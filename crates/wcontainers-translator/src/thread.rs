@@ -171,9 +171,12 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     // run
     {
         functions.function(3);
-        let mut f =
-            wasm_encoder::Function::new([(1, ValType::I64), (1, ValType::Ref(piece_ref()))]);
-        let (offset, piece) = (0, 1);
+        let mut f = wasm_encoder::Function::new([
+            (1, ValType::I64),
+            (1, ValType::Ref(piece_ref())),
+            (1, ValType::I32),
+        ]);
+        let (offset, piece, payload) = (0, 1, 2);
         let pc = global("pc");
         let mut s = f.instructions();
         s.loop_(BlockType::Empty);
@@ -209,15 +212,28 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         s.end(); // try_table
         s.unreachable();
         s.end(); // block: the unwind payload is on the stack
-        s.i32_const(UNWIND_GO_TO)
-            .i32_ne()
+        s.local_tee(payload)
+            .i32_const(UNWIND_LEAVE)
+            .i32_eq()
             .if_(BlockType::Empty)
             .return_()
             .end();
         s.i32_const(Reason::LeftToAddress as i32)
             .global_get(pc)
-            .call(WARN)
-            .br(0);
+            .call(WARN);
+        // The piece at `pc` may be the one whose check failed, so code that checks each access is put there.
+        s.local_get(payload)
+            .i32_const(UNWIND_GO_TO_EXACT)
+            .i32_eq()
+            .if_(BlockType::Empty)
+            .global_get(pc)
+            .call(LOAD_CODE)
+            .i32_eqz()
+            .if_(BlockType::Empty)
+            .return_()
+            .end()
+            .end();
+        s.br(0);
         s.end(); // loop
         s.end();
         code.function(&f);

@@ -35,12 +35,16 @@ pub const PERMISSION_PAGES: &str = "permission_pages";
 /// The lookup table, exported by the thread module.
 pub const LOOKUP: &str = "lookup";
 /// The exception tag that unwinds to the bottom loop, exported by the thread module. Its i32 payload is
-/// [`UNWIND_GO_TO`] or [`UNWIND_LEAVE`].
+/// [`UNWIND_GO_TO`], [`UNWIND_GO_TO_EXACT`] or [`UNWIND_LEAVE`].
 pub const UNWIND: &str = "unwind";
 /// Unwind payload: carry on at the address in `pc`.
 pub const UNWIND_GO_TO: i32 = 0;
 /// Unwind payload: return from `run` to the runner. Registers are saved and `pc` is set.
 pub const UNWIND_LEAVE: i32 = 1;
+/// Unwind payload: carry on at the address in `pc` from code that checks every access exactly. A check that
+/// covers several accesses failed there, so the piece the table holds for `pc` may be the one that made it;
+/// the bottom loop asks [`HOOK_LOAD_CODE`] for code at `pc` first.
+pub const UNWIND_GO_TO_EXACT: i32 = 2;
 
 /// Thread module export: run from the address in `pc` until a hook asks to leave, or no piece can be found
 /// for an address. Takes and returns nothing.
@@ -59,8 +63,9 @@ pub const HOOK_STOP: &str = "stop";
 /// Hook `(address: i64, access: i32)`: an access the page permissions do not allow. Access is 0 for a read
 /// and 1 for a write. Registers are saved and `pc` is the instruction. The thread then leaves.
 pub const HOOK_MEMORY_FAULT: &str = "memory_fault";
-/// Hook `(address: i64) -> i32`: no piece is known for this address. Return 1 once one has been added to
-/// the lookup table, or 0 to leave. Registers are saved and `pc` is the address.
+/// Hook `(address: i64) -> i32`: no piece is known for this address, or (after [`UNWIND_GO_TO_EXACT`]) the
+/// one there must be replaced by one translated at look-ahead none, unless it already is one. Return 1 once
+/// such a piece is in the lookup table, or 0 to leave. Registers are saved and `pc` is the address.
 pub const HOOK_LOAD_CODE: &str = "load_code";
 /// Hook `(reason: i32, detail: i64)`: a slow path was taken; see [`Reason`].
 pub const HOOK_WARN: &str = "warn";

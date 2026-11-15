@@ -117,9 +117,14 @@ pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report
             .collect()
     };
     let stopped = &result["stopped"];
+    // Docker reports a process killed by a signal as 128 plus the signal's number.
     let status = match stopped["kind"].as_str() {
         // Linux reports the low 8 bits of the status.
         Some("finished") => stopped["status"].as_i64().unwrap() as i32 & 0xff,
+        Some("memory fault") => 128 + 11,
+        Some("alignment") => 128 + 7,
+        Some("undefined" | "unsupported") => 128 + 4,
+        Some("breakpoint") => 128 + 5,
         _ => panic!(
             "the program stopped without exiting in Chrome: {stopped} at {}",
             result["pc"]

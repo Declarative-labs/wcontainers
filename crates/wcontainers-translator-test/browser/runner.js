@@ -51,6 +51,8 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   let snapshot = null;
   let thread = null;
   const blobs = [];
+  // Addresses code was translated from at run time: the table holds a piece of look-ahead none there.
+  const translatedFrom = new Set();
   let programBreak = 0;
 
   // Count a slow path taken at an address (or for a number) and the time it took; warn once per address
@@ -192,6 +194,7 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     },
     [contract.hookLoadCode]: (address) => {
       address = BigInt.asUintN(64, address);
+      if (translatedFrom.has(address)) return 1;
       const index = blobs.findIndex(
         (b) => address % 4n === 0n && address >= b.load + b.codeStart && address < b.load + b.codeEnd,
       );
@@ -201,6 +204,7 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
       }
       const start = performance.now();
       instantiateCode(index, address - blobs[index].load);
+      translatedFrom.add(address);
       slowPath(reason("translated at run time"), address, performance.now() - start);
       return 1;
     },

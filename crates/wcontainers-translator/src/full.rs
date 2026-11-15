@@ -1321,7 +1321,7 @@ impl<'a> FullEmitter<'a> {
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
     fn leave_to(&mut self, offset: u64) {
         self.save(Pc::Offset(offset));
-        self.sink().i32_const(UNWIND_GO_TO).throw(0);
+        self.sink().i32_const(UNWIND_GO_TO_EXACT).throw(0);
     }
 
     /// The pages of `len` bytes from `from` past the stack pointer allow reading and writing, or this

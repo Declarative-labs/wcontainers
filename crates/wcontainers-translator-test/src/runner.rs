@@ -1,7 +1,7 @@
 //! A small wasmtime runner: one guest thread, its memory, the hooks, and a stand-in for the kernel that
 //! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -61,6 +61,8 @@ pub struct Host {
     places: HashMap<(Reason, u64), u64>,
     warnings: Vec<Warning<'static>>,
     blobs: Vec<Blob>,
+    /// Addresses code was translated from at run time: the table holds a piece of look-ahead none there.
+    translated_from: HashSet<u64>,
     state: Option<SharedMemory>,
     save_state: Option<TypedFunc<(), ()>>,
     /// The program break the stand-in reports: the page after the highest blob.
@@ -141,6 +143,7 @@ impl Machine {
                 places: HashMap::new(),
                 warnings: Vec::new(),
                 blobs: Vec::new(),
+                translated_from: HashSet::new(),
                 state: None,
                 save_state: None,
                 program_break: 0,
@@ -519,6 +522,9 @@ fn hooks(linker: &mut Linker<Host>) {
             HOOK_LOAD_CODE,
             |mut caller: Caller<'_, Host>, address: i64| -> i32 {
                 let address = address as u64;
+                if caller.data().translated_from.contains(&address) {
+                    return 1;
+                }
                 let found = caller.data().blobs.iter().position(|blob| {
                     let start = blob.load_address + blob.code.start;
                     let end = blob.load_address + blob.code.end;
@@ -535,6 +541,7 @@ fn hooks(linker: &mut Linker<Host>) {
                             LookAhead::None,
                             Omit::default(),
                         );
+                        caller.data_mut().translated_from.insert(address);
                         let time = start.elapsed();
                         slow_path(
                             caller.data_mut(),
