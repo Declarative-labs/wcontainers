@@ -277,7 +277,12 @@ down into it, which the reference's layout never allows.
 Cases run in the third run (earlier ones are in git history): seed 45: 3000 passed; seed 47: 3000
 passed; seed 49: 3000 passed (after fixes); seed 50: 3000 passed; seed 51: 3000 passed;
 seed 52: 3000 passed (90 s, load 9 to 17); seed 53: 3000 passed (90 s, load 10 to 16). After the
-last fixes seed 48 passed 20000 sequences: the first 20000-sequence pass (599 s, load 4 to 42). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
+last fixes seed 48 passed 20000 sequences: the first 20000-sequence pass (599 s, load 4 to 42). Seed
+54's 20000 run then failed twice within 100 to 150 s: F_SETFL with O_DIRECT on a device (EINVAL; only
+tmpfs's regular files take direct I/O; O_NOATIME needs the owner or CAP_FOWNER), and SEEK_DATA over
+pages fallocate reserved (tmpfs treats pages not yet written as holes). Both fixed; seed 54 then passed
+3000 (90 s, load 25 to 52). Not yet checked: open with O_DIRECT on a file without direct I/O (Linux
+refuses with EINVAL in `do_dentry_open`; here it is taken). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
 times) each found a mismatch within 1 to 5 minutes, which was fixed: madvise MADV_REMOVE on shared
 anonymous memory, EROFS before the name lookup in unlink and rename, `/proc`'s link count (now masked,
 see above), reads of `/dev/full` into a buffer ending at an unmapped page (ARM64's `clear_user`), rename
@@ -396,7 +401,8 @@ All on this shared Mac; noisy, not benchmarks.
 ## Next (K1, in order)
 
 1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; seed
-   48 passed 20000. Start with seeds 54 and up, then the million. The orchestrator's long run is the command at the top.
+   48 passed 20000. Rerun seed 54 at 20000, then 55 and up, then the million. Make open refuse
+   O_DIRECT where F_SETFL does (see the runs above) and add O_DIRECT to layer 1's open flags. The orchestrator's long run is the command at the top.
 2. Missing calls that need later milestones: getitimer/setitimer and the timer calls (signal delivery
    and the timer queue, K2/K3), pipe2 and the rest of K2. Everything a single program uses without
    other processes, threads, timers or sockets is now built, except: execveat, rseq (glibc uses it;

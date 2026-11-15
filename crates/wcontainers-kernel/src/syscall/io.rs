@@ -1214,6 +1214,25 @@ pub(super) fn fcntl(
         F_SETFL if !path_only => {
             let mut file = descriptor.file.borrow_mut();
             let wanted = argument as u32;
+            // In the order of Linux's `setfl`. Only the owner or a holder of CAP_FOWNER may stop
+            // access times; only tmpfs's regular files take direct I/O (pipes read the flag as packet
+            // mode).
+            {
+                let inode = file.node.borrow();
+                let credentials = &kernel.processes[&kernel.threads[&tid].process].credentials;
+                if wanted & O_NOATIME != 0
+                    && file.flags & O_NOATIME == 0
+                    && credentials.fsuid != inode.uid
+                    && !credentials.has(crate::credentials::CAP_FOWNER)
+                {
+                    return Err(Errno::EPERM);
+                }
+                let direct = inode.fs.kind == crate::fs::Kind::Tmpfs
+                    && matches!(inode.content, Content::Regular(_));
+                if wanted & O_DIRECT != 0 && inode.file_type() != S_IFIFO && !direct {
+                    return Err(Errno::EINVAL);
+                }
+            }
             // `O_APPEND` cannot be taken off an append-only file; nothing here is append-only.
             file.flags = (file.flags & !SETTABLE_FLAGS) | (wanted & SETTABLE_FLAGS);
             Ok(0)

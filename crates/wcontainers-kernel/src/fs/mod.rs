@@ -139,6 +139,9 @@ pub(crate) enum Content {
 pub(crate) struct Regular {
     pub data: Vec<u8>,
     pub pages: alloc::collections::BTreeSet<u64>,
+    /// Pages `fallocate` reserved that nothing has written yet: they take space but read as holes
+    /// to SEEK_DATA and SEEK_HOLE, as tmpfs's pages that are not up to date.
+    pub allocated: alloc::collections::BTreeSet<u64>,
     /// `F_SEAL_*` bits; a file not made by `memfd_create` to be sealed is sealed against sealing.
     pub seals: u32,
 }
@@ -148,6 +151,7 @@ impl Default for Regular {
         Self {
             data: Vec::new(),
             pages: alloc::collections::BTreeSet::new(),
+            allocated: alloc::collections::BTreeSet::new(),
             seals: F_SEAL_SEAL,
         }
     }
@@ -199,6 +203,7 @@ impl Regular {
         if !bytes.is_empty() {
             for page in offset as u64 / 4096..=(end as u64 - 1) / 4096 {
                 self.pages.insert(page);
+                self.allocated.remove(&page);
             }
         }
     }
@@ -207,6 +212,7 @@ impl Regular {
         self.data.resize(length, 0);
         let pages = (length as u64).div_ceil(4096);
         self.pages.retain(|page| *page < pages);
+        self.allocated.retain(|page| *page < pages);
     }
 }
 
@@ -328,7 +334,7 @@ impl Inode {
     /// The 512 byte blocks `stat` reports.
     pub fn blocks(&self) -> u64 {
         match &self.content {
-            Content::Regular(file) => file.pages.len() as u64 * 8,
+            Content::Regular(file) => (file.pages.len() + file.allocated.len()) as u64 * 8,
             _ => 0,
         }
     }

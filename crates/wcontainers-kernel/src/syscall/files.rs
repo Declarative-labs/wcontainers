@@ -1850,13 +1850,18 @@ pub(super) fn fallocate(
         let first = offset.div_ceil(4096);
         let last = end / 4096;
         regular.pages.retain(|page| *page < first || *page >= last);
+        regular
+            .allocated
+            .retain(|page| *page < first || *page >= last);
         inode.mtime = now;
     } else {
         if mode & FALLOC_FL_KEEP_SIZE == 0 && regular.data.len() < end as usize {
             regular.data.resize(end as usize, 0);
         }
         for page in offset / 4096..end.div_ceil(4096) {
-            regular.pages.insert(page);
+            if !regular.pages.contains(&page) {
+                regular.allocated.insert(page);
+            }
         }
     }
     inode.ctime = now;
