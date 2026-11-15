@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-use wcontainers_abi::{Permissions, RegisterBlock};
+use wcontainers_abi::{Exit, Permissions, RegisterBlock};
 use wcontainers_translator::{LookAhead, Omit};
 
 /// Where every blob is linked and loaded.
@@ -57,7 +57,7 @@ pub enum Library {
     C,
 }
 
-/// Build `programs/<name>.c` at an optimisation level, such as "-O2", into a flat blob.
+/// Build `programs/<name>.c` (or `<name>.S`, assembly) at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
     build_with(name, optimisation, library, &[])
 }
@@ -76,6 +76,11 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     let own = unique(&stem);
     let elf = out.join(format!("{own}.elf"));
     let source = source_directory().join(format!("{name}.c"));
+    let source = if source.exists() {
+        source
+    } else {
+        source_directory().join(format!("{name}.S"))
+    };
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
     let script = format!("-Wl,-T,{}", text(&script));
@@ -199,9 +204,14 @@ pub fn translated_omitting(
     let started = Instant::now();
     let (stopped, registers) = machine.run();
     let ran_for = started.elapsed();
+    // Docker reports a process killed by a signal as 128 plus the signal's number.
     let status = match stopped {
         // Linux reports the low 8 bits of the status.
         Stopped::Finished(status) => status & 0xff,
+        Stopped::Exit(Exit::MemoryFault { .. }) => 128 + 11,
+        Stopped::Exit(Exit::AlignmentFault { .. }) => 128 + 7,
+        Stopped::Exit(Exit::IllegalInstruction) => 128 + 4,
+        Stopped::Exit(Exit::Breakpoint { .. }) => 128 + 5,
         other => {
             let at = (registers.pc - LOAD) as usize;
             let word = blob

@@ -15,6 +15,16 @@ fn programs_match_linux() {
     ]);
 }
 
+/// Hand-written programs whose callees give the stack pointer back moved.
+#[test]
+fn stack_moved_by_a_callee_matches_linux() {
+    match_linux(&[
+        ("callee_moves_sp", Library::None),
+        ("callee_moves_sp_away", Library::None),
+        ("callee_misaligns_sp", Library::None),
+    ]);
+}
+
 #[test]
 fn benchmarks_match_linux() {
     match_linux(&[("bench", Library::None)]);

@@ -8,7 +8,7 @@ use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::DfsPostOrder;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_arm64::{
     Access, Address, BranchRegister, Carry, Cond, Effects, Emitter, Flag, Flags, Instruction,
@@ -424,6 +424,8 @@ struct Plan {
     checks: HashMap<u64, CheckPlan>,
     /// Ranges relative to the stack pointer before the instruction, checked as the stack grows.
     frame_checks: HashMap<u64, (i64, u32)>,
+    /// Calls after which a frame is known, so the stack pointer must come back unchanged.
+    frame_across: HashSet<u64>,
     /// The piece calls or jumps to other pieces, so its entry needs the stop check.
     calls_out: bool,
 }
@@ -659,7 +661,11 @@ impl Plan {
             }
         }
 
-        let (checks, frame_checks) = checks(function, decoded, &frame_in);
+        let Checks {
+            plans: checks,
+            frame_checks,
+            frame_across,
+        } = checks(function, decoded, &frame_in);
         let dynamic_flags = flags_in.iter().any(|f| f.count_ones() > 1);
         let calls_out = function_instructions(function).any(|o| {
             let d = &decoded[&o];
@@ -679,6 +685,7 @@ impl Plan {
             dynamic_flags,
             checks,
             frame_checks,
+            frame_across,
             calls_out,
         }
     }
@@ -721,14 +728,17 @@ fn block_end(function: &Function, offset: u64) -> u64 {
         .end
 }
 
-/// Which accesses need a check, and where the stack's frame is checked.
-fn checks(
-    function: &Function,
-    decoded: &HashMap<u64, Decoded>,
-    frame_in: &[Frame],
-) -> (HashMap<u64, CheckPlan>, HashMap<u64, (i64, u32)>) {
+/// Which accesses need a check, where the stack's frame is checked, and the calls a frame is kept across.
+struct Checks {
+    plans: HashMap<u64, CheckPlan>,
+    frame_checks: HashMap<u64, (i64, u32)>,
+    frame_across: HashSet<u64>,
+}
+
+fn checks(function: &Function, decoded: &HashMap<u64, Decoded>, frame_in: &[Frame]) -> Checks {
     let mut plans = HashMap::new();
     let mut frame_checks = HashMap::new();
+    let mut frame_across = HashSet::new();
     for (b, block) in function.blocks.iter().enumerate() {
         let mut frame = frame_in[b];
         // Per base register: how far its value has moved from where its current groups are measured.
@@ -741,6 +751,9 @@ fn checks(
             if d.effects.calls || d.effects.syscall {
                 moved.clear();
                 open.clear();
+            }
+            if d.effects.calls && frame.is_some() {
+                frame_across.insert(o);
             }
             let movement = stack_move(d);
             if let StackMove::By { delta, .. } = movement
@@ -842,7 +855,11 @@ fn checks(
             }
         }
     }
-    (plans, frame_checks)
+    Checks {
+        plans,
+        frame_checks,
+        frame_across,
+    }
 }
 
 /// A frame before the stack pointer moves by `delta`, with the part a move down checks added.
@@ -1696,13 +1713,31 @@ impl Emitter for FullEmitter<'_> {
                 self.sink().local_get(local).call(F_DISPATCH);
             }
         }
+        let returned_sp = self.temporary(ValType::I64);
         let mut s = self.sink();
-        s.local_set(L_SP);
+        s.local_set(returned_sp);
         for i in (0..4).rev() {
             s.local_set(i);
         }
         self.at.dirty = Registers::NONE;
         self.set_flag_state(FLAGS_IN_GLOBALS);
+        // What is known about the stack pointer (its frame, its alignment) holds after the call only if the
+        // callee gave it back unchanged; otherwise carry on from code that knows nothing.
+        let kept =
+            self.at.aligned || (self.plan.frame_across.contains(&offset) && !self.omit.permissions);
+        if kept {
+            self.sink()
+                .local_get(returned_sp)
+                .local_get(L_SP)
+                .i64_ne()
+                .local_get(returned_sp)
+                .local_set(L_SP)
+                .if_(BlockType::Empty);
+            self.leave_to(offset + 4);
+            self.sink().end();
+        } else {
+            self.sink().local_get(returned_sp).local_set(L_SP);
+        }
         let reload = self.plan.live_after[&offset];
         for bit in reload.bits() {
             let local = self.register(bit);
