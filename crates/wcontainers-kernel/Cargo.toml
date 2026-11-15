@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-kernel"
+description = "A Linux kernel for ARM64 guests, driven as a state machine through wcontainers-abi."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-abi.workspace = true
+object = { version = "0.41", default-features = false, features = ["read_core", "elf"] }
+
+[lints]
+workspace = true
