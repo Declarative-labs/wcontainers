@@ -347,7 +347,12 @@ struct NoneEmitter<'a> {
 impl NoneEmitter<'_> {
     /// The stop check every piece starts with: each one passes control on.
     fn entry(&mut self) {
-        let pc = self.offset;
+        self.stop_check(0);
+    }
+
+    /// Call the stop hook if the stop flag is raised, with `pc` at this instruction plus `step`.
+    fn stop_check(&mut self, step: u64) {
+        let pc = self.offset + step;
         let mut s = self.sink();
         s.global_get(G_THREAD_BLOCK)
             .i32_atomic_load(memarg(
@@ -601,6 +606,8 @@ impl Emitter for NoneEmitter<'_> {
             self.get(Reg::X(i));
         }
         self.sink().call(F_SYSCALL).local_set(0);
+        // The kernel raises the flag during the call when the thread must not carry on.
+        self.stop_check(4);
     }
 
     fn trap(&mut self, trap: Trap) {
