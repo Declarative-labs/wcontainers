@@ -350,7 +350,10 @@ pub(super) fn readahead(
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
-    if file.borrow().node.borrow().file_type() != S_IFREG || (length as i64) < 0 {
+    // A secret memory file cannot be read ahead (measured).
+    let inode = file.borrow().node.clone();
+    let inode = inode.borrow();
+    if inode.file_type() != S_IFREG || inode.is_secret() || (length as i64) < 0 {
         return Err(Errno::EINVAL);
     }
     Ok(0)

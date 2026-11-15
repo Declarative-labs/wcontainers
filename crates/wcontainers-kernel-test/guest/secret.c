@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -48,6 +49,10 @@ int main(void) {
     result("lseek", lseek(fd, 0, SEEK_END));
     result("fallocate", fallocate(fd, 0, 0, PAGE));
     result("fsync", fsync(fd));
+    result("readahead", readahead(fd, 0, 64));
+    uint32_t stx[64];
+    syscall(SYS_statx, fd, "", AT_EMPTY_PATH, 0xfff, stx);
+    printf("statx mask %#x attributes mask %#llx\n", stx[0], *(unsigned long long *)&stx[14]);
     result("map before size", mmap(0, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) == MAP_FAILED ? -1 : 0);
     result("size", ftruncate(fd, 4 * PAGE));
     result("size again", ftruncate(fd, 8 * PAGE));

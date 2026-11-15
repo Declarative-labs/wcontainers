@@ -1311,7 +1311,9 @@ pub(super) fn statx(
     // tmpfs keeps fine-grained times only on request, so it reports the change and modification times,
     // and the birth time, only when asked for them; proc reports the basic set.
     let requested = mask as u32;
-    let reported = if inode.fs.kind == crate::fs::Kind::Proc {
+    // Secret memory files report what proc's do (measured).
+    let basic = inode.fs.kind == crate::fs::Kind::Proc || inode.is_secret();
+    let reported = if basic {
         STATX_BASIC_STATS | STATX_MNT_ID
     } else {
         let mut reported = (STATX_BASIC_STATS & !(STATX_MTIME | STATX_CTIME)) | STATX_MNT_ID;
@@ -1331,7 +1333,7 @@ pub(super) fn statx(
     out.stx_size = plain.st_size as u64;
     out.stx_blocks = plain.st_blocks as u64;
     let common = STATX_ATTR_AUTOMOUNT | STATX_ATTR_MOUNT_ROOT | STATX_ATTR_DAX;
-    out.stx_attributes_mask = u64::from(if inode.fs.kind == crate::fs::Kind::Proc {
+    out.stx_attributes_mask = u64::from(if basic {
         common
     } else {
         common | STATX_ATTR_IMMUTABLE | STATX_ATTR_APPEND | STATX_ATTR_NODUMP
