@@ -4,7 +4,7 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is partly done, first run: programs start from the file system (with
+K0 is done. K1 (one process) is built and tested, first run: programs start from the file system (with
 their own loader and `#!` scripts), memory calls with page protection and faults, the in-memory file
 systems (tmpfs, `/proc`, `/dev`), file descriptors, time, randomness, ids and powers for one process.
 Single busybox programs match the reference. Layer 1 runs. What is left for K1 is under "Next".
@@ -64,7 +64,7 @@ shrunk and printed call by call with the seed.
 
 ## System calls
 
-Done (119): brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep, close,
+Done (120): brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep, close,
 dup, dup3, execve, exit, exit_group, faccessat, faccessat2, fallocate, fchdir, fchmod, fchmodat,
 fchmodat2, fchown, fchownat, fcntl, fdatasync, fstat, fstatfs, fsync, ftruncate, get_robust_list,
 getcpu, getcwd, getdents64, getegid, geteuid, getgid, getgroups, getpgid, getpid, getppid,
@@ -93,13 +93,19 @@ Partial (inside the list above):
 - prctl: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, GET/SET_NO_NEW_PRIVS,
   GET_SECCOMP, GET_CHILD_SUBREAPER; others counted, EINVAL.
 - statfs: block and inode counts are made up (64 MiB like Docker's tmpfs).
+- ppoll: every file that exists so far is always ready (Linux's default poll mask; the host's pipes
+  always have room); a wait with nothing ready sleeps until its timeout, or for ever (until K2's
+  signals).
+- personality: Docker's filter is modelled for this call (only 0, 8, 0x20000, 0x20008 and the query
+  pass, others EPERM); the 32 bit personality gives EINVAL as on a CPU without that mode.
+- getpriority: nice values are not kept yet (always 0); setpriority is missing.
 
-Missing (206, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy,
+Missing (205, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy,
 io_submit, io_cancel, io_getevents, setxattr, lsetxattr, fsetxattr, getxattr, lgetxattr, fgetxattr,
 listxattr, llistxattr, flistxattr, removexattr, lremovexattr, fremovexattr, lookup_dcookie, eventfd2,
 epoll_create1, epoll_ctl, epoll_pwait, inotify_init1, inotify_add_watch, inotify_rm_watch,
 ioprio_set, ioprio_get, flock, umount2, mount, pivot_root, nfsservctl, vhangup, pipe2, quotactl,
-pselect6, ppoll, signalfd4, vmsplice, splice, tee, sync_file_range, timerfd_create, timerfd_settime,
+pselect6, signalfd4, vmsplice, splice, tee, sync_file_range, timerfd_create, timerfd_settime,
 timerfd_gettime, acct, waitid, unshare, futex, getitimer, setitimer, kexec_load, init_module,
 delete_module, timer_create, timer_gettime, timer_getoverrun, timer_settime, timer_delete,
 clock_settime, syslog, ptrace, sched_setparam, sched_setscheduler, sched_get_priority_max,
@@ -134,6 +140,12 @@ standin, boundary, layouts) still pass with the new start.
   sleep, getconf, cat and readlink of `/proc/self`, ls `/proc/self/fd`, ...): same stdout, stderr,
   exit code and files changed as the reference. Commands are found on the image's PATH as Docker does.
 - one_cpu: nproc says 1 (the plan's one-CPU difference).
+- memory: guest/memory.c, 10 cases against the reference: mprotect then write (SIGSEGV), PROT_NONE
+  read, unmapped hole, fresh memory is zero after reuse, MADV_DONTNEED, a private file mapping past
+  the file's end (SIGBUS), private file mapping copy semantics, stack growth by 4 MB of frames, stack
+  overflow (SIGSEGV), brk grow and shrink, running code from a page made executable and then not.
+- script: `#!` scripts with and without an argument, a script whose interpreter is a busybox applet,
+  and a missing interpreter (ENOENT).
 - layer1: see the layer 1 section.
 
 Known failures (ignored, with the reason in the attribute):
@@ -143,34 +155,47 @@ Known failures (ignored, with the reason in the attribute):
 
 ## Layer 1
 
-Calls covered (59 kinds, plus mkdirat and chdir at the start of every sequence): openat, close, read,
-write, pread64, pwrite64, readv, writev, lseek, getdents64, dup, dup3, fcntl, ioctl, fsync, mkdirat,
-mknodat, symlinkat, linkat, unlinkat, renameat2, readlinkat, newfstatat, fstat, statx, faccessat2,
-fchmod, fchmodat, fchownat, utimensat, truncate, ftruncate, fallocate, getcwd, chdir, fchdir, umask,
-fstatfs, sendfile, mmap, munmap, mprotect, madvise, uname, getuid, getgroups, setresuid, setresgid,
-prlimit64, clock_gettime, clock_getres, getrandom, rt_sigprocmask, rt_sigaction, sigaltstack, prctl,
-sched_getaffinity, nanosleep, capget. Arguments come from pools that include bad pointers, bad fds,
-huge counts, unknown flags and invalid values. Sequences have 1 to 15 calls after the two setup calls.
-Everything happens under `/dev/shm/w` (tmpfs in both), never on the root file system.
+Calls covered (95 kinds, plus mkdirat and chdir at the start of every sequence): openat, close, read,
+write, pread64, pwrite64, readv, writev, preadv, pwritev, lseek, getdents64, dup, dup3, fcntl, ioctl,
+fsync, fdatasync, mkdirat, mknodat, symlinkat, linkat, unlinkat, renameat, renameat2, readlinkat,
+newfstatat, fstat, statx, faccessat, faccessat2, fchmod, fchmodat, fchmodat2, fchown, fchownat,
+utimensat, truncate, ftruncate, fallocate, getcwd, chdir, fchdir, umask, statfs, fstatfs, sendfile,
+ppoll, mmap, munmap, mprotect, madvise, uname, getuid, getpid, getppid, gettid, getpgid, getsid,
+getresuid, getresgid, getgroups, setuid, setgid, setreuid, setregid, setresuid, setresgid, setfsuid,
+setfsgid, setgroups, prlimit64, getrlimit, setrlimit, getrusage, times, clock_gettime, clock_getres,
+gettimeofday, nanosleep, clock_nanosleep, getrandom, sysinfo, getcpu, rt_sigprocmask, rt_sigaction,
+rt_sigpending, sigaltstack, set_robust_list, prctl, personality, sched_getaffinity, sched_yield,
+getpriority, capget. Arguments come from pools with bad pointers, bad descriptors, huge counts,
+unknown flags and invalid values. 1 to 15 calls after the two setup calls. Everything happens under
+`/dev/shm/w` (tmpfs in both) and the devices; never on the root file system. After each sequence the
+runner puts back what a sequence can change outside its directory (`/dev/shm` and the three devices).
+
 Masked on both sides: inode and device numbers and times in stat and statx, d_ino in getdents64,
-fstatfs counts and fsid, clock_gettime's value, getrandom's bytes, uname's release and version, and
-the address mmap returns without MAP_FIXED.
+statfs counts and fsid, the values of clock_gettime, gettimeofday, times, sysinfo and getrusage,
+getrandom's bytes, uname's release and version, the CPU set and CPU number (one CPU is a declared
+difference), the time ppoll writes back, process numbers (the reference's caller is a child of its
+runner), and the address mmap returns without MAP_FIXED.
+
+Not generated, and why: named pipes (opening one waits; pipes are K2); fd 0 (a pipe in the reference
+runner, /dev/null in our container); process 1 as an argument; memory lengths above 256 MiB (our
+programs' own mappings lie higher in a 4 GiB space); ppoll without a timeout.
 
 Not yet covered by layer 1 (built, tested only through programs): brk, execve, exit, exit_group,
-mremap, msync, getpid and the other ids, setuid/setgid/setreuid/setregid/setfsuid/setfsgid,
-setgroups, getresuid/getresgid, kill/tkill/tgkill, getrlimit/setrlimit, getrusage, times, gettimeofday,
-clock_nanosleep, sysinfo, getcpu, sched_* others, getpriority, personality, set_robust_list,
-get_robust_list, set_tid_address, rt_sigpending, statfs, truncate of paths, faccessat, fchmodat2,
-fchown, renameat, preadv, pwritev, fdatasync, syncfs, sync, chroot, sethostname, setdomainname,
-setpgid, setsid, getpgid, getsid.
+mremap, msync, kill/tkill/tgkill, setpgid, setsid, chroot, sethostname, setdomainname, sync, syncfs,
+get_robust_list, set_tid_address, sched_getparam, sched_getscheduler, sched_setaffinity.
 
-Cases run: see the measurements.
+Cases run (all pass at the end of this run): 50 (seed 0), 300 (seed 1), 3000 (seed 2) on the first
+59 calls; 500 (seed 3) on all 95. See measurements for the last long run.
 
 ## Measurements
 
-- Load 27.75 32.08 54.80 (1, 5, 15 min) while the layer 1 run below started.
-- Layer 1, 50 sequences, seed 0: 2.2 s including starting the reference container.
-- busybox test binary (3 tests in parallel, 61 commands, each run in both): 54 s.
+All on this shared Mac; noisy, not benchmarks.
+- Layer 1, 50 sequences, seed 0: 2.2 s including starting the reference container (load about 30).
+- Layer 1, 3000 sequences, seed 2, 59 call kinds: 86 s (load 27.75 32.08 54.80 at the start).
+- Layer 1, 500 sequences, seed 3, 95 call kinds: 15.4 s (load about 14).
+- busybox test binary (4 tests in parallel, about 67 commands, each in both runners): 9 to 54 s
+  (load 14 to 50).
+- A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
 
@@ -197,7 +222,16 @@ Cases run: see the measurements.
   names it).
 - The generator now also copies linux-raw-sys's `system`, `ioctl` and `prctl` modules, and gives a named
   list of structures zerocopy's byte derives (which prove they have no padding).
-- Docker's default seccomp profile is still not modelled (see K0).
+- Docker's default seccomp profile is still not modelled (see K0), except for `personality`, whose
+  argument filter is modelled because layer 1 reaches it.
+- Mount flags are modelled per file system (`/dev` nosuid; `/dev/shm` and `/proc` nosuid, nodev,
+  noexec, relatime; `/dev/pts` nosuid, noexec, relatime; `/` relatime): statfs reports them, `nodev`
+  refuses opening devices (EACCES), `noexec` refuses execve (EACCES) and executable file mappings
+  (EPERM).
+- `fs.protected_hardlinks` and `fs.protected_symlinks` are on, as in the reference (measured: 1 and 1;
+  protected_regular and protected_fifos are 0).
+- Many checks were reordered to match the order Linux makes them in (found by layer 1): which error
+  comes first is part of the behaviour.
 - Layer 1 uses a long-lived reference container that runs each sequence in a forked child (so state does
   not carry over), instead of one container per sequence, so a case costs about a millisecond and
   proptest can shrink.
@@ -223,13 +257,10 @@ Cases run: see the measurements.
 
 ## Next (K1, in order)
 
-1. Run layer 1 for many more cases with several seeds and fix what it finds; extend it to the calls in
-   "Not yet covered" (ids need care: the reference child is not pid 1).
-2. More busybox single programs, including ones that read files under `/proc` and `/dev/shm`, `sh -c`
-   with builtins only, and scripts started by `#!`.
-3. A guest test of page protection and faults with mmap/mprotect from C (SIGSEGV and SIGBUS exit codes,
-   stack growth, the guard gap) against the reference.
-4. close_range, copy_file_range, preadv2/pwritev2, mincore, mlock family, memfd_create, openat2, flock
+1. Run layer 1 for many more cases with several seeds (the orchestrator's long run) and fix what it
+   finds; extend it to the calls in "Not yet covered".
+2. More busybox single programs.
+3. close_range, copy_file_range, preadv2/pwritev2, mincore, mlock family, memfd_create, openat2, flock
    (single-process semantics), fadvise64, sched_* remaining, setpriority, getitimer.
-5. Docker's default seccomp profile (gaps and blocked calls give EPERM).
-6. Then K2.
+4. Docker's default seccomp profile (gaps and blocked calls give EPERM).
+5. Then K2.

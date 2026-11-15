@@ -651,9 +651,11 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
+        // A relative sleep on the process's CPU clock never ends (it does not move while sleeping), so
+        // that clock is only slept on until a time already past.
         linux::__NR_clock_nanosleep => [
             pick(&[0, 1, 2, 3, 7, 99], a),
-            pick(&[0, 1], b),
+            if a % 6 == 2 { 1 } else { pick(&[0, 1], b) },
             ARENA + VALUES + 56 * 8 + (c % 4) * 16,
             0,
             0,

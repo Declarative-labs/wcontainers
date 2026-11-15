@@ -156,6 +156,20 @@ pub(super) fn clock_nanosleep(
         Ok(duration) => nanoseconds(&duration),
         Err(error) => return Err(error).into(),
     };
+    // The process's CPU clock does not move while its only thread sleeps, so a sleep on it that is not
+    // already over never ends.
+    if id == CLOCK_PROCESS_CPUTIME_ID {
+        let over = if absolute {
+            duration <= cpu_time(kernel, cx)
+        } else {
+            duration == 0
+        };
+        if over {
+            return Outcome::Return(0);
+        }
+        kernel.thread_mut(tid).parked = Some(Parked::Forever);
+        return Outcome::Parked;
+    }
     let now = cx.host.monotonic_nanoseconds();
     let until = if absolute {
         let clock_now = if realtime {
