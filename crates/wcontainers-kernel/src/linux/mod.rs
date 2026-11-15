@@ -33,5 +33,6 @@ pub mod auxvec;
 pub mod errno;
 pub mod general;
 pub mod ioctl;
+pub mod net;
 pub mod prctl;
 pub mod system;

@@ -90,10 +90,8 @@ fn number_high_bits_are_ignored_as_in_reference() {
     );
 }
 
-/// Numbers in the gaps of Linux's list are refused with EPERM by Docker's default seccomp profile; the
-/// kernel answers ENOSYS until that profile is modelled.
+/// Numbers in the gaps of Linux's list are refused with EPERM by Docker's default seccomp profile.
 #[test]
-#[ignore = "known failure: Docker's default seccomp profile is not modelled yet (EPERM in the reference, ENOSYS here)"]
 fn numbers_in_gaps_match_reference() {
     for argument in ["244", "400"] {
         let (ours, theirs) = run_both(&program(), &[argument]);

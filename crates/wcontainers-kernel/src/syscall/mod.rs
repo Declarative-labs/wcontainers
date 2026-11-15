@@ -267,6 +267,17 @@ pub(crate) fn dispatch(
     let handler = TABLE
         .get(number as usize)
         .map_or(Handler::Unknown, |entry| entry.handler);
+    let known = !matches!(handler, Handler::Unknown);
+    // Docker's profile answers first; what it answers is exact, but a number Linux does not have is
+    // still counted.
+    if let Some(errno) = crate::seccomp::docker_default(number, &call.arguments, known) {
+        if !known {
+            kernel
+                .counters
+                .count(cx.host, reason::UNKNOWN_SYSCALL, number.into());
+        }
+        return Err(errno).into();
+    }
     match handler {
         Handler::Simple(handler) => handler(kernel, cx, tid, call.arguments).into(),
         Handler::Full(handler) => handler(kernel, cx, tid, call.arguments),

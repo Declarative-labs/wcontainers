@@ -1113,10 +1113,6 @@ pub(super) fn capset(
     })
 }
 
-/// The personalities Docker's default seccomp profile lets a program set; anything else it refuses with
-/// EPERM before Linux sees it. 0xffffffff only asks.
-const ALLOWED_PERSONALITIES: [u32; 5] = [0, 8, 0x20000, 0x20008, 0xffff_ffff];
-
 pub(super) fn personality(
     kernel: &mut Kernel,
     _: &mut Context<'_>,
@@ -1124,9 +1120,6 @@ pub(super) fn personality(
     [persona, ..]: Args,
 ) -> Result<u64, Errno> {
     let persona = persona as u32;
-    if !ALLOWED_PERSONALITIES.contains(&persona) {
-        return Err(Errno::EPERM);
-    }
     // 32 bit programs do not run here, as on an ARM64 CPU without that mode.
     if persona != 0xffff_ffff && persona & 0xff == 8 {
         return Err(Errno::EINVAL);

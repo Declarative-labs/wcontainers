@@ -12,7 +12,9 @@ use std::process::{Command, Stdio};
 use regex::Regex;
 
 /// The linux-raw-sys modules the kernel uses.
-const MODULES: &[&str] = &["general", "errno", "auxvec", "system", "ioctl", "prctl"];
+const MODULES: &[&str] = &[
+    "general", "errno", "auxvec", "system", "ioctl", "prctl", "net",
+];
 
 /// Structures the kernel copies to or from guest memory. They get zerocopy's byte conversions, whose
 /// derive also proves they have no padding.
