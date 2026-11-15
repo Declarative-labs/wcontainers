@@ -342,7 +342,9 @@ Cases run in the fourth run: seed 54: 3000 passed after the O_DIRECT fix (97 s, 
 of a PROT_NONE range is ENOMEM; fixed), then 3000 failed (descriptor links in `/proc` have size 64;
 fixed), then 3000 passed (86 s, load 6 to 10). Seed 58: 20000 failed after 155 s (`..` from
 `/proc/self/fd` must reach `/proc/<pid>`; fixed), then 3000 passed (93 s). Seed 59: 2000 failed
-(execveat checks its flags before its path; fixed), then 2000 passed (61 s).
+(execveat checks its flags before its path; fixed), then 2000 passed (61 s). Seed 60: 20000 failed
+after 83 s (a descriptor link's mode in `/proc` has execute only with read or write, so an `O_PATH`
+one has none; fixed), then 3000 passed (85 s, load 16 to 23).
 
 Cases run in the third run (earlier ones are in git history): seed 45: 3000 passed; seed 47: 3000
 passed; seed 49: 3000 passed (after fixes); seed 50: 3000 passed; seed 51: 3000 passed;
@@ -486,8 +488,8 @@ All on this shared Mac; noisy, not benchmarks.
 
 1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; then
    the million (the orchestrator's command at the top). In the fourth run every 20000 run (seeds 54,
-   57, 58) found a mismatch within 3 to 7 minutes; seed 60's 20000 run was started at the end (see
-   the runs above for its result if recorded). Seeds 61 and up are fresh.
+   57, 58, 60) found a mismatch within 1.5 to 7 minutes. Seed 61's 20000 run was started at the end
+   of the fourth run; its result is not recorded here. Seeds 61 and up are fresh.
 2. Missing calls a single program can use without other processes, threads, timers or sockets:
    name_to_handle_at (tmpfs has handles; the reference's root, overlayfs, refuses them),
    process_vm_readv and process_vm_writev on the caller itself, cachestat, memfd_secret (needs shared

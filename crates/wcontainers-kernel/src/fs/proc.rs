@@ -229,7 +229,8 @@ impl Entry {
 pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: Entry) -> Node {
     let (uid, gid) = entry.owner(view);
     let mut mode = entry.mode();
-    // A descriptor's link shows how the file was opened.
+    // A descriptor's link shows how the file was opened: reading gives read and execute, writing
+    // write and execute, and an `O_PATH` descriptor nothing (Linux's `tid_fd_update_inode`).
     if let Entry::Fd(pid, fd) = entry
         && let Some(file) = view
             .processes
@@ -238,9 +239,8 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
     {
         let file = file.borrow();
         mode = S_IFLNK
-            | 0o100
-            | if file.readable() { 0o400 } else { 0 }
-            | if file.writable() { 0o200 } else { 0 };
+            | if file.readable() { 0o500 } else { 0 }
+            | if file.writable() { 0o300 } else { 0 };
     }
     let is_directory = mode & S_IFMT == S_IFDIR;
     // Docker mounts `/proc/sys` again over itself, read-only.
