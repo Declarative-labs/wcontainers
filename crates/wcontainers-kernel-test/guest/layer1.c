@@ -2,8 +2,9 @@
 //
 // Reads sequences from standard input, one at a time, and runs each in a child process so no state
 // carries over. A sequence is: arena bytes (u32 length, bytes), then calls (u32 count, then for each the
-// number and six arguments as u64). For each call the child reports the return value (i64) and the
-// arena's changed byte ranges (u32 count, then u32 offset, u32 length, bytes) into a pipe the parent
+// number and six arguments as u64). For each call the child reports the return value (i64), whether the
+// call was about a directory that outlives the sequence (u32, see `outliving`), and the arena's changed
+// byte ranges (u32 count, then u32 offset, u32 length, bytes) into a pipe the parent
 // drains. After each sequence the parent writes everything the child reported (u32 length, bytes), then
 // the child's wait status (u32), and puts back what the sequence may have changed. A child that dies
 // part way through a report leaves a short last record, which the reader drops; one that runs past the
@@ -11,6 +12,7 @@
 // and an argument equal to SELF is replaced by its process number.
 // All numbers are little endian.
 
+#define _GNU_SOURCE
 #include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -34,6 +36,38 @@
 #define SELF 0x5e1f5e1f00000001ULL
 
 static unsigned char before[ARENA_SIZE];
+
+// The directories that outlive every sequence and whose offsets therefore count every entry earlier
+// sequences made there: /dev/shm (each sequence's work directory) and /dev (the devices are remade).
+// Each is known by its file handle and mount.
+struct handle {
+    struct file_handle header;
+    unsigned char bytes[128];
+};
+static struct handle outliving[2];
+static int outliving_mount[2];
+
+static int handle_of(int fd, struct handle *handle, int *mount) {
+    handle->header.handle_bytes = sizeof handle->bytes;
+    return syscall(SYS_name_to_handle_at, fd, "", &handle->header, mount, AT_EMPTY_PATH);
+}
+
+// Whether a descriptor is on a directory that outlives the sequence.
+static uint32_t outlives(int fd) {
+    struct handle handle;
+    int mount;
+    if (handle_of(fd, &handle, &mount) != 0) {
+        return 0;
+    }
+    for (int index = 0; index < 2; index++) {
+        if (mount == outliving_mount[index] && handle.header.handle_type == outliving[index].header.handle_type &&
+            handle.header.handle_bytes == outliving[index].header.handle_bytes &&
+            memcmp(handle.bytes, outliving[index].bytes, handle.header.handle_bytes) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static int read_all(int fd, void *into, size_t length) {
     unsigned char *at = into;
@@ -124,6 +158,14 @@ static void remove_tree(int directory_fd, const char *name) {
 
 int main(void) {
     static unsigned char arena_init[ARENA_SIZE];
+    static const char *const outliving_paths[] = {"/dev/shm", "/dev"};
+    for (int index = 0; index < 2; index++) {
+        int fd = open(outliving_paths[index], O_RDONLY | O_DIRECTORY);
+        if (fd < 0 || handle_of(fd, &outliving[index], &outliving_mount[index]) != 0) {
+            return 1;
+        }
+        close(fd);
+    }
     for (;;) {
         uint32_t length;
         if (read_all(0, &length, 4) != 0 || length > ARENA_SIZE || read_all(0, arena_init, length) != 0) {
@@ -160,7 +202,12 @@ int main(void) {
                     }
                 }
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
+                uint32_t outlived = 0;
+                if (sequence[index][0] == SYS_getdents64 || sequence[index][0] == SYS_lseek) {
+                    outlived = outlives((int)sequence[index][1]);
+                }
                 write_all(1, &result, 8);
+                write_all(1, &outlived, 4);
                 report_changes(1);
             }
             _exit(0);

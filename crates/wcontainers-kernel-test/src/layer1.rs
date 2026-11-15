@@ -233,6 +233,10 @@ pub struct CallResult {
     pub value: i64,
     /// Changed ranges of the arena: offset and the bytes now there.
     pub changes: Vec<(u32, Vec<u8>)>,
+    /// The call read or moved through a directory that outlives the sequence (`/dev/shm` or
+    /// `/dev`). Only the reference reports it: there such a directory's offsets count every entry
+    /// earlier sequences made, which a fresh kernel cannot share.
+    pub outlived: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -460,7 +464,11 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
     // Each filter first lets through the calls the reference's runner reports with and every call of
     // the sequence that names a process, whose number differs between the runners.
-    let mut passed = vec![linux::__NR_write, linux::__NR_exit_group];
+    let mut passed = vec![
+        linux::__NR_write,
+        linux::__NR_exit_group,
+        linux::__NR_name_to_handle_at,
+    ];
     for call in &calls {
         if call.arguments.contains(&SELF) && !passed.contains(&call.number) {
             passed.push(call.number);
@@ -871,6 +879,8 @@ pub const CALLS: &[u32] = &[
     linux::__NR_fspick,
     linux::__NR_fsmount,
     linux::__NR_move_mount,
+    linux::__NR_process_vm_readv,
+    linux::__NR_process_vm_writev,
     // Three times, since most of its sequences need several filters to show anything.
     linux::__NR_seccomp,
     linux::__NR_seccomp,
@@ -987,6 +997,25 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
+        // The caller's own memory: both sides from the vectors readv and writev use.
+        linux::__NR_process_vm_readv | linux::__NR_process_vm_writev => {
+            // Segment lists the comparison can read: in the arena, or at a bad address.
+            let vectors = |word: u64| match word % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                2 => ARENA + OUTPUT + (word >> 3) % 0x8000,
+                _ => ARENA + IOVECS + ((word >> 3) % 16) * 16,
+            };
+            let counts = |word: u64| pick(&[0, 1, 2, 3, 16, 1025], word);
+            [
+                pick(&[SELF, SELF, SELF, 0, 99999], a),
+                vectors(b),
+                counts(c),
+                vectors(d),
+                counts(e),
+                pick(&[0, 0, 0, 1], f),
+            ]
+        }
         linux::__NR_lseek => [fd(a), offset(b), pick(&[0, 1, 2, 3, 4, 5], c), 0, 0, 0],
         linux::__NR_getdents64 => [
             fd(a),
@@ -1884,13 +1913,18 @@ fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
     let mut calls = Vec::new();
     let mut record = || -> Option<CallResult> {
         let value = i64::from_le_bytes(take(&mut bytes, 8)?.try_into().ok()?);
+        let outlived = word(&mut bytes)? != 0;
         let mut changes = Vec::new();
         for _ in 0..word(&mut bytes)? {
             let offset = word(&mut bytes)?;
             let length = word(&mut bytes)?;
             changes.push((offset, take(&mut bytes, length as usize)?.to_vec()));
         }
-        Some(CallResult { value, changes })
+        Some(CallResult {
+            value,
+            changes,
+            outlived,
+        })
     };
     while let Some(call) = record() {
         calls.push(call);
@@ -2063,6 +2097,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
                 results.push(CallResult {
                     value,
                     changes: changes(&before, &after),
+                    outlived: false,
                 });
                 before = after;
             }
@@ -2211,31 +2246,122 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
     }
 }
 
+/// Which bytes of the arena and the play area hold values no two machines share.
+struct Mask {
+    arena: Vec<bool>,
+    play: Vec<bool>,
+}
+
+/// The play area's size as far as calls reach into it: its pages and two past them.
+const PLAY_REACH: u64 = (PLAY_PAGES + 2) * 4096;
+
+impl Default for Mask {
+    fn default() -> Self {
+        Mask {
+            arena: vec![false; ARENA_SIZE as usize],
+            play: vec![false; PLAY_REACH as usize],
+        }
+    }
+}
+
+impl Mask {
+    fn slot(&mut self, address: u64) -> Option<&mut bool> {
+        if let Some(offset) = address.checked_sub(ARENA).filter(|at| *at < ARENA_SIZE) {
+            return self.arena.get_mut(offset as usize);
+        }
+        let offset = address.checked_sub(PLAY).filter(|at| *at < PLAY_REACH)?;
+        self.play.get_mut(offset as usize)
+    }
+
+    fn hide(&mut self, start: u64, length: u64) {
+        let length = length.min(ARENA_SIZE + PLAY_REACH);
+        for address in start..start.saturating_add(length) {
+            if let Some(slot) = self.slot(address) {
+                *slot = true;
+            }
+        }
+    }
+
+    fn hidden(&mut self, address: u64) -> bool {
+        self.slot(address).is_some_and(|slot| *slot)
+    }
+}
+
+/// `process_vm_readv` and `process_vm_writev` copy within the caller: a byte copied from a hidden
+/// one is hidden too. The segment lists are read from the arena as it was before the call.
+fn copied_masks(call: &Call, value: i64, before: &[u8], mask: &mut Mask) {
+    let write = match call.number {
+        linux::__NR_process_vm_readv => false,
+        linux::__NR_process_vm_writev => true,
+        _ => return,
+    };
+    if value <= 0 {
+        return;
+    }
+    let [_, local, local_count, remote, remote_count, _] = call.arguments;
+    let addresses = |vector: u64, count: u64| -> Vec<u64> {
+        let mut out = Vec::new();
+        for index in 0..count.min(1024) {
+            let at = vector.wrapping_add(index * 16).wrapping_sub(ARENA) as usize;
+            let Some(entry) = before.get(at..at + 16) else {
+                break;
+            };
+            let base = u64::from_le_bytes(entry[..8].try_into().expect("8 bytes"));
+            let length = u64::from_le_bytes(entry[8..].try_into().expect("8 bytes"));
+            for offset in 0..length.min(value as u64 - out.len() as u64) {
+                out.push(base.wrapping_add(offset));
+            }
+            if out.len() as u64 >= value as u64 {
+                break;
+            }
+        }
+        out
+    };
+    let local = addresses(local, local_count);
+    let remote = addresses(remote, remote_count);
+    let (from, to) = if write {
+        (local, remote)
+    } else {
+        (remote, local)
+    };
+    for (source, target) in from.into_iter().zip(to) {
+        if mask.hidden(source)
+            && let Some(slot) = mask.slot(target)
+        {
+            *slot = true;
+        }
+    }
+}
+
 /// Everything compared for a sequence, call by call, and the final status.
-pub fn seen(sequence: &Sequence, result: &SequenceResult) -> (Vec<Seen>, i32) {
+/// `outlived` marks the calls about a directory that outlives the sequence; their values and what
+/// they wrote are not compared.
+pub fn seen(sequence: &Sequence, result: &SequenceResult, outlived: &[bool]) -> (Vec<Seen>, i32) {
     let mut arena = sequence.arena.clone();
     arena.resize(ARENA_SIZE as usize, 0);
-    let mut mask = vec![false; ARENA_SIZE as usize];
+    let mut mask = Mask::default();
     let mut out = Vec::new();
-    for (call, each) in sequence.calls.iter().zip(&result.calls) {
+    for (index, (call, each)) in sequence.calls.iter().zip(&result.calls).enumerate() {
+        let outlived = outlived.get(index).copied().unwrap_or(false);
+        let before = arena.clone();
         for (offset, bytes) in &each.changes {
             arena[*offset as usize..*offset as usize + bytes.len()].copy_from_slice(bytes);
         }
-        for (start, length) in volatile(call, each.value, &arena) {
-            let Some(from) = start.checked_sub(ARENA) else {
-                continue;
-            };
-            for index in from..(from + length).min(ARENA_SIZE) {
-                mask[index as usize] = true;
-            }
+        let mut hidden = volatile(call, each.value, &arena);
+        if outlived && call.number == linux::__NR_getdents64 {
+            hidden.push((call.arguments[1], call.arguments[2].min(ARENA_SIZE)));
         }
+        for (start, length) in hidden {
+            mask.hide(start, length);
+        }
+        copied_masks(call, each.value, &before, &mut mask);
         let mut shown = arena.clone();
-        for (byte, masked) in shown.iter_mut().zip(&mask) {
+        for (byte, masked) in shown.iter_mut().zip(&mask.arena) {
             if *masked {
                 *byte = 0;
             }
         }
-        let value = if value_is_volatile(call, &arena) && each.value >= 0 {
+        let value = if outlived || value_is_volatile(call, &arena) && each.value >= 0 {
             0
         } else {
             each.value
@@ -2254,8 +2380,9 @@ pub fn difference(
     ours: &SequenceResult,
     theirs: &SequenceResult,
 ) -> Option<String> {
-    let (our_seen, our_status) = seen(sequence, ours);
-    let (their_seen, their_status) = seen(sequence, theirs);
+    let outlived: Vec<bool> = theirs.calls.iter().map(|call| call.outlived).collect();
+    let (our_seen, our_status) = seen(sequence, ours, &outlived);
+    let (their_seen, their_status) = seen(sequence, theirs, &outlived);
     let mut text = String::new();
     for (index, call) in sequence.calls.iter().enumerate() {
         let name = wcontainers_kernel::system_call_name(call.number.into()).unwrap_or("?");
