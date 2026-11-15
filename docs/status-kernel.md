@@ -11,8 +11,9 @@ memory calls with page protection, limits and faults, the
 in-memory file systems (tmpfs with extended attributes and seals, memory files, `/proc`, `/dev`), file
 descriptors, time, randomness, ids and powers, signals a process sends itself, and Docker's default
 seccomp profile. Single busybox programs match the reference. Layer 1 covers every call built. K1 is not
-finished: layer 1 has passed one 20000-sequence run (seed 48, third run); later 20000 runs still find
-mismatches within minutes, and the one-million bar has not been run.
+finished: in the fifth run, 20000-sequence runs went from failing within minutes to passing (seeds
+61, 63 to 69 each passed once their failures were fixed; the last three runs, seeds 67 to 69, passed
+with every fix in), but the one-million bar has not been run.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -250,7 +251,7 @@ epoll_pwait2, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self
 process_mrelease, futex_waitv, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes,
 signals, futex), K3 (timers) or K5 (sockets, epoll).
 
-## Tests (last run 2026-11-15: 33 passed, 5 ignored known failures)
+## Tests (last run 2026-11-15: 34 passed, 5 ignored known failures)
 
 All pass except the ignored known failures.
 - processvm (new, fifth run): guest/processvm.c checks process_vm_readv and process_vm_writev's
@@ -390,8 +391,18 @@ fixed by moving them into the profile, now checked against a full measurement). 
 more times: a `/proc/<pid>` working directory (harness), a refused filter load of the instruction
 pointer that Linux accepts (generator), and the profile above; then after 391 s a rename of `..`
 from the `/proc/sys` mount root (EXDEV before EBUSY; fixed). Seeds 63 and 64 then passed 20000 each
-(582 s and 585 s, run side by side, load 17 to 71 at the start and 11 at the end). Seed 65: 1500
-passed (42 s).
+(582 s and 585 s, run side by side, load 17 to 71 at the start and 11 at the end). After the
+rename fix seeds 61 and 66 passed 20000 each (572 s and 570 s, three runs side by side, load 30 at
+the start, 7 at the end); seed 65 failed after 273 s (rt_sigaction sets the new action before
+writing back the old one; fixed). Seeds 65, 67 and 68 at 20000 (side by side, load 10 to 20) then
+failed after 269 s, 108 s and 291 s: unknown signal action flags are dropped (Linux's
+`UAPI_SA_FLAGS`, measured), and utimensat may touch the caller's own `fd` directory (proc's
+permission rule); both fixed. Seed 65 then passed 20000 (563 s, load 5 to 13); seeds 67 and 68
+failed after 429 s and 325 s on preadv2: RWF_NOSIGNAL (0x100, new in Linux, typed by hand) is taken,
+and a directory, read a segment at a time by Linux's `do_loop_readv_writev`, refuses every flag but
+RWF_HIPRI (EOPNOTSUPP), after the range check; fixed. After that seeds 67, 68 and 69 passed 20000
+each (554 s each, side by side, load 7 to 12). At the end of the fifth run, with the last fixes in,
+seeds 67, 68 and 69 pass 20000; earlier passes (61, 63, 64, 65, 66) were before some later fixes.
 
 Cases run in the fourth run: seed 54: 3000 passed after the O_DIRECT fix (97 s, load 14 to 24), then
 20000 failed after 430 s (ioprio kept in 16 bits by Linux; fixed). Seeds 55 and 56: 1000 each passed
@@ -552,12 +563,11 @@ All on this shared Mac; noisy, not benchmarks.
 ## Next (K1, in order)
 
 1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; then
-   the million (the orchestrator's command at the top). In the fourth run every 20000 run (seeds 54,
-   57, 58, 60, 61) found a mismatch within 1.5 to 9 minutes, each fixed. Rerun seed 61 at 20000 next;
-   seeds 62 and up are fresh.
+   the million (the orchestrator's command at the top). Seeds 70 and up are fresh; the million is now
+   worth starting (expected about 8 hours at the measured 20000 per 9 to 10 minutes; not measured).
 2. Missing calls a single program can use without other processes, threads, timers or sockets:
-   name_to_handle_at (tmpfs has handles; the reference's root, overlayfs, refuses them),
-   process_vm_readv and process_vm_writev on the caller itself, cachestat, memfd_secret (needs shared
+   name_to_handle_at (measured: tmpfs gives type 1, 12 bytes, a random generation; `/proc`, devpts
+   and the overlayfs root refuse with EOPNOTSUPP unless AT_HANDLE_FID), memfd_secret (needs shared
    file mappings), seccomp listeners, rseq's time slice extension. The rest need K2 (pipe2, fork,
    futex, wait, signal delivery: rt_sigreturn, rt_sigsuspend, rt_sigtimedwait), K3 (timers,
    getitimer and setitimer) or K5 (sockets, epoll, eventfd, inotify).
