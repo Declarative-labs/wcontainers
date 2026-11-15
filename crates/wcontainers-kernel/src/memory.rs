@@ -6,6 +6,8 @@ use alloc::vec::Vec;
 use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
 
 use crate::fs::Node;
+use crate::linux::general::{RLIMIT_AS, RLIMIT_DATA, RLIMIT_STACK};
+use crate::process::{LIMITS, Limit};
 use crate::{Errno, errno};
 
 pub(crate) fn page_down(address: u64) -> u64 {
@@ -16,7 +18,7 @@ pub(crate) fn page_up(address: u64) -> u64 {
     page_down(address.saturating_add(PAGE_SIZE - 1))
 }
 
-/// Linux's default stack limit, `RLIMIT_STACK`.
+/// Linux's default stack limit, `RLIMIT_STACK`, which places a new program's mappings.
 pub(crate) const STACK_LIMIT: u64 = 8 << 20;
 
 /// The gap Linux keeps below a stack that may grow (`stack_guard_gap`, 256 pages).
@@ -49,6 +51,12 @@ pub(crate) struct Mapping {
 }
 
 impl Mapping {
+    /// Whether the mapping counts against `RLIMIT_DATA`: private and writable, and not a stack
+    /// (Linux's `is_data_mapping`).
+    pub fn is_data(&self) -> bool {
+        is_data(self.permissions, self.shared, &self.backing)
+    }
+
     /// What the CPU side is told the page at `address` allows.
     fn page_permissions(&self, address: u64) -> Permissions {
         match &self.backing {
@@ -71,6 +79,11 @@ impl Mapping {
         cut.end = end;
         cut
     }
+}
+
+/// Whether a mapping with these properties counts against `RLIMIT_DATA`.
+pub(crate) fn is_data(permissions: Permissions, shared: bool, backing: &Backing) -> bool {
+    permissions.contains(Permissions::WRITE) && !shared && !matches!(backing, Backing::Stack)
 }
 
 /// Every mapped range of one process, and where the next ones go.
@@ -102,6 +115,52 @@ impl AddressMap {
 
     pub fn iter(&self) -> impl Iterator<Item = &Mapping> {
         self.mappings.values()
+    }
+
+    /// Whether `pages` more pages, data pages if `data`, fit the limits on the address space and on
+    /// data, as Linux's `may_expand_vm`. `freed` pages of the same kind are given up at the same time.
+    pub fn may_expand(
+        &self,
+        limits: &[Limit; LIMITS],
+        data: bool,
+        pages: u64,
+        freed: (u64, u64),
+    ) -> bool {
+        let (total, data_pages) = self.iter().fold((0, 0), |(total, data), mapping| {
+            let pages = (mapping.end - mapping.start) / PAGE_SIZE;
+            (
+                total + pages,
+                data + if mapping.is_data() { pages } else { 0 },
+            )
+        });
+        let total = total - freed.0;
+        let data_pages = data_pages - freed.1;
+        if total + pages > limits[RLIMIT_AS as usize].current / PAGE_SIZE {
+            return false;
+        }
+        let data_limit = limits[RLIMIT_DATA as usize];
+        if data && data_pages + pages > data_limit.current / PAGE_SIZE {
+            // Linux lets a zero limit through up to the hard limit, for Valgrind.
+            return data_limit.current == 0 && data_pages + pages <= data_limit.maximum / PAGE_SIZE;
+        }
+        true
+    }
+
+    /// The pages of the range that are mapped, and how many of them are data.
+    pub fn pages_in(&self, start: u64, end: u64) -> (u64, u64) {
+        let mut total = 0;
+        let mut data = 0;
+        for mapping in self.mappings.values() {
+            let from = mapping.start.max(start);
+            let to = mapping.end.min(end);
+            if from < to {
+                total += (to - from) / PAGE_SIZE;
+                if mapping.is_data() {
+                    data += (to - from) / PAGE_SIZE;
+                }
+            }
+        }
+        (total, data)
     }
 
     /// The mapping holding `address`.
@@ -357,6 +416,7 @@ impl AddressMap {
         cpu: &mut dyn Cpu,
         memory: MemoryId,
         address: u64,
+        limits: &[Limit; LIMITS],
     ) -> Result<bool, Errno> {
         let Some(stack) = self
             .mappings
@@ -368,7 +428,11 @@ impl AddressMap {
             return Ok(false);
         };
         let new_start = page_down(address);
-        if self.end - new_start > STACK_LIMIT {
+        // Linux's `acct_stack_growth`: the stack's size within its limit, the growth within the
+        // address space's.
+        if stack.end - new_start > limits[RLIMIT_STACK as usize].current
+            || !self.may_expand(limits, false, (stack.start - new_start) / PAGE_SIZE, (0, 0))
+        {
             return Ok(false);
         }
         // Linux keeps the guard gap free below a growing stack.

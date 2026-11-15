@@ -4,7 +4,7 @@ use alloc::vec;
 
 use super::{Args, guest};
 use crate::linux::general::*;
-use crate::linux::system::new_utsname;
+use crate::linux::system::{__NEW_UTS_LEN, new_utsname};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
 
@@ -47,18 +47,47 @@ pub(super) fn uname(
     Ok(0)
 }
 
-/// `sethostname` and `setdomainname` need `CAP_SYS_ADMIN`, which a default container does not have.
 pub(super) fn sethostname(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
-    [_, length, ..]: Args,
+    [name, length, ..]: Args,
 ) -> Result<u64, Errno> {
-    if length as i32 > 64 || (length as i32) < 0 {
+    kernel.hostname = new_system_name(kernel, cx, tid, name, length)?;
+    Ok(0)
+}
+
+pub(super) fn setdomainname(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [name, length, ..]: Args,
+) -> Result<u64, Errno> {
+    kernel.domainname = new_system_name(kernel, cx, tid, name, length)?;
+    Ok(0)
+}
+
+/// The new name for `sethostname` or `setdomainname`, checked in Linux's order: the power first (a
+/// default container lacks it), then the length, then the bytes.
+fn new_system_name(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    name: u64,
+    length: u64,
+) -> Result<alloc::vec::Vec<u8>, Errno> {
+    if !kernel
+        .process_of(tid)
+        .credentials
+        .has(crate::linux::general::CAP_SYS_ADMIN)
+    {
+        return Err(Errno::EPERM);
+    }
+    let length = length as i32;
+    if !(0..=__NEW_UTS_LEN as i32).contains(&length) {
         return Err(Errno::EINVAL);
     }
-    let _ = kernel.process_of(tid);
-    Err(Errno::EPERM)
+    guest(kernel, cx, tid).read(name, length as u64)
 }
 
 pub(super) fn sysinfo(

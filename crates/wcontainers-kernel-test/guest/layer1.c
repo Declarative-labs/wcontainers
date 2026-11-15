@@ -7,7 +7,9 @@
 // drains. After each sequence the parent writes everything the child reported (u32 length, bytes), then
 // the child's wait status (u32), and puts back what the sequence may have changed. A child that dies
 // part way through a report leaves a short last record, which the reader drops; one that runs past the
-// deadline is killed. All numbers are little endian.
+// deadline is killed. The child first makes itself a session leader, as a container's first process is,
+// and an argument equal to SELF is replaced by its process number.
+// All numbers are little endian.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -28,6 +30,7 @@
 #define ARENA_SIZE (16 * 4096)
 // How long a sequence may take before its child is killed: only one that waits for ever comes near it.
 #define DEADLINE_SECONDS 60
+#define SELF 0x5e1f5e1f00000001ULL
 
 static unsigned char before[ARENA_SIZE];
 
@@ -147,7 +150,14 @@ int main(void) {
             }
             memcpy(ARENA, arena_init, length);
             memcpy(before, ARENA, ARENA_SIZE);
+            setsid();
+            uint64_t self = (uint64_t)getpid();
             for (uint32_t index = 0; index < calls; index++) {
+                for (int argument = 1; argument < 7; argument++) {
+                    if (sequence[index][argument] == SELF) {
+                        sequence[index][argument] = self;
+                    }
+                }
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
                 write_all(1, &result, 8);
                 report_changes(1);

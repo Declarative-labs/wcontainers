@@ -111,6 +111,8 @@ pub(crate) struct Thread {
     pub robust_list: (u64, u64),
     /// Blocked signals.
     pub signal_mask: u64,
+    /// Signals sent and not yet acted on.
+    pub pending: u64,
     /// `sigaltstack`: base, size and the flags it was given; no stack is a size of zero.
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is parked in, if it is waiting.
@@ -135,6 +137,7 @@ impl Thread {
             clear_child_tid: 0,
             robust_list: (0, 0),
             signal_mask: 0,
+            pending: 0,
             alternate_stack: (0, 0, 0),
             parked: None,
         }

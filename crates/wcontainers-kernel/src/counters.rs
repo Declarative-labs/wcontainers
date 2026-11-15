@@ -12,9 +12,15 @@ pub mod reason {
     pub const UNKNOWN_SYSCALL: &str = "system call number unknown";
     /// A program started without an auxiliary vector entry Linux passes. Detail: the `AT_*` key.
     pub const AUXILIARY_MISSING: &str = "auxiliary vector entry missing";
-    /// A signal the program set a handler for arrived; handlers do not run yet, so the default action
-    /// was taken. Detail: the signal.
+    /// A signal the program set a handler for arrived or was to be let through; handlers do not run
+    /// yet, so the call was refused, or for a fault the process died. Detail: the signal.
     pub const SIGNAL_HANDLER_NOT_RUN: &str = "signal handler not run";
+    /// A signal whose default action stops the process; stopping comes with job control. Detail: the
+    /// signal.
+    pub const PROCESS_STOP_NOT_IMPLEMENTED: &str = "process stop not implemented";
+    /// A change of owner or mode to a `/proc` entry outside the process directories, which Linux keeps
+    /// and this kernel refuses.
+    pub const PROC_CHANGE_NOT_KEPT: &str = "proc attribute change not kept";
     /// File locks through `fcntl`. Detail: the command.
     pub const LOCKS_NOT_IMPLEMENTED: &str = "file locks not implemented";
     /// An `fcntl` command the kernel does not know. Detail: the command.

@@ -190,9 +190,9 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_rt_sigprocmask, S(process::rt_sigprocmask)),
         (__NR_rt_sigpending, S(process::rt_sigpending)),
         (__NR_sigaltstack, S(process::sigaltstack)),
-        (__NR_kill, F(process::kill)),
-        (__NR_tkill, F(process::tkill)),
-        (__NR_tgkill, F(process::tgkill)),
+        (__NR_kill, S(process::kill)),
+        (__NR_tkill, S(process::tkill)),
+        (__NR_tgkill, S(process::tgkill)),
         (__NR_prlimit64, S(process::prlimit64)),
         (__NR_getrlimit, S(process::getrlimit)),
         (__NR_setrlimit, S(process::setrlimit)),
@@ -209,7 +209,7 @@ static TABLE: [Entry; LENGTH] = {
         // The machine.
         (__NR_uname, S(system::uname)),
         (__NR_sethostname, S(system::sethostname)),
-        (__NR_setdomainname, S(system::sethostname)),
+        (__NR_setdomainname, S(system::setdomainname)),
         (__NR_sysinfo, S(system::sysinfo)),
         (__NR_getrandom, S(system::getrandom)),
         (__NR_sched_yield, S(system::sched_yield)),
@@ -266,6 +266,7 @@ pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Ti
         cpu: cx.cpu,
         memory: process.memory,
         map: &mut process.map,
+        limits: &process.limits,
     }
 }
 

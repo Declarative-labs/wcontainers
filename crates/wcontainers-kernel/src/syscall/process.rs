@@ -11,6 +11,7 @@ use crate::credentials::{CAP_SETGID, CAP_SETUID};
 use crate::linux::general::*;
 use crate::linux::prctl::*;
 use crate::process::{LIMITS, Limit, SIGNALS, Tid};
+use crate::signal::UNBLOCKABLE;
 use crate::{Context, Errno, Kernel};
 
 /// `exit(status)`: ends the calling thread, and its process when it is the last thread.
@@ -107,18 +108,20 @@ fn exec(
     argv: u64,
     envp: u64,
 ) -> Result<(), Errno> {
+    // In Linux's order: the path, the file opened, then the argument and environment lists.
+    let path = guest(kernel, cx, tid).read_path(path)?;
+    let pid = kernel.threads[&tid].process;
+    let program = crate::loader::open_program(kernel, pid, &path)?;
     let mut guest = guest(kernel, cx, tid);
-    let path = guest.read_path(path)?;
     let arguments = read_strings(&mut guest, argv)?;
     let environment = read_strings(&mut guest, envp)?;
-    let pid = kernel.threads[&tid].process;
     if kernel.processes[&pid].threads.len() > 1 {
         kernel
             .counters
             .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(__NR_execve));
         return Err(Errno::ENOSYS);
     }
-    let image = crate::loader::load(kernel, cx, pid, &path, arguments, environment)?;
+    let image = crate::loader::load(kernel, cx, pid, &path, program, arguments, environment)?;
     kernel.install_image(cx, pid, tid, image);
     Ok(())
 }
@@ -198,20 +201,25 @@ pub(super) fn setpgid(
     tid: Tid,
     [pid, group, ..]: Args,
 ) -> Result<u64, Errno> {
-    if (group as i32) < 0 {
-        return Err(Errno::EINVAL);
-    }
-    own_pid(kernel, tid, pid)?;
+    // In Linux's order. There is one process, so any other is missing.
     let process = kernel.process_of_mut(tid);
-    let group = if group == 0 {
+    let pid = if pid as i32 == 0 {
         process.pid
     } else {
-        group as i32
+        pid as i32
     };
+    let group = if group as i32 == 0 { pid } else { group as i32 };
+    if group < 0 {
+        return Err(Errno::EINVAL);
+    }
+    if pid != process.pid {
+        return Err(Errno::ESRCH);
+    }
     if process.session == process.pid {
         return Err(Errno::EPERM);
     }
-    if group != process.pid {
+    // Joining a group needs a group of that number in the same session: only the process's own.
+    if group != pid && group != process.group {
         return Err(Errno::EPERM);
     }
     process.group = group;
@@ -635,10 +643,11 @@ pub(super) fn get_robust_list(
     [pid, head, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let target = if pid == 0 { tid } else { pid as i32 };
-    let (list, size) = kernel.threads.get(&target).ok_or(Errno::ESRCH)?.robust_list;
+    let (list, _) = kernel.threads.get(&target).ok_or(Errno::ESRCH)?.robust_list;
+    // The length is always the head's size, and is written first, as on Linux.
     let mut guest = guest(kernel, cx, tid);
+    guest.write(length, &ROBUST_LIST_HEAD_SIZE.to_le_bytes())?;
     guest.write(head, &list.to_le_bytes())?;
-    guest.write(length, &size.to_le_bytes())?;
     Ok(0)
 }
 
@@ -650,8 +659,6 @@ fn signal_set_size(size: u64) -> Result<(), Errno> {
         Ok(())
     }
 }
-
-const UNBLOCKABLE: u64 = (1 << (SIGKILL - 1)) | (1 << (SIGSTOP - 1));
 
 pub(super) fn rt_sigaction(
     kernel: &mut Kernel,
@@ -680,6 +687,10 @@ pub(super) fn rt_sigaction(
     if let Some(mut new) = new {
         new.sa_mask.sig[0] &= !UNBLOCKABLE;
         kernel.process_of_mut(tid).actions[index] = new;
+        if crate::signal::action_ignores(new.sa_handler_kernel, signal as u32) {
+            let pid = kernel.threads[&tid].process;
+            kernel.flush_pending(pid, signal as u32);
+        }
     }
     Ok(0)
 }
@@ -703,11 +714,13 @@ pub(super) fn rt_sigprocmask(
     } else {
         None
     };
+    // The new mask is set before the old one is written back, as on Linux.
+    if let Some(new) = new {
+        kernel.check_unblocking(cx, tid, new & !UNBLOCKABLE)?;
+        kernel.thread_mut(tid).signal_mask = new & !UNBLOCKABLE;
+    }
     if old != 0 {
         guest(kernel, cx, tid).write(old, &current.to_le_bytes())?;
-    }
-    if let Some(new) = new {
-        kernel.thread_mut(tid).signal_mask = new & !UNBLOCKABLE;
     }
     Ok(0)
 }
@@ -721,7 +734,9 @@ pub(super) fn rt_sigpending(
     if size > 8 {
         return Err(Errno::EINVAL);
     }
-    guest(kernel, cx, tid).write(set, &0u64.to_le_bytes()[..size as usize])?;
+    let thread = &kernel.threads[&tid];
+    let pending = thread.pending & thread.signal_mask;
+    guest(kernel, cx, tid).write(set, &pending.to_le_bytes()[..size as usize])?;
     Ok(0)
 }
 
@@ -775,55 +790,35 @@ pub(super) fn sigaltstack(
     Ok(0)
 }
 
-/// Signals whose default action is to do nothing.
-fn ignored_by_default(signal: u32) -> bool {
-    matches!(signal, SIGCHLD | SIGURG | SIGWINCH | SIGCONT)
+/// A signal sent to the caller's own process, once it is found: an unknown signal is refused only
+/// then, as Linux's `check_kill_permission` does.
+fn send_to_self(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    signal: u64,
+) -> Result<u64, Errno> {
+    let signal = signal as u32;
+    if signal as usize > SIGNALS {
+        return Err(Errno::EINVAL);
+    }
+    kernel.send_to_self(cx, tid, signal).map(|()| 0)
 }
 
-/// A signal sent to the caller itself. With fork and signal delivery still to come, only the outcomes
-/// that need no handler are exact: ignoring it, or dying of it.
-fn signal_self(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, signal: u32) -> Outcome {
-    if signal == 0 {
-        return Outcome::Return(0);
-    }
-    let action = kernel.process_of(tid).actions[signal as usize - 1];
-    let handler = action.sa_handler_kernel;
-    let blocked = kernel.threads[&tid].signal_mask & (1 << (signal - 1)) != 0;
-    if handler == crate::linux_extra::SIG_IGN
-        || (handler == crate::linux_extra::SIG_DFL && ignored_by_default(signal))
-    {
-        return Outcome::Return(0);
-    }
-    if handler != crate::linux_extra::SIG_DFL
-        || blocked
-        || matches!(signal, SIGSTOP | SIGTSTP | SIGTTIN | SIGTTOU)
-    {
-        kernel
-            .counters
-            .count(cx.host, reason::SIGNAL_HANDLER_NOT_RUN, signal.into());
-        return Err(Errno::ENOSYS).into();
-    }
-    let pid = kernel.threads[&tid].process;
-    kernel.end_process(cx, pid, signal as i32);
-    Outcome::Gone
-}
-
+/// There is one process, so any other target is missing.
 pub(super) fn kill(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     [pid, signal, ..]: Args,
-) -> Outcome {
-    let signal = signal as u32;
-    if signal as usize > SIGNALS {
-        return Err(Errno::EINVAL).into();
-    }
+) -> Result<u64, Errno> {
     let pid = pid as i32;
-    let own = kernel.threads[&tid].process;
-    if pid == own || pid == 0 || pid == -1 || pid == -own {
-        return signal_self(kernel, cx, tid, signal);
+    let process = kernel.process_of(tid);
+    // -1 is every process but the first and the caller: none here.
+    if pid == process.pid || pid == 0 || (pid < -1 && pid.unsigned_abs() as i32 == process.group) {
+        return send_to_self(kernel, cx, tid, signal);
     }
-    Err(Errno::ESRCH).into()
+    Err(Errno::ESRCH)
 }
 
 pub(super) fn tgkill(
@@ -831,15 +826,14 @@ pub(super) fn tgkill(
     cx: &mut Context<'_>,
     tid: Tid,
     [group, target, signal, ..]: Args,
-) -> Outcome {
-    let signal = signal as u32;
-    if (group as i32) <= 0 || (target as i32) <= 0 || signal as usize > SIGNALS {
-        return Err(Errno::EINVAL).into();
+) -> Result<u64, Errno> {
+    if (group as i32) <= 0 || (target as i32) <= 0 {
+        return Err(Errno::EINVAL);
     }
     if target as i32 == tid && group as i32 == kernel.threads[&tid].process {
-        return signal_self(kernel, cx, tid, signal);
+        return send_to_self(kernel, cx, tid, signal);
     }
-    Err(Errno::ESRCH).into()
+    Err(Errno::ESRCH)
 }
 
 pub(super) fn tkill(
@@ -847,15 +841,14 @@ pub(super) fn tkill(
     cx: &mut Context<'_>,
     tid: Tid,
     [target, signal, ..]: Args,
-) -> Outcome {
-    let signal = signal as u32;
-    if (target as i32) <= 0 || signal as usize > SIGNALS {
-        return Err(Errno::EINVAL).into();
+) -> Result<u64, Errno> {
+    if (target as i32) <= 0 {
+        return Err(Errno::EINVAL);
     }
     if target as i32 == tid {
-        return signal_self(kernel, cx, tid, signal);
+        return send_to_self(kernel, cx, tid, signal);
     }
-    Err(Errno::ESRCH).into()
+    Err(Errno::ESRCH)
 }
 
 pub(super) fn prlimit64(

@@ -1288,8 +1288,14 @@ fn change_mode(
 ) -> Result<u64, Errno> {
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
-    // Modes in the process information tree are fixed.
-    if matches!(node.borrow().content, Content::Proc(_)) {
+    // A process's entries refuse mode changes, as Linux's `proc_setattr` does. Other entries would keep
+    // them, which is not built.
+    if let Content::Proc(entry) = node.borrow().content {
+        if entry.of_process().is_none() {
+            kernel
+                .counters
+                .count(cx.host, reason::PROC_CHANGE_NOT_KEPT, 0);
+        }
         return Err(Errno::EPERM);
     }
     let mut inode = node.borrow_mut();
@@ -1369,10 +1375,6 @@ fn change_owner(
 ) -> Result<u64, Errno> {
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
-    // Owners in the process information tree follow the processes; they cannot be set.
-    if matches!(node.borrow().content, Content::Proc(_)) {
-        return Err(Errno::EPERM);
-    }
     let mut inode = node.borrow_mut();
     let changes_uid = uid != u32::MAX && uid != inode.uid;
     let changes_gid = gid != u32::MAX && gid != inode.gid;
@@ -1395,6 +1397,18 @@ fn change_owner(
     }
     if inode.fs.read_only() {
         return Err(Errno::EROFS);
+    }
+    if let Content::Proc(entry) = inode.content {
+        // A process's entries take the change and forget it at once: Linux sets their owners from the
+        // process again each time they are looked up. Other entries would keep it, which is not built.
+        if entry.of_process().is_some() {
+            return Ok(0);
+        }
+        drop(inode);
+        kernel
+            .counters
+            .count(cx.host, reason::PROC_CHANGE_NOT_KEPT, 0);
+        return Err(Errno::EPERM);
     }
     if uid != u32::MAX {
         inode.uid = uid;

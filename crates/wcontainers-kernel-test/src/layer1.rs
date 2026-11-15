@@ -29,6 +29,14 @@ const IOVECS: u64 = 0x3000;
 const POLLS: u64 = 0x3600;
 const VALUES: u64 = 0x3800;
 const CPU_LIMITS: u64 = 0x3a00;
+const CPU_MASKS: u64 = 0x3a40;
+/// Sixteen zero bytes: an empty argument list.
+const NULLS: u64 = 0x3a60;
+
+/// An argument each runner replaces by its caller's process number, so calls can name their own
+/// process although the two runners' numbers differ. Its negation, the caller's own process group, is
+/// not generated: our caller is process 1, and -1 means every process.
+pub const SELF: u64 = 0x5e1f_5e1f_0000_0001;
 const OUTPUT: u64 = 0x4000;
 
 /// The sequence's work directory, made and entered by its first two calls and removed afterwards.
@@ -175,11 +183,21 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     // Limits for RLIMIT_CPU, all too large to be reached: a reachable one ends the process at a moment
     // that depends on the machine's speed.
     let infinity = linux::RLIM_INFINITY as u64;
-    let cpu_limits: [(u64, u64); 4] = [(3600, infinity), (3600, 7200), (7200, 3600), (infinity, infinity)];
+    let cpu_limits: [(u64, u64); 4] = [
+        (3600, infinity),
+        (3600, 7200),
+        (7200, 3600),
+        (infinity, infinity),
+    ];
     for (index, (current, maximum)) in cpu_limits.iter().enumerate() {
         let at = (CPU_LIMITS + index as u64 * 16) as usize;
         arena[at..at + 8].copy_from_slice(&current.to_le_bytes());
         arena[at + 8..at + 16].copy_from_slice(&maximum.to_le_bytes());
+    }
+    // CPU sets for sched_setaffinity, each with CPU 0: the guest is told it has one CPU.
+    for (index, mask) in [1u64, 3, u64::MAX, 0x11].iter().enumerate() {
+        let at = (CPU_MASKS + index as u64 * 8) as usize;
+        arena[at..at + 8].copy_from_slice(&mask.to_le_bytes());
     }
     let mut calls = vec![
         Call {
@@ -296,6 +314,27 @@ pub const CALLS: &[u32] = &[
     linux::__NR_personality,
     linux::__NR_sched_yield,
     linux::__NR_getpriority,
+    linux::__NR_kill,
+    linux::__NR_tkill,
+    linux::__NR_tgkill,
+    linux::__NR_setpgid,
+    linux::__NR_setsid,
+    linux::__NR_chroot,
+    linux::__NR_sethostname,
+    linux::__NR_setdomainname,
+    linux::__NR_sync,
+    linux::__NR_syncfs,
+    linux::__NR_get_robust_list,
+    linux::__NR_set_tid_address,
+    linux::__NR_sched_getparam,
+    linux::__NR_sched_getscheduler,
+    linux::__NR_sched_setaffinity,
+    linux::__NR_exit,
+    linux::__NR_exit_group,
+    linux::__NR_execve,
+    linux::__NR_msync,
+    linux::__NR_mremap,
+    linux::__NR_capset,
 ];
 
 /// Turns a generated call into real arguments.
@@ -395,6 +434,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             word,
         )
     };
+    // Signals whose default action is the same for the container's first process (our caller) and for
+    // any other (the reference's caller): nothing, or a refusal of the number.
+    let signal = |word: u64| pick(&[0u64, 17, 18, 23, 28, 65], word);
     let prot = |word: u64| (word % 8) | if word >> 62 == 3 { 0x100 } else { 0 };
     let arguments = match number {
         linux::__NR_openat => [dirfd(a), path(b), open_flags(c), mode(d), 0, 0],
@@ -587,7 +629,7 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         }
         // No other process numbers: the reference's caller is a child, not process 1.
         linux::__NR_prlimit64 => [
-            pick(&[0, 99999], a),
+            pick(&[0, 99999, SELF], a),
             b % 17,
             if c % 3 == 0 { new_limit(b % 17, c) } else { 0 },
             if d % 2 == 0 { buffer(d) } else { 0 },
@@ -619,7 +661,8 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         linux::__NR_rt_sigaction => [
-            pick(&[1, 2, 9, 10, 15, 17, 19, 64, 65, 0], a),
+            // None of the signals `kill` sends: a handler cannot run here yet.
+            pick(&[1, 2, 9, 10, 15, 14, 19, 64, 65, 0], a),
             if b % 3 == 0 { 0 } else { value(b) },
             if c % 2 == 0 { buffer(c) } else { 0 },
             pick(&[8, 8, 4], d),
@@ -642,13 +685,22 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        linux::__NR_sched_getaffinity => [0, pick(&[0, 4, 8, 128], a), buffer(b), 0, 0, 0],
+        linux::__NR_sched_getaffinity => [
+            pick(&[0, SELF, 99999], c),
+            pick(&[0, 4, 8, 128], a),
+            buffer(b),
+            0,
+            0,
+            0,
+        ],
         linux::__NR_nanosleep => [ARENA + VALUES + 56 * 8 + (a % 4) * 16, 0, 0, 0, 0, 0],
         linux::__NR_capget => [value(a), if b % 2 == 0 { buffer(b) } else { 0 }, 0, 0, 0, 0],
         linux::__NR_getpid | linux::__NR_getppid | linux::__NR_gettid | linux::__NR_sched_yield => {
             [0; 6]
         }
-        linux::__NR_getpgid | linux::__NR_getsid => [pick(&[0, 99999, u64::MAX], a), 0, 0, 0, 0, 0],
+        linux::__NR_getpgid | linux::__NR_getsid => {
+            [pick(&[0, 99999, u64::MAX, SELF], a), 0, 0, 0, 0, 0]
+        }
         linux::__NR_getresuid | linux::__NR_getresgid => [buffer(a), buffer(b), buffer(c), 0, 0, 0],
         linux::__NR_setuid | linux::__NR_setgid | linux::__NR_setfsuid | linux::__NR_setfsgid => {
             [pick(&[0u64, 1000, 1, u32::MAX as u64], a), 0, 0, 0, 0, 0]
@@ -732,6 +784,77 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_rt_sigpending => [buffer(a), pick(&[8, 4, 16, 0], b), 0, 0, 0, 0],
         linux::__NR_personality => [pick(&[0xffff_ffffu64, 0, 8, 0x0040_0000], a), 0, 0, 0, 0, 0],
         linux::__NR_getpriority => [pick(&[0, 1, 2, 3], a), pick(&[0, 99999], b), 0, 0, 0, 0],
+        linux::__NR_kill => [
+            pick(&[SELF, SELF, 0, u64::MAX, 99999, -99999i64 as u64], a),
+            signal(b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_tkill => [
+            pick(&[SELF, SELF, 0, 99999, u64::MAX], a),
+            signal(b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_tgkill => [
+            pick(&[SELF, SELF, 0, 99999], a),
+            pick(&[SELF, SELF, 99999, u64::MAX], b),
+            signal(c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_setpgid => {
+            let pid = |word: u64| pick(&[0, SELF, 99999, u64::MAX], word);
+            [pid(a), pid(b), 0, 0, 0, 0]
+        }
+        linux::__NR_setsid | linux::__NR_sync => [0; 6],
+        linux::__NR_chroot => [path(a), 0, 0, 0, 0, 0],
+        linux::__NR_sethostname | linux::__NR_setdomainname => {
+            [buffer(a), pick(&[0, 5, 64, 65, u64::MAX], b), 0, 0, 0, 0]
+        }
+        linux::__NR_syncfs => [fd(a), 0, 0, 0, 0, 0],
+        linux::__NR_get_robust_list => [pick(&[0, SELF, 99999], a), buffer(b), buffer(c), 0, 0, 0],
+        linux::__NR_set_tid_address => [buffer(a), 0, 0, 0, 0, 0],
+        linux::__NR_sched_getparam => [pick(&[0, SELF, 99999, u64::MAX], a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_sched_getscheduler => [pick(&[0, SELF, 99999, u64::MAX], a), 0, 0, 0, 0, 0],
+        linux::__NR_sched_setaffinity => [
+            pick(&[0, SELF, 99999], a),
+            pick(&[0, 4, 8, 128], b),
+            ARENA + CPU_MASKS + (c % 4) * 8,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_exit | linux::__NR_exit_group => {
+            [pick(&[0, 1, 255, 256, 0x1_0000_0001], a), 0, 0, 0, 0, 0]
+        }
+        // Every path here fails: /dev/shm is mounted without execution and the rest are not programs.
+        linux::__NR_execve => {
+            let list = |word: u64| pick(&[0, ARENA + NULLS, u64::MAX - 4095], word);
+            [path(a), list(b), list(c), 0, 0, 0]
+        }
+        linux::__NR_msync => [
+            play(a),
+            play_length(b),
+            pick(&[0, 1, 2, 4, 3, 5, 6, 8], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_mremap => [
+            play(a),
+            play_length(b),
+            play_length(c),
+            pick(&[0, 1, 3, 5, 2, 8], d),
+            play(e),
+            0,
+        ],
+        linux::__NR_capset => [value(a), value(b), 0, 0, 0, 0],
         _ => unreachable!("every call in CALLS is decoded"),
     };
     Call { number, arguments }
@@ -988,9 +1111,20 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
     use wcontainers_abi::Cpu;
     cpu.read(memory, ARENA, &mut before)
         .expect("reading the arena");
+    let own = Call {
+        number: linux::__NR_getpid,
+        arguments: [0; 6],
+    };
+    let pid = call(&mut kernel, &mut cpu, &mut host, own).expect("getpid") as u64;
     let mut results = Vec::new();
     for each in &sequence.calls {
-        match call(&mut kernel, &mut cpu, &mut host, *each) {
+        let mut each = *each;
+        for argument in &mut each.arguments {
+            if *argument == SELF {
+                *argument = pid;
+            }
+        }
+        match call(&mut kernel, &mut cpu, &mut host, each) {
             Ok(value) => {
                 let mut after = vec![0u8; ARENA_SIZE as usize];
                 cpu.read(memory, ARENA, &mut after)
@@ -1087,7 +1221,11 @@ fn value_is_volatile(call: &Call) -> bool {
         | linux::__NR_gettid
         | linux::__NR_getpgid
         | linux::__NR_getsid
-        | linux::__NR_times => true,
+        | linux::__NR_times
+        | linux::__NR_setsid
+        | linux::__NR_set_tid_address => true,
+        // Moved by the kernel to a place of its choosing.
+        linux::__NR_mremap => call.arguments[3] & 3 == 1,
         _ => false,
     }
 }

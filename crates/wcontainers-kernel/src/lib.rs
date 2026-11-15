@@ -21,6 +21,7 @@ mod linux_extra;
 mod loader;
 mod memory;
 mod process;
+mod signal;
 mod syscall;
 mod user;
 
@@ -175,8 +176,16 @@ impl Kernel {
         let mut cx = Context { cpu, host };
         match exit {
             Exit::Syscall(call) => match syscall::dispatch(self, &mut cx, tid, call) {
-                syscall::Outcome::Return(value) => self.resume(tid, Resume::Return(value)),
-                syscall::Outcome::Restart => self.resume(tid, Resume::FromRegisters),
+                syscall::Outcome::Return(value) => {
+                    if self.deliver_signals(&mut cx, tid) {
+                        self.resume(tid, Resume::Return(value))
+                    }
+                }
+                syscall::Outcome::Restart => {
+                    if self.deliver_signals(&mut cx, tid) {
+                        self.resume(tid, Resume::FromRegisters)
+                    }
+                }
                 syscall::Outcome::Parked => {}
                 syscall::Outcome::Gone => {}
             },
@@ -300,7 +309,7 @@ impl Kernel {
             None => {
                 if process
                     .map
-                    .grow_stack(cx.cpu, process.memory, address)
+                    .grow_stack(cx.cpu, process.memory, address, &process.limits)
                     .unwrap_or(false)
                 {
                     self.resume(tid, Resume::FromRegisters);

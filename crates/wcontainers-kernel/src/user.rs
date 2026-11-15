@@ -7,6 +7,7 @@ use wcontainers_abi::{Cpu, MemoryId, PAGE_SIZE, Permissions};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::memory::AddressMap;
+use crate::process::{LIMITS, Limit};
 use crate::{Errno, errno};
 
 /// One past the highest user address on ARM64 Linux with 48 bit virtual addresses (`TASK_SIZE_MAX`).
@@ -23,6 +24,7 @@ pub(crate) struct Guest<'a> {
     pub cpu: &'a mut dyn Cpu,
     pub memory: MemoryId,
     pub map: &'a mut AddressMap,
+    pub limits: &'a [Limit; LIMITS],
 }
 
 impl Guest<'_> {
@@ -34,7 +36,7 @@ impl Guest<'_> {
             && self.map.find(address + done).is_none()
             && self
                 .map
-                .grow_stack(self.cpu, self.memory, address + done)
+                .grow_stack(self.cpu, self.memory, address + done, self.limits)
                 .unwrap_or(false)
         {
             return self.map.accessible(address, length, wanted);

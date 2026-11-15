@@ -69,6 +69,18 @@ pub(super) fn brk(
     if new_end > map.end {
         return Ok(old);
     }
+    // Linux's `check_data_rlimit` on the heap's size, then `may_expand_vm` on the growth.
+    let data_limit = process.limits[RLIMIT_DATA as usize].current;
+    if address - map.brk_start > data_limit
+        || !map.may_expand(
+            &process.limits,
+            true,
+            (new_end - old_end) / PAGE_SIZE,
+            (0, 0),
+        )
+    {
+        return Ok(old);
+    }
     let heap = Mapping {
         start: old_end,
         end: new_end,
@@ -224,6 +236,16 @@ pub(super) fn mmap(
         shared,
         backing,
     };
+    // Within the limits, counting what a fixed mapping replaces.
+    let replaced = map.pages_in(start, start + length);
+    if !map.may_expand(
+        &process.limits,
+        mapping.is_data(),
+        length / PAGE_SIZE,
+        replaced,
+    ) {
+        return Err(Errno::ENOMEM);
+    }
     map.insert(cx.cpu, process.memory, mapping)?;
     if let Some((node, _)) = &file {
         copy_file_pages(cx, process.memory, node, offset, start, length)?;
@@ -298,6 +320,26 @@ pub(super) fn mprotect(
     let process = kernel.process_of_mut(tid);
     if !process.map.fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
+    }
+    // Private pages turning writable become data, within its limit.
+    if permissions.contains(Permissions::WRITE) {
+        let becoming: u64 = process
+            .map
+            .iter()
+            .filter(|mapping| mapping.start < end && mapping.end > address)
+            .filter(|mapping| {
+                !mapping.is_data()
+                    && crate::memory::is_data(permissions, mapping.shared, &mapping.backing)
+            })
+            .map(|mapping| (mapping.end.min(end) - mapping.start.max(address)) / PAGE_SIZE)
+            .sum();
+        if becoming > 0
+            && !process
+                .map
+                .may_expand(&process.limits, true, becoming, (becoming, 0))
+        {
+            return Err(Errno::ENOMEM);
+        }
     }
     process
         .map
@@ -377,13 +419,7 @@ pub(super) fn madvise(
             }
             let from = mapping.start.max(at);
             let to = mapping.end.min(end);
-            cx.cpu
-                .zero(process.memory, from, to - from)
-                .map_err(errno::from_cpu)?;
-            if let Backing::File { node, offset, .. } = &mapping.backing {
-                let file_offset = offset + (from - mapping.start);
-                copy_file_pages(cx, process.memory, node, file_offset, from, to - from)?;
-            }
+            drop_pages(cx, process.memory, &mapping, from, to)?;
             at = to;
         }
     }
@@ -393,76 +429,279 @@ pub(super) fn madvise(
     Ok(0)
 }
 
+/// Linux's `TASK_SIZE` for 48 bit addresses, which `mremap` checks lengths and addresses against.
+const TASK_SIZE: u64 = crate::user::ADDRESS_LIMIT;
+
 pub(super) fn mremap(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     [old, old_length, new_length, flags, new_address, ..]: Args,
 ) -> Result<u64, Errno> {
+    // In the order of Linux's `do_mremap` and `check_mremap_params`.
     let flags = flags as u32;
+    let old_length = page_up(old_length);
+    let new_length = page_up(new_length);
     if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 || old % PAGE_SIZE != 0 {
         return Err(Errno::EINVAL);
     }
-    if flags & MREMAP_FIXED != 0 && flags & MREMAP_MAYMOVE == 0 {
+    if new_length == 0 || new_length > TASK_SIZE {
         return Err(Errno::EINVAL);
     }
-    if flags & MREMAP_DONTUNMAP != 0 {
-        kernel.counters.count(
-            cx.host,
-            reason::MEMORY_FLAG_NOT_IMPLEMENTED,
-            MREMAP_DONTUNMAP.into(),
-        );
+    let to_new_address = flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0;
+    if to_new_address
+        && (new_address > TASK_SIZE - new_length
+            || new_address % PAGE_SIZE != 0
+            || flags & MREMAP_MAYMOVE == 0
+            || (flags & MREMAP_DONTUNMAP != 0 && old_length != new_length)
+            || (old.saturating_add(old_length) > new_address && new_address + new_length > old))
+    {
         return Err(Errno::EINVAL);
     }
-    let old_length = page_up(old_length);
-    let new_length = page_up(new_length);
-    if new_length == 0 || old_length == 0 {
+    let request = Remap {
+        old,
+        old_length,
+        new_length,
+        new_address,
+        flags,
+    };
+    if flags & MREMAP_FIXED != 0 && old_length == new_length {
+        return move_ranges(kernel, cx, tid, request);
+    }
+    let mapping = kernel
+        .process_of(tid)
+        .map
+        .find(old)
+        .cloned()
+        .ok_or(Errno::EFAULT)?;
+    prepare(kernel, tid, &mapping, &request)?;
+    if to_new_address {
+        remap_to(kernel, cx, tid, &mapping, request)
+    } else {
+        remap_at(kernel, cx, tid, &mapping, request)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Remap {
+    old: u64,
+    old_length: u64,
+    new_length: u64,
+    new_address: u64,
+    flags: u32,
+}
+
+/// Linux's `check_prep_vma`: what a range of `mapping` must allow before it is resized or moved.
+fn prepare(kernel: &Kernel, tid: Tid, mapping: &Mapping, request: &Remap) -> Result<(), Errno> {
+    let Remap {
+        old,
+        old_length,
+        new_length,
+        ..
+    } = *request;
+    let maps_new =
+        new_length > old_length || request.flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0;
+    if !maps_new {
+        return Ok(());
+    }
+    // Duplicating a private mapping with a zero old length is refused.
+    if old_length == 0 && !mapping.shared {
         return Err(Errno::EINVAL);
     }
+    // A shrink may cross the end of the mapping; anything else must lie within it.
+    if old_length.min(new_length) > mapping.end - old {
+        return Err(Errno::EFAULT);
+    }
+    if new_length == old_length {
+        return Ok(());
+    }
+    let process = kernel.process_of(tid);
+    if !process.map.may_expand(
+        &process.limits,
+        mapping.is_data(),
+        (new_length - old_length) / PAGE_SIZE,
+        (0, 0),
+    ) {
+        return Err(Errno::ENOMEM);
+    }
+    Ok(())
+}
+
+/// Linux's `mremap_at`: resizing where the range is, or moving it if it must grow and may move.
+fn remap_at(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    mapping: &Mapping,
+    request: Remap,
+) -> Result<u64, Errno> {
+    let Remap {
+        old,
+        old_length,
+        new_length,
+        ..
+    } = request;
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
     let map = &mut process.map;
-    let old_end = old.checked_add(old_length).ok_or(Errno::EFAULT)?;
-    let mapping = map.find(old).cloned().ok_or(Errno::EFAULT)?;
-    if mapping.end < old_end {
-        return Err(Errno::EFAULT);
+    if new_length == old_length {
+        return Ok(old);
     }
-    if flags & MREMAP_FIXED == 0 {
-        if new_length <= old_length {
-            if new_length < old_length {
-                map.unmap(cx.cpu, memory, old + new_length, old_end)?;
-            }
-            return Ok(old);
+    if new_length < old_length {
+        map.unmap(
+            cx.cpu,
+            memory,
+            old + new_length,
+            old.saturating_add(old_length),
+        )?;
+        return Ok(old);
+    }
+    // Grow in place when the range is the end of its mapping and the space after is free.
+    let old_end = old + old_length;
+    let grown_end = old.saturating_add(new_length);
+    if mapping.end == old_end && grown_end <= map.end && !map.any_mapped(old_end, grown_end) {
+        let mut extra = mapping.cut_public(old_end, grown_end);
+        if let Backing::File { file_end, .. } = &mut extra.backing {
+            *file_end = (*file_end).min(grown_end).max(old_end);
         }
-        // Grow in place when the space after is free and the range is the end of its mapping.
-        let grown_end = old.checked_add(new_length).ok_or(Errno::ENOMEM)?;
-        if mapping.end == old_end && grown_end <= map.end && !map.any_mapped(old_end, grown_end) {
-            let mut extra = mapping.cut_public(old_end, grown_end);
-            if let Backing::File { file_end, .. } = &mut extra.backing {
-                *file_end = (*file_end).min(grown_end).max(old_end);
-            }
-            map.insert(cx.cpu, memory, extra.clone())?;
-            if let Backing::File { node, offset, .. } = &extra.backing {
-                copy_file_pages(cx, memory, node, *offset, old_end, grown_end - old_end)?;
-            }
-            return Ok(old);
+        map.insert(cx.cpu, memory, extra.clone())?;
+        if let Backing::File { node, offset, .. } = &extra.backing {
+            copy_file_pages(cx, memory, node, *offset, old_end, grown_end - old_end)?;
         }
-        if flags & MREMAP_MAYMOVE == 0 {
+        return Ok(old);
+    }
+    if request.flags & MREMAP_MAYMOVE == 0 {
+        return Err(Errno::ENOMEM);
+    }
+    let destination = map.find_free(new_length).ok_or(Errno::ENOMEM)?;
+    move_range(cx, kernel, tid, mapping, request, destination)
+}
+
+/// Linux's `mremap_to`: moving the range to a new address, given or chosen.
+fn remap_to(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    mapping: &Mapping,
+    mut request: Remap,
+) -> Result<u64, Errno> {
+    let process = kernel.process_of_mut(tid);
+    let memory = process.memory;
+    let map = &mut process.map;
+    if request.flags & MREMAP_FIXED != 0 {
+        let end = (request.new_address + request.new_length).min(map.end);
+        if request.new_address < end {
+            map.unmap(cx.cpu, memory, request.new_address, end)?;
+        }
+    }
+    if request.new_length < request.old_length {
+        map.unmap(
+            cx.cpu,
+            memory,
+            request.old + request.new_length,
+            request.old.saturating_add(request.old_length),
+        )?;
+        request.old_length = request.new_length;
+    }
+    // Leaving the old range mapped takes as much again.
+    if request.flags & MREMAP_DONTUNMAP != 0
+        && !map.may_expand(
+            &process.limits,
+            mapping.is_data(),
+            request.old_length / PAGE_SIZE,
+            (0, 0),
+        )
+    {
+        return Err(Errno::ENOMEM);
+    }
+    let destination = if request.flags & MREMAP_FIXED != 0 {
+        if request.new_address + request.new_length > map.end {
             return Err(Errno::ENOMEM);
         }
-    }
-    let destination = if flags & MREMAP_FIXED != 0 {
-        if new_address % PAGE_SIZE != 0 {
-            return Err(Errno::EINVAL);
-        }
-        let destination_end = new_address.checked_add(new_length).ok_or(Errno::EINVAL)?;
-        if destination_end > map.end || (new_address < old_end && old < destination_end) {
-            return Err(Errno::EINVAL);
-        }
-        new_address
+        request.new_address
     } else {
-        map.find_free(new_length).ok_or(Errno::ENOMEM)?
+        // The address is a hint, taken when the space there is free.
+        let hint = request.new_address;
+        if hint >= LOWEST_ADDRESS
+            && hint + request.new_length <= map.end
+            && !map.any_mapped(hint, hint + request.new_length)
+        {
+            hint
+        } else {
+            map.find_free(request.new_length).ok_or(Errno::ENOMEM)?
+        }
     };
+    move_range(cx, kernel, tid, mapping, request, destination)
+}
+
+/// The newer form of a move, Linux's `remap_move`: a fixed move with no change of size takes every
+/// mapping in the range along, keeping the gaps between them.
+fn move_ranges(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    request: Remap,
+) -> Result<u64, Errno> {
+    let start = request.old;
+    let end = request.old.saturating_add(request.old_length);
+    let mut target = request.new_address;
+    let mut result = Err(Errno::EFAULT);
+    let mut last_end = None;
+    let mut at = start;
+    while at < end {
+        let Some(mapping) = kernel.process_of(tid).map.next_after(at).cloned() else {
+            break;
+        };
+        if mapping.start >= end {
+            break;
+        }
+        // No gap is allowed at the start of the range.
+        if last_end.is_none() && start < mapping.start {
+            return Err(Errno::EFAULT);
+        }
+        let from = mapping.start.max(start);
+        let length = mapping.end.min(end) - from;
+        let gap = last_end.map_or(0, |last_end| mapping.start - last_end);
+        last_end = Some(mapping.end);
+        let piece = Remap {
+            old: from,
+            old_length: length,
+            new_length: length,
+            new_address: target + gap,
+            flags: request.flags,
+        };
+        prepare(kernel, tid, &mapping, &piece)?;
+        let moved = remap_to(kernel, cx, tid, &mapping, piece)?;
+        if result.is_err() {
+            result = Ok(moved);
+        }
+        target = moved + length;
+        at = from + length;
+    }
+    result
+}
+
+/// Linux's `move_vma`: the range's pages and what it maps go to `destination`, the old range is
+/// unmapped (or, with `MREMAP_DONTUNMAP`, left mapped with its pages dropped), and growth past the old
+/// length is fresh.
+fn move_range(
+    cx: &mut Context<'_>,
+    kernel: &mut Kernel,
+    tid: Tid,
+    mapping: &Mapping,
+    request: Remap,
+    destination: u64,
+) -> Result<u64, Errno> {
+    let Remap {
+        old,
+        old_length,
+        new_length,
+        ..
+    } = request;
+    let process = kernel.process_of_mut(tid);
+    let memory = process.memory;
+    let map = &mut process.map;
+    let old_end = old + old_length;
     let kept = old_length.min(new_length);
     let mut bytes = vec![0; kept as usize];
     cx.cpu
@@ -475,7 +714,11 @@ pub(super) fn mremap(
     if let Backing::File { file_end, .. } = &mut moved.backing {
         *file_end = shift((*file_end).clamp(old, old + new_length));
     }
-    map.unmap(cx.cpu, memory, old, old_end)?;
+    if request.flags & MREMAP_DONTUNMAP != 0 {
+        drop_pages(cx, memory, mapping, old, old_end)?;
+    } else {
+        map.unmap(cx.cpu, memory, old, old_end)?;
+    }
     map.insert(cx.cpu, memory, moved.clone())?;
     cx.cpu
         .write(memory, destination, &bytes)
@@ -493,6 +736,30 @@ pub(super) fn mremap(
         )?;
     }
     Ok(destination)
+}
+
+/// Puts a private range back to what it held before it was touched: zero, or the file's bytes.
+fn drop_pages(
+    cx: &mut Context<'_>,
+    memory: wcontainers_abi::MemoryId,
+    mapping: &Mapping,
+    from: u64,
+    to: u64,
+) -> Result<(), Errno> {
+    cx.cpu
+        .zero(memory, from, to - from)
+        .map_err(errno::from_cpu)?;
+    if let Backing::File { node, offset, .. } = &mapping.backing {
+        copy_file_pages(
+            cx,
+            memory,
+            node,
+            offset + (from - mapping.start),
+            from,
+            to - from,
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn msync(

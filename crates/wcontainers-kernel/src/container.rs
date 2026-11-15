@@ -434,11 +434,13 @@ impl Kernel {
                 .files
                 .add(OpenFile::new(pipe, O_WRONLY, Vec::new()), false, 0, limit)?;
         }
+        let program = crate::loader::open_program(self, pid, start.path)?;
         let image = crate::loader::load(
             self,
             cx,
             pid,
             start.path,
+            program,
             start
                 .arguments
                 .iter()

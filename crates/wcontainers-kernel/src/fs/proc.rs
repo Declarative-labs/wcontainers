@@ -117,6 +117,19 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
 ];
 
 impl Entry {
+    /// The process an entry belongs to, for the entries inside a process's directory and the
+    /// directory itself.
+    pub fn of_process(&self) -> Option<Pid> {
+        match *self {
+            Entry::Process(pid)
+            | Entry::ProcessFile(pid, _)
+            | Entry::ProcessLink(pid, _)
+            | Entry::Fds(pid)
+            | Entry::Fd(pid, _) => Some(pid),
+            Entry::Root | Entry::SelfLink | Entry::Global(_) => None,
+        }
+    }
+
     /// Proc files report no size.
     pub fn size(&self) -> u64 {
         0

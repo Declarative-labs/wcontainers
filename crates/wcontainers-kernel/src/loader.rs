@@ -45,7 +45,7 @@ pub(crate) struct Image {
 }
 
 /// One program file found by path.
-struct Program {
+pub(crate) struct Program {
     node: Node,
     /// Its path from the root, with links followed.
     path: Vec<u8>,
@@ -53,7 +53,7 @@ struct Program {
 }
 
 /// Finds a file to run by path from the process's point of view, with Linux's checks.
-fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Program, Errno> {
+pub(crate) fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Program, Errno> {
     kernel.with_walk(pid, |walk, process| {
         let (node, full) = walk.locate(&process.cwd, path)?;
         let inode = node.borrow();
@@ -83,12 +83,13 @@ pub(crate) fn load(
     cx: &mut Context<'_>,
     pid: Pid,
     path: &[u8],
+    program: Program,
     arguments: Vec<Vec<u8>>,
     environment: Vec<Vec<u8>>,
 ) -> Result<Image, Errno> {
     let mut arguments = arguments;
     let mut file_name = path.to_vec();
-    let mut program = open_program(kernel, pid, path)?;
+    let mut program = program;
     // Scripts: the interpreter runs with the script's path in place of the first argument.
     for depth in 0..=MAX_INTERPRETERS {
         if !program.bytes.starts_with(b"#!") {
