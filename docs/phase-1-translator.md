@@ -104,8 +104,8 @@ Reuse, checked 2026-11-14:
   code for constants and jump tables. Placing them there is the caller's job.
 - Output never contains an absolute address. The load address arrives as an imported value and every
   address is "load address plus offset".
-- The cache key is the blob's content hash, the start addresses, the look-ahead, the translator
-  version and its tuning numbers. Caching is the caller's job.
+- The cache key is the blob's content hash, the start addresses, the look-ahead, what to optimise
+  for (section 11), the translator version and its tuning numbers. Caching is the caller's job.
 
 ## 5. Look-ahead: the one dial
 
@@ -499,7 +499,10 @@ engine's compile time, and run time against native and against elfconv.
   image, and out of other large runtimes of different kinds: Python, Bun, a Java runtime and a Go
   program. The translator turns each into WebAssembly that loads. Lookup design and module splitting are
   settled against the engine limits. None of these run until the kernel exists; this milestone is
-  about size, speed of translation and engine limits.
+  about size, speed of translation and engine limits. The "optimise for" setting of section 11 is
+  built here, in its order: first everything that makes the output smaller at no cost in run speed,
+  then the size mode. Recorded for each binary in each mode: output size, the memory each engine uses
+  for the compiled code, and what a call between two modules costs.
 
 ## 11. Tuning numbers
 
@@ -509,6 +512,29 @@ Internal constants, fixed per build and part of the cache key. They are not sett
   programs, including whether to pass floating point argument registers.
 - The default N for bounded look-ahead.
 - Thresholds at which each warning is raised.
+
+### Optimise for speed or for size
+
+This is the one setting the translator has, and it works like a compiler's. It is given with each
+translation, so different blobs in one program can use different values, and it is part of the cache
+key.
+
+- **Speed** (the default). Nothing is traded away for size. Run speed stays goal number one.
+- **Size.** The translator may give up run speed to make the output smaller. What each such choice
+  saves and what it costs is measured and recorded.
+
+Output size matters for two reasons only: the engines' limits (a module may be 1 GiB in Chrome, so a
+large program is split, and calls between modules have a cost), and the memory an engine uses for
+compiled code. Measured at M2: about 23 bytes of WebAssembly per byte of ARM64, where the toy made 5.
+
+The order of work:
+1. Everything that makes the output smaller with no measurable loss of run speed is done in both
+   modes. This is measured first, by itself, to show how far size can come down for free.
+2. Then the size mode, one trade at a time.
+3. Mixing the two within one program (hot code for speed, the rest for size) is an experiment for
+   after both are measured. It is not built in phase one.
+
+Both modes give the same results as look-ahead none, and the tests of section 9 run in both.
 
 ## 12. Hooks present from day one
 
