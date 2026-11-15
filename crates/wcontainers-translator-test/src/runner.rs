@@ -41,6 +41,41 @@ pub enum Stopped {
     Finished(i32),
 }
 
+/// Where the thread is paused when the pause function runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pause {
+    /// At a stop check, before the thread carries on.
+    Stop,
+    /// After a system call the stand-in answered, before the thread carries on.
+    Syscall,
+}
+
+/// What a pause function may look at and change while the thread is paused.
+pub struct Paused<'a, 'b> {
+    caller: &'a mut Caller<'b, Host>,
+}
+
+impl Paused<'_, '_> {
+    pub fn registers(&mut self) -> RegisterBlock {
+        snapshot(self.caller)
+    }
+
+    pub fn read(&mut self, address: u64, into: &mut [u8]) {
+        let memory = self.caller.data().memory.unwrap();
+        memory
+            .read(&*self.caller, address as usize, into)
+            .expect("read inside guest memory");
+    }
+
+    /// Say what a page aligned range allows, as a kernel would for another thread or a system call.
+    pub fn set_permissions(&mut self, range: Range<u64>, permissions: Permissions) {
+        set_permissions(self.caller.data_mut(), range, permissions);
+    }
+}
+
+/// Called at every pause of the thread.
+type PauseFunction = Box<dyn FnMut(Pause, &mut Paused<'_, '_>)>;
+
 /// One blob placed in guest memory and translated.
 struct Blob {
     bytes: Vec<u8>,
@@ -72,6 +107,9 @@ pub struct Host {
     table_base: u64,
     /// The stop hook raises the flag again before it says carry on, so the thread stops at every check.
     stop_everywhere: bool,
+    /// What each page allows, as the permission table says.
+    permissions: Vec<Permissions>,
+    pause: Option<PauseFunction>,
 }
 
 pub struct Machine {
@@ -79,8 +117,6 @@ pub struct Machine {
     memory: Memory,
     state: SharedMemory,
     run: TypedFunc<(), ()>,
-    permission_pages: u64,
-    permissions: Vec<Permissions>,
 }
 
 /// One engine for the whole process, so compiled modules can be shared.
@@ -158,6 +194,8 @@ impl Machine {
                 memory: None,
                 table_base,
                 stop_everywhere: false,
+                permissions: vec![Permissions::empty(); permission_pages as usize],
+                pause: None,
             },
         );
         let pages = memory_bytes.div_ceil(65536);
@@ -205,8 +243,6 @@ impl Machine {
             memory,
             state,
             run,
-            permission_pages,
-            permissions: vec![Permissions::empty(); permission_pages as usize],
         }
     }
 
@@ -224,24 +260,13 @@ impl Machine {
 
     /// Say what a page aligned range allows.
     pub fn set_permissions(&mut self, range: Range<u64>, permissions: Permissions) {
-        let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
-        for page in pages.clone() {
-            self.permissions[page as usize] = permissions;
-        }
-        // Each byte also says what the page after it allows, so rewrite the one before the range too.
-        for page in pages.start.saturating_sub(1)..pages.end.min(self.permission_pages) {
-            let next = self
-                .permissions
-                .get(page as usize + 1)
-                .copied()
-                .unwrap_or(Permissions::empty());
-            let byte = contract::permission_byte(self.permissions[page as usize], next);
-            write_shared(
-                &self.state,
-                (u64::from(PERMISSIONS_AT) + page) as usize,
-                &[byte],
-            );
-        }
+        set_permissions(self.store.data_mut(), range, permissions);
+    }
+
+    /// From now on `pause` runs whenever the thread pauses at a stop check or after a system call, and may
+    /// change page permissions there.
+    pub fn on_pause(&mut self, pause: impl FnMut(Pause, &mut Paused<'_, '_>) + 'static) {
+        self.store.data_mut().pause = Some(Box::new(pause));
     }
 
     /// Place a blob at `load_address`, translate it from `starts` (blob offsets) with a look-ahead and add its
@@ -383,6 +408,32 @@ impl Machine {
     }
 }
 
+fn set_permissions(host: &mut Host, range: Range<u64>, permissions: Permissions) {
+    let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
+    for page in pages.clone() {
+        host.permissions[page as usize] = permissions;
+    }
+    let state = host.state.as_ref().unwrap();
+    // Each byte also says what the page after it allows, so rewrite the one before the range too.
+    for page in pages.start.saturating_sub(1)..pages.end.min(host.permissions.len() as u64) {
+        let next = host
+            .permissions
+            .get(page as usize + 1)
+            .copied()
+            .unwrap_or(Permissions::empty());
+        let byte = contract::permission_byte(host.permissions[page as usize], next);
+        write_shared(state, (u64::from(PERMISSIONS_AT) + page) as usize, &[byte]);
+    }
+}
+
+/// Run the pause function, if there is one.
+fn pause(caller: &mut Caller<'_, Host>, at: Pause) {
+    if let Some(mut function) = caller.data_mut().pause.take() {
+        function(at, &mut Paused { caller });
+        caller.data_mut().pause = Some(function);
+    }
+}
+
 fn write_shared(memory: &SharedMemory, at: usize, bytes: &[u8]) {
     let data = memory.data();
     assert!(at + bytes.len() <= data.len());
@@ -471,7 +522,11 @@ fn hooks(linker: &mut Linker<Host>) {
                     raise_stop_flag(&caller);
                     return 0;
                 }
-                stand_in(&mut caller, call)
+                let result = stand_in(&mut caller, call);
+                if caller.data().stopped.is_none() {
+                    pause(&mut caller, Pause::Syscall);
+                }
+                result
             },
         )
         .unwrap();
@@ -493,6 +548,7 @@ fn hooks(linker: &mut Linker<Host>) {
             if caller.data().stop_everywhere {
                 raise_stop_flag(&caller);
             }
+            pause(&mut caller, Pause::Stop);
             0
         })
         .unwrap();

@@ -200,6 +200,19 @@ fn run_blob(
     omit: Omit,
     stop_everywhere: bool,
 ) -> (Ran, Machine, RegisterBlock, Duration) {
+    let mut machine = ready(blob, look_ahead, omit);
+    if stop_everywhere {
+        machine.stop_at_every_check();
+    }
+    let started = Instant::now();
+    let (stopped, registers) = machine.run();
+    let ran_for = started.elapsed();
+    let ran = ran(blob, &machine, stopped, &registers);
+    (ran, machine, registers, ran_for)
+}
+
+/// A machine with a blob placed, translated and ready to run from its first byte.
+pub fn ready(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine {
     let slots = blob.code_bytes.div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, LOAD, slots, Syscalls::StandIn);
@@ -219,12 +232,11 @@ fn run_blob(
     registers.pc = LOAD;
     registers.sp = place.sp;
     machine.set_registers(&registers);
-    if stop_everywhere {
-        machine.stop_at_every_check();
-    }
-    let started = Instant::now();
-    let (stopped, registers) = machine.run();
-    let ran_for = started.elapsed();
+    machine
+}
+
+/// What a program did, from why its thread stopped. Panics if it stopped without exiting or faulting.
+pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &RegisterBlock) -> Ran {
     // Docker reports a process killed by a signal as 128 plus the signal's number.
     let status = match stopped {
         // Linux reports the low 8 bits of the status.
@@ -246,12 +258,11 @@ fn run_blob(
             )
         }
     };
-    let ran = Ran {
+    Ran {
         stdout: machine.stdout().to_vec(),
         stderr: machine.stderr().to_vec(),
         status,
-    };
-    (ran, machine, registers, ran_for)
+    }
 }
 
 /// Every byte the guest may reach: the blob's pages, then the stack.

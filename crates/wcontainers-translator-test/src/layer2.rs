@@ -2,7 +2,7 @@
 //! counters, calls, bounded recursion, tail calls, calls and jumps through registers, compiler-style jump
 //! tables, flags carried across instructions, stack frames of every size (some running off the stack), and
 //! memory use inside a fixed area, through the stack pointer, and in groups through other registers, some
-//! near a page that allows nothing. At the end it stores its registers and flags after the area and writes
+//! near a page that allows nothing, and system calls that write nothing. At the end it stores its registers and flags after the area and writes
 //! the whole area out; a program that faults ends with SIGSEGV instead.
 
 // dynasm's expansion converts register numbers to their own type.
@@ -140,6 +140,9 @@ pub enum Op {
         start: GroupBase,
         accesses: Vec<GroupAccess>,
     },
+    /// A system call that writes nothing to standard output: x0 = 1, x1 = the area, x2 = 0, x8 = 64 (write),
+    /// leaving x0 = 0.
+    Syscall,
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +252,9 @@ pub struct Lookup {
     /// After the access, a switch through the table's first two bytes on the turn's choice (2 skips it).
     pub switch: bool,
     pub choices: Vec<u8>,
+    /// The loop goes back to its head through a switch whose cases are the head and the way out, as a
+    /// compiler may make of a `continue` in a switch. Only with a loaded index (the switch uses its register).
+    pub back: bool,
 }
 
 /// A function may call only functions with lower numbers, so calls always end.
@@ -489,7 +495,11 @@ fn lookup() -> impl Strategy<Value = Lookup> {
             (0u16..512).prop_map(GroupBase::Area),
             (0u16..2048).prop_map(GroupBase::Edge),
         ],
-        (any::<bool>(), prop::collection::vec(0u8..3, 24)),
+        (
+            any::<bool>(),
+            prop::collection::vec(0u8..3, 24),
+            prop::bool::weighted(0.3),
+        ),
         prop::bool::weighted(0.3),
     )
         .prop_map(
@@ -499,7 +509,7 @@ fn lookup() -> impl Strategy<Value = Lookup> {
                 guard,
                 (extend, shift, load, bytes),
                 at,
-                (switch, choices),
+                (switch, choices, back),
                 tight,
             )| {
                 // Four different registers.
@@ -558,12 +568,17 @@ fn lookup() -> impl Strategy<Value = Lookup> {
                     at,
                     switch,
                     choices,
+                    back: back && loaded,
                 }
             },
         )
 }
 
 fn op() -> impl Strategy<Value = Op> {
+    prop_oneof![20 => plain_op(), 1 => Just(Op::Syscall)]
+}
+
+fn plain_op() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0u8..13, any::<bool>(), register(), register(), register()).prop_map(
             |(kind, wide, rd, rn, rm)| Op::Arithmetic {
@@ -983,6 +998,9 @@ fn emit_op(ops: &mut Ops, edge: DynamicLabel, op: &Op) {
             for access in accesses {
                 emit_group_access(ops, base, access);
             }
+        }
+        Op::Syscall => {
+            dynasm!(ops ; .arch aarch64 ; movz x0, #1 ; mov x1, x29 ; movz x2, #0 ; movz x8, #64 ; svc #0);
         }
     }
 }
@@ -1419,6 +1437,7 @@ fn emit_lookup(ops: &mut Ops, layout: &mut Layout, l: &Lookup) {
     let turns = u32::from(l.turns);
     let start = u32::from(l.start);
     dynasm!(ops ; .arch aarch64 ; adr X(tab), =>table ; movz W(index), #start ; movz x16, #turns ; =>top);
+    let top_at = ops.offset().0;
     if l.loaded {
         dynasm!(ops ; .arch aarch64 ; add x18, XSP(tab), #25 ; ldrb W(index), [x18, x16]);
     } else {
@@ -1486,7 +1505,27 @@ fn emit_lookup(ops: &mut Ops, layout: &mut Layout, l: &Lookup) {
             ; eor X(rt), X(rt), x16
         );
     }
-    dynasm!(ops ; .arch aarch64 ; =>skip ; subs x16, x16, #1 ; b.ne =>top);
+    if l.back {
+        // Entry 0 is the head, entry 1 the way out, chosen by whether the count has reached 0.
+        let (back, out) = (ops.new_dynamic_label(), ops.new_dynamic_label());
+        dynasm!(ops ; .arch aarch64
+            ; =>skip
+            ; subs x16, x16, #1
+            ; cset w18, eq
+            ; cmp w18, #1
+            ; b.hi =>out
+            ; adr X(index), =>back
+            ; ldrb w18, [X(index), x18]
+            ; adr X(index), =>top
+            ; add X(index), X(index), x18, lsl #2
+            ; br X(index)
+            ; =>out
+        );
+        let entry = u8::try_from((ops.offset().0 - top_at) / 4).expect("a short loop");
+        layout.tables.push((back, vec![0, entry]));
+    } else {
+        dynasm!(ops ; .arch aarch64 ; =>skip ; subs x16, x16, #1 ; b.ne =>top);
+    }
     // Turn t (counting down from `turns` to 1) reads byte t + 1 for its choice and t + 25 for its index.
     let mut bytes = vec![1, 0];
     bytes.extend(&l.choices);

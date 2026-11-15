@@ -7,6 +7,17 @@
 //! Registers that are not in a piece's locals live in the thread block in the state memory, so whenever a hook
 //! runs or `run` has returned, the block holds them all ("registers are saved"), and a runner sets registers
 //! by writing the block before `run`.
+//!
+//! **When the permission table may change.** What a piece has found out about page permissions (checks one
+//! check covers, kept runs of allowed pages, proofs over a loop's range, bounded indices) holds only until
+//! the next point where its thread can stop: a stop check whose hook runs, a system call, or leaving `run`.
+//! After any of those the piece checks again. The one exception is a stack frame checked when the stack
+//! pointer moved down: a change to a page of a running function's own frame is noticed at the next function
+//! entry, not at once. So whoever changes a process's page permissions must first bring every other
+//! running thread of that process to a stop (raise its stop flag and wait until its hook runs or it has
+//! left `run`), as a real kernel interrupts the other processors before it changes a page table. The
+//! thread making the change is already stopped, in its system call or hook. With one host thread this
+//! happens by itself, because only a stopped thread lets the kernel run.
 
 /// Import module name for what the runner provides.
 pub const ENV: &str = "env";
@@ -32,7 +43,8 @@ pub const TABLE_BASE: &str = "table_base";
 /// i32: where in the state memory this thread's block is (a [`wcontainers_abi::RegisterBlock`] followed by
 /// the stop flag), a multiple of 16.
 pub const THREAD_BLOCK: &str = "thread_block";
-/// i32: where in the state memory the page permission table starts, one byte per page.
+/// i32: where in the state memory the page permission table starts, one byte per page. It may change only
+/// while every thread of the process is stopped (see "When the permission table may change" in this module's documentation).
 pub const PERMISSIONS: &str = "permissions";
 /// i64: how many pages the permission table covers. The byte after the last one must be zero, so addresses at
 /// or above `pages * PAGE_SIZE` fault.
