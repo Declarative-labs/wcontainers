@@ -97,6 +97,12 @@ fn files() {
         &["mkfifo", "/tmp/fifo"],
         &["test", "-w", "/etc/passwd"],
         &["pwd"],
+        &["fallocate", "-l", "8192", "/tmp/f"],
+        &["install", "-m", "755", "/etc/passwd", "/tmp/p"],
+        &["readahead", "/etc/passwd"],
+        &["fsync", "/etc/passwd"],
+        &["cmp", "/bin/busybox", "/bin/sh"],
+        &["xxd", "-l", "16", "/bin/busybox"],
     ]);
 }
 
@@ -125,6 +131,20 @@ fn system() {
             "-c",
             "read x < /etc/hostname; echo \"$x\"; test -d /proc && echo yes",
         ],
+        &["nice", "-n", "5", "nice"],
+        &["renice", "-n", "3", "-p", "1"],
+        &[
+            "setpriv",
+            "--reuid=1000",
+            "--regid=1000",
+            "--clear-groups",
+            "id",
+        ],
+        &["linux32", "uname", "-m"],
+        &["linux64", "uname", "-m"],
+        &["sysctl", "kernel.hostname"],
+        &["sysctl", "-w", "kernel.hostname=x"],
+        &["pwdx", "1"],
         &["cat", "/proc/self/limits"],
         &["cat", "/proc/self/comm"],
         &[
