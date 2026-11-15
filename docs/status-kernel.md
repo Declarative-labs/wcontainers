@@ -111,23 +111,24 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
 
 ## System calls
 
-Done (157): brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep, close,
+Done (159): brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep, close,
 close_range, copy_file_range, dup, dup3, execve, exit, exit_group, faccessat, faccessat2, fadvise64,
 fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl, fdatasync, fgetxattr,
 flistxattr, flock, fremovexattr, fsetxattr, fstat, fstatfs, fsync, ftruncate, get_robust_list, getcpu,
 getcwd, getdents64, getegid, geteuid, getgid, getgroups, getpgid, getpid, getppid, getpriority,
 getrandom, getresgid, getresuid, getrlimit, getrusage, getsid, gettid, gettimeofday, getuid, getxattr,
-ioctl, kill, lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise,
-memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, mprotect, mremap, msync,
-munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2, personality, ppoll, prctl, pread64,
-preadv, preadv2, prlimit64, pselect6, pwrite64, pwritev, pwritev2, read, readahead, readlinkat, readv,
-removexattr, renameat, renameat2, rt_sigaction, rt_sigpending, rt_sigprocmask, sched_get_priority_max,
-sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler,
-sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler,
-sched_yield, sendfile, set_robust_list, set_tid_address, setdomainname, setfsgid, setfsuid, setgid,
-setgroups, sethostname, setpgid, setpriority, setregid, setresgid, setresuid, setreuid, setrlimit,
-setsid, setuid, setxattr, sigaltstack, statfs, statx, symlinkat, sync, sync_file_range, syncfs, sysinfo,
-tgkill, times, tkill, truncate, umask, uname, unlinkat, utimensat, write, writev.
+ioctl, ioprio_get, ioprio_set, kill, lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek,
+lsetxattr, madvise, memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, mprotect,
+mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2, personality, ppoll,
+prctl, pread64, preadv, preadv2, prlimit64, pselect6, pwrite64, pwritev, pwritev2, read, readahead,
+readlinkat, readv, removexattr, renameat, renameat2, rt_sigaction, rt_sigpending, rt_sigprocmask,
+sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam,
+sched_getscheduler, sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam,
+sched_setscheduler, sched_yield, sendfile, set_robust_list, set_tid_address, setdomainname, setfsgid,
+setfsuid, setgid, setgroups, sethostname, setpgid, setpriority, setregid, setresgid, setresuid,
+setreuid, setrlimit, setsid, setuid, setxattr, sigaltstack, statfs, statx, symlinkat, sync,
+sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, uname, unlinkat, utimensat,
+write, writev.
 
 Partial (inside the list above):
 - fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS); no leases, owners, signals, seals.
@@ -162,6 +163,10 @@ Partial (inside the list above):
 - mincore: every mapped page is reported in memory, counted "page residency not tracked" (the CPU side
   does not say which pages a program touched).
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
+- ioprio_get, ioprio_set: the value is kept per thread; nothing does I/O by it. A group or user is
+  answered with the implied class and level for no class (measured).
+- sigaltstack: refuses a change while the caller runs on its alternate stack (Linux's `on_sig_stack`,
+  from the thread's stack pointer); handlers still need K2.
 
 Refused by Docker's profile as in the reference (51; never reach the kernel there, so nothing to
 build): lookup_dcookie, umount2, mount, pivot_root, nfsservctl, quotactl, unshare, kexec_load,
@@ -172,29 +177,29 @@ clone3, pidfd_getfd, process_madvise, mount_setattr, quotactl_fd, set_mempolicy_
 listmount, lsm_get_self_attr, lsm_set_self_attr, lsm_list_modules, mseal, setxattrat, getxattrat,
 listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr.
 
-Missing (117, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
+Missing (115, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
 io_cancel, io_getevents, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
-inotify_add_watch, inotify_rm_watch, ioprio_set, ioprio_get, vhangup, pipe2, signalfd4, vmsplice,
-splice, tee, timerfd_create, timerfd_settime, timerfd_gettime, acct, waitid, futex, getitimer,
-setitimer, init_module, timer_create, timer_gettime, timer_getoverrun, timer_settime, timer_delete,
-syslog, ptrace, restart_syscall, rt_sigsuspend, rt_sigtimedwait, rt_sigqueueinfo, rt_sigreturn, reboot,
-adjtimex, mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl,
-msgrcv, msgsnd, semget, semctl, semtimedop, semop, shmget, shmctl, shmat, shmdt, socket, socketpair,
-bind, listen, accept, connect, getsockname, getpeername, sendto, recvfrom, setsockopt, getsockopt,
-shutdown, sendmsg, recvmsg, clone, swapoff, remap_file_pages, rt_tgsigqueueinfo, accept4, recvmmsg,
-wait4, fanotify_init, fanotify_mark, name_to_handle_at, clock_adjtime, sendmmsg, process_vm_readv,
-process_vm_writev, finit_module, seccomp, execveat, membarrier, pkey_mprotect, pkey_alloc, pkey_free,
-io_pgetevents, rseq, pidfd_send_signal, move_mount, fsopen, fsmount, fspick, pidfd_open, epoll_pwait2,
-landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret, process_mrelease,
-futex_waitv, cachestat, map_shadow_stack, futex_wake, futex_wait, futex_requeue. Most belong to K2
-(processes, pipes, signals, futex), K3 (timers) or K5 (sockets, epoll).
+inotify_add_watch, inotify_rm_watch, vhangup, pipe2, signalfd4, vmsplice, splice, tee, timerfd_create,
+timerfd_settime, timerfd_gettime, acct, waitid, futex, getitimer, setitimer, init_module, timer_create,
+timer_gettime, timer_getoverrun, timer_settime, timer_delete, syslog, ptrace, restart_syscall,
+rt_sigsuspend, rt_sigtimedwait, rt_sigqueueinfo, rt_sigreturn, reboot, adjtimex, mq_open, mq_unlink,
+mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl,
+semtimedop, semop, shmget, shmctl, shmat, shmdt, socket, socketpair, bind, listen, accept, connect,
+getsockname, getpeername, sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg, clone,
+swapoff, remap_file_pages, rt_tgsigqueueinfo, accept4, recvmmsg, wait4, fanotify_init, fanotify_mark,
+name_to_handle_at, clock_adjtime, sendmmsg, process_vm_readv, process_vm_writev, finit_module, seccomp,
+execveat, membarrier, pkey_mprotect, pkey_alloc, pkey_free, io_pgetevents, rseq, pidfd_send_signal,
+move_mount, fsopen, fsmount, fspick, pidfd_open, epoll_pwait2, landlock_create_ruleset,
+landlock_add_rule, landlock_restrict_self, memfd_secret, process_mrelease, futex_waitv, cachestat,
+map_shadow_stack, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes, signals,
+futex), K3 (timers) or K5 (sockets, epoll).
 
 ## Tests (last run 2026-11-15: 29 passed, 4 ignored known failures)
 
 All pass except the ignored known failures.
-- busybox: 81 single commands of the reference image (added this run: nice, renice, setpriv to another
-  user then id, linux32 and linux64 uname, sysctl read and write, pwdx, fallocate, install, readahead,
-  fsync, cmp, xxd): same stdout, stderr, exit code and files changed as the reference.
+- busybox: 85 single commands of the reference image (added this run: nice, renice, setpriv to another
+  user then id, linux32 and linux64 uname, sysctl read and write, pwdx, ionice (four ways),
+  fallocate, install, readahead, fsync, cmp, xxd): same stdout, stderr, exit code and files changed as the reference.
 - xattr (new): guest/xattr.c sets, gets, lists and removes every kind of name on tmpfs, devices, `/proc`,
   devpts and pipes, ACLs, file capabilities in both forms, their removal by write, chown and truncate;
   then execs copies of itself: plain, set-group, set-user, after giving up root, unreadable, with file
@@ -225,7 +230,8 @@ Known failures (ignored, with the reason in the attribute):
 ## Layer 1
 
 Calls covered (now 157 kinds, with the xattr calls, memfd_create, F_ADD_SEALS and F_GET_SEALS,
-sched_setattr, sched_getattr, sched_rr_get_interval and mincore added this run): every call in "Done"
+sched_setattr, sched_getattr, sched_rr_get_interval, mincore, ioprio_get and ioprio_set added this
+run; ioprio not by user, which names the reference's runner too): every call in "Done"
 except brk (its values are addresses that differ by layout; it is
 tested by guest/memory.c and guest/limits.c), plus mkdirat and chdir at the start of every sequence.
 Arguments come from pools with bad pointers, bad descriptors, huge counts, unknown flags and invalid
@@ -264,19 +270,24 @@ would wait for ever); openat2 restricted lookups (not built) and RESOLVE_CACHED 
 depends on what is cached); huge page memory files (not built); alternate signal stacks that could hold
 either caller's stack pointer (the two differ; the stacks are now chosen from a pool in the play area).
 
-Cases run this run (the earlier ones are in git history): seed 10: 500 passed; seed 20: 1000 passed;
-seed 22: 1500 passed; seed 30: 1500 passed; seed 32: 3000 passed; seed 41: 3000 passed; seed 43: 3000
-passed. Each 20000-sequence run (seeds 11, 12, 21, 22, 31, 32, 41, 42, 43) found a mismatch within 1 to 3 minutes, which
-was fixed or, for 42 (getpriority by user), excluded with its reason (about 28 fixes: capability
-versions, signal order, setpgid, sethostname, get_robust_list, execve's order, mremap, madvise,
-syncfs, flock, SCHED_EXT, openat with O_DIRECTORY on a link or a trailing slash, getdents64's buffer
-check, getcwd outside the root ("(unreachable)") and inside `/proc`, chdir into the own `fd`
-directory, long names in `/proc` (ENOENT, not ENAMETOOLONG), lseek's unknown origins, proc permissions, `/proc/sys`, and more). No run
-stalled after the runner change, but no run has yet been long enough to prove the stall gone.
+Cases run in the third run (earlier ones are in git history): seed 45: 3000 passed; seed 47: 3000
+passed; seed 49: 3000 passed (after fixes). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
+times) each found a mismatch within 1 to 5 minutes, which was fixed: madvise MADV_REMOVE on shared
+anonymous memory, EROFS before the name lookup in unlink and rename, `/proc`'s link count (now masked,
+see above), reads of `/dev/full` into a buffer ending at an unmapped page (ARM64's `clear_user`), rename
+onto "." with RENAME_NOREPLACE (EEXIST), sendfile's order (offset first, written back always),
+sigaltstack while on the stack (layer 1's stacks now from a pool), ioprio_get for a group, renaming a
+`/proc` directory below itself (EINVAL), access checks walking with the checked credentials, chown
+naming neither owner nor group in `/proc`. One was the runner's fault: a descriptor on `/dev/shm` and
+".." reach `/dev` and `/`, whose mode a sequence could change for the rest of the run; the runner now
+puts back their owner, mode, attributes and pool names after each sequence. No run stalled.
 
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Third run, layer 1 with 171 call kinds: 3000 sequences, seed 45: 86 s (load 11 to 17); seed 47:
+  85 s (load 7 to 11); seed 49: 88 s (load 28 to 49).
+- Third run, busybox system test (one test, about 30 commands in both runners): 10.8 s (load about 10).
 - Layer 1, 3000 sequences, seed 32, all call kinds: 89 s (load about 8 to 15).
 - Layer 1, 1500 sequences, seed 30: 46 s (load about 8 to 15).
 - Layer 1, 500 sequences, seed 10: 15.4 s (load 4.6).
@@ -286,6 +297,16 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- Added in the third run: the made-up machine has one CPU, so its default time slice is 0.7 ms (the
+  reference, with more CPUs, reports 2.8 ms) and sched_rr_get_interval reports it in whole 1 ms ticks
+  (the reference's tick, inferred from 2.8 ms reported as 2 ms). mincore reports every mapped page as
+  in memory. `/proc`'s link count follows Linux's formula with this container's processes. Huge page
+  memory files are refused (hugetlbfs not built). The reference's tmpfs has no POSIX ACLs and its
+  kernel no utilisation clamps; both are refused as there.
+- Values typed by hand because linux-raw-sys lacks them (in src/linux_extra.rs): the ACL tags and
+  version, `sched_attr` and its sizes, SCHED_FLAG_SUGOV, the ioprio classes and `which` values, and
+  PER_CLEAR_ON_SETID.
 
 - The root file system is in memory (tmpfs) in K1: the file backend is K4. Tests fill it from
   `docker export` of the reference image with `Kernel::add_file`. What shows the file system's own kind
@@ -361,13 +382,14 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Next (K1, in order)
 
-1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass. The
-   orchestrator's long run is the command at the top. Seed 43's 20000 run failed (fixed; 3000 then
-   passed); start with seeds 44 and up.
-2. Calls single programs still use that are missing: the extended attribute calls (tmpfs has user.,
-   trusted. and security. names), memfd_create (with fcntl seals), mincore, sched_rr_get_interval,
-   sched_setattr/sched_getattr, getitimer/setitimer (need signal delivery and the timer queue, may wait
-   for K2/K3).
-3. More busybox single programs (and ones that use the calls added this run: flock, cp of big files
-   through copy_file_range if any, nice, chrt-like tools are not in busybox).
+1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass. A seed
+   48 run of 20000 was in progress at the end of the third run (see the runs above for its result if
+   recorded); start with seeds 50 and up. The orchestrator's long run is the command at the top.
+2. Missing calls that need later milestones: getitimer/setitimer and the timer calls (signal delivery
+   and the timer queue, K2/K3), pipe2 and the rest of K2. Everything a single program uses without
+   other processes, threads, timers or sockets is now built, except: execveat, rseq (glibc uses it;
+   ENOSYS is what a kernel without it says), membarrier, pkey_*, name_to_handle_at, process_vm_*,
+   seccomp (a program's own filter, plan section 11), memfd_secret, cachestat, map_shadow_stack.
+3. Known gaps above (RLIMIT_CPU, brk's data limit, `/proc/mounts`, `/proc/sys` writes, nice in
+   `/proc/<pid>/stat`, xattr space, huge page memory files, shared file mappings).
 4. Then K2.
