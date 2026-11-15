@@ -11,8 +11,8 @@ memory calls with page protection, limits and faults, shared file mappings, the
 in-memory file systems (tmpfs with extended attributes and seals, memory files, `/proc`, `/dev`), file
 descriptors, time, randomness, ids and powers, signals a process sends itself, and Docker's default
 seccomp profile. Single busybox programs match the reference. Layer 1 covers every call built. K1 is not
-finished: 20000-sequence runs pass (sixth run: seeds 70 and 71 passed after their fixes; see Layer 1),
-but the one-million bar has not been run.
+finished: 20000-sequence runs pass (at the end of the sixth run seeds 79 to 81 passed with every fix
+in; see Layer 1), but the one-million bar has not been run.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -178,6 +178,12 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
   EINVAL, one size change, only shared mappings (private EINVAL), each locked within RLIMIT_MEMLOCK
   (EAGAIN) and kept locked by munlock, and out of reach of process_vm_readv (EFAULT), as measured.
 - A removed directory takes no new names and looks nothing up (ENOENT, Linux's `IS_DEADDIR`).
+- Pages a program may only run cannot be read (sixth run): the reference's CPU has execute-only
+  pages (measured: a load from a PROT_EXEC page is SIGSEGV, a write() from one EFAULT), so only
+  writing implies reading now.
+- A process killed by a signal that dumps core, with a core size limit above zero and dumpable, gets
+  no core file and no core flag in its wait status: counted "core dump not written" (Linux writes
+  `core` and sets 0x80; the reference's default limit is 0, so this needs a program to raise it).
 - `/proc/<pid>/fd` listings carry Linux's positions: a descriptor's is its number plus 2, and the end
   is the table's size plus 2 (`proc_readfd_common`).
 - The zero devices clear buffers as ARM64's `clear_user` does (eight bytes at a time; `/dev/full`
@@ -251,6 +257,7 @@ Partial (inside the list above):
 - process_vm_readv, process_vm_writev: only the caller's own process (the only one in K1).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted "page
   residency not tracked" whenever a mapped file's blocks are reported).
+- Core dumps: not written (counted, see above).
 - sigaltstack: refuses a change while the caller runs on its alternate stack (Linux's `on_sig_stack`,
   from the thread's stack pointer); handlers still need K2.
 
@@ -357,7 +364,10 @@ Sixth run: added shared file mappings (MAP_SHARED and MAP_SHARED_VALIDATE with a
 name_to_handle_at (handles with room for 128, 12, 0 and 129 bytes; the handle's words and the mount
 number are masked) and memfd_secret. getrandom now writes only to its own 96 bytes, which no call
 reads: the runners' random bytes differ, and a later call that read them as a structure went apart
-(seed 72: an iovec length). A link that names a process directory by number (`/proc/self/cwd` while
+(seed 72: an iovec length); for the same reason uname and name_to_handle_at's handle and mount number
+now write only to their own areas, and the core size limit is only ever set to zero (core dumps are
+not written, counted). Listings of `/proc` and of process directories are not compared (they hold the
+machine's processes and the chosen subset of entries, a declared difference). A link that names a process directory by number (`/proc/self/cwd` while
 in `/proc/self`) is not compared, as getcwd there.
 
 Cases run in the sixth run (up to three at once): seeds 70 and 71 at 20000 failed after 395 s and
@@ -367,6 +377,16 @@ directory (both fixed). Then seed 71 passed 20000 (324 s, load 8 to 11); seed 70
 seed 72 failed twice within 180 s (every iovec length is checked before any address, fixed; then
 the getrandom bytes above, harness); seed 74 failed after 91 s (a lookup in a removed directory is
 ENOENT before the name's length; fixed), then passed 2000 (33 s). Seed 73 passed 1000 (17 s).
+With memfd_secret generated, seeds 72, 75 to 80 found, one after another (each within 1 to 5
+minutes): secret memory's statx fields, readahead, noexec (not shown in statfs), lseek's origin
+check first, reopening it (ENXIO), vectored calls at the current position, sendfile from it;
+MADV_POPULATE_* on a mapping without the access (EINVAL), faccessat X_OK on a `noexec` mount
+(EACCES), setresuid leaving the file powers alone when it moves the file system user (only
+setfsuid moves them), execute-only pages, proc's seek limit (`MAX_NON_LFS`), O_PATH descriptors
+ready in select, and the harness issues above. All fixed. Passes of 20000 with the fixes then in:
+seed 75 (296 s), 72 and 76 (297 s each), 77 (301 s), 78 (290 s), three side by side at load 6 to 14.
+At the end of the sixth run, with every fix in, seeds 79, 80 and 81 passed 20000 each (307 s each,
+side by side, load 14 at the start, 6 at the end).
 
 Fifth run: added process_vm_readv and process_vm_writev (the caller itself, by process number, 0 or a
 missing one; segment lists from the vector pool, arbitrary arena bytes or bad addresses; never from the
@@ -501,7 +521,8 @@ puts back their owner, mode, attributes and pool names after each sequence. No r
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
-- Sixth run, layer 1 20000 sequences: seed 71 324 s (load 8 to 11, three runs side by side), seed 70
+- Sixth run, layer 1 20000 sequences, three side by side: about 290 to 330 s each (load 6 to 15);
+  seed 71 324 s (load 8 to 11, three runs side by side), seed 70
   326 s (load 8 to 12, three side by side); 2000 sequences, seed 74: 33 s; 1000, seed 73: 17 s.
 - Fourth run, layer 1 with 175 call kinds: 3000 sequences, seed 57: 85.6 s (load 5.8 to 9.5); 1000
   sequences, seed 56: 30 s (load 5 to 14).
@@ -632,8 +653,8 @@ All on this shared Mac; noisy, not benchmarks.
 ## Next (K1, in order)
 
 1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; then
-   the million (the orchestrator's command at the top). Seeds 77 and up are fresh; the million is
-   worth starting (expected about 5 to 6 hours at the measured 20000 per 5.5 minutes; not measured).
+   the million (the orchestrator's command at the top). Seeds 82 and up are fresh; the million is
+   worth starting (expected about 4 to 5 hours at the measured 20000 per 5 minutes; not measured).
 2. Missing calls a single program can use without other processes, threads, timers or sockets:
    seccomp listeners, rseq's time slice extension. The rest need K2 (pipe2, fork,
    futex, wait, signal delivery: rt_sigreturn, rt_sigsuspend, rt_sigtimedwait), K3 (timers,
