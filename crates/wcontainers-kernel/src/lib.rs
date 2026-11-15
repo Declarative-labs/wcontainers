@@ -61,6 +61,8 @@ pub(crate) struct Files {
     pub root: Node,
     pub proc_fs: FileSystem,
     pub pipe_fs: FileSystem,
+    /// The internal tmpfs memory files live on, made at the first `memfd_create`.
+    pub memfd_fs: Option<FileSystem>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -118,6 +120,7 @@ impl Kernel {
                 root,
                 proc_fs,
                 pipe_fs,
+                memfd_fs: None,
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",

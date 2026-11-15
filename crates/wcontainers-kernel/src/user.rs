@@ -96,6 +96,54 @@ impl Guest<'_> {
         length
     }
 
+    /// Zeroes as much of a range as ARM64 Linux's `clear_user` does before a fault, and returns how
+    /// much: it stores eight bytes at a time from the start (and overlapping words at the end), so a
+    /// store that would cross into a page it may not write ends the clearing at that store's start.
+    pub fn clear_partial(&mut self, address: u64, length: u64) -> u64 {
+        if !access_ok(address, length) {
+            return 0;
+        }
+        let writable = self.accessible(address, length, Permissions::WRITE);
+        let fits = |from: u64, size: u64| from + size <= address + writable;
+        let end = address + length;
+        let cleared = if length >= 8 {
+            // The main loop, then one store of the last eight bytes.
+            let mut at = address;
+            loop {
+                if !fits(at, 8) {
+                    break at - address;
+                }
+                at += 8;
+                if at + 8 >= end {
+                    break if fits(end - 8, 8) {
+                        length
+                    } else {
+                        at - address
+                    };
+                }
+            }
+        } else if length >= 4 {
+            match (fits(address, 4), fits(end - 4, 4)) {
+                (true, true) => length,
+                (true, false) => 4,
+                _ => 0,
+            }
+        } else {
+            let half = length & 2 != 0;
+            if half && !fits(address, 2) {
+                0
+            } else if length & 1 != 0 && !fits(end - 1, 1) {
+                length - 1
+            } else {
+                length
+            }
+        };
+        if cleared > 0 && self.cpu.zero(self.memory, address, cleared).is_err() {
+            return 0;
+        }
+        cleared
+    }
+
     pub fn read_value<T: FromBytes>(&mut self, address: u64) -> Result<T, Errno> {
         let bytes = self.read(address, size_of::<T>() as u64)?;
         Ok(T::read_from_bytes(&bytes).expect("size matches"))

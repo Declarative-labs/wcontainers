@@ -414,6 +414,23 @@ pub(crate) fn link_target(
     }
 }
 
+/// The path a magic link (a process link or a descriptor) leads to, as `d_path` gives it for the file
+/// it names; a file opened through one keeps that path.
+pub(crate) fn magic_path(view: &View<'_>, walk: &Walk<'_>, entry: &Entry) -> Option<Vec<u8>> {
+    match entry {
+        Entry::ProcessLink(..) => link_target(view, walk, entry).ok(),
+        Entry::Fd(pid, fd) => {
+            let file = view.processes.get(pid)?.files.file(*fd).ok()?;
+            let file = file.borrow();
+            if file.node.borrow().is_directory() {
+                return walk.path_of(&file.node).or_else(|| Some(file.path.clone()));
+            }
+            Some(file.path.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Follows a link of the tree. The process links and descriptors lead straight to the inode, not
 /// through its path, as Linux's "magic links" do.
 pub(crate) fn follow(

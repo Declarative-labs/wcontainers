@@ -508,6 +508,7 @@ pub(super) fn open(
             let now = kernel.now(cx);
             let mut inode = node.borrow_mut();
             if let Content::Regular(regular) = &mut inode.content {
+                regular.may_resize(0)?;
                 regular.truncate(0);
             }
             inode.mtime = now;
@@ -1412,6 +1413,12 @@ fn change_mode(
     {
         mode &= !S_ISGID;
     }
+    if let Content::Regular(regular) = &inode.content
+        && regular.seals & F_SEAL_EXEC != 0
+        && (inode.mode ^ mode) & 0o111 != 0
+    {
+        return Err(Errno::EPERM);
+    }
     inode.mode = (inode.mode & S_IFMT) | mode;
     inode.ctime = now;
     Ok(0)
@@ -1693,6 +1700,7 @@ fn truncate_node(
     let Content::Regular(regular) = &mut inode.content else {
         return Err(Errno::EINVAL);
     };
+    regular.may_resize(length)?;
     regular.truncate(length as usize);
     inode.mtime = now;
     inode.ctime = now;
@@ -1803,7 +1811,8 @@ pub(super) fn fallocate(
     if mode & !(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE) != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    if mode & FALLOC_FL_KEEP_SIZE == 0 {
+    // tmpfs checks the size limit even when the size is kept, then the seals.
+    if !punch {
         let size = node.borrow().size();
         super::io::new_size_ok(kernel, cx, tid, size, end)?;
     }
@@ -1812,6 +1821,11 @@ pub(super) fn fallocate(
     let Content::Regular(regular) = &mut inode.content else {
         return Err(Errno::ENODEV);
     };
+    if punch && regular.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0
+        || !punch && regular.seals & F_SEAL_GROW != 0 && end > regular.data.len() as u64
+    {
+        return Err(Errno::EPERM);
+    }
     if punch {
         let size = regular.data.len() as u64;
         let (from, to) = (offset.min(size) as usize, end.min(size) as usize);

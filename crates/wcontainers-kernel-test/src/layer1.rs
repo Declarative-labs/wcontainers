@@ -519,6 +519,7 @@ pub const CALLS: &[u32] = &[
     linux::__NR_removexattr,
     linux::__NR_lremovexattr,
     linux::__NR_fremovexattr,
+    linux::__NR_memfd_create,
 ];
 
 /// Turns a generated call into real arguments.
@@ -641,6 +642,8 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     linux::F_GETFL,
                     linux::F_SETFL,
                     linux::F_DUPFD_CLOEXEC,
+                    linux::F_ADD_SEALS,
+                    linux::F_GET_SEALS,
                     1000,
                 ],
                 b,
@@ -648,7 +651,10 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             [
                 fd(a),
                 command.into(),
-                pick(&[0, 1, 5, 100, 0x800, 0x400 | 0x800, u64::MAX], c),
+                pick(
+                    &[0, 1, 5, 100, 0x800, 0x400 | 0x800, u64::MAX, 8, 0x20, 0x16],
+                    c,
+                ),
                 0,
                 0,
                 0,
@@ -1141,6 +1147,20 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_mlock2 => [play(a), play_length(b), pick(&[0, 1, 2], c), 0, 0, 0],
         linux::__NR_mlockall => [pick(&[0, 1, 2, 3, 4, 5, 6, 7, 8], a), 0, 0, 0, 0, 0],
         linux::__NR_munlockall => [0; 6],
+        // Not huge page files (hugetlbfs is not built).
+        linux::__NR_memfd_create => {
+            let names = xattr_names().len() as u64;
+            let name = match a % 4 {
+                0 => 8,
+                1 => ARENA + XATTR_NAMES + xattr_name_offset((a >> 8) as usize % names as usize),
+                _ => path(a >> 8),
+            };
+            let flags = pick(
+                &[0u64, 1, 2, 3, 8, 0x10, 0x18, 0x100, 0x0a, 0x12, 21 << 26],
+                b,
+            );
+            [name, flags, 0, 0, 0, 0]
+        }
         linux::__NR_setxattr
         | linux::__NR_lsetxattr
         | linux::__NR_fsetxattr

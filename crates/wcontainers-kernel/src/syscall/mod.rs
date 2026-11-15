@@ -6,6 +6,7 @@
 mod files;
 mod io;
 mod list;
+mod memfd;
 mod memory;
 mod process;
 mod system;
@@ -159,6 +160,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_umask, S(files::umask)),
         (__NR_statfs, S(files::statfs)),
         (__NR_fstatfs, S(files::fstatfs)),
+        (__NR_memfd_create, S(memfd::memfd_create)),
         (__NR_setxattr, S(xattr::setxattr)),
         (__NR_lsetxattr, S(xattr::lsetxattr)),
         (__NR_fsetxattr, S(xattr::fsetxattr)),

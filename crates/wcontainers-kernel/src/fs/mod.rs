@@ -135,14 +135,61 @@ pub(crate) enum Content {
     Proc(proc::Entry),
 }
 
-/// A regular file's bytes, and which pages have been written (holes take no space).
-#[derive(Default)]
+/// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
 pub(crate) struct Regular {
     pub data: Vec<u8>,
     pub pages: alloc::collections::BTreeSet<u64>,
+    /// `F_SEAL_*` bits; a file not made by `memfd_create` to be sealed is sealed against sealing.
+    pub seals: u32,
+}
+
+impl Default for Regular {
+    fn default() -> Self {
+        Self {
+            data: Vec::new(),
+            pages: alloc::collections::BTreeSet::new(),
+            seals: F_SEAL_SEAL,
+        }
+    }
 }
 
 impl Regular {
+    /// How many of `length` bytes at `offset` a write may change, as tmpfs's `shmem_write_begin` allows
+    /// them page by page under its seals; `EPERM` when none.
+    pub fn writable(&self, offset: u64, length: u64) -> Result<u64, Errno> {
+        if self.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 {
+            return Err(Errno::EPERM);
+        }
+        if self.seals & F_SEAL_GROW == 0 {
+            return Ok(length);
+        }
+        let size = self.data.len() as u64;
+        let end = offset + length;
+        let mut at = offset;
+        while at < end {
+            let chunk_end = ((at / 4096 + 1) * 4096).min(end);
+            if chunk_end > size {
+                break;
+            }
+            at = chunk_end;
+        }
+        if at == offset && length > 0 {
+            return Err(Errno::EPERM);
+        }
+        Ok(at - offset)
+    }
+
+    /// Whether the seals allow a change of size (tmpfs's `shmem_setattr`).
+    pub fn may_resize(&self, length: u64) -> Result<(), Errno> {
+        let size = self.data.len() as u64;
+        if (length < size && self.seals & F_SEAL_SHRINK != 0)
+            || (length > size && self.seals & F_SEAL_GROW != 0)
+        {
+            return Err(Errno::EPERM);
+        }
+        Ok(())
+    }
+
     pub fn write(&mut self, offset: usize, bytes: &[u8]) {
         let end = offset + bytes.len();
         if self.data.len() < end {
@@ -541,9 +588,16 @@ impl<'a> Walk<'a> {
                 path = target;
                 continue;
             }
+            let magic = match &node.borrow().content {
+                Content::Proc(entry) => proc::magic_path(self.proc, self, entry),
+                _ => None,
+            };
             let node = self.follow(&parent.directory, node, &mut links)?;
             if parent.trailing_slash && !node.borrow().is_directory() {
                 return Err(Errno::ENOTDIR);
+            }
+            if let Some(path) = magic {
+                return Ok((node, path));
             }
             if node.borrow().is_directory()
                 && let Some(full) = self.path_of(&node)

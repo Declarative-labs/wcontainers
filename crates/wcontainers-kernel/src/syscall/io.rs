@@ -626,6 +626,35 @@ pub(super) fn read_at(
     count: u64,
     at: Option<u64>,
 ) -> Result<u64, Errno> {
+    // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
+    // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
+    // more is cleared (`read_iter_zero`).
+    let zero_device = {
+        let file = file.borrow();
+        let inode = file.node.borrow();
+        match inode.content {
+            Content::Special => Device::from_number(inode.rdev)
+                .filter(|device| matches!(device, Device::Zero | Device::Full)),
+            _ => None,
+        }
+    };
+    if let Some(device) = zero_device {
+        let mut guest = guest(kernel, cx, tid);
+        let mut cleared = guest.clear_partial(buffer, count);
+        if device == Device::Full {
+            while cleared < count {
+                let more = guest.clear_partial(buffer + cleared, (count - cleared).min(PAGE_SIZE));
+                if more == 0 {
+                    break;
+                }
+                cleared += more;
+            }
+        }
+        if cleared == 0 && count > 0 {
+            return Err(Errno::EFAULT);
+        }
+        return Ok(cleared);
+    }
     let offset = at.unwrap_or(file.borrow().offset);
     let bytes = file_bytes(cx, file, count, offset)?;
     let written = guest(kernel, cx, tid).write_partial(buffer, &bytes);
@@ -738,13 +767,20 @@ fn write_bytes(
     {
         return Err(Errno::EFBIG);
     }
+    let mut bytes = bytes;
     if !bytes.is_empty() {
-        regular.write(offset as usize, bytes);
+        // The times change and privileges go before the seals are looked at, as in tmpfs.
+        let allowed = regular.writable(offset, bytes.len() as u64);
+        if let Ok(allowed) = allowed {
+            bytes = &bytes[..allowed as usize];
+            regular.write(offset as usize, bytes);
+        }
         inode.mtime = now;
         inode.ctime = now;
         // Writing clears the set-user and set-group bits for a writer without `CAP_FSETID`, and file
         // capabilities always, as Linux's `file_remove_privs` does.
         inode.drop_privileges(!may_keep_privileges);
+        allowed?;
     }
     drop(inode);
     if at.is_none() {
@@ -1143,6 +1179,8 @@ pub(super) fn fcntl(
                 .count(cx.host, reason::LOCKS_NOT_IMPLEMENTED, command);
             Err(Errno::ENOSYS)
         }
+        F_ADD_SEALS if !path_only => super::memfd::add_seals(&descriptor.file.borrow(), argument),
+        F_GET_SEALS if !path_only => super::memfd::get_seals(&descriptor.file.borrow()),
         _ if path_only => Err(Errno::EBADF),
         _ => {
             kernel
