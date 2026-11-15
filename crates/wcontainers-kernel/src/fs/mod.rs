@@ -691,11 +691,21 @@ impl<'a> Walk<'a> {
         self.resolve_counted(directory, &target, true, links)
     }
 
-    /// The path of a directory from the walk's root, as `getcwd` gives it. None when the directory is
-    /// not below the root or has been removed.
+    /// The path of a directory from the walk's root. None when the directory is not below the root or
+    /// has been removed.
     pub fn path_of(&self, node: &Node) -> Option<Vec<u8>> {
+        match self.cwd_path(node) {
+            Ok(path) if !path.starts_with(UNREACHABLE) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// The path of a directory as `getcwd` gives it: from the walk's root, or, for one outside it,
+    /// from the top marked "(unreachable)". ENOENT once it has been removed.
+    pub fn cwd_path(&self, node: &Node) -> Result<Vec<u8>, Errno> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
         let mut at = node.clone();
+        let mut reachable = true;
         loop {
             if Rc::ptr_eq(&at, self.root) {
                 break;
@@ -703,24 +713,44 @@ impl<'a> Walk<'a> {
             let up = {
                 let inode = at.borrow();
                 if !inode.is_directory() || inode.nlink == 0 {
-                    return None;
+                    return Err(Errno::ENOENT);
                 }
-                parts.push(inode.place.name.clone());
-                inode.place.parent.as_ref()?.upgrade()?
+                match inode
+                    .place
+                    .parent
+                    .as_ref()
+                    .and_then(|parent| parent.upgrade())
+                {
+                    Some(up) => {
+                        parts.push(inode.place.name.clone());
+                        up
+                    }
+                    None => {
+                        reachable = false;
+                        break;
+                    }
+                }
             };
             at = mounted_root(up);
         }
-        let mut path = Vec::new();
+        let mut path = if reachable {
+            Vec::new()
+        } else {
+            UNREACHABLE.to_vec()
+        };
         for part in parts.iter().rev() {
             path.push(b'/');
             path.extend_from_slice(part);
         }
-        if path.is_empty() {
+        if path.is_empty() || path == UNREACHABLE {
             path.push(b'/');
         }
-        Some(path)
+        Ok(path)
     }
 }
+
+/// What `getcwd` puts before a directory outside the caller's root.
+const UNREACHABLE: &[u8] = b"(unreachable)";
 
 /// Whether two nodes are the same inode. Inodes of the process information tree are made at each
 /// lookup, so those are the same when they are the same entry.

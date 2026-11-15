@@ -864,7 +864,8 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_set_robust_list => [value(a), pick(&[24, 0, 16], b), 0, 0, 0, 0],
         linux::__NR_rt_sigpending => [buffer(a), pick(&[8, 4, 16, 0], b), 0, 0, 0, 0],
         linux::__NR_personality => [pick(&[0xffff_ffffu64, 0, 8, 0x0040_0000], a), 0, 0, 0, 0, 0],
-        linux::__NR_getpriority => [pick(&[0, 1, 2, 3], a), pick(&[0, 99999], b), 0, 0, 0, 0],
+        // Not by user: that also counts the reference's runner, which has no counterpart here.
+        linux::__NR_getpriority => [pick(&[0, 1, 3], a), pick(&[0, 99999], b), 0, 0, 0, 0],
         linux::__NR_kill => [
             pick(&[SELF, SELF, 0, u64::MAX, 99999, -99999i64 as u64], a),
             signal(b),

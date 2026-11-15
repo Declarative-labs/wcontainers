@@ -381,7 +381,8 @@ pub(super) fn open(
             }
             let is_link = node.borrow().file_type() == S_IFLNK;
             let node = if is_link && !(creating && flags & O_EXCL != 0) {
-                if flags & O_NOFOLLOW != 0 {
+                // A trailing slash follows the link whatever the flags say.
+                if flags & O_NOFOLLOW != 0 && !parent.trailing_slash {
                     // A link not followed is not a directory, which is checked before opening it.
                     if flags & O_PATH != 0 {
                         node
@@ -1830,9 +1831,7 @@ pub(super) fn getcwd(
     [buffer, size, ..]: Args,
 ) -> Result<u64, Errno> {
     let pid = kernel.threads[&tid].process;
-    let path = kernel.with_walk(pid, |walk, process| {
-        walk.path_of(&process.cwd).ok_or(Errno::ENOENT)
-    })?;
+    let path = kernel.with_walk(pid, |walk, process| walk.cwd_path(&process.cwd))?;
     let length = path.len() as u64 + 1;
     if length > size {
         return Err(Errno::ERANGE);
