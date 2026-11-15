@@ -928,7 +928,7 @@ fn rename(
     // In the order of Linux's `do_renameat2` and `vfs_rename`.
     let from = parent(kernel, cx, tid, old_dirfd, old_path)?;
     let to = parent(kernel, cx, tid, new_dirfd, new_path)?;
-    if from.directory.borrow().fs != to.directory.borrow().fs {
+    if from.base.borrow().fs != to.base.borrow().fs {
         return Err(Errno::EXDEV);
     }
     if from.name.is_empty() {

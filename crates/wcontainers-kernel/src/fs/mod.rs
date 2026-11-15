@@ -544,6 +544,9 @@ pub(crate) struct Walk<'a> {
 /// The result of walking all but the last part of a path.
 pub(crate) struct Parent {
     pub directory: Node,
+    /// The directory the last part is looked up in: `directory` itself, except for a last part of
+    /// `..`, where Linux's `filename_parentat` stops at the directory below it (and its mount).
+    pub base: Node,
     /// The last part; empty when the path names the start itself ("/" or ".").
     pub name: Vec<u8>,
     /// The path ended with a slash, so the last part must be a directory.
@@ -664,6 +667,7 @@ impl<'a> Walk<'a> {
         let trailing_slash = path.ends_with(b"/");
         let Some((last, middle)) = parts.split_last() else {
             return Ok(Parent {
+                base: at.clone(),
                 directory: at,
                 name: Vec::new(),
                 trailing_slash,
@@ -681,12 +685,14 @@ impl<'a> Walk<'a> {
             let directory = self.step(&at, last)?;
             return Ok(Parent {
                 directory,
+                base: at,
                 name: Vec::new(),
                 trailing_slash,
             });
         }
         self.check_search(&at)?;
         Ok(Parent {
+            base: at.clone(),
             directory: at,
             name: last.to_vec(),
             trailing_slash,
