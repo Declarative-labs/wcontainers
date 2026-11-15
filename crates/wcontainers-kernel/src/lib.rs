@@ -153,10 +153,9 @@ impl Kernel {
                 until_nanoseconds: self
                     .threads
                     .values()
-                    .filter_map(|thread| {
-                        thread
-                            .parked
-                            .map(|Parked::Until { nanoseconds }| nanoseconds)
+                    .filter_map(|thread| match thread.parked {
+                        Some(Parked::Until { nanoseconds }) => Some(nanoseconds),
+                        _ => None,
                     })
                     .min(),
             },

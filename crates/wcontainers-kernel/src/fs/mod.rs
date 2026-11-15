@@ -62,6 +62,14 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    /// The block size `stat` and `statfs` report.
+    pub fn block_size(self) -> u32 {
+        match self {
+            Kind::Proc => 1024,
+            _ => 4096,
+        }
+    }
+
     /// The magic number `statfs` reports.
     pub fn magic(self) -> u64 {
         match self {
@@ -456,6 +464,7 @@ impl<'a> Walk<'a> {
                 _ => None,
             };
             if let Some(target) = target {
+                self.may_follow(&parent.directory, &node.borrow())?;
                 links += 1;
                 if links > MAX_SYMLINKS {
                     return Err(Errno::ELOOP);
@@ -526,9 +535,6 @@ impl<'a> Walk<'a> {
             }
             at = next;
         }
-        if last.len() > NAME_MAX as usize {
-            return Err(Errno::ENAMETOOLONG);
-        }
         if *last == b"." || *last == b".." {
             let directory = self.step(&at, last)?;
             return Ok(Parent {
@@ -594,6 +600,20 @@ impl<'a> Walk<'a> {
         Ok(mounted_root(found))
     }
 
+    /// Linux's `may_follow_link` with `fs.protected_symlinks` on (as in the reference): in a sticky
+    /// directory anyone may write to, only links owned by the follower or by the directory's owner are
+    /// followed.
+    fn may_follow(&self, directory: &Node, link: &Inode) -> Result<(), Errno> {
+        if self.credentials.fsuid == link.uid {
+            return Ok(());
+        }
+        let directory = directory.borrow();
+        if directory.mode & (S_ISVTX | S_IWOTH) != S_ISVTX | S_IWOTH || directory.uid == link.uid {
+            return Ok(());
+        }
+        Err(Errno::EACCES)
+    }
+
     /// Follows a node while it is a symbolic link, relative to the directory it was found in.
     pub fn follow(&self, directory: &Node, node: Node, links: &mut u32) -> Result<Node, Errno> {
         let target = {
@@ -603,7 +623,10 @@ impl<'a> Walk<'a> {
                 return Ok(node);
             }
             match &inode.content {
-                Content::Symlink(target) => target.clone(),
+                Content::Symlink(target) => {
+                    self.may_follow(directory, &inode)?;
+                    target.clone()
+                }
                 Content::Proc(entry) => {
                     let entry = *entry;
                     drop(inode);

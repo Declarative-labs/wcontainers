@@ -476,7 +476,7 @@ impl Kernel {
         }
         thread.clear_child_tid = 0;
         thread.robust_list = (0, 0);
-        thread.alternate_stack = (0, 0, SS_DISABLE as i32);
+        thread.alternate_stack = (0, 0, 0);
         cx.cpu.set_registers(thread.cpu, &image.registers);
         thread.resume = Resume::FromRegisters;
         self.runnable.retain(|other| *other != tid);

@@ -43,7 +43,6 @@ pub(crate) fn docker_limits() -> [Limit; LIMITS] {
     set(&mut limits, RLIMIT_RTPRIO, 0, 0);
     set(&mut limits, RLIMIT_SIGPENDING, 128_302, 128_302);
     set(&mut limits, RLIMIT_MSGQUEUE, 819_200, 819_200);
-    set(&mut limits, RLIMIT_MEMLOCK, 8 << 20, 8 << 20);
     limits
 }
 
@@ -110,7 +109,7 @@ pub(crate) struct Thread {
     pub robust_list: (u64, u64),
     /// Blocked signals.
     pub signal_mask: u64,
-    /// `sigaltstack`: base, size and flags.
+    /// `sigaltstack`: base, size and the flags it was given; no stack is a size of zero.
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is parked in, if it is waiting.
     pub parked: Option<Parked>,
@@ -121,6 +120,8 @@ pub(crate) struct Thread {
 pub(crate) enum Parked {
     /// A sleep until this time on the monotonic clock; the call is finished when it comes.
     Until { nanoseconds: u64 },
+    /// A wait for something that nothing here can bring yet; only a signal could end it (K2).
+    Forever,
 }
 
 impl Thread {
@@ -132,7 +133,7 @@ impl Thread {
             clear_child_tid: 0,
             robust_list: (0, 0),
             signal_mask: 0,
-            alternate_stack: (0, 0, crate::linux::general::SS_DISABLE as i32),
+            alternate_stack: (0, 0, 0),
             parked: None,
         }
     }

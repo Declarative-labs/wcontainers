@@ -173,10 +173,10 @@ pub(super) fn readv(
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
-    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
+    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, None, false)
 }
 
@@ -187,10 +187,10 @@ pub(super) fn writev(
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
-    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
+    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, None, true)
 }
 
@@ -204,11 +204,11 @@ pub(super) fn preadv(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
-    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
+    positioned(&file, offset)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
-    positioned(&file, offset)?;
+    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, Some(offset), false)
 }
 
@@ -222,11 +222,11 @@ pub(super) fn pwritev(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
-    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
+    positioned(&file, offset)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
-    positioned(&file, offset)?;
+    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, Some(offset), true)
 }
 
@@ -856,4 +856,93 @@ pub(super) fn fsync(
 
 pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Result<u64, Errno> {
     Ok(0)
+}
+
+/// What `poll` reports for an open file. Everything that exists so far is always ready, as Linux's
+/// `DEFAULT_POLLMASK` says for files without a poll operation; the host's pipes always have room.
+fn poll_mask(file: &FileRef) -> u16 {
+    let file = file.borrow();
+    if file.is_path() {
+        return POLLNVAL as u16;
+    }
+    match file.node.borrow().content {
+        Content::HostStream(_) => (POLLOUT | POLLWRNORM) as u16,
+        _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
+    }
+}
+
+pub(super) fn ppoll(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fds, count, timeout, mask, mask_size, _]: Args,
+) -> super::Outcome {
+    match ppoll_typed(kernel, cx, tid, fds, count, timeout, mask, mask_size) {
+        Ok(Some(ready)) => super::Outcome::Return(ready),
+        Ok(None) => super::Outcome::Parked,
+        Err(error) => Err(error).into(),
+    }
+}
+
+/// `ppoll`: Some(count) when it returns now, None when it waits.
+#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+fn ppoll_typed(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    fds: u64,
+    count: u64,
+    timeout: u64,
+    mask: u64,
+    mask_size: u64,
+) -> Result<Option<u64>, Errno> {
+    // In the order of Linux's `ppoll`: the timeout, the signal mask, then the descriptors.
+    let until = if timeout != 0 {
+        let value: __kernel_timespec = guest(kernel, cx, tid).read_value(timeout)?;
+        if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+            return Err(Errno::EINVAL);
+        }
+        let duration = (value.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(value.tv_nsec as u64);
+        Some(cx.host.monotonic_nanoseconds().saturating_add(duration))
+    } else {
+        None
+    };
+    if mask != 0 {
+        if mask_size != 8 {
+            return Err(Errno::EINVAL);
+        }
+        guest(kernel, cx, tid).read(mask, 8)?;
+    }
+    if count > nofile_limit(kernel, tid) {
+        return Err(Errno::EINVAL);
+    }
+    let mut entries = guest(kernel, cx, tid).read(fds, count * 8)?;
+    let mut ready = 0;
+    for entry in entries.as_chunks_mut::<8>().0 {
+        let fd = i32::from_le_bytes(entry[..4].try_into().expect("4 bytes"));
+        let events = u16::from_le_bytes([entry[4], entry[5]]);
+        let revents = if fd < 0 {
+            0
+        } else {
+            match kernel.process_of(tid).files.file(fd) {
+                Ok(file) => poll_mask(&file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16),
+                Err(_) => POLLNVAL as u16,
+            }
+        };
+        entry[6..8].copy_from_slice(&revents.to_le_bytes());
+        if revents != 0 {
+            ready += 1;
+        }
+    }
+    guest(kernel, cx, tid).write(fds, &entries)?;
+    if ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds()) {
+        return Ok(Some(ready));
+    }
+    kernel.thread_mut(tid).parked = Some(match until {
+        Some(nanoseconds) => crate::process::Parked::Until { nanoseconds },
+        None => crate::process::Parked::Forever,
+    });
+    Ok(None)
 }

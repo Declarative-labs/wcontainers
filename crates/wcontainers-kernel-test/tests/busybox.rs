@@ -114,6 +114,24 @@ fn system() {
         &["cat", "/proc/self/cmdline"],
         &["readlink", "/proc/self/exe"],
         &["ls", "/proc/self/fd"],
+        &[
+            "sh",
+            "-c",
+            "echo a; cd /dev/shm; pwd; umask 077; umask; exit 3",
+        ],
+        &["sh", "-c", "exec ls -l /dev/null"],
+        &[
+            "sh",
+            "-c",
+            "read x < /etc/hostname; echo \"$x\"; test -d /proc && echo yes",
+        ],
+        &["cat", "/proc/self/limits"],
+        &["cat", "/proc/self/comm"],
+        &[
+            "sh",
+            "-c",
+            "echo hi > /dev/shm/f; read y < /dev/shm/f; echo $y >> /dev/shm/f",
+        ],
     ]);
 }
 

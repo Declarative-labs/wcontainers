@@ -630,7 +630,7 @@ fn process_file(
             ];
             let _ = writeln!(
                 out,
-                "{:<25} {:<20} {:<20} {:<10} ",
+                "{:<25} {:<20} {:<20} {:<10}",
                 "Limit", "Soft Limit", "Hard Limit", "Units"
             );
             for (index, (name, unit)) in NAMES.iter().enumerate() {
@@ -642,14 +642,20 @@ fn process_file(
                     }
                 };
                 let limit = process.limits[index];
-                let _ = writeln!(
+                // As Linux's `proc_pid_limits` prints them: the unit is padded, and left out when there
+                // is none.
+                let _ = write!(
                     out,
-                    "{:<25} {:<20} {:<20} {:<10} ",
+                    "{:<25} {:<20} {:<20} ",
                     name,
                     show(limit.current),
-                    show(limit.maximum),
-                    unit
+                    show(limit.maximum)
                 );
+                if unit.is_empty() {
+                    out.push('\n');
+                } else {
+                    let _ = writeln!(out, "{unit:<10}");
+                }
             }
         }
         ProcessFile::Cgroup => out.push_str("0::/\n"),

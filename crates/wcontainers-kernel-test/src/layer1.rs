@@ -319,9 +319,11 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     let value = |word: u64| ARENA + VALUES + (word % 52) * 8;
     let play =
         |word: u64| PLAY + ((word % (PLAY_PAGES + 2)) * 4096) + if word >> 60 == 0 { 1 } else { 0 };
+    // Lengths stay below the program's own mappings, which lie higher here (in a 4 GiB address
+    // space) than in the reference.
     let play_length = |word: u64| {
         pick(
-            &[0u64, 1, 4096, 8192, 3 * 4096, PLAY_PAGES * 4096, 1 << 40],
+            &[0u64, 1, 4096, 8192, 3 * 4096, PLAY_PAGES * 4096, 1 << 28],
             word,
         )
     };
@@ -489,10 +491,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 ],
                 c,
             );
-            // No lengths beyond this host's address space: refusing those is a declared difference.
             [
                 play(a),
-                play_length(b) % (1 << 32),
+                play_length(b),
                 prot(d),
                 flags,
                 fd(e),

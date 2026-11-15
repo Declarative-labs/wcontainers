@@ -739,32 +739,33 @@ pub(super) fn sigaltstack(
         if mode != SS_DISABLE as i32 && mode != SS_ONSTACK as i32 && mode != 0 {
             return Err(Errno::EINVAL);
         }
-        if mode == SS_DISABLE as i32 {
+        if (base, size, flags) == current {
+            // The same stack again changes nothing, whatever its size.
+            None
+        } else if mode == SS_DISABLE as i32 {
             Some((0, 0, flags))
         } else {
             if size < MIN_SIGNAL_STACK {
                 return Err(Errno::ENOMEM);
             }
-            Some((base, size, flags & SS_AUTODISARM as i32))
+            Some((base, size, flags))
         }
     } else {
         None
     };
+    // The new stack is set even when the old one cannot be written back, as on Linux.
+    if let Some(replacement) = replacement {
+        kernel.thread_mut(tid).alternate_stack = replacement;
+    }
     if old != 0 {
         let mut bytes = Vec::with_capacity(24);
         bytes.extend_from_slice(&current.0.to_le_bytes());
-        let flags = if current.1 == 0 {
-            SS_DISABLE as i32
-        } else {
-            current.2
-        };
+        let state = if current.1 == 0 { SS_DISABLE as i32 } else { 0 };
+        let flags = state | (current.2 & SS_AUTODISARM as i32);
         bytes.extend_from_slice(&flags.to_le_bytes());
         bytes.extend_from_slice(&[0; 4]);
         bytes.extend_from_slice(&current.1.to_le_bytes());
         guest(kernel, cx, tid).write(old, &bytes)?;
-    }
-    if let Some(replacement) = replacement {
-        kernel.thread_mut(tid).alternate_stack = replacement;
     }
     Ok(0)
 }
@@ -968,12 +969,12 @@ pub(super) fn prctl(
             Ok((kernel.process_of(tid).credentials.bounding >> second) & 1)
         }
         PR_CAPBSET_DROP => {
-            if second > u64::from(CAP_LAST_CAP) {
-                return Err(Errno::EINVAL);
-            }
             let credentials = &mut kernel.process_of_mut(tid).credentials;
             if !credentials.has(CAP_SETPCAP) {
                 return Err(Errno::EPERM);
+            }
+            if second > u64::from(CAP_LAST_CAP) {
+                return Err(Errno::EINVAL);
             }
             credentials.bounding &= !(1 << second);
             Ok(0)

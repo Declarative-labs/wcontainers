@@ -157,9 +157,10 @@ pub(super) fn mmap(
     {
         return Err(Errno::EEXIST);
     }
-    let shared = match flags & MAP_TYPE {
-        MAP_PRIVATE => false,
-        MAP_SHARED | MAP_SHARED_VALIDATE => true,
+    // Validated sharing exists only for files.
+    let shared = match (flags & MAP_TYPE, file.is_some()) {
+        (MAP_PRIVATE, _) => false,
+        (MAP_SHARED, _) | (MAP_SHARED_VALIDATE, true) => true,
         _ => return Err(Errno::EINVAL),
     };
     // What backs the mapping.

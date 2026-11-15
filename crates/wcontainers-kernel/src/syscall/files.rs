@@ -126,6 +126,19 @@ fn sticky_allows(directory: &Node, node: &Node, credentials: &Credentials) -> bo
         || credentials.has(CAP_FOWNER)
 }
 
+/// Linux's `may_linkat` with `fs.protected_hardlinks` on (as in the reference): only the owner, a
+/// caller with `CAP_FOWNER`, or one who may read and write a plain file may link to it.
+fn may_hard_link(node: &Node, credentials: &Credentials) -> bool {
+    let inode = node.borrow();
+    if credentials.fsuid == inode.uid || credentials.has(CAP_FOWNER) {
+        return true;
+    }
+    let plain = inode.file_type() == S_IFREG
+        && inode.mode & S_ISUID == 0
+        && inode.mode & (S_ISGID | S_IXGRP) != S_ISGID | S_IXGRP;
+    plain && inode.permits(credentials, R_OK | W_OK, true)
+}
+
 /// The owner and group a new inode gets: the caller's file system ids, or the directory's group when it
 /// has the set-group bit.
 fn new_owner(directory: &Node, credentials: &Credentials) -> (u32, u32, bool) {
@@ -205,8 +218,34 @@ pub(super) fn openat(
     tid: Tid,
     [dirfd, path, flags, mode, ..]: Args,
 ) -> Result<u64, Errno> {
+    // The flags are checked before the path is read, as Linux's `build_open_flags` runs first.
+    open_flags(kernel, cx, flags as u32)?;
     let path = guest(kernel, cx, tid).read_path(path)?;
     open(kernel, cx, tid, dirfd, &path, flags as u32, mode as u32)
+}
+
+/// The flags an open keeps, after `build_open_flags`'s checks.
+fn open_flags(kernel: &mut Kernel, cx: &mut Context<'_>, flags: u32) -> Result<u32, Errno> {
+    let mut flags = flags & VALID_OPEN_FLAGS;
+    if flags & O_PATH != 0 {
+        flags &= PATH_FLAGS;
+    }
+    if flags & (O_DIRECTORY | O_CREAT) == O_DIRECTORY | O_CREAT {
+        return Err(Errno::EINVAL);
+    }
+    let temporary = O_TMPFILE & !O_DIRECTORY;
+    if flags & temporary != 0 {
+        if flags & (O_TMPFILE | O_CREAT) != O_TMPFILE
+            || !matches!(flags & O_ACCMODE, O_WRONLY | O_RDWR)
+        {
+            return Err(Errno::EINVAL);
+        }
+        kernel
+            .counters
+            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(O_TMPFILE));
+        return Err(Errno::EOPNOTSUPP);
+    }
+    Ok(flags)
 }
 
 /// The flags `open` keeps; unknown bits are ignored, as Linux does for `open` and `openat`.
@@ -240,26 +279,7 @@ pub(super) fn open(
     flags: u32,
     mode: u32,
 ) -> Result<u64, Errno> {
-    let mut flags = flags & VALID_OPEN_FLAGS;
-    if flags & O_PATH != 0 {
-        flags &= PATH_FLAGS;
-    }
-    // `build_open_flags`'s checks, before anything is looked up.
-    if flags & (O_DIRECTORY | O_CREAT) == O_DIRECTORY | O_CREAT {
-        return Err(Errno::EINVAL);
-    }
-    let temporary = O_TMPFILE & !O_DIRECTORY;
-    if flags & temporary != 0 {
-        if flags & (O_TMPFILE | O_CREAT) != O_TMPFILE
-            || !matches!(flags & O_ACCMODE, O_WRONLY | O_RDWR)
-        {
-            return Err(Errno::EINVAL);
-        }
-        kernel
-            .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(O_TMPFILE));
-        return Err(Errno::EOPNOTSUPP);
-    }
+    let flags = open_flags(kernel, cx, flags)?;
     // Access mode 3 asks for both permissions and gives neither, as on Linux.
     let accmode = flags & O_ACCMODE;
     let at = start(kernel, tid, dirfd, path)?;
@@ -552,9 +572,6 @@ pub(super) fn mknodat(
         S_IFDIR => return Err(Errno::EPERM),
         _ => return Err(Errno::EINVAL),
     };
-    if matches!(file_type, S_IFCHR | S_IFBLK) && !credentials(kernel, tid).has(CAP_MKNOD) {
-        return Err(Errno::EPERM);
-    }
     let parent = parent(kernel, cx, tid, dirfd, path)?;
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
@@ -564,6 +581,14 @@ pub(super) fn mknodat(
         return Err(Errno::ENOENT);
     }
     may_change(&parent.directory, credentials(kernel, tid))?;
+    // Devices need `CAP_MKNOD`, except a whiteout (a character device 0:0).
+    let whiteout = file_type == S_IFCHR && device == 0;
+    if matches!(file_type, S_IFCHR | S_IFBLK)
+        && !whiteout
+        && !credentials(kernel, tid).has(CAP_MKNOD)
+    {
+        return Err(Errno::EPERM);
+    }
     let umask = kernel.process_of(tid).umask;
     let rdev = if matches!(file_type, S_IFCHR | S_IFBLK) {
         let device = device as u32;
@@ -639,16 +664,20 @@ pub(super) fn linkat(
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
     }
+    // In the order of Linux's `do_linkat` and `vfs_link`.
     check_absent(kernel, tid, &parent)?;
-    may_change(&parent.directory, credentials(kernel, tid))?;
+    if parent.trailing_slash {
+        return Err(Errno::ENOENT);
+    }
     if node.borrow().fs != parent.directory.borrow().fs {
         return Err(Errno::EXDEV);
     }
-    if node.borrow().is_directory() {
+    if !may_hard_link(&node, credentials(kernel, tid)) {
         return Err(Errno::EPERM);
     }
-    if parent.trailing_slash {
-        return Err(Errno::ENOENT);
+    may_change(&parent.directory, credentials(kernel, tid))?;
+    if node.borrow().is_directory() {
+        return Err(Errno::EPERM);
     }
     if node.borrow().nlink == 0 {
         return Err(Errno::ENOENT);
@@ -694,16 +723,8 @@ pub(super) fn unlinkat(
         });
     }
     let pid = kernel.threads[&tid].process;
-    let node = kernel.with_walk(pid, |walk, _| {
-        let inode = parent.directory.borrow();
-        match &inode.content {
-            Content::Directory(directory) => directory.get(&parent.name).ok_or(Errno::ENOENT),
-            _ => {
-                drop(inode);
-                walk.step(&parent.directory, &parent.name)
-            }
-        }
-    })?;
+    // A mount point is found as the root mounted on it.
+    let node = kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name))?;
     // In Linux's order: a trailing slash on a file, then `may_delete`, then the directory's own checks.
     let is_directory = node.borrow().is_directory();
     if !removing_directory && parent.trailing_slash {
@@ -721,8 +742,7 @@ pub(super) fn unlinkat(
         if !is_directory {
             return Err(Errno::ENOTDIR);
         }
-        if Rc::ptr_eq(&node, &kernel.process_of(tid).root) || node.borrow().place.mounted.is_some()
-        {
+        if Rc::ptr_eq(&node, &kernel.process_of(tid).root) || node.borrow().place.mount_root {
             return Err(Errno::EBUSY);
         }
         if node
@@ -798,9 +818,6 @@ fn rename(
     if flags & RENAME_EXCHANGE != 0 && flags & (RENAME_NOREPLACE | RENAME_WHITEOUT) != 0 {
         return Err(Errno::EINVAL);
     }
-    if flags & RENAME_WHITEOUT != 0 && !credentials(kernel, tid).has(CAP_MKNOD) {
-        return Err(Errno::EPERM);
-    }
     // In the order of Linux's `do_renameat2` and `vfs_rename`.
     let from = parent(kernel, cx, tid, old_dirfd, old_path)?;
     let to = parent(kernel, cx, tid, new_dirfd, new_path)?;
@@ -869,6 +886,9 @@ fn rename(
         return Ok(0);
     }
     let credentials = credentials(kernel, tid).clone();
+    if flags & RENAME_WHITEOUT != 0 && !credentials.has(CAP_MKNOD) {
+        return Err(Errno::EPERM);
+    }
     // `may_delete` of the source, then of the target or `may_create` where there is none.
     may_change(&from.directory, &credentials)?;
     if !sticky_allows(&from.directory, &source, &credentials) {
@@ -888,10 +908,10 @@ fn rename(
             }
         }
     }
-    if source.borrow().place.mounted.is_some()
+    if source.borrow().place.mount_root
         || target
             .as_ref()
-            .is_some_and(|target| target.borrow().place.mounted.is_some())
+            .is_some_and(|target| target.borrow().place.mount_root)
     {
         return Err(Errno::EBUSY);
     }
@@ -1043,7 +1063,7 @@ pub(super) fn stat_of(node: &Node) -> stat {
         st_rdev: inode.rdev,
         __pad1: 0,
         st_size: inode.size() as i64,
-        st_blksize: 4096,
+        st_blksize: inode.fs.kind.block_size() as i32,
         __pad2: 0,
         st_blocks: inode.blocks() as i64,
         st_atime: inode.atime.seconds,
@@ -1144,7 +1164,7 @@ pub(super) fn statx(
     };
     let mut out: statx = zerocopy::FromZeros::new_zeroed();
     out.stx_mask = reported;
-    out.stx_blksize = 4096;
+    out.stx_blksize = inode.fs.kind.block_size();
     out.stx_nlink = inode.nlink;
     out.stx_uid = inode.uid;
     out.stx_gid = inode.gid;
@@ -1579,42 +1599,75 @@ pub(super) fn fallocate(
     tid: Tid,
     [fd, mode, offset, length, ..]: Args,
 ) -> Result<u64, Errno> {
+    // In the order of Linux's `vfs_fallocate`; tmpfs takes keeping the size and punching holes.
     let file = kernel.process_of(tid).files.file(fd as i32)?;
+    if file.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    let mode = mode as u32;
     if (offset as i64) < 0 || (length as i64) <= 0 {
+        return Err(Errno::EINVAL);
+    }
+    let known = FALLOC_FL_KEEP_SIZE
+        | FALLOC_FL_PUNCH_HOLE
+        | FALLOC_FL_COLLAPSE_RANGE
+        | FALLOC_FL_ZERO_RANGE
+        | FALLOC_FL_INSERT_RANGE
+        | FALLOC_FL_UNSHARE_RANGE;
+    if mode & !known != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let punch = mode & FALLOC_FL_PUNCH_HOLE != 0;
+    if punch && mode != FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    if mode & (FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE) != 0
+        && mode & !(FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE) != 0
+    {
         return Err(Errno::EINVAL);
     }
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
     let node = file.borrow().node.clone();
-    if mode != 0 {
-        kernel
-            .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, mode);
+    {
+        let inode = node.borrow();
+        match inode.file_type() {
+            S_IFREG => {}
+            S_IFIFO => return Err(Errno::ESPIPE),
+            S_IFDIR => return Err(Errno::EISDIR),
+            _ => return Err(Errno::ENODEV),
+        }
+    }
+    let end = offset
+        .checked_add(length)
+        .filter(|end| *end <= i64::MAX as u64)
+        .ok_or(Errno::EFBIG)?;
+    // Only keeping the size and punching holes exist in tmpfs.
+    if mode & !(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE) != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
     let Content::Regular(regular) = &mut inode.content else {
-        return Err(if inode.is_directory() {
-            Errno::EISDIR
-        } else {
-            Errno::ENODEV
-        });
+        return Err(Errno::ENODEV);
     };
-    let end = offset
-        .checked_add(length)
-        .filter(|end| *end <= i64::MAX as u64)
-        .ok_or(Errno::EFBIG)?;
-    if regular.data.len() < end as usize {
-        regular.data.resize(end as usize, 0);
+    if punch {
+        let size = regular.data.len() as u64;
+        let (from, to) = (offset.min(size) as usize, end.min(size) as usize);
+        regular.data[from..to].fill(0);
+        // Whole pages in the range are given back.
+        let first = offset.div_ceil(4096);
+        let last = end / 4096;
+        regular.pages.retain(|page| *page < first || *page >= last);
         inode.mtime = now;
-    }
-    let Content::Regular(regular) = &mut inode.content else {
-        unreachable!()
-    };
-    for page in offset / 4096..end.div_ceil(4096) {
-        regular.pages.insert(page);
+    } else {
+        if mode & FALLOC_FL_KEEP_SIZE == 0 && regular.data.len() < end as usize {
+            regular.data.resize(end as usize, 0);
+        }
+        for page in offset / 4096..end.div_ceil(4096) {
+            regular.pages.insert(page);
+        }
     }
     inode.ctime = now;
     Ok(0)
@@ -1719,9 +1772,9 @@ fn statfs_of(node: &Node) -> statfs {
     let inode = node.borrow();
     let mut out: statfs = zerocopy::FromZeros::new_zeroed();
     out.f_type = inode.fs.kind.magic() as i64;
-    out.f_bsize = 4096;
+    out.f_bsize = inode.fs.kind.block_size().into();
     out.f_namelen = 255;
-    out.f_frsize = 4096;
+    out.f_frsize = inode.fs.kind.block_size().into();
     if inode.fs.kind == crate::fs::Kind::Tmpfs {
         out.f_blocks = 16384;
         out.f_bfree = 16384;

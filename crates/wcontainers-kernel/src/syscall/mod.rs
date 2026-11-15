@@ -111,6 +111,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_dup3, S(io::dup3)),
         (__NR_fcntl, S(io::fcntl)),
         (__NR_ioctl, S(io::ioctl)),
+        (__NR_ppoll, F(io::ppoll)),
         (__NR_fsync, S(io::fsync)),
         (__NR_fdatasync, S(io::fsync)),
         (__NR_syncfs, S(io::fsync)),
