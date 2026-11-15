@@ -17,7 +17,8 @@ far from the plan's hopes on call heavy and memory heavy code; see "Next".
 S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
 what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
 "S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
-calls) under "S1, sixth run", and what is left under "S1, what remains after the sixth run".
+calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
+rules) under "S1, seventh run", and what is left under "S1, what remains after the seventh run".
 
 ## S1: run speed at full look-ahead
 
@@ -378,24 +379,79 @@ S1, sixth run (commits 93b955e, ceaf05f; A/B runs alternate the two builds in on
   ms. Interpret in Chrome reads 4.2 to 4.4 in every session of this run, with two or four arguments alike,
   against 3.89 in the fifth run's last measurement.
 
-S1, what remains after the sixth run (aims with every check, in both engines):
-- Met in the last measurements: sieve, hash, matrix and search in both engines. Matrix in wasmtime is at its
-  aim (2.90 to 3.06 in this run), so noise can put it just over.
-- fib (aim 4): wasmtime 5.15, Chrome 4.74. With no check at all 3.86 / 4.25, so in Chrome even the bare
-  call is over the aim. Per call the wasmtime code still has the engine's stack limit check and its save of
-  ten callee-saved registers, the four guest stack stores and loads each with a 64 bit bounds check, x19,
-  x20, x29 and x30 through the thread block, the frame check of each new frame, the flags packed into the
-  block before the call (the callee may fault or stop before it sets flags) and the return check. Not shown
-  irremovable yet; the costs that look removable only by breaking a rule are the 64 bit bounds checks (a 32
-  bit guest memory, the owner's call) and the flags before calls (exact flags at a fault in the callee).
-- Sort (aim 2.5): wasmtime 3.21, Chrome 3.15; no check 2.49 / 2.51. The permission checks cost about half a
-  native run in wasmtime: its loops call the comparison, so neither kept runs nor the proof reach them, and
-  the comparison's own two loads are checked at every call.
-- Interpret (aim 3): wasmtime 4.08, Chrome 4.40; no check 3.00 / 2.29. As after the fifth run: three
-  kept-run checks a dispatch, two of them on addresses from data in memory (the byte code and the
-  interpreter's stack depth), which no proof at the loop's entry can bound; with every permission check left
-  out it is 3.24 in wasmtime, so even then the aim is not met there. Not yet shown irremovable.
-- 32 bit guest memory: measured 10 to 27% faster in wasmtime; the owner's call.
+S1, seventh run (commit bd4adcf; A/B runs alternate the two builds in one session, in a clone in scratch so
+the checkout stays free: `pyro-parked/wcontainers-scratch/translator/s7/ab.sh`):
+- A switch's case is worked out from the jump's register as it is, and the target is untagged only on the
+  path where no case is taken (`full.rs` `table_jump`). A tagged value never lands on a case (a top byte that
+  is not zero puts it far above every case; one with bit 55 set is unchanged by untagging), so it still
+  reaches the lookup untagged. wasmtime's dispatch in interpret loses the four untagging instructions (seen in
+  the machine code); V8 still works out the untagged value before its jump table. A/B interpret, every
+  check, three rounds, best of 3, load 7 to 18, seconds, before against after: wasmtime 0.606 / 0.584 /
+  0.599 against 0.569 / 0.838 (load 17) / 0.593; Chrome 0.623 / 0.681 / 0.642 against 0.630 / 0.647 /
+  0.654. Kept: less work, about 2% in wasmtime, no change in Chrome.
+- Tried and not kept: the module's own copies of the fixed values made mutable and read again into their
+  locals after every call, so that no engine keeps them across a call. wasmtime still saves all ten
+  callee-saved registers (Cranelift saves every one the function uses anywhere); V8 spills two values at
+  entry instead of five. A/B, three rounds, best of 3, load 9 to 17, before against after: fib wasmtime
+  2.073 against 2.143 s, Chrome 1.914 against 1.964; sort wasmtime 1.134 against 1.100, Chrome 1.079 against
+  1.064. Mixed and within noise. Patch: `s7/mutable.patch`.
+- The floor of a call under the plan's rules (`s7/floor`: `fib.wat`, `variants.py`, `chrome.mjs`). fib as
+  bench.c's -O2 code has it, written by hand in WebAssembly with only what the plan requires of a full piece
+  and nothing of ours: x0, x1 and sp passed and the expected return as a parameter; x19, x20, x29, x30 in
+  the thread block at the piece's edges and around the call; a 64 bit guest memory; the stop check at entry
+  and at the jump back; the frame and alignment check when sp moves down; NZCV packed into the block
+  before the call; sp compared after the call; the return check with x30 untagged. Then the same with one
+  part left out (only to measure). fib(42), native 0.39 to 0.41 s in this session:
+  - wasmtime 49 (CLI, memory may not move, as the runner), best of 3, load 9 to 15: every part 1.86 to 1.91
+    s (4.6 to 4.8 times native); without the stop checks 1.78; without the frame and alignment check 1.73;
+    without the flags 1.74; without the return check 1.75; with a 32 bit guest memory 1.90 (no gain here);
+    without x19 and x20 through the block around the call 1.85; with no check at all 1.57 (3.9). Its machine
+    code has the same engine part as ours: the stack limit check and the save of all ten callee-saved
+    registers on every call.
+  - Chrome 157, four runs in one instance, load 6 to 12: every part 1.72 s (4.3); any one check left out
+    1.31 to 1.37; 32 bit memory 1.83; no check 1.26. V8 inlines this fib into itself (its code holds the
+    callee's body at the call) as deep as its size budget allows, so one check more or less moves it by
+    25%. With `--js-flags=--no-wasm-inlining`: every part 2.30 s (5.7), no frame check 1.88, no check 1.62
+    (4.0).
+  - Ours in the same session (full benchmark below): wasmtime 2.06 s (5.22), Chrome 1.90 s (4.82).
+  - So in wasmtime the aim of 4 for fib with every check is below what the plan's call shape itself costs:
+    4.7 with every part, 3.9 with no check at all. Ours is about 10% above that floor. In Chrome the floor is
+    4.3 when V8 inlines the recursion and 5.7 when it does not; whether V8 inlines any of ours was not
+    checked.
+- Full benchmark at bd4adcf (`WC_BENCH_VARIANTS=1,3,5`, best of 3, load 6 to 11; times native, every check /
+  no permission check / no check; Chrome first run in the instance): fib wasmtime 5.22 / 4.58 / 3.90, Chrome
+  4.82 / 4.60 / 4.36; sieve 1.40 / 1.20 / 1.19, Chrome 1.18 / 0.98 / 0.95; hash 0.98 / 0.99 / 0.99, Chrome
+  0.99 / 0.99 / 1.45 (no check has no stop to move to V8's optimised code); sort 3.29 / 2.68 / 2.52, Chrome
+  3.30 / 2.76 / 2.54; interpret 3.86 / 2.68 / 2.59, Chrome 4.31 / 2.43 / 2.03; matrix 3.11 / 2.56 / 2.50,
+  Chrome 2.07 / 2.06 / 11.0 (as hash); walk 0.88 to 0.94; search 1.86 / 5.57 / 1.97, Chrome 1.86 / 1.94 /
+  10.1. Size: 340,508 bytes of WebAssembly (70.4 per byte of code), 75,704 gzipped, wasmtime compile 24 ms.
+  Raw output: `s7/bench-bd4adcf.txt`.
+
+S1, what remains after the seventh run (aims with every check, in both engines):
+- Met: sieve, hash and search in both engines, matrix in Chrome. Matrix in wasmtime sits at its aim (2.90 to
+  3.11 over the last two runs, native matrix 0.076 to 0.082 s), so noise puts it either side.
+- fib (aim 4): wasmtime 5.22, Chrome 4.82. Shown above: in wasmtime the plan's call shape alone, written by
+  hand, is 4.7 with every part the plan requires and 3.9 with none, so 4 cannot be reached without breaking
+  a rule (registers outside the passed ones in the thread block at calls, the stop check at entries, the frame
+  check, exact flags at a fault in the callee, the return check). Where the 10% of ours over the floor in
+  wasmtime goes is not traced yet (ours loads six fixed values at entry and spills more; not measured apart). In Chrome
+  the hand-written floor is 4.3 only through V8's inlining; reaching it would need V8 to inline our pieces.
+- Sort (aim 2.5): wasmtime 3.29, Chrome 3.30; no check 2.52 / 2.54, so even with no check it is at the aim.
+  The permission checks cost 0.6 of a native run: per comparison the callee's two loads are exact table
+  checks, because the plan relies on nothing proven before a call after it (a kept run cannot reach across
+  the call). A floor written by hand, as for fib, has not been measured for sort.
+- Interpret (aim 3): wasmtime 3.86, Chrome 4.31; no permission check 2.68 / 2.43, so the permission checks
+  are what is left (1.2 and 1.9 native runs). Each dispatch makes three kept-run checks: the byte code (an
+  index from data, any 32 bit value), the interpreter's stack (an index from data, sign extended) and the
+  switch's table byte (a byte index from a fixed table, so bounded). The first two cannot be proven ahead
+  and the kept run (a subtract, a compare and a branch) is the cheapest exact check found. The third could
+  be proven at the loop's entry, but the proof leaves out loops that hold a switch; lifting that is next.
+  Why the checks cost so much more in Chrome than in wasmtime is not explained; V8's code for the dispatch
+  loop is several copies of it and was not read through.
+- Not explained, only in a measuring variant: search with only the permission check left out is 5.6 times
+  native in wasmtime, against 2.0 with no check.
+- 32 bit guest memory: the owner's call; it made no difference to the hand-written fib in either engine.
+- Not run yet: the pass bars for layer 1 and layer 2 (long runs for the orchestrator).
 
 ## Done
 
@@ -665,6 +721,8 @@ contract's bits, in both runners).
   faulted; 1000 seed 43 (after outer loops): 0 mismatches, 379 faulted; 500 seed 31 (before walks): 0
   mismatches; 5000 seed 47, 20 on the CPU, after outer loops: 0 mismatches, 1774 faulted, 380 left to an
   address at full (77 s, load 8 to 10). Not yet the pass bar.
+- Layer 2, seventh S1 run, release: 2000 cases seed 71, 10 on the CPU: 0 mismatches, 666 faulted, 152 left
+  to an address at full (27 s, load 8 to 10). Not yet the pass bar.
 - Layer 2, sixth S1 run, release: 300 cases seed 61 and 2000 seed 63, 10 on the CPU (two argument
   registers): 0 mismatches, 674 faulted; 2000 seed 65, 10 on the CPU (lookup in place): 0 mismatches, 668
   faulted, 150 left to an address at full (30 s, load 13). Not yet the pass bar.
