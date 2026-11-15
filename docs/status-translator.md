@@ -279,7 +279,11 @@ S1, fourth run (no code change kept; measurements and two experiments):
   0.354 / 0.348, interpret 0.816 / 0.600 against 0.601 / 0.565. No gain. (b) The kept runs in mutable globals
   of the module instead of locals (so they are not loop values): matrix 0.529 s (unchanged), sieve 1.92,
   search 3.54, interpret 4.40 times native (all worse, load 6). Patch of (a):
-  `pyro-parked/wcontainers-scratch/translator/s4/writeback.patch`.
+  `pyro-parked/wcontainers-scratch/translator/s4/writeback.patch`. (c) The flags left out of the write back
+  before calls (wrong, only to measure): fib every check / no check, seconds, wasmtime 2.75 / 2.14 against
+  2.40 / 2.00 with them, Chrome 2.21 / 1.96 against 2.15 / 1.88; sort wasmtime 1.52 / 1.15 against 1.42 /
+  1.15, Chrome 1.11 / 0.99 against 1.16 / 0.98 (one round each, load 17 to 26). No gain in either engine,
+  so the flags are not where fib's time goes.
 - fib against the toy, measured again today in wasmtime 50 CLI (toy modules from translator-bench/out,
   compiled at opt-level 2, process start included, best of 3, native 0.365 s, load 7.5 to 12): toy
   `args4+check` (return check only, 32 bit memory, registers in module globals, flags never carried across
@@ -309,11 +313,11 @@ S1, what remains after the fourth run (aims with every check, in both engines):
   spilled. No cheaper exact check is known yet.
 - fib (aim 4): wasmtime 6.25 with every check, 6.0 with none; the toy's own call shape is 4.05 once it has
   the stop check (fourth run), so in wasmtime the aim is beyond the plan's call shape itself. In Chrome ours
-  is 5.6 / 4.7 and the toy's 2.7, so in Chrome the gap is ours and not yet explained in full. Differences
-  seen in V8's code of our fib: the flags worked out and stored before each call (about 17 instructions,
-  twice, as V8 inlines one level), x19, x20, x29, x30 through the thread block, the state memory's base
-  loaded again after each call (three loads), the sp compare after calls, and a compare and branch per
-  guest stack access (64 bit memory). Next: measure each in Chrome by leaving it out of the generated code.
+  is 5.3 to 5.6 / 4.7 and the toy's 2.7, so in Chrome the gap is ours and not yet explained. Differences
+  seen in V8's code of our fib (V8 inlines one level): x19, x20, x29, x30 through the thread block, the
+  state memory's base loaded again after each call (three loads), the sp compare after calls, a compare and
+  branch per guest stack access (64 bit memory), and the flags stored before each call (measured: no gain
+  when left out). Next: measure the others in Chrome the same way, by leaving each out of the code.
 - Sort (aim 2.5): wasmtime 4.05 / 2.95 (every / no check); the same call costs as fib plus a call through
   the lookup at every comparison.
 - 32 bit guest memory: measured 10 to 27% faster in wasmtime; the owner's call.
