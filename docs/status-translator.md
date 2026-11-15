@@ -14,6 +14,54 @@ first instruction looped for ever), added `tests/checks.rs`, and made layer 2 pr
 every size, x19 to x28, accesses through sp and groups through other registers, and fault. Speed is still
 far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
+S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
+what comes next.
+
+## S1: run speed at full look-ahead
+
+Tools for it: `cargo run --release -p wcontainers-translator-test --bin machine-code -- bench -O2 <dir>
+SCALE=1 WORKLOAD=<n>` writes the code module and wasmtime's compiled form (`objdump -d` it; function 8 is
+the first piece, the tool prints which is which). For V8's code: `nix shell nixpkgs#nodejs_latest -c node
+--print-wasm-code --no-liftoff --no-wasm-lazy-compilation -e 'new WebAssembly.Module(require("fs").readFileSync("<file>.wasm"))'`
+(node 26, V8 14; Chrome's own build has no disassembler). The benchmarks take `WC_BENCH_VARIANTS`,
+`WC_BENCH_REPEAT` (Chrome runs the program that many times in the same instances, each timed) and
+`WC_CHROME_JS_FLAGS`.
+
+Done so far, each measured (wasmtime unless said; times native, every check / no check; Apple silicon,
+load in brackets; the machine is shared, so native times themselves moved by up to 50% between runs):
+- Step 1, registers in the thread block. Registers that are not in locals are read and written at their
+  fixed place in the thread block (`state.rs`), not in imported globals. The thread module has no
+  registers, `save_state` and `load_state` are gone (the block always holds the registers when a hook runs
+  or `run` returns), runners read and write the block. Machine code (wasmtime): the block's place plus the
+  state memory's base sits in one register for the whole piece and every register is `ldr/str [xN, #off]`,
+  no bounds check, nothing reloaded; V8: the same, the base reloaded from the instance once per loop turn
+  (one load), no bounds check. Before / after (load 8 to 12): fib 9.4 / 8.2, sieve 3.2 / 2.2, hash 1.33 /
+  0.98, sort 5.5 / 5.5, interpret 8.6 / 8.6, matrix 7.7 / 7.1, search 8.5 / 5.5. Chrome (second run in
+  the same instance): fib 6.7 / 5.9, sieve 2.7 / 2.1, matrix 6.7 / 5.3, search 6.8 / 4.6.
+- Calls, first part. Machine code of fib showed every piece saving all ten callee-saved general registers
+  and eight vector registers on entry: in wasmtime a function containing `throw` does that. Pieces now
+  call a small function of the code module that throws. Pieces also read the six imported values from the
+  module's own immutable globals (one load each instead of two in wasmtime). Together with step 2's
+  setting: fib 8.2 to 6.3, sort 5.5 to 4.1, sieve 2.2 to 2.0, search 5.5 to 4.75 (load 6 to 10).
+- Step 2, guest memory. The runner's wasmtime engine has `memory_may_move(false)` (the contract now says
+  the guest memory's base must never move): the base is loaded once per piece and the bound is a constant,
+  so each access is an add, a compare and a select (wasmtime's Spectre guard) before it; before, each access
+  loaded base and length from memory. V8 keeps base and size in registers already: one compare and branch
+  per access. Measured and not kept: wasmtime with its heap Spectre guard turned off changed sieve, matrix
+  and search with no checks by 0 to 6% (load 8 to 11; it is a host security setting, so left on). A 32 bit
+  guest memory (addresses wrapped after the permission check, which already faults on anything above the
+  table) removes the engine's check entirely: 10 to 27% faster in wasmtime (sieve every check 0.89 to 0.79
+  s, matrix 0.66 to 0.43 s, search with no checks 0.24 to 0.17 s, fib 2.5 to 2.2 s; load 8 to 10). Not
+  taken: the plan gives a process 64 bit memory where the host has one; a 4 GiB cap is the owner's call.
+- Step 3, Chrome's compilers: confirmed. Running each workload several times in the same instances
+  (load 8 to 11): matrix with no checks 11.9 times native the first run, then 2.0, 1.96, 1.88; search
+  10.7 then 1.90; with every check 19.4 then 6.7 (matrix) and 19.7 then 6.8 (search). Sieve and fib
+  were the same every run (their loops' functions are entered many times). With
+  `--js-flags=--no-liftoff` the first run is as fast as later ones (matrix 1.85, search 1.63 with no
+  checks). Tried and not working: a `metadata.code.compilation_priority` section (the compilation hints
+  proposal) asking for every function optimized at once: no change, with no flag or with
+  `--wasm-compilation-hints`; `--experimental-wasm-compilation-hints` is not a flag in Chrome 157.
+
 ## Done
 
 - `wcontainers-arm64`: our own `Instruction` type; `decode` wraps yaxpeax-arm 0.5.0 and settles from the raw
