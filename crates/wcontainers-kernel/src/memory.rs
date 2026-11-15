@@ -654,12 +654,13 @@ impl AddressMap {
     }
 }
 
-/// What the CPU side enforces for what a program asked: on ARM64 writing implies reading, and so does
-/// running (no execute-only pages).
+/// What the CPU side enforces for what a program asked: on ARM64 writing implies reading, while a page
+/// that may only run cannot be read (execute-only, as on the reference's CPU, measured: a load faults
+/// and the kernel's copies give EFAULT).
 pub(crate) fn cpu_permissions(asked: Permissions) -> Permissions {
-    if asked.is_empty() {
-        asked
-    } else {
+    if asked.contains(Permissions::WRITE) {
         asked | Permissions::READ
+    } else {
+        asked
     }
 }

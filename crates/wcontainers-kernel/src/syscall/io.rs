@@ -1027,13 +1027,18 @@ pub(super) fn lseek(
                 || matches!(entry, crate::fs::proc::Entry::Global(index)
                     if crate::fs::proc::GLOBAL[*index].0.starts_with("sys/")) =>
         {
-            match whence {
+            // proc's largest offset is the default one, `MAX_NON_LFS` (`vfs_setpos`).
+            let new = match whence {
                 SEEK_SET | SEEK_END => offset,
                 SEEK_CUR => (file.offset as i64)
                     .checked_add(offset)
                     .ok_or(Errno::EINVAL)?,
                 _ => return Err(Errno::ENXIO),
+            };
+            if new > i64::from(i32::MAX) {
+                return Err(Errno::EINVAL);
             }
+            new
         }
         Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) => match whence {
             SEEK_SET => offset,

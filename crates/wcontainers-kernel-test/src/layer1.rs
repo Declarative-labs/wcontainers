@@ -44,6 +44,12 @@ const PRIORITIES: u64 = 0x3b80;
 /// Where getrandom writes: 96 bytes no call reads, since the two runners' random bytes differ and
 /// would steer later calls apart.
 const RANDOM: u64 = 0x3ba0;
+/// Where uname writes, past the paths: no call reads it, since the runners' release and version
+/// differ (a declared difference) and would steer later calls apart.
+const UNAME: u64 = 0x1800;
+/// Where name_to_handle_at writes the mount number, which differs between the machines; no call reads
+/// it.
+const MOUNT_NUMBER: u64 = 0x1a00;
 /// `sched_attr` structures for sched_setattr, 128 bytes apart.
 const SCHED_ATTRS: u64 = 0x2000;
 /// `file_handle` headers for name_to_handle_at, 128 bytes apart: room for 128 bytes, the 12 tmpfs
@@ -271,6 +277,10 @@ fn path_offsets() -> (Vec<u8>, Vec<u64>) {
         bytes.extend_from_slice(b"abc/");
     }
     bytes.push(0);
+    assert!(
+        PATHS + (bytes.len() as u64) <= UNAME,
+        "the paths reach uname's area"
+    );
     (bytes, offsets)
 }
 
@@ -1035,12 +1045,16 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_name_to_handle_at => [
             dirfd(a),
             path(b),
-            if c % 8 == 0 {
-                buffer(c >> 3)
-            } else {
-                ARENA + HANDLES + (c >> 3) % HANDLE_ROOMS.len() as u64 * 128
+            match c % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + HANDLES + (c >> 3) % HANDLE_ROOMS.len() as u64 * 128,
             },
-            buffer(d),
+            match d % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + MOUNT_NUMBER,
+            },
             pick(
                 &[
                     0, 0, 0x400, 0x1000, 0x200, 1, 2, 0x202, 0x1002, 4, 0x401, 0x1201,
@@ -1341,7 +1355,18 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        linux::__NR_uname => [buffer(a), 0, 0, 0, 0, 0],
+        linux::__NR_uname => [
+            match a % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + UNAME,
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
         linux::__NR_getuid => [0; 6],
         linux::__NR_getgroups => [pick(&[0, 1, 32, u64::MAX], a), buffer(b), 0, 0, 0, 0],
         linux::__NR_setresuid | linux::__NR_setresgid => {
