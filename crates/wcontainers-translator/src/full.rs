@@ -1980,7 +1980,13 @@ impl Emitter for FullEmitter<'_> {
             self.temporary(ValType::I64),
         );
         let offset = self.at.offset;
-        let table = self.table();
+        // A kept run's check is rare, so it reads the table's place from the module's globals rather than
+        // keeping it alive through the loop.
+        let table = if self.plan.kept.contains_key(&offset) {
+            Table::GLOBALS
+        } else {
+            self.table()
+        };
         match plan {
             CheckPlan::Skip => {}
             CheckPlan::Exact => {
