@@ -22,7 +22,23 @@ const ADDRESS_SPACE_END: u64 = 1 << 32;
 /// QEMU's exception numbers, as unicorn's interrupt hook reports them.
 const EXCEPTION_UNDEFINED: u32 = 1;
 const EXCEPTION_SYSCALL: u32 = 2;
+const EXCEPTION_DATA_ABORT: u32 = 4;
 const EXCEPTION_BREAKPOINT: u32 = 7;
+
+/// Something the stand-in cannot run as the reference's CPU does. It is reported instead of an [`Exit`],
+/// because no exit would be true.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unsupported {
+    /// The emulator requires this access to be aligned and real ARM64 hardware does not, as for an
+    /// exclusive load or store to an unaligned address. `pc` is the instruction.
+    AlignmentFault { pc: u64 },
+    /// The emulator stopped for a reason the stand-in does not know.
+    UnknownStop {
+        pc: u64,
+        result: Result<(), uc_error>,
+        exception: Option<u32>,
+    },
+}
 
 /// What stopped the emulator, recorded by its hooks.
 #[derive(Default)]
@@ -234,7 +250,7 @@ impl StandIn {
         thread: ThreadId,
         resume: Resume,
         slice_nanoseconds: Option<u64>,
-    ) -> Exit {
+    ) -> Result<Exit, Unsupported> {
         let state = self
             .threads
             .get_mut(&thread)
@@ -260,9 +276,10 @@ impl StandIn {
             .expect("reading registers from unicorn");
         let stopped = std::mem::take(memory.unicorn.get_data_mut());
         if let Some((address, access)) = stopped.fault {
-            return Exit::MemoryFault { address, access };
+            return Ok(Exit::MemoryFault { address, access });
         }
-        match (result, stopped.exception) {
+        let pc = state.registers.pc;
+        Ok(match (result, stopped.exception) {
             (_, Some(EXCEPTION_SYSCALL)) => {
                 let x = &state.registers.x;
                 Exit::Syscall(Syscall {
@@ -272,21 +289,25 @@ impl StandIn {
             }
             (_, Some(EXCEPTION_BREAKPOINT)) => {
                 let mut instruction = [0u8; 4];
-                let pc = state.registers.pc as usize;
-                instruction.copy_from_slice(&memory.bytes[pc..pc + 4]);
+                instruction.copy_from_slice(&memory.bytes[pc as usize..pc as usize + 4]);
                 let comment = (u32::from_le_bytes(instruction) >> 5) as u16;
                 Exit::Breakpoint { comment }
             }
             (_, Some(EXCEPTION_UNDEFINED)) | (Err(uc_error::INSN_INVALID), None) => {
                 Exit::IllegalInstruction
             }
+            // Permission and mapping faults come through the fault hook, so a data abort here is QEMU's
+            // alignment check.
+            (_, Some(EXCEPTION_DATA_ABORT)) => return Err(Unsupported::AlignmentFault { pc }),
             (Ok(()), None) => Exit::Stop,
             (result, exception) => {
-                panic!(
-                    "the stand-in stopped for an unknown reason: {result:?}, exception {exception:?}"
-                )
+                return Err(Unsupported::UnknownStop {
+                    pc,
+                    result,
+                    exception,
+                });
             }
-        }
+        })
     }
 }
 

@@ -9,7 +9,16 @@ use wcontainers_abi::{
 };
 use wcontainers_kernel::{Errno, Kernel};
 
-use crate::standin::StandIn;
+use crate::standin::{StandIn, Unsupported};
+
+/// Why a run on our kernel gave no outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The kernel could not start the program.
+    Start(Errno),
+    /// The program did something the stand-in CPU cannot run as the reference does.
+    StandIn(Unsupported),
+}
 
 /// What a program did, in a form both runners produce.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,7 +181,7 @@ pub fn run(
     arguments: &[&str],
     environment: &[&str],
     seed: u64,
-) -> Result<Run, Errno> {
+) -> Result<Run, Failure> {
     let mut cpu = StandIn::new();
     let mut host = TestHost::new(seed);
     let mut kernel = Kernel::new();
@@ -184,7 +193,9 @@ pub fn run(
         .iter()
         .map(|variable| variable.as_bytes())
         .collect();
-    kernel.start(&mut cpu, &mut host, program, &arguments, &environment)?;
+    kernel
+        .start(&mut cpu, &mut host, program, &arguments, &environment)
+        .map_err(Failure::Start)?;
     let status = loop {
         match kernel.next() {
             Next::Run {
@@ -192,7 +203,9 @@ pub fn run(
                 resume,
                 slice_nanoseconds,
             } => {
-                let exit = cpu.run(thread, resume, slice_nanoseconds);
+                let exit = cpu
+                    .run(thread, resume, slice_nanoseconds)
+                    .map_err(Failure::StandIn)?;
                 kernel.exit(&mut cpu, &mut host, exit);
             }
             Next::Idle { until_nanoseconds } => {

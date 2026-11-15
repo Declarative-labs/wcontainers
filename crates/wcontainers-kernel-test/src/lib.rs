@@ -20,7 +20,8 @@ pub fn run_both(program: &Path, arguments: &[&str]) -> (driver::Run, driver::Out
     );
     let mut all = vec![name.as_str()];
     all.extend_from_slice(arguments);
-    let ours = driver::run(&bytes, &all, reference::ENVIRONMENT, 0).expect("starting the program");
+    let ours = driver::run(&bytes, &all, reference::ENVIRONMENT, 0)
+        .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"));
     let theirs = reference::run(program, arguments);
     (ours, theirs)
 }

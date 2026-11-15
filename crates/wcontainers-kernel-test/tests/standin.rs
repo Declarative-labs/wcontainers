@@ -1,7 +1,7 @@
 //! The stand-in CPU comes back for each reason the abi names, with exact registers.
 
 use wcontainers_abi::{Access, Cpu, Exit, Permissions, RegisterBlock, Resume, Syscall};
-use wcontainers_kernel_test::standin::StandIn;
+use wcontainers_kernel_test::standin::{StandIn, Unsupported};
 
 const CODE: u64 = 0x10000;
 
@@ -41,7 +41,7 @@ fn exits_are_exact() {
     start.pstate = wcontainers_abi::pstate::Z | wcontainers_abi::pstate::C;
     cpu.set_registers(thread, &start);
 
-    let exit = cpu.run(thread, Resume::FromRegisters, None);
+    let exit = cpu.run(thread, Resume::FromRegisters, None).unwrap();
     assert_eq!(
         exit,
         Exit::Syscall(Syscall {
@@ -55,7 +55,7 @@ fn exits_are_exact() {
     assert_eq!(after.tpidr_el0, start.tpidr_el0);
     assert_eq!(after.pstate, start.pstate);
 
-    let exit = cpu.run(thread, Resume::Return(7), None);
+    let exit = cpu.run(thread, Resume::Return(7), None).unwrap();
     assert_eq!(exit, Exit::Breakpoint { comment: 5 });
     let after = registers(&mut cpu, thread);
     assert_eq!(after.pc, CODE + 4);
@@ -64,7 +64,7 @@ fn exits_are_exact() {
     let mut next = after;
     next.pc = CODE + 8;
     cpu.set_registers(thread, &next);
-    let exit = cpu.run(thread, Resume::FromRegisters, None);
+    let exit = cpu.run(thread, Resume::FromRegisters, None).unwrap();
     assert_eq!(
         exit,
         Exit::MemoryFault {
@@ -77,7 +77,7 @@ fn exits_are_exact() {
     next.pc = CODE + 12;
     cpu.set_registers(thread, &next);
     assert_eq!(
-        cpu.run(thread, Resume::FromRegisters, None),
+        cpu.run(thread, Resume::FromRegisters, None).unwrap(),
         Exit::IllegalInstruction
     );
     assert_eq!(registers(&mut cpu, thread).pc, CODE + 12);
@@ -85,7 +85,8 @@ fn exits_are_exact() {
     next.pc = CODE + 16;
     cpu.set_registers(thread, &next);
     assert_eq!(
-        cpu.run(thread, Resume::FromRegisters, Some(1_000_000)),
+        cpu.run(thread, Resume::FromRegisters, Some(1_000_000))
+            .unwrap(),
         Exit::Stop
     );
     assert_eq!(registers(&mut cpu, thread).pc, CODE + 16);
@@ -113,7 +114,7 @@ fn permissions_change_while_running() {
     start.x[1] = data + 4096;
     cpu.set_registers(thread, &start);
     assert_eq!(
-        cpu.run(thread, Resume::FromRegisters, None),
+        cpu.run(thread, Resume::FromRegisters, None).unwrap(),
         Exit::MemoryFault {
             address: data + 4096,
             access: Access::Write
@@ -128,7 +129,7 @@ fn permissions_change_while_running() {
     )
     .unwrap();
     assert!(matches!(
-        cpu.run(thread, Resume::FromRegisters, None),
+        cpu.run(thread, Resume::FromRegisters, None).unwrap(),
         Exit::Syscall(_)
     ));
     let mut stored = [0u8; 8];
@@ -138,10 +139,38 @@ fn permissions_change_while_running() {
     start.x[1] = data + 2 * 4096;
     cpu.set_registers(thread, &start);
     assert!(matches!(
-        cpu.run(thread, Resume::FromRegisters, None),
+        cpu.run(thread, Resume::FromRegisters, None).unwrap(),
         Exit::MemoryFault {
             access: Access::Write,
             ..
         }
     ));
+}
+
+/// An exclusive load from an unaligned address runs on the reference's hardware but faults in the
+/// emulator; the stand-in says so instead of giving an exit.
+#[test]
+fn unaligned_exclusive_is_reported_as_unsupported() {
+    const LDXR_X0_X1: u32 = 0xc85f_7c20;
+    let mut cpu = StandIn::new();
+    let memory = cpu.memory_new().unwrap();
+    cpu.write(memory, CODE, &LDXR_X0_X1.to_le_bytes()).unwrap();
+    cpu.set_permissions(memory, CODE, 4096, Permissions::READ | Permissions::EXECUTE)
+        .unwrap();
+    cpu.set_permissions(
+        memory,
+        0x20000,
+        4096,
+        Permissions::READ | Permissions::WRITE,
+    )
+    .unwrap();
+    let thread = cpu.thread_new(memory).unwrap();
+    let mut start = RegisterBlock::ZERO;
+    start.pc = CODE;
+    start.x[1] = 0x20001;
+    cpu.set_registers(thread, &start);
+    assert_eq!(
+        cpu.run(thread, Resume::FromRegisters, None),
+        Err(Unsupported::AlignmentFault { pc: CODE })
+    );
 }
