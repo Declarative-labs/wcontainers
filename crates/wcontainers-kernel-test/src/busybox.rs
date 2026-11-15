@@ -110,11 +110,56 @@ pub fn changes(
     out
 }
 
+/// Runs a command of the reference image on our kernel, found on the image's PATH as Docker finds it.
+pub fn run_ours(command: &[&str]) -> driver::Run {
+    let path = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ]
+    .iter()
+    .map(|directory| format!("{directory}/{}", command[0]))
+    .find(|path| {
+        image::reference_image()
+            .iter()
+            .any(|file| format!("/{}", file.path) == *path)
+    })
+    .unwrap_or_else(|| panic!("{} is not on the image's PATH", command[0]));
+    let container = driver::Container {
+        files: image::reference_image(),
+        path: &path,
+        arguments: command,
+        environment: reference::ENVIRONMENT,
+        working_directory: "/",
+    };
+    driver::run(&container, 0)
+        .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
+}
+
 /// Runs a command of the reference image (the first argument names it) as the container's first
 /// process in both runners, with `/` as the working directory, and asserts that output, exit status and
 /// the files changed are the same. Returns our run.
 pub fn compare(command: &[&str]) -> driver::Run {
-    let path = format!("/bin/{}", command[0]);
+    // Found on the image's PATH, as Docker finds a command.
+    let path = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ]
+    .iter()
+    .map(|directory| format!("{directory}/{}", command[0]))
+    .find(|path| {
+        image::reference_image()
+            .iter()
+            .any(|file| format!("/{}", file.path) == *path)
+    })
+    .unwrap_or_else(|| panic!("{} is not on the image's PATH", command[0]));
     let base = shapes_of_image(image::reference_image());
     let container = driver::Container {
         files: image::reference_image(),
@@ -142,6 +187,43 @@ pub fn compare(command: &[&str]) -> driver::Run {
         ours.outcome.exit_code, theirs.exit_code,
         "{command:?}: exit code"
     );
-    assert_eq!(our_changes, their_changes, "{command:?}: files changed");
+    let differing: Vec<String> = our_changes
+        .keys()
+        .chain(their_changes.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| our_changes.get(*path) != their_changes.get(*path))
+        .map(|path| {
+            format!(
+                "{path}: ours {}, theirs {}",
+                describe(our_changes.get(path)),
+                describe(their_changes.get(path))
+            )
+        })
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "{command:?}: files changed differently:\n{}",
+        differing.join("\n")
+    );
     ours
+}
+
+fn describe(change: Option<&Option<Shape>>) -> String {
+    match change {
+        None => "unchanged".to_string(),
+        Some(None) => "removed".to_string(),
+        Some(Some(shape)) => {
+            let text = String::from_utf8_lossy(&shape.contents);
+            let text: String = text.chars().take(80).collect();
+            format!(
+                "{:o} {}:{} {:?} ({} bytes)",
+                shape.mode,
+                shape.uid,
+                shape.gid,
+                text,
+                shape.contents.len()
+            )
+        }
+    }
 }

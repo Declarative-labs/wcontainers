@@ -47,13 +47,15 @@ pub(crate) struct Image {
 /// One program file found by path.
 struct Program {
     node: Node,
+    /// Its path from the root, with links followed.
+    path: Vec<u8>,
     bytes: Vec<u8>,
 }
 
 /// Finds a file to run by path from the process's point of view, with Linux's checks.
 fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Program, Errno> {
     kernel.with_walk(pid, |walk, process| {
-        let node = walk.resolve(&process.cwd, path, true)?;
+        let (node, full) = walk.locate(&process.cwd, path)?;
         let inode = node.borrow();
         if inode.mode & S_IFMT != S_IFREG {
             return Err(Errno::EACCES);
@@ -66,7 +68,11 @@ fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Program, Errno
             _ => return Err(Errno::EACCES),
         };
         drop(inode);
-        Ok(Program { node, bytes })
+        Ok(Program {
+            node,
+            path: full,
+            bytes,
+        })
     })
 }
 
@@ -225,20 +231,14 @@ fn place(
         elf::ET_DYN => page_down(end / 3 * 2),
         _ => return Err(Errno::ENOEXEC),
     };
-    let main_path = path_for_maps(kernel, pid, &program.node, file_name);
+    let main_path = program.path.clone();
     let main = place_elf(cx, memory, &mut map, &program, &main_path, Some(bias))?;
     map.brk_start = page_up(main.end);
     map.brk = map.brk_start;
 
     let (entry, interpreter_base) = match &interpreter {
         Some(interpreter) => {
-            let path = path_for_maps(
-                kernel,
-                pid,
-                &interpreter.node,
-                interpreter_path.as_deref().unwrap_or_default(),
-            );
-            let placed = place_elf(cx, memory, &mut map, interpreter, &path, None)?;
+            let placed = place_elf(cx, memory, &mut map, interpreter, &interpreter.path, None)?;
             (placed.entry, placed.base)
         }
         None => (main.entry, 0),
@@ -305,40 +305,6 @@ fn place(
         starting_stack,
         name,
     })
-}
-
-/// The path a file is shown by in `/proc/<pid>/maps` and `exe`: from the root, as found.
-fn path_for_maps(kernel: &Kernel, pid: Pid, node: &Node, path: &[u8]) -> Vec<u8> {
-    kernel
-        .with_walk(pid, |walk, process| {
-            if path.starts_with(b"/") {
-                return Ok(normalize(path));
-            }
-            let mut full = walk.path_of(&process.cwd).unwrap_or_default();
-            if !full.ends_with(b"/") {
-                full.push(b'/');
-            }
-            full.extend_from_slice(path);
-            let _ = node;
-            Ok(normalize(&full))
-        })
-        .unwrap_or_else(|_| path.to_vec())
-}
-
-/// Removes "." parts and doubled slashes from an absolute path.
-fn normalize(path: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for part in path.split(|byte| *byte == b'/') {
-        if part.is_empty() || part == b"." {
-            continue;
-        }
-        out.push(b'/');
-        out.extend_from_slice(part);
-    }
-    if out.is_empty() {
-        out.push(b'/');
-    }
-    out
 }
 
 /// Places one ELF file's loadable segments. With no bias given, the file goes wherever free space is,

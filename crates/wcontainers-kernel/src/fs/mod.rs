@@ -54,6 +54,8 @@ pub(crate) struct FileSystem {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Tmpfs,
+    /// Pseudo-terminal devices, at `/dev/pts`.
+    Devpts,
     Proc,
     /// The pipes the container's standard streams are.
     Pipe,
@@ -64,8 +66,9 @@ impl Kind {
     pub fn magic(self) -> u64 {
         match self {
             Kind::Tmpfs => TMPFS_MAGIC.into(),
+            Kind::Devpts => DEVPTS_SUPER_MAGIC.into(),
             Kind::Proc => PROC_SUPER_MAGIC.into(),
-            Kind::Pipe => 0x5049_5045,
+            Kind::Pipe => PIPEFS_MAGIC.into(),
         }
     }
 }
@@ -234,6 +237,7 @@ impl Inode {
     pub fn size(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => file.data.len() as u64,
+            Content::Directory(_) if self.fs.kind == Kind::Devpts => 0,
             Content::Directory(directory) => DIRENT_SIZE * (directory.len() as u64 + 2),
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
@@ -429,6 +433,50 @@ impl<'a> Walk<'a> {
             return Err(Errno::ENOTDIR);
         }
         Ok(node)
+    }
+
+    /// Finds the inode a path names, following every link, and its path from the root as Linux's
+    /// `d_path` gives it.
+    pub fn locate(&self, start: &Node, path: &[u8]) -> Result<(Node, Vec<u8>), Errno> {
+        let mut links = 0;
+        let mut at = start.clone();
+        let mut path = path.to_vec();
+        loop {
+            let parent = self.parent_counted(&at, &path, &mut links)?;
+            if parent.name.is_empty() {
+                let full = self.path_of(&parent.directory).unwrap_or_default();
+                return Ok((parent.directory, full));
+            }
+            let node = self.step(&parent.directory, &parent.name)?;
+            let target = match &node.borrow().content {
+                Content::Symlink(target) => Some(target.clone()),
+                _ => None,
+            };
+            if let Some(target) = target {
+                links += 1;
+                if links > MAX_SYMLINKS {
+                    return Err(Errno::ELOOP);
+                }
+                at = parent.directory;
+                path = target;
+                continue;
+            }
+            let node = self.follow(&parent.directory, node, &mut links)?;
+            if parent.trailing_slash && !node.borrow().is_directory() {
+                return Err(Errno::ENOTDIR);
+            }
+            if node.borrow().is_directory()
+                && let Some(full) = self.path_of(&node)
+            {
+                return Ok((node, full));
+            }
+            let mut full = self.path_of(&parent.directory).unwrap_or_default();
+            if !full.ends_with(b"/") {
+                full.push(b'/');
+            }
+            full.extend_from_slice(&parent.name);
+            return Ok((node, full));
+        }
     }
 
     /// Resolves a symbolic link's target found in `at`, following the last part.

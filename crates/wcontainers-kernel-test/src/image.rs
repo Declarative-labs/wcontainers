@@ -153,6 +153,15 @@ pub fn add_files(kernel: &mut Kernel, files: &[File]) {
             Kind::Fifo => NewFile::Fifo,
         };
         let path = format!("/{}", file.path);
+        // Docker mounts these over the image's empty placeholders, with the mode of the host's files.
+        let attributes = if DOCKER_FILES[..3].contains(&file.path.as_str()) {
+            Attributes {
+                mode: 0o644,
+                ..attributes
+            }
+        } else {
+            attributes
+        };
         if file.path == "etc/hostname" {
             let hostname = format!("{}\n", crate::reference::HOSTNAME);
             kernel

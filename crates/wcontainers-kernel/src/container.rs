@@ -141,8 +141,8 @@ pub(crate) fn make(
 }
 
 /// A new empty in-memory file system, mounted on a directory.
-fn mount_tmpfs(numbers: &mut Numbers, on: &Node, mode: u32, now: Time) -> Node {
-    let fs = numbers.file_system(Kind::Tmpfs, false);
+fn mount_tmpfs(numbers: &mut Numbers, on: &Node, mode: u32, now: Time, kind: Kind) -> Node {
+    let fs = numbers.file_system(kind, false);
     let ino = numbers.ino();
     let root = fs::new_inode(
         fs,
@@ -484,7 +484,7 @@ impl Kernel {
     fn make_mounts(&mut self) {
         let now = self.boot;
         let dev_point = directory_at(self, b"/dev", now);
-        let dev = mount_tmpfs(&mut self.files.numbers, &dev_point, 0o755, now);
+        let dev = mount_tmpfs(&mut self.files.numbers, &dev_point, 0o755, now, Kind::Tmpfs);
         for (name, major, minor) in DOCKER_DEVICES {
             make(
                 &mut self.files.numbers,
@@ -538,7 +538,37 @@ impl Kernel {
             .expect("dev")
             .get(b"shm")
             .expect("shm");
-        mount_tmpfs(&mut self.files.numbers, &shm_point, 0o1777, now);
+        mount_tmpfs(
+            &mut self.files.numbers,
+            &shm_point,
+            0o1777,
+            now,
+            Kind::Tmpfs,
+        );
+        let pts_point = dev
+            .borrow()
+            .directory()
+            .expect("dev")
+            .get(b"pts")
+            .expect("pts");
+        let pts = mount_tmpfs(
+            &mut self.files.numbers,
+            &pts_point,
+            0o755,
+            now,
+            Kind::Devpts,
+        );
+        make(
+            &mut self.files.numbers,
+            &pts,
+            b"ptmx",
+            S_IFCHR | 0o666,
+            0,
+            0,
+            encode_device(5, 2),
+            now,
+            Content::Special,
+        );
 
         let proc_point = directory_at(self, b"/proc", now);
         let view = fs::proc::View {

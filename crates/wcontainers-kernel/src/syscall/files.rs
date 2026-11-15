@@ -387,7 +387,13 @@ pub(super) fn open(
             inode.ctime = now;
         }
     }
-    let full_path = if parent.name.is_empty() {
+    let follows = flags & O_NOFOLLOW == 0;
+    let full_path = if follows {
+        kernel
+            .with_walk(pid, |walk, _| walk.locate(&at, path))
+            .map(|(_, full)| full)
+            .unwrap_or_else(|_| path_in(kernel, tid, &parent.directory, &parent.name))
+    } else if parent.name.is_empty() {
         path_in(kernel, tid, &node, b"")
     } else {
         path_in(kernel, tid, &parent.directory, &parent.name)
