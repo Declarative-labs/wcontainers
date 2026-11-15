@@ -953,18 +953,31 @@ impl<'a> Walk<'a> {
         self.resolve_counted(directory, &target, true, links)
     }
 
-    /// The path of a directory from the walk's root. None when the directory is not below the root or
-    /// has been removed.
+    /// A directory's path as Linux's `d_path` gives it: from the walk's root, or from the top when the
+    /// root is not above it, with " (deleted)" once it has been removed. None for other files.
     pub fn path_of(&self, node: &Node) -> Option<Vec<u8>> {
-        match self.cwd_path(node) {
-            Ok(path) if !path.starts_with(UNREACHABLE) => Some(path),
-            _ => None,
+        let (mut path, _) = self.ascend(node, true).ok()?;
+        if node.borrow().nlink == 0 {
+            path.extend_from_slice(b" (deleted)");
         }
+        Some(path)
     }
 
     /// The path of a directory as `getcwd` gives it: from the walk's root, or, for one outside it,
     /// from the top marked "(unreachable)". ENOENT once it has been removed.
     pub fn cwd_path(&self, node: &Node) -> Result<Vec<u8>, Errno> {
+        let (path, reachable) = self.ascend(node, false)?;
+        if reachable {
+            return Ok(path);
+        }
+        let mut marked = UNREACHABLE.to_vec();
+        marked.extend_from_slice(&path);
+        Ok(marked)
+    }
+
+    /// A directory's path from the walk's root, or from the top when the root is not above it (then
+    /// false). Removed directories are ENOENT unless `removed` allows them.
+    fn ascend(&self, node: &Node, removed: bool) -> Result<(Vec<u8>, bool), Errno> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
         let mut at = node.clone();
         let mut reachable = true;
@@ -974,7 +987,7 @@ impl<'a> Walk<'a> {
             }
             let up = {
                 let inode = at.borrow();
-                if !inode.is_directory() || inode.nlink == 0 {
+                if !inode.is_directory() || (inode.nlink == 0 && !removed) {
                     return Err(Errno::ENOENT);
                 }
                 // In the process information tree the inodes above may be gone: its directories are
@@ -991,7 +1004,7 @@ impl<'a> Walk<'a> {
                         path.push(b'/');
                         path.extend_from_slice(part);
                     }
-                    return Ok(path);
+                    return Ok((path, true));
                 }
                 match inode
                     .place
@@ -1011,19 +1024,15 @@ impl<'a> Walk<'a> {
             };
             at = mounted_root(up);
         }
-        let mut path = if reachable {
-            Vec::new()
-        } else {
-            UNREACHABLE.to_vec()
-        };
+        let mut path = Vec::new();
         for part in parts.iter().rev() {
             path.push(b'/');
             path.extend_from_slice(part);
         }
-        if path.is_empty() || path == UNREACHABLE {
+        if path.is_empty() {
             path.push(b'/');
         }
-        Ok(path)
+        Ok((path, reachable))
     }
 }
 
