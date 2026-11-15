@@ -74,6 +74,9 @@ pub enum Flags {
         b: u32,
         carry: Carry,
         result: u32,
+        /// For a plain subtraction (`b` inverted, carry one): the local holding the value subtracted, so a
+        /// condition can compare `a` with it directly.
+        subtrahend: Option<u32>,
     },
     /// N and Z from the result, C and V clear.
     Logic { width: Width, result: u32 },
@@ -84,6 +87,11 @@ pub enum Flags {
 }
 
 /// Where a meaning's registers, flags and control flow go. Each look-ahead implements it.
+///
+/// Meanings keep two rules an emitter may rely on: `set` and `set_vector` are never called inside a part
+/// of the meaning that runs only sometimes, and an instruction that calls `set_flags` once does so
+/// unconditionally. Locals a meaning gets from `local` are only used within that instruction, except those
+/// named in the `Flags` it passes to `set_flags`.
 pub trait Emitter {
     /// The body being written.
     fn sink(&mut self) -> InstructionSink<'_>;
@@ -161,6 +169,121 @@ pub fn condition_from_flags<E: Emitter + ?Sized>(e: &mut E, cond: Cond) {
     }
 }
 
+/// A WebAssembly comparison of two values of one width.
+#[derive(Clone, Copy)]
+enum Compare {
+    Eq,
+    Ne,
+    GeU,
+    LtU,
+    GtU,
+    LeU,
+    GeS,
+    LtS,
+    GtS,
+    LeS,
+}
+
+fn compare(sink: &mut InstructionSink<'_>, width: Width, op: Compare) {
+    use Compare as C;
+    match (width, op) {
+        (Width::W32, C::Eq) => sink.i32_eq(),
+        (Width::W32, C::Ne) => sink.i32_ne(),
+        (Width::W32, C::GeU) => sink.i32_ge_u(),
+        (Width::W32, C::LtU) => sink.i32_lt_u(),
+        (Width::W32, C::GtU) => sink.i32_gt_u(),
+        (Width::W32, C::LeU) => sink.i32_le_u(),
+        (Width::W32, C::GeS) => sink.i32_ge_s(),
+        (Width::W32, C::LtS) => sink.i32_lt_s(),
+        (Width::W32, C::GtS) => sink.i32_gt_s(),
+        (Width::W32, C::LeS) => sink.i32_le_s(),
+        (Width::X64, C::Eq) => sink.i64_eq(),
+        (Width::X64, C::Ne) => sink.i64_ne(),
+        (Width::X64, C::GeU) => sink.i64_ge_u(),
+        (Width::X64, C::LtU) => sink.i64_lt_u(),
+        (Width::X64, C::GtU) => sink.i64_gt_u(),
+        (Width::X64, C::LeU) => sink.i64_le_u(),
+        (Width::X64, C::GeS) => sink.i64_ge_s(),
+        (Width::X64, C::LtS) => sink.i64_lt_s(),
+        (Width::X64, C::GtS) => sink.i64_gt_s(),
+        (Width::X64, C::LeS) => sink.i64_le_s(),
+    };
+}
+
+/// Push whether a condition holds as one comparison of the values the flags were set from, where they came
+/// from a plain subtraction or a logical operation. Pushes nothing and returns false where it cannot.
+pub fn condition_direct(sink: &mut InstructionSink<'_>, flags: Flags, cond: Cond) -> bool {
+    use Compare as C;
+    match flags {
+        Flags::Add {
+            width,
+            a,
+            subtrahend: Some(m),
+            result,
+            ..
+        } => {
+            let op = match cond.0 {
+                0 => C::Eq,
+                1 => C::Ne,
+                2 => C::GeU,
+                3 => C::LtU,
+                8 => C::GtU,
+                9 => C::LeU,
+                10 => C::GeS,
+                11 => C::LtS,
+                12 => C::GtS,
+                13 => C::LeS,
+                4 | 5 => return sign_condition(sink, width, result, cond.0),
+                _ => return false,
+            };
+            sink.local_get(a).local_get(m);
+            compare(sink, width, op);
+            true
+        }
+        Flags::Logic { width, result } => match cond.0 {
+            0 | 1 => {
+                sink.local_get(result);
+                eqz(sink, width);
+                if cond.0 == 1 {
+                    sink.i32_eqz();
+                }
+                true
+            }
+            4 | 5 | 10..=13 => sign_condition(sink, width, result, cond.0),
+            // C and V are clear.
+            2 | 6 | 8 => {
+                sink.i32_const(0);
+                true
+            }
+            3 | 7 | 9 => {
+                sink.i32_const(1);
+                true
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Conditions on the sign of a result when V is clear or not asked: mi and lt, pl and ge, gt, le.
+fn sign_condition(sink: &mut InstructionSink<'_>, width: Width, result: u32, cond: u8) -> bool {
+    use Compare as C;
+    let op = match cond {
+        4 | 11 => C::LtS,
+        5 | 10 => C::GeS,
+        12 => C::GtS,
+        13 => C::LeS,
+        _ => return false,
+    };
+    sink.local_get(result);
+    match width {
+        Width::W32 => sink.i32_const(0),
+        Width::X64 => sink.i64_const(0),
+    };
+    compare(sink, width, op);
+    true
+}
+
 /// Push one flag, as an i32 0 or 1, for flags set this way.
 pub fn flag_value(sink: &mut InstructionSink<'_>, flags: Flags, flag: Flag) {
     match flags {
@@ -191,6 +314,7 @@ pub fn flag_value(sink: &mut InstructionSink<'_>, flags: Flags, flag: Flag) {
             b,
             carry,
             result,
+            ..
         } => match flag {
             Flag::N => sign_bit(sink, width, result),
             Flag::Z => {
@@ -383,7 +507,13 @@ fn add_with<E: Emitter + ?Sized>(
     carry: Carry,
     set_flags: bool,
 ) -> u32 {
+    let mut subtrahend = None;
     if invert {
+        if carry == Carry::One {
+            let m = save(e, w);
+            e.sink().local_get(m);
+            subtrahend = Some(m);
+        }
         constant(e, w, u64::MAX);
         op!(e, w, i32_xor, i64_xor);
     }
@@ -412,6 +542,7 @@ fn add_with<E: Emitter + ?Sized>(
             b,
             carry,
             result,
+            subtrahend,
         });
     }
     result

@@ -3,7 +3,8 @@
 
 mod code;
 pub mod contract;
+mod full;
 mod thread;
 
-pub use code::{Error, LookAhead, PASSED, Translation, translate};
+pub use code::{Error, LookAhead, Omit, PASSED, Translation, translate, translate_omitting};
 pub use thread::thread_module;

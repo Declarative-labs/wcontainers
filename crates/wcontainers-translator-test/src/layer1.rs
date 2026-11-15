@@ -7,6 +7,7 @@ use crate::runner::{Machine, Stopped, Syscalls};
 use proptest::prelude::*;
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
 use wcontainers_arm64::forms::{self, Form};
+use wcontainers_translator::LookAhead;
 
 /// The SIMD and floating point data processing forms translated so far.
 const VECTOR_FORMS: &[&str] = &[
@@ -339,7 +340,7 @@ pub fn translated(case: &Case) -> Outcome {
     let mut data = vec![0u8; DATA_BYTES as usize];
     fill(case.seed, &mut data);
     machine.write(DATA, &data);
-    machine.load(&case.word.to_le_bytes(), 0..4, CODE, &[0]);
+    machine.load(&case.word.to_le_bytes(), 0..4, CODE, &[0], LookAhead::None);
     let mut registers = RegisterBlock::ZERO;
     registers.x.copy_from_slice(&case.registers[..31]);
     registers.sp = case.registers[31];

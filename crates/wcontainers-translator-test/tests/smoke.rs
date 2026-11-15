@@ -1,6 +1,7 @@
 //! The runner and look-ahead none on a few hand-encoded programs.
 
 use wcontainers_abi::{Permissions, RegisterBlock};
+use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls};
 
@@ -18,7 +19,7 @@ fn run_with(words: &[u32], prepare: impl FnOnce(&Machine)) -> (Stopped, Register
         LOAD..LOAD + 0x1000,
         Permissions::READ | Permissions::EXECUTE,
     );
-    machine.load(&blob, 0..blob.len() as u64, LOAD, &[0]);
+    machine.load(&blob, 0..blob.len() as u64, LOAD, &[0], LookAhead::None);
     let mut registers = RegisterBlock::ZERO;
     registers.pc = LOAD;
     machine.set_registers(&registers);

@@ -12,6 +12,7 @@ wcontainers-abi.workspace = true
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
 wasm-encoder = "0.263.0"
 blake3 = "1"
+petgraph = { version = "0.8.3", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

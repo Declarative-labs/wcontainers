@@ -518,7 +518,39 @@ pub struct Flow {
     pub target: Option<i64>,
 }
 
+/// The one memory access of a load or store: where, how many bytes in all, and whether it writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryAccess {
+    pub address: Address,
+    pub bytes: u32,
+    pub write: bool,
+}
+
 impl Instruction {
+    pub fn memory_access(&self) -> Option<MemoryAccess> {
+        use Instruction as I;
+        let (address, bytes, write) = match *self {
+            I::Load { bytes, address, .. } | I::LoadVector { bytes, address, .. } => {
+                (address, u32::from(bytes), false)
+            }
+            I::Store { bytes, address, .. } | I::StoreVector { bytes, address, .. } => {
+                (address, u32::from(bytes), true)
+            }
+            I::LoadPair { bytes, address, .. } | I::LoadVectorPair { bytes, address, .. } => {
+                (address, 2 * u32::from(bytes), false)
+            }
+            I::StorePair { bytes, address, .. } | I::StoreVectorPair { bytes, address, .. } => {
+                (address, 2 * u32::from(bytes), true)
+            }
+            _ => return None,
+        };
+        Some(MemoryAccess {
+            address,
+            bytes,
+            write,
+        })
+    }
+
     pub fn flow(&self) -> Flow {
         use Instruction as I;
         let (falls_through, target) = match *self {

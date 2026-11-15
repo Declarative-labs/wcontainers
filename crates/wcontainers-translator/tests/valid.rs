@@ -53,4 +53,14 @@ proptest! {
         let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::None).unwrap();
         validate(&translation.wasm);
     }
+
+    /// Random words at full look-ahead, from the first word and from a few others.
+    #[test]
+    fn full_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4)) {
+        let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut starts = vec![0];
+        starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
+        let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::Full).unwrap();
+        validate(&translation.wasm);
+    }
 }

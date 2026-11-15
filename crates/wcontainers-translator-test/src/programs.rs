@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use wcontainers_abi::{Permissions, RegisterBlock};
+use wcontainers_translator::LookAhead;
 
 /// Where every blob is linked and loaded.
 pub const LOAD: u64 = 0x40_0000;
@@ -151,15 +152,15 @@ pub fn placement(blob: &Blob) -> Placement {
     }
 }
 
-/// Run a blob through the translator at look-ahead none in wasmtime, starting at its first byte.
-pub fn translated(blob: &Blob) -> (Ran, Machine) {
+/// Run a blob through the translator in wasmtime, starting at its first byte.
+pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, RegisterBlock) {
     let slots = blob.code_bytes.div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, LOAD, slots, Syscalls::StandIn);
     for (range, permissions) in place.regions {
         machine.set_permissions(range, permissions);
     }
-    machine.load(&blob.bytes, 0..blob.code_bytes, LOAD, &[0]);
+    machine.load(&blob.bytes, 0..blob.code_bytes, LOAD, &[0], look_ahead);
     machine.write(place.sp, &place.stack);
     let mut registers = RegisterBlock::ZERO;
     registers.pc = LOAD;
@@ -187,7 +188,18 @@ pub fn translated(blob: &Blob) -> (Ran, Machine) {
         stderr: machine.stderr().to_vec(),
         status,
     };
-    (ran, machine)
+    (ran, machine, registers)
+}
+
+/// Every byte the guest may reach: the blob's pages, then the stack.
+pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (range, _) in placement(blob).regions {
+        let mut part = vec![0; (range.end - range.start) as usize];
+        machine.read(range.start, &mut part);
+        bytes.extend(part);
+    }
+    bytes
 }
 
 /// Run a blob natively on ARM64 Linux in Docker.

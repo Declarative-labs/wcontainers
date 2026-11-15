@@ -1,7 +1,8 @@
 //! C programs give the same output and exit status through the translator as on real ARM64 Linux.
 
+use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator_test::programs::{Library, build, native, translated};
+use wcontainers_translator_test::programs::{Library, build, native, reachable_memory, translated};
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
@@ -27,8 +28,9 @@ fn hello_matches_linux() {
     match_linux(&[("hello", Library::C)]);
 }
 
-/// Every program, at every optimisation level. Levels that build to the same bytes as an earlier one are
-/// run once.
+/// Every program, at every optimisation level, at look-ahead none and full: the same output and exit status
+/// as on Linux, and at full the same registers and memory at the end as at none. Levels that build to the
+/// same bytes as an earlier one are run once.
 fn match_linux(programs: &[(&str, Library)]) {
     for &(name, library) in programs {
         let mut built: Vec<(&str, Vec<u8>)> = Vec::new();
@@ -39,32 +41,39 @@ fn match_linux(programs: &[(&str, Library)]) {
                 continue;
             }
             built.push((optimisation, blob.bytes.clone()));
-            let (ours, machine) = translated(&blob);
             let theirs = native(&blob);
+            let mut finals = Vec::new();
+            for look_ahead in [LookAhead::None, LookAhead::Full] {
+                let (ours, mut machine, registers) = translated(&blob, look_ahead);
+                let what = format!("{name} at {optimisation}, look-ahead {look_ahead:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&ours.stdout),
+                    String::from_utf8_lossy(&theirs.stdout),
+                    "output of {what}"
+                );
+                assert_eq!(ours.stdout, theirs.stdout, "output bytes of {what}");
+                assert_eq!(
+                    String::from_utf8_lossy(&ours.stderr),
+                    String::from_utf8_lossy(&theirs.stderr),
+                    "error output of {what}"
+                );
+                assert_eq!(ours.status, theirs.status, "exit status of {what}");
+                eprintln!(
+                    "{what}: {} bytes of code, matches, {:?}",
+                    blob.code_bytes,
+                    machine.counters()
+                );
+                assert_eq!(machine.count(Reason::UnsupportedInstructionReached), 0);
+                finals.push((registers, reachable_memory(&mut machine, &blob)));
+            }
             assert_eq!(
-                String::from_utf8_lossy(&ours.stdout),
-                String::from_utf8_lossy(&theirs.stdout),
-                "output of {name} at {optimisation}"
+                finals[0].0, finals[1].0,
+                "registers of {name} at {optimisation}, full against none"
             );
-            assert_eq!(
-                ours.stdout, theirs.stdout,
-                "output bytes of {name} at {optimisation}"
+            assert!(
+                finals[0].1 == finals[1].1,
+                "memory of {name} at {optimisation}, full against none"
             );
-            assert_eq!(
-                String::from_utf8_lossy(&ours.stderr),
-                String::from_utf8_lossy(&theirs.stderr),
-                "error output of {name} at {optimisation}"
-            );
-            assert_eq!(
-                ours.status, theirs.status,
-                "exit status of {name} at {optimisation}"
-            );
-            eprintln!(
-                "{name} {optimisation}: {} bytes of code, matches, {:?}",
-                blob.code_bytes,
-                machine.counters()
-            );
-            assert_eq!(machine.count(Reason::UnsupportedInstructionReached), 0);
         }
         eprintln!(
             "{name}: {} distinct blobs from {} levels",
@@ -80,7 +89,7 @@ fn match_linux(programs: &[(&str, Library)]) {
 fn measure() {
     use std::io::Write;
     use std::time::{Duration, Instant};
-    use wcontainers_translator::{LookAhead, translate};
+    use wcontainers_translator::translate;
     use wcontainers_translator_test::runner::compile_time;
     let gzip = |bytes: &[u8]| {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());

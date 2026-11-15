@@ -241,8 +241,16 @@ impl Machine {
         }
     }
 
-    /// Place a blob at `load_address`, translate it from `starts` (blob offsets) and add its pieces.
-    pub fn load(&mut self, bytes: &[u8], code: Range<u64>, load_address: u64, starts: &[u64]) {
+    /// Place a blob at `load_address`, translate it from `starts` (blob offsets) with a look-ahead and add its
+    /// pieces. Code reached at run time with no piece is translated at look-ahead none.
+    pub fn load(
+        &mut self,
+        bytes: &[u8],
+        code: Range<u64>,
+        load_address: u64,
+        starts: &[u64],
+        look_ahead: LookAhead,
+    ) {
         self.write(load_address, bytes);
         let host = self.store.data_mut();
         host.blobs.push(Blob {
@@ -253,7 +261,7 @@ impl Machine {
         let end = (load_address + bytes.len() as u64).next_multiple_of(PAGE_SIZE);
         host.program_break = host.program_break.max(end);
         let index = host.blobs.len() - 1;
-        instantiate_code(&mut self.store, index, starts);
+        instantiate_code(&mut self.store, index, starts, look_ahead);
     }
 
     /// Raise the thread's stop flag while it is not running, as something outside the thread would.
@@ -487,7 +495,7 @@ fn hooks(linker: &mut Linker<Host>) {
                     Some(index) => {
                         let start = Instant::now();
                         let offset = address - caller.data().blobs[index].load_address;
-                        instantiate_code(&mut caller, index, &[offset]);
+                        instantiate_code(&mut caller, index, &[offset], LookAhead::None);
                         let time = start.elapsed();
                         slow_path(
                             caller.data_mut(),
@@ -546,12 +554,13 @@ fn instantiate_code(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
     index: usize,
     starts: &[u64],
+    look_ahead: LookAhead,
 ) {
     let mut store = store.as_context_mut();
     let host = store.data();
     let blob = &host.blobs[index];
     let translation =
-        translate(&blob.bytes, blob.code.clone(), starts, LookAhead::None).expect("translate");
+        translate(&blob.bytes, blob.code.clone(), starts, look_ahead).expect("translate");
     let module = Module::new(&host.engine, &translation.wasm).expect("code module");
     let thread = host.thread.unwrap();
     let memory = host.memory.unwrap();

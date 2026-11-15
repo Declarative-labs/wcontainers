@@ -16,6 +16,20 @@ use wcontainers_arm64::{Access, Emitter, Flag, Flags, Reg, Target, Trap, flag_va
 pub enum LookAhead {
     /// One instruction per piece. The permanent reference.
     None,
+    /// The whole blob: one piece per function found in it.
+    Full,
+}
+
+/// Checks a translation can leave out, only so that what each costs can be measured. Output without any of
+/// them is not correct.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Omit {
+    /// The stop check.
+    pub stop: bool,
+    /// The page permission check.
+    pub permissions: bool,
+    /// The check that a return goes where the caller expects.
+    pub returns: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,31 +51,32 @@ pub struct Translation {
 pub const PASSED: u32 = 5;
 
 // Function indices: the hooks, then the dispatcher, then the pieces.
-const F_SYSCALL: u32 = 0;
-const F_STOP: u32 = 1;
-const F_MEMORY_FAULT: u32 = 2;
-const F_LOAD_CODE: u32 = 3;
-const F_TRAP: u32 = 5;
-const F_DISPATCH: u32 = 6;
-const F_FIRST_PIECE: u32 = 7;
+pub(crate) const F_SYSCALL: u32 = 0;
+pub(crate) const F_STOP: u32 = 1;
+pub(crate) const F_MEMORY_FAULT: u32 = 2;
+pub(crate) const F_LOAD_CODE: u32 = 3;
+pub(crate) const F_WARN: u32 = 4;
+pub(crate) const F_TRAP: u32 = 5;
+pub(crate) const F_DISPATCH: u32 = 6;
+pub(crate) const F_FIRST_PIECE: u32 = 7;
 
 // Global indices: the runner's constants, then the thread's registers.
-const G_LOAD_ADDRESS: u32 = 0;
-const G_SLOT_BASE: u32 = 1;
-const G_TABLE_BASE: u32 = 2;
-const G_THREAD_BLOCK: u32 = 3;
-const G_PERMISSIONS: u32 = 4;
-const G_PERMISSION_PAGES: u32 = 5;
-const G_FIRST_REGISTER: u32 = 6;
+pub(crate) const G_LOAD_ADDRESS: u32 = 0;
+pub(crate) const G_SLOT_BASE: u32 = 1;
+pub(crate) const G_TABLE_BASE: u32 = 2;
+pub(crate) const G_THREAD_BLOCK: u32 = 3;
+pub(crate) const G_PERMISSIONS: u32 = 4;
+pub(crate) const G_PERMISSION_PAGES: u32 = 5;
+pub(crate) const G_FIRST_REGISTER: u32 = 6;
 
-const MEMORY_STATE: u32 = 1;
+pub(crate) const MEMORY_STATE: u32 = 1;
 
-fn g_x(n: u8) -> u32 {
+pub(crate) fn g_x(n: u8) -> u32 {
     G_FIRST_REGISTER + u32::from(n)
 }
-const G_SP: u32 = G_FIRST_REGISTER + 31;
-const G_PC: u32 = G_FIRST_REGISTER + 32;
-fn g_flag(flag: Flag) -> u32 {
+pub(crate) const G_SP: u32 = G_FIRST_REGISTER + 31;
+pub(crate) const G_PC: u32 = G_FIRST_REGISTER + 32;
+pub(crate) fn g_flag(flag: Flag) -> u32 {
     G_FIRST_REGISTER
         + 33
         + match flag {
@@ -71,14 +86,14 @@ fn g_flag(flag: Flag) -> u32 {
             Flag::V => 3,
         }
 }
-const G_TPIDR: u32 = G_FIRST_REGISTER + 37;
-fn g_v(n: u8) -> u32 {
+pub(crate) const G_TPIDR: u32 = G_FIRST_REGISTER + 37;
+pub(crate) fn g_v(n: u8) -> u32 {
     G_FIRST_REGISTER + 40 + u32::from(n)
 }
 
 // Parameter locals of every piece.
-const L_SP: u32 = 4;
-const L_RETURN: u32 = 5;
+pub(crate) const L_SP: u32 = 4;
+pub(crate) const L_RETURN: u32 = 5;
 
 /// Translate a blob from the given starts. `code` is where in the blob the code is; starts and every piece
 /// are blob offsets. The output never holds an absolute address.
@@ -88,43 +103,31 @@ pub fn translate(
     starts: &[u64],
     look_ahead: LookAhead,
 ) -> Result<Translation, Error> {
+    translate_omitting(blob, code, starts, look_ahead, Omit::default())
+}
+
+/// [`translate`] without some checks at full look-ahead, only to measure what they cost. Look-ahead none
+/// always keeps every check.
+pub fn translate_omitting(
+    blob: &[u8],
+    code: Range<u64>,
+    starts: &[u64],
+    look_ahead: LookAhead,
+    omit: Omit,
+) -> Result<Translation, Error> {
     if code.end > blob.len() as u64 || code.start > code.end || !code.start.is_multiple_of(4) {
         return Err(Error::BadCodeRange);
     }
-    let word = |offset: u64| {
-        let at = offset as usize;
-        u32::from_le_bytes(blob[at..at + 4].try_into().unwrap())
-    };
-    // Targets can wrap below zero, so nothing here may overflow.
-    let inside = |offset: u64| {
-        offset.is_multiple_of(4)
-            && (code.start..code.end).contains(&offset)
-            && code.end - offset >= 4
-    };
+    let blob_code = Code { blob, range: code };
     for &start in starts {
-        if !inside(start) {
+        if !blob_code.inside(start) {
             return Err(Error::BadStart(start));
         }
     }
-
-    // Follow direct control flow from the starts; every instruction reached is its own piece.
-    let LookAhead::None = look_ahead;
-    let mut pieces = BTreeMap::new();
-    let mut work: Vec<u64> = starts.to_vec();
-    while let Some(offset) = work.pop() {
-        if !inside(offset) || pieces.contains_key(&offset) {
-            continue;
-        }
-        let instruction = wcontainers_arm64::decode(word(offset));
-        pieces.insert(offset, instruction);
-        let flow = instruction.flow();
-        if flow.falls_through {
-            work.push(offset + 4);
-        }
-        if let Some(target) = flow.target {
-            work.push(offset.wrapping_add_signed(target));
-        }
-    }
+    let pieces = match look_ahead {
+        LookAhead::None => none_pieces(&blob_code, starts),
+        LookAhead::Full => crate::full::pieces(&blob_code, starts, omit),
+    };
     let index: BTreeMap<u64, u32> = pieces
         .keys()
         .enumerate()
@@ -138,21 +141,9 @@ pub fn translate(
     let mut code_section = CodeSection::new();
     functions.function(6);
     code_section.function(&dispatcher());
-    for (&offset, instruction) in &pieces {
+    for function in pieces.values() {
         functions.function(0);
-        let mut emitter = NoneEmitter {
-            offset,
-            word: word(offset),
-            pieces: &index,
-            body: Vec::new(),
-            locals: Vec::new(),
-        };
-        emitter.entry();
-        wcontainers_arm64::emit(&mut emitter, instruction);
-        emitter.sink().end();
-        let mut function = wasm_encoder::Function::new_with_locals_types(emitter.locals);
-        function.raw(emitter.body);
-        code_section.function(&function);
+        code_section.function(function);
     }
     module.section(&functions);
     module.section(&elements(&index));
@@ -164,7 +155,144 @@ pub fn translate(
     })
 }
 
-fn types() -> TypeSection {
+/// The blob and where its code is.
+pub(crate) struct Code<'a> {
+    pub blob: &'a [u8],
+    pub range: Range<u64>,
+}
+
+impl Code<'_> {
+    /// Whether a whole instruction sits at this offset. Targets can wrap below zero, so nothing here may
+    /// overflow.
+    pub fn inside(&self, offset: u64) -> bool {
+        offset.is_multiple_of(4) && self.range.contains(&offset) && self.range.end - offset >= 4
+    }
+
+    pub fn word(&self, offset: u64) -> u32 {
+        let at = offset as usize;
+        u32::from_le_bytes(self.blob[at..at + 4].try_into().unwrap())
+    }
+
+    /// Little endian bytes of the blob, if they are all inside it.
+    pub fn read(&self, offset: u64, bytes: u8) -> Option<u64> {
+        let at = usize::try_from(offset).ok()?;
+        let slice = self.blob.get(at..at.checked_add(bytes.into())?)?;
+        Some(
+            slice
+                .iter()
+                .rev()
+                .fold(0, |value, &b| value << 8 | u64::from(b)),
+        )
+    }
+}
+
+/// Look-ahead none: follow direct control flow from the starts; every instruction reached is its own piece.
+fn none_pieces(code: &Code<'_>, starts: &[u64]) -> BTreeMap<u64, wasm_encoder::Function> {
+    let mut found = BTreeMap::new();
+    let mut work: Vec<u64> = starts.to_vec();
+    while let Some(offset) = work.pop() {
+        if !code.inside(offset) || found.contains_key(&offset) {
+            continue;
+        }
+        let instruction = wcontainers_arm64::decode(code.word(offset));
+        found.insert(offset, instruction);
+        let flow = instruction.flow();
+        if flow.falls_through {
+            work.push(offset + 4);
+        }
+        if let Some(target) = flow.target {
+            work.push(offset.wrapping_add_signed(target));
+        }
+    }
+    let index: BTreeMap<u64, u32> = found
+        .keys()
+        .enumerate()
+        .map(|(i, &offset)| (offset, F_FIRST_PIECE + i as u32))
+        .collect();
+    found
+        .iter()
+        .map(|(&offset, instruction)| {
+            let mut emitter = NoneEmitter {
+                offset,
+                word: code.word(offset),
+                pieces: &index,
+                body: Vec::new(),
+                locals: Vec::new(),
+            };
+            emitter.entry();
+            wcontainers_arm64::emit(&mut emitter, instruction);
+            emitter.sink().end();
+            let mut function = wasm_encoder::Function::new_with_locals_types(emitter.locals);
+            function.raw(emitter.body);
+            (offset, function)
+        })
+        .collect()
+}
+
+/// Open an `if` entered when `len` bytes (at most a page) at the address in i64 local `at` may not all be
+/// accessed as `this` (permission table bits for one page) says, with the first address that may not be
+/// accessed in i64 local `fault_at`. The caller writes the slow path and ends the `if`.
+pub(crate) fn permission_test(
+    s: &mut InstructionSink<'_>,
+    at: u32,
+    len: u32,
+    this: u8,
+    locals: (u32, u32, u32),
+) {
+    let (page, allowed, fault_at) = locals;
+    // The bits of the next page sit two above those of this one.
+    let next = this << 2;
+    debug_assert_eq!(PAGE_READ << 2, NEXT_PAGE_READ);
+    debug_assert_eq!(PAGE_WRITE << 2, NEXT_PAGE_WRITE);
+    // The page's byte, or nothing allowed above the table.
+    s.local_get(at)
+        .i64_const(12)
+        .i64_shr_u()
+        .local_tee(page)
+        .global_get(G_PERMISSION_PAGES)
+        .i64_lt_u()
+        .if_(BlockType::Result(ValType::I32))
+        .global_get(G_PERMISSIONS)
+        .local_get(page)
+        .i32_wrap_i64()
+        .i32_add()
+        .i32_load8_u(memarg(MEMORY_STATE, 0, 0))
+        .else_()
+        .i32_const(0)
+        .end()
+        .local_tee(allowed);
+    // Bits wanted and missing: this page's, and the next page's if the access runs onto it.
+    s.i32_const(-1)
+        .i32_xor()
+        .i32_const((this | next).into())
+        .i32_const(this.into())
+        .local_get(at)
+        .i64_const(0xfff)
+        .i64_and()
+        .i64_const(len.into())
+        .i64_add()
+        .i64_const(0x1000)
+        .i64_gt_u()
+        .select()
+        .i32_and()
+        .if_(BlockType::Empty);
+    // The address itself if this page forbids it, otherwise the start of the next page.
+    s.local_get(at)
+        .local_get(at)
+        .i64_const(0xfff)
+        .i64_or()
+        .i64_const(1)
+        .i64_add()
+        .local_get(allowed)
+        .i32_const(this.into())
+        .i32_and()
+        .i32_const(this.into())
+        .i32_ne()
+        .select()
+        .local_set(fault_at);
+}
+
+pub(crate) fn types() -> TypeSection {
     let mut types = TypeSection::new();
     piece_type(&mut types); // 0
     types.ty().function([ValType::I64; 7], [ValType::I64]); // 1: syscall
@@ -179,7 +307,7 @@ fn types() -> TypeSection {
     types
 }
 
-fn imports() -> ImportSection {
+pub(crate) fn imports() -> ImportSection {
     let mut imports = ImportSection::new();
     for (name, ty) in [
         (HOOK_SYSCALL, 1),
@@ -246,7 +374,7 @@ fn imports() -> ImportSection {
 }
 
 /// Store the passed registers of a piece (or the dispatcher) into their globals.
-fn save_passed(s: &mut InstructionSink<'_>) {
+pub(crate) fn save_passed(s: &mut InstructionSink<'_>) {
     for i in 0..4 {
         s.local_get(i).global_set(g_x(i as u8));
     }
@@ -255,7 +383,7 @@ fn save_passed(s: &mut InstructionSink<'_>) {
 
 /// The dispatcher: go to the piece for a guest address through the lookup table, asking the runner for
 /// code when there is none. Parameters: the piece parameters, then the address.
-fn dispatcher() -> wasm_encoder::Function {
+pub(crate) fn dispatcher() -> wasm_encoder::Function {
     const TARGET: u32 = 6;
     const OFFSET: u32 = 7;
     const PIECE: u32 = 8;
@@ -289,7 +417,7 @@ fn dispatcher() -> wasm_encoder::Function {
 }
 
 /// Put every piece in the lookup table at instantiation, one segment per run of consecutive pieces.
-fn elements(index: &BTreeMap<u64, u32>) -> ElementSection {
+pub(crate) fn elements(index: &BTreeMap<u64, u32>) -> ElementSection {
     let mut elements = ElementSection::new();
     let mut runs: Vec<(u64, Vec<u32>)> = Vec::new();
     for (&offset, &function) in index {
@@ -314,7 +442,7 @@ fn elements(index: &BTreeMap<u64, u32>) -> ElementSection {
     elements
 }
 
-fn description<'a>(
+pub(crate) fn description<'a>(
     blob: &[u8],
     look_ahead: LookAhead,
     pieces: impl ExactSizeIterator<Item = &'a u64>,
@@ -419,7 +547,7 @@ impl NoneEmitter<'_> {
 }
 
 /// Push the guest address of a blob offset.
-fn address(s: &mut InstructionSink<'_>, offset: u64) {
+pub(crate) fn address(s: &mut InstructionSink<'_>, offset: u64) {
     s.global_get(G_LOAD_ADDRESS)
         .i64_const(offset as i64)
         .i64_add();
@@ -489,76 +617,26 @@ impl Emitter for NoneEmitter<'_> {
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {
-        let (this, both) = match access {
-            Access::Read => (PAGE_READ, PAGE_READ | NEXT_PAGE_READ),
-            Access::Write => (PAGE_WRITE, PAGE_WRITE | NEXT_PAGE_WRITE),
+        let this = match access {
+            Access::Read => PAGE_READ,
+            Access::Write => PAGE_WRITE,
         };
-        let page = self.local(ValType::I64);
-        let allowed = self.local(ValType::I32);
-        let fault_at = self.local(ValType::I64);
+        let locals = (
+            self.local(ValType::I64),
+            self.local(ValType::I32),
+            self.local(ValType::I64),
+        );
         let pc = self.offset;
         let mut s = self.sink();
-        // The page's byte, or nothing allowed above the table.
-        s.local_get(address)
-            .i64_const(12)
-            .i64_shr_u()
-            .local_tee(page)
-            .global_get(G_PERMISSION_PAGES)
-            .i64_lt_u()
-            .if_(BlockType::Result(ValType::I32))
-            .global_get(G_PERMISSIONS)
-            .local_get(page)
-            .i32_wrap_i64()
-            .i32_add()
-            .i32_load8_u(memarg(MEMORY_STATE, 0, 0))
-            .else_()
-            .i32_const(0)
-            .end()
-            .local_tee(allowed)
-            .i32_const(both.into())
-            .i32_and()
-            .i32_const(both.into())
-            .i32_ne()
-            .if_(BlockType::Empty);
-        // Slow path: fault at the address if this page forbids it, or at the next page if the access
-        // runs onto it.
-        s.i64_const(-1).local_set(fault_at);
-        s.local_get(address)
-            .i64_const(0xfff)
-            .i64_and()
-            .i64_const(bytes.into())
-            .i64_add()
-            .i64_const(0x1000)
-            .i64_gt_u()
-            .if_(BlockType::Empty)
-            .local_get(address)
-            .i64_const(0xfff)
-            .i64_or()
-            .i64_const(1)
-            .i64_add()
-            .local_set(fault_at)
-            .end();
-        s.local_get(allowed)
-            .i32_const(this.into())
-            .i32_and()
-            .i32_eqz()
-            .if_(BlockType::Empty)
-            .local_get(address)
-            .local_set(fault_at)
-            .end();
-        s.local_get(fault_at)
-            .i64_const(-1)
-            .i64_ne()
-            .if_(BlockType::Empty);
+        permission_test(&mut s, address, bytes, this, locals);
         save_passed(&mut s);
         self::address(&mut s, pc);
         s.global_set(G_PC)
-            .local_get(fault_at)
+            .local_get(locals.2)
             .i32_const(i32::from(access == Access::Write))
             .call(F_MEMORY_FAULT)
             .i32_const(UNWIND_LEAVE)
             .throw(0)
-            .end()
             .end();
     }
 
