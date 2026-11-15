@@ -917,6 +917,8 @@ struct FullEmitter<'a> {
     canonical: Vec<Flags>,
     labels: Vec<Label>,
     at: At,
+    /// Locals the immutable imported globals (by index) are copied into at the entry, once used.
+    fixed: [Option<u32>; 6],
 }
 
 impl<'a> FullEmitter<'a> {
@@ -949,6 +951,7 @@ impl<'a> FullEmitter<'a> {
                 flags: 1 << FLAGS_IN_GLOBALS,
                 aligned: false,
             },
+            fixed: [None; 6],
         };
         e.flag_locals = [0; 4].map(|_| e.new_local(ValType::I32));
         e.flag_state = e.new_local(ValType::I32);
@@ -970,7 +973,15 @@ impl<'a> FullEmitter<'a> {
         }
         e.tree(0);
         e.sink().unreachable().end();
+        let mut entry = Vec::new();
+        let mut s = InstructionSink::new(&mut entry);
+        for (global, local) in e.fixed.iter().enumerate() {
+            if let Some(local) = local {
+                s.global_get(global as u32).local_set(*local);
+            }
+        }
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
+        f.raw(entry);
         f.raw(e.body);
         f
     }
@@ -1221,7 +1232,7 @@ impl<'a> FullEmitter<'a> {
                 self.sink().return_call(f);
             }
             None => {
-                address(&mut self.sink(), target);
+                self.address(target);
                 self.sink().return_call(F_DISPATCH);
             }
         }
@@ -1237,7 +1248,7 @@ impl<'a> FullEmitter<'a> {
 
     fn push_pc(&mut self, pc: Pc) {
         match pc {
-            Pc::Offset(offset) => address(&mut self.sink(), offset),
+            Pc::Offset(offset) => self.address(offset),
             Pc::Local(local) => {
                 self.sink().local_get(local);
             }
@@ -1274,14 +1285,15 @@ impl<'a> FullEmitter<'a> {
     /// are loaded back from the globals just written rather than kept across the call: `live` (the tracked
     /// registers needed after) and the passed ones from `passed_from` up.
     fn stop_check(&mut self, pc: Pc, live: Registers, passed_from: u32) {
-        self.sink()
-            .global_get(G_THREAD_BLOCK)
-            .i32_load(memarg(
-                MEMORY_STATE,
-                wcontainers_abi::STOP_FLAG_OFFSET as u64,
-                2,
-            ))
-            .if_(BlockType::Empty);
+        let block = self.fixed(G_THREAD_BLOCK);
+        let mut s = self.sink();
+        block.push(&mut s);
+        s.i32_load(memarg(
+            MEMORY_STATE,
+            wcontainers_abi::STOP_FLAG_OFFSET as u64,
+            2,
+        ))
+        .if_(BlockType::Empty);
         self.save(pc);
         self.sink()
             .call(F_STOP)
@@ -1321,6 +1333,7 @@ impl<'a> FullEmitter<'a> {
             self.temporary(ValType::I32),
             self.temporary(ValType::I64),
         );
+        let table = self.table();
         for chunk in (0..len).step_by(4096) {
             let piece = (len - chunk).min(4096);
             self.sink()
@@ -1329,12 +1342,44 @@ impl<'a> FullEmitter<'a> {
                 .i64_add()
                 .local_set(at);
             let mut s = self.sink();
-            permission_fast(&mut s, at, PAGE_READ | PAGE_WRITE, locals.0);
-            permission_exact(&mut s, at, piece, PAGE_READ | PAGE_WRITE, locals);
+            permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, locals.0);
+            permission_exact(&mut s, table, at, piece, PAGE_READ | PAGE_WRITE, locals);
             let offset = self.at.offset;
             self.leave_to(offset);
             self.sink().end().end();
         }
+    }
+
+    /// The local an immutable imported global is read from.
+    fn fixed(&mut self, global: u32) -> Fixed {
+        let local = match self.fixed[global as usize] {
+            Some(local) => local,
+            None => {
+                let ty = match global {
+                    G_LOAD_ADDRESS | G_TABLE_BASE | G_PERMISSION_PAGES => ValType::I64,
+                    _ => ValType::I32,
+                };
+                let local = self.new_local(ty);
+                self.fixed[global as usize] = Some(local);
+                local
+            }
+        };
+        Fixed::Local(local)
+    }
+
+    fn table(&mut self) -> Table {
+        Table {
+            at: self.fixed(G_PERMISSIONS),
+            pages: self.fixed(G_PERMISSION_PAGES),
+        }
+    }
+
+    /// Push the guest address of a blob offset.
+    fn address(&mut self, offset: u64) {
+        let load = self.fixed(G_LOAD_ADDRESS);
+        let mut s = self.sink();
+        load.push(&mut s);
+        s.i64_const(offset as i64).i64_add();
     }
 
     fn temporary(&mut self, ty: ValType) -> u32 {
@@ -1433,10 +1478,11 @@ impl<'a> FullEmitter<'a> {
             labels.push(label);
         }
         // A target that is not a multiple of four past the lowest case turns into a huge index.
-        self.sink()
-            .local_get(target)
-            .global_get(G_LOAD_ADDRESS)
-            .i64_sub()
+        let load = self.fixed(G_LOAD_ADDRESS);
+        let mut s = self.sink();
+        s.local_get(target);
+        load.push(&mut s);
+        s.i64_sub()
             .i64_const(lo as i64)
             .i64_sub()
             .i64_const(2)
@@ -1511,7 +1557,7 @@ impl Emitter for FullEmitter<'_> {
 
     fn this_address(&mut self) {
         let offset = self.at.offset;
-        address(&mut self.sink(), offset);
+        self.address(offset);
     }
 
     fn set_flags(&mut self, flags: Flags) {
@@ -1626,16 +1672,17 @@ impl Emitter for FullEmitter<'_> {
             self.temporary(ValType::I64),
         );
         let offset = self.at.offset;
+        let table = self.table();
         match plan {
             CheckPlan::Skip => {}
             CheckPlan::Exact => {
                 // An address the table allows has a clear top byte, so only one it does not is untagged and
                 // tried again.
                 let mut s = self.sink();
-                permission_fast(&mut s, address, this, locals.0);
+                permission_fast(&mut s, table, address, this, locals.0);
                 untag(&mut s, address);
                 s.local_set(address);
-                permission_exact(&mut s, address, bytes, this, locals);
+                permission_exact(&mut s, table, address, bytes, this, locals);
                 self.save(Pc::Offset(offset));
                 self.sink()
                     .local_get(locals.2)
@@ -1654,8 +1701,8 @@ impl Emitter for FullEmitter<'_> {
                     .i64_add()
                     .local_set(start);
                 let mut s = self.sink();
-                permission_fast(&mut s, start, this, locals.0);
-                permission_exact(&mut s, start, len, this, locals);
+                permission_fast(&mut s, table, start, this, locals.0);
+                permission_exact(&mut s, table, start, len, this, locals);
                 self.leave_to(offset);
                 self.sink().end().end();
             }
@@ -1695,7 +1742,7 @@ impl Emitter for FullEmitter<'_> {
         for i in 0..PASSED {
             s.local_get(i);
         }
-        address(&mut s, offset + 4);
+        self.address(offset + 4);
         match target {
             Target::Relative(by) => {
                 let to = offset.wrapping_add_signed(by);
@@ -1704,7 +1751,7 @@ impl Emitter for FullEmitter<'_> {
                         self.sink().call(f);
                     }
                     None => {
-                        address(&mut self.sink(), to);
+                        self.address(to);
                         self.sink().call(F_DISPATCH);
                     }
                 }

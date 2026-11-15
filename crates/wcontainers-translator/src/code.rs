@@ -230,33 +230,64 @@ fn none_pieces(code: &Code<'_>, starts: &[u64]) -> BTreeMap<u64, wasm_encoder::F
         .collect()
 }
 
+/// Where a piece reads one of the module's immutable imported values: the global, or a local the piece
+/// copied it into at its entry, which the engine can keep in a register.
+#[derive(Clone, Copy)]
+pub(crate) enum Fixed {
+    Global(u32),
+    Local(u32),
+}
+
+impl Fixed {
+    pub(crate) fn push(self, s: &mut InstructionSink<'_>) {
+        match self {
+            Fixed::Global(g) => s.global_get(g),
+            Fixed::Local(l) => s.local_get(l),
+        };
+    }
+}
+
+/// Where the permission table is: its place in the state memory and its length in pages.
+#[derive(Clone, Copy)]
+pub(crate) struct Table {
+    pub(crate) at: Fixed,
+    pub(crate) pages: Fixed,
+}
+
+impl Table {
+    pub(crate) const GLOBALS: Table = Table {
+        at: Fixed::Global(G_PERMISSIONS),
+        pages: Fixed::Global(G_PERMISSION_PAGES),
+    };
+}
+
 /// Push the permission table byte of the page of the address in i64 local `at`, leaving the page number in
 /// i64 local `page`. Pages past the table read the byte after it, which allows nothing.
-fn permission_byte(s: &mut InstructionSink<'_>, at: u32, page: u32) {
-    s.local_get(at)
-        .i64_const(12)
-        .i64_shr_u()
-        .local_tee(page)
-        .global_get(G_PERMISSION_PAGES)
-        .local_get(page)
-        .global_get(G_PERMISSION_PAGES)
-        .i64_lt_u()
-        .select()
-        .i32_wrap_i64()
-        .global_get(G_PERMISSIONS)
-        .i32_add()
-        .i32_load8_u(memarg(MEMORY_STATE, 0, 0));
+fn permission_byte(s: &mut InstructionSink<'_>, table: Table, at: u32, page: u32) {
+    s.local_get(at).i64_const(12).i64_shr_u().local_tee(page);
+    table.pages.push(s);
+    s.local_get(page);
+    table.pages.push(s);
+    s.i64_lt_u().select().i32_wrap_i64();
+    table.at.push(s);
+    s.i32_add().i32_load8_u(memarg(MEMORY_STATE, 0, 0));
 }
 
 /// Open an `if` entered unless the page of the address in i64 local `at`, and the page after it, allow an
 /// access as `this` (permission table bits for one page) says. This is the fast test: it is also entered
 /// for an access that would be allowed but sits on a page before one that does not allow it.
-pub(crate) fn permission_fast(s: &mut InstructionSink<'_>, at: u32, this: u8, page: u32) {
+pub(crate) fn permission_fast(
+    s: &mut InstructionSink<'_>,
+    table: Table,
+    at: u32,
+    this: u8,
+    page: u32,
+) {
     // The bits of the next page sit two above those of this one.
     let both = this | this << 2;
     debug_assert_eq!(PAGE_READ << 2, NEXT_PAGE_READ);
     debug_assert_eq!(PAGE_WRITE << 2, NEXT_PAGE_WRITE);
-    permission_byte(s, at, page);
+    permission_byte(s, table, at, page);
     s.i32_const(both.into())
         .i32_and()
         .i32_const(both.into())
@@ -269,6 +300,7 @@ pub(crate) fn permission_fast(s: &mut InstructionSink<'_>, at: u32, this: u8, pa
 /// caller writes the slow path and ends the `if`.
 pub(crate) fn permission_exact(
     s: &mut InstructionSink<'_>,
+    table: Table,
     at: u32,
     len: u32,
     this: u8,
@@ -276,7 +308,7 @@ pub(crate) fn permission_exact(
 ) {
     let (page, allowed, fault_at) = locals;
     let next = this << 2;
-    permission_byte(s, at, page);
+    permission_byte(s, table, at, page);
     // Bits wanted and missing: this page's, and the next page's if the access runs onto it.
     s.local_tee(allowed)
         .i32_const(-1)
@@ -647,8 +679,8 @@ impl Emitter for NoneEmitter<'_> {
         let mut s = self.sink();
         wcontainers_arm64::untag(&mut s, address);
         s.local_set(address);
-        permission_fast(&mut s, address, this, locals.0);
-        permission_exact(&mut s, address, bytes, this, locals);
+        permission_fast(&mut s, Table::GLOBALS, address, this, locals.0);
+        permission_exact(&mut s, Table::GLOBALS, address, bytes, this, locals);
         save_passed(&mut s);
         self::address(&mut s, pc);
         s.global_set(G_PC)
