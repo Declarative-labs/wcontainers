@@ -139,8 +139,10 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
       case 66n: {
         const out = file(a[0]);
         if (!out) return -EBADF;
-        if (a[2] > IOV_MAX) return -EINVAL;
-        const bytes = read(a[1], 16n * a[2]);
+        // Linux takes the vector count as a 32 bit number.
+        const count = BigInt.asUintN(32, a[2]);
+        if (count > IOV_MAX) return -EINVAL;
+        const bytes = read(a[1], 16n * count);
         if (!bytes) return -EFAULT;
         const view = new DataView(bytes.buffer);
         const vectors = [];

@@ -661,10 +661,12 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
             if file(caller.data_mut(), a0).is_none() {
                 return -EBADF;
             }
-            if a2 > IOV_MAX {
+            // Linux takes the vector count as a 32 bit number.
+            let count = u64::from(a2 as u32);
+            if count > IOV_MAX {
                 return -EINVAL;
             }
-            let Some(vectors) = read(caller, a1, 16 * a2) else {
+            let Some(vectors) = read(caller, a1, 16 * count) else {
                 return -EFAULT;
             };
             let vectors: Vec<(u64, u64)> = vectors

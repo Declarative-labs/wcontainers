@@ -63,6 +63,7 @@ void _start(void) {
     result(syscall3(66, 1, (i64)(after - 8), 1));
     result(syscall3(66, 1, (i64)four, 1025));
     result(syscall3(66, 1, (i64)four, 0));
+    result(syscall3(66, 1, (i64)four, 0x100000001));
     syscall3(94, 5, 0, 0);
     for (;;) {
     }
