@@ -256,6 +256,15 @@ impl Machine {
         instantiate_code(&mut self.store, index, starts);
     }
 
+    /// Raise the thread's stop flag while it is not running, as something outside the thread would.
+    pub fn raise_stop_flag(&self) {
+        write_shared(
+            &self.state,
+            BLOCK_AT as usize + STOP_FLAG_OFFSET,
+            &1u32.to_le_bytes(),
+        );
+    }
+
     pub fn set_registers(&mut self, registers: &RegisterBlock) {
         write_shared(&self.state, BLOCK_AT as usize, registers.as_bytes());
         self.load_state.call(&mut self.store, ()).unwrap();
@@ -427,12 +436,14 @@ fn hooks(linker: &mut Linker<Host>) {
                 BLOCK_AT as usize + STOP_FLAG_OFFSET,
                 &0u32.to_le_bytes(),
             );
-            if caller.data().stopped.is_none() {
-                stop(&mut caller, Stopped::Exit(Exit::Stop));
+            // The runner raised the flag itself to make the thread leave.
+            if caller.data().stopped.is_some() {
+                return 1;
             }
+            // Raised from outside: the stand-in clears it and the thread carries on.
             let pc = snapshot(&mut caller).pc;
             slow_path(caller.data_mut(), Reason::StoppedByFlag, pc, Duration::ZERO);
-            1
+            0
         })
         .unwrap();
     linker
@@ -603,9 +614,30 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
     const EBADF: i64 = 9;
     const EFAULT: i64 = 14;
     const ENOSYS: i64 = 38;
+    const EINVAL: i64 = 22;
+    // Linux's limit on the vectors of one writev.
+    const IOV_MAX: u64 = 1024;
     let [a0, a1, a2, ..] = call.arguments;
     let memory = caller.data().memory.unwrap();
+    // Guest bytes, if every one is on a page the guest may read. Like a write to a pipe on Linux, a buffer
+    // that is only partly readable gives a fault and writes nothing.
     let read = |caller: &mut Caller<'_, Host>, address: u64, length: u64| -> Option<Vec<u8>> {
+        if length > 0 {
+            let last = address.checked_add(length - 1)?;
+            if last >= memory.data_size(&*caller) as u64 {
+                return None;
+            }
+            let state = caller.data().state.clone().unwrap();
+            let table = state.data();
+            let readable = |page: u64| {
+                table
+                    .get(PERMISSIONS_AT as usize + page as usize)
+                    .is_some_and(|byte| unsafe { *byte.get() } & contract::PAGE_READ != 0)
+            };
+            if !(address / PAGE_SIZE..=last / PAGE_SIZE).all(readable) {
+                return None;
+            }
+        }
         let mut bytes = vec![0; usize::try_from(length).ok()?];
         memory.read(&*caller, address as usize, &mut bytes).ok()?;
         Some(bytes)
@@ -629,16 +661,25 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
             if file(caller.data_mut(), a0).is_none() {
                 return -EBADF;
             }
-            let Some(vectors) = a2
-                .checked_mul(16)
-                .and_then(|length| read(caller, a1, length))
-            else {
+            if a2 > IOV_MAX {
+                return -EINVAL;
+            }
+            let Some(vectors) = read(caller, a1, 16 * a2) else {
                 return -EFAULT;
             };
+            let vectors: Vec<(u64, u64)> = vectors
+                .chunks(16)
+                .map(|v| {
+                    let half = |at: usize| u64::from_le_bytes(v[at..at + 8].try_into().unwrap());
+                    (half(0), half(8))
+                })
+                .collect();
+            // A length that is negative as a signed number is invalid, checked before anything is read.
+            if vectors.iter().any(|&(_, length)| (length as i64) < 0) {
+                return -EINVAL;
+            }
             let mut gathered = Vec::new();
-            for vector in vectors.chunks(16) {
-                let base = u64::from_le_bytes(vector[..8].try_into().unwrap());
-                let length = u64::from_le_bytes(vector[8..].try_into().unwrap());
+            for (base, length) in vectors {
                 let Some(bytes) = read(caller, base, length) else {
                     return -EFAULT;
                 };

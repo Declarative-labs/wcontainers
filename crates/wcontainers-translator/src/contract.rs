@@ -82,10 +82,10 @@ pub fn permission_byte(
     next: wcontainers_abi::Permissions,
 ) -> u8 {
     use wcontainers_abi::Permissions as P;
-    let bits = |p: P| {
-        u8::from(p.contains(P::READ)) * PAGE_READ + u8::from(p.contains(P::WRITE)) * PAGE_WRITE
+    let bits = |p: P, read: u8, write: u8| {
+        (u8::from(p.contains(P::READ)) * read) | (u8::from(p.contains(P::WRITE)) * write)
     };
-    bits(this) | bits(next) << 2
+    bits(this, PAGE_READ, PAGE_WRITE) | bits(next, NEXT_PAGE_READ, NEXT_PAGE_WRITE)
 }
 
 /// The return address the bottom loop passes to the first piece it calls. Any value is correct: a piece

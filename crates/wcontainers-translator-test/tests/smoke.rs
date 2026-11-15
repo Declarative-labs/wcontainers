@@ -1,11 +1,17 @@
 //! The runner and look-ahead none on a few hand-encoded programs.
 
 use wcontainers_abi::{Permissions, RegisterBlock};
+use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls};
 
 const LOAD: u64 = 0x10000;
 
 fn run(words: &[u32]) -> (Stopped, RegisterBlock, Machine) {
+    run_with(words, |_| {})
+}
+
+/// Run after `prepare` has done something to the machine.
+fn run_with(words: &[u32], prepare: impl FnOnce(&Machine)) -> (Stopped, RegisterBlock, Machine) {
     let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let mut machine = Machine::new(1 << 20, LOAD, 1024, Syscalls::StandIn);
     machine.set_permissions(
@@ -16,6 +22,7 @@ fn run(words: &[u32]) -> (Stopped, RegisterBlock, Machine) {
     let mut registers = RegisterBlock::ZERO;
     registers.pc = LOAD;
     machine.set_registers(&registers);
+    prepare(&machine);
     let (stopped, registers) = machine.run();
     (stopped, registers, machine)
 }
@@ -27,28 +34,44 @@ fn exit_status() {
     assert_eq!(stopped, Stopped::Finished(42));
 }
 
+// x0 = 0; x1 = 10; loop: bl add; subs x1, x1, #1; b.ne loop; exit(x0)
+// add: add x0, x0, x1; ret
+const LOOP_AND_CALL: [u32; 9] = [
+    0xd280_0000, // movz x0, #0
+    0xd280_0141, // movz x1, #10
+    0x9400_0005, // bl +5 (add)
+    0xf100_0421, // subs x1, x1, #1
+    0x54ff_ffc1, // b.ne -2
+    0xd280_0ba8, // movz x8, #93
+    0xd400_0001, // svc #0
+    0x8b01_0000, // add x0, x0, x1
+    0xd65f_03c0, // ret
+];
+
 #[test]
 fn loop_and_call() {
-    // x0 = 0; x1 = 10; loop: bl add; subs x1, x1, #1; b.ne loop; exit(x0)
-    // add: add x0, x0, x1; ret
-    let words = [
-        0xd280_0000, // movz x0, #0
-        0xd280_0141, // movz x1, #10
-        0x9400_0005, // bl +5 (add)
-        0xf100_0421, // subs x1, x1, #1
-        0x54ff_ffc1, // b.ne -2
-        0xd280_0ba8, // movz x8, #93
-        0xd400_0001, // svc #0
-        0x8b01_0000, // add x0, x0, x1
-        0xd65f_03c0, // ret
-    ];
-    let (stopped, _, _) = run(&words);
+    let (stopped, _, machine) = run(&LOOP_AND_CALL);
     assert_eq!(stopped, Stopped::Finished(55));
+    assert_eq!(machine.count(Reason::StoppedByFlag), 0);
+}
+
+/// The stand-in behind the stop hook clears the flag and the thread carries on.
+#[test]
+fn a_raised_stop_flag_is_cleared_and_the_thread_carries_on() {
+    let (stopped, _, machine) = run_with(&LOOP_AND_CALL, Machine::raise_stop_flag);
+    assert_eq!(stopped, Stopped::Finished(55));
+    assert_eq!(machine.count(Reason::StoppedByFlag), 1);
+    let warnings: Vec<_> = machine
+        .warnings()
+        .iter()
+        .filter(|w| w.reason == Reason::StoppedByFlag.name())
+        .map(|w| w.detail)
+        .collect();
+    assert_eq!(warnings, [LOAD]);
 }
 
 #[test]
 fn slow_paths_are_counted_and_warned_once_per_place() {
-    use wcontainers_translator::contract::Reason;
     // movz x8, #999; svc #0; svc #0; movz x0, #3; movz x8, #93; svc #0
     let words = [
         0xd280_7ce8,

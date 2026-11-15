@@ -7,7 +7,11 @@ const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
 #[test]
 fn programs_match_linux() {
-    match_linux(&[("integers", Library::None), ("tables", Library::None)]);
+    match_linux(&[
+        ("integers", Library::None),
+        ("tables", Library::None),
+        ("buffers", Library::None),
+    ]);
 }
 
 #[test]

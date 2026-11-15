@@ -4,10 +4,11 @@
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{Library, build, native};
 
-const PROGRAMS: [(&str, Library); 3] = [
+const PROGRAMS: [(&str, Library); 4] = [
     ("hello", Library::C),
     ("integers", Library::None),
     ("tables", Library::None),
+    ("buffers", Library::None),
 ];
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 

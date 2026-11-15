@@ -18,5 +18,6 @@ SECTIONS {
     *(.got .got.*) *(.data .data.*) *(.bss .bss.*) *(COMMON)
   }
   .end : { BYTE(0) }
+  PROVIDE_HIDDEN(__blob_end = .);
   /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) *(.ARM.attributes) }
 }

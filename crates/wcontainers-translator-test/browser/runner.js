@@ -96,12 +96,13 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     const first = Math.floor(start / pageSize);
     const last = Math.ceil(end / pageSize);
     for (let page = first; page < last; page++) table[page] = permissions;
-    const bits = (p) =>
-      (p & contract.read ? contract.pageRead : 0) | (p & contract.write ? contract.pageWrite : 0);
+    const bits = (p, read, write) => (p & contract.read ? read : 0) | (p & contract.write ? write : 0);
     const bytes = new Uint8Array(state.buffer);
     for (let page = Math.max(first - 1, 0); page < Math.min(last, permissionPages); page++) {
       const next = page + 1 < permissionPages ? table[page + 1] : 0;
-      bytes[PERMISSIONS_AT + page] = bits(table[page]) | (bits(next) << 2);
+      bytes[PERMISSIONS_AT + page] =
+        bits(table[page], contract.pageRead, contract.pageWrite) |
+        bits(next, contract.nextPageRead, contract.nextPageWrite);
     }
   }
 
@@ -109,10 +110,20 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   function standIn(number, a) {
     const EBADF = 9n;
     const EFAULT = 14n;
+    const EINVAL = 22n;
     const ENOSYS = 38n;
+    // Linux's limit on the vectors of one writev.
+    const IOV_MAX = 1024n;
+    // Guest bytes, if every one is on a page the guest may read. Like a write to a pipe on Linux, a buffer
+    // that is only partly readable gives a fault and writes nothing.
     const read = (address, length) => {
       const end = address + length;
       if (end > BigInt(memoryBytes)) return null;
+      const table = new Uint8Array(state.buffer, PERMISSIONS_AT, permissionPages);
+      const size = BigInt(pageSize);
+      for (let page = address / size; length > 0n && page <= (end - 1n) / size; page++) {
+        if (!(table[Number(page)] & contract.pageRead)) return null;
+      }
       return guest().slice(Number(address), Number(end));
     };
     const file = (fd) => (fd === 1n ? stdout : fd === 2n ? stderr : null);
@@ -128,12 +139,19 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
       case 66n: {
         const out = file(a[0]);
         if (!out) return -EBADF;
-        const vectors = read(a[1], 16n * a[2]);
-        if (!vectors) return -EFAULT;
-        const view = new DataView(vectors.buffer);
+        if (a[2] > IOV_MAX) return -EINVAL;
+        const bytes = read(a[1], 16n * a[2]);
+        if (!bytes) return -EFAULT;
+        const view = new DataView(bytes.buffer);
+        const vectors = [];
+        for (let i = 0; i < bytes.length; i += 16) {
+          vectors.push([view.getBigUint64(i, true), view.getBigUint64(i + 8, true)]);
+        }
+        // A length that is negative as a signed number is invalid, checked before anything is read.
+        if (vectors.some(([, length]) => BigInt.asIntN(64, length) < 0n)) return -EINVAL;
         const gathered = [];
-        for (let i = 0; i < vectors.length; i += 16) {
-          const bytes = read(view.getBigUint64(i, true), view.getBigUint64(i + 8, true));
+        for (const [base, length] of vectors) {
+          const bytes = read(base, length);
           if (!bytes) return -EFAULT;
           gathered.push(...bytes);
         }
@@ -159,9 +177,11 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     [contract.hookSyscall]: (number, ...a) => standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v))),
     [contract.hookStop]: () => {
       Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 0);
-      if (!stopped) stop({ kind: "stop" });
+      // The runner raised the flag itself to make the thread leave.
+      if (stopped) return 1;
+      // Raised from outside: the stand-in clears it and the thread carries on.
       slowPath(reason("stopped by the flag"), registers().pc, 0);
-      return 1;
+      return 0;
     },
     [contract.hookMemoryFault]: (address, access) => {
       slowPath(reason("memory fault"), BigInt.asUintN(64, address), 0);
