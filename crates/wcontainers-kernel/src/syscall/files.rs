@@ -1679,9 +1679,7 @@ pub(super) fn utimensat(
         if !only_now {
             return Err(Errno::EPERM);
         }
-        if !inode.permits(&credentials, W_OK, true) {
-            return Err(Errno::EACCES);
-        }
+        crate::fs::permission(&inode, &credentials, W_OK, kernel.threads[&tid].process)?;
     }
     let pick = |time: Option<&__kernel_timespec>, old: Time| match time {
         None => Some(now),
