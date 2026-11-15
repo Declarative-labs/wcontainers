@@ -110,3 +110,42 @@ fn words_in_no_form_are_undefined() {
         assert_eq!(decode(word), Instruction::Undefined, "{word:#010x}");
     }
 }
+
+/// Every word we translate is a word of a form layer 1 compares with the CPU, so no meaning is given to a
+/// word whose form is unproven. `WC_DECODE_WORDS` random words (default 200,000), seeded from
+/// `WC_DECODE_SEED`.
+#[test]
+fn translated_words_are_of_forms_layer_1_covers() {
+    use wcontainers_translator_test::layer1::covered;
+    let count = setting("WC_DECODE_WORDS", 200_000) as u32;
+    let seed = setting("WC_DECODE_SEED", 1);
+    let mut key = [0u8; 32];
+    key[..8].copy_from_slice(&seed.to_le_bytes());
+    key[8..16].copy_from_slice(b"any word");
+    let mut config = Config::with_cases(count);
+    config.failure_persistence = None;
+    let mut runner =
+        TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
+    let result = runner.run(&any::<u32>(), |word| match decode(word) {
+        Instruction::Undefined | Instruction::Unsupported => Ok(()),
+        // A word of a form taken from a hint space runs as that hint, which does nothing.
+        Instruction::Nothing
+            if forms::all()
+                .iter()
+                .any(|f| f.hint_without_feature() && word & f.mask == f.value) =>
+        {
+            Ok(())
+        }
+        _ if forms::all().iter().any(|f| f.presented(word) && covered(f)) => Ok(()),
+        other => Err(TestCaseError::fail(format!(
+            "{word:#010x} decodes as {other:?}, but no form layer 1 covers holds it: {:?}",
+            forms::all()
+                .iter()
+                .filter(|f| f.presented(word))
+                .map(|f| &f.name)
+                .collect::<Vec<_>>()
+        ))),
+    });
+    eprintln!("decoding: {count} random words, seed {seed}");
+    result.unwrap();
+}
