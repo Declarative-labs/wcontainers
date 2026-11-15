@@ -17,6 +17,8 @@ use wcontainers_arm64::{
     flag_value, habits, untag,
 };
 
+mod proof;
+
 /// How far back a jump through a register looks for the switch it may come from.
 const SWITCH_WINDOW: u64 = 64;
 
@@ -495,6 +497,16 @@ struct Plan {
     /// what it keeps, and by loop header, the numbers forgotten when the loop is entered.
     kept: HashMap<u64, usize>,
     kept_by_loop: Vec<Vec<usize>>,
+    /// By loop header, the loops that have a copy without the checks their accesses are proven not to need.
+    versioned: HashMap<usize, proof::Versioned>,
+    /// By the header of such a loop, the blocks outside it placed after both copies (and no longer under the
+    /// block in the loop that dominates them), so either copy reaches them by a branch.
+    after: Vec<Vec<usize>>,
+    /// The accesses whose checks those copies leave out.
+    proven: HashSet<u64>,
+    /// By edge leaving loops, registers those loops keep in the thread block: the ones needed after it are
+    /// loaded there.
+    reload_on_exit: HashMap<(usize, usize), Registers>,
 }
 
 /// How the stack pointer moves at an instruction: by a known amount (before or after its access), or to
@@ -712,6 +724,38 @@ impl Plan {
             })
             .collect();
         let entering = |b: usize, s: usize| bodies.get(&s).is_some_and(|body| !body[b]);
+        // Registers kept in the thread block rather than in locals through a loop that neither reads nor
+        // writes them, so they take no engine register while it runs: loaded again where it is left. Not
+        // done for a loop left through a jump table, whose edges have no place for the loads.
+        let through: HashMap<usize, Registers> = bodies
+            .iter()
+            .map(|(&h, body)| {
+                let switch = (0..n).any(|b| body[b] && blocks[b].table.is_some());
+                (
+                    h,
+                    if switch {
+                        Registers::NONE
+                    } else {
+                        untouched[h]
+                    },
+                )
+            })
+            .collect();
+        let leaving = |b: usize, s: usize| {
+            bodies
+                .iter()
+                .filter(|(_, body)| body[b] && !body[s])
+                .fold(Registers::NONE, |r, (h, _)| r.union(through[h]))
+        };
+        let mut reload_on_exit = HashMap::new();
+        for (b, block) in blocks.iter().enumerate() {
+            for &s in &block.succs {
+                let r = leaving(b, s);
+                if r != Registers::NONE {
+                    reload_on_exit.insert((b, s), r);
+                }
+            }
+        }
         let mut written_before = vec![Registers::NONE; n];
 
         // Forward: what may be dirty, where the flags are, and the frame known to be allowed.
@@ -782,7 +826,10 @@ impl Plan {
             changed = false;
             for &b in order.iter().rev() {
                 let mut live = blocks[b].succs.iter().fold(Registers::NONE, |l, &s| {
-                    let l = l.union(live_in_blocks[s]);
+                    let l = l.union(
+                        live_in_blocks[s]
+                            .minus(*reload_on_exit.get(&(b, s)).unwrap_or(&Registers::NONE)),
+                    );
                     if entering(b, s) {
                         l.union(written_before[s])
                     } else {
@@ -861,6 +908,48 @@ impl Plan {
                 }
             }
         }
+        // Innermost loops without calls whose accesses can be proven allowed before they run.
+        let dominates = |a: usize, b: usize| {
+            doms.dominators(NodeIndex::new(b))
+                .is_some_and(|mut d| d.any(|x| x.index() == a))
+        };
+        let mut versioned = HashMap::new();
+        let mut after = vec![Vec::new(); n];
+        for &h in &headers {
+            let body = &bodies[&h];
+            if headers.iter().any(|&g| g != h && body[g]) || !quiet(h) {
+                continue;
+            }
+            let shape = proof::LoopShape {
+                function,
+                decoded,
+                checks: &checks,
+                body,
+                latches: preds[h]
+                    .iter()
+                    .copied()
+                    .filter(|&u| rank[h] <= rank[u])
+                    .collect(),
+                dominates: &dominates,
+            };
+            let Some(v) = proof::versioned(&shape) else {
+                continue;
+            };
+            versioned.insert(h, v);
+            for y in (1..n).filter(|&y| !body[y]) {
+                let idom = doms.immediate_dominator(NodeIndex::new(y)).unwrap().index();
+                if body[idom] {
+                    children[idom].retain(|&c| c != y);
+                    merge[y] = true;
+                    after[h].push(y);
+                }
+            }
+            after[h].sort_by_key(|&b| std::cmp::Reverse(rank[b]));
+        }
+        let proven = versioned
+            .values()
+            .flat_map(|v| v.regions.iter().map(|r| r.at))
+            .collect();
         let dynamic_flags = flags_in.iter().any(|f| f.count_ones() > 1);
         let calls_out = function_instructions(function).any(|o| {
             let d = &decoded[&o];
@@ -887,6 +976,10 @@ impl Plan {
             outside,
             kept,
             kept_by_loop,
+            versioned,
+            after,
+            proven,
+            reload_on_exit,
         }
     }
 }
@@ -1097,6 +1190,9 @@ enum AfterStop {
     /// Go on in a new call of this piece or of a loop piece (by function index) at the loop jumped back to,
     /// so an engine that has optimised the function since this call began runs the optimised code.
     Enter(u32),
+    /// Write back and go on at once in a new call of a piece whose entry check calls the stop hook, so the
+    /// loop has no call that returns to it.
+    Hand(u32),
     /// Go on with every local as it is: the hook changes nothing when it says carry on. Used at the entry,
     /// before any register but the passed ones is in a local.
     Continue,
@@ -1139,6 +1235,11 @@ struct FullEmitter<'a> {
     /// For each number in [`Plan::kept`], the i64 locals holding the run of pages last found allowed: its
     /// first address and how far past it an access may start (0 when nothing is kept).
     kept_pages: Vec<(u32, u32)>,
+    /// Emitting the copy of a loop that leaves out the checks of [`Plan::proven`].
+    unchecked: bool,
+    /// The piece checks the stop flag at its entry: when it calls or leaves to other pieces, and always for
+    /// a loop piece, which a stop check at a jump back enters.
+    entry_check: bool,
 }
 
 impl<'a> FullEmitter<'a> {
@@ -1151,6 +1252,7 @@ impl<'a> FullEmitter<'a> {
         own: u32,
         omit: Omit,
     ) -> wasm_encoder::Function {
+        let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
             function,
             plan,
@@ -1177,6 +1279,8 @@ impl<'a> FullEmitter<'a> {
             fixed: [None; 6],
             own,
             kept_pages: Vec::new(),
+            unchecked: false,
+            entry_check: (plan.calls_out || loop_piece) && !omit.stop,
         };
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
@@ -1193,7 +1297,7 @@ impl<'a> FullEmitter<'a> {
             let state = e.flag_state;
             e.sink().i32_const(FLAGS_IN_BLOCK as i32).local_set(state);
         }
-        if plan.calls_out && !omit.stop {
+        if e.entry_check {
             e.stop_check(Pc::Offset(function.entry), AfterStop::Continue);
         }
         for bit in plan.live_in[0].bits() {
@@ -1368,18 +1472,74 @@ impl<'a> FullEmitter<'a> {
                 let local = self.register(bit);
                 Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
             }
+            // Both locals are set, so nothing kept from before is alive through the loop.
             for number in self.plan.kept_by_loop[b].clone() {
-                let (_, room) = self.kept_pages[number];
-                self.sink().i64_const(0).local_set(room);
+                let (low, room) = self.kept_pages[number];
+                self.sink()
+                    .i64_const(0)
+                    .local_set(low)
+                    .i64_const(0)
+                    .local_set(room);
             }
-            self.sink().loop_(BlockType::Empty);
-            self.labels.push(Label::Loop(b));
-            self.within(b, &merges);
-            self.sink().end();
-            self.labels.pop();
+            let after = self.plan.after[b].clone();
+            for &y in &after {
+                self.sink().block(BlockType::Empty);
+                self.labels.push(Label::Merge(y));
+            }
+            match self.plan.versioned.get(&b).filter(|_| self.copies(b)) {
+                Some(v) => {
+                    self.proof(v);
+                    self.sink().if_(BlockType::Empty);
+                    self.labels.push(Label::Other);
+                    self.unchecked = true;
+                    self.loop_of(b, &merges);
+                    self.unchecked = false;
+                    self.sink().else_();
+                    // The loop with its checks is in its loop piece, so a function's own code holds only
+                    // the copy without them.
+                    match self.loops.get(&self.function.blocks[b].start) {
+                        Some(&f) if b != 0 => {
+                            self.at = At {
+                                offset: self.function.blocks[b].start,
+                                block: b,
+                                dirty: self.plan.dirty_in[b],
+                                flags: self.plan.flags_in[b],
+                                aligned: self.plan.aligned_in[b],
+                            };
+                            self.write_back(false);
+                            self.arguments();
+                            self.sink().return_call(f);
+                        }
+                        _ => self.loop_of(b, &merges),
+                    }
+                    self.sink().end();
+                    self.labels.pop();
+                }
+                None => self.loop_of(b, &merges),
+            }
+            for &y in after.iter().rev() {
+                self.sink().end();
+                self.labels.pop();
+                self.tree(y);
+            }
         } else {
             self.within(b, &merges);
         }
+    }
+
+    fn loop_of(&mut self, b: usize, merges: &[usize]) {
+        self.sink().loop_(BlockType::Empty);
+        self.labels.push(Label::Loop(b));
+        self.within(b, merges);
+        self.sink().end();
+        self.labels.pop();
+    }
+
+    /// Whether the loop at block `b` gets its copy without proven checks: after a stop the thread must
+    /// carry on where the proof is made again, at the loop's entry.
+    fn copies(&self, b: usize) -> bool {
+        !self.omit.permissions
+            && (self.omit.stop || b == 0 || self.loops.contains_key(&self.function.blocks[b].start))
     }
 
     fn within(&mut self, b: usize, merges: &[usize]) {
@@ -1438,6 +1598,13 @@ impl<'a> FullEmitter<'a> {
     }
 
     fn branch(&mut self, to: usize) {
+        if let Some(&kept) = self.plan.reload_on_exit.get(&(self.at.block, to)) {
+            let block = self.fixed(G_THREAD_BLOCK);
+            for bit in self.plan.live_in[to].intersect(kept).bits() {
+                let local = self.register(bit);
+                Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
+            }
+        }
         match self.label_for(to) {
             Some(label) => {
                 if let Label::Loop(_) = label
@@ -1445,8 +1612,9 @@ impl<'a> FullEmitter<'a> {
                 {
                     let start = self.function.blocks[to].start;
                     let after = match self.loops.get(&start) {
+                        _ if to == 0 && self.entry_check => AfterStop::Hand(self.own),
                         _ if to == 0 => AfterStop::Enter(self.own),
-                        Some(&f) => AfterStop::Enter(f),
+                        Some(&f) => AfterStop::Hand(f),
                         None => AfterStop::Reload(self.plan.live_in[to], 0),
                     };
                     self.stop_check(Pc::Offset(start), after);
@@ -1584,6 +1752,12 @@ impl<'a> FullEmitter<'a> {
             2,
         ))
         .if_(BlockType::Empty);
+        if let AfterStop::Hand(f) = after {
+            self.write_back(false);
+            self.arguments();
+            self.sink().return_call(f).end();
+            return;
+        }
         self.save(pc);
         self.sink()
             .call(F_STOP)
@@ -1604,7 +1778,7 @@ impl<'a> FullEmitter<'a> {
                     self.sink().i64_const(0).local_set(room);
                 }
             }
-            AfterStop::Continue => {}
+            AfterStop::Continue | AfterStop::Hand(_) => {}
         }
         self.sink().end();
     }
@@ -1972,6 +2146,9 @@ impl Emitter for FullEmitter<'_> {
         };
         let plan = self.plan.checks[&self.at.offset];
         if let CheckPlan::Skip = plan {
+            return;
+        }
+        if self.unchecked && self.plan.proven.contains(&self.at.offset) {
             return;
         }
         let locals = (
