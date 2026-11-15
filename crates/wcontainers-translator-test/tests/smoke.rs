@@ -93,3 +93,45 @@ fn slow_paths_are_counted_and_warned_once_per_place() {
         .collect();
     assert_eq!(warnings, [(999, 1)]);
 }
+
+/// A flag raised by another thread while a translated loop runs is seen, at every look-ahead: the check must
+/// read the flag from memory each time round.
+#[test]
+fn stop_flag_raised_while_running() {
+    // movz x0, #0x4000, lsl #16; loop: subs x0, x0, #1; b.ne loop; movz x8, #93; svc #0
+    let words = [
+        0xd2a8_0000,
+        0xf100_0400,
+        0x54ff_ffe1,
+        0xd280_0ba8,
+        0xd400_0001,
+    ];
+    let blob: Vec<u8> = words.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
+    for look_ahead in [LookAhead::None, LookAhead::Full] {
+        let mut machine = Machine::new(1 << 20, LOAD, 1024, Syscalls::StandIn);
+        machine.set_permissions(
+            LOAD..LOAD + 0x1000,
+            Permissions::READ | Permissions::EXECUTE,
+        );
+        machine.load(&blob, 0..blob.len() as u64, LOAD, &[0], look_ahead);
+        let mut registers = RegisterBlock::ZERO;
+        registers.pc = LOAD;
+        machine.set_registers(&registers);
+        let raise = machine.stop_flag_raiser();
+        let raiser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            raise();
+        });
+        let (stopped, registers) = machine.run();
+        raiser.join().unwrap();
+        assert_eq!(stopped, Stopped::Finished(0), "{look_ahead:?}");
+        assert_eq!(machine.count(Reason::StoppedByFlag), 1, "{look_ahead:?}");
+        // It was seen inside the loop, which then carried on to the end.
+        let seen_at = machine.warnings()[0].detail;
+        assert!(
+            [LOAD + 4, LOAD + 8].contains(&seen_at),
+            "{look_ahead:?}: {seen_at:#x}"
+        );
+        assert_eq!(registers.x[0], 0);
+    }
+}

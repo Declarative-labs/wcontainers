@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
 use wcontainers_translator::contract;
-use wcontainers_translator::{LookAhead, translate as translate_blob};
+use wcontainers_translator::{LookAhead, Omit, translate_omitting};
 
 thread_local! {
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -33,12 +33,24 @@ fn answer(bytes: Vec<u8>) -> i32 {
     length
 }
 
-/// Translate the blob in the input buffer from one start at look-ahead none. Returns the length of the code
-/// module, or -1 if the start or the code range is not valid.
+/// Translate the blob in the input buffer from one start, at look-ahead none (0) or full (1), leaving out the
+/// checks set in `omit` (1: stop, 2: permissions, 4: returns; only to measure them). Returns the length of
+/// the code module, or -1 if the start or the code range is not valid.
 #[unsafe(no_mangle)]
-pub extern "C" fn translate(code_start: u64, code_end: u64, start: u64) -> i32 {
-    let result = INPUT
-        .with_borrow(|blob| translate_blob(blob, code_start..code_end, &[start], LookAhead::None));
+pub extern "C" fn translate(code_start: u64, code_end: u64, start: u64, look_ahead: u32, omit: u32) -> i32 {
+    let look_ahead = if look_ahead == 1 {
+        LookAhead::Full
+    } else {
+        LookAhead::None
+    };
+    let omit = Omit {
+        stop: omit & 1 != 0,
+        permissions: omit & 2 != 0,
+        returns: omit & 4 != 0,
+    };
+    let result = INPUT.with_borrow(|blob| {
+        translate_omitting(blob, code_start..code_end, &[start], look_ahead, omit)
+    });
     match result {
         Ok(translation) => answer(translation.wasm),
         Err(_) => -1,

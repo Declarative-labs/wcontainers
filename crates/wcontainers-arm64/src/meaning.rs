@@ -113,8 +113,12 @@ pub trait Emitter {
     /// Push the thread pointer as an i64.
     fn get_thread_pointer(&mut self);
     fn set_thread_pointer(&mut self);
-    /// Stop the thread with a memory fault unless `bytes` bytes at the address in this i64 local may be
-    /// accessed this way.
+    /// Whether the stack pointer is known here to be a multiple of 16, so its alignment needs no check.
+    fn stack_aligned(&mut self) -> bool {
+        false
+    }
+    /// Untag the address in this i64 local in place (see [`untag`]), then stop the thread with a memory
+    /// fault unless `bytes` bytes at it may be accessed this way.
     fn check(&mut self, address: u32, bytes: u32, access: Access);
     /// Go to the target. Nothing after it in this instruction runs.
     fn jump(&mut self, target: Target);
@@ -551,9 +555,8 @@ fn add_with<E: Emitter + ?Sized>(
 /// Push the address in an i64 local as the CPU uses it. Linux turns on Top Byte Ignore for user space: when
 /// bit 55 is clear the top byte is ignored, which here means cleared; when it is set the address is used
 /// whole.
-fn untag<E: Emitter + ?Sized>(e: &mut E, local: u32) {
-    e.sink()
-        .local_get(local)
+pub fn untag(sink: &mut InstructionSink<'_>, local: u32) {
+    sink.local_get(local)
         .local_get(local)
         .i64_const(8)
         .i64_shl()
@@ -566,8 +569,8 @@ fn untag<E: Emitter + ?Sized>(e: &mut E, local: u32) {
         .i64_and();
 }
 
-/// The address of a load or store, untagged, in a fresh i64 local, and the write back to make after the
-/// access: the base register and what to add to the tagged address.
+/// The address of a load or store as the program computed it, in a fresh i64 local for the check to untag,
+/// and the write back to make after the access: the base register and what to add to the tagged address.
 fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Reg, u32, i64)>) {
     let local = e.local(ValType::I64);
     let base = match address {
@@ -578,7 +581,7 @@ fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Re
         Address::Literal { .. } => None,
     };
     // Linux has the CPU check that the stack pointer is a multiple of 16 when it is the base.
-    if base == Some(Reg::Sp) {
+    if base == Some(Reg::Sp) && !e.stack_aligned() {
         e.get(Reg::Sp);
         e.sink()
             .local_tee(local)
@@ -624,10 +627,9 @@ fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Re
     if let Address::PreIndex { base, .. } = address {
         post = Some((base, 0));
     }
-    untag(e, local);
-    let untagged = e.local(ValType::I64);
-    e.sink().local_set(untagged);
-    (untagged, post.map(|(base, offset)| (base, local, offset)))
+    let at = e.local(ValType::I64);
+    e.sink().local_get(local).local_set(at);
+    (at, post.map(|(base, offset)| (base, local, offset)))
 }
 
 /// The write back of a pre or post indexed access, after the access itself.
@@ -1215,7 +1217,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
         I::BranchRegister { op, rn } => {
             e.get(rn);
             let tagged = save(e, Width::X64);
-            untag(e, tagged);
+            untag(&mut e.sink(), tagged);
             let target = save(e, Width::X64);
             match op {
                 BranchRegister::Br => e.jump(Target::Address(target)),

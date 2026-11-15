@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
+use wcontainers_translator::{LookAhead, Omit};
 
 fn package() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser")
@@ -43,6 +44,8 @@ pub fn translator() -> PathBuf {
 /// What happened in Chrome: the program's output and status, and the runner's report.
 pub struct Report {
     pub ran: Ran,
+    /// How long the guest ran in the page, translating and compiling the first module not included.
+    pub run_seconds: f64,
     /// The slow paths taken, as `(reason, count)`.
     pub counters: Vec<(String, u64)>,
     pub user_agent: String,
@@ -58,7 +61,13 @@ impl Report {
 }
 
 /// Run a blob through the translator at look-ahead none in Chrome, starting at its first byte.
+/// Run a blob in Chrome at look-ahead none.
 pub fn translated(blob: &Blob) -> Report {
+    translated_with(blob, LookAhead::None, Omit::default())
+}
+
+/// Run a blob in Chrome at a look-ahead, leaving out some checks only to measure them.
+pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report {
     let place = placement(blob);
     let directory = target().join("cases").join(&blob.name);
     std::fs::create_dir_all(&directory).unwrap();
@@ -76,6 +85,11 @@ pub fn translated(blob: &Blob) -> Report {
         "memoryBytes": place.memory_bytes,
         "regions": regions,
         "sp": place.sp,
+        "lookAhead": match look_ahead {
+            LookAhead::None => 0,
+            LookAhead::Full => 1,
+        },
+        "omit": u8::from(omit.stop) | (u8::from(omit.permissions) << 1) | (u8::from(omit.returns) << 2),
     });
     std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
 
@@ -129,6 +143,7 @@ pub fn translated(blob: &Blob) -> Report {
             status,
         },
         counters,
+        run_seconds: result["runMilliseconds"].as_f64().unwrap_or(f64::NAN) / 1000.0,
         user_agent: result["userAgent"].as_str().unwrap_or_default().to_string(),
     }
 }

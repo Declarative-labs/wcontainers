@@ -13,7 +13,7 @@ use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_arm64::{
     Access, Address, BranchRegister, Carry, Cond, Effects, Emitter, Flag, Flags, Instruction,
     Operand, Reg, Registers, Target, Trap, Width, condition_direct, condition_from_flags, emit,
-    flag_value, habits,
+    flag_value, habits, untag,
 };
 
 /// How far back a jump through a register looks for the switch it may come from.
@@ -410,12 +410,13 @@ struct Plan {
     children: Vec<Vec<usize>>,
     merge: Vec<bool>,
     loop_header: Vec<bool>,
-    /// Registers to load at the entry.
-    live_in: Registers,
+    /// Registers that must hold their true value at the start of each block; the entry's are loaded.
+    live_in: Vec<Registers>,
     /// Registers that must hold their true value after each instruction.
     live_after: HashMap<u64, Registers>,
     dirty_in: Vec<Registers>,
     flags_in: Vec<FlagStates>,
+    aligned_in: Vec<bool>,
     /// Shape of every flag setting kept lazily, by its flag state number.
     shapes: Vec<Shape>,
     /// Some point does not know statically where the flags are, so a local says.
@@ -466,6 +467,25 @@ fn stack_move(d: &Decoded) -> StackMove {
             _ if d.effects.defs.has(Reg::Sp) => StackMove::Unknown,
             _ => StackMove::None,
         },
+    }
+}
+
+/// Whether the stack pointer is known to be a multiple of 16 after an instruction: an access through it checks
+/// that, and moving it by a multiple of 16 keeps it.
+fn aligned_after(d: &Decoded, aligned: bool) -> bool {
+    let checked = d.instruction.memory_access().is_some_and(|a| {
+        matches!(
+            a.address,
+            Address::Offset { base: Reg::Sp, .. }
+                | Address::PreIndex { base: Reg::Sp, .. }
+                | Address::PostIndex { base: Reg::Sp, .. }
+                | Address::Indexed { base: Reg::Sp, .. }
+        )
+    });
+    match stack_move(d) {
+        StackMove::None => aligned || checked,
+        StackMove::By { delta, .. } => (aligned || checked) && delta % 16 == 0,
+        StackMove::Unknown => false,
     }
 }
 
@@ -559,6 +579,8 @@ impl Plan {
         let mut dirty_in = vec![Registers::NONE; n];
         let mut flags_in: Vec<FlagStates> = vec![0; n];
         let mut frame_in: Vec<Option<Frame>> = vec![None; n];
+        let mut aligned_in = vec![true; n];
+        aligned_in[0] = false;
         flags_in[0] = 1 << FLAGS_IN_GLOBALS;
         frame_in[0] = Some(None);
         let mut changed = true;
@@ -570,8 +592,10 @@ impl Plan {
                 };
                 let mut dirty = dirty_in[b];
                 let mut flags = flags_in[b];
+                let mut aligned = aligned_in[b];
                 for o in instructions(b) {
                     let d = &decoded[&o];
+                    aligned = aligned_after(d, aligned);
                     dirty = dirty_after(d, dirty);
                     flags = flag_state(d, flags);
                     frame = frame_after(d, frame);
@@ -588,10 +612,13 @@ impl Plan {
                             _ => None,
                         },
                     };
+                    let joined_aligned = aligned_in[s] && aligned;
                     if joined_dirty != dirty_in[s]
                         || joined_flags != flags_in[s]
                         || frame_in[s] != Some(joined_frame)
+                        || joined_aligned != aligned_in[s]
                     {
+                        aligned_in[s] = joined_aligned;
                         dirty_in[s] = joined_dirty;
                         flags_in[s] = joined_flags;
                         frame_in[s] = Some(joined_frame);
@@ -643,10 +670,11 @@ impl Plan {
             children,
             merge,
             loop_header,
-            live_in: live_in_blocks[0],
+            live_in: live_in_blocks,
             live_after,
             dirty_in,
             flags_in,
+            aligned_in,
             shapes,
             dynamic_flags,
             checks,
@@ -842,6 +870,8 @@ struct At {
     block: usize,
     dirty: Registers,
     flags: FlagStates,
+    /// The stack pointer is known to be a multiple of 16.
+    aligned: bool,
 }
 
 /// What a stop check or write back sets `pc` to.
@@ -900,6 +930,7 @@ impl<'a> FullEmitter<'a> {
                 block: 0,
                 dirty: Registers::NONE,
                 flags: 1 << FLAGS_IN_GLOBALS,
+                aligned: false,
             },
         };
         e.flag_locals = [0; 4].map(|_| e.new_local(ValType::I32));
@@ -908,7 +939,7 @@ impl<'a> FullEmitter<'a> {
             let flags = e.canonical_flags(shape);
             e.canonical.push(flags);
         }
-        for bit in plan.live_in.bits() {
+        for bit in plan.live_in[0].bits() {
             let local = e.register(bit);
             let global = global_of(bit);
             e.sink().global_get(global).local_set(local);
@@ -918,7 +949,7 @@ impl<'a> FullEmitter<'a> {
             e.sink().i32_const(FLAGS_IN_GLOBALS as i32).local_set(state);
         }
         if plan.calls_out && !omit.stop {
-            e.stop_check(Pc::Offset(function.entry));
+            e.stop_check(Pc::Offset(function.entry), plan.live_in[0], 0);
         }
         e.tree(0);
         e.sink().unreachable().end();
@@ -1026,6 +1057,7 @@ impl<'a> FullEmitter<'a> {
             block: b,
             dirty: self.plan.dirty_in[b],
             flags: self.plan.flags_in[b],
+            aligned: self.plan.aligned_in[b],
         };
         for offset in (block.start..block.end).step_by(4) {
             self.at.offset = offset;
@@ -1035,8 +1067,9 @@ impl<'a> FullEmitter<'a> {
             {
                 self.frame_check(from, len);
             }
-            let instruction = self.decoded().instruction;
-            emit(self, &instruction);
+            let decoded = self.decoded();
+            emit(self, &decoded.instruction);
+            self.at.aligned = aligned_after(&decoded, self.at.aligned);
             let released: Vec<_> = self.taken.drain(mark..).collect();
             self.free.extend(released);
         }
@@ -1065,7 +1098,8 @@ impl<'a> FullEmitter<'a> {
                     && !self.omit.stop
                 {
                     let start = self.function.blocks[to].start;
-                    self.stop_check(Pc::Offset(start));
+                    let live = self.plan.live_in[to];
+                    self.stop_check(Pc::Offset(start), live, 0);
                 }
                 let depth = self.depth(label);
                 self.sink().br(depth);
@@ -1140,10 +1174,13 @@ impl<'a> FullEmitter<'a> {
         self.sink().global_set(G_PC);
     }
 
-    fn stop_check(&mut self, pc: Pc) {
+    /// Call the stop hook if the flag is raised. If the thread carries on, nothing has changed, so registers
+    /// are loaded back from the globals just written rather than kept across the call: `live` (the tracked
+    /// registers needed after) and the passed ones from `passed_from` up.
+    fn stop_check(&mut self, pc: Pc, live: Registers, passed_from: u32) {
         self.sink()
             .global_get(G_THREAD_BLOCK)
-            .i32_atomic_load(memarg(
+            .i32_load(memarg(
                 MEMORY_STATE,
                 wcontainers_abi::STOP_FLAG_OFFSET as u64,
                 2,
@@ -1155,8 +1192,22 @@ impl<'a> FullEmitter<'a> {
             .if_(BlockType::Empty)
             .i32_const(UNWIND_LEAVE)
             .throw(0)
-            .end()
             .end();
+        self.reload(live, passed_from);
+        self.sink().end();
+    }
+
+    /// Load registers from their globals: the tracked ones in `live`, and the passed ones from `passed_from`.
+    fn reload(&mut self, live: Registers, passed_from: u32) {
+        for bit in live.intersect(tracked()).bits() {
+            let local = self.register(bit);
+            self.sink().global_get(global_of(bit)).local_set(local);
+        }
+        let mut s = self.sink();
+        for i in passed_from..4 {
+            s.global_get(g_x(i as u8)).local_set(i);
+        }
+        s.global_get(G_SP).local_set(L_SP);
     }
 
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
@@ -1181,10 +1232,12 @@ impl<'a> FullEmitter<'a> {
                 .i64_const(from + i64::from(chunk))
                 .i64_add()
                 .local_set(at);
-            permission_test(&mut self.sink(), at, piece, PAGE_READ | PAGE_WRITE, locals);
+            let mut s = self.sink();
+            permission_fast(&mut s, at, PAGE_READ | PAGE_WRITE, locals.0);
+            permission_exact(&mut s, at, piece, PAGE_READ | PAGE_WRITE, locals);
             let offset = self.at.offset;
             self.leave_to(offset);
-            self.sink().end();
+            self.sink().end().end();
         }
     }
 
@@ -1267,7 +1320,10 @@ impl<'a> FullEmitter<'a> {
                 .iter()
                 .any(|&(_, b)| self.plan.rank[b] <= self.plan.rank[self.at.block])
         {
-            self.stop_check(Pc::Local(target));
+            let live = present
+                .iter()
+                .fold(Registers::NONE, |l, &(_, b)| l.union(self.plan.live_in[b]));
+            self.stop_check(Pc::Local(target), live, 0);
         }
         let index = self.temporary(ValType::I64);
         self.sink().block(BlockType::Empty);
@@ -1451,6 +1507,10 @@ impl Emitter for FullEmitter<'_> {
         self.sink().global_get(G_TPIDR);
     }
 
+    fn stack_aligned(&mut self) -> bool {
+        self.at.aligned
+    }
+
     fn set_thread_pointer(&mut self) {
         self.sink().global_set(G_TPIDR);
     }
@@ -1476,7 +1536,13 @@ impl Emitter for FullEmitter<'_> {
         match plan {
             CheckPlan::Skip => {}
             CheckPlan::Exact => {
-                permission_test(&mut self.sink(), address, bytes, this, locals);
+                // An address the table allows has a clear top byte, so only one it does not is untagged and
+                // tried again.
+                let mut s = self.sink();
+                permission_fast(&mut s, address, this, locals.0);
+                untag(&mut s, address);
+                s.local_set(address);
+                permission_exact(&mut s, address, bytes, this, locals);
                 self.save(Pc::Offset(offset));
                 self.sink()
                     .local_get(locals.2)
@@ -1484,6 +1550,7 @@ impl Emitter for FullEmitter<'_> {
                     .call(F_MEMORY_FAULT)
                     .i32_const(UNWIND_LEAVE)
                     .throw(0)
+                    .end()
                     .end();
             }
             CheckPlan::Group { from, len } => {
@@ -1493,9 +1560,11 @@ impl Emitter for FullEmitter<'_> {
                     .i64_const(from)
                     .i64_add()
                     .local_set(start);
-                permission_test(&mut self.sink(), start, len, this, locals);
+                let mut s = self.sink();
+                permission_fast(&mut s, start, this, locals.0);
+                permission_exact(&mut s, start, len, this, locals);
                 self.leave_to(offset);
-                self.sink().end();
+                self.sink().end().end();
             }
         }
     }
@@ -1601,10 +1670,11 @@ impl Emitter for FullEmitter<'_> {
         }
         self.sink().call(F_SYSCALL).local_set(0);
         self.at.dirty = Registers::NONE;
-        if !self.omit.stop {
-            // The kernel raises the flag during the call when the thread must not carry on.
-            self.stop_check(Pc::Offset(next));
-        }
+        // Nothing but x0 has changed, and everything was just written back.
+        let live = self.plan.live_after[&self.at.offset];
+        self.reload(live, 1);
+        // The kernel raises the flag during the call when the thread must not carry on.
+        self.stop_check(Pc::Offset(next), live, 0);
     }
 
     fn trap(&mut self, trap: Trap) {

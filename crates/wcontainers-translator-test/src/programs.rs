@@ -7,8 +7,9 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 use wcontainers_abi::{Permissions, RegisterBlock};
-use wcontainers_translator::LookAhead;
+use wcontainers_translator::{LookAhead, Omit};
 
 /// Where every blob is linked and loaded.
 pub const LOAD: u64 = 0x40_0000;
@@ -165,19 +166,39 @@ pub fn placement(blob: &Blob) -> Placement {
 
 /// Run a blob through the translator in wasmtime, starting at its first byte.
 pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, RegisterBlock) {
+    let (ran, machine, registers, _) = translated_omitting(blob, look_ahead, Omit::default());
+    (ran, machine, registers)
+}
+
+/// [`translated`] without some checks, also giving how long the guest ran (translating and compiling not
+/// included).
+pub fn translated_omitting(
+    blob: &Blob,
+    look_ahead: LookAhead,
+    omit: Omit,
+) -> (Ran, Machine, RegisterBlock, Duration) {
     let slots = blob.code_bytes.div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, LOAD, slots, Syscalls::StandIn);
     for (range, permissions) in place.regions {
         machine.set_permissions(range, permissions);
     }
-    machine.load(&blob.bytes, 0..blob.code_bytes, LOAD, &[0], look_ahead);
+    machine.load_omitting(
+        &blob.bytes,
+        0..blob.code_bytes,
+        LOAD,
+        &[0],
+        look_ahead,
+        omit,
+    );
     machine.write(place.sp, &place.stack);
     let mut registers = RegisterBlock::ZERO;
     registers.pc = LOAD;
     registers.sp = place.sp;
     machine.set_registers(&registers);
+    let started = Instant::now();
     let (stopped, registers) = machine.run();
+    let ran_for = started.elapsed();
     let status = match stopped {
         // Linux reports the low 8 bits of the status.
         Stopped::Finished(status) => status & 0xff,
@@ -199,7 +220,7 @@ pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, Register
         stderr: machine.stderr().to_vec(),
         status,
     };
-    (ran, machine, registers)
+    (ran, machine, registers, ran_for)
 }
 
 /// Every byte the guest may reach: the blob's pages, then the stack.
@@ -211,6 +232,41 @@ pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
         bytes.extend(part);
     }
     bytes
+}
+
+/// The shortest of `runs` native runs of a blob on ARM64 Linux in Docker, in seconds, by busybox's `time` in
+/// one container (so starting the container is not counted).
+pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
+    let reference = build_reference();
+    let directory = out_directory().join("native");
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = format!("{}.bin", unique(&blob.name));
+    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
+    let script = format!(
+        "for i in $(seq {runs}); do time /r/wcontainers-reference blob /p/{file} {LOAD:#x} {STACK_TOP:#x} > /dev/null; done"
+    );
+    let output = Command::new("docker")
+        .args(["run", "--rm", "--network", "none", "--name"])
+        .arg(container_name("timing"))
+        .arg("-v")
+        .arg(format!("{}:/r:ro", reference.display()))
+        .arg("-v")
+        .arg(format!("{}:/p:ro", directory.display()))
+        .args(["alpine:latest", "sh", "-c", &script])
+        .output()
+        .expect("run docker");
+    std::fs::remove_file(directory.join(&file)).unwrap();
+    // busybox prints "real\t0m 1.23s".
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter_map(|l| l.strip_prefix("real"))
+        .map(|t| {
+            let t = t.trim();
+            let (minutes, seconds) = t.split_once('m').expect("minutes");
+            minutes.parse::<f64>().unwrap() * 60.0
+                + seconds.trim().trim_end_matches('s').parse::<f64>().unwrap()
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Run a blob natively on ARM64 Linux in Docker.

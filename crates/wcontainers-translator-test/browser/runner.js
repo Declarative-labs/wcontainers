@@ -27,16 +27,17 @@ function constant(value, type) {
   return new WebAssembly.Global({ value: type, mutable: false }, value);
 }
 
-function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp, stack }) {
+function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp, stack, lookAhead, omit }) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
     new Uint8Array(translator.memory.buffer, translator.output(), length).slice();
   const contract = JSON.parse(new TextDecoder().decode(result(translator.contract())));
 
   const pageSize = contract.pageSize;
-  const permissionPages = Math.ceil(memoryBytes / pageSize);
+  // The table covers the whole memory, and one more byte, always zero, follows it.
+  const permissionPages = (Math.ceil(memoryBytes / 65536) * 65536) / pageSize;
   const memory = memory64(Math.ceil(memoryBytes / 65536));
-  const statePages = Math.ceil((PERMISSIONS_AT + permissionPages) / 65536);
+  const statePages = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 65536);
   const state = new WebAssembly.Memory({ initial: statePages, maximum: statePages, shared: true });
   const guest = () => new Uint8Array(memory.buffer);
   const flags = () => new Int32Array(state.buffer);
@@ -211,13 +212,14 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     },
   };
 
-  // Translate blob `index` from `start` and instantiate it, adding its pieces to the lookup table.
-  function instantiateCode(index, start) {
+  // Translate blob `index` from `start` and instantiate it, adding its pieces to the lookup table. Code reached
+  // at run time is translated at look-ahead none.
+  function instantiateCode(index, start, lookAhead = 0, omit = 0) {
     const b = blobs[index];
     // The translator's memory may grow while it makes room, so its buffer is taken after.
     const at = translator.input(b.bytes.length);
     new Uint8Array(translator.memory.buffer, at, b.bytes.length).set(b.bytes);
-    const length = translator.translate(b.codeStart, b.codeEnd, start);
+    const length = translator.translate(b.codeStart, b.codeEnd, start, lookAhead, omit);
     if (length < 0) throw new Error(`no translation from ${start}`);
     const module = new WebAssembly.Module(result(length));
     new WebAssembly.Instance(module, {
@@ -253,7 +255,7 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   guest().set(stack, sp);
   blobs.push({ bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) });
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
-  instantiateCode(0, 0n);
+  instantiateCode(0, 0n, lookAhead, omit);
 
   const block = new DataView(state.buffer, BLOCK_AT, contract.threadBlockSize);
   for (let i = 0; i < contract.threadBlockSize; i++) block.setUint8(i, 0);
@@ -261,6 +263,7 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   block.setBigUint64(contract.registerSp, BigInt(sp), true);
   thread.exports[contract.loadState]();
 
+  const started = performance.now();
   try {
     thread.exports[contract.run]();
   } catch (error) {
@@ -268,8 +271,10 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     slowPath(reason("fault without exact registers"), 0, 0);
     stopped = { kind: "fault without exact registers" };
   }
+  const runMilliseconds = performance.now() - started;
   return {
     stopped,
+    runMilliseconds,
     pc: snapshot ? snapshot.pc.toString() : null,
     stdout,
     stderr,

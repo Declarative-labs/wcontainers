@@ -28,7 +28,8 @@ pub const TABLE_BASE: &str = "table_base";
 pub const THREAD_BLOCK: &str = "thread_block";
 /// i32: where in the state memory the page permission table starts, one byte per page.
 pub const PERMISSIONS: &str = "permissions";
-/// i64: how many pages the permission table covers. Addresses at or above `pages * PAGE_SIZE` fault.
+/// i64: how many pages the permission table covers. The byte after the last one must be zero, so addresses at
+/// or above `pages * PAGE_SIZE` fault.
 pub const PERMISSION_PAGES: &str = "permission_pages";
 
 /// The lookup table, exported by the thread module.

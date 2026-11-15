@@ -24,9 +24,10 @@ pub enum LookAhead {
 /// them is not correct.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Omit {
-    /// The stop check.
+    /// The stop check at jumps back and at piece entries (not the one after a system call, which is how the
+    /// kernel stops a thread).
     pub stop: bool,
-    /// The page permission check.
+    /// The page permission check, and with it the untagging of data addresses, which it does.
     pub permissions: bool,
     /// The check that a return goes where the caller expects.
     pub returns: bool,
@@ -229,10 +230,44 @@ fn none_pieces(code: &Code<'_>, starts: &[u64]) -> BTreeMap<u64, wasm_encoder::F
         .collect()
 }
 
+/// Push the permission table byte of the page of the address in i64 local `at`, leaving the page number in
+/// i64 local `page`. Pages past the table read the byte after it, which allows nothing.
+fn permission_byte(s: &mut InstructionSink<'_>, at: u32, page: u32) {
+    s.local_get(at)
+        .i64_const(12)
+        .i64_shr_u()
+        .local_tee(page)
+        .global_get(G_PERMISSION_PAGES)
+        .local_get(page)
+        .global_get(G_PERMISSION_PAGES)
+        .i64_lt_u()
+        .select()
+        .i32_wrap_i64()
+        .global_get(G_PERMISSIONS)
+        .i32_add()
+        .i32_load8_u(memarg(MEMORY_STATE, 0, 0));
+}
+
+/// Open an `if` entered unless the page of the address in i64 local `at`, and the page after it, allow an
+/// access as `this` (permission table bits for one page) says. This is the fast test: it is also entered
+/// for an access that would be allowed but sits on a page before one that does not allow it.
+pub(crate) fn permission_fast(s: &mut InstructionSink<'_>, at: u32, this: u8, page: u32) {
+    // The bits of the next page sit two above those of this one.
+    let both = this | this << 2;
+    debug_assert_eq!(PAGE_READ << 2, NEXT_PAGE_READ);
+    debug_assert_eq!(PAGE_WRITE << 2, NEXT_PAGE_WRITE);
+    permission_byte(s, at, page);
+    s.i32_const(both.into())
+        .i32_and()
+        .i32_const(both.into())
+        .i32_ne()
+        .if_(BlockType::Empty);
+}
+
 /// Open an `if` entered when `len` bytes (at most a page) at the address in i64 local `at` may not all be
-/// accessed as `this` (permission table bits for one page) says, with the first address that may not be
-/// accessed in i64 local `fault_at`. The caller writes the slow path and ends the `if`.
-pub(crate) fn permission_test(
+/// accessed as `this` says, with the first address that may not be accessed in i64 local `fault_at`. The
+/// caller writes the slow path and ends the `if`.
+pub(crate) fn permission_exact(
     s: &mut InstructionSink<'_>,
     at: u32,
     len: u32,
@@ -240,29 +275,11 @@ pub(crate) fn permission_test(
     locals: (u32, u32, u32),
 ) {
     let (page, allowed, fault_at) = locals;
-    // The bits of the next page sit two above those of this one.
     let next = this << 2;
-    debug_assert_eq!(PAGE_READ << 2, NEXT_PAGE_READ);
-    debug_assert_eq!(PAGE_WRITE << 2, NEXT_PAGE_WRITE);
-    // The page's byte, or nothing allowed above the table.
-    s.local_get(at)
-        .i64_const(12)
-        .i64_shr_u()
-        .local_tee(page)
-        .global_get(G_PERMISSION_PAGES)
-        .i64_lt_u()
-        .if_(BlockType::Result(ValType::I32))
-        .global_get(G_PERMISSIONS)
-        .local_get(page)
-        .i32_wrap_i64()
-        .i32_add()
-        .i32_load8_u(memarg(MEMORY_STATE, 0, 0))
-        .else_()
-        .i32_const(0)
-        .end()
-        .local_tee(allowed);
+    permission_byte(s, at, page);
     // Bits wanted and missing: this page's, and the next page's if the access runs onto it.
-    s.i32_const(-1)
+    s.local_tee(allowed)
+        .i32_const(-1)
         .i32_xor()
         .i32_const((this | next).into())
         .i32_const(this.into())
@@ -480,7 +497,7 @@ impl NoneEmitter<'_> {
         let pc = self.offset + step;
         let mut s = self.sink();
         s.global_get(G_THREAD_BLOCK)
-            .i32_atomic_load(memarg(
+            .i32_load(memarg(
                 MEMORY_STATE,
                 wcontainers_abi::STOP_FLAG_OFFSET as u64,
                 2,
@@ -628,7 +645,10 @@ impl Emitter for NoneEmitter<'_> {
         );
         let pc = self.offset;
         let mut s = self.sink();
-        permission_test(&mut s, address, bytes, this, locals);
+        wcontainers_arm64::untag(&mut s, address);
+        s.local_set(address);
+        permission_fast(&mut s, address, this, locals.0);
+        permission_exact(&mut s, address, bytes, this, locals);
         save_passed(&mut s);
         self::address(&mut s, pc);
         s.global_set(G_PC)
@@ -637,6 +657,7 @@ impl Emitter for NoneEmitter<'_> {
             .call(F_MEMORY_FAULT)
             .i32_const(UNWIND_LEAVE)
             .throw(0)
+            .end()
             .end();
     }
 

@@ -14,7 +14,7 @@ use wcontainers_abi::{
     Warning,
 };
 use wcontainers_translator::contract::{self, Reason};
-use wcontainers_translator::{LookAhead, translate};
+use wcontainers_translator::{LookAhead, Omit, translate_omitting};
 use zerocopy::{FromBytes, IntoBytes};
 
 /// Where the thread block sits in the state memory.
@@ -127,7 +127,8 @@ impl Machine {
     /// `slots` entries starting at guest address `table_base`.
     pub fn new(memory_bytes: u64, table_base: u64, slots: u32, syscalls: Syscalls) -> Self {
         let engine = engine();
-        let permission_pages = memory_bytes.div_ceil(PAGE_SIZE);
+        // The table covers the whole memory, and one more byte, always zero, follows it.
+        let permission_pages = memory_bytes.div_ceil(65536) * 65536 / PAGE_SIZE;
         let mut store = Store::new(
             &engine,
             Host {
@@ -152,7 +153,7 @@ impl Machine {
         let pages = memory_bytes.div_ceil(65536);
         let memory =
             Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).expect("memory");
-        let state_pages = (u64::from(PERMISSIONS_AT) + permission_pages).div_ceil(65536) as u32;
+        let state_pages = (u64::from(PERMISSIONS_AT) + permission_pages + 1).div_ceil(65536) as u32;
         let state = SharedMemory::new(&engine, MemoryType::shared(state_pages, state_pages))
             .expect("state memory");
 
@@ -251,6 +252,26 @@ impl Machine {
         starts: &[u64],
         look_ahead: LookAhead,
     ) {
+        self.load_omitting(
+            bytes,
+            code,
+            load_address,
+            starts,
+            look_ahead,
+            Omit::default(),
+        );
+    }
+
+    /// [`Machine::load`] without some checks, only to measure what they cost.
+    pub fn load_omitting(
+        &mut self,
+        bytes: &[u8],
+        code: Range<u64>,
+        load_address: u64,
+        starts: &[u64],
+        look_ahead: LookAhead,
+        omit: Omit,
+    ) {
         self.write(load_address, bytes);
         let host = self.store.data_mut();
         host.blobs.push(Blob {
@@ -261,7 +282,7 @@ impl Machine {
         let end = (load_address + bytes.len() as u64).next_multiple_of(PAGE_SIZE);
         host.program_break = host.program_break.max(end);
         let index = host.blobs.len() - 1;
-        instantiate_code(&mut self.store, index, starts, look_ahead);
+        instantiate_code(&mut self.store, index, starts, look_ahead, omit);
     }
 
     /// Raise the thread's stop flag while it is not running, as something outside the thread would.
@@ -271,6 +292,18 @@ impl Machine {
             BLOCK_AT as usize + STOP_FLAG_OFFSET,
             &1u32.to_le_bytes(),
         );
+    }
+
+    /// Something another host thread can call to raise the stop flag while the guest runs.
+    pub fn stop_flag_raiser(&self) -> impl Fn() + Send + 'static {
+        let state = self.state.clone();
+        move || {
+            let word = &state.data()[BLOCK_AT as usize + STOP_FLAG_OFFSET];
+            // The flag is a 4 byte aligned word that both threads reach only through atomics or the guest's
+            // own loads.
+            let flag = unsafe { &*(word.get() as *const std::sync::atomic::AtomicU32) };
+            flag.store(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     pub fn set_registers(&mut self, registers: &RegisterBlock) {
@@ -495,7 +528,13 @@ fn hooks(linker: &mut Linker<Host>) {
                     Some(index) => {
                         let start = Instant::now();
                         let offset = address - caller.data().blobs[index].load_address;
-                        instantiate_code(&mut caller, index, &[offset], LookAhead::None);
+                        instantiate_code(
+                            &mut caller,
+                            index,
+                            &[offset],
+                            LookAhead::None,
+                            Omit::default(),
+                        );
                         let time = start.elapsed();
                         slow_path(
                             caller.data_mut(),
@@ -555,12 +594,13 @@ fn instantiate_code(
     index: usize,
     starts: &[u64],
     look_ahead: LookAhead,
+    omit: Omit,
 ) {
     let mut store = store.as_context_mut();
     let host = store.data();
     let blob = &host.blobs[index];
-    let translation =
-        translate(&blob.bytes, blob.code.clone(), starts, look_ahead).expect("translate");
+    let translation = translate_omitting(&blob.bytes, blob.code.clone(), starts, look_ahead, omit)
+        .expect("translate");
     let module = Module::new(&host.engine, &translation.wasm).expect("code module");
     let thread = host.thread.unwrap();
     let memory = host.memory.unwrap();

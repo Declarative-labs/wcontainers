@@ -14,5 +14,5 @@ pub use effects::{Effects, Registers};
 pub use instruction::*;
 pub use meaning::{
     Access, Carry, Emitter, Flag, Flags, Target, Trap, condition_direct, condition_from_flags,
-    emit, flag_value,
+    emit, flag_value, untag,
 };
