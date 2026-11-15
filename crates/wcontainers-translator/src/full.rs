@@ -17,7 +17,7 @@ use wcontainers_arm64::{
 };
 
 /// How far back a jump through a register looks for the switch it may come from.
-const SWITCH_WINDOW: u64 = 16;
+const SWITCH_WINDOW: u64 = 64;
 
 /// The pieces of a full translation, by entry offset.
 pub(crate) fn pieces(
@@ -140,7 +140,9 @@ impl Finder<'_> {
     ) -> Function {
         let mut body = BTreeSet::new();
         let mut leaders = BTreeSet::from([entry]);
-        let mut tables = HashMap::new();
+        let mut tables: HashMap<u64, Vec<u64>> = HashMap::new();
+        // Addresses the code builds; those a jump table of this function goes to are its own blocks.
+        let mut built = Vec::new();
         let mut work = vec![entry];
         while let Some(offset) = work.pop() {
             if !self.code.inside(offset) || (offset != entry && entries.contains(&offset)) {
@@ -164,7 +166,7 @@ impl Finder<'_> {
                     offset: by,
                     ..
                 } => {
-                    found.insert(offset.wrapping_add_signed(by));
+                    built.push(offset.wrapping_add_signed(by));
                 }
                 Instruction::AddSub {
                     width: Width::X64,
@@ -181,7 +183,7 @@ impl Finder<'_> {
                     } = self.get(offset - 4).instruction
                         && rd == rn
                     {
-                        found.insert(
+                        built.push(
                             ((offset - 4) & !0xfff)
                                 .wrapping_add_signed(by)
                                 .wrapping_add(value),
@@ -214,6 +216,12 @@ impl Finder<'_> {
             }
             work.extend(jumps);
         }
+
+        found.extend(
+            built
+                .into_iter()
+                .filter(|b| !tables.values().any(|t| t.contains(b))),
+        );
 
         // Cut the body into blocks, the entry's first.
         let mut blocks: Vec<Block> = Vec::new();

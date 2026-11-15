@@ -16,6 +16,11 @@ fn programs_match_linux() {
 }
 
 #[test]
+fn benchmarks_match_linux() {
+    match_linux(&[("bench", Library::None)]);
+}
+
+#[test]
 fn blobs_are_told_the_hwcap_of_the_abi() {
     assert_eq!(
         wcontainers_translator_test::layout::BLOB_HWCAP,

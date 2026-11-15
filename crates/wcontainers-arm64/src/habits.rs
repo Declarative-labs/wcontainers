@@ -104,8 +104,8 @@ fn constant(before: &[(u64, Instruction)], r: Reg, end: usize) -> Option<u64> {
     }
 }
 
-/// How many entries the nearest bound check allows: `cmp` with an immediate followed by `b.hi` (that many
-/// plus one) or `b.hs`.
+/// How many entries the nearest bound check allows: a flag setting subtraction of an immediate (`cmp` or
+/// `subs`) followed by `b.hi` (that many plus one) or `b.hs`.
 fn bound(before: &[(u64, Instruction)]) -> Option<u64> {
     let branch = before.iter().rposition(|(_, i)| {
         matches!(
@@ -126,7 +126,6 @@ fn bound(before: &[(u64, Instruction)]) -> Option<u64> {
         Instruction::AddSub {
             subtract: true,
             set_flags: true,
-            rd: Reg::Zero,
             operand: Operand::Imm(n),
             ..
         } => Some(if cond.0 == 8 { n.checked_add(1)? } else { n }),

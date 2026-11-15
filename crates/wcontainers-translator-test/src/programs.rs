@@ -58,9 +58,19 @@ pub enum Library {
 
 /// Build `programs/<name>.c` at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
+    build_with(name, optimisation, library, &[])
+}
+
+/// [`build`] with preprocessor definitions, such as "SCALE=1".
+pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&str]) -> Blob {
     let out = out_directory();
     std::fs::create_dir_all(&out).unwrap();
-    let stem = format!("{name}{optimisation}");
+    let mut stem = format!("{name}{optimisation}");
+    for define in defines {
+        stem.push('-');
+        stem.push_str(&define.replace('=', ""));
+    }
+    let defines: Vec<String> = defines.iter().map(|d| format!("-D{d}")).collect();
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
     let elf = out.join(format!("{own}.elf"));
@@ -90,6 +100,7 @@ pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
             "-fwrapv",
         ]);
     }
+    arguments.extend(defines.iter().map(String::as_str));
     let (elf_text, source_text) = (text(&elf), text(&source));
     arguments.extend(["-o", &elf_text, &source_text]);
     zig(&arguments);
