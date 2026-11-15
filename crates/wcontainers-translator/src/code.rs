@@ -49,8 +49,11 @@ pub struct Translation {
     pub pieces: Vec<u64>,
 }
 
-/// How many registers a piece takes as parameters and gives back as results: x0 to x3 and sp.
-pub const PASSED: u32 = 5;
+/// How many argument registers, from x0 up, a piece takes as parameters and gives back as results.
+pub(crate) const ARGUMENTS: u32 = 2;
+/// How many registers a piece takes as parameters and gives back as results: the argument registers and
+/// sp.
+pub const PASSED: u32 = ARGUMENTS + 1;
 
 // Function indices: the hooks, then the dispatcher, then the pieces.
 pub(crate) const F_SYSCALL: u32 = 0;
@@ -81,8 +84,10 @@ pub(crate) const MEMORY_STATE: u32 = 1;
 const BLOCK: Fixed = Fixed::Global(G_THREAD_BLOCK);
 
 // Parameter locals of every piece.
-pub(crate) const L_SP: u32 = 4;
-pub(crate) const L_RETURN: u32 = 5;
+pub(crate) const L_SP: u32 = ARGUMENTS;
+pub(crate) const L_RETURN: u32 = ARGUMENTS + 1;
+/// How many parameters a piece has: the passed registers and the expected return address.
+pub(crate) const PARAMETERS: u32 = PASSED + 1;
 
 /// Translate a blob from the given starts. `code` is where in the blob the code is; starts and every piece
 /// are blob offsets. The output never holds an absolute address.
@@ -384,9 +389,10 @@ pub(crate) fn types() -> TypeSection {
     types.ty().function([ValType::I64, ValType::I32], []); // 3: memory_fault
     types.ty().function([ValType::I64], [ValType::I32]); // 4: load_code
     types.ty().function([ValType::I32, ValType::I64], []); // 5: warn, trap
-    types
-        .ty()
-        .function([ValType::I64; 7], [ValType::I64; PASSED as usize]); // 6: dispatcher
+    types.ty().function(
+        [ValType::I64; PARAMETERS as usize + 1],
+        [ValType::I64; PASSED as usize],
+    ); // 6: dispatcher
     types.ty().function([ValType::I32], []); // 7: unwind tag
     types
 }
@@ -475,12 +481,18 @@ fn own_globals() -> GlobalSection {
     globals
 }
 
+/// The thread block slots of the passed registers, in parameter order.
+pub(crate) fn passed_slots() -> impl DoubleEndedIterator<Item = Slot> {
+    (0..ARGUMENTS as u8)
+        .map(Slot::X)
+        .chain(std::iter::once(Slot::Sp))
+}
+
 /// Store the passed registers of a piece (or the dispatcher) into the thread block.
 pub(crate) fn save_passed(s: &mut InstructionSink<'_>, block: Fixed) {
-    for i in 0..4 {
-        Slot::X(i as u8).store_from(s, block, i);
+    for (i, slot) in passed_slots().enumerate() {
+        slot.store_from(s, block, i as u32);
     }
-    Slot::Sp.store_from(s, block, L_SP);
 }
 
 /// Set `pc` in the thread block to the guest address `push` pushes.
@@ -497,9 +509,9 @@ pub(crate) fn set_pc(
 /// The dispatcher: go to the piece for a guest address through the lookup table, asking the runner for
 /// code when there is none. Parameters: the piece parameters, then the address.
 pub(crate) fn dispatcher() -> wasm_encoder::Function {
-    const TARGET: u32 = 6;
-    const OFFSET: u32 = 7;
-    const PIECE: u32 = 8;
+    const TARGET: u32 = PARAMETERS;
+    const OFFSET: u32 = PARAMETERS + 1;
+    const PIECE: u32 = PARAMETERS + 2;
     let mut f = wasm_encoder::Function::new([(1, ValType::I64), (1, ValType::Ref(piece_ref()))]);
     let mut s = f.instructions();
     set_pc(&mut s, BLOCK, |s| {
@@ -522,7 +534,7 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
         .br(1)
         .end()
         .end();
-    for i in 0..6 {
+    for i in 0..PARAMETERS {
         s.local_get(i);
     }
     s.local_get(PIECE)
@@ -701,13 +713,13 @@ impl Emitter for NoneEmitter<'_> {
 
     fn local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        6 + self.locals.len() as u32 - 1
+        PARAMETERS + self.locals.len() as u32 - 1
     }
 
     fn get(&mut self, r: Reg) {
         let mut s = self.sink();
         match r {
-            Reg::X(n) if n < 4 => {
+            Reg::X(n) if u32::from(n) < ARGUMENTS => {
                 s.local_get(n.into());
             }
             Reg::X(n) => {
@@ -725,7 +737,7 @@ impl Emitter for NoneEmitter<'_> {
 
     fn set(&mut self, r: Reg) {
         match r {
-            Reg::X(n) if n < 4 => {
+            Reg::X(n) if u32::from(n) < ARGUMENTS => {
                 self.sink().local_set(n.into());
             }
             Reg::X(n) => self.store(Slot::X(n)),
@@ -820,7 +832,7 @@ impl Emitter for NoneEmitter<'_> {
         self.transfer(target, false);
         let mut s = self.sink();
         s.local_set(L_SP);
-        for i in (0..4).rev() {
+        for i in (0..ARGUMENTS).rev() {
             s.local_set(i);
         }
     }

@@ -8,11 +8,12 @@ use wasm_encoder::{
     TableType, TagKind, TagSection, TagType, TypeSection, ValType,
 };
 
-/// The piece signature: x0 to x3, sp and the expected return address in; x0 to x3 and sp out.
+/// The piece signature: the passed registers and the expected return address in; the passed registers out.
 pub(crate) fn piece_type(types: &mut TypeSection) {
-    types
-        .ty()
-        .function([ValType::I64; 6], [ValType::I64; crate::PASSED as usize]);
+    types.ty().function(
+        [ValType::I64; crate::code::PARAMETERS as usize],
+        [ValType::I64; crate::PASSED as usize],
+    );
 }
 
 pub(crate) fn piece_ref() -> RefType {
@@ -117,7 +118,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         .end();
     s.br(3);
     s.end();
-    for slot in [Slot::X(0), Slot::X(1), Slot::X(2), Slot::X(3), Slot::Sp] {
+    for slot in crate::code::passed_slots() {
         s.global_get(BLOCK);
         slot.load_from(&mut s, STATE_M);
     }
@@ -126,7 +127,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         .ref_as_non_null()
         .call_ref(0);
     // The results, last first, go back to the block.
-    for slot in [Slot::Sp, Slot::X(3), Slot::X(2), Slot::X(1), Slot::X(0)] {
+    for slot in crate::code::passed_slots().rev() {
         s.local_set(offset).global_get(BLOCK).local_get(offset);
         slot.store_to(&mut s, STATE_M);
     }

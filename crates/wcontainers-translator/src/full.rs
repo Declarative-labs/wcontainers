@@ -401,7 +401,7 @@ fn irreducible(function: &Function) -> Vec<u64> {
 fn tracked() -> Registers {
     Registers::ALL
         .minus(Registers::FLAGS)
-        .minus(Registers(((1 << 4) - 1) | (1 << 31)))
+        .minus(Registers(((1 << ARGUMENTS) - 1) | (1 << 31)))
 }
 
 /// Where the flags are known to be at a point: a set of [`FlagState`] bits, one bit when it is known which.
@@ -1340,7 +1340,7 @@ impl<'a> FullEmitter<'a> {
 
     fn new_local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        6 + self.locals.len() as u32 - 1
+        PARAMETERS + self.locals.len() as u32 - 1
     }
 
     /// The locals a shape keeps: the operands only (a and the value subtracted, or a, b and the carry),
@@ -1454,7 +1454,7 @@ impl<'a> FullEmitter<'a> {
     /// The local of a register bit: a parameter for the passed ones.
     fn register(&mut self, bit: u32) -> u32 {
         match bit {
-            0..4 => bit,
+            _ if bit < ARGUMENTS => bit,
             31 => L_SP,
             _ => {
                 if let Some(&local) = self.registers.get(&bit) {
@@ -1812,10 +1812,9 @@ impl<'a> FullEmitter<'a> {
             Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
         }
         let mut s = self.sink();
-        for i in passed_from..4 {
-            Slot::X(i as u8).load_into(&mut s, block, i);
+        for (i, slot) in passed_slots().enumerate().skip(passed_from as usize) {
+            slot.load_into(&mut s, block, i as u32);
         }
-        Slot::Sp.load_into(&mut s, block, L_SP);
     }
 
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
@@ -2298,7 +2297,7 @@ impl Emitter for FullEmitter<'_> {
         let returned_sp = self.temporary(ValType::I64);
         let mut s = self.sink();
         s.local_set(returned_sp);
-        for i in (0..4).rev() {
+        for i in (0..ARGUMENTS).rev() {
             s.local_set(i);
         }
         self.at.dirty = Registers::NONE;
