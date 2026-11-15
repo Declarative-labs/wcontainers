@@ -8,6 +8,10 @@
 //! `wcontainers-reference blob <file> <load address> <stack top>` runs a flat blob from its first byte with
 //! all registers zero and the starting stack of `initial_stack`, for real; its output and exit status are the
 //! program's.
+//!
+//! `wcontainers-reference time <runs> <file> <load address> <stack top>` runs the blob that many times, each
+//! in a child process, and writes each run's time in seconds to stderr: from just before the child is made
+//! until it has ended, so the reference's own start-up is not counted.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -348,6 +352,21 @@ fn blob(path: &str, load: u64, stack_top: u64) {
     unreachable!("the blob returned without exiting");
 }
 
+fn time(runs: u32, path: &str, load: u64, stack_top: u64) {
+    for _ in 0..runs {
+        let start = std::time::Instant::now();
+        match unsafe { libc::fork() } {
+            0 => blob(path, load, stack_top),
+            -1 => panic!("fork failed"),
+            child => {
+                let mut status = 0;
+                assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+                eprintln!("{:.6}", start.elapsed().as_secs_f64());
+            }
+        }
+    }
+}
+
 fn number(text: &str) -> u64 {
     u64::from_str_radix(text.trim_start_matches("0x"), 16).expect("a hexadecimal number")
 }
@@ -357,6 +376,14 @@ fn main() {
     match arguments.get(1).map(String::as_str) {
         Some("cases") => cases(),
         Some("blob") => blob(&arguments[2], number(&arguments[3]), number(&arguments[4])),
-        _ => panic!("usage: wcontainers-reference cases | blob <file> <load> <stack top>"),
+        Some("time") => time(
+            arguments[2].parse().expect("a number of runs"),
+            &arguments[3],
+            number(&arguments[4]),
+            number(&arguments[5]),
+        ),
+        _ => panic!(
+            "usage: wcontainers-reference cases | blob <file> <load> <stack top> | time <runs> <file> <load> <stack top>"
+        ),
     }
 }

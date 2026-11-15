@@ -244,8 +244,9 @@ pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
     bytes
 }
 
-/// The shortest of `runs` native runs of a blob on ARM64 Linux in Docker, in seconds, by busybox's `time` in
-/// one container (so starting the container is not counted).
+/// The shortest of `runs` native runs of a blob on ARM64 Linux in Docker, in seconds, each timed by the
+/// reference from making a child process to its end (so neither the container's nor the reference's start-up
+/// is counted).
 pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     let reference = build_reference();
     let directory = out_directory().join("native");
@@ -253,7 +254,7 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
     let script = format!(
-        "for i in $(seq {runs}); do time /r/wcontainers-reference blob /p/{file} {LOAD:#x} {STACK_TOP:#x} > /dev/null; done"
+        "/r/wcontainers-reference time {runs} /p/{file} {LOAD:#x} {STACK_TOP:#x} > /dev/null"
     );
     let output = Command::new("docker")
         .args(["run", "--rm", "--network", "none", "--name"])
@@ -266,17 +267,12 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
         .output()
         .expect("run docker");
     std::fs::remove_file(directory.join(&file)).unwrap();
-    // busybox prints "real\t0m 1.23s".
-    String::from_utf8_lossy(&output.stderr)
+    let times: Vec<f64> = String::from_utf8_lossy(&output.stderr)
         .lines()
-        .filter_map(|l| l.strip_prefix("real"))
-        .map(|t| {
-            let t = t.trim();
-            let (minutes, seconds) = t.split_once('m').expect("minutes");
-            minutes.parse::<f64>().unwrap() * 60.0
-                + seconds.trim().trim_end_matches('s').parse::<f64>().unwrap()
-        })
-        .fold(f64::INFINITY, f64::min)
+        .map(|l| l.parse().expect("a time from the reference"))
+        .collect();
+    assert_eq!(times.len(), runs as usize, "native timing runs");
+    times.into_iter().fold(f64::INFINITY, f64::min)
 }
 
 /// Run a blob natively on ARM64 Linux in Docker.
