@@ -45,3 +45,27 @@ fn loop_and_call() {
     let (stopped, _, _) = run(&words);
     assert_eq!(stopped, Stopped::Finished(55));
 }
+
+#[test]
+fn slow_paths_are_counted_and_warned_once_per_place() {
+    use wcontainers_translator::contract::Reason;
+    // movz x8, #999; svc #0; svc #0; movz x0, #3; movz x8, #93; svc #0
+    let words = [
+        0xd280_7ce8,
+        0xd400_0001,
+        0xd400_0001,
+        0xd280_0060,
+        0xd280_0ba8,
+        0xd400_0001,
+    ];
+    let (stopped, _, machine) = run(&words);
+    assert_eq!(stopped, Stopped::Finished(3));
+    assert_eq!(machine.count(Reason::SystemCallNotImplemented), 2);
+    let warnings: Vec<_> = machine
+        .warnings()
+        .iter()
+        .filter(|w| w.reason == Reason::SystemCallNotImplemented.name())
+        .map(|w| (w.detail, w.count))
+        .collect();
+    assert_eq!(warnings, [(999, 1)]);
+}

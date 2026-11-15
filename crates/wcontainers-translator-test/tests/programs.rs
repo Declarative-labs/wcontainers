@@ -20,7 +20,7 @@ fn integers() {
             "integers {optimisation}: {} bytes of code, {:?}",
             blob.code_bytes, counters
         );
-        assert_eq!(counters.get(&Reason::UnsupportedInstructionReached), None);
+        assert_eq!(machine.count(Reason::UnsupportedInstructionReached), 0);
     }
 }
 

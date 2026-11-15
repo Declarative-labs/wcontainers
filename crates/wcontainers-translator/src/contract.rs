@@ -120,6 +120,9 @@ impl TrapKind {
     }
 }
 
+/// Tuning number: a slow path warns once per address (or number), when its count there reaches this.
+pub const WARNING_THRESHOLD: u64 = 1;
+
 /// Every slow path, with the fixed name its counter and warning carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(i32)]

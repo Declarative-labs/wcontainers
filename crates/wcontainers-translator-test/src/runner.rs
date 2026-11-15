@@ -4,12 +4,14 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use wasmtime::{
     Caller, Config, Engine, Extern, Global, Instance, Linker, Memory, MemoryType, Module,
     SharedMemory, Store, Trap, TypedFunc, Val,
 };
 use wcontainers_abi::{
-    Access, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET, Syscall,
+    Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET, Syscall,
+    Warning,
 };
 use wcontainers_translator::contract::{self, Reason};
 use wcontainers_translator::{LookAhead, translate};
@@ -52,7 +54,10 @@ pub struct Host {
     /// Registers at the moment the thread stopped.
     snapshot: RegisterBlock,
     pub output: Vec<u8>,
-    pub counters: HashMap<Reason, u64>,
+    counters: HashMap<Reason, (u64, Duration)>,
+    /// How often each slow path was taken at each address or number.
+    places: HashMap<(Reason, u64), u64>,
+    warnings: Vec<Warning<'static>>,
     blobs: Vec<Blob>,
     state: Option<SharedMemory>,
     save_state: Option<TypedFunc<(), ()>>,
@@ -129,6 +134,8 @@ impl Machine {
                 snapshot: RegisterBlock::ZERO,
                 output: Vec::new(),
                 counters: HashMap::new(),
+                places: HashMap::new(),
+                warnings: Vec::new(),
                 blobs: Vec::new(),
                 state: None,
                 save_state: None,
@@ -259,8 +266,30 @@ impl Machine {
         &self.store.data().output
     }
 
-    pub fn counters(&self) -> &HashMap<Reason, u64> {
-        &self.store.data().counters
+    /// Every slow path taken so far: how often and the time spent.
+    pub fn counters(&self) -> Vec<CounterReading> {
+        let counters = &self.store.data().counters;
+        Reason::ALL
+            .into_iter()
+            .filter_map(|reason| {
+                let &(count, time) = counters.get(&reason)?;
+                Some(CounterReading {
+                    reason: reason.name(),
+                    count,
+                    nanoseconds: time.as_nanos() as u64,
+                })
+            })
+            .collect()
+    }
+
+    /// How often a slow path was taken.
+    pub fn count(&self, reason: Reason) -> u64 {
+        self.store.data().counters.get(&reason).map_or(0, |c| c.0)
+    }
+
+    /// The warnings raised so far.
+    pub fn warnings(&self) -> &[Warning<'static>] {
+        &self.store.data().warnings
     }
 
     /// Run from the registers set until the thread stops. Returns why, and the registers at that moment.
@@ -273,7 +302,12 @@ impl Machine {
             }
             Err(error) => match error.downcast_ref::<Trap>() {
                 Some(Trap::MemoryOutOfBounds) => {
-                    count(self.store.data_mut(), Reason::FaultWithoutExactRegisters);
+                    slow_path(
+                        self.store.data_mut(),
+                        Reason::FaultWithoutExactRegisters,
+                        0,
+                        Duration::ZERO,
+                    );
                     (
                         Stopped::Exit(Exit::MemoryFaultWithoutRegisters),
                         RegisterBlock::ZERO,
@@ -310,8 +344,27 @@ fn snapshot(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> RegisterBlo
     RegisterBlock::read_from_bytes(&bytes).unwrap()
 }
 
-fn count(host: &mut Host, reason: Reason) {
-    *host.counters.entry(reason).or_default() += 1;
+/// Count a slow path taken at an address (or for a number) and the time it took; warn once per address
+/// when its count there reaches the threshold.
+fn slow_path(host: &mut Host, reason: Reason, detail: u64, time: Duration) {
+    let counter = host.counters.entry(reason).or_default();
+    counter.0 += 1;
+    counter.1 += time;
+    let total = counter.0;
+    let here = host.places.entry((reason, detail)).or_default();
+    *here += 1;
+    if *here == contract::WARNING_THRESHOLD {
+        let warning = Warning {
+            reason: reason.name(),
+            count: total,
+            detail,
+        };
+        eprintln!(
+            "wcontainers warning: {}, {detail:#x}, {total} so far",
+            warning.reason
+        );
+        host.warnings.push(warning);
+    }
 }
 
 /// Record why the thread leaves, with its registers now.
@@ -367,11 +420,11 @@ fn hooks(linker: &mut Linker<Host>) {
                 BLOCK_AT as usize + STOP_FLAG_OFFSET,
                 &0u32.to_le_bytes(),
             );
-            count(caller.data_mut(), Reason::StoppedByFlag);
-            if caller.data().stopped.is_some() {
-                return 1;
+            if caller.data().stopped.is_none() {
+                stop(&mut caller, Stopped::Exit(Exit::Stop));
             }
-            stop(&mut caller, Stopped::Exit(Exit::Stop));
+            let pc = snapshot(&mut caller).pc;
+            slow_path(caller.data_mut(), Reason::StoppedByFlag, pc, Duration::ZERO);
             1
         })
         .unwrap();
@@ -380,7 +433,12 @@ fn hooks(linker: &mut Linker<Host>) {
             HOOKS,
             HOOK_MEMORY_FAULT,
             |mut caller: Caller<'_, Host>, address: i64, access: i32| {
-                count(caller.data_mut(), Reason::MemoryFault);
+                slow_path(
+                    caller.data_mut(),
+                    Reason::MemoryFault,
+                    address as u64,
+                    Duration::ZERO,
+                );
                 let access = if access == 1 {
                     Access::Write
                 } else {
@@ -409,9 +467,16 @@ fn hooks(linker: &mut Linker<Host>) {
                 });
                 match found {
                     Some(index) => {
-                        count(caller.data_mut(), Reason::TranslatedAtRunTime);
+                        let start = Instant::now();
                         let offset = address - caller.data().blobs[index].load_address;
                         instantiate_code(&mut caller, index, &[offset]);
+                        let time = start.elapsed();
+                        slow_path(
+                            caller.data_mut(),
+                            Reason::TranslatedAtRunTime,
+                            address,
+                            time,
+                        );
                         1
                     }
                     None => {
@@ -426,9 +491,9 @@ fn hooks(linker: &mut Linker<Host>) {
         .func_wrap(
             HOOKS,
             HOOK_WARN,
-            |mut caller: Caller<'_, Host>, reason: i32, _detail: i64| {
+            |mut caller: Caller<'_, Host>, reason: i32, detail: i64| {
                 let reason = Reason::from_i32(reason).expect("known reason");
-                count(caller.data_mut(), reason);
+                slow_path(caller.data_mut(), reason, detail as u64, Duration::ZERO);
             },
         )
         .unwrap();
@@ -437,12 +502,9 @@ fn hooks(linker: &mut Linker<Host>) {
             HOOKS,
             HOOK_TRAP,
             |mut caller: Caller<'_, Host>, kind: i32, detail: i64| {
-                let exit = match TrapKind::from_i32(kind).expect("known trap") {
-                    TrapKind::Undefined => Exit::IllegalInstruction,
-                    TrapKind::Unsupported => {
-                        count(caller.data_mut(), Reason::UnsupportedInstructionReached);
-                        Exit::IllegalInstruction
-                    }
+                let kind = TrapKind::from_i32(kind).expect("known trap");
+                let exit = match kind {
+                    TrapKind::Undefined | TrapKind::Unsupported => Exit::IllegalInstruction,
                     TrapKind::Breakpoint => Exit::Breakpoint {
                         comment: detail as u16,
                     },
@@ -451,6 +513,11 @@ fn hooks(linker: &mut Linker<Host>) {
                     },
                 };
                 stop(&mut caller, Stopped::Exit(exit));
+                if kind == TrapKind::Unsupported {
+                    let pc = caller.data().snapshot.pc;
+                    let reason = Reason::UnsupportedInstructionReached;
+                    slow_path(caller.data_mut(), reason, pc, Duration::ZERO);
+                }
             },
         )
         .unwrap();
@@ -562,8 +629,9 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
         // brk: this stand-in never moves the break, and answers with the current one as Linux does when it
         // cannot.
         214 => caller.data().program_break as i64,
-        _ => {
-            count(caller.data_mut(), Reason::SystemCallNotImplemented);
+        number => {
+            let reason = Reason::SystemCallNotImplemented;
+            slow_path(caller.data_mut(), reason, number, Duration::ZERO);
             -ENOSYS
         }
     }
