@@ -1005,9 +1005,6 @@ fn rename(
         return Ok(0);
     }
     let credentials = credentials(kernel, tid).clone();
-    if flags & RENAME_WHITEOUT != 0 && !credentials.has(CAP_MKNOD) {
-        return Err(Errno::EPERM);
-    }
     // `may_delete` of the source, then of the target or `may_create` where there is none.
     may_change(kernel, tid, &from.directory)?;
     if !sticky_allows(&from.directory, &source, &credentials) {
