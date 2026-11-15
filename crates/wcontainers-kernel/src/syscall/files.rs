@@ -563,9 +563,12 @@ pub(super) fn open(
     } else {
         path_in(kernel, tid, &parent.directory, &parent.name)
     };
+    // A 64 bit kernel opens every file large, except one opened only for its path, whose flags
+    // `build_open_how` has reduced to `O_PATH_FLAGS`.
+    let large = if flags & O_PATH == 0 { O_LARGEFILE } else { 0 };
     let file = OpenFile::new(
         node.clone(),
-        flags & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
+        (flags | large) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         full_path,
     );
     file.borrow_mut().contents = contents;
@@ -1110,9 +1113,31 @@ fn rename(
             loses.borrow_mut().nlink -= 1;
         }
     } else {
-        entries(&from.directory)(&mut |d| {
-            d.remove(&from.name);
-        });
+        // In tmpfs's order: the new name's position first (`simple_offset_add`), then the whiteout
+        // left at the old name, then the move to the head of the new directory's list.
+        let position = to
+            .directory
+            .borrow_mut()
+            .directory_mut()
+            .expect("directory")
+            .position_for(&to.name);
+        if flags & RENAME_WHITEOUT != 0 {
+            // As overlay file systems use: a character device 0:0 in place of the old name.
+            create(
+                kernel,
+                cx,
+                tid,
+                &from.directory,
+                &from.name,
+                S_IFCHR,
+                0,
+                Content::Special,
+            );
+        } else {
+            entries(&from.directory)(&mut |d| {
+                d.remove(&from.name);
+            });
+        }
         if let Some(target) = &target {
             let mut inode = target.borrow_mut();
             if inode.is_directory() {
@@ -1123,29 +1148,15 @@ fn rename(
                 inode.nlink -= 1;
                 inode.ctime = now;
             }
-            entries(&to.directory)(&mut |d| {
-                d.remove(&to.name);
-            });
         }
-        entries(&to.directory)(&mut |d| d.insert(&to.name, source.clone()));
+        entries(&to.directory)(&mut |d| {
+            d.put(&to.name, source.clone(), position);
+        });
         set_place(&source, &to.directory, &to.name);
         if source_is_directory && !Rc::ptr_eq(&from.directory, &to.directory) {
             from.directory.borrow_mut().nlink -= 1;
             to.directory.borrow_mut().nlink += 1;
         }
-    }
-    // A whiteout, as overlay file systems use: a character device 0:0 left at the old name.
-    if flags & RENAME_WHITEOUT != 0 {
-        create(
-            kernel,
-            cx,
-            tid,
-            &from.directory,
-            &from.name,
-            S_IFCHR,
-            0,
-            Content::Special,
-        );
     }
     touch_directory(&from.directory, now);
     touch_directory(&to.directory, now);

@@ -8,8 +8,8 @@ use wcontainers_abi::{PAGE_SIZE, Permissions, Stream};
 use super::{Args, guest};
 use crate::counters::reason;
 use crate::file::{Descriptor, FileRef};
+use crate::fs::Content;
 use crate::fs::dev::Device;
-use crate::fs::{Content, FIRST_POSITION};
 use crate::linux::general::*;
 use crate::linux::ioctl::{FIOCLEX, FIONBIO, FIONCLEX, TCGETS, TIOCGWINSZ};
 use crate::process::Tid;
@@ -1086,8 +1086,9 @@ pub(super) fn getdents64(
             .map_or(inode.ino, |parent| parent.borrow().ino);
         match &inode.content {
             Content::Directory(directory) => {
-                // `.` at 0, `..` at 1, then the entries newest first, each giving the next one's position.
-                let newest = directory.at_or_below(u64::MAX).next().map(|(at, _, _)| at);
+                // `.` at 0, `..` at 1, then the entries in tmpfs's order, each giving the next one's
+                // position.
+                let newest = directory.listed_from(2).next().map(|(at, _, _)| at);
                 if position == 0 {
                     entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 1));
                 }
@@ -1099,9 +1100,8 @@ pub(super) fn getdents64(
                         newest.unwrap_or(END_OF_DIRECTORY),
                     ));
                 }
-                let from = if position <= 1 { u64::MAX } else { position };
-                if from >= FIRST_POSITION && position != END_OF_DIRECTORY {
-                    let listed: Vec<_> = directory.at_or_below(from).collect();
+                if position != END_OF_DIRECTORY {
+                    let listed: Vec<_> = directory.listed_from(position).collect();
                     for (index, (_, name, child)) in listed.iter().enumerate() {
                         let next = listed
                             .get(index + 1)
@@ -1307,10 +1307,7 @@ pub(super) fn fcntl(
             files.get_mut(fd)?.close_on_exec = argument & u64::from(FD_CLOEXEC) != 0;
             Ok(0)
         }
-        F_GETFL => {
-            let file = descriptor.file.borrow();
-            Ok(u64::from(file.flags | O_LARGEFILE))
-        }
+        F_GETFL => Ok(u64::from(descriptor.file.borrow().flags)),
         F_SETFL if !path_only => {
             let mut file = descriptor.file.borrow_mut();
             let wanted = argument as u32;

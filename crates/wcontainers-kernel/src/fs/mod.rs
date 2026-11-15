@@ -318,11 +318,17 @@ pub(crate) struct Block {
     pub length: u64,
 }
 
-/// A directory's entries, in the order tmpfs lists them: by the position each got when it was added.
+/// A directory's entries as tmpfs keeps them: each has a position (the offset it got when its name
+/// was added, which a rename onto the name keeps) and a place in the list of names tmpfs lists in
+/// (newest first; a rename puts the moved entry at the head, as `d_move`).
 pub(crate) struct Directory {
-    entries: BTreeMap<u64, (Vec<u8>, Node)>,
+    /// By position: the name, the inode and the entry's rank in the list.
+    entries: BTreeMap<u64, (Vec<u8>, Node, u64)>,
     names: BTreeMap<Vec<u8>, u64>,
+    /// The list: rank to position, the highest rank at the head.
+    list: BTreeMap<u64, u64>,
     next_position: u64,
+    next_rank: u64,
 }
 
 /// Where a directory sits. Directories have exactly one name, so they know it.
@@ -350,7 +356,9 @@ impl Directory {
         Self {
             entries: BTreeMap::new(),
             names: BTreeMap::new(),
+            list: BTreeMap::new(),
             next_position: FIRST_POSITION,
+            next_rank: 0,
         }
     }
 
@@ -359,22 +367,47 @@ impl Directory {
         Some(self.entries[position].1.clone())
     }
 
+    /// Adds a name with a new position, in place of what the name held.
     pub fn insert(&mut self, name: &[u8], node: Node) {
         let position = self.next_position;
         self.next_position += 1;
+        self.put(name, node, position);
+    }
+
+    /// The position of a name: its own if it is here, otherwise a new one, taken now
+    /// (`simple_offset_add`).
+    pub fn position_for(&mut self, name: &[u8]) -> u64 {
+        if let Some(position) = self.names.get(name) {
+            return *position;
+        }
+        let position = self.next_position;
+        self.next_position += 1;
+        position
+    }
+
+    /// Puts an inode under a name at a position, at the head of the list, in place of what the name
+    /// held.
+    pub fn put(&mut self, name: &[u8], node: Node, position: u64) -> Option<Node> {
+        let old = self.remove(name);
+        let rank = self.next_rank;
+        self.next_rank += 1;
         self.names.insert(name.to_vec(), position);
-        self.entries.insert(position, (name.to_vec(), node));
+        self.entries.insert(position, (name.to_vec(), node, rank));
+        self.list.insert(rank, position);
+        old
     }
 
     pub fn remove(&mut self, name: &[u8]) -> Option<Node> {
         let position = self.names.remove(name)?;
-        Some(self.entries.remove(&position).expect("entry").1)
+        let (_, node, rank) = self.entries.remove(&position).expect("entry");
+        self.list.remove(&rank);
+        Some(node)
     }
 
-    /// Puts another inode under an existing name, keeping its position.
+    /// Puts another inode under an existing name, keeping its position, at the head of the list.
     pub fn replace(&mut self, name: &[u8], node: Node) {
         let position = self.names[name];
-        self.entries.insert(position, (name.to_vec(), node));
+        self.put(name, node, position);
     }
 
     pub fn len(&self) -> usize {
@@ -385,19 +418,25 @@ impl Directory {
         self.entries.is_empty()
     }
 
-    /// The entries at or below a position, newest first, as tmpfs lists them.
-    pub fn at_or_below(&self, position: u64) -> impl Iterator<Item = (u64, &[u8], &Node)> {
-        self.entries
-            .range(..=position)
-            .rev()
-            .map(|(position, (name, node))| (*position, name.as_slice(), node))
+    /// The entries tmpfs lists from a position, after `.` and `..` (`offset_iterate_dir`): down the
+    /// list from its head at 2 or below, otherwise from the entry with the greatest position at or
+    /// below it, or from the head when there is none.
+    pub fn listed_from(&self, position: u64) -> impl Iterator<Item = (u64, &[u8], &Node)> {
+        let start = (position > 2)
+            .then(|| self.entries.range(..=position).next_back())
+            .flatten()
+            .map_or(u64::MAX, |(_, (_, _, rank))| *rank);
+        self.list.range(..=start).rev().map(|(_, position)| {
+            let (name, node, _) = &self.entries[position];
+            (*position, name.as_slice(), node)
+        })
     }
 
     /// Every entry, oldest first.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &Node)> {
         self.entries
             .values()
-            .map(|(name, node)| (name.as_slice(), node))
+            .map(|(name, node, _)| (name.as_slice(), node))
     }
 }
 
