@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-abi.workspace = true
+zerocopy.workspace = true
 object = { version = "0.41", default-features = false, features = ["read_core", "elf"] }
 
 [lints]

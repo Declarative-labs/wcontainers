@@ -1,10 +1,143 @@
-//! Checks on guest addresses that Linux makes before touching user memory.
+//! Copying to and from guest memory with the checks Linux makes.
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+use wcontainers_abi::{Cpu, MemoryId, PAGE_SIZE, Permissions};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
+
+use crate::memory::AddressMap;
+use crate::{Errno, errno};
 
 /// One past the highest user address on ARM64 Linux with 48 bit virtual addresses (`TASK_SIZE_MAX`).
-const ADDRESS_LIMIT: u64 = 1 << 48;
+pub(crate) const ADDRESS_LIMIT: u64 = 1 << 48;
 
 /// Linux's `access_ok`: the whole range lies below the user address limit. Whether it is mapped is
 /// found out only when it is copied.
 pub(crate) fn access_ok(address: u64, length: u64) -> bool {
     length <= ADDRESS_LIMIT && address <= ADDRESS_LIMIT - length
+}
+
+/// One process's memory as a system call sees it.
+pub(crate) struct Guest<'a> {
+    pub cpu: &'a mut dyn Cpu,
+    pub memory: MemoryId,
+    pub map: &'a mut AddressMap,
+}
+
+impl Guest<'_> {
+    /// How many bytes from `address` on can be accessed as `wanted`, growing the stack as a fault there
+    /// would.
+    pub fn accessible(&mut self, address: u64, length: u64, wanted: Permissions) -> u64 {
+        let done = self.map.accessible(address, length, wanted);
+        if done < length
+            && self.map.find(address + done).is_none()
+            && self
+                .map
+                .grow_stack(self.cpu, self.memory, address + done)
+                .unwrap_or(false)
+        {
+            return self.map.accessible(address, length, wanted);
+        }
+        done
+    }
+
+    /// `copy_from_user` of the whole range, or `EFAULT`.
+    pub fn read(&mut self, address: u64, length: u64) -> Result<Vec<u8>, Errno> {
+        if !access_ok(address, length) {
+            return Err(Errno::EFAULT);
+        }
+        if self.accessible(address, length, Permissions::READ) != length {
+            return Err(Errno::EFAULT);
+        }
+        let mut bytes = vec![0; length as usize];
+        self.cpu
+            .read(self.memory, address, &mut bytes)
+            .map_err(errno::from_cpu)?;
+        Ok(bytes)
+    }
+
+    /// `copy_to_user` of the whole range, or `EFAULT`.
+    pub fn write(&mut self, address: u64, bytes: &[u8]) -> Result<(), Errno> {
+        let length = bytes.len() as u64;
+        if !access_ok(address, length) {
+            return Err(Errno::EFAULT);
+        }
+        if self.accessible(address, length, Permissions::WRITE) != length {
+            return Err(Errno::EFAULT);
+        }
+        self.cpu
+            .write(self.memory, address, bytes)
+            .map_err(errno::from_cpu)
+    }
+
+    /// Copies as much of `bytes` as can be written, a page at a time, as a partial `copy_to_user`.
+    pub fn write_partial(&mut self, address: u64, bytes: &[u8]) -> usize {
+        if !access_ok(address, bytes.len() as u64) {
+            return 0;
+        }
+        let length = self.accessible(address, bytes.len() as u64, Permissions::WRITE) as usize;
+        if self
+            .cpu
+            .write(self.memory, address, &bytes[..length])
+            .is_err()
+        {
+            return 0;
+        }
+        length
+    }
+
+    pub fn read_value<T: FromBytes>(&mut self, address: u64) -> Result<T, Errno> {
+        let bytes = self.read(address, size_of::<T>() as u64)?;
+        Ok(T::read_from_bytes(&bytes).expect("size matches"))
+    }
+
+    pub fn write_value<T: IntoBytes + Immutable>(
+        &mut self,
+        address: u64,
+        value: &T,
+    ) -> Result<(), Errno> {
+        self.write(address, value.as_bytes())
+    }
+
+    /// A string ending in a zero byte, as `strncpy_from_user` reads it: `ENAMETOOLONG` if there is no
+    /// zero within `limit` bytes.
+    pub fn read_string(&mut self, address: u64, limit: u64) -> Result<Vec<u8>, Errno> {
+        let mut out = Vec::new();
+        let mut at = address;
+        loop {
+            let page_end = (at / PAGE_SIZE + 1) * PAGE_SIZE;
+            let wanted = (page_end - at).min(limit - out.len() as u64);
+            if !access_ok(at, wanted) || self.accessible(at, wanted, Permissions::READ) != wanted {
+                return Err(Errno::EFAULT);
+            }
+            let mut chunk = vec![0; wanted as usize];
+            self.cpu
+                .read(self.memory, at, &mut chunk)
+                .map_err(errno::from_cpu)?;
+            if let Some(zero) = chunk.iter().position(|byte| *byte == 0) {
+                out.extend_from_slice(&chunk[..zero]);
+                return Ok(out);
+            }
+            out.extend_from_slice(&chunk);
+            if out.len() as u64 >= limit {
+                return Err(Errno::ENAMETOOLONG);
+            }
+            at = page_end;
+        }
+    }
+
+    /// A path argument, as `getname` reads it: at most `PATH_MAX` bytes with the zero, `ENOENT` if empty.
+    pub fn read_path(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
+        let path = self.read_string(address, crate::linux::general::PATH_MAX.into())?;
+        if path.is_empty() {
+            return Err(Errno::ENOENT);
+        }
+        Ok(path)
+    }
+
+    /// A path argument that may be empty (for `AT_EMPTY_PATH`).
+    pub fn read_path_maybe_empty(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
+        self.read_string(address, crate::linux::general::PATH_MAX.into())
+    }
 }

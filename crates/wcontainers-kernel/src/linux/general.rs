@@ -84,18 +84,42 @@ pub struct __kernel_fd_set {
     pub fds_bits: [super::ctypes::c_ulong; 16usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct __kernel_fsid_t {
     pub val: [super::ctypes::c_int; 2usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct __user_cap_header_struct {
     pub version: __u32,
     pub pid: super::ctypes::c_int,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct __user_cap_data_struct {
     pub effective: __u32,
     pub permitted: __u32,
@@ -151,7 +175,15 @@ pub struct flock64 {
     pub l_pid: __kernel_pid_t,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct open_how {
     pub flags: __u64,
     pub mode: __u64,
@@ -502,19 +534,43 @@ pub struct vgetrandom_opaque_params {
     pub reserved: [__u32; 13usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct __kernel_timespec {
     pub tv_sec: __kernel_time64_t,
     pub tv_nsec: super::ctypes::c_longlong,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct __kernel_itimerspec {
     pub it_interval: __kernel_timespec,
     pub it_value: __kernel_timespec,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct __kernel_old_timeval {
     pub tv_sec: __kernel_long_t,
     pub tv_usec: __kernel_long_t,
@@ -538,7 +594,15 @@ pub struct __kernel_sock_timeval {
     pub tv_usec: __s64,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct rusage {
     pub ru_utime: __kernel_old_timeval,
     pub ru_stime: __kernel_old_timeval,
@@ -558,13 +622,29 @@ pub struct rusage {
     pub ru_nivcsw: __kernel_long_t,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct rlimit {
     pub rlim_cur: __kernel_ulong_t,
     pub rlim_max: __kernel_ulong_t,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct rlimit64 {
     pub rlim_cur: __u64,
     pub rlim_max: __u64,
@@ -701,14 +781,30 @@ pub struct sigevent__bindgen_ty_1__bindgen_ty_1 {
     pub _attribute: u64,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct statx_timestamp {
     pub tv_sec: __s64,
     pub tv_nsec: __u32,
     pub __reserved: __s32,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct statx {
     pub stx_mask: __u32,
     pub stx_blksize: __u32,
@@ -777,7 +873,15 @@ pub struct ktermios {
     pub c_ospeed: speed_t,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct winsize {
     pub ws_row: super::ctypes::c_ushort,
     pub ws_col: super::ctypes::c_ushort,
@@ -795,13 +899,29 @@ pub struct termio {
     pub c_cc: [super::ctypes::c_uchar; 8usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct timespec {
     pub tv_sec: __kernel_old_time_t,
     pub tv_nsec: super::ctypes::c_long,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct timeval {
     pub tv_sec: __kernel_old_time_t,
     pub tv_usec: __kernel_suseconds_t,
@@ -819,13 +939,29 @@ pub struct itimerval {
     pub it_value: timeval,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct timezone {
     pub tz_minuteswest: super::ctypes::c_int,
     pub tz_dsttime: super::ctypes::c_int,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct iovec {
     pub iov_base: u64,
     pub iov_len: __kernel_size_t,
@@ -968,7 +1104,15 @@ pub struct linux_dirent64 {
     pub d_name: __IncompleteArrayField<super::ctypes::c_char>,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct stat {
     pub st_dev: super::ctypes::c_ulong,
     pub st_ino: super::ctypes::c_ulong,
@@ -992,7 +1136,15 @@ pub struct stat {
     pub __unused5: super::ctypes::c_uint,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct statfs {
     pub f_type: __kernel_long_t,
     pub f_bsize: __kernel_long_t,
@@ -1050,12 +1202,28 @@ pub struct user_desc {
     pub __bindgen_padding_0: [u8; 3usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct kernel_sigset_t {
     pub sig: [super::ctypes::c_ulong; 1usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct kernel_sigaction {
     pub sa_handler_kernel: __kernel_sighandler_t,
     pub sa_flags: super::ctypes::c_ulong,

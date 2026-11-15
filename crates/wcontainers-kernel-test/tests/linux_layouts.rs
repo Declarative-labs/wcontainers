@@ -1228,4 +1228,54 @@ fn layouts_match_linux_raw_sys() {
         align_of::<linux_raw_sys::general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1>(),
         "general::uffd_msg__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1"
     );
+    assert_eq!(
+        size_of::<wcontainers_kernel::linux::system::sysinfo>(),
+        size_of::<linux_raw_sys::system::sysinfo>(),
+        "system::sysinfo"
+    );
+    assert_eq!(
+        align_of::<wcontainers_kernel::linux::system::sysinfo>(),
+        align_of::<linux_raw_sys::system::sysinfo>(),
+        "system::sysinfo"
+    );
+    assert_eq!(
+        size_of::<wcontainers_kernel::linux::system::oldold_utsname>(),
+        size_of::<linux_raw_sys::system::oldold_utsname>(),
+        "system::oldold_utsname"
+    );
+    assert_eq!(
+        align_of::<wcontainers_kernel::linux::system::oldold_utsname>(),
+        align_of::<linux_raw_sys::system::oldold_utsname>(),
+        "system::oldold_utsname"
+    );
+    assert_eq!(
+        size_of::<wcontainers_kernel::linux::system::old_utsname>(),
+        size_of::<linux_raw_sys::system::old_utsname>(),
+        "system::old_utsname"
+    );
+    assert_eq!(
+        align_of::<wcontainers_kernel::linux::system::old_utsname>(),
+        align_of::<linux_raw_sys::system::old_utsname>(),
+        "system::old_utsname"
+    );
+    assert_eq!(
+        size_of::<wcontainers_kernel::linux::system::new_utsname>(),
+        size_of::<linux_raw_sys::system::new_utsname>(),
+        "system::new_utsname"
+    );
+    assert_eq!(
+        align_of::<wcontainers_kernel::linux::system::new_utsname>(),
+        align_of::<linux_raw_sys::system::new_utsname>(),
+        "system::new_utsname"
+    );
+    assert_eq!(
+        size_of::<wcontainers_kernel::linux::prctl::prctl_mm_map>(),
+        size_of::<linux_raw_sys::prctl::prctl_mm_map>(),
+        "prctl::prctl_mm_map"
+    );
+    assert_eq!(
+        align_of::<wcontainers_kernel::linux::prctl::prctl_mm_map>(),
+        align_of::<linux_raw_sys::prctl::prctl_mm_map>(),
+        "prctl::prctl_mm_map"
+    );
 }

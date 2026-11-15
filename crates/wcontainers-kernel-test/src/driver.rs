@@ -5,11 +5,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Host, HostError, Next, Stream, Warning,
+    BackendRequestId, ConnectionId, CounterReading, Event, Host, HostError, Next, Stream, Warning,
 };
-use wcontainers_kernel::{Errno, Kernel};
+use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
 
 use crate::standin::{StandIn, Unsupported};
+use crate::{image, reference};
 
 /// Why a run on our kernel gave no outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +45,8 @@ pub struct Run {
     pub outcome: Outcome,
     pub warnings: Vec<Warned>,
     pub counters: Vec<CounterReading>,
+    /// The root file system when the container ended.
+    pub files: Vec<FileRecord>,
 }
 
 impl Run {
@@ -77,9 +80,12 @@ impl Run {
     }
 }
 
-/// The host used in tests. Randomness comes from a seed so runs repeat exactly.
+/// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
+/// until a time, the host's clocks jump to it instead of waiting.
 pub struct TestHost {
     started: Instant,
+    /// How far the clocks have jumped ahead.
+    skipped: u64,
     random: StdRng,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -90,6 +96,7 @@ impl TestHost {
     pub fn new(seed: u64) -> Self {
         Self {
             started: Instant::now(),
+            skipped: 0,
             random: StdRng::seed_from_u64(seed),
             stdout: Vec::new(),
             stderr: Vec::new(),
@@ -100,7 +107,7 @@ impl TestHost {
 
 impl Host for TestHost {
     fn monotonic_nanoseconds(&mut self) -> u64 {
-        self.started.elapsed().as_nanos() as u64
+        self.started.elapsed().as_nanos() as u64 + self.skipped
     }
 
     fn realtime_nanoseconds(&mut self) -> u64 {
@@ -108,6 +115,7 @@ impl Host for TestHost {
             .duration_since(UNIX_EPOCH)
             .expect("the clock is after 1970")
             .as_nanos() as u64
+            + self.skipped
     }
 
     fn random(&mut self, into: &mut [u8]) {
@@ -175,26 +183,42 @@ pub fn exit_code(wait_status: i32) -> i32 {
     }
 }
 
-/// Runs a program on our kernel and the stand-in CPU until the container's first process ends.
-pub fn run(
-    program: &[u8],
-    arguments: &[&str],
-    environment: &[&str],
-    seed: u64,
-) -> Result<Run, Failure> {
+/// What a container starts with: its files and its first process.
+pub struct Container<'a> {
+    pub files: &'a [image::File],
+    pub path: &'a str,
+    pub arguments: &'a [&'a str],
+    pub environment: &'a [&'a str],
+    pub working_directory: &'a str,
+}
+
+/// Runs a container on our kernel and the stand-in CPU until its first process ends.
+pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
     let mut cpu = StandIn::new();
     let mut host = TestHost::new(seed);
     let mut kernel = Kernel::new();
-    let arguments: Vec<&[u8]> = arguments
+    image::add_files(&mut kernel, container.files);
+    let arguments: Vec<&[u8]> = container
+        .arguments
         .iter()
         .map(|argument| argument.as_bytes())
         .collect();
-    let environment: Vec<&[u8]> = environment
+    let environment: Vec<&[u8]> = container
+        .environment
         .iter()
         .map(|variable| variable.as_bytes())
         .collect();
+    let groups = image::root_groups(container.files);
+    let start = Start {
+        path: container.path.as_bytes(),
+        arguments: &arguments,
+        environment: &environment,
+        working_directory: container.working_directory.as_bytes(),
+        hostname: reference::HOSTNAME.as_bytes(),
+        groups: &groups,
+    };
     kernel
-        .start(&mut cpu, &mut host, program, &arguments, &environment)
+        .start(&mut cpu, &mut host, &start)
         .map_err(Failure::Start)?;
     let status = loop {
         match kernel.next() {
@@ -209,7 +233,12 @@ pub fn run(
                 kernel.exit(&mut cpu, &mut host, exit);
             }
             Next::Idle { until_nanoseconds } => {
-                panic!("the kernel is idle until {until_nanoseconds:?} and this host has no events")
+                let until = until_nanoseconds.expect(
+                    "the kernel is idle with nothing to wake it, and this host has no events",
+                );
+                let now = host.monotonic_nanoseconds();
+                host.skipped += until.saturating_sub(now);
+                kernel.event(&mut cpu, &mut host, Event::Timer);
             }
             Next::Finished { status } => break status,
         }
@@ -222,5 +251,6 @@ pub fn run(
         },
         warnings: host.warnings,
         counters: kernel.counters().collect(),
+        files: kernel.root_files(),
     })
 }

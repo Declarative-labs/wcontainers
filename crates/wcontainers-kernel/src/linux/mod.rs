@@ -32,3 +32,6 @@ pub mod ctypes {
 pub mod auxvec;
 pub mod errno;
 pub mod general;
+pub mod ioctl;
+pub mod prctl;
+pub mod system;

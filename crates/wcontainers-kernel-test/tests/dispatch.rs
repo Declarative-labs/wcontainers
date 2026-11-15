@@ -38,15 +38,12 @@ fn not_implemented_counts_and_warns() {
         .find(|call| !call.implemented)
         .expect("some call is not built yet");
     let program = program();
-    let bytes = std::fs::read(&program).unwrap();
     let number = missing.number.to_string();
-    let run = wcontainers_kernel_test::driver::run(
-        &bytes,
+    let run = wcontainers_kernel_test::run_ours(
+        program.parent().unwrap(),
+        "/wc/syscall",
         &["/wc/syscall", &number],
-        wcontainers_kernel_test::reference::ENVIRONMENT,
-        0,
-    )
-    .unwrap();
+    );
     let enosys = -(linux_raw_sys::errno::ENOSYS as i64);
     assert_eq!(run.outcome.stdout, format!("{enosys}\n").into_bytes());
     assert_eq!(run.outcome.exit_code, 0);
