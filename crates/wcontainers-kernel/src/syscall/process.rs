@@ -757,24 +757,22 @@ pub(super) fn rt_sigaction(
     tid: Tid,
     [signal, action, old, size, ..]: Args,
 ) -> Result<u64, Errno> {
+    // In Linux's order: the size, the new action read, `do_sigaction`'s checks and change, and only
+    // then the old action written back, so a bad old pointer still leaves the new action set.
     signal_set_size(size)?;
-    let signal = signal as i32;
-    if !(1..=SIGNALS as i32).contains(&signal) {
-        return Err(Errno::EINVAL);
-    }
-    let index = signal as usize - 1;
     let new: Option<kernel_sigaction> = if action != 0 {
-        if signal as u32 == SIGKILL || signal as u32 == SIGSTOP {
-            return Err(Errno::EINVAL);
-        }
         Some(guest(kernel, cx, tid).read_value(action)?)
     } else {
         None
     };
-    let previous = kernel.process_of(tid).actions[index];
-    if old != 0 {
-        guest(kernel, cx, tid).write_value(old, &previous)?;
+    let signal = signal as i32;
+    if !(1..=SIGNALS as i32).contains(&signal)
+        || new.is_some() && (signal as u32 == SIGKILL || signal as u32 == SIGSTOP)
+    {
+        return Err(Errno::EINVAL);
     }
+    let index = signal as usize - 1;
+    let previous = kernel.process_of(tid).actions[index];
     if let Some(mut new) = new {
         new.sa_mask.sig[0] &= !UNBLOCKABLE;
         kernel.process_of_mut(tid).actions[index] = new;
@@ -782,6 +780,9 @@ pub(super) fn rt_sigaction(
             let pid = kernel.threads[&tid].process;
             kernel.flush_pending(pid, signal as u32);
         }
+    }
+    if old != 0 {
+        guest(kernel, cx, tid).write_value(old, &previous)?;
     }
     Ok(0)
 }

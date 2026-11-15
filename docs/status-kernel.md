@@ -377,6 +377,22 @@ layer 1 runs; found by seed 48 while seed 53 ran beside it). Stack limits above 
 in our 4 GiB address space nothing lies between the stack and the play area, so the stack could grow
 down into it, which the reference's layout never allows.
 
+Cases run in the fifth run (each 20000-sequence run took 3 to 11 minutes; up to three ran at once):
+seed 61 at 20000 failed after 649 s (load 5 to 9: utimensat with "now" for one time and the other
+left alone needs the owner; fixed). Seed 62: 1500 failed (`/dev/shm` listings, see above; fixed in the
+harness), then 1500 passed (46 s, load 4.5). Seed 0 at 64 failed once the process memory calls were
+generated (masked bytes copied unmasked; fixed in the harness). Seed 63 at 20000 failed after 201 s
+(the whole range of a vectored write is checked before the size limit; fixed), then again after
+224 s (setresuid that changes nothing leaves the file system id alone; fixed). Seed 64 at 20000
+failed after 71 s (whiteouts need no power since Linux 5.8; fixed), then after 486 s (load up to
+190: Docker's profile refuses the power-gated calls itself, seen under a filter answering TRACE;
+fixed by moving them into the profile, now checked against a full measurement). Seed 61 failed three
+more times: a `/proc/<pid>` working directory (harness), a refused filter load of the instruction
+pointer that Linux accepts (generator), and the profile above; then after 391 s a rename of `..`
+from the `/proc/sys` mount root (EXDEV before EBUSY; fixed). Seeds 63 and 64 then passed 20000 each
+(582 s and 585 s, run side by side, load 17 to 71 at the start and 11 at the end). Seed 65: 1500
+passed (42 s).
+
 Cases run in the fourth run: seed 54: 3000 passed after the O_DIRECT fix (97 s, load 14 to 24), then
 20000 failed after 430 s (ioprio kept in 16 bits by Linux; fixed). Seeds 55 and 56: 1000 each passed
 (several times while seccomp was added to the generator). Seed 57: 20000 failed after 180 s (mlock
