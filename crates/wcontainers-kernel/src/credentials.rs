@@ -120,9 +120,11 @@ impl Credentials {
     pub fn after_uid_change(&mut self, old_uid: u32, old_euid: u32, old_suid: u32) {
         let was_root = old_uid == 0 || old_euid == 0 || old_suid == 0;
         let all_nonroot = self.uid != 0 && self.euid != 0 && self.suid != 0;
-        if was_root && all_nonroot && !self.keep_capabilities {
-            self.permitted = 0;
-            self.effective = 0;
+        if was_root && all_nonroot {
+            if !self.keep_capabilities {
+                self.permitted = 0;
+                self.effective = 0;
+            }
             self.ambient = 0;
         }
         if old_euid == 0 && self.euid != 0 {
@@ -131,13 +133,12 @@ impl Credentials {
         if old_euid != 0 && self.euid == 0 {
             self.effective = self.permitted;
         }
-        // The file system user follows the effective one, and its powers follow it too.
-        let old_fsuid = self.fsuid;
+        // The file system user follows the effective one; only `setfsuid` moves the file powers with
+        // it (`cap_task_fix_setuid`).
         self.fsuid = self.euid;
-        self.after_fsuid_change(old_fsuid);
     }
 
-    /// Linux's `cap_emulate_setxuid` for the file system user: leaving root drops the file powers.
+    /// Linux's `cap_task_fix_setuid` for `setfsuid`: leaving root drops the file powers.
     pub fn after_fsuid_change(&mut self, old_fsuid: u32) {
         const FILE_POWERS: u64 = bits(&[
             general::CAP_CHOWN,

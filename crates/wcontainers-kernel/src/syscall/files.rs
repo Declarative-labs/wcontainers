@@ -1428,6 +1428,10 @@ fn access(
         return Ok(0);
     }
     let inode = node.borrow();
+    // A regular file on a `noexec` mount may not run, whatever its mode (`do_faccessat`).
+    if mode & X_OK != 0 && inode.file_type() == S_IFREG && inode.fs.no_execute() {
+        return Err(Errno::EACCES);
+    }
     crate::fs::permission(&inode, &checking, mode, kernel.threads[&tid].process)?;
     if mode & W_OK != 0
         && inode.fs.read_only()

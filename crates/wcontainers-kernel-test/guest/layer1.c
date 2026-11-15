@@ -18,6 +18,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -82,6 +83,30 @@ static uint32_t outlives(int fd) {
         }
     }
     return 0;
+}
+
+// Whether a descriptor is on /proc itself or a process directory there, whose listings hold the
+// machine's processes and the chosen subset of Linux's entries (a declared difference).
+static uint32_t lists_processes(int fd) {
+    char link[64], path[256];
+    snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+    ssize_t length = readlink(link, path, sizeof path - 1);
+    if (length < 0) {
+        return 0;
+    }
+    path[length] = 0;
+    if (strcmp(path, "/proc") == 0) {
+        return 1;
+    }
+    if (strncmp(path, "/proc/", 6) != 0 || path[6] == 0) {
+        return 0;
+    }
+    for (char *at = path + 6; *at; at++) {
+        if (*at < '0' || *at > '9') {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int read_all(int fd, void *into, size_t length) {
@@ -224,7 +249,7 @@ int main(void) {
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
                 uint32_t unshared = 0;
                 if (sequence[index][0] == SYS_getdents64 || sequence[index][0] == SYS_lseek) {
-                    unshared = outlives((int)sequence[index][1]);
+                    unshared = outlives((int)sequence[index][1]) || lists_processes((int)sequence[index][1]);
                 }
                 if (sequence[index][0] == SYS_getcwd) {
                     unshared = in_proc(AT_FDCWD);
