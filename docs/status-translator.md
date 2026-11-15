@@ -45,12 +45,13 @@ M0 (skeleton) is built and tested. M1 has not started.
 ## Cases actually run
 
 - Layer 1: 261 forms x 64 cases, seed 1: 0 mismatches.
-- Layer 1: 261 forms x 1000 cases, seed 2: see below (result added when the run finished).
+- Layer 1: 261 forms x 1000 cases, seed 2: 0 mismatches (261,000 cases).
 - Pass bar of the plan (10,000 per form) not yet run.
 
 ## Measurements
 
 - Layer 1, 261 forms x 64 cases (debug build, opt-level 1): 93 s at load 26 to 34, about 5.6 ms per case.
+- Layer 1, 261 forms x 1000 cases: 1334 s at load 39 to 73, about 5.1 ms per case.
 - integers.c, look-ahead none, every instruction a start, release build, best of 5, load 64 to 77:
   - -O0: 2896 bytes of code, translated in 0.51 ms (5.6 MB/s), 113,270 bytes of WebAssembly (39.1 per byte),
     wasmtime compile 32 ms.
@@ -72,6 +73,9 @@ M0 (skeleton) is built and tested. M1 has not started.
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
 - The WebAssembly stack overflowing on deep guest recursion is not handled.
 - Stand-in brk never moves the break.
+- The runner counts every slow path by reason but does not yet raise a warning once per address past a
+  threshold, and does not time them.
+- Compressed output size is not measured yet.
 
 ## Departures from the plan
 
