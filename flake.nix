@@ -1,0 +1,56 @@
+{
+  description = "wcontainers";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs =
+    inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [
+        "aarch64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
+
+      perSystem =
+        { system, pkgs, ... }:
+        {
+          _module.args.pkgs = import inputs.nixpkgs {
+            inherit system;
+            overlays = [ inputs.rust-overlay.overlays.default ];
+          };
+
+          # Docker and Chrome are used by the tests but stay outside Nix.
+          devShells.default = pkgs.mkShell {
+            packages = [
+              (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
+              pkgs.nixfmt
+              pkgs.nodejs
+              pkgs.taplo
+              # running and inspecting WebAssembly
+              pkgs.wasmtime
+              pkgs.wasm-tools
+              # building ARM64 Linux test programs, and the C parts of test-only dependencies
+              pkgs.zig
+              pkgs.cmake
+              pkgs.pkg-config
+              # random C programs and shrinking the ones that fail
+              pkgs.csmith
+              pkgs.creduce
+            ];
+          };
+
+          formatter = pkgs.nixfmt;
+        };
+    };
+}

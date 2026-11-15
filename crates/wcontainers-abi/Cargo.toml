@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-abi"
+description = "What the wcontainers translator and kernel must agree on: register layout, why a thread stops, and the hooks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bitflags.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

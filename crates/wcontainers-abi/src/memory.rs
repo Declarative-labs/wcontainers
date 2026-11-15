@@ -1,0 +1,26 @@
+//! Guest memory as both sides see it: pages and what each allows.
+
+use bitflags::bitflags;
+
+/// The page size the guest is told. Permissions are kept per page of this size.
+pub const PAGE_SIZE: u64 = 4096;
+
+/// Nothing is ever placed below this address, so a null pointer always faults.
+pub const LOWEST_ADDRESS: u64 = 64 * 1024;
+
+bitflags! {
+    /// What a page allows. Empty means any access faults.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct Permissions: u8 {
+        const READ = 1;
+        const WRITE = 2;
+        const EXECUTE = 4;
+    }
+}
+
+/// The addresses a process may use: from [`LOWEST_ADDRESS`] up to, not including, `end`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddressSpace {
+    /// The host's cap. 4 GiB on a host with 32 bit memories.
+    pub end: u64,
+}

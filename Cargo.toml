@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stack1ng/wcontainers"
+
+[workspace.dependencies]
+wcontainers-abi = { path = "crates/wcontainers-abi" }
+bitflags = { version = "2", default-features = false }
+zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+# Tests run real programs through the translator and the kernel, so unoptimized builds are too slow to be useful.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

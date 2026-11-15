@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy", "rust-src"]
+# wasm32 is what we ship; aarch64 Linux is for the reference runners that execute on real ARM64 Linux.
+targets = ["wasm32-unknown-unknown", "aarch64-unknown-linux-musl"]
