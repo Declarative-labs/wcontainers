@@ -2010,8 +2010,43 @@ impl<'a> FullEmitter<'a> {
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)
             .call(F_WARN);
+        let piece = self.look_up(target);
         self.arguments();
-        self.sink().local_get(target).return_call(F_DISPATCH);
+        self.call_looked_up(piece, target, true);
+    }
+
+    /// Look up the piece for the guest address in `target`, before the arguments of the call are pushed.
+    fn look_up(&mut self, target: u32) -> u32 {
+        let offset = self.temporary(ValType::I64);
+        let piece = self.temporary(ValType::Ref(crate::thread::piece_ref()));
+        crate::thread::lookup(
+            &mut self.sink(),
+            target,
+            G_OWN + G_TABLE_BASE,
+            offset,
+            piece,
+        );
+        piece
+    }
+
+    /// Call the piece looked up, or the dispatcher when there is none, with the arguments pushed.
+    fn call_looked_up(&mut self, piece: u32, target: u32, tail: bool) {
+        let mut s = self.sink();
+        s.local_get(piece)
+            .ref_is_null()
+            .if_(BlockType::FunctionType(0))
+            .local_get(target);
+        if tail {
+            s.return_call(F_DISPATCH);
+        } else {
+            s.call(F_DISPATCH);
+        }
+        s.else_().local_get(piece).ref_as_non_null();
+        if tail {
+            s.return_call_ref(0).end().unreachable();
+        } else {
+            s.call_ref(0).end();
+        }
     }
 }
 
@@ -2269,6 +2304,10 @@ impl Emitter for FullEmitter<'_> {
     fn call(&mut self, target: Target) {
         let offset = self.at.offset;
         self.write_back(false);
+        let looked_up = match target {
+            Target::Address(local) => Some(self.look_up(local)),
+            Target::Relative(_) => None,
+        };
         let mut s = self.sink();
         for i in 0..PASSED {
             s.local_get(i);
@@ -2291,7 +2330,8 @@ impl Emitter for FullEmitter<'_> {
                 }
             }
             Target::Address(local) => {
-                self.sink().local_get(local).call(F_DISPATCH);
+                let piece = looked_up.expect("looked up");
+                self.call_looked_up(piece, local, false);
             }
         }
         let returned_sp = self.temporary(ValType::I64);
