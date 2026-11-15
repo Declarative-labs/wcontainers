@@ -1,7 +1,7 @@
 //! Writes what the engines run for a test program at full look-ahead, for reading the machine code: the
 //! code module (`.wasm`) and wasmtime's compiled form of it with the runner's settings (`.cwasm`, an ELF file
 //! for `objdump -d`). Prints each piece's function index (counting the six imported hooks and the
-//! dispatcher before the pieces), blob offset and the program's symbol there.
+//! dispatcher and the unwinder before the pieces), blob offset and the program's symbol there.
 //!
 //! Usage: `machine-code <program> <optimisation> <out directory> [define ...]`, such as
 //! `machine-code bench -O2 out SCALE=1 WORKLOAD=2`. `WC_OMIT` (a list of stop, permissions, returns) leaves
@@ -55,7 +55,7 @@ fn main() {
             .filter(|(a, _)| *a == address)
             .map(|(_, n)| n.as_str())
             .collect();
-        println!("function {}: offset {offset:#x} {}", 7 + i, name.join(" "));
+        println!("function {}: offset {offset:#x} {}", 8 + i, name.join(" "));
     }
     println!("wrote {base}.wasm and {base}.cwasm");
 }

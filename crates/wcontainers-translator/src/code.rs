@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, Encode, EntityType,
-    FunctionSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module, TableType,
-    TagKind, TagType, TypeSection, ValType,
+    FunctionSection, GlobalSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module,
+    TableType, TagKind, TagType, TypeSection, ValType,
 };
 use wcontainers_arm64::{Access, Emitter, Flag, Flags, Reg, Target, Trap, flag_value};
 
@@ -60,7 +60,8 @@ pub(crate) const F_LOAD_CODE: u32 = 3;
 pub(crate) const F_WARN: u32 = 4;
 pub(crate) const F_TRAP: u32 = 5;
 pub(crate) const F_DISPATCH: u32 = 6;
-pub(crate) const F_FIRST_PIECE: u32 = 7;
+pub(crate) const F_UNWIND: u32 = 7;
+pub(crate) const F_FIRST_PIECE: u32 = 8;
 
 // Global indices: the runner's constants.
 pub(crate) const G_LOAD_ADDRESS: u32 = 0;
@@ -69,6 +70,10 @@ pub(crate) const G_TABLE_BASE: u32 = 2;
 pub(crate) const G_THREAD_BLOCK: u32 = 3;
 pub(crate) const G_PERMISSIONS: u32 = 4;
 pub(crate) const G_PERMISSION_PAGES: u32 = 5;
+
+/// Each of the six imported values above is copied into a global of the module's own, at this index plus
+/// the import's: wasmtime reads an imported global through a pointer, and a module's own directly.
+pub(crate) const G_OWN: u32 = 6;
 
 pub(crate) const MEMORY_STATE: u32 = 1;
 
@@ -125,11 +130,14 @@ pub fn translate_omitting(
     let mut code_section = CodeSection::new();
     functions.function(6);
     code_section.function(&dispatcher());
+    functions.function(7);
+    code_section.function(&unwinder());
     for function in pieces.values() {
         functions.function(0);
         code_section.function(function);
     }
     module.section(&functions);
+    module.section(&own_globals());
     module.section(&elements(&index));
     module.section(&code_section);
     module.section(&description(blob, look_ahead, pieces.keys()));
@@ -224,7 +232,7 @@ pub(crate) enum Fixed {
 impl Fixed {
     pub(crate) fn push(self, s: &mut InstructionSink<'_>) {
         match self {
-            Fixed::Global(g) => s.global_get(g),
+            Fixed::Global(g) => s.global_get(G_OWN + g),
             Fixed::Local(l) => s.local_get(l),
         };
     }
@@ -402,6 +410,27 @@ pub(crate) fn imports() -> ImportSection {
     imports
 }
 
+/// The module's own copies of the imported values.
+fn own_globals() -> GlobalSection {
+    let mut globals = GlobalSection::new();
+    for (g, ty) in [
+        (G_LOAD_ADDRESS, ValType::I64),
+        (G_SLOT_BASE, ValType::I32),
+        (G_TABLE_BASE, ValType::I64),
+        (G_THREAD_BLOCK, ValType::I32),
+        (G_PERMISSIONS, ValType::I32),
+        (G_PERMISSION_PAGES, ValType::I64),
+    ] {
+        let ty = GlobalType {
+            val_type: ty,
+            mutable: false,
+            shared: false,
+        };
+        globals.global(ty, &ConstExpr::global_get(g));
+    }
+    globals
+}
+
 /// Store the passed registers of a piece (or the dispatcher) into the thread block.
 pub(crate) fn save_passed(s: &mut InstructionSink<'_>, block: Fixed) {
     for i in 0..4 {
@@ -433,17 +462,18 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
         s.local_get(TARGET);
     });
     s.loop_(BlockType::Empty);
-    crate::thread::lookup(&mut s, TARGET, Fixed::Global(G_TABLE_BASE), OFFSET, PIECE);
+    crate::thread::lookup(&mut s, TARGET, G_OWN + G_TABLE_BASE, OFFSET, PIECE);
     s.local_get(PIECE).ref_is_null().if_(BlockType::Empty);
     save_passed(&mut s, BLOCK);
     crate::thread::misaligned_code(&mut s, TARGET, F_TRAP);
-    s.i32_const(UNWIND_LEAVE).throw(0).end();
+    s.i32_const(UNWIND_LEAVE).call(F_UNWIND).unreachable().end();
     s.local_get(TARGET)
         .call(F_LOAD_CODE)
         .i32_eqz()
         .if_(BlockType::Empty)
         .i32_const(UNWIND_LEAVE)
-        .throw(0)
+        .call(F_UNWIND)
+        .unreachable()
         .end()
         .br(1)
         .end()
@@ -455,6 +485,14 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
         .ref_as_non_null()
         .return_call_ref(0)
         .end();
+    f
+}
+
+/// Throw the unwind exception with the payload given. Pieces call this instead of throwing themselves: in
+/// wasmtime a function that throws saves every callee-saved register on entry, which would tax every call.
+pub(crate) fn unwinder() -> wasm_encoder::Function {
+    let mut f = wasm_encoder::Function::new([]);
+    f.instructions().local_get(0).throw(0).end();
     f
 }
 
@@ -533,7 +571,8 @@ impl NoneEmitter<'_> {
         s.call(F_STOP)
             .if_(BlockType::Empty)
             .i32_const(UNWIND_LEAVE)
-            .throw(0)
+            .call(F_UNWIND)
+            .unreachable()
             .end()
             .end();
     }
@@ -582,7 +621,10 @@ impl NoneEmitter<'_> {
     }
 
     fn leave(&mut self) {
-        self.sink().i32_const(UNWIND_LEAVE).throw(0);
+        self.sink()
+            .i32_const(UNWIND_LEAVE)
+            .call(F_UNWIND)
+            .unreachable();
     }
 
     /// Push a register kept in the thread block.
@@ -603,7 +645,7 @@ impl NoneEmitter<'_> {
 
 /// Push the guest address of a blob offset.
 pub(crate) fn address(s: &mut InstructionSink<'_>, offset: u64) {
-    s.global_get(G_LOAD_ADDRESS)
+    s.global_get(G_OWN + G_LOAD_ADDRESS)
         .i64_const(offset as i64)
         .i64_add();
 }
@@ -705,7 +747,8 @@ impl Emitter for NoneEmitter<'_> {
             .i32_const(i32::from(access == Access::Write))
             .call(F_MEMORY_FAULT)
             .i32_const(UNWIND_LEAVE)
-            .throw(0)
+            .call(F_UNWIND)
+            .unreachable()
             .end()
             .end();
     }
@@ -749,7 +792,7 @@ impl Emitter for NoneEmitter<'_> {
         set_pc(&mut s, BLOCK, |s| {
             s.local_get(target);
         });
-        s.i32_const(UNWIND_GO_TO).throw(0);
+        s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
     }
 
     fn syscall(&mut self) {

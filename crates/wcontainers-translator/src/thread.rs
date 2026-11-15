@@ -1,6 +1,5 @@
 //! The thread module: one per guest thread. It owns the lookup table and the bottom loop.
 
-use crate::code::Fixed;
 use crate::contract::*;
 use crate::state::Slot;
 use wasm_encoder::{
@@ -106,7 +105,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     s.global_get(BLOCK);
     Slot::Pc.load_from(&mut s, STATE_M);
     s.local_set(pc);
-    lookup(&mut s, pc, Fixed::Global(TABLE_BASE_G), offset, piece);
+    lookup(&mut s, pc, TABLE_BASE_G, offset, piece);
     s.local_get(piece).ref_is_null().if_(BlockType::Empty);
     misaligned_code(&mut s, pc, TRAP);
     s.return_().end();
@@ -199,18 +198,18 @@ pub(crate) fn misaligned_code(s: &mut wasm_encoder::InstructionSink<'_>, address
 }
 
 /// Leave the piece for the guest address in i64 local `pc` in local `piece`, or null if there is none.
-/// `offset` is an i64 scratch local.
+/// `table_base` is the global holding [`TABLE_BASE`]; `offset` is an i64 scratch local.
 pub(crate) fn lookup(
     s: &mut wasm_encoder::InstructionSink<'_>,
     pc: u32,
-    table_base: Fixed,
+    table_base: u32,
     offset: u32,
     piece: u32,
 ) {
     s.ref_null(HeapType::Concrete(0)).local_set(piece);
-    s.local_get(pc);
-    table_base.push(s);
-    s.i64_sub()
+    s.local_get(pc)
+        .global_get(table_base)
+        .i64_sub()
         .local_tee(offset)
         .i64_const(3)
         .i64_and()

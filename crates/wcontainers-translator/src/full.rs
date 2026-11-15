@@ -978,7 +978,7 @@ impl<'a> FullEmitter<'a> {
         let mut s = InstructionSink::new(&mut entry);
         for (global, local) in e.fixed.iter().enumerate() {
             if let Some(local) = local {
-                s.global_get(global as u32).local_set(*local);
+                s.global_get(G_OWN + global as u32).local_set(*local);
             }
         }
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
@@ -1299,7 +1299,8 @@ impl<'a> FullEmitter<'a> {
             .call(F_STOP)
             .if_(BlockType::Empty)
             .i32_const(UNWIND_LEAVE)
-            .throw(0)
+            .call(F_UNWIND)
+            .unreachable()
             .end();
         self.reload(live, passed_from);
         self.sink().end();
@@ -1323,7 +1324,10 @@ impl<'a> FullEmitter<'a> {
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
     fn leave_to(&mut self, offset: u64) {
         self.save(Pc::Offset(offset));
-        self.sink().i32_const(UNWIND_GO_TO_EXACT).throw(0);
+        self.sink()
+            .i32_const(UNWIND_GO_TO_EXACT)
+            .call(F_UNWIND)
+            .unreachable();
     }
 
     /// The pages of `len` bytes from `from` past the stack pointer allow reading and writing, or this
@@ -1690,7 +1694,8 @@ impl Emitter for FullEmitter<'_> {
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
                     .i32_const(UNWIND_LEAVE)
-                    .throw(0)
+                    .call(F_UNWIND)
+                    .unreachable()
                     .end()
                     .end();
             }
@@ -1820,7 +1825,7 @@ impl Emitter for FullEmitter<'_> {
         set_pc(&mut s, block, |s| {
             s.local_get(target);
         });
-        s.i32_const(UNWIND_GO_TO).throw(0);
+        s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
     }
 
     fn syscall(&mut self) {
@@ -1852,7 +1857,10 @@ impl Emitter for FullEmitter<'_> {
                 .i64_const(comment.into()),
             Trap::Alignment(address) => s.i32_const(TrapKind::Alignment as i32).local_get(address),
         };
-        s.call(F_TRAP).i32_const(UNWIND_LEAVE).throw(0);
+        s.call(F_TRAP)
+            .i32_const(UNWIND_LEAVE)
+            .call(F_UNWIND)
+            .unreachable();
     }
 
     fn next(&mut self) {

@@ -110,7 +110,8 @@ fn new_engine() -> Engine {
         .wasm_threads(true)
         .wasm_memory64(true)
         .wasm_multi_memory(true)
-        .shared_memory(true);
+        .shared_memory(true)
+        .memory_may_move(false);
     Engine::new(&config).expect("engine")
 }
 
