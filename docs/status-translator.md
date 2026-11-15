@@ -238,7 +238,8 @@ contract's bits, in both runners).
   mismatches (399,000 cases). This confirms the second run's seed 2 result with a new seed.
 - Pass bar of the plan (10,000 per form) not yet run. One command for it is under "How to run".
 - Layer 2 (M2): 64 cases, seed 1, 8 on the CPU: 0 mismatches. 2000 cases, seed 7, 40 on the CPU, release:
-  0 mismatches (22 s at load 3 to 4). Pass bar (one million) not run.
+  0 mismatches (22 s at load 3 to 4). Second M2 run, after this run's changes: 3000 cases, seed 11, 20 on
+  the CPU, release: 0 mismatches (35 s at load 10 to 16). Pass bar (one million) not run.
 
 ## Measurements
 
