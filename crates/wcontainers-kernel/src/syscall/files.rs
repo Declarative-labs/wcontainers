@@ -1660,7 +1660,13 @@ pub(super) fn utimensat(
     let now = kernel.now(cx);
     let credentials = credentials(kernel, tid).clone();
     let mut inode = node.borrow_mut();
-    let only_now = wanted.is_none_or(|wanted| wanted.iter().all(|time| matches!(time.tv_nsec, n if n == i64::from(UTIME_NOW) || n == i64::from(UTIME_OMIT))));
+    // Only "now" for both times is a touch, which write access allows; anything else (even "now"
+    // with one left alone) sets times, which needs the owner (Linux's `vfs_utimes`).
+    let only_now = wanted.is_none_or(|wanted| {
+        wanted
+            .iter()
+            .all(|time| time.tv_nsec == i64::from(UTIME_NOW))
+    });
     if inode.fs.read_only() {
         return Err(Errno::EROFS);
     }
