@@ -61,23 +61,36 @@ load in brackets; the machine is shared, so native times themselves moved by up 
   checks). Tried and not working: a `metadata.code.compilation_priority` section (the compilation hints
   proposal) asking for every function optimized at once: no change, with no flag or with
   `--wasm-compilation-hints`; `--experimental-wasm-compilation-hints` is not a flag in Chrome 157.
-  What an ordinary page can do, built: after the stop hook says carry on at a jump back, a piece enters
-  itself again at that loop (`return_call` to itself; a word in the thread block's padding,
-  `contract::RESUME_OFFSET`, says which loop, and the piece's entry goes there through the header of each
-  loop around it, so the control flow stays reducible). The new call runs whatever code V8 has for the
-  function by then. The page (`browser/run.mjs`) raises the stop flag at 1, 2, 4, ... 1024 ms after the
-  guest starts. Result, every check, first run in Chrome (load 13 to 34): matrix 16.7 to 3.7 times native,
-  search 17.0 to 3.8, hash 2.9 to 1.0; later runs the same as the first. (With the stop checks left out
-  there is nothing to re-enter, so "no check" still shows the old first run.) Found by the new test below:
-  a re-entry must skip the entry's own stop check (a second stop there restarted the function from its
-  start); and an entry check that re-enters itself never makes progress when the flag is raised at every
-  check, so the entry check carries on in place.
+  What an ordinary page can do, built: after the stop hook says carry on at a jump back, the thread goes
+  on in a new call, which runs whatever code V8 has for the function by then. The page
+  (`browser/run.mjs`) raises the stop flag at 1, 2, 4, ... 1024 ms after the guest starts. Result, every
+  check, first run in Chrome (load 13 to 34): matrix 16.7 to 3.7 times native, search 17.0 to 3.8, hash
+  2.9 to 1.0; later runs the same as the first. (With the stop checks left out there is nothing to
+  re-enter, so "no check" still shows the old first run.) The first run's version entered the function
+  itself again and went to the loop through the header of each loop around it (a word in the thread
+  block's padding said which loop); in wasmtime those extra ways into loops cost matrix half its time.
+  Second run, replaced by loop pieces (`full.rs`, `pieces`): for each loop header of a function, a piece
+  that starts there and holds that loop and what follows it up to the header of any other loop, where it
+  goes on in that loop's piece. Only a stop check that carries on at a jump back enters one (a direct
+  `return_call`), so a loop piece is not in the lookup table and may rely on what its function knows at
+  the loop (the frame and the alignment of sp); the function keeps a single way into each loop. Where a
+  loop piece would need more entries to stay reducible, none is made and the stop check carries on in
+  place, loading registers back. Measured (load 15 to 27, same session): wasmtime matrix every check 0.75
+  s to 0.41 s (9.5 to about 5 times native), sieve 0.75 to 0.66 to 0.71, search 0.44 (unchanged); Chrome
+  first run matrix 3.4, search 2.1, sieve 1.33 times native (load 25 to 45), the second run the same.
+  Size, bench at -O2 SCALE=1: 141,853 to 329,880 bytes of WebAssembly (68 per byte of code), wasmtime
+  compile 31 to 35 ms. A first version, whose loop pieces ran on to the end of the function, made
+  1,306,873 bytes (one copy of the rest of the function per loop). The thread block's word 804 is no
+  longer used. Found by the new test below: an entry check that went on in a new call never made progress
+  when the flag was raised at every check, so the entry check carries on in place. Breaking the change
+  on purpose (each stop going on in the loop piece of another loop) fails
+  `stops_at_every_check_change_nothing`.
 - Step 5, the stop check. In wasmtime the stop check now costs about 10% on sieve (1.71 against 1.55 with
   no stop check, load 10 to 23) where it doubled it before; matrix still pays more (0.59 against 0.34 s,
-  same run; not explained yet, see what remains). Carrying on no longer reloads registers anywhere but
-  after a switch's jump back and a system call: at loops the piece re-enters (it loads what the loop needs
-  at its entry), and at the entry check, which comes before any register but the passed ones is loaded,
-  nothing is reloaded. This relies on the abi: after `Exit::Stop`, `Resume::Continue` says nothing has
+  same run; the second run traced this to the re-entry paths, see step 3). Carrying on no longer reloads
+  registers anywhere but after a switch's jump back, at a loop with no loop piece, and after a system
+  call: at loops the thread goes on in a loop piece (which loads what the loop needs at its entry), and
+  at the entry check, which comes before any register but the passed ones is loaded, nothing is reloaded. This relies on the abi: after `Exit::Stop`, `Resume::Continue` says nothing has
   changed, and the kernel plan's uses of the hook (deliver a signal, switch threads) replace the registers
   (`Resume::FromRegisters`), which is the hook's "leave" answer.
 - Step 6, permission checks over a whole loop. An access checked exactly inside a loop that makes no call
@@ -86,7 +99,7 @@ load in brackets; the machine is shared, so native times themselves moved by up 
   base register in one loop share one kept page; it is forgotten when the loop is entered from outside,
   on re-entry, and when a stop check carries on in place. Faults stay exact (the full check runs on every
   new page). Measured (wasmtime, load 10 to 19): search 3.9 to 3.4, sieve 1.71 to 1.57, matrix 7.3 to
-  6.2; interpret did not move (8.6 to 9.0, noise).
+  6.2; interpret did not move (8.6 to 9.0, noise). The page is also forgotten on entering a loop piece.
 - Calls, second part. Before, a piece wrote its flags back at every return (packing NZCV from the lazy
   operands, about 12 instructions). Now the caller sets the low bit of the expected return address
   (`contract::FLAGS_WANTED`) when the flags may be read after the call (the rest of its block is looked
@@ -124,26 +137,60 @@ instance, the second run within 2% unless said):
   the next outer jump back: wasmtime matrix 0.50 s, sieve 0.80, search 0.46; Chrome first run matrix 9.4,
   search 5.5, sieve 1.8 times native (load 11 to 14), much worse in Chrome, so reverted.
 
-S1, what remains (aims, every check, both engines: sieve and hash 1.5, sort 2.5, fib 4, matrix, search and
-interpret 3):
-- Met: hash (1.0 in both), sieve in Chrome (1.38). Not met: sieve in wasmtime (1.69), fib (6.4 wasmtime,
-  5.6 Chrome), sort (4.2, 3.4), interpret (8.8, 8.9), matrix (9.3 wasmtime, 3.3 Chrome), search (3.5,
-  3.0). The status file does not yet show for any of these that the rest cannot be removed.
-- Interpret: the permission check costs most (2.8 times native without it), but keeping pages did not
-  help, so the time is not in the checks' table lookups. The machine code (wasmtime) is dominated by
-  spills: over twenty values live across the dispatch loop. Next: look at it with a profiler (`sample`
-  on macOS gives no instruction level; try Instruments' cpu counters or `perf` in a Linux VM), and try
-  giving accesses through a copy of sp (`mov x9, sp`, as interpret does) the frame's knowledge.
-- Matrix: in wasmtime the paths into nested loops for re-entry cost about half its time (experiment (a)
-  above); Chrome needs them. Next: find what Cranelift does with the structure (the extra edges make each
-  inner loop header a merge child of the loop around it) and change the structure so the normal path is
-  as before, e.g. place the re-entry hop as a branch at the outer header's end rather than its start.
-- fib and sort (calls): per call there remain the write back and reload of x19, x20, x29, x30 through the
-  block, the frame check of the new frame, the bounds check of every stack access (64 bit memory), the
-  flags written before the call, the entry stop check and the return check. Next to try: passing more
-  registers as parameters (the plan's tuning number), and skipping the frame's alignment check.
-- 64 bit guest memory: a 32 bit memory measured 10 to 27% faster in wasmtime (see step 2); the owner's
-  call.
+S1 measurements at the end of the second run (commit af2566e, `tests/benchmarks.rs` with
+`WC_BENCH_VARIANTS=1,5`, best of 3, load 8 to 19; times native, every check / no check; Chrome first run
+in the instance). Native times were 15 to 35% slower in this session than in the first run's (fib 0.54
+s, sieve 0.54, hash 0.76, sort 0.46, interpret 0.19, matrix 0.10, search 0.12), so ratios may read low:
+- fib: wasmtime 5.95 / 4.73; Chrome 4.31 / 3.88.
+- sieve: wasmtime 1.44 / 1.19; Chrome 1.37 / 0.97.
+- hash: wasmtime 0.99 / 0.97; Chrome 0.96 / 1.69 (no check has no stop to move to V8's optimised code).
+- sort: wasmtime 3.92 / 3.64; Chrome 3.50 / 2.77.
+- interpret: wasmtime 9.29 / 2.95; Chrome 9.13 / 2.34.
+- matrix: wasmtime 4.88 / 2.60; Chrome 2.62 / 11.6 (as hash).
+- walk: 0.6 to 0.85 everywhere. search: wasmtime 3.67 / 2.07; Chrome 2.91 / 11.0 (as hash).
+- Size: 329,880 bytes of WebAssembly (68.2 per byte of code), 69,102 gzipped (24.1), wasmtime compile 37
+  ms.
+- Aims met with every check in this run: sieve and hash in both engines; matrix and search in Chrome. Not
+  met: fib (aim 4), sort (2.5), interpret (3) in both; matrix and search (3) in wasmtime. For none of
+  these does the status file show yet that the rest cannot be removed; see below.
+
+S1, second run, what the machine code and experiments show (wasmtime's code from the `machine-code`
+tool; A/B runs alternate the two builds in one session, because native times alone moved by up to 35%
+between sessions at load 10 to 45):
+- Matrix (wasmtime): with loop pieces the inner loop (7 guest instructions, two loads through x0 and x1
+  with a register index) is about 45 instructions a turn. About 30 values are live in it: 19 guest
+  registers, and of ours the permission table's place and length, two kept pages, the thread block, the
+  guest memory's base, its bound and a zero for wasmtime's Spectre guard, and the operands kept for the
+  flags. That is more than the 26 or so registers Cranelift hands out, so it spills: at the jump back 8
+  stores and 3 loads to its own stack each turn. Registers the loop loads anew every turn (x6, x7) stay
+  alive across the jump back only because the next turn's fault paths write them back. Not yet tried:
+  making slow paths not need those registers in registers (e.g. writing such registers to the block as
+  they are set inside the loop, or one shared exit per loop).
+- Interpret: its stack accesses are `[x9, w10, sxtw #3]` through a copy of sp with a register index, so
+  giving x9 the frame's knowledge would not drop them (the index is unknown). Each turn of the dispatch
+  makes three kept-page checks (bytecode, jump table byte, stack), each a shift, a compare with a spilled
+  kept page and a branch; the untagging of the switch's target and a 75 entry `br_table` are on the path
+  too. Why removing the permission check takes it from about 9 to about 3 times native is still not
+  explained; it needs an instruction-level profile (`sample` gives none; Instruments' counters or `perf`
+  in a Linux VM).
+- fib: per call about 150 instructions in wasmtime against 19 natively. In the code: Cranelift's own
+  save of ten callee-saved registers, loads of the two imported memories' bases (two loads each) and the
+  fixed values, the entry stop check, loading x19, x20, x29, x30 from the block and storing them back
+  before every call, the frame check of the new frame (about 10), the alignment check, four guest stack
+  stores and loads each with a 64-bit bounds check (add, compare, select), NZCV worked out and stored
+  before the call (about 17), and the return check with x30 untagged (4). Measured, A/B, load 10 to 19,
+  best of 3, seconds: leaving out the flags written before calls 2.39 / 2.64 (base) against 2.64 / 3.09;
+  leaving out the frame check 2.42 / 2.80; comparing x30 before untagging it in the return check 2.73 /
+  2.69 (new) against 3.04 / 2.73 (old). None measurable, so none kept. With no check at all fib is 4.7 to
+  5.0 times native, so the aim of 4 needs a cheaper call even without checks: the likely cost is the
+  chain of stores and loads through the thread block that every call makes for the guest's callee-saved
+  registers (caller writes x19 to the block, callee reads it there to save it on the guest stack, and the
+  same back). Next to try: pass x19 to x30 as parameters and results (the plan's tuning number); it
+  changes the convention of every look-ahead, the dispatcher and both runners.
+- Sort: the same costs per call as fib, plus a call through a register (the dispatcher's table lookup)
+  to the comparison at every step.
+- 64 bit guest memory: a 32 bit memory measured 10 to 27% faster in wasmtime (see step 2) and frees the
+  bound and Spectre-guard registers in every loop; the owner's call.
 
 ## Done
 
@@ -398,6 +445,8 @@ contract's bits, in both runners).
   the CPU, release: 0 mismatches (35 s at load 10 to 16). Pass bar (one million) not run.
 - Layer 2, S1 (every case also run at full stopping at every check), release: 500 cases seed 3, 2000 seed
   5 (after kept pages), 2000 seed 9 (after the flags bit): 0 mismatches. Not yet the pass bar.
+- Layer 2, second S1 run, after loop pieces: 2000 cases, seed 13, 10 on the CPU, release: 0 mismatches,
+  308 faulted, 220 left to an address at full (37 s at load 22 to 57).
 - Layer 2, third M2 run, with frames, sp accesses, groups and faults: 500 cases, seed 1, 60 on the CPU,
   release: 0 mismatches, 61 faulted, 40 left to an address. 20,000 cases, seed 21, 40 on the CPU,
   release: 0 mismatches, 2949 faulted (SIGSEGV, same at none, full and on the CPU where run), 2131 left
@@ -632,9 +681,13 @@ contract's bits, in both runners).
   memory, at their places in `RegisterBlock`, not in the instance's globals (the plan: "registers live in
   the instance's globals"). There is no save or load state: the block always holds the registers when a
   hook runs or `run` returns, and a runner sets registers by writing it.
-- S1: after the stop hook says carry on at a jump back, a piece enters itself again at the loop instead of
-  going on in place (the plan: "loads its registers back and continues"); at the entry check it goes on
-  with nothing reloaded. Both rest on `Resume::Continue` meaning nothing changed.
+- S1: after the stop hook says carry on at a jump back, the thread goes on in a new call of a loop piece
+  of that loop (or of the piece itself when the loop starts at its entry) instead of going on in place
+  (the plan: "loads its registers back and continues"); at the entry check it goes on with nothing
+  reloaded. Both rest on `Resume::Continue` meaning nothing changed. Loop pieces are pieces the lookup
+  table does not hold (the plan has every piece in the table): only stop checks of their own function
+  enter them, so they may rely on what that function knows at the loop. They are not listed in the
+  description section either.
 - S1: the browser page raises the stop flag at 1, 2, 4, ... 1024 ms after the guest starts, so V8's
   optimised code is used in long loops of functions entered once. A real browser host needs the same (or
   any other early raises); wasmtime needs none.
@@ -657,7 +710,6 @@ contract's bits, in both runners).
   fault. Later LDAR/STLR and exclusives on misaligned addresses will use it too.
 - Seen, not changed: `cargo clippy -p wcontainers-abi --all-targets -- -D warnings` fails on the abi's own
   layout test (`assertions_on_constants`, registers.rs line 79).
-- S1, used, not changed: the CPU side keeps one word for itself in the thread block's padding, right after
-  the stop flag (`contract::RESUME_OFFSET`, offset 804). It is zero except between a piece's re-entry and
-  its entry, and `run` clears it when it starts, so the kernel may leave it as it likes. The kernel half
-  should not use bytes 804 to 807 of a block. No other change to the shared crate in S1.
+- S1, first run: the CPU side kept one word for itself in the thread block's padding (offset 804). Since
+  the second run's loop pieces it does not: the CPU side uses no byte of the block outside the abi's
+  layout. No change to the shared crate in S1.
