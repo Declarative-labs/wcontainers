@@ -4,10 +4,13 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is built and tested, first run: programs start from the file system (with
-their own loader and `#!` scripts), memory calls with page protection and faults, the in-memory file
-systems (tmpfs, `/proc`, `/dev`), file descriptors, time, randomness, ids and powers for one process.
-Single busybox programs match the reference. Layer 1 runs. What is left for K1 is under "Next".
+K0 is done. K1 (one process) is built; two runs so far. Programs start from the file system (with their
+own loader and `#!` scripts), memory calls with page protection, limits and faults, the in-memory file
+systems (tmpfs, `/proc`, `/dev`), file descriptors, time, randomness, ids and powers, signals a process
+sends itself, and Docker's default seccomp profile. Single busybox programs match the reference. Layer 1
+covers every call built. K1 is not finished: layer 1 has not yet passed a long run (each long run so
+far found a mismatch, which was fixed), and a few calls single programs use are still missing (see
+"Next").
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -16,7 +19,8 @@ Needs Docker running; the reference uses alpine:3.22. Containers are named `wc-k
 Layer 1 long run (one command, for the orchestrator):
 `LAYER1_CASES=1000000 LAYER1_SEED=<n> nix develop -c cargo test -p wcontainers-kernel-test --test layer1`
 `LAYER1_CASES` is the number of sequences (default 64), `LAYER1_SEED` the seed (default 0). A failure is
-shrunk and printed call by call with the seed.
+shrunk and printed call by call with the seed. A sequence that runs past 60 s in the reference is
+killed there (SIGKILL), which our side reports for a wait that never ends.
 
 ## What exists
 
@@ -52,152 +56,186 @@ shrunk and printed call by call with the seed.
   Linux's rules for changing ids and what that does to powers and to `dumpable`, capget/capset.
 - Time: clocks from the host, coarse clocks at 1 ms resolution (measured), sleeps park the thread and
   the kernel goes idle until the time; the test host jumps its clocks instead of waiting.
-- Signals as far as one process with no delivery can go: actions and masks are kept; a signal to
-  itself that is ignored does nothing, one whose default kills ends the process with that signal; one
-  with a handler (or blocked, or stopping) is counted "signal handler not run" and the call gives
-  ENOSYS. A fault with a handler set is counted the same way and kills.
+- Signal actions and masks are kept; see the signals bullet below for sending. A fault with a handler
+  set is counted "signal handler not run" and kills.
 - Test crate: `buffer.rs` (a CPU side with no instructions, for layer 1), `image.rs` (docker export of
   the image into `add_file`), `busybox.rs` (one command in both runners, comparing output, exit code and
   the files changed relative to the image), `layer1.rs` and `guest/layer1.c` (the runner: reads
   sequences from stdin, runs each in a fresh child, reports each call's value and the arena bytes it
   changed).
+- Signals within one process (src/signal.rs): a signal sent to itself is dropped if ignored, kept
+  pending while blocked (`rt_sigpending` shows it, `SIG_IGN` flushes it), and acted on when it is let
+  through on the way back from any call. The container's first process ignores every signal it has no
+  handler for, as Linux protects a pid namespace's init (`SIGNAL_UNKILLABLE`); faults still kill it.
+  A signal that would need its handler run, or would stop the process, is refused with ENOSYS and
+  counted ("signal handler not run", "process stop not implemented") where it would become deliverable
+  (`kill`, or `rt_sigprocmask` unblocking it).
+- Resource limits enforced: RLIMIT_FSIZE (writes shortened, EFBIG, SIGXFSZ; truncate and fallocate),
+  RLIMIT_AS and RLIMIT_DATA (mmap, brk, mprotect to writable, mremap growth; Linux's `may_expand_vm`),
+  RLIMIT_STACK (stack growth), RLIMIT_MEMLOCK (mlock, MAP_LOCKED, MCL_FUTURE), RLIMIT_NOFILE. RLIMIT_CPU
+  is kept but not enforced (needs CPU time and timers, K3).
+- Docker's default seccomp profile (src/seccomp.rs), measured on the reference: 37 calls refused with
+  EPERM, numbers Linux does not have up to the profile's last known call (futex_requeue, 456) EPERM,
+  above it ENOSYS, clone3 ENOSYS, and the argument rules for personality, socket (AF_VSOCK and families
+  from AF_MAX refused) and clone (namespace flags refused), compared as 64 bit values.
+- `/proc` follows the reference's rules: a process directory refuses writes and changes (EPERM), a
+  process may always use its own `fd` directory (mode 0500), `/proc/sys` is Docker's read-only mount
+  (EROFS, a mount root), owners follow Linux's `task_dump_owner` (root while not dumpable, except
+  world-readable directories), link counts (9 for a process directory, 1 for sysctl directories), and
+  an `fd` directory's size is its number of open descriptors. Removing or making names there gives the
+  path and type errors first, then EPERM.
+- File locks with `flock` between open files (a refused change loses the old lock, as on Linux). A
+  conflicting wait parks for ever: only this process holds locks.
+
 
 ## System calls
 
-Done (120): brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep, close,
-dup, dup3, execve, exit, exit_group, faccessat, faccessat2, fallocate, fchdir, fchmod, fchmodat,
-fchmodat2, fchown, fchownat, fcntl, fdatasync, fstat, fstatfs, fsync, ftruncate, get_robust_list,
-getcpu, getcwd, getdents64, getegid, geteuid, getgid, getgroups, getpgid, getpid, getppid,
-getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage, getsid, gettid, gettimeofday,
-getuid, ioctl, kill, linkat, lseek, madvise, mkdirat, mknodat, mmap, mprotect, mremap, msync, munmap,
-nanosleep, newfstatat, openat, personality, prctl, pread64, preadv, prlimit64, pwrite64, pwritev,
-read, readlinkat, readv, renameat, renameat2, rt_sigaction, rt_sigpending, rt_sigprocmask,
-sched_getaffinity, sched_getparam, sched_getscheduler, sched_setaffinity, sched_yield, sendfile,
+Done (140): brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep, close,
+close_range, copy_file_range, dup, dup3, execve, exit, exit_group, faccessat, faccessat2, fadvise64,
+fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl, fdatasync, flock, fstat,
+fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
+getgroups, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
+getsid, gettid, gettimeofday, getuid, ioctl, kill, linkat, lseek, madvise, mkdirat, mknodat, mlock,
+mlock2, mlockall, mmap, mprotect, mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat,
+openat, openat2, personality, ppoll, prctl, pread64, preadv, preadv2, prlimit64, pselect6, pwrite64,
+pwritev, pwritev2, read, readahead, readlinkat, readv, renameat, renameat2, rt_sigaction, rt_sigpending,
+rt_sigprocmask, sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getparam,
+sched_getscheduler, sched_setaffinity, sched_setparam, sched_setscheduler, sched_yield, sendfile,
 set_robust_list, set_tid_address, setdomainname, setfsgid, setfsuid, setgid, setgroups, sethostname,
-setpgid, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, sigaltstack, statfs,
-statx, symlinkat, sync, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, uname, unlinkat,
-utimensat, write, writev.
+setpgid, setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, sigaltstack,
+statfs, statx, symlinkat, sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask,
+uname, unlinkat, utimensat, write, writev.
 
 Partial (inside the list above):
-- fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS); no leases, owners, signals.
+- fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS); no leases, owners, signals, seals.
 - ioctl: FIOCLEX, FIONCLEX, FIONBIO; terminal requests give ENOTTY (no terminals yet); others ENOTTY,
   counted when the file is a device.
 - mmap: no shared file mappings (counted, ENODEV); MAP_HUGETLB counted, ENOMEM. MAP_SHARED anonymous
   is exact while there is no fork.
-- openat: O_TMPFILE counted, EOPNOTSUPP; named pipes counted, ENXIO; `/dev/ptmx` counted, ENODEV.
+- openat, openat2: O_TMPFILE counted, EOPNOTSUPP; named pipes counted, ENXIO; `/dev/ptmx` counted,
+  ENODEV. openat2's restricted lookups (RESOLVE_NO_XDEV, NO_MAGICLINKS, NO_SYMLINKS, BENEATH, IN_ROOT)
+  are counted and refused with ENOSYS, as by a kernel without them; RESOLVE_CACHED is taken (everything
+  is in memory).
 - kill, tkill, tgkill: only to the caller itself (see signals above); others ESRCH.
 - execve: only from a process with one thread.
-- rt_sigaction, rt_sigprocmask, sigaltstack: recorded, not delivered (K2).
+- rt_sigaction, rt_sigprocmask, sigaltstack: handlers recorded, not run (K2).
 - getrusage, times, CPU-time clocks: CPU time is the time since the container started.
-- fallocate: mode 0 only (others counted, EOPNOTSUPP).
+- fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
 - prctl: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, GET/SET_NO_NEW_PRIVS,
   GET_SECCOMP, GET_CHILD_SUBREAPER; others counted, EINVAL.
 - statfs: block and inode counts are made up (64 MiB like Docker's tmpfs).
-- ppoll: every file that exists so far is always ready (Linux's default poll mask; the host's pipes
-  always have room); a wait with nothing ready sleeps until its timeout, or for ever (until K2's
-  signals).
-- personality: Docker's filter is modelled for this call (only 0, 8, 0x20000, 0x20008 and the query
-  pass, others EPERM); the 32 bit personality gives EINVAL as on a CPU without that mode.
-- getpriority: nice values are not kept yet (always 0); setpriority is missing.
+- ppoll, pselect6: every file that exists so far is always ready (Linux's default poll mask; the host's
+  pipes always have room); a wait with nothing ready sleeps until its timeout, or for ever (until K2's
+  signals). The signal mask they take is read, not applied.
+- flock: a wait for a conflicting lock never ends (one process).
+- sched_setscheduler, sched_setparam: kept per thread with Linux's checks for an unprivileged caller
+  (no CAP_SYS_NICE, RLIMIT_RTPRIO and RLIMIT_NICE zero); nothing is scheduled by them yet.
+  `/proc/<pid>/stat` still shows nice 0.
+- mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
+- brk: RLIMIT_DATA is checked on the heap alone, not heap plus data segment as Linux does.
 
-Missing (205, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy,
-io_submit, io_cancel, io_getevents, setxattr, lsetxattr, fsetxattr, getxattr, lgetxattr, fgetxattr,
-listxattr, llistxattr, flistxattr, removexattr, lremovexattr, fremovexattr, lookup_dcookie, eventfd2,
-epoll_create1, epoll_ctl, epoll_pwait, inotify_init1, inotify_add_watch, inotify_rm_watch,
-ioprio_set, ioprio_get, flock, umount2, mount, pivot_root, nfsservctl, vhangup, pipe2, quotactl,
-pselect6, signalfd4, vmsplice, splice, tee, sync_file_range, timerfd_create, timerfd_settime,
-timerfd_gettime, acct, waitid, unshare, futex, getitimer, setitimer, kexec_load, init_module,
-delete_module, timer_create, timer_gettime, timer_getoverrun, timer_settime, timer_delete,
-clock_settime, syslog, ptrace, sched_setparam, sched_setscheduler, sched_get_priority_max,
-sched_get_priority_min, sched_rr_get_interval, restart_syscall, rt_sigsuspend, rt_sigtimedwait,
-rt_sigqueueinfo, rt_sigreturn, setpriority, reboot, settimeofday, adjtimex, mq_open, mq_unlink,
-mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget,
-semctl, semtimedop, semop, shmget, shmctl, shmat, shmdt, socket, socketpair, bind, listen, accept,
-connect, getsockname, getpeername, sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg,
-recvmsg, readahead, add_key, request_key, keyctl, clone, fadvise64, swapon, swapoff, mlock, munlock,
-mlockall, munlockall, mincore, remap_file_pages, mbind, get_mempolicy, set_mempolicy, migrate_pages,
-move_pages, rt_tgsigqueueinfo, perf_event_open, accept4, recvmmsg, wait4, fanotify_init,
-fanotify_mark, name_to_handle_at, open_by_handle_at, clock_adjtime, setns, sendmmsg,
-process_vm_readv, process_vm_writev, kcmp, finit_module, sched_setattr, sched_getattr, seccomp,
-memfd_create, bpf, execveat, userfaultfd, membarrier, mlock2, copy_file_range, preadv2, pwritev2,
-pkey_mprotect, pkey_alloc, pkey_free, io_pgetevents, rseq, kexec_file_load, pidfd_send_signal,
-io_uring_setup, io_uring_enter, io_uring_register, open_tree, move_mount, fsopen, fsconfig, fsmount,
-fspick, pidfd_open, clone3, close_range, openat2, pidfd_getfd, process_madvise, epoll_pwait2,
-mount_setattr, quotactl_fd, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self,
-memfd_secret, process_mrelease, futex_waitv, set_mempolicy_home_node, cachestat, map_shadow_stack,
-futex_wake, futex_wait, futex_requeue, statmount, listmount, lsm_get_self_attr, lsm_set_self_attr,
-lsm_list_modules, mseal, setxattrat, getxattrat, listxattrat, removexattrat, open_tree_attr,
-file_getattr, file_setattr.
+Refused by Docker's profile as in the reference (51; never reach the kernel there, so nothing to
+build): lookup_dcookie, umount2, mount, pivot_root, nfsservctl, quotactl, unshare, kexec_load,
+delete_module, clock_settime, settimeofday, add_key, request_key, keyctl, swapon, mbind, get_mempolicy,
+set_mempolicy, migrate_pages, move_pages, perf_event_open, open_by_handle_at, setns, kcmp, bpf,
+userfaultfd, kexec_file_load, io_uring_setup, io_uring_enter, io_uring_register, open_tree, fsconfig,
+clone3, pidfd_getfd, process_madvise, mount_setattr, quotactl_fd, set_mempolicy_home_node, statmount,
+listmount, lsm_get_self_attr, lsm_set_self_attr, lsm_list_modules, mseal, setxattrat, getxattrat,
+listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr.
 
-## Tests (last run 2026-11-15: 22 passed, 4 ignored known failures)
+Missing (134, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
+io_cancel, io_getevents, setxattr, lsetxattr, fsetxattr, getxattr, lgetxattr, fgetxattr, listxattr,
+llistxattr, flistxattr, removexattr, lremovexattr, fremovexattr, eventfd2, epoll_create1, epoll_ctl,
+epoll_pwait, inotify_init1, inotify_add_watch, inotify_rm_watch, ioprio_set, ioprio_get, vhangup, pipe2,
+signalfd4, vmsplice, splice, tee, timerfd_create, timerfd_settime, timerfd_gettime, acct, waitid, futex,
+getitimer, setitimer, init_module, timer_create, timer_gettime, timer_getoverrun, timer_settime,
+timer_delete, syslog, ptrace, sched_rr_get_interval, restart_syscall, rt_sigsuspend, rt_sigtimedwait,
+rt_sigqueueinfo, rt_sigreturn, reboot, adjtimex, mq_open, mq_unlink, mq_timedsend, mq_timedreceive,
+mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl, semtimedop, semop, shmget,
+shmctl, shmat, shmdt, socket, socketpair, bind, listen, accept, connect, getsockname, getpeername, sendto,
+recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg, clone, swapoff, mincore, remap_file_pages,
+rt_tgsigqueueinfo, accept4, recvmmsg, wait4, fanotify_init, fanotify_mark, name_to_handle_at,
+clock_adjtime, sendmmsg, process_vm_readv, process_vm_writev, finit_module, sched_setattr,
+sched_getattr, seccomp, memfd_create, execveat, membarrier, pkey_mprotect, pkey_alloc, pkey_free,
+io_pgetevents, rseq, pidfd_send_signal, move_mount, fsopen, fsmount, fspick, pidfd_open, epoll_pwait2,
+landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret, process_mrelease,
+futex_waitv, cachestat, map_shadow_stack, futex_wake, futex_wait, futex_requeue. Most belong to K2
+(processes, pipes, signals, futex), K3 (timers) or K5 (sockets, epoll).
 
-All pass except the ignored known failures. Earlier K0 tests (hello, write, loader, faults, dispatch,
-standin, boundary, layouts) still pass with the new start.
-- busybox: 67 single commands of the reference image (echo, printf, cat, head, tail, wc, sort, grep,
-  sed, awk, cut, tr, seq, md5sum, sha256sum, base64, od, expr, basename, true, false, ls of `/dev`,
-  `/dev/shm`, `/dev/pts`, mkdir, touch -d, rm, rm -r, rmdir, mv, cp -a, ln, ln -s, chmod 4755, chown,
-  readlink -f, realpath, stat, dd, tee, truncate, mknod, mkfifo, test, pwd, id, whoami, hostname, env,
-  sleep, getconf, cat and readlink of `/proc/self`, ls `/proc/self/fd`, `/proc/self/limits`, `sh -c`
-  with builtins, redirections and `exec`, ...): same stdout, stderr,
-  exit code and files changed as the reference. Commands are found on the image's PATH as Docker does.
-- one_cpu: nproc says 1 (the plan's one-CPU difference).
-- memory: guest/memory.c, 10 cases against the reference: mprotect then write (SIGSEGV), PROT_NONE
-  read, unmapped hole, fresh memory is zero after reuse, MADV_DONTNEED, a private file mapping past
-  the file's end (SIGBUS), private file mapping copy semantics, stack growth by 4 MB of frames, stack
-  overflow (SIGSEGV), brk grow and shrink, running code from a page made executable and then not.
-- script: `#!` scripts with and without an argument, a script whose interpreter is a busybox applet,
-  and a missing interpreter (ENOENT).
+## Tests (last run 2026-11-15: 26 passed, 3 ignored known failures)
+
+All pass except the ignored known failures.
+- busybox: 67 single commands of the reference image (unchanged this run): same stdout, stderr, exit
+  code and files changed as the reference.
+- memory (10 cases), script, one_cpu, dispatch, loader, faults, standin, boundary, layouts: as before.
+- limits (new): guest/limits.c as the container's first process in both: RLIMIT_FSIZE on write,
+  pwrite, ftruncate and fallocate with SIGXFSZ ignored (first process) and blocked (pending);
+  kill/tkill of itself with SIGTERM, SIGKILL and SIGSTOP (all ignored by the first process), kill(0),
+  kill(-1), unknown signals, pending signals, flushing by SIG_IGN; RLIMIT_AS, RLIMIT_DATA (mmap,
+  mprotect, mremap, sbrk); RLIMIT_STACK (stack growth past the limit is SIGSEGV).
+- seccomp (new): guest/seccomp.c makes the profile's refused calls and argument rules; same output.
+- procaccess (new): guest/procaccess.c checks access, rmdir, unlink, mkdir and create on `/proc`
+  entries as root and after setreuid(0, 1000); same output.
+- dispatch: the seccomp gap case is no longer a known failure.
 - layer1: see the layer 1 section.
 
 Known failures (ignored, with the reason in the attribute):
 - busybox root_file_system: `ls -la /`, `ls -ln /etc`, `stat /etc`, `find /etc`, `du /etc/apk` show
   the root file system's own kind (overlayfs over ext4 in the reference, tmpfs here until K4).
-- The three K0 ones (seccomp gaps, two unicorn alignment differences), unchanged.
+- The two unicorn alignment differences from K0, unchanged.
 
 ## Layer 1
 
-Calls covered (95 kinds, plus mkdirat and chdir at the start of every sequence): openat, close, read,
-write, pread64, pwrite64, readv, writev, preadv, pwritev, lseek, getdents64, dup, dup3, fcntl, ioctl,
-fsync, fdatasync, mkdirat, mknodat, symlinkat, linkat, unlinkat, renameat, renameat2, readlinkat,
-newfstatat, fstat, statx, faccessat, faccessat2, fchmod, fchmodat, fchmodat2, fchown, fchownat,
-utimensat, truncate, ftruncate, fallocate, getcwd, chdir, fchdir, umask, statfs, fstatfs, sendfile,
-ppoll, mmap, munmap, mprotect, madvise, uname, getuid, getpid, getppid, gettid, getpgid, getsid,
-getresuid, getresgid, getgroups, setuid, setgid, setreuid, setregid, setresuid, setresgid, setfsuid,
-setfsgid, setgroups, prlimit64, getrlimit, setrlimit, getrusage, times, clock_gettime, clock_getres,
-gettimeofday, nanosleep, clock_nanosleep, getrandom, sysinfo, getcpu, rt_sigprocmask, rt_sigaction,
-rt_sigpending, sigaltstack, set_robust_list, prctl, personality, sched_getaffinity, sched_yield,
-getpriority, capget. Arguments come from pools with bad pointers, bad descriptors, huge counts,
-unknown flags and invalid values. 1 to 15 calls after the two setup calls. Everything happens under
-`/dev/shm/w` (tmpfs in both) and the devices; never on the root file system. After each sequence the
-runner puts back what a sequence can change outside its directory (`/dev/shm` and the three devices).
+Calls covered: every call in "Done" except brk (its values are addresses that differ by layout; it is
+tested by guest/memory.c and guest/limits.c), plus mkdirat and chdir at the start of every sequence.
+Arguments come from pools with bad pointers, bad descriptors, huge counts, unknown flags and invalid
+values. 1 to 15 calls after the two setup calls. Everything happens under `/dev/shm/w` (tmpfs in both),
+the devices and `/proc`; never on the root file system. After each sequence the runner puts back what a
+sequence can change outside its directory (`/dev/shm` and the three devices).
+
+How the runner works now: the reference child reports into a pipe its parent drains; the parent sends
+the whole report with a length, then the wait status, so a child that dies part way through a report
+cannot desynchronise the stream (the cause of the earlier stalls: a child killed mid-record by its own
+10 s alarm). The child first makes itself a session leader, as our caller (the container's first
+process) is. An argument SELF is replaced on each side by the caller's own process number, so kill,
+tkill, tgkill, setpgid, getpgid, getsid, prlimit64, get_robust_list and the sched_* calls can name their
+own process.
 
 Masked on both sides: inode and device numbers and times in stat and statx, d_ino in getdents64,
 statfs counts and fsid, the values of clock_gettime, gettimeofday, times, sysinfo and getrusage,
 getrandom's bytes, uname's release and version, the CPU set and CPU number (one CPU is a declared
-difference), the time ppoll writes back, process numbers (the reference's caller is a child of its
-runner), and the address mmap returns without MAP_FIXED.
+difference), the time ppoll and pselect6 write back, process numbers (the reference's caller is a child
+of its runner), set_tid_address's value, and the address mmap or a moving mremap returns.
 
-Not generated, and why: named pipes (opening one waits; pipes are K2); fd 0 (a pipe in the reference
-runner, /dev/null in our container); process 1 as an argument; memory lengths above 256 MiB (our
-programs' own mappings lie higher in a 4 GiB space); ppoll without a timeout.
+Not generated, and why: named pipes (opening one waits; pipes are K2); descriptors 0 to 2 (the
+reference's caller reports through them, and fd 0 differs); process 1 as an argument and the caller's
+own group negated (our caller is process 1, so -1 would mean every process); memory lengths above
+256 MiB (our programs' own mappings lie higher in a 4 GiB space); ppoll and pselect6 without a timeout;
+signals whose default action ends or stops a process, and rt_sigaction on the signals kill sends (our
+caller is the container's first process, which Linux keeps from such signals, theirs is not; handlers
+need K2); RLIMIT_CPU and RLIMIT_FSIZE limits that can be reached (the same reason, and CPU time depends
+on the machine's speed); setpriority by user (it reaches the reference's runner); flock waits (they
+would wait for ever); openat2 restricted lookups (not built) and RESOLVE_CACHED (its result in Linux
+depends on what is cached).
 
-Not yet covered by layer 1 (built, tested only through programs): brk, execve, exit, exit_group,
-mremap, msync, kill/tkill/tgkill, setpgid, setsid, chroot, sethostname, setdomainname, sync, syncfs,
-get_robust_list, set_tid_address, sched_getparam, sched_getscheduler, sched_setaffinity.
-
-Cases run, each passing after the fixes it led to: 50 (seed 0), 300 (seed 1), 3000 (seed 2) on the
-first 59 calls; on all 95: 500 (seed 3), 2000 (seed 4), 800 (seed 6). Runs of 8000 (seed 5) and 1500
-(seed 6) stalled (see known issues) and gave no verdict.
+Cases run this run (the earlier ones are in git history): seed 10: 500 passed; seed 20: 1000 passed;
+seed 22: 1500 passed; seed 30: 1500 passed; seed 32: 3000 passed. Each 20000-sequence run (seeds 11, 12,
+21, 22, 31, 32) found a mismatch within 1 to 3 minutes, which was fixed (about 25 fixes: capability
+versions, signal order, setpgid, sethostname, get_robust_list, execve's order, mremap, madvise,
+syncfs, flock, SCHED_EXT, openat with O_DIRECTORY on a link, getdents64's buffer check, proc
+permissions, `/proc/sys`, and more). No run stalled after the runner change, but no run has yet been
+long enough to prove the stall gone. Seeds 41 and 42 (20000 each) were started at the end of this run;
+see "Next".
 
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
-- Layer 1, 50 sequences, seed 0: 2.2 s including starting the reference container (load about 30).
-- Layer 1, 3000 sequences, seed 2, 59 call kinds: 86 s (load 27.75 32.08 54.80 at the start).
-- Layer 1, 500 sequences, seed 3, 95 call kinds: 15.4 s (load about 14).
-- Layer 1, 2000 sequences, seed 4: 63 s; 800 sequences, seed 6: 24.7 s (load about 4 to 7).
-- busybox test binary (4 tests in parallel, about 67 commands, each in both runners): 9 to 54 s
-  (load 14 to 50).
+- Layer 1, 3000 sequences, seed 32, all call kinds: 89 s (load about 8 to 15).
+- Layer 1, 1500 sequences, seed 30: 46 s (load about 8 to 15).
+- Layer 1, 500 sequences, seed 10: 15.4 s (load 4.6).
+- Earlier (first run): 3000 sequences, seed 2, 59 call kinds: 86 s (load 27 to 55).
+- busybox test binary (4 tests in parallel, about 67 commands, each in both runners): 11 to 18 s this
+  run (load about 7 to 15); 9 to 54 s in the first run (load 14 to 50).
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
@@ -225,8 +263,6 @@ All on this shared Mac; noisy, not benchmarks.
   names it).
 - The generator now also copies linux-raw-sys's `system`, `ioctl` and `prctl` modules, and gives a named
   list of structures zerocopy's byte derives (which prove they have no padding).
-- Docker's default seccomp profile is still not modelled (see K0), except for `personality`, whose
-  argument filter is modelled because layer 1 reaches it.
 - Mount flags are modelled per file system (`/dev` nosuid; `/dev/shm` and `/proc` nosuid, nodev,
   noexec, relatime; `/dev/pts` nosuid, noexec, relatime; `/` relatime): statfs reports them, `nodev`
   refuses opening devices (EACCES), `noexec` refuses execve (EACCES) and executable file mappings
@@ -240,11 +276,22 @@ All on this shared Mac; noisy, not benchmarks.
   proptest can shrink.
 - Layer 1's mmap lengths stay below 4 GiB: refusing larger reservations is the plan's declared
   small-address-space difference.
+- Docker's default seccomp profile is modelled from measurement of the reference (Docker 29.9.3), not
+  from the profile's source, because the reference is the specification. A program run on a different
+  Docker version could see a different profile.
+- `/proc/sys/{abi,debug,dev,net,sunrpc,user}` exist as empty directories so that paths through them
+  resolve as in the reference; their contents are not part of the made-up machine yet.
+- statfs reports a block size of 4096 for every file system, `/proc` included (measured); stat still
+  reports 1024 for `/proc` files (measured).
+- The generator now also copies linux-raw-sys's `net` module (for the socket families the profile
+  checks). Values newer than linux-raw-sys 0.12.1 (RWF_NOAPPEND, RWF_ATOMIC, RWF_DONTCACHE,
+  CLOSE_RANGE_UNSHARE, CLOSE_RANGE_CLOEXEC) are in src/linux_extra.rs, with that reason.
+
 
 ## Changes to the shared crate (wcontainers-abi)
 
 - K0: `Host::output(stream, bytes)` with `Stream`; `CounterReading::detail`.
-- None in K1 so far.
+- None in K1 so far (checked again this run).
 
 ## Questions for the orchestrator (boundary)
 
@@ -257,21 +304,23 @@ All on this shared Mac; noisy, not benchmarks.
 
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen.
-- Layer 1 runs of more than a few thousand sequences have twice stalled: the test waits for the
-  runner's answer while the runner (in the reference container) waits for the next sequence; CPU use
-  stops after about 10 s. Cause not found; the suspect is Docker's relay of the container's standard
-  input under load. Runs of up to 3000 sequences completed. The orchestrator's long run should be
-  split into runs of a few thousand with different seeds until this is fixed (a read timeout and a
-  restart of the reference container would also do).
-- Inodes of `/proc` are made at each lookup, so changes to them do not last: chmod and chown give
-  EPERM (chown of a proc entry is allowed on Linux in some cases), utimensat succeeds with no effect.
+- Inodes of `/proc` are made at each lookup, so changes to them do not last: chown of a process's
+  entries succeeds with no effect, as on Linux; chmod or chown of entries outside the process
+  directories (which Linux keeps) are refused with EPERM and counted ("proc attribute change not
+  kept"); utimensat on them succeeds with no effect.
+- `/proc` writes to `/proc/sys` files give EACCES or EROFS depending on our file modes; the reference
+  gives EROFS for the writable ones (not compared yet).
+- `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts.
 
 ## Next (K1, in order)
 
-1. Run layer 1 for many more cases with several seeds (the orchestrator's long run) and fix what it
-   finds; extend it to the calls in "Not yet covered".
-2. More busybox single programs.
-3. close_range, copy_file_range, preadv2/pwritev2, mincore, mlock family, memfd_create, openat2, flock
-   (single-process semantics), fadvise64, sched_* remaining, setpriority, getitimer.
-4. Docker's default seccomp profile (gaps and blocked calls give EPERM).
-5. Then K2.
+1. Look at seeds 41 and 42 (`LAYER1_CASES=20000`, logs were in the scratch directory) or rerun them;
+   fix what they find; repeat with new seeds until long runs pass. The orchestrator's long run is the
+   command at the top.
+2. Calls single programs still use that are missing: the extended attribute calls (tmpfs has user.,
+   trusted. and security. names), memfd_create (with fcntl seals), mincore, sched_rr_get_interval,
+   sched_setattr/sched_getattr, getitimer/setitimer (need signal delivery and the timer queue, may wait
+   for K2/K3).
+3. More busybox single programs (and ones that use the calls added this run: flock, cp of big files
+   through copy_file_range if any, nice, chrt-like tools are not in busybox).
+4. Then K2.
