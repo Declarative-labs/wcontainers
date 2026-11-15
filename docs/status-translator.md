@@ -14,12 +14,97 @@ first instruction looped for ever), added `tests/checks.rs`, and made layer 2 pr
 every size, x19 to x28, accesses through sp and groups through other registers, and fault. Speed is still
 far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
-S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
-what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
+S1 (run speed at full look-ahead) is closed (ninth run): the orchestrator withdrew the aims of 4 for fib,
+2.5 for sort and 3 for interpret (where their remaining cost sits is under "S1, what remains after the
+eighth run"). The close-out added the test of section 9 that changes page permissions at random stops and
+system calls, wrote down the rule the dropped checks rest on, looked into the search measuring variant and
+recorded what each S1 change added to the output's size: see "S1, close-out" just below. S1 waits for its
+independent check. The third run's work is under "S1, third run", the fourth's (measurements only) under
 "S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
 calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
 rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
 eighth run", and what is left under "S1, what remains after the eighth run".
+
+## S1, close-out (ninth run)
+
+- The rule the dropped checks rest on (now in `contract.rs`'s documentation, "When the permission table
+  may change"): what a piece has found out about page permissions (a check another covers, a kept run,
+  a proof over a loop's range, a bounded index) holds only until the next point where its thread can stop:
+  a stop check whose hook runs, a system call, or leaving `run`. The one exception is the plan's own: a
+  frame checked when sp moved down holds until the next function entry. So whoever changes a process's
+  page permissions must first bring every other running thread of that process to a stop (raise its flag
+  and wait for its hook, or for it to leave `run`), as a real kernel interrupts the other processors
+  before it changes a page table. With one host thread this happens by itself; the later host-threads
+  work must do it.
+- The section 9 test, `tests/changes.rs` with `src/changes.rs`. The run at full makes changes and records
+  where; the run at none, stopping at every instruction, makes the same changes at the same points and
+  must end the same. A change is up to three pages, each set to nothing, read, write, read and write, or
+  everything; 60% are the page a register points at, the one before it or the two after it (so they land
+  on what a loop's proof or a kept run covers, and on the page after the one being accessed), the rest
+  any page of the blob, the page after it, the stack below sp or the page below the stack. Pages from
+  sp's page to the top of the stack are left alone (frames, the plan's exception). Changes come at one
+  pause in 1, 4, 32 or 256 (one in 16 or 1024 for the C programs), at stop checks (the full run stops at
+  every check in 3 cases in 4) and after system calls. A fault on such a page is handled as a program's
+  handler would: the page is made readable and writable and the thread carries on from the faulting
+  instruction, up to 64 times a run, so one run meets many faults and every one is compared: why the
+  thread came back (fault address and kind), every register, then output, status and every byte of
+  those pages at the end. A system call point is found again by its count; a stop point by how often
+  the thread had come back before it plus its registers and a hash of that memory (a handled fault
+  returns to the same registers and memory, which first matched the wrong stop; found by the test
+  itself). Programs: layer 2's random programs, and walks (-O0, -O2), integers, tables and bench (-O0,
+  -O2, the small sizes), each with several seeds.
+- Layer 2's generator has two new shapes for it: a system call op (a write of nothing to standard
+  output, so stops and checks after a system call are exercised mid-function and the CPU agrees), and
+  a lookup loop that goes back to its head through a switch whose cases are the head and the way out (a
+  switch with a backward case, so a stop carries on in place inside a loop with kept runs). Before the
+  second, no test program reached that path. Old layer 2 seeds now give other programs.
+- Shown to fail by breaking the code on purpose: (A) a proven loop's copy without checks carrying on in
+  place after a stop at its jump back, instead of going to the loop piece that proves again (patch
+  `s9/break-proof.patch`): with the final test, caught at the first failing case on seeds 1, 2 and 3
+  (within 20, 6 and 28 cases counting shrinking; full ran past a fault none took, or faulted later).
+  (B) a stop that carries on in place leaving the kept
+  runs alive (`full.rs` `stop_check`, patch `s9/break-kept-run.patch` in scratch): not caught by 3000
+  cases before the backward switch shape existed (that path was never reached), caught within 232, 122
+  and 154 cases (seeds 1, 2, 3) after.
+- The switch that leaves checks out (`Omit`, `translate_omitting`) exists only with the translator
+  crate's `measure` feature; `translate` always translates with every check. Only the test crate and the
+  browser translator turn the feature on. Cargo merges features in one build, so a crate built in the
+  same build as the test crate sees `Omit` too, but must still call `translate_omitting` by name.
+- Search with only the permission check left out (5.6 times native in wasmtime, against 2.0 with no
+  check and 2.0 with every check), looked into for about half an hour, best of 3 to 5, load 6 to 13:
+  reproduced (0.66 to 0.73 s against 0.24 for no check and for every check). It is not a cost of any
+  check. The hot loop's machine code is the same as every check's proven copy (both hold the stop flag
+  load), 19 to 22 instructions a turn; no slow path is taken (no counter moves); `sample` puts 65% of
+  the samples on the instruction after the loop's first data dependent branch. Changing only what the
+  piece does at its entry (a few stores to unused state memory, an experiment not kept, patch
+  `s9/search/pad.patch`) changes how Cranelift allocates registers in that function: 10 of 11 such
+  builds stay at 0.66 to 0.73 s and one runs at 0.245 s, with the loop's running sum kept on the stack
+  instead of in a register. So it is an artefact of how Cranelift compiled that one function in that
+  variant, together with this CPU; why that code is three times slower was not traced (no hardware
+  counters here).
+- Output size, bench -O2 SCALE=1, all workloads, 4836 bytes of code, at full, each S1 commit built in a
+  scratch clone (`s9/size.sh`; bytes of WebAssembly, then gzipped at the default level):
+  - before S1 (d0e700d): 111,975 (23.2 per byte of code), 27,653 gzipped.
+  - registers in the thread block (5ab1eed): +27,411 to 139,386 (28.8). Every register outside the
+    locals is a load or store with its own offset, instead of a global.
+  - throwing through a helper, the module's own globals (2300a89): +316.
+  - re-entering the piece at its loops after a stop (7e8be55, replaced later): -4,322.
+  - kept page in loops (2382c4a): +3,381.
+  - the flags bit in the return address (87bb69e): +3,092 to 141,853 (29.3).
+  - loop pieces (af2566e): +188,027 to 329,880 (68.2), 69,297 gzipped. The largest by far: each loop
+    gets a piece that holds the loop and what follows it up to another loop's header, so code is copied
+    once per loop that reaches it.
+  - kept runs of up to eight pages and the write back before loops (1f7dfee): +10,708.
+  - the table's place from the module's globals in a kept run's check (86f24d5): -140.
+  - the proof over a loop's range and its copy without checks (dc7af11): +8,254; outer loops proven too
+    (c7b40ab): +1,690.
+  - two argument registers instead of four (93b955e): -10,479.
+  - the lookup in place at calls through a register (ceaf05f): +541; the switch's case from the
+    register (bd4adcf): +54.
+  - bounded indices proven (ce0fb6b): +13,382 to 353,890 (73.2), 78,378 gzipped. Unchanged since.
+  So of the growth from 23.2 to 73.2 bytes per byte of code, loop pieces are about 78%, registers in the
+  block about 11%, proofs (both kinds) about 10%, kept runs about 6%, and the rest small or negative.
+  Nothing was changed for size.
 
 ## S1: run speed at full look-ahead
 
@@ -731,6 +816,8 @@ contract's bits, in both runners).
 - Translator proptest: `PROPTEST_CASES`, `PROPTEST_RNG_SEED` (default seed 1).
 - Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
   (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
+- Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
+  (defaults 64 random programs, seed 1, 3 seeds for each C program; about 2 ms a random program at load 10).
 - Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
@@ -778,6 +865,12 @@ contract's bits, in both runners).
 - Layer 2, sixth S1 run, release: 300 cases seed 61 and 2000 seed 63, 10 on the CPU (two argument
   registers): 0 mismatches, 674 faulted; 2000 seed 65, 10 on the CPU (lookup in place): 0 mismatches, 668
   faulted, 150 left to an address at full (30 s, load 13). Not yet the pass bar.
+
+- S1 close-out, release: layer 2, 2000 cases seed 91, 40 on the CPU (with the new system call and
+  backward switch shapes): 0 mismatches, 704 faulted, 132 left to an address at full (35 s, load 4 to 8).
+  `tests/changes.rs`, 5000 random programs seed 11 and the C programs with 6 seeds each (72 runs): 0
+  mismatches; 205,661 changes made, 11,178 faults handled and compared (108 s, load 7.5 to 9). Not yet a
+  pass bar (the plan's one million random programs applies across layers 2 and 3).
 
 ## Measurements
 
@@ -872,7 +965,8 @@ contract's bits, in both runners).
 
 ## Next
 
-1. Finish S1 (see "S1, what remains"): its aims are not met yet.
+1. S1's independent check. Then the long runs for the pass bars (layer 1, layer 2, `tests/changes.rs`),
+   started by the orchestrator; commands under "How to run".
 2. Measure the second lookup design (M5 says settle it; nothing built yet).
 3. M3: every instruction.
 
@@ -890,10 +984,10 @@ contract's bits, in both runners).
   with recursion 50,000 deep in 16 byte frames (800 KB of a 1 MiB stack), which Linux runs. The plan's way
   out is the "stack is lost" path (M4): count call depth and, past a limit, leave to the bottom loop and
   carry on from the guest's own stack. Not built; its cost on calls is unmeasured.
-- Not yet in the across-layer tests: pieces of different look-aheads mixed at random, injected rare events
-  (stack lost, missing piece, flag raised at a random check), and faults with the table changed at random
-  points (M4 per the plan's milestones). Layer 2 programs fault only on the page after the blob and below
-  the stack, with a table fixed for the run.
+- Not yet in the across-layer tests: pieces of different look-aheads mixed at random, and injected rare
+  events other than the stop flag (stack lost, missing piece) (M4 per the plan's milestones). Faults with
+  the table changed at random stops and system calls are in `tests/changes.rs` since S1's close-out;
+  bounded look-ahead does not exist yet, so only full is compared with none there.
 - A test whose guest never ends hangs rather than fails (nothing bounds how long a translated run may
   take); the hang this run fixed showed as layer 2 and `tests/checks.rs` running for ever.
 - The full piece of a function keeps every local it may need; very large functions could pass V8's 50,000
@@ -910,6 +1004,12 @@ contract's bits, in both runners).
   features than the one we present).
 
 ## Departures from the plan
+
+- S1 close-out: in `tests/changes.rs` changes never touch the pages from sp's page to the top of the stack,
+  because the plan lets a frame's check hold until the next function entry ("What still gets through"), so
+  full and none may differ there by design. Faults the test handles make the page readable and writable;
+  the plan's section 9 asks only that faults reach the hook with the same registers as none, the handling
+  is there so a run meets many faults.
 
 - Two kinds of module per thread: a thread module (lookup table, unwind tag, bottom loop) and code modules
   (pieces only, importing the thread module's table). The plan has every module export run and save/load;
