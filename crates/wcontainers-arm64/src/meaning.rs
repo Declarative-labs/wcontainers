@@ -98,6 +98,10 @@ pub trait Emitter {
     fn set_flags(&mut self, flags: Flags);
     /// Push one flag as an i32 0 or 1.
     fn flag(&mut self, flag: Flag);
+    /// Push SIMD and floating point register `n` as a v128.
+    fn get_vector(&mut self, n: u8);
+    /// Pop a v128 into SIMD and floating point register `n`.
+    fn set_vector(&mut self, n: u8);
     /// Push the thread pointer as an i64.
     fn get_thread_pointer(&mut self);
     fn set_thread_pointer(&mut self);
@@ -551,6 +555,44 @@ fn store<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, rt:
         2 => s.i64_store16(m),
         4 => s.i64_store32(m),
         _ => s.i64_store(m),
+    };
+}
+
+/// Load `bytes` from the address in `local` plus `offset` into the low bytes of a v128, the rest zero.
+fn load_vector<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8) {
+    if bytes < 4 {
+        e.sink().v128_const(0);
+    }
+    e.sink().local_get(local);
+    if offset != 0 {
+        e.sink().i64_const(offset as i64).i64_add();
+    }
+    let m = memory(0);
+    let mut s = e.sink();
+    match bytes {
+        1 => s.i32_load8_u(m).i32x4_replace_lane(0),
+        2 => s.i32_load16_u(m).i32x4_replace_lane(0),
+        4 => s.v128_load32_zero(m),
+        8 => s.v128_load64_zero(m),
+        _ => s.v128_load(m),
+    };
+}
+
+/// Store the low `bytes` of vector register `rt` at the address in `local` plus `offset`.
+fn store_vector<E: Emitter + ?Sized>(e: &mut E, local: u32, offset: u64, bytes: u8, rt: u8) {
+    e.sink().local_get(local);
+    if offset != 0 {
+        e.sink().i64_const(offset as i64).i64_add();
+    }
+    e.get_vector(rt);
+    let m = memory(0);
+    let mut s = e.sink();
+    match bytes {
+        1 => s.v128_store8_lane(m, 0),
+        2 => s.v128_store16_lane(m, 0),
+        4 => s.v128_store32_lane(m, 0),
+        8 => s.v128_store64_lane(m, 0),
+        _ => s.v128_store(m),
     };
 }
 
@@ -1110,6 +1152,71 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             write_back(e, update);
             e.next();
         }
+        I::LoadVector {
+            bytes,
+            rt,
+            address: form,
+        } => {
+            let (at, update) = address(e, form);
+            e.check(at, bytes.into(), Access::Read);
+            load_vector(e, at, 0, bytes);
+            e.set_vector(rt);
+            write_back(e, update);
+            e.next();
+        }
+        I::StoreVector {
+            bytes,
+            rt,
+            address: form,
+        } => {
+            let (at, update) = address(e, form);
+            e.check(at, bytes.into(), Access::Write);
+            store_vector(e, at, 0, bytes, rt);
+            write_back(e, update);
+            e.next();
+        }
+        I::LoadVectorPair {
+            bytes,
+            rt,
+            rt2,
+            address: form,
+        } => {
+            let (at, update) = address(e, form);
+            e.check(at, 2 * u32::from(bytes), Access::Read);
+            load_vector(e, at, 0, bytes);
+            let first = e.local(ValType::V128);
+            e.sink().local_set(first);
+            load_vector(e, at, bytes.into(), bytes);
+            e.set_vector(rt2);
+            e.sink().local_get(first);
+            e.set_vector(rt);
+            write_back(e, update);
+            e.next();
+        }
+        I::StoreVectorPair {
+            bytes,
+            rt,
+            rt2,
+            address: form,
+        } => {
+            let (at, update) = address(e, form);
+            e.check(at, 2 * u32::from(bytes), Access::Write);
+            store_vector(e, at, 0, bytes, rt);
+            store_vector(e, at, bytes.into(), bytes, rt2);
+            write_back(e, update);
+            e.next();
+        }
+        I::VectorImmediate { .. }
+        | I::VectorBinary { .. }
+        | I::VectorUnary { .. }
+        | I::VectorAcross { .. }
+        | I::DuplicateGeneral { .. }
+        | I::DuplicateElement { .. }
+        | I::MoveToGeneral { .. }
+        | I::MoveFromGeneral { .. }
+        | I::InsertGeneral { .. }
+        | I::InsertElement { .. }
+        | I::ExtractVector { .. } => crate::vector::emit(e, instruction),
         I::Syscall => {
             e.syscall();
             e.next();

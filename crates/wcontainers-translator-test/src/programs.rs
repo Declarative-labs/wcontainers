@@ -1,5 +1,6 @@
-//! Small C programs built as flat blobs, run through the translator and on real ARM64 Linux.
+//! C programs built as flat blobs, run through the translator and on real ARM64 Linux.
 
+use crate::layout::initial_stack;
 use crate::reference::{build as build_reference, container_name};
 use crate::runner::{Machine, Stopped, Syscalls};
 use std::path::{Path, PathBuf};
@@ -31,9 +32,17 @@ fn zig(arguments: &[&str]) {
     assert!(status.success(), "zig {arguments:?} failed");
 }
 
-/// Build `programs/<name>.c` at an optimisation level, such as "-O2", into a flat blob. Only general
-/// registers are used: milestone 0 translates integer instructions.
-pub fn build(name: &str, optimisation: &str) -> Blob {
+/// What a program is built against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Library {
+    /// Nothing: the program brings its own `_start` and system calls, and uses only general registers.
+    None,
+    /// The C library (musl, as zig builds it), started by its own `_start`.
+    C,
+}
+
+/// Build `programs/<name>.c` at an optimisation level, such as "-O2", into a flat blob.
+pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/programs");
     std::fs::create_dir_all(&out).unwrap();
     let stem = format!("{name}{optimisation}");
@@ -41,27 +50,32 @@ pub fn build(name: &str, optimisation: &str) -> Blob {
     let source = source_directory().join(format!("{name}.c"));
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
-    zig(&[
+    let script = format!("-Wl,-T,{}", text(&script));
+    let mut arguments = vec![
         "cc",
         "-target",
         "aarch64-linux-musl",
         optimisation,
-        "-ffreestanding",
-        "-nostdlib",
         "-static",
         "-fno-pic",
         "-no-pie",
-        // zig sets the CPU's features itself; this is how it leaves out floating point and vectors.
-        "-mcpu=generic-neon-fp_armv8",
-        "-fno-stack-protector",
         "-fno-sanitize=all",
-        "-fwrapv",
-        &format!("-Wl,-T,{}", text(&script)),
+        &script,
         "-Wl,--build-id=none",
-        "-o",
-        &text(&elf),
-        &text(&source),
-    ]);
+    ];
+    if library == Library::None {
+        arguments.extend([
+            "-ffreestanding",
+            "-nostdlib",
+            // zig sets the CPU's features itself; this is how it leaves out floating point and vectors.
+            "-mcpu=generic-neon-fp_armv8",
+            "-fno-stack-protector",
+            "-fwrapv",
+        ]);
+    }
+    let (elf_text, source_text) = (text(&elf), text(&source));
+    arguments.extend(["-o", &elf_text, &source_text]);
+    zig(&arguments);
     let path = out.join(format!("{stem}.bin"));
     let code = out.join(format!("{stem}.text"));
     zig(&["objcopy", "-O", "binary", &text(&elf), &text(&path)]);
@@ -83,7 +97,8 @@ pub fn build(name: &str, optimisation: &str) -> Blob {
 /// What a program did: its output and exit status.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ran {
-    pub output: Vec<u8>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
     pub status: i32,
 }
 
@@ -98,13 +113,16 @@ pub fn translated(blob: &Blob) -> (Ran, Machine) {
         Permissions::READ | Permissions::WRITE,
     );
     machine.load(&blob.bytes, 0..blob.code_bytes, LOAD, &[0]);
+    let (sp, stack) = initial_stack(STACK_TOP);
+    machine.write(sp, &stack);
     let mut registers = RegisterBlock::ZERO;
     registers.pc = LOAD;
-    registers.sp = STACK_TOP;
+    registers.sp = sp;
     machine.set_registers(&registers);
     let (stopped, registers) = machine.run();
     let status = match stopped {
-        Stopped::Finished(status) => status,
+        // Linux reports the low 8 bits of the status.
+        Stopped::Finished(status) => status & 0xff,
         other => {
             let at = (registers.pc - LOAD) as usize;
             let word = blob
@@ -119,7 +137,8 @@ pub fn translated(blob: &Blob) -> (Ran, Machine) {
         }
     };
     let ran = Ran {
-        output: machine.output().to_vec(),
+        stdout: machine.stdout().to_vec(),
+        stderr: machine.stderr().to_vec(),
         status,
     };
     (ran, machine)
@@ -144,7 +163,8 @@ pub fn native(blob: &Blob) -> Ran {
         .output()
         .expect("run docker");
     Ran {
-        output: output.stdout,
+        stdout: output.stdout,
+        stderr: output.stderr,
         status: output.status.code().expect("an exit status"),
     }
 }

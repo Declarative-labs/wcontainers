@@ -6,10 +6,77 @@ use crate::reference::{Cases, Landed};
 use crate::runner::{Machine, Stopped, Syscalls};
 use proptest::prelude::*;
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
-use wcontainers_arm64::forms::Form;
+use wcontainers_arm64::forms::{self, Form};
 
-/// The forms layer 1 covers now: the base integer instructions. System register moves are limited to
-/// the registers [`restrict`] allows. Floating point, vectors, atomics, exclusives, load-acquire and
+/// The SIMD and floating point data processing forms translated so far.
+const VECTOR_FORMS: &[&str] = &[
+    "MOVI_asimdimm_L_sl",
+    "ORR_asimdimm_L_sl",
+    "MOVI_asimdimm_L_hl",
+    "ORR_asimdimm_L_hl",
+    "MOVI_asimdimm_M_sm",
+    "MOVI_asimdimm_N_b",
+    "FMOV_asimdimm_S_s",
+    "MVNI_asimdimm_L_sl",
+    "BIC_asimdimm_L_sl",
+    "MVNI_asimdimm_L_hl",
+    "BIC_asimdimm_L_hl",
+    "MVNI_asimdimm_M_sm",
+    "MOVI_asimdimm_D_ds",
+    "MOVI_asimdimm_D2_d",
+    "FMOV_asimdimm_D2_d",
+    "AND_asimdsame_only",
+    "BIC_asimdsame_only",
+    "ORR_asimdsame_only",
+    "ORN_asimdsame_only",
+    "EOR_asimdsame_only",
+    "BSL_asimdsame_only",
+    "BIT_asimdsame_only",
+    "BIF_asimdsame_only",
+    "ADD_asimdsame_only",
+    "SUB_asimdsame_only",
+    "MUL_asimdsame_only",
+    "CMEQ_asimdsame_only",
+    "CMTST_asimdsame_only",
+    "CMGT_asimdsame_only",
+    "CMGE_asimdsame_only",
+    "CMHI_asimdsame_only",
+    "CMHS_asimdsame_only",
+    "CNT_asimdmisc_R",
+    "NOT_asimdmisc_R",
+    "ADDV_asimdall_only",
+    "SMAXV_asimdall_only",
+    "SMINV_asimdall_only",
+    "UMAXV_asimdall_only",
+    "UMINV_asimdall_only",
+    "DUP_asimdins_DV_v",
+    "DUP_asimdins_DR_r",
+    "SMOV_asimdins_W_w",
+    "UMOV_asimdins_W_w",
+    "INS_asimdins_IR_r",
+    "SMOV_asimdins_X_x",
+    "UMOV_asimdins_X_x",
+    "INS_asimdins_IV_v",
+    "EXT_asimdext_only",
+    "FMOV_32S_float2int",
+    "FMOV_S32_float2int",
+    "FMOV_64D_float2int",
+    "FMOV_D64_float2int",
+    "FMOV_64VX_float2int",
+    "FMOV_V64I_float2int",
+];
+
+/// Every feature the form's condition names is one we offer.
+fn offered(form: &Form) -> bool {
+    form.features
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|token| token.starts_with("FEAT_"))
+        .all(|feature| forms::OFFERED_FEATURES.contains(&feature))
+}
+
+/// The forms layer 1 covers now: the base integer instructions, the SIMD and floating point register
+/// loads and stores, and [`VECTOR_FORMS`]. System register moves are limited to the registers
+/// [`restrict`] allows. The rest of floating point and vectors, atomics, exclusives, load-acquire and
 /// store-release and the other system instructions come with milestone 3.
 pub fn covered(form: &Form) -> bool {
     const GROUPS: &[&str] = &[
@@ -37,10 +104,14 @@ pub fn covered(form: &Form) -> bool {
         "ldst/loadlit",
         "reserved/perm_undef",
     ];
-    let integer = form.field(form.value, "VR") != Some(1);
-    // Forms of the base set: their condition names no feature, though it may limit their fields.
-    let base = !form.features.contains("FEAT_");
-    base && integer && GROUPS.iter().any(|g| form.group.starts_with(g))
+    if VECTOR_FORMS.contains(&form.name.as_str()) {
+        return true;
+    }
+    let vector = form.field(form.value, "VR") == Some(1);
+    // Integer forms of the base set: their condition names no feature, though it may limit their fields.
+    let base = !form.features.contains("FEAT_") && !vector;
+    let vector_access = vector && form.group.starts_with("ldst/") && offered(form);
+    (base || vector_access) && GROUPS.iter().any(|g| form.group.starts_with(g))
 }
 
 /// Narrow a word where milestone 0 covers only part of a form: system register moves only reach NZCV and
@@ -68,7 +139,12 @@ pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
         .any(|kind| form.group.ends_with(kind));
     let rn = field("Rn");
     let loads_pair = form.group.contains("pair") && field("L") == Some(1);
-    if writeback && rn != Some(31) && (rn == field("Rt") || (rn.is_some() && rn == field("Rt2"))) {
+    let integer = field("VR") != Some(1);
+    if writeback
+        && integer
+        && rn != Some(31)
+        && (rn == field("Rt") || (rn.is_some() && rn == field("Rt2")))
+    {
         return Some("write back to a transfer register");
     }
     if loads_pair && field("Rt") == field("Rt2") {
@@ -87,12 +163,13 @@ pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
     None
 }
 
-/// One case: the instruction word, starting registers (x0 to x30, sp, flags, thread pointer) and the data
-/// area's seed.
+/// One case: the instruction word, starting registers (x0 to x30, sp, flags, thread pointer), vector
+/// registers and the data area's seed.
 #[derive(Clone, Debug)]
 pub struct Case {
     pub word: u32,
     pub registers: [u64; 34],
+    pub vectors: [u128; 32],
     pub seed: u64,
 }
 
@@ -122,6 +199,16 @@ fn value() -> impl Strategy<Value = u64> {
     ]
 }
 
+fn vector_value() -> impl Strategy<Value = u128> {
+    prop_oneof![
+        2 => any::<u128>(),
+        2 => (value(), value()).prop_map(|(low, high)| u128::from(high) << 64 | u128::from(low)),
+        // Bytes from a few values, so elements of different registers are often equal.
+        2 => prop::array::uniform16(prop::sample::select(vec![0u8, 1, 0x7f, 0x80, 0xff]))
+            .prop_map(u128::from_le_bytes),
+    ]
+}
+
 fn data_pointer() -> impl Strategy<Value = u64> {
     (0..DATA_BYTES, any::<bool>()).prop_map(|(at, align)| DATA + if align { at & !7 } else { at })
 }
@@ -148,9 +235,10 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
         any::<u64>(),
         data_pointer(),
         small,
+        prop::collection::vec(vector_value(), 32),
     )
         .prop_map(
-            move |(free, choice, x, sp, flags, thread_pointer, seed, base, index)| {
+            move |(free, choice, x, sp, flags, thread_pointer, seed, base, index, v)| {
                 let word = restrict(&form, form.word(free), choice);
                 let mut registers = [0u64; 34];
                 registers[..31].copy_from_slice(&x);
@@ -158,6 +246,7 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
                 registers[32] = flags << 28;
                 registers[33] = thread_pointer;
                 // Loads and stores mostly reach the data area: the base points into it and an index is small.
+                // Elsewhere Rn and Rm may name general or vector registers.
                 if form.group.starts_with("ldst/") {
                     if let Some(rn) = form.field(word, "Rn").filter(|&r| r < 31) {
                         registers[rn as usize] = base;
@@ -169,6 +258,7 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
                 Case {
                     word,
                     registers,
+                    vectors: v.try_into().unwrap(),
                     seed,
                 }
             },
@@ -184,6 +274,7 @@ pub struct Outcome {
     /// Where control went or why the thread stopped, as the reference reports it.
     pub stop: Stop,
     pub registers: [u64; 35],
+    pub vectors: [u128; 32],
     pub changed: Vec<(u32, u8)>,
 }
 
@@ -225,6 +316,7 @@ pub fn reference_outcome(landed: &Landed) -> Outcome {
     Outcome {
         stop,
         registers: landed.registers,
+        vectors: landed.vectors,
         changed: landed.changed.clone(),
     }
 }
@@ -254,6 +346,9 @@ pub fn translated(case: &Case) -> Outcome {
     registers.pc = CODE;
     registers.pstate = case.registers[32];
     registers.tpidr_el0 = case.registers[33];
+    for (to, from) in registers.v.iter_mut().zip(case.vectors) {
+        *to = [from as u64, (from >> 64) as u64];
+    }
     machine.set_registers(&registers);
     let (stopped, after) = machine.run();
     let stop = match stopped {
@@ -283,13 +378,16 @@ pub fn translated(case: &Case) -> Outcome {
     Outcome {
         stop,
         registers: out,
+        vectors: after
+            .v
+            .map(|[low, high]| u128::from(high) << 64 | u128::from(low)),
         changed,
     }
 }
 
 /// Compare one case on both sides; describe the difference if there is one.
 pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
-    let landed = reference.run(case.word, case.seed, &case.registers);
+    let landed = reference.run(case.word, case.seed, &case.registers, &case.vectors);
     let expected = reference_outcome(&landed);
     let actual = translated(case);
     if expected == actual {
@@ -316,6 +414,14 @@ pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
                     .get(if i < 32 { i } else { i - 1 })
                     .copied()
                     .unwrap_or(0)
+            );
+        }
+    }
+    for (i, before) in case.vectors.iter().enumerate() {
+        if expected.vectors[i] != actual.vectors[i] {
+            report += &format!(
+                "  v{i}: reference {:#034x}, translated {:#034x}, before {before:#034x}\n",
+                expected.vectors[i], actual.vectors[i]
             );
         }
     }

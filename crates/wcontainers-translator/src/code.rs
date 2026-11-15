@@ -1,7 +1,7 @@
 //! Code modules: the pieces of one translation, and the emitter for look-ahead none.
 
 use crate::contract::*;
-use crate::thread::{CODE_REGISTERS, memarg, piece_ref, piece_type, registers, state_memory};
+use crate::thread::{memarg, piece_ref, piece_type, registers, state_memory};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use wasm_encoder::{
@@ -72,6 +72,9 @@ fn g_flag(flag: Flag) -> u32 {
         }
 }
 const G_TPIDR: u32 = G_FIRST_REGISTER + 37;
+fn g_v(n: u8) -> u32 {
+    G_FIRST_REGISTER + 40 + u32::from(n)
+}
 
 // Parameter locals of every piece.
 const L_SP: u32 = 4;
@@ -217,7 +220,7 @@ fn imports() -> ImportSection {
     ] {
         imports.import(ENV, name, global(ty, false));
     }
-    for r in registers().iter().take(CODE_REGISTERS as usize) {
+    for r in &registers() {
         imports.import(THREAD, &r.name, global(r.ty, true));
     }
     imports.import(
@@ -479,6 +482,14 @@ impl Emitter for NoneEmitter<'_> {
 
     fn flag(&mut self, flag: Flag) {
         self.sink().global_get(g_flag(flag));
+    }
+
+    fn get_vector(&mut self, n: u8) {
+        self.sink().global_get(g_v(n));
+    }
+
+    fn set_vector(&mut self, n: u8) {
+        self.sink().global_set(g_v(n));
     }
 
     fn get_thread_pointer(&mut self) {

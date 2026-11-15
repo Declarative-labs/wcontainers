@@ -6,7 +6,8 @@
 //! the registers after it. System calls made from the instruction are caught by seccomp and never run.
 //!
 //! `wcontainers-reference blob <file> <load address> <stack top>` runs a flat blob from its first byte with
-//! all registers zero, for real; its output and exit status are the program's.
+//! all registers zero and the starting stack of `initial_stack`, for real; its output and exit status are the
+//! program's.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -22,6 +23,9 @@ const NZCV: u64 = 0xf000_0000;
 static mut GUEST: [u64; 35] = [0; 35];
 /// The registers where control landed, in the same order.
 static mut LANDED: [u64; 35] = [0; 35];
+/// v0 to v31 the guest starts with, and where control landed.
+static mut GUEST_VECTORS: [u128; 32] = [0; 32];
+static mut LANDED_VECTORS: [u128; 32] = [0; 32];
 static mut SIGNAL: [u64; 3] = [0; 3];
 static mut HOST: core::mem::MaybeUninit<libc::mcontext_t> = core::mem::MaybeUninit::uninit();
 static mut HOST_THREAD_POINTER: u64 = 0;
@@ -36,6 +40,21 @@ fn set_thread_pointer(value: u64) {
     unsafe { core::arch::asm!("msr tpidr_el0, {}", in(reg) value) };
 }
 
+/// v0 to v31 in a signal frame: in the FPSIMD record that starts the frame's extra space, which Linux puts
+/// 288 bytes into `uc_mcontext` (`struct sigcontext`).
+unsafe fn frame_vectors(uc: *mut libc::ucontext_t) -> *mut [u128; 32] {
+    const FPSIMD_MAGIC: u32 = 0x4650_8001;
+    unsafe {
+        let record = (&raw mut (*uc).uc_mcontext as *mut u8).add(288);
+        assert_eq!(
+            (record as *const u32).read(),
+            FPSIMD_MAGIC,
+            "the signal frame starts with the FPSIMD record"
+        );
+        record.add(16) as *mut [u128; 32]
+    }
+}
+
 /// Entry: keep the host's frame, put the guest's registers in its place.
 extern "C" fn enter(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut libc::c_void) {
     unsafe {
@@ -47,6 +66,7 @@ extern "C" fn enter(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut libc:
         uc.uc_mcontext.sp = guest[31];
         uc.uc_mcontext.pc = guest[32];
         uc.uc_mcontext.pstate = (uc.uc_mcontext.pstate & !NZCV) | (guest[33] & NZCV);
+        frame_vectors(uc).write_unaligned(*addr_of!(GUEST_VECTORS));
         set_thread_pointer(guest[34]);
     }
 }
@@ -63,6 +83,7 @@ extern "C" fn land(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mu
         landed[32] = uc.uc_mcontext.pc;
         landed[33] = uc.uc_mcontext.pstate & NZCV;
         landed[34] = guest_thread_pointer;
+        *addr_of_mut!(LANDED_VECTORS) = frame_vectors(uc).read_unaligned();
         SIGNAL = [
             signal as u64,
             (*info).si_code as u64,
@@ -258,6 +279,11 @@ fn cases() {
             guest[32] = CODE;
             guest[33] = word(&request, 12 + 8 * 32);
             guest[34] = word(&request, 12 + 8 * 33);
+            let vectors = &mut *addr_of_mut!(GUEST_VECTORS);
+            for (i, value) in vectors.iter_mut().enumerate() {
+                let at = 12 + 8 * 34 + 16 * i;
+                *value = u128::from_le_bytes(request[at..at + 16].try_into().unwrap());
+            }
             timer(500_000);
             libc::raise(libc::SIGUSR1);
             timer(0);
@@ -277,6 +303,9 @@ fn cases() {
         result.extend_from_slice(&(signal[1] as u32).to_le_bytes());
         result.extend_from_slice(&signal[2].to_le_bytes());
         for value in unsafe { *addr_of!(LANDED) } {
+            result.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in unsafe { *addr_of!(LANDED_VECTORS) } {
             result.extend_from_slice(&value.to_le_bytes());
         }
         result.extend_from_slice(&(changed.len() as u32).to_le_bytes());
@@ -306,11 +335,13 @@ fn blob(path: &str, load: u64, stack_top: u64) {
     }
     const STACK: u64 = 1 << 20;
     map(stack_top - STACK, STACK, libc::PROT_READ | libc::PROT_WRITE);
+    let (sp, stack) = initial_stack(stack_top);
+    unsafe { core::ptr::copy_nonoverlapping(stack.as_ptr(), sp as *mut u8, stack.len()) };
     handle(libc::SIGUSR1, enter);
     unsafe {
         let guest = &mut *addr_of_mut!(GUEST);
         *guest = [0; 35];
-        guest[31] = stack_top;
+        guest[31] = sp;
         guest[32] = load;
         libc::raise(libc::SIGUSR1);
     }

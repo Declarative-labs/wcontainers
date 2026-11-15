@@ -5,6 +5,7 @@ mod decode;
 pub mod forms;
 mod instruction;
 mod meaning;
+mod vector;
 
 pub use decode::decode;
 pub use instruction::*;

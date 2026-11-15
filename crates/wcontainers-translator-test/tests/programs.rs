@@ -1,19 +1,35 @@
-//! Small C programs give the same output and exit status through the translator as on real ARM64 Linux.
+//! C programs give the same output and exit status through the translator as on real ARM64 Linux.
 
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator_test::programs::{build, native, translated};
+use wcontainers_translator_test::programs::{Library, build, native, translated};
 
-/// Every program, at every optimisation level. Levels that build to the same bytes as an earlier one are
-/// run once.
-const PROGRAMS: [&str; 2] = ["integers", "tables"];
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
 #[test]
 fn programs_match_linux() {
-    for name in PROGRAMS {
+    match_linux(&[("integers", Library::None), ("tables", Library::None)]);
+}
+
+#[test]
+fn blobs_are_told_the_hwcap_of_the_abi() {
+    assert_eq!(
+        wcontainers_translator_test::layout::BLOB_HWCAP,
+        wcontainers_abi::HWCAP
+    );
+}
+
+#[test]
+fn hello_matches_linux() {
+    match_linux(&[("hello", Library::C)]);
+}
+
+/// Every program, at every optimisation level. Levels that build to the same bytes as an earlier one are
+/// run once.
+fn match_linux(programs: &[(&str, Library)]) {
+    for &(name, library) in programs {
         let mut built: Vec<(&str, Vec<u8>)> = Vec::new();
         for optimisation in LEVELS {
-            let blob = build(name, optimisation);
+            let blob = build(name, optimisation, library);
             if let Some((same, _)) = built.iter().find(|(_, bytes)| *bytes == blob.bytes) {
                 eprintln!("{name} {optimisation}: the same blob as {same}");
                 continue;
@@ -22,9 +38,18 @@ fn programs_match_linux() {
             let (ours, machine) = translated(&blob);
             let theirs = native(&blob);
             assert_eq!(
-                String::from_utf8_lossy(&ours.output),
-                String::from_utf8_lossy(&theirs.output),
+                String::from_utf8_lossy(&ours.stdout),
+                String::from_utf8_lossy(&theirs.stdout),
                 "output of {name} at {optimisation}"
+            );
+            assert_eq!(
+                ours.stdout, theirs.stdout,
+                "output bytes of {name} at {optimisation}"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&ours.stderr),
+                String::from_utf8_lossy(&theirs.stderr),
+                "error output of {name} at {optimisation}"
             );
             assert_eq!(
                 ours.status, theirs.status,
@@ -64,7 +89,7 @@ fn measure() {
         ("tables", "-O0"),
         ("tables", "-O2"),
     ] {
-        let blob = build(name, optimisation);
+        let blob = build(name, optimisation, Library::None);
         let code = &blob.bytes[..blob.code_bytes as usize];
         let starts: Vec<u64> = (0..blob.code_bytes / 4).map(|i| 4 * i).collect();
         let mut best = (Duration::MAX, Duration::MAX, Vec::new());

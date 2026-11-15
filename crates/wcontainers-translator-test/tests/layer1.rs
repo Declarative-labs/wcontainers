@@ -93,9 +93,35 @@ fn alignment_faults_match_the_cpu() {
         let case = Case {
             word,
             registers,
+            vectors: [0; 32],
             seed: 1,
         };
         compare(&mut reference, &case).unwrap_or_else(|report| panic!("{report}"));
         assert_eq!(translated(&case).stop, expected, "word {word:#010x}");
     }
+}
+
+/// The vector registers reach the CPU and come back: a known sum, checked against the CPU and for the
+/// expected value.
+#[test]
+fn vector_registers_reach_the_cpu() {
+    // add v0.16b, v1.16b, v2.16b
+    let word = 0x4e22_8420;
+    let mut vectors = [0u128; 32];
+    vectors[1] = 0x0102_0304_0506_0708_090a_0b0c_0d0e_0fff;
+    vectors[2] = 0x1010_1010_1010_1010_1010_1010_1010_1002;
+    let case = Case {
+        word,
+        registers: [0; 34],
+        vectors,
+        seed: 1,
+    };
+    let mut reference = Cases::start();
+    compare(&mut reference, &case).unwrap_or_else(|report| panic!("{report}"));
+    let outcome = translated(&case);
+    assert_eq!(
+        outcome.vectors[0],
+        0x1112_1314_1516_1718_191a_1b1c_1d1e_1f01
+    );
+    assert_eq!(outcome.vectors[1..3], vectors[1..3]);
 }

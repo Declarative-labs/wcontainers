@@ -21,7 +21,7 @@ pub(crate) struct RegisterGlobal {
     pub flag_bit: Option<u64>,
 }
 
-/// Every register global in export order. Code modules import the integer ones (all but the last 34).
+/// Every register global in export order. Code modules import them all.
 pub(crate) fn registers() -> Vec<RegisterGlobal> {
     let plain = |name: String, ty, offset: usize| RegisterGlobal {
         name,
@@ -63,10 +63,6 @@ pub(crate) fn registers() -> Vec<RegisterGlobal> {
     }
     all
 }
-
-/// How many register globals code modules import: x0 to x30, sp, pc, the four flags and the thread
-/// pointer.
-pub(crate) const CODE_REGISTERS: u32 = 38;
 
 /// The piece signature: x0 to x3, sp and the expected return address in; x0 to x3 and sp out.
 pub(crate) fn piece_type(types: &mut TypeSection) {

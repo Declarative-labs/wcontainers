@@ -45,6 +45,7 @@ pub struct Landed {
     pub address: u64,
     /// x0 to x30, sp, pc, flags, thread pointer.
     pub registers: [u64; 35],
+    pub vectors: [u128; 32],
     /// Changed data bytes: offset from `DATA`, new value.
     pub changed: Vec<(u32, u8)>,
 }
@@ -78,12 +79,22 @@ impl Cases {
         }
     }
 
-    /// Run one instruction from these registers (x0 to x30, sp, flags, thread pointer) and data seed.
-    pub fn run(&mut self, word: u32, seed: u64, registers: &[u64; 34]) -> Landed {
+    /// Run one instruction from these registers (x0 to x30, sp, flags, thread pointer), vector registers
+    /// and data seed.
+    pub fn run(
+        &mut self,
+        word: u32,
+        seed: u64,
+        registers: &[u64; 34],
+        vectors: &[u128; 32],
+    ) -> Landed {
         let mut request = Vec::with_capacity(REQUEST_BYTES);
         request.extend_from_slice(&word.to_le_bytes());
         request.extend_from_slice(&seed.to_le_bytes());
         for value in registers {
+            request.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in vectors {
             request.extend_from_slice(&value.to_le_bytes());
         }
         self.input.write_all(&request).expect("send a case");
@@ -99,12 +110,17 @@ impl Cases {
             code: u32_at(4),
             address: u64_at(8),
             registers: [0; 35],
+            vectors: [0; 32],
             changed: Vec::new(),
         };
         for (i, value) in landed.registers.iter_mut().enumerate() {
             *value = u64_at(16 + 8 * i);
         }
-        let count = u32_at(16 + 35 * 8) as usize;
+        for (i, value) in landed.vectors.iter_mut().enumerate() {
+            let at = 16 + 35 * 8 + 16 * i;
+            *value = u128::from_le_bytes(header[at..at + 16].try_into().unwrap());
+        }
+        let count = u32_at(16 + 35 * 8 + 32 * 16) as usize;
         let mut changes = vec![0u8; 5 * count];
         self.output.read_exact(&mut changes).unwrap();
         landed.changed = changes

@@ -53,7 +53,9 @@ pub struct Host {
     stopped: Option<Stopped>,
     /// Registers at the moment the thread stopped.
     snapshot: RegisterBlock,
-    pub output: Vec<u8>,
+    /// What the guest wrote to file descriptors 1 and 2.
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
     counters: HashMap<Reason, (u64, Duration)>,
     /// How often each slow path was taken at each address or number.
     places: HashMap<(Reason, u64), u64>,
@@ -132,7 +134,8 @@ impl Machine {
                 syscalls,
                 stopped: None,
                 snapshot: RegisterBlock::ZERO,
-                output: Vec::new(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
                 counters: HashMap::new(),
                 places: HashMap::new(),
                 warnings: Vec::new(),
@@ -262,8 +265,12 @@ impl Machine {
         snapshot(&mut self.store)
     }
 
-    pub fn output(&self) -> &[u8] {
-        &self.store.data().output
+    pub fn stdout(&self) -> &[u8] {
+        &self.store.data().stdout
+    }
+
+    pub fn stderr(&self) -> &[u8] {
+        &self.store.data().stderr
     }
 
     /// Every slow path taken so far: how often and the time spent.
@@ -582,43 +589,65 @@ fn instantiate_code(
         .expect("code instance");
 }
 
+/// Where the stand-in sends what is written to a file descriptor.
+fn file(host: &mut Host, fd: u64) -> Option<&mut Vec<u8>> {
+    match fd {
+        1 => Some(&mut host.stdout),
+        2 => Some(&mut host.stderr),
+        _ => None,
+    }
+}
+
 /// The stand-in kernel.
 fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
-    const ENOSYS: i64 = 38;
+    const EBADF: i64 = 9;
     const EFAULT: i64 = 14;
+    const ENOSYS: i64 = 38;
     let [a0, a1, a2, ..] = call.arguments;
     let memory = caller.data().memory.unwrap();
     let read = |caller: &mut Caller<'_, Host>, address: u64, length: u64| -> Option<Vec<u8>> {
-        let mut bytes = vec![0; length as usize];
+        let mut bytes = vec![0; usize::try_from(length).ok()?];
         memory.read(&*caller, address as usize, &mut bytes).ok()?;
         Some(bytes)
     };
     match call.number {
         // write
-        64 => match read(caller, a1, a2) {
-            Some(bytes) if a0 == 1 || a0 == 2 => {
-                caller.data_mut().output.extend_from_slice(&bytes);
-                a2 as i64
+        64 => {
+            if file(caller.data_mut(), a0).is_none() {
+                return -EBADF;
             }
-            Some(_) => -9,
-            None => -EFAULT,
-        },
-        // writev
-        66 => {
-            let Some(vectors) = read(caller, a1, 16 * a2) else {
+            let Some(bytes) = read(caller, a1, a2) else {
                 return -EFAULT;
             };
-            let mut total = 0;
+            file(caller.data_mut(), a0)
+                .unwrap()
+                .extend_from_slice(&bytes);
+            a2 as i64
+        }
+        // writev
+        66 => {
+            if file(caller.data_mut(), a0).is_none() {
+                return -EBADF;
+            }
+            let Some(vectors) = a2
+                .checked_mul(16)
+                .and_then(|length| read(caller, a1, length))
+            else {
+                return -EFAULT;
+            };
+            let mut gathered = Vec::new();
             for vector in vectors.chunks(16) {
                 let base = u64::from_le_bytes(vector[..8].try_into().unwrap());
                 let length = u64::from_le_bytes(vector[8..].try_into().unwrap());
                 let Some(bytes) = read(caller, base, length) else {
                     return -EFAULT;
                 };
-                caller.data_mut().output.extend_from_slice(&bytes);
-                total += length as i64;
+                gathered.extend_from_slice(&bytes);
             }
-            total
+            file(caller.data_mut(), a0)
+                .unwrap()
+                .extend_from_slice(&gathered);
+            gathered.len() as i64
         }
         // exit, exit_group
         93 | 94 => {

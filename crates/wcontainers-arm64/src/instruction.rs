@@ -160,6 +160,72 @@ pub enum Address {
     Literal { offset: i64 },
 }
 
+/// The shape of an AdvSIMD operand: the element size in bytes (1, 2, 4 or 8), and whether the whole 128
+/// bits are used. When not, only the low 64 bits are read and the top half of a result is cleared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Arrangement {
+    pub element: u8,
+    pub whole: bool,
+}
+
+/// AdvSIMD operations on two registers, element by element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorBinary {
+    And,
+    /// bic: and with the inverse of the second.
+    AndNot,
+    Or,
+    /// orn: or with the inverse of the second.
+    OrNot,
+    Xor,
+    /// bsl: the destination selects, bit by bit, from the first (set) or second (clear).
+    Select,
+    /// bit: the second selects where the first is inserted into the destination.
+    InsertIfTrue,
+    /// bif: the inverse of the second selects where the first is inserted.
+    InsertIfFalse,
+    Add,
+    Sub,
+    Mul,
+    /// The compares give all ones where they hold, zero where not.
+    Equal,
+    SignedGreater,
+    SignedGreaterOrEqual,
+    UnsignedGreater,
+    UnsignedGreaterOrEqual,
+    /// cmtst: the two have a set bit in common.
+    Test,
+}
+
+/// AdvSIMD operations on one register, element by element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorUnary {
+    Not,
+    /// cnt: set bits in each byte.
+    CountBits,
+}
+
+/// AdvSIMD reductions across all elements to one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorAcross {
+    Add,
+    SignedMax,
+    SignedMin,
+    UnsignedMax,
+    UnsignedMin,
+}
+
+/// What a vector immediate does with its register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorImmediate {
+    /// movi, mvni and fmov: the register becomes the immediate.
+    Move,
+    /// orr: the register is ored with it.
+    Or,
+    /// bic: the register is anded with its inverse.
+    Clear,
+}
+
 /// A system register that unprivileged code may read or write and that we answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemRegister {
@@ -314,6 +380,112 @@ pub enum Instruction {
         rt: Reg,
         rt2: Reg,
         address: Address,
+    },
+    /// Load of `bytes` (1, 2, 4, 8 or 16) into the low bytes of SIMD and floating point register `rt`; the
+    /// rest of the register is cleared.
+    LoadVector {
+        bytes: u8,
+        rt: u8,
+        address: Address,
+    },
+    /// Store of the low `bytes` of SIMD and floating point register `rt`.
+    StoreVector {
+        bytes: u8,
+        rt: u8,
+        address: Address,
+    },
+    /// Two vector loads of `bytes` (4, 8 or 16) each from consecutive addresses.
+    LoadVectorPair {
+        bytes: u8,
+        rt: u8,
+        rt2: u8,
+        address: Address,
+    },
+    StoreVectorPair {
+        bytes: u8,
+        rt: u8,
+        rt2: u8,
+        address: Address,
+    },
+    /// AdvSIMD modified immediate. `imm` is the 64 bit pattern, repeated in both halves when `whole`;
+    /// otherwise the top half is cleared.
+    VectorImmediate {
+        op: VectorImmediate,
+        rd: u8,
+        imm: u64,
+        whole: bool,
+    },
+    VectorBinary {
+        op: VectorBinary,
+        arrangement: Arrangement,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+    },
+    VectorUnary {
+        op: VectorUnary,
+        arrangement: Arrangement,
+        rd: u8,
+        rn: u8,
+    },
+    /// The result is one element in the low bits of `rd`; the rest of `rd` is cleared.
+    VectorAcross {
+        op: VectorAcross,
+        arrangement: Arrangement,
+        rd: u8,
+        rn: u8,
+    },
+    /// dup (general): every element becomes the low bits of a general register.
+    DuplicateGeneral {
+        arrangement: Arrangement,
+        rd: u8,
+        rn: Reg,
+    },
+    /// dup (element): every element becomes element `index` of `rn`.
+    DuplicateElement {
+        arrangement: Arrangement,
+        index: u8,
+        rd: u8,
+        rn: u8,
+    },
+    /// umov, smov and fmov to a general register: element `index` of `bytes` bytes, zero extended, or sign
+    /// extended to the width given.
+    MoveToGeneral {
+        bytes: u8,
+        index: u8,
+        signed: Option<Width>,
+        rd: Reg,
+        rn: u8,
+    },
+    /// fmov from a general register: the low `bytes` (4 or 8) of `rd` become them, the rest is cleared.
+    MoveFromGeneral {
+        bytes: u8,
+        rd: u8,
+        rn: Reg,
+    },
+    /// ins (general): element `index` of `bytes` bytes becomes the low bits of a general register; the
+    /// other elements are kept.
+    InsertGeneral {
+        bytes: u8,
+        index: u8,
+        rd: u8,
+        rn: Reg,
+    },
+    /// ins (element): element `to` of `rd` becomes element `from` of `rn`.
+    InsertElement {
+        bytes: u8,
+        to: u8,
+        from: u8,
+        rd: u8,
+        rn: u8,
+    },
+    /// ext: bytes from `index` of `rm`:`rn` joined, `rn` lowest.
+    ExtractVector {
+        whole: bool,
+        index: u8,
+        rd: u8,
+        rn: u8,
+        rm: u8,
     },
     /// svc
     Syscall,
