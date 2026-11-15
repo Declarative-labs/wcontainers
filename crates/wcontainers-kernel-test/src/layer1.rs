@@ -28,6 +28,7 @@ const PATHS: u64 = 0;
 const IOVECS: u64 = 0x3000;
 const POLLS: u64 = 0x3600;
 const VALUES: u64 = 0x3800;
+const CPU_LIMITS: u64 = 0x3a00;
 const OUTPUT: u64 = 0x4000;
 
 /// The sequence's work directory, made and entered by its first two calls and removed afterwards.
@@ -170,6 +171,15 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         let at = (VALUES + 56 * 8 + index as u64 * 16) as usize;
         arena[at..at + 8].copy_from_slice(&seconds.to_le_bytes());
         arena[at + 8..at + 16].copy_from_slice(&nanoseconds.to_le_bytes());
+    }
+    // Limits for RLIMIT_CPU, all too large to be reached: a reachable one ends the process at a moment
+    // that depends on the machine's speed.
+    let infinity = linux::RLIM_INFINITY as u64;
+    let cpu_limits: [(u64, u64); 4] = [(3600, infinity), (3600, 7200), (7200, 3600), (infinity, infinity)];
+    for (index, (current, maximum)) in cpu_limits.iter().enumerate() {
+        let at = (CPU_LIMITS + index as u64 * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&current.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&maximum.to_le_bytes());
     }
     let mut calls = vec![
         Call {
@@ -367,6 +377,14 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         ))
     };
     let value = |word: u64| ARENA + VALUES + (word % 52) * 8;
+    // A new limit for a resource: CPU limits only from the ones never reached.
+    let new_limit = |resource: u64, word: u64| {
+        if resource == u64::from(linux::RLIMIT_CPU) {
+            ARENA + CPU_LIMITS + (word % 4) * 16
+        } else {
+            value(word)
+        }
+    };
     let play =
         |word: u64| PLAY + ((word % (PLAY_PAGES + 2)) * 4096) + if word >> 60 == 0 { 1 } else { 0 };
     // Lengths stay below the program's own mappings, which lie higher here (in a 4 GiB address
@@ -571,7 +589,7 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_prlimit64 => [
             pick(&[0, 99999], a),
             b % 17,
-            if c % 3 == 0 { value(c) } else { 0 },
+            if c % 3 == 0 { new_limit(b % 17, c) } else { 0 },
             if d % 2 == 0 { buffer(d) } else { 0 },
             0,
             0,
@@ -641,7 +659,14 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         }
         linux::__NR_setgroups => [pick(&[0, 1, 2, 3, 65537], a), value(b), 0, 0, 0, 0],
         linux::__NR_getrlimit => [b % 17, buffer(a), 0, 0, 0, 0],
-        linux::__NR_setrlimit => [b % 17, if a % 4 == 0 { 0 } else { value(a) }, 0, 0, 0, 0],
+        linux::__NR_setrlimit => [
+            b % 17,
+            if a % 4 == 0 { 0 } else { new_limit(b % 17, a) },
+            0,
+            0,
+            0,
+            0,
+        ],
         linux::__NR_times => [if a % 3 == 0 { 0 } else { buffer(a) }, 0, 0, 0, 0, 0],
         linux::__NR_gettimeofday => [
             if a % 3 == 0 { 0 } else { buffer(a) },
@@ -776,42 +801,47 @@ impl Reference {
             .write_all(&sequence_bytes(sequence))
             .expect("sending a sequence");
         self.input.flush().expect("sending a sequence");
-        let mut calls = Vec::new();
-        loop {
-            let mut word = [0u8; 4];
-            self.output.read_exact(&mut word).expect("reading a result");
-            if u32::from_le_bytes(word) == u32::MAX {
-                self.output
-                    .read_exact(&mut word)
-                    .expect("reading the status");
-                return SequenceResult {
-                    calls,
-                    status: i32::from_le_bytes(word),
-                };
-            }
-            let mut value = [0u8; 8];
-            self.output
-                .read_exact(&mut value)
-                .expect("reading a result");
-            let value = i64::from_le_bytes(value);
-            self.output.read_exact(&mut word).expect("reading a result");
-            let mut changes = Vec::new();
-            for _ in 0..u32::from_le_bytes(word) {
-                let mut header = [0u8; 8];
-                self.output
-                    .read_exact(&mut header)
-                    .expect("reading a change");
-                let offset = u32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
-                let length = u32::from_le_bytes(header[4..].try_into().expect("4 bytes"));
-                let mut bytes = vec![0; length as usize];
-                self.output
-                    .read_exact(&mut bytes)
-                    .expect("reading a change");
-                changes.push((offset, bytes));
-            }
-            calls.push(CallResult { value, changes });
+        let mut word = [0u8; 4];
+        self.output.read_exact(&mut word).expect("reading a result");
+        let mut reported = vec![0; u32::from_le_bytes(word) as usize];
+        self.output
+            .read_exact(&mut reported)
+            .expect("reading a result");
+        self.output
+            .read_exact(&mut word)
+            .expect("reading the status");
+        SequenceResult {
+            calls: parse_reports(&reported),
+            status: i32::from_le_bytes(word),
         }
     }
+}
+
+/// The calls a child reported, without a last record cut short by the child's death.
+fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
+    fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Option<&'a [u8]> {
+        let (taken, rest) = bytes.split_at_checked(length)?;
+        *bytes = rest;
+        Some(taken)
+    }
+    fn word(bytes: &mut &[u8]) -> Option<u32> {
+        Some(u32::from_le_bytes(take(bytes, 4)?.try_into().ok()?))
+    }
+    let mut calls = Vec::new();
+    let mut record = || -> Option<CallResult> {
+        let value = i64::from_le_bytes(take(&mut bytes, 8)?.try_into().ok()?);
+        let mut changes = Vec::new();
+        for _ in 0..word(&mut bytes)? {
+            let offset = word(&mut bytes)?;
+            let length = word(&mut bytes)?;
+            changes.push((offset, take(&mut bytes, length as usize)?.to_vec()));
+        }
+        Some(CallResult { value, changes })
+    };
+    while let Some(call) = record() {
+        calls.push(call);
+    }
+    calls
 }
 
 impl Drop for Reference {
@@ -931,10 +961,10 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
                 } => return Ok(value as i64),
                 Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
                 Next::Finished { status } => return Err(status),
-                // Waiting for ever: the runner's alarm would end it with SIGALRM.
+                // Waiting for ever: the runner kills such a sequence at its deadline.
                 Next::Idle {
                     until_nanoseconds: None,
-                } => return Err(linux::SIGALRM as i32),
+                } => return Err(linux::SIGKILL as i32),
                 Next::Idle {
                     until_nanoseconds: Some(until),
                 } => {
@@ -1132,7 +1162,7 @@ pub fn difference(
             (None, None) => break,
             (our, their) => {
                 text.push_str(&format!(
-                    "{line}: ours {:?} theirs {:?} (one side ended)\n",
+                    "{line}: ours {:?} theirs {:?} (one side ended; status ours {our_status:#x} theirs {their_status:#x})\n",
                     our.map(|seen| seen.value),
                     their.map(|seen| seen.value)
                 ));

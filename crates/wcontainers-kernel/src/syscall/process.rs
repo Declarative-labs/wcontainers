@@ -1020,26 +1020,44 @@ pub(super) fn prctl(
     }
 }
 
+/// Linux's `cap_validate_magic`: the header, and how many 32 bit words of each set its version moves.
+/// An unknown version is replaced by the one Linux prefers, and is EINVAL.
+fn capability_version(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    header: u64,
+) -> Result<(__user_cap_header_struct, usize), Errno> {
+    let head: __user_cap_header_struct = guest(kernel, cx, tid).read_value(header)?;
+    match head.version {
+        _LINUX_CAPABILITY_VERSION_1 => Ok((head, 1)),
+        _LINUX_CAPABILITY_VERSION_2 | _LINUX_CAPABILITY_VERSION_3 => Ok((head, 2)),
+        _ => {
+            let mut fixed = head;
+            fixed.version = _LINUX_CAPABILITY_VERSION_3;
+            guest(kernel, cx, tid).write_value(header, &fixed)?;
+            Err(Errno::EINVAL)
+        }
+    }
+}
+
 pub(super) fn capget(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     [header, data, ..]: Args,
 ) -> Result<u64, Errno> {
-    let head: __user_cap_header_struct = guest(kernel, cx, tid).read_value(header)?;
-    if head.version != _LINUX_CAPABILITY_VERSION_3 && head.version != _LINUX_CAPABILITY_VERSION_2 {
-        let mut fixed = head;
-        fixed.version = _LINUX_CAPABILITY_VERSION_3;
-        guest(kernel, cx, tid).write_value(header, &fixed)?;
-        return if data == 0 { Ok(0) } else { Err(Errno::EINVAL) };
+    let (head, words) = match capability_version(kernel, cx, tid, header) {
+        Err(Errno::EINVAL) if data == 0 => return Ok(0),
+        result => result?,
+    };
+    if data == 0 {
+        return Ok(0);
     }
     if head.pid < 0 {
         return Err(Errno::EINVAL);
     }
     own_pid(kernel, tid, head.pid as u64)?;
-    if data == 0 {
-        return Ok(0);
-    }
     let credentials = kernel.process_of(tid).credentials.clone();
     let half = |set: u64, upper: bool| {
         if upper {
@@ -1049,7 +1067,7 @@ pub(super) fn capget(
         }
     };
     let mut out = Vec::new();
-    for upper in [false, true] {
+    for upper in [false, true].into_iter().take(words) {
         out.extend_from_slice(half(credentials.effective, upper).to_le_bytes().as_slice());
         out.extend_from_slice(half(credentials.permitted, upper).to_le_bytes().as_slice());
         out.extend_from_slice(
@@ -1068,21 +1086,16 @@ pub(super) fn capset(
     tid: Tid,
     [header, data, ..]: Args,
 ) -> Result<u64, Errno> {
-    let head: __user_cap_header_struct = guest(kernel, cx, tid).read_value(header)?;
-    if head.version != _LINUX_CAPABILITY_VERSION_3 && head.version != _LINUX_CAPABILITY_VERSION_2 {
-        let mut fixed = head;
-        fixed.version = _LINUX_CAPABILITY_VERSION_3;
-        guest(kernel, cx, tid).write_value(header, &fixed)?;
-        return Err(Errno::EINVAL);
-    }
+    let (head, words) = capability_version(kernel, cx, tid, header)?;
     if head.pid != 0 && head.pid != kernel.threads[&tid].process {
         return Err(Errno::EPERM);
     }
-    let bytes = guest(kernel, cx, tid).read(data, 24)?;
+    let bytes = guest(kernel, cx, tid).read(data, words as u64 * 12)?;
+    // The upper halves are zero for the one-word version.
     let word = |index: usize| {
-        u64::from(u32::from_le_bytes(
-            bytes[index * 4..index * 4 + 4].try_into().expect("4 bytes"),
-        ))
+        bytes.get(index * 4..index * 4 + 4).map_or(0, |four| {
+            u64::from(u32::from_le_bytes(four.try_into().expect("4 bytes")))
+        })
     };
     let effective = word(0) | word(3) << 32;
     let permitted = word(1) | word(4) << 32;

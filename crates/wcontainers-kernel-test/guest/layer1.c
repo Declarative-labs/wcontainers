@@ -2,15 +2,21 @@
 //
 // Reads sequences from standard input, one at a time, and runs each in a child process so no state
 // carries over. A sequence is: arena bytes (u32 length, bytes), then calls (u32 count, then for each the
-// number and six arguments as u64). For each call the child writes the u32 1, the return value (i64) and the
-// arena's changed byte ranges (u32 count, then u32 offset, u32 length, bytes). After each sequence the
-// parent writes the u32 0xffffffff and the child's wait status, and puts back what the sequence may
-// have changed. All numbers are little endian.
+// number and six arguments as u64). For each call the child reports the return value (i64) and the
+// arena's changed byte ranges (u32 count, then u32 offset, u32 length, bytes) into a pipe the parent
+// drains. After each sequence the parent writes everything the child reported (u32 length, bytes), then
+// the child's wait status (u32), and puts back what the sequence may have changed. A child that dies
+// part way through a report leaves a short last record, which the reader drops; one that runs past the
+// deadline is killed. All numbers are little endian.
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -20,6 +26,8 @@
 
 #define ARENA ((unsigned char *)0x70000000UL)
 #define ARENA_SIZE (16 * 4096)
+// How long a sequence may take before its child is killed: only one that waits for ever comes near it.
+#define DEADLINE_SECONDS 60
 
 static unsigned char before[ARENA_SIZE];
 
@@ -125,10 +133,15 @@ int main(void) {
         if (calls > 4096 || read_all(0, sequence, calls * 56) != 0) {
             return 1;
         }
+        int report[2];
+        if (pipe(report) != 0) {
+            return 1;
+        }
         pid_t child = fork();
         if (child == 0) {
-            // A call that blocks forever ends the sequence with SIGALRM instead of hanging the run.
-            alarm(10);
+            dup2(report[1], 1);
+            close(report[0]);
+            close(report[1]);
             if (mmap(ARENA, ARENA_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != ARENA) {
                 _exit(3);
             }
@@ -136,17 +149,48 @@ int main(void) {
             memcpy(before, ARENA, ARENA_SIZE);
             for (uint32_t index = 0; index < calls; index++) {
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
-                uint32_t tag = 1;
-                write_all(1, &tag, 4);
                 write_all(1, &result, 8);
                 report_changes(1);
             }
             _exit(0);
         }
+        close(report[1]);
+        static unsigned char *reported;
+        static size_t capacity;
+        size_t used = 0;
+        struct timespec now, deadline;
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += DEADLINE_SECONDS;
+        int killed = 0;
+        for (;;) {
+            if (capacity - used < 65536) {
+                capacity = capacity * 2 + 65536;
+                reported = realloc(reported, capacity);
+                if (!reported) {
+                    return 1;
+                }
+            }
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long left = (deadline.tv_sec - now.tv_sec) * 1000 + (deadline.tv_nsec - now.tv_nsec) / 1000000;
+            struct pollfd ready = {report[0], POLLIN, 0};
+            if (!killed && (left <= 0 || poll(&ready, 1, left) == 0)) {
+                kill(child, SIGKILL);
+                killed = 1;
+            }
+            ssize_t got = read(report[0], reported + used, capacity - used);
+            if (got <= 0) {
+                break;
+            }
+            used += got;
+        }
+        close(report[0]);
         int status;
         waitpid(child, &status, 0);
-        uint32_t end[2] = {0xffffffff, (uint32_t)status};
-        write_all(1, end, 8);
+        uint32_t header = (uint32_t)used;
+        write_all(1, &header, 4);
+        write_all(1, reported, used);
+        uint32_t end = (uint32_t)status;
+        write_all(1, &end, 4);
         // Sequences may change anything they can name, so everything they can name outside their work
         // directory is put back: /dev/shm emptied with its own mode, and the devices remade.
         DIR *shm = opendir("/dev/shm");
