@@ -495,6 +495,8 @@ impl Kernel {
             action.sa_mask = kernel_sigset_t { sig: [0] };
         }
         let thread = self.threads.get_mut(&tid).expect("thread");
+        // The new program has not registered its area.
+        thread.rseq = None;
         if old_memory.0 != 0 {
             cx.cpu.thread_drop(thread.cpu);
             thread.cpu = cx

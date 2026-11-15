@@ -121,6 +121,8 @@ pub(crate) struct Thread {
     /// How the thread is scheduled: its policy, real-time priority, nice value and whether children
     /// go back to the default.
     pub schedule: Schedule,
+    /// `rseq`: the registered area, its length and its signature.
+    pub rseq: Option<(u64, u32, u32)>,
     /// The seccomp filters the thread installed, oldest first; Docker's profile is not among them.
     pub filters: Vec<Rc<crate::seccomp::Filter>>,
 }
@@ -161,6 +163,7 @@ impl Thread {
             alternate_stack: (0, 0, 0),
             parked: None,
             schedule: Schedule::default(),
+            rseq: None,
             filters: Vec::new(),
         }
     }

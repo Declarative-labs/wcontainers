@@ -61,6 +61,10 @@ const ACTIONS: u64 = 0x3180;
 const FILTER_WORDS: usize = 13;
 /// Where the filters' words start in the generated values.
 const FILTER_VALUES: usize = 72;
+/// Areas for rseq: 64 byte aligned, 32 byte aligned and 16 byte aligned ones.
+const RSEQS: u64 = 0x3200;
+/// The offsets of the rseq areas that can be registered (aligned to 32 bytes at least).
+const RSEQ_AREAS: [u64; 3] = [0, 0x20, 0x40];
 /// Extended attribute names, one after another.
 const XATTR_NAMES: u64 = 0x3c00;
 /// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
@@ -849,6 +853,23 @@ pub const CALLS: &[u32] = &[
     linux::__NR_mincore,
     linux::__NR_ioprio_get,
     linux::__NR_ioprio_set,
+    linux::__NR_pkey_mprotect,
+    linux::__NR_pkey_alloc,
+    linux::__NR_pkey_free,
+    linux::__NR_map_shadow_stack,
+    linux::__NR_rseq,
+    linux::__NR_membarrier,
+    linux::__NR_acct,
+    linux::__NR_vhangup,
+    linux::__NR_swapoff,
+    linux::__NR_init_module,
+    linux::__NR_finit_module,
+    linux::__NR_reboot,
+    linux::__NR_syslog,
+    linux::__NR_fsopen,
+    linux::__NR_fspick,
+    linux::__NR_fsmount,
+    linux::__NR_move_mount,
     // Three times, since most of its sequences need several filters to show anything.
     linux::__NR_seccomp,
     linux::__NR_seccomp,
@@ -1129,6 +1150,84 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         }
         linux::__NR_munmap => [play(a), play_length(b), 0, 0, 0, 0],
         linux::__NR_mprotect => [play(a), play_length(b), prot(c), 0, 0, 0],
+        linux::__NR_pkey_mprotect => [
+            play(a),
+            play_length(b),
+            prot(c),
+            pick(&[0, u64::MAX, 1, 15, 16, 1 << 32, (1 << 32) - 1], d),
+            0,
+            0,
+        ],
+        linux::__NR_pkey_alloc => [
+            pick(&[0, 0, 1, 1 << 32], a),
+            pick(&[0, 1, 4, 8, 15, 16, u64::MAX], b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_pkey_free => [pick(&[0, 0, 1, u64::MAX, 1 << 32], a), 0, 0, 0, 0, 0],
+        linux::__NR_map_shadow_stack => [play(a), count(b), value(c), 0, 0, 0],
+        // No time slice extension flag (not built).
+        linux::__NR_rseq => [
+            pick(
+                &[
+                    ARENA + RSEQS,
+                    ARENA + RSEQS,
+                    ARENA + RSEQS + RSEQ_AREAS[1],
+                    ARENA + RSEQS + RSEQ_AREAS[2],
+                    ARENA + RSEQS + 0x10,
+                    0,
+                    0x1000,
+                    u64::MAX - 4095,
+                ],
+                a,
+            ),
+            pick(&[32, 32, 33, 64, 28, 31, 4096, 1 << 32 | 32], b),
+            pick(&[0, 0, 0, 1, 1, 3, 4, 1 << 32], c),
+            pick(&[0, 1, 0x5305_3053], d),
+            0,
+            0,
+        ],
+        linux::__NR_membarrier => [
+            pick(
+                &[
+                    0,
+                    1,
+                    2,
+                    4,
+                    8,
+                    16,
+                    32,
+                    64,
+                    128,
+                    256,
+                    512,
+                    3,
+                    1 << 32,
+                    u64::MAX,
+                    1 << 20,
+                ],
+                a,
+            ),
+            pick(&[0, 0, 1, 2], b),
+            pick(&[0, 5, u64::MAX], c),
+            0,
+            0,
+            0,
+        ],
+        // Each refused for a power a container lacks, whatever the arguments.
+        linux::__NR_acct
+        | linux::__NR_vhangup
+        | linux::__NR_swapoff
+        | linux::__NR_init_module
+        | linux::__NR_finit_module
+        | linux::__NR_reboot
+        | linux::__NR_syslog
+        | linux::__NR_fsopen
+        | linux::__NR_fspick
+        | linux::__NR_fsmount
+        | linux::__NR_move_mount => [path(a), value(b), value(c), 0, 0, 0],
         linux::__NR_madvise => [
             play(a),
             play_length(b),
@@ -1971,6 +2070,11 @@ pub struct Seen {
 fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     let [a, b, c, d, e, _] = call.arguments;
     let mut out = Vec::new();
+    // The CPU a registered rseq area names, which the reference's kernel rewrites whenever its caller
+    // moves to another CPU, during any call (one CPU here is a declared difference).
+    for offset in RSEQ_AREAS {
+        out.push((ARENA + RSEQS + offset, 8));
+    }
     // The time left, which ppoll writes back even when it fails.
     if call.number == linux::__NR_ppoll && c != 0 {
         out.push((c, 16));

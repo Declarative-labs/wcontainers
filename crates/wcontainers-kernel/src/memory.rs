@@ -112,6 +112,10 @@ pub(crate) struct AddressMap {
     pub brk: u64,
     /// How new mappings are locked, as `mlockall(MCL_FUTURE)` sets (Linux's `def_flags`).
     pub future_lock: Lock,
+    /// `membarrier` registrations, as Linux's `MEMBARRIER_STATE_*` bits.
+    pub membarrier: u32,
+    /// Protection keys allocated, one bit each; key 0 from the start.
+    pub protection_keys: u32,
 }
 
 impl AddressMap {
@@ -125,6 +129,8 @@ impl AddressMap {
             brk_start: 0,
             brk: 0,
             future_lock: Lock::None,
+            membarrier: 0,
+            protection_keys: 1,
         }
     }
 

@@ -78,3 +78,13 @@ pub(crate) const IOPRIO_CLASS_IDLE: u32 = 3;
 /// What `ioprio_get`'s `which` names: one process, a process group, or a user's processes.
 pub(crate) const IOPRIO_WHO_PROCESS: u64 = 1;
 pub(crate) const IOPRIO_WHO_USER: u64 = 3;
+
+/// `rseq`'s flags (`linux/rseq.h`, which linux-raw-sys does not generate): unregister, and turn time
+/// slice extensions on from the start.
+pub(crate) const RSEQ_FLAG_UNREGISTER: u32 = 1;
+pub(crate) const RSEQ_FLAG_SLICE_EXT_DEFAULT_ON: u32 = 2;
+/// The size of the first `struct rseq`, and the part of it the kernel writes (to `end`).
+pub(crate) const ORIG_RSEQ_SIZE: u32 = 32;
+pub(crate) const RSEQ_WRITTEN_SIZE: u32 = 28;
+/// `cpu_id`'s value in an area not registered (`RSEQ_CPU_ID_UNINITIALIZED`).
+pub(crate) const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;

@@ -740,3 +740,23 @@ pub(super) fn ioprio_set(
     kernel.thread_mut(tid).schedule.io_priority = u32::from(priority as u16);
     Ok(0)
 }
+
+/// A call whose first step in Linux is to check one power: without it the call is EPERM before its
+/// arguments are looked at. Docker's default powers lack each of these, and powers can only be given
+/// up, so a container's processes always get EPERM; what the call does with the power is not built.
+pub(super) fn needs_power<const POWER: u32, const NUMBER: u32>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    _: Args,
+) -> Result<u64, Errno> {
+    if !kernel.process_of(tid).credentials.has(POWER) {
+        return Err(Errno::EPERM);
+    }
+    kernel.counters.count(
+        cx.host,
+        crate::counters::reason::NOT_IMPLEMENTED,
+        NUMBER.into(),
+    );
+    Err(Errno::ENOSYS)
+}

@@ -333,7 +333,30 @@ pub(super) fn mprotect(
     tid: Tid,
     [address, length, prot, ..]: Args,
 ) -> Result<u64, Errno> {
-    if address % PAGE_SIZE != 0 {
+    protect(kernel, cx, tid, address, length, prot, -1)
+}
+
+/// `pkey_mprotect`: `mprotect` with a protection key, which must be -1 (none) or allocated.
+pub(super) fn pkey_mprotect(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [address, length, prot, key, ..]: Args,
+) -> Result<u64, Errno> {
+    protect(kernel, cx, tid, address, length, prot, key as i32)
+}
+
+/// Linux's `do_mprotect_pkey`.
+fn protect(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    length: u64,
+    prot: u64,
+    key: i32,
+) -> Result<u64, Errno> {
+    if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
     }
     if length == 0 {
@@ -346,6 +369,9 @@ pub(super) fn mprotect(
         .ok_or(Errno::ENOMEM)?;
     let permissions = permissions(prot, true)?;
     let process = kernel.process_of_mut(tid);
+    if key != -1 && !key_allocated(&process.map, key) {
+        return Err(Errno::EINVAL);
+    }
     if !process.map.fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
     }
@@ -411,7 +437,7 @@ pub(super) fn madvise(
     if !known {
         return Err(Errno::EINVAL);
     }
-    if address % PAGE_SIZE != 0 {
+    if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
     }
     let length = page_up(length);
@@ -898,6 +924,19 @@ fn lock_range(
         return Err(Errno::ENOMEM);
     }
     process.map.set_lock(start, end, lock);
+    // Linux's `__mm_populate`: bringing the pages in fails at one that cannot be read (no access, or
+    // wholly past its file's end), and the call is ENOMEM though the range stays locked.
+    let unreadable = process
+        .map
+        .iter()
+        .filter(|mapping| mapping.start < end && mapping.end > start)
+        .any(|mapping| {
+            mapping.permissions.is_empty()
+                || matches!(mapping.backing, Backing::File { file_end, .. } if file_end < end.min(mapping.end))
+        });
+    if lock == Lock::Now && unreadable {
+        return Err(Errno::ENOMEM);
+    }
     Ok(0)
 }
 
@@ -993,7 +1032,7 @@ pub(super) fn mincore(
     [address, length, vector, ..]: Args,
 ) -> Result<u64, Errno> {
     // In the order of Linux's `mincore`: the range, the vector, then mapping by mapping.
-    if address % PAGE_SIZE != 0 {
+    if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
     }
     if !crate::user::access_ok(address, length) {
@@ -1020,4 +1059,53 @@ pub(super) fn mincore(
         at = to;
     }
     Ok(0)
+}
+
+/// The protection keys a process can hold: ARM64 Linux allows eight with the CPU's permission overlays
+/// and only key 0 without them, as on the reference (which lacks them).
+const PROTECTION_KEYS: i32 = 1;
+
+fn key_allocated(map: &crate::memory::AddressMap, key: i32) -> bool {
+    (0..PROTECTION_KEYS).contains(&key) && map.protection_keys & (1 << key) != 0
+}
+
+/// `pkey_alloc`: with no permission overlays there is never a key to give (ENOSPC).
+pub(super) fn pkey_alloc(
+    _: &mut Kernel,
+    _: &mut Context<'_>,
+    _: Tid,
+    [flags, access, ..]: Args,
+) -> Result<u64, Errno> {
+    // ARM64's `PKEY_ACCESS_MASK`: no access, no write, no execute, no read.
+    const ACCESS_MASK: u64 = 0xf;
+    if flags != 0 || access & !ACCESS_MASK != 0 {
+        return Err(Errno::EINVAL);
+    }
+    Err(Errno::ENOSPC)
+}
+
+pub(super) fn pkey_free(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [key, ..]: Args,
+) -> Result<u64, Errno> {
+    let key = key as i32;
+    let map = &mut kernel.process_of_mut(tid).map;
+    if !key_allocated(map, key) {
+        return Err(Errno::EINVAL);
+    }
+    map.protection_keys &= !(1 << key);
+    Ok(0)
+}
+
+/// `map_shadow_stack`: the CPU has no guarded control stacks (as the reference's), so EOPNOTSUPP
+/// before anything else.
+pub(super) fn map_shadow_stack(
+    _: &mut Kernel,
+    _: &mut Context<'_>,
+    _: Tid,
+    _: Args,
+) -> Result<u64, Errno> {
+    Err(Errno::EOPNOTSUPP)
 }
