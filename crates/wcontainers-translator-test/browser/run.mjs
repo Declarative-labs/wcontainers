@@ -1,7 +1,7 @@
 // Runs one flat blob in Chrome through the browser runner and prints what happened as JSON.
 //
-// Usage: node run.mjs <case directory>. The directory holds case.json (where things go in guest memory),
-// blob.bin, stack.bin and translator.wasm. Chrome is the one installed on the machine; playwright-core comes
+// Usage: node run.mjs <case directory>. The directory holds case.json (where things go in guest memory, and
+// how many times to run the program in the same instances), blob.bin, stack.bin and translator.wasm. Chrome is the one installed on the machine; playwright-core comes
 // from the Nix shell (WC_PLAYWRIGHT_CORE).
 
 import { createRequire } from "node:module";
@@ -23,7 +23,13 @@ const files = {
 };
 const setup = JSON.parse(await readFile(join(directory, "case.json"), "utf8"));
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+// V8 flags, only for measuring what the engine does (such as which compiler runs the code).
+const jsFlags = process.env.WC_CHROME_JS_FLAGS;
+const browser = await chromium.launch({
+  channel: "chrome",
+  headless: true,
+  args: jsFlags ? [`--js-flags=${jsFlags}`] : [],
+});
 try {
   const page = await browser.newPage();
   page.on("console", (message) => process.stderr.write(`chrome: ${message.text()}\n`));

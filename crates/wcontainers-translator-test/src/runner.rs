@@ -116,6 +116,12 @@ fn new_engine() -> Engine {
     Engine::new(&config).expect("engine")
 }
 
+/// A module compiled with the runner's settings, as wasmtime stores it (an ELF file), for reading its machine
+/// code.
+pub fn precompile(wasm: &[u8]) -> Vec<u8> {
+    engine().precompile_module(wasm).expect("a valid module")
+}
+
 /// How long the engine takes to compile a module.
 pub fn compile_time(wasm: &[u8]) -> std::time::Duration {
     let engine = engine();

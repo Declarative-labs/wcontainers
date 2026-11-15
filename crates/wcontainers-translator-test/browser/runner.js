@@ -27,7 +27,7 @@ function constant(value, type) {
   return new WebAssembly.Global({ value: type, mutable: false }, value);
 }
 
-function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp, stack, lookAhead, omit }) {
+function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp, stack, lookAhead, omit, repeat }) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
     new Uint8Array(translator.memory.buffer, translator.output(), length).slice();
@@ -256,29 +256,39 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   const table = new Uint8Array(permissionPages);
   for (const [start, end, permissions] of regions) setPermissions(start, end, permissions, table);
   guest().set(blob, load);
-  guest().set(stack, sp);
   blobs.push({ bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) });
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
   instantiateCode(0, 0n, lookAhead, omit);
 
-  const block = new DataView(state.buffer, BLOCK_AT, contract.threadBlockSize);
-  for (let i = 0; i < contract.threadBlockSize; i++) block.setUint8(i, 0);
-  block.setBigUint64(contract.registerPc, BigInt(load), true);
-  block.setBigUint64(contract.registerSp, BigInt(sp), true);
-  thread.exports[contract.loadState]();
+  // Each run starts the program afresh in the same instances: the blob and the stack placed again, the
+  // registers as at the start, and the output of earlier runs dropped.
+  const runs = [];
+  for (let run = 0; run < repeat; run++) {
+    guest().set(blob, load);
+    guest().set(stack, sp);
+    stdout.length = 0;
+    stderr.length = 0;
+    stopped = null;
+    snapshot = null;
+    const block = new DataView(state.buffer, BLOCK_AT, contract.threadBlockSize);
+    for (let i = 0; i < contract.threadBlockSize; i++) block.setUint8(i, 0);
+    block.setBigUint64(contract.registerPc, BigInt(load), true);
+    block.setBigUint64(contract.registerSp, BigInt(sp), true);
+    thread.exports[contract.loadState]();
 
-  const started = performance.now();
-  try {
-    thread.exports[contract.run]();
-  } catch (error) {
-    if (!(error instanceof WebAssembly.RuntimeError) || !/out of bounds/.test(error.message)) throw error;
-    slowPath(reason("fault without exact registers"), 0, 0);
-    stopped = { kind: "fault without exact registers" };
+    const started = performance.now();
+    try {
+      thread.exports[contract.run]();
+    } catch (error) {
+      if (!(error instanceof WebAssembly.RuntimeError) || !/out of bounds/.test(error.message)) throw error;
+      slowPath(reason("fault without exact registers"), 0, 0);
+      stopped = { kind: "fault without exact registers" };
+    }
+    runs.push(performance.now() - started);
   }
-  const runMilliseconds = performance.now() - started;
   return {
     stopped,
-    runMilliseconds,
+    runs,
     pc: snapshot ? snapshot.pc.toString() : null,
     stdout,
     stderr,
