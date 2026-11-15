@@ -62,9 +62,32 @@ const HINT_CARVE_OUTS: [&str; 1] = ["RPRFM_R_ldst_regoff"];
 
 /// Whether a word is an instruction of the CPU we present.
 pub fn presented(word: u32) -> bool {
-    all().iter().any(|form| {
+    candidates(word).iter().any(|&i| {
+        let form = &all()[usize::from(i)];
         form.presented(word) || (form.hint_without_feature() && word & form.mask == form.value)
     })
+}
+
+/// The bits of a word that pick its bucket of candidate forms: bits 31 to 21.
+const KEY_LOW: u32 = 21;
+const KEY_BUCKETS: u32 = 1 << (32 - KEY_LOW);
+
+/// The forms whose fixed bits in the key agree with the word's.
+fn candidates(word: u32) -> &'static [u16] {
+    static INDEX: OnceLock<Vec<Vec<u16>>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        (0..KEY_BUCKETS)
+            .map(|key| {
+                let word = key << KEY_LOW;
+                let key_mask = u32::MAX << KEY_LOW;
+                (0..all().len())
+                    .filter(|&i| (word ^ all()[i].value) & all()[i].mask & key_mask == 0)
+                    .map(|i| u16::try_from(i).expect("fewer than 65536 forms"))
+                    .collect()
+            })
+            .collect()
+    });
+    &index[(word >> KEY_LOW) as usize]
 }
 
 fn read() -> Vec<Form> {

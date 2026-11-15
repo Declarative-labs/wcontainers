@@ -83,3 +83,30 @@ fn features_not_offered_are_undefined() {
         assert_eq!(decode(word), Instruction::Undefined, "{word:#010x}");
     }
 }
+
+/// Words in no form of Arm's list that `yaxpeax-arm` accepts as base integer instructions: MOVZ with hw
+/// above 1 in 32 bit, conditional select and compare with wrong fixed bits, and others. The CPU raises
+/// illegal instruction for each.
+#[test]
+fn words_in_no_form_are_undefined() {
+    for word in [
+        0x52d7_c74f,
+        0x12ca_4fde,
+        0x72d3_c194,
+        0xdaac_9658,
+        0x9aae_83e2,
+        0x3a65_c0e8,
+        0xba7c_3a01,
+        0x3a28_0002,
+        0x1afe_25d5,
+        0x9aea_0d40,
+        0xdae0_0189,
+        0x5ae0_099c,
+    ] {
+        assert!(
+            !forms::all().iter().any(|f| word & f.mask == f.value),
+            "{word:#010x}"
+        );
+        assert_eq!(decode(word), Instruction::Undefined, "{word:#010x}");
+    }
+}

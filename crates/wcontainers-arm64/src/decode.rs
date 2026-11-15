@@ -5,19 +5,17 @@ use crate::instruction::*;
 use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv8::a64::{InstDecoder, Opcode, Operand as Op, ShiftStyle, SizeCode};
 
-/// Decode one instruction word.
+/// Decode one instruction word. Arm's forms decide whether it is an instruction at all; `yaxpeax-arm`
+/// accepts some words that are not.
 pub fn decode(word: u32) -> Instruction {
-    let Ok(decoded) = InstDecoder::default().decode(&mut U8Reader::new(&word.to_le_bytes())) else {
+    if !crate::forms::presented(word) {
         return Instruction::Undefined;
+    }
+    let Ok(decoded) = InstDecoder::default().decode(&mut U8Reader::new(&word.to_le_bytes())) else {
+        return Instruction::Unsupported;
     };
     let ops = decoded.operands;
-    convert(word, decoded.opcode, &ops).unwrap_or_else(|| {
-        if crate::forms::presented(word) {
-            Instruction::Unsupported
-        } else {
-            Instruction::Undefined
-        }
-    })
+    convert(word, decoded.opcode, &ops).unwrap_or(Instruction::Unsupported)
 }
 
 fn bits(word: u32, low: u32, width: u32) -> u32 {

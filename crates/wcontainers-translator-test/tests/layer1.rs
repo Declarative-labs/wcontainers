@@ -4,6 +4,7 @@
 //! name, so any failure replays with the same two values. `WC_LAYER1_FORMS` limits the run to a
 //! comma-separated list of form names.
 
+use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
 use wcontainers_arm64::forms;
@@ -124,4 +125,38 @@ fn vector_registers_reach_the_cpu() {
         0x1112_1314_1516_1718_191a_1b1c_1d1e_1f01
     );
     assert_eq!(outcome.vectors[1..3], vectors[1..3]);
+}
+
+/// Words in no form of Arm's list, for any feature, are illegal on the CPU and in ours. Random words,
+/// `WC_LAYER1_CASES` of them (default 64), seeded from `WC_LAYER1_SEED`.
+#[test]
+fn words_in_no_form_are_illegal_as_on_the_cpu() {
+    let count = setting("WC_LAYER1_CASES", 64) as u32;
+    let seed = setting("WC_LAYER1_SEED", 1);
+    let mut key = [0u8; 32];
+    key[..8].copy_from_slice(&seed.to_le_bytes());
+    key[8..16].copy_from_slice(b"no form ");
+    let mut config = Config::with_cases(count);
+    config.failure_persistence = None;
+    let mut runner =
+        TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
+    let reference = RefCell::new(Cases::start());
+    let unallocated = any::<u32>().prop_filter("in a form", |&word| {
+        !forms::all().iter().any(|f| word & f.mask == f.value)
+    });
+    let result = runner.run(&unallocated, |word| {
+        let mut registers = [0u64; 34];
+        registers[31] = DATA + 0x1000;
+        let case = Case {
+            word,
+            registers,
+            vectors: [0; 32],
+            seed,
+        };
+        compare(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)?;
+        prop_assert_eq!(translated(&case).stop, Stop::Illegal, "word {:#010x}", word);
+        Ok(())
+    });
+    eprintln!("layer 1: {count} words in no form, seed {seed}");
+    result.unwrap();
 }
