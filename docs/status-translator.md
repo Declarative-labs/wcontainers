@@ -126,9 +126,9 @@ instance, the second run within 2% unless said):
 
 S1, what remains (aims, every check, both engines: sieve and hash 1.5, sort 2.5, fib 4, matrix, search and
 interpret 3):
-- Met: hash (about 1.0 in both). Close: sieve 1.57 in wasmtime. Not met: fib (6.25 wasmtime), sort (4.2),
-  interpret (9), matrix (6 to 7 wasmtime, 3.7 Chrome), search (3.4 wasmtime, 3.8 Chrome). Final numbers of
-  this run are under "S1 measurements".
+- Met: hash (1.0 in both), sieve in Chrome (1.38). Not met: sieve in wasmtime (1.69), fib (6.4 wasmtime,
+  5.6 Chrome), sort (4.2, 3.4), interpret (8.8, 8.9), matrix (9.3 wasmtime, 3.3 Chrome), search (3.5,
+  3.0). The status file does not yet show for any of these that the rest cannot be removed.
 - Interpret: the permission check costs most (2.8 times native without it), but keeping pages did not
   help, so the time is not in the checks' table lookups. The machine code (wasmtime) is dominated by
   spills: over twenty values live across the dispatch loop. Next: look at it with a profiler (`sample`
@@ -396,6 +396,8 @@ contract's bits, in both runners).
 - Layer 2 (M2): 64 cases, seed 1, 8 on the CPU: 0 mismatches. 2000 cases, seed 7, 40 on the CPU, release:
   0 mismatches (22 s at load 3 to 4). Second M2 run, after this run's changes: 3000 cases, seed 11, 20 on
   the CPU, release: 0 mismatches (35 s at load 10 to 16). Pass bar (one million) not run.
+- Layer 2, S1 (every case also run at full stopping at every check), release: 500 cases seed 3, 2000 seed
+  5 (after kept pages), 2000 seed 9 (after the flags bit): 0 mismatches. Not yet the pass bar.
 - Layer 2, third M2 run, with frames, sp accesses, groups and faults: 500 cases, seed 1, 60 on the CPU,
   release: 0 mismatches, 61 faulted, 40 left to an address. 20,000 cases, seed 21, 40 on the CPU,
   release: 0 mismatches, 2949 faulted (SIGSEGV, same at none, full and on the CPU where run), 2131 left
