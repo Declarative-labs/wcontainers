@@ -130,6 +130,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_fdatasync, S(io::fsync)),
         (__NR_syncfs, S(io::syncfs)),
         (__NR_sync, S(io::sync)),
+        (__NR_cachestat, S(io::cachestat)),
         (__NR_openat, S(files::openat)),
         (__NR_openat2, S(files::openat2)),
         (__NR_flock, F(files::flock)),

@@ -144,6 +144,9 @@ pub(crate) struct Regular {
     pub allocated: alloc::collections::BTreeSet<u64>,
     /// `F_SEAL_*` bits; a file not made by `memfd_create` to be sealed is sealed against sealing.
     pub seals: u32,
+    /// Whether the file has been mapped: tmpfs then brings in the pages a program's faults touch,
+    /// which are not known here.
+    pub mapped: bool,
 }
 
 impl Default for Regular {
@@ -153,6 +156,7 @@ impl Default for Regular {
             pages: alloc::collections::BTreeSet::new(),
             allocated: alloc::collections::BTreeSet::new(),
             seals: F_SEAL_SEAL,
+            mapped: false,
         }
     }
 }

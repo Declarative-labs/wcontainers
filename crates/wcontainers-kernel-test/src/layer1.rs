@@ -881,6 +881,7 @@ pub const CALLS: &[u32] = &[
     linux::__NR_move_mount,
     linux::__NR_process_vm_readv,
     linux::__NR_process_vm_writev,
+    linux::__NR_cachestat,
     // Three times, since most of its sequences need several filters to show anything.
     linux::__NR_seccomp,
     linux::__NR_seccomp,
@@ -1016,6 +1017,19 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 pick(&[0, 0, 0, 1], f),
             ]
         }
+        // The range from the generated values, or a bad address.
+        linux::__NR_cachestat => [
+            fd(a),
+            if b % 8 == 0 {
+                buffer(b >> 3)
+            } else {
+                value(b >> 3)
+            },
+            buffer(c),
+            pick(&[0, 0, 0, 1], d),
+            0,
+            0,
+        ],
         linux::__NR_lseek => [fd(a), offset(b), pick(&[0, 1, 2, 3, 4, 5], c), 0, 0, 0],
         linux::__NR_getdents64 => [
             fd(a),

@@ -244,8 +244,11 @@ pub(super) fn mmap(
     let backing = match &file {
         None => Backing::Anonymous,
         Some((node, path)) => {
-            let size = match &node.borrow().content {
-                Content::Regular(regular) => regular.data.len() as u64,
+            let size = match &mut node.borrow_mut().content {
+                Content::Regular(regular) => {
+                    regular.mapped = true;
+                    regular.data.len() as u64
+                }
                 _ => 0,
             };
             let file_pages = page_up(size).saturating_sub(offset);
