@@ -21,6 +21,7 @@ pub(crate) const ST_RELATIME: u32 = 0x1000;
 pub(crate) const RWF_NOAPPEND: u32 = 0x20;
 pub(crate) const RWF_ATOMIC: u32 = 0x40;
 pub(crate) const RWF_DONTCACHE: u32 = 0x80;
+pub(crate) const RWF_NOSIGNAL: u32 = 0x100;
 /// `close_range` flags (`linux/close_range.h`).
 pub(crate) const CLOSE_RANGE_UNSHARE: u32 = 1 << 1;
 pub(crate) const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;

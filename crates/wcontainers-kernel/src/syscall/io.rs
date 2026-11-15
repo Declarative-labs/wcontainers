@@ -172,7 +172,7 @@ fn vectored2(
     [fd, vector, count, offset, flags]: [u64; 5],
     writing: bool,
 ) -> Result<u64, Errno> {
-    use crate::linux_extra::{RWF_ATOMIC, RWF_DONTCACHE, RWF_NOAPPEND};
+    use crate::linux_extra::{RWF_ATOMIC, RWF_DONTCACHE, RWF_NOAPPEND, RWF_NOSIGNAL};
     let flags = flags as u32;
     let current = offset as i64 == -1;
     if !current && (offset as i64) < 0 {
@@ -194,7 +194,31 @@ fn vectored2(
     if parts.iter().all(|(_, length)| *length == 0) {
         return Ok(0);
     }
-    let known = RWF_HIPRI | RWF_DSYNC | RWF_SYNC | RWF_NOWAIT | RWF_APPEND | RWF_NOAPPEND;
+    // The range is checked before the flags, as in `vfs_readv` and `vfs_writev`.
+    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+        let total = parts.iter().map(|(_, length)| length).sum();
+        let position = if current {
+            file.borrow().offset
+        } else {
+            offset
+        };
+        verify_area(position, total)?;
+    }
+    // A file without Linux's iterating read or write (directories, and writes to `/dev/full`) is
+    // moved a segment at a time by `do_loop_readv_writev`, which takes no flag but RWF_HIPRI.
+    let looped = {
+        let file = file.borrow();
+        let inode = file.node.borrow();
+        inode.file_type() == S_IFDIR
+            || writing
+                && matches!(inode.content, Content::Special)
+                && matches!(Device::from_number(inode.rdev), Some(Device::Full))
+    };
+    if looped && flags & !RWF_HIPRI != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let known =
+        RWF_HIPRI | RWF_DSYNC | RWF_SYNC | RWF_NOWAIT | RWF_APPEND | RWF_NOAPPEND | RWF_NOSIGNAL;
     // Atomic writes and uncached access are not offered by tmpfs, nor by anything else here.
     if flags & !(known | RWF_ATOMIC | RWF_DONTCACHE) != 0
         || flags & (RWF_ATOMIC | RWF_DONTCACHE) != 0
