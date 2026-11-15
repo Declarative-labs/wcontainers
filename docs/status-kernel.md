@@ -184,8 +184,9 @@ Not yet covered by layer 1 (built, tested only through programs): brk, execve, e
 mremap, msync, kill/tkill/tgkill, setpgid, setsid, chroot, sethostname, setdomainname, sync, syncfs,
 get_robust_list, set_tid_address, sched_getparam, sched_getscheduler, sched_setaffinity.
 
-Cases run (all pass at the end of this run): 50 (seed 0), 300 (seed 1), 3000 (seed 2) on the first
-59 calls; 500 (seed 3) on all 95. See measurements for the last long run.
+Cases run, each passing after the fixes it led to: 50 (seed 0), 300 (seed 1), 3000 (seed 2) on the
+first 59 calls; on all 95: 500 (seed 3), 2000 (seed 4), 800 (seed 6). Runs of 8000 (seed 5) and 1500
+(seed 6) stalled (see known issues) and gave no verdict.
 
 ## Measurements
 
@@ -193,6 +194,7 @@ All on this shared Mac; noisy, not benchmarks.
 - Layer 1, 50 sequences, seed 0: 2.2 s including starting the reference container (load about 30).
 - Layer 1, 3000 sequences, seed 2, 59 call kinds: 86 s (load 27.75 32.08 54.80 at the start).
 - Layer 1, 500 sequences, seed 3, 95 call kinds: 15.4 s (load about 14).
+- Layer 1, 2000 sequences, seed 4: 63 s; 800 sequences, seed 6: 24.7 s (load about 4 to 7).
 - busybox test binary (4 tests in parallel, about 67 commands, each in both runners): 9 to 54 s
   (load 14 to 50).
 - A failing layer 1 case takes one to two minutes to shrink.
@@ -254,6 +256,14 @@ All on this shared Mac; noisy, not benchmarks.
 
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen.
+- Layer 1 runs of more than a few thousand sequences have twice stalled: the test waits for the
+  runner's answer while the runner (in the reference container) waits for the next sequence; CPU use
+  stops after about 10 s. Cause not found; the suspect is Docker's relay of the container's standard
+  input under load. Runs of up to 3000 sequences completed. The orchestrator's long run should be
+  split into runs of a few thousand with different seeds until this is fixed (a read timeout and a
+  restart of the reference container would also do).
+- Inodes of `/proc` are made at each lookup, so changes to them do not last: chmod and chown give
+  EPERM (chown of a proc entry is allowed on Linux in some cases), utimensat succeeds with no effect.
 
 ## Next (K1, in order)
 

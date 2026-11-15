@@ -286,6 +286,10 @@ pub(super) fn open(
     let pid = kernel.threads[&tid].process;
     let parent = kernel.with_walk(pid, |walk, _| walk.parent(&at, path))?;
     let creating = flags & O_CREAT != 0 && flags & O_PATH == 0;
+    // Creating a name written with a trailing slash is refused before it is looked up.
+    if creating && parent.trailing_slash && !parent.name.is_empty() {
+        return Err(Errno::EISDIR);
+    }
     let found = if parent.name.is_empty() {
         Some(parent.directory.clone())
     } else {
@@ -1284,6 +1288,10 @@ fn change_mode(
 ) -> Result<u64, Errno> {
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
+    // Modes in the process information tree are fixed.
+    if matches!(node.borrow().content, Content::Proc(_)) {
+        return Err(Errno::EPERM);
+    }
     let mut inode = node.borrow_mut();
     if credentials.fsuid != inode.uid && !credentials.has(CAP_FOWNER) {
         return Err(Errno::EPERM);
@@ -1361,6 +1369,10 @@ fn change_owner(
 ) -> Result<u64, Errno> {
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
+    // Owners in the process information tree follow the processes; they cannot be set.
+    if matches!(node.borrow().content, Content::Proc(_)) {
+        return Err(Errno::EPERM);
+    }
     let mut inode = node.borrow_mut();
     let changes_uid = uid != u32::MAX && uid != inode.uid;
     let changes_gid = gid != u32::MAX && gid != inode.gid;
