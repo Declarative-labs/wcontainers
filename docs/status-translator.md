@@ -345,15 +345,22 @@ S1, fifth run (commits dc7af11, 98f61b7, c7b40ab, 68cff43):
   wasmtime and Chrome, and full matches none. Checked by breaking on purpose: a proof that always passes
   fails layer 2 and `walks.c`; a range one turn short fails layer 2 within 15 cases (seeds 41, 42).
 
+- After c7b40ab (outer loops proven), every check, best of 3, load 7.5 to 10.6, wasmtime / Chrome first run:
+  sieve 1.44 / 1.15, matrix 2.94 / 2.02, search 1.70 / 1.88, hash 0.97 / 0.97, interpret 3.74 / 3.89. Size
+  350,392 bytes of WebAssembly (72.5 per byte of code).
+
 S1, what remains after the fifth run (aims with every check, in both engines):
-- Met in the last measurements: matrix (wasmtime 3.00 and 3.09, at the aim; Chrome 2.11), search, hash,
-  sieve in Chrome (1.32). Sieve in wasmtime 1.42 after proving outer loops (one run, load 8; aim 1.5).
+- Met in the last measurements (after c7b40ab, above): sieve, hash, matrix and search in both engines.
+  Matrix is at its aim in wasmtime (2.94, 3.00, 3.09 in three sessions), so noise can put it just over.
 - Interpret (aim 3): wasmtime 3.81, Chrome 4.18; no check 2.92 / 2.19. Its dispatch loop holds a switch
   (whose stop check carries on in place) and its accesses are data dependent (byte code through w12, the
   switch's byte table through the loaded opcode, the interpreter's stack through w10), so the proof does not
   reach them; three kept-run checks a dispatch remain. Not yet shown irremovable. Ideas: the switch's byte
   table load has a known bound (the jump table's own compare), so its range is known; the switch's jump
   back could hand over to a loop piece like other jump backs, which would let the dispatch loop be proven.
+  Neither reaches the aim alone: with the permission check left out entirely interpret is 2.92 in
+  wasmtime, so nearly every check would have to go, and two of the three depend on data in memory (the byte
+  code and the interpreter's stack depth), which no proof at the loop's entry can bound.
 - fib (aim 4): wasmtime 6.0, Chrome 5.2 with every check; 5.2 / 4.7 with none. The checks cost little; the
   call itself is the cost (see the fourth run: in wasmtime even the toy's call shape is 4.05 with the stop
   check). In Chrome the toy is 2.7, so the gap there is ours and not yet explained.
@@ -626,7 +633,8 @@ contract's bits, in both runners).
 
 - Layer 2, fifth S1 run (with walks), release: 1000 cases seed 41, 40 on the CPU: 0 mismatches, 325
   faulted; 1000 seed 43 (after outer loops): 0 mismatches, 379 faulted; 500 seed 31 (before walks): 0
-  mismatches. Not yet the pass bar.
+  mismatches; 5000 seed 47, 20 on the CPU, after outer loops: 0 mismatches, 1774 faulted, 380 left to an
+  address at full (77 s, load 8 to 10). Not yet the pass bar.
 
 ## Measurements
 
