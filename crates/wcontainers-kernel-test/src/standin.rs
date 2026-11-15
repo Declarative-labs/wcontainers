@@ -380,6 +380,10 @@ impl StandIn {
                 let comment = (u32::from_le_bytes(instruction) >> 5) as u16;
                 Exit::Breakpoint { comment }
             }
+            // QEMU raises a fetch from a pc that is not a multiple of 4 as undefined.
+            (_, Some(EXCEPTION_UNDEFINED)) if !pc.is_multiple_of(4) => {
+                Exit::AlignmentFault { address: pc }
+            }
             (_, Some(EXCEPTION_UNDEFINED)) | (Err(uc_error::INSN_INVALID), None) => {
                 Exit::IllegalInstruction
             }

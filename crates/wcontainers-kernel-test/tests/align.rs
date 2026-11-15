@@ -18,7 +18,7 @@ fn unaligned_exclusive_matches_reference() {
 }
 
 #[test]
-#[ignore = "known failure: unicorn (QEMU) never checks stack pointer alignment, and the abi has no exit for the SIGBUS the reference gives"]
+#[ignore = "known failure: unicorn (QEMU) never checks stack pointer alignment, so the stand-in never reports the alignment fault the reference's SIGBUS comes from"]
 fn misaligned_stack_pointer_matches_reference() {
     let (ours, theirs) = run_both(&program(), &["stack"]);
     assert_eq!(ours.outcome, theirs);

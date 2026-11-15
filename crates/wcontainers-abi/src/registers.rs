@@ -76,6 +76,8 @@ mod tests {
         assert_eq!(offset_of!(RegisterBlock, tpidr_el0), 792);
         assert_eq!(size_of::<RegisterBlock>(), 800);
         assert_eq!(STOP_FLAG_OFFSET, 800);
-        assert!(STOP_FLAG_OFFSET + 4 <= THREAD_BLOCK_SIZE);
     }
+
+    // The stop flag fits inside the block.
+    const _: () = assert!(STOP_FLAG_OFFSET + 4 <= THREAD_BLOCK_SIZE);
 }

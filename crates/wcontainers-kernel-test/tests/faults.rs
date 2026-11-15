@@ -8,13 +8,14 @@ use wcontainers_kernel_test::{guest, run_both};
 fn faults_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let program = guest::build("fault", &["-nostdlib"], &out);
-    // 128 plus SIGSEGV, SIGTRAP or SIGILL, as Docker reports a death by signal.
+    // 128 plus SIGSEGV, SIGTRAP, SIGILL or SIGBUS, as Docker reports a death by signal.
     let expected = [
         ("read", 139),
         ("write", 139),
         ("execute", 139),
         ("breakpoint", 133),
         ("undefined", 132),
+        ("jump", 135),
         ("none", 0),
     ];
     for (kind, exit_code) in expected {

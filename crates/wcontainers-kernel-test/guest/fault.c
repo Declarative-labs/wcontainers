@@ -1,6 +1,6 @@
 // Writes a line, then dies the way its first argument names, with no C library and no handlers:
 // read (an unmapped address), write (a read-only page), execute (a page without execute),
-// breakpoint (brk) or undefined (udf).
+// breakpoint (brk), undefined (udf) or jump (to an address that is not a multiple of 4).
 
 #include <sys/syscall.h>
 
@@ -36,6 +36,9 @@ void start(long *stack) {
         break;
     case 'u':
         __asm__ volatile("udf #0");
+        break;
+    case 'j':
+        __asm__ volatile("br %0" : : "r"((char *)start + 2));
         break;
     }
     call3(SYS_exit_group, 0, 0, 0);

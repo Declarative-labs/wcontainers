@@ -210,6 +210,11 @@ impl Kernel {
             Exit::MemoryFaultWithoutRegisters => {
                 self.kill_by_signal(&mut cx, tid, linux::general::SIGSEGV)
             }
+            // Linux's `do_sp_pc_abort`: SIGBUS, BUS_ADRALN at `address`. Code and address reach only a
+            // handler, and handlers do not run yet.
+            Exit::AlignmentFault { .. } => {
+                self.kill_by_signal(&mut cx, tid, linux::general::SIGBUS)
+            }
             Exit::IllegalInstruction => self.kill_by_signal(&mut cx, tid, linux::general::SIGILL),
             Exit::Breakpoint { .. } => self.kill_by_signal(&mut cx, tid, linux::general::SIGTRAP),
         }
