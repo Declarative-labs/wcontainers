@@ -129,6 +129,13 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
   swapoff, init_module, finit_module, reboot, syslog with `dmesg_restrict` 1 as measured, fsopen,
   fspick, fsmount, move_mount): EPERM. If a process held the power the call would be counted and
   ENOSYS, which cannot happen in a default container.
+- execveat: by path, from a directory descriptor, or a descriptor itself (`AT_EMPTY_PATH`), named
+  `/dev/fd/<n>[/path]` as Linux names it; a script through a descriptor closed at exec is ENOENT;
+  `AT_SYMLINK_NOFOLLOW` and `AT_EXECVE_CHECK` (a check only). Flags are checked before the path
+  (measured). A process is named after the file asked for (a script, not its interpreter), and when
+  run from a descriptor after the file run, as Linux 7.0.
+- `..` in `/proc` reaches the directory above even after the walk that made it is gone (proc
+  directories hold their parent).
 - mlock fails with ENOMEM after locking when a page cannot be brought in (no access, or wholly past
   its file's end), as Linux's `__mm_populate`.
 - The zero devices clear buffers as ARM64's `clear_user` does (eight bytes at a time; `/dev/full`
@@ -137,11 +144,11 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
 
 ## System calls
 
-Done (177): acct, brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep,
-close, close_range, copy_file_range, dup, dup3, execve, exit, exit_group, faccessat, faccessat2,
-fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl, fdatasync,
-fgetxattr, finit_module, flistxattr, flock, fremovexattr, fsetxattr, fsmount, fsopen, fspick, fstat,
-fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
+Done (178): acct, brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep,
+close, close_range, copy_file_range, dup, dup3, execve, execveat, exit, exit_group, faccessat,
+faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl,
+fdatasync, fgetxattr, finit_module, flistxattr, flock, fremovexattr, fsetxattr, fsmount, fsopen, fspick,
+fstat, fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
 getgroups, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
 getsid, gettid, gettimeofday, getuid, getxattr, init_module, ioctl, ioprio_get, ioprio_set, kill,
 lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
@@ -169,7 +176,7 @@ Partial (inside the list above):
   are counted and refused with ENOSYS, as by a kernel without them; RESOLVE_CACHED is taken (everything
   is in memory).
 - kill, tkill, tgkill: only to the caller itself (see signals above); others ESRCH.
-- execve: only from a process with one thread.
+- execve, execveat: only from a process with one thread.
 - rt_sigaction, rt_sigprocmask, sigaltstack: handlers recorded, not run (K2).
 - getrusage, times, CPU-time clocks: CPU time is the time since the container started.
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
@@ -210,7 +217,7 @@ clone3, pidfd_getfd, process_madvise, mount_setattr, quotactl_fd, set_mempolicy_
 listmount, lsm_get_self_attr, lsm_set_self_attr, lsm_list_modules, mseal, setxattrat, getxattrat,
 listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr.
 
-Missing (97, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
+Missing (96, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
 io_cancel, io_getevents, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
 inotify_add_watch, inotify_rm_watch, pipe2, signalfd4, vmsplice, splice, tee, timerfd_create,
 timerfd_settime, timerfd_gettime, waitid, futex, getitimer, setitimer, timer_create, timer_gettime,
@@ -220,14 +227,19 @@ mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl, semtimedop, semop
 shmdt, socket, socketpair, bind, listen, accept, connect, getsockname, getpeername, sendto, recvfrom,
 setsockopt, getsockopt, shutdown, sendmsg, recvmsg, clone, remap_file_pages, rt_tgsigqueueinfo, accept4,
 recvmmsg, wait4, fanotify_init, fanotify_mark, name_to_handle_at, clock_adjtime, sendmmsg,
-process_vm_readv, process_vm_writev, execveat, io_pgetevents, pidfd_send_signal, pidfd_open,
-epoll_pwait2, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret,
-process_mrelease, futex_waitv, cachestat, futex_wake, futex_wait, futex_requeue. Most belong to K2
-(processes, pipes, signals, futex), K3 (timers) or K5 (sockets, epoll).
+process_vm_readv, process_vm_writev, io_pgetevents, pidfd_send_signal, pidfd_open, epoll_pwait2,
+landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret, process_mrelease,
+futex_waitv, cachestat, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes,
+signals, futex), K3 (timers) or K5 (sockets, epoll).
 
-## Tests (last run 2026-11-15: 30 passed, 4 ignored known failures)
+## Tests (last run 2026-11-15: 31 passed, 4 ignored known failures)
 
 All pass except the ignored known failures.
+- execveat (new, fourth run): guest/execveat.c checks execveat's refusals and AT_EXECVE_CHECK, then
+  runs itself by path, from a directory descriptor, from its own descriptor and through a script's
+  descriptor (closed at exec first: ENOENT), printing arguments, name and program each time. Same
+  output. (Reading AT_EXECFN with getauxval in a program run from a descriptor stopped the program
+  in both runners alike; the test prints `/proc/self/exe` instead.)
 - filter (new, fourth run): guest/filter.c in nine runs, each compared with the reference: the
   seccomp operations and their checks, 26 kinds of refused program, accepted ones, arithmetic and
   jumps on the call's data (157 cases), the architecture, high halves, the instruction pointer,
@@ -323,6 +335,14 @@ reached (Linux counts the user's processes on the whole machine, which the refer
 layer 1 runs; found by seed 48 while seed 53 ran beside it). Stack limits above 1 GiB:
 in our 4 GiB address space nothing lies between the stack and the play area, so the stack could grow
 down into it, which the reference's layout never allows.
+
+Cases run in the fourth run: seed 54: 3000 passed after the O_DIRECT fix (97 s, load 14 to 24), then
+20000 failed after 430 s (ioprio kept in 16 bits by Linux; fixed). Seeds 55 and 56: 1000 each passed
+(several times while seccomp was added to the generator). Seed 57: 20000 failed after 180 s (mlock
+of a PROT_NONE range is ENOMEM; fixed), then 3000 failed (descriptor links in `/proc` have size 64;
+fixed), then 3000 passed (86 s, load 6 to 10). Seed 58: 20000 failed after 155 s (`..` from
+`/proc/self/fd` must reach `/proc/<pid>`; fixed), then 3000 passed (93 s). Seed 59: 2000 failed
+(execveat checks its flags before its path; fixed), then 2000 passed (61 s).
 
 Cases run in the third run (earlier ones are in git history): seed 45: 3000 passed; seed 47: 3000
 passed; seed 49: 3000 passed (after fixes); seed 50: 3000 passed; seed 51: 3000 passed;
@@ -437,7 +457,7 @@ All on this shared Mac; noisy, not benchmarks.
 ## Changes to the shared crate (wcontainers-abi)
 
 - K0: `Host::output(stream, bytes)` with `Stream`; `CounterReading::detail`.
-- None in K1 so far (checked again this run).
+- None in K1 so far (checked again in the fourth run).
 
 ## Questions for the orchestrator (boundary)
 
@@ -459,17 +479,23 @@ All on this shared Mac; noisy, not benchmarks.
 - `/proc` writes to `/proc/sys` files give EACCES or EROFS depending on our file modes; the reference
   gives EROFS for the writable ones (not compared yet).
 - `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts.
+- `/proc/<pid>/status` has only some of Linux's lines (the reference has many more, such as the
+  memory and context switch lines); the seccomp and NoNewPrivs lines are now right.
 
 ## Next (K1, in order)
 
-1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; seed
-   48 passed 20000. Rerun seed 54 at 20000, then 55 and up, then the million. Make open refuse
-   O_DIRECT where F_SETFL does (see the runs above) and add O_DIRECT to layer 1's open flags. The orchestrator's long run is the command at the top.
-2. Missing calls that need later milestones: getitimer/setitimer and the timer calls (signal delivery
-   and the timer queue, K2/K3), pipe2 and the rest of K2. Everything a single program uses without
-   other processes, threads, timers or sockets is now built, except: execveat, rseq (glibc uses it;
-   ENOSYS is what a kernel without it says), membarrier, pkey_*, name_to_handle_at, process_vm_*,
-   seccomp (a program's own filter, plan section 11), memfd_secret, cachestat, map_shadow_stack.
+1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; then
+   the million (the orchestrator's command at the top). In the fourth run every 20000 run (seeds 54,
+   57, 58) found a mismatch within 3 to 7 minutes; seed 60's 20000 run was started at the end (see
+   the runs above for its result if recorded). Seeds 61 and up are fresh.
+2. Missing calls a single program can use without other processes, threads, timers or sockets:
+   name_to_handle_at (tmpfs has handles; the reference's root, overlayfs, refuses them),
+   process_vm_readv and process_vm_writev on the caller itself, cachestat, memfd_secret (needs shared
+   file mappings), seccomp listeners, rseq's time slice extension. The rest need K2 (pipe2, fork,
+   futex, wait, signal delivery: rt_sigreturn, rt_sigsuspend, rt_sigtimedwait), K3 (timers,
+   getitimer and setitimer) or K5 (sockets, epoll, eventfd, inotify).
 3. Known gaps above (RLIMIT_CPU, brk's data limit, `/proc/mounts`, `/proc/sys` writes, nice in
-   `/proc/<pid>/stat`, xattr space, huge page memory files, shared file mappings).
-4. Then K2.
+   `/proc/<pid>/stat`, `/proc/<pid>/status` lines, xattr space, huge page memory files, shared file
+   mappings).
+4. K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
+5. Then K2.
