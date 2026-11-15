@@ -908,7 +908,7 @@ impl Plan {
                 }
             }
         }
-        // Loops without calls and without a switch whose accesses can be proven allowed before they run.
+        // Loops without calls whose accesses can be proven allowed before they run.
         // Only the loop's own blocks count, not those of loops inside it, which have proofs of their own.
         let dominates = |a: usize, b: usize| {
             doms.dominators(NodeIndex::new(b))
@@ -928,7 +928,16 @@ impl Plan {
                 .filter(|&g| g != h && body[g])
                 .collect();
             let nested: Vec<bool> = (0..n).map(|b| inner.iter().any(|g| bodies[g][b])).collect();
-            if !quiet(h) || (0..n).any(|b| body[b] && blocks[b].table.is_some()) {
+            // A stop at a switch's jump back carries on in place, where nothing would be proven again.
+            let switch_back = (0..n).any(|b| {
+                body[b]
+                    && blocks[b]
+                        .table
+                        .iter()
+                        .flatten()
+                        .any(|c| function.at.get(c).is_some_and(|&t| rank[t] <= rank[b]))
+            });
+            if !quiet(h) || switch_back {
                 continue;
             }
             let shape = proof::LoopShape {

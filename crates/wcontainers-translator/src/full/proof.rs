@@ -1,8 +1,9 @@
 //! Loops whose accesses are proven allowed before they run. A loop that makes no call and no system call
-//! and has an exit that counts its turns gets a second copy in which the accesses whose
-//! addresses move by a fixed step each turn (or not at all) have no permission check. Before the loop every
-//! page those accesses can reach in the turns it may run is looked up; the copy runs only when all of them
-//! allow the access, otherwise the loop runs as usual, so faults stay exact.
+//! gets a second copy in which some accesses have no permission check: those whose addresses do not move,
+//! those whose index a comparison or a narrow load bounds (a switch's table), and, when the loop has an exit
+//! that counts its turns, those whose addresses move by a fixed step each turn. Before the loop every page
+//! those accesses can reach in the turns it may run is looked up; the copy runs only when all of them allow
+//! the access, otherwise the loop runs as usual, so faults stay exact.
 
 use super::*;
 use wcontainers_arm64::Extend;
@@ -83,6 +84,8 @@ pub(super) struct Region {
     len: u32,
     /// The base or the index, when one of them moves.
     moving: Option<Moving>,
+    /// The index's largest value, when it is bounded rather than read at the loop's entry (it is at least 0).
+    index_max: Option<i64>,
 }
 
 /// How the counting exit continues the loop: while the counter compared with the bound is not equal, or below
@@ -111,7 +114,7 @@ struct Counter {
 /// A loop that has a copy without the checks of `regions`.
 #[derive(Clone, Debug)]
 pub(super) struct Versioned {
-    counter: Counter,
+    counter: Option<Counter>,
     pub(super) regions: Vec<Region>,
     /// The headers of the loops inside it.
     pub(super) inner: Vec<usize>,
@@ -219,7 +222,7 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
     let counter = blocks
         .iter()
         .filter(|&&e| !shape.nested[e] && shape.latches.iter().all(|&l| (shape.dominates)(e, l)))
-        .find_map(|&e| counting_exit(shape, e, &invariant, &induction, &steps))?;
+        .find_map(|&e| counting_exit(shape, e, &invariant, &induction, &steps));
 
     let mut regions = Vec::new();
     for (b, o) in instructions().filter(|&(b, _)| !shape.nested[b]) {
@@ -275,10 +278,20 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
         let Some(base_moves) = moves(base, Domain::U64) else {
             continue;
         };
+        let mut index_max = None;
         let index_moves = match index {
-            Some((bit, domain, _)) => match moves(bit, domain) {
+            Some((bit, domain, shift)) => match moves(bit, domain) {
                 Some(m) => m,
-                None => continue,
+                None => {
+                    let Some(max) = index_bound(shape, b, o, bit, domain) else {
+                        continue;
+                    };
+                    if base_moves.is_some() || max << shift > MAX_STEP {
+                        continue;
+                    }
+                    index_max = Some(max);
+                    None
+                }
             },
             None => None,
         };
@@ -286,6 +299,10 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
             (Some(_), Some(_)) => continue,
             (m, None) | (None, m) => m,
         };
+        // Moving addresses are bounded by the turns, so they need the counting exit.
+        if moving.is_some() && counter.is_none() {
+            continue;
+        }
         regions.push(Region {
             at: o,
             this: if access.write { PAGE_WRITE } else { PAGE_READ },
@@ -295,6 +312,7 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
             from,
             len,
             moving,
+            index_max,
         });
     }
     if regions.is_empty() {
@@ -444,6 +462,83 @@ fn counting_exit(
     })
 }
 
+/// The largest value index register `bit` can hold where it is read as `domain` at `at` in block `b`: set
+/// earlier in the block by a load of at most 4 bytes that zero extends, or, when the block does not set it,
+/// bounded by an unsigned comparison with a constant on the only edge into the block (a switch's guard).
+fn index_bound(shape: &LoopShape<'_>, b: usize, at: u64, bit: u32, domain: Domain) -> Option<i64> {
+    let function = shape.function;
+    let sets = |o: &u64| shape.decoded[o].effects.defs.bits().any(|d| d == bit);
+    // The largest value a zero extending load leaves, when that is what sets the register.
+    let loaded = |o: u64| match shape.decoded[&o].instruction {
+        Instruction::Load {
+            bytes,
+            signed: None,
+            ..
+        } if bytes <= 4 => Some((1i64 << (8 * bytes)) - 1),
+        _ => None,
+    };
+    let block = &function.blocks[b];
+    if let Some(o) = backwards(block.start, at).find(sets) {
+        return loaded(o);
+    }
+    let preds: Vec<usize> = (0..function.blocks.len())
+        .filter(|&p| function.blocks[p].succs.contains(&b))
+        .collect();
+    let &[p] = preds.as_slice() else {
+        return None;
+    };
+    let pred = &function.blocks[p];
+    if p == b || b == 0 {
+        return None;
+    }
+    let last = pred.end - 4;
+    let Instruction::BranchCond { cond, offset } = shape.decoded[&last].instruction else {
+        return None;
+    };
+    let taken = last.wrapping_add_signed(offset) == block.start;
+    if taken == (pred.end == block.start) || cond.0 >= 14 {
+        return None;
+    }
+    // The condition that holds on the edge into the block.
+    let cond = if taken { cond } else { Cond(cond.0 ^ 1) };
+    let setter = backwards(pred.start, last)
+        .find(|o| shape.decoded[o].effects.defs.intersect(Registers::FLAGS) != Registers::NONE)?;
+    let Instruction::AddSub {
+        width,
+        subtract: true,
+        set_flags: true,
+        rn,
+        operand: Operand::Imm(k),
+        ..
+    } = shape.decoded[&setter].instruction
+    else {
+        return None;
+    };
+    if Registers::bit(rn) != Some(bit) || (setter..last).step_by(4).any(|o| sets(&o)) {
+        return None;
+    }
+    let k = k as i64;
+    let max = match cond.0 {
+        3 => k - 1,
+        9 => k,
+        _ => return None,
+    };
+    if !(0..1 << 31).contains(&max) {
+        return None;
+    }
+    // A 32 bit comparison bounds all 64 bits only when what set the register cleared the top half.
+    if width == Width::W32 && matches!(domain, Domain::U64 | Domain::S64) {
+        let def = backwards(pred.start, setter).find(sets)?;
+        loaded(def)?;
+    }
+    Some(max)
+}
+
+/// The instructions from `from` up to `to`, last first.
+fn backwards(from: u64, to: u64) -> impl Iterator<Item = u64> {
+    (0..(to - from) / 4).rev().map(move |i| from + 4 * i)
+}
+
 /// The largest step proven loops allow, so that no product here overflows.
 const MAX_STEP: i64 = 1 << 24;
 /// The most turns a proven loop may run.
@@ -465,7 +560,20 @@ impl FullEmitter<'_> {
         self.sink()
             .block(BlockType::Result(ValType::I32))
             .block(BlockType::Empty);
-        let c = v.counter;
+        if let Some(c) = v.counter {
+            self.turns(c, turns, (step, x, y));
+        }
+        for region in &v.regions {
+            self.region(region, turns, (step, x, y, low, high));
+        }
+        self.sink().i32_const(1).br(1).end().i32_const(0).end();
+        let released: Vec<_> = self.taken.drain(mark..).collect();
+        self.free.extend(released);
+    }
+
+    /// Set i64 local `turns` to the most turns the loop can run, or branch out (depth 0) when that is not
+    /// known to be small.
+    fn turns(&mut self, c: Counter, turns: u32, (step, x, y): (u32, u32, u32)) {
         let domain = c.domain;
         self.step_value(&c.induction, domain, step);
         let (dmin, dmax) = domain.bounds();
@@ -587,13 +695,6 @@ impl FullEmitter<'_> {
                 s.local_get(turns).i64_const(1).i64_add().local_set(turns);
             }
         }
-
-        for region in &v.regions {
-            self.region(region, turns, (step, x, y, low, high));
-        }
-        self.sink().i32_const(1).br(1).end().i32_const(0).end();
-        let released: Vec<_> = self.taken.drain(mark..).collect();
-        self.free.extend(released);
     }
 
     /// Branch out (depth 0) unless every page of `region` allows its access in every turn.
@@ -606,7 +707,7 @@ impl FullEmitter<'_> {
         // a0: the address in the turn the moving register has taken no step.
         let base = self.register(r.base);
         self.sink().local_get(base);
-        if let Some((bit, domain, shift)) = r.index {
+        if let Some((bit, domain, shift)) = r.index.filter(|_| r.index_max.is_none()) {
             self.read(Value::Reg(bit), domain, end);
             self.sink()
                 .local_get(end)
@@ -619,7 +720,16 @@ impl FullEmitter<'_> {
         within(&mut s, a0, -MAX_ADDRESS, MAX_ADDRESS - 1, 0);
         match r.moving {
             None => {
-                s.local_get(a0).local_tee(low).local_set(high);
+                // A bounded index covers 0 to its largest value.
+                let reach = match (r.index, r.index_max) {
+                    (Some((_, _, shift)), Some(max)) => max << shift,
+                    _ => 0,
+                };
+                s.local_get(a0)
+                    .local_tee(low)
+                    .i64_const(reach)
+                    .i64_add()
+                    .local_set(high);
             }
             Some(m) => {
                 let (domain, shift) = match r.index {
