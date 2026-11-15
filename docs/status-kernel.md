@@ -214,18 +214,19 @@ own group negated (our caller is process 1, so -1 would mean every process); mem
 signals whose default action ends or stops a process, and rt_sigaction on the signals kill sends (our
 caller is the container's first process, which Linux keeps from such signals, theirs is not; handlers
 need K2); RLIMIT_CPU and RLIMIT_FSIZE limits that can be reached (the same reason, and CPU time depends
-on the machine's speed); setpriority by user (it reaches the reference's runner); flock waits (they
+on the machine's speed); setpriority and getpriority by user (they reach the reference's runner,
+which has no counterpart here); flock waits (they
 would wait for ever); openat2 restricted lookups (not built) and RESOLVE_CACHED (its result in Linux
 depends on what is cached).
 
 Cases run this run (the earlier ones are in git history): seed 10: 500 passed; seed 20: 1000 passed;
-seed 22: 1500 passed; seed 30: 1500 passed; seed 32: 3000 passed. Each 20000-sequence run (seeds 11, 12,
-21, 22, 31, 32) found a mismatch within 1 to 3 minutes, which was fixed (about 25 fixes: capability
+seed 22: 1500 passed; seed 30: 1500 passed; seed 32: 3000 passed; seed 41: 3000 passed. Each
+20000-sequence run (seeds 11, 12, 21, 22, 31, 32, 41, 42) found a mismatch within 1 to 3 minutes, which
+was fixed or, for 42 (getpriority by user), excluded with its reason (about 28 fixes: capability
 versions, signal order, setpgid, sethostname, get_robust_list, execve's order, mremap, madvise,
-syncfs, flock, SCHED_EXT, openat with O_DIRECTORY on a link, getdents64's buffer check, proc
-permissions, `/proc/sys`, and more). No run stalled after the runner change, but no run has yet been
-long enough to prove the stall gone. Seeds 41 and 42 (20000 each) were started at the end of this run;
-see "Next".
+syncfs, flock, SCHED_EXT, openat with O_DIRECTORY on a link or a trailing slash, getdents64's buffer
+check, getcwd outside the root ("(unreachable)"), proc permissions, `/proc/sys`, and more). No run
+stalled after the runner change, but no run has yet been long enough to prove the stall gone.
 
 ## Measurements
 
@@ -314,9 +315,9 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Next (K1, in order)
 
-1. Look at seeds 41 and 42 (`LAYER1_CASES=20000`, logs were in the scratch directory) or rerun them;
-   fix what they find; repeat with new seeds until long runs pass. The orchestrator's long run is the
-   command at the top.
+1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass. The
+   orchestrator's long run is the command at the top. Seed 43 was the last one started (result below,
+   under "Last long run").
 2. Calls single programs still use that are missing: the extended attribute calls (tmpfs has user.,
    trusted. and security. names), memfd_create (with fcntl seals), mincore, sched_rr_get_interval,
    sched_setattr/sched_getattr, getitimer/setitimer (need signal delivery and the timer queue, may wait
