@@ -36,12 +36,14 @@ int main(void) {
            (long)st.st_blksize);
     struct statfs fs;
     fstatfs(fd, &fs);
-    printf("magic %#lx\n", (unsigned long)fs.f_type);
+    printf("magic %#lx flags %#lx\n", (unsigned long)fs.f_type, (unsigned long)fs.f_flags);
     char link[256] = "";
     char path[64];
     snprintf(path, sizeof path, "/proc/self/fd/%d", fd);
     readlink(path, link, sizeof link - 1);
     printf("link %s\n", link);
+    result("open again", open(path, O_RDWR));
+    result("open again as a path", open(path, O_PATH) < 0 ? -1 : 0);
     char byte = 1;
     result("write", write(fd, &byte, 1));
     result("read", read(fd, &byte, 1));

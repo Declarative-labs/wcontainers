@@ -64,8 +64,10 @@ impl FileSystem {
     }
 
     /// Programs on it may not run (`noexec`).
+    /// Whether nothing on it may run: a `noexec` mount, or secret memory, whose file system says so
+    /// itself (`SB_I_NOEXEC`, measured) without showing it in statfs's flags.
     pub fn no_execute(&self) -> bool {
-        self.flags & crate::linux_extra::ST_NOEXEC != 0
+        self.flags & crate::linux_extra::ST_NOEXEC != 0 || self.kind == Kind::Secretmem
     }
 }
 

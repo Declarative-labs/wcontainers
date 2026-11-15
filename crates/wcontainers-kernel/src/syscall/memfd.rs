@@ -116,13 +116,10 @@ pub(super) fn memfd_secret(
     process.files.lowest_free(0, limit)?;
     let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
     let now = kernel.now(cx);
-    let fs = *kernel.files.secretmem_fs.get_or_insert_with(|| {
-        // Secret memory is never run (the mount is `noexec`, measured).
-        kernel
-            .files
-            .numbers
-            .file_system(Kind::Secretmem, crate::linux_extra::ST_NOEXEC)
-    });
+    let fs = *kernel
+        .files
+        .secretmem_fs
+        .get_or_insert_with(|| kernel.files.numbers.file_system(Kind::Secretmem, 0));
     let ino = kernel.files.numbers.ino();
     let node: Node = new_inode(
         fs,

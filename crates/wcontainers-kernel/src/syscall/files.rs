@@ -531,6 +531,10 @@ pub(super) fn open(
         if let Some(entry) = entry {
             contents = Some(proc_contents(kernel, cx, tid, &entry)?);
         }
+        // A secret memory file cannot be opened again, as through `/proc/self/fd` (`no_open`).
+        if node.borrow().is_secret() {
+            return Err(Errno::ENXIO);
+        }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
         if flags & O_DIRECT != 0 && !node.borrow().takes_direct_io() {
             return Err(Errno::EINVAL);
