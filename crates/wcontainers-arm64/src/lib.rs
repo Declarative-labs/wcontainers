@@ -1,7 +1,8 @@
-//! Everything that is only true of ARM64: the instruction type, the decoder wrapper and the meaning of every
-//! instruction as WebAssembly. Nothing here knows about look-ahead or layout.
+//! Everything that is only true of ARM64: the instruction type, the decoder wrapper, the meaning of every
+//! instruction as WebAssembly, and Arm's list of every instruction form. Nothing here knows about look-ahead or layout.
 
 mod decode;
+pub mod forms;
 mod instruction;
 mod meaning;
 

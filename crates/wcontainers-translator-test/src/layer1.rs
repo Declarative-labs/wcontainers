@@ -1,12 +1,12 @@
 //! Layer 1: one instruction at a time, on the real CPU and through the translator at look-ahead none, with
 //! every register, flag and touched byte compared.
 
-use crate::forms::Form;
 use crate::layout::*;
 use crate::reference::{Cases, Landed};
 use crate::runner::{Machine, Stopped, Syscalls};
 use proptest::prelude::*;
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
+use wcontainers_arm64::forms::Form;
 
 /// The forms layer 1 covers now: the base integer instructions. System register moves are limited to
 /// the registers [`restrict`] allows. Floating point, vectors, atomics, exclusives, load-acquire and
@@ -38,7 +38,9 @@ pub fn covered(form: &Form) -> bool {
         "reserved/perm_undef",
     ];
     let integer = form.field(form.value, "VR") != Some(1);
-    form.features == "true" && integer && GROUPS.iter().any(|g| form.group.starts_with(g))
+    // Forms of the base set: their condition names no feature, though it may limit their fields.
+    let base = !form.features.contains("FEAT_");
+    base && integer && GROUPS.iter().any(|g| form.group.starts_with(g))
 }
 
 /// Narrow a word where milestone 0 covers only part of a form: system register moves only reach NZCV and
@@ -172,7 +174,7 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
             },
         )
         .prop_filter("excluded encodings", move |case| {
-            excluded(&kept, case.word).is_none()
+            kept.presented(case.word) && excluded(&kept, case.word).is_none()
         })
 }
 

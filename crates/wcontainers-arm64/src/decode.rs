@@ -11,7 +11,13 @@ pub fn decode(word: u32) -> Instruction {
         return Instruction::Undefined;
     };
     let ops = decoded.operands;
-    convert(word, decoded.opcode, &ops).unwrap_or(Instruction::Unsupported)
+    convert(word, decoded.opcode, &ops).unwrap_or_else(|| {
+        if crate::forms::presented(word) {
+            Instruction::Unsupported
+        } else {
+            Instruction::Undefined
+        }
+    })
 }
 
 fn bits(word: u32, low: u32, width: u32) -> u32 {
@@ -462,15 +468,9 @@ fn convert(word: u32, opcode: Opcode, ops: &[Op; 4]) -> Option<Instruction> {
                 }
             }
         }
-        O::PRFM
-        | O::PRFUM
-        | O::DMB(_)
-        | O::DSB(_)
-        | O::ISB
-        | O::CLREX
-        | O::SB
-        | O::SSBB
-        | O::PSSBB => I::Nothing,
+        O::PRFM | O::PRFUM | O::DMB(_) | O::DSB(_) | O::ISB | O::CLREX | O::SSBB | O::PSSBB => {
+            I::Nothing
+        }
         O::SVC => I::Syscall,
         O::BRK => I::Breakpoint {
             comment: immediate(&ops[0])? as u16,

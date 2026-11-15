@@ -6,9 +6,10 @@
 
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
+use wcontainers_arm64::forms;
 use wcontainers_translator_test::layer1::{Case, Stop, cases, compare, covered, translated};
 use wcontainers_translator_test::layout::{CODE, DATA};
-use wcontainers_translator_test::{forms, reference::Cases};
+use wcontainers_translator_test::reference::Cases;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -24,7 +25,7 @@ fn every_covered_form_matches_the_cpu() {
     let reference = RefCell::new(Cases::start());
     let mut failures = Vec::new();
     let mut forms_run = 0;
-    for form in forms::all().into_iter().filter(covered) {
+    for form in forms::all().iter().filter(|f| covered(f)) {
         if only
             .as_ref()
             .is_some_and(|names| !names.contains(&form.name))
@@ -81,6 +82,8 @@ fn alignment_faults_match_the_cpu() {
         (0x9100_07ff, stack, Stop::Landed(CODE + 4)),
         // br x1, to an address that is not a multiple of 4
         (0xd61f_0020, stack + 8, Stop::Alignment(target)),
+        // rprfm through a misaligned stack pointer: a hint, so nothing
+        (0xf8a0_4bf8, stack, Stop::Landed(CODE + 4)),
     ];
     let mut reference = Cases::start();
     for (word, sp, expected) in cases {
