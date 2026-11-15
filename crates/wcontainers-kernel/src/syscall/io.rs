@@ -795,28 +795,60 @@ pub(super) fn sendfile(
     tid: Tid,
     [out_fd, in_fd, offset_address, count, ..]: Args,
 ) -> Result<u64, Errno> {
+    // Linux's `sendfile64`: the offset is read first and written back whatever the transfer did.
+    if offset_address == 0 {
+        return send(kernel, cx, tid, out_fd, in_fd, None, count);
+    }
+    let mut offset: i64 = guest(kernel, cx, tid).read_value(offset_address)?;
+    let result = send(kernel, cx, tid, out_fd, in_fd, Some(&mut offset), count);
+    guest(kernel, cx, tid).write(offset_address, &offset.to_le_bytes())?;
+    result
+}
+
+/// Linux's `do_sendfile`, in its order: the input, its offset, the output, then the transfer.
+fn send(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    out_fd: u64,
+    in_fd: u64,
+    explicit: Option<&mut i64>,
+    count: u64,
+) -> Result<u64, Errno> {
     let input = file(kernel, tid, in_fd)?;
-    let output = file(kernel, tid, out_fd)?;
-    if !input.borrow().readable() || !output.borrow().writable() {
+    if input.borrow().is_path() || !input.borrow().readable() {
         return Err(Errno::EBADF);
+    }
+    if explicit.is_some() {
+        positioned(&input, 0)?;
+    }
+    let position = match &explicit {
+        Some(offset) => **offset,
+        None => input.borrow().offset as i64,
+    };
+    // `rw_verify_area`.
+    if (count as i64) < 0 || position < 0 || position.checked_add(count as i64).is_none() {
+        return Err(Errno::EINVAL);
+    }
+    let count = count.min(MAX_RW_COUNT);
+    let output = file(kernel, tid, out_fd)?;
+    if output.borrow().is_path() || !output.borrow().writable() {
+        return Err(Errno::EBADF);
+    }
+    if (output.borrow().offset as i64)
+        .checked_add(count as i64)
+        .is_none()
+    {
+        return Err(Errno::EINVAL);
     }
     if output.borrow().flags & O_APPEND != 0 {
         return Err(Errno::EINVAL);
     }
-    if matches!(input.borrow().node.borrow().content, Content::Directory(_)) {
+    if input.borrow().node.borrow().is_directory() {
         return Err(Errno::EINVAL);
     }
-    let explicit = if offset_address != 0 {
-        let offset: i64 = guest(kernel, cx, tid).read_value(offset_address)?;
-        if offset < 0 {
-            return Err(Errno::EINVAL);
-        }
-        Some(offset as u64)
-    } else {
-        None
-    };
-    let offset = explicit.unwrap_or(input.borrow().offset);
-    let mut bytes = file_bytes(cx, &input, count.min(MAX_RW_COUNT), offset)?;
+    let offset = position as u64;
+    let mut bytes = file_bytes(cx, &input, count, offset)?;
     if matches!(output.borrow().node.borrow().content, Content::Regular(_)) {
         let at = output.borrow().offset;
         let allowed = write_limit(kernel, cx, tid, at, bytes.len() as u64)?;
@@ -824,9 +856,7 @@ pub(super) fn sendfile(
     }
     let written = write_bytes(kernel, cx, tid, &output, &bytes, None, false)?;
     match explicit {
-        Some(_) => {
-            guest(kernel, cx, tid).write(offset_address, &(offset + written).to_le_bytes())?
-        }
+        Some(offset) => *offset = (position as u64 + written) as i64,
         None => input.borrow_mut().offset = offset + written,
     }
     Ok(written)

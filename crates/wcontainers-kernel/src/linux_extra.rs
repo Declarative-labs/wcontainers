@@ -42,3 +42,28 @@ pub(crate) const ACL_OTHER: u16 = 0x20;
 /// `linux/personality.h`'s `READ_IMPLIES_EXEC`, `ADDR_NO_RANDOMIZE`, `ADDR_COMPAT_LAYOUT` and
 /// `MMAP_PAGE_ZERO`).
 pub(crate) const PER_CLEAR_ON_SETID: u32 = 0x0400000 | 0x0040000 | 0x0200000 | 0x0100000;
+
+/// `sched_setattr`'s and `sched_getattr`'s structure (`linux/sched/types.h`), which linux-raw-sys does
+/// not generate. Its first version ends after `sched_period`.
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct sched_attr {
+    pub size: u32,
+    pub sched_policy: u32,
+    pub sched_flags: u64,
+    pub sched_nice: i32,
+    pub sched_priority: u32,
+    pub sched_runtime: u64,
+    pub sched_deadline: u64,
+    pub sched_period: u64,
+    pub sched_util_min: u32,
+    pub sched_util_max: u32,
+}
+/// The size of the first version of `sched_attr` (`SCHED_ATTR_SIZE_VER0`).
+pub(crate) const SCHED_ATTR_SIZE_VER0: u32 = 48;
+/// The size of the version with utilisation clamps (`SCHED_ATTR_SIZE_VER1`).
+pub(crate) const SCHED_ATTR_SIZE_VER1: u32 = 56;
+/// A flag only the kernel's own frequency governor threads may use (`SCHED_FLAG_SUGOV`).
+pub(crate) const SCHED_FLAG_SUGOV: u64 = 0x1000_0000;

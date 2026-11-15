@@ -985,3 +985,39 @@ pub(super) fn munlockall(
     map.future_lock = Lock::None;
     Ok(0)
 }
+
+pub(super) fn mincore(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [address, length, vector, ..]: Args,
+) -> Result<u64, Errno> {
+    // In the order of Linux's `mincore`: the range, the vector, then mapping by mapping.
+    if address % PAGE_SIZE != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if !crate::user::access_ok(address, length) {
+        return Err(Errno::ENOMEM);
+    }
+    let pages = length.div_ceil(PAGE_SIZE);
+    if !crate::user::access_ok(vector, pages) {
+        return Err(Errno::EFAULT);
+    }
+    kernel
+        .counters
+        .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);
+    let end = address + pages * PAGE_SIZE;
+    let mut at = address;
+    let mut written = 0;
+    while at < end {
+        let Some(mapping) = kernel.process_of(tid).map.find(at) else {
+            return Err(Errno::ENOMEM);
+        };
+        let to = mapping.end.min(end);
+        let count = (to - at) / PAGE_SIZE;
+        super::guest(kernel, cx, tid).write(vector + written, &vec![1u8; count as usize])?;
+        written += count;
+        at = to;
+    }
+    Ok(0)
+}

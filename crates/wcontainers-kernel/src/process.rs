@@ -128,6 +128,10 @@ pub(crate) struct Schedule {
     pub priority: u32,
     pub nice: i32,
     pub reset_on_fork: bool,
+    /// A time slice the thread asked for with `sched_setattr`, in nanoseconds; 0 for the default.
+    pub slice: u64,
+    /// The deadline policy's runtime, deadline and period.
+    pub deadline: (u64, u64, u64),
 }
 
 /// What a parked thread waits for.

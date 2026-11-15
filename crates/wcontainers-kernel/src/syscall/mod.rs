@@ -186,6 +186,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_munlock, S(memory::munlock)),
         (__NR_mlockall, S(memory::mlockall)),
         (__NR_munlockall, S(memory::munlockall)),
+        (__NR_mincore, S(memory::mincore)),
         // The process and its thread.
         (__NR_exit, F(process::exit)),
         (__NR_exit_group, F(process::exit_group)),
@@ -262,6 +263,9 @@ static TABLE: [Entry; LENGTH] = {
             S(system::sched_get_priority_min),
         ),
         (__NR_getcpu, S(system::getcpu)),
+        (__NR_sched_setattr, S(system::sched_setattr)),
+        (__NR_sched_getattr, S(system::sched_getattr)),
+        (__NR_sched_rr_get_interval, S(system::sched_rr_get_interval)),
     ];
     let mut index = 0;
     while index < implemented.len() {

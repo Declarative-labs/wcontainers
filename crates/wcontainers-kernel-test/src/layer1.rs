@@ -40,6 +40,8 @@ const MASK_PACKS: u64 = 0x3ac0;
 const HOWS: u64 = 0x3b00;
 /// Scheduling priorities for sched_setscheduler and sched_setparam.
 const PRIORITIES: u64 = 0x3b80;
+/// `sched_attr` structures for sched_setattr, 128 bytes apart.
+const SCHED_ATTRS: u64 = 0x2000;
 /// Extended attribute names, one after another.
 const XATTR_NAMES: u64 = 0x3c00;
 /// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
@@ -109,6 +111,48 @@ const XATTR_VALUE_POOL: &[&[u8]] = &[
         0, 4, 0, 0xff, 0xff, 0xff, 0xff,
     ],
 ];
+
+/// `sched_attr` values: the size, policy, flags, nice, priority, runtime, deadline and period, then the
+/// clamps, and for one a byte past the structure.
+fn sched_attrs() -> Vec<Vec<u8>> {
+    /// Size, policy, flags, nice, priority, runtime, deadline, period, and a byte past the end.
+    type Attributes = (u32, u32, u64, i32, u32, u64, u64, u64, bool);
+    let attributes: &[Attributes] = &[
+        (56, 0, 0, 5, 0, 0, 0, 0, false),
+        (48, 3, 0, 19, 0, 3_000_000, 0, 0, false),
+        (0, 0, 0, -3, 0, 0, 0, 0, false),
+        (56, 1, 0, 0, 1, 0, 0, 0, false),
+        (56, 6, 0, 0, 0, 1_000_000, 2_000_000, 3_000_000, false),
+        (47, 0, 0, 0, 0, 0, 0, 0, false),
+        (80, 0, 0, 0, 0, 0, 0, 0, true),
+        (56, 5, 0x18, 0, 0, 0, 0, 0, false),
+        (56, 3, 1, 25, 0, 0, 0, 0, false),
+        (56, 3, 0x60, 0, 0, 0, 0, 0, false),
+        (56, 7, 0, 0, 0, 0, 0, 0, false),
+        (56, 3, 0x1000_0000, 0, 0, 0, 0, 0, false),
+    ];
+    attributes
+        .iter()
+        .map(
+            |&(size, policy, flags, nice, priority, runtime, deadline, period, tail)| {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(&size.to_le_bytes());
+                bytes.extend_from_slice(&policy.to_le_bytes());
+                bytes.extend_from_slice(&flags.to_le_bytes());
+                bytes.extend_from_slice(&nice.to_le_bytes());
+                bytes.extend_from_slice(&priority.to_le_bytes());
+                bytes.extend_from_slice(&runtime.to_le_bytes());
+                bytes.extend_from_slice(&deadline.to_le_bytes());
+                bytes.extend_from_slice(&period.to_le_bytes());
+                bytes.extend_from_slice(&[0; 8]);
+                if tail {
+                    bytes.extend_from_slice(&[0, 0, 0, 1]);
+                }
+                bytes
+            },
+        )
+        .collect()
+}
 
 /// Extended attribute names calls choose from, each ending in a zero byte: every namespace, names
 /// with nothing after the prefix, the longest name Linux takes and one longer.
@@ -321,6 +365,10 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         let at = (XATTR_NAMES + xattr_name_offset(index)) as usize;
         arena[at..at + name.len()].copy_from_slice(name);
     }
+    for (index, attributes) in sched_attrs().iter().enumerate() {
+        let at = (SCHED_ATTRS + index as u64 * 128) as usize;
+        arena[at..at + attributes.len()].copy_from_slice(attributes);
+    }
     for (index, value) in XATTR_VALUE_POOL.iter().enumerate() {
         let at = (XATTR_VALUES + index as u64 * 32) as usize;
         arena[at..at + value.len()].copy_from_slice(value);
@@ -520,6 +568,10 @@ pub const CALLS: &[u32] = &[
     linux::__NR_lremovexattr,
     linux::__NR_fremovexattr,
     linux::__NR_memfd_create,
+    linux::__NR_sched_setattr,
+    linux::__NR_sched_getattr,
+    linux::__NR_sched_rr_get_interval,
+    linux::__NR_mincore,
 ];
 
 /// Turns a generated call into real arguments.
@@ -1147,6 +1199,33 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_mlock2 => [play(a), play_length(b), pick(&[0, 1, 2], c), 0, 0, 0],
         linux::__NR_mlockall => [pick(&[0, 1, 2, 3, 4, 5, 6, 7, 8], a), 0, 0, 0, 0, 0],
         linux::__NR_munlockall => [0; 6],
+        linux::__NR_sched_setattr => {
+            let attributes = if b % 4 == 0 {
+                buffer(b >> 2)
+            } else {
+                ARENA + SCHED_ATTRS + ((b >> 2) % sched_attrs().len() as u64) * 128
+            };
+            [
+                pick(&[0, SELF, 99999, u64::MAX], a),
+                attributes,
+                pick(&[0, 0, 0, 1], c),
+                0,
+                0,
+                0,
+            ]
+        }
+        linux::__NR_sched_getattr => [
+            pick(&[0, SELF, 99999, u64::MAX], a),
+            buffer(b),
+            pick(&[0, 47, 48, 56, 64, 120, 4096, 4097], c),
+            pick(&[0, 0, 0, 1], d),
+            0,
+            0,
+        ],
+        linux::__NR_sched_rr_get_interval => {
+            [pick(&[0, SELF, 99999, u64::MAX], a), buffer(b), 0, 0, 0, 0]
+        }
+        linux::__NR_mincore => [play(a), play_length(b), buffer(c), 0, 0, 0],
         // Not huge page files (hugetlbfs is not built).
         linux::__NR_memfd_create => {
             let names = xattr_names().len() as u64;
@@ -1533,6 +1612,11 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     if call.number == linux::__NR_gettimeofday {
         out.push((a, 16));
     }
+    // Which pages are in memory: every mapped one here, the touched ones in the reference (a declared
+    // difference), written up to a gap that fails the call.
+    if call.number == linux::__NR_mincore {
+        out.push((c, b.div_ceil(4096).min(1 << 20)));
+    }
     if value < 0 {
         return out;
     }
@@ -1571,6 +1655,9 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
         linux::__NR_getrusage => out.push((b, 144)),
         linux::__NR_statfs => out.push((b + 16, 48)),
         linux::__NR_getrandom => out.push((a, value as u64)),
+        // The default time slice depends on the machine's CPU count, one here.
+        linux::__NR_sched_rr_get_interval => out.push((b, 16)),
+        linux::__NR_sched_getattr if c >= 32 => out.push((b + 24, 8)),
         linux::__NR_uname => out.push((a + 130, 130)),
         // The guest is told it has one CPU, a declared difference.
         linux::__NR_sched_getaffinity => out.push((c, value as u64)),

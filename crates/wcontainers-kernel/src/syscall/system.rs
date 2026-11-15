@@ -5,8 +5,11 @@ use alloc::vec;
 use super::{Args, guest};
 use crate::linux::general::*;
 use crate::linux::system::{__NEW_UTS_LEN, new_utsname};
+use crate::linux_extra::{SCHED_ATTR_SIZE_VER0, SCHED_ATTR_SIZE_VER1, sched_attr};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
+use wcontainers_abi::PAGE_SIZE;
+use zerocopy::IntoBytes;
 
 fn field(text: &[u8]) -> [u8; 65] {
     let mut out = [0; 65];
@@ -277,8 +280,8 @@ pub(super) fn sched_setparam(
     set_schedule(kernel, cx, tid, pid, None, param)
 }
 
-/// Linux's `do_sched_setscheduler` and the checks of `__sched_setscheduler` for an unprivileged
-/// caller: a default container has no `CAP_SYS_NICE` and its real-time and nice limits are zero.
+/// Linux's `do_sched_setscheduler`: the parameter, the thread, then `__sched_setscheduler` with the
+/// thread's own nice value and time slice.
 fn set_schedule(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -293,65 +296,303 @@ fn set_schedule(
     let priority: i32 = guest(kernel, cx, tid).read_value(param)?;
     let target = scheduled(kernel, tid, pid)?;
     let current = kernel.threads[&target].schedule;
-    let (policy, reset_on_fork) = match policy {
+    let (policy, flags) = match policy {
+        Some(policy) if policy & SCHED_RESET_ON_FORK != 0 => (
+            Some(policy & !SCHED_RESET_ON_FORK),
+            u64::from(SCHED_FLAG_RESET_ON_FORK),
+        ),
+        policy => (policy, 0),
+    };
+    let request = Request {
+        policy,
+        flags,
+        nice: current.nice,
+        priority: priority as u32,
+        runtime: current.slice,
+        deadline: 0,
+        period: 0,
+    };
+    change_schedule(kernel, tid, target, &request)
+}
+
+/// The time slice Linux's fair scheduler gives a thread by default (`sysctl_sched_base_slice`): 0.7 ms
+/// scaled by the logarithm of the CPU count, which is one here.
+const BASE_SLICE: u64 = 700_000;
+/// The length of a scheduler tick (`TICK_NSEC`); the reference's kernel ticks 1000 times a second.
+const TICK: u64 = 1_000_000;
+/// A round-robin thread's time slice (`RR_TIMESLICE`).
+const ROUND_ROBIN_SLICE: u64 = 100_000_000;
+
+/// What a call asks the scheduler for, as Linux's `sched_attr`; no policy keeps the current one.
+struct Request {
+    policy: Option<u32>,
+    flags: u64,
+    nice: i32,
+    priority: u32,
+    runtime: u64,
+    deadline: u64,
+    period: u64,
+}
+
+fn is_fair(policy: u32) -> bool {
+    matches!(policy, SCHED_NORMAL | SCHED_BATCH)
+}
+
+fn is_real_time(policy: u32) -> bool {
+    matches!(policy, SCHED_FIFO | SCHED_RR)
+}
+
+/// Linux's `__checkparam_dl`: deadline parameters that make sense.
+fn deadline_valid(request: &Request) -> bool {
+    /// `sysctl_sched_dl_period_min` and `_max`, in nanoseconds.
+    const PERIOD_MIN: u64 = 100_000;
+    const PERIOD_MAX: u64 = (1 << 22) * 1000;
+    if request.flags & crate::linux_extra::SCHED_FLAG_SUGOV != 0 {
+        return true;
+    }
+    if request.deadline == 0 || request.runtime < 1 << 10 {
+        return false;
+    }
+    if request.deadline & (1 << 63) != 0 || request.period & (1 << 63) != 0 {
+        return false;
+    }
+    let period = if request.period == 0 {
+        request.deadline
+    } else {
+        request.period
+    };
+    period >= request.deadline
+        && request.deadline >= request.runtime
+        && (PERIOD_MIN..=PERIOD_MAX).contains(&period)
+}
+
+/// Linux's `__sched_setscheduler` with the checks `user_check_sched_setscheduler` makes of a caller
+/// without `CAP_SYS_NICE` (a default container's), whose real-time and nice limits are zero.
+fn change_schedule(
+    kernel: &mut Kernel,
+    tid: Tid,
+    target: Tid,
+    request: &Request,
+) -> Result<u64, Errno> {
+    let current = kernel.threads[&target].schedule;
+    let (policy, reset_on_fork) = match request.policy {
         None => (current.policy, current.reset_on_fork),
         Some(policy) => {
-            let reset = policy & SCHED_RESET_ON_FORK != 0;
-            let policy = policy & !SCHED_RESET_ON_FORK;
-            // The reference refuses the extensible class with no scheduler loaded for it (measured),
-            // although it names its priority range.
+            // The reference's kernel has no extensible scheduler class (measured: refused), although
+            // it names its priority range.
             if !matches!(
                 policy,
                 SCHED_NORMAL | SCHED_FIFO | SCHED_RR | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE
             ) {
                 return Err(Errno::EINVAL);
             }
-            (policy, reset)
+            (
+                policy,
+                request.flags & u64::from(SCHED_FLAG_RESET_ON_FORK) != 0,
+            )
         }
     };
-    let real_time = matches!(policy, SCHED_FIFO | SCHED_RR);
-    let priority = priority as u32;
-    if priority > 99 || real_time != (priority != 0) {
+    if request.flags & !(u64::from(SCHED_FLAG_ALL) | crate::linux_extra::SCHED_FLAG_SUGOV) != 0 {
         return Err(Errno::EINVAL);
     }
-    if policy == SCHED_DEADLINE {
-        // Linux checks the deadline parameters, which `sched_setscheduler` cannot carry.
+    let priority = request.priority;
+    if priority > 99
+        || (policy == SCHED_DEADLINE && !deadline_valid(request))
+        || is_real_time(policy) != (priority != 0)
+    {
         return Err(Errno::EINVAL);
     }
     let limits = &kernel.process_of(target).limits;
     let real_time_limit = limits[RLIMIT_RTPRIO as usize].current;
     let nice_limit = limits[RLIMIT_NICE as usize].current;
-    let mut needs_power = false;
-    if real_time
-        && ((policy != current.policy && real_time_limit == 0)
-            || (priority > current.priority && u64::from(priority) > real_time_limit))
-    {
-        needs_power = true;
-    }
-    // Leaving the idle policy is raising the priority to nice 19's or better.
-    if current.policy == SCHED_IDLE
-        && policy != SCHED_IDLE
-        && (20 - current.nice) as u64 > nice_limit
-    {
-        needs_power = true;
-    }
-    if current.reset_on_fork && !reset_on_fork {
-        needs_power = true;
-    }
-    if needs_power
-        && !kernel
-            .process_of(tid)
-            .credentials
-            .has(crate::linux::general::CAP_SYS_NICE)
-    {
+    // Linux's `is_nice_reduction`: the nice limit allows this value.
+    let allowed_nice = |nice: i32| (20 - nice) as u64 <= nice_limit;
+    let needs_power = (is_fair(policy) && request.nice < current.nice && !allowed_nice(request.nice))
+        || (is_real_time(policy)
+            && ((policy != current.policy && real_time_limit == 0)
+                || (priority > current.priority && u64::from(priority) > real_time_limit)))
+        || policy == SCHED_DEADLINE
+        // Leaving the idle policy is raising the priority to the current nice value's.
+        || (current.policy == SCHED_IDLE && policy != SCHED_IDLE && !allowed_nice(current.nice))
+        || (current.reset_on_fork && !reset_on_fork);
+    if needs_power && !kernel.process_of(tid).credentials.has(CAP_SYS_NICE) {
         return Err(Errno::EPERM);
     }
-    kernel.thread_mut(target).schedule = crate::process::Schedule {
-        policy,
-        priority,
-        reset_on_fork,
-        ..current
+    if request.flags & crate::linux_extra::SCHED_FLAG_SUGOV != 0 {
+        return Err(Errno::EINVAL);
+    }
+    // The reference's kernel has no utilisation clamping.
+    if request.flags & u64::from(SCHED_FLAG_UTIL_CLAMP) != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let mut schedule = current;
+    schedule.policy = policy;
+    schedule.reset_on_fork = reset_on_fork;
+    schedule.priority = priority;
+    if is_fair(policy) {
+        schedule.nice = request.nice;
+        schedule.slice = if request.runtime == 0 {
+            0
+        } else {
+            request.runtime.clamp(100_000, 100_000_000)
+        };
+    }
+    if policy == SCHED_DEADLINE {
+        schedule.deadline = (request.runtime, request.deadline, request.period);
+    }
+    kernel.thread_mut(target).schedule = schedule;
+    Ok(0)
+}
+
+/// A thread's scheduling parameters as Linux's `get_params` reports them.
+fn current_attributes(schedule: &crate::process::Schedule) -> sched_attr {
+    let mut attributes = sched_attr {
+        sched_policy: schedule.policy,
+        ..Default::default()
     };
+    if schedule.reset_on_fork {
+        attributes.sched_flags |= u64::from(SCHED_FLAG_RESET_ON_FORK);
+    }
+    if schedule.policy == SCHED_DEADLINE {
+        (
+            attributes.sched_runtime,
+            attributes.sched_deadline,
+            attributes.sched_period,
+        ) = schedule.deadline;
+    } else if is_real_time(schedule.policy) {
+        attributes.sched_priority = schedule.priority;
+    } else {
+        attributes.sched_nice = schedule.nice;
+        attributes.sched_runtime = slice(schedule);
+    }
+    attributes
+}
+
+fn slice(schedule: &crate::process::Schedule) -> u64 {
+    if schedule.slice == 0 {
+        BASE_SLICE
+    } else {
+        schedule.slice
+    }
+}
+
+pub(super) fn sched_setattr(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [pid, address, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    // In the order of Linux's `sched_setattr` call and `sched_copy_attr`.
+    if address == 0 || (pid as i32) < 0 || flags as u32 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let known = size_of::<sched_attr>() as u64;
+    let mut guest = guest(kernel, cx, tid);
+    let size: u32 = guest.read_value(address)?;
+    let size = if size == 0 {
+        SCHED_ATTR_SIZE_VER0
+    } else {
+        size
+    };
+    let too_big = |guest: &mut crate::user::Guest<'_>| {
+        guest.write_value(address, &(known as u32))?;
+        Err(Errno::E2BIG)
+    };
+    if size < SCHED_ATTR_SIZE_VER0 || u64::from(size) > PAGE_SIZE {
+        return too_big(&mut guest);
+    }
+    // Linux's `copy_struct_from_user`: what lies past the structure it knows must be zero.
+    let bytes = guest.read(address, u64::from(size))?;
+    if bytes.len() as u64 > known && bytes[known as usize..].iter().any(|byte| *byte != 0) {
+        return too_big(&mut guest);
+    }
+    let mut attributes = sched_attr::default();
+    let length = bytes.len().min(known as usize);
+    attributes.as_mut_bytes()[..length].copy_from_slice(&bytes[..length]);
+    if attributes.sched_flags & u64::from(SCHED_FLAG_UTIL_CLAMP) != 0 && size < SCHED_ATTR_SIZE_VER1
+    {
+        return Err(Errno::EINVAL);
+    }
+    let nice = attributes.sched_nice.clamp(-20, 19);
+    if (attributes.sched_policy as i32) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let keep_policy = attributes.sched_flags & u64::from(SCHED_FLAG_KEEP_POLICY) != 0;
+    let target = scheduled(kernel, tid, pid)?;
+    let mut request = Request {
+        policy: (!keep_policy).then_some(attributes.sched_policy),
+        flags: attributes.sched_flags,
+        nice,
+        priority: attributes.sched_priority,
+        runtime: attributes.sched_runtime,
+        deadline: attributes.sched_deadline,
+        period: attributes.sched_period,
+    };
+    if attributes.sched_flags & u64::from(SCHED_FLAG_KEEP_PARAMS) != 0 {
+        let kept = current_attributes(&kernel.threads[&target].schedule);
+        let schedule = kernel.threads[&target].schedule;
+        if schedule.policy == SCHED_DEADLINE {
+            (request.runtime, request.deadline, request.period) = schedule.deadline;
+        } else if is_real_time(schedule.policy) {
+            request.priority = kept.sched_priority;
+        } else {
+            request.nice = kept.sched_nice;
+            request.runtime = kept.sched_runtime;
+        }
+    }
+    change_schedule(kernel, tid, target, &request)
+}
+
+pub(super) fn sched_getattr(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [pid, address, size, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let size = size as u32;
+    if address == 0
+        || (pid as i32) < 0
+        || u64::from(size) > PAGE_SIZE
+        || size < SCHED_ATTR_SIZE_VER0
+        || flags as u32 != 0
+    {
+        return Err(Errno::EINVAL);
+    }
+    let target = scheduled(kernel, tid, pid)?;
+    let mut attributes = current_attributes(&kernel.threads[&target].schedule);
+    let length = (size as usize).min(size_of::<sched_attr>());
+    attributes.size = length as u32;
+    if !crate::user::access_ok(address, size.into()) {
+        return Err(Errno::EFAULT);
+    }
+    // Linux's `copy_struct_to_user`: what the caller has room for past the structure is cleared first.
+    let mut guest = guest(kernel, cx, tid);
+    if size as usize > length {
+        guest.write(address + length as u64, &vec![0; size as usize - length])?;
+    }
+    guest.write(address, &attributes.as_bytes()[..length])?;
+    Ok(0)
+}
+
+pub(super) fn sched_rr_get_interval(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [pid, out, ..]: Args,
+) -> Result<u64, Errno> {
+    let target = scheduled(kernel, tid, pid)?;
+    let schedule = kernel.threads[&target].schedule;
+    // Linux's `get_rr_interval` of each class, in whole ticks.
+    let interval = match schedule.policy {
+        SCHED_RR => ROUND_ROBIN_SLICE,
+        SCHED_FIFO | SCHED_DEADLINE => 0,
+        _ => slice(&schedule) / TICK * TICK,
+    };
+    let value = __kernel_timespec {
+        tv_sec: (interval / 1_000_000_000) as i64,
+        tv_nsec: (interval % 1_000_000_000) as i64,
+    };
+    guest(kernel, cx, tid).write_value(out, &value)?;
     Ok(0)
 }
 

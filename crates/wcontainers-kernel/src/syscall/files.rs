@@ -918,8 +918,15 @@ fn rename(
     if from.directory.borrow().fs != to.directory.borrow().fs {
         return Err(Errno::EXDEV);
     }
-    if from.name.is_empty() || to.name.is_empty() {
+    if from.name.is_empty() {
         return Err(Errno::EBUSY);
+    }
+    if to.name.is_empty() {
+        return Err(if flags & RENAME_NOREPLACE != 0 {
+            Errno::EEXIST
+        } else {
+            Errno::EBUSY
+        });
     }
     // `mnt_want_write` comes before the names are looked up.
     if from.directory.borrow().fs.read_only() {

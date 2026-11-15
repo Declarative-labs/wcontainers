@@ -37,6 +37,9 @@ pub mod reason {
     pub const PRCTL_UNKNOWN: &str = "prctl option unknown";
     /// A flag of a memory call the kernel does not implement. Detail: the flag bits.
     pub const MEMORY_FLAG_NOT_IMPLEMENTED: &str = "memory call flag not implemented";
+    /// `mincore` reported every mapped page as in memory: which pages a program has touched is not
+    /// known here. Detail: none.
+    pub const RESIDENCY_NOT_TRACKED: &str = "page residency not tracked";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
 }
