@@ -292,9 +292,13 @@ fn cases() {
 fn blob(path: &str, load: u64, stack_top: u64) {
     let bytes = std::fs::read(path).expect("read the blob");
     let length = (bytes.len() as u64).next_multiple_of(PAGE);
-    map(load, length, libc::PROT_READ | libc::PROT_WRITE);
+    // One mapping for code and data, as a flat blob needs.
+    map(
+        load,
+        length,
+        libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+    );
     unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), load as *mut u8, bytes.len()) };
-    protect(load, length, libc::PROT_READ | libc::PROT_EXEC);
     let mut address = load;
     while address < load + length {
         synchronise(address);

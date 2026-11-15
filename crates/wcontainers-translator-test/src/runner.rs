@@ -107,6 +107,14 @@ fn new_engine() -> Engine {
     Engine::new(&config).expect("engine")
 }
 
+/// How long the engine takes to compile a module.
+pub fn compile_time(wasm: &[u8]) -> std::time::Duration {
+    let engine = engine();
+    let start = std::time::Instant::now();
+    Module::new(&engine, wasm).expect("a valid module");
+    start.elapsed()
+}
+
 impl Machine {
     /// A machine with `memory_bytes` of guest memory, nothing allowed anywhere, and a lookup table of
     /// `slots` entries starting at guest address `table_base`.

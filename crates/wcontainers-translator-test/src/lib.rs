@@ -4,5 +4,6 @@
 pub mod forms;
 pub mod layer1;
 pub mod layout;
+pub mod programs;
 pub mod reference;
 pub mod runner;
