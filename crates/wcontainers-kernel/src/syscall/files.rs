@@ -160,9 +160,19 @@ fn touch_directory(directory: &Node, now: Time) {
     inode.ctime = now;
 }
 
+/// A directory that has been removed takes no new names (Linux's `IS_DEADDIR`, `ENOENT`).
+fn not_removed(directory: &Node) -> Result<(), Errno> {
+    let inode = directory.borrow();
+    if matches!(inode.content, Content::Directory(_)) && inode.nlink == 0 {
+        return Err(Errno::ENOENT);
+    }
+    Ok(())
+}
+
 /// The checks before making a name: it must not exist (`EEXIST`). In the process information tree a
 /// missing name is an error of the lookup itself (`ENOENT`), as Linux's proc lookups return it.
 fn check_absent(kernel: &Kernel, tid: Tid, parent: &crate::fs::Parent) -> Result<(), Errno> {
+    not_removed(&parent.directory)?;
     let pid = kernel.threads[&tid].process;
     match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
         Ok(_) => Err(Errno::EEXIST),
@@ -432,6 +442,7 @@ pub(super) fn open(
             if parent.trailing_slash {
                 return Err(Errno::EISDIR);
             }
+            not_removed(&parent.directory)?;
             may_change(kernel, tid, &parent.directory)?;
             changes_names(&parent.directory)?;
             let umask = kernel.process_of(tid).umask;
@@ -529,10 +540,12 @@ pub(super) fn open(
             let mut inode = node.borrow_mut();
             if let Content::Regular(regular) = &mut inode.content {
                 regular.may_resize(0)?;
-                regular.truncate(0);
+                regular.truncate(cx.cpu, 0);
             }
             inode.mtime = now;
             inode.ctime = now;
+            drop(inode);
+            crate::shared::resized(kernel, cx, &node)?;
         }
     }
     let follows = flags & O_NOFOLLOW == 0;
@@ -947,6 +960,7 @@ fn rename(
     }
     let pid = kernel.threads[&tid].process;
     let source = kernel.with_walk(pid, |walk, _| walk.step(&from.directory, &from.name))?;
+    not_removed(&to.directory)?;
     let target = match kernel.with_walk(pid, |walk, _| walk.step(&to.directory, &to.name)) {
         Ok(node) => Some(node),
         Err(Errno::ENOENT) if !matches!(to.directory.borrow().content, Content::Proc(_)) => None,
@@ -1167,6 +1181,16 @@ pub(super) fn readlinkat(
     Ok(length as u64)
 }
 
+/// A mapped tmpfs file's blocks include the pages its mappings' faults brought in, which are not known
+/// here: counted when reported.
+fn count_unknown_blocks(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
+    if matches!(&node.borrow().content, Content::Regular(regular) if regular.mapped) {
+        kernel
+            .counters
+            .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);
+    }
+}
+
 /// Fills Linux's `stat` for an inode.
 pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     let inode = node.borrow();
@@ -1224,6 +1248,7 @@ pub(super) fn newfstatat(
         flags,
         flags & AT_SYMLINK_NOFOLLOW == 0,
     )?;
+    count_unknown_blocks(kernel, cx, &node);
     let value = stat_of(kernel, &node);
     guest(kernel, cx, tid).write_value(buffer, &value)?;
     Ok(0)
@@ -1242,6 +1267,7 @@ pub(super) fn fstat(
         .borrow()
         .node
         .clone();
+    count_unknown_blocks(kernel, cx, &node);
     let value = stat_of(kernel, &node);
     guest(kernel, cx, tid).write_value(buffer, &value)?;
     Ok(0)
@@ -1271,6 +1297,7 @@ pub(super) fn statx(
         flags,
         flags & AT_SYMLINK_NOFOLLOW == 0,
     )?;
+    count_unknown_blocks(kernel, cx, &node);
     let plain = stat_of(kernel, &node);
     let inode = node.borrow();
     let time = |time: Time| statx_timestamp {
@@ -1732,10 +1759,12 @@ fn truncate_node(
         return Err(Errno::EINVAL);
     };
     regular.may_resize(length)?;
-    regular.truncate(length as usize);
+    regular.truncate(cx.cpu, length);
     inode.mtime = now;
     inode.ctime = now;
     inode.drop_privileges(!may_keep_privileges);
+    drop(inode);
+    crate::shared::resized(kernel, cx, node)?;
     Ok(0)
 }
 
@@ -1853,25 +1882,16 @@ pub(super) fn fallocate(
         return Err(Errno::ENODEV);
     };
     if punch && regular.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0
-        || !punch && regular.seals & F_SEAL_GROW != 0 && end > regular.data.len() as u64
+        || !punch && regular.seals & F_SEAL_GROW != 0 && end > regular.size()
     {
         return Err(Errno::EPERM);
     }
     if punch {
-        let size = regular.data.len() as u64;
-        let (from, to) = (offset.min(size) as usize, end.min(size) as usize);
-        regular.data[from..to].fill(0);
-        // Whole pages in the range are given back.
-        let first = offset.div_ceil(4096);
-        let last = end / 4096;
-        regular.pages.retain(|page| *page < first || *page >= last);
-        regular
-            .allocated
-            .retain(|page| *page < first || *page >= last);
+        regular.punch(cx.cpu, offset, end);
         inode.mtime = now;
     } else {
-        if mode & FALLOC_FL_KEEP_SIZE == 0 && regular.data.len() < end as usize {
-            regular.data.resize(end as usize, 0);
+        if mode & FALLOC_FL_KEEP_SIZE == 0 && regular.size() < end {
+            regular.truncate(cx.cpu, end);
         }
         for page in offset / 4096..end.div_ceil(4096) {
             if !regular.pages.contains(&page) {
@@ -1880,6 +1900,8 @@ pub(super) fn fallocate(
         }
     }
     inode.ctime = now;
+    drop(inode);
+    crate::shared::resized(kernel, cx, &node)?;
     Ok(0)
 }
 

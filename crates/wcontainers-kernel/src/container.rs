@@ -264,11 +264,11 @@ impl Kernel {
         }
         let (mode, rdev, content) = match file {
             NewFile::Directory => (S_IFDIR, 0, Content::Directory(Directory::new())),
-            NewFile::Regular(bytes) => {
-                let mut regular = Regular::default();
-                regular.write(0, bytes);
-                (S_IFREG, 0, Content::Regular(regular))
-            }
+            NewFile::Regular(bytes) => (
+                S_IFREG,
+                0,
+                Content::Regular(Regular::with_bytes(bytes.to_vec())),
+            ),
             NewFile::Symlink(target) => (S_IFLNK, 0, Content::Symlink(target.to_vec())),
             NewFile::HardLink(target) => {
                 let node = self.with_root_walk(|walk, root| walk.resolve(root, target, false))?;
@@ -324,9 +324,9 @@ impl Kernel {
     }
 
     /// Every file of the root file system, not crossing into other mounts, in path order.
-    pub fn root_files(&self) -> Vec<FileRecord> {
+    pub fn root_files(&self, cpu: &mut dyn Cpu) -> Vec<FileRecord> {
         let mut out = Vec::new();
-        collect(&self.files.root, b"", &mut out);
+        collect(cpu, &self.files.root, b"", &mut out);
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out
     }
@@ -435,7 +435,7 @@ impl Kernel {
                 .files
                 .add(OpenFile::new(pipe, O_WRONLY, Vec::new()), false, 0, limit)?;
         }
-        let program = crate::loader::open_program(self, pid, start.path)?;
+        let program = crate::loader::open_program(self, cx.cpu, pid, start.path)?;
         let image = crate::loader::load(
             self,
             cx,
@@ -512,6 +512,7 @@ impl Kernel {
         thread.resume = Resume::FromRegisters;
         self.runnable.retain(|other| *other != tid);
         self.runnable.push_front(tid);
+        crate::shared::release(self, cx);
     }
 
     /// The mounts and device files `docker run` sets up.
@@ -626,7 +627,7 @@ impl Kernel {
     }
 }
 
-fn collect(directory: &Node, path: &[u8], out: &mut Vec<FileRecord>) {
+fn collect(cpu: &mut dyn Cpu, directory: &Node, path: &[u8], out: &mut Vec<FileRecord>) {
     let inode = directory.borrow();
     let Some(entries) = inode.directory() else {
         return;
@@ -637,7 +638,7 @@ fn collect(directory: &Node, path: &[u8], out: &mut Vec<FileRecord>) {
         child_path.extend_from_slice(name);
         let child = node.borrow();
         let contents = match &child.content {
-            Content::Regular(file) => file.data.clone(),
+            Content::Regular(file) => file.bytes(cpu),
             Content::Symlink(target) => target.clone(),
             _ => Vec::new(),
         };
@@ -653,7 +654,7 @@ fn collect(directory: &Node, path: &[u8], out: &mut Vec<FileRecord>) {
         let is_directory = child.is_directory();
         drop(child);
         if is_directory && !is_mount_point && !Rc::ptr_eq(node, directory) {
-            collect(node, &child_path, out);
+            collect(cpu, node, &child_path, out);
         }
     }
 }

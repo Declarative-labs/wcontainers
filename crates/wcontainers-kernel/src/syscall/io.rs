@@ -637,7 +637,7 @@ fn file_bytes(
     Ok(match &inode.content {
         Content::Directory(_) => return Err(Errno::EISDIR),
         Content::Proc(_) if inode.is_directory() => return Err(Errno::EISDIR),
-        Content::Regular(regular) => window(&regular.data),
+        Content::Regular(regular) => regular.read(cx.cpu, offset, count),
         Content::Proc(_) => window(file.borrow().contents.as_deref().unwrap_or_default()),
         Content::Special => match Device::from_number(inode.rdev) {
             Some(Device::Null) => Vec::new(),
@@ -794,7 +794,7 @@ fn write_bytes(
         }
     };
     let offset = if append {
-        regular.data.len() as u64
+        regular.size()
     } else {
         at.unwrap_or(file.borrow().offset)
     };
@@ -810,7 +810,7 @@ fn write_bytes(
         let allowed = regular.writable(offset, bytes.len() as u64);
         if let Ok(allowed) = allowed {
             bytes = &bytes[..allowed as usize];
-            regular.write(offset as usize, bytes);
+            regular.write(cx.cpu, offset, bytes);
         }
         inode.mtime = now;
         inode.ctime = now;
@@ -820,6 +820,7 @@ fn write_bytes(
         allowed?;
     }
     drop(inode);
+    crate::shared::resized(kernel, cx, &node)?;
     if at.is_none() {
         file.borrow_mut().offset = offset + bytes.len() as u64;
     }
@@ -949,7 +950,7 @@ pub(super) fn lseek(
             _ => file.offset as i64,
         },
         Content::Regular(regular) => {
-            let size = regular.data.len() as i64;
+            let size = regular.size() as i64;
             match whence {
                 SEEK_SET => offset,
                 SEEK_CUR => (file.offset as i64)
@@ -1072,32 +1073,53 @@ pub(super) fn getdents64(
             Content::Proc(entry) => {
                 let entry = *entry;
                 drop(inode);
-                let listed = kernel.with_walk(kernel.threads[&tid].process, |walk, _| {
+                // Each entry's own position, and the position after the last: in order from 2, except
+                // that a descriptor's is its number plus 2 and the end is the table's size plus 2, as
+                // Linux's `proc_readfd_common` leaves them.
+                let pid = kernel.threads[&tid].process;
+                let (listed, end) = kernel.with_walk(pid, |walk, _| {
                     let mut out = Vec::new();
                     for (index, (name, child)) in crate::fs::proc::list(walk.proc, &entry)
                         .into_iter()
                         .enumerate()
                     {
+                        let position = match child {
+                            crate::fs::proc::Entry::Fd(_, fd) => fd as u64 + 2,
+                            _ => index as u64 + 2,
+                        };
                         let child_node = crate::fs::proc::node(walk.proc, None, &name, child);
                         let child_inode = child_node.borrow();
-                        out.push((
-                            name,
-                            child_inode.ino,
-                            child_inode.dirent_type(),
-                            index as u64 + 3,
-                        ));
+                        out.push((name, child_inode.ino, child_inode.dirent_type(), position));
                     }
-                    Ok(out)
+                    let end = match entry {
+                        crate::fs::proc::Entry::Fds(pid) => walk
+                            .proc
+                            .processes
+                            .get(&pid)
+                            .map_or(2, |process| u64::from(process.files.capacity()) + 2),
+                        _ => out.len() as u64 + 2,
+                    };
+                    Ok((out, end))
                 })?;
                 let ino = node.borrow().ino;
+                let first = listed.first().map_or(end, |(_, _, _, position)| *position);
                 if position == 0 {
                     entries.push((b".".to_vec(), ino, DT_DIR as u8, 1));
                 }
                 if position <= 1 {
-                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 2));
+                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, first));
                 }
-                let skip = position.saturating_sub(2) as usize;
-                entries.extend(listed.into_iter().skip(skip));
+                let nexts: Vec<u64> = listed
+                    .iter()
+                    .skip(1)
+                    .map(|(_, _, _, position)| *position)
+                    .chain([end])
+                    .collect();
+                for ((name, ino, kind, own), next) in listed.into_iter().zip(nexts) {
+                    if own >= position {
+                        entries.push((name, ino, kind, next));
+                    }
+                }
             }
             _ => return Err(Errno::ENOTDIR),
         }
@@ -1280,7 +1302,9 @@ pub(super) fn fcntl(
                 .count(cx.host, reason::LOCKS_NOT_IMPLEMENTED, command);
             Err(Errno::ENOSYS)
         }
-        F_ADD_SEALS if !path_only => super::memfd::add_seals(&descriptor.file.borrow(), argument),
+        F_ADD_SEALS if !path_only => {
+            super::memfd::add_seals(kernel, &descriptor.file.borrow(), argument)
+        }
         F_GET_SEALS if !path_only => super::memfd::get_seals(&descriptor.file.borrow()),
         _ if path_only => Err(Errno::EBADF),
         _ => {

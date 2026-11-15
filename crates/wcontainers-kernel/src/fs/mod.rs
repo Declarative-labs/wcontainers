@@ -12,7 +12,8 @@ use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use wcontainers_abi::Stream;
+use alloc::vec;
+use wcontainers_abi::{Cpu, SharedId, Stream};
 
 use crate::Errno;
 use crate::credentials::Credentials;
@@ -137,7 +138,10 @@ pub(crate) enum Content {
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
 pub(crate) struct Regular {
-    pub data: Vec<u8>,
+    /// The file's bytes; those the block holds are stale here while there is one.
+    data: Vec<u8>,
+    /// While a mapping shares the file: the block of shared pages holding its first bytes.
+    pub block: Option<Block>,
     pub pages: alloc::collections::BTreeSet<u64>,
     /// Pages `fallocate` reserved that nothing has written yet: they take space but read as holes
     /// to SEEK_DATA and SEEK_HOLE, as tmpfs's pages that are not up to date.
@@ -153,6 +157,7 @@ impl Default for Regular {
     fn default() -> Self {
         Self {
             data: Vec::new(),
+            block: None,
             pages: alloc::collections::BTreeSet::new(),
             allocated: alloc::collections::BTreeSet::new(),
             seals: F_SEAL_SEAL,
@@ -198,26 +203,114 @@ impl Regular {
         Ok(())
     }
 
-    pub fn write(&mut self, offset: usize, bytes: &[u8]) {
-        let end = offset + bytes.len();
-        if self.data.len() < end {
-            self.data.resize(end, 0);
+    /// A file holding `bytes`, as unpacking an image makes it.
+    pub fn with_bytes(bytes: Vec<u8>) -> Self {
+        let mut regular = Self::default();
+        regular.mark_written(0, bytes.len() as u64);
+        regular.data = bytes;
+        regular
+    }
+
+    pub fn size(&self) -> u64 {
+        self.data.len() as u64
+    }
+
+    /// Up to `count` bytes from `offset`, stopping at the end of the file.
+    pub fn read(&self, cpu: &mut dyn Cpu, offset: u64, count: u64) -> Vec<u8> {
+        let start = offset.min(self.size());
+        let end = start.saturating_add(count).min(self.size());
+        let mut bytes = self.data[start as usize..end as usize].to_vec();
+        if let Some(block) = self.block
+            && start < block.length
+        {
+            let shared_end = end.min(block.length);
+            cpu.shared_read(block.id, start, &mut bytes[..(shared_end - start) as usize])
+                .expect("the block holds the file's first pages");
         }
-        self.data[offset..end].copy_from_slice(bytes);
-        if !bytes.is_empty() {
-            for page in offset as u64 / 4096..=(end as u64 - 1) / 4096 {
+        bytes
+    }
+
+    /// Every byte of the file.
+    pub fn bytes(&self, cpu: &mut dyn Cpu) -> Vec<u8> {
+        self.read(cpu, 0, self.size())
+    }
+
+    pub fn write(&mut self, cpu: &mut dyn Cpu, offset: u64, bytes: &[u8]) {
+        let end = offset + bytes.len() as u64;
+        if self.size() < end {
+            self.data.resize(end as usize, 0);
+        }
+        self.data[offset as usize..end as usize].copy_from_slice(bytes);
+        if let Some(block) = self.block
+            && offset < block.length
+        {
+            let shared_end = end.min(block.length);
+            cpu.shared_write(block.id, offset, &bytes[..(shared_end - offset) as usize])
+                .expect("the block holds the file's first pages");
+        }
+        self.mark_written(offset, bytes.len() as u64);
+    }
+
+    fn mark_written(&mut self, offset: u64, length: u64) {
+        if length > 0 {
+            for page in offset / 4096..=(offset + length - 1) / 4096 {
                 self.pages.insert(page);
                 self.allocated.remove(&page);
             }
         }
     }
 
-    pub fn truncate(&mut self, length: usize) {
-        self.data.resize(length, 0);
-        let pages = (length as u64).div_ceil(4096);
+    /// Punches a hole in `[offset, end)`: its bytes read as zero and its whole pages are given back.
+    pub fn punch(&mut self, cpu: &mut dyn Cpu, offset: u64, end: u64) {
+        let (from, to) = (offset.min(self.size()), end.min(self.size()));
+        self.data[from as usize..to as usize].fill(0);
+        self.zero_block(cpu, from, to);
+        let first = offset.div_ceil(4096);
+        let last = end / 4096;
+        self.pages.retain(|page| *page < first || *page >= last);
+        self.allocated.retain(|page| *page < first || *page >= last);
+    }
+
+    fn zero_block(&mut self, cpu: &mut dyn Cpu, from: u64, to: u64) {
+        if let Some(block) = self.block
+            && from < block.length
+        {
+            let zeros = vec![0; (to.min(block.length) - from) as usize];
+            cpu.shared_write(block.id, from, &zeros)
+                .expect("the block holds the file's first pages");
+        }
+    }
+
+    /// Sets the size. Pages dropped from the end are gone from shared mappings too, so they read as
+    /// zero if the file grows again.
+    pub fn truncate(&mut self, cpu: &mut dyn Cpu, length: u64) {
+        if let Some(block) = self.block
+            && length < self.size()
+        {
+            self.zero_block(cpu, length, block.length);
+        }
+        self.data.resize(length as usize, 0);
+        let pages = length.div_ceil(4096);
         self.pages.retain(|page| *page < pages);
         self.allocated.retain(|page| *page < pages);
     }
+
+    /// Moves the bytes the block holds back into the file's own memory, ending the block.
+    pub fn take_block(&mut self, cpu: &mut dyn Cpu) -> Option<Block> {
+        let block = self.block.take()?;
+        let end = block.length.min(self.size());
+        cpu.shared_read(block.id, 0, &mut self.data[..end as usize])
+            .expect("the block holds the file's first pages");
+        Some(block)
+    }
+}
+
+/// A block of shared pages holding a file's first `length` bytes, which every shared mapping of the
+/// file shows.
+#[derive(Clone, Copy)]
+pub(crate) struct Block {
+    pub id: SharedId,
+    pub length: u64,
 }
 
 /// A directory's entries, in the order tmpfs lists them: by the position each got when it was added.
@@ -329,7 +422,7 @@ impl Inode {
     /// The size `stat` reports.
     pub fn size(&self) -> u64 {
         match &self.content {
-            Content::Regular(file) => file.data.len() as u64,
+            Content::Regular(file) => file.size(),
             Content::Directory(_) if self.fs.kind == Kind::Devpts => 0,
             Content::Directory(directory) => DIRENT_SIZE * (directory.len() as u64 + 2),
             Content::Symlink(target) => target.len() as u64,

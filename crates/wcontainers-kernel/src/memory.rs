@@ -46,6 +46,8 @@ pub(crate) struct Mapping {
     pub end: u64,
     /// What the program asked for.
     pub permissions: Permissions,
+    /// What `mprotect` may give it (Linux's `VM_MAYREAD`, `VM_MAYWRITE` and `VM_MAYEXEC`).
+    pub allowed: Permissions,
     pub shared: bool,
     /// Whether `mlock` holds it in memory (Linux's `VM_LOCKED`).
     pub locked: Lock,
@@ -75,6 +77,11 @@ impl Mapping {
             Backing::File { file_end, .. } if address >= *file_end => Permissions::empty(),
             _ => cpu_permissions(self.permissions),
         }
+    }
+
+    /// Whether the mapping shows a file's block of shared pages.
+    pub fn shares_file(&self) -> bool {
+        self.shared && matches!(self.backing, Backing::File { .. })
     }
 
     /// The same mapping cut to `[start, end)`.
@@ -348,6 +355,10 @@ impl AddressMap {
         for old in &removed {
             cpu.set_permissions(memory, old.start, old.end - old.start, Permissions::empty())
                 .map_err(errno::from_cpu)?;
+            if old.shares_file() {
+                cpu.shared_unmap(memory, old.start, old.end - old.start)
+                    .map_err(errno::from_cpu)?;
+            }
             if old.permissions.contains(Permissions::EXECUTE) {
                 cpu.code_changed(memory, old.start, old.end - old.start, &[]);
             }
@@ -375,6 +386,41 @@ impl AddressMap {
             self.mappings.insert(mapping.start, mapping);
         }
         self.merge_around();
+        Ok(())
+    }
+
+    /// Moves where the shared mappings of a file stop being reachable to the file's new end,
+    /// `file_pages` bytes from its start.
+    pub fn set_file_end(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        node: &Node,
+        file_pages: u64,
+    ) -> Result<(), Errno> {
+        let affected: Vec<u64> = self
+            .mappings
+            .values()
+            .filter(|mapping| {
+                mapping.shared
+                    && matches!(&mapping.backing, Backing::File { node: mapped, .. } if alloc::rc::Rc::ptr_eq(mapped, node))
+            })
+            .map(|mapping| mapping.start)
+            .collect();
+        for start in affected {
+            let mut mapping = self.mappings.remove(&start).expect("mapping");
+            if let Backing::File {
+                offset, file_end, ..
+            } = &mut mapping.backing
+            {
+                *file_end = mapping.start
+                    + file_pages
+                        .saturating_sub(*offset)
+                        .min(mapping.end - mapping.start);
+            }
+            self.apply_permissions(cpu, memory, &mapping)?;
+            self.mappings.insert(start, mapping);
+        }
         Ok(())
     }
 
@@ -436,6 +482,20 @@ impl AddressMap {
         memory: MemoryId,
         mapping: &Mapping,
     ) -> Result<(), Errno> {
+        self.apply_permissions(cpu, memory, mapping)?;
+        if mapping.permissions.contains(Permissions::EXECUTE) {
+            cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+        }
+        Ok(())
+    }
+
+    /// Tells the CPU side what a mapping's pages allow: nothing wholly past a file's end.
+    fn apply_permissions(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        mapping: &Mapping,
+    ) -> Result<(), Errno> {
         let split = match &mapping.backing {
             Backing::File { file_end, .. } => (*file_end).clamp(mapping.start, mapping.end),
             _ => mapping.end,
@@ -453,9 +513,6 @@ impl AddressMap {
         if mapping.end > split {
             cpu.set_permissions(memory, split, mapping.end - split, Permissions::empty())
                 .map_err(errno::from_cpu)?;
-        }
-        if mapping.permissions.contains(Permissions::EXECUTE) {
-            cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
         }
         Ok(())
     }
@@ -488,7 +545,9 @@ impl AddressMap {
         Ok(())
     }
 
-    /// Joins neighbouring anonymous mappings that are the same, as Linux merges areas.
+    /// Joins neighbouring mappings that are the same, as Linux merges areas: anonymous ones, and shared
+    /// ones of the same file at following offsets (private file pages may have their own copies, which
+    /// Linux merges only in cases not modelled here).
     fn merge_around(&mut self) {
         let mut merged: BTreeMap<u64, Mapping> = BTreeMap::new();
         for (_, mapping) in core::mem::take(&mut self.mappings) {
@@ -496,16 +555,44 @@ impl AddressMap {
                 && last.end == mapping.start
                 && last.permissions == mapping.permissions
                 && last.shared == mapping.shared
+                && last.allowed == mapping.allowed
                 && last.locked == mapping.locked
-                && matches!(
-                    (&last.backing, &mapping.backing),
-                    (Backing::Anonymous, Backing::Anonymous)
-                        | (Backing::Heap, Backing::Heap)
-                        | (Backing::Stack, Backing::Stack)
-                )
             {
-                last.end = mapping.end;
-                continue;
+                let file_end = match (&last.backing, &mapping.backing) {
+                    (Backing::Anonymous, Backing::Anonymous)
+                    | (Backing::Heap, Backing::Heap)
+                    | (Backing::Stack, Backing::Stack) => Some(None),
+                    (
+                        Backing::File {
+                            node,
+                            offset,
+                            file_end,
+                            ..
+                        },
+                        Backing::File {
+                            node: next_node,
+                            offset: next_offset,
+                            file_end: next_file_end,
+                            ..
+                        },
+                    ) if mapping.shared
+                        && alloc::rc::Rc::ptr_eq(node, next_node)
+                        && offset + (last.end - last.start) == *next_offset
+                        && (*file_end == last.end || *next_file_end == mapping.start) =>
+                    {
+                        Some(Some((*file_end).max(*next_file_end)))
+                    }
+                    _ => None,
+                };
+                if let Some(file_end) = file_end {
+                    last.end = mapping.end;
+                    if let (Some(new_end), Backing::File { file_end, .. }) =
+                        (file_end, &mut last.backing)
+                    {
+                        *file_end = new_end;
+                    }
+                    continue;
+                }
             }
             merged.insert(mapping.start, mapping);
         }

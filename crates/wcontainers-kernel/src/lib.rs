@@ -22,6 +22,7 @@ mod loader;
 mod memory;
 mod process;
 mod seccomp;
+mod shared;
 mod signal;
 mod syscall;
 mod user;
@@ -63,6 +64,8 @@ pub(crate) struct Files {
     pub pipe_fs: FileSystem,
     /// The internal tmpfs memory files live on, made at the first `memfd_create`.
     pub memfd_fs: Option<FileSystem>,
+    /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
+    pub shared: Vec<Node>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -121,6 +124,7 @@ impl Kernel {
                 proc_fs,
                 pipe_fs,
                 memfd_fs: None,
+                shared: Vec::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
@@ -299,6 +303,7 @@ impl Kernel {
             self.runnable.retain(|other| other != tid);
         }
         cx.cpu.memory_drop(process.memory);
+        shared::release(self, cx);
         if self.init == Some(pid) {
             self.finished = Some(wait_status);
         }

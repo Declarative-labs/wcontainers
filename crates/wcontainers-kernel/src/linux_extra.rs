@@ -89,3 +89,23 @@ pub(crate) const ORIG_RSEQ_SIZE: u32 = 32;
 pub(crate) const RSEQ_WRITTEN_SIZE: u32 = 28;
 /// `cpu_id`'s value in an area not registered (`RSEQ_CPU_ID_UNINITIALIZED`).
 pub(crate) const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;
+
+/// The `mmap` flags Linux knew before `MAP_SHARED_VALIDATE` (`LEGACY_MAP_MASK` in Linux's internal
+/// `linux/mman.h`): a validated shared mapping refuses any other.
+pub(crate) const LEGACY_MAP_MASK: u32 = {
+    use crate::linux::general::*;
+    MAP_SHARED
+        | MAP_PRIVATE
+        | MAP_FIXED
+        | MAP_ANONYMOUS
+        | MAP_DENYWRITE
+        | MAP_EXECUTABLE
+        | MAP_UNINITIALIZED
+        | MAP_GROWSDOWN
+        | MAP_LOCKED
+        | MAP_NORESERVE
+        | MAP_POPULATE
+        | MAP_NONBLOCK
+        | MAP_STACK
+        | MAP_HUGETLB
+};

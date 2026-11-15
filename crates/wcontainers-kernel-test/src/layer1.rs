@@ -1181,6 +1181,8 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     0x22 | 0x100000,
                     0x22,
                     0x23 | 0x10,
+                    0x01 | 0x10,
+                    0x03 | 0x10,
                 ],
                 c,
             );

@@ -63,14 +63,20 @@ pub(crate) struct Program {
 }
 
 /// Finds a file to run by path from the process's point of view, with Linux's checks.
-pub(crate) fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Program, Errno> {
+pub(crate) fn open_program(
+    kernel: &Kernel,
+    cpu: &mut dyn Cpu,
+    pid: Pid,
+    path: &[u8],
+) -> Result<Program, Errno> {
     let cwd = kernel.processes[&pid].cwd.clone();
-    open_program_at(kernel, pid, &cwd, path, true)
+    open_program_at(kernel, cpu, pid, &cwd, path, true)
 }
 
 /// The same from `start`; not following a link as the last part makes one ELOOP.
 pub(crate) fn open_program_at(
     kernel: &Kernel,
+    cpu: &mut dyn Cpu,
     pid: Pid,
     start: &Node,
     path: &[u8],
@@ -82,12 +88,13 @@ pub(crate) fn open_program_at(
         }
         walk.locate(start, path)
     })?;
-    program_of(kernel, pid, node, full)
+    program_of(kernel, cpu, pid, node, full)
 }
 
 /// Linux's checks on a file to run (`do_open_execat`), for a file already found.
 pub(crate) fn program_of(
     kernel: &Kernel,
+    cpu: &mut dyn Cpu,
     pid: Pid,
     node: Node,
     path: Vec<u8>,
@@ -101,7 +108,7 @@ pub(crate) fn program_of(
         return Err(Errno::EACCES);
     }
     let bytes = match &inode.content {
-        Content::Regular(file) => file.data.clone(),
+        Content::Regular(file) => file.bytes(cpu),
         _ => return Err(Errno::EACCES),
     };
     let readable = inode.permits(credentials, R_OK, true);
@@ -148,7 +155,7 @@ pub(crate) fn load(
         new_arguments.push(file_name.clone());
         new_arguments.extend(arguments.into_iter().skip(1));
         arguments = new_arguments;
-        program = open_program(kernel, pid, &interpreter)?;
+        program = open_program(kernel, cx.cpu, pid, &interpreter)?;
         readable &= program.readable;
         file_name = interpreter;
     }
@@ -271,7 +278,7 @@ fn place(
         }
     }
     let interpreter = match &interpreter_path {
-        Some(path) => Some(open_program(kernel, pid, path)?),
+        Some(path) => Some(open_program(kernel, cx.cpu, pid, path)?),
         None => None,
     };
     let bias = match header.e_type(endian) {
@@ -344,6 +351,7 @@ fn place(
             start: stack_start,
             end,
             permissions: Permissions::READ | Permissions::WRITE,
+            allowed: Permissions::all(),
             shared: false,
             locked: crate::memory::Lock::None,
             backing: Backing::Stack,
@@ -459,6 +467,7 @@ fn place_elf(
                     start,
                     end: file_pages_end,
                     permissions,
+                    allowed: Permissions::all(),
                     shared: false,
                     locked: crate::memory::Lock::None,
                     backing: Backing::File {
@@ -492,6 +501,7 @@ fn place_elf(
                     start: file_pages_end,
                     end: stop,
                     permissions,
+                    allowed: Permissions::all(),
                     shared: false,
                     locked: crate::memory::Lock::None,
                     backing: Backing::Anonymous,

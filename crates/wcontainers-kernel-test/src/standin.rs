@@ -3,7 +3,9 @@
 //! Each memory is one unicorn instance, because a unicorn instance is one address space. The bytes live
 //! in a host mapping the size of the whole address space, which the kernel reads and writes directly.
 //! Unicorn sees only the pages that allow something, mapped onto that same host memory, so a page that
-//! allows nothing faults by being absent and one that allows less faults on its protection.
+//! allows nothing faults by being absent and one that allows less faults on its protection. A range that
+//! shows a block of shared pages is mapped in unicorn onto the block's host memory instead, so every
+//! memory that shows the block sees the same bytes at once.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -54,6 +56,13 @@ struct Memory {
     pages: Vec<Permissions>,
     /// The ranges currently mapped in unicorn: start to (end, permissions).
     mapped: BTreeMap<u64, (u64, Permissions)>,
+    /// Ranges that show a block: start to (end, the block's host memory for the start).
+    shared: BTreeMap<u64, (u64, *mut u8)>,
+}
+
+/// A block of shared pages, in host memory that lives until the block is dropped.
+struct Block {
+    bytes: MmapMut,
 }
 
 struct Thread {
@@ -66,8 +75,10 @@ struct Thread {
 pub struct StandIn {
     memories: HashMap<MemoryId, Memory>,
     threads: HashMap<ThreadId, Thread>,
+    blocks: HashMap<SharedId, Block>,
     last_memory: u32,
     last_thread: u32,
+    last_block: u32,
 }
 
 fn prot(permissions: Permissions) -> Prot {
@@ -140,7 +151,82 @@ impl Memory {
             bytes,
             pages: vec![Permissions::empty(); (ADDRESS_SPACE_END / PAGE_SIZE) as usize],
             mapped: BTreeMap::new(),
+            shared: BTreeMap::new(),
         })
+    }
+
+    /// Where the byte at `address` lives in host memory, and how many bytes from it are contiguous
+    /// there (to the end of its shared range or of the memory).
+    fn host(&mut self, address: u64) -> (*mut u8, u64) {
+        if let Some((start, (end, base))) = self.shared.range(..=address).next_back()
+            && address < *end
+        {
+            // SAFETY: the offset is inside the block, which outlives every range that shows it.
+            return (
+                unsafe { base.add((address - start) as usize) },
+                end - address,
+            );
+        }
+        let next_shared = self
+            .shared
+            .range(address..)
+            .next()
+            .map_or(ADDRESS_SPACE_END, |(start, _)| *start);
+        // SAFETY: the address is inside the address space, which `bytes` covers.
+        (
+            unsafe { self.bytes.as_mut_ptr().add(address as usize) },
+            next_shared - address,
+        )
+    }
+
+    /// Calls `f` with each contiguous piece of host memory for `[address, address + length)` and its
+    /// offset in the range.
+    fn pieces(
+        &mut self,
+        address: u64,
+        length: u64,
+        mut f: impl FnMut(&mut [u8], usize),
+    ) -> Result<(), CpuError> {
+        self.range(address, length)?;
+        let mut done = 0;
+        while done < length {
+            let (pointer, contiguous) = self.host(address + done);
+            let chunk = contiguous.min(length - done);
+            // SAFETY: `host` says this many bytes from the pointer are one allocation, and nothing else
+            // touches them while the stand-in is not running a thread.
+            f(
+                unsafe { std::slice::from_raw_parts_mut(pointer, chunk as usize) },
+                done as usize,
+            );
+            done += chunk;
+        }
+        Ok(())
+    }
+
+    /// Takes `[start, end)` out of the shared ranges, splitting those at its ends, and returns the parts
+    /// taken with their host memory.
+    fn unshare(&mut self, start: u64, end: u64) -> Vec<(u64, u64, *mut u8)> {
+        let overlapping: Vec<u64> = self
+            .shared
+            .range(..end)
+            .filter(|(_, (range_end, _))| *range_end > start)
+            .map(|(range_start, _)| *range_start)
+            .collect();
+        let mut taken = Vec::new();
+        for range_start in overlapping {
+            let (range_end, base) = self.shared.remove(&range_start).expect("range");
+            // SAFETY: offsets inside the block.
+            let at = |address: u64| unsafe { base.add((address - range_start) as usize) };
+            if range_start < start {
+                self.shared.insert(range_start, (start, base));
+            }
+            if range_end > end {
+                self.shared.insert(end, (range_end, at(end)));
+            }
+            let from = range_start.max(start);
+            taken.push((from, range_end.min(end), at(from)));
+        }
+        taken
     }
 
     fn range(&self, address: u64, length: u64) -> Result<std::ops::Range<usize>, CpuError> {
@@ -174,7 +260,9 @@ impl Memory {
         while page < last {
             let permissions = self.pages[page as usize];
             let run_start = page;
-            while page < last && self.pages[page as usize] == permissions {
+            let (pointer, contiguous) = self.host(page * PAGE_SIZE);
+            let run_last = last.min(page + contiguous / PAGE_SIZE);
+            while page < run_last && self.pages[page as usize] == permissions {
                 page += 1;
             }
             if permissions.is_empty() {
@@ -182,16 +270,11 @@ impl Memory {
             }
             let address = run_start * PAGE_SIZE;
             let length = (page - run_start) * PAGE_SIZE;
-            // SAFETY: the pointer is inside `bytes`, which lives as long as the unicorn instance, and
-            // unicorn only touches it while the stand-in runs a thread or is asked to.
+            // SAFETY: the pointer is inside `bytes` or a block, which live as long as unicorn maps them,
+            // and unicorn only touches them while the stand-in runs a thread or is asked to.
             unsafe {
                 self.unicorn
-                    .mem_map_ptr(
-                        address,
-                        length,
-                        prot(permissions),
-                        self.bytes.as_mut_ptr().add(address as usize).cast(),
-                    )
+                    .mem_map_ptr(address, length, prot(permissions), pointer.cast())
                     .expect("mapping host memory into unicorn");
             }
             self.mapped.insert(address, (address + length, permissions));
@@ -289,7 +372,11 @@ impl StandIn {
             }
             (_, Some(EXCEPTION_BREAKPOINT)) => {
                 let mut instruction = [0u8; 4];
-                instruction.copy_from_slice(&memory.bytes[pc as usize..pc as usize + 4]);
+                memory
+                    .pieces(pc, 4, |piece, at| {
+                        instruction[at..at + piece.len()].copy_from_slice(piece);
+                    })
+                    .expect("the instruction is in the address space");
                 let comment = (u32::from_le_bytes(instruction) >> 5) as u16;
                 Exit::Breakpoint { comment }
             }
@@ -335,22 +422,26 @@ impl Cpu for StandIn {
     }
 
     fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
-        let memory = &self.memories[&memory];
-        let range = memory.range(address, into.len() as u64)?;
-        into.copy_from_slice(&memory.bytes[range]);
-        Ok(())
+        let memory = self.memories.get_mut(&memory).expect("memory exists");
+        memory.pieces(address, into.len() as u64, |piece, at| {
+            into[at..at + piece.len()].copy_from_slice(piece);
+        })
     }
 
     fn write(&mut self, memory: MemoryId, address: u64, from: &[u8]) -> Result<(), CpuError> {
         let memory = self.memories.get_mut(&memory).expect("memory exists");
-        let range = memory.range(address, from.len() as u64)?;
-        memory.bytes[range].copy_from_slice(from);
-        Ok(())
+        memory.pieces(address, from.len() as u64, |piece, at| {
+            piece.copy_from_slice(&from[at..at + piece.len()]);
+        })
     }
 
     fn zero(&mut self, memory: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
         let memory = self.memories.get_mut(&memory).expect("memory exists");
         let range = memory.range(address, length)?;
+        // Zeroing ends sharing.
+        if !memory.unshare(address, address + length).is_empty() {
+            memory.remap(address, address + length);
+        }
         memory.bytes[range].fill(0);
         Ok(())
     }
@@ -378,49 +469,84 @@ impl Cpu for StandIn {
             .expect("dropping unicorn's translations");
     }
 
-    fn shared_new(&mut self, _length: u64) -> Result<SharedId, CpuError> {
-        Err(CpuError::NotSupported)
+    fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
+        let bytes = MmapMut::map_anon(length as usize).map_err(|_| CpuError::OutOfMemory)?;
+        self.last_block += 1;
+        let id = SharedId(self.last_block);
+        self.blocks.insert(id, Block { bytes });
+        Ok(id)
     }
 
     fn shared_map(
         &mut self,
-        _shared: SharedId,
-        _offset: u64,
-        _memory: MemoryId,
-        _address: u64,
-        _length: u64,
+        shared: SharedId,
+        offset: u64,
+        memory: MemoryId,
+        address: u64,
+        length: u64,
     ) -> Result<(), CpuError> {
-        Err(CpuError::NotSupported)
+        let block = self.blocks.get_mut(&shared).ok_or(CpuError::BadAddress)?;
+        if offset
+            .checked_add(length)
+            .is_none_or(|end| end > block.bytes.len() as u64)
+        {
+            return Err(CpuError::BadAddress);
+        }
+        // SAFETY: the offset is inside the block.
+        let base = unsafe { block.bytes.as_mut_ptr().add(offset as usize) };
+        let memory = self.memories.get_mut(&memory).expect("memory exists");
+        memory.range(address, length)?;
+        memory.unshare(address, address + length);
+        memory.shared.insert(address, (address + length, base));
+        memory.remap(address, address + length);
+        Ok(())
     }
 
     fn shared_unmap(
         &mut self,
-        _memory: MemoryId,
-        _address: u64,
-        _length: u64,
+        memory: MemoryId,
+        address: u64,
+        length: u64,
     ) -> Result<(), CpuError> {
-        Err(CpuError::NotSupported)
+        let memory = self.memories.get_mut(&memory).expect("memory exists");
+        memory.range(address, length)?;
+        for (start, end, base) in memory.unshare(address, address + length) {
+            // SAFETY: the block holds `end - start` bytes from `base`.
+            let bytes = unsafe { std::slice::from_raw_parts(base, (end - start) as usize) };
+            memory.bytes[start as usize..end as usize].copy_from_slice(bytes);
+        }
+        memory.remap(address, address + length);
+        Ok(())
     }
 
     fn shared_read(
         &mut self,
-        _shared: SharedId,
-        _offset: u64,
-        _into: &mut [u8],
+        shared: SharedId,
+        offset: u64,
+        into: &mut [u8],
     ) -> Result<(), CpuError> {
-        Err(CpuError::NotSupported)
+        let block = self.blocks.get(&shared).ok_or(CpuError::BadAddress)?;
+        let bytes = block
+            .bytes
+            .get(offset as usize..offset as usize + into.len())
+            .ok_or(CpuError::BadAddress)?;
+        into.copy_from_slice(bytes);
+        Ok(())
     }
 
-    fn shared_write(
-        &mut self,
-        _shared: SharedId,
-        _offset: u64,
-        _from: &[u8],
-    ) -> Result<(), CpuError> {
-        Err(CpuError::NotSupported)
+    fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
+        let block = self.blocks.get_mut(&shared).ok_or(CpuError::BadAddress)?;
+        block
+            .bytes
+            .get_mut(offset as usize..offset as usize + from.len())
+            .ok_or(CpuError::BadAddress)?
+            .copy_from_slice(from);
+        Ok(())
     }
 
-    fn shared_drop(&mut self, _shared: SharedId) {}
+    fn shared_drop(&mut self, shared: SharedId) {
+        self.blocks.remove(&shared);
+    }
 
     fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
         if !self.memories.contains_key(&memory) {

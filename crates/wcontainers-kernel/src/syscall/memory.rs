@@ -10,6 +10,7 @@ use crate::counters::reason;
 use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::linux::general::*;
+use crate::linux_extra::LEGACY_MAP_MASK;
 use crate::memory::{Backing, Lock, Mapping, STACK_GUARD_GAP, page_down, page_up};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel, errno};
@@ -95,6 +96,7 @@ pub(super) fn brk(
         start: old_end,
         end: new_end,
         permissions: Permissions::READ | Permissions::WRITE,
+        allowed: Permissions::all(),
         shared: false,
         locked: map.future_lock,
         backing: Backing::Heap,
@@ -204,38 +206,54 @@ pub(super) fn mmap(
         (MAP_SHARED, _) | (MAP_SHARED_VALIDATE, true) => true,
         _ => return Err(Errno::EINVAL),
     };
-    // What backs the mapping.
+    let mut allowed = Permissions::all();
+    // What backs the mapping, with Linux's checks on the file.
     let file = match file {
         None => None,
         Some(file) => {
             let file = file.borrow();
             let node = file.node.clone();
             let inode = node.borrow();
-            if shared && permissions.contains(Permissions::WRITE) && !file.writable() {
-                return Err(Errno::EACCES);
+            if flags & MAP_TYPE == MAP_SHARED_VALIDATE && flags & !LEGACY_MAP_MASK != 0 {
+                return Err(Errno::EOPNOTSUPP);
             }
-            // Running code from a `noexec` mount is refused.
-            if permissions.contains(Permissions::EXECUTE) && inode.fs.no_execute() {
-                return Err(Errno::EPERM);
+            if shared {
+                if permissions.contains(Permissions::WRITE) && !file.writable() {
+                    return Err(Errno::EACCES);
+                }
+                if !file.writable() {
+                    allowed.remove(Permissions::WRITE);
+                }
             }
             if !file.readable() {
                 return Err(Errno::EACCES);
+            }
+            // Running code from a `noexec` mount is refused, then and later.
+            if inode.fs.no_execute() {
+                if permissions.contains(Permissions::EXECUTE) {
+                    return Err(Errno::EPERM);
+                }
+                allowed.remove(Permissions::EXECUTE);
             }
             let zero = matches!(inode.content, Content::Special)
                 && Device::from_number(inode.rdev) == Some(Device::Zero);
             if !zero && !matches!(inode.content, Content::Regular(_)) {
                 return Err(Errno::ENODEV);
             }
+            // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
+            if let Content::Regular(regular) = &inode.content
+                && shared
+                && regular.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0
+            {
+                if permissions.contains(Permissions::WRITE) {
+                    return Err(Errno::EPERM);
+                }
+                allowed.remove(Permissions::WRITE);
+            }
             if zero {
                 None
             } else {
                 drop(inode);
-                if shared {
-                    kernel
-                        .counters
-                        .count(cx.host, reason::SHARED_FILE_MAPPING, 0);
-                    return Err(Errno::ENODEV);
-                }
                 Some((node, file.path.clone()))
             }
         }
@@ -248,7 +266,7 @@ pub(super) fn mmap(
             let size = match &mut node.borrow_mut().content {
                 Content::Regular(regular) => {
                     regular.mapped = true;
-                    regular.data.len() as u64
+                    regular.size()
                 }
                 _ => 0,
             };
@@ -265,6 +283,7 @@ pub(super) fn mmap(
         start,
         end: start + length,
         permissions,
+        allowed,
         shared,
         locked,
         backing,
@@ -279,11 +298,32 @@ pub(super) fn mmap(
     ) {
         return Err(Errno::ENOMEM);
     }
-    map.insert(cx.cpu, process.memory, mapping)?;
-    if let Some((node, _)) = &file {
-        copy_file_pages(cx, process.memory, node, offset, start, length)?;
-    }
+    let memory = process.memory;
+    map.insert(cx.cpu, memory, mapping.clone())?;
+    show_file(kernel, cx, memory, &mapping, start, length)?;
+    crate::shared::release(kernel, cx);
     Ok(start)
+}
+
+/// Makes `[start, start + length)` of a file mapping show the file: its block of shared pages for a
+/// shared mapping, a copy of its bytes for a private one.
+fn show_file(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    memory: wcontainers_abi::MemoryId,
+    mapping: &Mapping,
+    start: u64,
+    length: u64,
+) -> Result<(), Errno> {
+    let Backing::File { node, offset, .. } = &mapping.backing else {
+        return Ok(());
+    };
+    let offset = offset + (start - mapping.start);
+    if mapping.shared {
+        crate::shared::attach(kernel, cx, node, memory, start, offset, length)
+    } else {
+        copy_file_pages(cx, memory, node, offset, start, length)
+    }
 }
 
 /// Copies a file's bytes into a private mapping of it: the bytes from `offset` up to the mapping's
@@ -300,14 +340,8 @@ fn copy_file_pages(
     let Content::Regular(regular) = &inode.content else {
         return Ok(());
     };
-    let size = regular.data.len() as u64;
-    if offset < size {
-        let end = size.min(offset + length);
-        cx.cpu
-            .write(memory, start, &regular.data[offset as usize..end as usize])
-            .map_err(errno::from_cpu)?;
-    }
-    Ok(())
+    let bytes = regular.read(cx.cpu, offset, length);
+    cx.cpu.write(memory, start, &bytes).map_err(errno::from_cpu)
 }
 
 pub(super) fn munmap(
@@ -329,6 +363,7 @@ pub(super) fn munmap(
     if address < end {
         process.map.unmap(cx.cpu, process.memory, address, end)?;
     }
+    crate::shared::release(kernel, cx);
     Ok(0)
 }
 
@@ -380,6 +415,14 @@ fn protect(
     if !process.map.fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
     }
+    // Mapping by mapping, the change stops at the first that may not have it.
+    let refused = process
+        .map
+        .iter()
+        .filter(|mapping| mapping.start < end && mapping.end > address)
+        .find(|mapping| !mapping.allowed.contains(permissions))
+        .map(|mapping| mapping.start.max(address));
+    let end = refused.unwrap_or(end);
     // Private pages turning writable become data, within its limit.
     if permissions.contains(Permissions::WRITE) {
         let becoming: u64 = process
@@ -400,10 +443,15 @@ fn protect(
             return Err(Errno::ENOMEM);
         }
     }
-    process
-        .map
-        .protect(cx.cpu, process.memory, address, end, permissions)?;
-    Ok(0)
+    if end > address {
+        process
+            .map
+            .protect(cx.cpu, process.memory, address, end, permissions)?;
+    }
+    match refused {
+        Some(_) => Err(Errno::EACCES),
+        None => Ok(0),
+    }
 }
 
 pub(super) fn madvise(
@@ -450,9 +498,10 @@ pub(super) fn madvise(
     if length == 0 {
         return Ok(0);
     }
+    let now = kernel.now(cx);
     let process = kernel.process_of_mut(tid);
-    // Removing pages punches a hole in what a shared mapping is backed by; shared anonymous memory is
-    // the only such mapping so far. Linux's `madvise_remove`, mapping by mapping.
+    // Removing pages punches a hole in what a shared mapping is backed by: its file, or its shared
+    // anonymous memory. Linux's `madvise_remove`, mapping by mapping.
     if advice == MADV_REMOVE {
         let mut at = address;
         while let Some(mapping) = process.map.next_after(at).cloned() {
@@ -462,7 +511,24 @@ pub(super) fn madvise(
             if mapping.locked != Lock::None {
                 return Err(Errno::EINVAL);
             }
-            match mapping.backing {
+            match &mapping.backing {
+                Backing::File { node, offset, .. }
+                    if mapping.shared && mapping.allowed.contains(Permissions::WRITE) =>
+                {
+                    // `vfs_fallocate` punching a hole, as tmpfs does it.
+                    let from = offset + (mapping.start.max(at) - mapping.start);
+                    let to = offset + (mapping.end.min(end) - mapping.start);
+                    let mut inode = node.borrow_mut();
+                    let Content::Regular(regular) = &mut inode.content else {
+                        return Err(Errno::EINVAL);
+                    };
+                    if regular.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 {
+                        return Err(Errno::EPERM);
+                    }
+                    regular.punch(cx.cpu, from, to);
+                    inode.mtime = now;
+                    inode.ctime = now;
+                }
                 Backing::File { .. } => return Err(Errno::EACCES),
                 Backing::Anonymous if mapping.shared => {
                     let from = mapping.start.max(at);
@@ -666,9 +732,7 @@ fn remap_at(
             *file_end = (*file_end).min(grown_end).max(old_end);
         }
         map.insert(cx.cpu, memory, extra.clone())?;
-        if let Backing::File { node, offset, .. } = &extra.backing {
-            copy_file_pages(cx, memory, node, *offset, old_end, grown_end - old_end)?;
-        }
+        show_file(kernel, cx, memory, &extra, old_end, grown_end - old_end)?;
         return Ok(old);
     }
     if request.flags & MREMAP_MAYMOVE == 0 {
@@ -803,7 +867,12 @@ fn move_range(
     let memory = process.memory;
     let map = &mut process.map;
     let old_end = old + old_length;
-    let kept = old_length.min(new_length);
+    // A shared file mapping shows its file wherever it goes; anything else takes its bytes along.
+    let kept = if mapping.shares_file() {
+        0
+    } else {
+        old_length.min(new_length)
+    };
     let mut bytes = vec![0; kept as usize];
     cx.cpu
         .read(memory, old, &mut bytes)
@@ -824,22 +893,14 @@ fn move_range(
     cx.cpu
         .write(memory, destination, &bytes)
         .map_err(errno::from_cpu)?;
-    if new_length > old_length
-        && let Backing::File { node, offset, .. } = &moved.backing
-    {
-        copy_file_pages(
-            cx,
-            memory,
-            node,
-            offset + old_length,
-            destination + old_length,
-            new_length - old_length,
-        )?;
-    }
+    let shown = destination + kept;
+    show_file(kernel, cx, memory, &moved, shown, moved.end - shown)?;
+    crate::shared::release(kernel, cx);
     Ok(destination)
 }
 
-/// Puts a private range back to what it held before it was touched: zero, or the file's bytes.
+/// Puts a private range back to what it held before it was touched: zero, or the file's bytes. A
+/// shared file mapping's pages are the file's and stay.
 fn drop_pages(
     cx: &mut Context<'_>,
     memory: wcontainers_abi::MemoryId,
@@ -847,6 +908,9 @@ fn drop_pages(
     from: u64,
     to: u64,
 ) -> Result<(), Errno> {
+    if mapping.shares_file() {
+        return Ok(());
+    }
     cx.cpu
         .zero(memory, from, to - from)
         .map_err(errno::from_cpu)?;

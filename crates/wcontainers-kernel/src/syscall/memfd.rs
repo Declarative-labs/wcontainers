@@ -115,7 +115,7 @@ pub(super) fn get_seals(file: &OpenFile) -> Result<u64, Errno> {
 }
 
 /// `F_ADD_SEALS`, as Linux's `memfd_add_seals` checks and widens them.
-pub(super) fn add_seals(file: &OpenFile, seals: u64) -> Result<u64, Errno> {
+pub(super) fn add_seals(kernel: &Kernel, file: &OpenFile, seals: u64) -> Result<u64, Errno> {
     if !file.writable() {
         return Err(Errno::EPERM);
     }
@@ -126,6 +126,13 @@ pub(super) fn add_seals(file: &OpenFile, seals: u64) -> Result<u64, Errno> {
     let current = seals_of(file).ok_or(Errno::EINVAL)?;
     if current & F_SEAL_SEAL != 0 {
         return Err(Errno::EPERM);
+    }
+    // No shared mapping may write the file once it is sealed against writing.
+    if seals & F_SEAL_WRITE != 0
+        && current & F_SEAL_WRITE == 0
+        && crate::shared::writably_mapped(kernel, &file.node)
+    {
+        return Err(Errno::EBUSY);
     }
     let mut inode = file.node.borrow_mut();
     // Sealing against running makes an executable file unchangeable as well.

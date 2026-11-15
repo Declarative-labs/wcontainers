@@ -259,6 +259,6 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
         },
         warnings: host.warnings,
         counters: kernel.counters().collect(),
-        files: kernel.root_files(),
+        files: kernel.root_files(&mut cpu),
     })
 }
