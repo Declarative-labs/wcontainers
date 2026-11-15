@@ -234,7 +234,9 @@ impl Kernel {
                     .map(|(tid, _)| *tid)
                     .collect();
                 for tid in due {
-                    self.threads.get_mut(&tid).expect("thread").parked = None;
+                    let thread = self.threads.get_mut(&tid).expect("thread");
+                    thread.parked = None;
+                    thread.slept += now.saturating_sub(thread.parked_at);
                     self.resume(tid, Resume::Return(0));
                 }
                 return;
@@ -253,6 +255,14 @@ impl Kernel {
     /// Every counter that has been bumped.
     pub fn counters(&self) -> impl Iterator<Item = CounterReading> + '_ {
         self.counters.readings()
+    }
+
+    /// Parks a thread in its call; the time it spends parked is not CPU time.
+    pub(crate) fn park(&mut self, cx: &mut Context<'_>, tid: Tid, parked: Parked) {
+        let now = cx.host.monotonic_nanoseconds();
+        let thread = self.thread_mut(tid);
+        thread.parked = Some(parked);
+        thread.parked_at = now;
     }
 
     fn resume(&mut self, tid: Tid, resume: Resume) {

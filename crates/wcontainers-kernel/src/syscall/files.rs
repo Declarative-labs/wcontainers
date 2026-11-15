@@ -2094,7 +2094,7 @@ pub(super) fn flock(
         Ok(None) => {
             // The holder is an open file of this process, which cannot let go while its only thread
             // waits, so the wait lasts until a signal ends it (K2), as on Linux.
-            kernel.thread_mut(tid).parked = Some(crate::process::Parked::Forever);
+            kernel.park(cx, tid, crate::process::Parked::Forever);
             super::Outcome::Parked
         }
         Err(error) => Err(error).into(),

@@ -118,6 +118,9 @@ pub(crate) struct Thread {
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is parked in, if it is waiting.
     pub parked: Option<Parked>,
+    /// When the thread last parked, on the monotonic clock, and how long it has been parked before.
+    pub parked_at: u64,
+    pub slept: u64,
     /// How the thread is scheduled: its policy, real-time priority, nice value and whether children
     /// go back to the default.
     pub schedule: Schedule,
@@ -162,6 +165,8 @@ impl Thread {
             pending: 0,
             alternate_stack: (0, 0, 0),
             parked: None,
+            parked_at: 0,
+            slept: 0,
             schedule: Schedule::default(),
             rseq: None,
             filters: Vec::new(),

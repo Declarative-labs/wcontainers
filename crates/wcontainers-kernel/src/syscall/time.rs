@@ -5,16 +5,30 @@ use crate::linux::general::*;
 use crate::process::{Parked, Tid};
 use crate::{Context, Errno, Kernel};
 
-/// The CPU time a process has used. One guest thread runs at a time and the container's first process
-/// is the only one, so this is the time since the container started.
-pub(super) fn cpu_time(kernel: &Kernel, cx: &mut Context<'_>) -> u64 {
-    cx.host
-        .monotonic_nanoseconds()
-        .saturating_sub(kernel.boot_monotonic)
+/// The CPU time the caller's process has used: the time since the container started, which is when
+/// its one process started, less the time its threads have spent parked.
+pub(super) fn cpu_time(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid) -> u64 {
+    let now = cx.host.monotonic_nanoseconds();
+    let parked: u64 = kernel
+        .process_of(tid)
+        .threads
+        .iter()
+        .map(|thread| {
+            let thread = &kernel.threads[thread];
+            thread.slept
+                + if thread.parked.is_some() {
+                    now.saturating_sub(thread.parked_at)
+                } else {
+                    0
+                }
+        })
+        .sum();
+    now.saturating_sub(kernel.boot_monotonic)
+        .saturating_sub(parked)
 }
 
 /// The value of a clock in nanoseconds.
-fn clock(kernel: &Kernel, cx: &mut Context<'_>, clock: u64) -> Result<u64, Errno> {
+fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<u64, Errno> {
     Ok(match clock as u32 {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE | CLOCK_REALTIME_ALARM | CLOCK_TAI => {
             cx.host.realtime_nanoseconds()
@@ -24,7 +38,7 @@ fn clock(kernel: &Kernel, cx: &mut Context<'_>, clock: u64) -> Result<u64, Errno
         | CLOCK_MONOTONIC_COARSE
         | CLOCK_BOOTTIME
         | CLOCK_BOOTTIME_ALARM => cx.host.monotonic_nanoseconds(),
-        CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => cpu_time(kernel, cx),
+        CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => cpu_time(kernel, cx, tid),
         _ => return Err(Errno::EINVAL),
     })
 }
@@ -42,7 +56,7 @@ pub(super) fn clock_gettime(
     tid: Tid,
     [id, out, ..]: Args,
 ) -> Result<u64, Errno> {
-    let now = clock(kernel, cx, id)?;
+    let now = clock(kernel, cx, tid, id)?;
     guest(kernel, cx, tid).write_value(out, &timespec_bytes(now))?;
     Ok(0)
 }
@@ -53,7 +67,7 @@ pub(super) fn clock_getres(
     tid: Tid,
     [id, out, ..]: Args,
 ) -> Result<u64, Errno> {
-    clock(kernel, cx, id)?;
+    clock(kernel, cx, tid, id)?;
     // The coarse clocks tick with the scheduler (1000 times a second in the reference); the others are
     // as fine as the host's.
     let resolution = match id as u32 {
@@ -107,8 +121,8 @@ fn nanoseconds(value: &__kernel_timespec) -> u64 {
 }
 
 /// Parks the thread until a time on the monotonic clock.
-fn sleep_until(kernel: &mut Kernel, tid: Tid, until: u64) -> Outcome {
-    kernel.thread_mut(tid).parked = Some(Parked::Until { nanoseconds: until });
+fn sleep_until(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, until: u64) -> Outcome {
+    kernel.park(cx, tid, Parked::Until { nanoseconds: until });
     Outcome::Parked
 }
 
@@ -124,7 +138,7 @@ pub(super) fn nanosleep(
                 .host
                 .monotonic_nanoseconds()
                 .saturating_add(nanoseconds(&duration));
-            sleep_until(kernel, tid, until)
+            sleep_until(kernel, cx, tid, until)
         }
         Err(error) => Err(error).into(),
     }
@@ -160,14 +174,14 @@ pub(super) fn clock_nanosleep(
     // already over never ends.
     if id == CLOCK_PROCESS_CPUTIME_ID {
         let over = if absolute {
-            duration <= cpu_time(kernel, cx)
+            duration <= cpu_time(kernel, cx, tid)
         } else {
             duration == 0
         };
         if over {
             return Outcome::Return(0);
         }
-        kernel.thread_mut(tid).parked = Some(Parked::Forever);
+        kernel.park(cx, tid, Parked::Forever);
         return Outcome::Parked;
     }
     let now = cx.host.monotonic_nanoseconds();
@@ -181,7 +195,7 @@ pub(super) fn clock_nanosleep(
     } else {
         now.saturating_add(duration)
     };
-    sleep_until(kernel, tid, until)
+    sleep_until(kernel, cx, tid, until)
 }
 
 pub(super) fn times(
@@ -191,7 +205,7 @@ pub(super) fn times(
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
     let ticks = |nanoseconds: u64| nanoseconds / 10_000_000;
-    let used = ticks(cpu_time(kernel, cx));
+    let used = ticks(cpu_time(kernel, cx, tid));
     if out != 0 {
         let mut bytes = [0u8; 32];
         bytes[..8].copy_from_slice(&used.to_le_bytes());

@@ -1273,12 +1273,23 @@ pub(super) fn getrusage(
     }
     let mut out = rusage::new_zeroed();
     if who != RUSAGE_CHILDREN {
-        let used = super::time::cpu_time(kernel, cx);
+        let used = super::time::cpu_time(kernel, cx, tid);
         out.ru_utime = __kernel_old_timeval {
             tv_sec: (used / 1_000_000_000) as i64,
             tv_usec: (used % 1_000_000_000 / 1000) as i64,
         };
-        out.ru_maxrss = 1;
+        // Which pages a program has touched is not known, so every mapped page counts as resident,
+        // as mincore reports them.
+        let mapped: u64 = kernel
+            .process_of(tid)
+            .map
+            .iter()
+            .map(|mapping| mapping.end - mapping.start)
+            .sum();
+        out.ru_maxrss = (mapped / 1024) as i64;
+        kernel
+            .counters
+            .count(cx.host, crate::counters::reason::RESIDENCY_NOT_TRACKED, 0);
     }
     guest(kernel, cx, tid).write_value(usage, &out)?;
     Ok(0)

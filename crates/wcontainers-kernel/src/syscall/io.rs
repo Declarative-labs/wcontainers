@@ -1507,11 +1507,12 @@ fn finish_wait(
 }
 
 /// Parks a waiting thread until its timeout, or for ever (until a signal, K2).
-fn park_until(kernel: &mut Kernel, tid: Tid, until: Option<u64>) {
-    kernel.thread_mut(tid).parked = Some(match until {
+fn park_until(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, until: Option<u64>) {
+    let parked = match until {
         Some(nanoseconds) => crate::process::Parked::Until { nanoseconds },
         None => crate::process::Parked::Forever,
-    });
+    };
+    kernel.park(cx, tid, parked);
 }
 
 pub(super) fn ppoll(
@@ -1655,7 +1656,7 @@ fn select_typed(
     if returns {
         return Ok(Some(ready));
     }
-    park_until(kernel, tid, until);
+    park_until(kernel, cx, tid, until);
     Ok(None)
 }
 
@@ -1702,7 +1703,7 @@ fn ppoll_typed(
     if ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds()) {
         return Ok(Some(ready));
     }
-    park_until(kernel, tid, until);
+    park_until(kernel, cx, tid, until);
     Ok(None)
 }
 
