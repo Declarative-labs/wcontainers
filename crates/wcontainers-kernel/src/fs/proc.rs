@@ -267,6 +267,9 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
             name: name.to_vec(),
         },
     );
+    if is_directory {
+        node.borrow_mut().place.held_parent = parent.cloned();
+    }
     // Link counts as the reference reports them: a process directory counts Linux's seven
     // subdirectories, and the sysctl directories count none.
     match entry {

@@ -235,6 +235,9 @@ pub(crate) struct Place {
     pub mounted: Option<Node>,
     /// This is the root of a mounted file system.
     pub mount_root: bool,
+    /// For a directory of the process information tree, whose inodes live only while something holds
+    /// them, the directory above, held so that `..` still finds it.
+    pub held_parent: Option<Node>,
 }
 
 /// The first position given to an entry (`DIR_OFFSET_MIN`); `.` and `..` come before it.
@@ -518,6 +521,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Node {
             name: new.name,
             mounted: None,
             mount_root: false,
+            held_parent: None,
         },
         content: new.content,
         flocks: Vec::new(),
