@@ -9,7 +9,10 @@ pushed. M2 (full look-ahead) is built and tested: every part of the plan's list 
 benchmark set match none register by register and byte by byte, layer 2 runs, and size and speed numbers
 are below. The second M2 run fixed the two faults the independent check found (a frame and the stack
 alignment were relied on after a call that moved sp) and made checks cheaper by reading fixed values from
-locals. Speed is still far from the plan's hopes on call heavy and memory heavy code; see "Next".
+locals. The third M2 run fixed a hang the next check found (a frame or group check failing on a function's
+first instruction looped for ever), added `tests/checks.rs`, and made layer 2 programs use stack frames of
+every size, x19 to x28, accesses through sp and groups through other registers, and fault. Speed is still
+far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
 ## Done
 
@@ -158,10 +161,13 @@ contract's bits, in both runners).
     analysis carries the frame between blocks. (2) A group: accesses through one base register in one
     block, with the base unchanged or moved by a known amount by its own pre/post indexing, and touching at
     most 4096 bytes in all, are checked once at the first of them. If a frame or group check fails, the
-    thread leaves to the instruction ("go to address") and carries on in code translated at none from
-    there, which checks each access exactly, so faults land at the same instruction with the same
-    registers as at none. Nothing proved before a call or system call is relied on after it, except the
-    frame.
+    thread leaves to the instruction with the unwind payload `UNWIND_GO_TO_EXACT`: the bottom loop counts
+    "left to an address" and asks the load code hook for code at that address even though the table may
+    hold a piece there (the failing one, when the instruction is a function's entry). The runner translates
+    at none from there, unless it already did (it keeps the set of addresses it translated from), so the
+    instruction runs from code that checks each access exactly, and faults land at the same instruction
+    with the same registers as at none. Nothing proved before a call or system call is relied on after it,
+    except the frame.
   - The stack alignment check is left out where the stack pointer is known to be a multiple of 16 (checked
     by an earlier access and moved only by multiples of 16 since); a new `Emitter::stack_aligned` asks.
   - A call after which a frame or the alignment is known compares the stack pointer the callee gives back
@@ -188,9 +194,17 @@ contract's bits, in both runners).
   - `tests/layer2.rs` with `src/layer2.rs`: random programs assembled with `dynasm` (dynasmrt 5.1.0): loops
     with counters, calls with bounded depth, bounded recursion, tail calls, calls and jumps through
     registers, compiler-style jump tables, flags carried across instructions (cmp, ccmp, csel, mrs/msr
-    nzcv), loads and stores in a 512 byte area. Each ends by writing its area, x0 to x15 and NZCV. Full
-    against none: registers, output and all reachable memory; the first few also against the real CPU.
-    Breaking one direct comparison on purpose was caught within 218 cases and shrunk.
+    nzcv), loads and stores in a 512 byte area. Each ends by writing its area, x0 to x15, x19 to x28 and
+    NZCV. Full against none: registers, output and all reachable memory; the first few also against the
+    real CPU. Breaking one direct comparison on purpose was caught within 218 cases and shrunk. Since the
+    third M2 run: every function call (recursive ones too) makes a frame with sp, from 528 bytes to 1.5 MiB
+    (some run off the 1 MiB stack, some reach below it but are used only at the top), at the instruction a
+    recursive `bl` enters, so frame checks fail on entries; accesses through sp in the frame; groups of up
+    to four accesses (every size, pairs, offset, pre- and post-indexing) through any register, from the
+    area or from just before the end of the blob, which is followed by a page that allows nothing (the blob
+    ends with a page and more of zeros so these reach no code). About 12% of programs fault (SIGSEGV),
+    about 11% leave to an address at full. With the old leave-to (before this run's fix) a 500 case run
+    hung (killed after 240 s); with the fix it passes in 14 s.
   - `tests/smoke.rs`: a flag raised by another host thread while a translated loop runs is seen inside the
     loop, at none and full.
   - `tests/programs.rs` also runs hand-written assembly programs (`programs/*.S`; a program may be C or
@@ -199,8 +213,17 @@ contract's bits, in both runners).
     full matches none in registers and memory. With the compare after the call taken out, the second gives
     77 at full where Linux faults, so the test catches it. A program killed by a fault now reports 128 plus
     the signal's number, as Docker does for the native run, instead of panicking.
+  - `tests/checks.rs`: frame and group checks failing, on a function's first instruction too: recursion
+    with 4 KiB frames made by the entry running off the stack (SIGSEGV), a function whose first two loads
+    are a group reaching a forbidden page, a frame reaching below the stack used only in its mapped part
+    (exit 0) and then once below it, groups crossing onto a forbidden page, an alloca loop running off the
+    stack. Linux, none and full agree, and full matches none in registers and memory; the entry cases also
+    run at full in Chrome. Before the fix the three entry cases hung at full.
   - `tests/benchmarks.rs` (ignored, one command, see "How to run"): native and wasmtime and Chrome timings
-    with and without each check, and the translation's size.
+    with and without each check, and the translation's size. Native runs are timed by the reference itself
+    (`wcontainers-reference time`), from making a child process to its end, so the reference's start-up is
+    not counted (it was before, by busybox `time` in 10 ms steps). Matrix, the shortest: 0.093 s native
+    either way, so the earlier ratios stand.
 
 ## How to run
 
@@ -240,6 +263,12 @@ contract's bits, in both runners).
 - Layer 2 (M2): 64 cases, seed 1, 8 on the CPU: 0 mismatches. 2000 cases, seed 7, 40 on the CPU, release:
   0 mismatches (22 s at load 3 to 4). Second M2 run, after this run's changes: 3000 cases, seed 11, 20 on
   the CPU, release: 0 mismatches (35 s at load 10 to 16). Pass bar (one million) not run.
+- Layer 2, third M2 run, with frames, sp accesses, groups and faults: 500 cases, seed 1, 60 on the CPU,
+  release: 0 mismatches, 61 faulted, 40 left to an address. 20,000 cases, seed 21, 40 on the CPU,
+  release: 0 mismatches, 2949 faulted (SIGSEGV, same at none, full and on the CPU where run), 2131 left
+  to an address at full; 265 s at load 17 to 19. Found on the way (a generator bug, not ours): a store
+  with write back whose transfer register is its base is CONSTRAINED UNPREDICTABLE, and the reference
+  CPU raises SIGILL for it; the generator now keeps such registers apart, as layer 1 does.
 
 ## Measurements
 
@@ -324,6 +353,14 @@ contract's bits, in both runners).
   - walk: 0.8 to 0.95 everywhere (memory latency; the native run is slower here, unexplained).
   - search (load 8 to 11): wasmtime 9.1 / 3.2 / 6.1 / 9.6 / 2.2; Chrome 20.4 / 14.4 / 17.7 / 19.8 / 10.5.
 
+- Third M2 run, wasmtime, best of 3, load 14 to 17: sieve native 0.449 s, every check 3.23 times
+  native, no stop check 1.49; matrix native 0.079 s, every check 8.06, no stop check 5.20. An experiment
+  not kept, same conditions: with the registers not loaded back after the stop hook says carry on (kept in
+  locals instead), every check gave sieve 2.90 and matrix 7.34 times native, about 11% faster. Not kept
+  because the plan says the code loads its registers back after the hook; the gain says the stop check's
+  cost is mostly elsewhere (the write back of every dirty register on its slow path, through one
+  imported global pointer per register; see "Next").
+
 ## Next
 
 1. Speed at full look-ahead (goal one). Machine code (wasmtime, hash and sieve loops) shows the loops
@@ -360,7 +397,10 @@ contract's bits, in both runners).
   carry on from the guest's own stack. Not built; its cost on calls is unmeasured.
 - Not yet in the across-layer tests: pieces of different look-aheads mixed at random, injected rare events
   (stack lost, missing piece, flag raised at a random check), and faults with the table changed at random
-  points (M4 per the plan's milestones). Layer 2 programs never fault.
+  points (M4 per the plan's milestones). Layer 2 programs fault only on the page after the blob and below
+  the stack, with a table fixed for the run.
+- A test whose guest never ends hangs rather than fails (nothing bounds how long a translated run may
+  take); the hang this run fixed showed as layer 2 and `tests/checks.rs` running for ever.
 - The full piece of a function keeps every local it may need; very large functions could pass V8's 50,000
   locals or function size limits. Not checked yet (M5).
 - Finding functions explores every entry again when entries are added; fine for the test programs, not
@@ -438,6 +478,11 @@ contract's bits, in both runners).
   the plan's "loads its registers back" says, and it keeps registers out of callee-saved registers.
 - A frame or group permission check that fails leaves to the instruction and carries on at none from
   there ("left to an address"), instead of working out the exact fault in the piece. Exact either way.
+  For this the contract has a third unwind payload, `UNWIND_GO_TO_EXACT`, and the load code hook may be
+  asked for code at an address that has a piece (it puts one translated at none there, unless the one
+  there already is). After that the table holds none code at that address, so calls through the table run
+  it at none; direct calls still reach the full piece, whose check fails and leaves again each time
+  (counted and warned each time; the runner does not translate again).
 - The permission check of none changed shape too (fast test, then exact test), so both look-aheads share
   it; layer 1 passed after the change.
 - Without the permission check (`Omit::permissions`, only for measuring) addresses are not untagged either,
