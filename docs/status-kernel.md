@@ -4,14 +4,15 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is built; three runs so far. Programs start from the file system (with
+K0 is done. K1 (one process) is built; four runs so far. Programs start from the file system (with
 their own loader and `#!` scripts) with the credentials Linux gives them (set-user and set-group bits,
-file capabilities, secure mode, dumpability), memory calls with page protection, limits and faults, the
+file capabilities, secure mode, dumpability), a program's own seccomp filters, rseq, membarrier,
+memory calls with page protection, limits and faults, the
 in-memory file systems (tmpfs with extended attributes and seals, memory files, `/proc`, `/dev`), file
 descriptors, time, randomness, ids and powers, signals a process sends itself, and Docker's default
 seccomp profile. Single busybox programs match the reference. Layer 1 covers every call built. K1 is not
-finished: layer 1 passed its first 20000-sequence run (seed 48) only at the end of the third run; the
-one-million bar has not been run.
+finished: layer 1 has passed one 20000-sequence run (seed 48, third run); later 20000 runs still find
+mismatches within minutes, and the one-million bar has not been run.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -105,30 +106,57 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
 - sched_setattr and sched_getattr in the order of `__sched_setscheduler` (shared with
   sched_setscheduler), with custom time slices (clamped to 0.1 to 100 ms); no utilisation clamps
   (EOPNOTSUPP, as the reference's kernel); sched_rr_get_interval in whole ticks.
+- A program's own seccomp filters (src/seccomp.rs, src/syscall/seccomp.rs): classic BPF programs
+  checked as Linux's `bpf_check_classic`, `check_load_and_stores` and `seccomp_check_filter` do
+  (every refusal EINVAL), and run on each call of the thread with Docker's profile as the oldest
+  filter; the lowest action wins as in Linux (ties to the newest). ERRNO (at most 4095), ALLOW, LOG,
+  TRACE and USER_NOTIF (ENOSYS: no tracer or listener can exist), TRAP (SIGSYS; a handler cannot run
+  yet, counted), KILL_THREAD, KILL_PROCESS and unknown actions (the process dies of SIGSYS, whatever
+  its handler). Needs no_new_privs (Docker's root lacks CAP_SYS_ADMIN, so EACCES); the instruction
+  limit counts Docker's profile as 1032 instructions (measured). Filters are per thread and kept
+  across execve; `SECCOMP_FILTER_FLAG_TSYNC` checks and copies to other threads as Linux. The
+  instruction pointer is read from the registers only for filters that load it.
+  `PR_GET_SECCOMP` and `/proc/<pid>/status` say filter mode with Docker's filter plus the thread's
+  own; `NoNewPrivs` there is now real.
+- rseq: registration checks in the order of Linux 7.0 (measured: an area of other than 32 bytes must
+  be 64 byte aligned), writes the fields Linux writes (CPU 0, no critical section, node 0, concurrency
+  id 0) and unregistration writes them back; cleared at execve. membarrier: Linux's checks and
+  registrations (per address space); the barriers need nothing (one CPU, threads take turns).
+- Protection keys as on the reference's CPU, which has no permission overlays: only key 0, allocated
+  from the start; pkey_alloc is ENOSPC, pkey_free can free key 0, pkey_mprotect is mprotect with
+  Linux's key check. map_shadow_stack is EOPNOTSUPP (no guarded control stacks, as the reference).
+- Calls whose first step in Linux is to check a power no container process can hold (acct, vhangup,
+  swapoff, init_module, finit_module, reboot, syslog with `dmesg_restrict` 1 as measured, fsopen,
+  fspick, fsmount, move_mount): EPERM. If a process held the power the call would be counted and
+  ENOSYS, which cannot happen in a default container.
+- mlock fails with ENOMEM after locking when a page cannot be brought in (no access, or wholly past
+  its file's end), as Linux's `__mm_populate`.
 - The zero devices clear buffers as ARM64's `clear_user` does (eight bytes at a time; `/dev/full`
   retries from where it stopped, measured), with no limit on the length.
 
 
 ## System calls
 
-Done (159): brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep, close,
-close_range, copy_file_range, dup, dup3, execve, exit, exit_group, faccessat, faccessat2, fadvise64,
-fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl, fdatasync, fgetxattr,
-flistxattr, flock, fremovexattr, fsetxattr, fstat, fstatfs, fsync, ftruncate, get_robust_list, getcpu,
-getcwd, getdents64, getegid, geteuid, getgid, getgroups, getpgid, getpid, getppid, getpriority,
-getrandom, getresgid, getresuid, getrlimit, getrusage, getsid, gettid, gettimeofday, getuid, getxattr,
-ioctl, ioprio_get, ioprio_set, kill, lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek,
-lsetxattr, madvise, memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, mprotect,
-mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2, personality, ppoll,
-prctl, pread64, preadv, preadv2, prlimit64, pselect6, pwrite64, pwritev, pwritev2, read, readahead,
-readlinkat, readv, removexattr, renameat, renameat2, rt_sigaction, rt_sigpending, rt_sigprocmask,
-sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam,
-sched_getscheduler, sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam,
-sched_setscheduler, sched_yield, sendfile, set_robust_list, set_tid_address, setdomainname, setfsgid,
-setfsuid, setgid, setgroups, sethostname, setpgid, setpriority, setregid, setresgid, setresuid,
-setreuid, setrlimit, setsid, setuid, setxattr, sigaltstack, statfs, statx, symlinkat, sync,
-sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, uname, unlinkat, utimensat,
-write, writev.
+Done (177): acct, brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep,
+close, close_range, copy_file_range, dup, dup3, execve, exit, exit_group, faccessat, faccessat2,
+fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl, fdatasync,
+fgetxattr, finit_module, flistxattr, flock, fremovexattr, fsetxattr, fsmount, fsopen, fspick, fstat,
+fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
+getgroups, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
+getsid, gettid, gettimeofday, getuid, getxattr, init_module, ioctl, ioprio_get, ioprio_set, kill,
+lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
+membarrier, memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, move_mount,
+mprotect, mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2,
+personality, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64, preadv, preadv2, prlimit64,
+pselect6, pwrite64, pwritev, pwritev2, read, readahead, readlinkat, readv, reboot, removexattr,
+renameat, renameat2, rseq, rt_sigaction, rt_sigpending, rt_sigprocmask, sched_get_priority_max,
+sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler,
+sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler,
+sched_yield, seccomp, sendfile, set_robust_list, set_tid_address, setdomainname, setfsgid, setfsuid,
+setgid, setgroups, sethostname, setpgid, setpriority, setregid, setresgid, setresuid, setreuid,
+setrlimit, setsid, setuid, setxattr, sigaltstack, statfs, statx, swapoff, symlinkat, sync,
+sync_file_range, syncfs, sysinfo, syslog, tgkill, times, tkill, truncate, umask, uname, unlinkat,
+utimensat, vhangup, write, writev.
 
 Partial (inside the list above):
 - fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS); no leases, owners, signals, seals.
@@ -165,6 +193,11 @@ Partial (inside the list above):
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
 - ioprio_get, ioprio_set: the value is kept per thread; nothing does I/O by it. A group or user is
   answered with the implied class and level for no class (measured).
+- seccomp: no listener (`SECCOMP_FILTER_FLAG_NEW_LISTENER` counted "seccomp listener not
+  implemented", EINVAL as a kernel without listeners); TRAP with a handler set kills (handlers, K2).
+- rseq: a critical section is never aborted yet; signal delivery (K2) and preemption between threads
+  (K3) must do that. The time slice extension flag is counted and refused with EINVAL (not built);
+  the reference takes it.
 - sigaltstack: refuses a change while the caller runs on its alternate stack (Linux's `on_sig_stack`,
   from the thread's stack pointer); handlers still need K2.
 
@@ -177,26 +210,30 @@ clone3, pidfd_getfd, process_madvise, mount_setattr, quotactl_fd, set_mempolicy_
 listmount, lsm_get_self_attr, lsm_set_self_attr, lsm_list_modules, mseal, setxattrat, getxattrat,
 listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr.
 
-Missing (115, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
+Missing (97, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
 io_cancel, io_getevents, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
-inotify_add_watch, inotify_rm_watch, vhangup, pipe2, signalfd4, vmsplice, splice, tee, timerfd_create,
-timerfd_settime, timerfd_gettime, acct, waitid, futex, getitimer, setitimer, init_module, timer_create,
-timer_gettime, timer_getoverrun, timer_settime, timer_delete, syslog, ptrace, restart_syscall,
-rt_sigsuspend, rt_sigtimedwait, rt_sigqueueinfo, rt_sigreturn, reboot, adjtimex, mq_open, mq_unlink,
-mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl,
-semtimedop, semop, shmget, shmctl, shmat, shmdt, socket, socketpair, bind, listen, accept, connect,
-getsockname, getpeername, sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg, clone,
-swapoff, remap_file_pages, rt_tgsigqueueinfo, accept4, recvmmsg, wait4, fanotify_init, fanotify_mark,
-name_to_handle_at, clock_adjtime, sendmmsg, process_vm_readv, process_vm_writev, finit_module, seccomp,
-execveat, membarrier, pkey_mprotect, pkey_alloc, pkey_free, io_pgetevents, rseq, pidfd_send_signal,
-move_mount, fsopen, fsmount, fspick, pidfd_open, epoll_pwait2, landlock_create_ruleset,
-landlock_add_rule, landlock_restrict_self, memfd_secret, process_mrelease, futex_waitv, cachestat,
-map_shadow_stack, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes, signals,
-futex), K3 (timers) or K5 (sockets, epoll).
+inotify_add_watch, inotify_rm_watch, pipe2, signalfd4, vmsplice, splice, tee, timerfd_create,
+timerfd_settime, timerfd_gettime, waitid, futex, getitimer, setitimer, timer_create, timer_gettime,
+timer_getoverrun, timer_settime, timer_delete, ptrace, restart_syscall, rt_sigsuspend, rt_sigtimedwait,
+rt_sigqueueinfo, rt_sigreturn, adjtimex, mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify,
+mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl, semtimedop, semop, shmget, shmctl, shmat,
+shmdt, socket, socketpair, bind, listen, accept, connect, getsockname, getpeername, sendto, recvfrom,
+setsockopt, getsockopt, shutdown, sendmsg, recvmsg, clone, remap_file_pages, rt_tgsigqueueinfo, accept4,
+recvmmsg, wait4, fanotify_init, fanotify_mark, name_to_handle_at, clock_adjtime, sendmmsg,
+process_vm_readv, process_vm_writev, execveat, io_pgetevents, pidfd_send_signal, pidfd_open,
+epoll_pwait2, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret,
+process_mrelease, futex_waitv, cachestat, futex_wake, futex_wait, futex_requeue. Most belong to K2
+(processes, pipes, signals, futex), K3 (timers) or K5 (sockets, epoll).
 
-## Tests (last run 2026-11-15: 29 passed, 4 ignored known failures)
+## Tests (last run 2026-11-15: 30 passed, 4 ignored known failures)
 
 All pass except the ignored known failures.
+- filter (new, fourth run): guest/filter.c in nine runs, each compared with the reference: the
+  seccomp operations and their checks, 26 kinds of refused program, accepted ones, arithmetic and
+  jumps on the call's data (157 cases), the architecture, high halves, the instruction pointer,
+  stacked filters with Docker's profile, then ending by trap (also with SIGSYS ignored and blocked),
+  kill process, kill thread, an unknown action, a division by zero, execve (the filter stays), and
+  the instruction limit (ENOMEM). Same output and exit status (159 for SIGSYS).
 - busybox: 85 single commands of the reference image (added this run: nice, renice, setpriv to another
   user then id, linux32 and linux64 uname, sysctl read and write, pwdx, ionice (four ways),
   fallocate, install, readahead, fsync, cmp, xxd): same stdout, stderr, exit code and files changed as the reference.
@@ -229,7 +266,20 @@ Known failures (ignored, with the reason in the attribute):
 
 ## Layer 1
 
-Calls covered (now 157 kinds, with the xattr calls, memfd_create, F_ADD_SEALS and F_GET_SEALS,
+Fourth run: seccomp (three times in the list of kinds, as most of its sequences need several filters
+to show anything) with four filters per sequence made from the generated values: each first lets
+through write and exit_group (which the reference's runner reports with) and every call of the
+sequence that names a process (the runners' numbers differ), then up to eight instructions, one in
+sixteen of a kind Linux refuses, then allows. Half the sequences start with
+`prctl(PR_SET_NO_NEW_PRIVS, 1)`; prctl now also makes PR_SET_SECCOMP, PR_GET_SECCOMP and
+PR_SET_NO_NEW_PRIVS with 1. Also added: rseq, membarrier, pkey_mprotect, pkey_alloc, pkey_free,
+map_shadow_stack, the eleven calls refused for powers, O_DIRECT and O_NOATIME in open flags. The
+generated values grew from 72 to 125, so seeds before the fourth run make different sequences now.
+Not generated: seccomp listeners and the rseq time slice flag (not built), filter loads of the
+instruction pointer (the runners' differ), rseq areas where other calls write. Masked: the CPU
+fields of the rseq areas (the reference rewrites them whenever its caller changes CPU).
+
+Calls covered (157 kinds in the third run, with the xattr calls, memfd_create, F_ADD_SEALS and F_GET_SEALS,
 sched_setattr, sched_getattr, sched_rr_get_interval, mincore, ioprio_get and ioprio_set added this
 run; ioprio not by user, which names the reference's runner too): every call in "Done"
 except brk (its values are addresses that differ by layout; it is
@@ -300,6 +350,9 @@ puts back their owner, mode, attributes and pool names after each sequence. No r
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Fourth run, layer 1 with 175 call kinds: 3000 sequences, seed 57: 85.6 s (load 5.8 to 9.5); 1000
+  sequences, seed 56: 30 s (load 5 to 14).
+- Fourth run, the filter test (nine programs in both runners): 2.0 s (load about 10).
 - Third run, layer 1 with 171 call kinds: 3000 sequences, seed 45: 86 s (load 11 to 17); seed 47:
   85 s (load 7 to 11); seed 49: 88 s (load 28 to 49).
 - Third run, layer 1 20000 sequences, seed 48: 599 s (load 4 to 42).
@@ -313,6 +366,15 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- Added in the fourth run: the classic BPF checker and interpreter for seccomp filters are written
+  here (src/seccomp.rs), following Linux's: the few crates that interpret classic BPF are small,
+  little used, not no_std, or do not make Linux's checks, which are part of the behaviour. Docker's
+  profile is modelled as a table (third run), so its length as a program, which counts towards the
+  instruction limit, is the measured constant 1032. The made-up machine has, like the reference's
+  CPU, no permission overlays (protection keys) and no guarded control stacks. Typed by hand (not in
+  linux-raw-sys): rseq's flags, sizes and `RSEQ_CPU_ID_UNINITIALIZED`, in src/linux_extra.rs; the
+  generator now also copies linux-raw-sys's `ptrace` module (seccomp's and BPF's definitions).
 
 - Added in the third run: the made-up machine has one CPU, so its default time slice is 0.7 ms (the
   reference, with more CPUs, reports 2.8 ms) and sched_rr_get_interval reports it in whole 1 ms ticks

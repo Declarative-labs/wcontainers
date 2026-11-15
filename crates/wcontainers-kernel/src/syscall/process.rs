@@ -91,36 +91,113 @@ pub(super) fn execve(
     tid: Tid,
     [path, argv, envp, ..]: Args,
 ) -> Outcome {
-    match exec(kernel, cx, tid, path, argv, envp) {
-        Ok(()) => Outcome::Restart,
+    match exec(kernel, cx, tid, AT_FDCWD as u64, path, argv, envp, 0) {
+        Ok(Exec::Started) => Outcome::Restart,
+        Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
     }
 }
 
+pub(super) fn execveat(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [dirfd, path, argv, envp, flags, _]: Args,
+) -> Outcome {
+    match exec(kernel, cx, tid, dirfd, path, argv, envp, flags as u32) {
+        Ok(Exec::Started) => Outcome::Restart,
+        Ok(Exec::Checked) => Outcome::Return(0),
+        Err(error) => Err(error).into(),
+    }
+}
+
+enum Exec {
+    /// The new program is in place.
+    Started,
+    /// `AT_EXECVE_CHECK`: the file could be run; nothing changed.
+    Checked,
+}
+
+/// Linux's `do_execveat_common`.
+#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
 fn exec(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
+    dirfd: u64,
     path: u64,
     argv: u64,
     envp: u64,
-) -> Result<(), Errno> {
-    // In Linux's order: the path, the file opened, then the argument and environment lists.
-    let path = guest(kernel, cx, tid).read_path(path)?;
+    flags: u32,
+) -> Result<Exec, Errno> {
+    // In the reference's order: the flags, the path, the file opened, then the argument and
+    // environment lists.
+    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_EXECVE_CHECK) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let path = if flags & AT_EMPTY_PATH != 0 {
+        guest(kernel, cx, tid).read_path_maybe_empty(path)?
+    } else {
+        guest(kernel, cx, tid).read_path(path)?
+    };
     let pid = kernel.threads[&tid].process;
-    let program = crate::loader::open_program(kernel, pid, &path)?;
+    let dirfd = dirfd as i32;
+    // A path from a descriptor is named through `/dev/fd`, as Linux's `alloc_bprm` names it; a script
+    // cannot be run through one closed at exec, which its interpreter could not open.
+    let from_descriptor = dirfd != AT_FDCWD && !path.starts_with(b"/");
+    let (file_name, reachable) = if from_descriptor {
+        let mut name = alloc::format!("/dev/fd/{dirfd}").into_bytes();
+        if !path.is_empty() {
+            name.push(b'/');
+            name.extend_from_slice(&path);
+        }
+        let descriptor = kernel.processes[&pid].files.get(dirfd)?;
+        (name, !descriptor.close_on_exec)
+    } else {
+        (path.clone(), true)
+    };
+    let program = if path.is_empty() && dirfd == AT_FDCWD {
+        let cwd = kernel.processes[&pid].cwd.clone();
+        crate::loader::program_of(kernel, pid, cwd, Vec::new())?
+    } else if path.is_empty() {
+        let file = kernel.processes[&pid].files.file(dirfd)?;
+        let (node, full) = {
+            let file = file.borrow();
+            (file.node.clone(), file.path.clone())
+        };
+        crate::loader::program_of(kernel, pid, node, full)?
+    } else {
+        let at = super::files::start(kernel, tid, dirfd as u64, &path)?;
+        crate::loader::open_program_at(kernel, pid, &at, &path, flags & AT_SYMLINK_NOFOLLOW == 0)?
+    };
     let mut guest = guest(kernel, cx, tid);
     let arguments = read_strings(&mut guest, argv)?;
     let environment = read_strings(&mut guest, envp)?;
+    if flags & AT_EXECVE_CHECK != 0 {
+        return Ok(Exec::Checked);
+    }
     if kernel.processes[&pid].threads.len() > 1 {
         kernel
             .counters
             .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(__NR_execve));
         return Err(Errno::ENOSYS);
     }
-    let image = crate::loader::load(kernel, cx, pid, &path, program, arguments, environment)?;
+    let mut program = program;
+    program.reopenable = reachable;
+    let mut image =
+        crate::loader::load(kernel, cx, pid, &file_name, program, arguments, environment)?;
+    // Run from a descriptor, the process is named after the file run (a script's interpreter), not
+    // `/dev/fd/<n>`.
+    if from_descriptor {
+        let path = &image.executable.1;
+        image.name = path
+            .rsplit(|byte| *byte == b'/')
+            .next()
+            .unwrap_or_default()
+            .to_vec();
+    }
     kernel.install_image(cx, pid, tid, image);
-    Ok(())
+    Ok(Exec::Started)
 }
 
 pub(super) fn getpid(

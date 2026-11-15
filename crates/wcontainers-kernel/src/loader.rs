@@ -13,7 +13,7 @@ use wcontainers_abi::{
 
 use crate::fs::{Content, Node};
 use crate::linux::auxvec::*;
-use crate::linux::general::{R_OK, S_IFMT, S_IFREG, X_OK};
+use crate::linux::general::{R_OK, S_IFLNK, S_IFMT, S_IFREG, X_OK};
 use crate::memory::{AddressMap, Backing, Mapping, STACK_LIMIT, page_down, page_up};
 use crate::process::{Pid, StartingStack};
 use crate::{Context, Errno, Kernel, errno};
@@ -57,31 +57,61 @@ pub(crate) struct Program {
     bytes: Vec<u8>,
     /// The caller may read it (Linux's `would_dump`).
     readable: bool,
+    /// The new program could open it again by the name it was run by, as a script's interpreter
+    /// must: not so through a descriptor closed at exec.
+    pub reopenable: bool,
 }
 
 /// Finds a file to run by path from the process's point of view, with Linux's checks.
 pub(crate) fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Program, Errno> {
-    kernel.with_walk(pid, |walk, process| {
-        let (node, full) = walk.locate(&process.cwd, path)?;
-        let inode = node.borrow();
-        if inode.mode & S_IFMT != S_IFREG || inode.fs.no_execute() {
-            return Err(Errno::EACCES);
+    let cwd = kernel.processes[&pid].cwd.clone();
+    open_program_at(kernel, pid, &cwd, path, true)
+}
+
+/// The same from `start`; not following a link as the last part makes one ELOOP.
+pub(crate) fn open_program_at(
+    kernel: &Kernel,
+    pid: Pid,
+    start: &Node,
+    path: &[u8],
+    follow: bool,
+) -> Result<Program, Errno> {
+    let (node, full) = kernel.with_walk(pid, |walk, _| {
+        if !follow && walk.resolve(start, path, false)?.borrow().file_type() == S_IFLNK {
+            return Err(Errno::ELOOP);
         }
-        if !inode.permits(&process.credentials, X_OK, true) {
-            return Err(Errno::EACCES);
-        }
-        let bytes = match &inode.content {
-            Content::Regular(file) => file.data.clone(),
-            _ => return Err(Errno::EACCES),
-        };
-        let readable = inode.permits(&process.credentials, R_OK, true);
-        drop(inode);
-        Ok(Program {
-            node,
-            path: full,
-            bytes,
-            readable,
-        })
+        walk.locate(start, path)
+    })?;
+    program_of(kernel, pid, node, full)
+}
+
+/// Linux's checks on a file to run (`do_open_execat`), for a file already found.
+pub(crate) fn program_of(
+    kernel: &Kernel,
+    pid: Pid,
+    node: Node,
+    path: Vec<u8>,
+) -> Result<Program, Errno> {
+    let credentials = &kernel.processes[&pid].credentials;
+    let inode = node.borrow();
+    if inode.mode & S_IFMT != S_IFREG || inode.fs.no_execute() {
+        return Err(Errno::EACCES);
+    }
+    if !inode.permits(credentials, X_OK, true) {
+        return Err(Errno::EACCES);
+    }
+    let bytes = match &inode.content {
+        Content::Regular(file) => file.data.clone(),
+        _ => return Err(Errno::EACCES),
+    };
+    let readable = inode.permits(credentials, R_OK, true);
+    drop(inode);
+    Ok(Program {
+        node,
+        path,
+        bytes,
+        readable,
+        reopenable: true,
     })
 }
 
@@ -109,6 +139,10 @@ pub(crate) fn load(
             return Err(Errno::ELOOP);
         }
         let (interpreter, argument) = parse_script_line(&program.bytes)?;
+        // The interpreter would open the script by a path the new program cannot reach.
+        if !program.reopenable {
+            return Err(Errno::ENOENT);
+        }
         let mut new_arguments = vec![interpreter.clone()];
         new_arguments.extend(argument);
         new_arguments.push(file_name.clone());
@@ -125,7 +159,6 @@ pub(crate) fn load(
         pid,
         memory,
         program,
-        &file_name,
         path,
         &arguments,
         &environment,
@@ -208,7 +241,6 @@ fn place(
     pid: Pid,
     memory: MemoryId,
     program: Program,
-    file_name: &[u8],
     exec_path: &[u8],
     arguments: &[Vec<u8>],
     environment: &[Vec<u8>],
@@ -323,7 +355,8 @@ fn place(
     let mut registers = RegisterBlock::ZERO;
     registers.sp = sp;
     registers.pc = entry;
-    let name = file_name
+    // Linux names the process after the file asked for, not a script's interpreter.
+    let name = exec_path
         .rsplit(|byte| *byte == b'/')
         .next()
         .unwrap_or_default()

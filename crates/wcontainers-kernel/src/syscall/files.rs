@@ -18,7 +18,7 @@ use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
 
 /// The start of a walk for a `*at` call: the directory `dirfd` names, or the working directory.
-fn start(kernel: &Kernel, tid: Tid, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
+pub(super) fn start(kernel: &Kernel, tid: Tid, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
     let process = kernel.process_of(tid);
     let dirfd = dirfd as i32;
     if path.starts_with(b"/") {

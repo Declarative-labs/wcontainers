@@ -853,6 +853,7 @@ pub const CALLS: &[u32] = &[
     linux::__NR_mincore,
     linux::__NR_ioprio_get,
     linux::__NR_ioprio_set,
+    linux::__NR_execveat,
     linux::__NR_pkey_mprotect,
     linux::__NR_pkey_alloc,
     linux::__NR_pkey_free,
@@ -1166,6 +1167,28 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
+        // Always only a check: a program that ran would replace the reference's runner.
+        linux::__NR_execveat => {
+            let list = |word: u64| pick(&[ARENA + NULLS, 0, u64::MAX - 4095], word);
+            let flags = pick(
+                &[
+                    0,
+                    linux::AT_EMPTY_PATH,
+                    linux::AT_SYMLINK_NOFOLLOW,
+                    linux::AT_EMPTY_PATH | linux::AT_SYMLINK_NOFOLLOW,
+                    2,
+                ],
+                e,
+            );
+            [
+                dirfd(a),
+                path(b),
+                list(c),
+                list(d),
+                u64::from(flags | linux::AT_EXECVE_CHECK),
+                0,
+            ]
+        }
         linux::__NR_pkey_free => [pick(&[0, 0, 1, u64::MAX, 1 << 32], a), 0, 0, 0, 0, 0],
         linux::__NR_map_shadow_stack => [play(a), count(b), value(c), 0, 0, 0],
         // No time slice extension flag (not built).

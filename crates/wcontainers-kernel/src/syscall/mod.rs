@@ -235,6 +235,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_prctl, S(process::prctl)),
         (__NR_seccomp, S(seccomp::seccomp)),
         (__NR_rseq, S(rseq::rseq)),
+        (__NR_execveat, F(process::execveat)),
         (__NR_membarrier, S(rseq::membarrier)),
         (__NR_pkey_mprotect, S(memory::pkey_mprotect)),
         (__NR_pkey_alloc, S(memory::pkey_alloc)),
