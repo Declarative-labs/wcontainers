@@ -336,3 +336,30 @@ pub enum Instruction {
     /// An instruction of the CPU we present that is not translated yet.
     Unsupported,
 }
+
+/// Where control can go after an instruction, as far as the instruction itself says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Flow {
+    /// The next instruction can run after this one (including after a call returns).
+    pub falls_through: bool,
+    /// A direct jump or call target, in bytes from this instruction.
+    pub target: Option<i64>,
+}
+
+impl Instruction {
+    pub fn flow(&self) -> Flow {
+        use Instruction as I;
+        let (falls_through, target) = match *self {
+            I::Branch { link, offset } => (link, Some(offset)),
+            I::BranchCond { cond, offset } => (cond.0 < 14, Some(offset)),
+            I::CompareBranch { offset, .. } | I::TestBranch { offset, .. } => (true, Some(offset)),
+            I::BranchRegister { op, .. } => (op == BranchRegister::Blr, None),
+            I::Breakpoint { .. } | I::Undefined | I::Unsupported => (false, None),
+            _ => (true, None),
+        };
+        Flow {
+            falls_through,
+            target,
+        }
+    }
+}
