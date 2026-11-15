@@ -5,7 +5,7 @@ use crate::thread::{memarg, piece_ref, piece_type, registers, state_memory};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, EntityType,
+    BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, Encode, EntityType,
     FunctionSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module, TableType,
     TagKind, TagType, TypeSection, ValType,
 };
@@ -321,25 +321,13 @@ fn description<'a>(
 ) -> CustomSection<'static> {
     let mut data = vec![1, look_ahead as u8];
     data.extend_from_slice(blake3::hash(blob).as_bytes());
-    leb128(&mut data, pieces.len() as u64);
-    for &offset in pieces {
-        leb128(&mut data, offset);
+    (pieces.len() as u64).encode(&mut data);
+    for offset in pieces {
+        offset.encode(&mut data);
     }
     CustomSection {
         name: DESCRIPTION_SECTION.into(),
         data: data.into(),
-    }
-}
-
-fn leb128(out: &mut Vec<u8>, mut value: u64) {
-    loop {
-        let byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
     }
 }
 
