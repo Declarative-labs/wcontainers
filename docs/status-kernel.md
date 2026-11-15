@@ -4,16 +4,15 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is built; five runs so far. Programs start from the file system (with
+K0 is done. K1 (one process) is built; six runs so far. Programs start from the file system (with
 their own loader and `#!` scripts) with the credentials Linux gives them (set-user and set-group bits,
 file capabilities, secure mode, dumpability), a program's own seccomp filters, rseq, membarrier,
-memory calls with page protection, limits and faults, the
+memory calls with page protection, limits and faults, shared file mappings, the
 in-memory file systems (tmpfs with extended attributes and seals, memory files, `/proc`, `/dev`), file
 descriptors, time, randomness, ids and powers, signals a process sends itself, and Docker's default
 seccomp profile. Single busybox programs match the reference. Layer 1 covers every call built. K1 is not
-finished: in the fifth run, 20000-sequence runs went from failing within minutes to passing (seeds
-61, 63 to 69 each passed once their failures were fixed; the last three runs, seeds 67 to 69, passed
-with every fix in), but the one-million bar has not been run.
+finished: 20000-sequence runs pass (sixth run: seeds 70 and 71 passed after their fixes; see Layer 1),
+but the one-million bar has not been run.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -152,13 +151,42 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
 - cachestat (fifth run): tmpfs pages written or allocated, as the reference counts them (never dirty,
   under writeback or evicted, measured); devices, `/proc`, directories and pipes have none. A file that
   has been mapped is counted "page residency not tracked", since its faults bring in pages here unseen.
+- Shared file mappings (sixth run, src/shared.rs): while any mapping shares a tmpfs file (memory files
+  too), the file's first pages live in one block of shared pages (the abi's `shared_new` and
+  `shared_map`) that every such mapping shows, and the file's reads, writes, truncation and holes
+  reach the same block, so all see the same bytes at once, as Linux's page cache. A mapping past the
+  block makes a larger one and moves every mapping over; when no mapping shares the file any more
+  (munmap, mremap, execve, exit) its bytes move back and the block is dropped. Size changes move each
+  shared mapping's SIGBUS boundary. Linux's rules: a shared writable mapping needs a writable
+  descriptor, a read-only descriptor's shared mapping may never become writable (`VM_MAYWRITE`), a
+  `noexec` mount's mappings may never run (`VM_MAYEXEC`, also for private ones), `mprotect` stops at
+  the first mapping that may not have the change (EACCES), `MAP_SHARED_VALIDATE` refuses flags outside
+  `LEGACY_MAP_MASK` (EOPNOTSUPP), write seals refuse writable shared mappings (EPERM) and
+  F_SEAL_WRITE is refused while a shared mapping may write (EBUSY), MADV_REMOVE punches a hole
+  through a shared writable mapping, mremap moves a shared mapping without copying, and neighbouring
+  shared mappings of a file merge as Linux merges them. Both test CPUs implement shared blocks: the
+  stand-in maps a block's host memory into unicorn at every range that shows it (exact, also two
+  mappings in one process); the layer 1 buffer CPU looks shared ranges up in the block.
+- name_to_handle_at (sixth run, src/syscall/handle.rs): tmpfs handles (type 1: generation, inode
+  number), the generic identifier for `/proc`, devpts and pipes with AT_HANDLE_FID (type 0x81: inode
+  number, generation 0) and EOPNOTSUPP without it, connectable handles refused (EOPNOTSUPP: nothing
+  here decodes to a parent), EOVERFLOW with the size needed, the mount number as statx's, all in
+  Linux's order (measured). A tmpfs inode's generation, random in Linux, is a keyed hash of its
+  number with a key drawn from the host at start.
+- memfd_secret (sixth run): a file on its own file system (`SECRETMEM_MAGIC`), mode 0600, shown as
+  `/secretmem (deleted)`; read and write EINVAL, positions ESPIPE, fallocate EOPNOTSUPP, fsync
+  EINVAL, one size change, only shared mappings (private EINVAL), each locked within RLIMIT_MEMLOCK
+  (EAGAIN) and kept locked by munlock, and out of reach of process_vm_readv (EFAULT), as measured.
+- A removed directory takes no new names and looks nothing up (ENOENT, Linux's `IS_DEADDIR`).
+- `/proc/<pid>/fd` listings carry Linux's positions: a descriptor's is its number plus 2, and the end
+  is the table's size plus 2 (`proc_readfd_common`).
 - The zero devices clear buffers as ARM64's `clear_user` does (eight bytes at a time; `/dev/full`
   retries from where it stopped, measured), with no limit on the length.
 
 
 ## System calls
 
-Done (168): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+Done (170): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
 clock_nanosleep, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit, exit_group,
 faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat,
 fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat, fstatfs, fsync,
@@ -166,8 +194,8 @@ ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid
 getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
 getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill, lgetxattr,
 linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
-membarrier, memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, mprotect,
-mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2, personality,
+membarrier, memfd_create, memfd_secret, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, mprotect,
+mremap, msync, munlock, munlockall, munmap, name_to_handle_at, nanosleep, newfstatat, openat, openat2, personality,
 pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64, preadv, preadv2, prlimit64,
 process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev, pwritev2, read, readahead,
 readlinkat, readv, removexattr, renameat, renameat2, rseq, rt_sigaction, rt_sigpending,
@@ -183,8 +211,10 @@ Partial (inside the list above):
 - fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS); no leases, owners, signals, seals.
 - ioctl: FIOCLEX, FIONCLEX, FIONBIO; terminal requests give ENOTTY (no terminals yet); others ENOTTY,
   counted when the file is a device.
-- mmap: no shared file mappings (counted, ENODEV); MAP_HUGETLB counted, ENOMEM. MAP_SHARED anonymous
-  is exact while there is no fork.
+- mmap: MAP_HUGETLB counted, ENOMEM. MAP_SHARED anonymous is exact while there is no fork (it is
+  private memory here). A private file mapping is a copy made at mmap: pages not yet written do not
+  see later changes to the file, which Linux's do (no counter: the CPU side does not say which pages
+  were written). MAP_SYNC is refused (EOPNOTSUPP), as tmpfs refuses it.
 - openat, openat2: O_TMPFILE counted, EOPNOTSUPP; named pipes counted, ENXIO; `/dev/ptmx` counted,
   ENODEV. openat2's restricted lookups (RESOLVE_NO_XDEV, NO_MAGICLINKS, NO_SYMLINKS, BENEATH, IN_ROOT)
   are counted and refused with ENOSYS, as by a kernel without them; RESOLVE_CACHED is taken (everything
@@ -207,8 +237,7 @@ Partial (inside the list above):
   the line also gained the field it lacked, 52 as Linux).
 - mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
 - memfd_create: MFD_HUGETLB counted ("memory call flag not implemented") and refused with ENOSYS, as by
-  a kernel without hugetlbfs; the reference makes such files. Shared mappings of memory files are
-  shared file mappings, not built (counted, ENODEV), which is most of what programs use them for.
+  a kernel without hugetlbfs; the reference makes such files.
 - mincore: every mapped page is reported in memory, counted "page residency not tracked" (the CPU side
   does not say which pages a program touched).
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
@@ -220,7 +249,8 @@ Partial (inside the list above):
   (K3) must do that. The time slice extension flag is counted and refused with EINVAL (not built);
   the reference takes it.
 - process_vm_readv, process_vm_writev: only the caller's own process (the only one in K1).
-- cachestat: pages a mapped file's faults bring in are not known (counted, see above).
+- cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted "page
+  residency not tracked" whenever a mapped file's blocks are reported).
 - sigaltstack: refuses a change while the caller runs on its alternate stack (Linux's `on_sig_stack`,
   from the thread's stack pointer); handlers still need K2.
 
@@ -236,7 +266,7 @@ listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr, acct, vh
 init_module, finit_module, reboot, syslog, fsopen, fspick, fsmount, move_mount, sethostname,
 setdomainname, fanotify_init.
 
-Missing (92, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy,
+Missing (90, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy,
 io_submit, io_cancel, io_getevents, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
 inotify_add_watch, inotify_rm_watch, pipe2, signalfd4, vmsplice, splice, tee, timerfd_create,
 timerfd_settime, timerfd_gettime, waitid, futex, getitimer, setitimer, timer_create, timer_gettime,
@@ -246,14 +276,28 @@ mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semge
 semtimedop, semop, shmget, shmctl, shmat, shmdt, socket, socketpair, bind, listen, accept, connect,
 getsockname, getpeername, sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg,
 clone, remap_file_pages, rt_tgsigqueueinfo, accept4, recvmmsg, wait4, fanotify_mark,
-name_to_handle_at, clock_adjtime, sendmmsg, io_pgetevents, pidfd_send_signal, pidfd_open,
-epoll_pwait2, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret,
+clock_adjtime, sendmmsg, io_pgetevents, pidfd_send_signal, pidfd_open,
+epoll_pwait2, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self,
 process_mrelease, futex_waitv, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes,
 signals, futex), K3 (timers) or K5 (sockets, epoll).
 
-## Tests (last run 2026-11-15: 34 passed, 5 ignored known failures)
+## Tests (last run 2026-11-15: 37 passed, 5 ignored known failures)
 
 All pass except the ignored known failures.
+- sharedmap (new, sixth run): guest/sharedmap.c: writes through a shared mapping seen by pread and
+  the other way, appends, two mappings of one file, bytes past the end in the last page, growing and
+  shrinking under a mapping, a write from the mapping itself, msync, MADV_DONTNEED, mremap growing
+  past the end then the file growing under it, `/proc/self/maps` (sorted: placement differs),
+  munmap, MADV_REMOVE (the change in blocks), read-only descriptors, `noexec`, validated flags,
+  write and future-write seals, a memory file mapped before it has a size, and last a touch past the
+  end (SIGBUS, exit status 135). Same output and status.
+- handle (new, sixth run): guest/handle.c: name_to_handle_at's flags, sizes, types and words (which
+  hold the inode number, compared with statx), mount numbers, tmpfs, devices, `/proc`, devpts,
+  empty paths, links and bad pointers. Same output. (`/dev/mqueue` is left out: a plain directory
+  here.)
+- secret (new, sixth run): guest/secret.c: memfd_secret's flags, what the file says of itself and
+  refuses, its one size change, shared and private mappings, munlock and MADV_DONTNEED, copies to and
+  from it, process_vm_readv, its maps lines and the lock limit. Same output.
 - processvm (new, fifth run): guest/processvm.c checks process_vm_readv and process_vm_writev's
   refusals in order, whole copies by process and thread number, partial copies at pages with no
   access, read-only, write-only and execute-only pages, a gap, past a mapped file's end and below the
@@ -308,6 +352,21 @@ Known failures (ignored, with the reason in the attribute):
   counted by the reference and not known here (counted "page residency not tracked").
 
 ## Layer 1
+
+Sixth run: added shared file mappings (MAP_SHARED and MAP_SHARED_VALIDATE with a file, fixed),
+name_to_handle_at (handles with room for 128, 12, 0 and 129 bytes; the handle's words and the mount
+number are masked) and memfd_secret. getrandom now writes only to its own 96 bytes, which no call
+reads: the runners' random bytes differ, and a later call that read them as a structure went apart
+(seed 72: an iovec length). A link that names a process directory by number (`/proc/self/cwd` while
+in `/proc/self`) is not compared, as getcwd there.
+
+Cases run in the sixth run (up to three at once): seeds 70 and 71 at 20000 failed after 395 s and
+351 s (load 6 to 9): `/proc/<pid>/fd` listing positions, and names made in a removed working
+directory (both fixed). Then seed 71 passed 20000 (324 s, load 8 to 11); seed 70 failed after 262 s
+(a link naming the process number, harness; fixed) and then passed 20000 (326 s, load 8 to 12);
+seed 72 failed twice within 180 s (every iovec length is checked before any address, fixed; then
+the getrandom bytes above, harness); seed 74 failed after 91 s (a lookup in a removed directory is
+ENOENT before the name's length; fixed), then passed 2000 (33 s). Seed 73 passed 1000 (17 s).
 
 Fifth run: added process_vm_readv and process_vm_writev (the caller itself, by process number, 0 or a
 missing one; segment lists from the vector pool, arbitrary arena bytes or bad addresses; never from the
@@ -442,6 +501,8 @@ puts back their owner, mode, attributes and pool names after each sequence. No r
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Sixth run, layer 1 20000 sequences: seed 71 324 s (load 8 to 11, three runs side by side), seed 70
+  326 s (load 8 to 12, three side by side); 2000 sequences, seed 74: 33 s; 1000, seed 73: 17 s.
 - Fourth run, layer 1 with 175 call kinds: 3000 sequences, seed 57: 85.6 s (load 5.8 to 9.5); 1000
   sequences, seed 56: 30 s (load 5 to 14).
 - Fourth run, the filter test (nine programs in both runners): 2.0 s (load about 10).
@@ -458,6 +519,14 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- Added in the sixth run: a file mapped shared keeps its first pages in a block of shared pages for as
+  long as any mapping shares it (section 7's shared mapping), and the kernel's reads and writes of the
+  file go through the abi's `shared_read` and `shared_write`. Private file mappings stay copies made
+  at mmap (see Partial). A tmpfs inode's generation is a keyed hash of its number (siphasher, a new
+  dependency of the kernel, no_std) instead of a stored random number. The stand-in CPU implements
+  shared blocks by mapping the block's host memory into unicorn wherever it is shown (no host
+  page-table tricks: the Mac's 16 KiB pages cannot alias 4 KiB guest pages).
 
 - Added in the fifth run: ARM64 Linux's user copy routine (`copy_template.S`) is modelled in
   src/user.rs, only for what overlapping copies within one process leave behind (process_vm_readv and
@@ -535,7 +604,7 @@ All on this shared Mac; noisy, not benchmarks.
 ## Changes to the shared crate (wcontainers-abi)
 
 - K0: `Host::output(stream, bytes)` with `Stream`; `CounterReading::detail`.
-- None in K1 so far (checked again in the fourth run).
+- None in K1 so far (checked again in the sixth run: shared mappings use the existing shared page calls).
 
 ## Questions for the orchestrator (boundary)
 
@@ -563,17 +632,15 @@ All on this shared Mac; noisy, not benchmarks.
 ## Next (K1, in order)
 
 1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; then
-   the million (the orchestrator's command at the top). Seeds 70 and up are fresh; the million is now
-   worth starting (expected about 8 hours at the measured 20000 per 9 to 10 minutes; not measured).
+   the million (the orchestrator's command at the top). Seeds 77 and up are fresh; the million is
+   worth starting (expected about 5 to 6 hours at the measured 20000 per 5.5 minutes; not measured).
 2. Missing calls a single program can use without other processes, threads, timers or sockets:
-   name_to_handle_at (measured: tmpfs gives type 1, 12 bytes, a random generation; `/proc`, devpts
-   and the overlayfs root refuse with EOPNOTSUPP unless AT_HANDLE_FID), memfd_secret (needs shared
-   file mappings), seccomp listeners, rseq's time slice extension. The rest need K2 (pipe2, fork,
+   seccomp listeners, rseq's time slice extension. The rest need K2 (pipe2, fork,
    futex, wait, signal delivery: rt_sigreturn, rt_sigsuspend, rt_sigtimedwait), K3 (timers,
    getitimer and setitimer) or K5 (sockets, epoll, eventfd, inotify).
 3. Known gaps above (RLIMIT_CPU, `/proc/mounts`, `/proc/sys` writes,
    `/proc/<pid>/stat`'s times and addresses (start time, rss, the code, data, argument and
-   environment addresses are 0 here), `/proc/<pid>/status` lines, xattr space, huge page memory files, shared file
-   mappings).
+   environment addresses are 0 here), `/proc/<pid>/status` lines (VmLck among them), xattr space,
+   huge page memory files, private file mappings that see later file changes).
 4. K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
 5. Then K2.
