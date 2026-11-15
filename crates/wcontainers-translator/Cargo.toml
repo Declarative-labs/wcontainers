@@ -1,0 +1,22 @@
+[package]
+name = "wcontainers-translator"
+description = "Translates ARM64 machine code into WebAssembly."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-arm64 = { path = "../wcontainers-arm64" }
+wasm-encoder = "0.263.0"
+blake3 = "1"
+petgraph = { version = "0.8.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1.12.0"
+wasmparser = "0.263.0"

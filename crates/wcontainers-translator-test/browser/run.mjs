@@ -1,0 +1,66 @@
+// Runs one flat blob in Chrome through the browser runner and prints what happened as JSON.
+//
+// Usage: node run.mjs <case directory>. The directory holds case.json (where things go in guest memory),
+// blob.bin, stack.bin and translator.wasm. Chrome is the one installed on the machine; playwright-core comes
+// from the Nix shell (WC_PLAYWRIGHT_CORE).
+
+import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.WC_PLAYWRIGHT_CORE);
+
+const directory = process.argv[2];
+const here = new URL(".", import.meta.url).pathname;
+const origin = "https://wcontainers.test";
+const files = {
+  "/index.html": [join(here, "index.html"), "text/html"],
+  "/runner.js": [join(here, "runner.js"), "text/javascript"],
+  "/translator.wasm": [join(directory, "translator.wasm"), "application/wasm"],
+  "/blob.bin": [join(directory, "blob.bin"), "application/octet-stream"],
+  "/stack.bin": [join(directory, "stack.bin"), "application/octet-stream"],
+};
+const setup = JSON.parse(await readFile(join(directory, "case.json"), "utf8"));
+
+const browser = await chromium.launch({ channel: "chrome", headless: true });
+try {
+  const page = await browser.newPage();
+  page.on("console", (message) => process.stderr.write(`chrome: ${message.text()}\n`));
+  // Every file is served from here, with the headers that give the page shared memory.
+  await page.route(`${origin}/**`, async (route) => {
+    const file = files[new URL(route.request().url()).pathname];
+    if (!file) return route.fulfill({ status: 404 });
+    await route.fulfill({
+      status: 200,
+      body: await readFile(file[0]),
+      headers: {
+        "content-type": file[1],
+        "cross-origin-opener-policy": "same-origin",
+        "cross-origin-embedder-policy": "require-corp",
+      },
+    });
+  });
+  await page.goto(`${origin}/index.html`);
+  const result = await page.evaluate(async (setup) => {
+    if (!crossOriginIsolated) throw new Error("the page is not cross-origin isolated");
+    const bytes = async (path) => new Uint8Array(await (await fetch(path)).arrayBuffer());
+    const message = {
+      ...setup,
+      translatorBytes: await bytes("/translator.wasm"),
+      blob: await bytes("/blob.bin"),
+      stack: await bytes("/stack.bin"),
+    };
+    const worker = new Worker("/runner.js", { type: "module" });
+    const answer = await new Promise((resolve, reject) => {
+      worker.onmessage = ({ data }) => resolve(data);
+      worker.onerror = (event) => reject(new Error(event.message));
+      worker.postMessage(message);
+    });
+    worker.terminate();
+    return answer;
+  }, setup);
+  process.stdout.write(JSON.stringify({ ...result, userAgent: await page.evaluate(() => navigator.userAgent) }));
+} finally {
+  await browser.close();
+}

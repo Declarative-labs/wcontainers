@@ -31,6 +31,10 @@ pub enum Exit {
     /// An access outside the whole address space, stopped by the host's engine. The registers are lost, so
     /// the process can only be killed; no handler may run.
     MemoryFaultWithoutRegisters,
+    /// Something the CPU requires to be aligned was not: a load or store through a stack pointer that is not
+    /// a multiple of 16 (`pc` is that instruction, `address` the stack pointer), or a jump to an address
+    /// that is not a multiple of 4 (`pc` and `address` are that address). Linux sends SIGBUS, BUS_ADRALN.
+    AlignmentFault { address: u64 },
     /// An instruction the CPU we present does not have. `pc` is that instruction.
     IllegalInstruction,
     /// A breakpoint instruction (`brk`), with its 16 bit comment field. `pc` is that instruction.
