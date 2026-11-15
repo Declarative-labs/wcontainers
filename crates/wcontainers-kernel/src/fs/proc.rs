@@ -128,6 +128,18 @@ pub(crate) fn is_sysctl_root(index: usize) -> bool {
 }
 
 impl Entry {
+    /// A directory's path below the tree's root, for finding it again when the inodes above it, which
+    /// are made at each lookup, are gone.
+    pub fn directory_path(&self) -> Option<String> {
+        match *self {
+            Entry::Root => Some(String::new()),
+            Entry::Process(pid) => Some(format!("/{pid}")),
+            Entry::Fds(pid) => Some(format!("/{pid}/fd")),
+            Entry::Global(index) => Some(format!("/{}", GLOBAL[index].0)),
+            _ => None,
+        }
+    }
+
     /// The process an entry belongs to, for the entries inside a process's directory and the
     /// directory itself.
     pub fn of_process(&self) -> Option<Pid> {

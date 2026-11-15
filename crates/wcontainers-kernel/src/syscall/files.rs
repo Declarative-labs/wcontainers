@@ -1848,9 +1848,12 @@ fn change_directory(kernel: &mut Kernel, tid: Tid, node: Node) -> Result<u64, Er
         if !inode.is_directory() {
             return Err(Errno::ENOTDIR);
         }
-        if !inode.permits(credentials(kernel, tid), X_OK, true) {
-            return Err(Errno::EACCES);
-        }
+        crate::fs::permission(
+            &inode,
+            credentials(kernel, tid),
+            X_OK,
+            kernel.threads[&tid].process,
+        )?;
     }
     kernel.process_of_mut(tid).cwd = node;
     Ok(0)
@@ -1894,9 +1897,12 @@ pub(super) fn chroot(
         if !inode.is_directory() {
             return Err(Errno::ENOTDIR);
         }
-        if !inode.permits(credentials(kernel, tid), X_OK, true) {
-            return Err(Errno::EACCES);
-        }
+        crate::fs::permission(
+            &inode,
+            credentials(kernel, tid),
+            X_OK,
+            kernel.threads[&tid].process,
+        )?;
     }
     if !credentials(kernel, tid).has(CAP_SYS_CHROOT) {
         return Err(Errno::EPERM);

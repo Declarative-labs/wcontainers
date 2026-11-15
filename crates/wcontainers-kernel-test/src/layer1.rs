@@ -1380,6 +1380,9 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     if value < 0 {
         return out;
     }
+    if call.number == linux::__NR_getcwd && under_proc(a, arena) {
+        out.push((a, value as u64));
+    }
     match call.number {
         linux::__NR_newfstatat => out.extend([(c, 16), (c + 72, 48)]),
         linux::__NR_fstat => out.extend([(b, 16), (b + 72, 48)]),
@@ -1414,10 +1417,20 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     out
 }
 
+/// Whether the path written at `address` in the arena lies in `/proc`.
+fn under_proc(address: u64, arena: &[u8]) -> bool {
+    address
+        .checked_sub(ARENA)
+        .and_then(|offset| arena.get(offset as usize..offset as usize + 6))
+        == Some(b"/proc/".as_slice())
+}
+
 /// Whether a call's value is an address the kernel chose.
 /// Process numbers differ too: the reference's caller is a child of its runner.
-fn value_is_volatile(call: &Call) -> bool {
+fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
     match call.number {
+        // A working directory inside `/proc/<pid>` names the caller's process number.
+        linux::__NR_getcwd => under_proc(call.arguments[0], arena),
         linux::__NR_mmap => call.arguments[3] & 0x10_0010 == 0,
         linux::__NR_getpid
         | linux::__NR_getppid
@@ -1457,7 +1470,7 @@ pub fn seen(sequence: &Sequence, result: &SequenceResult) -> (Vec<Seen>, i32) {
                 *byte = 0;
             }
         }
-        let value = if value_is_volatile(call) && each.value >= 0 {
+        let value = if value_is_volatile(call, &arena) && each.value >= 0 {
             0
         } else {
             each.value

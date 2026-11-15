@@ -205,7 +205,8 @@ Masked on both sides: inode and device numbers and times in stat and statx, d_in
 statfs counts and fsid, the values of clock_gettime, gettimeofday, times, sysinfo and getrusage,
 getrandom's bytes, uname's release and version, the CPU set and CPU number (one CPU is a declared
 difference), the time ppoll and pselect6 write back, process numbers (the reference's caller is a child
-of its runner), set_tid_address's value, and the address mmap or a moving mremap returns.
+of its runner), set_tid_address's value, getcwd inside `/proc/<pid>` (it names the process number),
+and the address mmap or a moving mremap returns.
 
 Not generated, and why: named pipes (opening one waits; pipes are K2); descriptors 0 to 2 (the
 reference's caller reports through them, and fd 0 differs); process 1 as an argument and the caller's
@@ -220,12 +221,13 @@ would wait for ever); openat2 restricted lookups (not built) and RESOLVE_CACHED 
 depends on what is cached).
 
 Cases run this run (the earlier ones are in git history): seed 10: 500 passed; seed 20: 1000 passed;
-seed 22: 1500 passed; seed 30: 1500 passed; seed 32: 3000 passed; seed 41: 3000 passed. Each
-20000-sequence run (seeds 11, 12, 21, 22, 31, 32, 41, 42) found a mismatch within 1 to 3 minutes, which
+seed 22: 1500 passed; seed 30: 1500 passed; seed 32: 3000 passed; seed 41: 3000 passed; seed 43: 3000
+passed. Each 20000-sequence run (seeds 11, 12, 21, 22, 31, 32, 41, 42, 43) found a mismatch within 1 to 3 minutes, which
 was fixed or, for 42 (getpriority by user), excluded with its reason (about 28 fixes: capability
 versions, signal order, setpgid, sethostname, get_robust_list, execve's order, mremap, madvise,
 syncfs, flock, SCHED_EXT, openat with O_DIRECTORY on a link or a trailing slash, getdents64's buffer
-check, getcwd outside the root ("(unreachable)"), proc permissions, `/proc/sys`, and more). No run
+check, getcwd outside the root ("(unreachable)") and inside `/proc`, chdir into the own `fd`
+directory, long names in `/proc` (ENOENT, not ENAMETOOLONG), lseek's unknown origins, proc permissions, `/proc/sys`, and more). No run
 stalled after the runner change, but no run has yet been long enough to prove the stall gone.
 
 ## Measurements
@@ -316,8 +318,8 @@ All on this shared Mac; noisy, not benchmarks.
 ## Next (K1, in order)
 
 1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass. The
-   orchestrator's long run is the command at the top. Seed 43 was the last one started (result below,
-   under "Last long run").
+   orchestrator's long run is the command at the top. Seed 43's 20000 run failed (fixed; 3000 then
+   passed); start with seeds 44 and up.
 2. Calls single programs still use that are missing: the extended attribute calls (tmpfs has user.,
    trusted. and security. names), memfd_create (with fcntl seals), mincore, sched_rr_get_interval,
    sched_setattr/sched_getattr, getitimer/setitimer (need signal delivery and the timer queue, may wait

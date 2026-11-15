@@ -609,7 +609,10 @@ impl<'a> Walk<'a> {
 
     /// One step from a directory to a name in it, crossing mounts.
     pub fn step(&self, directory: &Node, name: &[u8]) -> Result<Node, Errno> {
-        if name.len() > NAME_MAX as usize {
+        // The length limit is each file system's own; the process information tree has none, so a
+        // long name there is simply not found.
+        if name.len() > NAME_MAX as usize && !matches!(directory.borrow().content, Content::Proc(_))
+        {
             return Err(Errno::ENAMETOOLONG);
         }
         self.check_search(directory)?;
@@ -714,6 +717,22 @@ impl<'a> Walk<'a> {
                 let inode = at.borrow();
                 if !inode.is_directory() || inode.nlink == 0 {
                     return Err(Errno::ENOENT);
+                }
+                // In the process information tree the inodes above may be gone: its directories are
+                // found again from the tree's root, mounted at `/proc`.
+                if let Content::Proc(entry) = inode.content
+                    && !matches!(entry, proc::Entry::Root)
+                    && let Some(below) = entry.directory_path()
+                    && let Ok(proc_root) = self.step(self.root, b"proc")
+                    && matches!(proc_root.borrow().content, Content::Proc(proc::Entry::Root))
+                {
+                    let mut path = b"/proc".to_vec();
+                    path.extend_from_slice(below.as_bytes());
+                    for part in parts.iter().rev() {
+                        path.push(b'/');
+                        path.extend_from_slice(part);
+                    }
+                    return Ok(path);
                 }
                 match inode
                     .place

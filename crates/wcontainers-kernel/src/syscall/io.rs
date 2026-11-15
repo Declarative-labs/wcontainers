@@ -835,6 +835,10 @@ pub(super) fn lseek(
     }
     let offset = offset as i64;
     let whence = whence as u32;
+    // An unknown origin is refused before the file has its say.
+    if whence > SEEK_MAX {
+        return Err(Errno::EINVAL);
+    }
     let inode = file.node.borrow();
     let new = match &inode.content {
         Content::HostStream(_) => return Err(Errno::ESPIPE),
