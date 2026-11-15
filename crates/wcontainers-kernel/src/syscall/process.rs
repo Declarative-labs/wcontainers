@@ -390,6 +390,10 @@ pub(super) fn setresuid(
     changing(kernel, tid, |credentials| {
         let wanted = [ruid as u32, euid as u32, suid as u32];
         let current = [credentials.uid, credentials.euid, credentials.suid];
+        // Linux returns at once when nothing changes, leaving even the file system id alone.
+        if unchanged(wanted, current, credentials.fsuid) {
+            return Ok(0);
+        }
         if !credentials.has(CAP_SETUID)
             && wanted
                 .iter()
@@ -421,6 +425,9 @@ pub(super) fn setresgid(
     changing(kernel, tid, |credentials| {
         let wanted = [rgid as u32, egid as u32, sgid as u32];
         let current = [credentials.gid, credentials.egid, credentials.sgid];
+        if unchanged(wanted, current, credentials.fsgid) {
+            return Ok(0);
+        }
         if !credentials.has(CAP_SETGID)
             && wanted
                 .iter()
@@ -613,6 +620,16 @@ pub(super) fn setfsgid(
 }
 
 /// Changes the caller's credentials; a change Linux's `commit_creds` counts makes it undumpable.
+/// The no-op test of Linux's `__sys_setresuid` and `__sys_setresgid`: every id asked for is -1 or
+/// already the current one, and a new effective id also equals the file system id.
+fn unchanged(wanted: [u32; 3], current: [u32; 3], fs_id: u32) -> bool {
+    wanted
+        .iter()
+        .zip(current)
+        .all(|(wanted, current)| *wanted == u32::MAX || *wanted == current)
+        && (wanted[1] == u32::MAX || wanted[1] == fs_id)
+}
+
 fn changing(
     kernel: &mut Kernel,
     tid: Tid,
