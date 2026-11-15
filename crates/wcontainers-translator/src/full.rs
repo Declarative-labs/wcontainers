@@ -502,8 +502,8 @@ struct Plan {
     /// By the header of such a loop, the blocks outside it placed after both copies (and no longer under the
     /// block in the loop that dominates them), so either copy reaches them by a branch.
     after: Vec<Vec<usize>>,
-    /// The accesses whose checks those copies leave out.
-    proven: HashSet<u64>,
+    /// The accesses whose checks those copies leave out, with the header of the loop whose proof covers them.
+    proven: HashMap<u64, usize>,
     /// By edge leaving loops, registers those loops keep in the thread block: the ones needed after it are
     /// loaded there.
     reload_on_exit: HashMap<(usize, usize), Registers>,
@@ -908,16 +908,27 @@ impl Plan {
                 }
             }
         }
-        // Innermost loops without calls whose accesses can be proven allowed before they run.
+        // Loops without calls and without a switch whose accesses can be proven allowed before they run.
+        // Only the loop's own blocks count, not those of loops inside it, which have proofs of their own.
         let dominates = |a: usize, b: usize| {
             doms.dominators(NodeIndex::new(b))
                 .is_some_and(|mut d| d.any(|x| x.index() == a))
         };
         let mut versioned = HashMap::new();
         let mut after = vec![Vec::new(); n];
-        for &h in &headers {
+        let mut homed = vec![false; n];
+        let mut outermost_first = headers.clone();
+        outermost_first
+            .sort_by_key(|h| std::cmp::Reverse(bodies[h].iter().filter(|&&x| x).count()));
+        for &h in &outermost_first {
             let body = &bodies[&h];
-            if headers.iter().any(|&g| g != h && body[g]) || !quiet(h) {
+            let inner: Vec<usize> = headers
+                .iter()
+                .copied()
+                .filter(|&g| g != h && body[g])
+                .collect();
+            let nested: Vec<bool> = (0..n).map(|b| inner.iter().any(|g| bodies[g][b])).collect();
+            if !quiet(h) || (0..n).any(|b| body[b] && blocks[b].table.is_some()) {
                 continue;
             }
             let shape = proof::LoopShape {
@@ -925,6 +936,7 @@ impl Plan {
                 decoded,
                 checks: &checks,
                 body,
+                nested: &nested,
                 latches: preds[h]
                     .iter()
                     .copied()
@@ -932,13 +944,19 @@ impl Plan {
                     .collect(),
                 dominates: &dominates,
             };
-            let Some(v) = proof::versioned(&shape) else {
+            let Some(mut v) = proof::versioned(&shape) else {
                 continue;
             };
+            v.inner = inner;
             versioned.insert(h, v);
-            for y in (1..n).filter(|&y| !body[y]) {
+            // Placed after the outermost such loop they leave.
+            for y in 1..n {
+                if body[y] || homed[y] {
+                    continue;
+                }
                 let idom = doms.immediate_dominator(NodeIndex::new(y)).unwrap().index();
                 if body[idom] {
+                    homed[y] = true;
                     children[idom].retain(|&c| c != y);
                     merge[y] = true;
                     after[h].push(y);
@@ -947,8 +965,8 @@ impl Plan {
             after[h].sort_by_key(|&b| std::cmp::Reverse(rank[b]));
         }
         let proven = versioned
-            .values()
-            .flat_map(|v| v.regions.iter().map(|r| r.at))
+            .iter()
+            .flat_map(|(&h, v)| v.regions.iter().map(move |r| (r.at, h)))
             .collect();
         let dynamic_flags = flags_in.iter().any(|f| f.count_ones() > 1);
         let calls_out = function_instructions(function).any(|o| {
@@ -1235,8 +1253,8 @@ struct FullEmitter<'a> {
     /// For each number in [`Plan::kept`], the i64 locals holding the run of pages last found allowed: its
     /// first address and how far past it an access may start (0 when nothing is kept).
     kept_pages: Vec<(u32, u32)>,
-    /// Emitting the copy of a loop that leaves out the checks of [`Plan::proven`].
-    unchecked: bool,
+    /// The loops whose copy without proven checks is being emitted.
+    unchecked: Vec<usize>,
     /// The piece checks the stop flag at its entry: when it calls or leaves to other pieces, and always for
     /// a loop piece, which a stop check at a jump back enters.
     entry_check: bool,
@@ -1279,7 +1297,7 @@ impl<'a> FullEmitter<'a> {
             fixed: [None; 6],
             own,
             kept_pages: Vec::new(),
-            unchecked: false,
+            unchecked: Vec::new(),
             entry_check: (plan.calls_out || loop_piece) && !omit.stop,
         };
         for _ in plan.kept_by_loop.iter().flatten() {
@@ -1491,9 +1509,9 @@ impl<'a> FullEmitter<'a> {
                     self.proof(v);
                     self.sink().if_(BlockType::Empty);
                     self.labels.push(Label::Other);
-                    self.unchecked = true;
+                    self.unchecked.push(b);
                     self.loop_of(b, &merges);
-                    self.unchecked = false;
+                    self.unchecked.pop();
                     self.sink().else_();
                     // The loop with its checks is in its loop piece, so a function's own code holds only
                     // the copy without them.
@@ -1535,11 +1553,13 @@ impl<'a> FullEmitter<'a> {
         self.labels.pop();
     }
 
-    /// Whether the loop at block `b` gets its copy without proven checks: after a stop the thread must
-    /// carry on where the proof is made again, at the loop's entry.
+    /// Whether the loop at block `b` gets its copy without proven checks: after a stop at a jump back in it
+    /// or in any loop inside it, the thread must carry on where the proof is made again, at a loop's entry.
     fn copies(&self, b: usize) -> bool {
+        let pieced = |h: usize| h == 0 || self.loops.contains_key(&self.function.blocks[h].start);
         !self.omit.permissions
-            && (self.omit.stop || b == 0 || self.loops.contains_key(&self.function.blocks[b].start))
+            && (self.omit.stop
+                || (pieced(b) && self.plan.versioned[&b].inner.iter().all(|&g| pieced(g))))
     }
 
     fn within(&mut self, b: usize, merges: &[usize]) {
@@ -2148,7 +2168,12 @@ impl Emitter for FullEmitter<'_> {
         if let CheckPlan::Skip = plan {
             return;
         }
-        if self.unchecked && self.plan.proven.contains(&self.at.offset) {
+        if self
+            .plan
+            .proven
+            .get(&self.at.offset)
+            .is_some_and(|h| self.unchecked.contains(h))
+        {
             return;
         }
         let locals = (

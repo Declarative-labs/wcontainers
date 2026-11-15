@@ -1,5 +1,5 @@
-//! Loops whose accesses are proven allowed before they run. A loop that makes no call and no system call,
-//! holds no other loop and has an exit that counts its turns gets a second copy in which the accesses whose
+//! Loops whose accesses are proven allowed before they run. A loop that makes no call and no system call
+//! and has an exit that counts its turns gets a second copy in which the accesses whose
 //! addresses move by a fixed step each turn (or not at all) have no permission check. Before the loop every
 //! page those accesses can reach in the turns it may run is looked up; the copy runs only when all of them
 //! allow the access, otherwise the loop runs as usual, so faults stay exact.
@@ -113,6 +113,8 @@ struct Counter {
 pub(super) struct Versioned {
     counter: Counter,
     pub(super) regions: Vec<Region>,
+    /// The headers of the loops inside it.
+    pub(super) inner: Vec<usize>,
 }
 
 /// What [`versioned`] needs to know about the function.
@@ -121,12 +123,15 @@ pub(super) struct LoopShape<'a> {
     pub(super) decoded: &'a HashMap<u64, Decoded>,
     pub(super) checks: &'a HashMap<u64, CheckPlan>,
     pub(super) body: &'a [bool],
+    /// Blocks of the body inside a loop within it.
+    pub(super) nested: &'a [bool],
     pub(super) latches: Vec<usize>,
     pub(super) dominates: &'a dyn Fn(usize, usize) -> bool,
 }
 
-/// The copy without checks for an innermost loop that makes no call and no system call, if it has a counting
-/// exit and accesses whose checks it can leave out.
+/// The copy without checks for a loop that makes no call and no system call, if it has a counting exit and
+/// accesses whose checks it can leave out. Only the loop's own blocks, run at most once a turn, are looked at
+/// for its changes, its exit and its accesses.
 pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
     let function = shape.function;
     let blocks: Vec<usize> = (0..function.blocks.len())
@@ -155,6 +160,9 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
         let &[(block, at)] = defs.get(&bit)?.as_slice() else {
             return None;
         };
+        if shape.nested[block] {
+            return None;
+        }
         let instruction = shape.decoded[&at].instruction;
         let (width, step, negate) = match instruction {
             Instruction::AddSub {
@@ -210,11 +218,11 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
 
     let counter = blocks
         .iter()
-        .filter(|&&e| shape.latches.iter().all(|&l| (shape.dominates)(e, l)))
+        .filter(|&&e| !shape.nested[e] && shape.latches.iter().all(|&l| (shape.dominates)(e, l)))
         .find_map(|&e| counting_exit(shape, e, &invariant, &induction, &steps))?;
 
     let mut regions = Vec::new();
-    for (b, o) in instructions() {
+    for (b, o) in instructions().filter(|&(b, _)| !shape.nested[b]) {
         let Some(access) = shape.decoded[&o].instruction.memory_access() else {
             continue;
         };
@@ -292,7 +300,11 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
     if regions.is_empty() {
         return None;
     }
-    Some(Versioned { counter, regions })
+    Some(Versioned {
+        counter,
+        regions,
+        inner: Vec::new(),
+    })
 }
 
 /// The counting exit at the end of block `e`, if it has one.
