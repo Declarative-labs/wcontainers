@@ -100,6 +100,49 @@ pub(super) fn memfd_create(
     Ok(added as u64)
 }
 
+/// `memfd_secret`: an unnamed file of memory only its shared mappings reach (Linux's `secretmem`).
+pub(super) fn memfd_secret(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let flags = flags as u32;
+    if flags & !O_CLOEXEC != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let process = kernel.process_of(tid);
+    let limit = process.limits[RLIMIT_NOFILE as usize].current;
+    process.files.lowest_free(0, limit)?;
+    let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
+    let now = kernel.now(cx);
+    let fs = *kernel
+        .files
+        .secretmem_fs
+        .get_or_insert_with(|| kernel.files.numbers.file_system(Kind::Secretmem, 0));
+    let ino = kernel.files.numbers.ino();
+    let node: Node = new_inode(
+        fs,
+        ino,
+        New {
+            mode: S_IFREG | 0o600,
+            uid,
+            gid,
+            rdev: 0,
+            now,
+            content: Content::Regular(Regular::default()),
+            parent: None,
+            name: b"secretmem".to_vec(),
+        },
+    );
+    let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, b"/secretmem".to_vec());
+    let added = kernel
+        .process_of_mut(tid)
+        .files
+        .add(file, flags & O_CLOEXEC != 0, 0, limit)?;
+    Ok(added as u64)
+}
+
 /// The seals of the file an open file is, where it has them: tmpfs's regular files.
 fn seals_of(file: &OpenFile) -> Option<u32> {
     let inode = file.node.borrow();

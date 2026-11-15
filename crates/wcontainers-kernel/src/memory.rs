@@ -79,6 +79,11 @@ impl Mapping {
         }
     }
 
+    /// Whether it maps a secret memory file, which stays locked and which no other task may reach.
+    pub fn is_secret(&self) -> bool {
+        matches!(&self.backing, Backing::File { node, .. } if node.borrow().is_secret())
+    }
+
     /// Whether the mapping shows a file's block of shared pages.
     pub fn shares_file(&self) -> bool {
         self.shared && matches!(self.backing, Backing::File { .. })
@@ -243,7 +248,7 @@ impl AddressMap {
         let mut at = address;
         while at < end {
             let Some(mapping) = self.find(at) else { break };
-            if !mapping.permissions.contains(wanted) {
+            if !mapping.permissions.contains(wanted) || mapping.is_secret() {
                 break;
             }
             let reach = match &mapping.backing {
@@ -427,7 +432,9 @@ impl AddressMap {
     /// Locks or unlocks a range, every page of which is mapped.
     pub fn set_lock(&mut self, start: u64, end: u64, lock: Lock) {
         for mut mapping in self.remove(start, end) {
-            mapping.locked = lock;
+            if !mapping.is_secret() {
+                mapping.locked = lock;
+            }
             self.mappings.insert(mapping.start, mapping);
         }
         self.merge_around();
@@ -436,7 +443,9 @@ impl AddressMap {
     /// Locks or unlocks every mapping.
     pub fn set_lock_all(&mut self, lock: Lock) {
         for mapping in self.mappings.values_mut() {
-            mapping.locked = lock;
+            if !mapping.is_secret() {
+                mapping.locked = lock;
+            }
         }
         self.merge_around();
     }

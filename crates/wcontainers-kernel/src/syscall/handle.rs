@@ -29,10 +29,10 @@ fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, [u32
             FILEID_INO32_GEN,
             [generation(kernel, inode.ino), ino[0], ino[1]],
         )),
-        Kind::Proc | Kind::Devpts | Kind::Pipe if identifier => {
+        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem if identifier => {
             Ok((FILEID_INO64_GEN, [ino[0], ino[1], 0]))
         }
-        Kind::Proc | Kind::Devpts | Kind::Pipe => Err(Errno::EOPNOTSUPP),
+        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem => Err(Errno::EOPNOTSUPP),
     }
 }
 

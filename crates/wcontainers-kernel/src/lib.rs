@@ -64,6 +64,8 @@ pub(crate) struct Files {
     pub pipe_fs: FileSystem,
     /// The internal tmpfs memory files live on, made at the first `memfd_create`.
     pub memfd_fs: Option<FileSystem>,
+    /// The internal file system secret memory files live on, made at the first `memfd_secret`.
+    pub secretmem_fs: Option<FileSystem>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
@@ -126,6 +128,7 @@ impl Kernel {
                 proc_fs,
                 pipe_fs,
                 memfd_fs: None,
+                secretmem_fs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
             },

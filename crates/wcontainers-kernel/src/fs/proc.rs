@@ -410,7 +410,7 @@ pub(crate) fn link_target(
                     walk.path_of(&file.node)
                         .unwrap_or_else(|| file.path.clone())
                 }
-                _ if inode.nlink == 0 => {
+                _ if inode.shown_deleted() => {
                     let mut path = file.path.clone();
                     path.extend_from_slice(b" (deleted)");
                     path
@@ -625,11 +625,19 @@ fn process_file(
                 let (offset, ino, path) = match &mapping.backing {
                     Backing::File {
                         node, path, offset, ..
-                    } => (
-                        *offset,
-                        node.borrow().ino,
-                        String::from_utf8_lossy(path).into_owned(),
-                    ),
+                    } => {
+                        let inode = node.borrow();
+                        let deleted = if inode.shown_deleted() {
+                            " (deleted)"
+                        } else {
+                            ""
+                        };
+                        (
+                            *offset,
+                            inode.ino,
+                            alloc::format!("{}{deleted}", String::from_utf8_lossy(path)),
+                        )
+                    }
                     Backing::Heap => (0, 0, String::from("[heap]")),
                     Backing::Stack => (0, 0, String::from("[stack]")),
                     Backing::Anonymous => (0, 0, String::new()),

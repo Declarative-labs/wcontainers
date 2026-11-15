@@ -1184,7 +1184,8 @@ pub(super) fn readlinkat(
 /// A mapped tmpfs file's blocks include the pages its mappings' faults brought in, which are not known
 /// here: counted when reported.
 fn count_unknown_blocks(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
-    if matches!(&node.borrow().content, Content::Regular(regular) if regular.mapped) {
+    let inode = node.borrow();
+    if !inode.is_secret() && matches!(&inode.content, Content::Regular(regular) if regular.mapped) {
         kernel
             .counters
             .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);
@@ -1753,6 +1754,10 @@ fn truncate_node(
         }
     }
     let size = node.borrow().size();
+    // A secret memory file takes a size once (`secretmem_setattr`).
+    if node.borrow().is_secret() && size != 0 {
+        return Err(Errno::EINVAL);
+    }
     super::io::new_size_ok(kernel, cx, tid, size, length)?;
     let mut inode = node.borrow_mut();
     let Content::Regular(regular) = &mut inode.content else {
@@ -1867,6 +1872,9 @@ pub(super) fn fallocate(
         .checked_add(length)
         .filter(|end| *end <= i64::MAX as u64)
         .ok_or(Errno::EFBIG)?;
+    if node.borrow().is_secret() {
+        return Err(Errno::EOPNOTSUPP);
+    }
     // Only keeping the size and punching holes exist in tmpfs.
     if mode & !(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE) != 0 {
         return Err(Errno::EOPNOTSUPP);

@@ -77,6 +77,8 @@ pub(crate) enum Kind {
     Proc,
     /// The pipes the container's standard streams are.
     Pipe,
+    /// Secret memory files, which only a shared mapping reaches (`memfd_secret`).
+    Secretmem,
 }
 
 impl Kind {
@@ -96,6 +98,7 @@ impl Kind {
             Kind::Devpts => DEVPTS_SUPER_MAGIC.into(),
             Kind::Proc => PROC_SUPER_MAGIC.into(),
             Kind::Pipe => PIPEFS_MAGIC.into(),
+            Kind::Secretmem => SECRETMEM_MAGIC.into(),
         }
     }
 }
@@ -458,6 +461,16 @@ impl Inode {
 
     /// Whether an open file of this inode takes direct I/O (Linux's `FMODE_CAN_ODIRECT`): only tmpfs's
     /// regular files do.
+    /// A secret memory file: no reads, writes or positions, one size change, only shared mappings.
+    pub fn is_secret(&self) -> bool {
+        self.fs.kind == Kind::Secretmem
+    }
+
+    /// Whether its name is shown as deleted: it was unlinked, or never had one in any directory.
+    pub fn shown_deleted(&self) -> bool {
+        self.nlink == 0 || self.is_secret()
+    }
+
     pub fn takes_direct_io(&self) -> bool {
         self.fs.kind == Kind::Tmpfs && matches!(self.content, Content::Regular(_))
     }
@@ -802,6 +815,18 @@ impl<'a> Walk<'a> {
 
     /// One step from a directory to a name in it, crossing mounts.
     pub fn step(&self, directory: &Node, name: &[u8]) -> Result<Node, Errno> {
+        // A removed directory holds nothing, and Linux looks nothing up in it (`IS_DEADDIR`) before the
+        // file system sees the name.
+        {
+            let inode = directory.borrow();
+            if matches!(inode.content, Content::Directory(_))
+                && inode.nlink == 0
+                && name != b"."
+                && name != b".."
+            {
+                return Err(Errno::ENOENT);
+            }
+        }
         // The length limit is each file system's own; the process information tree has none, so a
         // long name there is simply not found.
         if name.len() > NAME_MAX as usize && !matches!(directory.borrow().content, Content::Proc(_))

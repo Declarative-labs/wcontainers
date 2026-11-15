@@ -41,6 +41,9 @@ const MASK_PACKS: u64 = 0x3ac0;
 const HOWS: u64 = 0x3b00;
 /// Scheduling priorities for sched_setscheduler and sched_setparam.
 const PRIORITIES: u64 = 0x3b80;
+/// Where getrandom writes: 96 bytes no call reads, since the two runners' random bytes differ and
+/// would steer later calls apart.
+const RANDOM: u64 = 0x3ba0;
 /// `sched_attr` structures for sched_setattr, 128 bytes apart.
 const SCHED_ATTRS: u64 = 0x2000;
 /// `file_handle` headers for name_to_handle_at, 128 bytes apart: room for 128 bytes, the 12 tmpfs
@@ -892,6 +895,7 @@ pub const CALLS: &[u32] = &[
     linux::__NR_process_vm_writev,
     linux::__NR_cachestat,
     linux::__NR_name_to_handle_at,
+    linux::__NR_memfd_secret,
     // Three times, since most of its sequences need several filters to show anything.
     linux::__NR_seccomp,
     linux::__NR_seccomp,
@@ -1027,6 +1031,7 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 pick(&[0, 0, 0, 1], f),
             ]
         }
+        linux::__NR_memfd_secret => [pick(&[0, 0, 0x80000, 1, 0x80001], a), 0, 0, 0, 0, 0],
         linux::__NR_name_to_handle_at => [
             dirfd(a),
             path(b),
@@ -1361,8 +1366,12 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         linux::__NR_getrandom => [
-            buffer(a),
-            pick(&[0, 1, 16, 300], b),
+            match a % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + RANDOM,
+            },
+            pick(&[0, 1, 16, 96], b),
             pick(&[0, 1, 2, 4, 8], c),
             0,
             0,

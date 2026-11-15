@@ -39,6 +39,7 @@ pub(super) fn read(
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
+    moves_bytes(&file)?;
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
@@ -66,6 +67,7 @@ pub(super) fn write(
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
+    moves_bytes(&file)?;
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
@@ -381,10 +383,22 @@ pub(super) fn sync_file_range(
     Ok(0)
 }
 
-/// The checks for a read or write at a given offset: a negative offset is invalid, and a pipe has none.
+/// The checks for a read or write at a given offset: a negative offset is invalid, and a pipe or a
+/// secret memory file has none.
 fn positioned(file: &FileRef, _offset: u64) -> Result<(), Errno> {
-    if matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+    let file = file.borrow();
+    let inode = file.node.borrow();
+    if matches!(inode.content, Content::HostStream(_)) || inode.is_secret() {
         return Err(Errno::ESPIPE);
+    }
+    Ok(())
+}
+
+/// A secret memory file has no read or write operation (Linux's `FMODE_CAN_READ` and
+/// `FMODE_CAN_WRITE` unset).
+pub(super) fn moves_bytes(file: &FileRef) -> Result<(), Errno> {
+    if file.borrow().node.borrow().is_secret() {
+        return Err(Errno::EINVAL);
     }
     Ok(())
 }
@@ -497,6 +511,7 @@ pub(super) fn readv(
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
+    moves_bytes(&file)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, None, None)
 }
@@ -511,6 +526,7 @@ pub(super) fn writev(
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
+    moves_bytes(&file)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, None, Some(appends(&file)))
 }
@@ -702,6 +718,7 @@ pub(super) fn read_at(
         }
         return Ok(cleared);
     }
+    moves_bytes(file)?;
     let offset = at.unwrap_or(file.borrow().offset);
     let bytes = file_bytes(cx, file, count, offset)?;
     let written = guest(kernel, cx, tid).write_partial(buffer, &bytes);
@@ -735,6 +752,7 @@ pub(super) fn write_at(
     if let Some(stream) = stream {
         return write_host_stream(kernel, cx, tid, stream, buffer, count);
     }
+    moves_bytes(file)?;
     let (regular, device) = {
         let inode = node.borrow();
         (
@@ -944,6 +962,9 @@ pub(super) fn lseek(
     let mut file = file.borrow_mut();
     if file.is_path() {
         return Err(Errno::EBADF);
+    }
+    if file.node.borrow().is_secret() {
+        return Err(Errno::ESPIPE);
     }
     let offset = offset as i64;
     let whence = whence as u32;
@@ -1386,8 +1407,11 @@ pub(super) fn fsync(
     }
     // Only tmpfs's files and directories have a sync operation; pipes, devices and the process
     // information tree have none.
-    match file.borrow().node.borrow().content {
+    let file = file.borrow();
+    let inode = file.node.borrow();
+    match inode.content {
         Content::HostStream(_) | Content::Special | Content::Proc(_) => Err(Errno::EINVAL),
+        _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }
 }

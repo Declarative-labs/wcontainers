@@ -279,7 +279,7 @@ pub(super) fn mmap(
             }
         }
     };
-    let mapping = Mapping {
+    let mut mapping = Mapping {
         start,
         end: start + length,
         permissions,
@@ -297,6 +297,22 @@ pub(super) fn mmap(
         replaced,
     ) {
         return Err(Errno::ENOMEM);
+    }
+    // A secret memory file is mapped only shared, and locked, within the limit on locked memory
+    // (`secretmem_mmap`).
+    if mapping.is_secret() {
+        if !shared {
+            return Err(Errno::EINVAL);
+        }
+        if !map.may_lock(
+            &process.limits,
+            Lock::Now,
+            length / PAGE_SIZE,
+            process.credentials.has(CAP_IPC_LOCK),
+        ) {
+            return Err(Errno::EAGAIN);
+        }
+        mapping.locked = Lock::Now;
     }
     let memory = process.memory;
     map.insert(cx.cpu, memory, mapping.clone())?;
