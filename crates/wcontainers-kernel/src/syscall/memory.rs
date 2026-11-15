@@ -1,6 +1,7 @@
 //! The memory calls: the program break, mappings and their protection.
 
 use alloc::vec;
+use alloc::vec::Vec;
 
 use wcontainers_abi::{LOWEST_ADDRESS, PAGE_SIZE, Permissions};
 
@@ -1108,4 +1109,135 @@ pub(super) fn map_shadow_stack(
     _: Args,
 ) -> Result<u64, Errno> {
     Err(Errno::EOPNOTSUPP)
+}
+
+pub(super) fn process_vm_readv(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    arguments: Args,
+) -> Result<u64, Errno> {
+    process_vm(kernel, cx, tid, arguments, false)
+}
+
+pub(super) fn process_vm_writev(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    arguments: Args,
+) -> Result<u64, Errno> {
+    process_vm(kernel, cx, tid, arguments, true)
+}
+
+/// Linux's `process_vm_rw`: copies between the caller's segments and another task's memory, which
+/// is reached as `get_user_pages` reaches it. Returns what was copied, or the error if nothing was.
+fn process_vm(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [pid, local, local_count, remote, remote_count, flags]: Args,
+    write: bool,
+) -> Result<u64, Errno> {
+    use super::io::{MAX_SEGMENTS, segments};
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let local = segments(&mut super::guest(kernel, cx, tid), local, local_count)?;
+    let mut remaining: u64 = local.iter().map(|(_, length)| length).sum();
+    if remaining == 0 {
+        return Ok(0);
+    }
+    // The other task's segments are only read and checked for a negative length (`iovec_from_user`).
+    if remote_count > MAX_SEGMENTS {
+        return Err(Errno::EINVAL);
+    }
+    let bytes = super::guest(kernel, cx, tid).read(remote, remote_count * 16)?;
+    let mut targets = Vec::with_capacity(remote_count as usize);
+    for chunk in bytes.as_chunks::<16>().0 {
+        let base = u64::from_le_bytes(chunk[..8].try_into().expect("8 bytes"));
+        let length = u64::from_le_bytes(chunk[8..].try_into().expect("8 bytes"));
+        if (length as i64) < 0 {
+            return Err(Errno::EINVAL);
+        }
+        targets.push((base, length));
+    }
+    if targets.iter().all(|(_, length)| *length == 0) {
+        return Ok(0);
+    }
+    let Some(target) = kernel.threads.get(&(pid as i32)) else {
+        return Err(Errno::ESRCH);
+    };
+    if target.process != kernel.threads[&tid].process {
+        // Another process's memory needs Linux's `ptrace_may_access`, which comes with processes.
+        kernel.counters.count(
+            cx.host,
+            reason::NOT_IMPLEMENTED,
+            if write {
+                __NR_process_vm_writev
+            } else {
+                __NR_process_vm_readv
+            }
+            .into(),
+        );
+        return Err(Errno::ENOSYS);
+    }
+    let mut guest = super::guest(kernel, cx, tid);
+    let mut local = local.into_iter().filter(|(_, length)| *length > 0);
+    let mut current = local.next();
+    let mut copied = 0;
+    for (base, length) in targets {
+        if remaining == 0 {
+            break;
+        }
+        if length == 0 {
+            continue;
+        }
+        let wanted = length.min(remaining);
+        let reach = guest.map.pinnable(base, wanted, write);
+        // Linux copies a page of the other side at a time, into as many local segments as it takes.
+        let mut at = base;
+        while at < base + reach {
+            let Some((local_base, local_length)) = current else {
+                break;
+            };
+            let page_end = (at / PAGE_SIZE + 1) * PAGE_SIZE;
+            let size = local_length.min(base + reach - at).min(page_end - at);
+            let local_right = if write {
+                Permissions::READ
+            } else {
+                Permissions::WRITE
+            };
+            let moved = guest.accessible(local_base, size, local_right);
+            let (from, to) = if write {
+                (local_base, at)
+            } else {
+                (at, local_base)
+            };
+            guest.copy_within(from, to, moved)?;
+            copied += moved;
+            remaining -= moved;
+            at += moved;
+            if moved < size {
+                return finish(copied);
+            }
+            current = if moved == local_length {
+                local.next()
+            } else {
+                Some((local_base + moved, local_length - moved))
+            };
+        }
+        if remaining > 0 && reach < wanted {
+            return finish(copied);
+        }
+    }
+    Ok(copied)
+}
+
+/// The end of a copy that faulted: what was copied, or `EFAULT` if nothing was.
+fn finish(copied: u64) -> Result<u64, Errno> {
+    if copied > 0 {
+        Ok(copied)
+    } else {
+        Err(Errno::EFAULT)
+    }
 }

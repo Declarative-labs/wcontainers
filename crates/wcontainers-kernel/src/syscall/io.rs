@@ -20,7 +20,7 @@ use crate::{Context, Errno, Kernel};
 pub(super) const MAX_RW_COUNT: u64 = 0x7fff_f000;
 
 /// The most segments `readv` and `writev` take (`UIO_MAXIOV`).
-const MAX_SEGMENTS: u64 = 1024;
+pub(super) const MAX_SEGMENTS: u64 = 1024;
 
 /// The end-of-directory position tmpfs gives (`DIR_OFFSET_EOD`).
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
@@ -425,7 +425,11 @@ fn verify_area(offset: u64, count: u64) -> Result<(), Errno> {
 }
 
 /// The segments of a `readv` or `writev`, checked as Linux's `import_iovec` does.
-fn segments(guest: &mut Guest<'_>, address: u64, count: u64) -> Result<Vec<(u64, u64)>, Errno> {
+pub(super) fn segments(
+    guest: &mut Guest<'_>,
+    address: u64,
+    count: u64,
+) -> Result<Vec<(u64, u64)>, Errno> {
     if count > MAX_SEGMENTS {
         return Err(Errno::EINVAL);
     }

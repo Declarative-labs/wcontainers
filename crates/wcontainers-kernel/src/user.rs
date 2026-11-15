@@ -144,6 +144,41 @@ impl Guest<'_> {
         cleared
     }
 
+    /// Copies `length` bytes from `from` to `to` within this memory as ARM64 Linux's user copy routine
+    /// (`copy_template.S`) orders its loads and stores, which decides what overlapping ranges end
+    /// up holding. Both ranges must be accessible.
+    pub fn copy_within(&mut self, from: u64, to: u64, length: u64) -> Result<(), Errno> {
+        if length == 0 || from == to {
+            return Ok(());
+        }
+        if from + length <= to || to + length <= from {
+            let mut bytes = vec![0; length as usize];
+            self.cpu
+                .read(self.memory, from, &mut bytes)
+                .map_err(errno::from_cpu)?;
+            return self
+                .cpu
+                .write(self.memory, to, &bytes)
+                .map_err(errno::from_cpu);
+        }
+        let low = from.min(to);
+        let mut bytes = vec![0; (from.max(to) + length - low) as usize];
+        self.cpu
+            .read(self.memory, low, &mut bytes)
+            .map_err(errno::from_cpu)?;
+        template_copy(
+            &mut bytes,
+            (from - low) as usize,
+            (to - low) as usize,
+            length as usize,
+            from as usize,
+        );
+        let start = (to - low) as usize;
+        self.cpu
+            .write(self.memory, to, &bytes[start..start + length as usize])
+            .map_err(errno::from_cpu)
+    }
+
     pub fn read_value<T: FromBytes>(&mut self, address: u64) -> Result<T, Errno> {
         let bytes = self.read(address, size_of::<T>() as u64)?;
         Ok(T::read_from_bytes(&bytes).expect("size matches"))
@@ -197,4 +232,102 @@ impl Guest<'_> {
     pub fn read_path_maybe_empty(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
         self.read_string(address, crate::linux::general::PATH_MAX.into())
     }
+}
+
+/// ARM64 Linux's `copy_template.S` run on `bytes`: copies `count` bytes from offset `source` to
+/// offset `target`, with loads and stores in its order and sizes. `source_address` is where the source
+/// lies in memory, whose alignment decides the first steps.
+fn template_copy(
+    bytes: &mut [u8],
+    source: usize,
+    target: usize,
+    count: usize,
+    source_address: usize,
+) {
+    struct Copy<'a> {
+        bytes: &'a mut [u8],
+        source: usize,
+        target: usize,
+    }
+    impl Copy<'_> {
+        fn load(&mut self, size: usize) -> [u8; 16] {
+            let mut value = [0; 16];
+            value[..size].copy_from_slice(&self.bytes[self.source..self.source + size]);
+            self.source += size;
+            value
+        }
+        fn store(&mut self, value: [u8; 16], size: usize) {
+            self.bytes[self.target..self.target + size].copy_from_slice(&value[..size]);
+            self.target += size;
+        }
+        fn step(&mut self, size: usize) {
+            let value = self.load(size);
+            self.store(value, size);
+        }
+        /// Up to 15 bytes, the largest piece first.
+        fn tiny(&mut self, count: usize) {
+            for size in [8, 4, 2, 1] {
+                if count & size != 0 {
+                    self.step(size);
+                }
+            }
+        }
+        /// Up to 63 bytes: 16 at a time, then the rest.
+        fn tail(&mut self, count: usize) {
+            for _ in 0..(count & 0x30) / 16 {
+                self.step(16);
+            }
+            self.tiny(count);
+        }
+    }
+    let mut copy = Copy {
+        bytes,
+        source,
+        target,
+    };
+    if count < 16 {
+        copy.tiny(count);
+        return;
+    }
+    // Align the source to 16 bytes, smallest piece first.
+    let leading = source_address.wrapping_neg() & 15;
+    let mut count = count - leading;
+    for size in [1, 2, 4, 8] {
+        if leading & size != 0 {
+            copy.step(size);
+        }
+    }
+    if count < 64 {
+        copy.tail(count);
+        return;
+    }
+    if count < 128 {
+        let a = copy.load(16);
+        copy.store(a, 16);
+        let b = copy.load(16);
+        let c = copy.load(16);
+        copy.store(b, 16);
+        copy.store(c, 16);
+        let d = copy.load(16);
+        copy.store(d, 16);
+        copy.tail(count);
+        return;
+    }
+    // 64 bytes loaded ahead of the stores, then each block stored as the next is loaded.
+    let mut held = [copy.load(16), copy.load(16), copy.load(16), copy.load(16)];
+    count -= 128;
+    loop {
+        for value in &mut held {
+            copy.store(*value, 16);
+            *value = copy.load(16);
+        }
+        if count < 64 {
+            break;
+        }
+        count -= 64;
+    }
+    for value in held {
+        copy.store(value, 16);
+    }
+    copy.tail(count);
 }

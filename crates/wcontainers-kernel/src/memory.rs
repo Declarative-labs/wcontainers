@@ -219,6 +219,32 @@ impl AddressMap {
         at - address
     }
 
+    /// How many bytes from `address` on, up to `length`, another task's access may reach, as Linux's
+    /// `get_user_pages` without `FOLL_FORCE`: by the mapping's own read or write right (not what the
+    /// CPU allows), never wholly past a file's end, and never growing a stack.
+    pub fn pinnable(&self, address: u64, length: u64, write: bool) -> u64 {
+        let wanted = if write {
+            Permissions::WRITE
+        } else {
+            Permissions::READ
+        };
+        let end = address.saturating_add(length);
+        let mut at = address;
+        while at < end {
+            let Some(mapping) = self.find(at) else { break };
+            if !mapping.permissions.contains(wanted) {
+                break;
+            }
+            let reach = match &mapping.backing {
+                Backing::File { file_end, .. } if at >= *file_end => break,
+                Backing::File { file_end, .. } => (*file_end).min(mapping.end),
+                _ => mapping.end,
+            };
+            at = reach.min(end);
+        }
+        at - address
+    }
+
     /// Whether every page of the range is mapped.
     pub fn fully_mapped(&self, start: u64, end: u64) -> bool {
         let mut at = start;

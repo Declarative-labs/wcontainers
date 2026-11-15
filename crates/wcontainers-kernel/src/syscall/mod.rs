@@ -189,6 +189,8 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_mlockall, S(memory::mlockall)),
         (__NR_munlockall, S(memory::munlockall)),
         (__NR_mincore, S(memory::mincore)),
+        (__NR_process_vm_readv, S(memory::process_vm_readv)),
+        (__NR_process_vm_writev, S(memory::process_vm_writev)),
         // The process and its thread.
         (__NR_exit, F(process::exit)),
         (__NR_exit_group, F(process::exit_group)),
