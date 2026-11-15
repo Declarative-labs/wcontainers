@@ -300,6 +300,32 @@ impl Kernel {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }
 
+    /// Ends a process killed by a signal. A signal whose default action dumps core would have Linux
+    /// write a core file and mark the wait status, when the core size limit allows one and the process
+    /// is dumpable; neither is done here (counted).
+    pub(crate) fn die_of(&mut self, cx: &mut Context<'_>, pid: Pid, signal: u32) {
+        use linux::general::*;
+        let dumps = matches!(
+            signal,
+            SIGQUIT
+                | SIGILL
+                | SIGTRAP
+                | SIGABRT
+                | SIGBUS
+                | SIGFPE
+                | SIGSEGV
+                | SIGXCPU
+                | SIGXFSZ
+                | SIGSYS
+        );
+        let process = &self.processes[&pid];
+        if dumps && process.limits[RLIMIT_CORE as usize].current > 0 && process.dumpable {
+            self.counters
+                .count(cx.host, reason::CORE_DUMP_NOT_WRITTEN, signal.into());
+        }
+        self.end_process(cx, pid, signal as i32);
+    }
+
     /// Ends a whole process with a wait status, as `exit_group` and fatal signals do.
     pub(crate) fn end_process(&mut self, cx: &mut Context<'_>, pid: Pid, wait_status: i32) {
         let process = self.processes.remove(&pid).expect("process exists");
@@ -374,7 +400,7 @@ impl Kernel {
             self.counters
                 .count(cx.host, reason::SIGNAL_HANDLER_NOT_RUN, signal.into());
         }
-        self.end_process(cx, pid, signal as i32);
+        self.die_of(cx, pid, signal);
     }
 }
 

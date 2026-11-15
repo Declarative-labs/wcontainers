@@ -135,7 +135,7 @@ impl Kernel {
             }
             // Signals needing a handler or a stop never reach here: they are refused before they can be
             // pending and not blocked.
-            self.end_process(cx, pid, signal as i32);
+            self.die_of(cx, pid, signal);
             return false;
         }
     }

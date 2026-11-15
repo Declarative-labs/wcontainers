@@ -240,7 +240,7 @@ pub(super) fn filter_call(
             if action == SECCOMP_RET_KILL_THREAD && kernel.processes[&pid].threads.len() > 1 {
                 kernel.end_thread(cx, tid);
             } else {
-                kernel.end_process(cx, pid, SIGSYS as i32);
+                kernel.die_of(cx, pid, SIGSYS);
             }
             Some(Outcome::Gone)
         }

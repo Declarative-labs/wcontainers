@@ -15,6 +15,7 @@ pub mod reason {
     /// A signal the program set a handler for arrived or was to be let through; handlers do not run
     /// yet, so the call was refused, or for a fault the process died. Detail: the signal.
     pub const SIGNAL_HANDLER_NOT_RUN: &str = "signal handler not run";
+    pub const CORE_DUMP_NOT_WRITTEN: &str = "core dump not written";
     /// A signal whose default action stops the process; stopping comes with job control. Detail: the
     /// signal.
     pub const PROCESS_STOP_NOT_IMPLEMENTED: &str = "process stop not implemented";

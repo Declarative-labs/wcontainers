@@ -1632,9 +1632,10 @@ fn select_typed(
                 continue;
             }
             let file = files.file(fd as i32)?;
-            // An `O_PATH` descriptor is never ready, as `fdget` does not see it.
+            // An `O_PATH` descriptor has no poll operation, so it is ready as Linux's default
+            // (measured: select sees it, where poll calls it invalid).
             let mask = if file.borrow().is_path() {
-                0
+                (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16
             } else {
                 poll_mask(&file)
             };

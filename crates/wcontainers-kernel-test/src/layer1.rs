@@ -989,6 +989,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             ARENA + UNREACHED_LIMITS + (word % 4) * 16
         } else if resource == u64::from(linux::RLIMIT_STACK) {
             ARENA + STACK_LIMITS + (word % 4) * 16
+        } else if resource == u64::from(linux::RLIMIT_CORE) {
+            // No core size limit above zero: core dumps are not written (counted).
+            ARENA + NULLS
         } else {
             value(word)
         }
