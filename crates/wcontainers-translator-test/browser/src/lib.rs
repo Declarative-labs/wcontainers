@@ -37,7 +37,13 @@ fn answer(bytes: Vec<u8>) -> i32 {
 /// checks set in `omit` (1: stop, 2: permissions, 4: returns; only to measure them). Returns the length of
 /// the code module, or -1 if the start or the code range is not valid.
 #[unsafe(no_mangle)]
-pub extern "C" fn translate(code_start: u64, code_end: u64, start: u64, look_ahead: u32, omit: u32) -> i32 {
+pub extern "C" fn translate(
+    code_start: u64,
+    code_end: u64,
+    start: u64,
+    look_ahead: u32,
+    omit: u32,
+) -> i32 {
     let look_ahead = if look_ahead == 1 {
         LookAhead::Full
     } else {

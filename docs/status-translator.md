@@ -5,7 +5,10 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
-pushed, including the fixes from the independent check of M1 (third M1 run). M2 has not started.
+pushed. M2 (full look-ahead) is built and tested, first run: every part of the plan's list is in, hello and
+the benchmark set match none register by register and byte by byte, layer 2 runs, and the first size and
+speed numbers are below. Speed is far from the plan's hopes on call heavy and memory heavy code; see
+"Next".
 
 ## Done
 
@@ -109,6 +112,81 @@ exit as a stop and always made the thread leave. The description section had a h
 encoder (now wasm-encoder's `Encode`). The permission byte was built with a fixed shift (now from the
 contract's bits, in both runners).
 
+- M2, full look-ahead (`wcontainers-translator/src/full.rs`, `LookAhead::Full`):
+  - Finding functions: the starts, targets of `bl`, addresses built by `adr` or by `adrp` with the `add`
+    right after it (except those a jump table of the same function goes to), and extra entries that keep
+    every function's control flow reducible (a block entered by a jump back from outside its loop becomes
+    an entry of its own, tried again until none is left). A function is everything reachable from its
+    entry without passing another entry; reaching another entry is a tail call. The same instruction may be
+    in more than one piece.
+  - One piece per function. Blocks are structured after Ramsey's "Beyond Relooper" (dominators from
+    `petgraph`): loops for loop heads, blocks for merge points, everything else placed inline.
+  - Registers (x4 to x30, v0 to v31) are locals; x0 to x3 and sp stay parameters and results. A forward
+    analysis says which locals may be newer than their globals ("dirty"); a backward one says which must
+    hold their true value, counting every register that may be dirty at a block's start as needed there, so
+    no write back ever stores a stale local. Locals are loaded at the entry when needed, written back
+    before calls, system calls, slow paths and leaving the piece, and loaded again after a call when
+    needed.
+  - Flags are kept as the last comparison: a flag setting the meaning makes once (`Effects::flags`) is kept
+    as its operands in locals shared by every setter of the same shape, and a condition on it is one
+    WebAssembly comparison (`condition_direct` in the arm64 crate: a subtraction gives eq, ne, hs, lo, hi,
+    ls, ge, lt, gt, le straight from its operands; a logical operation gives the sign conditions). Where
+    the flags are is known per point (flag locals, the globals, or one shape); where paths with different
+    shapes meet, a local says which, and readers choose by it. After a call the flags are in the globals,
+    so nothing is loaded.
+  - Direct calls are WebAssembly calls; calls through a register and calls to code with no piece go through
+    the dispatcher (the lookup). Jumps that leave the piece are tail calls, direct or through the lookup.
+    Returns keep the check of M0.
+  - Jump tables (`wcontainers-arm64/src/habits.rs`): a `br` whose target is a base built by `adr` plus a
+    shifted entry loaded from a table built by `adr`/`adrp`, with the bound from the nearest flag setting
+    subtraction of an immediate and `b.hi`/`b.hs` before it (looking up to 64 instructions back). The
+    targets are read from the blob and become blocks of the function; the jump is a `br_table` on the
+    address actually computed at run time, so a wrong guess or a changed table only takes the lookup. An
+    unrecognised `br` leaves through the lookup and is counted ("jump through a register not
+    recognised"), as is a recognised one going somewhere not in its table.
+  - Stop check at every jump back and at the entry of every piece that calls or leaves to another piece. It
+    reads the flag with a plain load (see "Departures"); when the hook says carry on, registers are loaded
+    back from the globals just written rather than kept across the call. The check after a system call
+    stays (it is how the kernel makes a thread leave).
+  - Permission check with the drops the plan allows. The fast test is one clamped byte load and an AND
+    (this page and the next both allow it); only when that fails is the exact test made (does the access
+    really reach the next page, and where it faults). An address the table allows has a clear top byte, so
+    untagging (Top Byte Ignore) moved into the check's slow path. Drops: (1) the stack frame: when the
+    stack pointer moves down by a known amount, the pages of the new part are checked once for reading and
+    writing, and accesses through sp inside the known frame have no check, across calls too; a forward
+    analysis carries the frame between blocks. (2) A group: accesses through one base register in one
+    block, with the base unchanged or moved by a known amount by its own pre/post indexing, and touching at
+    most 4096 bytes in all, are checked once at the first of them. If a frame or group check fails, the
+    thread leaves to the instruction ("go to address") and carries on in code translated at none from
+    there, which checks each access exactly, so faults land at the same instruction with the same
+    registers as at none. Nothing proved before a call or system call is relied on after it, except the
+    frame.
+  - The stack alignment check is left out where the stack pointer is known to be a multiple of 16 (checked
+    by an earlier access and moved only by multiples of 16 since); a new `Emitter::stack_aligned` asks.
+  - `translate_omitting` with `Omit { stop, permissions, returns }` leaves checks out, only to measure them.
+- `wcontainers-arm64` additions: `Effects` and `Registers` (what an instruction reads and writes, found by
+  running its meaning against a recording emitter, so there is no second copy of instruction logic),
+  `Instruction::memory_access`, `habits::jump_table`, `condition_direct`, `untag` (now public; the check
+  calls it), `Flags::Add::subtrahend` (the value subtracted, for direct comparisons).
+- Tests for M2:
+  - `tests/programs.rs`: integers, tables, buffers, hello and `programs/bench.c` at every distinct
+    optimisation level, at none and full: output and status equal to Linux, and at full the final
+    registers and every reachable byte of memory equal to none.
+  - `programs/bench.c`: the toy's four workloads (fib, sieve, hash, sort through a callback) and four of our
+    own (a byte code interpreter on a switch, a matrix product, a linked list walk, a byte search).
+    `WORKLOAD` picks one, `SCALE=1` gives the toy's sizes for timing.
+  - `tests/browser.rs`: the same programs (and bench) in Chrome at none and full, output equal to Linux.
+  - `tests/layer2.rs` with `src/layer2.rs`: random programs assembled with `dynasm` (dynasmrt 5.1.0): loops
+    with counters, calls with bounded depth, bounded recursion, tail calls, calls and jumps through
+    registers, compiler-style jump tables, flags carried across instructions (cmp, ccmp, csel, mrs/msr
+    nzcv), loads and stores in a 512 byte area. Each ends by writing its area, x0 to x15 and NZCV. Full
+    against none: registers, output and all reachable memory; the first few also against the real CPU.
+    Breaking one direct comparison on purpose was caught within 218 cases and shrunk.
+  - `tests/smoke.rs`: a flag raised by another host thread while a translated loop runs is seen inside the
+    loop, at none and full.
+  - `tests/benchmarks.rs` (ignored, one command, see "How to run"): native and wasmtime and Chrome timings
+    with and without each check, and the translation's size.
+
 ## How to run
 
 - Everything: `nix develop -c cargo test -p wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test`
@@ -123,6 +201,10 @@ contract's bits, in both runners).
   from the whole space, default 200,000), `WC_DECODE_SEED` (default 1).
 - Words in no form against the CPU: part of the layer 1 command; `WC_LAYER1_CASES` words.
 - Translator proptest: `PROPTEST_CASES`, `PROPTEST_RNG_SEED` (default seed 1).
+- Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
+  (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
+- Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
+  (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
 ## Cases actually run
 
@@ -140,6 +222,8 @@ contract's bits, in both runners).
 - Third M1 run, after the decoder change: layer 1, 399 forms x 1000 cases, seed 3, release build: 0
   mismatches (399,000 cases). This confirms the second run's seed 2 result with a new seed.
 - Pass bar of the plan (10,000 per form) not yet run. One command for it is under "How to run".
+- Layer 2 (M2): 64 cases, seed 1, 8 on the CPU: 0 mismatches. 2000 cases, seed 7, 40 on the CPU, release:
+  0 mismatches (22 s at load 3 to 4). Pass bar (one million) not run.
 
 ## Measurements
 
@@ -169,16 +253,53 @@ contract's bits, in both runners).
   module per piece; look-ahead (M2, M4) is what removes it.
 - Chrome test (hello, integers, tables, 9 distinct blobs, a fresh headless Chrome for each): 23 to 29 s in
   all over 6 runs, load 22 to 33. With buffers too (12 blobs): 28 s, one run, load 4 to 8.
-- Run time against native and against elfconv: not measured. The M0 programs run for far less than a
-  millisecond natively, so a comparison means nothing yet; it starts with the benchmark set at M2. elfconv
-  is not set up.
+- Run time against elfconv: not measured; elfconv is not set up.
+- M2, full look-ahead, `tests/benchmarks.rs`, release build, best of 2, Apple silicon Mac, wasmtime 50
+  (crate) and Chrome 157 headless; native is the reference runner in Docker timed by busybox `time`
+  (10 ms steps). Load 3.4 to 8 during the run. Times are seconds, then times native, in the order: every
+  check / no stop check / no permission check / no return check / no check.
+  - fib(42), native 0.38: wasmtime 4.38 (11.5) / 3.10 (8.2) / 4.31 (11.3) / 4.15 (10.9) / 2.76 (7.3);
+    Chrome 3.39 (8.9) / 2.85 (7.5) / 3.29 (8.7) / 3.28 (8.6) / 2.59 (6.8).
+  - sieve, native 0.43: wasmtime 1.54 (3.6) / 0.73 (1.7) / 0.76 (1.8) / 1.59 (3.7) / 0.53 (1.2);
+    Chrome 1.43 (3.3) / 0.73 (1.7) / 0.85 (2.0) / 1.26 (2.9) / 0.43 (1.0).
+  - hash, native 0.55: wasmtime 1.04 (1.9) / 0.57 (1.0) / 0.58 (1.05) / 1.03 (1.9) / 0.55 (1.0);
+    Chrome 1.79 (3.3) / 1.08 (2.0) / 1.67 (3.0) / 1.78 (3.2) / 0.98 (1.8).
+  - sort, native 0.34: wasmtime 2.18 (6.4) / 2.20 (6.5) / 2.11 (6.2) / 2.22 (6.5) / 1.62 (4.8);
+    Chrome 1.76 (5.2) / 1.66 (4.9) / 1.63 (4.8) / 1.73 (5.1) / 1.57 (4.6).
+  - interpret, native 0.14: wasmtime 1.43 (10.2) / 2.06 (14.7, an outlier against the others) / 0.65 (4.6)
+    / 1.43 (10.2) / 0.41 (2.9); Chrome 1.31 (9.3) / 1.17 (8.3) / 0.42 (3.0) / 1.30 (9.3) / 0.34 (2.4).
+  - matrix, native 0.07: wasmtime 0.66 (9.4) / 0.38 (5.5) / 0.35 (5.0) / 0.68 (9.7) / 0.20 (2.9);
+    Chrome 1.59 (22.7) / 0.99 (14.1) / 1.39 (19.8) / 1.58 (22.5) / 0.95 (13.5).
+  - walk (memory latency), native 2.19: about 0.9 to 1.1 everywhere.
+  - search, native 0.11: wasmtime 1.42 (12.9) / 0.48 (4.4) / 0.62 (5.6) / 1.35 (12.3) / 0.24 (2.2);
+    Chrome 2.53 (23.0) / 1.65 (15.0) / 2.27 (20.6) / 2.52 (22.9) / 1.48 (13.5).
+  - After keeping fewer flag operands (last commit of this run), wasmtime, load 5.7 to 7.8: sieve 3.8 /
+    1.6 / 1.6 / 3.6 / 1.3, hash 2.1 / 1.1 / 1.1 / 1.9 / 1.0, search 9.3 / 3.8 / 5.2 / 9.3 / 2.0 times
+    native. Within noise except search.
+  - Against the toy's figures in the plan: the toy had loops at about 1.3 times native with registers in
+    locals and no checks; we have 1.0 to 1.3 on sieve and hash with no check, so the shape holds. The toy's
+    checks cost 5 to 15% (stop, tightest loop) and 0 to 24% (permissions, wasmtime) each; ours each alone
+    cost 0 to 40% on sieve and hash, but together they double the loops in both engines. Call heavy code
+    (fib, sort) is 5 to 7 times native even with no check; the toy's call figures were relative (about 20%
+    better with 4 passed registers), not against native. Matrix and search in Chrome are 13 times native
+    with no check, which wasmtime is not (2 to 3): unexplained.
+  - Size, bench at -O2 SCALE=1 (all workloads): 4836 bytes of code (2867 gzipped), translated at full in
+    2.4 ms (2.0 MB/s), 88,244 bytes of WebAssembly (18.2 per byte of code), 16,400 gzipped (5.7 per gzipped
+    byte), wasmtime compile 30 ms, load 7. The toy made about 5 bytes per byte of ARM64.
 
 ## Next
 
-1. Before M2: decide the alignment exit with the orchestrator (see "Shared crate").
-2. M2: full look-ahead (section 10 of the plan). The benchmark set (pyro-parked/translator-bench/src/bench.c)
-   becomes test programs; hello and the benchmark set must give the same results as at none, in wasmtime
-   and Chrome. The Chrome runner already takes any flat blob.
+1. Speed at full look-ahead (goal one). What the machine code shows (wasmtime, hash loop): with both checks
+   in, Cranelift spills: every guest register used, the flag operand locals, the parameters, and the
+   runtime's values (permission table place and size, thread block, both memory bases, the guest memory's
+   length for its explicit 64 bit bounds check) are all live in the loop. Each check alone costs little
+   (hash: 1.01 and 1.00 times native without the other), together 1.8. Ideas, none tried: keep fewer flag
+   operands (a and m only; result and b can be worked out on the slow path); fewer runtime values (thread
+   block and table at fixed places in the state memory); drop permission checks for accesses whose base
+   moves by a known step in a loop (the plan's "whole function" reasoning, unmeasured); calls: fib is 7
+   times native even with no check, from writing back and loading x19, x20, x29, x30 around each call.
+2. Measure the second lookup design (M5 says settle it; nothing built yet).
+3. M3: every instruction.
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
@@ -188,7 +309,15 @@ contract's bits, in both runners).
 - Layer 1 does not carry FPSR and FPCR yet; nothing translated so far reads or writes them.
 - Flat blobs have no program headers, so thread local data is not supported in test programs.
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
-- The WebAssembly stack overflowing on deep guest recursion is not handled.
+- The WebAssembly stack overflowing on deep guest recursion is not handled (at full look-ahead every guest
+  call is a WebAssembly call).
+- Not yet in the across-layer tests: pieces of different look-aheads mixed at random, injected rare events
+  (stack lost, missing piece, flag raised at a random check), and faults with the table changed at random
+  points (M4 per the plan's milestones). Layer 2 programs never fault.
+- The full piece of a function keeps every local it may need; very large functions could pass V8's 50,000
+  locals or function size limits. Not checked yet (M5).
+- Finding functions explores every entry again when entries are added; fine for the test programs, not
+  measured on large binaries (M5).
 - Stand-in brk never moves the break.
 - A stop flag raised from outside is tested in wasmtime only (`tests/smoke.rs`), and only raised before a
   run, not by a second thread while the guest runs. The Chrome runner has the same hook code.
@@ -250,6 +379,35 @@ contract's bits, in both runners).
 - A word of the CPU we present that yaxpeax-arm rejects or that we do not translate is `Unsupported`, also
   where Arm's decode pseudocode makes it UNDEFINED (that is not in the forms list): both raise illegal
   instruction, but such a word is counted as "unsupported instruction reached" too.
+- Full look-ahead finds functions only from the code (starts, `bl` targets, built addresses). It does not
+  take a jump that leaves its function as a new entry unless something else makes it one; such code is
+  copied into the jumping piece instead (correct, larger).
+- Stop flag read with a plain `i32.load`, not an atomic load. An atomic load cost the same here, but a
+  plain one is what the plan measured; an engine may in principle keep a plain load out of a loop, so
+  `tests/smoke.rs` checks that a flag raised by another thread mid-loop is seen, at none and full, in
+  wasmtime. Not yet checked mid-loop in Chrome.
+- After the stop hook says carry on, and after a system call, registers are loaded back from the globals
+  instead of being kept across the call (the abi's `Resume::Continue` says nothing changed). This is what
+  the plan's "loads its registers back" says, and it keeps registers out of callee-saved registers.
+- A frame or group permission check that fails leaves to the instruction and carries on at none from
+  there ("left to an address"), instead of working out the exact fault in the piece. Exact either way.
+- The permission check of none changed shape too (fast test, then exact test), so both look-aheads share
+  it; layer 1 passed after the change.
+- Without the permission check (`Omit::permissions`, only for measuring) addresses are not untagged either,
+  because untagging is part of the check's slow path now.
+- The table byte after the last page must read as "nothing allowed"; the runners size the state memory for
+  it. Pages past the table are clamped to that byte.
+- A recognised jump table that reaches a target not in its table counts as "jump through a register not
+  recognised" (it goes through the lookup like one).
+- Every executed jump through a register that is not recognised calls the warn hook (counted per
+  execution, as every slow path is). Tail calls through function pointers (common in the C library) pay a
+  host call each time.
+- Layer 2 compares against the real CPU only for the first `WC_LAYER2_NATIVE` cases, because the
+  reference runs one blob per container; full against none is compared for every case.
+- Layer 2 writes `mrs`/`msr nzcv` as raw words, because dynasm has no name for the register.
+- Code translated at run time is at look-ahead none, and its pieces replace whatever the table held for
+  every address it reaches (including full pieces). Correct; after a "go to address" later calls through
+  the table may reach none pieces. Bounded look-ahead (M4) should take this over.
 - Vector registers, FPSR and FPCR at the start of a flat blob: the runners and the reference start v0 to
   v31 at zero, as Linux does at exec. The reference leaves FPSR and FPCR as its own process had them.
 

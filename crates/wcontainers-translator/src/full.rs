@@ -963,6 +963,9 @@ impl<'a> FullEmitter<'a> {
         6 + self.locals.len() as u32 - 1
     }
 
+    /// The locals a shape keeps: the operands only (a and the value subtracted, or a, b and the carry),
+    /// since the rest can be worked out from them when needed; `b` and `result` of a kept addition are
+    /// not locals.
     fn canonical_flags(&mut self, shape: Shape) -> Flags {
         let ty = |w: Width| match w {
             Width::W32 => ValType::I32,
@@ -976,19 +979,95 @@ impl<'a> FullEmitter<'a> {
             } => Flags::Add {
                 width,
                 a: self.new_local(ty(width)),
-                b: self.new_local(ty(width)),
+                b: if subtract {
+                    u32::MAX
+                } else {
+                    self.new_local(ty(width))
+                },
                 carry: match carry {
                     0 => Carry::Zero,
                     1 => Carry::One,
                     _ => Carry::Local(self.new_local(ValType::I32)),
                 },
-                result: self.new_local(ty(width)),
+                result: u32::MAX,
                 subtrahend: subtract.then(|| self.new_local(ty(width))),
             },
             Shape::Logic(width) => Flags::Logic {
                 width,
                 result: self.new_local(ty(width)),
             },
+        }
+    }
+
+    /// The flags of a kept shape with every local filled in: what was not kept is worked out into
+    /// temporaries (an engine drops what is not used).
+    fn shape_flags(&mut self, id: usize) -> Flags {
+        let Flags::Add {
+            width,
+            a,
+            b,
+            carry,
+            subtrahend,
+            ..
+        } = self.canonical[id]
+        else {
+            return self.canonical[id];
+        };
+        let ty = match width {
+            Width::W32 => ValType::I32,
+            Width::X64 => ValType::I64,
+        };
+        let b = match subtrahend {
+            Some(m) => {
+                let inverted = self.temporary(ty);
+                let mut s = self.sink();
+                s.local_get(m);
+                match width {
+                    Width::W32 => s.i32_const(-1).i32_xor(),
+                    Width::X64 => s.i64_const(-1).i64_xor(),
+                };
+                s.local_set(inverted);
+                inverted
+            }
+            None => b,
+        };
+        let result = self.temporary(ty);
+        let mut s = self.sink();
+        s.local_get(a).local_get(b);
+        let add = |s: &mut InstructionSink<'_>| match width {
+            Width::W32 => {
+                s.i32_add();
+            }
+            Width::X64 => {
+                s.i64_add();
+            }
+        };
+        add(&mut s);
+        match carry {
+            Carry::Zero => {}
+            Carry::One => {
+                match width {
+                    Width::W32 => s.i32_const(1),
+                    Width::X64 => s.i64_const(1),
+                };
+                add(&mut s);
+            }
+            Carry::Local(c) => {
+                s.local_get(c);
+                if width == Width::X64 {
+                    s.i64_extend_i32_u();
+                }
+                add(&mut s);
+            }
+        }
+        s.local_set(result);
+        Flags::Add {
+            width,
+            a,
+            b,
+            carry,
+            result,
+            subtrahend,
         }
     }
 
@@ -1289,7 +1368,7 @@ impl<'a> FullEmitter<'a> {
                 self.sink().global_get(g_flag(flag));
             }
             shape => {
-                let flags = self.canonical[shape as usize - 2];
+                let flags = self.shape_flags(shape as usize - 2);
                 flag_value(&mut self.sink(), flags, flag);
             }
         }
@@ -1434,7 +1513,6 @@ impl Emitter for FullEmitter<'_> {
                             a,
                             b,
                             carry,
-                            result,
                             subtrahend,
                             ..
                         },
@@ -1442,19 +1520,17 @@ impl Emitter for FullEmitter<'_> {
                             a: ca,
                             b: cb,
                             carry: cc,
-                            result: cr,
                             subtrahend: cm,
                             ..
                         },
                     ) => {
                         copy(&mut s, a, ca);
-                        copy(&mut s, b, cb);
-                        copy(&mut s, result, cr);
+                        match (subtrahend, cm) {
+                            (Some(m), Some(to)) => copy(&mut s, m, to),
+                            _ => copy(&mut s, b, cb),
+                        }
                         if let (Carry::Local(c), Carry::Local(to)) = (carry, cc) {
                             copy(&mut s, c, to);
-                        }
-                        if let (Some(m), Some(to)) = (subtrahend, cm) {
-                            copy(&mut s, m, to);
                         }
                     }
                     (Flags::Logic { result, .. }, Flags::Logic { result: cr, .. }) => {
@@ -1483,7 +1559,7 @@ impl Emitter for FullEmitter<'_> {
     fn condition(&mut self, cond: Cond) {
         let states = self.at.flags;
         if states.count_ones() == 1 && states.trailing_zeros() >= 2 {
-            let flags = self.canonical[states.trailing_zeros() as usize - 2];
+            let flags = self.shape_flags(states.trailing_zeros() as usize - 2);
             if condition_direct(&mut self.sink(), flags, cond) {
                 return;
             }
