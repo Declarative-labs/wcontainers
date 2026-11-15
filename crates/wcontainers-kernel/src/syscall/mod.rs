@@ -263,6 +263,8 @@ static TABLE: [Entry; LENGTH] = {
             S(system::sched_get_priority_min),
         ),
         (__NR_getcpu, S(system::getcpu)),
+        (__NR_ioprio_get, S(system::ioprio_get)),
+        (__NR_ioprio_set, S(system::ioprio_set)),
         (__NR_sched_setattr, S(system::sched_setattr)),
         (__NR_sched_getattr, S(system::sched_getattr)),
         (__NR_sched_rr_get_interval, S(system::sched_rr_get_interval)),

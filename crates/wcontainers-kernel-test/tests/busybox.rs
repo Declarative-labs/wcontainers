@@ -145,6 +145,10 @@ fn system() {
         &["sysctl", "kernel.hostname"],
         &["sysctl", "-w", "kernel.hostname=x"],
         &["pwdx", "1"],
+        &["ionice", "-p", "1"],
+        &["ionice", "-c", "1", "-p", "1"],
+        &["ionice", "-c", "2", "-n", "5", "ionice", "-p", "1"],
+        &["ionice", "-c", "3", "ionice", "-p", "0"],
         &["cat", "/proc/self/limits"],
         &["cat", "/proc/self/comm"],
         &[

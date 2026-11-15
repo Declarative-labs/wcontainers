@@ -673,3 +673,69 @@ pub(super) fn setpriority(
     kernel.thread_mut(tid).schedule.nice = nice;
     Ok(0)
 }
+
+/// Which processes an `ioprio_*` call names: its `which` is `getpriority`'s plus one.
+fn io_prioritized(kernel: &Kernel, tid: Tid, which: u64, who: u64) -> Result<bool, Errno> {
+    use crate::linux_extra::{IOPRIO_WHO_PROCESS, IOPRIO_WHO_USER};
+    if !(IOPRIO_WHO_PROCESS..=IOPRIO_WHO_USER).contains(&which) {
+        return Err(Errno::EINVAL);
+    }
+    prioritized(kernel, tid, which - 1, who)
+}
+
+pub(super) fn ioprio_get(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [which, who, ..]: Args,
+) -> Result<u64, Errno> {
+    use crate::linux_extra::*;
+    if !io_prioritized(kernel, tid, which, who)? {
+        return Err(Errno::ESRCH);
+    }
+    let schedule = kernel.threads[&tid].schedule;
+    // One process gives the value as set; a group or a user gives each process's effective one, where
+    // no class means the one its scheduling policy and nice value imply (Linux's `__get_task_ioprio`).
+    if which == IOPRIO_WHO_PROCESS
+        || schedule.io_priority >> IOPRIO_CLASS_SHIFT != IOPRIO_CLASS_NONE
+    {
+        return Ok(schedule.io_priority.into());
+    }
+    let class = match schedule.policy {
+        SCHED_IDLE => IOPRIO_CLASS_IDLE,
+        SCHED_FIFO | SCHED_RR => IOPRIO_CLASS_RT,
+        _ => IOPRIO_CLASS_BE,
+    };
+    Ok(u64::from(
+        class << IOPRIO_CLASS_SHIFT | ((schedule.nice + 20) / 5) as u32,
+    ))
+}
+
+pub(super) fn ioprio_set(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [which, who, priority, ..]: Args,
+) -> Result<u64, Errno> {
+    use crate::linux_extra::*;
+    // Linux's `ioprio_check_cap`, then the processes named.
+    let priority = priority as u32;
+    let class = (priority >> IOPRIO_CLASS_SHIFT) & 7;
+    let level = priority & 7;
+    match class {
+        IOPRIO_CLASS_RT => {
+            let credentials = &kernel.process_of(tid).credentials;
+            if !credentials.has(CAP_SYS_ADMIN) && !credentials.has(CAP_SYS_NICE) {
+                return Err(Errno::EPERM);
+            }
+        }
+        IOPRIO_CLASS_BE | IOPRIO_CLASS_IDLE => {}
+        IOPRIO_CLASS_NONE if level == 0 => {}
+        _ => return Err(Errno::EINVAL),
+    }
+    if !io_prioritized(kernel, tid, which, who)? {
+        return Err(Errno::ESRCH);
+    }
+    kernel.thread_mut(tid).schedule.io_priority = priority;
+    Ok(0)
+}

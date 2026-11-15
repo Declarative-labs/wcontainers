@@ -750,8 +750,18 @@ pub(super) fn sigaltstack(
     [new, old, ..]: Args,
 ) -> Result<u64, Errno> {
     let current = kernel.threads[&tid].alternate_stack;
+    // Linux's `on_sig_stack`: whether the caller runs on its alternate stack now, unless the stack is
+    // given up on entry to a handler (`SS_AUTODISARM`).
+    let mut registers = wcontainers_abi::RegisterBlock::ZERO;
+    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    let on_stack = current.2 & SS_AUTODISARM as i32 == 0
+        && registers.sp > current.0
+        && registers.sp - current.0 <= current.1;
     let replacement = if new != 0 {
         let bytes = guest(kernel, cx, tid).read(new, 24)?;
+        if on_stack {
+            return Err(Errno::EPERM);
+        }
         let base = u64::from_le_bytes(bytes[0..8].try_into().expect("8 bytes"));
         let flags = i32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes"));
         let size = u64::from_le_bytes(bytes[16..24].try_into().expect("8 bytes"));
@@ -780,7 +790,13 @@ pub(super) fn sigaltstack(
     if old != 0 {
         let mut bytes = Vec::with_capacity(24);
         bytes.extend_from_slice(&current.0.to_le_bytes());
-        let state = if current.1 == 0 { SS_DISABLE as i32 } else { 0 };
+        let state = if current.1 == 0 {
+            SS_DISABLE as i32
+        } else if on_stack {
+            SS_ONSTACK as i32
+        } else {
+            0
+        };
         let flags = state | (current.2 & SS_AUTODISARM as i32);
         bytes.extend_from_slice(&flags.to_le_bytes());
         bytes.extend_from_slice(&[0; 4]);

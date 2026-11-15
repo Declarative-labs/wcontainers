@@ -67,3 +67,14 @@ pub(crate) const SCHED_ATTR_SIZE_VER0: u32 = 48;
 pub(crate) const SCHED_ATTR_SIZE_VER1: u32 = 56;
 /// A flag only the kernel's own frequency governor threads may use (`SCHED_FLAG_SUGOV`).
 pub(crate) const SCHED_FLAG_SUGOV: u64 = 0x1000_0000;
+
+/// I/O priorities (`linux/ioprio.h`, which linux-raw-sys does not generate): the class sits above 13
+/// bits, the level in the lowest three.
+pub(crate) const IOPRIO_CLASS_SHIFT: u32 = 13;
+pub(crate) const IOPRIO_CLASS_NONE: u32 = 0;
+pub(crate) const IOPRIO_CLASS_RT: u32 = 1;
+pub(crate) const IOPRIO_CLASS_BE: u32 = 2;
+pub(crate) const IOPRIO_CLASS_IDLE: u32 = 3;
+/// What `ioprio_get`'s `which` names: one process, a process group, or a user's processes.
+pub(crate) const IOPRIO_WHO_PROCESS: u64 = 1;
+pub(crate) const IOPRIO_WHO_USER: u64 = 3;

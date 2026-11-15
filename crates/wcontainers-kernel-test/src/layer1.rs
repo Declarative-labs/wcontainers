@@ -42,6 +42,8 @@ const HOWS: u64 = 0x3b00;
 const PRIORITIES: u64 = 0x3b80;
 /// `sched_attr` structures for sched_setattr, 128 bytes apart.
 const SCHED_ATTRS: u64 = 0x2000;
+/// `stack_t` values for sigaltstack, 24 bytes apart.
+const SIGNAL_STACKS: u64 = 0x2800;
 /// Extended attribute names, one after another.
 const XATTR_NAMES: u64 = 0x3c00;
 /// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
@@ -369,6 +371,22 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         let at = (SCHED_ATTRS + index as u64 * 128) as usize;
         arena[at..at + attributes.len()].copy_from_slice(attributes);
     }
+    // Alternate signal stacks in the play area, never holding either caller's stack pointer (which
+    // differ): enough, too small, disabled, given up in handlers, already on it, and unknown flags.
+    let stacks: [(u64, i32, u64); 6] = [
+        (PLAY, 0, 8192),
+        (PLAY, 0, 1024),
+        (0, linux::SS_DISABLE as i32, 0),
+        (PLAY, linux::SS_AUTODISARM as i32, 65536),
+        (PLAY + 4096, linux::SS_ONSTACK as i32, 1 << 20),
+        (PLAY, 3, 8192),
+    ];
+    for (index, (base, flags, size)) in stacks.iter().enumerate() {
+        let at = (SIGNAL_STACKS + index as u64 * 24) as usize;
+        arena[at..at + 8].copy_from_slice(&base.to_le_bytes());
+        arena[at + 8..at + 12].copy_from_slice(&flags.to_le_bytes());
+        arena[at + 16..at + 24].copy_from_slice(&size.to_le_bytes());
+    }
     for (index, value) in XATTR_VALUE_POOL.iter().enumerate() {
         let at = (XATTR_VALUES + index as u64 * 32) as usize;
         arena[at..at + value.len()].copy_from_slice(value);
@@ -572,6 +590,8 @@ pub const CALLS: &[u32] = &[
     linux::__NR_sched_getattr,
     linux::__NR_sched_rr_get_interval,
     linux::__NR_mincore,
+    linux::__NR_ioprio_get,
+    linux::__NR_ioprio_set,
 ];
 
 /// Turns a generated call into real arguments.
@@ -895,7 +915,11 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         linux::__NR_sigaltstack => [
-            if a % 3 == 0 { 0 } else { value(a) },
+            match a % 4 {
+                0 => 0,
+                1 => buffer(a >> 2),
+                _ => ARENA + SIGNAL_STACKS + ((a >> 2) % 6) * 24,
+            },
             if b % 2 == 0 { buffer(b) } else { 0 },
             0,
             0,
@@ -1226,6 +1250,29 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             [pick(&[0, SELF, 99999, u64::MAX], a), buffer(b), 0, 0, 0, 0]
         }
         linux::__NR_mincore => [play(a), play_length(b), buffer(c), 0, 0, 0],
+        // Not by user: that names the reference's runner too.
+        linux::__NR_ioprio_get | linux::__NR_ioprio_set => [
+            pick(&[0, 1, 1, 2, 4], a),
+            pick(&[0, SELF, 99999], b),
+            pick(
+                &[
+                    0u64,
+                    1,
+                    1 << 13,
+                    2 << 13 | 5,
+                    2 << 13 | 7,
+                    3 << 13,
+                    7 << 13,
+                    2 << 13 | 8,
+                    1 << 16 | 2 << 13,
+                    u64::MAX,
+                ],
+                c,
+            ),
+            0,
+            0,
+            0,
+        ],
         // Not huge page files (hugetlbfs is not built).
         linux::__NR_memfd_create => {
             let names = xattr_names().len() as u64;

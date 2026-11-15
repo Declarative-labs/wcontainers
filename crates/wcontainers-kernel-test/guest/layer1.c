@@ -221,6 +221,23 @@ int main(void) {
         for (long at = 0; at < names_length; at += strlen(names + at) + 1) {
             removexattr("/dev/shm", names + at);
         }
+        // A descriptor on /dev/shm and ".." reach /dev, and from there the root: names from the pool
+        // made there go, and the two directories get back their owner, mode and attributes.
+        static const char *const above[] = {"/dev", "/"};
+        static const char *const pool_names[] = {"a", "b", "c", "l"};
+        for (int index = 0; index < 2; index++) {
+            int directory = open(above[index], O_RDONLY | O_DIRECTORY);
+            for (int name = 0; name < 4; name++) {
+                remove_tree(directory, pool_names[name]);
+            }
+            close(directory);
+            chown(above[index], 0, 0);
+            chmod(above[index], 0755);
+            names_length = listxattr(above[index], names, sizeof names);
+            for (long at = 0; at < names_length; at += strlen(names + at) + 1) {
+                removexattr(above[index], names + at);
+            }
+        }
         static const struct { const char *path; int minor; } devices[] = {
             {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}};
         for (int index = 0; index < 3; index++) {

@@ -957,11 +957,12 @@ fn rename(
     if flags & RENAME_EXCHANGE != 0 && !target_is_directory && to.trailing_slash {
         return Err(Errno::ENOTDIR);
     }
-    // A directory may not move below itself, nor replace one of its own ancestors.
+    // A directory may not move below itself, nor replace one of its own ancestors. The process
+    // information tree's inodes are made at each lookup, so they are compared by entry.
     let below = |moving: &Node, destination: &Node| {
         let mut at = Some(destination.clone());
         while let Some(node) = at {
-            if Rc::ptr_eq(&node, moving) {
+            if crate::fs::same_inode(&node, moving) {
                 return true;
             }
             at = node
@@ -1354,7 +1355,6 @@ fn access(
     // Checked with the real ids unless `AT_EACCESS`, and the powers only root's real id has.
     let mut checking = credentials(kernel, tid).clone();
     if flags & AT_EACCESS == 0 {
-        let old_fsuid = checking.fsuid;
         checking.fsuid = checking.uid;
         checking.fsgid = checking.gid;
         checking.effective = if checking.uid == 0 {
@@ -1362,9 +1362,14 @@ fn access(
         } else {
             0
         };
-        let _ = old_fsuid;
     }
-    let node = lookup(
+    // The whole walk runs with these credentials, as Linux's `access_override_creds` replaces the
+    // caller's for the call.
+    let own = core::mem::replace(
+        &mut kernel.process_of_mut(tid).credentials,
+        checking.clone(),
+    );
+    let found = lookup(
         kernel,
         cx,
         tid,
@@ -1372,7 +1377,9 @@ fn access(
         path,
         flags,
         flags & AT_SYMLINK_NOFOLLOW == 0,
-    )?;
+    );
+    kernel.process_of_mut(tid).credentials = own;
+    let node = found?;
     if mode == F_OK {
         return Ok(0);
     }
@@ -1515,13 +1522,16 @@ fn change_owner(
         return Err(Errno::EPERM);
     }
     if let Content::Proc(entry) = inode.content {
-        // A process's directory refuses every change (measured on the reference). Its other entries
-        // take the change and forget it at once: Linux sets their owners from the process again each
-        // time they are looked up. Other entries would keep it, which is not built.
-        if matches!(entry, crate::fs::proc::Entry::Process(_)) {
+        // A process's directory is immutable: it refuses a change of owner or group (measured on the
+        // reference), though not one that names neither. Its other entries take the change and forget
+        // it at once: Linux sets their owners from the process again each time they are looked up.
+        // Other entries would keep it, which is not built.
+        if matches!(entry, crate::fs::proc::Entry::Process(_))
+            && (uid != u32::MAX || gid != u32::MAX)
+        {
             return Err(Errno::EPERM);
         }
-        if entry.of_process().is_some() {
+        if entry.of_process().is_some() || (uid == u32::MAX && gid == u32::MAX) {
             return Ok(0);
         }
         drop(inode);

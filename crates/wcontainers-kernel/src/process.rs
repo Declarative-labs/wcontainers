@@ -132,6 +132,8 @@ pub(crate) struct Schedule {
     pub slice: u64,
     /// The deadline policy's runtime, deadline and period.
     pub deadline: (u64, u64, u64),
+    /// `ioprio_set`'s value; 0 (no class) until one is set.
+    pub io_priority: u32,
 }
 
 /// What a parked thread waits for.
