@@ -110,6 +110,9 @@ pub(crate) struct AddressMap {
     pub mmap_base: u64,
     pub brk_start: u64,
     pub brk: u64,
+    /// The program's data as Linux measures it (`end_data - start_data`), which `RLIMIT_DATA` counts
+    /// together with the heap.
+    pub data_size: u64,
     /// How new mappings are locked, as `mlockall(MCL_FUTURE)` sets (Linux's `def_flags`).
     pub future_lock: Lock,
     /// `membarrier` registrations, as Linux's `MEMBARRIER_STATE_*` bits.
@@ -128,6 +131,7 @@ impl AddressMap {
             mmap_base: page_down(end - (128 << 20)),
             brk_start: 0,
             brk: 0,
+            data_size: 0,
             future_lock: Lock::None,
             membarrier: 0,
             protection_keys: 1,

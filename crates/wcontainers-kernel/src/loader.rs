@@ -229,6 +229,9 @@ struct Placed {
     program_header_count: u64,
     /// One past the highest byte of any segment, for the program break.
     end: u64,
+    /// Linux's `end_data - start_data`: from the highest segment start to the highest end of a
+    /// segment's file bytes.
+    data: u64,
 }
 
 #[allow(
@@ -297,6 +300,7 @@ fn place(
     let main = place_elf(cx, memory, &mut map, &program, &main_path, Some(bias))?;
     map.brk_start = page_up(main.end);
     map.brk = map.brk_start;
+    map.data_size = main.data;
 
     let (entry, interpreter_base) = match &interpreter {
         Some(interpreter) => {
@@ -421,6 +425,7 @@ fn place_elf(
     let mut program_headers = 0;
     let phoff = header.e_phoff(endian);
     let mut end = 0;
+    let (mut start_data, mut end_data) = (0, 0);
     let mut code = Vec::new();
     for segment in &loads {
         let address = bias + segment.p_vaddr(endian);
@@ -500,6 +505,8 @@ fn place_elf(
             program_headers = address + (phoff - offset);
         }
         end = end.max(address + segment_memory);
+        start_data = start_data.max(address);
+        end_data = end_data.max(file_end);
     }
     let entry = bias + header.e_entry(endian);
     for (start, stop) in code {
@@ -517,6 +524,7 @@ fn place_elf(
         program_header_size: u64::from(header.e_phentsize(endian)),
         program_header_count: u64::from(header.e_phnum(endian)),
         end,
+        data: end_data.saturating_sub(start_data),
     })
 }
 

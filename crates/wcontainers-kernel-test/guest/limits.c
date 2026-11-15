@@ -107,6 +107,21 @@ int main(int argc, char **argv) {
         void *top = sbrk(0);
         show("sbrk past limit", sbrk(64 << 20) == (void *)-1 ? -1 : 0);
         show("break kept", sbrk(0) == top);
+    } else if (!strcmp(kind, "break")) {
+        // The most the break may grow under a data limit, which counts the program's data too.
+        long start = syscall(SYS_brk, 0);
+        limit(RLIMIT_DATA, 1 << 20, RLIM_INFINITY);
+        long low = 0, high = 2 << 20;
+        while (low < high) {
+            long middle = (low + high + 1) / 2;
+            if (syscall(SYS_brk, start + middle) == start + middle) {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+            syscall(SYS_brk, start);
+        }
+        printf("break may grow by %ld\n", low);
     } else if (!strcmp(kind, "stack")) {
         limit(RLIMIT_STACK, 1 << 20, RLIM_INFINITY);
         printf("within %d\n", grow(512 << 10));

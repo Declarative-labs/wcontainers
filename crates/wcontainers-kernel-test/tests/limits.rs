@@ -9,7 +9,7 @@ fn limits_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let program = guest::build("limits", &[], &out);
     let mut failed = Vec::new();
-    for kind in ["fsize", "kill", "memory", "stack"] {
+    for kind in ["fsize", "kill", "memory", "break", "stack"] {
         let (ours, theirs) = run_both(&program, &[kind]);
         if ours.outcome != theirs {
             failed.push(format!(

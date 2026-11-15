@@ -70,9 +70,10 @@ pub(super) fn brk(
     if new_end > map.end {
         return Ok(old);
     }
-    // Linux's `check_data_rlimit` on the heap's size, then `may_expand_vm` on the growth.
+    // Linux's `check_data_rlimit` on the heap and the program's data, then `may_expand_vm` on the
+    // growth.
     let data_limit = process.limits[RLIMIT_DATA as usize].current;
-    if address - map.brk_start > data_limit
+    if (address - map.brk_start).saturating_add(map.data_size) > data_limit
         || !map.may_expand(
             &process.limits,
             true,
