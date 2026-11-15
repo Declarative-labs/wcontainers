@@ -11,6 +11,13 @@ pub struct ConnectionId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BackendRequestId(pub u64);
 
+/// The container's standard output streams as the outside sees them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Stream {
+    Output,
+    Error,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostError {
     /// This host cannot do this at all.
@@ -38,6 +45,8 @@ pub struct Warning<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct CounterReading {
     pub reason: &'static str,
+    /// The guest address or the number concerned, as in [`Warning::detail`]; one counter per value.
+    pub detail: u64,
     pub count: u64,
     pub nanoseconds: u64,
 }
@@ -90,8 +99,9 @@ pub trait Host {
     /// request is one FUSE defines as having no reply.
     fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 
-    /// Bytes the container wrote to its terminal.
-    fn terminal_output(&mut self, bytes: &[u8]);
+    /// Bytes the container wrote to one of its standard streams. When the container has a terminal,
+    /// everything the terminal shows comes on [`Stream::Output`].
+    fn output(&mut self, stream: Stream, bytes: &[u8]);
 
     /// Start connecting to an outside address (4 or 16 bytes) and port. The result arrives as
     /// [`Event::Connected`]. `stream` is true for TCP and false for UDP.
