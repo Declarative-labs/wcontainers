@@ -124,7 +124,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         s.global_get(BLOCK);
         slot.load_from(&mut s, STATE_M);
     }
-    s.i64_const(BOTTOM_RETURN)
+    s.i64_const(BOTTOM_RETURN | FLAGS_WANTED)
         .local_get(piece)
         .ref_as_non_null()
         .call_ref(0);

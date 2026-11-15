@@ -1476,17 +1476,66 @@ impl<'a> FullEmitter<'a> {
     /// Copy every register whose place in the thread block may be stale there, the flags too, and the
     /// passed registers when asked.
     fn write_back(&mut self, passed: bool) {
+        self.write_back_registers();
+        self.write_back_flags();
+        if passed {
+            let block = self.fixed(G_THREAD_BLOCK);
+            save_passed(&mut self.sink(), block);
+        }
+    }
+
+    /// Copy every tracked register that may be stale in the thread block there.
+    fn write_back_registers(&mut self) {
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in self.at.dirty.bits() {
             let local = self.register(bit);
             Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
         }
+    }
+
+    /// Put the flags in the thread block, unless they are there.
+    fn write_back_flags(&mut self) {
         if self.at.flags != 1 << FLAGS_IN_BLOCK {
+            let block = self.fixed(G_THREAD_BLOCK);
             store_flags(self, block, |e, flag| e.push_flag(flag));
         }
-        if passed {
-            save_passed(&mut self.sink(), block);
+    }
+
+    /// Whether the flags may be read, or written back, after the instruction at `offset` before something
+    /// sets them again. Only the rest of its block is looked at, and anything but plain arithmetic that
+    /// neither reads the flags nor moves the stack pointer counts as reading them.
+    fn flags_needed_after(&self, offset: u64) -> bool {
+        use Instruction as I;
+        let end = self.function.blocks[self.at.block].end;
+        for o in (offset + 4..end).step_by(4) {
+            let d = &self.decoded[&o];
+            let plain = matches!(
+                d.instruction,
+                I::AddSub { .. }
+                    | I::AddSubCarry { .. }
+                    | I::Logical { .. }
+                    | I::MoveWide { .. }
+                    | I::Bitfield { .. }
+                    | I::Extract { .. }
+                    | I::PcRelative { .. }
+                    | I::CondCompare { .. }
+                    | I::CondSelect { .. }
+                    | I::Unary { .. }
+                    | I::Binary { .. }
+                    | I::MulAdd { .. }
+                    | I::Nothing
+            );
+            if !plain
+                || d.effects.uses.intersect(Registers::FLAGS) != Registers::NONE
+                || d.effects.defs.has(Reg::Sp)
+            {
+                return true;
+            }
+            if d.effects.defs.intersect(Registers::FLAGS) == Registers::FLAGS {
+                return false;
+            }
         }
+        true
     }
 
     /// Write back everything, with `pc` set.
@@ -1999,6 +2048,9 @@ impl Emitter for FullEmitter<'_> {
             s.local_get(i);
         }
         self.address(offset + 4);
+        if self.flags_needed_after(offset) {
+            self.sink().i64_const(FLAGS_WANTED).i64_or();
+        }
         match target {
             Target::Relative(by) => {
                 let to = offset.wrapping_add_signed(by);
@@ -2050,8 +2102,24 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn ret(&mut self, target: u32) {
-        self.write_back(false);
+        self.write_back_registers();
+        // The flags go back only when the caller asks for them.
+        let flags = self.at.flags;
+        let wanted = |e: &mut Self| {
+            if flags != 1 << FLAGS_IN_BLOCK {
+                e.sink()
+                    .local_get(L_RETURN)
+                    .i64_const(FLAGS_WANTED)
+                    .i64_and()
+                    .i32_wrap_i64()
+                    .if_(BlockType::Empty);
+                e.write_back_flags();
+                e.at.flags = flags;
+                e.sink().end();
+            }
+        };
         if self.omit.returns {
+            wanted(self);
             let mut s = self.sink();
             for i in 0..PASSED {
                 s.local_get(i);
@@ -2062,13 +2130,18 @@ impl Emitter for FullEmitter<'_> {
         let mut s = self.sink();
         s.local_get(target)
             .local_get(L_RETURN)
+            .i64_const(!FLAGS_WANTED)
+            .i64_and()
             .i64_eq()
             .if_(BlockType::Empty);
+        wanted(self);
+        let mut s = self.sink();
         for i in 0..PASSED {
             s.local_get(i);
         }
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
+        self.write_back_flags();
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         save_passed(&mut s, block);

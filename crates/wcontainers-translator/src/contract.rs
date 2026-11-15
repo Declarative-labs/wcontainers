@@ -101,9 +101,15 @@ pub fn permission_byte(
     bits(this, PAGE_READ, PAGE_WRITE) | bits(next, NEXT_PAGE_READ, NEXT_PAGE_WRITE)
 }
 
-/// The return address the bottom loop passes to the first piece it calls. Any value is correct: a piece
-/// returns only when the guest returns to exactly this address, and the loop then carries on there.
-pub const BOTTOM_RETURN: i64 = -1;
+/// The bit of a piece's expected return address parameter that says the caller reads the flags from the
+/// thread block after the piece returns; without it a piece may return with the flags it set only in its
+/// locals. The rest of the parameter is the address the caller expects control back at.
+pub const FLAGS_WANTED: i64 = 1;
+
+/// The return address the bottom loop passes to the first piece it calls (with [`FLAGS_WANTED`]). Any even
+/// value is correct: a piece returns only when the guest returns to exactly this address, and the loop then
+/// carries on there.
+pub const BOTTOM_RETURN: i64 = -2;
 
 /// Why the instruction at `pc` stopped the thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

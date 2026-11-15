@@ -768,7 +768,11 @@ impl Emitter for NoneEmitter<'_> {
 
     fn call(&mut self, target: Target) {
         let next = self.offset + 4;
-        self.arguments(|s| address(s, next));
+        // The flags are always in the thread block here.
+        self.arguments(|s| {
+            address(s, next);
+            s.i64_const(FLAGS_WANTED).i64_or();
+        });
         self.transfer(target, false);
         let mut s = self.sink();
         s.local_set(L_SP);
@@ -781,6 +785,8 @@ impl Emitter for NoneEmitter<'_> {
         let mut s = self.sink();
         s.local_get(target)
             .local_get(L_RETURN)
+            .i64_const(!FLAGS_WANTED)
+            .i64_and()
             .i64_eq()
             .if_(BlockType::Empty);
         for i in 0..PASSED {
