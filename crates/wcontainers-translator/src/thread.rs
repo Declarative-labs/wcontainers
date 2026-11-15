@@ -99,6 +99,9 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     ]);
     let (pc, offset, piece, payload) = (0, 1, 2, 3);
     let mut s = f.instructions();
+    s.global_get(BLOCK)
+        .i32_const(0)
+        .i32_store(memarg(STATE_M, RESUME_OFFSET, 2));
     s.loop_(BlockType::Empty);
     s.block(BlockType::Result(ValType::I32));
     s.try_table(BlockType::Empty, [Catch::One { tag: 0, label: 0 }]);

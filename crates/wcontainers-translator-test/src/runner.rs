@@ -70,6 +70,8 @@ pub struct Host {
     thread: Option<Instance>,
     memory: Option<Memory>,
     table_base: u64,
+    /// The stop hook raises the flag again before it says carry on, so the thread stops at every check.
+    stop_everywhere: bool,
 }
 
 pub struct Machine {
@@ -155,6 +157,7 @@ impl Machine {
                 thread: None,
                 memory: None,
                 table_base,
+                stop_everywhere: false,
             },
         );
         let pages = memory_bytes.div_ceil(65536);
@@ -282,6 +285,12 @@ impl Machine {
         host.program_break = host.program_break.max(end);
         let index = host.blobs.len() - 1;
         instantiate_code(&mut self.store, index, starts, look_ahead, omit);
+    }
+
+    /// From now on the thread stops at every stop check it reaches (each counted), and carries on each time.
+    pub fn stop_at_every_check(&mut self) {
+        self.store.data_mut().stop_everywhere = true;
+        self.raise_stop_flag();
     }
 
     /// Raise the thread's stop flag while it is not running, as something outside the thread would.
@@ -481,6 +490,9 @@ fn hooks(linker: &mut Linker<Host>) {
             // Raised from outside: the stand-in clears it and the thread carries on.
             let pc = snapshot(&mut caller).pc;
             slow_path(caller.data_mut(), Reason::StoppedByFlag, pc, Duration::ZERO);
+            if caller.data().stop_everywhere {
+                raise_stop_flag(&caller);
+            }
             0
         })
         .unwrap();

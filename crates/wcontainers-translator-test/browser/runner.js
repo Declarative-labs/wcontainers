@@ -262,6 +262,8 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
 
   // Each run starts the program afresh in the same instances: the blob and the stack placed again, the
   // registers as at the start, and the output of earlier runs dropped.
+  // The page raises the stop flag a few times early on (see run.mjs), so it needs the state memory.
+  postMessage({ stopFlag: { buffer: state.buffer, index: (BLOCK_AT + contract.stopFlag) / 4 } });
   const runs = [];
   for (let run = 0; run < repeat; run++) {
     guest().set(blob, load);

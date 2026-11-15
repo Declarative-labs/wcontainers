@@ -2,7 +2,10 @@
 
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator_test::programs::{Library, build, native, reachable_memory, translated};
+use wcontainers_translator_test::programs::{
+    Library, build, build_with, native, reachable_memory, translated,
+    translated_stopping_everywhere,
+};
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
@@ -95,6 +98,33 @@ fn match_linux(programs: &[(&str, Library)]) {
             built.len(),
             LEVELS.len()
         );
+    }
+}
+
+/// Stopping at every stop check (so full pieces carry on after the stop hook at every loop turn and entry,
+/// entering themselves again) changes nothing: the same output as Linux, and the same registers and memory
+/// at the end as at none with no stops.
+#[test]
+fn stops_at_every_check_change_nothing() {
+    for (name, defines) in [("bench", &["SCALE=0"][..]), ("integers", &[][..])] {
+        for optimisation in ["-O0", "-O2"] {
+            let blob = build_with(name, optimisation, Library::None, defines);
+            let theirs = native(&blob);
+            let what = format!("{name} at {optimisation}");
+            let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
+            assert_eq!(none, theirs, "{what} at none");
+            let (full, mut machine, registers) =
+                translated_stopping_everywhere(&blob, LookAhead::Full);
+            assert_eq!(full, theirs, "{what} at full, stopping everywhere");
+            assert_eq!(registers, none_registers, "registers of {what}");
+            assert!(
+                reachable_memory(&mut machine, &blob) == reachable_memory(&mut none_machine, &blob),
+                "memory of {what}"
+            );
+            let stops = machine.count(Reason::StoppedByFlag);
+            eprintln!("{what}: {stops} stops");
+            assert!(stops > 1000, "{what} stopped only {stops} times");
+        }
     }
 }
 

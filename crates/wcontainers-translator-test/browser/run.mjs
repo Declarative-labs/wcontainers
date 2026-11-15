@@ -58,8 +58,18 @@ try {
       stack: await bytes("/stack.bin"),
     };
     const worker = new Worker("/runner.js", { type: "module" });
+    // V8 runs a function first from its baseline compiler and uses optimised code only from the function's
+    // next entry, so a loop in a function entered once would stay in baseline code. The page raises the
+    // thread's stop flag at 1, 2, 4, ... 1024 ms after the guest starts; after each stop a piece enters itself
+    // again at its loop, and so picks up optimised code once V8 has it.
     const answer = await new Promise((resolve, reject) => {
-      worker.onmessage = ({ data }) => resolve(data);
+      worker.onmessage = ({ data }) => {
+        if (!data.stopFlag) return resolve(data);
+        const flag = new Int32Array(data.stopFlag.buffer);
+        for (let ms = 1; ms <= 1024; ms *= 2) {
+          setTimeout(() => Atomics.store(flag, data.stopFlag.index, 1), ms);
+        }
+      };
       worker.onerror = (event) => reject(new Error(event.message));
       worker.postMessage(message);
     });
