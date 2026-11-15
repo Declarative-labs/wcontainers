@@ -268,13 +268,16 @@ on the machine's speed); setpriority and getpriority by user (they reach the ref
 which has no counterpart here); flock waits (they
 would wait for ever); openat2 restricted lookups (not built) and RESOLVE_CACHED (its result in Linux
 depends on what is cached); huge page memory files (not built); alternate signal stacks that could hold
-either caller's stack pointer (the two differ; the stacks are now chosen from a pool in the play area). Stack limits above 1 GiB:
+either caller's stack pointer (the two differ; the stacks are now chosen from a pool in the play area). Process limits that can be
+reached (Linux counts the user's processes on the whole machine, which the reference shares with other
+layer 1 runs; found by seed 48 while seed 53 ran beside it). Stack limits above 1 GiB:
 in our 4 GiB address space nothing lies between the stack and the play area, so the stack could grow
 down into it, which the reference's layout never allows.
 
 Cases run in the third run (earlier ones are in git history): seed 45: 3000 passed; seed 47: 3000
 passed; seed 49: 3000 passed (after fixes); seed 50: 3000 passed; seed 51: 3000 passed;
-seed 52: 3000 passed (90 s, load 9 to 17). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
+seed 52: 3000 passed (90 s, load 9 to 17); seed 53: 3000 passed (90 s, load 10 to 16). The last
+seed 48 run of 20000 got furthest: 538 s before the process-limit case above (load 6 to 16). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
 times) each found a mismatch within 1 to 5 minutes, which was fixed: madvise MADV_REMOVE on shared
 anonymous memory, EROFS before the name lookup in unlink and rename, `/proc`'s link count (now masked,
 see above), reads of `/dev/full` into a buffer ending at an unmapped page (ARM64's `clear_user`), rename

@@ -669,7 +669,12 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     let value = |word: u64| ARENA + VALUES + (word % 52) * 8;
     // A new limit for a resource: CPU and file size limits only from the ones never reached.
     let new_limit = |resource: u64, word: u64| {
-        if resource == u64::from(linux::RLIMIT_CPU) || resource == u64::from(linux::RLIMIT_FSIZE) {
+        // A process limit counts every process of the user on the whole machine, which the reference
+        // shares with other runs.
+        if resource == u64::from(linux::RLIMIT_CPU)
+            || resource == u64::from(linux::RLIMIT_FSIZE)
+            || resource == u64::from(linux::RLIMIT_NPROC)
+        {
             ARENA + UNREACHED_LIMITS + (word % 4) * 16
         } else if resource == u64::from(linux::RLIMIT_STACK) {
             ARENA + STACK_LIMITS + (word % 4) * 16
