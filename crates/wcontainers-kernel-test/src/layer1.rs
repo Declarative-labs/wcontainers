@@ -26,6 +26,7 @@ pub const PLAY_PAGES: u64 = 16;
 /// Offsets in the arena.
 const PATHS: u64 = 0;
 const IOVECS: u64 = 0x3000;
+const POLLS: u64 = 0x3600;
 const VALUES: u64 = 0x3800;
 const OUTPUT: u64 = 0x4000;
 
@@ -135,6 +136,19 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at..at + 8].copy_from_slice(&base.to_le_bytes());
         arena[at + 8..at + 16].copy_from_slice(&length.to_le_bytes());
     }
+    // Eight entries for ppoll: a descriptor and the events asked for.
+    for index in 0..8u64 {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(17);
+        let fd = [3i32, 4, 5, -1, 100, 3, 6, 4][(word % 8) as usize];
+        let events = (word >> 8) as u16;
+        let at = (POLLS + index * 8) as usize;
+        arena[at..at + 4].copy_from_slice(&fd.to_le_bytes());
+        arena[at + 4..at + 6].copy_from_slice(&events.to_le_bytes());
+    }
     // Values calls read: times, limits, masks, chosen to include the special ones. The last eight hold
     // the four sleeps `nanosleep` chooses from: short, none, and two invalid ones.
     for index in 0..56u64 {
@@ -236,6 +250,42 @@ pub const CALLS: &[u32] = &[
     linux::__NR_sched_getaffinity,
     linux::__NR_nanosleep,
     linux::__NR_capget,
+    linux::__NR_getpid,
+    linux::__NR_getppid,
+    linux::__NR_gettid,
+    linux::__NR_getpgid,
+    linux::__NR_getsid,
+    linux::__NR_getresuid,
+    linux::__NR_getresgid,
+    linux::__NR_setuid,
+    linux::__NR_setgid,
+    linux::__NR_setreuid,
+    linux::__NR_setregid,
+    linux::__NR_setfsuid,
+    linux::__NR_setfsgid,
+    linux::__NR_setgroups,
+    linux::__NR_getrlimit,
+    linux::__NR_setrlimit,
+    linux::__NR_times,
+    linux::__NR_gettimeofday,
+    linux::__NR_clock_nanosleep,
+    linux::__NR_sysinfo,
+    linux::__NR_getrusage,
+    linux::__NR_getcpu,
+    linux::__NR_statfs,
+    linux::__NR_faccessat,
+    linux::__NR_fchmodat2,
+    linux::__NR_fchown,
+    linux::__NR_renameat,
+    linux::__NR_preadv,
+    linux::__NR_pwritev,
+    linux::__NR_fdatasync,
+    linux::__NR_ppoll,
+    linux::__NR_set_robust_list,
+    linux::__NR_rt_sigpending,
+    linux::__NR_personality,
+    linux::__NR_sched_yield,
+    linux::__NR_getpriority,
 ];
 
 /// Turns a generated call into real arguments.
@@ -577,6 +627,84 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_sched_getaffinity => [0, pick(&[0, 4, 8, 128], a), buffer(b), 0, 0, 0],
         linux::__NR_nanosleep => [ARENA + VALUES + 56 * 8 + (a % 4) * 16, 0, 0, 0, 0, 0],
         linux::__NR_capget => [value(a), if b % 2 == 0 { buffer(b) } else { 0 }, 0, 0, 0, 0],
+        linux::__NR_getpid | linux::__NR_getppid | linux::__NR_gettid | linux::__NR_sched_yield => {
+            [0; 6]
+        }
+        linux::__NR_getpgid | linux::__NR_getsid => [pick(&[0, 99999, u64::MAX], a), 0, 0, 0, 0, 0],
+        linux::__NR_getresuid | linux::__NR_getresgid => [buffer(a), buffer(b), buffer(c), 0, 0, 0],
+        linux::__NR_setuid | linux::__NR_setgid | linux::__NR_setfsuid | linux::__NR_setfsgid => {
+            [pick(&[0u64, 1000, 1, u32::MAX as u64], a), 0, 0, 0, 0, 0]
+        }
+        linux::__NR_setreuid | linux::__NR_setregid => {
+            let id = |word: u64| pick(&[0u64, 1000, u32::MAX as u64], word);
+            [id(a), id(b), 0, 0, 0, 0]
+        }
+        linux::__NR_setgroups => [pick(&[0, 1, 2, 3, 65537], a), value(b), 0, 0, 0, 0],
+        linux::__NR_getrlimit => [b % 17, buffer(a), 0, 0, 0, 0],
+        linux::__NR_setrlimit => [b % 17, if a % 4 == 0 { 0 } else { value(a) }, 0, 0, 0, 0],
+        linux::__NR_times => [if a % 3 == 0 { 0 } else { buffer(a) }, 0, 0, 0, 0, 0],
+        linux::__NR_gettimeofday => [
+            if a % 3 == 0 { 0 } else { buffer(a) },
+            if b % 3 == 0 { 0 } else { buffer(b) },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_clock_nanosleep => [
+            pick(&[0, 1, 2, 3, 7, 99], a),
+            pick(&[0, 1], b),
+            ARENA + VALUES + 56 * 8 + (c % 4) * 16,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sysinfo | linux::__NR_getcpu => [
+            buffer(a),
+            if b % 2 == 0 { 0 } else { buffer(b) },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_getrusage => [
+            pick(&[0, u64::MAX, u64::MAX - 1, 1, 5], a),
+            buffer(b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_statfs => [path(a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_faccessat => [dirfd(a), path(b), pick(&[0, 1, 2, 4, 7, 8], c), 0, 0, 0],
+        linux::__NR_fchmodat2 => [dirfd(a), path(b), mode(c), at_flags(d), 0, 0],
+        linux::__NR_fchown => {
+            let id = |word: u64| pick(&[0u64, 1, 1000, u32::MAX as u64], word);
+            [fd(a), id(b), id(c), 0, 0, 0]
+        }
+        linux::__NR_renameat => [dirfd(a), path(b), dirfd(c), path(d), 0, 0],
+        linux::__NR_preadv | linux::__NR_pwritev => [
+            fd(a),
+            ARENA + IOVECS + (b % 16) * 16,
+            pick(&[0, 1, 2, 3, 16, 1025], c),
+            offset(d),
+            0,
+            0,
+        ],
+        linux::__NR_fdatasync => [fd(a), 0, 0, 0, 0, 0],
+        linux::__NR_ppoll => [
+            ARENA + POLLS + (a % 8) * 8,
+            pick(&[0, 1, 2, 8, 1 << 21], b),
+            // Always a timeout: with none and nothing ready both sides would wait for ever.
+            ARENA + VALUES + 56 * 8 + (c % 4) * 16,
+            if d % 2 == 0 { 0 } else { value(d) },
+            pick(&[8, 8, 4], e),
+            0,
+        ],
+        linux::__NR_set_robust_list => [value(a), pick(&[24, 0, 16], b), 0, 0, 0, 0],
+        linux::__NR_rt_sigpending => [buffer(a), pick(&[8, 4, 16, 0], b), 0, 0, 0, 0],
+        linux::__NR_personality => [pick(&[0xffff_ffffu64, 0, 8, 0x0040_0000], a), 0, 0, 0, 0, 0],
+        linux::__NR_getpriority => [pick(&[0, 1, 2, 3], a), pick(&[0, 99999], b), 0, 0, 0, 0],
         _ => unreachable!("every call in CALLS is decoded"),
     };
     Call { number, arguments }
@@ -801,8 +929,13 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
                 } => return Ok(value as i64),
                 Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
                 Next::Finished { status } => return Err(status),
-                Next::Idle { until_nanoseconds } => {
-                    let until = until_nanoseconds.expect("idle with nothing to wake it");
+                // Waiting for ever: the runner's alarm would end it with SIGALRM.
+                Next::Idle {
+                    until_nanoseconds: None,
+                } => return Err(linux::SIGALRM as i32),
+                Next::Idle {
+                    until_nanoseconds: Some(until),
+                } => {
                     host.skip_to(until);
                     kernel.event(cpu, host, Event::Timer);
                 }
@@ -863,6 +996,18 @@ pub struct Seen {
 fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     let [a, b, c, d, e, _] = call.arguments;
     let mut out = Vec::new();
+    // The time left, which ppoll writes back even when it fails.
+    if call.number == linux::__NR_ppoll && c != 0 {
+        out.push((c, 16));
+    }
+    // The CPU number, written before a fault on the node number.
+    if call.number == linux::__NR_getcpu {
+        out.push((a, 4));
+    }
+    // The time, written before a fault on the time zone.
+    if call.number == linux::__NR_gettimeofday {
+        out.push((a, 16));
+    }
     if value < 0 {
         return out;
     }
@@ -872,6 +1017,10 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
         linux::__NR_statx => out.extend([(e + 32, 8), (e + 64, 64), (e + 136, 16)]),
         linux::__NR_fstatfs => out.push((b + 16, 48)),
         linux::__NR_clock_gettime => out.push((b, 16)),
+        linux::__NR_times => out.push((a, 32)),
+        linux::__NR_sysinfo => out.push((a, 112)),
+        linux::__NR_getrusage => out.push((b, 144)),
+        linux::__NR_statfs => out.push((b + 16, 48)),
         linux::__NR_getrandom => out.push((a, value as u64)),
         linux::__NR_uname => out.push((a + 130, 130)),
         // The guest is told it has one CPU, a declared difference.
@@ -897,8 +1046,18 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
 }
 
 /// Whether a call's value is an address the kernel chose.
+/// Process numbers differ too: the reference's caller is a child of its runner.
 fn value_is_volatile(call: &Call) -> bool {
-    call.number == linux::__NR_mmap && call.arguments[3] & 0x10_0010 == 0
+    match call.number {
+        linux::__NR_mmap => call.arguments[3] & 0x10_0010 == 0,
+        linux::__NR_getpid
+        | linux::__NR_getppid
+        | linux::__NR_gettid
+        | linux::__NR_getpgid
+        | linux::__NR_getsid
+        | linux::__NR_times => true,
+        _ => false,
+    }
 }
 
 /// Everything compared for a sequence, call by call, and the final status.

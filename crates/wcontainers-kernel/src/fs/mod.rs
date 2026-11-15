@@ -48,7 +48,24 @@ pub(crate) struct FileSystem {
     pub kind: Kind,
     /// The device number `stat` reports, as Linux's `st_dev` encodes it.
     pub device: u64,
-    pub read_only: bool,
+    /// How it is mounted, as `statfs`'s `ST_*` bits.
+    pub flags: u32,
+}
+
+impl FileSystem {
+    pub fn read_only(&self) -> bool {
+        self.flags & crate::linux_extra::ST_RDONLY != 0
+    }
+
+    /// Devices opened from it are refused (`nodev`).
+    pub fn no_devices(&self) -> bool {
+        self.flags & crate::linux_extra::ST_NODEV != 0
+    }
+
+    /// Programs on it may not run (`noexec`).
+    pub fn no_execute(&self) -> bool {
+        self.flags & crate::linux_extra::ST_NOEXEC != 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,13 +348,13 @@ impl Default for Numbers {
 }
 
 impl Numbers {
-    pub fn file_system(&mut self, kind: Kind, read_only: bool) -> FileSystem {
+    pub fn file_system(&mut self, kind: Kind, flags: u32) -> FileSystem {
         let minor = self.next_device_minor;
         self.next_device_minor += 1;
         FileSystem {
             kind,
             device: encode_device(0, minor),
-            read_only,
+            flags,
         }
     }
 
@@ -674,6 +691,18 @@ impl<'a> Walk<'a> {
             path.push(b'/');
         }
         Some(path)
+    }
+}
+
+/// Whether two nodes are the same inode. Inodes of the process information tree are made at each
+/// lookup, so those are the same when they are the same entry.
+pub(crate) fn same_inode(a: &Node, b: &Node) -> bool {
+    if Rc::ptr_eq(a, b) {
+        return true;
+    }
+    match (&a.borrow().content, &b.borrow().content) {
+        (Content::Proc(first), Content::Proc(second)) => first == second,
+        _ => false,
     }
 }
 

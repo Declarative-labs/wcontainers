@@ -57,7 +57,7 @@ fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Program, Errno
     kernel.with_walk(pid, |walk, process| {
         let (node, full) = walk.locate(&process.cwd, path)?;
         let inode = node.borrow();
-        if inode.mode & S_IFMT != S_IFREG {
+        if inode.mode & S_IFMT != S_IFREG || inode.fs.no_execute() {
             return Err(Errno::EACCES);
         }
         if !inode.permits(&process.credentials, X_OK, true) {

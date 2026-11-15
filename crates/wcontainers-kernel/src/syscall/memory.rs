@@ -173,6 +173,10 @@ pub(super) fn mmap(
             if shared && permissions.contains(Permissions::WRITE) && !file.writable() {
                 return Err(Errno::EACCES);
             }
+            // Running code from a `noexec` mount is refused.
+            if permissions.contains(Permissions::EXECUTE) && inode.fs.no_execute() {
+                return Err(Errno::EPERM);
+            }
             if !file.readable() {
                 return Err(Errno::EACCES);
             }

@@ -44,6 +44,9 @@ impl Guest<'_> {
 
     /// `copy_from_user` of the whole range, or `EFAULT`.
     pub fn read(&mut self, address: u64, length: u64) -> Result<Vec<u8>, Errno> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
         if !access_ok(address, length) {
             return Err(Errno::EFAULT);
         }
@@ -60,6 +63,10 @@ impl Guest<'_> {
     /// `copy_to_user` of the whole range, or `EFAULT`.
     pub fn write(&mut self, address: u64, bytes: &[u8]) -> Result<(), Errno> {
         let length = bytes.len() as u64;
+        // Copying nothing succeeds wherever it points, as `copy_to_user` reports nothing uncopied.
+        if length == 0 {
+            return Ok(());
+        }
         if !access_ok(address, length) {
             return Err(Errno::EFAULT);
         }

@@ -42,6 +42,9 @@ pub(super) fn read(
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
+    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+        verify_area(file.borrow().offset, count)?;
+    }
     read_at(
         kernel,
         cx,
@@ -65,6 +68,9 @@ pub(super) fn write(
     }
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
+    }
+    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+        verify_area(file.borrow().offset, count)?;
     }
     write_at(
         kernel,
@@ -94,6 +100,7 @@ pub(super) fn pread64(
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
+    verify_area(offset, count)?;
     read_at(
         kernel,
         cx,
@@ -122,6 +129,7 @@ pub(super) fn pwrite64(
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
+    verify_area(offset, count)?;
     write_at(
         kernel,
         cx,
@@ -137,6 +145,17 @@ pub(super) fn pwrite64(
 fn positioned(file: &FileRef, _offset: u64) -> Result<(), Errno> {
     if matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
         return Err(Errno::ESPIPE);
+    }
+    Ok(())
+}
+
+/// Linux's `rw_verify_area`: the range must end within the largest file offset.
+fn verify_area(offset: u64, count: u64) -> Result<(), Errno> {
+    if (count as i64) < 0
+        || (offset as i64) < 0
+        || (offset as i64).checked_add(count as i64).is_none()
+    {
+        return Err(Errno::EINVAL);
     }
     Ok(())
 }
@@ -877,14 +896,58 @@ pub(super) fn ppoll(
     tid: Tid,
     [fds, count, timeout, mask, mask_size, _]: Args,
 ) -> super::Outcome {
-    match ppoll_typed(kernel, cx, tid, fds, count, timeout, mask, mask_size) {
+    // The timeout first; a bad one ends the call before anything else.
+    let until = if timeout != 0 {
+        let value: __kernel_timespec = match guest(kernel, cx, tid).read_value(timeout) {
+            Ok(value) => value,
+            Err(error) => return Err(error).into(),
+        };
+        if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+            return Err(Errno::EINVAL).into();
+        }
+        let duration = (value.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(value.tv_nsec as u64);
+        Some((
+            duration,
+            cx.host.monotonic_nanoseconds().saturating_add(duration),
+        ))
+    } else {
+        None
+    };
+    let result = ppoll_typed(
+        kernel,
+        cx,
+        tid,
+        fds,
+        count,
+        until.map(|(_, until)| until),
+        mask,
+        mask_size,
+    );
+    // As Linux's `poll_select_finish`: the time left goes back into a non-zero timeout, whatever the
+    // result, and a failure to write it is ignored. A wait that parks will time out with none left.
+    if let Some((duration, until)) = until
+        && duration != 0
+    {
+        let left = match result {
+            Ok(Some(_)) | Err(_) => until.saturating_sub(cx.host.monotonic_nanoseconds()),
+            Ok(None) => 0,
+        };
+        let value = __kernel_timespec {
+            tv_sec: (left / 1_000_000_000) as i64,
+            tv_nsec: (left % 1_000_000_000) as i64,
+        };
+        let _ = guest(kernel, cx, tid).write_value(timeout, &value);
+    }
+    match result {
         Ok(Some(ready)) => super::Outcome::Return(ready),
         Ok(None) => super::Outcome::Parked,
         Err(error) => Err(error).into(),
     }
 }
 
-/// `ppoll`: Some(count) when it returns now, None when it waits.
+/// `ppoll` after its timeout is read: Some(count) when it returns now, None when it waits.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
 fn ppoll_typed(
     kernel: &mut Kernel,
@@ -892,23 +955,10 @@ fn ppoll_typed(
     tid: Tid,
     fds: u64,
     count: u64,
-    timeout: u64,
+    until: Option<u64>,
     mask: u64,
     mask_size: u64,
 ) -> Result<Option<u64>, Errno> {
-    // In the order of Linux's `ppoll`: the timeout, the signal mask, then the descriptors.
-    let until = if timeout != 0 {
-        let value: __kernel_timespec = guest(kernel, cx, tid).read_value(timeout)?;
-        if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
-            return Err(Errno::EINVAL);
-        }
-        let duration = (value.tv_sec as u64)
-            .saturating_mul(1_000_000_000)
-            .saturating_add(value.tv_nsec as u64);
-        Some(cx.host.monotonic_nanoseconds().saturating_add(duration))
-    } else {
-        None
-    };
     if mask != 0 {
         if mask_size != 8 {
             return Err(Errno::EINVAL);

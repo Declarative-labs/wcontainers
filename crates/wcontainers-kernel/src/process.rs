@@ -73,6 +73,8 @@ pub(crate) struct Process {
     /// The program file and the path it was started by.
     pub executable: (Node, Vec<u8>),
     pub starting_stack: StartingStack,
+    /// `personality`'s value; kept across `execve`.
+    pub personality: u32,
     /// `PR_SET_DUMPABLE`; cleared when the process's ids change.
     pub dumpable: bool,
     /// Signal handlers as `rt_sigaction` set them, by signal number less one.

@@ -141,9 +141,16 @@ pub(super) fn clock_nanosleep(
     let realtime = match id {
         CLOCK_REALTIME | CLOCK_TAI => true,
         CLOCK_MONOTONIC | CLOCK_BOOTTIME => false,
-        CLOCK_THREAD_CPUTIME_ID => return Err(Errno::EINVAL).into(),
         CLOCK_PROCESS_CPUTIME_ID => false,
-        _ => return Err(Errno::EOPNOTSUPP).into(),
+        // Clocks that exist but cannot be slept on; the alarm clocks need a real-time clock device,
+        // which the reference has not either.
+        CLOCK_THREAD_CPUTIME_ID
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_REALTIME_COARSE
+        | CLOCK_MONOTONIC_COARSE
+        | CLOCK_REALTIME_ALARM
+        | CLOCK_BOOTTIME_ALARM => return Err(Errno::EOPNOTSUPP).into(),
+        _ => return Err(Errno::EINVAL).into(),
     };
     let duration = match read_duration(kernel, cx, tid, request) {
         Ok(duration) => nanoseconds(&duration),

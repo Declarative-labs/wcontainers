@@ -12,6 +12,7 @@ use crate::file::{FdTable, OpenFile};
 use crate::fs::dev::DOCKER_DEVICES;
 use crate::fs::{self, Content, Directory, Kind, New, Node, Numbers, Regular, Time, encode_device};
 use crate::linux::general::*;
+use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RELATIME};
 use crate::loader::Image;
 use crate::process::{Pid, Process, SIGNALS, Thread, Tid, docker_limits};
 use crate::{Context, Errno, Kernel, errno};
@@ -73,7 +74,7 @@ pub struct FileRecord {
 
 /// The root of the container's file system: an empty in-memory directory.
 pub(crate) fn new_root(numbers: &mut Numbers) -> Node {
-    let fs = numbers.file_system(Kind::Tmpfs, false);
+    let fs = numbers.file_system(Kind::Tmpfs, ST_RELATIME);
     let ino = numbers.ino();
     let root = fs::new_inode(
         fs,
@@ -143,8 +144,15 @@ pub(crate) fn make(
 }
 
 /// A new empty in-memory file system, mounted on a directory.
-fn mount_tmpfs(numbers: &mut Numbers, on: &Node, mode: u32, now: Time, kind: Kind) -> Node {
-    let fs = numbers.file_system(kind, false);
+fn mount_tmpfs(
+    numbers: &mut Numbers,
+    on: &Node,
+    mode: u32,
+    now: Time,
+    kind: Kind,
+    flags: u32,
+) -> Node {
+    let fs = numbers.file_system(kind, flags);
     let ino = numbers.ino();
     let root = fs::new_inode(
         fs,
@@ -360,6 +368,7 @@ impl Kernel {
             executable: (root.clone(), Vec::new()),
             starting_stack: Default::default(),
             dumpable: true,
+            personality: 0,
             actions: [kernel_sigaction {
                 sa_handler_kernel: crate::linux_extra::SIG_DFL,
                 sa_flags: 0,
@@ -487,7 +496,14 @@ impl Kernel {
     fn make_mounts(&mut self) {
         let now = self.boot;
         let dev_point = directory_at(self, b"/dev", now);
-        let dev = mount_tmpfs(&mut self.files.numbers, &dev_point, 0o755, now, Kind::Tmpfs);
+        let dev = mount_tmpfs(
+            &mut self.files.numbers,
+            &dev_point,
+            0o755,
+            now,
+            Kind::Tmpfs,
+            ST_NOSUID,
+        );
         for (name, major, minor) in DOCKER_DEVICES {
             make(
                 &mut self.files.numbers,
@@ -547,6 +563,7 @@ impl Kernel {
             0o1777,
             now,
             Kind::Tmpfs,
+            ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
         );
         let pts_point = dev
             .borrow()
@@ -560,6 +577,7 @@ impl Kernel {
             0o755,
             now,
             Kind::Devpts,
+            ST_NOSUID | ST_NOEXEC | ST_RELATIME,
         );
         make(
             &mut self.files.numbers,

@@ -108,7 +108,7 @@ fn may_change(directory: &Node, credentials: &Credentials) -> Result<(), Errno> 
     if matches!(inode.content, Content::Proc(_)) {
         return Err(Errno::EPERM);
     }
-    if inode.fs.read_only {
+    if inode.fs.read_only() {
         return Err(Errno::EROFS);
     }
     Ok(())
@@ -377,6 +377,10 @@ pub(super) fn open(
         if file_type == S_IFDIR && (accmode != O_RDONLY || flags & O_TRUNC != 0) {
             return Err(Errno::EISDIR);
         }
+        // Devices on a `nodev` mount may not be opened.
+        if matches!(file_type, S_IFCHR | S_IFBLK) && node.borrow().fs.no_devices() {
+            return Err(Errno::EACCES);
+        }
         if !created {
             let mut mask = 0;
             if matches!(accmode, O_RDONLY | O_RDWR) {
@@ -390,7 +394,7 @@ pub(super) fn open(
                 return Err(Errno::EACCES);
             }
             if mask & W_OK != 0
-                && inode.fs.read_only
+                && inode.fs.read_only()
                 && matches!(file_type, S_IFREG | S_IFDIR | S_IFLNK)
             {
                 return Err(Errno::EROFS);
@@ -881,7 +885,7 @@ fn rename(
         });
     }
     if let Some(target) = &target
-        && Rc::ptr_eq(&source, target)
+        && crate::fs::same_inode(&source, target)
     {
         return Ok(0);
     }
@@ -1262,7 +1266,7 @@ fn access(
         return Err(Errno::EACCES);
     }
     if mode & W_OK != 0
-        && inode.fs.read_only
+        && inode.fs.read_only()
         && matches!(inode.file_type(), S_IFREG | S_IFDIR | S_IFLNK)
     {
         return Err(Errno::EROFS);
@@ -1284,7 +1288,7 @@ fn change_mode(
     if credentials.fsuid != inode.uid && !credentials.has(CAP_FOWNER) {
         return Err(Errno::EPERM);
     }
-    if inode.fs.read_only {
+    if inode.fs.read_only() {
         return Err(Errno::EROFS);
     }
     let mut mode = mode & 0o7777;
@@ -1377,7 +1381,7 @@ fn change_owner(
     {
         return Err(Errno::EPERM);
     }
-    if inode.fs.read_only {
+    if inode.fs.read_only() {
         return Err(Errno::EROFS);
     }
     if uid != u32::MAX {
@@ -1497,7 +1501,7 @@ pub(super) fn utimensat(
             return Err(Errno::EACCES);
         }
     }
-    if inode.fs.read_only {
+    if inode.fs.read_only() {
         return Err(Errno::EROFS);
     }
     let pick = |time: Option<&__kernel_timespec>, old: Time| match time {
@@ -1786,14 +1790,7 @@ fn statfs_of(node: &Node) -> statfs {
     out.f_fsid = __kernel_fsid_t {
         val: [(major << 8 | minor) as i32, 0],
     };
-    out.f_flags = i64::from(
-        crate::linux_extra::ST_RELATIME
-            | if inode.fs.read_only {
-                crate::linux_extra::ST_RDONLY
-            } else {
-                0
-            },
-    );
+    out.f_flags = i64::from(inode.fs.flags | crate::linux_extra::ST_VALID);
     out
 }
 

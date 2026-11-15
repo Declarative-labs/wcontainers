@@ -217,10 +217,22 @@ pub(super) fn getpriority(
     tid: Tid,
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
-    if which as u32 > PRIO_USER {
-        return Err(Errno::EINVAL);
-    }
-    if which as u32 == PRIO_PROCESS && who != 0 && who as i32 != kernel.threads[&tid].process {
+    let who = who as u32;
+    let process = kernel.process_of(tid);
+    // Some process must match: the caller's own number, group, or effective user.
+    let found = match which as u32 {
+        PRIO_PROCESS => who == 0 || who as i32 == process.pid,
+        PRIO_PGRP => who == 0 || who as i32 == process.group,
+        PRIO_USER => {
+            who == 0
+                || kernel
+                    .processes
+                    .values()
+                    .any(|other| other.credentials.uid == who)
+        }
+        _ => return Err(Errno::EINVAL),
+    };
+    if !found {
         return Err(Errno::ESRCH);
     }
     // Linux returns 20 minus the nice value, so that the result is never negative.

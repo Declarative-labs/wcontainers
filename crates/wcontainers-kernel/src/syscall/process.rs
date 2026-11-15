@@ -579,12 +579,13 @@ pub(super) fn setgroups(
     tid: Tid,
     [size, list, ..]: Args,
 ) -> Result<u64, Errno> {
-    if size > MAX_GROUPS {
-        return Err(Errno::EINVAL);
-    }
     if !kernel.process_of(tid).credentials.has(CAP_SETGID) {
         return Err(Errno::EPERM);
     }
+    if size as u32 as u64 > MAX_GROUPS {
+        return Err(Errno::EINVAL);
+    }
+    let size = size as u32 as u64;
     let bytes = guest(kernel, cx, tid).read(list, size * 4)?;
     let mut groups: Vec<u32> = bytes
         .as_chunks::<4>()
@@ -592,6 +593,10 @@ pub(super) fn setgroups(
         .iter()
         .map(|chunk| u32::from_le_bytes(*chunk))
         .collect();
+    // -1 is no group.
+    if groups.contains(&u32::MAX) {
+        return Err(Errno::EINVAL);
+    }
     groups.sort_unstable();
     kernel.process_of_mut(tid).credentials.groups = groups;
     Ok(0)
@@ -903,7 +908,16 @@ pub(super) fn getrlimit(
     tid: Tid,
     [resource, old, ..]: Args,
 ) -> Result<u64, Errno> {
-    prlimit64(kernel, cx, tid, [0, resource, 0, old, 0, 0])
+    if resource as usize >= LIMITS {
+        return Err(Errno::EINVAL);
+    }
+    let limit = kernel.process_of(tid).limits[resource as usize];
+    let value = rlimit64 {
+        rlim_cur: limit.current,
+        rlim_max: limit.maximum,
+    };
+    guest(kernel, cx, tid).write_value(old, &value)?;
+    Ok(0)
 }
 
 pub(super) fn setrlimit(
@@ -1093,18 +1107,30 @@ pub(super) fn capset(
     })
 }
 
+/// The personalities Docker's default seccomp profile lets a program set; anything else it refuses with
+/// EPERM before Linux sees it. 0xffffffff only asks.
+const ALLOWED_PERSONALITIES: [u32; 5] = [0, 8, 0x20000, 0x20008, 0xffff_ffff];
+
 pub(super) fn personality(
-    _: &mut Kernel,
-    cx: &mut Context<'_>,
-    _: Tid,
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
     [persona, ..]: Args,
 ) -> Result<u64, Errno> {
-    // Only the plain Linux personality exists here.
-    if persona as u32 != 0xffff_ffff && persona as u32 != 0 {
-        let _ = cx;
+    let persona = persona as u32;
+    if !ALLOWED_PERSONALITIES.contains(&persona) {
+        return Err(Errno::EPERM);
+    }
+    // 32 bit programs do not run here, as on an ARM64 CPU without that mode.
+    if persona != 0xffff_ffff && persona & 0xff == 8 {
         return Err(Errno::EINVAL);
     }
-    Ok(0)
+    let process = kernel.process_of_mut(tid);
+    let old = process.personality;
+    if persona != 0xffff_ffff {
+        process.personality = persona;
+    }
+    Ok(old.into())
 }
 
 pub(super) fn getrusage(

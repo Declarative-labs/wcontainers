@@ -96,8 +96,12 @@ impl Kernel {
     pub fn new() -> Self {
         let mut numbers = Numbers::default();
         let root = container::new_root(&mut numbers);
-        let proc_fs = numbers.file_system(fs::Kind::Proc, false);
-        let pipe_fs = numbers.file_system(fs::Kind::Pipe, false);
+        use linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RELATIME};
+        let proc_fs = numbers.file_system(
+            fs::Kind::Proc,
+            ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+        );
+        let pipe_fs = numbers.file_system(fs::Kind::Pipe, 0);
         Self {
             processes: BTreeMap::new(),
             threads: BTreeMap::new(),
