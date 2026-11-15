@@ -1622,13 +1622,13 @@ pub(super) fn utimensat(
         if flags != 0 {
             return Err(Errno::EINVAL);
         }
-        kernel
-            .process_of(tid)
-            .files
-            .file(dirfd as i32)?
-            .borrow()
-            .node
-            .clone()
+        // Linux's `do_utimes_fd` takes no `O_PATH` descriptor.
+        let file = kernel.process_of(tid).files.file(dirfd as i32)?;
+        let file = file.borrow();
+        if file.is_path() {
+            return Err(Errno::EBADF);
+        }
+        file.node.clone()
     } else {
         if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
             return Err(Errno::EINVAL);
