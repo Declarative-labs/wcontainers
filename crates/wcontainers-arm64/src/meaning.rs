@@ -411,9 +411,27 @@ fn add_with<E: Emitter + ?Sized>(
     result
 }
 
-/// The address of a load or store in a fresh i64 local, with the base register updated where the form
-/// writes back before the access.
-fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Reg, i64)>) {
+/// Push the address in an i64 local as the CPU uses it. Linux turns on Top Byte Ignore for user space: when
+/// bit 55 is clear the top byte is ignored, which here means cleared; when it is set the address is used
+/// whole.
+fn untag<E: Emitter + ?Sized>(e: &mut E, local: u32) {
+    e.sink()
+        .local_get(local)
+        .local_get(local)
+        .i64_const(8)
+        .i64_shl()
+        .i64_const(63)
+        .i64_shr_s()
+        .i64_const(56)
+        .i64_shl()
+        .i64_const(0x00ff_ffff_ffff_ffff)
+        .i64_or()
+        .i64_and();
+}
+
+/// The address of a load or store, untagged, in a fresh i64 local, and the write back to make after the
+/// access: the base register and what to add to the tagged address.
+fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Reg, u32, i64)>) {
     let local = e.local(ValType::I64);
     let mut post = None;
     match address {
@@ -449,12 +467,15 @@ fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Re
     if let Address::PreIndex { base, .. } = address {
         post = Some((base, 0));
     }
-    (local, post)
+    untag(e, local);
+    let untagged = e.local(ValType::I64);
+    e.sink().local_set(untagged);
+    (untagged, post.map(|(base, offset)| (base, local, offset)))
 }
 
 /// The write back of a pre or post indexed access, after the access itself.
-fn write_back<E: Emitter + ?Sized>(e: &mut E, local: u32, update: Option<(Reg, i64)>) {
-    if let Some((base, offset)) = update {
+fn write_back<E: Emitter + ?Sized>(e: &mut E, update: Option<(Reg, u32, i64)>) {
+    if let Some((base, local, offset)) = update {
         e.sink().local_get(local);
         if offset != 0 {
             e.sink().i64_const(offset).i64_add();
@@ -998,6 +1019,8 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
         }
         I::BranchRegister { op, rn } => {
             e.get(rn);
+            let tagged = save(e, Width::X64);
+            untag(e, tagged);
             let target = save(e, Width::X64);
             match op {
                 BranchRegister::Br => e.jump(Target::Address(target)),
@@ -1019,7 +1042,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             e.check(at, bytes.into(), Access::Read);
             load(e, at, 0, bytes, signed);
             e.set(rt);
-            write_back(e, at, update);
+            write_back(e, update);
             e.next();
         }
         I::Store {
@@ -1030,7 +1053,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             let (at, update) = address(e, form);
             e.check(at, bytes.into(), Access::Write);
             store(e, at, 0, bytes, rt);
-            write_back(e, at, update);
+            write_back(e, update);
             e.next();
         }
         I::LoadPair {
@@ -1049,7 +1072,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             e.set(rt2);
             e.sink().local_get(first);
             e.set(rt);
-            write_back(e, at, update);
+            write_back(e, update);
             e.next();
         }
         I::StorePair {
@@ -1062,7 +1085,7 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             e.check(at, 2 * u32::from(bytes), Access::Write);
             store(e, at, 0, bytes, rt);
             store(e, at, bytes.into(), bytes, rt2);
-            write_back(e, at, update);
+            write_back(e, update);
             e.next();
         }
         I::Syscall => {

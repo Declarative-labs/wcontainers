@@ -166,6 +166,20 @@ fn address(word: u32, op: &Op) -> Option<Address> {
     })
 }
 
+/// A logical immediate whose bit mask is reserved: no element size, or an element of all ones.
+fn reserved_bit_mask(word: u32) -> bool {
+    if bits(word, 23, 6) != 0b100100 {
+        return false;
+    }
+    let (sf, n, imms) = (bits(word, 31, 1), bits(word, 22, 1), bits(word, 10, 6));
+    let combined = (n << 6) | (!imms & 0x3f);
+    if (sf == 0 && n == 1) || combined < 2 {
+        return true;
+    }
+    let levels = (1 << (31 - combined.leading_zeros())) - 1;
+    imms & levels == levels
+}
+
 fn convert(word: u32, opcode: Opcode, ops: &[Op; 4]) -> Option<Instruction> {
     use Instruction as I;
     use Opcode as O;
@@ -173,6 +187,9 @@ fn convert(word: u32, opcode: Opcode, ops: &[Op; 4]) -> Option<Instruction> {
     let (w, rd) = r0.unwrap_or((Width::X64, Reg::Zero));
     let rn = || reg(&ops[1]).map(|(_, r)| r);
     let rm = || reg(&ops[2]).map(|(_, r)| r);
+    if reserved_bit_mask(word) {
+        return Some(I::Undefined);
+    }
     // The hint space is all hints: pointer signing and branch marks included, as on a CPU without them.
     if word & 0xffff_f01f == 0xd503_201f {
         return Some(I::Nothing);
@@ -380,14 +397,11 @@ fn convert(word: u32, opcode: Opcode, ops: &[Op; 4]) -> Option<Instruction> {
         | O::LDTRH
         | O::LDTRSB
         | O::LDTRSH
-        | O::LDTRSW
-        | O::LDAR
-        | O::LDARB
-        | O::LDARH => {
+        | O::LDTRSW => {
             r0?;
             let (bytes, signed) = match opcode {
-                O::LDRB | O::LDURB | O::LDTRB | O::LDARB => (1, None),
-                O::LDRH | O::LDURH | O::LDTRH | O::LDARH => (2, None),
+                O::LDRB | O::LDURB | O::LDTRB => (1, None),
+                O::LDRH | O::LDURH | O::LDTRH => (2, None),
                 O::LDRSB | O::LDURSB | O::LDTRSB => (1, Some(w)),
                 O::LDRSH | O::LDURSH | O::LDTRSH => (2, Some(w)),
                 O::LDRSW | O::LDURSW | O::LDTRSW => (4, Some(Width::X64)),
@@ -408,14 +422,11 @@ fn convert(word: u32, opcode: Opcode, ops: &[Op; 4]) -> Option<Instruction> {
         | O::STURH
         | O::STTR
         | O::STTRB
-        | O::STTRH
-        | O::STLR
-        | O::STLRB
-        | O::STLRH => {
+        | O::STTRH => {
             r0?;
             let bytes = match opcode {
-                O::STRB | O::STURB | O::STTRB | O::STLRB => 1,
-                O::STRH | O::STURH | O::STTRH | O::STLRH => 2,
+                O::STRB | O::STURB | O::STTRB => 1,
+                O::STRH | O::STURH | O::STTRH => 2,
                 _ if w == Width::X64 => 8,
                 _ => 4,
             };

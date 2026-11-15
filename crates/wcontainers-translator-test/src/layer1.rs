@@ -1,0 +1,316 @@
+//! Layer 1: one instruction at a time, on the real CPU and through the translator at look-ahead none, with
+//! every register, flag and touched byte compared.
+
+use crate::forms::Form;
+use crate::layout::*;
+use crate::reference::{Cases, Landed};
+use crate::runner::{Machine, Stopped, Syscalls};
+use proptest::prelude::*;
+use wcontainers_abi::{Exit, Permissions, RegisterBlock};
+
+/// The forms layer 1 covers now: the base integer instructions. System register moves are limited to
+/// the registers [`restrict`] allows. Floating point, vectors, atomics, exclusives, load-acquire and
+/// store-release and the other system instructions come with milestone 3.
+pub fn covered(form: &Form) -> bool {
+    const GROUPS: &[&str] = &[
+        "dpimm/",
+        "dpreg/",
+        "control/branch_imm",
+        "control/branch_reg",
+        "control/compbranch",
+        "control/condbranch",
+        "control/testbranch",
+        "control/exception",
+        "control/hints",
+        "control/barriers",
+        "control/systemmove",
+        "ldst/ldst_pos",
+        "ldst/ldst_unscaled",
+        "ldst/ldst_immpre",
+        "ldst/ldst_immpost",
+        "ldst/ldst_regoff",
+        "ldst/ldst_unpriv",
+        "ldst/ldstpair_off",
+        "ldst/ldstpair_pre",
+        "ldst/ldstpair_post",
+        "ldst/ldstnapair_offs",
+        "ldst/loadlit",
+        "reserved/perm_undef",
+    ];
+    let integer = form.field(form.value, "VR") != Some(1);
+    form.features == "true" && integer && GROUPS.iter().any(|g| form.group.starts_with(g))
+}
+
+/// Narrow a word where milestone 0 covers only part of a form: system register moves only reach NZCV and
+/// TPIDR_EL0.
+fn restrict(form: &Form, word: u32, choice: bool) -> u32 {
+    if form.group == "control/systemmove" {
+        // o0:op1:CRn:CRm:op2 of NZCV (3,3,4,2,0) or TPIDR_EL0 (3,3,13,0,2).
+        let register: u32 = if choice {
+            (1 << 14) | (3 << 11) | (4 << 7) | (2 << 3)
+        } else {
+            (1 << 14) | (3 << 11) | (13 << 7) | 2
+        };
+        return (word & !(0x7fff << 5)) | (register << 5);
+    }
+    word
+}
+
+/// Why a word is left out of the comparison, if it is. Each is an encoding the architecture leaves
+/// CONSTRAINED UNPREDICTABLE, a branch to itself (which never finishes), or a hint whose meaning depends on
+/// features the reference CPU has and the CPU we present does not.
+pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
+    let field = |name| form.field(word, name);
+    let writeback = ["immpre", "immpost", "pair_pre", "pair_post"]
+        .iter()
+        .any(|kind| form.group.ends_with(kind));
+    let rn = field("Rn");
+    let loads_pair = form.group.contains("pair") && field("L") == Some(1);
+    if writeback && rn != Some(31) && (rn == field("Rt") || (rn.is_some() && rn == field("Rt2"))) {
+        return Some("write back to a transfer register");
+    }
+    if loads_pair && field("Rt") == field("Rt2") {
+        return Some("load pair into one register");
+    }
+    let offset = field("imm26").or(field("imm19")).or(field("imm14"));
+    if form.group.starts_with("control/") && offset == Some(0) {
+        return Some("branch to itself");
+    }
+    if form.group == "control/hints" {
+        let (crm, op2) = (field("CRm").unwrap_or(0), field("op2").unwrap_or(0));
+        if crm == 1 || crm == 3 || (crm == 0 && op2 == 7) || crm >= 4 {
+            return Some("hint with a meaning on CPUs with pointer signing or later features");
+        }
+    }
+    None
+}
+
+/// One case: the instruction word, starting registers (x0 to x30, sp, flags, thread pointer) and the data
+/// area's seed.
+#[derive(Clone, Debug)]
+pub struct Case {
+    pub word: u32,
+    pub registers: [u64; 34],
+    pub seed: u64,
+}
+
+fn value() -> impl Strategy<Value = u64> {
+    prop_oneof![
+        2 => prop::sample::select(vec![
+            0,
+            1,
+            2,
+            u64::MAX,
+            u64::MAX - 1,
+            i64::MAX as u64,
+            i64::MIN as u64,
+            0x7fff_ffff,
+            0x8000_0000,
+            0xffff_ffff,
+            0x1_0000_0000,
+            0xffff_ffff_8000_0000,
+        ]),
+        2 => (0u64..64).prop_map(|v| v.wrapping_sub(32)),
+        2 => data_pointer(),
+        1 => (0u64..1024, any::<bool>()).prop_map(|(k, up)| {
+            let step = 4 * (k + 1);
+            if up { CODE + step } else { CODE - step }
+        }),
+        3 => any::<u64>(),
+    ]
+}
+
+fn data_pointer() -> impl Strategy<Value = u64> {
+    (0..DATA_BYTES, any::<bool>()).prop_map(|(at, align)| DATA + if align { at & !7 } else { at })
+}
+
+/// Cases for one form.
+pub fn cases(form: Form) -> impl Strategy<Value = Case> {
+    let kept = form.clone();
+    let registers = prop::collection::vec(value(), 31);
+    let stack = (DATA_WRITABLE / 16 / 4..DATA_WRITABLE / 16 * 3 / 4).prop_map(|k| DATA + 16 * k);
+    let small = (0u64..128).prop_map(|v| v.wrapping_sub(64));
+    (
+        any::<u32>(),
+        any::<bool>(),
+        registers,
+        stack,
+        0u64..16,
+        any::<u64>(),
+        any::<u64>(),
+        data_pointer(),
+        small,
+    )
+        .prop_map(
+            move |(free, choice, x, sp, flags, thread_pointer, seed, base, index)| {
+                let word = restrict(&form, form.word(free), choice);
+                let mut registers = [0u64; 34];
+                registers[..31].copy_from_slice(&x);
+                registers[31] = sp;
+                registers[32] = flags << 28;
+                registers[33] = thread_pointer;
+                // Loads and stores mostly reach the data area: the base points into it and an index is small.
+                if form.group.starts_with("ldst/") {
+                    if let Some(rn) = form.field(word, "Rn").filter(|&r| r < 31) {
+                        registers[rn as usize] = base;
+                    }
+                    if let Some(rm) = form.field(word, "Rm").filter(|&r| r < 31) {
+                        registers[rm as usize] = index;
+                    }
+                }
+                Case {
+                    word,
+                    registers,
+                    seed,
+                }
+            },
+        )
+        .prop_filter("excluded encodings", move |case| {
+            excluded(&kept, case.word).is_none()
+        })
+}
+
+/// What the translator did with a case, in the reference's terms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outcome {
+    /// Where control went or why the thread stopped, as the reference reports it.
+    pub stop: Stop,
+    pub registers: [u64; 35],
+    pub changed: Vec<(u32, u8)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// Control reached this address and the instruction finished.
+    Landed(u64),
+    Illegal,
+    Breakpoint,
+    Syscall,
+    MemoryFault(u64),
+    /// Anything that has no counterpart on the other side.
+    Other(u32, u64),
+}
+
+/// The reference's result as an [`Outcome`].
+pub fn reference_outcome(landed: &Landed) -> Outcome {
+    const SIGILL: u32 = 4;
+    const SIGBUS: u32 = 7;
+    const SIGTRAP: u32 = 5;
+    const SIGSEGV: u32 = 11;
+    const SIGSYS: u32 = 31;
+    let pc = landed.registers[32];
+    let stop = match landed.signal {
+        SIGILL if pc == CODE => Stop::Illegal,
+        SIGILL => Stop::Landed(pc),
+        // Control reached an address that cannot be run: unmapped, or not a multiple of four. Turning that
+        // into the right signal is the CPU side's job when it finds no code there.
+        SIGSEGV | SIGBUS if landed.address == pc && pc != CODE => Stop::Landed(pc),
+        SIGSEGV => Stop::MemoryFault(landed.address),
+        SIGTRAP => Stop::Breakpoint,
+        SIGSYS => Stop::Syscall,
+        signal => Stop::Other(signal, landed.address),
+    };
+    Outcome {
+        stop,
+        registers: landed.registers,
+        changed: landed.changed.clone(),
+    }
+}
+
+/// Memory size of the translator's machine: everything up to the end of the code region.
+const MEMORY: u64 = CODE + CODE_SPAN;
+
+/// Run a case through the translator.
+pub fn translated(case: &Case) -> Outcome {
+    let mut machine = Machine::new(MEMORY, CODE, 1024, Syscalls::Stop);
+    machine.set_permissions(
+        DATA..DATA + DATA_WRITABLE,
+        Permissions::READ | Permissions::WRITE,
+    );
+    machine.set_permissions(DATA + DATA_WRITABLE..DATA + DATA_BYTES, Permissions::READ);
+    machine.set_permissions(
+        CODE - CODE_SPAN..CODE + CODE_SPAN,
+        Permissions::READ | Permissions::EXECUTE,
+    );
+    let mut data = vec![0u8; DATA_BYTES as usize];
+    fill(case.seed, &mut data);
+    machine.write(DATA, &data);
+    machine.load(&case.word.to_le_bytes(), 0..4, CODE, &[0]);
+    let mut registers = RegisterBlock::ZERO;
+    registers.x.copy_from_slice(&case.registers[..31]);
+    registers.sp = case.registers[31];
+    registers.pc = CODE;
+    registers.pstate = case.registers[32];
+    registers.tpidr_el0 = case.registers[33];
+    machine.set_registers(&registers);
+    let (stopped, after) = machine.run();
+    let stop = match stopped {
+        Stopped::NoCode(address) => Stop::Landed(address),
+        Stopped::Exit(Exit::IllegalInstruction) => Stop::Illegal,
+        Stopped::Exit(Exit::Breakpoint { .. }) => Stop::Breakpoint,
+        Stopped::Exit(Exit::Syscall(_)) => Stop::Syscall,
+        Stopped::Exit(Exit::MemoryFault { address, .. }) => Stop::MemoryFault(address),
+        other => panic!("no counterpart on the reference: {other:?}"),
+    };
+    let mut now = vec![0u8; DATA_BYTES as usize];
+    machine.read(DATA, &mut now);
+    let changed = now
+        .iter()
+        .zip(&data)
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, _))| (i as u32, *a))
+        .collect();
+    let mut out = [0u64; 35];
+    out[..31].copy_from_slice(&after.x);
+    out[31] = after.sp;
+    out[32] = after.pc;
+    out[33] = after.pstate;
+    out[34] = after.tpidr_el0;
+    Outcome {
+        stop,
+        registers: out,
+        changed,
+    }
+}
+
+/// Compare one case on both sides; describe the difference if there is one.
+pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
+    let landed = reference.run(case.word, case.seed, &case.registers);
+    let expected = reference_outcome(&landed);
+    let actual = translated(case);
+    if expected == actual {
+        return Ok(());
+    }
+    let names: Vec<String> = (0..31)
+        .map(|i| format!("x{i}"))
+        .chain(["sp", "pc", "nzcv", "tpidr_el0"].map(String::from))
+        .collect();
+    let mut report = format!(
+        "word {:#010x} ({:?})\n  reference: {:?}\n  translated: {:?}\n",
+        case.word,
+        wcontainers_arm64::decode(case.word),
+        expected.stop,
+        actual.stop
+    );
+    for (i, name) in names.iter().enumerate() {
+        if expected.registers[i] != actual.registers[i] {
+            report += &format!(
+                "  {name}: reference {:#x}, translated {:#x}, before {:#x}\n",
+                expected.registers[i],
+                actual.registers[i],
+                case.registers
+                    .get(if i < 32 { i } else { i - 1 })
+                    .copied()
+                    .unwrap_or(0)
+            );
+        }
+    }
+    if expected.changed != actual.changed {
+        report += &format!(
+            "  data: reference {:?}, translated {:?}\n",
+            expected.changed, actual.changed
+        );
+    }
+    Err(report)
+}

@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::{Mutex, OnceLock};
 use wasmtime::{
     Caller, Config, Engine, Extern, Global, Instance, Linker, Memory, MemoryType, Module,
     SharedMemory, Store, Trap, TypedFunc, Val,
@@ -73,7 +74,26 @@ pub struct Machine {
     permissions: Vec<Permissions>,
 }
 
+/// One engine for the whole process, so compiled modules can be shared.
 fn engine() -> Engine {
+    static ENGINE: OnceLock<Engine> = OnceLock::new();
+    ENGINE.get_or_init(new_engine).clone()
+}
+
+/// The thread module for a table size, compiled once.
+fn thread_module(engine: &Engine, slots: u32) -> Module {
+    static MODULES: OnceLock<Mutex<HashMap<u32, Module>>> = OnceLock::new();
+    let mut modules = MODULES.get_or_init(Default::default).lock().unwrap();
+    modules
+        .entry(slots)
+        .or_insert_with(|| {
+            Module::new(engine, wcontainers_translator::thread_module(slots))
+                .expect("thread module")
+        })
+        .clone()
+}
+
+fn new_engine() -> Engine {
     let mut config = Config::new();
     config
         .wasm_tail_call(true)
@@ -118,8 +138,7 @@ impl Machine {
         let state = SharedMemory::new(&engine, MemoryType::shared(state_pages, state_pages))
             .expect("state memory");
 
-        let thread_module = Module::new(&engine, wcontainers_translator::thread_module(slots))
-            .expect("thread module");
+        let thread_module = thread_module(&engine, slots);
         let mut linker = Linker::new(&engine);
         hooks(&mut linker);
         linker

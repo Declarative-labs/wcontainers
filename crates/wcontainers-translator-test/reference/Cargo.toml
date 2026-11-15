@@ -1,0 +1,16 @@
+# The native reference runner. It is built for aarch64-unknown-linux-musl and run on real ARM64 Linux, so it
+# is its own workspace and pulls in nothing the host side needs.
+[package]
+name = "wcontainers-reference"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+libc = "0.2.191"
+
+[profile.release]
+panic = "abort"
+
+[workspace]
