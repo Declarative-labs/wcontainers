@@ -18,7 +18,8 @@ S1 (run speed at full look-ahead) is in progress; see "S1" below for what is don
 what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
 "S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
 calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
-rules) under "S1, seventh run", and what is left under "S1, what remains after the seventh run".
+rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
+eighth run", and what is left under "S1, what remains after the eighth run".
 
 ## S1: run speed at full look-ahead
 
@@ -427,27 +428,75 @@ the checkout stays free: `pyro-parked/wcontainers-scratch/translator/s7/ab.sh`):
   10.1. Size: 340,508 bytes of WebAssembly (70.4 per byte of code), 75,704 gzipped, wasmtime compile 24 ms.
   Raw output: `s7/bench-bd4adcf.txt`.
 
-S1, what remains after the seventh run (aims with every check, in both engines):
+S1, eighth run (commits ce0fb6b, 33dea4b; A/B runs alternate the two builds in one session, in clones in
+scratch: `pyro-parked/wcontainers-scratch/translator/s8/ab.sh`, best of 3 unless said):
+- Bounded indices proven (`full/proof.rs` `index_bound`). An access whose base the loop does not write and
+  whose index does not move by a fixed step is proven when the index is bounded where it is read: set
+  earlier in its block by a load of at most 4 bytes that zero extends, or, when the block does not set it,
+  bounded by an unsigned comparison with a constant (lo or ls) on the only edge into the block; for a 32 bit
+  comparison and a 64 bit read, what set the register before the comparison must be such a load. The range
+  is the base up to the base plus the largest index shifted, and needs no counting exit (accesses that move
+  still need one). Loops holding a switch are proven too, unless a case of the switch jumps back, because a
+  stop there carries on in place without proving again. In interpret this proves the switch's table byte
+  (`cmp w14, #0xb; b.hi; ldrb w15, [x8, x14]`): the dispatch makes two kept-run checks instead of three
+  (seen in wasmtime's code: the table byte's load keeps only the engine's own bound).
+- Measured first by leaving that one check out (only to measure; two rounds, load 5 to 8): interpret
+  wasmtime 0.558 / 0.560 against 0.531 / 0.566 s, Chrome 0.632 / 0.629 against 0.548 / 0.549. The proof
+  itself, two rounds, load 8 to 16: interpret wasmtime 0.587 / 0.558 to 0.529 / 0.523 s, Chrome 0.668 /
+  0.638 to 0.570 / 0.573; matrix and search unchanged.
+- Tests: layer 2 has a new chunk, a lookup: a counted loop whose access is a base plus an index loaded each
+  turn from a byte table in the blob or worked out (the counter exclusive-ored in), with or without a guard
+  (b.hi or b.hs after a 32 or 64 bit compare), read as uxtw, sxtw or lsl, shifted or not, near the end of
+  the blob or in the area, sometimes followed by a switch on a byte of the table; in "tight" cases the
+  largest index's access starts exactly on the page after the blob. Checked by breaking on purpose: a range
+  covering only the first entry fails layer 2 (seeds 81, 82, 300 cases each); a range one entry short
+  passed 1200 cases before the tight cases were added and fails within 400 cases after (seeds 81 to 83).
+- Tried and not kept: (a) in `keep_pages`, the count of trailing zeros worked out with a count of leading
+  zeros: V8 (node 26) calls out of line for i64.ctz on arm64 (`wasm::word64_ctz` in its code), which spills
+  the loop around the slow path; with clz the call is gone and V8's hit path in interpret's dispatch is
+  shorter, but A/B two rounds, load 5 to 9, sieve, interpret, matrix and search did not move beyond noise
+  (interpret Chrome 0.706 / 0.638 against 0.641 / 0.633 s). Patch `s8/clz.patch`. (b) Only to measure: the
+  exact check without its clamp to the table's length and the table's offset (3 of its instructions):
+  sort, wasmtime, three rounds, load 14 to 17, best 1.115 against 1.092 s, about 2%. So in sort the exact
+  check costs its table load and test, not those. (c) Only to measure: the proof at a loop's entry without
+  its table lookups (ranges still worked out): matrix wasmtime 0.240 / 0.241 against 0.224 / 0.231 s,
+  Chrome 0.162 / 0.161 against 0.157 / 0.158; sieve wasmtime 0.644 / 0.633 against 0.551 / 0.624 (load 7
+  to 17, noisy). Matrix's inner loop is entered 2.8 million times and proven each time; keeping what was
+  proven across entries (forgotten at stops, like a kept run) would save at most these few percent.
+- fib in Chrome: V8 does not inline our fib piece (its code, node 26 with `--no-liftoff`, keeps both
+  recursive calls as calls; the piece is about 1,480 lines of V8 machine code), while it inlined the
+  hand-written floor. Ours (4.76) is below that floor without inlining (5.7), and the floor with inlining
+  is 4.3, above the aim of 4.
+- Full benchmark at 33dea4b (`WC_BENCH_VARIANTS=1,3,5`, best of 3, load 6.5 to 12; times native, every
+  check / no permission check / no check; Chrome first run in the instance): fib wasmtime 5.22 / 4.53 /
+  3.87, Chrome 4.76 / 4.58 / 4.29; sieve 1.43 / 1.21 / 1.21, Chrome 1.21 / 0.99 / 0.96; hash 0.97 / 0.99 /
+  0.98, Chrome 0.98 / 1.01 / 1.51 (no check has no stop to move to V8's optimised code); sort 3.30 / 2.65 /
+  2.51, Chrome 3.22 / 2.74 / 2.55; interpret 3.51 / 2.67 / 2.60, Chrome 3.92 / 2.39 / 2.03; matrix 3.06 /
+  2.68 / 2.64, Chrome 2.11 / 2.08 / 11.4 (as hash); walk 0.92 to 0.96; search 2.00 / 5.63 / 2.00, Chrome
+  1.99 / 2.02 / 10.5. Size: 353,890 bytes of WebAssembly (73.2 per byte of code), 78,146 gzipped,
+  wasmtime compile 24 ms. Raw output: `s8/bench-33dea4b.txt`.
+
+S1, what remains after the eighth run (aims with every check, in both engines):
 - Met: sieve, hash and search in both engines, matrix in Chrome. Matrix in wasmtime sits at its aim (2.90 to
-  3.11 over the last two runs, native matrix 0.076 to 0.082 s), so noise puts it either side.
-- fib (aim 4): wasmtime 5.22, Chrome 4.82. Shown above: in wasmtime the plan's call shape alone, written by
-  hand, is 4.7 with every part the plan requires and 3.9 with none, so 4 cannot be reached without breaking
-  a rule (registers outside the passed ones in the thread block at calls, the stop check at entries, the frame
-  check, exact flags at a fault in the callee, the return check). Where the 10% of ours over the floor in
-  wasmtime goes is not traced yet (ours loads six fixed values at entry and spills more; not measured apart). In Chrome
-  the hand-written floor is 4.3 only through V8's inlining; reaching it would need V8 to inline our pieces.
-- Sort (aim 2.5): wasmtime 3.29, Chrome 3.30; no check 2.52 / 2.54, so even with no check it is at the aim.
-  The permission checks cost 0.6 of a native run: per comparison the callee's two loads are exact table
-  checks, because the plan relies on nothing proven before a call after it (a kept run cannot reach across
-  the call). A floor written by hand, as for fib, has not been measured for sort.
-- Interpret (aim 3): wasmtime 3.86, Chrome 4.31; no permission check 2.68 / 2.43, so the permission checks
-  are what is left (1.2 and 1.9 native runs). Each dispatch makes three kept-run checks: the byte code (an
-  index from data, any 32 bit value), the interpreter's stack (an index from data, sign extended) and the
-  switch's table byte (a byte index from a fixed table, so bounded). The first two cannot be proven ahead
-  and the kept run (a subtract, a compare and a branch) is the cheapest exact check found. The third could
-  be proven at the loop's entry, but the proof leaves out loops that hold a switch; lifting that is next.
-  Why the checks cost so much more in Chrome than in wasmtime is not explained; V8's code for the dispatch
-  loop is several copies of it and was not read through.
+  3.11 over the last three runs, native 0.076 to 0.082 s), so noise puts it either side; the proof at each
+  entry of its inner loop is a few percent of it (see (c) above), the next thing to try for it.
+- fib (aim 4): wasmtime 5.22, Chrome 4.76. Shown in the seventh run: the plan's call shape written by hand
+  is 4.7 times native in wasmtime with every part the plan requires (3.9 with none; ours with no check is
+  3.87, the same), and 4.3 in Chrome only when V8 inlines it (5.7 when not; V8 does not inline ours). So 4
+  cannot be reached in either engine without breaking a rule (registers outside the passed ones in the
+  thread block at calls, the stop check at entries, the frame check, exact flags at a fault in the callee,
+  the return check). Ours is about 10% above the floor in wasmtime; where that goes is not traced.
+- Sort (aim 2.5): wasmtime 3.30, Chrome 3.22; no check 2.51 / 2.55, so even with no check it is at the aim,
+  and with no check our call shape matches the hand-written floor in fib in wasmtime (3.87 against 3.9). The permission checks cost 0.65
+  of a native run: per comparison the callee's two loads are exact table checks, because the plan relies
+  on nothing proven before a call after it. The check's clamp and table offset are 2% of it (b above); the
+  rest is the table load and test each access needs. No floor written by hand for sort itself yet.
+- Interpret (aim 3): wasmtime 3.51, Chrome 3.92; no permission check 2.67 / 2.39. Left: two kept-run checks
+  per dispatch (a subtract, a compare and a branch, with the kept run spilled to the stack in both
+  engines), on the byte code (an index from data: pc is incremented or loaded from the byte code) and on
+  the interpreter's stack (an index from data, sign extended). Neither index has a bound the code shows, so
+  neither can be proven ahead; the kept run is the cheapest exact check found. Not measured: a hand-written
+  floor of the dispatch with those two checks.
 - Not explained, only in a measuring variant: search with only the permission check left out is 5.6 times
   native in wasmtime, against 2.0 with no check.
 - 32 bit guest memory: the owner's call; it made no difference to the hand-written fib in either engine.
@@ -723,6 +772,9 @@ contract's bits, in both runners).
   address at full (77 s, load 8 to 10). Not yet the pass bar.
 - Layer 2, seventh S1 run, release: 2000 cases seed 71, 10 on the CPU: 0 mismatches, 666 faulted, 152 left
   to an address at full (27 s, load 8 to 10). Not yet the pass bar.
+- Layer 2, eighth S1 run (with lookups), release: 300 cases seed 81, 12 on the CPU; 600 seed 84, 40 on the
+  CPU; 2000 seed 85, 10 on the CPU: 0 mismatches (seed 85: 658 faulted, 111 left to an address at full, 36
+  s at load 7 to 15). Not yet the pass bar.
 - Layer 2, sixth S1 run, release: 300 cases seed 61 and 2000 seed 63, 10 on the CPU (two argument
   registers): 0 mismatches, 674 faulted; 2000 seed 65, 10 on the CPU (lookup in place): 0 mismatches, 668
   faulted, 150 left to an address at full (30 s, load 13). Not yet the pass bar.
@@ -965,9 +1017,11 @@ contract's bits, in both runners).
   optimised code is used in long loops of functions entered once. A real browser host needs the same (or
   any other early raises); wasmtime needs none.
 - S1: the plan's "whole function reasoning" for permission checks is a kept run of up to eight allowed
-  pages per base register and kind in loops without calls (see step 6 and the third run), and, for counted
-  loops whose accesses move by a fixed step, a proof over the loop's range at its entry that picks a copy
-  of the loop without those checks (fifth run).
+  pages per base register and kind in loops without calls (see step 6 and the third run), and a proof over
+  the loop's range at its entry that picks a copy of the loop without those checks: for counted loops,
+  accesses that move by a fixed step (fifth run); for any loop without calls, accesses whose index a
+  comparison on the edge into the block, or the narrow load that set it, bounds, such as a switch's table
+  (eighth run). Loops whose switch can jump back are left out, because a stop there carries on in place.
 - S1: a proven loop's copy with its checks is only in its loop piece; the function tail calls into the loop
   piece when the proof fails. Loop pieces check the stop flag at their entry, and a stop check at a jump back
   to a loop with a loop piece writes back and tail calls it without calling the stop hook itself.
