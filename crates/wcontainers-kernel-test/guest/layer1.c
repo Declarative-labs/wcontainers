@@ -3,7 +3,7 @@
 // Reads sequences from standard input, one at a time, and runs each in a child process so no state
 // carries over. A sequence is: arena bytes (u32 length, bytes), then calls (u32 count, then for each the
 // number and six arguments as u64). For each call the child reports the return value (i64), whether the
-// call was about a directory that outlives the sequence (u32, see `outliving`), and the arena's changed
+// call's result depends on what the runners cannot share (u32, see `unshared`), and the arena's changed
 // byte ranges (u32 count, then u32 offset, u32 length, bytes) into a pipe the parent
 // drains. After each sequence the parent writes everything the child reported (u32 length, bytes), then
 // the child's wait status (u32), and puts back what the sequence may have changed. A child that dies
@@ -29,6 +29,10 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#ifndef AT_HANDLE_FID
+#define AT_HANDLE_FID 0x200
+#endif
+
 #define ARENA ((unsigned char *)0x70000000UL)
 #define ARENA_SIZE (16 * 4096)
 // How long a sequence may take before its child is killed: only one that waits for ever comes near it.
@@ -46,6 +50,17 @@ struct handle {
 };
 static struct handle outliving[2];
 static int outliving_mount[2];
+// The mount of /proc, where a working directory's path names the caller's process number.
+static int proc_mount;
+
+// Whether a directory lies on /proc's own mount, asked for an identifier any file system gives.
+static uint32_t in_proc(int fd) {
+    struct handle handle;
+    int mount;
+    handle.header.handle_bytes = sizeof handle.bytes;
+    return syscall(SYS_name_to_handle_at, fd, "", &handle.header, &mount, AT_EMPTY_PATH | AT_HANDLE_FID) == 0 &&
+           mount == proc_mount;
+}
 
 static int handle_of(int fd, struct handle *handle, int *mount) {
     handle->header.handle_bytes = sizeof handle->bytes;
@@ -166,6 +181,11 @@ int main(void) {
         }
         close(fd);
     }
+    struct handle proc_handle;
+    proc_handle.header.handle_bytes = sizeof proc_handle.bytes;
+    if (syscall(SYS_name_to_handle_at, AT_FDCWD, "/proc", &proc_handle.header, &proc_mount, AT_HANDLE_FID) != 0) {
+        return 1;
+    }
     for (;;) {
         uint32_t length;
         if (read_all(0, &length, 4) != 0 || length > ARENA_SIZE || read_all(0, arena_init, length) != 0) {
@@ -202,12 +222,15 @@ int main(void) {
                     }
                 }
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
-                uint32_t outlived = 0;
+                uint32_t unshared = 0;
                 if (sequence[index][0] == SYS_getdents64 || sequence[index][0] == SYS_lseek) {
-                    outlived = outlives((int)sequence[index][1]);
+                    unshared = outlives((int)sequence[index][1]);
+                }
+                if (sequence[index][0] == SYS_getcwd) {
+                    unshared = in_proc(AT_FDCWD);
                 }
                 write_all(1, &result, 8);
-                write_all(1, &outlived, 4);
+                write_all(1, &unshared, 4);
                 report_changes(1);
             }
             _exit(0);

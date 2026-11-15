@@ -233,10 +233,11 @@ pub struct CallResult {
     pub value: i64,
     /// Changed ranges of the arena: offset and the bytes now there.
     pub changes: Vec<(u32, Vec<u8>)>,
-    /// The call read or moved through a directory that outlives the sequence (`/dev/shm` or
-    /// `/dev`). Only the reference reports it: there such a directory's offsets count every entry
-    /// earlier sequences made, which a fresh kernel cannot share.
-    pub outlived: bool,
+    /// The call's result depends on what the two runners cannot share: a directory that outlives
+    /// the sequence (`/dev/shm` or `/dev`, whose offsets in the reference count every entry earlier
+    /// sequences made), or a working directory in `/proc` (whose path names the caller's process
+    /// number, and so differs in length). Only the reference reports it.
+    pub unshared: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1927,7 +1928,7 @@ fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
     let mut calls = Vec::new();
     let mut record = || -> Option<CallResult> {
         let value = i64::from_le_bytes(take(&mut bytes, 8)?.try_into().ok()?);
-        let outlived = word(&mut bytes)? != 0;
+        let unshared = word(&mut bytes)? != 0;
         let mut changes = Vec::new();
         for _ in 0..word(&mut bytes)? {
             let offset = word(&mut bytes)?;
@@ -1937,7 +1938,7 @@ fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
         Some(CallResult {
             value,
             changes,
-            outlived,
+            unshared,
         })
     };
     while let Some(call) = record() {
@@ -2111,7 +2112,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
                 results.push(CallResult {
                     value,
                     changes: changes(&before, &after),
-                    outlived: false,
+                    unshared: false,
                 });
                 before = after;
             }
@@ -2348,22 +2349,27 @@ fn copied_masks(call: &Call, value: i64, before: &[u8], mask: &mut Mask) {
 }
 
 /// Everything compared for a sequence, call by call, and the final status.
-/// `outlived` marks the calls about a directory that outlives the sequence; their values and what
-/// they wrote are not compared.
-pub fn seen(sequence: &Sequence, result: &SequenceResult, outlived: &[bool]) -> (Vec<Seen>, i32) {
+/// `unshared` marks the calls whose results depend on what the runners cannot share; their values
+/// and what they wrote are not compared.
+pub fn seen(sequence: &Sequence, result: &SequenceResult, unshared: &[bool]) -> (Vec<Seen>, i32) {
     let mut arena = sequence.arena.clone();
     arena.resize(ARENA_SIZE as usize, 0);
     let mut mask = Mask::default();
     let mut out = Vec::new();
     for (index, (call, each)) in sequence.calls.iter().zip(&result.calls).enumerate() {
-        let outlived = outlived.get(index).copied().unwrap_or(false);
+        let unshared = unshared.get(index).copied().unwrap_or(false);
         let before = arena.clone();
         for (offset, bytes) in &each.changes {
             arena[*offset as usize..*offset as usize + bytes.len()].copy_from_slice(bytes);
         }
         let mut hidden = volatile(call, each.value, &arena);
-        if outlived && call.number == linux::__NR_getdents64 {
-            hidden.push((call.arguments[1], call.arguments[2].min(ARENA_SIZE)));
+        if unshared {
+            let [a, b, c, ..] = call.arguments;
+            match call.number {
+                linux::__NR_getdents64 => hidden.push((b, c.min(ARENA_SIZE))),
+                linux::__NR_getcwd => hidden.push((a, b.min(ARENA_SIZE))),
+                _ => {}
+            }
         }
         for (start, length) in hidden {
             mask.hide(start, length);
@@ -2375,7 +2381,7 @@ pub fn seen(sequence: &Sequence, result: &SequenceResult, outlived: &[bool]) -> 
                 *byte = 0;
             }
         }
-        let value = if outlived || value_is_volatile(call, &arena) && each.value >= 0 {
+        let value = if unshared || value_is_volatile(call, &arena) && each.value >= 0 {
             0
         } else {
             each.value
@@ -2394,9 +2400,9 @@ pub fn difference(
     ours: &SequenceResult,
     theirs: &SequenceResult,
 ) -> Option<String> {
-    let outlived: Vec<bool> = theirs.calls.iter().map(|call| call.outlived).collect();
-    let (our_seen, our_status) = seen(sequence, ours, &outlived);
-    let (their_seen, their_status) = seen(sequence, theirs, &outlived);
+    let unshared: Vec<bool> = theirs.calls.iter().map(|call| call.unshared).collect();
+    let (our_seen, our_status) = seen(sequence, ours, &unshared);
+    let (their_seen, their_status) = seen(sequence, theirs, &unshared);
     let mut text = String::new();
     for (index, call) in sequence.calls.iter().enumerate() {
         let name = wcontainers_kernel::system_call_name(call.number.into()).unwrap_or("?");

@@ -4,7 +4,7 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is built; four runs so far. Programs start from the file system (with
+K0 is done. K1 (one process) is built; five runs so far. Programs start from the file system (with
 their own loader and `#!` scripts) with the credentials Linux gives them (set-user and set-group bits,
 file capabilities, secure mode, dumpability), a program's own seccomp filters, rseq, membarrier,
 memory calls with page protection, limits and faults, the
@@ -138,13 +138,23 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
   directories hold their parent).
 - mlock fails with ENOMEM after locking when a page cannot be brought in (no access, or wholly past
   its file's end), as Linux's `__mm_populate`.
+- process_vm_readv and process_vm_writev (fifth run) on the caller's own threads, in the order of
+  Linux's `process_vm_rw`: the other side is reached as `get_user_pages` reaches it (by the mapping's
+  own read or write right, never past a file's end, never growing a stack), a page at a time, and the
+  caller's side faults part way as `copy_to_user` and `copy_from_user`. Overlapping ranges end up as
+  ARM64's `copy_template.S` leaves them (its loads and stores are modelled; 1620 overlap cases match
+  the reference). Another process's memory is counted "system call not implemented" and ENOSYS; no
+  other process can exist in K1.
+- cachestat (fifth run): tmpfs pages written or allocated, as the reference counts them (never dirty,
+  under writeback or evicted, measured); devices, `/proc`, directories and pipes have none. A file that
+  has been mapped is counted "page residency not tracked", since its faults bring in pages here unseen.
 - The zero devices clear buffers as ARM64's `clear_user` does (eight bytes at a time; `/dev/full`
   retries from where it stopped, measured), with no limit on the length.
 
 
 ## System calls
 
-Done (178): acct, brk, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep,
+Done (181): acct, brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep,
 close, close_range, copy_file_range, dup, dup3, execve, execveat, exit, exit_group, faccessat,
 faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl,
 fdatasync, fgetxattr, finit_module, flistxattr, flock, fremovexattr, fsetxattr, fsmount, fsopen, fspick,
@@ -155,7 +165,7 @@ lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvis
 membarrier, memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, move_mount,
 mprotect, mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2,
 personality, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64, preadv, preadv2, prlimit64,
-pselect6, pwrite64, pwritev, pwritev2, read, readahead, readlinkat, readv, reboot, removexattr,
+process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev, pwritev2, read, readahead, readlinkat, readv, reboot, removexattr,
 renameat, renameat2, rseq, rt_sigaction, rt_sigpending, rt_sigprocmask, sched_get_priority_max,
 sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler,
 sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler,
@@ -205,6 +215,8 @@ Partial (inside the list above):
 - rseq: a critical section is never aborted yet; signal delivery (K2) and preemption between threads
   (K3) must do that. The time slice extension flag is counted and refused with EINVAL (not built);
   the reference takes it.
+- process_vm_readv, process_vm_writev: only the caller's own process (the only one in K1).
+- cachestat: pages a mapped file's faults bring in are not known (counted, see above).
 - sigaltstack: refuses a change while the caller runs on its alternate stack (Linux's `on_sig_stack`,
   from the thread's stack pointer); handlers still need K2.
 
@@ -217,7 +229,7 @@ clone3, pidfd_getfd, process_madvise, mount_setattr, quotactl_fd, set_mempolicy_
 listmount, lsm_get_self_attr, lsm_set_self_attr, lsm_list_modules, mseal, setxattrat, getxattrat,
 listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr.
 
-Missing (96, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
+Missing (93, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
 io_cancel, io_getevents, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
 inotify_add_watch, inotify_rm_watch, pipe2, signalfd4, vmsplice, splice, tee, timerfd_create,
 timerfd_settime, timerfd_gettime, waitid, futex, getitimer, setitimer, timer_create, timer_gettime,
@@ -227,14 +239,23 @@ mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl, semtimedop, semop
 shmdt, socket, socketpair, bind, listen, accept, connect, getsockname, getpeername, sendto, recvfrom,
 setsockopt, getsockopt, shutdown, sendmsg, recvmsg, clone, remap_file_pages, rt_tgsigqueueinfo, accept4,
 recvmmsg, wait4, fanotify_init, fanotify_mark, name_to_handle_at, clock_adjtime, sendmmsg,
-process_vm_readv, process_vm_writev, io_pgetevents, pidfd_send_signal, pidfd_open, epoll_pwait2,
+io_pgetevents, pidfd_send_signal, pidfd_open, epoll_pwait2,
 landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret, process_mrelease,
-futex_waitv, cachestat, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes,
+futex_waitv, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes,
 signals, futex), K3 (timers) or K5 (sockets, epoll).
 
-## Tests (last run 2026-11-15: 31 passed, 4 ignored known failures)
+## Tests (last run 2026-11-15: 33 passed, 5 ignored known failures)
 
 All pass except the ignored known failures.
+- processvm (new, fifth run): guest/processvm.c checks process_vm_readv and process_vm_writev's
+  refusals in order, whole copies by process and thread number, partial copies at pages with no
+  access, read-only, write-only and execute-only pages, a gap, past a mapped file's end and below the
+  stack, faults on the caller's side, and 1620 overlapping copies (sizes 3 to 1000, distances -70 to
+  100, three alignments, both directions). Same output.
+- cachestat (new, fifth run): guest/cachestat.c on written, grown, allocated, read, shrunk and
+  punched tmpfs files, ranges (wrapping, past the end), devices, `/proc`, a directory, an `O_PATH`
+  descriptor, a memory file, a pipe, bad pointers and flags, and the write-permission rule after
+  giving up root. Same output. Known failure (ignored): a file read through a private mapping.
 - execveat (new, fourth run): guest/execveat.c checks execveat's refusals and AT_EXECVE_CHECK, then
   runs itself by path, from a directory descriptor, from its own descriptor and through a script's
   descriptor (closed at exec first: ENOENT), printing arguments, name and program each time. Same
@@ -275,8 +296,21 @@ Known failures (ignored, with the reason in the attribute):
   the root file system's own kind (overlayfs over ext4 in the reference, tmpfs here until K4).
 - The two unicorn alignment differences from K0, unchanged.
 - memfd huge_page_memory_files: hugetlbfs is not built (see Partial).
+- cachestat mapped_file_pages: the page a private mapping's read fault brings into a tmpfs file is
+  counted by the reference and not known here (counted "page residency not tracked").
 
 ## Layer 1
+
+Fifth run: added process_vm_readv and process_vm_writev (the caller itself, by process number, 0 or a
+missing one; segment lists from the vector pool, arbitrary arena bytes or bad addresses; never from the
+play area, whose contents the comparison does not know) and cachestat. A byte copied by them from a
+masked byte is masked too; the masks now also cover the play area. Directories that outlive a sequence:
+the reference's `/dev/shm` and `/dev` keep tmpfs's offset counters across sequences (each sequence
+makes `/dev/shm/w`, and the devices are remade; measured: a million mkdir and rmdir leave the next
+entry at offset 1000003), which a fresh kernel cannot share. The reference's runner now asks, after
+each getdents64 and lseek, whether the descriptor is on one of them (by `name_to_handle_at`, which
+every generated filter lets through and the generator never makes); such a call's value and the
+listing it wrote are not compared, on both sides. Found by seed 62 after under 1500 sequences.
 
 Fourth run: seccomp (three times in the list of kinds, as most of its sequences need several filters
 to show anything) with four filters per sequence made from the generated values: each first lets
@@ -390,6 +424,12 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- Added in the fifth run: ARM64 Linux's user copy routine (`copy_template.S`) is modelled in
+  src/user.rs, only for what overlapping copies within one process leave behind (process_vm_readv and
+  process_vm_writev on oneself); no crate does this. cachestat on the root file system counts tmpfs
+  pages here, where the reference's overlayfs file has none of its own (part of the root file
+  system's known difference until K4).
 
 - Added in the fourth run: the classic BPF checker and interpreter for seccomp filters are written
   here (src/seccomp.rs), following Linux's: the few crates that interpret classic BPF are small,
