@@ -157,6 +157,9 @@ pub enum Chunk {
     },
     /// A loop counting in x16 that accesses memory through x18 at an address moving by a fixed step.
     Walk(Walk),
+    /// A loop counting in x16 that accesses memory at a base plus an index read from the area or worked
+    /// out each turn, and bounded by a comparison or by the load that read it.
+    Lookup(Lookup),
     /// Call a function by number, directly or through x18.
     Call {
         function: usize,
@@ -216,6 +219,36 @@ pub struct Walk {
     pub moves: WalkMove,
     /// Bytes the address moves by each turn, before any shift by the access size.
     pub step: i8,
+}
+
+/// A loop whose access goes through a table: `base` plus `index` (read as `extend`: 0 uxtw, 1 sxtw, 2 lsl,
+/// shifted by the access size when `shift`).
+#[derive(Clone, Debug)]
+pub struct Lookup {
+    pub turns: u8,
+    pub base: u8,
+    pub index: u8,
+    pub rt: u8,
+    /// Holds the place of the loop's byte table: the switch's two entries, then a switch choice for each
+    /// turn, then an index for each turn.
+    pub table: u8,
+    /// The index is loaded from the table each turn; otherwise it starts at `start` and has the counter
+    /// exclusive-ored into it each turn.
+    pub loaded: bool,
+    pub start: u16,
+    pub values: Vec<u8>,
+    /// The access is skipped when the index is above `bound` (or at or above it when not `inclusive`),
+    /// compared in 64 bits when `wide`.
+    pub guard: Option<(u16, bool, bool)>,
+    pub extend: u8,
+    pub shift: bool,
+    pub load: bool,
+    /// 1 or 8.
+    pub bytes: u8,
+    pub at: GroupBase,
+    /// After the access, a switch through the table's first two bytes on the turn's choice (2 skips it).
+    pub switch: bool,
+    pub choices: Vec<u8>,
 }
 
 /// A function may call only functions with lower numbers, so calls always end.
@@ -433,6 +466,103 @@ fn walk() -> impl Strategy<Value = Walk> {
         )
 }
 
+fn lookup() -> impl Strategy<Value = Lookup> {
+    (
+        (1u8..24, register(), register(), register(), register()),
+        (
+            any::<bool>(),
+            0u16..600,
+            prop::collection::vec(prop_oneof![3 => 0u8..16, 1 => any::<u8>()], 24),
+        ),
+        prop::option::of((
+            prop_oneof![3 => 0u16..64, 1 => 64u16..4096],
+            any::<bool>(),
+            any::<bool>(),
+        )),
+        (
+            0u8..3,
+            any::<bool>(),
+            any::<bool>(),
+            prop::sample::select(vec![1u8, 8]),
+        ),
+        prop_oneof![
+            (0u16..512).prop_map(GroupBase::Area),
+            (0u16..2048).prop_map(GroupBase::Edge),
+        ],
+        (any::<bool>(), prop::collection::vec(0u8..3, 24)),
+        prop::bool::weighted(0.3),
+    )
+        .prop_map(
+            |(
+                (turns, base, index, rt, table),
+                (loaded, start, values),
+                guard,
+                (extend, shift, load, bytes),
+                at,
+                (switch, choices),
+                tight,
+            )| {
+                // Four different registers.
+                let next = |r: u8, not: &[u8]| {
+                    *REGISTERS
+                        .iter()
+                        .cycle()
+                        .skip_while(|&&x| x != r)
+                        .find(|x| !not.contains(x))
+                        .unwrap()
+                };
+                let index = next(index, &[base]);
+                let rt = next(rt, &[base, index]);
+                let table = next(table, &[base, index, rt]);
+                let shift = shift && bytes == 8;
+                let scale: u32 = if shift { 8 } else { 1 };
+                // A worked out index, a store and an access in the area need the guard. Every access stays
+                // within the area, or within 2 KiB of a base near the end of the blob, so it runs onto the
+                // page after it and no further.
+                let mut guard = guard;
+                let mut at = at;
+                if guard.is_none() && (!loaded || !load || matches!(at, GroupBase::Area(_))) {
+                    guard = Some((255, true, false));
+                }
+                // Tight: the bound is the largest index the turns load, and an access there starts at the
+                // end of the blob.
+                if let (true, true, Some((bound, inclusive, _))) = (tight, loaded, &mut guard) {
+                    *bound = u16::from(*values[..usize::from(turns)].iter().max().unwrap());
+                    *inclusive = true;
+                    if let GroupBase::Edge(by) = &mut at {
+                        *by = (u32::from(*bound) * scale).min(2040) as u16;
+                    }
+                }
+                if let Some((bound, inclusive, _)) = &mut guard {
+                    *bound = (*bound).min((2040 / scale) as u16);
+                    if let GroupBase::Area(first) = &mut at {
+                        *inclusive = true;
+                        *bound = (*bound).min(((AREA - 8) / scale) as u16 - 1);
+                        *first = (*first).min((AREA - 8 - u32::from(*bound + 1) * scale) as u16);
+                    }
+                }
+                Lookup {
+                    turns,
+                    base,
+                    index,
+                    rt,
+                    table,
+                    loaded,
+                    start,
+                    values,
+                    guard,
+                    extend,
+                    shift,
+                    load,
+                    bytes,
+                    at,
+                    switch,
+                    choices,
+                }
+            },
+        )
+}
+
 fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0u8..13, any::<bool>(), register(), register(), register()).prop_map(
@@ -555,6 +685,7 @@ fn chunk(callable: usize) -> BoxedStrategy<Chunk> {
             .prop_map(|(count, ops)| Chunk::Loop { count, ops })
             .boxed(),
         walk().prop_map(Chunk::Walk).boxed(),
+        lookup().prop_map(Chunk::Lookup).boxed(),
         (register(), prop::collection::vec(ops(), 1..6))
             .prop_map(|(index, cases)| Chunk::Switch { index, cases })
             .boxed(),
@@ -975,6 +1106,7 @@ fn emit_chunks(ops: &mut Ops, layout: &mut Layout, chunks: &[Chunk]) {
                 dynasm!(ops ; .arch aarch64 ; subs x16, x16, #1 ; b.ne =>top);
             }
             Chunk::Walk(w) => emit_walk(ops, layout.edge, w),
+            Chunk::Lookup(l) => emit_lookup(ops, layout, l),
             Chunk::Call {
                 function,
                 through_register,
@@ -1267,6 +1399,99 @@ fn emit_walk(ops: &mut Ops, edge: DynamicLabel, w: &Walk) {
             }
         }
     }
+}
+
+fn emit_lookup(ops: &mut Ops, layout: &mut Layout, l: &Lookup) {
+    let (base, index, rt, tab) = (l.base, l.index, l.rt, l.table);
+    match l.at {
+        GroupBase::Area(at) => {
+            let at = u32::from(at);
+            dynasm!(ops ; .arch aarch64 ; add XSP(base), x29, #at);
+        }
+        GroupBase::Edge(by) => {
+            let by = u32::from(by);
+            dynasm!(ops ; .arch aarch64 ; adr X(base), =>layout.edge ; sub XSP(base), XSP(base), #by);
+        }
+    }
+    let top = ops.new_dynamic_label();
+    let skip = ops.new_dynamic_label();
+    let table = ops.new_dynamic_label();
+    let turns = u32::from(l.turns);
+    let start = u32::from(l.start);
+    dynasm!(ops ; .arch aarch64 ; adr X(tab), =>table ; movz W(index), #start ; movz x16, #turns ; =>top);
+    if l.loaded {
+        dynasm!(ops ; .arch aarch64 ; add x18, XSP(tab), #25 ; ldrb W(index), [x18, x16]);
+    } else {
+        dynasm!(ops ; .arch aarch64 ; eor W(index), W(index), w16);
+    }
+    if let Some((bound, inclusive, wide)) = l.guard {
+        let bound = u32::from(bound);
+        if wide {
+            dynasm!(ops ; .arch aarch64 ; cmp XSP(index), #bound);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; cmp WSP(index), #bound);
+        }
+        branch_if(ops, if inclusive { 8 } else { 2 }, skip);
+    }
+    match (l.bytes, l.load, l.extend, l.shift) {
+        (1, true, 0, _) => dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [X(base), W(index), uxtw]),
+        (1, true, 1, _) => dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [X(base), W(index), sxtw]),
+        (1, true, _, _) => dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [X(base), X(index)]),
+        (1, false, 0, _) => dynasm!(ops ; .arch aarch64 ; strb W(rt), [X(base), W(index), uxtw]),
+        (1, false, 1, _) => dynasm!(ops ; .arch aarch64 ; strb W(rt), [X(base), W(index), sxtw]),
+        (1, false, _, _) => dynasm!(ops ; .arch aarch64 ; strb W(rt), [X(base), X(index)]),
+        (_, true, 0, false) => dynasm!(ops ; .arch aarch64 ; ldr X(rt), [X(base), W(index), uxtw]),
+        (_, true, 0, true) => {
+            dynasm!(ops ; .arch aarch64 ; ldr X(rt), [X(base), W(index), uxtw #3])
+        }
+        (_, true, 1, false) => dynasm!(ops ; .arch aarch64 ; ldr X(rt), [X(base), W(index), sxtw]),
+        (_, true, 1, true) => {
+            dynasm!(ops ; .arch aarch64 ; ldr X(rt), [X(base), W(index), sxtw #3])
+        }
+        (_, true, _, false) => dynasm!(ops ; .arch aarch64 ; ldr X(rt), [X(base), X(index)]),
+        (_, true, _, true) => dynasm!(ops ; .arch aarch64 ; ldr X(rt), [X(base), X(index), lsl #3]),
+        (_, false, 0, false) => dynasm!(ops ; .arch aarch64 ; str X(rt), [X(base), W(index), uxtw]),
+        (_, false, 0, true) => {
+            dynasm!(ops ; .arch aarch64 ; str X(rt), [X(base), W(index), uxtw #3])
+        }
+        (_, false, 1, false) => dynasm!(ops ; .arch aarch64 ; str X(rt), [X(base), W(index), sxtw]),
+        (_, false, 1, true) => {
+            dynasm!(ops ; .arch aarch64 ; str X(rt), [X(base), W(index), sxtw #3])
+        }
+        (_, false, _, false) => dynasm!(ops ; .arch aarch64 ; str X(rt), [X(base), X(index)]),
+        (_, false, _, true) => {
+            dynasm!(ops ; .arch aarch64 ; str X(rt), [X(base), X(index), lsl #3])
+        }
+    }
+    if l.switch {
+        // Two cases chosen by the turn's choice, through the table's first two bytes.
+        let cases = ops.new_dynamic_label();
+        let (one, two) = (ops.new_dynamic_label(), ops.new_dynamic_label());
+        dynasm!(ops ; .arch aarch64
+            ; add x18, XSP(tab), #1
+            ; ldrb w18, [x18, x16]
+            ; cmp w18, #1
+            ; b.hi =>skip
+            ; ldrb w18, [X(tab), x18]
+            ; adr X(index), =>cases
+            ; add X(index), X(index), x18, lsl #2
+            ; br X(index)
+            ; =>cases
+            ; b =>one
+            ; b =>two
+            ; =>one
+            ; add XSP(rt), XSP(rt), #1
+            ; b =>skip
+            ; =>two
+            ; eor X(rt), X(rt), x16
+        );
+    }
+    dynasm!(ops ; .arch aarch64 ; =>skip ; subs x16, x16, #1 ; b.ne =>top);
+    // Turn t (counting down from `turns` to 1) reads byte t + 1 for its choice and t + 25 for its index.
+    let mut bytes = vec![1, 0];
+    bytes.extend(&l.choices);
+    bytes.extend(&l.values);
+    layout.tables.push((table, bytes));
 }
 
 /// Move sp down (or back up) by a frame size: a multiple of 4096, or less than 4096.
