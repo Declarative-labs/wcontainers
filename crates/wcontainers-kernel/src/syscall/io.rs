@@ -83,6 +83,9 @@ pub(super) fn pread64(
     tid: Tid,
     [fd, buffer, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
+    if (offset as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
     let file = file(kernel, tid, fd)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
@@ -108,6 +111,9 @@ pub(super) fn pwrite64(
     tid: Tid,
     [fd, buffer, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
+    if (offset as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
     let file = file(kernel, tid, fd)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
@@ -128,10 +134,7 @@ pub(super) fn pwrite64(
 }
 
 /// The checks for a read or write at a given offset: a negative offset is invalid, and a pipe has none.
-fn positioned(file: &FileRef, offset: u64) -> Result<(), Errno> {
-    if (offset as i64) < 0 {
-        return Err(Errno::EINVAL);
-    }
+fn positioned(file: &FileRef, _offset: u64) -> Result<(), Errno> {
     if matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
         return Err(Errno::ESPIPE);
     }
@@ -197,6 +200,9 @@ pub(super) fn preadv(
     tid: Tid,
     [fd, vector, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
+    if (offset as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
     let file = file(kernel, tid, fd)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     if !file.borrow().readable() {
@@ -212,6 +218,9 @@ pub(super) fn pwritev(
     tid: Tid,
     [fd, vector, count, offset, ..]: Args,
 ) -> Result<u64, Errno> {
+    if (offset as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
     let file = file(kernel, tid, fd)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     if !file.borrow().writable() {
@@ -255,6 +264,39 @@ fn vectored(
     Ok(done)
 }
 
+/// The bytes a read of up to `count` bytes at `offset` gives, without moving the file's position.
+fn file_bytes(
+    cx: &mut Context<'_>,
+    file: &FileRef,
+    count: u64,
+    offset: u64,
+) -> Result<Vec<u8>, Errno> {
+    let node = file.borrow().node.clone();
+    let inode = node.borrow();
+    let window = |data: &[u8]| {
+        let start = (offset as usize).min(data.len());
+        let end = (start + count as usize).min(data.len());
+        data[start..end].to_vec()
+    };
+    Ok(match &inode.content {
+        Content::Directory(_) => return Err(Errno::EISDIR),
+        Content::Proc(_) if inode.is_directory() => return Err(Errno::EISDIR),
+        Content::Regular(regular) => window(&regular.data),
+        Content::Proc(_) => window(file.borrow().contents.as_deref().unwrap_or_default()),
+        Content::Special => match Device::from_number(inode.rdev) {
+            Some(Device::Null) => Vec::new(),
+            Some(Device::Zero | Device::Full) => vec![0; count.min(PAGE_SIZE * 16) as usize],
+            Some(Device::Random | Device::Urandom) => {
+                let mut bytes = vec![0; count.min(PAGE_SIZE * 16) as usize];
+                cx.host.random(&mut bytes);
+                bytes
+            }
+            _ => return Err(Errno::ENXIO),
+        },
+        Content::HostStream(_) | Content::Symlink(_) => return Err(Errno::EINVAL),
+    })
+}
+
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
 pub(super) fn read_at(
     kernel: &mut Kernel,
@@ -265,38 +307,8 @@ pub(super) fn read_at(
     count: u64,
     at: Option<u64>,
 ) -> Result<u64, Errno> {
-    let node = file.borrow().node.clone();
     let offset = at.unwrap_or(file.borrow().offset);
-    let bytes: Vec<u8> = {
-        let inode = node.borrow();
-        match &inode.content {
-            Content::Directory(_) => return Err(Errno::EISDIR),
-            Content::Proc(_) if inode.is_directory() => return Err(Errno::EISDIR),
-            Content::Regular(regular) => {
-                let start = (offset as usize).min(regular.data.len());
-                let end = (start + count as usize).min(regular.data.len());
-                regular.data[start..end].to_vec()
-            }
-            Content::Proc(_) => {
-                let file = file.borrow();
-                let contents = file.contents.as_deref().unwrap_or_default();
-                let start = (offset as usize).min(contents.len());
-                let end = (start + count as usize).min(contents.len());
-                contents[start..end].to_vec()
-            }
-            Content::Special => match Device::from_number(inode.rdev) {
-                Some(Device::Null) => Vec::new(),
-                Some(Device::Zero | Device::Full) => vec![0; count.min(PAGE_SIZE * 16) as usize],
-                Some(Device::Random | Device::Urandom) => {
-                    let mut bytes = vec![0; count.min(PAGE_SIZE * 16) as usize];
-                    cx.host.random(&mut bytes);
-                    bytes
-                }
-                _ => return Err(Errno::ENXIO),
-            },
-            Content::HostStream(_) | Content::Symlink(_) => return Err(Errno::EINVAL),
-        }
-    };
+    let bytes = file_bytes(cx, file, count, offset)?;
     let written = guest(kernel, cx, tid).write_partial(buffer, &bytes);
     if written == 0 && !bytes.is_empty() {
         return Err(Errno::EFAULT);
@@ -318,41 +330,75 @@ pub(super) fn write_at(
     at: Option<u64>,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
-    let kind = match &node.borrow().content {
-        Content::Regular(_) => None,
-        Content::HostStream(stream) => Some(Ok(*stream)),
-        Content::Special => Some(Err(Device::from_number(node.borrow().rdev))),
-        Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) => {
-            return Err(Errno::EINVAL);
-        }
+    let stream = match &node.borrow().content {
+        Content::HostStream(stream) => Some(*stream),
+        _ => None,
     };
-    match kind {
-        None => {}
-        Some(Ok(stream)) => return write_host_stream(kernel, cx, tid, stream, buffer, count),
-        Some(Err(Some(Device::Null | Device::Zero))) => return Ok(count),
-        Some(Err(Some(Device::Full))) => return Err(Errno::ENOSPC),
-        Some(Err(Some(Device::Random | Device::Urandom))) => {
-            guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
-            return Ok(count);
+    if let Some(stream) = stream {
+        return write_host_stream(kernel, cx, tid, stream, buffer, count);
+    }
+    let (regular, device) = {
+        let inode = node.borrow();
+        (
+            matches!(inode.content, Content::Regular(_)),
+            Device::from_number(inode.rdev),
+        )
+    };
+    let bytes = if regular {
+        // As much of the buffer as can be read.
+        let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
+        if readable == 0 && count > 0 {
+            return Err(Errno::EFAULT);
         }
-        Some(Err(_)) => return Err(Errno::ENXIO),
-    }
-    // A regular file: as much of the buffer as can be read, a page at a time.
-    let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
-    if readable == 0 && count > 0 {
-        return Err(Errno::EFAULT);
-    }
-    let bytes = guest(kernel, cx, tid).read(buffer, readable)?;
-    let append = file.borrow().flags & O_APPEND != 0;
+        guest(kernel, cx, tid).read(buffer, readable)?
+    } else if matches!(device, Some(Device::Random | Device::Urandom)) {
+        // The random devices take the bytes in; the rest only count them.
+        guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
+        return write_bytes(kernel, cx, tid, file, &[], at).map(|_| count);
+    } else {
+        return write_bytes(kernel, cx, tid, file, &[], at).map(|_| count);
+    };
+    write_bytes(kernel, cx, tid, file, &bytes, at)
+}
+
+/// Writes bytes the kernel holds to a file, at its position or at `at`. Devices that take anything
+/// report nothing written here; the caller counts what it offered.
+fn write_bytes(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    bytes: &[u8],
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let node = file.borrow().node.clone();
     let now = kernel.now(cx);
     let may_keep_privileges = kernel
         .process_of(tid)
         .credentials
         .has(crate::credentials::CAP_FSETID);
     let mut inode = node.borrow_mut();
-    let Content::Regular(regular) = &mut inode.content else {
-        unreachable!()
+    let rdev = inode.rdev;
+    let regular = match &mut inode.content {
+        Content::Regular(regular) => regular,
+        Content::HostStream(stream) => {
+            cx.host.output(*stream, bytes);
+            return Ok(bytes.len() as u64);
+        }
+        Content::Special => {
+            return match Device::from_number(rdev) {
+                Some(Device::Null | Device::Zero | Device::Random | Device::Urandom) => {
+                    Ok(bytes.len() as u64)
+                }
+                Some(Device::Full) => Err(Errno::ENOSPC),
+                _ => Err(Errno::ENXIO),
+            };
+        }
+        Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) => {
+            return Err(Errno::EINVAL);
+        }
     };
+    let append = file.borrow().flags & O_APPEND != 0;
     let offset = if append {
         regular.data.len() as u64
     } else {
@@ -365,7 +411,7 @@ pub(super) fn write_at(
         return Err(Errno::EFBIG);
     }
     if !bytes.is_empty() {
-        regular.write(offset as usize, &bytes);
+        regular.write(offset as usize, bytes);
         inode.mtime = now;
         inode.ctime = now;
         // Writing clears the set-user and set-group bits, as Linux's `file_remove_privs` does for a
@@ -379,6 +425,44 @@ pub(super) fn write_at(
         file.borrow_mut().offset = offset + bytes.len() as u64;
     }
     Ok(bytes.len() as u64)
+}
+
+pub(super) fn sendfile(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [out_fd, in_fd, offset_address, count, ..]: Args,
+) -> Result<u64, Errno> {
+    let input = file(kernel, tid, in_fd)?;
+    let output = file(kernel, tid, out_fd)?;
+    if !input.borrow().readable() || !output.borrow().writable() {
+        return Err(Errno::EBADF);
+    }
+    if output.borrow().flags & O_APPEND != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if matches!(input.borrow().node.borrow().content, Content::Directory(_)) {
+        return Err(Errno::EINVAL);
+    }
+    let explicit = if offset_address != 0 {
+        let offset: i64 = guest(kernel, cx, tid).read_value(offset_address)?;
+        if offset < 0 {
+            return Err(Errno::EINVAL);
+        }
+        Some(offset as u64)
+    } else {
+        None
+    };
+    let offset = explicit.unwrap_or(input.borrow().offset);
+    let bytes = file_bytes(cx, &input, count.min(MAX_RW_COUNT), offset)?;
+    let written = write_bytes(kernel, cx, tid, &output, &bytes, None)?;
+    match explicit {
+        Some(_) => {
+            guest(kernel, cx, tid).write(offset_address, &(offset + written).to_le_bytes())?
+        }
+        None => input.borrow_mut().offset = offset + written,
+    }
+    Ok(written)
 }
 
 /// The host takes a stream's bytes at once, so this is a write to an empty pipe, as the reference's

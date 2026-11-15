@@ -305,28 +305,29 @@ pub(super) fn setresuid(
     tid: Tid,
     [ruid, euid, suid, ..]: Args,
 ) -> Result<u64, Errno> {
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let wanted = [ruid as u32, euid as u32, suid as u32];
-    let current = [credentials.uid, credentials.euid, credentials.suid];
-    if !credentials.has(CAP_SETUID)
-        && wanted
-            .iter()
-            .any(|id| *id != u32::MAX && !current.contains(id))
-    {
-        return Err(Errno::EPERM);
-    }
-    let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
-    if wanted[0] != u32::MAX {
-        credentials.uid = wanted[0];
-    }
-    if wanted[1] != u32::MAX {
-        credentials.euid = wanted[1];
-    }
-    if wanted[2] != u32::MAX {
-        credentials.suid = wanted[2];
-    }
-    credentials.after_uid_change(old_uid, old_euid, old_suid);
-    Ok(0)
+    changing(kernel, tid, |credentials| {
+        let wanted = [ruid as u32, euid as u32, suid as u32];
+        let current = [credentials.uid, credentials.euid, credentials.suid];
+        if !credentials.has(CAP_SETUID)
+            && wanted
+                .iter()
+                .any(|id| *id != u32::MAX && !current.contains(id))
+        {
+            return Err(Errno::EPERM);
+        }
+        let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
+        if wanted[0] != u32::MAX {
+            credentials.uid = wanted[0];
+        }
+        if wanted[1] != u32::MAX {
+            credentials.euid = wanted[1];
+        }
+        if wanted[2] != u32::MAX {
+            credentials.suid = wanted[2];
+        }
+        credentials.after_uid_change(old_uid, old_euid, old_suid);
+        Ok(0)
+    })
 }
 
 pub(super) fn setresgid(
@@ -335,27 +336,28 @@ pub(super) fn setresgid(
     tid: Tid,
     [rgid, egid, sgid, ..]: Args,
 ) -> Result<u64, Errno> {
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let wanted = [rgid as u32, egid as u32, sgid as u32];
-    let current = [credentials.gid, credentials.egid, credentials.sgid];
-    if !credentials.has(CAP_SETGID)
-        && wanted
-            .iter()
-            .any(|id| *id != u32::MAX && !current.contains(id))
-    {
-        return Err(Errno::EPERM);
-    }
-    if wanted[0] != u32::MAX {
-        credentials.gid = wanted[0];
-    }
-    if wanted[1] != u32::MAX {
-        credentials.egid = wanted[1];
-    }
-    if wanted[2] != u32::MAX {
-        credentials.sgid = wanted[2];
-    }
-    credentials.fsgid = credentials.egid;
-    Ok(0)
+    changing(kernel, tid, |credentials| {
+        let wanted = [rgid as u32, egid as u32, sgid as u32];
+        let current = [credentials.gid, credentials.egid, credentials.sgid];
+        if !credentials.has(CAP_SETGID)
+            && wanted
+                .iter()
+                .any(|id| *id != u32::MAX && !current.contains(id))
+        {
+            return Err(Errno::EPERM);
+        }
+        if wanted[0] != u32::MAX {
+            credentials.gid = wanted[0];
+        }
+        if wanted[1] != u32::MAX {
+            credentials.egid = wanted[1];
+        }
+        if wanted[2] != u32::MAX {
+            credentials.sgid = wanted[2];
+        }
+        credentials.fsgid = credentials.egid;
+        Ok(0)
+    })
 }
 
 pub(super) fn setuid(
@@ -368,19 +370,20 @@ pub(super) fn setuid(
     if uid == u32::MAX {
         return Err(Errno::EINVAL);
     }
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
-    if credentials.has(CAP_SETUID) {
-        credentials.uid = uid;
-        credentials.euid = uid;
-        credentials.suid = uid;
-    } else if uid == credentials.uid || uid == credentials.suid {
-        credentials.euid = uid;
-    } else {
-        return Err(Errno::EPERM);
-    }
-    credentials.after_uid_change(old_uid, old_euid, old_suid);
-    Ok(0)
+    changing(kernel, tid, |credentials| {
+        let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
+        if credentials.has(CAP_SETUID) {
+            credentials.uid = uid;
+            credentials.euid = uid;
+            credentials.suid = uid;
+        } else if uid == credentials.uid || uid == credentials.suid {
+            credentials.euid = uid;
+        } else {
+            return Err(Errno::EPERM);
+        }
+        credentials.after_uid_change(old_uid, old_euid, old_suid);
+        Ok(0)
+    })
 }
 
 pub(super) fn setgid(
@@ -393,18 +396,19 @@ pub(super) fn setgid(
     if gid == u32::MAX {
         return Err(Errno::EINVAL);
     }
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    if credentials.has(CAP_SETGID) {
-        credentials.gid = gid;
-        credentials.egid = gid;
-        credentials.sgid = gid;
-    } else if gid == credentials.gid || gid == credentials.sgid {
-        credentials.egid = gid;
-    } else {
-        return Err(Errno::EPERM);
-    }
-    credentials.fsgid = credentials.egid;
-    Ok(0)
+    changing(kernel, tid, |credentials| {
+        if credentials.has(CAP_SETGID) {
+            credentials.gid = gid;
+            credentials.egid = gid;
+            credentials.sgid = gid;
+        } else if gid == credentials.gid || gid == credentials.sgid {
+            credentials.egid = gid;
+        } else {
+            return Err(Errno::EPERM);
+        }
+        credentials.fsgid = credentials.egid;
+        Ok(0)
+    })
 }
 
 pub(super) fn setreuid(
@@ -414,26 +418,32 @@ pub(super) fn setreuid(
     [ruid, euid, ..]: Args,
 ) -> Result<u64, Errno> {
     let (ruid, euid) = (ruid as u32, euid as u32);
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let privileged = credentials.has(CAP_SETUID);
-    let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
-    if ruid != u32::MAX && !privileged && ruid != old_uid && ruid != old_euid {
-        return Err(Errno::EPERM);
-    }
-    if euid != u32::MAX && !privileged && euid != old_uid && euid != old_euid && euid != old_suid {
-        return Err(Errno::EPERM);
-    }
-    if ruid != u32::MAX {
-        credentials.uid = ruid;
-    }
-    if euid != u32::MAX {
-        credentials.euid = euid;
-    }
-    if ruid != u32::MAX || (euid != u32::MAX && euid != old_uid) {
-        credentials.suid = credentials.euid;
-    }
-    credentials.after_uid_change(old_uid, old_euid, old_suid);
-    Ok(0)
+    changing(kernel, tid, |credentials| {
+        let privileged = credentials.has(CAP_SETUID);
+        let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
+        if ruid != u32::MAX && !privileged && ruid != old_uid && ruid != old_euid {
+            return Err(Errno::EPERM);
+        }
+        if euid != u32::MAX
+            && !privileged
+            && euid != old_uid
+            && euid != old_euid
+            && euid != old_suid
+        {
+            return Err(Errno::EPERM);
+        }
+        if ruid != u32::MAX {
+            credentials.uid = ruid;
+        }
+        if euid != u32::MAX {
+            credentials.euid = euid;
+        }
+        if ruid != u32::MAX || (euid != u32::MAX && euid != old_uid) {
+            credentials.suid = credentials.euid;
+        }
+        credentials.after_uid_change(old_uid, old_euid, old_suid);
+        Ok(0)
+    })
 }
 
 pub(super) fn setregid(
@@ -443,26 +453,32 @@ pub(super) fn setregid(
     [rgid, egid, ..]: Args,
 ) -> Result<u64, Errno> {
     let (rgid, egid) = (rgid as u32, egid as u32);
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let privileged = credentials.has(CAP_SETGID);
-    let (old_gid, old_egid, old_sgid) = (credentials.gid, credentials.egid, credentials.sgid);
-    if rgid != u32::MAX && !privileged && rgid != old_gid && rgid != old_egid {
-        return Err(Errno::EPERM);
-    }
-    if egid != u32::MAX && !privileged && egid != old_gid && egid != old_egid && egid != old_sgid {
-        return Err(Errno::EPERM);
-    }
-    if rgid != u32::MAX {
-        credentials.gid = rgid;
-    }
-    if egid != u32::MAX {
-        credentials.egid = egid;
-    }
-    if rgid != u32::MAX || (egid != u32::MAX && egid != old_gid) {
-        credentials.sgid = credentials.egid;
-    }
-    credentials.fsgid = credentials.egid;
-    Ok(0)
+    changing(kernel, tid, |credentials| {
+        let privileged = credentials.has(CAP_SETGID);
+        let (old_gid, old_egid, old_sgid) = (credentials.gid, credentials.egid, credentials.sgid);
+        if rgid != u32::MAX && !privileged && rgid != old_gid && rgid != old_egid {
+            return Err(Errno::EPERM);
+        }
+        if egid != u32::MAX
+            && !privileged
+            && egid != old_gid
+            && egid != old_egid
+            && egid != old_sgid
+        {
+            return Err(Errno::EPERM);
+        }
+        if rgid != u32::MAX {
+            credentials.gid = rgid;
+        }
+        if egid != u32::MAX {
+            credentials.egid = egid;
+        }
+        if rgid != u32::MAX || (egid != u32::MAX && egid != old_gid) {
+            credentials.sgid = credentials.egid;
+        }
+        credentials.fsgid = credentials.egid;
+        Ok(0)
+    })
 }
 
 pub(super) fn setfsuid(
@@ -472,21 +488,22 @@ pub(super) fn setfsuid(
     [uid, ..]: Args,
 ) -> Result<u64, Errno> {
     let uid = uid as u32;
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let old = credentials.fsuid;
-    let allowed = [
-        credentials.uid,
-        credentials.euid,
-        credentials.suid,
-        credentials.fsuid,
-    ]
-    .contains(&uid)
-        || credentials.has(CAP_SETUID);
-    if uid != u32::MAX && allowed {
-        credentials.fsuid = uid;
-        credentials.after_fsuid_change(old);
-    }
-    Ok(old.into())
+    changing(kernel, tid, |credentials| {
+        let old = credentials.fsuid;
+        let allowed = [
+            credentials.uid,
+            credentials.euid,
+            credentials.suid,
+            credentials.fsuid,
+        ]
+        .contains(&uid)
+            || credentials.has(CAP_SETUID);
+        if uid != u32::MAX && allowed {
+            credentials.fsuid = uid;
+            credentials.after_fsuid_change(old);
+        }
+        Ok(old.into())
+    })
 }
 
 pub(super) fn setfsgid(
@@ -496,20 +513,36 @@ pub(super) fn setfsgid(
     [gid, ..]: Args,
 ) -> Result<u64, Errno> {
     let gid = gid as u32;
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let old = credentials.fsgid;
-    let allowed = [
-        credentials.gid,
-        credentials.egid,
-        credentials.sgid,
-        credentials.fsgid,
-    ]
-    .contains(&gid)
-        || credentials.has(CAP_SETGID);
-    if gid != u32::MAX && allowed {
-        credentials.fsgid = gid;
+    changing(kernel, tid, |credentials| {
+        let old = credentials.fsgid;
+        let allowed = [
+            credentials.gid,
+            credentials.egid,
+            credentials.sgid,
+            credentials.fsgid,
+        ]
+        .contains(&gid)
+            || credentials.has(CAP_SETGID);
+        if gid != u32::MAX && allowed {
+            credentials.fsgid = gid;
+        }
+        Ok(old.into())
+    })
+}
+
+/// Changes the caller's credentials; a change Linux's `commit_creds` counts makes it undumpable.
+fn changing(
+    kernel: &mut Kernel,
+    tid: Tid,
+    change: impl FnOnce(&mut crate::credentials::Credentials) -> Result<u64, Errno>,
+) -> Result<u64, Errno> {
+    let process = kernel.process_of_mut(tid);
+    let old = process.credentials.clone();
+    let result = change(&mut process.credentials);
+    if process.credentials.loses_dumpable(&old) {
+        process.dumpable = false;
     }
-    Ok(old.into())
+    result
 }
 
 /// Linux's limit on supplementary groups (`NGROUPS_MAX`).
@@ -825,34 +858,33 @@ pub(super) fn prlimit64(
     tid: Tid,
     [pid, resource, new, old, ..]: Args,
 ) -> Result<u64, Errno> {
-    if resource as usize >= LIMITS {
-        return Err(Errno::EINVAL);
-    }
-    own_pid(kernel, tid, pid).map_err(|error| {
-        if error == Errno::EINVAL {
-            Errno::ESRCH
-        } else {
-            error
-        }
-    })?;
-    let resource = resource as usize;
+    // In Linux's order: read the new value, find the process, then `do_prlimit`'s checks.
     let wanted: Option<rlimit64> = if new != 0 {
         Some(guest(kernel, cx, tid).read_value(new)?)
     } else {
         None
     };
+    own_pid(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
+    if resource as usize >= LIMITS {
+        return Err(Errno::EINVAL);
+    }
+    let resource = resource as usize;
     let current = kernel.process_of(tid).limits[resource];
     if let Some(wanted) = &wanted {
         if wanted.rlim_cur > wanted.rlim_max {
             return Err(Errno::EINVAL);
         }
+        if resource == RLIMIT_NOFILE as usize && wanted.rlim_max > 1 << 20 {
+            return Err(Errno::EPERM);
+        }
         // Raising a hard limit needs `CAP_SYS_RESOURCE`, which a default container does not have.
         if wanted.rlim_max > current.maximum {
             return Err(Errno::EPERM);
         }
-        if resource == RLIMIT_NOFILE as usize && wanted.rlim_max > 1 << 20 {
-            return Err(Errno::EPERM);
-        }
+        kernel.process_of_mut(tid).limits[resource] = Limit {
+            current: wanted.rlim_cur,
+            maximum: wanted.rlim_max,
+        };
     }
     if old != 0 {
         let value = rlimit64 {
@@ -860,12 +892,6 @@ pub(super) fn prlimit64(
             rlim_max: current.maximum,
         };
         guest(kernel, cx, tid).write_value(old, &value)?;
-    }
-    if let Some(wanted) = wanted {
-        kernel.process_of_mut(tid).limits[resource] = Limit {
-            current: wanted.rlim_cur,
-            maximum: wanted.rlim_max,
-        };
     }
     Ok(0)
 }
@@ -895,18 +921,21 @@ pub(super) fn prctl(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [option, second, ..]: Args,
+    [option, second, third, fourth, fifth, _]: Args,
 ) -> Result<u64, Errno> {
+    let rest_zero = third == 0 && fourth == 0 && fifth == 0;
     match option as u32 {
         PR_SET_NAME => {
-            let name = guest(kernel, cx, tid).read(second, 16).or_else(|_| {
-                guest(kernel, cx, tid)
-                    .read_string(second, 16)
-                    .map(|mut name| {
-                        name.push(0);
-                        name
-                    })
-            })?;
+            // `strncpy_from_user` of at most 15 bytes: a fault before the end or a zero is EFAULT.
+            let mut name = Vec::new();
+            let mut guest = guest(kernel, cx, tid);
+            for index in 0..15 {
+                let byte = guest.read(second + index, 1)?[0];
+                if byte == 0 {
+                    break;
+                }
+                name.push(byte);
+            }
             kernel.process_of_mut(tid).set_name_exact(&name);
             Ok(0)
         }
@@ -916,11 +945,12 @@ pub(super) fn prctl(
             guest(kernel, cx, tid).write(second, &name)?;
             Ok(0)
         }
-        PR_GET_DUMPABLE => Ok(1),
+        PR_GET_DUMPABLE => Ok(kernel.process_of(tid).dumpable.into()),
         PR_SET_DUMPABLE => {
             if second > 1 {
                 return Err(Errno::EINVAL);
             }
+            kernel.process_of_mut(tid).dumpable = second == 1;
             Ok(0)
         }
         PR_GET_KEEPCAPS => Ok(kernel.process_of(tid).credentials.keep_capabilities.into()),
@@ -937,10 +967,33 @@ pub(super) fn prctl(
             }
             Ok((kernel.process_of(tid).credentials.bounding >> second) & 1)
         }
-        PR_GET_SECCOMP | PR_GET_NO_NEW_PRIVS | PR_GET_CHILD_SUBREAPER => {
-            if option as u32 == PR_GET_CHILD_SUBREAPER {
-                guest(kernel, cx, tid).write(second, &0i32.to_le_bytes())?;
+        PR_CAPBSET_DROP => {
+            if second > u64::from(CAP_LAST_CAP) {
+                return Err(Errno::EINVAL);
             }
+            let credentials = &mut kernel.process_of_mut(tid).credentials;
+            if !credentials.has(CAP_SETPCAP) {
+                return Err(Errno::EPERM);
+            }
+            credentials.bounding &= !(1 << second);
+            Ok(0)
+        }
+        PR_GET_NO_NEW_PRIVS => {
+            if second != 0 || !rest_zero {
+                return Err(Errno::EINVAL);
+            }
+            Ok(kernel.process_of(tid).credentials.no_new_privileges.into())
+        }
+        PR_SET_NO_NEW_PRIVS => {
+            if second != 1 || !rest_zero {
+                return Err(Errno::EINVAL);
+            }
+            kernel.process_of_mut(tid).credentials.no_new_privileges = true;
+            Ok(0)
+        }
+        PR_GET_SECCOMP => Ok(0),
+        PR_GET_CHILD_SUBREAPER => {
+            guest(kernel, cx, tid).write(second, &0i32.to_le_bytes())?;
             Ok(0)
         }
         _ => {
@@ -1019,23 +1072,24 @@ pub(super) fn capset(
     let effective = word(0) | word(3) << 32;
     let permitted = word(1) | word(4) << 32;
     let inheritable = word(2) | word(5) << 32;
-    let credentials = &mut kernel.process_of_mut(tid).credentials;
-    let can_set_pcap = credentials.has(crate::linux::general::CAP_SETPCAP);
-    // Linux's `cap_capset` rules.
-    if !can_set_pcap && inheritable & !(credentials.inheritable | credentials.permitted) != 0 {
-        return Err(Errno::EPERM);
-    }
-    if inheritable & !(credentials.inheritable | credentials.bounding) != 0 {
-        return Err(Errno::EPERM);
-    }
-    if permitted & !credentials.permitted != 0 || effective & !permitted != 0 {
-        return Err(Errno::EPERM);
-    }
-    credentials.effective = effective;
-    credentials.permitted = permitted;
-    credentials.inheritable = inheritable;
-    credentials.ambient &= permitted & inheritable;
-    Ok(0)
+    changing(kernel, tid, |credentials| {
+        let can_set_pcap = credentials.has(crate::linux::general::CAP_SETPCAP);
+        // Linux's `cap_capset` rules.
+        if !can_set_pcap && inheritable & !(credentials.inheritable | credentials.permitted) != 0 {
+            return Err(Errno::EPERM);
+        }
+        if inheritable & !(credentials.inheritable | credentials.bounding) != 0 {
+            return Err(Errno::EPERM);
+        }
+        if permitted & !credentials.permitted != 0 || effective & !permitted != 0 {
+            return Err(Errno::EPERM);
+        }
+        credentials.effective = effective;
+        credentials.permitted = permitted;
+        credentials.inheritable = inheritable;
+        credentials.ambient &= permitted & inheritable;
+        Ok(0)
+    })
 }
 
 pub(super) fn personality(

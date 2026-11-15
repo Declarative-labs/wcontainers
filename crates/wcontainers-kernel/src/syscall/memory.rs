@@ -13,9 +13,10 @@ use crate::memory::{Backing, Mapping, STACK_GUARD_GAP, page_down, page_up};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel, errno};
 
-fn permissions(prot: u64) -> Result<Permissions, Errno> {
+/// What a protection argument allows. `mprotect` refuses bits ARM64 does not have; `mmap` ignores them.
+fn permissions(prot: u64, strict: bool) -> Result<Permissions, Errno> {
     let prot = prot as u32;
-    if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC | PROT_SEM) != 0 {
+    if strict && prot & !(PROT_READ | PROT_WRITE | PROT_EXEC | PROT_SEM) != 0 {
         return Err(Errno::EINVAL);
     }
     let mut permissions = Permissions::empty();
@@ -88,27 +89,21 @@ pub(super) fn mmap(
     tid: Tid,
     [address, length, prot, flags, fd, offset]: Args,
 ) -> Result<u64, Errno> {
+    // In the order of Linux's `sys_mmap`, `ksys_mmap_pgoff` and `do_mmap`.
     let flags = flags as u32;
     let fd = fd as i32;
-    if length == 0 || offset % PAGE_SIZE != 0 {
+    if offset % PAGE_SIZE != 0 {
         return Err(Errno::EINVAL);
     }
-    let shared = match flags & MAP_TYPE {
-        MAP_PRIVATE => false,
-        MAP_SHARED | MAP_SHARED_VALIDATE => true,
-        _ => return Err(Errno::EINVAL),
+    let file = if flags & MAP_ANONYMOUS != 0 {
+        None
+    } else {
+        let file = kernel.process_of(tid).files.file(fd)?;
+        if file.borrow().is_path() {
+            return Err(Errno::EBADF);
+        }
+        Some(file)
     };
-    let permissions = permissions(prot)?;
-    let length = page_up(length);
-    if length == 0 || length > kernel.process_of(tid).map.end {
-        return Err(Errno::ENOMEM);
-    }
-    if offset
-        .checked_add(length)
-        .is_none_or(|end| end > i64::MAX as u64)
-    {
-        return Err(Errno::EOVERFLOW);
-    }
     if flags & MAP_HUGETLB != 0 {
         kernel.counters.count(
             cx.host,
@@ -117,57 +112,31 @@ pub(super) fn mmap(
         );
         return Err(Errno::ENOMEM);
     }
-    // What backs the mapping.
-    let file = if flags & MAP_ANONYMOUS != 0 {
-        None
-    } else {
-        let file = kernel.process_of(tid).files.file(fd)?;
-        let file = file.borrow();
-        if file.is_path() {
-            return Err(Errno::EBADF);
-        }
-        let node = file.node.clone();
-        let inode = node.borrow();
-        let zero = matches!(inode.content, Content::Special)
-            && Device::from_number(inode.rdev) == Some(Device::Zero);
-        if !zero && !matches!(inode.content, Content::Regular(_)) {
-            return Err(Errno::ENODEV);
-        }
-        if !file.readable() {
-            return Err(Errno::EACCES);
-        }
-        if shared && permissions.contains(Permissions::WRITE) && !file.writable() {
-            return Err(Errno::EACCES);
-        }
-        if zero {
-            None
-        } else {
-            drop(inode);
-            if shared {
-                kernel
-                    .counters
-                    .count(cx.host, reason::SHARED_FILE_MAPPING, 0);
-                return Err(Errno::ENODEV);
-            }
-            Some((node, file.path.clone()))
-        }
-    };
-    let process = kernel.process_of_mut(tid);
-    let map = &mut process.map;
+    if length == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let permissions = permissions(prot, false)?;
+    let length = page_up(length);
+    if length == 0 {
+        return Err(Errno::ENOMEM);
+    }
+    if (offset / PAGE_SIZE)
+        .checked_add(length / PAGE_SIZE)
+        .is_none()
+    {
+        return Err(Errno::EOVERFLOW);
+    }
+    let map = &kernel.process_of(tid).map;
     let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
     let start = if fixed {
+        if length > map.end || address > map.end - length {
+            return Err(Errno::ENOMEM);
+        }
         if address % PAGE_SIZE != 0 {
             return Err(Errno::EINVAL);
         }
-        if address < LOWEST_ADDRESS || address.checked_add(length).is_none_or(|end| end > map.end) {
-            return Err(if address < LOWEST_ADDRESS {
-                Errno::EPERM
-            } else {
-                Errno::ENOMEM
-            });
-        }
-        if flags & MAP_FIXED == 0 && map.any_mapped(address, address + length) {
-            return Err(Errno::EEXIST);
+        if address < LOWEST_ADDRESS {
+            return Err(Errno::EPERM);
         }
         address
     } else {
@@ -182,6 +151,51 @@ pub(super) fn mmap(
             map.find_free(length).ok_or(Errno::ENOMEM)?
         }
     };
+    if flags & MAP_FIXED_NOREPLACE != 0
+        && flags & MAP_FIXED == 0
+        && map.any_mapped(start, start + length)
+    {
+        return Err(Errno::EEXIST);
+    }
+    let shared = match flags & MAP_TYPE {
+        MAP_PRIVATE => false,
+        MAP_SHARED | MAP_SHARED_VALIDATE => true,
+        _ => return Err(Errno::EINVAL),
+    };
+    // What backs the mapping.
+    let file = match file {
+        None => None,
+        Some(file) => {
+            let file = file.borrow();
+            let node = file.node.clone();
+            let inode = node.borrow();
+            if shared && permissions.contains(Permissions::WRITE) && !file.writable() {
+                return Err(Errno::EACCES);
+            }
+            if !file.readable() {
+                return Err(Errno::EACCES);
+            }
+            let zero = matches!(inode.content, Content::Special)
+                && Device::from_number(inode.rdev) == Some(Device::Zero);
+            if !zero && !matches!(inode.content, Content::Regular(_)) {
+                return Err(Errno::ENODEV);
+            }
+            if zero {
+                None
+            } else {
+                drop(inode);
+                if shared {
+                    kernel
+                        .counters
+                        .count(cx.host, reason::SHARED_FILE_MAPPING, 0);
+                    return Err(Errno::ENODEV);
+                }
+                Some((node, file.path.clone()))
+            }
+        }
+    };
+    let process = kernel.process_of_mut(tid);
+    let map = &mut process.map;
     let backing = match &file {
         None => Backing::Anonymous,
         Some((node, path)) => {
@@ -267,12 +281,15 @@ pub(super) fn mprotect(
     if address % PAGE_SIZE != 0 {
         return Err(Errno::EINVAL);
     }
-    let permissions = permissions(prot)?;
     if length == 0 {
         return Ok(0);
     }
     let length = page_up(length);
-    let end = address.checked_add(length).ok_or(Errno::ENOMEM)?;
+    let end = address
+        .checked_add(length)
+        .filter(|end| *end > address)
+        .ok_or(Errno::ENOMEM)?;
+    let permissions = permissions(prot, true)?;
     let process = kernel.process_of_mut(tid);
     if !process.map.fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
@@ -289,9 +306,6 @@ pub(super) fn madvise(
     tid: Tid,
     [address, length, advice, ..]: Args,
 ) -> Result<u64, Errno> {
-    if address % PAGE_SIZE != 0 {
-        return Err(Errno::EINVAL);
-    }
     let advice = advice as u32;
     let known = matches!(
         advice,
@@ -311,8 +325,18 @@ pub(super) fn madvise(
             | MADV_PAGEOUT
             | MADV_WIPEONFORK
             | MADV_KEEPONFORK
+            | MADV_REMOVE
+            | MADV_MERGEABLE
+            | MADV_UNMERGEABLE
+            | MADV_POPULATE_READ
+            | MADV_POPULATE_WRITE
+            | MADV_COLLAPSE
     );
+    // Poisoning pages (MADV_HWPOISON, MADV_SOFT_OFFLINE) is not in the reference's kernel either.
     if !known {
+        return Err(Errno::EINVAL);
+    }
+    if address % PAGE_SIZE != 0 {
         return Err(Errno::EINVAL);
     }
     let length = page_up(length);
@@ -321,6 +345,21 @@ pub(super) fn madvise(
         return Ok(0);
     }
     let process = kernel.process_of_mut(tid);
+    // Removing pages works only on shared file mappings, which do not exist yet; anything else refuses.
+    if advice == MADV_REMOVE {
+        if let Some(mapping) = process
+            .map
+            .next_after(address)
+            .filter(|mapping| mapping.start < end)
+        {
+            return Err(if matches!(mapping.backing, Backing::File { .. }) {
+                Errno::EACCES
+            } else {
+                Errno::EINVAL
+            });
+        }
+        return Err(Errno::ENOMEM);
+    }
     if advice == MADV_DONTNEED {
         // Private pages go back to what they were: zero, or the file's bytes.
         let mut at = address;

@@ -105,6 +105,14 @@ impl TestHost {
     }
 }
 
+impl TestHost {
+    /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
+    pub fn skip_to(&mut self, until: u64) {
+        let now = self.monotonic_nanoseconds();
+        self.skipped += until.saturating_sub(now);
+    }
+}
+
 impl Host for TestHost {
     fn monotonic_nanoseconds(&mut self) -> u64 {
         self.started.elapsed().as_nanos() as u64 + self.skipped

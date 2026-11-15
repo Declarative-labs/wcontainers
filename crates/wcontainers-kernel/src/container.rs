@@ -75,7 +75,7 @@ pub struct FileRecord {
 pub(crate) fn new_root(numbers: &mut Numbers) -> Node {
     let fs = numbers.file_system(Kind::Tmpfs, false);
     let ino = numbers.ino();
-    fs::new_inode(
+    let root = fs::new_inode(
         fs,
         ino,
         New {
@@ -88,7 +88,9 @@ pub(crate) fn new_root(numbers: &mut Numbers) -> Node {
             parent: None,
             name: Vec::new(),
         },
-    )
+    );
+    root.borrow_mut().place.mount_root = true;
+    root
 }
 
 /// Adds a name for `node` in `directory`, keeping the link counts right.
@@ -357,6 +359,7 @@ impl Kernel {
             name: Vec::new(),
             executable: (root.clone(), Vec::new()),
             starting_stack: Default::default(),
+            dumpable: true,
             actions: [kernel_sigaction {
                 sa_handler_kernel: crate::linux_extra::SIG_DFL,
                 sa_flags: 0,

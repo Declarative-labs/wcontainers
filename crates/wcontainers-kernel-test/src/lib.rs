@@ -1,10 +1,12 @@
 //! Runs wcontainers-kernel on a stand-in CPU and compares it with real ARM64 Linux.
 
+pub mod buffer;
 pub mod busybox;
 pub mod driver;
 pub mod generate;
 pub mod guest;
 pub mod image;
+pub mod layer1;
 pub mod reference;
 pub mod standin;
 

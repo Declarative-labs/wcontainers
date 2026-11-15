@@ -61,6 +61,8 @@ pub(crate) struct Credentials {
     pub ambient: u64,
     /// `PR_SET_KEEPCAPS`.
     pub keep_capabilities: bool,
+    /// `PR_SET_NO_NEW_PRIVS`.
+    pub no_new_privileges: bool,
 }
 
 impl Credentials {
@@ -83,7 +85,18 @@ impl Credentials {
             bounding: DOCKER_DEFAULT,
             ambient: 0,
             keep_capabilities: false,
+            no_new_privileges: false,
         }
+    }
+
+    /// Whether a change from `old` makes the process undumpable, as Linux's `commit_creds` decides: a
+    /// change of effective or file system ids, or powers gained.
+    pub fn loses_dumpable(&self, old: &Credentials) -> bool {
+        self.euid != old.euid
+            || self.egid != old.egid
+            || self.fsuid != old.fsuid
+            || self.fsgid != old.fsgid
+            || self.permitted & !old.permitted != 0
     }
 
     pub fn has(&self, capability: u32) -> bool {

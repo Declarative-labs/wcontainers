@@ -54,9 +54,10 @@ pub(super) fn clock_getres(
     [id, out, ..]: Args,
 ) -> Result<u64, Errno> {
     clock(kernel, cx, id)?;
-    // The coarse clocks tick with the scheduler; the others are as fine as the host's.
+    // The coarse clocks tick with the scheduler (1000 times a second in the reference); the others are
+    // as fine as the host's.
     let resolution = match id as u32 {
-        CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => 4_000_000,
+        CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => 1_000_000,
         _ => 1,
     };
     if out != 0 {

@@ -104,12 +104,12 @@ fn may_change(directory: &Node, credentials: &Credentials) -> Result<(), Errno> 
     if !inode.permits(credentials, W_OK | X_OK, true) {
         return Err(Errno::EACCES);
     }
-    if inode.fs.read_only || !matches!(inode.content, Content::Directory(_)) {
-        return Err(if matches!(inode.content, Content::Proc(_)) {
-            Errno::EACCES
-        } else {
-            Errno::EROFS
-        });
+    // The process information tree has no operations that change names: permitted callers get EPERM.
+    if matches!(inode.content, Content::Proc(_)) {
+        return Err(Errno::EPERM);
+    }
+    if inode.fs.read_only {
+        return Err(Errno::EROFS);
     }
     Ok(())
 }
@@ -141,6 +141,20 @@ fn touch_directory(directory: &Node, now: Time) {
     let mut inode = directory.borrow_mut();
     inode.mtime = now;
     inode.ctime = now;
+}
+
+/// The checks before making a name: it must not exist (`EEXIST`). In the process information tree a
+/// missing name is an error of the lookup itself (`ENOENT`), as Linux's proc lookups return it.
+fn check_absent(kernel: &Kernel, tid: Tid, parent: &crate::fs::Parent) -> Result<(), Errno> {
+    let pid = kernel.threads[&tid].process;
+    match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
+        Ok(_) => Err(Errno::EEXIST),
+        Err(Errno::ENOENT) if matches!(parent.directory.borrow().content, Content::Proc(_)) => {
+            Err(Errno::ENOENT)
+        }
+        Err(Errno::ENOENT) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Makes an inode in a directory as a call from `tid` would.
@@ -230,8 +244,15 @@ pub(super) fn open(
     if flags & O_PATH != 0 {
         flags &= PATH_FLAGS;
     }
-    if flags & O_TMPFILE == O_TMPFILE {
-        if flags & O_ACCMODE == O_RDONLY {
+    // `build_open_flags`'s checks, before anything is looked up.
+    if flags & (O_DIRECTORY | O_CREAT) == O_DIRECTORY | O_CREAT {
+        return Err(Errno::EINVAL);
+    }
+    let temporary = O_TMPFILE & !O_DIRECTORY;
+    if flags & temporary != 0 {
+        if flags & (O_TMPFILE | O_CREAT) != O_TMPFILE
+            || !matches!(flags & O_ACCMODE, O_WRONLY | O_RDWR)
+        {
             return Err(Errno::EINVAL);
         }
         kernel
@@ -239,10 +260,8 @@ pub(super) fn open(
             .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(O_TMPFILE));
         return Err(Errno::EOPNOTSUPP);
     }
+    // Access mode 3 asks for both permissions and gives neither, as on Linux.
     let accmode = flags & O_ACCMODE;
-    if accmode == 3 && flags & O_PATH == 0 {
-        return Err(Errno::EINVAL);
-    }
     let at = start(kernel, tid, dirfd, path)?;
     let pid = kernel.threads[&tid].process;
     let parent = kernel.with_walk(pid, |walk, _| walk.parent(&at, path))?;
@@ -252,7 +271,12 @@ pub(super) fn open(
     } else {
         match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
             Ok(node) => Some(node),
-            Err(Errno::ENOENT) => None,
+            // A proc lookup that fails is an error, not a name that may be made.
+            Err(Errno::ENOENT)
+                if !matches!(parent.directory.borrow().content, Content::Proc(_)) =>
+            {
+                None
+            }
             Err(error) => return Err(error),
         }
     };
@@ -497,12 +521,7 @@ pub(super) fn mkdirat(
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
     }
-    let pid = kernel.threads[&tid].process;
-    match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
-        Ok(_) => return Err(Errno::EEXIST),
-        Err(Errno::ENOENT) => {}
-        Err(error) => return Err(error),
-    }
+    check_absent(kernel, tid, &parent)?;
     may_change(&parent.directory, credentials(kernel, tid))?;
     let umask = kernel.process_of(tid).umask;
     let mode = S_IFDIR | (mode as u32 & 0o1777 & !umask);
@@ -540,12 +559,7 @@ pub(super) fn mknodat(
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
     }
-    let pid = kernel.threads[&tid].process;
-    match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
-        Ok(_) => return Err(Errno::EEXIST),
-        Err(Errno::ENOENT) => {}
-        Err(error) => return Err(error),
-    }
+    check_absent(kernel, tid, &parent)?;
     if parent.trailing_slash {
         return Err(Errno::ENOENT);
     }
@@ -584,12 +598,7 @@ pub(super) fn symlinkat(
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
     }
-    let pid = kernel.threads[&tid].process;
-    match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
-        Ok(_) => return Err(Errno::EEXIST),
-        Err(Errno::ENOENT) => {}
-        Err(error) => return Err(error),
-    }
+    check_absent(kernel, tid, &parent)?;
     if parent.trailing_slash {
         return Err(Errno::ENOENT);
     }
@@ -630,12 +639,7 @@ pub(super) fn linkat(
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
     }
-    let pid = kernel.threads[&tid].process;
-    match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
-        Ok(_) => return Err(Errno::EEXIST),
-        Err(Errno::ENOENT) => {}
-        Err(error) => return Err(error),
-    }
+    check_absent(kernel, tid, &parent)?;
     may_change(&parent.directory, credentials(kernel, tid))?;
     if node.borrow().fs != parent.directory.borrow().fs {
         return Err(Errno::EXDEV);
@@ -700,13 +704,25 @@ pub(super) fn unlinkat(
             }
         }
     })?;
-    may_change(&parent.directory, credentials(kernel, tid))?;
+    // In Linux's order: a trailing slash on a file, then `may_delete`, then the directory's own checks.
     let is_directory = node.borrow().is_directory();
+    if !removing_directory && parent.trailing_slash {
+        return Err(if is_directory {
+            Errno::EISDIR
+        } else {
+            Errno::ENOTDIR
+        });
+    }
+    may_change(&parent.directory, credentials(kernel, tid))?;
+    if !sticky_allows(&parent.directory, &node, credentials(kernel, tid)) {
+        return Err(Errno::EPERM);
+    }
     if removing_directory {
         if !is_directory {
             return Err(Errno::ENOTDIR);
         }
-        if node.borrow().place.mounted.is_some() {
+        if Rc::ptr_eq(&node, &kernel.process_of(tid).root) || node.borrow().place.mounted.is_some()
+        {
             return Err(Errno::EBUSY);
         }
         if node
@@ -716,20 +732,8 @@ pub(super) fn unlinkat(
         {
             return Err(Errno::ENOTEMPTY);
         }
-    } else {
-        if is_directory {
-            return Err(Errno::EISDIR);
-        }
-        if parent.trailing_slash {
-            return Err(Errno::ENOTDIR);
-        }
-    }
-    if !sticky_allows(&parent.directory, &node, credentials(kernel, tid)) {
-        return Err(Errno::EPERM);
-    }
-    let process = kernel.process_of(tid);
-    if is_directory && (Rc::ptr_eq(&node, &process.root)) {
-        return Err(Errno::EBUSY);
+    } else if is_directory {
+        return Err(Errno::EISDIR);
     }
     let now = kernel.now(cx);
     parent
@@ -794,71 +798,44 @@ fn rename(
     if flags & RENAME_EXCHANGE != 0 && flags & (RENAME_NOREPLACE | RENAME_WHITEOUT) != 0 {
         return Err(Errno::EINVAL);
     }
-    if flags & RENAME_WHITEOUT != 0 {
-        kernel
-            .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(RENAME_WHITEOUT));
-        return Err(Errno::EINVAL);
+    if flags & RENAME_WHITEOUT != 0 && !credentials(kernel, tid).has(CAP_MKNOD) {
+        return Err(Errno::EPERM);
     }
+    // In the order of Linux's `do_renameat2` and `vfs_rename`.
     let from = parent(kernel, cx, tid, old_dirfd, old_path)?;
     let to = parent(kernel, cx, tid, new_dirfd, new_path)?;
-    if from.name.is_empty() || to.name.is_empty() {
-        return Err(Errno::EBUSY);
-    }
-    let get = |directory: &Node, name: &[u8]| {
-        directory
-            .borrow()
-            .directory()
-            .and_then(|entries| entries.get(name))
-    };
-    let source = get(&from.directory, &from.name).ok_or(Errno::ENOENT)?;
-    let target = get(&to.directory, &to.name);
-    let credentials = credentials(kernel, tid).clone();
-    may_change(&from.directory, &credentials)?;
-    may_change(&to.directory, &credentials)?;
     if from.directory.borrow().fs != to.directory.borrow().fs {
         return Err(Errno::EXDEV);
     }
-    let source_is_directory = source.borrow().is_directory();
-    if (from.trailing_slash || to.trailing_slash) && !source_is_directory {
-        return Err(Errno::ENOTDIR);
+    if from.name.is_empty() || to.name.is_empty() {
+        return Err(Errno::EBUSY);
     }
+    let pid = kernel.threads[&tid].process;
+    let source = kernel.with_walk(pid, |walk, _| walk.step(&from.directory, &from.name))?;
+    let target = match kernel.with_walk(pid, |walk, _| walk.step(&to.directory, &to.name)) {
+        Ok(node) => Some(node),
+        Err(Errno::ENOENT) if !matches!(to.directory.borrow().content, Content::Proc(_)) => None,
+        Err(error) => return Err(error),
+    };
     if flags & RENAME_EXCHANGE != 0 && target.is_none() {
         return Err(Errno::ENOENT);
     }
-    if let Some(target) = &target {
-        if flags & RENAME_NOREPLACE != 0 {
-            return Err(Errno::EEXIST);
-        }
-        if Rc::ptr_eq(&source, target) {
-            return Ok(0);
-        }
-        let target_is_directory = target.borrow().is_directory();
-        if flags & RENAME_EXCHANGE == 0 {
-            if source_is_directory && !target_is_directory {
-                return Err(Errno::ENOTDIR);
-            }
-            if !source_is_directory && target_is_directory {
-                return Err(Errno::EISDIR);
-            }
-            if target_is_directory && target.borrow().directory().is_some_and(|d| !d.is_empty()) {
-                return Err(Errno::ENOTEMPTY);
-            }
-        }
-        if !sticky_allows(&to.directory, target, &credentials) {
-            return Err(Errno::EPERM);
-        }
-        if target.borrow().place.mounted.is_some() {
-            return Err(Errno::EBUSY);
-        }
+    if flags & RENAME_NOREPLACE != 0 && target.is_some() {
+        return Err(Errno::EEXIST);
     }
-    if !sticky_allows(&from.directory, &source, &credentials) {
-        return Err(Errno::EPERM);
+    let source_is_directory = source.borrow().is_directory();
+    let target_is_directory = target
+        .as_ref()
+        .is_some_and(|target| target.borrow().is_directory());
+    if !source_is_directory
+        && (from.trailing_slash || (flags & RENAME_EXCHANGE == 0 && to.trailing_slash))
+    {
+        return Err(Errno::ENOTDIR);
     }
-    if source.borrow().place.mounted.is_some() {
-        return Err(Errno::EBUSY);
+    if flags & RENAME_EXCHANGE != 0 && !target_is_directory && to.trailing_slash {
+        return Err(Errno::ENOTDIR);
     }
-    // A directory may not move below itself.
+    // A directory may not move below itself, nor replace one of its own ancestors.
     let below = |moving: &Node, destination: &Node| {
         let mut at = Some(destination.clone());
         while let Some(node) = at {
@@ -874,15 +851,76 @@ fn rename(
         }
         false
     };
-    if source_is_directory && below(&source, &to.directory) {
+    if below(&source, &to.directory) {
         return Err(Errno::EINVAL);
     }
     if let Some(target) = &target
-        && flags & RENAME_EXCHANGE != 0
-        && target.borrow().is_directory()
         && below(target, &from.directory)
     {
-        return Err(Errno::EINVAL);
+        return Err(if flags & RENAME_EXCHANGE != 0 {
+            Errno::EINVAL
+        } else {
+            Errno::ENOTEMPTY
+        });
+    }
+    if let Some(target) = &target
+        && Rc::ptr_eq(&source, target)
+    {
+        return Ok(0);
+    }
+    let credentials = credentials(kernel, tid).clone();
+    // `may_delete` of the source, then of the target or `may_create` where there is none.
+    may_change(&from.directory, &credentials)?;
+    if !sticky_allows(&from.directory, &source, &credentials) {
+        return Err(Errno::EPERM);
+    }
+    may_change(&to.directory, &credentials)?;
+    if let Some(target) = &target {
+        if !sticky_allows(&to.directory, target, &credentials) {
+            return Err(Errno::EPERM);
+        }
+        if flags & RENAME_EXCHANGE == 0 {
+            if source_is_directory && !target_is_directory {
+                return Err(Errno::ENOTDIR);
+            }
+            if !source_is_directory && target_is_directory {
+                return Err(Errno::EISDIR);
+            }
+        }
+    }
+    if source.borrow().place.mounted.is_some()
+        || target
+            .as_ref()
+            .is_some_and(|target| target.borrow().place.mounted.is_some())
+    {
+        return Err(Errno::EBUSY);
+    }
+    // A directory changing parent has its `..` rewritten, which needs write permission on it.
+    let moves_parent = !Rc::ptr_eq(&from.directory, &to.directory);
+    if moves_parent && source_is_directory && !source.borrow().permits(&credentials, W_OK, true) {
+        return Err(Errno::EACCES);
+    }
+    if moves_parent
+        && flags & RENAME_EXCHANGE != 0
+        && target_is_directory
+        && !target
+            .as_ref()
+            .expect("checked")
+            .borrow()
+            .permits(&credentials, W_OK, true)
+    {
+        return Err(Errno::EACCES);
+    }
+    if flags & RENAME_EXCHANGE == 0
+        && target_is_directory
+        && target
+            .as_ref()
+            .expect("checked")
+            .borrow()
+            .directory()
+            .is_some_and(|d| !d.is_empty())
+    {
+        return Err(Errno::ENOTEMPTY);
     }
     let now = kernel.now(cx);
     let set_place = |node: &Node, directory: &Node, name: &[u8]| {
@@ -941,6 +979,19 @@ fn rename(
             to.directory.borrow_mut().nlink += 1;
         }
     }
+    // A whiteout, as overlay file systems use: a character device 0:0 left at the old name.
+    if flags & RENAME_WHITEOUT != 0 {
+        create(
+            kernel,
+            cx,
+            tid,
+            &from.directory,
+            &from.name,
+            S_IFCHR,
+            0,
+            Content::Special,
+        );
+    }
     touch_directory(&from.directory, now);
     touch_directory(&to.directory, now);
     Ok(0)
@@ -956,6 +1007,9 @@ pub(super) fn readlinkat(
     if size <= 0 {
         return Err(Errno::EINVAL);
     }
+    let empty = guest(kernel, cx, tid)
+        .read_path_maybe_empty(path)?
+        .is_empty();
     let node = lookup(kernel, cx, tid, dirfd, path, AT_EMPTY_PATH, false)?;
     let target = {
         let inode = node.borrow();
@@ -967,9 +1021,8 @@ pub(super) fn readlinkat(
                 let pid = kernel.threads[&tid].process;
                 kernel.with_walk(pid, |walk, _| proc::link_target(walk.proc, walk, &entry))?
             }
-            _ => {
-                return Err(Errno::EINVAL);
-            }
+            // An empty path names `dirfd` itself, and when that is no link Linux says it is not there.
+            _ => return Err(if empty { Errno::ENOENT } else { Errno::EINVAL }),
         }
     };
     let length = target.len().min(size as usize);
@@ -1077,10 +1130,18 @@ pub(super) fn statx(
     };
     let (major, minor) = crate::fs::decode_device(inode.fs.device);
     let (rdev_major, rdev_minor) = crate::fs::decode_device(inode.rdev);
-    let mut reported = STATX_BASIC_STATS | STATX_MNT_ID;
-    if !matches!(inode.content, Content::Proc(_)) {
-        reported |= STATX_BTIME;
-    }
+    // tmpfs keeps fine-grained times only on request, so it reports the change and modification times,
+    // and the birth time, only when asked for them; proc reports the basic set.
+    let requested = mask as u32;
+    let reported = if inode.fs.kind == crate::fs::Kind::Proc {
+        STATX_BASIC_STATS | STATX_MNT_ID
+    } else {
+        let mut reported = (STATX_BASIC_STATS & !(STATX_MTIME | STATX_CTIME)) | STATX_MNT_ID;
+        if requested & (STATX_MTIME | STATX_CTIME) != 0 {
+            reported |= STATX_MTIME | STATX_CTIME;
+        }
+        reported | (requested & STATX_BTIME)
+    };
     let mut out: statx = zerocopy::FromZeros::new_zeroed();
     out.stx_mask = reported;
     out.stx_blksize = 4096;
@@ -1091,7 +1152,15 @@ pub(super) fn statx(
     out.stx_ino = inode.ino;
     out.stx_size = plain.st_size as u64;
     out.stx_blocks = plain.st_blocks as u64;
-    out.stx_attributes_mask = u64::from(STATX_ATTR_MOUNT_ROOT);
+    let common = STATX_ATTR_AUTOMOUNT | STATX_ATTR_MOUNT_ROOT | STATX_ATTR_DAX;
+    out.stx_attributes_mask = u64::from(if inode.fs.kind == crate::fs::Kind::Proc {
+        common
+    } else {
+        common | STATX_ATTR_IMMUTABLE | STATX_ATTR_APPEND | STATX_ATTR_NODUMP
+    });
+    if inode.place.mount_root {
+        out.stx_attributes = u64::from(STATX_ATTR_MOUNT_ROOT);
+    }
     out.stx_atime = time(inode.atime);
     out.stx_btime = if reported & STATX_BTIME != 0 {
         time(inode.btime)
@@ -1344,15 +1413,45 @@ pub(super) fn utimensat(
     tid: Tid,
     [dirfd, path, times, flags, ..]: Args,
 ) -> Result<u64, Errno> {
+    // In Linux's order: read the times, skip if both are left alone, find the file, check the times.
     let flags = flags as u32;
-    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
-        return Err(Errno::EINVAL);
-    }
     let wanted: Option<[__kernel_timespec; 2]> = if times == 0 {
         None
     } else {
         let mut guest = guest(kernel, cx, tid);
         Some([guest.read_value(times)?, guest.read_value(times + 16)?])
+    };
+    let omitted = |time: &__kernel_timespec| time.tv_nsec == i64::from(UTIME_OMIT);
+    if wanted.is_some_and(|wanted| wanted.iter().all(omitted)) {
+        return Ok(0);
+    }
+    let node = if path == 0 && dirfd as i32 != AT_FDCWD {
+        if flags != 0 {
+            return Err(Errno::EINVAL);
+        }
+        kernel
+            .process_of(tid)
+            .files
+            .file(dirfd as i32)?
+            .borrow()
+            .node
+            .clone()
+    } else {
+        if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
+            return Err(Errno::EINVAL);
+        }
+        if path == 0 {
+            return Err(Errno::EFAULT);
+        }
+        lookup(
+            kernel,
+            cx,
+            tid,
+            dirfd,
+            path,
+            flags,
+            flags & AT_SYMLINK_NOFOLLOW == 0,
+        )?
     };
     if let Some(wanted) = &wanted {
         for time in wanted {
@@ -1365,39 +1464,9 @@ pub(super) fn utimensat(
             }
         }
     }
-    let node = if path == 0 {
-        if dirfd as i32 == AT_FDCWD {
-            return Err(Errno::EFAULT);
-        }
-        kernel
-            .process_of(tid)
-            .files
-            .file(dirfd as i32)?
-            .borrow()
-            .node
-            .clone()
-    } else {
-        lookup(
-            kernel,
-            cx,
-            tid,
-            dirfd,
-            path,
-            flags,
-            flags & AT_SYMLINK_NOFOLLOW == 0,
-        )?
-    };
     let now = kernel.now(cx);
     let credentials = credentials(kernel, tid).clone();
     let mut inode = node.borrow_mut();
-    let all_omitted = wanted.is_some_and(|wanted| {
-        wanted
-            .iter()
-            .all(|time| time.tv_nsec == i64::from(UTIME_OMIT))
-    });
-    if all_omitted {
-        return Ok(0);
-    }
     let only_now = wanted.is_none_or(|wanted| wanted.iter().all(|time| matches!(time.tv_nsec, n if n == i64::from(UTIME_NOW) || n == i64::from(UTIME_OMIT))));
     let owner = credentials.fsuid == inode.uid || credentials.has(CAP_FOWNER);
     if !owner {
@@ -1468,6 +1537,9 @@ pub(super) fn truncate(
     tid: Tid,
     [path, length, ..]: Args,
 ) -> Result<u64, Errno> {
+    if (length as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
     let node = lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, true)?;
     if node.borrow().is_directory() {
         return Err(Errno::EISDIR);
@@ -1484,6 +1556,9 @@ pub(super) fn ftruncate(
     tid: Tid,
     [fd, length, ..]: Args,
 ) -> Result<u64, Errno> {
+    if (length as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
     let file = kernel.process_of(tid).files.file(fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);

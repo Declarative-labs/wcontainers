@@ -104,6 +104,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_preadv, S(io::preadv)),
         (__NR_pwritev, S(io::pwritev)),
         (__NR_lseek, S(io::lseek)),
+        (__NR_sendfile, S(io::sendfile)),
         (__NR_getdents64, S(io::getdents64)),
         (__NR_close, S(io::close)),
         (__NR_dup, S(io::dup)),

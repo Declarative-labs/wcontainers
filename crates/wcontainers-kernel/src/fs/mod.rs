@@ -149,6 +149,8 @@ pub(crate) struct Place {
     pub name: Vec<u8>,
     /// The root of a file system mounted here.
     pub mounted: Option<Node>,
+    /// This is the root of a mounted file system.
+    pub mount_root: bool,
 }
 
 /// The first position given to an entry (`DIR_OFFSET_MIN`); `.` and `..` come before it.
@@ -382,6 +384,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Node {
             parent: new.parent.as_ref().map(Rc::downgrade),
             name: new.name,
             mounted: None,
+            mount_root: false,
         },
         content: new.content,
     }))
@@ -672,6 +675,7 @@ pub(crate) fn mount(on: &Node, root: &Node) {
         let mut inode = root.borrow_mut();
         inode.place.parent = parent;
         inode.place.name = name;
+        inode.place.mount_root = true;
     }
     on.borrow_mut().place.mounted = Some(root.clone());
 }
