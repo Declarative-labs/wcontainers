@@ -469,9 +469,8 @@ pub(super) fn open(
                 mask |= W_OK;
             }
             let inode = node.borrow();
-            if !inode.permits(credentials(kernel, tid), mask, true) {
-                return Err(Errno::EACCES);
-            }
+            // Linux's `inode_permission`, with the process information tree's own rules.
+            crate::fs::permission(&inode, credentials(kernel, tid), mask, pid)?;
             if mask & W_OK != 0
                 && inode.fs.read_only()
                 && matches!(file_type, S_IFREG | S_IFDIR | S_IFLNK)

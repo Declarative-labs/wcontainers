@@ -285,7 +285,8 @@ onto "." with RENAME_NOREPLACE (EEXIST), sendfile's order (offset first, written
 sigaltstack while on the stack (layer 1's stacks now from a pool), ioprio_get for a group, renaming a
 `/proc` directory below itself (EINVAL), access checks walking with the checked credentials, chown
 naming neither owner nor group in `/proc`, fsync on `/proc` files (EINVAL: no sync operation), and
-seeking `/proc` directories and `/proc/sys` files (Linux's `generic_file_llseek` with size 0), and
+seeking `/proc` directories and `/proc/sys` files (Linux's `generic_file_llseek` with size 0), opening
+the own `fd` directory after the ids change (open now uses `/proc`'s permission rules), and
 (a layout difference, excluded) a stack limit large enough for our stack to grow to the play area. Seeds 50
 and 51 (after the fsync fix): 3000 each passed. One was the runner's fault: a descriptor on `/dev/shm` and
 ".." reach `/dev` and `/`, whose mode a sequence could change for the rest of the run; the runner now
