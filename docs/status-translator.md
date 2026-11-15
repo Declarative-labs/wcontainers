@@ -106,6 +106,24 @@ load in brackets; the machine is shared, so native times themselves moved by up 
   page two pages ahead fails the checks test; never asking for the flags after a call fails layer 2 within
   2000 cases (seed 9).
 
+S1 measurements at the end of the first run (commit 413f126, `tests/benchmarks.rs`, best of 3, load 4 to 12;
+times native; every check / no stop check / no permission check / no check; Chrome first run in the same
+instance, the second run within 2% unless said):
+- fib (native 0.40 s): wasmtime 6.38 / 5.52 / 5.69 / 4.96; Chrome 5.63 / 4.92 / 5.17 / 4.73.
+- sieve (0.45 s): wasmtime 1.69 / 1.45 / 1.43 / 1.21; Chrome 1.38 / 1.33 / 1.03 / 0.94.
+- hash (0.58 s): wasmtime 1.01 / 1.00 / 0.99 / 0.99; Chrome 1.00 / 1.82 then 0.99 / 0.99 / 1.78 then 0.98.
+- sort (0.34 s): wasmtime 4.21 / 4.10 / 3.69 / 3.40; Chrome 3.39 / 3.37 / 3.06 / 2.95.
+- interpret (0.15 s): wasmtime 8.79 / 8.90 / 2.79 / 2.87; Chrome 8.92 / 8.72 / 2.48 / 2.32.
+- matrix (0.08 s): wasmtime 9.26 / 5.97 / 3.67 / 2.57; Chrome 3.29 / 14.5 then 4.06 / 2.17 / 12.7 then 1.91.
+- search (0.12 s): wasmtime 3.46 / 4.27 / 2.03 / 2.08; Chrome 3.04 / 13.9 then 2.89 / 1.99 / 11.1 then 1.90.
+- Size: bench at -O2: 138,761 bytes of WebAssembly (28.7 per byte of code), 31,094 gzipped (10.8).
+- Experiments after it, not kept: (a) the stop checks without the paths into nested loops (every re-entry
+  at the start, which is wrong but never taken in wasmtime): matrix 0.39 s against 0.75 s, sieve 0.70
+  against 0.75 (load 4 to 9). So in wasmtime the paths into loops cost matrix about half its time. (b)
+  re-entering only loops inside no other loop, a stop at a nested loop marking the piece to re-enter at
+  the next outer jump back: wasmtime matrix 0.50 s, sieve 0.80, search 0.46; Chrome first run matrix 9.4,
+  search 5.5, sieve 1.8 times native (load 11 to 14), much worse in Chrome, so reverted.
+
 S1, what remains (aims, every check, both engines: sieve and hash 1.5, sort 2.5, fib 4, matrix, search and
 interpret 3):
 - Met: hash (about 1.0 in both). Close: sieve 1.57 in wasmtime. Not met: fib (6.25 wasmtime), sort (4.2),
@@ -116,8 +134,10 @@ interpret 3):
   spills: over twenty values live across the dispatch loop. Next: look at it with a profiler (`sample`
   on macOS gives no instruction level; try Instruments' cpu counters or `perf` in a Linux VM), and try
   giving accesses through a copy of sp (`mov x9, sp`, as interpret does) the frame's knowledge.
-- Matrix: the stop check costs 70% in wasmtime there; look at what the re-entry path keeps alive in the
-  inner loop.
+- Matrix: in wasmtime the paths into nested loops for re-entry cost about half its time (experiment (a)
+  above); Chrome needs them. Next: find what Cranelift does with the structure (the extra edges make each
+  inner loop header a merge child of the loop around it) and change the structure so the normal path is
+  as before, e.g. place the re-entry hop as a branch at the outer header's end rather than its start.
 - fib and sort (calls): per call there remain the write back and reload of x19, x20, x29, x30 through the
   block, the frame check of the new frame, the bounds check of every stack access (64 bit memory), the
   flags written before the call, the entry stop check and the return check. Next to try: passing more
