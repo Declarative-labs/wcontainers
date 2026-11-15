@@ -16,7 +16,8 @@ far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
 S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
 what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
-"S1, fourth run", and what is left under "S1, what remains after the fourth run".
+"S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", and what is left under
+"S1, what remains after the fifth run".
 
 ## S1: run speed at full look-ahead
 
@@ -294,35 +295,70 @@ S1, fourth run (no code change kept; measurements and two experiments):
   Ours: 6.0 with no check, 6.25 with every check (this session). The toy figures in Chrome (2.55 to 2.72 times
   native, `out/poll-results.txt`, load 16) were not measured again.
 
-S1, what remains after the fourth run (aims with every check, in both engines):
-- Met: sieve and hash (sieve wasmtime 1.51 at load 12 to 14 in the fourth run, just over the aim of 1.5;
-  1.31 and 1.50 in two A/B rounds at load 5 to 19, so within noise of it), search in Chrome and about at the
-  aim in wasmtime (2.5 to 3.0).
-- Matrix (aim 3), most important: wasmtime about 7, Chrome about 4 to 5; with no permission check 2.72 in
-  wasmtime, so the permission check is the whole gap there. Next: the proof over the loop's range. For a
-  loop without calls, find registers the loop changes only by a fixed step once per turn (here w4 by 1, w5
-  by w3, x18 by -1), the trip count from the compare of the exit (subs x18, #1 / b.ne gives x18 turns), and
-  for each access whose base is unchanged in the loop and whose index is such a register, the range it
-  covers. Before the loop, check every page of each range (one 8 byte table load per 8 pages, as the kept
-  runs do), and run a copy of the loop with no permission check when all are allowed; otherwise run the
-  loop as now, which stays exact. A 32 bit index (uxtw) that would wrap counts as not proven. Loop pieces
-  need the same choice at their entry. Not started.
-- Interpret (aim 3): 3.8 in wasmtime, 3.8 to 4.1 in Chrome; with no permission check 2.88 in wasmtime. Its
-  accesses are data dependent (byte code, jump table, interpreter stack through a register index), so the
-  range proof does not reach them; what is left is three kept-run checks per dispatch with their bounds
-  spilled. No cheaper exact check is known yet.
-- fib (aim 4): wasmtime 6.25 with every check, 6.0 with none; the toy's own call shape is 4.05 once it has
-  the stop check (fourth run), so in wasmtime the aim is beyond the plan's call shape itself. In Chrome ours
-  is 5.3 to 5.6 / 4.7 and the toy's 2.7, so in Chrome the gap is ours and not yet explained. Differences
-  seen in V8's code of our fib (V8 inlines one level): x19, x20, x29, x30 through the thread block, the
-  state memory's base loaded again after each call (three loads), the sp compare after calls, a compare and
-  branch per guest stack access (64 bit memory), and the flags stored before each call (measured: no gain
-  when left out). Next: measure the others in Chrome the same way, by leaving each out of the code.
-- Sort (aim 2.5): wasmtime 4.05 / 2.95 (every / no check); the same call costs as fib plus a call through
-  the lookup at every comparison.
+S1, fifth run (commits dc7af11, 98f61b7, c7b40ab, 68cff43):
+- The proof over a loop's range (`full/proof.rs`), the fourth run's plan for matrix. A loop that makes no
+  call and no system call and holds no switch is looked at over its own blocks (not those of loops inside
+  it). A register written there at one instruction only, by adding a constant or a register the loop does
+  not write (add/sub, or pre/post indexing), moves by a fixed step at most once a turn. An exit at a block
+  every turn passes, a compare (subs/cmp with an immediate or a register the loop does not write) or
+  cbz/cbnz on such a register, bounds the turns: "not equal" with step 1 or -1 (modulo the width), or an
+  ordered condition (lo, ls, hi, hs, lt, le, gt, ge) stepping toward the bound. Each access checked exactly or
+  as a group whose base and index are such registers (one of them moving, or neither) covers a range of
+  addresses over the turns. At the loop's entry the translated code works out the turns and every range,
+  and looks up every page of each range in the permission table (eight table bytes at a time). When all
+  allow the access it runs a copy of the loop with no check for those accesses; otherwise the loop runs with
+  its checks, so faults stay exact. Anything that could wrap (a 32 bit index or counter passing its limit,
+  steps above 2^24, more than 2^32 turns, addresses outside the table) makes the proof fail, never pass.
+- Where the copy lives matters for wasmtime. With both copies in one function, matrix stayed at 4.5 to 5.4
+  times native: Cranelift's register allocator moved values that live through the loop (x0 to x3, sp, the
+  expected return, kept runs of outer loops) between registers and its stack at every turn (7 to 10 loads
+  and stores a turn, seen in the machine code), even though the copy itself is 15 instructions. Trapping in
+  the checked copy (only to measure) gave 2.88. So the checked copy is now only in the loop's loop piece: the
+  function runs the proof and either the copy without checks or a tail call into the loop piece, which holds
+  both copies. A stop at a jump back now writes back and goes straight on in the loop piece, whose entry
+  check calls the stop hook (loop pieces always check the flag at entry), so the loop has no call that
+  returns into it. Registers a loop neither reads nor writes are no longer kept in locals through it: they
+  are loaded from the thread block on each edge leaving it (the dirty ones are already written back before
+  it). In this case Cranelift forwarded the stored value past the loop anyway, so that part did not change
+  matrix, but it is kept as the cleaner rule (it did not slow anything measured).
+- Loops holding other loops are proven too (sieve's outer loop): only accesses and register changes in the
+  loop's own blocks count; the copy is used only when every loop inside has a loop piece, so a stop
+  anywhere inside carries on where a proof is made again.
+- Measured, wasmtime, best of 3 (times native, every check): matrix 7.4 (fourth run) to 3.00 and 3.09
+  (load 5 to 8; 2.63 with no check), sieve 1.69 to 1.42 with outer loops proven (load 8), search 2.9 to 1.75
+  to 2.0, hash 1.0. Chrome (first run in the instance, load 5 to 9): matrix 2.11, search 1.73, sieve 1.32,
+  hash 1.00.
+- Full benchmark run at 98f61b7 (before outer loops were proven), best of 3, load 4 to 12, every check / no
+  check: fib wasmtime 6.02 / 5.19, Chrome 5.16 / 4.71; sieve 1.69 / 1.25, Chrome 1.32 / 0.99; hash 0.98 /
+  0.97, Chrome 1.00 / 1.59 (no check has no stop to move to V8's optimised code); sort 4.12 / 3.34, Chrome
+  3.31 / 2.80; interpret 3.81 / 2.92, Chrome 4.18 / 2.19; matrix 3.00 / 2.63, Chrome 2.11 / 11.3; walk 0.92
+  to 0.97; search 1.75 / 1.81, Chrome 1.73 / 9.2. Size: 348,702 bytes of WebAssembly (72.1 per byte of
+  code), 74,679 gzipped, wasmtime compile 28 ms.
+- Seen and not explained: search with only the permission check left out is 5.8 times native in wasmtime,
+  also at the fourth run's commit 50908cb (so not from this run), while with no check at all it is 1.8. Only
+  a measuring variant; its machine code for the inner loop is tight, so the time is elsewhere.
+- Tests: layer 2 has a new chunk, a walk: a counted loop (every counter form above, 32 and 64 bit, the
+  compare before or after the change) over memory through x18, moving its base by indexing or an add, or an
+  index read as uxtw, sxtw or lsl, shifted or not, stepping by an immediate or a register, starting near
+  2^32 or 2^31 so some wrap, in the area or walking forward onto the page after the blob. `programs/walks.c`
+  (nested counted loops, one running onto the page after the blob) matches Linux at every level, in
+  wasmtime and Chrome, and full matches none. Checked by breaking on purpose: a proof that always passes
+  fails layer 2 and `walks.c`; a range one turn short fails layer 2 within 15 cases (seeds 41, 42).
+
+S1, what remains after the fifth run (aims with every check, in both engines):
+- Met in the last measurements: matrix (wasmtime 3.00 and 3.09, at the aim; Chrome 2.11), search, hash,
+  sieve in Chrome (1.32). Sieve in wasmtime 1.42 after proving outer loops (one run, load 8; aim 1.5).
+- Interpret (aim 3): wasmtime 3.81, Chrome 4.18; no check 2.92 / 2.19. Its dispatch loop holds a switch
+  (whose stop check carries on in place) and its accesses are data dependent (byte code through w12, the
+  switch's byte table through the loaded opcode, the interpreter's stack through w10), so the proof does not
+  reach them; three kept-run checks a dispatch remain. Not yet shown irremovable. Ideas: the switch's byte
+  table load has a known bound (the jump table's own compare), so its range is known; the switch's jump
+  back could hand over to a loop piece like other jump backs, which would let the dispatch loop be proven.
+- fib (aim 4): wasmtime 6.0, Chrome 5.2 with every check; 5.2 / 4.7 with none. The checks cost little; the
+  call itself is the cost (see the fourth run: in wasmtime even the toy's call shape is 4.05 with the stop
+  check). In Chrome the toy is 2.7, so the gap there is ours and not yet explained.
+- Sort (aim 2.5): wasmtime 4.12, Chrome 3.31; with no check 3.34 / 2.80. Same call costs as fib.
 - 32 bit guest memory: measured 10 to 27% faster in wasmtime; the owner's call.
-- Not yet shown for matrix, interpret, sort, or fib in Chrome that the rest cannot be removed within the
-  plan's rules.
 
 ## Done
 
@@ -588,6 +624,10 @@ contract's bits, in both runners).
   with write back whose transfer register is its base is CONSTRAINED UNPREDICTABLE, and the reference
   CPU raises SIGILL for it; the generator now keeps such registers apart, as layer 1 does.
 
+- Layer 2, fifth S1 run (with walks), release: 1000 cases seed 41, 40 on the CPU: 0 mismatches, 325
+  faulted; 1000 seed 43 (after outer loops): 0 mismatches, 379 faulted; 500 seed 31 (before walks): 0
+  mismatches. Not yet the pass bar.
+
 ## Measurements
 
 - Layer 1, 261 forms x 64 cases (debug build, opt-level 1): 93 s at load 26 to 34, about 5.6 ms per case.
@@ -826,8 +866,14 @@ contract's bits, in both runners).
   optimised code is used in long loops of functions entered once. A real browser host needs the same (or
   any other early raises); wasmtime needs none.
 - S1: the plan's "whole function reasoning" for permission checks is a kept run of up to eight allowed
-  pages per base register and kind in loops without calls (see step 6 and the third run), not a proof
-  about the loop's range.
+  pages per base register and kind in loops without calls (see step 6 and the third run), and, for counted
+  loops whose accesses move by a fixed step, a proof over the loop's range at its entry that picks a copy
+  of the loop without those checks (fifth run).
+- S1: a proven loop's copy with its checks is only in its loop piece; the function tail calls into the loop
+  piece when the proof fails. Loop pieces check the stop flag at their entry, and a stop check at a jump back
+  to a loop with a loop piece writes back and tail calls it without calling the stop hook itself.
+- S1: registers a loop neither reads nor writes are kept in the thread block through it and loaded on the
+  edges leaving it (not for loops holding a switch).
 - S1: registers dirty at a loop's entry that the loop does not touch are written back before it (the plan
   writes registers back only around calls, system calls, slow paths and the piece's edges).
 - S1: the low bit of a piece's expected return address says whether the caller reads the flags after the
