@@ -545,6 +545,15 @@ fn vectored(
     mut offset: Option<u64>,
     writing: Option<bool>,
 ) -> Result<u64, Errno> {
+    // Linux's `vfs_readv` and `vfs_writev`: nothing to move is done at once, else the whole range is
+    // checked against the largest offset before the file sees it.
+    let total: u64 = parts.iter().map(|(_, length)| length).sum();
+    if total == 0 {
+        return Ok(0);
+    }
+    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+        verify_area(offset.unwrap_or(file.borrow().offset), total)?;
+    }
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
     if let Some(append) = writing
@@ -1605,4 +1614,58 @@ fn ppoll_typed(
     }
     park_until(kernel, tid, until);
     Ok(None)
+}
+
+/// `cachestat`: how many of a file's pages are in memory. Only tmpfs files hold pages here (as in
+/// Linux, where devices, `/proc` and directories keep none); none is ever dirty, under writeback or
+/// evicted, as tmpfs without swap (measured).
+pub(super) fn cachestat(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fd, range, out, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let file = file(kernel, tid, u64::from(fd as u32))?;
+    if file.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    let range = guest(kernel, cx, tid).read(range, 16)?;
+    let offset = u64::from_le_bytes(range[..8].try_into().expect("8 bytes"));
+    let length = u64::from_le_bytes(range[8..].try_into().expect("8 bytes"));
+    // Linux's `can_do_cachestat`: opened for writing, the owner, or allowed to write.
+    let node = file.borrow().node.clone();
+    let allowed = file.borrow().writable() || {
+        let credentials = &kernel.process_of(tid).credentials;
+        let inode = node.borrow();
+        credentials.owns_or_capable(inode.uid)
+            || !inode.fs.read_only() && inode.permits(credentials, W_OK, true)
+    };
+    if !allowed {
+        return Err(Errno::EPERM);
+    }
+    if flags as u32 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let first = offset / PAGE_SIZE;
+    let last = if length == 0 {
+        u64::MAX
+    } else {
+        offset.wrapping_add(length).wrapping_sub(1) / PAGE_SIZE
+    };
+    let mut cached = 0;
+    if let Content::Regular(regular) = &node.borrow().content
+        && first <= last
+    {
+        if regular.mapped {
+            kernel
+                .counters
+                .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);
+        }
+        cached = (regular.pages.range(first..=last).count()
+            + regular.allocated.range(first..=last).count()) as u64;
+    }
+    let mut bytes = [0u8; 40];
+    bytes[..8].copy_from_slice(&cached.to_le_bytes());
+    guest(kernel, cx, tid).write(out, &bytes)?;
+    Ok(0)
 }
