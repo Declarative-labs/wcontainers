@@ -244,52 +244,6 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_pkey_alloc, S(memory::pkey_alloc)),
         (__NR_pkey_free, S(memory::pkey_free)),
         (__NR_map_shadow_stack, S(memory::map_shadow_stack)),
-        (
-            __NR_acct,
-            S(system::needs_power::<CAP_SYS_PACCT, __NR_acct>),
-        ),
-        (
-            __NR_vhangup,
-            S(system::needs_power::<CAP_SYS_TTY_CONFIG, __NR_vhangup>),
-        ),
-        (
-            __NR_swapoff,
-            S(system::needs_power::<CAP_SYS_ADMIN, __NR_swapoff>),
-        ),
-        (
-            __NR_init_module,
-            S(system::needs_power::<CAP_SYS_MODULE, __NR_init_module>),
-        ),
-        (
-            __NR_finit_module,
-            S(system::needs_power::<CAP_SYS_MODULE, __NR_finit_module>),
-        ),
-        (
-            __NR_reboot,
-            S(system::needs_power::<CAP_SYS_BOOT, __NR_reboot>),
-        ),
-        // `dmesg_restrict` is 1 in the reference (measured), so every action needs CAP_SYSLOG.
-        (
-            __NR_syslog,
-            S(system::needs_power::<CAP_SYSLOG, __NR_syslog>),
-        ),
-        // Linux's `may_mount`.
-        (
-            __NR_fsopen,
-            S(system::needs_power::<CAP_SYS_ADMIN, __NR_fsopen>),
-        ),
-        (
-            __NR_fspick,
-            S(system::needs_power::<CAP_SYS_ADMIN, __NR_fspick>),
-        ),
-        (
-            __NR_fsmount,
-            S(system::needs_power::<CAP_SYS_ADMIN, __NR_fsmount>),
-        ),
-        (
-            __NR_move_mount,
-            S(system::needs_power::<CAP_SYS_ADMIN, __NR_move_mount>),
-        ),
         (__NR_personality, S(process::personality)),
         // Time.
         (__NR_clock_gettime, S(time::clock_gettime)),

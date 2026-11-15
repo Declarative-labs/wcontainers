@@ -55,6 +55,21 @@ const REFUSED: &[u32] = &[
     __NR_mount_setattr,
     __NR_quotactl_fd,
     __NR_set_mempolicy_home_node,
+    // The profile's sections for powers a default container lacks.
+    __NR_vhangup,
+    __NR_acct,
+    __NR_init_module,
+    __NR_finit_module,
+    __NR_syslog,
+    __NR_reboot,
+    __NR_sethostname,
+    __NR_setdomainname,
+    __NR_swapoff,
+    __NR_fanotify_init,
+    __NR_move_mount,
+    __NR_fsopen,
+    __NR_fsmount,
+    __NR_fspick,
 ];
 
 /// The personalities the profile lets through; the last only asks.
@@ -328,5 +343,43 @@ impl Filter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The calls Docker's profile refuses with EPERM when called with zero arguments, measured on the
+    /// reference by stacking a filter that answers SECCOMP_RET_TRACE for everything: the profile's
+    /// ERRNO outranks it, while a call the profile lets through ends as TRACE does with no tracer.
+    const MEASURED: &[u32] = &[
+        18, 39, 40, 41, 42, 58, 60, 89, 97, 104, 105, 106, 112, 116, 142, 161, 162, 170, 217, 218,
+        219, 224, 225, 235, 236, 237, 238, 239, 241, 244, 245, 246, 247, 248, 249, 250, 251, 252,
+        253, 254, 255, 256, 257, 258, 259, 262, 265, 268, 272, 273, 280, 282, 294, 295, 296, 297,
+        298, 299, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315,
+        316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333,
+        334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351,
+        352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369,
+        370, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 384, 385, 386, 387,
+        388, 389, 390, 391, 392, 393, 394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405,
+        406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423,
+        425, 426, 427, 428, 429, 430, 431, 432, 433, 438, 440, 442, 443, 450,
+    ];
+
+    #[test]
+    fn profile_refuses_what_the_reference_refuses() {
+        let mut wrong = alloc::vec::Vec::new();
+        for number in 0..1100u32 {
+            if number == crate::linux::general::__NR_write
+                || number == crate::linux::general::__NR_exit_group
+            {
+                continue;
+            }
+            let known = crate::syscall::name(number.into()).is_some();
+            let ours = super::docker_default(number, &[0; 6], known) == Some(crate::Errno::EPERM);
+            if ours != MEASURED.contains(&number) {
+                wrong.push(number);
+            }
+        }
+        assert!(wrong.is_empty(), "differ from the reference: {wrong:?}");
     }
 }
