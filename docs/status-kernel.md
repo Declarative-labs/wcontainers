@@ -125,10 +125,12 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
 - Protection keys as on the reference's CPU, which has no permission overlays: only key 0, allocated
   from the start; pkey_alloc is ENOSPC, pkey_free can free key 0, pkey_mprotect is mprotect with
   Linux's key check. map_shadow_stack is EOPNOTSUPP (no guarded control stacks, as the reference).
-- Calls whose first step in Linux is to check a power no container process can hold (acct, vhangup,
-  swapoff, init_module, finit_module, reboot, syslog with `dmesg_restrict` 1 as measured, fsopen,
-  fspick, fsmount, move_mount): EPERM. If a process held the power the call would be counted and
-  ENOSYS, which cannot happen in a default container.
+- Calls Docker's profile refuses for powers a default container lacks (acct, vhangup, swapoff,
+  init_module, finit_module, reboot, syslog, sethostname, setdomainname, fanotify_init, fsopen, fspick,
+  fsmount, move_mount) are refused by the profile, not by the kernel (measured in the fifth run: under
+  a filter answering SECCOMP_RET_TRACE they stay EPERM, so the profile's ERRNO outranks it). A unit
+  test checks the whole profile against that measurement. sethostname and setdomainname keep their
+  handlers, which the profile keeps out of reach.
 - execveat: by path, from a directory descriptor, or a descriptor itself (`AT_EMPTY_PATH`), named
   `/dev/fd/<n>[/path]` as Linux names it; a script through a descriptor closed at exec is ENOENT;
   `AT_SYMLINK_NOFOLLOW` and `AT_EXECVE_CHECK` (a check only). Flags are checked before the path
@@ -154,26 +156,26 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
 
 ## System calls
 
-Done (181): acct, brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime, clock_nanosleep,
-close, close_range, copy_file_range, dup, dup3, execve, execveat, exit, exit_group, faccessat,
-faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat, fcntl,
-fdatasync, fgetxattr, finit_module, flistxattr, flock, fremovexattr, fsetxattr, fsmount, fsopen, fspick,
-fstat, fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
-getgroups, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
-getsid, gettid, gettimeofday, getuid, getxattr, init_module, ioctl, ioprio_get, ioprio_set, kill,
-lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
-membarrier, memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, move_mount,
-mprotect, mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2,
-personality, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64, preadv, preadv2, prlimit64,
-process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev, pwritev2, read, readahead, readlinkat, readv, reboot, removexattr,
-renameat, renameat2, rseq, rt_sigaction, rt_sigpending, rt_sigprocmask, sched_get_priority_max,
-sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler,
-sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler,
-sched_yield, seccomp, sendfile, set_robust_list, set_tid_address, setdomainname, setfsgid, setfsuid,
-setgid, setgroups, sethostname, setpgid, setpriority, setregid, setresgid, setresuid, setreuid,
-setrlimit, setsid, setuid, setxattr, sigaltstack, statfs, statx, swapoff, symlinkat, sync,
-sync_file_range, syncfs, sysinfo, syslog, tgkill, times, tkill, truncate, umask, uname, unlinkat,
-utimensat, vhangup, write, writev.
+Done (168): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+clock_nanosleep, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit, exit_group,
+faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat,
+fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat, fstatfs, fsync,
+ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid, getgroups,
+getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
+getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill, lgetxattr,
+linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
+membarrier, memfd_create, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap, mprotect,
+mremap, msync, munlock, munlockall, munmap, nanosleep, newfstatat, openat, openat2, personality,
+pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64, preadv, preadv2, prlimit64,
+process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev, pwritev2, read, readahead,
+readlinkat, readv, removexattr, renameat, renameat2, rseq, rt_sigaction, rt_sigpending,
+rt_sigprocmask, sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getattr,
+sched_getparam, sched_getscheduler, sched_rr_get_interval, sched_setaffinity, sched_setattr,
+sched_setparam, sched_setscheduler, sched_yield, seccomp, sendfile, set_robust_list,
+set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid, setpriority, setregid, setresgid,
+setresuid, setreuid, setrlimit, setsid, setuid, setxattr, sigaltstack, statfs, statx, symlinkat,
+sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, uname, unlinkat,
+utimensat, write, writev.
 
 Partial (inside the list above):
 - fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS); no leases, owners, signals, seals.
@@ -221,28 +223,31 @@ Partial (inside the list above):
 - sigaltstack: refuses a change while the caller runs on its alternate stack (Linux's `on_sig_stack`,
   from the thread's stack pointer); handlers still need K2.
 
-Refused by Docker's profile as in the reference (51; never reach the kernel there, so nothing to
-build): lookup_dcookie, umount2, mount, pivot_root, nfsservctl, quotactl, unshare, kexec_load,
-delete_module, clock_settime, settimeofday, add_key, request_key, keyctl, swapon, mbind, get_mempolicy,
-set_mempolicy, migrate_pages, move_pages, perf_event_open, open_by_handle_at, setns, kcmp, bpf,
-userfaultfd, kexec_file_load, io_uring_setup, io_uring_enter, io_uring_register, open_tree, fsconfig,
-clone3, pidfd_getfd, process_madvise, mount_setattr, quotactl_fd, set_mempolicy_home_node, statmount,
+Refused by Docker's profile as in the reference (65; never reach the kernel there, so nothing to
+build; the last 14 measured in the fifth run under a filter that traces every call): lookup_dcookie,
+umount2, mount, pivot_root, nfsservctl, quotactl, unshare, kexec_load, delete_module, clock_settime,
+settimeofday, add_key, request_key, keyctl, swapon, mbind, get_mempolicy, set_mempolicy,
+migrate_pages, move_pages, perf_event_open, open_by_handle_at, setns, kcmp, bpf, userfaultfd,
+kexec_file_load, io_uring_setup, io_uring_enter, io_uring_register, open_tree, fsconfig, clone3,
+pidfd_getfd, process_madvise, mount_setattr, quotactl_fd, set_mempolicy_home_node, statmount,
 listmount, lsm_get_self_attr, lsm_set_self_attr, lsm_list_modules, mseal, setxattrat, getxattrat,
-listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr.
+listxattrat, removexattrat, open_tree_attr, file_getattr, file_setattr, acct, vhangup, swapoff,
+init_module, finit_module, reboot, syslog, fsopen, fspick, fsmount, move_mount, sethostname,
+setdomainname, fanotify_init.
 
-Missing (93, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy, io_submit,
-io_cancel, io_getevents, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
+Missing (92, each counted "system call not implemented" and ENOSYS): io_setup, io_destroy,
+io_submit, io_cancel, io_getevents, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
 inotify_add_watch, inotify_rm_watch, pipe2, signalfd4, vmsplice, splice, tee, timerfd_create,
 timerfd_settime, timerfd_gettime, waitid, futex, getitimer, setitimer, timer_create, timer_gettime,
-timer_getoverrun, timer_settime, timer_delete, ptrace, restart_syscall, rt_sigsuspend, rt_sigtimedwait,
-rt_sigqueueinfo, rt_sigreturn, adjtimex, mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify,
-mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl, semtimedop, semop, shmget, shmctl, shmat,
-shmdt, socket, socketpair, bind, listen, accept, connect, getsockname, getpeername, sendto, recvfrom,
-setsockopt, getsockopt, shutdown, sendmsg, recvmsg, clone, remap_file_pages, rt_tgsigqueueinfo, accept4,
-recvmmsg, wait4, fanotify_init, fanotify_mark, name_to_handle_at, clock_adjtime, sendmmsg,
-io_pgetevents, pidfd_send_signal, pidfd_open, epoll_pwait2,
-landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret, process_mrelease,
-futex_waitv, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes,
+timer_getoverrun, timer_settime, timer_delete, ptrace, restart_syscall, rt_sigsuspend,
+rt_sigtimedwait, rt_sigqueueinfo, rt_sigreturn, adjtimex, mq_open, mq_unlink, mq_timedsend,
+mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl,
+semtimedop, semop, shmget, shmctl, shmat, shmdt, socket, socketpair, bind, listen, accept, connect,
+getsockname, getpeername, sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg,
+clone, remap_file_pages, rt_tgsigqueueinfo, accept4, recvmmsg, wait4, fanotify_mark,
+name_to_handle_at, clock_adjtime, sendmmsg, io_pgetevents, pidfd_send_signal, pidfd_open,
+epoll_pwait2, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, memfd_secret,
+process_mrelease, futex_waitv, futex_wake, futex_wait, futex_requeue. Most belong to K2 (processes, pipes,
 signals, futex), K3 (timers) or K5 (sockets, epoll).
 
 ## Tests (last run 2026-11-15: 33 passed, 5 ignored known failures)
