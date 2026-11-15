@@ -44,8 +44,9 @@ pub fn translator() -> PathBuf {
 /// What happened in Chrome: the program's output and status, and the runner's report.
 pub struct Report {
     pub ran: Ran,
-    /// How long the guest ran in the page, translating and compiling the first module not included.
-    pub run_seconds: f64,
+    /// How long the guest ran in the page each time it was run, translating and compiling the first module
+    /// not included.
+    pub runs: Vec<f64>,
     /// The slow paths taken, as `(reason, count)`.
     pub counters: Vec<(String, u64)>,
     pub user_agent: String,
@@ -60,14 +61,19 @@ impl Report {
     }
 }
 
-/// Run a blob through the translator at look-ahead none in Chrome, starting at its first byte.
-/// Run a blob in Chrome at look-ahead none.
+/// Run a blob in Chrome at look-ahead none, starting at its first byte.
 pub fn translated(blob: &Blob) -> Report {
     translated_with(blob, LookAhead::None, Omit::default())
 }
 
 /// Run a blob in Chrome at a look-ahead, leaving out some checks only to measure them.
 pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report {
+    repeated(blob, look_ahead, omit, 1)
+}
+
+/// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
+/// The report holds the output of the last run.
+pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> Report {
     let place = placement(blob);
     let directory = target().join("cases").join(&blob.name);
     std::fs::create_dir_all(&directory).unwrap();
@@ -89,6 +95,7 @@ pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report
             LookAhead::None => 0,
             LookAhead::Full => 1,
         },
+        "repeat": repeat,
         "omit": u8::from(omit.stop) | (u8::from(omit.permissions) << 1) | (u8::from(omit.returns) << 2),
     });
     std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
@@ -148,7 +155,12 @@ pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report
             status,
         },
         counters,
-        run_seconds: result["runMilliseconds"].as_f64().unwrap_or(f64::NAN) / 1000.0,
+        runs: result["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|ms| ms.as_f64().unwrap() / 1000.0)
+            .collect(),
         user_agent: result["userAgent"].as_str().unwrap_or_default().to_string(),
     }
 }

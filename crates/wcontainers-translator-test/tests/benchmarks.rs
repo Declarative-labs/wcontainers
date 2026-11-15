@@ -1,7 +1,10 @@
 //! Not a check: times the benchmark set (`programs/bench.c` at full size, -O2) natively and at full
 //! look-ahead in wasmtime and Chrome, with and without each check, and prints the size of the translation.
 //! Run with `--ignored --nocapture` in a release build. Knobs: `WC_BENCH_RUNS` (best of, default 3),
-//! `WC_BENCH_WORKLOADS` (numbers from bench.c, default all), `WC_BENCH_CHROME` (0 leaves Chrome out).
+//! `WC_BENCH_WORKLOADS` (numbers from bench.c, default all), `WC_BENCH_VARIANTS` (which of the five check
+//! variants, numbered from 1, default all), `WC_BENCH_CHROME` (0 leaves Chrome out), `WC_BENCH_REPEAT` (how
+//! many times Chrome runs the program in the same instances, each run timed by itself, default 1) and
+//! `WC_CHROME_JS_FLAGS` (V8 flags for Chrome).
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -106,6 +109,14 @@ fn measure_benchmarks() {
         v.split(',').map(|n| n.parse().unwrap()).collect()
     });
     let chrome = std::env::var("WC_BENCH_CHROME").map_or(true, |v| v != "0");
+    let repeat: u32 = std::env::var("WC_BENCH_REPEAT").map_or(1, |v| v.parse().unwrap());
+    let variants: Vec<(&str, Omit)> = match std::env::var("WC_BENCH_VARIANTS") {
+        Ok(v) => v
+            .split(',')
+            .map(|n| variants()[n.parse::<usize>().unwrap() - 1])
+            .collect(),
+        Err(_) => variants().to_vec(),
+    };
     size(&build_with("bench", "-O2", Library::None, &["SCALE=1"]));
     for k in chosen {
         let name = WORKLOADS[k - 1];
@@ -114,7 +125,7 @@ fn measure_benchmarks() {
         let expected = native(&blob);
         let native_time = native_seconds(&blob, runs);
         eprintln!("{name}: native {native_time:.3} s (load {})", load());
-        for (label, omit) in variants() {
+        for &(label, omit) in &variants {
             let mut best = f64::INFINITY;
             for _ in 0..runs {
                 let (ran, _, _, time) = translated_omitting(&blob, LookAhead::Full, omit);
@@ -130,16 +141,23 @@ fn measure_benchmarks() {
         if !chrome {
             continue;
         }
-        for (label, omit) in variants() {
-            let mut best = f64::INFINITY;
+        for &(label, omit) in &variants {
+            // The best time of each run in the same instances.
+            let mut best = vec![f64::INFINITY; repeat as usize];
             for _ in 0..runs {
-                let report = browser::translated_with(&blob, LookAhead::Full, omit);
+                let report = browser::repeated(&blob, LookAhead::Full, omit, repeat);
                 assert_eq!(report.ran, expected, "{name} in Chrome with {label}");
-                best = best.min(report.run_seconds);
+                for (best, time) in best.iter_mut().zip(report.runs) {
+                    *best = best.min(time);
+                }
             }
+            let each: Vec<String> = best
+                .iter()
+                .map(|t| format!("{t:.3} s ({:.2})", t / native_time))
+                .collect();
             eprintln!(
-                "{name}: Chrome, {label}: {best:.3} s, {:.2} times native (load {})",
-                best / native_time,
+                "{name}: Chrome, {label}: {}, times native in brackets (load {})",
+                each.join(", then "),
                 load()
             );
         }

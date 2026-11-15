@@ -253,3 +253,37 @@ fn alloca_loop_off_the_stack() {
         compare(&blob(&format!("alloca-{turns}"), ops));
     }
 }
+
+/// Loops that make no call read or write through a base and an index moved by a fixed step each turn,
+/// until the access reaches the page after the blob, which allows nothing. These accesses keep the page they
+/// last found allowed, so the fault must still land on the exact turn.
+#[test]
+fn loops_running_onto_a_forbidden_page() {
+    for step in [1u32, 8, 4095, 4096, 4097] {
+        for write in [false, true] {
+            let mut ops: Ops = VecAssembler::new(0);
+            zero(&mut ops);
+            dynasm!(ops ; .arch aarch64
+                ; movz x1, #0x40, lsl #16
+                ; movz x3, #0x200
+                ; movz x6, step
+                ; ->turn:
+            );
+            if write {
+                dynasm!(ops ; .arch aarch64 ; strb w3, [x1, x3]);
+            } else {
+                dynasm!(ops ; .arch aarch64 ; ldrb w2, [x1, x3] ; add x4, x4, x2);
+            }
+            dynasm!(ops ; .arch aarch64
+                ; add x3, x3, x6
+                ; add x5, x5, #1
+                ; b ->turn
+            );
+            dump(&mut ops);
+            // Three more pages for the loop to walk through first.
+            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            let name = format!("loop-step-{step}-{}", if write { "store" } else { "load" });
+            compare(&blob(&name, ops));
+        }
+    }
+}

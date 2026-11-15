@@ -1,9 +1,12 @@
 //! What a runner must provide to, and may expect from, the modules the translator makes.
 //!
 //! Two kinds of module run per guest thread. The **thread module** ([`crate::thread_module`]) holds the
-//! registers as globals, the lookup table, the bottom loop and save and load state. **Code modules**
-//! ([`crate::translate`]) hold pieces; they import the thread module's registers and table and add their
-//! pieces to the table when instantiated.
+//! lookup table and the bottom loop. **Code modules** ([`crate::translate`]) hold pieces; they import the
+//! thread module's table and add their pieces to the table when instantiated.
+//!
+//! Registers that are not in a piece's locals live in the thread block in the state memory, so whenever a hook
+//! runs or `run` has returned, the block holds them all ("registers are saved"), and a runner sets registers
+//! by writing the block before `run`.
 
 /// Import module name for what the runner provides.
 pub const ENV: &str = "env";
@@ -12,7 +15,10 @@ pub const HOOKS: &str = "hooks";
 /// Import module name for what the thread module exports.
 pub const THREAD: &str = "thread";
 
-/// The guest memory: a 64 bit memory holding the guest's whole address space, unshared.
+/// The guest memory: a 64 bit memory holding the guest's whole address space, unshared. Its base must never
+/// move, so the engine keeps the base and bound in registers instead of reloading them at every access: in
+/// wasmtime the engine needs `Config::memory_may_move(false)` and a memory reservation that covers the
+/// memory (V8 keeps them in registers either way).
 pub const MEMORY: &str = "memory";
 /// The runtime's own memory, which the guest cannot reach: thread blocks and the page permission table.
 /// A shared 32 bit memory, at most 4 GiB.
@@ -24,7 +30,7 @@ pub const SLOT_BASE: &str = "slot_base";
 /// i64: the guest address of lookup table slot zero. Slot `i` holds the piece for `table_base + 4 * i`.
 pub const TABLE_BASE: &str = "table_base";
 /// i32: where in the state memory this thread's block is (a [`wcontainers_abi::RegisterBlock`] followed by
-/// the stop flag).
+/// the stop flag), a multiple of 16.
 pub const THREAD_BLOCK: &str = "thread_block";
 /// i32: where in the state memory the page permission table starts, one byte per page.
 pub const PERMISSIONS: &str = "permissions";
@@ -46,13 +52,9 @@ pub const UNWIND_LEAVE: i32 = 1;
 /// the bottom loop asks [`HOOK_LOAD_CODE`] for code at `pc` first.
 pub const UNWIND_GO_TO_EXACT: i32 = 2;
 
-/// Thread module export: run from the address in `pc` until a hook asks to leave, or no piece can be found
-/// for an address. Takes and returns nothing.
+/// Thread module export: run from the registers in the thread block until a hook asks to leave, or no piece
+/// can be found for an address. Takes and returns nothing.
 pub const RUN: &str = "run";
-/// Thread module export: copy every register into the thread block.
-pub const SAVE_STATE: &str = "save_state";
-/// Thread module export: copy every register from the thread block.
-pub const LOAD_STATE: &str = "load_state";
 
 /// Hook `(number, a0, a1, a2, a3, a4, a5: i64) -> i64`: a system call. The result goes to x0. Registers
 /// are saved and `pc` is the instruction after. To stop the thread, raise its stop flag and return.
@@ -94,9 +96,15 @@ pub fn permission_byte(
     bits(this, PAGE_READ, PAGE_WRITE) | bits(next, NEXT_PAGE_READ, NEXT_PAGE_WRITE)
 }
 
-/// The return address the bottom loop passes to the first piece it calls. Any value is correct: a piece
-/// returns only when the guest returns to exactly this address, and the loop then carries on there.
-pub const BOTTOM_RETURN: i64 = -1;
+/// The bit of a piece's expected return address parameter that says the caller reads the flags from the
+/// thread block after the piece returns; without it a piece may return with the flags it set only in its
+/// locals. The rest of the parameter is the address the caller expects control back at.
+pub const FLAGS_WANTED: i64 = 1;
+
+/// The return address the bottom loop passes to the first piece it calls (with [`FLAGS_WANTED`]). Any even
+/// value is correct: a piece returns only when the guest returns to exactly this address, and the loop then
+/// carries on there.
+pub const BOTTOM_RETURN: i64 = -2;
 
 /// Why the instruction at `pc` stopped the thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

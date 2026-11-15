@@ -14,6 +14,494 @@ first instruction looped for ever), added `tests/checks.rs`, and made layer 2 pr
 every size, x19 to x28, accesses through sp and groups through other registers, and fault. Speed is still
 far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
+S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
+what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
+"S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
+calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
+rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
+eighth run", and what is left under "S1, what remains after the eighth run".
+
+## S1: run speed at full look-ahead
+
+Tools for it: `cargo run --release -p wcontainers-translator-test --bin machine-code -- bench -O2 <dir>
+SCALE=1 WORKLOAD=<n>` writes the code module and wasmtime's compiled form (`objdump -d` it; function 8 is
+the first piece, the tool prints which is which). For V8's code: `nix shell nixpkgs#nodejs_latest -c node
+--print-wasm-code --no-liftoff --no-wasm-lazy-compilation -e 'new WebAssembly.Module(require("fs").readFileSync("<file>.wasm"))'`
+(node 26, V8 14; Chrome's own build has no disassembler). The benchmarks take `WC_BENCH_VARIANTS`,
+`WC_BENCH_REPEAT` (Chrome runs the program that many times in the same instances, each timed) and
+`WC_CHROME_JS_FLAGS`.
+
+Done so far, each measured (wasmtime unless said; times native, every check / no check; Apple silicon,
+load in brackets; the machine is shared, so native times themselves moved by up to 50% between runs):
+- Step 1, registers in the thread block. Registers that are not in locals are read and written at their
+  fixed place in the thread block (`state.rs`), not in imported globals. The thread module has no
+  registers, `save_state` and `load_state` are gone (the block always holds the registers when a hook runs
+  or `run` returns), runners read and write the block. Machine code (wasmtime): the block's place plus the
+  state memory's base sits in one register for the whole piece and every register is `ldr/str [xN, #off]`,
+  no bounds check, nothing reloaded; V8: the same, the base reloaded from the instance once per loop turn
+  (one load), no bounds check. Before / after (load 8 to 12): fib 9.4 / 8.2, sieve 3.2 / 2.2, hash 1.33 /
+  0.98, sort 5.5 / 5.5, interpret 8.6 / 8.6, matrix 7.7 / 7.1, search 8.5 / 5.5. Chrome (second run in
+  the same instance): fib 6.7 / 5.9, sieve 2.7 / 2.1, matrix 6.7 / 5.3, search 6.8 / 4.6.
+- Calls, first part. Machine code of fib showed every piece saving all ten callee-saved general registers
+  and eight vector registers on entry: in wasmtime a function containing `throw` does that. Pieces now
+  call a small function of the code module that throws. Pieces also read the six imported values from the
+  module's own immutable globals (one load each instead of two in wasmtime). Together with step 2's
+  setting: fib 8.2 to 6.3, sort 5.5 to 4.1, sieve 2.2 to 2.0, search 5.5 to 4.75 (load 6 to 10).
+- Step 2, guest memory. The runner's wasmtime engine has `memory_may_move(false)` (the contract now says
+  the guest memory's base must never move): the base is loaded once per piece and the bound is a constant,
+  so each access is an add, a compare and a select (wasmtime's Spectre guard) before it; before, each access
+  loaded base and length from memory. V8 keeps base and size in registers already: one compare and branch
+  per access. Measured and not kept: wasmtime with its heap Spectre guard turned off changed sieve, matrix
+  and search with no checks by 0 to 6% (load 8 to 11; it is a host security setting, so left on). A 32 bit
+  guest memory (addresses wrapped after the permission check, which already faults on anything above the
+  table) removes the engine's check entirely: 10 to 27% faster in wasmtime (sieve every check 0.89 to 0.79
+  s, matrix 0.66 to 0.43 s, search with no checks 0.24 to 0.17 s, fib 2.5 to 2.2 s; load 8 to 10). Not
+  taken: the plan gives a process 64 bit memory where the host has one; a 4 GiB cap is the owner's call.
+- Step 3, Chrome's compilers: confirmed. Running each workload several times in the same instances
+  (load 8 to 11): matrix with no checks 11.9 times native the first run, then 2.0, 1.96, 1.88; search
+  10.7 then 1.90; with every check 19.4 then 6.7 (matrix) and 19.7 then 6.8 (search). Sieve and fib
+  were the same every run (their loops' functions are entered many times). With
+  `--js-flags=--no-liftoff` the first run is as fast as later ones (matrix 1.85, search 1.63 with no
+  checks). Tried and not working: a `metadata.code.compilation_priority` section (the compilation hints
+  proposal) asking for every function optimized at once: no change, with no flag or with
+  `--wasm-compilation-hints`; `--experimental-wasm-compilation-hints` is not a flag in Chrome 157.
+  What an ordinary page can do, built: after the stop hook says carry on at a jump back, the thread goes
+  on in a new call, which runs whatever code V8 has for the function by then. The page
+  (`browser/run.mjs`) raises the stop flag at 1, 2, 4, ... 1024 ms after the guest starts. Result, every
+  check, first run in Chrome (load 13 to 34): matrix 16.7 to 3.7 times native, search 17.0 to 3.8, hash
+  2.9 to 1.0; later runs the same as the first. (With the stop checks left out there is nothing to
+  re-enter, so "no check" still shows the old first run.) The first run's version entered the function
+  itself again and went to the loop through the header of each loop around it (a word in the thread
+  block's padding said which loop); in wasmtime those extra ways into loops cost matrix half its time.
+  Second run, replaced by loop pieces (`full.rs`, `pieces`): for each loop header of a function, a piece
+  that starts there and holds that loop and what follows it up to the header of any other loop, where it
+  goes on in that loop's piece. Only a stop check that carries on at a jump back enters one (a direct
+  `return_call`), so a loop piece is not in the lookup table and may rely on what its function knows at
+  the loop (the frame and the alignment of sp); the function keeps a single way into each loop. Where a
+  loop piece would need more entries to stay reducible, none is made and the stop check carries on in
+  place, loading registers back. Measured (load 15 to 27, same session): wasmtime matrix every check 0.75
+  s to 0.41 s (9.5 to about 5 times native), sieve 0.75 to 0.66 to 0.71, search 0.44 (unchanged); Chrome
+  first run matrix 3.4, search 2.1, sieve 1.33 times native (load 25 to 45), the second run the same.
+  Size, bench at -O2 SCALE=1: 141,853 to 329,880 bytes of WebAssembly (68 per byte of code), wasmtime
+  compile 31 to 35 ms. A first version, whose loop pieces ran on to the end of the function, made
+  1,306,873 bytes (one copy of the rest of the function per loop). The thread block's word 804 is no
+  longer used. Found by the new test below: an entry check that went on in a new call never made progress
+  when the flag was raised at every check, so the entry check carries on in place. Breaking the change
+  on purpose (each stop going on in the loop piece of another loop) fails
+  `stops_at_every_check_change_nothing`.
+- Step 5, the stop check. In wasmtime the stop check now costs about 10% on sieve (1.71 against 1.55 with
+  no stop check, load 10 to 23) where it doubled it before; matrix still pays more (0.59 against 0.34 s,
+  same run; the second run traced this to the re-entry paths, see step 3). Carrying on no longer reloads
+  registers anywhere but after a switch's jump back, at a loop with no loop piece, and after a system
+  call: at loops the thread goes on in a loop piece (which loads what the loop needs at its entry), and
+  at the entry check, which comes before any register but the passed ones is loaded, nothing is reloaded. This relies on the abi: after `Exit::Stop`, `Resume::Continue` says nothing has
+  changed, and the kernel plan's uses of the hook (deliver a signal, switch threads) replace the registers
+  (`Resume::FromRegisters`), which is the hook's "leave" answer.
+- Step 6, permission checks over a whole loop. An access checked exactly inside a loop that makes no call
+  and no system call keeps the page it last found allowed (the fast test: that page and the next allow
+  the access); it checks again only when the access is on another page. Accesses of one kind through one
+  base register in one loop share one kept page; it is forgotten when the loop is entered from outside,
+  on re-entry, and when a stop check carries on in place. Faults stay exact (the full check runs on every
+  new page). Measured (wasmtime, load 10 to 19): search 3.9 to 3.4, sieve 1.71 to 1.57, matrix 7.3 to
+  6.2; interpret did not move (8.6 to 9.0, noise). The page is also forgotten on entering a loop piece.
+  Since the third run a run of up to eight pages is kept instead of one page; see "S1, third run".
+- Calls, second part. Before, a piece wrote its flags back at every return (packing NZCV from the lazy
+  operands, about 12 instructions). Now the caller sets the low bit of the expected return address
+  (`contract::FLAGS_WANTED`) when the flags may be read after the call (the rest of its block is looked
+  at: anything but plain arithmetic before the next flag setting counts as reading); the piece writes the
+  flags back at a return only then. `BOTTOM_RETURN` is now -2 (even) and the bottom loop passes it with
+  the bit. fib, wasmtime, every check: 3.09 to 2.48 s, 6.9 to 6.25 times native (load 11 to 14). Writing
+  flags back before a call is still needed: the callee may fault before it sets flags, and the fault must
+  see the caller's flags.
+- `Omit` and `translate_omitting` are public only with the translator crate's `measure` feature, which only
+  the test crate and the browser translator turn on.
+- New tests: `tests/programs.rs` `stops_at_every_check_change_nothing` (bench and integers at -O0 and -O2,
+  the stop hook raising the flag again before it says carry on, so the thread stops at every check, about
+  100,000 to 260,000 stops per program: output equal to Linux, registers and memory equal to none); layer
+  2 runs every case a second time at full stopping at every check; `tests/checks.rs`
+  `loops_running_onto_a_forbidden_page` (loads and stores with steps 1, 8, 4095, 4096, 4097 bytes running
+  off the blob onto a page that allows nothing). Each was checked by breaking the code on purpose: a kept
+  page two pages ahead fails the checks test; never asking for the flags after a call fails layer 2 within
+  2000 cases (seed 9).
+
+S1 measurements at the end of the first run (commit 413f126, `tests/benchmarks.rs`, best of 3, load 4 to 12;
+times native; every check / no stop check / no permission check / no check; Chrome first run in the same
+instance, the second run within 2% unless said):
+- fib (native 0.40 s): wasmtime 6.38 / 5.52 / 5.69 / 4.96; Chrome 5.63 / 4.92 / 5.17 / 4.73.
+- sieve (0.45 s): wasmtime 1.69 / 1.45 / 1.43 / 1.21; Chrome 1.38 / 1.33 / 1.03 / 0.94.
+- hash (0.58 s): wasmtime 1.01 / 1.00 / 0.99 / 0.99; Chrome 1.00 / 1.82 then 0.99 / 0.99 / 1.78 then 0.98.
+- sort (0.34 s): wasmtime 4.21 / 4.10 / 3.69 / 3.40; Chrome 3.39 / 3.37 / 3.06 / 2.95.
+- interpret (0.15 s): wasmtime 8.79 / 8.90 / 2.79 / 2.87; Chrome 8.92 / 8.72 / 2.48 / 2.32.
+- matrix (0.08 s): wasmtime 9.26 / 5.97 / 3.67 / 2.57; Chrome 3.29 / 14.5 then 4.06 / 2.17 / 12.7 then 1.91.
+- search (0.12 s): wasmtime 3.46 / 4.27 / 2.03 / 2.08; Chrome 3.04 / 13.9 then 2.89 / 1.99 / 11.1 then 1.90.
+- Size: bench at -O2: 138,761 bytes of WebAssembly (28.7 per byte of code), 31,094 gzipped (10.8).
+- Experiments after it, not kept: (a) the stop checks without the paths into nested loops (every re-entry
+  at the start, which is wrong but never taken in wasmtime): matrix 0.39 s against 0.75 s, sieve 0.70
+  against 0.75 (load 4 to 9). So in wasmtime the paths into loops cost matrix about half its time. (b)
+  re-entering only loops inside no other loop, a stop at a nested loop marking the piece to re-enter at
+  the next outer jump back: wasmtime matrix 0.50 s, sieve 0.80, search 0.46; Chrome first run matrix 9.4,
+  search 5.5, sieve 1.8 times native (load 11 to 14), much worse in Chrome, so reverted.
+
+S1 measurements at the end of the second run (commit af2566e, `tests/benchmarks.rs` with
+`WC_BENCH_VARIANTS=1,5`, best of 3, load 8 to 19; times native, every check / no check; Chrome first run
+in the instance). Native times were 15 to 35% slower in this session than in the first run's (fib 0.54
+s, sieve 0.54, hash 0.76, sort 0.46, interpret 0.19, matrix 0.10, search 0.12), so ratios may read low:
+- fib: wasmtime 5.95 / 4.73; Chrome 4.31 / 3.88.
+- sieve: wasmtime 1.44 / 1.19; Chrome 1.37 / 0.97.
+- hash: wasmtime 0.99 / 0.97; Chrome 0.96 / 1.69 (no check has no stop to move to V8's optimised code).
+- sort: wasmtime 3.92 / 3.64; Chrome 3.50 / 2.77.
+- interpret: wasmtime 9.29 / 2.95; Chrome 9.13 / 2.34.
+- matrix: wasmtime 4.88 / 2.60; Chrome 2.62 / 11.6 (as hash).
+- walk: 0.6 to 0.85 everywhere. search: wasmtime 3.67 / 2.07; Chrome 2.91 / 11.0 (as hash).
+- Size: 329,880 bytes of WebAssembly (68.2 per byte of code), 69,102 gzipped (24.1), wasmtime compile 37
+  ms.
+- Aims met with every check in this run: sieve and hash in both engines; matrix and search in Chrome. Not
+  met: fib (aim 4), sort (2.5), interpret (3) in both; matrix and search (3) in wasmtime. For none of
+  these does the status file show yet that the rest cannot be removed; see below.
+
+S1, second run, what the machine code and experiments show (wasmtime's code from the `machine-code`
+tool; A/B runs alternate the two builds in one session, because native times alone moved by up to 35%
+between sessions at load 10 to 45):
+- Matrix (wasmtime): with loop pieces the inner loop (7 guest instructions, two loads through x0 and x1
+  with a register index) is about 45 instructions a turn. About 30 values are live in it: 19 guest
+  registers, and of ours the permission table's place and length, two kept pages, the thread block, the
+  guest memory's base, its bound and a zero for wasmtime's Spectre guard, and the operands kept for the
+  flags. That is more than the 26 or so registers Cranelift hands out, so it spills: at the jump back 8
+  stores and 3 loads to its own stack each turn. Registers the loop loads anew every turn (x6, x7) stay
+  alive across the jump back only because the next turn's fault paths write them back. Not yet tried:
+  making slow paths not need those registers in registers (e.g. writing such registers to the block as
+  they are set inside the loop, or one shared exit per loop).
+- Interpret: its stack accesses are `[x9, w10, sxtw #3]` through a copy of sp with a register index, so
+  giving x9 the frame's knowledge would not drop them (the index is unknown). Each turn of the dispatch
+  makes three kept-page checks (bytecode, jump table byte, stack), each a shift, a compare with a spilled
+  kept page and a branch; the untagging of the switch's target and a 75 entry `br_table` are on the path
+  too. Why removing the permission check takes it from about 9 to about 3 times native is still not
+  explained; it needs an instruction-level profile (`sample` gives none; Instruments' counters or `perf`
+  in a Linux VM).
+- fib: per call about 150 instructions in wasmtime against 19 natively. In the code: Cranelift's own
+  save of ten callee-saved registers, loads of the two imported memories' bases (two loads each) and the
+  fixed values, the entry stop check, loading x19, x20, x29, x30 from the block and storing them back
+  before every call, the frame check of the new frame (about 10), the alignment check, four guest stack
+  stores and loads each with a 64-bit bounds check (add, compare, select), NZCV worked out and stored
+  before the call (about 17), and the return check with x30 untagged (4). Measured, A/B, load 10 to 19,
+  best of 3, seconds: leaving out the flags written before calls 2.39 / 2.64 (base) against 2.64 / 3.09;
+  leaving out the frame check 2.42 / 2.80; comparing x30 before untagging it in the return check 2.73 /
+  2.69 (new) against 3.04 / 2.73 (old). None measurable, so none kept. With no check at all fib is 4.7 to
+  5.0 times native, so the aim of 4 needs a cheaper call even without checks: the likely cost is the
+  chain of stores and loads through the thread block that every call makes for the guest's callee-saved
+  registers (caller writes x19 to the block, callee reads it there to save it on the guest stack, and the
+  same back). Next to try: pass x19 to x30 as parameters and results (the plan's tuning number); it
+  changes the convention of every look-ahead, the dispatcher and both runners.
+- Sort: the same costs per call as fib, plus a call through a register (the dispatcher's table lookup)
+  to the comparison at every step.
+- 64 bit guest memory: a 32 bit memory measured 10 to 27% faster in wasmtime (see step 2) and frees the
+  bound and Spectre-guard registers in every loop; the owner's call.
+
+S1, third run (commits 1f7dfee, 86f24d5):
+- Interpret's permission cost found and removed. Counting kept-page misses (a counter in the thread
+  block's padding, not committed) showed every one of interpret's 1.17 billion checked accesses missing:
+  the kept page needed the page after it to allow the access too, and the interpreter's stack sits on the
+  top page of the stack and its byte code and jump table on the last page of the blob, each followed by a
+  page that allows nothing. So the fast test failed every time and the exact test ran. Matrix had 56
+  million misses (its column walk moves to a new page every 5.3 turns), sieve 53 million.
+- What is kept now (`code.rs` `keep_pages`, `full.rs` `check`): per kept key two locals, the first
+  address of a run of pages that allow the access and the room in it. The check is `address - low <u
+  room` (a subtract, a compare and a branch, as before); nothing kept is room 0, which nothing passes.
+  After an access passes the full check (fast or exact), the run is that page and the pages after it that
+  allow the same kind, up to eight, found with one 8 byte load of the table and a count of trailing zeros;
+  room is the run's length less 31 (the longest access is 32 bytes), so an access that starts in it ends in
+  it. Faults stay exact: anything outside the run takes the full check. The kept run is forgotten where the
+  kept page was. Misses after it: interpret 4,003, matrix 11 million, search 14 thousand.
+- Registers that are dirty when a loop is entered and that its own code neither reads nor writes are
+  written back to the thread block just before the loop, so the loop's slow paths no longer keep them
+  alive (`Plan::written_before`; the backward analysis counts them as needed on the edges that enter the
+  loop, so the locals hold their true values there). Matrix 0.643 to 0.621 s, search 0.45 to 0.43 s, others
+  within noise (A/B in one session, two rounds each, best of 2, load 8 to 11).
+- The check of a kept run reads the table's place and length from the module's globals instead of the
+  piece's locals, so loops do not keep them in registers for a check that rarely runs. A/B, two rounds,
+  load 8 to 11: matrix 0.597 to 0.555 s, search 0.42 to 0.35 s, interpret and sieve unchanged.
+- Tried and not kept: one kept page with the meaning "this page allows it" and a test that the access
+  does not run past the page (one local): A/B against the runs, load 7 to 14, two rounds: matrix 0.48 / 0.55
+  against 0.62 / 0.53 s, search 0.42 / 0.42 against 0.41 / 0.35, interpret 0.76 / 0.76 against 0.67 / 0.59,
+  sieve 0.82 / 0.77 against 0.83 / 0.66. Writing the slow paths' pc from the load address global instead
+  of the local: matrix 0.547 to 0.594 s, interpret 0.57 to 0.61 (load 6 to 10), so reverted.
+- Checked by breaking on purpose: a run one page too long fails `tests/checks.rs`
+  `loops_running_onto_a_forbidden_page`; leaving out the stores before loops (analysis unchanged) fails
+  layer 2 within 300 cases.
+- Benchmarks after 1f7dfee (`WC_BENCH_VARIANTS=1,5`, best of 3, load 6 to 18; times native, every check /
+  no check; Chrome first run): fib wasmtime 6.67 / 5.12, Chrome 5.63 / 4.67; sieve 1.58 / 1.20, Chrome 1.39
+  / 0.99; hash 0.96 / 0.93, Chrome 0.91 / 1.17; sort 4.11 / 3.33, Chrome 3.31 / 2.88; interpret 3.82 / 2.90,
+  Chrome 3.87 / 2.04; matrix 7.74 / 2.65, Chrome 4.87 / 11.3; walk 0.8 to 1.0; search 2.61 / 1.55, Chrome
+  2.12 / 7.26. Size: 340,588 bytes of WebAssembly (70.4 per byte of code), 70,878 gzipped.
+- After 86f24d5, every check only (best of 3, load 24 to 50, so noisier): sieve wasmtime 1.61, Chrome 1.43;
+  hash 1.00 / 1.00; interpret 4.12 / 4.25; matrix 7.26 / 3.99; search 3.00 / 3.06.
+- Against the second run: interpret 9.3 to about 3.8 to 4.1 in both engines; search in wasmtime 3.7 to
+  2.6 to 3.0; matrix worse, wasmtime 4.9 to about 7 and Chrome 2.6 to about 4 to 5 (native matrix 0.076 to
+  0.080 s in both sessions). Matrix's inner loop spills (see the second run's notes); two locals per kept
+  key instead of one add to it. The one-local variant above did not measure better for matrix within
+  the noise, and is worse for interpret and search.
+- Calls (fib, sort), why passing more registers cannot help in wasmtime: a test module
+  (`pyro-parked/wcontainers-scratch/translator/s3/cc/cc.wat`, a function of 14 i64 parameters and 14
+  results, compiled by wasmtime 49) shows Cranelift passes only the first four parameters in registers (x4
+  to x7, after the two instance pointers in x2 and x3) and the rest on the stack, and returns six results in
+  registers and the rest through memory. Our pieces already pass six (x0 to x3, sp, the expected return), so
+  sp and the expected return already go through the stack on every call; x19 to x30 as parameters would
+  be stores and loads to the stack instead of to the thread block, the same work. fib's remaining cost
+  per call in wasmtime (machine code of `fib`, function 9): the engine's stack limit check (5
+  instructions), its save and restore of ten callee-saved registers (12 instructions; they hold the
+  instance, the thread block, the state memory's base, the load address, the permission table's place and
+  length, the guest memory's base and the expected return, all live across the guest's call), the stack
+  arguments, the four guest stack stores and loads each with a 64 bit bounds check (add, compare, select:
+  24 instructions; a 32 bit guest memory would remove them, the owner's call), and x19, x20, x29, x30
+  through the thread block (about 15 loads and stores). With every check off fib is 5.1 times native in
+  wasmtime and 4.7 in Chrome in this run, so the aim of 4 is out of reach without a cheaper call
+  convention in the engine or a 32 bit guest memory. Tried and not kept: in pieces that call, reading
+  every fixed value from the module's globals at each use instead of copying them into locals. fib 2.42 /
+  2.41 s against 2.41 / 2.46, sort 1.44 / 1.48 against 1.50 / 1.47 (A/B, load 70 to 160, so only a rough
+  answer); the machine code shows why: the piece still saves all ten callee-saved registers, because
+  Cranelift merges the reads of an immutable global into one value that lives across the calls anyway.
+
+S1, fourth run (no code change kept; measurements and two experiments):
+- Where each check's cost sits now, wasmtime, commit 5cac63e, best of 3, load 12 to 17 (every check / no
+  stop check / no permission check / no return check / no check, times native): matrix 7.39 / 5.14 / 2.72 /
+  7.62 / 2.66; interpret 3.78 / 3.69 / 2.88 / 4.09 / 2.80; fib 6.25 / 6.33 / 6.35 / 6.80 / 6.01; sort 4.05 /
+  3.74 / 3.31 / 3.56 / 2.95; sieve 1.51 / 1.45 / 1.25 / 1.58 / 1.24 (native sieve 0.442 s). So in matrix and
+  interpret almost all of the checks' cost is the permission check; in fib the checks cost about 4% and the
+  call itself is the cost.
+- Matrix in numbers: n = 96, 300 rounds, 265 million turns of the 6 instruction inner loop; native 0.29 ns a
+  turn, no check 0.77 ns, every check 2.1 ns. Kept-run misses (11 million, one per 24 turns) account for
+  about 2 instructions a turn; the rest is the two kept-run checks per turn and the spills they cause (the
+  inner loop is about 56 instructions in wasmtime, 12 of them stores to its own stack and 10 loads, see the
+  second run's notes). The way to the aim is the proof over the loop's range (below): with it the loop is
+  the no-permission loop, 2.7 in wasmtime.
+- Tried and not kept: (a) registers the header of a loop sets before reading them (x6, x7 in matrix) written
+  back at every jump back and before the loop, so they are no longer alive across the jump back. The
+  machine code shows the two stores and x6, x7 gone from the spills, but the loop still spills the same
+  amount (other values took the registers). A/B, two rounds alternating, load 5 to 19, seconds: matrix 0.665
+  / 0.554 against 0.609 / 0.552, sieve 0.884 / 0.672 against 0.756 / 0.676, search 0.444 / 0.350 against
+  0.354 / 0.348, interpret 0.816 / 0.600 against 0.601 / 0.565. No gain. (b) The kept runs in mutable globals
+  of the module instead of locals (so they are not loop values): matrix 0.529 s (unchanged), sieve 1.92,
+  search 3.54, interpret 4.40 times native (all worse, load 6). Patch of (a):
+  `pyro-parked/wcontainers-scratch/translator/s4/writeback.patch`. (c) The flags left out of the write back
+  before calls (wrong, only to measure): fib every check / no check, seconds, wasmtime 2.75 / 2.14 against
+  2.40 / 2.00 with them, Chrome 2.21 / 1.96 against 2.15 / 1.88; sort wasmtime 1.52 / 1.15 against 1.42 /
+  1.15, Chrome 1.11 / 0.99 against 1.16 / 0.98 (one round each, load 17 to 26). No gain in either engine,
+  so the flags are not where fib's time goes.
+- fib against the toy, measured again today in wasmtime 50 CLI (toy modules from translator-bench/out,
+  compiled at opt-level 2, process start included, best of 3, native 0.365 s, load 7.5 to 12): toy
+  `args4+check` (return check only, 32 bit memory, registers in module globals, flags never carried across
+  calls, no permission check) 1.25 s, 3.4 times native; `args4+check+flag@loops+callers` (adds the stop check
+  at loops and at entries of callers) 1.48 s, 4.05; `locals+check` 1.53 s against `locals+check+mem64` 1.60
+  s (the same with a 64 bit memory: 4% slower). So in wasmtime even the toy's call shape is at 4 once it has
+  the stop check the plan requires, before a 64 bit memory, permission checks or flags kept across calls.
+  Ours: 6.0 with no check, 6.25 with every check (this session). The toy figures in Chrome (2.55 to 2.72 times
+  native, `out/poll-results.txt`, load 16) were not measured again.
+
+S1, fifth run (commits dc7af11, 98f61b7, c7b40ab, 68cff43):
+- The proof over a loop's range (`full/proof.rs`), the fourth run's plan for matrix. A loop that makes no
+  call and no system call and holds no switch is looked at over its own blocks (not those of loops inside
+  it). A register written there at one instruction only, by adding a constant or a register the loop does
+  not write (add/sub, or pre/post indexing), moves by a fixed step at most once a turn. An exit at a block
+  every turn passes, a compare (subs/cmp with an immediate or a register the loop does not write) or
+  cbz/cbnz on such a register, bounds the turns: "not equal" with step 1 or -1 (modulo the width), or an
+  ordered condition (lo, ls, hi, hs, lt, le, gt, ge) stepping toward the bound. Each access checked exactly or
+  as a group whose base and index are such registers (one of them moving, or neither) covers a range of
+  addresses over the turns. At the loop's entry the translated code works out the turns and every range,
+  and looks up every page of each range in the permission table (eight table bytes at a time). When all
+  allow the access it runs a copy of the loop with no check for those accesses; otherwise the loop runs with
+  its checks, so faults stay exact. Anything that could wrap (a 32 bit index or counter passing its limit,
+  steps above 2^24, more than 2^32 turns, addresses outside the table) makes the proof fail, never pass.
+- Where the copy lives matters for wasmtime. With both copies in one function, matrix stayed at 4.5 to 5.4
+  times native: Cranelift's register allocator moved values that live through the loop (x0 to x3, sp, the
+  expected return, kept runs of outer loops) between registers and its stack at every turn (7 to 10 loads
+  and stores a turn, seen in the machine code), even though the copy itself is 15 instructions. Trapping in
+  the checked copy (only to measure) gave 2.88. So the checked copy is now only in the loop's loop piece: the
+  function runs the proof and either the copy without checks or a tail call into the loop piece, which holds
+  both copies. A stop at a jump back now writes back and goes straight on in the loop piece, whose entry
+  check calls the stop hook (loop pieces always check the flag at entry), so the loop has no call that
+  returns into it. Registers a loop neither reads nor writes are no longer kept in locals through it: they
+  are loaded from the thread block on each edge leaving it (the dirty ones are already written back before
+  it). In this case Cranelift forwarded the stored value past the loop anyway, so that part did not change
+  matrix, but it is kept as the cleaner rule (it did not slow anything measured).
+- Loops holding other loops are proven too (sieve's outer loop): only accesses and register changes in the
+  loop's own blocks count; the copy is used only when every loop inside has a loop piece, so a stop
+  anywhere inside carries on where a proof is made again.
+- Measured, wasmtime, best of 3 (times native, every check): matrix 7.4 (fourth run) to 3.00 and 3.09
+  (load 5 to 8; 2.63 with no check), sieve 1.69 to 1.42 with outer loops proven (load 8), search 2.9 to 1.75
+  to 2.0, hash 1.0. Chrome (first run in the instance, load 5 to 9): matrix 2.11, search 1.73, sieve 1.32,
+  hash 1.00.
+- Full benchmark run at 98f61b7 (before outer loops were proven), best of 3, load 4 to 12, every check / no
+  check: fib wasmtime 6.02 / 5.19, Chrome 5.16 / 4.71; sieve 1.69 / 1.25, Chrome 1.32 / 0.99; hash 0.98 /
+  0.97, Chrome 1.00 / 1.59 (no check has no stop to move to V8's optimised code); sort 4.12 / 3.34, Chrome
+  3.31 / 2.80; interpret 3.81 / 2.92, Chrome 4.18 / 2.19; matrix 3.00 / 2.63, Chrome 2.11 / 11.3; walk 0.92
+  to 0.97; search 1.75 / 1.81, Chrome 1.73 / 9.2. Size: 348,702 bytes of WebAssembly (72.1 per byte of
+  code), 74,679 gzipped, wasmtime compile 28 ms.
+- Seen and not explained: search with only the permission check left out is 5.8 times native in wasmtime,
+  also at the fourth run's commit 50908cb (so not from this run), while with no check at all it is 1.8. Only
+  a measuring variant; its machine code for the inner loop is tight, so the time is elsewhere.
+- Tests: layer 2 has a new chunk, a walk: a counted loop (every counter form above, 32 and 64 bit, the
+  compare before or after the change) over memory through x18, moving its base by indexing or an add, or an
+  index read as uxtw, sxtw or lsl, shifted or not, stepping by an immediate or a register, starting near
+  2^32 or 2^31 so some wrap, in the area or walking forward onto the page after the blob. `programs/walks.c`
+  (nested counted loops, one running onto the page after the blob) matches Linux at every level, in
+  wasmtime and Chrome, and full matches none. Checked by breaking on purpose: a proof that always passes
+  fails layer 2 and `walks.c`; a range one turn short fails layer 2 within 15 cases (seeds 41, 42).
+
+- After c7b40ab (outer loops proven), every check, best of 3, load 7.5 to 10.6, wasmtime / Chrome first run:
+  sieve 1.44 / 1.15, matrix 2.94 / 2.02, search 1.70 / 1.88, hash 0.97 / 0.97, interpret 3.74 / 3.89. Size
+  350,392 bytes of WebAssembly (72.5 per byte of code).
+
+S1, sixth run (commits 93b955e, ceaf05f; A/B runs alternate the two builds in one session, best of 3):
+- Fewer argument registers passed (the plan's tuning number, `code::ARGUMENTS`). The machine code showed
+  wasmtime passing only the first four parameters of a piece in registers (sp and the expected return went
+  through its stack on every call), and V8 giving back only two results in registers (x2, x3 and sp went
+  through its stack on every return; V8 also has no callee-saved registers, so every value live across a
+  call is spilled and reloaded). Now x0 and x1 are passed; x2 and x3 live in locals like x4 and up, written
+  back and loaded only where needed. Seconds, every check, four against two, three rounds at load 10 to 26:
+  fib wasmtime best 2.40 against 2.09, Chrome 2.03 against 1.92; sort wasmtime 1.39 against 1.26, Chrome
+  1.12 against 1.09. One argument register against two (two rounds, load 8 to 25): fib the same (2.00 /
+  2.16 against 2.07 / 2.15 s), sort worse (wasmtime 1.27 / 1.38 against 1.26 / 1.28, Chrome 1.17 / 1.20
+  against 1.10 / 1.15), so two. Interpret pays a little for it (four against two, two rounds, load 7 to 11:
+  wasmtime 0.551 / 0.553 against 0.572 / 0.575 s, Chrome the same); matrix unchanged.
+- Calls and jumps through a register look up the piece in place (`full.rs` `look_up`, `call_looked_up`) and
+  call it with `call_ref`, going through the dispatcher only when the table has no piece there. Before, every
+  such call was a call of the dispatcher, which tail called the piece. Sort (its comparison is called through
+  a register), two rounds, load 10 to 16: wasmtime 1.34 / 1.32 to 1.155 / 1.25 s, Chrome unchanged (1.15 /
+  1.20 to 1.14 / 1.20).
+- Tried and not kept: the dispatcher writing `pc` only on its slow path (sort unchanged, 1.265 / 1.265
+  against 1.265 / 1.254 s, load 14 to 24).
+- Full benchmark run at ceaf05f (`WC_BENCH_VARIANTS=1,3,5`, best of 3, load 6 to 13; times native, every
+  check / no permission check / no check; Chrome first run in the instance): fib wasmtime 5.15 / 4.52 / 3.86,
+  Chrome 4.74 / 4.58 / 4.25; sieve 1.47 / 1.19 / 1.19, Chrome 1.17 / 0.97 / 0.95; hash 0.96 / 0.96 / 0.99,
+  Chrome 0.97 / 0.97 / 1.54 (no check has no stop to move to V8's optimised code); sort 3.21 / 2.64 / 2.49,
+  Chrome 3.15 / 2.92 / 2.51; interpret 4.08 / 3.24 / 3.00, Chrome 4.40 / 2.40 / 2.29; matrix 2.90 / 2.58 /
+  2.52, Chrome 2.10 / 2.25 / 12.2 (as hash); walk 0.78 to 0.91; search 2.06 / 5.78 / 2.02, Chrome 1.94 / 2.03
+  / 10.7. Size: 340,454 bytes of WebAssembly (70.4 per byte of code), 75,696 gzipped, wasmtime compile 24
+  ms. Interpret in Chrome reads 4.2 to 4.4 in every session of this run, with two or four arguments alike,
+  against 3.89 in the fifth run's last measurement.
+
+S1, seventh run (commit bd4adcf; A/B runs alternate the two builds in one session, in a clone in scratch so
+the checkout stays free: `pyro-parked/wcontainers-scratch/translator/s7/ab.sh`):
+- A switch's case is worked out from the jump's register as it is, and the target is untagged only on the
+  path where no case is taken (`full.rs` `table_jump`). A tagged value never lands on a case (a top byte that
+  is not zero puts it far above every case; one with bit 55 set is unchanged by untagging), so it still
+  reaches the lookup untagged. wasmtime's dispatch in interpret loses the four untagging instructions (seen in
+  the machine code); V8 still works out the untagged value before its jump table. A/B interpret, every
+  check, three rounds, best of 3, load 7 to 18, seconds, before against after: wasmtime 0.606 / 0.584 /
+  0.599 against 0.569 / 0.838 (load 17) / 0.593; Chrome 0.623 / 0.681 / 0.642 against 0.630 / 0.647 /
+  0.654. Kept: less work, about 2% in wasmtime, no change in Chrome.
+- Tried and not kept: the module's own copies of the fixed values made mutable and read again into their
+  locals after every call, so that no engine keeps them across a call. wasmtime still saves all ten
+  callee-saved registers (Cranelift saves every one the function uses anywhere); V8 spills two values at
+  entry instead of five. A/B, three rounds, best of 3, load 9 to 17, before against after: fib wasmtime
+  2.073 against 2.143 s, Chrome 1.914 against 1.964; sort wasmtime 1.134 against 1.100, Chrome 1.079 against
+  1.064. Mixed and within noise. Patch: `s7/mutable.patch`.
+- The floor of a call under the plan's rules (`s7/floor`: `fib.wat`, `variants.py`, `chrome.mjs`). fib as
+  bench.c's -O2 code has it, written by hand in WebAssembly with only what the plan requires of a full piece
+  and nothing of ours: x0, x1 and sp passed and the expected return as a parameter; x19, x20, x29, x30 in
+  the thread block at the piece's edges and around the call; a 64 bit guest memory; the stop check at entry
+  and at the jump back; the frame and alignment check when sp moves down; NZCV packed into the block
+  before the call; sp compared after the call; the return check with x30 untagged. Then the same with one
+  part left out (only to measure). fib(42), native 0.39 to 0.41 s in this session:
+  - wasmtime 49 (CLI, memory may not move, as the runner), best of 3, load 9 to 15: every part 1.86 to 1.91
+    s (4.6 to 4.8 times native); without the stop checks 1.78; without the frame and alignment check 1.73;
+    without the flags 1.74; without the return check 1.75; with a 32 bit guest memory 1.90 (no gain here);
+    without x19 and x20 through the block around the call 1.85; with no check at all 1.57 (3.9). Its machine
+    code has the same engine part as ours: the stack limit check and the save of all ten callee-saved
+    registers on every call.
+  - Chrome 157, four runs in one instance, load 6 to 12: every part 1.72 s (4.3); any one check left out
+    1.31 to 1.37; 32 bit memory 1.83; no check 1.26. V8 inlines this fib into itself (its code holds the
+    callee's body at the call) as deep as its size budget allows, so one check more or less moves it by
+    25%. With `--js-flags=--no-wasm-inlining`: every part 2.30 s (5.7), no frame check 1.88, no check 1.62
+    (4.0).
+  - Ours in the same session (full benchmark below): wasmtime 2.06 s (5.22), Chrome 1.90 s (4.82).
+  - So in wasmtime the aim of 4 for fib with every check is below what the plan's call shape itself costs:
+    4.7 with every part, 3.9 with no check at all. Ours is about 10% above that floor. In Chrome the floor is
+    4.3 when V8 inlines the recursion and 5.7 when it does not; whether V8 inlines any of ours was not
+    checked.
+- Full benchmark at bd4adcf (`WC_BENCH_VARIANTS=1,3,5`, best of 3, load 6 to 11; times native, every check /
+  no permission check / no check; Chrome first run in the instance): fib wasmtime 5.22 / 4.58 / 3.90, Chrome
+  4.82 / 4.60 / 4.36; sieve 1.40 / 1.20 / 1.19, Chrome 1.18 / 0.98 / 0.95; hash 0.98 / 0.99 / 0.99, Chrome
+  0.99 / 0.99 / 1.45 (no check has no stop to move to V8's optimised code); sort 3.29 / 2.68 / 2.52, Chrome
+  3.30 / 2.76 / 2.54; interpret 3.86 / 2.68 / 2.59, Chrome 4.31 / 2.43 / 2.03; matrix 3.11 / 2.56 / 2.50,
+  Chrome 2.07 / 2.06 / 11.0 (as hash); walk 0.88 to 0.94; search 1.86 / 5.57 / 1.97, Chrome 1.86 / 1.94 /
+  10.1. Size: 340,508 bytes of WebAssembly (70.4 per byte of code), 75,704 gzipped, wasmtime compile 24 ms.
+  Raw output: `s7/bench-bd4adcf.txt`.
+
+S1, eighth run (commits ce0fb6b, 33dea4b; A/B runs alternate the two builds in one session, in clones in
+scratch: `pyro-parked/wcontainers-scratch/translator/s8/ab.sh`, best of 3 unless said):
+- Bounded indices proven (`full/proof.rs` `index_bound`). An access whose base the loop does not write and
+  whose index does not move by a fixed step is proven when the index is bounded where it is read: set
+  earlier in its block by a load of at most 4 bytes that zero extends, or, when the block does not set it,
+  bounded by an unsigned comparison with a constant (lo or ls) on the only edge into the block; for a 32 bit
+  comparison and a 64 bit read, what set the register before the comparison must be such a load. The range
+  is the base up to the base plus the largest index shifted, and needs no counting exit (accesses that move
+  still need one). Loops holding a switch are proven too, unless a case of the switch jumps back, because a
+  stop there carries on in place without proving again. In interpret this proves the switch's table byte
+  (`cmp w14, #0xb; b.hi; ldrb w15, [x8, x14]`): the dispatch makes two kept-run checks instead of three
+  (seen in wasmtime's code: the table byte's load keeps only the engine's own bound).
+- Measured first by leaving that one check out (only to measure; two rounds, load 5 to 8): interpret
+  wasmtime 0.558 / 0.560 against 0.531 / 0.566 s, Chrome 0.632 / 0.629 against 0.548 / 0.549. The proof
+  itself, two rounds, load 8 to 16: interpret wasmtime 0.587 / 0.558 to 0.529 / 0.523 s, Chrome 0.668 /
+  0.638 to 0.570 / 0.573; matrix and search unchanged.
+- Tests: layer 2 has a new chunk, a lookup: a counted loop whose access is a base plus an index loaded each
+  turn from a byte table in the blob or worked out (the counter exclusive-ored in), with or without a guard
+  (b.hi or b.hs after a 32 or 64 bit compare), read as uxtw, sxtw or lsl, shifted or not, near the end of
+  the blob or in the area, sometimes followed by a switch on a byte of the table; in "tight" cases the
+  largest index's access starts exactly on the page after the blob. Checked by breaking on purpose: a range
+  covering only the first entry fails layer 2 (seeds 81, 82, 300 cases each); a range one entry short
+  passed 1200 cases before the tight cases were added and fails within 400 cases after (seeds 81 to 83).
+- Tried and not kept: (a) in `keep_pages`, the count of trailing zeros worked out with a count of leading
+  zeros: V8 (node 26) calls out of line for i64.ctz on arm64 (`wasm::word64_ctz` in its code), which spills
+  the loop around the slow path; with clz the call is gone and V8's hit path in interpret's dispatch is
+  shorter, but A/B two rounds, load 5 to 9, sieve, interpret, matrix and search did not move beyond noise
+  (interpret Chrome 0.706 / 0.638 against 0.641 / 0.633 s). Patch `s8/clz.patch`. (b) Only to measure: the
+  exact check without its clamp to the table's length and the table's offset (3 of its instructions):
+  sort, wasmtime, three rounds, load 14 to 17, best 1.115 against 1.092 s, about 2%. So in sort the exact
+  check costs its table load and test, not those. (c) Only to measure: the proof at a loop's entry without
+  its table lookups (ranges still worked out): matrix wasmtime 0.240 / 0.241 against 0.224 / 0.231 s,
+  Chrome 0.162 / 0.161 against 0.157 / 0.158; sieve wasmtime 0.644 / 0.633 against 0.551 / 0.624 (load 7
+  to 17, noisy). Matrix's inner loop is entered 2.8 million times and proven each time; keeping what was
+  proven across entries (forgotten at stops, like a kept run) would save at most these few percent.
+- fib in Chrome: V8 does not inline our fib piece (its code, node 26 with `--no-liftoff`, keeps both
+  recursive calls as calls; the piece is about 1,480 lines of V8 machine code), while it inlined the
+  hand-written floor. Ours (4.76) is below that floor without inlining (5.7), and the floor with inlining
+  is 4.3, above the aim of 4.
+- Full benchmark at 33dea4b (`WC_BENCH_VARIANTS=1,3,5`, best of 3, load 6.5 to 12; times native, every
+  check / no permission check / no check; Chrome first run in the instance): fib wasmtime 5.22 / 4.53 /
+  3.87, Chrome 4.76 / 4.58 / 4.29; sieve 1.43 / 1.21 / 1.21, Chrome 1.21 / 0.99 / 0.96; hash 0.97 / 0.99 /
+  0.98, Chrome 0.98 / 1.01 / 1.51 (no check has no stop to move to V8's optimised code); sort 3.30 / 2.65 /
+  2.51, Chrome 3.22 / 2.74 / 2.55; interpret 3.51 / 2.67 / 2.60, Chrome 3.92 / 2.39 / 2.03; matrix 3.06 /
+  2.68 / 2.64, Chrome 2.11 / 2.08 / 11.4 (as hash); walk 0.92 to 0.96; search 2.00 / 5.63 / 2.00, Chrome
+  1.99 / 2.02 / 10.5. Size: 353,890 bytes of WebAssembly (73.2 per byte of code), 78,146 gzipped,
+  wasmtime compile 24 ms. Raw output: `s8/bench-33dea4b.txt`.
+
+S1, what remains after the eighth run (aims with every check, in both engines):
+- Met: sieve, hash and search in both engines, matrix in Chrome. Matrix in wasmtime sits at its aim (2.90 to
+  3.11 over the last three runs, native 0.076 to 0.082 s), so noise puts it either side; the proof at each
+  entry of its inner loop is a few percent of it (see (c) above), the next thing to try for it.
+- fib (aim 4): wasmtime 5.22, Chrome 4.76. Shown in the seventh run: the plan's call shape written by hand
+  is 4.7 times native in wasmtime with every part the plan requires (3.9 with none; ours with no check is
+  3.87, the same), and 4.3 in Chrome only when V8 inlines it (5.7 when not; V8 does not inline ours). So 4
+  cannot be reached in either engine without breaking a rule (registers outside the passed ones in the
+  thread block at calls, the stop check at entries, the frame check, exact flags at a fault in the callee,
+  the return check). Ours is about 10% above the floor in wasmtime; where that goes is not traced.
+- Sort (aim 2.5): wasmtime 3.30, Chrome 3.22; no check 2.51 / 2.55, so even with no check it is at the aim,
+  and with no check our call shape matches the hand-written floor in fib in wasmtime (3.87 against 3.9). The permission checks cost 0.65
+  of a native run: per comparison the callee's two loads are exact table checks, because the plan relies
+  on nothing proven before a call after it. The check's clamp and table offset are 2% of it (b above); the
+  rest is the table load and test each access needs. No floor written by hand for sort itself yet.
+- Interpret (aim 3): wasmtime 3.51, Chrome 3.92; no permission check 2.67 / 2.39. Left: two kept-run checks
+  per dispatch (a subtract, a compare and a branch, with the kept run spilled to the stack in both
+  engines), on the byte code (an index from data: pc is incremented or loaded from the byte code) and on
+  the interpreter's stack (an index from data, sign extended). Neither index has a bound the code shows, so
+  neither can be proven ahead; the kept run is the cheapest exact check found. Not measured: a hand-written
+  floor of the dispatch with those two checks.
+- Not explained, only in a measuring variant: search with only the permission check left out is 5.6 times
+  native in wasmtime, against 2.0 with no check.
+- 32 bit guest memory: the owner's call; it made no difference to the hand-written fib in either engine.
+- Not run yet: the pass bars for layer 1 and layer 2 (long runs for the orchestrator).
+
 ## Done
 
 - `wcontainers-arm64`: our own `Instruction` type; `decode` wraps yaxpeax-arm 0.5.0 and settles from the raw
@@ -35,9 +523,10 @@ far from the plan's hopes on call heavy and memory heavy code; see "Next".
   `contract` is the module contract: import names, hooks, trap kinds, warning reasons, permission table bits,
   description section. Look-ahead none follows direct control flow from the starts; every instruction reached
   is its own piece.
-- Piece convention: params x0 to x3, sp, expected return address; results x0 to x3, sp. Everything else in
-  thread module globals. Returns check x30 against the expected address, else leave through "go to address"
-  (an exception the bottom loop catches).
+- Piece convention: params x0 and x1 (`code::ARGUMENTS`, four up to S1's sixth run), sp, expected return
+  address; results x0, x1, sp. Everything else in the thread block (since S1). Returns check x30 against the expected address, else leave through "go to
+  address" (an exception the bottom loop catches). Since S1 the expected address's low bit
+  (`contract::FLAGS_WANTED`) says whether the caller reads the flags after the call.
 - Lookup: one table slot per 4 bytes of code (design one of the two). The second design is not built.
 - Permission check (one byte per page, with next-page bits) and stop check are already in look-ahead none.
 - `wcontainers-translator-test`:
@@ -178,7 +667,8 @@ contract's bits, in both runners).
     length) are copied into locals at its entry, so the engine can keep them in registers instead of
     reloading them through the import on every check (wasmtime loads an imported global through a
     pointer).
-  - `translate_omitting` with `Omit { stop, permissions, returns }` leaves checks out, only to measure them.
+  - `translate_omitting` with `Omit { stop, permissions, returns }` leaves checks out, only to measure them
+    (since S1 public only with the crate's `measure` feature, which only the test tools turn on).
 - `wcontainers-arm64` additions: `Effects` and `Registers` (what an instruction reads and writes, found by
   running its meaning against a recording emitter, so there is no second copy of instruction logic),
   `Instruction::memory_access`, `habits::jump_table`, `condition_direct`, `untag` (now public; the check
@@ -263,12 +753,31 @@ contract's bits, in both runners).
 - Layer 2 (M2): 64 cases, seed 1, 8 on the CPU: 0 mismatches. 2000 cases, seed 7, 40 on the CPU, release:
   0 mismatches (22 s at load 3 to 4). Second M2 run, after this run's changes: 3000 cases, seed 11, 20 on
   the CPU, release: 0 mismatches (35 s at load 10 to 16). Pass bar (one million) not run.
+- Layer 2, S1 (every case also run at full stopping at every check), release: 500 cases seed 3, 2000 seed
+  5 (after kept pages), 2000 seed 9 (after the flags bit): 0 mismatches. Not yet the pass bar.
+- Layer 2, second S1 run, after loop pieces: 2000 cases, seed 13, 10 on the CPU, release: 0 mismatches,
+  308 faulted, 220 left to an address at full (37 s at load 22 to 57).
+- Layer 2, third S1 run, after kept runs and the write back before loops: 2000 cases, seed 17, 10 on the
+  CPU, release: 0 mismatches, 315 faulted, 211 left to an address at full (32 s at load 7 to 8).
 - Layer 2, third M2 run, with frames, sp accesses, groups and faults: 500 cases, seed 1, 60 on the CPU,
   release: 0 mismatches, 61 faulted, 40 left to an address. 20,000 cases, seed 21, 40 on the CPU,
   release: 0 mismatches, 2949 faulted (SIGSEGV, same at none, full and on the CPU where run), 2131 left
   to an address at full; 265 s at load 17 to 19. Found on the way (a generator bug, not ours): a store
   with write back whose transfer register is its base is CONSTRAINED UNPREDICTABLE, and the reference
   CPU raises SIGILL for it; the generator now keeps such registers apart, as layer 1 does.
+
+- Layer 2, fifth S1 run (with walks), release: 1000 cases seed 41, 40 on the CPU: 0 mismatches, 325
+  faulted; 1000 seed 43 (after outer loops): 0 mismatches, 379 faulted; 500 seed 31 (before walks): 0
+  mismatches; 5000 seed 47, 20 on the CPU, after outer loops: 0 mismatches, 1774 faulted, 380 left to an
+  address at full (77 s, load 8 to 10). Not yet the pass bar.
+- Layer 2, seventh S1 run, release: 2000 cases seed 71, 10 on the CPU: 0 mismatches, 666 faulted, 152 left
+  to an address at full (27 s, load 8 to 10). Not yet the pass bar.
+- Layer 2, eighth S1 run (with lookups), release: 300 cases seed 81, 12 on the CPU; 600 seed 84, 40 on the
+  CPU; 2000 seed 85, 10 on the CPU: 0 mismatches (seed 85: 658 faulted, 111 left to an address at full, 36
+  s at load 7 to 15). Not yet the pass bar.
+- Layer 2, sixth S1 run, release: 300 cases seed 61 and 2000 seed 63, 10 on the CPU (two argument
+  registers): 0 mismatches, 674 faulted; 2000 seed 65, 10 on the CPU (lookup in place): 0 mismatches, 668
+  faulted, 150 left to an address at full (30 s, load 13). Not yet the pass bar.
 
 ## Measurements
 
@@ -363,21 +872,7 @@ contract's bits, in both runners).
 
 ## Next
 
-1. Speed at full look-ahead (goal one). Machine code (wasmtime, hash and sieve loops) shows the loops
-   spilling. The main cause found: every register global is imported by the code modules, so each read or
-   write of one goes through a pointer loaded from the instance. Cranelift loads each such pointer once
-   and keeps it, so a loop whose slow paths write back many registers holds a pointer per register
-   alive and spills. Measured (wasmtime, best of 2, load 9 to 11, an experiment not kept): with the slow
-   paths of the stop and permission checks writing nothing back, matrix went from 7.7 to 5.6 times native
-   and sieve from 3.2 to 2.9; hash did not move. That bounds what keeping the registers that are not in
-   locals in the thread block (state memory, one base) instead of in imported globals could gain on loops;
-   it should also cut the cost of calls (fib: every call writes back and reloads x19, x20, x29, x30
-   through such pointers). That is a departure from the plan's "registers live in the instance's
-   globals" and touches the thread module, both emitters and both runners; not started. Other costs seen
-   in the same code: each guest memory access reloads the memory's base and length (the guest memory is
-   imported and may grow), and the checks' branches break the loop into several blocks. Ideas not tried:
-   dropping permission checks for accesses whose base moves by a known step in a loop (the plan's whole
-   function reasoning).
+1. Finish S1 (see "S1, what remains"): its aims are not met yet.
 2. Measure the second lookup design (M5 says settle it; nothing built yet).
 3. M3: every instruction.
 
@@ -416,10 +911,10 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
-- Two kinds of module per thread: a thread module (register globals, lookup table, unwind tag, bottom loop,
-  save and load state) and code modules (pieces only, importing the thread module's globals and table). The
-  plan has every module export run and save/load; here only the thread module does, so code loaded later
-  and split modules are all the same kind.
+- Two kinds of module per thread: a thread module (lookup table, unwind tag, bottom loop) and code modules
+  (pieces only, importing the thread module's table). The plan has every module export run and save/load;
+  here only the thread module exports run, and since S1 there is no save or load state at all (see S1), so
+  code loaded later and split modules are all the same kind.
 - A second memory, "state", shared, holds thread blocks (stop flag at 800) and the permission table, so the
   guest cannot reach them.
 - The permission check and the stop check are in look-ahead none from M0, so layer 1 can compare faults
@@ -473,9 +968,9 @@ contract's bits, in both runners).
   plain one is what the plan measured; an engine may in principle keep a plain load out of a loop, so
   `tests/smoke.rs` checks that a flag raised by another thread mid-loop is seen, at none and full, in
   wasmtime. Not yet checked mid-loop in Chrome.
-- After the stop hook says carry on, and after a system call, registers are loaded back from the globals
-  instead of being kept across the call (the abi's `Resume::Continue` says nothing changed). This is what
-  the plan's "loads its registers back" says, and it keeps registers out of callee-saved registers.
+- After a system call, and after the stop hook says carry on at a switch's jump back, registers are loaded
+  back from the thread block instead of being kept across the call (it keeps registers out of
+  callee-saved registers). Elsewhere since S1 a piece does not reload after carrying on: see S1.
 - A frame or group permission check that fails leaves to the instruction and carries on at none from
   there ("left to an address"), instead of working out the exact fault in the piece. Exact either way.
   For this the contract has a third unwind payload, `UNWIND_GO_TO_EXACT`, and the load code hook may be
@@ -507,6 +1002,40 @@ contract's bits, in both runners).
 - Vector registers, FPSR and FPCR at the start of a flat blob: the runners and the reference start v0 to
   v31 at zero, as Linux does at exec. The reference leaves FPSR and FPCR as its own process had them.
 
+- S1, approved by the orchestrator: registers that are not in locals live in the thread block in the state
+  memory, at their places in `RegisterBlock`, not in the instance's globals (the plan: "registers live in
+  the instance's globals"). There is no save or load state: the block always holds the registers when a
+  hook runs or `run` returns, and a runner sets registers by writing it.
+- S1: after the stop hook says carry on at a jump back, the thread goes on in a new call of a loop piece
+  of that loop (or of the piece itself when the loop starts at its entry) instead of going on in place
+  (the plan: "loads its registers back and continues"); at the entry check it goes on with nothing
+  reloaded. Both rest on `Resume::Continue` meaning nothing changed. Loop pieces are pieces the lookup
+  table does not hold (the plan has every piece in the table): only stop checks of their own function
+  enter them, so they may rely on what that function knows at the loop. They are not listed in the
+  description section either.
+- S1: the browser page raises the stop flag at 1, 2, 4, ... 1024 ms after the guest starts, so V8's
+  optimised code is used in long loops of functions entered once. A real browser host needs the same (or
+  any other early raises); wasmtime needs none.
+- S1: the plan's "whole function reasoning" for permission checks is a kept run of up to eight allowed
+  pages per base register and kind in loops without calls (see step 6 and the third run), and a proof over
+  the loop's range at its entry that picks a copy of the loop without those checks: for counted loops,
+  accesses that move by a fixed step (fifth run); for any loop without calls, accesses whose index a
+  comparison on the edge into the block, or the narrow load that set it, bounds, such as a switch's table
+  (eighth run). Loops whose switch can jump back are left out, because a stop there carries on in place.
+- S1: a proven loop's copy with its checks is only in its loop piece; the function tail calls into the loop
+  piece when the proof fails. Loop pieces check the stop flag at their entry, and a stop check at a jump back
+  to a loop with a loop piece writes back and tail calls it without calling the stop hook itself.
+- S1: registers a loop neither reads nor writes are kept in the thread block through it and loaded on the
+  edges leaving it (not for loops holding a switch).
+- S1: registers dirty at a loop's entry that the loop does not touch are written back before it (the plan
+  writes registers back only around calls, system calls, slow paths and the piece's edges).
+- S1: the low bit of a piece's expected return address says whether the caller reads the flags after the
+  call (`FLAGS_WANTED`); `BOTTOM_RETURN` changed from -1 to -2.
+- S1: pieces throw through a small function of their module (wasmtime makes a function that throws save
+  every callee-saved register), and read the imported values from the module's own globals.
+- S1: the contract requires a guest memory whose base never moves (the runner's wasmtime engine has
+  `memory_may_move(false)`).
+
 ## Shared crate (wcontainers-abi)
 
 - Added `Exit::AlignmentFault { address }` (one new variant, additive): a load or store through an SP that
@@ -517,3 +1046,6 @@ contract's bits, in both runners).
   fault. Later LDAR/STLR and exclusives on misaligned addresses will use it too.
 - Seen, not changed: `cargo clippy -p wcontainers-abi --all-targets -- -D warnings` fails on the abi's own
   layout test (`assertions_on_constants`, registers.rs line 79).
+- S1, first run: the CPU side kept one word for itself in the thread block's padding (offset 804). Since
+  the second run's loop pieces it does not: the CPU side uses no byte of the block outside the abi's
+  layout. No change to the shared crate in S1.

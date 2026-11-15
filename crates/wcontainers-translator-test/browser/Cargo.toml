@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wcontainers-abi = { path = "../../wcontainers-abi" }
-wcontainers-translator = { path = "../../wcontainers-translator" }
+wcontainers-translator = { path = "../../wcontainers-translator", features = ["measure"] }
 serde_json = "1"
 
 [profile.release]

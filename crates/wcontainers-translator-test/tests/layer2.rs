@@ -1,5 +1,6 @@
 //! Layer 2: random small programs give the same result at full look-ahead as at none, register by register
-//! and byte by byte in the same engine, and the same output as on the real CPU.
+//! and byte by byte in the same engine, also when the thread stops at every stop check and carries on, and
+//! the same output as on the real CPU.
 //!
 //! Knobs: `WC_LAYER2_CASES` (default 64), `WC_LAYER2_SEED` (default 1), `WC_LAYER2_NATIVE` (how many of the
 //! cases also run on the real CPU, default 8; each starts a container).
@@ -8,7 +9,9 @@ use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::layer2::{OUTPUT, assemble, program};
-use wcontainers_translator_test::programs::{native, reachable_memory, translated};
+use wcontainers_translator_test::programs::{
+    native, reachable_memory, translated, translated_stopping_everywhere,
+};
 
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -53,6 +56,18 @@ fn full_matches_none_and_the_cpu() {
             "memory at full against none"
         );
         assert_eq!(full_machine.count(Reason::UnsupportedInstructionReached), 0);
+        let (stopping, mut stopping_machine, stopping_registers) =
+            translated_stopping_everywhere(&blob, LookAhead::Full);
+        assert_eq!(stopping, none, "output at full stopping everywhere");
+        assert_eq!(
+            stopping_registers, none_registers,
+            "registers at full stopping everywhere"
+        );
+        assert!(
+            reachable_memory(&mut stopping_machine, &blob)
+                == reachable_memory(&mut none_machine, &blob),
+            "memory at full stopping everywhere"
+        );
         if full_machine.count(Reason::LeftToAddress) > 0 {
             left.set(left.get() + 1);
         }

@@ -1,13 +1,14 @@
 //! Code modules: the pieces of one translation, and the emitter for look-ahead none.
 
 use crate::contract::*;
-use crate::thread::{memarg, piece_ref, piece_type, registers, state_memory};
+use crate::state::{Slot, load_flag, store_flags};
+use crate::thread::{memarg, piece_ref, piece_type, state_memory};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, Encode, EntityType,
-    FunctionSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module, TableType,
-    TagKind, TagType, TypeSection, ValType,
+    FunctionSection, GlobalSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module,
+    TableType, TagKind, TagType, TypeSection, ValType,
 };
 use wcontainers_arm64::{Access, Emitter, Flag, Flags, Reg, Target, Trap, flag_value};
 
@@ -48,8 +49,11 @@ pub struct Translation {
     pub pieces: Vec<u64>,
 }
 
-/// How many registers a piece takes as parameters and gives back as results: x0 to x3 and sp.
-pub const PASSED: u32 = 5;
+/// How many argument registers, from x0 up, a piece takes as parameters and gives back as results.
+pub(crate) const ARGUMENTS: u32 = 2;
+/// How many registers a piece takes as parameters and gives back as results: the argument registers and
+/// sp.
+pub const PASSED: u32 = ARGUMENTS + 1;
 
 // Function indices: the hooks, then the dispatcher, then the pieces.
 pub(crate) const F_SYSCALL: u32 = 0;
@@ -59,42 +63,31 @@ pub(crate) const F_LOAD_CODE: u32 = 3;
 pub(crate) const F_WARN: u32 = 4;
 pub(crate) const F_TRAP: u32 = 5;
 pub(crate) const F_DISPATCH: u32 = 6;
-pub(crate) const F_FIRST_PIECE: u32 = 7;
+pub(crate) const F_UNWIND: u32 = 7;
+pub(crate) const F_FIRST_PIECE: u32 = 8;
 
-// Global indices: the runner's constants, then the thread's registers.
+// Global indices: the runner's constants.
 pub(crate) const G_LOAD_ADDRESS: u32 = 0;
 pub(crate) const G_SLOT_BASE: u32 = 1;
 pub(crate) const G_TABLE_BASE: u32 = 2;
 pub(crate) const G_THREAD_BLOCK: u32 = 3;
 pub(crate) const G_PERMISSIONS: u32 = 4;
 pub(crate) const G_PERMISSION_PAGES: u32 = 5;
-pub(crate) const G_FIRST_REGISTER: u32 = 6;
+
+/// Each of the six imported values above is copied into a global of the module's own, at this index plus
+/// the import's: wasmtime reads an imported global through a pointer, and a module's own directly.
+pub(crate) const G_OWN: u32 = 6;
 
 pub(crate) const MEMORY_STATE: u32 = 1;
 
-pub(crate) fn g_x(n: u8) -> u32 {
-    G_FIRST_REGISTER + u32::from(n)
-}
-pub(crate) const G_SP: u32 = G_FIRST_REGISTER + 31;
-pub(crate) const G_PC: u32 = G_FIRST_REGISTER + 32;
-pub(crate) fn g_flag(flag: Flag) -> u32 {
-    G_FIRST_REGISTER
-        + 33
-        + match flag {
-            Flag::N => 0,
-            Flag::Z => 1,
-            Flag::C => 2,
-            Flag::V => 3,
-        }
-}
-pub(crate) const G_TPIDR: u32 = G_FIRST_REGISTER + 37;
-pub(crate) fn g_v(n: u8) -> u32 {
-    G_FIRST_REGISTER + 40 + u32::from(n)
-}
+/// Where the dispatcher and the pieces of look-ahead none find the thread block.
+const BLOCK: Fixed = Fixed::Global(G_THREAD_BLOCK);
 
 // Parameter locals of every piece.
-pub(crate) const L_SP: u32 = 4;
-pub(crate) const L_RETURN: u32 = 5;
+pub(crate) const L_SP: u32 = ARGUMENTS;
+pub(crate) const L_RETURN: u32 = ARGUMENTS + 1;
+/// How many parameters a piece has: the passed registers and the expected return address.
+pub(crate) const PARAMETERS: u32 = PASSED + 1;
 
 /// Translate a blob from the given starts. `code` is where in the blob the code is; starts and every piece
 /// are blob offsets. The output never holds an absolute address.
@@ -125,8 +118,9 @@ pub fn translate_omitting(
             return Err(Error::BadStart(start));
         }
     }
-    let pieces = match look_ahead {
-        LookAhead::None => none_pieces(&blob_code, starts),
+    // The pieces the lookup table holds, and functions only pieces call, whose indices follow theirs.
+    let (pieces, others) = match look_ahead {
+        LookAhead::None => (none_pieces(&blob_code, starts), Vec::new()),
         LookAhead::Full => crate::full::pieces(&blob_code, starts, omit),
     };
     let index: BTreeMap<u64, u32> = pieces
@@ -142,11 +136,14 @@ pub fn translate_omitting(
     let mut code_section = CodeSection::new();
     functions.function(6);
     code_section.function(&dispatcher());
-    for function in pieces.values() {
+    functions.function(7);
+    code_section.function(&unwinder());
+    for function in pieces.values().chain(&others) {
         functions.function(0);
         code_section.function(function);
     }
     module.section(&functions);
+    module.section(&own_globals());
     module.section(&elements(&index));
     module.section(&code_section);
     module.section(&description(blob, look_ahead, pieces.keys()));
@@ -241,7 +238,7 @@ pub(crate) enum Fixed {
 impl Fixed {
     pub(crate) fn push(self, s: &mut InstructionSink<'_>) {
         match self {
-            Fixed::Global(g) => s.global_get(g),
+            Fixed::Global(g) => s.global_get(G_OWN + g),
             Fixed::Local(l) => s.local_get(l),
         };
     }
@@ -341,6 +338,49 @@ pub(crate) fn permission_exact(
         .local_set(fault_at);
 }
 
+/// The longest single access, in bytes (a pair of 128 bit registers).
+const LONGEST_ACCESS: i64 = 32;
+
+/// Keep the run of pages, from the allowed page in i64 local `page` and at most 8 long, that allow an access
+/// as `this` says: i64 locals `low` (its first address) and `room` (how far past `low` an access may start
+/// and still end within the run).
+pub(crate) fn keep_pages(
+    s: &mut InstructionSink<'_>,
+    table: Table,
+    page: u32,
+    this: u8,
+    low: u32,
+    room: u32,
+) {
+    s.local_get(page).i64_const(12).i64_shl().local_set(low);
+    // The table bytes of the page and the seven after it, when they are all in the table.
+    s.local_get(page).i64_const(8).i64_add();
+    table.pages.push(s);
+    s.i64_le_u().if_(BlockType::Result(ValType::I64));
+    let every = i64::from(this) * 0x0101_0101_0101_0101;
+    s.i64_const(every);
+    table.at.push(s);
+    s.local_get(page)
+        .i32_wrap_i64()
+        .i32_add()
+        .i64_load(memarg(MEMORY_STATE, 0, 0))
+        .i64_const(-1)
+        .i64_xor()
+        .i64_and()
+        // Bytes up to the first page that does not allow it, then the run's length in bytes.
+        .i64_ctz()
+        .i64_const(3)
+        .i64_shr_u()
+        .i64_const(12)
+        .i64_shl()
+        .else_()
+        .i64_const(4096)
+        .end()
+        .i64_const(LONGEST_ACCESS - 1)
+        .i64_sub()
+        .local_set(room);
+}
+
 pub(crate) fn types() -> TypeSection {
     let mut types = TypeSection::new();
     piece_type(&mut types); // 0
@@ -349,9 +389,10 @@ pub(crate) fn types() -> TypeSection {
     types.ty().function([ValType::I64, ValType::I32], []); // 3: memory_fault
     types.ty().function([ValType::I64], [ValType::I32]); // 4: load_code
     types.ty().function([ValType::I32, ValType::I64], []); // 5: warn, trap
-    types
-        .ty()
-        .function([ValType::I64; 7], [ValType::I64; PASSED as usize]); // 6: dispatcher
+    types.ty().function(
+        [ValType::I64; PARAMETERS as usize + 1],
+        [ValType::I64; PASSED as usize],
+    ); // 6: dispatcher
     types.ty().function([ValType::I32], []); // 7: unwind tag
     types
 }
@@ -380,10 +421,10 @@ pub(crate) fn imports() -> ImportSection {
         }),
     );
     imports.import(ENV, STATE, EntityType::Memory(state_memory()));
-    let global = |ty, mutable| {
+    let global = |ty| {
         EntityType::Global(GlobalType {
             val_type: ty,
-            mutable,
+            mutable: false,
             shared: false,
         })
     };
@@ -395,10 +436,7 @@ pub(crate) fn imports() -> ImportSection {
         (PERMISSIONS, ValType::I32),
         (PERMISSION_PAGES, ValType::I64),
     ] {
-        imports.import(ENV, name, global(ty, false));
-    }
-    for r in &registers() {
-        imports.import(THREAD, &r.name, global(r.ty, true));
+        imports.import(ENV, name, global(ty));
     }
     imports.import(
         THREAD,
@@ -422,46 +460,95 @@ pub(crate) fn imports() -> ImportSection {
     imports
 }
 
-/// Store the passed registers of a piece (or the dispatcher) into their globals.
-pub(crate) fn save_passed(s: &mut InstructionSink<'_>) {
-    for i in 0..4 {
-        s.local_get(i).global_set(g_x(i as u8));
+/// The module's own copies of the imported values.
+fn own_globals() -> GlobalSection {
+    let mut globals = GlobalSection::new();
+    for (g, ty) in [
+        (G_LOAD_ADDRESS, ValType::I64),
+        (G_SLOT_BASE, ValType::I32),
+        (G_TABLE_BASE, ValType::I64),
+        (G_THREAD_BLOCK, ValType::I32),
+        (G_PERMISSIONS, ValType::I32),
+        (G_PERMISSION_PAGES, ValType::I64),
+    ] {
+        let ty = GlobalType {
+            val_type: ty,
+            mutable: false,
+            shared: false,
+        };
+        globals.global(ty, &ConstExpr::global_get(g));
     }
-    s.local_get(L_SP).global_set(G_SP);
+    globals
+}
+
+/// The thread block slots of the passed registers, in parameter order.
+pub(crate) fn passed_slots() -> impl DoubleEndedIterator<Item = Slot> {
+    (0..ARGUMENTS as u8)
+        .map(Slot::X)
+        .chain(std::iter::once(Slot::Sp))
+}
+
+/// Store the passed registers of a piece (or the dispatcher) into the thread block.
+pub(crate) fn save_passed(s: &mut InstructionSink<'_>, block: Fixed) {
+    for (i, slot) in passed_slots().enumerate() {
+        slot.store_from(s, block, i as u32);
+    }
+}
+
+/// Set `pc` in the thread block to the guest address `push` pushes.
+pub(crate) fn set_pc(
+    s: &mut InstructionSink<'_>,
+    block: Fixed,
+    push: impl FnOnce(&mut InstructionSink<'_>),
+) {
+    block.push(s);
+    push(s);
+    Slot::Pc.store(s);
 }
 
 /// The dispatcher: go to the piece for a guest address through the lookup table, asking the runner for
 /// code when there is none. Parameters: the piece parameters, then the address.
 pub(crate) fn dispatcher() -> wasm_encoder::Function {
-    const TARGET: u32 = 6;
-    const OFFSET: u32 = 7;
-    const PIECE: u32 = 8;
+    const TARGET: u32 = PARAMETERS;
+    const OFFSET: u32 = PARAMETERS + 1;
+    const PIECE: u32 = PARAMETERS + 2;
     let mut f = wasm_encoder::Function::new([(1, ValType::I64), (1, ValType::Ref(piece_ref()))]);
     let mut s = f.instructions();
-    s.local_get(TARGET).global_set(G_PC);
+    set_pc(&mut s, BLOCK, |s| {
+        s.local_get(TARGET);
+    });
     s.loop_(BlockType::Empty);
-    crate::thread::lookup(&mut s, G_PC, G_TABLE_BASE, OFFSET, PIECE);
+    crate::thread::lookup(&mut s, TARGET, G_OWN + G_TABLE_BASE, OFFSET, PIECE);
     s.local_get(PIECE).ref_is_null().if_(BlockType::Empty);
-    save_passed(&mut s);
+    save_passed(&mut s, BLOCK);
     crate::thread::misaligned_code(&mut s, TARGET, F_TRAP);
-    s.i32_const(UNWIND_LEAVE).throw(0).end();
+    s.i32_const(UNWIND_LEAVE).call(F_UNWIND).unreachable().end();
     s.local_get(TARGET)
         .call(F_LOAD_CODE)
         .i32_eqz()
         .if_(BlockType::Empty)
         .i32_const(UNWIND_LEAVE)
-        .throw(0)
+        .call(F_UNWIND)
+        .unreachable()
         .end()
         .br(1)
         .end()
         .end();
-    for i in 0..6 {
+    for i in 0..PARAMETERS {
         s.local_get(i);
     }
     s.local_get(PIECE)
         .ref_as_non_null()
         .return_call_ref(0)
         .end();
+    f
+}
+
+/// Throw the unwind exception with the payload given. Pieces call this instead of throwing themselves: in
+/// wasmtime a function that throws saves every callee-saved register on entry, which would tax every call.
+pub(crate) fn unwinder() -> wasm_encoder::Function {
+    let mut f = wasm_encoder::Function::new([]);
+    f.instructions().local_get(0).throw(0).end();
     f
 }
 
@@ -528,20 +615,20 @@ impl NoneEmitter<'_> {
     fn stop_check(&mut self, step: u64) {
         let pc = self.offset + step;
         let mut s = self.sink();
-        s.global_get(G_THREAD_BLOCK)
-            .i32_load(memarg(
-                MEMORY_STATE,
-                wcontainers_abi::STOP_FLAG_OFFSET as u64,
-                2,
-            ))
-            .if_(BlockType::Empty);
-        save_passed(&mut s);
-        address(&mut s, pc);
-        s.global_set(G_PC)
-            .call(F_STOP)
+        BLOCK.push(&mut s);
+        s.i32_load(memarg(
+            MEMORY_STATE,
+            wcontainers_abi::STOP_FLAG_OFFSET as u64,
+            2,
+        ))
+        .if_(BlockType::Empty);
+        save_passed(&mut s, BLOCK);
+        set_pc(&mut s, BLOCK, |s| address(s, pc));
+        s.call(F_STOP)
             .if_(BlockType::Empty)
             .i32_const(UNWIND_LEAVE)
-            .throw(0)
+            .call(F_UNWIND)
+            .unreachable()
             .end()
             .end();
     }
@@ -550,9 +637,8 @@ impl NoneEmitter<'_> {
     fn save(&mut self, step: u64) {
         let pc = self.offset + step;
         let mut s = self.sink();
-        save_passed(&mut s);
-        address(&mut s, pc);
-        s.global_set(G_PC);
+        save_passed(&mut s, BLOCK);
+        set_pc(&mut s, BLOCK, |s| address(s, pc));
     }
 
     /// Push the passed registers, then the return address the caller expects.
@@ -591,13 +677,31 @@ impl NoneEmitter<'_> {
     }
 
     fn leave(&mut self) {
-        self.sink().i32_const(UNWIND_LEAVE).throw(0);
+        self.sink()
+            .i32_const(UNWIND_LEAVE)
+            .call(F_UNWIND)
+            .unreachable();
+    }
+
+    /// Push a register kept in the thread block.
+    fn load(&mut self, slot: Slot) {
+        let mut s = self.sink();
+        BLOCK.push(&mut s);
+        slot.load(&mut s);
+    }
+
+    /// Pop a value into a register kept in the thread block.
+    fn store(&mut self, slot: Slot) {
+        let value = self.local(slot.ty());
+        let mut s = self.sink();
+        s.local_set(value);
+        slot.store_from(&mut s, BLOCK, value);
     }
 }
 
 /// Push the guest address of a blob offset.
 pub(crate) fn address(s: &mut InstructionSink<'_>, offset: u64) {
-    s.global_get(G_LOAD_ADDRESS)
+    s.global_get(G_OWN + G_LOAD_ADDRESS)
         .i64_const(offset as i64)
         .i64_add();
 }
@@ -609,27 +713,41 @@ impl Emitter for NoneEmitter<'_> {
 
     fn local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        6 + self.locals.len() as u32 - 1
+        PARAMETERS + self.locals.len() as u32 - 1
     }
 
     fn get(&mut self, r: Reg) {
         let mut s = self.sink();
         match r {
-            Reg::X(n) if n < 4 => s.local_get(n.into()),
-            Reg::X(n) => s.global_get(g_x(n)),
-            Reg::Sp => s.local_get(L_SP),
-            Reg::Zero => s.i64_const(0),
-        };
+            Reg::X(n) if u32::from(n) < ARGUMENTS => {
+                s.local_get(n.into());
+            }
+            Reg::X(n) => {
+                BLOCK.push(&mut s);
+                Slot::X(n).load(&mut s);
+            }
+            Reg::Sp => {
+                s.local_get(L_SP);
+            }
+            Reg::Zero => {
+                s.i64_const(0);
+            }
+        }
     }
 
     fn set(&mut self, r: Reg) {
-        let mut s = self.sink();
         match r {
-            Reg::X(n) if n < 4 => s.local_set(n.into()),
-            Reg::X(n) => s.global_set(g_x(n)),
-            Reg::Sp => s.local_set(L_SP),
-            Reg::Zero => s.drop(),
-        };
+            Reg::X(n) if u32::from(n) < ARGUMENTS => {
+                self.sink().local_set(n.into());
+            }
+            Reg::X(n) => self.store(Slot::X(n)),
+            Reg::Sp => {
+                self.sink().local_set(L_SP);
+            }
+            Reg::Zero => {
+                self.sink().drop();
+            }
+        }
     }
 
     fn this_address(&mut self) {
@@ -638,31 +756,29 @@ impl Emitter for NoneEmitter<'_> {
     }
 
     fn set_flags(&mut self, flags: Flags) {
-        for flag in Flag::ALL {
-            let mut s = self.sink();
-            flag_value(&mut s, flags, flag);
-            s.global_set(g_flag(flag));
-        }
+        store_flags(self, BLOCK, |e, flag| {
+            flag_value(&mut e.sink(), flags, flag)
+        });
     }
 
     fn flag(&mut self, flag: Flag) {
-        self.sink().global_get(g_flag(flag));
+        load_flag(&mut self.sink(), BLOCK, flag);
     }
 
     fn get_vector(&mut self, n: u8) {
-        self.sink().global_get(g_v(n));
+        self.load(Slot::Vector(n));
     }
 
     fn set_vector(&mut self, n: u8) {
-        self.sink().global_set(g_v(n));
+        self.store(Slot::Vector(n));
     }
 
     fn get_thread_pointer(&mut self) {
-        self.sink().global_get(G_TPIDR);
+        self.load(Slot::ThreadPointer);
     }
 
     fn set_thread_pointer(&mut self) {
-        self.sink().global_set(G_TPIDR);
+        self.store(Slot::ThreadPointer);
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {
@@ -681,14 +797,14 @@ impl Emitter for NoneEmitter<'_> {
         s.local_set(address);
         permission_fast(&mut s, Table::GLOBALS, address, this, locals.0);
         permission_exact(&mut s, Table::GLOBALS, address, bytes, this, locals);
-        save_passed(&mut s);
-        self::address(&mut s, pc);
-        s.global_set(G_PC)
-            .local_get(locals.2)
+        save_passed(&mut s, BLOCK);
+        set_pc(&mut s, BLOCK, |s| self::address(s, pc));
+        s.local_get(locals.2)
             .i32_const(i32::from(access == Access::Write))
             .call(F_MEMORY_FAULT)
             .i32_const(UNWIND_LEAVE)
-            .throw(0)
+            .call(F_UNWIND)
+            .unreachable()
             .end()
             .end();
     }
@@ -708,11 +824,15 @@ impl Emitter for NoneEmitter<'_> {
 
     fn call(&mut self, target: Target) {
         let next = self.offset + 4;
-        self.arguments(|s| address(s, next));
+        // The flags are always in the thread block here.
+        self.arguments(|s| {
+            address(s, next);
+            s.i64_const(FLAGS_WANTED).i64_or();
+        });
         self.transfer(target, false);
         let mut s = self.sink();
         s.local_set(L_SP);
-        for i in (0..4).rev() {
+        for i in (0..ARGUMENTS).rev() {
             s.local_set(i);
         }
     }
@@ -721,6 +841,8 @@ impl Emitter for NoneEmitter<'_> {
         let mut s = self.sink();
         s.local_get(target)
             .local_get(L_RETURN)
+            .i64_const(!FLAGS_WANTED)
+            .i64_and()
             .i64_eq()
             .if_(BlockType::Empty);
         for i in 0..PASSED {
@@ -728,11 +850,11 @@ impl Emitter for NoneEmitter<'_> {
         }
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
-        save_passed(&mut s);
-        s.local_get(target)
-            .global_set(G_PC)
-            .i32_const(UNWIND_GO_TO)
-            .throw(0);
+        save_passed(&mut s, BLOCK);
+        set_pc(&mut s, BLOCK, |s| {
+            s.local_get(target);
+        });
+        s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
     }
 
     fn syscall(&mut self) {

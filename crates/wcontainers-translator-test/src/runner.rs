@@ -64,13 +64,14 @@ pub struct Host {
     /// Addresses code was translated from at run time: the table holds a piece of look-ahead none there.
     translated_from: HashSet<u64>,
     state: Option<SharedMemory>,
-    save_state: Option<TypedFunc<(), ()>>,
     /// The program break the stand-in reports: the page after the highest blob.
     program_break: u64,
     engine: Engine,
     thread: Option<Instance>,
     memory: Option<Memory>,
     table_base: u64,
+    /// The stop hook raises the flag again before it says carry on, so the thread stops at every check.
+    stop_everywhere: bool,
 }
 
 pub struct Machine {
@@ -78,7 +79,6 @@ pub struct Machine {
     memory: Memory,
     state: SharedMemory,
     run: TypedFunc<(), ()>,
-    load_state: TypedFunc<(), ()>,
     permission_pages: u64,
     permissions: Vec<Permissions>,
 }
@@ -112,8 +112,15 @@ fn new_engine() -> Engine {
         .wasm_threads(true)
         .wasm_memory64(true)
         .wasm_multi_memory(true)
-        .shared_memory(true);
+        .shared_memory(true)
+        .memory_may_move(false);
     Engine::new(&config).expect("engine")
+}
+
+/// A module compiled with the runner's settings, as wasmtime stores it (an ELF file), for reading its machine
+/// code.
+pub fn precompile(wasm: &[u8]) -> Vec<u8> {
+    engine().precompile_module(wasm).expect("a valid module")
 }
 
 /// How long the engine takes to compile a module.
@@ -145,12 +152,12 @@ impl Machine {
                 blobs: Vec::new(),
                 translated_from: HashSet::new(),
                 state: None,
-                save_state: None,
                 program_break: 0,
                 engine: engine.clone(),
                 thread: None,
                 memory: None,
                 table_base,
+                stop_everywhere: false,
             },
         );
         let pages = memory_bytes.div_ceil(65536);
@@ -189,15 +196,8 @@ impl Machine {
             .expect("thread instance");
 
         let run = thread.get_typed_func(&mut store, contract::RUN).unwrap();
-        let save_state = thread
-            .get_typed_func(&mut store, contract::SAVE_STATE)
-            .unwrap();
-        let load_state = thread
-            .get_typed_func(&mut store, contract::LOAD_STATE)
-            .unwrap();
         let host = store.data_mut();
         host.state = Some(state.clone());
-        host.save_state = Some(save_state);
         host.thread = Some(thread);
         host.memory = Some(memory);
         Machine {
@@ -205,7 +205,6 @@ impl Machine {
             memory,
             state,
             run,
-            load_state,
             permission_pages,
             permissions: vec![Permissions::empty(); permission_pages as usize],
         }
@@ -288,6 +287,12 @@ impl Machine {
         instantiate_code(&mut self.store, index, starts, look_ahead, omit);
     }
 
+    /// From now on the thread stops at every stop check it reaches (each counted), and carries on each time.
+    pub fn stop_at_every_check(&mut self) {
+        self.store.data_mut().stop_everywhere = true;
+        self.raise_stop_flag();
+    }
+
     /// Raise the thread's stop flag while it is not running, as something outside the thread would.
     pub fn raise_stop_flag(&self) {
         write_shared(
@@ -311,7 +316,6 @@ impl Machine {
 
     pub fn set_registers(&mut self, registers: &RegisterBlock) {
         write_shared(&self.state, BLOCK_AT as usize, registers.as_bytes());
-        self.load_state.call(&mut self.store, ()).unwrap();
     }
 
     pub fn registers(&mut self) -> RegisterBlock {
@@ -395,9 +399,8 @@ fn read_shared(memory: &SharedMemory, at: usize, into: &mut [u8]) {
     }
 }
 
+/// The registers, from the thread block, where they all are whenever a hook runs or the thread has left.
 fn snapshot(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> RegisterBlock {
-    let save = store.as_context().data().save_state.clone().unwrap();
-    save.call(&mut *store, ()).unwrap();
     let mut bytes = [0u8; size_of::<RegisterBlock>()];
     let state = store.as_context().data().state.clone().unwrap();
     read_shared(&state, BLOCK_AT as usize, &mut bytes);
@@ -487,6 +490,9 @@ fn hooks(linker: &mut Linker<Host>) {
             // Raised from outside: the stand-in clears it and the thread carries on.
             let pc = snapshot(&mut caller).pc;
             slow_path(caller.data_mut(), Reason::StoppedByFlag, pc, Duration::ZERO);
+            if caller.data().stop_everywhere {
+                raise_stop_flag(&caller);
+            }
             0
         })
         .unwrap();

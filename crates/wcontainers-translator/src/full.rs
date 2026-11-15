@@ -4,6 +4,7 @@
 
 use crate::code::*;
 use crate::contract::*;
+use crate::state::{Slot, load_flag, store_flags};
 use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -16,35 +17,91 @@ use wcontainers_arm64::{
     flag_value, habits, untag,
 };
 
+mod proof;
+
 /// How far back a jump through a register looks for the switch it may come from.
 const SWITCH_WINDOW: u64 = 64;
 
-/// The pieces of a full translation, by entry offset.
+/// The pieces of a full translation: those the lookup table holds, by entry offset, and then the loop pieces,
+/// whose function indices follow the others in order.
+///
+/// A loop piece starts at the header of a loop of a function and holds that loop and what follows it up to
+/// the header of any other loop, going on there in that loop's piece. Only a stop check that carries on at a jump back enters one,
+/// so it may rely on what its function knows at the loop. That way a thread carries on in a new call, which
+/// runs whatever code the engine has made for the function by then, and the function itself has no second
+/// way into its loops.
 pub(crate) fn pieces(
     code: &Code<'_>,
     starts: &[u64],
     omit: Omit,
-) -> BTreeMap<u64, wasm_encoder::Function> {
+) -> (
+    BTreeMap<u64, wasm_encoder::Function>,
+    Vec<wasm_encoder::Function>,
+) {
     let mut finder = Finder {
         code,
         decoded: HashMap::new(),
     };
     let functions = finder.functions(starts);
+    let entries: BTreeSet<u64> = functions.iter().map(|f| f.entry).collect();
     let index: BTreeMap<u64, u32> = functions
         .iter()
         .enumerate()
         .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
         .collect();
-    functions
+    let plans: Vec<Plan> = functions
         .iter()
-        .map(|function| {
-            let plan = Plan::new(function, &finder.decoded);
-            (
-                function.entry,
-                FullEmitter::piece(function, &plan, &finder.decoded, &index, omit),
-            )
+        .map(|f| Plan::new(f, &finder.decoded, Seed::NOTHING))
+        .collect();
+
+    // Loop pieces, by the function they come from; with no stop checks nothing enters them.
+    let mut loops: Vec<(usize, Function, Plan)> = Vec::new();
+    let mut loop_index: Vec<HashMap<u64, u32>> = vec![HashMap::new(); functions.len()];
+    let mut next = F_FIRST_PIECE + functions.len() as u32;
+    for (i, (function, plan)) in functions.iter().zip(&plans).enumerate() {
+        if omit.stop {
+            break;
+        }
+        for (h, others) in &plan.outside {
+            let mut bounds = entries.clone();
+            bounds.extend(others.iter().map(|&d| function.blocks[d].start));
+            let start = function.blocks[*h].start;
+            let piece = finder.explore(start, &bounds, &mut BTreeSet::new());
+            // Where a loop piece would need more entries, the stop check carries on in place instead.
+            if !irreducible(&piece).is_empty() {
+                continue;
+            }
+            let seed = Seed {
+                frame: plan.frame_in[*h],
+                aligned: plan.aligned_in[*h],
+            };
+            let piece_plan = Plan::new(&piece, &finder.decoded, seed);
+            loop_index[i].insert(start, next);
+            next += 1;
+            loops.push((i, piece, piece_plan));
+        }
+    }
+
+    let decoded = &finder.decoded;
+    let table = functions
+        .iter()
+        .zip(&plans)
+        .enumerate()
+        .map(|(i, (function, plan))| {
+            let own = index[&function.entry];
+            let piece =
+                FullEmitter::piece(function, plan, decoded, &index, &loop_index[i], own, omit);
+            (function.entry, piece)
         })
-        .collect()
+        .collect();
+    let extra = loops
+        .iter()
+        .map(|(i, function, plan)| {
+            let own = loop_index[*i][&function.entry];
+            FullEmitter::piece(function, plan, decoded, &index, &loop_index[*i], own, omit)
+        })
+        .collect();
+    (table, extra)
 }
 
 #[derive(Clone, Copy)]
@@ -344,15 +401,15 @@ fn irreducible(function: &Function) -> Vec<u64> {
 fn tracked() -> Registers {
     Registers::ALL
         .minus(Registers::FLAGS)
-        .minus(Registers(((1 << 4) - 1) | (1 << 31)))
+        .minus(Registers(((1 << ARGUMENTS) - 1) | (1 << 31)))
 }
 
 /// Where the flags are known to be at a point: a set of [`FlagState`] bits, one bit when it is known which.
 type FlagStates = u32;
 /// The flags are in the piece's flag locals.
 const FLAGS_IN_LOCALS: u32 = 0;
-/// The flags are in the thread's globals, which are up to date.
-const FLAGS_IN_GLOBALS: u32 = 1;
+/// The flags are in the thread block, which is up to date.
+const FLAGS_IN_BLOCK: u32 = 1;
 
 /// How a flag setting that is kept lazily looks, so setters of one shape can share locals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,6 +472,8 @@ struct Plan {
     /// Registers that must hold their true value after each instruction.
     live_after: HashMap<u64, Registers>,
     dirty_in: Vec<Registers>,
+    /// By loop header, the registers written back to the thread block when the loop is entered.
+    written_before: Vec<Registers>,
     flags_in: Vec<FlagStates>,
     aligned_in: Vec<bool>,
     /// Shape of every flag setting kept lazily, by its flag state number.
@@ -428,6 +487,26 @@ struct Plan {
     frame_across: HashSet<u64>,
     /// The piece calls or jumps to other pieces, so its entry needs the stop check.
     calls_out: bool,
+    /// What is known at each block's start about the stack: its frame and whether it is aligned.
+    frame_in: Vec<Frame>,
+    /// Every loop header but the entry, with the headers of the loops it is not around.
+    outside: Vec<(usize, Vec<usize>)>,
+    /// Accesses checked exactly inside a loop that makes no call or system call keep the run of pages last
+    /// found to allow them and check again only when an access does not lie within that run. Accesses of
+    /// one kind (read or write) through one base register in one loop share what they keep. Each such access's number for
+    /// what it keeps, and by loop header, the numbers forgotten when the loop is entered.
+    kept: HashMap<u64, usize>,
+    kept_by_loop: Vec<Vec<usize>>,
+    /// By loop header, the loops that have a copy without the checks their accesses are proven not to need.
+    versioned: HashMap<usize, proof::Versioned>,
+    /// By the header of such a loop, the blocks outside it placed after both copies (and no longer under the
+    /// block in the loop that dominates them), so either copy reaches them by a branch.
+    after: Vec<Vec<usize>>,
+    /// The accesses whose checks those copies leave out, with the header of the loop whose proof covers them.
+    proven: HashMap<u64, usize>,
+    /// By edge leaving loops, registers those loops keep in the thread block: the ones needed after it are
+    /// loaded there.
+    reload_on_exit: HashMap<(usize, usize), Registers>,
 }
 
 /// How the stack pointer moves at an instruction: by a known amount (before or after its access), or to
@@ -500,11 +579,67 @@ fn covers(frame: Frame, lo: i64, hi: i64) -> bool {
     frame.is_some_and(|(a, b)| a <= lo && hi <= b)
 }
 
+/// What is known at a piece's entry about the stack: nothing for a piece any caller may enter; for a loop
+/// piece, what its function knows at that loop.
+#[derive(Clone, Copy)]
+struct Seed {
+    frame: Frame,
+    aligned: bool,
+}
+
+impl Seed {
+    const NOTHING: Seed = Seed {
+        frame: None,
+        aligned: false,
+    };
+}
+
 impl Plan {
-    fn new(function: &Function, decoded: &HashMap<u64, Decoded>) -> Plan {
+    fn new(function: &Function, decoded: &HashMap<u64, Decoded>, seed: Seed) -> Plan {
         let blocks = &function.blocks;
         let n = blocks.len();
         let (graph, rank) = ranks(function);
+
+        // Loops, and for each the loops around it.
+        let mut preds = vec![Vec::new(); n];
+        for (u, block) in blocks.iter().enumerate() {
+            for &v in &block.succs {
+                preds[v].push(u);
+            }
+        }
+        let headers: Vec<usize> = (0..n)
+            .filter(|&h| preds[h].iter().any(|&u| rank[h] <= rank[u]))
+            .collect();
+        let body = |h: usize| -> Vec<bool> {
+            let mut inside = vec![false; n];
+            inside[h] = true;
+            let mut work: Vec<usize> = preds[h]
+                .iter()
+                .copied()
+                .filter(|&u| rank[h] <= rank[u])
+                .collect();
+            while let Some(u) = work.pop() {
+                if !inside[u] {
+                    inside[u] = true;
+                    work.extend(preds[u].iter().copied());
+                }
+            }
+            inside
+        };
+        let bodies: HashMap<usize, Vec<bool>> = headers.iter().map(|&h| (h, body(h))).collect();
+        let outside = headers
+            .iter()
+            .copied()
+            .filter(|&h| h != 0)
+            .map(|h| {
+                let others = headers
+                    .iter()
+                    .copied()
+                    .filter(|&d| d != h && !bodies[&h][d])
+                    .collect();
+                (h, others)
+            })
+            .collect();
         let doms = dominators::simple_fast(&graph, NodeIndex::new(0));
         let mut children = vec![Vec::new(); n];
         for b in 1..n {
@@ -514,10 +649,8 @@ impl Plan {
         let mut forward_in = vec![0; n];
         let mut loop_header = vec![false; n];
         let mut merge = vec![false; n];
-        let mut preds = vec![Vec::new(); n];
         for (u, block) in blocks.iter().enumerate() {
             for &v in &block.succs {
-                preds[v].push(u);
                 if rank[v] <= rank[u] {
                     loop_header[v] = true;
                 } else {
@@ -553,7 +686,7 @@ impl Plan {
         }
         let flag_state = |d: &Decoded, state: FlagStates| -> FlagStates {
             if d.effects.calls {
-                1 << FLAGS_IN_GLOBALS
+                1 << FLAGS_IN_BLOCK
             } else if let Some(shape) = d.effects.flags.and_then(Shape::of) {
                 1 << (2 + shapes.iter().position(|s| *s == shape).unwrap())
             } else if d.effects.defs.intersect(Registers::FLAGS) != Registers::NONE {
@@ -577,14 +710,62 @@ impl Plan {
             }
         };
 
+        // Registers a loop's own code neither reads nor writes. Those that may be dirty when the loop is
+        // entered are written back before it, so its slow paths do not keep them alive.
+        let untouched: Vec<Registers> = (0..n)
+            .map(|h| match bodies.get(&h) {
+                Some(body) => (0..n).filter(|&b| body[b]).fold(tracked(), |r, b| {
+                    instructions(b).fold(r, |r, o| {
+                        let e = &decoded[&o].effects;
+                        r.minus(e.defs).minus(e.uses)
+                    })
+                }),
+                None => Registers::NONE,
+            })
+            .collect();
+        let entering = |b: usize, s: usize| bodies.get(&s).is_some_and(|body| !body[b]);
+        // Registers kept in the thread block rather than in locals through a loop that neither reads nor
+        // writes them, so they take no engine register while it runs: loaded again where it is left. Not
+        // done for a loop left through a jump table, whose edges have no place for the loads.
+        let through: HashMap<usize, Registers> = bodies
+            .iter()
+            .map(|(&h, body)| {
+                let switch = (0..n).any(|b| body[b] && blocks[b].table.is_some());
+                (
+                    h,
+                    if switch {
+                        Registers::NONE
+                    } else {
+                        untouched[h]
+                    },
+                )
+            })
+            .collect();
+        let leaving = |b: usize, s: usize| {
+            bodies
+                .iter()
+                .filter(|(_, body)| body[b] && !body[s])
+                .fold(Registers::NONE, |r, (h, _)| r.union(through[h]))
+        };
+        let mut reload_on_exit = HashMap::new();
+        for (b, block) in blocks.iter().enumerate() {
+            for &s in &block.succs {
+                let r = leaving(b, s);
+                if r != Registers::NONE {
+                    reload_on_exit.insert((b, s), r);
+                }
+            }
+        }
+        let mut written_before = vec![Registers::NONE; n];
+
         // Forward: what may be dirty, where the flags are, and the frame known to be allowed.
         let mut dirty_in = vec![Registers::NONE; n];
         let mut flags_in: Vec<FlagStates> = vec![0; n];
         let mut frame_in: Vec<Option<Frame>> = vec![None; n];
         let mut aligned_in = vec![true; n];
-        aligned_in[0] = false;
-        flags_in[0] = 1 << FLAGS_IN_GLOBALS;
-        frame_in[0] = Some(None);
+        aligned_in[0] = seed.aligned;
+        flags_in[0] = 1 << FLAGS_IN_BLOCK;
+        frame_in[0] = Some(seed.frame);
         let mut changed = true;
         while changed {
             changed = false;
@@ -603,6 +784,11 @@ impl Plan {
                     frame = frame_after(d, frame);
                 }
                 for &s in &blocks[b].succs {
+                    let mut dirty = dirty;
+                    if entering(b, s) {
+                        written_before[s] = written_before[s].union(dirty.intersect(untouched[s]));
+                        dirty = dirty.minus(untouched[s]);
+                    }
                     let joined_dirty = dirty_in[s].union(dirty);
                     let joined_flags = flags_in[s] | flags;
                     let joined_frame = match frame_in[s] {
@@ -639,10 +825,17 @@ impl Plan {
         while changed {
             changed = false;
             for &b in order.iter().rev() {
-                let mut live = blocks[b]
-                    .succs
-                    .iter()
-                    .fold(Registers::NONE, |l, &s| l.union(live_in_blocks[s]));
+                let mut live = blocks[b].succs.iter().fold(Registers::NONE, |l, &s| {
+                    let l = l.union(
+                        live_in_blocks[s]
+                            .minus(*reload_on_exit.get(&(b, s)).unwrap_or(&Registers::NONE)),
+                    );
+                    if entering(b, s) {
+                        l.union(written_before[s])
+                    } else {
+                        l
+                    }
+                });
                 for o in instructions(b).collect::<Vec<_>>().into_iter().rev() {
                     let d = &decoded[&o];
                     live_after.insert(o, live);
@@ -666,6 +859,124 @@ impl Plan {
             frame_checks,
             frame_across,
         } = checks(function, decoded, &frame_in);
+        // The innermost loop around each block, and loops in which nothing can change the permission table:
+        // no call and no system call. (A stop check that carries on in place forgets every kept run.)
+        let innermost = |b: usize| {
+            headers
+                .iter()
+                .copied()
+                .filter(|h| bodies[h][b])
+                .min_by_key(|h| bodies[h].iter().filter(|&&x| x).count())
+        };
+        let quiet = |h: usize| {
+            (0..n).filter(|&b| bodies[&h][b]).all(|b| {
+                instructions(b).all(|o| {
+                    let e = &decoded[&o].effects;
+                    !e.calls && !e.syscall
+                })
+            })
+        };
+        let mut kept = HashMap::new();
+        let mut kept_by_loop = vec![Vec::new(); n];
+        let mut keys = Vec::new();
+        for b in 0..n {
+            if let Some(h) = innermost(b)
+                && quiet(h)
+            {
+                for o in instructions(b) {
+                    if let (Some(CheckPlan::Exact), Some(access)) =
+                        (checks.get(&o), decoded[&o].instruction.memory_access())
+                    {
+                        let base = match access.address {
+                            Address::Offset { base, .. }
+                            | Address::PreIndex { base, .. }
+                            | Address::PostIndex { base, .. }
+                            | Address::Indexed { base, .. } => Some(base),
+                            Address::Literal { .. } => None,
+                        };
+                        let key = (h, base, access.write);
+                        let number = match keys.iter().position(|k| *k == key) {
+                            Some(number) => number,
+                            None => {
+                                keys.push(key);
+                                kept_by_loop[h].push(keys.len() - 1);
+                                keys.len() - 1
+                            }
+                        };
+                        kept.insert(o, number);
+                    }
+                }
+            }
+        }
+        // Loops without calls whose accesses can be proven allowed before they run.
+        // Only the loop's own blocks count, not those of loops inside it, which have proofs of their own.
+        let dominates = |a: usize, b: usize| {
+            doms.dominators(NodeIndex::new(b))
+                .is_some_and(|mut d| d.any(|x| x.index() == a))
+        };
+        let mut versioned = HashMap::new();
+        let mut after = vec![Vec::new(); n];
+        let mut homed = vec![false; n];
+        let mut outermost_first = headers.clone();
+        outermost_first
+            .sort_by_key(|h| std::cmp::Reverse(bodies[h].iter().filter(|&&x| x).count()));
+        for &h in &outermost_first {
+            let body = &bodies[&h];
+            let inner: Vec<usize> = headers
+                .iter()
+                .copied()
+                .filter(|&g| g != h && body[g])
+                .collect();
+            let nested: Vec<bool> = (0..n).map(|b| inner.iter().any(|g| bodies[g][b])).collect();
+            // A stop at a switch's jump back carries on in place, where nothing would be proven again.
+            let switch_back = (0..n).any(|b| {
+                body[b]
+                    && blocks[b]
+                        .table
+                        .iter()
+                        .flatten()
+                        .any(|c| function.at.get(c).is_some_and(|&t| rank[t] <= rank[b]))
+            });
+            if !quiet(h) || switch_back {
+                continue;
+            }
+            let shape = proof::LoopShape {
+                function,
+                decoded,
+                checks: &checks,
+                body,
+                nested: &nested,
+                latches: preds[h]
+                    .iter()
+                    .copied()
+                    .filter(|&u| rank[h] <= rank[u])
+                    .collect(),
+                dominates: &dominates,
+            };
+            let Some(mut v) = proof::versioned(&shape) else {
+                continue;
+            };
+            v.inner = inner;
+            versioned.insert(h, v);
+            // Placed after the outermost such loop they leave.
+            for y in 1..n {
+                if body[y] || homed[y] {
+                    continue;
+                }
+                let idom = doms.immediate_dominator(NodeIndex::new(y)).unwrap().index();
+                if body[idom] {
+                    homed[y] = true;
+                    children[idom].retain(|&c| c != y);
+                    merge[y] = true;
+                    after[h].push(y);
+                }
+            }
+            after[h].sort_by_key(|&b| std::cmp::Reverse(rank[b]));
+        }
+        let proven = versioned
+            .iter()
+            .flat_map(|(&h, v)| v.regions.iter().map(move |r| (r.at, h)))
+            .collect();
         let dynamic_flags = flags_in.iter().any(|f| f.count_ones() > 1);
         let calls_out = function_instructions(function).any(|o| {
             let d = &decoded[&o];
@@ -679,6 +990,7 @@ impl Plan {
             live_in: live_in_blocks,
             live_after,
             dirty_in,
+            written_before,
             flags_in,
             aligned_in,
             shapes,
@@ -687,6 +999,14 @@ impl Plan {
             frame_checks,
             frame_across,
             calls_out,
+            frame_in,
+            outside,
+            kept,
+            kept_by_loop,
+            versioned,
+            after,
+            proven,
+            reload_on_exit,
         }
     }
 }
@@ -891,6 +1211,22 @@ struct At {
     aligned: bool,
 }
 
+/// How a piece carries on when the stop hook says so.
+#[derive(Clone, Copy)]
+enum AfterStop {
+    /// Go on in a new call of this piece or of a loop piece (by function index) at the loop jumped back to,
+    /// so an engine that has optimised the function since this call began runs the optimised code.
+    Enter(u32),
+    /// Write back and go on at once in a new call of a piece whose entry check calls the stop hook, so the
+    /// loop has no call that returns to it.
+    Hand(u32),
+    /// Go on with every local as it is: the hook changes nothing when it says carry on. Used at the entry,
+    /// before any register but the passed ones is in a local.
+    Continue,
+    /// Load back the tracked registers in the set, and the passed ones from the number given, and go on.
+    Reload(Registers, u32),
+}
+
 /// What a stop check or write back sets `pc` to.
 #[derive(Clone, Copy)]
 enum Pc {
@@ -904,6 +1240,8 @@ struct FullEmitter<'a> {
     plan: &'a Plan,
     decoded: &'a HashMap<u64, Decoded>,
     index: &'a BTreeMap<u64, u32>,
+    /// The loop pieces of the function this piece comes from, by header offset.
+    loops: &'a HashMap<u64, u32>,
     omit: Omit,
     body: Vec<u8>,
     locals: Vec<ValType>,
@@ -919,6 +1257,16 @@ struct FullEmitter<'a> {
     at: At,
     /// Locals the immutable imported globals (by index) are copied into at the entry, once used.
     fixed: [Option<u32>; 6],
+    /// The piece's own function index.
+    own: u32,
+    /// For each number in [`Plan::kept`], the i64 locals holding the run of pages last found allowed: its
+    /// first address and how far past it an access may start (0 when nothing is kept).
+    kept_pages: Vec<(u32, u32)>,
+    /// The loops whose copy without proven checks is being emitted.
+    unchecked: Vec<usize>,
+    /// The piece checks the stop flag at its entry: when it calls or leaves to other pieces, and always for
+    /// a loop piece, which a stop check at a jump back enters.
+    entry_check: bool,
 }
 
 impl<'a> FullEmitter<'a> {
@@ -927,13 +1275,17 @@ impl<'a> FullEmitter<'a> {
         plan: &'a Plan,
         decoded: &'a HashMap<u64, Decoded>,
         index: &'a BTreeMap<u64, u32>,
+        loops: &'a HashMap<u64, u32>,
+        own: u32,
         omit: Omit,
     ) -> wasm_encoder::Function {
+        let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
             function,
             plan,
             decoded,
             index,
+            loops,
             omit,
             body: Vec::new(),
             locals: Vec::new(),
@@ -948,28 +1300,37 @@ impl<'a> FullEmitter<'a> {
                 offset: function.entry,
                 block: 0,
                 dirty: Registers::NONE,
-                flags: 1 << FLAGS_IN_GLOBALS,
+                flags: 1 << FLAGS_IN_BLOCK,
                 aligned: false,
             },
             fixed: [None; 6],
+            own,
+            kept_pages: Vec::new(),
+            unchecked: Vec::new(),
+            entry_check: (plan.calls_out || loop_piece) && !omit.stop,
         };
+        for _ in plan.kept_by_loop.iter().flatten() {
+            let low = e.new_local(ValType::I64);
+            let room = e.new_local(ValType::I64);
+            e.kept_pages.push((low, room));
+        }
         e.flag_locals = [0; 4].map(|_| e.new_local(ValType::I32));
         e.flag_state = e.new_local(ValType::I32);
         for shape in plan.shapes.clone() {
             let flags = e.canonical_flags(shape);
             e.canonical.push(flags);
         }
-        for bit in plan.live_in[0].bits() {
-            let local = e.register(bit);
-            let global = global_of(bit);
-            e.sink().global_get(global).local_set(local);
-        }
         if plan.dynamic_flags {
             let state = e.flag_state;
-            e.sink().i32_const(FLAGS_IN_GLOBALS as i32).local_set(state);
+            e.sink().i32_const(FLAGS_IN_BLOCK as i32).local_set(state);
         }
-        if plan.calls_out && !omit.stop {
-            e.stop_check(Pc::Offset(function.entry), plan.live_in[0], 0);
+        if e.entry_check {
+            e.stop_check(Pc::Offset(function.entry), AfterStop::Continue);
+        }
+        for bit in plan.live_in[0].bits() {
+            let local = e.register(bit);
+            let block = e.fixed(G_THREAD_BLOCK);
+            Slot::of_bit(bit).load_into(&mut e.sink(), block, local);
         }
         e.tree(0);
         e.sink().unreachable().end();
@@ -977,7 +1338,7 @@ impl<'a> FullEmitter<'a> {
         let mut s = InstructionSink::new(&mut entry);
         for (global, local) in e.fixed.iter().enumerate() {
             if let Some(local) = local {
-                s.global_get(global as u32).local_set(*local);
+                s.global_get(G_OWN + global as u32).local_set(*local);
             }
         }
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
@@ -988,7 +1349,7 @@ impl<'a> FullEmitter<'a> {
 
     fn new_local(&mut self, ty: ValType) -> u32 {
         self.locals.push(ty);
-        6 + self.locals.len() as u32 - 1
+        PARAMETERS + self.locals.len() as u32 - 1
     }
 
     /// The locals a shape keeps: the operands only (a and the value subtracted, or a, b and the carry),
@@ -1102,7 +1463,7 @@ impl<'a> FullEmitter<'a> {
     /// The local of a register bit: a parameter for the passed ones.
     fn register(&mut self, bit: u32) -> u32 {
         match bit {
-            0..4 => bit,
+            _ if bit < ARGUMENTS => bit,
             31 => L_SP,
             _ => {
                 if let Some(&local) = self.registers.get(&bit) {
@@ -1133,14 +1494,81 @@ impl<'a> FullEmitter<'a> {
             .filter(|&c| self.plan.merge[c])
             .collect();
         if self.plan.loop_header[b] {
-            self.sink().loop_(BlockType::Empty);
-            self.labels.push(Label::Loop(b));
-            self.within(b, &merges);
-            self.sink().end();
-            self.labels.pop();
+            let block = self.fixed(G_THREAD_BLOCK);
+            for bit in self.plan.written_before[b].bits() {
+                let local = self.register(bit);
+                Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
+            }
+            // Both locals are set, so nothing kept from before is alive through the loop.
+            for number in self.plan.kept_by_loop[b].clone() {
+                let (low, room) = self.kept_pages[number];
+                self.sink()
+                    .i64_const(0)
+                    .local_set(low)
+                    .i64_const(0)
+                    .local_set(room);
+            }
+            let after = self.plan.after[b].clone();
+            for &y in &after {
+                self.sink().block(BlockType::Empty);
+                self.labels.push(Label::Merge(y));
+            }
+            match self.plan.versioned.get(&b).filter(|_| self.copies(b)) {
+                Some(v) => {
+                    self.proof(v);
+                    self.sink().if_(BlockType::Empty);
+                    self.labels.push(Label::Other);
+                    self.unchecked.push(b);
+                    self.loop_of(b, &merges);
+                    self.unchecked.pop();
+                    self.sink().else_();
+                    // The loop with its checks is in its loop piece, so a function's own code holds only
+                    // the copy without them.
+                    match self.loops.get(&self.function.blocks[b].start) {
+                        Some(&f) if b != 0 => {
+                            self.at = At {
+                                offset: self.function.blocks[b].start,
+                                block: b,
+                                dirty: self.plan.dirty_in[b],
+                                flags: self.plan.flags_in[b],
+                                aligned: self.plan.aligned_in[b],
+                            };
+                            self.write_back(false);
+                            self.arguments();
+                            self.sink().return_call(f);
+                        }
+                        _ => self.loop_of(b, &merges),
+                    }
+                    self.sink().end();
+                    self.labels.pop();
+                }
+                None => self.loop_of(b, &merges),
+            }
+            for &y in after.iter().rev() {
+                self.sink().end();
+                self.labels.pop();
+                self.tree(y);
+            }
         } else {
             self.within(b, &merges);
         }
+    }
+
+    fn loop_of(&mut self, b: usize, merges: &[usize]) {
+        self.sink().loop_(BlockType::Empty);
+        self.labels.push(Label::Loop(b));
+        self.within(b, merges);
+        self.sink().end();
+        self.labels.pop();
+    }
+
+    /// Whether the loop at block `b` gets its copy without proven checks: after a stop at a jump back in it
+    /// or in any loop inside it, the thread must carry on where the proof is made again, at a loop's entry.
+    fn copies(&self, b: usize) -> bool {
+        let pieced = |h: usize| h == 0 || self.loops.contains_key(&self.function.blocks[h].start);
+        !self.omit.permissions
+            && (self.omit.stop
+                || (pieced(b) && self.plan.versioned[&b].inner.iter().all(|&g| pieced(g))))
     }
 
     fn within(&mut self, b: usize, merges: &[usize]) {
@@ -1199,14 +1627,26 @@ impl<'a> FullEmitter<'a> {
     }
 
     fn branch(&mut self, to: usize) {
+        if let Some(&kept) = self.plan.reload_on_exit.get(&(self.at.block, to)) {
+            let block = self.fixed(G_THREAD_BLOCK);
+            for bit in self.plan.live_in[to].intersect(kept).bits() {
+                let local = self.register(bit);
+                Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
+            }
+        }
         match self.label_for(to) {
             Some(label) => {
                 if let Label::Loop(_) = label
                     && !self.omit.stop
                 {
                     let start = self.function.blocks[to].start;
-                    let live = self.plan.live_in[to];
-                    self.stop_check(Pc::Offset(start), live, 0);
+                    let after = match self.loops.get(&start) {
+                        _ if to == 0 && self.entry_check => AfterStop::Hand(self.own),
+                        _ if to == 0 => AfterStop::Enter(self.own),
+                        Some(&f) => AfterStop::Hand(f),
+                        None => AfterStop::Reload(self.plan.live_in[to], 0),
+                    };
+                    self.stop_check(Pc::Offset(start), after);
                 }
                 let depth = self.depth(label);
                 self.sink().br(depth);
@@ -1227,7 +1667,7 @@ impl<'a> FullEmitter<'a> {
         }
         self.write_back(false);
         self.arguments();
-        match self.index.get(&target) {
+        match self.index.get(&target).or(self.loops.get(&target)) {
             Some(&f) => {
                 self.sink().return_call(f);
             }
@@ -1255,36 +1695,83 @@ impl<'a> FullEmitter<'a> {
         }
     }
 
-    /// Copy every register whose global may be stale into its global, the flags too, and the passed
-    /// registers when asked.
+    /// Copy every register whose place in the thread block may be stale there, the flags too, and the
+    /// passed registers when asked.
     fn write_back(&mut self, passed: bool) {
+        self.write_back_registers();
+        self.write_back_flags();
+        if passed {
+            let block = self.fixed(G_THREAD_BLOCK);
+            save_passed(&mut self.sink(), block);
+        }
+    }
+
+    /// Copy every tracked register that may be stale in the thread block there.
+    fn write_back_registers(&mut self) {
+        let block = self.fixed(G_THREAD_BLOCK);
         for bit in self.at.dirty.bits() {
             let local = self.register(bit);
-            self.sink().local_get(local).global_set(global_of(bit));
+            Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
         }
-        for flag in Flag::ALL {
-            if self.at.flags == 1 << FLAGS_IN_GLOBALS {
-                break;
+    }
+
+    /// Put the flags in the thread block, unless they are there.
+    fn write_back_flags(&mut self) {
+        if self.at.flags != 1 << FLAGS_IN_BLOCK {
+            let block = self.fixed(G_THREAD_BLOCK);
+            store_flags(self, block, |e, flag| e.push_flag(flag));
+        }
+    }
+
+    /// Whether the flags may be read, or written back, after the instruction at `offset` before something
+    /// sets them again. Only the rest of its block is looked at, and anything but plain arithmetic that
+    /// neither reads the flags nor moves the stack pointer counts as reading them.
+    fn flags_needed_after(&self, offset: u64) -> bool {
+        use Instruction as I;
+        let end = self.function.blocks[self.at.block].end;
+        for o in (offset + 4..end).step_by(4) {
+            let d = &self.decoded[&o];
+            let plain = matches!(
+                d.instruction,
+                I::AddSub { .. }
+                    | I::AddSubCarry { .. }
+                    | I::Logical { .. }
+                    | I::MoveWide { .. }
+                    | I::Bitfield { .. }
+                    | I::Extract { .. }
+                    | I::PcRelative { .. }
+                    | I::CondCompare { .. }
+                    | I::CondSelect { .. }
+                    | I::Unary { .. }
+                    | I::Binary { .. }
+                    | I::MulAdd { .. }
+                    | I::Nothing
+            );
+            if !plain
+                || d.effects.uses.intersect(Registers::FLAGS) != Registers::NONE
+                || d.effects.defs.has(Reg::Sp)
+            {
+                return true;
             }
-            self.push_flag(flag);
-            self.sink().global_set(g_flag(flag));
+            if d.effects.defs.intersect(Registers::FLAGS) == Registers::FLAGS {
+                return false;
+            }
         }
-        if passed {
-            save_passed(&mut self.sink());
-        }
+        true
     }
 
     /// Write back everything, with `pc` set.
     fn save(&mut self, pc: Pc) {
         self.write_back(true);
+        let block = self.fixed(G_THREAD_BLOCK);
+        block.push(&mut self.sink());
         self.push_pc(pc);
-        self.sink().global_set(G_PC);
+        Slot::Pc.store(&mut self.sink());
     }
 
-    /// Call the stop hook if the flag is raised. If the thread carries on, nothing has changed, so registers
-    /// are loaded back from the globals just written rather than kept across the call: `live` (the tracked
-    /// registers needed after) and the passed ones from `passed_from` up.
-    fn stop_check(&mut self, pc: Pc, live: Registers, passed_from: u32) {
+    /// Call the stop hook if the flag is raised, then carry on as `after` says: when the hook says carry on,
+    /// nothing has changed.
+    fn stop_check(&mut self, pc: Pc, after: AfterStop) {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
@@ -1294,34 +1781,58 @@ impl<'a> FullEmitter<'a> {
             2,
         ))
         .if_(BlockType::Empty);
+        if let AfterStop::Hand(f) = after {
+            self.write_back(false);
+            self.arguments();
+            self.sink().return_call(f).end();
+            return;
+        }
         self.save(pc);
         self.sink()
             .call(F_STOP)
             .if_(BlockType::Empty)
             .i32_const(UNWIND_LEAVE)
-            .throw(0)
+            .call(F_UNWIND)
+            .unreachable()
             .end();
-        self.reload(live, passed_from);
+        match after {
+            AfterStop::Enter(f) => {
+                self.arguments();
+                self.sink().return_call(f);
+            }
+            AfterStop::Reload(live, passed_from) => {
+                self.reload(live, passed_from);
+                // The table may have changed during the stop.
+                for (_, room) in self.kept_pages.clone() {
+                    self.sink().i64_const(0).local_set(room);
+                }
+            }
+            AfterStop::Continue | AfterStop::Hand(_) => {}
+        }
         self.sink().end();
     }
 
-    /// Load registers from their globals: the tracked ones in `live`, and the passed ones from `passed_from`.
+    /// Load registers from the thread block: the tracked ones in `live`, and the passed ones from
+    /// `passed_from`.
     fn reload(&mut self, live: Registers, passed_from: u32) {
+        let block = self.fixed(G_THREAD_BLOCK);
         for bit in live.intersect(tracked()).bits() {
             let local = self.register(bit);
-            self.sink().global_get(global_of(bit)).local_set(local);
+            Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
         }
         let mut s = self.sink();
-        for i in passed_from..4 {
-            s.global_get(g_x(i as u8)).local_set(i);
+        for (i, slot) in passed_slots().enumerate().skip(passed_from as usize) {
+            slot.load_into(&mut s, block, i as u32);
         }
-        s.global_get(G_SP).local_set(L_SP);
     }
 
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
     fn leave_to(&mut self, offset: u64) {
         self.save(Pc::Offset(offset));
-        self.sink().i32_const(UNWIND_GO_TO_EXACT).throw(0);
+        self.sink()
+            .i32_const(UNWIND_GO_TO_EXACT)
+            .call(F_UNWIND)
+            .unreachable();
     }
 
     /// The pages of `len` bytes from `from` past the stack pointer allow reading and writing, or this
@@ -1426,8 +1937,9 @@ impl<'a> FullEmitter<'a> {
                 let local = self.flag_locals[i];
                 self.sink().local_get(local);
             }
-            FLAGS_IN_GLOBALS => {
-                self.sink().global_get(g_flag(flag));
+            FLAGS_IN_BLOCK => {
+                let block = self.fixed(G_THREAD_BLOCK);
+                load_flag(&mut self.sink(), block, flag);
             }
             shape => {
                 let flags = self.shape_flags(shape as usize - 2);
@@ -1464,7 +1976,7 @@ impl<'a> FullEmitter<'a> {
             let live = present
                 .iter()
                 .fold(Registers::NONE, |l, &(_, b)| l.union(self.plan.live_in[b]));
-            self.stop_check(Pc::Local(target), live, 0);
+            self.stop_check(Pc::Local(target), AfterStop::Reload(live, 0));
         }
         let index = self.temporary(ValType::I64);
         self.sink().block(BlockType::Empty);
@@ -1477,10 +1989,15 @@ impl<'a> FullEmitter<'a> {
             };
             labels.push(label);
         }
-        // A target that is not a multiple of four past the lowest case turns into a huge index.
+        // A target that is not a multiple of four past the lowest case turns into a huge index. The index
+        // is worked out from the register as it is, not untagged: a tagged address is far from every case,
+        // so it goes to the lookup, which untags it, and the engine can see through `adr` plus an entry.
+        let Instruction::BranchRegister { rn, .. } = self.decoded().instruction else {
+            unreachable!("a jump through a table is a jump through a register")
+        };
         let load = self.fixed(G_LOAD_ADDRESS);
+        self.get(rn);
         let mut s = self.sink();
-        s.local_get(target);
         load.push(&mut s);
         s.i64_sub()
             .i64_const(lo as i64)
@@ -1497,6 +2014,10 @@ impl<'a> FullEmitter<'a> {
             .br_table(labels, 0)
             .end();
         self.labels.pop();
+        // Untagged again here, so that the engine works it out only when no case is taken.
+        let register = self.register(Registers::bit(rn).expect("a general register"));
+        untag(&mut self.sink(), register);
+        self.sink().local_set(target);
         self.unrecognised_jump(target);
     }
 
@@ -1507,17 +2028,43 @@ impl<'a> FullEmitter<'a> {
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)
             .call(F_WARN);
+        let piece = self.look_up(target);
         self.arguments();
-        self.sink().local_get(target).return_call(F_DISPATCH);
+        self.call_looked_up(piece, target, true);
     }
-}
 
-/// The global of a tracked register bit.
-fn global_of(bit: u32) -> u32 {
-    match bit {
-        0..31 => g_x(bit as u8),
-        31 => G_SP,
-        _ => g_v((bit - 64) as u8),
+    /// Look up the piece for the guest address in `target`, before the arguments of the call are pushed.
+    fn look_up(&mut self, target: u32) -> u32 {
+        let offset = self.temporary(ValType::I64);
+        let piece = self.temporary(ValType::Ref(crate::thread::piece_ref()));
+        crate::thread::lookup(
+            &mut self.sink(),
+            target,
+            G_OWN + G_TABLE_BASE,
+            offset,
+            piece,
+        );
+        piece
+    }
+
+    /// Call the piece looked up, or the dispatcher when there is none, with the arguments pushed.
+    fn call_looked_up(&mut self, piece: u32, target: u32, tail: bool) {
+        let mut s = self.sink();
+        s.local_get(piece)
+            .ref_is_null()
+            .if_(BlockType::FunctionType(0))
+            .local_get(target);
+        if tail {
+            s.return_call(F_DISPATCH);
+        } else {
+            s.call(F_DISPATCH);
+        }
+        s.else_().local_get(piece).ref_as_non_null();
+        if tail {
+            s.return_call_ref(0).end().unreachable();
+        } else {
+            s.call_ref(0).end();
+        }
     }
 }
 
@@ -1643,7 +2190,10 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn get_thread_pointer(&mut self) {
-        self.sink().global_get(G_TPIDR);
+        let block = self.fixed(G_THREAD_BLOCK);
+        let mut s = self.sink();
+        block.push(&mut s);
+        Slot::ThreadPointer.load(&mut s);
     }
 
     fn stack_aligned(&mut self) -> bool {
@@ -1651,7 +2201,11 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_thread_pointer(&mut self) {
-        self.sink().global_set(G_TPIDR);
+        let block = self.fixed(G_THREAD_BLOCK);
+        let value = self.temporary(ValType::I64);
+        let mut s = self.sink();
+        s.local_set(value);
+        Slot::ThreadPointer.store_from(&mut s, block, value);
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {
@@ -1666,32 +2220,62 @@ impl Emitter for FullEmitter<'_> {
         if let CheckPlan::Skip = plan {
             return;
         }
+        if self
+            .plan
+            .proven
+            .get(&self.at.offset)
+            .is_some_and(|h| self.unchecked.contains(h))
+        {
+            return;
+        }
         let locals = (
             self.temporary(ValType::I64),
             self.temporary(ValType::I32),
             self.temporary(ValType::I64),
         );
         let offset = self.at.offset;
-        let table = self.table();
+        // A kept run's check is rare, so it reads the table's place from the module's globals rather than
+        // keeping it alive through the loop.
+        let table = if self.plan.kept.contains_key(&offset) {
+            Table::GLOBALS
+        } else {
+            self.table()
+        };
         match plan {
             CheckPlan::Skip => {}
             CheckPlan::Exact => {
+                let kept = self.plan.kept.get(&offset).map(|&n| self.kept_pages[n]);
+                let mut s = self.sink();
+                if let Some((low, room)) = kept {
+                    // Checked again unless the access starts within the kept run of pages.
+                    s.local_get(address)
+                        .local_get(low)
+                        .i64_sub()
+                        .local_get(room)
+                        .i64_ge_u()
+                        .if_(BlockType::Empty);
+                }
                 // An address the table allows has a clear top byte, so only one it does not is untagged and
                 // tried again.
-                let mut s = self.sink();
                 permission_fast(&mut s, table, address, this, locals.0);
                 untag(&mut s, address);
                 s.local_set(address);
                 permission_exact(&mut s, table, address, bytes, this, locals);
                 self.save(Pc::Offset(offset));
-                self.sink()
-                    .local_get(locals.2)
+                let mut s = self.sink();
+                s.local_get(locals.2)
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
                     .i32_const(UNWIND_LEAVE)
-                    .throw(0)
+                    .call(F_UNWIND)
+                    .unreachable()
                     .end()
                     .end();
+                if let Some((low, room)) = kept {
+                    // The access is allowed, so the page it starts on allows this kind.
+                    keep_pages(&mut s, table, locals.0, this, low, room);
+                    s.end();
+                }
             }
             CheckPlan::Group { from, len } => {
                 let start = self.temporary(ValType::I64);
@@ -1738,11 +2322,18 @@ impl Emitter for FullEmitter<'_> {
     fn call(&mut self, target: Target) {
         let offset = self.at.offset;
         self.write_back(false);
+        let looked_up = match target {
+            Target::Address(local) => Some(self.look_up(local)),
+            Target::Relative(_) => None,
+        };
         let mut s = self.sink();
         for i in 0..PASSED {
             s.local_get(i);
         }
         self.address(offset + 4);
+        if self.flags_needed_after(offset) {
+            self.sink().i64_const(FLAGS_WANTED).i64_or();
+        }
         match target {
             Target::Relative(by) => {
                 let to = offset.wrapping_add_signed(by);
@@ -1757,17 +2348,18 @@ impl Emitter for FullEmitter<'_> {
                 }
             }
             Target::Address(local) => {
-                self.sink().local_get(local).call(F_DISPATCH);
+                let piece = looked_up.expect("looked up");
+                self.call_looked_up(piece, local, false);
             }
         }
         let returned_sp = self.temporary(ValType::I64);
         let mut s = self.sink();
         s.local_set(returned_sp);
-        for i in (0..4).rev() {
+        for i in (0..ARGUMENTS).rev() {
             s.local_set(i);
         }
         self.at.dirty = Registers::NONE;
-        self.set_flag_state(FLAGS_IN_GLOBALS);
+        self.set_flag_state(FLAGS_IN_BLOCK);
         // What is known about the stack pointer (its frame, its alignment) holds after the call only if the
         // callee gave it back unchanged; otherwise carry on from code that knows nothing.
         let kept =
@@ -1786,15 +2378,32 @@ impl Emitter for FullEmitter<'_> {
             self.sink().local_get(returned_sp).local_set(L_SP);
         }
         let reload = self.plan.live_after[&offset];
+        let block = self.fixed(G_THREAD_BLOCK);
         for bit in reload.bits() {
             let local = self.register(bit);
-            self.sink().global_get(global_of(bit)).local_set(local);
+            Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
         }
     }
 
     fn ret(&mut self, target: u32) {
-        self.write_back(false);
+        self.write_back_registers();
+        // The flags go back only when the caller asks for them.
+        let flags = self.at.flags;
+        let wanted = |e: &mut Self| {
+            if flags != 1 << FLAGS_IN_BLOCK {
+                e.sink()
+                    .local_get(L_RETURN)
+                    .i64_const(FLAGS_WANTED)
+                    .i64_and()
+                    .i32_wrap_i64()
+                    .if_(BlockType::Empty);
+                e.write_back_flags();
+                e.at.flags = flags;
+                e.sink().end();
+            }
+        };
         if self.omit.returns {
+            wanted(self);
             let mut s = self.sink();
             for i in 0..PASSED {
                 s.local_get(i);
@@ -1805,18 +2414,25 @@ impl Emitter for FullEmitter<'_> {
         let mut s = self.sink();
         s.local_get(target)
             .local_get(L_RETURN)
+            .i64_const(!FLAGS_WANTED)
+            .i64_and()
             .i64_eq()
             .if_(BlockType::Empty);
+        wanted(self);
+        let mut s = self.sink();
         for i in 0..PASSED {
             s.local_get(i);
         }
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
-        save_passed(&mut s);
-        s.local_get(target)
-            .global_set(G_PC)
-            .i32_const(UNWIND_GO_TO)
-            .throw(0);
+        self.write_back_flags();
+        let block = self.fixed(G_THREAD_BLOCK);
+        let mut s = self.sink();
+        save_passed(&mut s, block);
+        set_pc(&mut s, block, |s| {
+            s.local_get(target);
+        });
+        s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
     }
 
     fn syscall(&mut self) {
@@ -1832,7 +2448,7 @@ impl Emitter for FullEmitter<'_> {
         let live = self.plan.live_after[&self.at.offset];
         self.reload(live, 1);
         // The kernel raises the flag during the call when the thread must not carry on.
-        self.stop_check(Pc::Offset(next), live, 0);
+        self.stop_check(Pc::Offset(next), AfterStop::Reload(live, 0));
     }
 
     fn trap(&mut self, trap: Trap) {
@@ -1848,7 +2464,10 @@ impl Emitter for FullEmitter<'_> {
                 .i64_const(comment.into()),
             Trap::Alignment(address) => s.i32_const(TrapKind::Alignment as i32).local_get(address),
         };
-        s.call(F_TRAP).i32_const(UNWIND_LEAVE).throw(0);
+        s.call(F_TRAP)
+            .i32_const(UNWIND_LEAVE)
+            .call(F_UNWIND)
+            .unreachable();
     }
 
     fn next(&mut self) {

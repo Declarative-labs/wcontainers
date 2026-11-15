@@ -182,6 +182,24 @@ pub fn translated_omitting(
     look_ahead: LookAhead,
     omit: Omit,
 ) -> (Ran, Machine, RegisterBlock, Duration) {
+    run_blob(blob, look_ahead, omit, false)
+}
+
+/// [`translated`] with the thread stopping at every stop check it reaches and carrying on each time.
+pub fn translated_stopping_everywhere(
+    blob: &Blob,
+    look_ahead: LookAhead,
+) -> (Ran, Machine, RegisterBlock) {
+    let (ran, machine, registers, _) = run_blob(blob, look_ahead, Omit::default(), true);
+    (ran, machine, registers)
+}
+
+fn run_blob(
+    blob: &Blob,
+    look_ahead: LookAhead,
+    omit: Omit,
+    stop_everywhere: bool,
+) -> (Ran, Machine, RegisterBlock, Duration) {
     let slots = blob.code_bytes.div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, LOAD, slots, Syscalls::StandIn);
@@ -201,6 +219,9 @@ pub fn translated_omitting(
     registers.pc = LOAD;
     registers.sp = place.sp;
     machine.set_registers(&registers);
+    if stop_everywhere {
+        machine.stop_at_every_check();
+    }
     let started = Instant::now();
     let (stopped, registers) = machine.run();
     let ran_for = started.elapsed();
