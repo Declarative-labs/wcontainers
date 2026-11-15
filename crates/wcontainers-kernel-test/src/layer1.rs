@@ -44,6 +44,8 @@ const PRIORITIES: u64 = 0x3b80;
 const SCHED_ATTRS: u64 = 0x2000;
 /// `stack_t` values for sigaltstack, 24 bytes apart.
 const SIGNAL_STACKS: u64 = 0x2800;
+/// Stack limits for RLIMIT_STACK, 16 bytes apart.
+const STACK_LIMITS: u64 = 0x2900;
 /// Extended attribute names, one after another.
 const XATTR_NAMES: u64 = 0x3c00;
 /// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
@@ -387,6 +389,20 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at + 8..at + 12].copy_from_slice(&flags.to_le_bytes());
         arena[at + 16..at + 24].copy_from_slice(&size.to_le_bytes());
     }
+    // Stack limits no larger than 1 GiB: in our 4 GiB address space nothing lies between the stack and
+    // the play area, so a larger one would let the stack grow down to it, which the reference's layout
+    // never allows.
+    let stack_limits: [(u64, u64); 4] = [
+        (8 << 20, infinity),
+        (1 << 20, 1 << 30),
+        (1 << 30, 1 << 30),
+        (0, infinity),
+    ];
+    for (index, (current, maximum)) in stack_limits.iter().enumerate() {
+        let at = (STACK_LIMITS + index as u64 * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&current.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&maximum.to_le_bytes());
+    }
     for (index, value) in XATTR_VALUE_POOL.iter().enumerate() {
         let at = (XATTR_VALUES + index as u64 * 32) as usize;
         arena[at..at + value.len()].copy_from_slice(value);
@@ -655,6 +671,8 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     let new_limit = |resource: u64, word: u64| {
         if resource == u64::from(linux::RLIMIT_CPU) || resource == u64::from(linux::RLIMIT_FSIZE) {
             ARENA + UNREACHED_LIMITS + (word % 4) * 16
+        } else if resource == u64::from(linux::RLIMIT_STACK) {
+            ARENA + STACK_LIMITS + (word % 4) * 16
         } else {
             value(word)
         }

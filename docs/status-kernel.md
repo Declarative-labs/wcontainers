@@ -268,17 +268,23 @@ on the machine's speed); setpriority and getpriority by user (they reach the ref
 which has no counterpart here); flock waits (they
 would wait for ever); openat2 restricted lookups (not built) and RESOLVE_CACHED (its result in Linux
 depends on what is cached); huge page memory files (not built); alternate signal stacks that could hold
-either caller's stack pointer (the two differ; the stacks are now chosen from a pool in the play area).
+either caller's stack pointer (the two differ; the stacks are now chosen from a pool in the play area). Stack limits above 1 GiB:
+in our 4 GiB address space nothing lies between the stack and the play area, so the stack could grow
+down into it, which the reference's layout never allows.
 
 Cases run in the third run (earlier ones are in git history): seed 45: 3000 passed; seed 47: 3000
-passed; seed 49: 3000 passed (after fixes). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
+passed; seed 49: 3000 passed (after fixes); seed 50: 3000 passed; seed 51: 3000 passed;
+seed 52: 3000 passed (90 s, load 9 to 17). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
 times) each found a mismatch within 1 to 5 minutes, which was fixed: madvise MADV_REMOVE on shared
 anonymous memory, EROFS before the name lookup in unlink and rename, `/proc`'s link count (now masked,
 see above), reads of `/dev/full` into a buffer ending at an unmapped page (ARM64's `clear_user`), rename
 onto "." with RENAME_NOREPLACE (EEXIST), sendfile's order (offset first, written back always),
 sigaltstack while on the stack (layer 1's stacks now from a pool), ioprio_get for a group, renaming a
 `/proc` directory below itself (EINVAL), access checks walking with the checked credentials, chown
-naming neither owner nor group in `/proc`. One was the runner's fault: a descriptor on `/dev/shm` and
+naming neither owner nor group in `/proc`, fsync on `/proc` files (EINVAL: no sync operation), and
+seeking `/proc` directories and `/proc/sys` files (Linux's `generic_file_llseek` with size 0), and
+(a layout difference, excluded) a stack limit large enough for our stack to grow to the play area. Seeds 50
+and 51 (after the fsync fix): 3000 each passed. One was the runner's fault: a descriptor on `/dev/shm` and
 ".." reach `/dev` and `/`, whose mode a sequence could change for the rest of the run; the runner now
 puts back their owner, mode, attributes and pool names after each sequence. No run stalled.
 
@@ -371,6 +377,8 @@ All on this shared Mac; noisy, not benchmarks.
 ## Known issues
 
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
+- Once in the third run (load about 20 to 50) the stand-in test binary (tests/standin.rs, which uses no
+  kernel) hung for over 12 minutes and was killed; three reruns passed at once. Cause not found.
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen.
 - Inodes of `/proc` are made at each lookup, so changes to them do not last: chown of a process's
   entries succeeds with no effect, as on Linux; chmod or chown of entries outside the process

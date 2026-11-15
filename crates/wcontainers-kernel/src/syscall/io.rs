@@ -946,6 +946,21 @@ pub(super) fn lseek(
                 _ => return Err(Errno::EINVAL),
             }
         }
+        // The process information tree's directories and `/proc/sys`'s files seek as Linux's
+        // `generic_file_llseek` does with a size of zero.
+        Content::Proc(entry)
+            if inode.is_directory()
+                || matches!(entry, crate::fs::proc::Entry::Global(index)
+                    if crate::fs::proc::GLOBAL[*index].0.starts_with("sys/")) =>
+        {
+            match whence {
+                SEEK_SET | SEEK_END => offset,
+                SEEK_CUR => (file.offset as i64)
+                    .checked_add(offset)
+                    .ok_or(Errno::EINVAL)?,
+                _ => return Err(Errno::ENXIO),
+            }
+        }
         Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) => match whence {
             SEEK_SET => offset,
             SEEK_CUR => (file.offset as i64)
@@ -1279,8 +1294,10 @@ pub(super) fn fsync(
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
+    // Only tmpfs's files and directories have a sync operation; pipes, devices and the process
+    // information tree have none.
     match file.borrow().node.borrow().content {
-        Content::HostStream(_) | Content::Special => Err(Errno::EINVAL),
+        Content::HostStream(_) | Content::Special | Content::Proc(_) => Err(Errno::EINVAL),
         _ => Ok(0),
     }
 }
