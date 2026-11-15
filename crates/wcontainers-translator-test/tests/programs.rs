@@ -15,6 +15,7 @@ fn programs_match_linux() {
         ("integers", Library::None),
         ("tables", Library::None),
         ("buffers", Library::None),
+        ("walks", Library::None),
     ]);
 }
 

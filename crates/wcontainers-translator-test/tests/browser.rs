@@ -5,12 +5,13 @@ use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{Library, build, native};
 
-const PROGRAMS: [(&str, Library); 5] = [
+const PROGRAMS: [(&str, Library); 6] = [
     ("hello", Library::C),
     ("bench", Library::None),
     ("integers", Library::None),
     ("tables", Library::None),
     ("buffers", Library::None),
+    ("walks", Library::None),
 ];
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
