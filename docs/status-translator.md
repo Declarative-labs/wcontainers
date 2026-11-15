@@ -15,7 +15,8 @@ every size, x19 to x28, accesses through sp and groups through other registers, 
 far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
 S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
-what comes next. The third run's work is under "S1, third run" (after the second run's findings).
+what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
+"S1, fourth run", and what is left under "S1, what remains after the fourth run".
 
 ## S1: run speed at full look-ahead
 
@@ -257,25 +258,67 @@ S1, third run (commits 1f7dfee, 86f24d5):
   answer); the machine code shows why: the piece still saves all ten callee-saved registers, because
   Cranelift merges the reads of an immutable global into one value that lives across the calls anyway.
 
-S1, what remains after the third run (aims with every check, in both engines):
-- Met: sieve and hash (at most 1.5; sieve wasmtime 1.5 to 1.6 at high load, at or just over the aim, so
-  re-measure at low load), search in Chrome and about at the aim in wasmtime (2.6 to 3.0).
-- Matrix (aim 3): wasmtime about 7, Chrome about 4 to 5; no check 2.65. Its inner loop spills (about 30
-  live values for Cranelift's 26 or so registers). Next: cut what the loop keeps alive only for slow
-  paths: the operands of lazily kept flags and registers the next turn sets before reading (x6, x7 here),
-  which stay alive across the jump back only because the next turn's slow paths write them back (write
-  them back at the jump back instead, or let a slow path before their next setting not need them). A
-  proof over the loop's range (base plus index times a step, with the trip count from the loop's compare)
-  would drop both checks and their kept runs; not built.
-- Interpret (aim 3): about 3.8 to 4.1 in both; 2.9 (wasmtime) and 2.0 (Chrome) with no check. What is
-  left on its path: three kept-run checks per dispatch with their bounds spilled, and the switch's target
-  untagged, rotated and clamped twice (ours and the engine's `br_table`) before the jump.
-- fib (aim 4) and sort (aim 2.5): no check is already 5.1 / 3.3 in wasmtime and 4.7 / 2.9 in Chrome, so
-  the aims need a cheaper call than our convention allows in these engines (see above); the status file
-  shows the machine code and the experiments. Still open: whether a 32 bit guest memory (the owner's
-  call) closes the gap; it removes 24 instructions per fib call in wasmtime.
-- The aims are not met for matrix, interpret, fib and sort, and for none of them does this file yet show
-  that the rest cannot be removed without breaking the plan's rules.
+S1, fourth run (no code change kept; measurements and two experiments):
+- Where each check's cost sits now, wasmtime, commit 5cac63e, best of 3, load 12 to 17 (every check / no
+  stop check / no permission check / no return check / no check, times native): matrix 7.39 / 5.14 / 2.72 /
+  7.62 / 2.66; interpret 3.78 / 3.69 / 2.88 / 4.09 / 2.80; fib 6.25 / 6.33 / 6.35 / 6.80 / 6.01; sort 4.05 /
+  3.74 / 3.31 / 3.56 / 2.95; sieve 1.51 / 1.45 / 1.25 / 1.58 / 1.24 (native sieve 0.442 s). So in matrix and
+  interpret almost all of the checks' cost is the permission check; in fib the checks cost about 4% and the
+  call itself is the cost.
+- Matrix in numbers: n = 96, 300 rounds, 265 million turns of the 6 instruction inner loop; native 0.29 ns a
+  turn, no check 0.77 ns, every check 2.1 ns. Kept-run misses (11 million, one per 24 turns) account for
+  about 2 instructions a turn; the rest is the two kept-run checks per turn and the spills they cause (the
+  inner loop is about 56 instructions in wasmtime, 12 of them stores to its own stack and 10 loads, see the
+  second run's notes). The way to the aim is the proof over the loop's range (below): with it the loop is
+  the no-permission loop, 2.7 in wasmtime.
+- Tried and not kept: (a) registers the header of a loop sets before reading them (x6, x7 in matrix) written
+  back at every jump back and before the loop, so they are no longer alive across the jump back. The
+  machine code shows the two stores and x6, x7 gone from the spills, but the loop still spills the same
+  amount (other values took the registers). A/B, two rounds alternating, load 5 to 19, seconds: matrix 0.665
+  / 0.554 against 0.609 / 0.552, sieve 0.884 / 0.672 against 0.756 / 0.676, search 0.444 / 0.350 against
+  0.354 / 0.348, interpret 0.816 / 0.600 against 0.601 / 0.565. No gain. (b) The kept runs in mutable globals
+  of the module instead of locals (so they are not loop values): matrix 0.529 s (unchanged), sieve 1.92,
+  search 3.54, interpret 4.40 times native (all worse, load 6). Patch of (a):
+  `pyro-parked/wcontainers-scratch/translator/s4/writeback.patch`.
+- fib against the toy, measured again today in wasmtime 50 CLI (toy modules from translator-bench/out,
+  compiled at opt-level 2, process start included, best of 3, native 0.365 s, load 7.5 to 12): toy
+  `args4+check` (return check only, 32 bit memory, registers in module globals, flags never carried across
+  calls, no permission check) 1.25 s, 3.4 times native; `args4+check+flag@loops+callers` (adds the stop check
+  at loops and at entries of callers) 1.48 s, 4.05; `locals+check` 1.53 s against `locals+check+mem64` 1.60
+  s (the same with a 64 bit memory: 4% slower). So in wasmtime even the toy's call shape is at 4 once it has
+  the stop check the plan requires, before a 64 bit memory, permission checks or flags kept across calls.
+  Ours: 6.0 with no check, 6.25 with every check (this session). The toy figures in Chrome (2.55 to 2.72 times
+  native, `out/poll-results.txt`, load 16) were not measured again.
+
+S1, what remains after the fourth run (aims with every check, in both engines):
+- Met: sieve and hash (sieve wasmtime 1.51 at load 12 to 14 in the fourth run, just over the aim of 1.5;
+  1.31 and 1.50 in two A/B rounds at load 5 to 19, so within noise of it), search in Chrome and about at the
+  aim in wasmtime (2.5 to 3.0).
+- Matrix (aim 3), most important: wasmtime about 7, Chrome about 4 to 5; with no permission check 2.72 in
+  wasmtime, so the permission check is the whole gap there. Next: the proof over the loop's range. For a
+  loop without calls, find registers the loop changes only by a fixed step once per turn (here w4 by 1, w5
+  by w3, x18 by -1), the trip count from the compare of the exit (subs x18, #1 / b.ne gives x18 turns), and
+  for each access whose base is unchanged in the loop and whose index is such a register, the range it
+  covers. Before the loop, check every page of each range (one 8 byte table load per 8 pages, as the kept
+  runs do), and run a copy of the loop with no permission check when all are allowed; otherwise run the
+  loop as now, which stays exact. A 32 bit index (uxtw) that would wrap counts as not proven. Loop pieces
+  need the same choice at their entry. Not started.
+- Interpret (aim 3): 3.8 in wasmtime, 3.8 to 4.1 in Chrome; with no permission check 2.88 in wasmtime. Its
+  accesses are data dependent (byte code, jump table, interpreter stack through a register index), so the
+  range proof does not reach them; what is left is three kept-run checks per dispatch with their bounds
+  spilled. No cheaper exact check is known yet.
+- fib (aim 4): wasmtime 6.25 with every check, 6.0 with none; the toy's own call shape is 4.05 once it has
+  the stop check (fourth run), so in wasmtime the aim is beyond the plan's call shape itself. In Chrome ours
+  is 5.6 / 4.7 and the toy's 2.7, so in Chrome the gap is ours and not yet explained in full. Differences
+  seen in V8's code of our fib: the flags worked out and stored before each call (about 17 instructions,
+  twice, as V8 inlines one level), x19, x20, x29, x30 through the thread block, the state memory's base
+  loaded again after each call (three loads), the sp compare after calls, and a compare and branch per
+  guest stack access (64 bit memory). Next: measure each in Chrome by leaving it out of the generated code.
+- Sort (aim 2.5): wasmtime 4.05 / 2.95 (every / no check); the same call costs as fib plus a call through
+  the lookup at every comparison.
+- 32 bit guest memory: measured 10 to 27% faster in wasmtime; the owner's call.
+- Not yet shown for matrix, interpret, sort, or fib in Chrome that the rest cannot be removed within the
+  plan's rules.
 
 ## Done
 
