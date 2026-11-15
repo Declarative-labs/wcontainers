@@ -87,6 +87,8 @@ fn place(
     let mut mappings = Vec::new();
     let mut program_headers = None;
     let phoff = header.e_phoff(endian);
+    // The end of the highest range any segment has written so far.
+    let mut written_end = 0;
     for segment in segments {
         if segment.p_type(endian) != elf::PT_LOAD {
             continue;
@@ -103,21 +105,43 @@ fn place(
         if start < wcontainers_abi::LOWEST_ADDRESS || stop > end - STACK_SIZE {
             return Err(Errno::ENOEXEC);
         }
-        // As Linux maps the file: from the start of the page, up to the end of the file's part.
-        let from = page_down(offset) as usize;
-        let to = (offset + file_size) as usize;
-        let bytes = program.get(from..to).ok_or(Errno::ENOEXEC)?;
-        cx.cpu
-            .write(memory, start, bytes)
-            .map_err(errno::from_cpu)?;
-        // Linux clears the rest of the last file page, which may hold bytes from an earlier segment.
-        let tail = page_up(start + bytes.len() as u64).min(stop) - (start + bytes.len() as u64);
-        if tail > 0 {
+        let permissions = segment_permissions(segment.p_flags(endian));
+        let file_end = address + file_size;
+        // Where the pages that are new and zero start, as in Linux's `elf_load`.
+        let mut fresh = start;
+        if file_size > 0 {
+            // As Linux maps the file: whole pages, so the rest of the last page shows the file's following
+            // bytes, and zero past the file's end.
+            let from = page_down(offset);
+            let to = offset.checked_add(file_size).ok_or(Errno::ENOEXEC)?;
+            let bytes = program
+                .get(from as usize..page_up(to).min(program.len() as u64) as usize)
+                .filter(|bytes| bytes.len() as u64 >= to - from)
+                .ok_or(Errno::ENOEXEC)?;
+            fresh = page_up(file_end);
+            let written = start + bytes.len() as u64;
             cx.cpu
-                .write(memory, start + bytes.len() as u64, &vec![0; tail as usize])
+                .write(memory, start, bytes)
+                .map_err(errno::from_cpu)?;
+            cx.cpu
+                .zero(memory, written, fresh - written)
+                .map_err(errno::from_cpu)?;
+            // Linux clears the rest of the last file page only when zeroed data follows and the segment is
+            // writable (`padzero`).
+            if memory_size > file_size && permissions.contains(Permissions::WRITE) {
+                cx.cpu
+                    .zero(memory, file_end, fresh - file_end)
+                    .map_err(errno::from_cpu)?;
+            }
+        }
+        // The rest is new and zero. A new memory is zero already, except where an earlier segment wrote.
+        let dirty = written_end.min(stop);
+        if fresh < dirty {
+            cx.cpu
+                .zero(memory, fresh, dirty - fresh)
                 .map_err(errno::from_cpu)?;
         }
-        let permissions = segment_permissions(segment.p_flags(endian));
+        written_end = written_end.max(stop);
         cx.cpu
             .set_permissions(memory, start, stop - start, permissions)
             .map_err(errno::from_cpu)?;
@@ -163,6 +187,12 @@ fn place(
         entry,
     };
     let sp = build_stack(cx, memory, end, arguments, environment, &auxiliary)?;
+    // No vDSO yet (its page holds the signal return path), and no signal frame size to report.
+    for key in [AT_SYSINFO_EHDR, AT_MINSIGSTKSZ] {
+        kernel
+            .counters
+            .count(cx.host, reason::AUXILIARY_MISSING, key.into());
+    }
     let mut registers = RegisterBlock::ZERO;
     registers.sp = sp;
     registers.pc = entry;

@@ -37,6 +37,37 @@ pub struct Run {
     pub counters: Vec<CounterReading>,
 }
 
+impl Run {
+    /// The warnings besides those every program start gives today, after checking that those came
+    /// exactly once: the auxiliary vector entries the kernel does not pass yet.
+    pub fn warnings_besides_start(&self) -> Vec<&Warned> {
+        let start = [
+            linux_raw_sys::auxvec::AT_SYSINFO_EHDR,
+            linux_raw_sys::auxvec::AT_MINSIGSTKSZ,
+        ];
+        for key in start {
+            let found: Vec<_> = self
+                .warnings
+                .iter()
+                .filter(|warned| {
+                    warned.reason == wcontainers_kernel::reason::AUXILIARY_MISSING
+                        && warned.detail == u64::from(key)
+                })
+                .collect();
+            assert_eq!(
+                found.len(),
+                1,
+                "auxiliary vector key {key}: {:?}",
+                self.warnings
+            );
+        }
+        self.warnings
+            .iter()
+            .filter(|warned| warned.reason != wcontainers_kernel::reason::AUXILIARY_MISSING)
+            .collect()
+    }
+}
+
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly.
 pub struct TestHost {
     started: Instant,

@@ -12,6 +12,8 @@ pub mod reason {
     pub const UNKNOWN_SYSCALL: &str = "system call number unknown";
     /// A program that names a loader for shared libraries, which the kernel cannot start yet.
     pub const DYNAMIC_PROGRAM: &str = "dynamically linked program not supported";
+    /// A program started without an auxiliary vector entry Linux passes. Detail: the `AT_*` key.
+    pub const AUXILIARY_MISSING: &str = "auxiliary vector entry missing";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
 }

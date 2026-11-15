@@ -15,5 +15,9 @@ fn write_edges_match_reference() {
         String::from_utf8_lossy(&theirs.stdout)
     );
     assert_eq!(ours.outcome, theirs);
-    assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
+    assert!(
+        ours.warnings_besides_start().is_empty(),
+        "{:?}",
+        ours.warnings
+    );
 }

@@ -21,6 +21,10 @@ fn faults_match_reference() {
         let (ours, theirs) = run_both(&program, &[kind]);
         assert_eq!(ours.outcome, theirs, "{kind}");
         assert_eq!(theirs.exit_code, exit_code, "{kind}");
-        assert!(ours.warnings.is_empty(), "{kind}: {:?}", ours.warnings);
+        assert!(
+            ours.warnings_besides_start().is_empty(),
+            "{kind}: {:?}",
+            ours.warnings
+        );
     }
 }
