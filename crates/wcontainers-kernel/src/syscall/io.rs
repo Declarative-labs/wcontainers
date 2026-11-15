@@ -914,7 +914,8 @@ fn send(
     if output.borrow().flags & O_APPEND != 0 {
         return Err(Errno::EINVAL);
     }
-    if input.borrow().node.borrow().is_directory() {
+    // Neither a directory nor secret memory can be spliced from (no `splice_read`).
+    if input.borrow().node.borrow().is_directory() || input.borrow().node.borrow().is_secret() {
         return Err(Errno::EINVAL);
     }
     let offset = position as u64;

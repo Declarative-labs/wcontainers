@@ -598,6 +598,25 @@ pub(super) fn madvise(
             at = to;
         }
     }
+    // Populating faults the pages in mapping by mapping (`madvise_populate`): a mapping that does not
+    // allow the access is EINVAL, a gap before it ENOMEM.
+    if matches!(advice, MADV_POPULATE_READ | MADV_POPULATE_WRITE) {
+        let wanted = if advice == MADV_POPULATE_WRITE {
+            Permissions::WRITE
+        } else {
+            Permissions::READ
+        };
+        let mut at = address;
+        while at < end {
+            match process.map.find(at) {
+                None => return Err(Errno::ENOMEM),
+                Some(mapping) if !mapping.permissions.contains(wanted) => {
+                    return Err(Errno::EINVAL);
+                }
+                Some(mapping) => at = mapping.end,
+            }
+        }
+    }
     if !process.map.fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
     }
