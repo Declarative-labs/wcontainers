@@ -671,9 +671,11 @@ fn process_file(
                 SCHED_DEADLINE => -101,
                 _ => 20 + schedule.nice,
             };
+            let (ignored, caught) = ignored_and_caught(process);
+            let blocked = source.view.threads[&process.threads[0]].signal_mask;
             let _ = writeln!(
                 out,
-                "{} ({}) R {} {} {} 0 -1 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
+                "{} ({}) R {} {} {} 0 -1 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
                 process.pid,
                 name,
                 process.parent,
@@ -683,6 +685,10 @@ fn process_file(
                 schedule.nice,
                 process.threads.len(),
                 vsize,
+                // Only the first 31 signals, as Linux's `do_task_stat` shows them.
+                blocked & 0x7fff_ffff,
+                ignored & 0x7fff_ffff,
+                caught & 0x7fff_ffff,
                 schedule.priority,
                 schedule.policy
             );
@@ -716,13 +722,17 @@ fn process_file(
             for group in &credentials.groups {
                 let _ = write!(out, "{group} ");
             }
+            let (ignored, caught) = ignored_and_caught(process);
             let _ = write!(
                 out,
-                "\nVmSize:\t{:8} kB\nThreads:\t{}\nSigBlk:\t0000000000000000\n\
+                "\nVmSize:\t{:8} kB\nThreads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\
                  CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\nCapAmb:\t{:016x}\n\
                  NoNewPrivs:\t{}\nSeccomp:\t2\nSeccomp_filters:\t{}\n",
                 vsize / 1024,
                 process.threads.len(),
+                source.view.threads[&process.threads[0]].signal_mask,
+                ignored,
+                caught,
                 credentials.inheritable,
                 credentials.permitted,
                 credentials.effective,
@@ -789,6 +799,20 @@ fn process_file(
 }
 
 /// The total mapped size of a process, and the part that is writable.
+/// The signals a process ignores and those it has handlers for, one bit each from bit 0 for signal 1
+/// (Linux's `collect_sigign_sigcatch`).
+fn ignored_and_caught(process: &Process) -> (u64, u64) {
+    let (mut ignored, mut caught) = (0, 0);
+    for (index, action) in process.actions.iter().enumerate() {
+        match action.sa_handler_kernel {
+            crate::linux_extra::SIG_IGN => ignored |= 1 << index,
+            crate::linux_extra::SIG_DFL => {}
+            _ => caught |= 1 << index,
+        }
+    }
+    (ignored, caught)
+}
+
 fn sizes(process: &Process) -> (u64, u64) {
     let mut total = 0;
     let mut writable = 0;
