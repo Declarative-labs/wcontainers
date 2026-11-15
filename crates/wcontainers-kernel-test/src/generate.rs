@@ -13,7 +13,7 @@ use regex::Regex;
 
 /// The linux-raw-sys modules the kernel uses.
 const MODULES: &[&str] = &[
-    "general", "errno", "auxvec", "system", "ioctl", "prctl", "net",
+    "general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace",
 ];
 
 /// Structures the kernel copies to or from guest memory. They get zerocopy's byte conversions, whose
@@ -41,6 +41,9 @@ const BYTES: &[&str] = &[
     "kernel_sigset_t",
     "__user_cap_header_struct",
     "__user_cap_data_struct",
+    "sock_filter",
+    "seccomp_data",
+    "seccomp_notif_sizes",
 ];
 
 /// One file the generator writes, relative to the workspace root, and what it holds.

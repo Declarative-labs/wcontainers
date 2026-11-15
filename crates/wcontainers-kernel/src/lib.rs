@@ -272,6 +272,7 @@ impl Kernel {
         let process = &self.processes[&pid];
         let view = fs::proc::View {
             processes: &self.processes,
+            threads: &self.threads,
             caller: pid,
             fs: self.files.proc_fs,
             boot: self.boot,
@@ -301,6 +302,18 @@ impl Kernel {
         if self.init == Some(pid) {
             self.finished = Some(wait_status);
         }
+    }
+
+    /// Ends one thread of a process that has others.
+    pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
+        let thread = self.threads.remove(&tid).expect("thread exists");
+        cx.cpu.thread_drop(thread.cpu);
+        self.runnable.retain(|other| *other != tid);
+        let process = self
+            .processes
+            .get_mut(&thread.process)
+            .expect("process exists");
+        process.threads.retain(|other| *other != tid);
     }
 
     /// A fault: grow the stack if that is what it is, or kill the process as Linux's default action does
@@ -343,7 +356,7 @@ impl Kernel {
 
     /// A signal with no handler that kills: the process dies of it, as Linux's default action does. A
     /// handler the program set cannot run yet, which is counted.
-    fn kill_by_signal(&mut self, cx: &mut Context<'_>, tid: Tid, signal: u32) {
+    pub(crate) fn kill_by_signal(&mut self, cx: &mut Context<'_>, tid: Tid, signal: u32) {
         let pid = self.threads[&tid].process;
         let handler = self.processes[&pid].actions[signal as usize - 1].sa_handler_kernel;
         if handler != linux_extra::SIG_DFL {

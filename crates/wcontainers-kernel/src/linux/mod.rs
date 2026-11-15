@@ -35,4 +35,5 @@ pub mod general;
 pub mod ioctl;
 pub mod net;
 pub mod prctl;
+pub mod ptrace;
 pub mod system;

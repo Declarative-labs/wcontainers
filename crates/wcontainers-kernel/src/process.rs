@@ -1,5 +1,6 @@
 //! Processes and threads.
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 use wcontainers_abi::{MemoryId, Resume, ThreadId};
@@ -120,6 +121,8 @@ pub(crate) struct Thread {
     /// How the thread is scheduled: its policy, real-time priority, nice value and whether children
     /// go back to the default.
     pub schedule: Schedule,
+    /// The seccomp filters the thread installed, oldest first; Docker's profile is not among them.
+    pub filters: Vec<Rc<crate::seccomp::Filter>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -158,6 +161,7 @@ impl Thread {
             alternate_stack: (0, 0, 0),
             parked: None,
             schedule: Schedule::default(),
+            filters: Vec::new(),
         }
     }
 }

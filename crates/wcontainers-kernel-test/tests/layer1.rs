@@ -36,7 +36,7 @@ fn sequences_match_reference() {
         TestRng::from_seed(RngAlgorithm::ChaCha, &seed_bytes),
     );
     let strategy = (
-        proptest::collection::vec(any::<u64>(), 72),
+        proptest::collection::vec(any::<u64>(), 125),
         proptest::collection::vec((any::<u8>(), any::<[u64; 6]>()), 1..16),
     );
     let result = runner.run(&strategy, |(values, raw)| {

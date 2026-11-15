@@ -26,10 +26,7 @@ pub(super) fn exit(
     if kernel.processes[&pid].threads.len() == 1 {
         kernel.end_process(cx, pid, exit_status(status));
     } else {
-        let thread = kernel.threads.remove(&tid).expect("thread exists");
-        cx.cpu.thread_drop(thread.cpu);
-        let process = kernel.processes.get_mut(&pid).expect("process exists");
-        process.threads.retain(|other| *other != tid);
+        kernel.end_thread(cx, tid);
     }
     Outcome::Gone
 }
@@ -1015,7 +1012,9 @@ pub(super) fn prctl(
             kernel.process_of_mut(tid).credentials.no_new_privileges = true;
             Ok(0)
         }
-        PR_GET_SECCOMP => Ok(0),
+        // Docker's profile puts every process in filter mode.
+        PR_GET_SECCOMP => Ok(crate::linux::ptrace::SECCOMP_MODE_FILTER.into()),
+        PR_SET_SECCOMP => super::seccomp::prctl_set(kernel, cx, tid, second, third),
         PR_GET_CHILD_SUBREAPER => {
             guest(kernel, cx, tid).write(second, &0i32.to_le_bytes())?;
             Ok(0)

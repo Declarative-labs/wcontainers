@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use linux_raw_sys::general as linux;
+use linux_raw_sys::ptrace as seccomp;
 use wcontainers_abi::{Event, Exit, Next, Syscall};
 use wcontainers_kernel::{Kernel, Start};
 
@@ -46,6 +47,20 @@ const SCHED_ATTRS: u64 = 0x2000;
 const SIGNAL_STACKS: u64 = 0x2800;
 /// Stack limits for RLIMIT_STACK, 16 bytes apart.
 const STACK_LIMITS: u64 = 0x2900;
+/// Seccomp filter programs, `FILTER_SPACING` bytes apart.
+const FILTERS: u64 = 0x2a00;
+const FILTER_COUNT: u64 = 4;
+const FILTER_SPACING: u64 = 0x180;
+/// `sock_fprog` values for seccomp, 16 bytes apart: one for each filter, then an empty one, one too
+/// long, one with no program and one whose program cannot be read.
+const FPROGS: u64 = 0x3100;
+const FPROG_COUNT: u64 = 8;
+/// Actions for SECCOMP_GET_ACTION_AVAIL, 4 bytes apart.
+const ACTIONS: u64 = 0x3180;
+/// How many random words make the filters: for each, a length and up to twelve instructions.
+const FILTER_WORDS: usize = 13;
+/// Where the filters' words start in the generated values.
+const FILTER_VALUES: usize = 72;
 /// Extended attribute names, one after another.
 const XATTR_NAMES: u64 = 0x3c00;
 /// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
@@ -417,8 +432,232 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
             arguments: [ARENA + path_at[0], 0, 0, 0, 0, 0],
         },
     ];
+    // Half the sequences may install seccomp filters, which needs no_new_privs (Docker's root lacks
+    // CAP_SYS_ADMIN).
+    if values
+        .get(FILTER_VALUES + FILTER_WORDS * FILTER_COUNT as usize)
+        .copied()
+        .unwrap_or(0)
+        % 2
+        == 1
+    {
+        calls.push(Call {
+            number: linux::__NR_prctl,
+            arguments: [
+                u64::from(linux_raw_sys::prctl::PR_SET_NO_NEW_PRIVS),
+                1,
+                0,
+                0,
+                0,
+                0,
+            ],
+        });
+    }
     calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
+    // Each filter first lets through the calls the reference's runner reports with and every call of
+    // the sequence that names a process, whose number differs between the runners.
+    let mut passed = vec![linux::__NR_write, linux::__NR_exit_group];
+    for call in &calls {
+        if call.arguments.contains(&SELF) && !passed.contains(&call.number) {
+            passed.push(call.number);
+        }
+    }
+    for index in 0..FILTER_COUNT {
+        let start = FILTER_VALUES + FILTER_WORDS * index as usize;
+        let words: Vec<u64> = (start..start + FILTER_WORDS)
+            .map(|at| values.get(at).copied().unwrap_or(0))
+            .collect();
+        let program = filter_program(&words, &passed);
+        let at = (FILTERS + index * FILTER_SPACING) as usize;
+        arena[at..at + program.len()].copy_from_slice(&program);
+        let fprog = (FPROGS + index * 16) as usize;
+        arena[fprog..fprog + 2].copy_from_slice(&((program.len() / 8) as u16).to_le_bytes());
+        arena[fprog + 8..fprog + 16]
+            .copy_from_slice(&(ARENA + FILTERS + index * FILTER_SPACING).to_le_bytes());
+    }
+    let odd: [(u16, u64); 4] = [
+        (0, ARENA + FILTERS),
+        (4097, ARENA + FILTERS),
+        (1, 0),
+        (2, u64::MAX - 4095),
+    ];
+    for (index, (length, address)) in odd.iter().enumerate() {
+        let fprog = (FPROGS + (FILTER_COUNT + index as u64) * 16) as usize;
+        arena[fprog..fprog + 2].copy_from_slice(&length.to_le_bytes());
+        arena[fprog + 8..fprog + 16].copy_from_slice(&address.to_le_bytes());
+    }
+    for (index, action) in SECCOMP_ACTIONS.iter().enumerate() {
+        let at = (ACTIONS + index as u64 * 4) as usize;
+        arena[at..at + 4].copy_from_slice(&action.to_le_bytes());
+    }
     Sequence { arena, calls }
+}
+
+/// Filter answers: every action, an ERRNO past Linux's largest, data on actions that take none, and
+/// values that are no action.
+const SECCOMP_ACTIONS: [u32; 12] = [
+    seccomp::SECCOMP_RET_ALLOW,
+    seccomp::SECCOMP_RET_ERRNO | 13,
+    seccomp::SECCOMP_RET_ERRNO | 5000,
+    seccomp::SECCOMP_RET_LOG,
+    seccomp::SECCOMP_RET_TRACE | 1,
+    seccomp::SECCOMP_RET_USER_NOTIF,
+    seccomp::SECCOMP_RET_TRAP,
+    seccomp::SECCOMP_RET_KILL_PROCESS,
+    seccomp::SECCOMP_RET_KILL_THREAD | 7,
+    seccomp::SECCOMP_RET_ERRNO,
+    0x0001_0000,
+    0x7fff_0001,
+];
+
+/// A seccomp filter as bytes: it loads the call number and lets `passed` through, then runs up to
+/// eight instructions chosen by `words` (some of them ones Linux refuses, so that its checks are
+/// tested), then lets everything else through. It never loads the instruction pointer, which differs
+/// between the runners.
+fn filter_program(words: &[u64], passed: &[u32]) -> Vec<u8> {
+    use seccomp::*;
+    let constants = |word: u64| -> u32 {
+        pick(
+            &[
+                0,
+                1,
+                2,
+                3,
+                31,
+                32,
+                0xfff,
+                u32::MAX,
+                0x8000_0000,
+                AUDIT_ARCH_AARCH64,
+                linux::__NR_openat,
+                linux::__NR_close,
+                linux::__NR_getpid,
+                ARENA as u32,
+                (word >> 32) as u32,
+            ],
+            word,
+        )
+    };
+    let jumps = |word: u64| pick(&[0u8, 0, 1, 2, 3], word);
+    let body_length = 1 + (words[0] % 8) as usize;
+    let mut body: Vec<(u16, u8, u8, u32)> = Vec::new();
+    // Scratch words stored so far, so that most loads from scratch memory are valid.
+    let mut stored: Vec<u32> = Vec::new();
+    for (index, &word) in words[1..=body_length].iter().enumerate() {
+        // One instruction in sixteen is one Linux refuses.
+        let broken = (word >> 60) == 0;
+        let w = word >> 4;
+        let x_or_k = if w & 1 == 0 { BPF_K } else { BPF_X };
+        // How far a jump from here may go and still land in the program.
+        let reach = (body_length - 1 - index) as u32;
+        let mut instruction = match word % 16 {
+            0..=2 => (
+                BPF_LD | BPF_W | BPF_ABS,
+                0,
+                0,
+                if broken {
+                    pick(&[2u32, 64, 0xffff_f000, 8], w >> 1)
+                } else {
+                    pick(&[0u32, 4, 16, 20, 24, 28, 32, 40, 56, 60], w >> 1)
+                },
+            ),
+            3 => (BPF_LD | BPF_IMM, 0, 0, constants(w)),
+            4 => (BPF_LDX | BPF_IMM, 0, 0, constants(w)),
+            5 if !stored.is_empty() || broken => (
+                pick(&[BPF_LD | BPF_MEM, BPF_LDX | BPF_MEM], w),
+                0,
+                0,
+                if broken {
+                    pick(&[16u32, 3], w >> 1)
+                } else {
+                    pick(&stored, w >> 1)
+                },
+            ),
+            5 | 6 => {
+                let slot = if broken {
+                    16
+                } else {
+                    pick(&[0u32, 1, 15], w >> 1)
+                };
+                stored.push(slot);
+                (pick(&[BPF_ST, BPF_STX], w), 0, 0, slot)
+            }
+            7 => (
+                pick(
+                    &[BPF_MISC | BPF_TAX, BPF_MISC | BPF_TXA, BPF_ALU | BPF_NEG],
+                    w,
+                ),
+                0,
+                0,
+                0,
+            ),
+            8 | 9 => {
+                let operation = if broken {
+                    pick(&[BPF_MOD, BPF_DIV, BPF_LSH], w >> 1)
+                } else {
+                    pick(
+                        &[
+                            BPF_ADD, BPF_SUB, BPF_MUL, BPF_DIV, BPF_OR, BPF_AND, BPF_XOR, BPF_LSH,
+                            BPF_RSH,
+                        ],
+                        w >> 1,
+                    )
+                };
+                let k = if broken && operation != BPF_MOD {
+                    pick(&[0u32, 32, 33], w >> 5)
+                } else {
+                    constants(w >> 5)
+                };
+                (BPF_ALU | x_or_k | operation, 0, 0, k)
+            }
+            10 => (BPF_JMP | BPF_JA, 0, 0, pick(&[0u32, 1, 2, 3], w)),
+            11 | 12 => (
+                BPF_JMP | x_or_k | pick(&[BPF_JEQ, BPF_JGT, BPF_JGE, BPF_JSET], w >> 1),
+                jumps(w >> 3),
+                jumps(w >> 7),
+                constants(w >> 11),
+            ),
+            13 | 15 if !broken => (BPF_RET | BPF_K, 0, 0, pick(&SECCOMP_ACTIONS, w)),
+            14 => (BPF_RET | BPF_A, 0, 0, 0),
+            _ => (
+                (w & 0xffff) as u32,
+                (w >> 16) as u8,
+                (w >> 24) as u8,
+                (w >> 32) as u32,
+            ),
+        };
+        // Jumps past the end, unless this one is to be refused.
+        if instruction.0 & 7 == BPF_JMP {
+            if broken {
+                instruction.1 = instruction.1.saturating_add(reach as u8 + 1);
+                instruction.3 = instruction.3.wrapping_add(reach + 1);
+            } else {
+                instruction.1 = instruction.1.min(reach as u8);
+                instruction.2 = instruction.2.min(reach as u8);
+                if instruction.0 == BPF_JMP | BPF_JA {
+                    instruction.3 = instruction.3.min(reach);
+                }
+            }
+        }
+        let (code, jt, jf, k) = instruction;
+        body.push((code as u16, jt, jf, k));
+    }
+    let total = 1 + passed.len() + body.len() + 1;
+    let mut program = vec![((BPF_LD | BPF_W | BPF_ABS) as u16, 0u8, 0u8, 0u32)];
+    for (index, number) in passed.iter().enumerate() {
+        let to_end = (total - 1) - (1 + index) - 1;
+        program.push(((BPF_JMP | BPF_JEQ | BPF_K) as u16, to_end as u8, 0, *number));
+    }
+    program.extend(body);
+    program.push(((BPF_RET | BPF_K) as u16, 0, 0, SECCOMP_RET_ALLOW));
+    let mut bytes = Vec::new();
+    for (code, jt, jf, k) in program {
+        bytes.extend_from_slice(&code.to_le_bytes());
+        bytes.push(jt);
+        bytes.push(jf);
+        bytes.extend_from_slice(&k.to_le_bytes());
+    }
+    bytes
 }
 
 /// Flags for an open, each bit present one time in eight.
@@ -610,6 +849,10 @@ pub const CALLS: &[u32] = &[
     linux::__NR_mincore,
     linux::__NR_ioprio_get,
     linux::__NR_ioprio_set,
+    // Three times, since most of its sequences need several filters to show anything.
+    linux::__NR_seccomp,
+    linux::__NR_seccomp,
+    linux::__NR_seccomp,
 ];
 
 /// Turns a generated call into real arguments.
@@ -629,6 +872,15 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         1 => PLAY + (word >> 8) % (PLAY_PAGES * 4096),
         2 => u64::MAX - 4095,
         _ => ARENA + OUTPUT + (word >> 8) % 0x8000,
+    };
+    // Mostly the generated filters, else the odd ones and bad addresses.
+    let fprog = |word: u64| match word % 16 {
+        0..=9 => ARENA + FPROGS + (word >> 4) % FILTER_COUNT * 16,
+        10..=13 => {
+            ARENA + FPROGS + (FILTER_COUNT + (word >> 4) % (FPROG_COUNT - FILTER_COUNT)) * 16
+        }
+        14 => 0,
+        _ => buffer(word >> 4),
     };
     let count = |word: u64| {
         pick(
@@ -951,14 +1203,64 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        linux::__NR_prctl => [
-            pick(&[15u64, 16, 3, 4, 7, 8, 24, 38, 39, 9999], a),
-            buffer(b),
-            0,
-            0,
-            0,
-            0,
-        ],
+        linux::__NR_prctl => {
+            let option = pick(&[15u64, 16, 3, 4, 7, 8, 24, 38, 39, 9999, 21, 22, 22], a);
+            match option {
+                // PR_SET_SECCOMP: a mode and a filter.
+                22 => [option, pick(&[0, 1, 2, 2, 3], b), fprog(c), 0, 0, 0],
+                // PR_SET_NO_NEW_PRIVS: only 1 is taken.
+                38 if b % 2 == 0 => [option, pick(&[1, 0, 2], b >> 1), 0, 0, 0, 0],
+                _ => [option, buffer(b), 0, 0, 0, 0],
+            }
+        }
+        linux::__NR_seccomp => {
+            use seccomp::*;
+            let operation = pick(
+                &[
+                    u64::from(SECCOMP_SET_MODE_STRICT),
+                    u64::from(SECCOMP_SET_MODE_FILTER),
+                    u64::from(SECCOMP_SET_MODE_FILTER),
+                    u64::from(SECCOMP_SET_MODE_FILTER),
+                    u64::from(SECCOMP_GET_ACTION_AVAIL),
+                    u64::from(SECCOMP_GET_ACTION_AVAIL),
+                    u64::from(SECCOMP_GET_NOTIF_SIZES),
+                    4,
+                    1 << 32 | u64::from(SECCOMP_SET_MODE_FILTER),
+                ],
+                a,
+            );
+            // No listener (not built).
+            let flags = pick(
+                &[
+                    0u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC),
+                    u64::from(SECCOMP_FILTER_FLAG_LOG),
+                    u64::from(SECCOMP_FILTER_FLAG_SPEC_ALLOW),
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC_ESRCH),
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC | SECCOMP_FILTER_FLAG_TSYNC_ESRCH),
+                    u64::from(SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV),
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC | SECCOMP_FILTER_FLAG_NEW_LISTENER),
+                    64,
+                    1 << 32,
+                ],
+                b,
+            );
+            let argument = match operation as u32 {
+                SECCOMP_SET_MODE_FILTER => fprog(c),
+                SECCOMP_GET_ACTION_AVAIL if c % 4 != 0 => {
+                    ARENA + ACTIONS + (c >> 2) % SECCOMP_ACTIONS.len() as u64 * 4
+                }
+                _ => pick(&[0, buffer(c >> 2)], c),
+            };
+            [operation, flags, argument, 0, 0, 0]
+        }
         linux::__NR_sched_getaffinity => [
             pick(&[0, SELF, 99999], c),
             pick(&[0, 4, 8, 128], a),

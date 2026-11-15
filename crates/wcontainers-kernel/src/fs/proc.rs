@@ -13,11 +13,12 @@ use super::{Content, FileSystem, New, Node, Time, Walk, new_inode};
 use crate::Errno;
 use crate::linux::general::*;
 use crate::memory::Backing;
-use crate::process::{Pid, Process};
+use crate::process::{Pid, Process, Thread, Tid};
 
 /// What a walk through `/proc` needs to know about the kernel.
 pub(crate) struct View<'a> {
     pub processes: &'a BTreeMap<Pid, Process>,
+    pub threads: &'a BTreeMap<Tid, Thread>,
     /// The process walking, which `/proc/self` names.
     pub caller: Pid,
     pub fs: FileSystem,
@@ -665,6 +666,7 @@ fn process_file(
         }
         ProcessFile::Status => {
             let credentials = &process.credentials;
+            let filters = source.view.threads[&process.threads[0]].filters.len();
             let (vsize, _) = sizes(process);
             let _ = write!(
                 out,
@@ -691,14 +693,17 @@ fn process_file(
                 out,
                 "\nVmSize:\t{:8} kB\nThreads:\t{}\nSigBlk:\t0000000000000000\n\
                  CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\nCapAmb:\t{:016x}\n\
-                 NoNewPrivs:\t0\nSeccomp:\t0\n",
+                 NoNewPrivs:\t{}\nSeccomp:\t2\nSeccomp_filters:\t{}\n",
                 vsize / 1024,
                 process.threads.len(),
                 credentials.inheritable,
                 credentials.permitted,
                 credentials.effective,
                 credentials.bounding,
-                credentials.ambient
+                credentials.ambient,
+                u8::from(credentials.no_new_privileges),
+                // Docker's profile, then the first thread's own.
+                1 + filters,
             );
         }
         ProcessFile::Mounts => out.push_str(source.mounts),

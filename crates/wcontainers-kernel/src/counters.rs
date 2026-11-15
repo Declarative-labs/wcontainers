@@ -40,6 +40,9 @@ pub mod reason {
     /// `mincore` reported every mapped page as in memory: which pages a program has touched is not
     /// known here. Detail: none.
     pub const RESIDENCY_NOT_TRACKED: &str = "page residency not tracked";
+    /// A seccomp filter asked for a listener, through which another process would answer the calls it
+    /// stops; not built. Detail: the flags.
+    pub const SECCOMP_LISTENER_NOT_IMPLEMENTED: &str = "seccomp listener not implemented";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
 }

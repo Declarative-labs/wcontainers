@@ -9,6 +9,7 @@ mod list;
 mod memfd;
 mod memory;
 mod process;
+mod seccomp;
 mod system;
 mod time;
 mod xattr;
@@ -231,6 +232,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_setrlimit, S(process::setrlimit)),
         (__NR_getrusage, S(process::getrusage)),
         (__NR_prctl, S(process::prctl)),
+        (__NR_seccomp, S(seccomp::seccomp)),
         (__NR_personality, S(process::personality)),
         // Time.
         (__NR_clock_gettime, S(time::clock_gettime)),
@@ -291,14 +293,19 @@ pub(crate) fn dispatch(
         .get(number as usize)
         .map_or(Handler::Unknown, |entry| entry.handler);
     let known = !matches!(handler, Handler::Unknown);
-    // Docker's profile answers first; what it answers is exact, but a number Linux does not have is
-    // still counted.
-    if let Some(errno) = crate::seccomp::docker_default(number, &call.arguments, known) {
-        if !known {
-            kernel
-                .counters
-                .count(cx.host, reason::UNKNOWN_SYSCALL, number.into());
+    // Docker's profile and the thread's own filters answer first; what they answer is exact, but a
+    // number Linux does not have (which the profile always stops) is still counted.
+    if !known {
+        kernel
+            .counters
+            .count(cx.host, reason::UNKNOWN_SYSCALL, number.into());
+    }
+    let docker = crate::seccomp::docker_default(number, &call.arguments, known);
+    if !kernel.threads[&tid].filters.is_empty() {
+        if let Some(outcome) = seccomp::filter_call(kernel, cx, tid, &call, docker) {
+            return outcome;
         }
+    } else if let Some(errno) = docker {
         return Err(errno).into();
     }
     match handler {
@@ -310,12 +317,8 @@ pub(crate) fn dispatch(
                 .count(cx.host, reason::NOT_IMPLEMENTED, number.into());
             Err(Errno::ENOSYS).into()
         }
-        Handler::Unknown => {
-            kernel
-                .counters
-                .count(cx.host, reason::UNKNOWN_SYSCALL, number.into());
-            Err(Errno::ENOSYS).into()
-        }
+        // Counted above.
+        Handler::Unknown => Err(Errno::ENOSYS).into(),
     }
 }
 

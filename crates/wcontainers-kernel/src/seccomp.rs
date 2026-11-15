@@ -1,11 +1,16 @@
-//! Docker's default seccomp profile, which the reference applies before Linux sees a call. What it
-//! refuses was measured on the reference (Docker 29.9.3) by making every call with and without the
-//! profile, and the argument rules by making the filtered calls with chosen arguments. Its arguments
-//! are compared as full 64 bit values, as seccomp does.
+//! Seccomp: Docker's default profile, which the reference applies before Linux sees a call, and the
+//! filters a program installs itself, which are classic BPF programs checked and run as Linux does.
+//!
+//! What the profile refuses was measured on the reference (Docker 29.9.3) by making every call with
+//! and without the profile, and the argument rules by making the filtered calls with chosen arguments.
+//! Its arguments are compared as full 64 bit values, as seccomp does.
+
+use alloc::boxed::Box;
 
 use crate::Errno;
 use crate::linux::general::*;
 use crate::linux::net::{AF_MAX, AF_VSOCK};
+use crate::linux::ptrace::*;
 
 /// The highest call number the profile knows; it answers anything above as a kernel without the
 /// call would, so that programs fall back.
@@ -79,4 +84,249 @@ pub(crate) fn docker_default(number: u32, arguments: &[u64; 6], known: bool) -> 
         _ => REFUSED.contains(&number),
     };
     refused.then_some(Errno::EPERM)
+}
+
+/// The length of Docker's profile as a BPF program, which counts towards the instructions one call
+/// may run through (measured: the limit is reached 1032 instructions early).
+pub(crate) const DOCKER_PROFILE_LENGTH: usize = 1032;
+
+/// Linux's `MAX_INSNS_PER_PATH`: the most instructions the filters of a thread may hold, each counted
+/// with four more for its own cost.
+pub(crate) const MAX_INSTRUCTIONS_PER_PATH: usize = 32768;
+
+/// What a filter answers, in the order Linux ranks the actions: lower wins (`ACTION_ONLY`).
+pub(crate) fn rank(answer: u32) -> i32 {
+    (answer & SECCOMP_RET_ACTION_FULL) as i32
+}
+
+/// The words of `struct seccomp_data` a filter loads: the call number, the architecture, the address
+/// after the call instruction and the six arguments, each in two halves, low first.
+pub(crate) type Data = [u32; 16];
+
+/// The `seccomp_data` word of the instruction pointer's low half.
+const POINTER_WORD: u32 = 2;
+
+/// Words of `seccomp_data`, as `BPF_LD | BPF_W | BPF_LEN` reports its size.
+const DATA_SIZE: u32 = core::mem::size_of::<seccomp_data>() as u32;
+
+/// A program checked as Linux's `bpf_check_classic`, `check_load_and_stores` and
+/// `seccomp_check_filter` do, with the length loads replaced by the size of the data, as Linux does.
+pub(crate) struct Filter {
+    program: Box<[sock_filter]>,
+    /// Whether it loads the instruction pointer, which the call must then read from the registers.
+    pub reads_pointer: bool,
+}
+
+const LD_W_ABS: u16 = (BPF_LD | BPF_W | BPF_ABS) as u16;
+const LD_W_LEN: u16 = (BPF_LD | BPF_W | BPF_LEN) as u16;
+const LDX_W_LEN: u16 = (BPF_LDX | BPF_W | BPF_LEN) as u16;
+const LD_IMM: u16 = (BPF_LD | BPF_IMM) as u16;
+const LDX_IMM: u16 = (BPF_LDX | BPF_IMM) as u16;
+const LD_MEM: u16 = (BPF_LD | BPF_MEM) as u16;
+const LDX_MEM: u16 = (BPF_LDX | BPF_MEM) as u16;
+const ST: u16 = BPF_ST as u16;
+const STX: u16 = BPF_STX as u16;
+const TAX: u16 = (BPF_MISC | BPF_TAX) as u16;
+const TXA: u16 = (BPF_MISC | BPF_TXA) as u16;
+const RET_K: u16 = (BPF_RET | BPF_K) as u16;
+const RET_A: u16 = (BPF_RET | BPF_A) as u16;
+const JA: u16 = (BPF_JMP | BPF_JA) as u16;
+const NEG: u16 = (BPF_ALU | BPF_NEG) as u16;
+
+const fn alu(operation: u32, source: u32) -> u16 {
+    (BPF_ALU | operation | source) as u16
+}
+
+const fn jump(test: u32, source: u32) -> u16 {
+    (BPF_JMP | test | source) as u16
+}
+
+/// The arithmetic codes, each with a constant or X; MOD is classic BPF but not seccomp's.
+const ARITHMETIC: [u32; 9] = [
+    BPF_ADD, BPF_SUB, BPF_MUL, BPF_DIV, BPF_OR, BPF_AND, BPF_XOR, BPF_LSH, BPF_RSH,
+];
+
+/// The conditional jumps, each with a constant or X.
+const TESTS: [u32; 4] = [BPF_JEQ, BPF_JGT, BPF_JGE, BPF_JSET];
+
+fn is_conditional(code: u16) -> bool {
+    TESTS
+        .iter()
+        .any(|&test| code == jump(test, BPF_K) || code == jump(test, BPF_X))
+}
+
+/// Linux's `chk_code_allowed`: the codes classic BPF has.
+fn classic_code(code: u16) -> bool {
+    const LOADS: [u32; 14] = [
+        BPF_LD | BPF_W | BPF_ABS,
+        BPF_LD | BPF_H | BPF_ABS,
+        BPF_LD | BPF_B | BPF_ABS,
+        BPF_LD | BPF_W | BPF_LEN,
+        BPF_LD | BPF_W | BPF_IND,
+        BPF_LD | BPF_H | BPF_IND,
+        BPF_LD | BPF_B | BPF_IND,
+        BPF_LD | BPF_IMM,
+        BPF_LD | BPF_MEM,
+        BPF_LDX | BPF_W | BPF_LEN,
+        BPF_LDX | BPF_B | BPF_MSH,
+        BPF_LDX | BPF_IMM,
+        BPF_LDX | BPF_MEM,
+        BPF_ST,
+    ];
+    LOADS.iter().any(|&load| code == load as u16)
+        || [STX, TAX, TXA, RET_K, RET_A, JA, NEG].contains(&code)
+        || is_conditional(code)
+        || ARITHMETIC
+            .iter()
+            .chain(&[BPF_MOD])
+            .any(|&op| code == alu(op, BPF_K) || code == alu(op, BPF_X))
+}
+
+/// The codes seccomp takes (Linux's `seccomp_check_filter`).
+fn seccomp_code(code: u16) -> bool {
+    [
+        LD_W_ABS, LD_W_LEN, LDX_W_LEN, RET_K, RET_A, NEG, LD_IMM, LDX_IMM, TAX, TXA, LD_MEM,
+        LDX_MEM, ST, STX, JA,
+    ]
+    .contains(&code)
+        || is_conditional(code)
+        || ARITHMETIC
+            .iter()
+            .any(|&op| code == alu(op, BPF_K) || code == alu(op, BPF_X))
+}
+
+impl Filter {
+    /// Checks a program as Linux does when it is installed; every refusal is EINVAL.
+    pub fn new(mut program: Box<[sock_filter]>) -> Result<Self, Errno> {
+        let length = program.len();
+        // `bpf_check_classic`.
+        for (pc, instruction) in program.iter().enumerate() {
+            let code = instruction.code;
+            let k = instruction.k;
+            let valid = classic_code(code)
+                && match code {
+                    _ if code == alu(BPF_DIV, BPF_K) || code == alu(BPF_MOD, BPF_K) => k != 0,
+                    _ if code == alu(BPF_LSH, BPF_K) || code == alu(BPF_RSH, BPF_K) => k < 32,
+                    LD_MEM | LDX_MEM | ST | STX => k < BPF_MEMWORDS,
+                    JA => (k as usize) < length - pc - 1,
+                    _ if is_conditional(code) => {
+                        pc + usize::from(instruction.jt) + 1 < length
+                            && pc + usize::from(instruction.jf) + 1 < length
+                    }
+                    _ => true,
+                };
+            if !valid {
+                return Err(Errno::EINVAL);
+            }
+        }
+        if ![RET_K, RET_A].contains(&program[length - 1].code) {
+            return Err(Errno::EINVAL);
+        }
+        // `check_load_and_stores`: scratch memory is read only where every path has written it.
+        let mut masks = alloc::vec![u16::MAX; length];
+        let mut valid: u16 = 0;
+        for (pc, instruction) in program.iter().enumerate() {
+            valid &= masks[pc];
+            let code = instruction.code;
+            match code {
+                ST | STX => valid |= 1 << instruction.k,
+                LD_MEM | LDX_MEM if valid & (1 << instruction.k) == 0 => {
+                    return Err(Errno::EINVAL);
+                }
+                JA => {
+                    masks[pc + 1 + instruction.k as usize] &= valid;
+                    valid = u16::MAX;
+                }
+                _ if is_conditional(code) => {
+                    masks[pc + 1 + usize::from(instruction.jt)] &= valid;
+                    masks[pc + 1 + usize::from(instruction.jf)] &= valid;
+                    valid = u16::MAX;
+                }
+                _ => {}
+            }
+        }
+        // `seccomp_check_filter`: only whole aligned words of the data, and length loads become the
+        // data's size.
+        let mut reads_pointer = false;
+        for instruction in program.iter_mut() {
+            match instruction.code {
+                LD_W_ABS => {
+                    if instruction.k >= DATA_SIZE || instruction.k & 3 != 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                    reads_pointer |= matches!(instruction.k / 4, POINTER_WORD | 3);
+                }
+                LD_W_LEN => (instruction.code, instruction.k) = (LD_IMM, DATA_SIZE),
+                LDX_W_LEN => (instruction.code, instruction.k) = (LDX_IMM, DATA_SIZE),
+                code if seccomp_code(code) => {}
+                _ => return Err(Errno::EINVAL),
+            }
+        }
+        Ok(Self {
+            program,
+            reads_pointer,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.program.len()
+    }
+
+    /// Runs the program on one call's data and gives its answer. A and X start at zero, arithmetic is
+    /// on 32 bits, shifts by X take its low five bits, and a division by an X of zero ends the program
+    /// with 0, as Linux's translation of classic BPF does.
+    pub fn run(&self, data: &Data) -> u32 {
+        let (mut a, mut x) = (0u32, 0u32);
+        let mut memory = [0u32; BPF_MEMWORDS as usize];
+        let mut pc = 0;
+        loop {
+            let instruction = self.program[pc];
+            let k = instruction.k;
+            pc += 1;
+            match instruction.code {
+                LD_W_ABS => a = data[(k / 4) as usize],
+                LD_IMM => a = k,
+                LDX_IMM => x = k,
+                LD_MEM => a = memory[k as usize],
+                LDX_MEM => x = memory[k as usize],
+                ST => memory[k as usize] = a,
+                STX => memory[k as usize] = x,
+                TAX => x = a,
+                TXA => a = x,
+                RET_K => return k,
+                RET_A => return a,
+                JA => pc += k as usize,
+                NEG => a = a.wrapping_neg(),
+                code if code & 7 == BPF_JMP as u16 => {
+                    let operand = if code & BPF_X as u16 != 0 { x } else { k };
+                    let taken = match u32::from(code) & 0xf0 {
+                        BPF_JEQ => a == operand,
+                        BPF_JGT => a > operand,
+                        BPF_JGE => a >= operand,
+                        _ => a & operand != 0,
+                    };
+                    pc += usize::from(if taken {
+                        instruction.jt
+                    } else {
+                        instruction.jf
+                    });
+                }
+                code => {
+                    let operand = if code & BPF_X as u16 != 0 { x } else { k };
+                    a = match u32::from(code) & 0xf0 {
+                        BPF_ADD => a.wrapping_add(operand),
+                        BPF_SUB => a.wrapping_sub(operand),
+                        BPF_MUL => a.wrapping_mul(operand),
+                        BPF_DIV if operand == 0 => return 0,
+                        BPF_DIV => a / operand,
+                        BPF_OR => a | operand,
+                        BPF_AND => a & operand,
+                        BPF_XOR => a ^ operand,
+                        BPF_LSH => a << (operand & 31),
+                        _ => a >> (operand & 31),
+                    };
+                }
+            }
+        }
+    }
 }

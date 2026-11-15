@@ -310,6 +310,7 @@ impl Kernel {
         let credentials = Credentials::container_root(Vec::new());
         let view = fs::proc::View {
             processes: &self.processes,
+            threads: &self.threads,
             caller: 0,
             fs: self.files.proc_fs,
             boot: self.boot,
@@ -613,6 +614,7 @@ impl Kernel {
         let proc_point = directory_at(self, b"/proc", now);
         let view = fs::proc::View {
             processes: &self.processes,
+            threads: &self.threads,
             caller: 0,
             fs: self.files.proc_fs,
             boot: self.boot,
