@@ -736,6 +736,7 @@ pub(super) fn ioprio_set(
     if !io_prioritized(kernel, tid, which, who)? {
         return Err(Errno::ESRCH);
     }
-    kernel.thread_mut(tid).schedule.io_priority = priority;
+    // Linux keeps the value in 16 bits.
+    kernel.thread_mut(tid).schedule.io_priority = u32::from(priority as u16);
     Ok(0)
 }
