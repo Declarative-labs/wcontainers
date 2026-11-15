@@ -73,7 +73,8 @@ killed there (SIGKILL), which our side reports for a wait that never ends.
   counted ("signal handler not run", "process stop not implemented") where it would become deliverable
   (`kill`, or `rt_sigprocmask` unblocking it).
 - Resource limits enforced: RLIMIT_FSIZE (writes shortened, EFBIG, SIGXFSZ; truncate and fallocate),
-  RLIMIT_AS and RLIMIT_DATA (mmap, brk, mprotect to writable, mremap growth; Linux's `may_expand_vm`),
+  RLIMIT_AS and RLIMIT_DATA (mmap, brk, mprotect to writable, mremap growth; Linux's `may_expand_vm`;
+  brk also by `check_data_rlimit`, heap plus the program's `end_data - start_data`),
   RLIMIT_STACK (stack growth), RLIMIT_MEMLOCK (mlock, MAP_LOCKED, MCL_FUTURE), RLIMIT_NOFILE. RLIMIT_CPU
   is kept but not enforced (needs CPU time and timers, K3).
 - Docker's default seccomp profile (src/seccomp.rs), measured on the reference: 37 calls refused with
@@ -204,7 +205,6 @@ Partial (inside the list above):
   `/proc/<pid>/stat` shows the leader's priority, nice, real-time priority and policy (fifth run;
   the line also gained the field it lacked, 52 as Linux).
 - mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
-- brk: RLIMIT_DATA is checked on the heap alone, not heap plus data segment as Linux does.
 - memfd_create: MFD_HUGETLB counted ("memory call flag not implemented") and refused with ENOSYS, as by
   a kernel without hugetlbfs; the reference makes such files. Shared mappings of memory files are
   shared file mappings, not built (counted, ENODEV), which is most of what programs use them for.
@@ -290,7 +290,8 @@ All pass except the ignored known failures.
   pwrite, ftruncate and fallocate with SIGXFSZ ignored (first process) and blocked (pending);
   kill/tkill of itself with SIGTERM, SIGKILL and SIGSTOP (all ignored by the first process), kill(0),
   kill(-1), unknown signals, pending signals, flushing by SIG_IGN; RLIMIT_AS, RLIMIT_DATA (mmap,
-  mprotect, mremap, sbrk); RLIMIT_STACK (stack growth past the limit is SIGSEGV).
+  mprotect, mremap, sbrk); RLIMIT_STACK (stack growth past the limit is SIGSEGV); the most the
+  break may grow under a 1 MiB data limit (fifth run).
 - seccomp (new): guest/seccomp.c makes the profile's refused calls and argument rules; same output.
 - procaccess (new): guest/procaccess.c checks access, rmdir, unlink, mkdir and create on `/proc`
   entries as root and after setreuid(0, 1000); same output.
@@ -544,7 +545,7 @@ All on this shared Mac; noisy, not benchmarks.
    file mappings), seccomp listeners, rseq's time slice extension. The rest need K2 (pipe2, fork,
    futex, wait, signal delivery: rt_sigreturn, rt_sigsuspend, rt_sigtimedwait), K3 (timers,
    getitimer and setitimer) or K5 (sockets, epoll, eventfd, inotify).
-3. Known gaps above (RLIMIT_CPU, brk's data limit, `/proc/mounts`, `/proc/sys` writes,
+3. Known gaps above (RLIMIT_CPU, `/proc/mounts`, `/proc/sys` writes,
    `/proc/<pid>/stat`'s times and addresses (start time, rss, the code, data, argument and
    environment addresses are 0 here), `/proc/<pid>/status` lines, xattr space, huge page memory files, shared file
    mappings).
