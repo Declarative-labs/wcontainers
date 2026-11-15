@@ -15,7 +15,7 @@ every size, x19 to x28, accesses through sp and groups through other registers, 
 far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
 S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
-what comes next.
+what comes next. The third run's work is under "S1, third run" (after the second run's findings).
 
 ## S1: run speed at full look-ahead
 
@@ -100,6 +100,7 @@ load in brackets; the machine is shared, so native times themselves moved by up 
   on re-entry, and when a stop check carries on in place. Faults stay exact (the full check runs on every
   new page). Measured (wasmtime, load 10 to 19): search 3.9 to 3.4, sieve 1.71 to 1.57, matrix 7.3 to
   6.2; interpret did not move (8.6 to 9.0, noise). The page is also forgotten on entering a loop piece.
+  Since the third run a run of up to eight pages is kept instead of one page; see "S1, third run".
 - Calls, second part. Before, a piece wrote its flags back at every return (packing NZCV from the lazy
   operands, about 12 instructions). Now the caller sets the low bit of the expected return address
   (`contract::FLAGS_WANTED`) when the flags may be read after the call (the rest of its block is looked
@@ -191,6 +192,67 @@ between sessions at load 10 to 45):
   to the comparison at every step.
 - 64 bit guest memory: a 32 bit memory measured 10 to 27% faster in wasmtime (see step 2) and frees the
   bound and Spectre-guard registers in every loop; the owner's call.
+
+S1, third run (commits 1f7dfee, 86f24d5):
+- Interpret's permission cost found and removed. Counting kept-page misses (a counter in the thread
+  block's padding, not committed) showed every one of interpret's 1.17 billion checked accesses missing:
+  the kept page needed the page after it to allow the access too, and the interpreter's stack sits on the
+  top page of the stack and its byte code and jump table on the last page of the blob, each followed by a
+  page that allows nothing. So the fast test failed every time and the exact test ran. Matrix had 56
+  million misses (its column walk moves to a new page every 5.3 turns), sieve 53 million.
+- What is kept now (`code.rs` `keep_pages`, `full.rs` `check`): per kept key two locals, the first
+  address of a run of pages that allow the access and the room in it. The check is `address - low <u
+  room` (a subtract, a compare and a branch, as before); nothing kept is room 0, which nothing passes.
+  After an access passes the full check (fast or exact), the run is that page and the pages after it that
+  allow the same kind, up to eight, found with one 8 byte load of the table and a count of trailing zeros;
+  room is the run's length less 31 (the longest access is 32 bytes), so an access that starts in it ends in
+  it. Faults stay exact: anything outside the run takes the full check. The kept run is forgotten where the
+  kept page was. Misses after it: interpret 4,003, matrix 11 million, search 14 thousand.
+- Registers that are dirty when a loop is entered and that its own code neither reads nor writes are
+  written back to the thread block just before the loop, so the loop's slow paths no longer keep them
+  alive (`Plan::written_before`; the backward analysis counts them as needed on the edges that enter the
+  loop, so the locals hold their true values there). Matrix 0.643 to 0.621 s, search 0.45 to 0.43 s, others
+  within noise (A/B in one session, two rounds each, best of 2, load 8 to 11).
+- The check of a kept run reads the table's place and length from the module's globals instead of the
+  piece's locals, so loops do not keep them in registers for a check that rarely runs. A/B, two rounds,
+  load 8 to 11: matrix 0.597 to 0.555 s, search 0.42 to 0.35 s, interpret and sieve unchanged.
+- Tried and not kept: one kept page with the meaning "this page allows it" and a test that the access
+  does not run past the page (one local): A/B against the runs, load 7 to 14, two rounds: matrix 0.48 / 0.55
+  against 0.62 / 0.53 s, search 0.42 / 0.42 against 0.41 / 0.35, interpret 0.76 / 0.76 against 0.67 / 0.59,
+  sieve 0.82 / 0.77 against 0.83 / 0.66. Writing the slow paths' pc from the load address global instead
+  of the local: matrix 0.547 to 0.594 s, interpret 0.57 to 0.61 (load 6 to 10), so reverted.
+- Checked by breaking on purpose: a run one page too long fails `tests/checks.rs`
+  `loops_running_onto_a_forbidden_page`; leaving out the stores before loops (analysis unchanged) fails
+  layer 2 within 300 cases.
+- Benchmarks after 1f7dfee (`WC_BENCH_VARIANTS=1,5`, best of 3, load 6 to 18; times native, every check /
+  no check; Chrome first run): fib wasmtime 6.67 / 5.12, Chrome 5.63 / 4.67; sieve 1.58 / 1.20, Chrome 1.39
+  / 0.99; hash 0.96 / 0.93, Chrome 0.91 / 1.17; sort 4.11 / 3.33, Chrome 3.31 / 2.88; interpret 3.82 / 2.90,
+  Chrome 3.87 / 2.04; matrix 7.74 / 2.65, Chrome 4.87 / 11.3; walk 0.8 to 1.0; search 2.61 / 1.55, Chrome
+  2.12 / 7.26. Size: 340,588 bytes of WebAssembly (70.4 per byte of code), 70,878 gzipped.
+- After 86f24d5, every check only (best of 3, load 24 to 50, so noisier): sieve wasmtime 1.61, Chrome 1.43;
+  hash 1.00 / 1.00; interpret 4.12 / 4.25; matrix 7.26 / 3.99; search 3.00 / 3.06.
+- Against the second run: interpret 9.3 to about 3.8 to 4.1 in both engines; search in wasmtime 3.7 to
+  2.6 to 3.0; matrix worse, wasmtime 4.9 to about 7 and Chrome 2.6 to about 4 to 5 (native matrix 0.076 to
+  0.080 s in both sessions). Matrix's inner loop spills (see the second run's notes); two locals per kept
+  key instead of one add to it. The one-local variant above did not measure better for matrix within
+  the noise, and is worse for interpret and search.
+- Calls (fib, sort), why passing more registers cannot help in wasmtime: a test module
+  (`pyro-parked/wcontainers-scratch/translator/s3/cc/cc.wat`, a function of 14 i64 parameters and 14
+  results, compiled by wasmtime 49) shows Cranelift passes only the first four parameters in registers (x4
+  to x7, after the two instance pointers in x2 and x3) and the rest on the stack, and returns six results in
+  registers and the rest through memory. Our pieces already pass six (x0 to x3, sp, the expected return), so
+  sp and the expected return already go through the stack on every call; x19 to x30 as parameters would
+  be stores and loads to the stack instead of to the thread block, the same work. fib's remaining cost
+  per call in wasmtime (machine code of `fib`, function 9): the engine's stack limit check (5
+  instructions), its save and restore of ten callee-saved registers (12 instructions; they hold the
+  instance, the thread block, the state memory's base, the load address, the permission table's place and
+  length, the guest memory's base and the expected return, all live across the guest's call), the stack
+  arguments, the four guest stack stores and loads each with a 64 bit bounds check (add, compare, select:
+  24 instructions; a 32 bit guest memory would remove them, the owner's call), and x19, x20, x29, x30
+  through the thread block (about 15 loads and stores). With every check off fib is 5.1 times native in
+  wasmtime and 4.7 in Chrome in this run, so the aim of 4 is out of reach without a cheaper call
+  convention in the engine or a 32 bit guest memory. Not yet measured: re-reading the fixed values from
+  globals after each call instead of keeping them in callee-saved registers.
 
 ## Done
 
@@ -447,6 +509,8 @@ contract's bits, in both runners).
   5 (after kept pages), 2000 seed 9 (after the flags bit): 0 mismatches. Not yet the pass bar.
 - Layer 2, second S1 run, after loop pieces: 2000 cases, seed 13, 10 on the CPU, release: 0 mismatches,
   308 faulted, 220 left to an address at full (37 s at load 22 to 57).
+- Layer 2, third S1 run, after kept runs and the write back before loops: 2000 cases, seed 17, 10 on the
+  CPU, release: 0 mismatches, 315 faulted, 211 left to an address at full (32 s at load 7 to 8).
 - Layer 2, third M2 run, with frames, sp accesses, groups and faults: 500 cases, seed 1, 60 on the CPU,
   release: 0 mismatches, 61 faulted, 40 left to an address. 20,000 cases, seed 21, 40 on the CPU,
   release: 0 mismatches, 2949 faulted (SIGSEGV, same at none, full and on the CPU where run), 2131 left
@@ -691,8 +755,11 @@ contract's bits, in both runners).
 - S1: the browser page raises the stop flag at 1, 2, 4, ... 1024 ms after the guest starts, so V8's
   optimised code is used in long loops of functions entered once. A real browser host needs the same (or
   any other early raises); wasmtime needs none.
-- S1: the plan's "whole function reasoning" for permission checks is a kept page per base register and kind
-  in loops without calls (see step 6), not a proof about the loop's range.
+- S1: the plan's "whole function reasoning" for permission checks is a kept run of up to eight allowed
+  pages per base register and kind in loops without calls (see step 6 and the third run), not a proof
+  about the loop's range.
+- S1: registers dirty at a loop's entry that the loop does not touch are written back before it (the plan
+  writes registers back only around calls, system calls, slow paths and the piece's edges).
 - S1: the low bit of a piece's expected return address says whether the caller reads the flags after the
   call (`FLAGS_WANTED`); `BOTTOM_RETURN` changed from -1 to -2.
 - S1: pieces throw through a small function of their module (wasmtime makes a function that throws save
