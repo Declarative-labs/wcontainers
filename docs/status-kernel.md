@@ -10,8 +10,8 @@ file capabilities, secure mode, dumpability), memory calls with page protection,
 in-memory file systems (tmpfs with extended attributes and seals, memory files, `/proc`, `/dev`), file
 descriptors, time, randomness, ids and powers, signals a process sends itself, and Docker's default
 seccomp profile. Single busybox programs match the reference. Layer 1 covers every call built. K1 is not
-finished: layer 1 has not yet passed a 20000-sequence run (each long run still finds a new mismatch,
-which is then fixed), so the one-million bar is far off.
+finished: layer 1 passed its first 20000-sequence run (seed 48) only at the end of the third run; the
+one-million bar has not been run.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -276,8 +276,8 @@ down into it, which the reference's layout never allows.
 
 Cases run in the third run (earlier ones are in git history): seed 45: 3000 passed; seed 47: 3000
 passed; seed 49: 3000 passed (after fixes); seed 50: 3000 passed; seed 51: 3000 passed;
-seed 52: 3000 passed (90 s, load 9 to 17); seed 53: 3000 passed (90 s, load 10 to 16). The last
-seed 48 run of 20000 got furthest: 538 s before the process-limit case above (load 6 to 16). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
+seed 52: 3000 passed (90 s, load 9 to 17); seed 53: 3000 passed (90 s, load 10 to 16). After the
+last fixes seed 48 passed 20000 sequences: the first 20000-sequence pass (599 s, load 4 to 42). 20000-sequence runs: seed 44 (twice), 46 and 48 (four
 times) each found a mismatch within 1 to 5 minutes, which was fixed: madvise MADV_REMOVE on shared
 anonymous memory, EROFS before the name lookup in unlink and rename, `/proc`'s link count (now masked,
 see above), reads of `/dev/full` into a buffer ending at an unmapped page (ARM64's `clear_user`), rename
@@ -297,6 +297,7 @@ puts back their owner, mode, attributes and pool names after each sequence. No r
 All on this shared Mac; noisy, not benchmarks.
 - Third run, layer 1 with 171 call kinds: 3000 sequences, seed 45: 86 s (load 11 to 17); seed 47:
   85 s (load 7 to 11); seed 49: 88 s (load 28 to 49).
+- Third run, layer 1 20000 sequences, seed 48: 599 s (load 4 to 42).
 - Third run, busybox system test (one test, about 30 commands in both runners): 10.8 s (load about 10).
 - Layer 1, 3000 sequences, seed 32, all call kinds: 89 s (load about 8 to 15).
 - Layer 1, 1500 sequences, seed 30: 46 s (load about 8 to 15).
@@ -394,9 +395,8 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Next (K1, in order)
 
-1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass. A seed
-   48 run of 20000 was in progress at the end of the third run (see the runs above for its result if
-   recorded); start with seeds 50 and up. The orchestrator's long run is the command at the top.
+1. Run layer 1 with new seeds (20000 or more each) and fix what it finds, until long runs pass; seed
+   48 passed 20000. Start with seeds 54 and up, then the million. The orchestrator's long run is the command at the top.
 2. Missing calls that need later milestones: getitimer/setitimer and the timer calls (signal delivery
    and the timer queue, K2/K3), pipe2 and the rest of K2. Everything a single program uses without
    other processes, threads, timers or sockets is now built, except: execveat, rseq (glibc uses it;
