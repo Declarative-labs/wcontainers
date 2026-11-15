@@ -163,9 +163,13 @@ impl Entry {
         }
     }
 
-    /// Proc files report no size.
+    /// The size `stat` reports: none, except for descriptor links.
     pub fn size(&self) -> u64 {
-        0
+        match self {
+            // Linux's `proc_fd_instantiate` gives descriptor links a size of 64 (measured too).
+            Entry::Fd(..) => 64,
+            _ => 0,
+        }
     }
 
     fn mode(&self) -> u32 {
