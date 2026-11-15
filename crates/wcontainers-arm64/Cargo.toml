@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-arm64"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wasm-encoder = "0.263.0"
+yaxpeax-arch = { version = "0.3.3", default-features = false }
+yaxpeax-arm = "0.5.0"
+
+[lints]
+workspace = true
