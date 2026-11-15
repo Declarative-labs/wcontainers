@@ -129,15 +129,16 @@ futex_wake, futex_wait, futex_requeue, statmount, listmount, lsm_get_self_attr, 
 lsm_list_modules, mseal, setxattrat, getxattrat, listxattrat, removexattrat, open_tree_attr,
 file_getattr, file_setattr.
 
-## Tests (last run 2026-11-15)
+## Tests (last run 2026-11-15: 22 passed, 4 ignored known failures)
 
 All pass except the ignored known failures. Earlier K0 tests (hello, write, loader, faults, dispatch,
 standin, boundary, layouts) still pass with the new start.
-- busybox: 61 single commands of the reference image (echo, printf, cat, head, tail, wc, sort, grep,
+- busybox: 67 single commands of the reference image (echo, printf, cat, head, tail, wc, sort, grep,
   sed, awk, cut, tr, seq, md5sum, sha256sum, base64, od, expr, basename, true, false, ls of `/dev`,
   `/dev/shm`, `/dev/pts`, mkdir, touch -d, rm, rm -r, rmdir, mv, cp -a, ln, ln -s, chmod 4755, chown,
   readlink -f, realpath, stat, dd, tee, truncate, mknod, mkfifo, test, pwd, id, whoami, hostname, env,
-  sleep, getconf, cat and readlink of `/proc/self`, ls `/proc/self/fd`, ...): same stdout, stderr,
+  sleep, getconf, cat and readlink of `/proc/self`, ls `/proc/self/fd`, `/proc/self/limits`, `sh -c`
+  with builtins, redirections and `exec`, ...): same stdout, stderr,
   exit code and files changed as the reference. Commands are found on the image's PATH as Docker does.
 - one_cpu: nproc says 1 (the plan's one-CPU difference).
 - memory: guest/memory.c, 10 cases against the reference: mprotect then write (SIGSEGV), PROT_NONE
