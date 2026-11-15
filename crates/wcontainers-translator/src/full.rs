@@ -1980,10 +1980,15 @@ impl<'a> FullEmitter<'a> {
             };
             labels.push(label);
         }
-        // A target that is not a multiple of four past the lowest case turns into a huge index.
+        // A target that is not a multiple of four past the lowest case turns into a huge index. The index
+        // is worked out from the register as it is, not untagged: a tagged address is far from every case,
+        // so it goes to the lookup, which untags it, and the engine can see through `adr` plus an entry.
+        let Instruction::BranchRegister { rn, .. } = self.decoded().instruction else {
+            unreachable!("a jump through a table is a jump through a register")
+        };
         let load = self.fixed(G_LOAD_ADDRESS);
+        self.get(rn);
         let mut s = self.sink();
-        s.local_get(target);
         load.push(&mut s);
         s.i64_sub()
             .i64_const(lo as i64)
@@ -2000,6 +2005,10 @@ impl<'a> FullEmitter<'a> {
             .br_table(labels, 0)
             .end();
         self.labels.pop();
+        // Untagged again here, so that the engine works it out only when no case is taken.
+        let register = self.register(Registers::bit(rn).expect("a general register"));
+        untag(&mut self.sink(), register);
+        self.sink().local_set(target);
         self.unrecognised_jump(target);
     }
 
