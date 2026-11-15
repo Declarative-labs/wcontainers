@@ -16,6 +16,7 @@ pub mod linux;
 mod loader;
 mod process;
 mod syscall;
+mod user;
 
 use alloc::collections::{BTreeMap, VecDeque};
 

@@ -20,7 +20,9 @@ pub(crate) struct Mapping {
 /// What a file descriptor refers to.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum File {
-    /// One of the container's standard streams, handed to the host.
+    /// The null device: writes are taken whole and nothing is read from the buffer.
+    Null,
+    /// One of the container's standard output streams, handed to the host.
     HostStream(Stream),
 }
 
@@ -34,7 +36,9 @@ pub(crate) struct Process {
 
 impl Process {
     pub fn new(memory: MemoryId, first_thread: Tid, mappings: Vec<Mapping>) -> Self {
+        // The first process's descriptors as `docker run` without a terminal gives them.
         let files = BTreeMap::from([
+            (0, File::Null),
             (1, File::HostStream(Stream::Output)),
             (2, File::HostStream(Stream::Error)),
         ]);

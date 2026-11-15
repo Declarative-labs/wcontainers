@@ -1,5 +1,5 @@
 //! Every ARM64 Linux system call has an entry; one that is not built answers "not implemented",
-//! counts and warns; a number Linux does not have does the same and matches the reference.
+//! counts and warns; a number Linux does not have does the same; the number is decoded as Linux does.
 
 use std::path::Path;
 
@@ -61,11 +61,35 @@ fn not_implemented_counts_and_warns() {
     assert_eq!((counter.detail, counter.count), (missing.number, 1));
 }
 
+/// Numbers above every call Linux has, including x8 = -1, give "not implemented" in the reference too:
+/// Docker's seccomp filter passes numbers above its highest known call through to the kernel.
 #[test]
-fn unknown_number_matches_reference() {
-    let (ours, theirs) = run_both(&program(), &["1000"]);
+fn numbers_above_linux_calls_match_reference() {
+    for (argument, detail) in [("1000", 1000), ("-1", u64::from(u32::MAX))] {
+        let (ours, theirs) = run_both(&program(), &[argument]);
+        assert_eq!(ours.outcome, theirs, "{argument}");
+        assert_eq!(ours.warnings.len(), 1, "{argument}");
+        assert_eq!(ours.warnings[0].reason, reason::UNKNOWN_SYSCALL);
+        assert_eq!(ours.warnings[0].detail, detail);
+    }
+}
+
+/// Linux uses only the low 32 bits of x8: 2^32 + 64 is write (here to fd 0 with no bytes).
+#[test]
+fn number_high_bits_are_ignored_as_in_reference() {
+    let (ours, theirs) = run_both(&program(), &[&((1u64 << 32) | 64).to_string()]);
     assert_eq!(ours.outcome, theirs);
-    assert_eq!(ours.warnings.len(), 1);
-    assert_eq!(ours.warnings[0].reason, reason::UNKNOWN_SYSCALL);
-    assert_eq!(ours.warnings[0].detail, 1000);
+    assert_eq!(ours.outcome.stdout, b"0\n");
+    assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
+}
+
+/// Numbers in the gaps of Linux's list are refused with EPERM by Docker's default seccomp profile; the
+/// kernel answers ENOSYS until that profile is modelled.
+#[test]
+#[ignore = "known failure: Docker's default seccomp profile is not modelled yet (EPERM in the reference, ENOSYS here)"]
+fn numbers_in_gaps_match_reference() {
+    for argument in ["244", "400"] {
+        let (ours, theirs) = run_both(&program(), &[argument]);
+        assert_eq!(ours.outcome, theirs, "{argument}");
+    }
 }

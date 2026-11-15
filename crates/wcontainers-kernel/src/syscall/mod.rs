@@ -95,9 +95,15 @@ pub(crate) fn dispatch(
     tid: Tid,
     call: Syscall,
 ) -> Outcome {
-    let handler = match TABLE.get(call.number as usize) {
+    // ARM64 Linux takes the call number from the low 32 bits of x8 only.
+    let number = call.number as u32;
+    let handler = match TABLE.get(number as usize) {
         Some(entry) => entry.handler,
         None => unknown,
+    };
+    let call = Syscall {
+        number: u64::from(number),
+        ..call
     };
     handler(kernel, cx, tid, call)
 }
