@@ -775,6 +775,18 @@ pub(super) fn rt_sigaction(
     let previous = kernel.process_of(tid).actions[index];
     if let Some(mut new) = new {
         new.sa_mask.sig[0] &= !UNBLOCKABLE;
+        // Linux keeps only the flags it knows (`UAPI_SA_FLAGS`), so programs can tell which it has.
+        new.sa_flags &= u64::from(
+            SA_NOCLDSTOP
+                | SA_NOCLDWAIT
+                | SA_SIGINFO
+                | SA_ONSTACK
+                | SA_RESTART
+                | SA_NODEFER
+                | SA_RESETHAND
+                | SA_EXPOSE_TAGBITS
+                | SA_RESTORER,
+        );
         kernel.process_of_mut(tid).actions[index] = new;
         if crate::signal::action_ignores(new.sa_handler_kernel, signal as u32) {
             let pid = kernel.threads[&tid].process;
