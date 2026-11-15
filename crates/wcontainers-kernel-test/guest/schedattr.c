@@ -4,6 +4,7 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,6 +54,24 @@ static long set(uint32_t size, uint32_t policy, uint64_t flags, int nice, uint32
     return syscall(SYS_sched_setattr, 0, &attr, 0);
 }
 
+// The scheduling fields of /proc/self/stat: priority, nice, threads, exit signal, real-time priority
+// and policy (the CPU number, field 39, differs between machines).
+static void stat_fields(const char *what) {
+    char line[1024] = {0};
+    int fd = open("/proc/self/stat", O_RDONLY);
+    read(fd, line, sizeof line - 1);
+    close(fd);
+    char *at = strrchr(line, ')') + 2;
+    int field = 3;
+    printf("%s stat:", what);
+    for (char *word = strtok(at, " \n"); word; word = strtok(NULL, " \n"), field++) {
+        if ((field >= 18 && field <= 20) || field == 38 || field == 40 || field == 41) {
+            printf(" %s", word);
+        }
+    }
+    printf(" (%d fields)\n", field - 1);
+}
+
 int main(void) {
     get("get", 56);
     get("get small", 48);
@@ -86,7 +105,9 @@ int main(void) {
     show("set nice 2", set(56, SCHED_OTHER, 0, 2, 0, 0, 0, 0, 0, 0));
     show("set nice 30", set(56, SCHED_OTHER, 0, 30, 0, 0, 0, 0, 0, 0));
     get("after nice 30", 56);
+    stat_fields("start");
     show("set batch", set(56, SCHED_BATCH, 0, 19, 0, 0, 0, 0, 0, 0));
+    stat_fields("batch");
     get("after batch", 56);
     show("set fifo", set(56, SCHED_FIFO, 0, 0, 1, 0, 0, 0, 0, 0));
     show("set fifo 0", set(56, SCHED_FIFO, 0, 0, 0, 0, 0, 0, 0, 0));
@@ -115,6 +136,7 @@ int main(void) {
     show("set sugov", set(56, SCHED_BATCH, 0x10000000, 19, 0, 0, 0, 0, 0, 0));
     show("set sugov deadline", set(56, SCHED_DEADLINE, 0x10000000, 0, 0, 0, 0, 0, 0, 0));
     show("set idle", set(56, SCHED_IDLE, 0, 19, 0, 0, 0, 0, 0, 0));
+    stat_fields("idle");
     get("after idle", 56);
     show("set leave idle early", set(56, SCHED_BATCH, 0, 19, 0, 0, 0, 0, 0, 0));
     show("set reset on fork", set(56, SCHED_IDLE, 1, 19, 0, 0, 0, 0, 0, 0));

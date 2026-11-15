@@ -199,7 +199,8 @@ Partial (inside the list above):
 - flock: a wait for a conflicting lock never ends (one process).
 - sched_setscheduler, sched_setparam: kept per thread with Linux's checks for an unprivileged caller
   (no CAP_SYS_NICE, RLIMIT_RTPRIO and RLIMIT_NICE zero); nothing is scheduled by them yet.
-  `/proc/<pid>/stat` still shows nice 0.
+  `/proc/<pid>/stat` shows the leader's priority, nice, real-time priority and policy (fifth run;
+  the line also gained the field it lacked, 52 as Linux).
 - mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
 - brk: RLIMIT_DATA is checked on the heap alone, not heap plus data segment as Linux does.
 - memfd_create: MFD_HUGETLB counted ("memory call flag not implemented") and refused with ENOSYS, as by
@@ -538,8 +539,9 @@ All on this shared Mac; noisy, not benchmarks.
    file mappings), seccomp listeners, rseq's time slice extension. The rest need K2 (pipe2, fork,
    futex, wait, signal delivery: rt_sigreturn, rt_sigsuspend, rt_sigtimedwait), K3 (timers,
    getitimer and setitimer) or K5 (sockets, epoll, eventfd, inotify).
-3. Known gaps above (RLIMIT_CPU, brk's data limit, `/proc/mounts`, `/proc/sys` writes, nice in
-   `/proc/<pid>/stat`, `/proc/<pid>/status` lines, xattr space, huge page memory files, shared file
+3. Known gaps above (RLIMIT_CPU, brk's data limit, `/proc/mounts`, `/proc/sys` writes,
+   `/proc/<pid>/stat`'s times and addresses (start time, rss, the code, data, argument and
+   environment addresses are 0 here), `/proc/<pid>/status` lines, xattr space, huge page memory files, shared file
    mappings).
 4. K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
 5. Then K2.

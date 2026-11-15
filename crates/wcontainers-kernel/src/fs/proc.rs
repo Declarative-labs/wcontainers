@@ -655,16 +655,27 @@ fn process_file(
         ProcessFile::Stat => {
             let name = String::from_utf8_lossy(&process.name);
             let (vsize, _) = sizes(process);
+            let schedule = source.view.threads[&process.threads[0]].schedule;
+            // Linux's `task_prio`: 20 plus nice for the fair policies, below 0 for real time.
+            let priority = match schedule.policy {
+                SCHED_FIFO | SCHED_RR => -1 - schedule.priority as i32,
+                SCHED_DEADLINE => -101,
+                _ => 20 + schedule.nice,
+            };
             let _ = writeln!(
                 out,
-                "{} ({}) R {} {} {} 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 {} 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+                "{} ({}) R {} {} {} 0 -1 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
                 process.pid,
                 name,
                 process.parent,
                 process.group,
                 process.session,
+                priority,
+                schedule.nice,
                 process.threads.len(),
-                vsize
+                vsize,
+                schedule.priority,
+                schedule.policy
             );
         }
         ProcessFile::Statm => {
