@@ -569,7 +569,7 @@ fn filter_program(words: &[u64], passed: &[u32]) -> Vec<u8> {
                 0,
                 0,
                 if broken {
-                    pick(&[2u32, 64, 0xffff_f000, 8], w >> 1)
+                    pick(&[2u32, 64, 0xffff_f000, 62], w >> 1)
                 } else {
                     pick(&[0u32, 4, 16, 20, 24, 28, 32, 40, 56, 60], w >> 1)
                 },
