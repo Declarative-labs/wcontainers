@@ -1,7 +1,7 @@
 //! Layer 1: random sequences of system calls, made in the reference by a small native runner and in our
 //! kernel with a plain buffer as guest memory. Every return value and every byte written into the
 //! sequence's memory is compared; the few values that must differ (inode numbers, times, process
-//! numbers) are masked on both sides.
+//! numbers, `/proc`'s link count) are masked on both sides.
 
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
@@ -40,6 +40,11 @@ const MASK_PACKS: u64 = 0x3ac0;
 const HOWS: u64 = 0x3b00;
 /// Scheduling priorities for sched_setscheduler and sched_setparam.
 const PRIORITIES: u64 = 0x3b80;
+/// Extended attribute names, one after another.
+const XATTR_NAMES: u64 = 0x3c00;
+/// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
+/// 1000 and of 0), and an access control list.
+const XATTR_VALUES: u64 = 0x3f00;
 
 /// An argument each runner replaces by its caller's process number, so calls can name their own
 /// process although the two runners' numbers differ. Its negation, the caller's own process group, is
@@ -81,6 +86,67 @@ const PATH_POOL: &[&str] = &[
     "/proc/self/fd",
     "/proc/sys",
 ];
+
+/// Attribute values, 32 bytes apart from `XATTR_VALUES`.
+const XATTR_VALUE_POOL: &[&[u8]] = &[
+    &[
+        0, 0, 0, 2, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ],
+    &[
+        1, 0, 0, 2, 0x20, 0, 0, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+    ],
+    &[
+        1, 0, 0, 3, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xe8, 3, 0, 0,
+    ],
+    &[
+        0, 0, 0, 3, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ],
+    &[
+        0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff,
+    ],
+    &[
+        2, 0, 0, 0, 1, 0, 6, 0, 0xff, 0xff, 0xff, 0xff, 4, 0, 4, 0, 0xff, 0xff, 0xff, 0xff, 0x20,
+        0, 4, 0, 0xff, 0xff, 0xff, 0xff,
+    ],
+];
+
+/// Extended attribute names calls choose from, each ending in a zero byte: every namespace, names
+/// with nothing after the prefix, the longest name Linux takes and one longer.
+fn xattr_names() -> Vec<Vec<u8>> {
+    let mut names: Vec<Vec<u8>> = [
+        "user.a",
+        "user.b",
+        "user.",
+        "trusted.a",
+        "security.a",
+        "security.capability",
+        "security.",
+        "system.posix_acl_access",
+        "system.posix_acl_default",
+        "system.a",
+        "other.a",
+        "",
+    ]
+    .iter()
+    .map(|name| name.as_bytes().to_vec())
+    .collect();
+    let mut longest = b"user.".to_vec();
+    longest.resize(255, b'x');
+    names.push(longest.clone());
+    longest.push(b'x');
+    names.push(longest);
+    for name in &mut names {
+        name.push(0);
+    }
+    names
+}
+
+fn xattr_name_offset(index: usize) -> u64 {
+    xattr_names()[..index]
+        .iter()
+        .map(|name| name.len() as u64)
+        .sum()
+}
 
 /// One call: its number and six raw arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +316,14 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     for (index, priority) in [0i32, 1, 50, 99, 100, -1].iter().enumerate() {
         let at = (PRIORITIES + index as u64 * 4) as usize;
         arena[at..at + 4].copy_from_slice(&priority.to_le_bytes());
+    }
+    for (index, name) in xattr_names().iter().enumerate() {
+        let at = (XATTR_NAMES + xattr_name_offset(index)) as usize;
+        arena[at..at + name.len()].copy_from_slice(name);
+    }
+    for (index, value) in XATTR_VALUE_POOL.iter().enumerate() {
+        let at = (XATTR_VALUES + index as u64 * 32) as usize;
+        arena[at..at + value.len()].copy_from_slice(value);
     }
     let mut calls = vec![
         Call {
@@ -433,6 +507,18 @@ pub const CALLS: &[u32] = &[
     linux::__NR_munlock,
     linux::__NR_mlockall,
     linux::__NR_munlockall,
+    linux::__NR_setxattr,
+    linux::__NR_lsetxattr,
+    linux::__NR_fsetxattr,
+    linux::__NR_getxattr,
+    linux::__NR_lgetxattr,
+    linux::__NR_fgetxattr,
+    linux::__NR_listxattr,
+    linux::__NR_llistxattr,
+    linux::__NR_flistxattr,
+    linux::__NR_removexattr,
+    linux::__NR_lremovexattr,
+    linux::__NR_fremovexattr,
 ];
 
 /// Turns a generated call into real arguments.
@@ -1055,6 +1141,56 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_mlock2 => [play(a), play_length(b), pick(&[0, 1, 2], c), 0, 0, 0],
         linux::__NR_mlockall => [pick(&[0, 1, 2, 3, 4, 5, 6, 7, 8], a), 0, 0, 0, 0, 0],
         linux::__NR_munlockall => [0; 6],
+        linux::__NR_setxattr
+        | linux::__NR_lsetxattr
+        | linux::__NR_fsetxattr
+        | linux::__NR_getxattr
+        | linux::__NR_lgetxattr
+        | linux::__NR_fgetxattr
+        | linux::__NR_listxattr
+        | linux::__NR_llistxattr
+        | linux::__NR_flistxattr
+        | linux::__NR_removexattr
+        | linux::__NR_lremovexattr
+        | linux::__NR_fremovexattr => {
+            let by_fd = matches!(
+                number,
+                linux::__NR_fsetxattr
+                    | linux::__NR_fgetxattr
+                    | linux::__NR_flistxattr
+                    | linux::__NR_fremovexattr
+            );
+            let target = if by_fd { fd(a) } else { path(a) };
+            let names = xattr_names().len();
+            let name = ARENA + XATTR_NAMES + xattr_name_offset((b % names as u64) as usize);
+            let name = if b >> 60 == 0 { 8 } else { name };
+            let size = pick(&[0u64, 1, 5, 20, 24, 28, 64, 65536, 65537], d);
+            let value = if c % 3 == 0 {
+                ARENA + XATTR_VALUES + ((c >> 8) % XATTR_VALUE_POOL.len() as u64) * 32
+            } else {
+                buffer(c)
+            };
+            match number {
+                linux::__NR_setxattr | linux::__NR_lsetxattr | linux::__NR_fsetxattr => {
+                    let size = if (ARENA + XATTR_VALUES..ARENA + OUTPUT).contains(&value)
+                        && c >> 60 != 0
+                    {
+                        XATTR_VALUE_POOL[((value - ARENA - XATTR_VALUES) / 32) as usize].len()
+                            as u64
+                    } else {
+                        size
+                    };
+                    [target, name, value, size, pick(&[0, 0, 1, 2, 3, 4], e), 0]
+                }
+                linux::__NR_getxattr | linux::__NR_lgetxattr | linux::__NR_fgetxattr => {
+                    [target, name, buffer(c), size, 0, 0]
+                }
+                linux::__NR_listxattr | linux::__NR_llistxattr | linux::__NR_flistxattr => {
+                    [target, buffer(c), size, 0, 0, 0]
+                }
+                _ => [target, name, 0, 0, 0, 0],
+            }
+        }
         _ => unreachable!("every call in CALLS is decoded"),
     };
     Call { number, arguments }
@@ -1382,6 +1518,27 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     }
     if call.number == linux::__NR_getcwd && under_proc(a, arena) {
         out.push((a, value as u64));
+    }
+    // The link count of `/proc` itself counts every process on the machine (Linux's
+    // `proc_root_getattr`), and the reference shares its machine. `/proc` is inode 1 of a file system
+    // with 1024 byte blocks.
+    let read = |address: u64, length: usize| {
+        address
+            .checked_sub(ARENA)
+            .and_then(|offset| arena.get(offset as usize..offset as usize + length))
+            .map(|bytes| {
+                let mut word = [0u8; 8];
+                word[..length].copy_from_slice(bytes);
+                u64::from_le_bytes(word)
+            })
+    };
+    let proc_root =
+        |ino: u64, blksize: u64| read(ino, 8) == Some(1) && read(blksize, 4) == Some(1024);
+    match call.number {
+        linux::__NR_newfstatat if proc_root(c + 8, c + 56) => out.push((c + 20, 4)),
+        linux::__NR_fstat if proc_root(b + 8, b + 56) => out.push((b + 20, 4)),
+        linux::__NR_statx if proc_root(e + 32, e + 4) => out.push((e + 16, 4)),
+        _ => {}
     }
     match call.number {
         linux::__NR_newfstatat => out.extend([(c, 16), (c + 72, 48)]),

@@ -742,11 +742,9 @@ fn write_bytes(
         regular.write(offset as usize, bytes);
         inode.mtime = now;
         inode.ctime = now;
-        // Writing clears the set-user and set-group bits, as Linux's `file_remove_privs` does for a
-        // writer without `CAP_FSETID`.
-        if !may_keep_privileges {
-            inode.mode &= !crate::fs::privileges_to_drop(inode.mode);
-        }
+        // Writing clears the set-user and set-group bits for a writer without `CAP_FSETID`, and file
+        // capabilities always, as Linux's `file_remove_privs` does.
+        inode.drop_privileges(!may_keep_privileges);
     }
     drop(inode);
     if at.is_none() {

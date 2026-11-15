@@ -13,7 +13,7 @@ use wcontainers_abi::{
 
 use crate::fs::{Content, Node};
 use crate::linux::auxvec::*;
-use crate::linux::general::{S_IFMT, S_IFREG, X_OK};
+use crate::linux::general::{R_OK, S_IFMT, S_IFREG, X_OK};
 use crate::memory::{AddressMap, Backing, Mapping, STACK_LIMIT, page_down, page_up};
 use crate::process::{Pid, StartingStack};
 use crate::{Context, Errno, Kernel, errno};
@@ -42,6 +42,11 @@ pub(crate) struct Image {
     pub starting_stack: StartingStack,
     /// The last part of the file name, for the process's name.
     pub name: Vec<u8>,
+    /// Who the process is once the program runs.
+    pub after: crate::credentials::AfterExec,
+    /// Every file the start read (scripts, the program, its loader) was readable by the caller, which
+    /// keeps the process dumpable.
+    pub readable: bool,
 }
 
 /// One program file found by path.
@@ -50,6 +55,8 @@ pub(crate) struct Program {
     /// Its path from the root, with links followed.
     path: Vec<u8>,
     bytes: Vec<u8>,
+    /// The caller may read it (Linux's `would_dump`).
+    readable: bool,
 }
 
 /// Finds a file to run by path from the process's point of view, with Linux's checks.
@@ -67,11 +74,13 @@ pub(crate) fn open_program(kernel: &Kernel, pid: Pid, path: &[u8]) -> Result<Pro
             Content::Regular(file) => file.data.clone(),
             _ => return Err(Errno::EACCES),
         };
+        let readable = inode.permits(&process.credentials, R_OK, true);
         drop(inode);
         Ok(Program {
             node,
             path: full,
             bytes,
+            readable,
         })
     })
 }
@@ -90,6 +99,7 @@ pub(crate) fn load(
     let mut arguments = arguments;
     let mut file_name = path.to_vec();
     let mut program = program;
+    let mut readable = program.readable;
     // Scripts: the interpreter runs with the script's path in place of the first argument.
     for depth in 0..=MAX_INTERPRETERS {
         if !program.bytes.starts_with(b"#!") {
@@ -105,6 +115,7 @@ pub(crate) fn load(
         new_arguments.extend(arguments.into_iter().skip(1));
         arguments = new_arguments;
         program = open_program(kernel, pid, &interpreter)?;
+        readable &= program.readable;
         file_name = interpreter;
     }
     let memory = cx.cpu.memory_new().map_err(errno::from_cpu)?;
@@ -118,6 +129,7 @@ pub(crate) fn load(
         path,
         &arguments,
         &environment,
+        readable,
     );
     if result.is_err() {
         cx.cpu.memory_drop(memory);
@@ -200,6 +212,7 @@ fn place(
     exec_path: &[u8],
     arguments: &[Vec<u8>],
     environment: &[Vec<u8>],
+    readable: bool,
 ) -> Result<Image, Errno> {
     let end = cx.cpu.address_space().end;
     let mut map = AddressMap::new(end);
@@ -232,6 +245,22 @@ fn place(
         elf::ET_DYN => page_down(end / 3 * 2),
         _ => return Err(Errno::ENOEXEC),
     };
+    let readable = readable && interpreter.as_ref().is_none_or(|program| program.readable);
+    let after = {
+        let inode = program.node.borrow();
+        kernel.processes[&pid]
+            .credentials
+            .for_program(&crate::credentials::ProgramFile {
+                mode: inode.mode,
+                uid: inode.uid,
+                gid: inode.gid,
+                nosuid: inode.fs.flags & crate::linux_extra::ST_NOSUID != 0,
+                capabilities: inode
+                    .xattrs
+                    .get(crate::syscall::CAPABILITY)
+                    .map(Vec::as_slice),
+            })?
+    };
     let main_path = program.path.clone();
     let main = place_elf(cx, memory, &mut map, &program, &main_path, Some(bias))?;
     map.brk_start = page_up(main.end);
@@ -245,7 +274,7 @@ fn place(
         None => (main.entry, 0),
     };
 
-    let credentials = kernel.processes[&pid].credentials.clone();
+    let credentials = &after.credentials;
     let auxiliary = [
         (AT_HWCAP, HWCAP),
         (AT_PAGESZ, PAGE_SIZE),
@@ -260,7 +289,7 @@ fn place(
         (AT_EUID, credentials.euid.into()),
         (AT_GID, credentials.gid.into()),
         (AT_EGID, credentials.egid.into()),
-        (AT_SECURE, 0),
+        (AT_SECURE, after.secure.into()),
     ];
     let (sp, starting_stack) = build_stack(
         cx,
@@ -306,6 +335,8 @@ fn place(
         executable: (program.node, main_path),
         starting_stack,
         name,
+        after,
+        readable,
     })
 }
 

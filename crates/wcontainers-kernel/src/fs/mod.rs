@@ -119,6 +119,8 @@ pub(crate) struct Inode {
     /// `flock` locks: the open file holding each, and whether it is exclusive. An entry whose open file
     /// is gone was released when it closed.
     pub flocks: Vec<(alloc::rc::Weak<RefCell<crate::file::OpenFile>>, bool)>,
+    /// Extended attributes by full name, for file systems that keep them.
+    pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 pub(crate) enum Content {
@@ -284,6 +286,23 @@ impl Inode {
         }
     }
 
+    /// What a write, truncation or change of owner takes away from a file that is not a directory: the
+    /// set-user and set-group bits when `mode_bits`, and file capabilities that are not empty (Linux's
+    /// `cap_inode_need_killpriv`).
+    pub fn drop_privileges(&mut self, mode_bits: bool) {
+        if mode_bits {
+            self.mode &= !privileges_to_drop(self.mode);
+        }
+        if !self.is_directory()
+            && self
+                .xattrs
+                .get(crate::syscall::CAPABILITY)
+                .is_some_and(|value| !value.is_empty())
+        {
+            self.xattrs.remove(crate::syscall::CAPABILITY);
+        }
+    }
+
     /// The `d_type` of a directory entry for this inode.
     pub fn dirent_type(&self) -> u8 {
         (self.file_type() >> 12) as u8
@@ -443,6 +462,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Node {
         },
         content: new.content,
         flocks: Vec::new(),
+        xattrs: BTreeMap::new(),
     }))
 }
 

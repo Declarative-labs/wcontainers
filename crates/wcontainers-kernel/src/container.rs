@@ -467,6 +467,23 @@ impl Kernel {
         process.executable = image.executable;
         process.starting_stack = image.starting_stack;
         process.set_name(&image.name);
+        // Dumpable unless a file could not be read or the ids differ, before or after (Linux's
+        // `begin_new_exec` and `commit_creds`).
+        let old = &process.credentials;
+        let new = &image.after.credentials;
+        process.dumpable = image.readable
+            && old.euid == old.uid
+            && old.egid == old.gid
+            && !new.loses_dumpable(old);
+        if image.after.gained {
+            process.personality &= !crate::linux_extra::PER_CLEAR_ON_SETID;
+        }
+        // A program in secure mode starts with at most Linux's default stack limit (`_STK_LIM`).
+        let stack = &mut process.limits[RLIMIT_STACK as usize];
+        if image.after.secure && stack.current > crate::memory::STACK_LIMIT {
+            stack.current = crate::memory::STACK_LIMIT;
+        }
+        process.credentials = image.after.credentials;
         process.files.close_on_exec();
         for action in &mut process.actions {
             if action.sa_handler_kernel != crate::linux_extra::SIG_IGN {

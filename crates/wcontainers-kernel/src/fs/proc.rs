@@ -122,6 +122,15 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("version", Global::File),
 ];
 
+/// The link count of `/proc` itself, as Linux's `proc_root_getattr` gives it: two, one for each
+/// directory below it, and one for each process on the machine.
+pub(crate) fn root_links(processes: usize) -> u32 {
+    let directories = global_children("")
+        .filter(|(index, _)| GLOBAL[*index].1 == Global::Directory)
+        .count();
+    (2 + directories + processes) as u32
+}
+
 /// Whether a global entry is the `/proc/sys` directory itself.
 pub(crate) fn is_sysctl_root(index: usize) -> bool {
     GLOBAL[index].0 == "sys"

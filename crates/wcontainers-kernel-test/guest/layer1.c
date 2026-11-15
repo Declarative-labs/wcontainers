@@ -24,6 +24,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #define ARENA ((unsigned char *)0x70000000UL)
@@ -215,6 +216,11 @@ int main(void) {
         }
         chown("/dev/shm", 0, 0);
         chmod("/dev/shm", 01777);
+        static char names[65536];
+        long names_length = listxattr("/dev/shm", names, sizeof names);
+        for (long at = 0; at < names_length; at += strlen(names + at) + 1) {
+            removexattr("/dev/shm", names + at);
+        }
         static const struct { const char *path; int minor; } devices[] = {
             {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}};
         for (int index = 0; index < 3; index++) {

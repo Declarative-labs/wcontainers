@@ -12,7 +12,7 @@ use crate::credentials::{
 };
 use crate::file::OpenFile;
 use crate::fs::dev::Device;
-use crate::fs::{Content, Directory, Node, Regular, Time, privileges_to_drop, proc};
+use crate::fs::{Content, Directory, Node, Regular, Time, proc};
 use crate::linux::general::*;
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
@@ -35,7 +35,7 @@ fn start(kernel: &Kernel, tid: Tid, dirfd: u64, path: &[u8]) -> Result<Node, Err
 }
 
 /// The inode a `*at` call names. An empty path names `dirfd` itself when `AT_EMPTY_PATH` is given.
-fn lookup(
+pub(super) fn lookup(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -809,6 +809,10 @@ pub(super) fn unlinkat(
             _ => Errno::EISDIR,
         });
     }
+    // `mnt_want_write` comes before the name is looked up.
+    if parent.directory.borrow().fs.read_only() {
+        return Err(Errno::EROFS);
+    }
     let pid = kernel.threads[&tid].process;
     // A mount point is found as the root mounted on it.
     let node = kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name))?;
@@ -915,6 +919,10 @@ fn rename(
     }
     if from.name.is_empty() || to.name.is_empty() {
         return Err(Errno::EBUSY);
+    }
+    // `mnt_want_write` comes before the names are looked up.
+    if from.directory.borrow().fs.read_only() {
+        return Err(Errno::EROFS);
     }
     let pid = kernel.threads[&tid].process;
     let source = kernel.with_walk(pid, |walk, _| walk.step(&from.directory, &from.name))?;
@@ -1147,7 +1155,10 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
         st_dev: inode.fs.device,
         st_ino: inode.ino,
         st_mode: inode.mode,
-        st_nlink: inode.nlink,
+        st_nlink: match inode.content {
+            Content::Proc(proc::Entry::Root) => proc::root_links(kernel.processes.len()),
+            _ => inode.nlink,
+        },
         st_uid: inode.uid,
         st_gid: inode.gid,
         st_rdev: inode.rdev,
@@ -1265,7 +1276,7 @@ pub(super) fn statx(
     let mut out: statx = zerocopy::FromZeros::new_zeroed();
     out.stx_mask = reported;
     out.stx_blksize = inode.fs.kind.block_size();
-    out.stx_nlink = inode.nlink;
+    out.stx_nlink = plain.st_nlink;
     out.stx_uid = inode.uid;
     out.stx_gid = inode.gid;
     out.stx_mode = inode.mode as u16;
@@ -1511,7 +1522,7 @@ fn change_owner(
     if gid != u32::MAX {
         inode.gid = gid;
     }
-    inode.mode &= !privileges_to_drop(inode.mode);
+    inode.drop_privileges(true);
     inode.ctime = now;
     Ok(0)
 }
@@ -1685,9 +1696,7 @@ fn truncate_node(
     regular.truncate(length as usize);
     inode.mtime = now;
     inode.ctime = now;
-    if !may_keep_privileges {
-        inode.mode &= !privileges_to_drop(inode.mode);
-    }
+    inode.drop_privileges(!may_keep_privileges);
     Ok(0)
 }
 

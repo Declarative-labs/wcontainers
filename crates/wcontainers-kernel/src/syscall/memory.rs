@@ -420,20 +420,34 @@ pub(super) fn madvise(
         return Ok(0);
     }
     let process = kernel.process_of_mut(tid);
-    // Removing pages works only on shared file mappings, which do not exist yet; anything else refuses.
+    // Removing pages punches a hole in what a shared mapping is backed by; shared anonymous memory is
+    // the only such mapping so far. Linux's `madvise_remove`, mapping by mapping.
     if advice == MADV_REMOVE {
-        if let Some(mapping) = process
-            .map
-            .next_after(address)
-            .filter(|mapping| mapping.start < end)
-        {
-            return Err(if matches!(mapping.backing, Backing::File { .. }) {
-                Errno::EACCES
-            } else {
-                Errno::EINVAL
-            });
+        let mut at = address;
+        while let Some(mapping) = process.map.next_after(at).cloned() {
+            if mapping.start >= end {
+                break;
+            }
+            if mapping.locked != Lock::None {
+                return Err(Errno::EINVAL);
+            }
+            match mapping.backing {
+                Backing::File { .. } => return Err(Errno::EACCES),
+                Backing::Anonymous if mapping.shared => {
+                    let from = mapping.start.max(at);
+                    let to = mapping.end.min(end);
+                    cx.cpu
+                        .zero(process.memory, from, to - from)
+                        .map_err(errno::from_cpu)?;
+                }
+                _ => return Err(Errno::EINVAL),
+            }
+            at = mapping.end;
         }
-        return Err(Errno::ENOMEM);
+        if !process.map.fully_mapped(address, end) {
+            return Err(Errno::ENOMEM);
+        }
+        return Ok(0);
     }
     // Freeing lazily and wiping on fork are for private anonymous memory only.
     if matches!(advice, MADV_FREE | MADV_WIPEONFORK)

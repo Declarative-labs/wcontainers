@@ -13,6 +13,8 @@ pub(crate) const CAP_SETGID: u32 = general::CAP_SETGID;
 pub(crate) const CAP_SETUID: u32 = general::CAP_SETUID;
 pub(crate) const CAP_MKNOD: u32 = general::CAP_MKNOD;
 pub(crate) const CAP_SYS_CHROOT: u32 = general::CAP_SYS_CHROOT;
+pub(crate) const CAP_SYS_ADMIN: u32 = general::CAP_SYS_ADMIN;
+pub(crate) const CAP_SETFCAP: u32 = general::CAP_SETFCAP;
 
 /// The powers a default Docker container gives its processes.
 pub(crate) const DOCKER_DEFAULT: u64 = bits(&[
@@ -147,5 +149,142 @@ impl Credentials {
         if old_fsuid != 0 && self.fsuid == 0 {
             self.effective |= self.permitted & FILE_POWERS;
         }
+    }
+}
+
+/// What the file a program starts from says about the credentials it runs with.
+pub(crate) struct ProgramFile<'a> {
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    /// It is on a mount that ignores set-user bits and file capabilities (`nosuid`).
+    pub nosuid: bool,
+    /// Its stored file capabilities, if it has any.
+    pub capabilities: Option<&'a [u8]>,
+}
+
+/// What `execve` does to a process's identity.
+pub(crate) struct AfterExec {
+    pub credentials: Credentials,
+    /// The program runs in secure mode (`AT_SECURE`).
+    pub secure: bool,
+    /// The program gained privileges, which clears some `personality` bits.
+    pub gained: bool,
+}
+
+/// The powers Linux knows (`CAP_VALID_MASK`).
+const VALID: u64 = (1 << (general::CAP_LAST_CAP + 1)) - 1;
+
+/// File capabilities as Linux's `get_vfs_caps_from_disk` reads them: permitted, inheritable and whether
+/// they are made effective. None where Linux finds none (owned by a user other than root).
+fn file_capabilities(stored: &[u8]) -> Result<Option<(u64, u64, bool)>, crate::Errno> {
+    use crate::Errno;
+    use general::{VFS_CAP_REVISION_2, VFS_CAP_REVISION_3, VFS_CAP_REVISION_MASK};
+    if stored.len() > size_of::<general::vfs_ns_cap_data>() {
+        return Err(Errno::ERANGE);
+    }
+    if stored.len() < 4 {
+        return Err(Errno::EINVAL);
+    }
+    let word = |index: usize| {
+        u64::from(u32::from_le_bytes(
+            stored[index * 4..index * 4 + 4]
+                .try_into()
+                .expect("four bytes"),
+        ))
+    };
+    let magic = word(0) as u32;
+    let root = match magic & VFS_CAP_REVISION_MASK {
+        VFS_CAP_REVISION_2 if stored.len() == size_of::<general::vfs_cap_data>() => 0,
+        VFS_CAP_REVISION_3 if stored.len() == size_of::<general::vfs_ns_cap_data>() => word(5),
+        _ => return Err(Errno::EINVAL),
+    };
+    if root != 0 {
+        return Ok(None);
+    }
+    let permitted = (word(1) | word(3) << 32) & VALID;
+    let inheritable = (word(2) | word(4) << 32) & VALID;
+    Ok(Some((
+        permitted,
+        inheritable,
+        magic & general::VFS_CAP_FLAGS_EFFECTIVE != 0,
+    )))
+}
+
+impl Credentials {
+    /// The credentials a program runs with, as Linux's `bprm_fill_uid` and `cap_bprm_creds_from_file`
+    /// work them out for a process nobody traces: set-user and set-group bits, file capabilities and
+    /// root's powers. An error refuses the `execve`.
+    pub fn for_program(&self, file: &ProgramFile<'_>) -> Result<AfterExec, crate::Errno> {
+        let old = self;
+        let mut new = self.clone();
+        let mut gained = false;
+        if !file.nosuid && !old.no_new_privileges {
+            if file.mode & general::S_ISUID != 0 {
+                new.euid = file.uid;
+                gained = true;
+            }
+            if file.mode & (general::S_ISGID | general::S_IXGRP)
+                == general::S_ISGID | general::S_IXGRP
+            {
+                new.egid = file.gid;
+                gained = true;
+            }
+        }
+        new.permitted = 0;
+        let mut effective = false;
+        let mut has_file_capabilities = false;
+        if !file.nosuid
+            && let Some(stored) = file.capabilities
+            && let Some((permitted, inheritable, raise)) = file_capabilities(stored)?
+        {
+            effective = raise;
+            has_file_capabilities = true;
+            new.permitted = (new.bounding & permitted) | (new.inheritable & inheritable);
+            if permitted & !new.permitted != 0 {
+                return Err(crate::Errno::EPERM);
+            }
+        }
+        // Root's powers, unless a set-user-root program with file capabilities is run by another user.
+        let set_user_root = new.uid != 0 && new.euid == 0;
+        if !(has_file_capabilities && set_user_root) {
+            if new.euid == 0 || new.uid == 0 {
+                new.permitted = new.bounding | new.inheritable;
+            }
+            if new.euid == 0 {
+                effective = true;
+            }
+        }
+        let capabilities_gained = new.permitted & !old.permitted != 0;
+        gained |= capabilities_gained;
+        let id_changed = new.euid != old.euid || !old.in_group(new.egid, true);
+        if (id_changed || capabilities_gained) && old.no_new_privileges {
+            new.euid = new.uid;
+            new.egid = new.gid;
+            new.permitted &= old.permitted;
+        }
+        new.suid = new.euid;
+        new.fsuid = new.euid;
+        new.sgid = new.egid;
+        new.fsgid = new.egid;
+        if has_file_capabilities || id_changed {
+            new.ambient = 0;
+        }
+        new.permitted |= new.ambient;
+        new.effective = if effective {
+            new.permitted
+        } else {
+            new.ambient
+        };
+        new.keep_capabilities = false;
+        let secure = id_changed
+            || new.euid != old.uid
+            || new.egid != old.gid
+            || (new.uid != 0 && (effective || new.permitted & !new.ambient != 0));
+        Ok(AfterExec {
+            credentials: new,
+            secure,
+            gained,
+        })
     }
 }

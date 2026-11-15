@@ -10,8 +10,11 @@ mod memory;
 mod process;
 mod system;
 mod time;
+mod xattr;
 
 use wcontainers_abi::Syscall;
+
+pub(crate) use xattr::CAPABILITY;
 
 use crate::counters::reason;
 use crate::process::Tid;
@@ -156,6 +159,18 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_umask, S(files::umask)),
         (__NR_statfs, S(files::statfs)),
         (__NR_fstatfs, S(files::fstatfs)),
+        (__NR_setxattr, S(xattr::setxattr)),
+        (__NR_lsetxattr, S(xattr::lsetxattr)),
+        (__NR_fsetxattr, S(xattr::fsetxattr)),
+        (__NR_getxattr, S(xattr::getxattr)),
+        (__NR_lgetxattr, S(xattr::lgetxattr)),
+        (__NR_fgetxattr, S(xattr::fgetxattr)),
+        (__NR_listxattr, S(xattr::listxattr)),
+        (__NR_llistxattr, S(xattr::llistxattr)),
+        (__NR_flistxattr, S(xattr::flistxattr)),
+        (__NR_removexattr, S(xattr::removexattr)),
+        (__NR_lremovexattr, S(xattr::lremovexattr)),
+        (__NR_fremovexattr, S(xattr::fremovexattr)),
         // Memory.
         (__NR_brk, S(memory::brk)),
         (__NR_mmap, S(memory::mmap)),
