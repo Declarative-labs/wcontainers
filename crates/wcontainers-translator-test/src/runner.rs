@@ -446,6 +446,9 @@ fn hooks(linker: &mut Linker<Host>) {
                     TrapKind::Breakpoint => Exit::Breakpoint {
                         comment: detail as u16,
                     },
+                    TrapKind::Alignment => Exit::AlignmentFault {
+                        address: detail as u64,
+                    },
                 };
                 stop(&mut caller, Stopped::Exit(exit));
             },

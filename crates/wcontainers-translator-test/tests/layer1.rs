@@ -6,7 +6,8 @@
 
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
-use wcontainers_translator_test::layer1::{cases, compare, covered};
+use wcontainers_translator_test::layer1::{Case, Stop, cases, compare, covered, translated};
+use wcontainers_translator_test::layout::{CODE, DATA};
 use wcontainers_translator_test::{forms, reference::Cases};
 
 fn setting(name: &str, default: u64) -> u64 {
@@ -58,4 +59,40 @@ fn every_covered_form_matches_the_cpu() {
         "{} forms differ from the CPU",
         failures.len()
     );
+}
+
+/// Alignment faults, each checked against the CPU and for the expected outcome, so the cases reach them.
+#[test]
+fn alignment_faults_match_the_cpu() {
+    let stack = DATA + 0x1008;
+    let target = CODE + 0x102;
+    let cases = [
+        // ldr x0, [sp]
+        (0xf940_03e0, stack, Stop::Alignment(stack)),
+        // stp x29, x30, [sp, #-16]!
+        (0xa9bf_7bfd, stack, Stop::Alignment(stack)),
+        // ldr x0, [sp, x1]
+        (0xf861_6be0, stack + 3, Stop::Alignment(stack + 3)),
+        // ldr x0, [sp, #8], with the stack pointer aligned
+        (0xf940_07e0, stack + 8, Stop::Landed(CODE + 4)),
+        // prfm pldl1keep, [sp]: a prefetch is not checked
+        (0xf980_03e0, stack, Stop::Landed(CODE + 4)),
+        // add sp, sp, #1: only loads and stores are checked
+        (0x9100_07ff, stack, Stop::Landed(CODE + 4)),
+        // br x1, to an address that is not a multiple of 4
+        (0xd61f_0020, stack + 8, Stop::Alignment(target)),
+    ];
+    let mut reference = Cases::start();
+    for (word, sp, expected) in cases {
+        let mut registers = [0u64; 34];
+        registers[1] = target;
+        registers[31] = sp;
+        let case = Case {
+            word,
+            registers,
+            seed: 1,
+        };
+        compare(&mut reference, &case).unwrap_or_else(|report| panic!("{report}"));
+        assert_eq!(translated(&case).stop, expected, "word {word:#010x}");
+    }
 }

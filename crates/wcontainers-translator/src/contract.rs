@@ -102,13 +102,21 @@ pub enum TrapKind {
     Unsupported = 1,
     /// `brk`. Detail: its comment field.
     Breakpoint = 2,
+    /// A load or store through a stack pointer that is not a multiple of 16, or a jump to an address that
+    /// is not a multiple of 4. Detail: that stack pointer or address.
+    Alignment = 3,
 }
 
 impl TrapKind {
     pub fn from_i32(value: i32) -> Option<Self> {
-        [Self::Undefined, Self::Unsupported, Self::Breakpoint]
-            .into_iter()
-            .find(|kind| *kind as i32 == value)
+        [
+            Self::Undefined,
+            Self::Unsupported,
+            Self::Breakpoint,
+            Self::Alignment,
+        ]
+        .into_iter()
+        .find(|kind| *kind as i32 == value)
     }
 }
 

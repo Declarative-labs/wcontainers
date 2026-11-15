@@ -28,6 +28,8 @@ pub enum Trap {
     Undefined,
     Unsupported,
     Breakpoint(u16),
+    /// An alignment fault at the address in this i64 local.
+    Alignment(u32),
 }
 
 /// One of the four condition flags.
@@ -433,6 +435,26 @@ fn untag<E: Emitter + ?Sized>(e: &mut E, local: u32) {
 /// access: the base register and what to add to the tagged address.
 fn address<E: Emitter + ?Sized>(e: &mut E, address: Address) -> (u32, Option<(Reg, u32, i64)>) {
     let local = e.local(ValType::I64);
+    let base = match address {
+        Address::Offset { base, .. }
+        | Address::PreIndex { base, .. }
+        | Address::PostIndex { base, .. }
+        | Address::Indexed { base, .. } => Some(base),
+        Address::Literal { .. } => None,
+    };
+    // Linux has the CPU check that the stack pointer is a multiple of 16 when it is the base.
+    if base == Some(Reg::Sp) {
+        e.get(Reg::Sp);
+        e.sink()
+            .local_tee(local)
+            .i64_const(15)
+            .i64_and()
+            .i64_const(0)
+            .i64_ne()
+            .if_(BlockType::Empty);
+        e.trap(Trap::Alignment(local));
+        e.sink().end();
+    }
     let mut post = None;
     match address {
         Address::Offset { base, offset } | Address::PreIndex { base, offset } => {

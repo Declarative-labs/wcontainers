@@ -34,6 +34,16 @@ fn config() -> Config {
     config
 }
 
+/// A branch whose target wraps below the blob's start.
+#[test]
+fn target_below_zero() {
+    // tbz x0, #0, -32768
+    let blob = 0x3604_0000u32.to_le_bytes();
+    let translation = translate(&blob, 0..4, &[0], LookAhead::None).unwrap();
+    assert_eq!(translation.pieces, [0]);
+    validate(&translation.wasm);
+}
+
 proptest! {
     #![proptest_config(config())]
     #[test]

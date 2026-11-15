@@ -92,8 +92,12 @@ pub fn translate(
         let at = offset as usize;
         u32::from_le_bytes(blob[at..at + 4].try_into().unwrap())
     };
-    let inside =
-        |offset: u64| offset.is_multiple_of(4) && offset >= code.start && offset + 4 <= code.end;
+    // Targets can wrap below zero, so nothing here may overflow.
+    let inside = |offset: u64| {
+        offset.is_multiple_of(4)
+            && (code.start..code.end).contains(&offset)
+            && code.end - offset >= 4
+    };
     for &start in starts {
         if !inside(start) {
             return Err(Error::BadStart(start));
@@ -259,6 +263,8 @@ fn dispatcher() -> wasm_encoder::Function {
     crate::thread::lookup(&mut s, G_PC, G_TABLE_BASE, OFFSET, PIECE);
     s.local_get(PIECE).ref_is_null().if_(BlockType::Empty);
     save_passed(&mut s);
+    crate::thread::misaligned_code(&mut s, TARGET, F_TRAP);
+    s.i32_const(UNWIND_LEAVE).throw(0).end();
     s.local_get(TARGET)
         .call(F_LOAD_CODE)
         .i32_eqz()
@@ -612,15 +618,17 @@ impl Emitter for NoneEmitter<'_> {
 
     fn trap(&mut self, trap: Trap) {
         self.save(0);
-        let (kind, detail) = match trap {
-            Trap::Undefined => (TrapKind::Undefined, i64::from(self.word)),
-            Trap::Unsupported => (TrapKind::Unsupported, i64::from(self.word)),
-            Trap::Breakpoint(comment) => (TrapKind::Breakpoint, comment.into()),
+        let word = i64::from(self.word);
+        let mut s = self.sink();
+        match trap {
+            Trap::Undefined => s.i32_const(TrapKind::Undefined as i32).i64_const(word),
+            Trap::Unsupported => s.i32_const(TrapKind::Unsupported as i32).i64_const(word),
+            Trap::Breakpoint(comment) => s
+                .i32_const(TrapKind::Breakpoint as i32)
+                .i64_const(comment.into()),
+            Trap::Alignment(address) => s.i32_const(TrapKind::Alignment as i32).local_get(address),
         };
-        self.sink()
-            .i32_const(kind as i32)
-            .i64_const(detail)
-            .call(F_TRAP);
+        s.call(F_TRAP);
         self.leave();
     }
 

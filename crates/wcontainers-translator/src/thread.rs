@@ -1,12 +1,16 @@
 //! The thread module: one per guest thread. It owns the registers, the lookup table and the bottom loop.
 
 use crate::contract::*;
+use core::mem::offset_of;
 use wasm_encoder::{
     BlockType, Catch, CodeSection, EntityType, ExportKind, ExportSection, FunctionSection,
     GlobalSection, GlobalType, HeapType, ImportSection, MemArg, MemArgTarget, Module, RefType,
     TableSection, TableType, TagKind, TagSection, TagType, TypeSection, ValType,
 };
-use wcontainers_abi::{STOP_FLAG_OFFSET, pstate};
+use wcontainers_abi::{RegisterBlock as B, pstate};
+
+/// Where the packed flags sit in the register block.
+const PSTATE: u64 = offset_of!(B, pstate) as u64;
 
 /// A register kept as a global: its export name, its type, and where it sits in the register block.
 pub(crate) struct RegisterGlobal {
@@ -19,17 +23,17 @@ pub(crate) struct RegisterGlobal {
 
 /// Every register global in export order. Code modules import the integer ones (all but the last 34).
 pub(crate) fn registers() -> Vec<RegisterGlobal> {
-    let plain = |name: String, ty, offset| RegisterGlobal {
+    let plain = |name: String, ty, offset: usize| RegisterGlobal {
         name,
         ty,
-        offset,
+        offset: offset as u64,
         flag_bit: None,
     };
     let mut all: Vec<_> = (0..31)
-        .map(|i| plain(format!("x{i}"), ValType::I64, 8 * i))
+        .map(|i| plain(format!("x{i}"), ValType::I64, offset_of!(B, x) + 8 * i))
         .collect();
-    all.push(plain("sp".into(), ValType::I64, 248));
-    all.push(plain("pc".into(), ValType::I64, 256));
+    all.push(plain("sp".into(), ValType::I64, offset_of!(B, sp)));
+    all.push(plain("pc".into(), ValType::I64, offset_of!(B, pc)));
     for (name, bit) in [
         ("n", pstate::N),
         ("z", pstate::Z),
@@ -39,15 +43,23 @@ pub(crate) fn registers() -> Vec<RegisterGlobal> {
         all.push(RegisterGlobal {
             name: name.into(),
             ty: ValType::I32,
-            offset: 264,
+            offset: offset_of!(B, pstate) as u64,
             flag_bit: Some(bit.trailing_zeros().into()),
         });
     }
-    all.push(plain("tpidr_el0".into(), ValType::I64, 792));
-    all.push(plain("fpsr".into(), ValType::I32, 784));
-    all.push(plain("fpcr".into(), ValType::I32, 788));
+    all.push(plain(
+        "tpidr_el0".into(),
+        ValType::I64,
+        offset_of!(B, tpidr_el0),
+    ));
+    all.push(plain("fpsr".into(), ValType::I32, offset_of!(B, fpsr)));
+    all.push(plain("fpcr".into(), ValType::I32, offset_of!(B, fpcr)));
     for i in 0..32 {
-        all.push(plain(format!("v{i}"), ValType::V128, 272 + 16 * i));
+        all.push(plain(
+            format!("v{i}"),
+            ValType::V128,
+            offset_of!(B, v) + 16 * i,
+        ));
     }
     all
 }
@@ -100,6 +112,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
 
     const LOAD_CODE: u32 = 0;
     const WARN: u32 = 1;
+    const TRAP: u32 = 2;
     const TABLE_BASE_G: u32 = 0;
     const THREAD_BLOCK_G: u32 = 1;
     const FIRST_REGISTER: u32 = 2;
@@ -107,6 +120,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     let mut imports = ImportSection::new();
     imports.import(HOOKS, HOOK_LOAD_CODE, EntityType::Function(1));
     imports.import(HOOKS, HOOK_WARN, EntityType::Function(2));
+    imports.import(HOOKS, HOOK_TRAP, EntityType::Function(2));
     imports.import(ENV, STATE, EntityType::Memory(state_memory()));
     let constant = |ty| {
         EntityType::Global(GlobalType {
@@ -154,9 +168,9 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
 
     let mut functions = FunctionSection::new();
     let mut code = CodeSection::new();
-    const RUN_F: u32 = 2;
-    const SAVE_F: u32 = 3;
-    const LOAD_F: u32 = 4;
+    const RUN_F: u32 = 3;
+    const SAVE_F: u32 = 4;
+    const LOAD_F: u32 = 5;
 
     // run
     {
@@ -171,6 +185,9 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         s.try_table(BlockType::Empty, [Catch::One { tag: 0, label: 0 }]);
         lookup(&mut s, pc, TABLE_BASE_G, offset, piece);
         s.local_get(piece).ref_is_null().if_(BlockType::Empty);
+        s.global_get(pc).local_set(offset);
+        misaligned_code(&mut s, offset, TRAP);
+        s.return_().end();
         s.global_get(pc)
             .call(LOAD_CODE)
             .i32_eqz()
@@ -225,7 +242,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
                     .i64_shl()
                     .i64_or();
             }
-            s.i64_store(memarg(0, 264, 3));
+            s.i64_store(memarg(0, PSTATE, 3));
         }
         for r in registers.iter().filter(|r| r.flag_bit.is_none()) {
             let m = memarg(0, r.offset, 0);
@@ -249,7 +266,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         if !save {
             for r in registers.iter().filter(|r| r.flag_bit.is_some()) {
                 s.global_get(THREAD_BLOCK_G)
-                    .i64_load(memarg(0, 264, 0))
+                    .i64_load(memarg(0, PSTATE, 0))
                     .i64_const(r.flag_bit.unwrap() as i64)
                     .i64_shr_u()
                     .i32_wrap_i64()
@@ -282,8 +299,22 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         .section(&globals)
         .section(&exports)
         .section(&code);
-    debug_assert_eq!(STOP_FLAG_OFFSET, 800);
     module.finish()
+}
+
+/// Open an `if` that is entered, after the trap hook has been called with an alignment fault, when the
+/// i64 local `address` (where control is going, already in `pc`) is not a multiple of 4. The caller ends
+/// it by leaving.
+pub(crate) fn misaligned_code(s: &mut wasm_encoder::InstructionSink<'_>, address: u32, trap: u32) {
+    s.local_get(address)
+        .i64_const(3)
+        .i64_and()
+        .i64_const(0)
+        .i64_ne()
+        .if_(BlockType::Empty)
+        .i32_const(TrapKind::Alignment as i32)
+        .local_get(address)
+        .call(trap);
 }
 
 /// Leave the piece for the guest address in global `pc` in local `piece`, or null if there is none.

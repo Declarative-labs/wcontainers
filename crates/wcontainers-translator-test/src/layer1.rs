@@ -128,7 +128,13 @@ fn data_pointer() -> impl Strategy<Value = u64> {
 pub fn cases(form: Form) -> impl Strategy<Value = Case> {
     let kept = form.clone();
     let registers = prop::collection::vec(value(), 31);
-    let stack = (DATA_WRITABLE / 16 / 4..DATA_WRITABLE / 16 * 3 / 4).prop_map(|k| DATA + 16 * k);
+    // The stack pointer is mostly a multiple of 16, as the ABI keeps it, and sometimes not, which faults
+    // when it is a load or store's base.
+    let stack = (
+        DATA_WRITABLE / 16 / 4..DATA_WRITABLE / 16 * 3 / 4,
+        prop_oneof![3 => Just(0u64), 1 => 1u64..16],
+    )
+        .prop_map(|(k, misaligned)| DATA + 16 * k + misaligned);
     let small = (0u64..128).prop_map(|v| v.wrapping_sub(64));
     (
         any::<u32>(),
@@ -187,6 +193,8 @@ pub enum Stop {
     Breakpoint,
     Syscall,
     MemoryFault(u64),
+    /// SIGBUS with BUS_ADRALN at this address.
+    Alignment(u64),
     /// Anything that has no counterpart on the other side.
     Other(u32, u64),
 }
@@ -198,13 +206,15 @@ pub fn reference_outcome(landed: &Landed) -> Outcome {
     const SIGTRAP: u32 = 5;
     const SIGSEGV: u32 = 11;
     const SIGSYS: u32 = 31;
+    const BUS_ADRALN: u32 = 1;
     let pc = landed.registers[32];
     let stop = match landed.signal {
         SIGILL if pc == CODE => Stop::Illegal,
         SIGILL => Stop::Landed(pc),
-        // Control reached an address that cannot be run: unmapped, or not a multiple of four. Turning that
-        // into the right signal is the CPU side's job when it finds no code there.
-        SIGSEGV | SIGBUS if landed.address == pc && pc != CODE => Stop::Landed(pc),
+        SIGBUS if landed.code == BUS_ADRALN => Stop::Alignment(landed.address),
+        // Control reached an address that cannot be run because nothing is mapped there. Turning that into
+        // the right signal is the CPU side's job when it finds no code there.
+        SIGSEGV if landed.address == pc && pc != CODE => Stop::Landed(pc),
         SIGSEGV => Stop::MemoryFault(landed.address),
         SIGTRAP => Stop::Breakpoint,
         SIGSYS => Stop::Syscall,
@@ -250,6 +260,7 @@ pub fn translated(case: &Case) -> Outcome {
         Stopped::Exit(Exit::Breakpoint { .. }) => Stop::Breakpoint,
         Stopped::Exit(Exit::Syscall(_)) => Stop::Syscall,
         Stopped::Exit(Exit::MemoryFault { address, .. }) => Stop::MemoryFault(address),
+        Stopped::Exit(Exit::AlignmentFault { address }) => Stop::Alignment(address),
         other => panic!("no counterpart on the reference: {other:?}"),
     };
     let mut now = vec![0u8; DATA_BYTES as usize];
