@@ -16,8 +16,8 @@ far from the plan's hopes on call heavy and memory heavy code; see "Next".
 
 S1 (run speed at full look-ahead) is in progress; see "S1" below for what is done, what was measured and
 what comes next. The third run's work is under "S1, third run", the fourth's (measurements only) under
-"S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", and what is left under
-"S1, what remains after the fifth run".
+"S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
+calls) under "S1, sixth run", and what is left under "S1, what remains after the sixth run".
 
 ## S1: run speed at full look-ahead
 
@@ -349,22 +349,52 @@ S1, fifth run (commits dc7af11, 98f61b7, c7b40ab, 68cff43):
   sieve 1.44 / 1.15, matrix 2.94 / 2.02, search 1.70 / 1.88, hash 0.97 / 0.97, interpret 3.74 / 3.89. Size
   350,392 bytes of WebAssembly (72.5 per byte of code).
 
-S1, what remains after the fifth run (aims with every check, in both engines):
-- Met in the last measurements (after c7b40ab, above): sieve, hash, matrix and search in both engines.
-  Matrix is at its aim in wasmtime (2.94, 3.00, 3.09 in three sessions), so noise can put it just over.
-- Interpret (aim 3): wasmtime 3.81, Chrome 4.18; no check 2.92 / 2.19. Its dispatch loop holds a switch
-  (whose stop check carries on in place) and its accesses are data dependent (byte code through w12, the
-  switch's byte table through the loaded opcode, the interpreter's stack through w10), so the proof does not
-  reach them; three kept-run checks a dispatch remain. Not yet shown irremovable. Ideas: the switch's byte
-  table load has a known bound (the jump table's own compare), so its range is known; the switch's jump
-  back could hand over to a loop piece like other jump backs, which would let the dispatch loop be proven.
-  Neither reaches the aim alone: with the permission check left out entirely interpret is 2.92 in
-  wasmtime, so nearly every check would have to go, and two of the three depend on data in memory (the byte
-  code and the interpreter's stack depth), which no proof at the loop's entry can bound.
-- fib (aim 4): wasmtime 6.0, Chrome 5.2 with every check; 5.2 / 4.7 with none. The checks cost little; the
-  call itself is the cost (see the fourth run: in wasmtime even the toy's call shape is 4.05 with the stop
-  check). In Chrome the toy is 2.7, so the gap there is ours and not yet explained.
-- Sort (aim 2.5): wasmtime 4.12, Chrome 3.31; with no check 3.34 / 2.80. Same call costs as fib.
+S1, sixth run (commits 93b955e, ceaf05f; A/B runs alternate the two builds in one session, best of 3):
+- Fewer argument registers passed (the plan's tuning number, `code::ARGUMENTS`). The machine code showed
+  wasmtime passing only the first four parameters of a piece in registers (sp and the expected return went
+  through its stack on every call), and V8 giving back only two results in registers (x2, x3 and sp went
+  through its stack on every return; V8 also has no callee-saved registers, so every value live across a
+  call is spilled and reloaded). Now x0 and x1 are passed; x2 and x3 live in locals like x4 and up, written
+  back and loaded only where needed. Seconds, every check, four against two, three rounds at load 10 to 26:
+  fib wasmtime best 2.40 against 2.09, Chrome 2.03 against 1.92; sort wasmtime 1.39 against 1.26, Chrome
+  1.12 against 1.09. One argument register against two (two rounds, load 8 to 25): fib the same (2.00 /
+  2.16 against 2.07 / 2.15 s), sort worse (wasmtime 1.27 / 1.38 against 1.26 / 1.28, Chrome 1.17 / 1.20
+  against 1.10 / 1.15), so two. Interpret pays a little for it (four against two, two rounds, load 7 to 11:
+  wasmtime 0.551 / 0.553 against 0.572 / 0.575 s, Chrome the same); matrix unchanged.
+- Calls and jumps through a register look up the piece in place (`full.rs` `look_up`, `call_looked_up`) and
+  call it with `call_ref`, going through the dispatcher only when the table has no piece there. Before, every
+  such call was a call of the dispatcher, which tail called the piece. Sort (its comparison is called through
+  a register), two rounds, load 10 to 16: wasmtime 1.34 / 1.32 to 1.155 / 1.25 s, Chrome unchanged (1.15 /
+  1.20 to 1.14 / 1.20).
+- Tried and not kept: the dispatcher writing `pc` only on its slow path (sort unchanged, 1.265 / 1.265
+  against 1.265 / 1.254 s, load 14 to 24).
+- Full benchmark run at ceaf05f (`WC_BENCH_VARIANTS=1,3,5`, best of 3, load 6 to 13; times native, every
+  check / no permission check / no check; Chrome first run in the instance): fib wasmtime 5.15 / 4.52 / 3.86,
+  Chrome 4.74 / 4.58 / 4.25; sieve 1.47 / 1.19 / 1.19, Chrome 1.17 / 0.97 / 0.95; hash 0.96 / 0.96 / 0.99,
+  Chrome 0.97 / 0.97 / 1.54 (no check has no stop to move to V8's optimised code); sort 3.21 / 2.64 / 2.49,
+  Chrome 3.15 / 2.92 / 2.51; interpret 4.08 / 3.24 / 3.00, Chrome 4.40 / 2.40 / 2.29; matrix 2.90 / 2.58 /
+  2.52, Chrome 2.10 / 2.25 / 12.2 (as hash); walk 0.78 to 0.91; search 2.06 / 5.78 / 2.02, Chrome 1.94 / 2.03
+  / 10.7. Size: 340,454 bytes of WebAssembly (70.4 per byte of code), 75,696 gzipped, wasmtime compile 24
+  ms. Interpret in Chrome reads 4.2 to 4.4 in every session of this run, with two or four arguments alike,
+  against 3.89 in the fifth run's last measurement.
+
+S1, what remains after the sixth run (aims with every check, in both engines):
+- Met in the last measurements: sieve, hash, matrix and search in both engines. Matrix in wasmtime is at its
+  aim (2.90 to 3.06 in this run), so noise can put it just over.
+- fib (aim 4): wasmtime 5.15, Chrome 4.74. With no check at all 3.86 / 4.25, so in Chrome even the bare
+  call is over the aim. Per call the wasmtime code still has the engine's stack limit check and its save of
+  ten callee-saved registers, the four guest stack stores and loads each with a 64 bit bounds check, x19,
+  x20, x29 and x30 through the thread block, the frame check of each new frame, the flags packed into the
+  block before the call (the callee may fault or stop before it sets flags) and the return check. Not shown
+  irremovable yet; the costs that look removable only by breaking a rule are the 64 bit bounds checks (a 32
+  bit guest memory, the owner's call) and the flags before calls (exact flags at a fault in the callee).
+- Sort (aim 2.5): wasmtime 3.21, Chrome 3.15; no check 2.49 / 2.51. The permission checks cost about half a
+  native run in wasmtime: its loops call the comparison, so neither kept runs nor the proof reach them, and
+  the comparison's own two loads are checked at every call.
+- Interpret (aim 3): wasmtime 4.08, Chrome 4.40; no check 3.00 / 2.29. As after the fifth run: three
+  kept-run checks a dispatch, two of them on addresses from data in memory (the byte code and the
+  interpreter's stack depth), which no proof at the loop's entry can bound; with every permission check left
+  out it is 3.24 in wasmtime, so even then the aim is not met there. Not yet shown irremovable.
 - 32 bit guest memory: measured 10 to 27% faster in wasmtime; the owner's call.
 
 ## Done
@@ -388,8 +418,8 @@ S1, what remains after the fifth run (aims with every check, in both engines):
   `contract` is the module contract: import names, hooks, trap kinds, warning reasons, permission table bits,
   description section. Look-ahead none follows direct control flow from the starts; every instruction reached
   is its own piece.
-- Piece convention: params x0 to x3, sp, expected return address; results x0 to x3, sp. Everything else in
-  the thread block (since S1). Returns check x30 against the expected address, else leave through "go to
+- Piece convention: params x0 and x1 (`code::ARGUMENTS`, four up to S1's sixth run), sp, expected return
+  address; results x0, x1, sp. Everything else in the thread block (since S1). Returns check x30 against the expected address, else leave through "go to
   address" (an exception the bottom loop catches). Since S1 the expected address's low bit
   (`contract::FLAGS_WANTED`) says whether the caller reads the flags after the call.
 - Lookup: one table slot per 4 bytes of code (design one of the two). The second design is not built.
@@ -635,6 +665,9 @@ contract's bits, in both runners).
   faulted; 1000 seed 43 (after outer loops): 0 mismatches, 379 faulted; 500 seed 31 (before walks): 0
   mismatches; 5000 seed 47, 20 on the CPU, after outer loops: 0 mismatches, 1774 faulted, 380 left to an
   address at full (77 s, load 8 to 10). Not yet the pass bar.
+- Layer 2, sixth S1 run, release: 300 cases seed 61 and 2000 seed 63, 10 on the CPU (two argument
+  registers): 0 mismatches, 674 faulted; 2000 seed 65, 10 on the CPU (lookup in place): 0 mismatches, 668
+  faulted, 150 left to an address at full (30 s, load 13). Not yet the pass bar.
 
 ## Measurements
 
