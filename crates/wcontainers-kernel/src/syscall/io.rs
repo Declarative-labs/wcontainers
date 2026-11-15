@@ -966,14 +966,14 @@ pub(super) fn lseek(
     if file.is_path() {
         return Err(Errno::EBADF);
     }
-    if file.node.borrow().is_secret() {
-        return Err(Errno::ESPIPE);
-    }
     let offset = offset as i64;
     let whence = whence as u32;
     // An unknown origin is refused before the file has its say.
     if whence > SEEK_MAX {
         return Err(Errno::EINVAL);
+    }
+    if file.node.borrow().is_secret() {
+        return Err(Errno::ESPIPE);
     }
     let inode = file.node.borrow();
     let new = match &inode.content {

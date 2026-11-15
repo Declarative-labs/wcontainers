@@ -47,6 +47,7 @@ int main(void) {
     result("read", read(fd, &byte, 1));
     result("pread", pread(fd, &byte, 1, 0));
     result("lseek", lseek(fd, 0, SEEK_END));
+    result("lseek, unknown origin", lseek(fd, 0, 5));
     result("fallocate", fallocate(fd, 0, 0, PAGE));
     result("fsync", fsync(fd));
     result("readahead", readahead(fd, 0, 64));
@@ -59,6 +60,7 @@ int main(void) {
     result("shrink", ftruncate(fd, PAGE));
     fstat(fd, &st);
     printf("size %ld blocks %ld\n", (long)st.st_size, (long)st.st_blocks);
+    result("shared, runnable", mmap(0, PAGE, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0) == MAP_FAILED ? -1 : 0);
     result("private", mmap(0, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0) == MAP_FAILED ? -1 : 0);
     unsigned char *a = mmap(0, 4 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     result("shared", a == MAP_FAILED ? -1 : 0);
