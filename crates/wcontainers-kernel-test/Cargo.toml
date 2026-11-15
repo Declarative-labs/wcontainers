@@ -1,0 +1,23 @@
+[package]
+name = "wcontainers-kernel-test"
+description = "Runs wcontainers-kernel on a stand-in CPU and compares it with real ARM64 Linux."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# unicorn-engine is GPL-2.0, so this crate is test-only and never shipped.
+license = "GPL-2.0-only"
+repository.workspace = true
+publish = false
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-kernel = { path = "../wcontainers-kernel" }
+unicorn-engine = "2.1.5"
+memmap2 = "0.9.12"
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
+cargo_metadata = "0.23.1"
+regex = "1.13.1"
+rand = "0.9.2"
+
+[lints]
+workspace = true
