@@ -437,6 +437,8 @@ fn open_flag_bits(word: u64) -> u64 {
         linux::O_NONBLOCK,
         linux::O_CREAT,
         linux::FASYNC,
+        linux::O_DIRECT,
+        linux::O_NOATIME,
     ];
     let mut flags = 0;
     for (index, bit) in bits.iter().enumerate() {

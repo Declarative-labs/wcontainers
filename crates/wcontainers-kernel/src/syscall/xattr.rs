@@ -4,7 +4,7 @@
 use alloc::vec::Vec;
 
 use super::{Args, guest};
-use crate::credentials::{CAP_FOWNER, CAP_SETFCAP, CAP_SYS_ADMIN, Credentials};
+use crate::credentials::{CAP_SETFCAP, CAP_SYS_ADMIN, Credentials};
 use crate::fs::{Content, Inode, Kind, Node};
 use crate::linux::general::*;
 use crate::linux_extra::{
@@ -138,8 +138,7 @@ fn permission(
         if file_type == S_IFDIR
             && inode.mode & S_ISVTX != 0
             && write
-            && credentials.fsuid != inode.uid
-            && !credentials.has(CAP_FOWNER)
+            && !credentials.owns_or_capable(inode.uid)
         {
             return Err(Errno::EPERM);
         }

@@ -134,7 +134,7 @@ fn sticky_allows(directory: &Node, node: &Node, credentials: &Credentials) -> bo
 /// caller with `CAP_FOWNER`, or one who may read and write a plain file may link to it.
 fn may_hard_link(node: &Node, credentials: &Credentials) -> bool {
     let inode = node.borrow();
-    if credentials.fsuid == inode.uid || credentials.has(CAP_FOWNER) {
+    if credentials.owns_or_capable(inode.uid) {
         return true;
     }
     let plain = inode.file_type() == S_IFREG
@@ -452,6 +452,7 @@ pub(super) fn open(
     if flags & O_DIRECTORY != 0 && file_type != S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
+    let mut contents = None;
     if flags & O_PATH == 0 {
         if file_type == S_IFDIR && (accmode != O_RDONLY || flags & O_TRUNC != 0) {
             return Err(Errno::EISDIR);
@@ -459,6 +460,11 @@ pub(super) fn open(
         // Devices on a `nodev` mount may not be opened.
         if matches!(file_type, S_IFCHR | S_IFBLK) && node.borrow().fs.no_devices() {
             return Err(Errno::EACCES);
+        }
+        // Truncating takes write access to the mount before `may_open`.
+        if !created && flags & O_TRUNC != 0 && file_type == S_IFREG && node.borrow().fs.read_only()
+        {
+            return Err(Errno::EROFS);
         }
         if !created {
             let mut mask = 0;
@@ -470,7 +476,11 @@ pub(super) fn open(
             }
             let inode = node.borrow();
             // Linux's `inode_permission`, with the process information tree's own rules.
-            crate::fs::permission(&inode, credentials(kernel, tid), mask, pid)?;
+            let credentials = credentials(kernel, tid);
+            crate::fs::permission(&inode, credentials, mask, pid)?;
+            if flags & O_NOATIME != 0 && !credentials.owns_or_capable(inode.uid) {
+                return Err(Errno::EPERM);
+            }
             if mask & W_OK != 0
                 && inode.fs.read_only()
                 && matches!(file_type, S_IFREG | S_IFDIR | S_IFLNK)
@@ -503,6 +513,17 @@ pub(super) fn open(
             S_IFSOCK => return Err(Errno::ENXIO),
             _ => {}
         }
+        let entry = match &node.borrow().content {
+            Content::Proc(entry) if file_type == S_IFREG => Some(*entry),
+            _ => None,
+        };
+        if let Some(entry) = entry {
+            contents = Some(proc_contents(kernel, cx, tid, &entry)?);
+        }
+        // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
+        if flags & O_DIRECT != 0 && !node.borrow().takes_direct_io() {
+            return Err(Errno::EINVAL);
+        }
         if flags & O_TRUNC != 0 && file_type == S_IFREG {
             let now = kernel.now(cx);
             let mut inode = node.borrow_mut();
@@ -530,14 +551,7 @@ pub(super) fn open(
         flags & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         full_path,
     );
-    let entry = match &node.borrow().content {
-        Content::Proc(entry) if file_type == S_IFREG && flags & O_PATH == 0 => Some(*entry),
-        _ => None,
-    };
-    if let Some(entry) = entry {
-        let contents = proc_contents(kernel, cx, tid, &entry)?;
-        file.borrow_mut().contents = Some(contents);
-    }
+    file.borrow_mut().contents = contents;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .process_of_mut(tid)
@@ -1418,7 +1432,7 @@ fn change_mode(
         return Err(Errno::EPERM);
     }
     let mut inode = node.borrow_mut();
-    if credentials.fsuid != inode.uid && !credentials.has(CAP_FOWNER) {
+    if !credentials.owns_or_capable(inode.uid) {
         return Err(Errno::EPERM);
     }
     let mut mode = mode & 0o7777;
@@ -1657,7 +1671,7 @@ pub(super) fn utimensat(
     ) {
         return Err(Errno::EPERM);
     }
-    let owner = credentials.fsuid == inode.uid || credentials.has(CAP_FOWNER);
+    let owner = credentials.owns_or_capable(inode.uid);
     if !owner {
         if !only_now {
             return Err(Errno::EPERM);

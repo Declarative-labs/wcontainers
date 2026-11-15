@@ -356,6 +356,12 @@ impl Inode {
         }
     }
 
+    /// Whether an open file of this inode takes direct I/O (Linux's `FMODE_CAN_ODIRECT`): only tmpfs's
+    /// regular files do.
+    pub fn takes_direct_io(&self) -> bool {
+        self.fs.kind == Kind::Tmpfs && matches!(self.content, Content::Regular(_))
+    }
+
     /// The `d_type` of a directory entry for this inode.
     pub fn dirent_type(&self) -> u8 {
         (self.file_type() >> 12) as u8

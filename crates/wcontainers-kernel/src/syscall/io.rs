@@ -1222,14 +1222,14 @@ pub(super) fn fcntl(
                 let credentials = &kernel.processes[&kernel.threads[&tid].process].credentials;
                 if wanted & O_NOATIME != 0
                     && file.flags & O_NOATIME == 0
-                    && credentials.fsuid != inode.uid
-                    && !credentials.has(crate::credentials::CAP_FOWNER)
+                    && !credentials.owns_or_capable(inode.uid)
                 {
                     return Err(Errno::EPERM);
                 }
-                let direct = inode.fs.kind == crate::fs::Kind::Tmpfs
-                    && matches!(inode.content, Content::Regular(_));
-                if wanted & O_DIRECT != 0 && inode.file_type() != S_IFIFO && !direct {
+                if wanted & O_DIRECT != 0
+                    && inode.file_type() != S_IFIFO
+                    && !inode.takes_direct_io()
+                {
                     return Err(Errno::EINVAL);
                 }
             }

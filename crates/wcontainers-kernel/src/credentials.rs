@@ -105,6 +105,12 @@ impl Credentials {
         self.effective & (1 << capability) != 0
     }
 
+    /// Linux's `inode_owner_or_capable`: the file system user owns a file of owner `uid`, or holds
+    /// CAP_FOWNER.
+    pub fn owns_or_capable(&self, uid: u32) -> bool {
+        self.fsuid == uid || self.has(general::CAP_FOWNER)
+    }
+
     pub fn in_group(&self, gid: u32, use_fs_ids: bool) -> bool {
         let own = if use_fs_ids { self.fsgid } else { self.egid };
         own == gid || self.groups.binary_search(&gid).is_ok()
