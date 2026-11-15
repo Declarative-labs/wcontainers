@@ -385,11 +385,49 @@ pub fn translated(case: &Case) -> Outcome {
     }
 }
 
+/// When a load or store faults, Arm leaves the registers it loads and the memory it stores UNKNOWN: a CPU
+/// may have done part of the access first (this one does, for 32 byte pairs that cross onto a page that
+/// faults). Ours does none of it. Take the reference's UNKNOWN parts as ours, provided ours touched no memory.
+fn unknown_after_fault(case: &Case, expected: &mut Outcome, actual: &Outcome) {
+    use wcontainers_arm64::Instruction as I;
+    let Stop::MemoryFault(address) = expected.stop else {
+        return;
+    };
+    if actual.stop != Stop::MemoryFault(address) || !actual.changed.is_empty() {
+        return;
+    }
+    let reg = |r: wcontainers_arm64::Reg| match r {
+        wcontainers_arm64::Reg::X(n) => Some(usize::from(n)),
+        _ => None,
+    };
+    let (general, vector) = match wcontainers_arm64::decode(case.word) {
+        I::Load { rt, .. } => ([reg(rt), None], [None, None]),
+        I::LoadPair { rt, rt2, .. } => ([reg(rt), reg(rt2)], [None, None]),
+        I::LoadVector { rt, .. } => ([None, None], [Some(rt), None]),
+        I::LoadVectorPair { rt, rt2, .. } => ([None, None], [Some(rt), Some(rt2)]),
+        I::Store { .. }
+        | I::StorePair { .. }
+        | I::StoreVector { .. }
+        | I::StoreVectorPair { .. } => {
+            expected.changed.clear();
+            return;
+        }
+        _ => return,
+    };
+    for n in general.into_iter().flatten() {
+        expected.registers[n] = actual.registers[n];
+    }
+    for n in vector.into_iter().flatten() {
+        expected.vectors[usize::from(n)] = actual.vectors[usize::from(n)];
+    }
+}
+
 /// Compare one case on both sides; describe the difference if there is one.
 pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
     let landed = reference.run(case.word, case.seed, &case.registers, &case.vectors);
-    let expected = reference_outcome(&landed);
+    let mut expected = reference_outcome(&landed);
     let actual = translated(case);
+    unknown_after_fault(case, &mut expected, &actual);
     if expected == actual {
         return Ok(());
     }
