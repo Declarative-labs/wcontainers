@@ -904,10 +904,9 @@ pub(super) fn getdents64(
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
+    // The buffer is checked only as each entry is written, after the file is found to be a
+    // directory, as Linux's `filldir64` does.
     let count = count as u32 as u64;
-    if !access_ok(buffer, count) {
-        return Err(Errno::EFAULT);
-    }
     let node = file.borrow().node.clone();
     let position = file.borrow().offset;
     // Every entry from the position on: name, inode number, type, and the position after it.

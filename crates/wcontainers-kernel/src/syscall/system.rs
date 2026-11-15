@@ -298,15 +298,11 @@ fn set_schedule(
         Some(policy) => {
             let reset = policy & SCHED_RESET_ON_FORK != 0;
             let policy = policy & !SCHED_RESET_ON_FORK;
+            // The reference refuses the extensible class with no scheduler loaded for it (measured),
+            // although it names its priority range.
             if !matches!(
                 policy,
-                SCHED_NORMAL
-                    | SCHED_FIFO
-                    | SCHED_RR
-                    | SCHED_BATCH
-                    | SCHED_IDLE
-                    | SCHED_DEADLINE
-                    | SCHED_EXT
+                SCHED_NORMAL | SCHED_FIFO | SCHED_RR | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE
             ) {
                 return Err(Errno::EINVAL);
             }

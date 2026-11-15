@@ -98,6 +98,9 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("mounts", Global::Link("self/mounts")),
     ("stat", Global::File),
     ("sys", Global::Directory),
+    ("sys/abi", Global::Directory),
+    ("sys/debug", Global::Directory),
+    ("sys/dev", Global::Directory),
     ("sys/fs", Global::Directory),
     ("sys/fs/nr_open", Global::File),
     ("sys/kernel", Global::Directory),
@@ -110,11 +113,19 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/random", Global::Directory),
     ("sys/kernel/random/boot_id", Global::File),
     ("sys/kernel/random/uuid", Global::File),
+    ("sys/net", Global::Directory),
+    ("sys/sunrpc", Global::Directory),
+    ("sys/user", Global::Directory),
     ("sys/vm", Global::Directory),
     ("sys/vm/overcommit_memory", Global::File),
     ("uptime", Global::File),
     ("version", Global::File),
 ];
+
+/// Whether a global entry is the `/proc/sys` directory itself.
+pub(crate) fn is_sysctl_root(index: usize) -> bool {
+    GLOBAL[index].0 == "sys"
+}
 
 impl Entry {
     /// The process an entry belongs to, for the entries inside a process's directory and the
@@ -137,7 +148,8 @@ impl Entry {
 
     fn mode(&self) -> u32 {
         match self {
-            Entry::Root | Entry::Process(_) | Entry::Fds(_) => S_IFDIR | 0o555,
+            Entry::Root | Entry::Process(_) => S_IFDIR | 0o555,
+            Entry::Fds(_) => S_IFDIR | 0o500,
             Entry::Global(index) => match GLOBAL[*index].1 {
                 Global::Directory => S_IFDIR | 0o555,
                 Global::File => S_IFREG | 0o444,
@@ -175,8 +187,14 @@ impl Entry {
             | Entry::Fd(pid, _) => *pid,
             _ => return (0, 0),
         };
+        // Linux's `task_dump_owner`: the process's effective ids, except that what is not a world
+        // readable directory belongs to root while the process may not be dumped.
         view.processes.get(&pid).map_or((0, 0), |process| {
-            (process.credentials.euid, process.credentials.egid)
+            if self.mode() != S_IFDIR | 0o555 && !process.dumpable {
+                (0, 0)
+            } else {
+                (process.credentials.euid, process.credentials.egid)
+            }
         })
     }
 }
@@ -199,8 +217,18 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
             | if file.writable() { 0o200 } else { 0 };
     }
     let is_directory = mode & S_IFMT == S_IFDIR;
-    new_inode(
-        view.fs,
+    // Docker mounts `/proc/sys` again over itself, read-only.
+    let fs = match entry {
+        Entry::Global(index) if GLOBAL[index].0 == "sys" || GLOBAL[index].0.starts_with("sys/") => {
+            FileSystem {
+                flags: view.fs.flags | crate::linux_extra::ST_RDONLY,
+                ..view.fs
+            }
+        }
+        _ => view.fs,
+    };
+    let node = new_inode(
+        fs,
         entry.ino(),
         New {
             mode,
@@ -212,7 +240,21 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
             parent: parent.filter(|_| is_directory).cloned(),
             name: name.to_vec(),
         },
-    )
+    );
+    // Link counts as the reference reports them: a process directory counts Linux's seven
+    // subdirectories, and the sysctl directories count none.
+    match entry {
+        Entry::Process(_) => node.borrow_mut().nlink = 9,
+        // The root of Docker's read-only mount of `/proc/sys`.
+        Entry::Global(index) if is_sysctl_root(index) => {
+            let mut inode = node.borrow_mut();
+            inode.nlink = 1;
+            inode.place.mount_root = true;
+        }
+        Entry::Global(_) if fs.read_only() && is_directory => node.borrow_mut().nlink = 1,
+        _ => {}
+    }
+    node
 }
 
 fn parse_number(name: &[u8]) -> Option<i64> {

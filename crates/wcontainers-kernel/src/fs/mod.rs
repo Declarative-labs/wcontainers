@@ -79,7 +79,8 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    /// The block size `stat` and `statfs` report.
+    /// The block size `stat` reports. `statfs` reports a page for every kind (measured on the
+    /// reference, where proc's files say 1024 and its file system 4096).
     pub fn block_size(self) -> u32 {
         match self {
             Kind::Proc => 1024,
@@ -319,6 +320,32 @@ impl Inode {
             return true;
         }
         false
+    }
+}
+
+/// Linux's `inode_permission` for a process `caller`, with the process information tree's own rules: a
+/// process directory may not be written (EPERM, measured on the reference), a process may always use
+/// its own descriptor directory, and `/proc/sys` may not be written even by root.
+pub(crate) fn permission(
+    inode: &Inode,
+    credentials: &Credentials,
+    mask: u32,
+    caller: crate::process::Pid,
+) -> Result<(), Errno> {
+    if let Content::Proc(entry) = inode.content {
+        match entry {
+            proc::Entry::Process(_) if mask & W_OK != 0 => return Err(Errno::EPERM),
+            proc::Entry::Fds(pid) if pid == caller => return Ok(()),
+            proc::Entry::Global(index) if proc::is_sysctl_root(index) && mask & W_OK != 0 => {
+                return Err(Errno::EACCES);
+            }
+            _ => {}
+        }
+    }
+    if inode.permits(credentials, mask, true) {
+        Ok(())
+    } else {
+        Err(Errno::EACCES)
     }
 }
 
@@ -577,10 +604,7 @@ impl<'a> Walk<'a> {
         if !directory.is_directory() {
             return Err(Errno::ENOTDIR);
         }
-        if !directory.permits(self.credentials, X_OK, true) {
-            return Err(Errno::EACCES);
-        }
-        Ok(())
+        permission(&directory, self.credentials, X_OK, self.proc.caller)
     }
 
     /// One step from a directory to a name in it, crossing mounts.

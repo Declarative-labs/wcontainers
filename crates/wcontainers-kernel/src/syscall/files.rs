@@ -96,20 +96,24 @@ fn credentials(kernel: &Kernel, tid: Tid) -> &Credentials {
 }
 
 /// May the caller make or remove names in this directory.
-fn may_change(directory: &Node, credentials: &Credentials) -> Result<(), Errno> {
+fn may_change(kernel: &Kernel, tid: Tid, directory: &Node) -> Result<(), Errno> {
     let inode = directory.borrow();
     if !inode.is_directory() {
         return Err(Errno::ENOTDIR);
     }
-    if !inode.permits(credentials, W_OK | X_OK, true) {
-        return Err(Errno::EACCES);
-    }
-    // The process information tree has no operations that change names: permitted callers get EPERM.
-    if matches!(inode.content, Content::Proc(_)) {
-        return Err(Errno::EPERM);
-    }
+    let caller = kernel.threads[&tid].process;
+    crate::fs::permission(&inode, credentials(kernel, tid), W_OK | X_OK, caller)?;
     if inode.fs.read_only() {
         return Err(Errno::EROFS);
+    }
+    Ok(())
+}
+
+/// The process information tree has no operations that change names: callers that get this far are
+/// refused with EPERM, as Linux does for a directory with no such operation.
+fn changes_names(directory: &Node) -> Result<(), Errno> {
+    if matches!(directory.borrow().content, Content::Proc(_)) {
+        return Err(Errno::EPERM);
     }
     Ok(())
 }
@@ -378,8 +382,11 @@ pub(super) fn open(
             let is_link = node.borrow().file_type() == S_IFLNK;
             let node = if is_link && !(creating && flags & O_EXCL != 0) {
                 if flags & O_NOFOLLOW != 0 {
+                    // A link not followed is not a directory, which is checked before opening it.
                     if flags & O_PATH != 0 {
                         node
+                    } else if flags & O_DIRECTORY != 0 {
+                        return Err(Errno::ENOTDIR);
                     } else {
                         return Err(Errno::ELOOP);
                     }
@@ -424,7 +431,8 @@ pub(super) fn open(
             if parent.trailing_slash {
                 return Err(Errno::EISDIR);
             }
-            may_change(&parent.directory, credentials(kernel, tid))?;
+            may_change(kernel, tid, &parent.directory)?;
+            changes_names(&parent.directory)?;
             let umask = kernel.process_of(tid).umask;
             let node = create(
                 kernel,
@@ -616,7 +624,8 @@ pub(super) fn mkdirat(
         return Err(Errno::EEXIST);
     }
     check_absent(kernel, tid, &parent)?;
-    may_change(&parent.directory, credentials(kernel, tid))?;
+    may_change(kernel, tid, &parent.directory)?;
+    changes_names(&parent.directory)?;
     let umask = kernel.process_of(tid).umask;
     let mode = S_IFDIR | (mode as u32 & 0o1777 & !umask);
     create(
@@ -654,7 +663,8 @@ pub(super) fn mknodat(
     if parent.trailing_slash {
         return Err(Errno::ENOENT);
     }
-    may_change(&parent.directory, credentials(kernel, tid))?;
+    may_change(kernel, tid, &parent.directory)?;
+    changes_names(&parent.directory)?;
     // Devices need `CAP_MKNOD`, except a whiteout (a character device 0:0).
     let whiteout = file_type == S_IFCHR && device == 0;
     if matches!(file_type, S_IFCHR | S_IFBLK)
@@ -701,7 +711,8 @@ pub(super) fn symlinkat(
     if parent.trailing_slash {
         return Err(Errno::ENOENT);
     }
-    may_change(&parent.directory, credentials(kernel, tid))?;
+    may_change(kernel, tid, &parent.directory)?;
+    changes_names(&parent.directory)?;
     create(
         kernel,
         cx,
@@ -749,7 +760,8 @@ pub(super) fn linkat(
     if !may_hard_link(&node, credentials(kernel, tid)) {
         return Err(Errno::EPERM);
     }
-    may_change(&parent.directory, credentials(kernel, tid))?;
+    may_change(kernel, tid, &parent.directory)?;
+    changes_names(&parent.directory)?;
     if node.borrow().is_directory() {
         return Err(Errno::EPERM);
     }
@@ -808,7 +820,7 @@ pub(super) fn unlinkat(
             Errno::ENOTDIR
         });
     }
-    may_change(&parent.directory, credentials(kernel, tid))?;
+    may_change(kernel, tid, &parent.directory)?;
     if !sticky_allows(&parent.directory, &node, credentials(kernel, tid)) {
         return Err(Errno::EPERM);
     }
@@ -816,6 +828,7 @@ pub(super) fn unlinkat(
         if !is_directory {
             return Err(Errno::ENOTDIR);
         }
+        changes_names(&parent.directory)?;
         if Rc::ptr_eq(&node, &kernel.process_of(tid).root) || node.borrow().place.mount_root {
             return Err(Errno::EBUSY);
         }
@@ -829,6 +842,7 @@ pub(super) fn unlinkat(
     } else if is_directory {
         return Err(Errno::EISDIR);
     }
+    changes_names(&parent.directory)?;
     let now = kernel.now(cx);
     parent
         .directory
@@ -964,11 +978,11 @@ fn rename(
         return Err(Errno::EPERM);
     }
     // `may_delete` of the source, then of the target or `may_create` where there is none.
-    may_change(&from.directory, &credentials)?;
+    may_change(kernel, tid, &from.directory)?;
     if !sticky_allows(&from.directory, &source, &credentials) {
         return Err(Errno::EPERM);
     }
-    may_change(&to.directory, &credentials)?;
+    may_change(kernel, tid, &to.directory)?;
     if let Some(target) = &target {
         if !sticky_allows(&to.directory, target, &credentials) {
             return Err(Errno::EPERM);
@@ -982,6 +996,7 @@ fn rename(
             }
         }
     }
+    changes_names(&from.directory)?;
     if source.borrow().place.mount_root
         || target
             .as_ref()
@@ -1125,7 +1140,7 @@ pub(super) fn readlinkat(
 }
 
 /// Fills Linux's `stat` for an inode.
-pub(super) fn stat_of(node: &Node) -> stat {
+pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     let inode = node.borrow();
     stat {
         st_dev: inode.fs.device,
@@ -1136,7 +1151,15 @@ pub(super) fn stat_of(node: &Node) -> stat {
         st_gid: inode.gid,
         st_rdev: inode.rdev,
         __pad1: 0,
-        st_size: inode.size() as i64,
+        st_size: match inode.content {
+            // A descriptor directory's size is how many descriptors are open, as on Linux.
+            Content::Proc(proc::Entry::Fds(pid)) => kernel
+                .processes
+                .get(&pid)
+                .map_or(0, |process| process.files.iter().count())
+                as i64,
+            _ => inode.size() as i64,
+        },
         st_blksize: inode.fs.kind.block_size() as i32,
         __pad2: 0,
         st_blocks: inode.blocks() as i64,
@@ -1170,7 +1193,8 @@ pub(super) fn newfstatat(
         flags,
         flags & AT_SYMLINK_NOFOLLOW == 0,
     )?;
-    guest(kernel, cx, tid).write_value(buffer, &stat_of(&node))?;
+    let value = stat_of(kernel, &node);
+    guest(kernel, cx, tid).write_value(buffer, &value)?;
     Ok(0)
 }
 
@@ -1187,7 +1211,8 @@ pub(super) fn fstat(
         .borrow()
         .node
         .clone();
-    guest(kernel, cx, tid).write_value(buffer, &stat_of(&node))?;
+    let value = stat_of(kernel, &node);
+    guest(kernel, cx, tid).write_value(buffer, &value)?;
     Ok(0)
 }
 
@@ -1215,7 +1240,7 @@ pub(super) fn statx(
         flags,
         flags & AT_SYMLINK_NOFOLLOW == 0,
     )?;
-    let plain = stat_of(&node);
+    let plain = stat_of(kernel, &node);
     let inode = node.borrow();
     let time = |time: Time| statx_timestamp {
         tv_sec: time.seconds,
@@ -1332,9 +1357,7 @@ fn access(
         return Ok(0);
     }
     let inode = node.borrow();
-    if !inode.permits(&checking, mode, true) {
-        return Err(Errno::EACCES);
-    }
+    crate::fs::permission(&inode, &checking, mode, kernel.threads[&tid].process)?;
     if mode & W_OK != 0
         && inode.fs.read_only()
         && matches!(inode.file_type(), S_IFREG | S_IFDIR | S_IFLNK)
@@ -1354,6 +1377,10 @@ fn change_mode(
 ) -> Result<u64, Errno> {
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
+    // A read-only mount refuses before anything else, as `mnt_want_write` comes first.
+    if node.borrow().fs.read_only() {
+        return Err(Errno::EROFS);
+    }
     // A process's entries refuse mode changes, as Linux's `proc_setattr` does. Other entries would keep
     // them, which is not built.
     if let Content::Proc(entry) = node.borrow().content {
@@ -1367,9 +1394,6 @@ fn change_mode(
     let mut inode = node.borrow_mut();
     if credentials.fsuid != inode.uid && !credentials.has(CAP_FOWNER) {
         return Err(Errno::EPERM);
-    }
-    if inode.fs.read_only() {
-        return Err(Errno::EROFS);
     }
     let mut mode = mode & 0o7777;
     if mode & S_ISGID != 0 && !credentials.in_group(inode.gid, true) && !credentials.has(CAP_FSETID)
@@ -1442,6 +1466,9 @@ fn change_owner(
     let credentials = credentials(kernel, tid).clone();
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
+    if inode.fs.read_only() {
+        return Err(Errno::EROFS);
+    }
     let changes_uid = uid != u32::MAX && uid != inode.uid;
     let changes_gid = gid != u32::MAX && gid != inode.gid;
     if changes_uid && !credentials.has(CAP_CHOWN) {
@@ -1461,12 +1488,13 @@ fn change_owner(
     {
         return Err(Errno::EPERM);
     }
-    if inode.fs.read_only() {
-        return Err(Errno::EROFS);
-    }
     if let Content::Proc(entry) = inode.content {
-        // A process's entries take the change and forget it at once: Linux sets their owners from the
-        // process again each time they are looked up. Other entries would keep it, which is not built.
+        // A process's directory refuses every change (measured on the reference). Its other entries
+        // take the change and forget it at once: Linux sets their owners from the process again each
+        // time they are looked up. Other entries would keep it, which is not built.
+        if matches!(entry, crate::fs::proc::Entry::Process(_)) {
+            return Err(Errno::EPERM);
+        }
         if entry.of_process().is_some() {
             return Ok(0);
         }
@@ -1584,6 +1612,16 @@ pub(super) fn utimensat(
     let credentials = credentials(kernel, tid).clone();
     let mut inode = node.borrow_mut();
     let only_now = wanted.is_none_or(|wanted| wanted.iter().all(|time| matches!(time.tv_nsec, n if n == i64::from(UTIME_NOW) || n == i64::from(UTIME_OMIT))));
+    if inode.fs.read_only() {
+        return Err(Errno::EROFS);
+    }
+    // A process's directory refuses every change (measured on the reference).
+    if matches!(
+        inode.content,
+        Content::Proc(crate::fs::proc::Entry::Process(_))
+    ) {
+        return Err(Errno::EPERM);
+    }
     let owner = credentials.fsuid == inode.uid || credentials.has(CAP_FOWNER);
     if !owner {
         if !only_now {
@@ -1592,9 +1630,6 @@ pub(super) fn utimensat(
         if !inode.permits(&credentials, W_OK, true) {
             return Err(Errno::EACCES);
         }
-    }
-    if inode.fs.read_only() {
-        return Err(Errno::EROFS);
     }
     let pick = |time: Option<&__kernel_timespec>, old: Time| match time {
         None => Some(now),
@@ -1664,9 +1699,16 @@ pub(super) fn truncate(
     if (length as i64) < 0 {
         return Err(Errno::EINVAL);
     }
+    // In the order of Linux's `vfs_truncate`.
     let node = lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, true)?;
     if node.borrow().is_directory() {
         return Err(Errno::EISDIR);
+    }
+    if node.borrow().file_type() != S_IFREG {
+        return Err(Errno::EINVAL);
+    }
+    if node.borrow().fs.read_only() {
+        return Err(Errno::EROFS);
     }
     if !node.borrow().permits(credentials(kernel, tid), W_OK, true) {
         return Err(Errno::EACCES);
@@ -1880,9 +1922,9 @@ fn statfs_of(node: &Node) -> statfs {
     let inode = node.borrow();
     let mut out: statfs = zerocopy::FromZeros::new_zeroed();
     out.f_type = inode.fs.kind.magic() as i64;
-    out.f_bsize = inode.fs.kind.block_size().into();
+    out.f_bsize = wcontainers_abi::PAGE_SIZE as i64;
     out.f_namelen = 255;
-    out.f_frsize = inode.fs.kind.block_size().into();
+    out.f_frsize = wcontainers_abi::PAGE_SIZE as i64;
     if inode.fs.kind == crate::fs::Kind::Tmpfs {
         out.f_blocks = 16384;
         out.f_bfree = 16384;

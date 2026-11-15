@@ -77,6 +77,9 @@ const PATH_POOL: &[&str] = &[
     "/proc/self/cwd",
     "l/x",
     "c/",
+    "/proc/self/",
+    "/proc/self/fd",
+    "/proc/sys",
 ];
 
 /// One call: its number and six raw arguments.
