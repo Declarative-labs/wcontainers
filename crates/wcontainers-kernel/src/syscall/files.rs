@@ -1350,7 +1350,7 @@ pub(super) fn statx(
     out.stx_rdev_minor = rdev_minor;
     out.stx_dev_major = major;
     out.stx_dev_minor = minor;
-    out.stx_mnt_id = (inode.fs.device & 0xff) + 1;
+    out.stx_mnt_id = super::handle::mount_id(&inode);
     drop(inode);
     guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)

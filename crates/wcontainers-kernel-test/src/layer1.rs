@@ -43,6 +43,10 @@ const HOWS: u64 = 0x3b00;
 const PRIORITIES: u64 = 0x3b80;
 /// `sched_attr` structures for sched_setattr, 128 bytes apart.
 const SCHED_ATTRS: u64 = 0x2000;
+/// `file_handle` headers for name_to_handle_at, 128 bytes apart: room for 128 bytes, the 12 tmpfs
+/// needs, none, and more than Linux allows.
+const HANDLES: u64 = 0x2600;
+const HANDLE_ROOMS: [u32; 4] = [128, 12, 0, 129];
 /// `stack_t` values for sigaltstack, 24 bytes apart.
 const SIGNAL_STACKS: u64 = 0x2800;
 /// Stack limits for RLIMIT_STACK, 16 bytes apart.
@@ -392,6 +396,10 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     for (index, name) in xattr_names().iter().enumerate() {
         let at = (XATTR_NAMES + xattr_name_offset(index)) as usize;
         arena[at..at + name.len()].copy_from_slice(name);
+    }
+    for (index, room) in HANDLE_ROOMS.iter().enumerate() {
+        let at = (HANDLES + index as u64 * 128) as usize;
+        arena[at..at + 4].copy_from_slice(&room.to_le_bytes());
     }
     for (index, attributes) in sched_attrs().iter().enumerate() {
         let at = (SCHED_ATTRS + index as u64 * 128) as usize;
@@ -883,6 +891,7 @@ pub const CALLS: &[u32] = &[
     linux::__NR_process_vm_readv,
     linux::__NR_process_vm_writev,
     linux::__NR_cachestat,
+    linux::__NR_name_to_handle_at,
     // Three times, since most of its sequences need several filters to show anything.
     linux::__NR_seccomp,
     linux::__NR_seccomp,
@@ -1018,6 +1027,23 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 pick(&[0, 0, 0, 1], f),
             ]
         }
+        linux::__NR_name_to_handle_at => [
+            dirfd(a),
+            path(b),
+            if c % 8 == 0 {
+                buffer(c >> 3)
+            } else {
+                ARENA + HANDLES + (c >> 3) % HANDLE_ROOMS.len() as u64 * 128
+            },
+            buffer(d),
+            pick(
+                &[
+                    0, 0, 0x400, 0x1000, 0x200, 1, 2, 0x202, 0x1002, 4, 0x401, 0x1201,
+                ],
+                e,
+            ),
+            0,
+        ],
         // The range from the generated values, or a bad address.
         linux::__NR_cachestat => [
             fd(a),
@@ -2170,8 +2196,16 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     if call.number == linux::__NR_mincore {
         out.push((c, b.div_ceil(4096).min(1 << 20)));
     }
+    // A handle holds inode numbers and a random generation, and the mount number is the machine's;
+    // the mount number is written even when the handle does not fit.
+    if call.number == linux::__NR_name_to_handle_at {
+        out.extend([(c + 8, 12), (d, 8)]);
+    }
     if value < 0 {
         return out;
+    }
+    if call.number == linux::__NR_readlinkat && names_process(c, arena) {
+        out.push((c, d));
     }
     if call.number == linux::__NR_getcwd && under_proc(a, arena) {
         out.push((a, value as u64));
@@ -2242,12 +2276,23 @@ fn under_proc(address: u64, arena: &[u8]) -> bool {
         == Some(b"/proc/".as_slice())
 }
 
+/// Whether the path at `address` names a process directory, `/proc/<pid>`, by number.
+fn names_process(address: u64, arena: &[u8]) -> bool {
+    under_proc(address, arena)
+        && address
+            .checked_sub(ARENA)
+            .and_then(|offset| arena.get(offset as usize + 6))
+            .is_some_and(u8::is_ascii_digit)
+}
+
 /// Whether a call's value is an address the kernel chose.
 /// Process numbers differ too: the reference's caller is a child of its runner.
 fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
     match call.number {
         // A working directory inside `/proc/<pid>` names the caller's process number.
         linux::__NR_getcwd => under_proc(call.arguments[0], arena),
+        // So does a link to one, such as `/proc/self/cwd` there.
+        linux::__NR_readlinkat => names_process(call.arguments[2], arena),
         linux::__NR_mmap => call.arguments[3] & 0x10_0010 == 0,
         linux::__NR_getpid
         | linux::__NR_getppid

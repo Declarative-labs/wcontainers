@@ -458,14 +458,24 @@ pub(super) fn segments(
         return Err(Errno::EINVAL);
     }
     let bytes = guest.read(address, count * 16)?;
+    let entries: Vec<(u64, u64)> = bytes
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|chunk| {
+            (
+                u64::from_le_bytes(chunk[..8].try_into().expect("8 bytes")),
+                u64::from_le_bytes(chunk[8..].try_into().expect("8 bytes")),
+            )
+        })
+        .collect();
+    // Every length is checked as the list is copied in (`iovec_from_user`), before any address.
+    if entries.iter().any(|(_, length)| (*length as i64) < 0) {
+        return Err(Errno::EINVAL);
+    }
     let mut out = Vec::with_capacity(count as usize);
     let mut total: u64 = 0;
-    for chunk in bytes.as_chunks::<16>().0 {
-        let base = u64::from_le_bytes(chunk[..8].try_into().expect("8 bytes"));
-        let length = u64::from_le_bytes(chunk[8..].try_into().expect("8 bytes"));
-        if (length as i64) < 0 {
-            return Err(Errno::EINVAL);
-        }
+    for (base, length) in entries {
         // Linux shortens the list so the total stays within the largest single transfer.
         let length = length.min(MAX_RW_COUNT - total);
         if !access_ok(base, length) {

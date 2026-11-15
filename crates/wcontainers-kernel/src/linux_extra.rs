@@ -109,3 +109,10 @@ pub(crate) const LEGACY_MAP_MASK: u32 = {
         | MAP_STACK
         | MAP_HUGETLB
 };
+
+/// File handles (Linux's internal `linux/exportfs.h`): the largest handle, and the types tmpfs and the
+/// generic inode encoding give, and the one for a handle that did not fit.
+pub(crate) const MAX_HANDLE_SZ: u32 = 128;
+pub(crate) const FILEID_INO32_GEN: i32 = 1;
+pub(crate) const FILEID_INO64_GEN: i32 = 0x81;
+pub(crate) const FILEID_INVALID: i32 = 0xff;

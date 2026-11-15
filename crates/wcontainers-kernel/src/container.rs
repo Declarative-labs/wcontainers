@@ -344,6 +344,7 @@ impl Kernel {
         self.boot = Time::from_nanoseconds(cx.host.realtime_nanoseconds());
         self.boot_monotonic = cx.host.monotonic_nanoseconds();
         cx.host.random(&mut self.boot_id);
+        cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
         self.hostname = start.hostname.to_vec();
         self.make_mounts();

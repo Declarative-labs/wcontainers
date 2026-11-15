@@ -66,6 +66,8 @@ pub(crate) struct Files {
     pub memfd_fs: Option<FileSystem>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
+    /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
+    pub generation_key: [u8; 16],
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -125,6 +127,7 @@ impl Kernel {
                 pipe_fs,
                 memfd_fs: None,
                 shared: Vec::new(),
+                generation_key: [0; 16],
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
