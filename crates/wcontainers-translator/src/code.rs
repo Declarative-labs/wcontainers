@@ -113,8 +113,9 @@ pub fn translate_omitting(
             return Err(Error::BadStart(start));
         }
     }
-    let pieces = match look_ahead {
-        LookAhead::None => none_pieces(&blob_code, starts),
+    // The pieces the lookup table holds, and functions only pieces call, whose indices follow theirs.
+    let (pieces, others) = match look_ahead {
+        LookAhead::None => (none_pieces(&blob_code, starts), Vec::new()),
         LookAhead::Full => crate::full::pieces(&blob_code, starts, omit),
     };
     let index: BTreeMap<u64, u32> = pieces
@@ -132,7 +133,7 @@ pub fn translate_omitting(
     code_section.function(&dispatcher());
     functions.function(7);
     code_section.function(&unwinder());
-    for function in pieces.values() {
+    for function in pieces.values().chain(&others) {
         functions.function(0);
         code_section.function(function);
     }

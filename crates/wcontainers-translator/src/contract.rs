@@ -52,11 +52,6 @@ pub const UNWIND_LEAVE: i32 = 1;
 /// the bottom loop asks [`HOOK_LOAD_CODE`] for code at `pc` first.
 pub const UNWIND_GO_TO_EXACT: i32 = 2;
 
-/// Where in the thread block a word the CPU side keeps for itself sits: in the padding after the stop flag.
-/// A piece that carries on after the stop hook at a jump back enters itself again, and this word says at
-/// which loop; it is zero at every other time, and `run` clears it when it starts.
-pub const RESUME_OFFSET: u64 = wcontainers_abi::STOP_FLAG_OFFSET as u64 + 4;
-
 /// Thread module export: run from the registers in the thread block until a hook asks to leave, or no piece
 /// can be found for an address. Takes and returns nothing.
 pub const RUN: &str = "run";

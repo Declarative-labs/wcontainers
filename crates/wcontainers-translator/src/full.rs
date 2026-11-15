@@ -20,32 +20,86 @@ use wcontainers_arm64::{
 /// How far back a jump through a register looks for the switch it may come from.
 const SWITCH_WINDOW: u64 = 64;
 
-/// The pieces of a full translation, by entry offset.
+/// The pieces of a full translation: those the lookup table holds, by entry offset, and then the loop pieces,
+/// whose function indices follow the others in order.
+///
+/// A loop piece starts at the header of a loop of a function and holds that loop and what follows it up to
+/// the header of any other loop, going on there in that loop's piece. Only a stop check that carries on at a jump back enters one,
+/// so it may rely on what its function knows at the loop. That way a thread carries on in a new call, which
+/// runs whatever code the engine has made for the function by then, and the function itself has no second
+/// way into its loops.
 pub(crate) fn pieces(
     code: &Code<'_>,
     starts: &[u64],
     omit: Omit,
-) -> BTreeMap<u64, wasm_encoder::Function> {
+) -> (
+    BTreeMap<u64, wasm_encoder::Function>,
+    Vec<wasm_encoder::Function>,
+) {
     let mut finder = Finder {
         code,
         decoded: HashMap::new(),
     };
     let functions = finder.functions(starts);
+    let entries: BTreeSet<u64> = functions.iter().map(|f| f.entry).collect();
     let index: BTreeMap<u64, u32> = functions
         .iter()
         .enumerate()
         .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
         .collect();
-    functions
+    let plans: Vec<Plan> = functions
         .iter()
-        .map(|function| {
-            let plan = Plan::new(function, &finder.decoded, !omit.stop);
-            (
-                function.entry,
-                FullEmitter::piece(function, &plan, &finder.decoded, &index, omit),
-            )
+        .map(|f| Plan::new(f, &finder.decoded, Seed::NOTHING))
+        .collect();
+
+    // Loop pieces, by the function they come from; with no stop checks nothing enters them.
+    let mut loops: Vec<(usize, Function, Plan)> = Vec::new();
+    let mut loop_index: Vec<HashMap<u64, u32>> = vec![HashMap::new(); functions.len()];
+    let mut next = F_FIRST_PIECE + functions.len() as u32;
+    for (i, (function, plan)) in functions.iter().zip(&plans).enumerate() {
+        if omit.stop {
+            break;
+        }
+        for (h, others) in &plan.outside {
+            let mut bounds = entries.clone();
+            bounds.extend(others.iter().map(|&d| function.blocks[d].start));
+            let start = function.blocks[*h].start;
+            let piece = finder.explore(start, &bounds, &mut BTreeSet::new());
+            // Where a loop piece would need more entries, the stop check carries on in place instead.
+            if !irreducible(&piece).is_empty() {
+                continue;
+            }
+            let seed = Seed {
+                frame: plan.frame_in[*h],
+                aligned: plan.aligned_in[*h],
+            };
+            let piece_plan = Plan::new(&piece, &finder.decoded, seed);
+            loop_index[i].insert(start, next);
+            next += 1;
+            loops.push((i, piece, piece_plan));
+        }
+    }
+
+    let decoded = &finder.decoded;
+    let table = functions
+        .iter()
+        .zip(&plans)
+        .enumerate()
+        .map(|(i, (function, plan))| {
+            let own = index[&function.entry];
+            let piece =
+                FullEmitter::piece(function, plan, decoded, &index, &loop_index[i], own, omit);
+            (function.entry, piece)
         })
-        .collect()
+        .collect();
+    let extra = loops
+        .iter()
+        .map(|(i, function, plan)| {
+            let own = loop_index[*i][&function.entry];
+            FullEmitter::piece(function, plan, decoded, &index, &loop_index[*i], own, omit)
+        })
+        .collect();
+    (table, extra)
 }
 
 #[derive(Clone, Copy)]
@@ -429,14 +483,10 @@ struct Plan {
     frame_across: HashSet<u64>,
     /// The piece calls or jumps to other pieces, so its entry needs the stop check.
     calls_out: bool,
-    /// For each block, the number the piece re-enters it by after a stop at a jump back to it (see
-    /// [`RESUME_OFFSET`]), or 0 if it is entered from the start instead.
-    reentry: Vec<u32>,
-    /// Where each block sends a re-entry on, at its start: for each re-entry number, the next loop header
-    /// on the way to the block re-entered, and whether that header is the block itself.
-    resume_hops: Vec<Vec<(u32, usize, bool)>>,
-    /// The registers a re-entry loads: everything any re-entered block needs.
-    resume_live: Registers,
+    /// What is known at each block's start about the stack: its frame and whether it is aligned.
+    frame_in: Vec<Frame>,
+    /// Every loop header but the entry, with the headers of the loops it is not around.
+    outside: Vec<(usize, Vec<usize>)>,
     /// Accesses checked exactly inside a loop that makes no call or system call keep the page last found
     /// allowed (with the page after it) and check again only on another page. Accesses of one kind (read or
     /// write) through one base register in one loop share what they keep. Each such access's number for
@@ -515,16 +565,28 @@ fn covers(frame: Frame, lo: i64, hi: i64) -> bool {
     frame.is_some_and(|(a, b)| a <= lo && hi <= b)
 }
 
+/// What is known at a piece's entry about the stack: nothing for a piece any caller may enter; for a loop
+/// piece, what its function knows at that loop.
+#[derive(Clone, Copy)]
+struct Seed {
+    frame: Frame,
+    aligned: bool,
+}
+
+impl Seed {
+    const NOTHING: Seed = Seed {
+        frame: None,
+        aligned: false,
+    };
+}
+
 impl Plan {
-    /// `reenter`: jumps back have stop checks, after which the piece re-enters itself at the loop.
-    fn new(function: &Function, decoded: &HashMap<u64, Decoded>, reenter: bool) -> Plan {
+    fn new(function: &Function, decoded: &HashMap<u64, Decoded>, seed: Seed) -> Plan {
         let blocks = &function.blocks;
         let n = blocks.len();
-        let (mut graph, rank) = ranks(function);
+        let (graph, rank) = ranks(function);
 
-        // Loops and the way into each from the entry. A piece re-entered at a loop header goes there through
-        // the header of every loop around it, outermost first, so each loop is still entered only at its
-        // header and the control flow stays reducible.
+        // Loops, and for each the loops around it.
         let mut preds = vec![Vec::new(); n];
         for (u, block) in blocks.iter().enumerate() {
             for &v in &block.succs {
@@ -551,30 +613,19 @@ impl Plan {
             inside
         };
         let bodies: HashMap<usize, Vec<bool>> = headers.iter().map(|&h| (h, body(h))).collect();
-        let mut reentry = vec![0; n];
-        let mut resume_hops = vec![Vec::new(); n];
-        let mut extra_edges = Vec::new();
-        if reenter {
-            for &h in headers.iter().filter(|&&h| h != 0) {
-                let id = reentry.iter().max().unwrap() + 1;
-                reentry[h] = id;
-                let mut around: Vec<usize> = headers
+        let outside = headers
+            .iter()
+            .copied()
+            .filter(|&h| h != 0)
+            .map(|h| {
+                let others = headers
                     .iter()
                     .copied()
-                    .filter(|&d| d != h && d != 0 && bodies[&d][h])
+                    .filter(|&d| d != h && !bodies[&h][d])
                     .collect();
-                around.sort_by_key(|&d| rank[d]);
-                let mut from = 0;
-                for &next in around.iter().chain([&h]) {
-                    resume_hops[from].push((id, next, next == h));
-                    extra_edges.push((from, next));
-                    from = next;
-                }
-            }
-        }
-        for &(u, v) in &extra_edges {
-            graph.add_edge(NodeIndex::new(u), NodeIndex::new(v), ());
-        }
+                (h, others)
+            })
+            .collect();
         let doms = dominators::simple_fast(&graph, NodeIndex::new(0));
         let mut children = vec![Vec::new(); n];
         for b in 1..n {
@@ -584,9 +635,6 @@ impl Plan {
         let mut forward_in = vec![0; n];
         let mut loop_header = vec![false; n];
         let mut merge = vec![false; n];
-        for &(_, v) in &extra_edges {
-            forward_in[v] += 1;
-        }
         for (u, block) in blocks.iter().enumerate() {
             for &v in &block.succs {
                 if rank[v] <= rank[u] {
@@ -653,16 +701,9 @@ impl Plan {
         let mut flags_in: Vec<FlagStates> = vec![0; n];
         let mut frame_in: Vec<Option<Frame>> = vec![None; n];
         let mut aligned_in = vec![true; n];
-        aligned_in[0] = false;
+        aligned_in[0] = seed.aligned;
         flags_in[0] = 1 << FLAGS_IN_BLOCK;
-        frame_in[0] = Some(None);
-        // A re-entry finds the flags in the block. What else is known at the loop's start still holds: it
-        // comes from the jump back, and the stop hook changed nothing.
-        for (h, &id) in reentry.iter().enumerate() {
-            if id != 0 {
-                flags_in[h] |= 1 << FLAGS_IN_BLOCK;
-            }
-        }
+        frame_in[0] = Some(seed.frame);
         let mut changed = true;
         while changed {
             changed = false;
@@ -794,9 +835,6 @@ impl Plan {
             }
         }
         let dynamic_flags = flags_in.iter().any(|f| f.count_ones() > 1);
-        let resume_live = (0..n)
-            .filter(|&h| reentry[h] != 0)
-            .fold(Registers::NONE, |l, h| l.union(live_in_blocks[h]));
         let calls_out = function_instructions(function).any(|o| {
             let d = &decoded[&o];
             d.effects.calls || leaves_piece(function, o, &d.instruction)
@@ -817,9 +855,8 @@ impl Plan {
             frame_checks,
             frame_across,
             calls_out,
-            reentry,
-            resume_hops,
-            resume_live,
+            frame_in,
+            outside,
             kept,
             kept_by_loop,
         }
@@ -1029,9 +1066,9 @@ struct At {
 /// How a piece carries on when the stop hook says so.
 #[derive(Clone, Copy)]
 enum AfterStop {
-    /// Enter the piece again at this block (by its re-entry number; 0 is the start), so an engine that has
-    /// optimised the function since this call began runs the optimised code from here on.
-    Reenter(u32),
+    /// Go on in a new call of this piece or of a loop piece (by function index) at the loop jumped back to,
+    /// so an engine that has optimised the function since this call began runs the optimised code.
+    Enter(u32),
     /// Go on with every local as it is: the hook changes nothing when it says carry on. Used at the entry,
     /// before any register but the passed ones is in a local.
     Continue,
@@ -1052,6 +1089,8 @@ struct FullEmitter<'a> {
     plan: &'a Plan,
     decoded: &'a HashMap<u64, Decoded>,
     index: &'a BTreeMap<u64, u32>,
+    /// The loop pieces of the function this piece comes from, by header offset.
+    loops: &'a HashMap<u64, u32>,
     omit: Omit,
     body: Vec<u8>,
     locals: Vec<ValType>,
@@ -1069,8 +1108,6 @@ struct FullEmitter<'a> {
     fixed: [Option<u32>; 6],
     /// The piece's own function index.
     own: u32,
-    /// The i32 local holding the re-entry number on the way to the block re-entered, else 0.
-    resume: u32,
     /// For each number in [`Plan::kept`], the i64 local holding the page last found allowed, or -1.
     kept_pages: Vec<u32>,
 }
@@ -1081,6 +1118,8 @@ impl<'a> FullEmitter<'a> {
         plan: &'a Plan,
         decoded: &'a HashMap<u64, Decoded>,
         index: &'a BTreeMap<u64, u32>,
+        loops: &'a HashMap<u64, u32>,
+        own: u32,
         omit: Omit,
     ) -> wasm_encoder::Function {
         let mut e = FullEmitter {
@@ -1088,6 +1127,7 @@ impl<'a> FullEmitter<'a> {
             plan,
             decoded,
             index,
+            loops,
             omit,
             body: Vec::new(),
             locals: Vec::new(),
@@ -1106,8 +1146,7 @@ impl<'a> FullEmitter<'a> {
                 aligned: false,
             },
             fixed: [None; 6],
-            own: index[&function.entry],
-            resume: 0,
+            own,
             kept_pages: Vec::new(),
         };
         for _ in plan.kept_by_loop.iter().flatten() {
@@ -1124,34 +1163,8 @@ impl<'a> FullEmitter<'a> {
             let state = e.flag_state;
             e.sink().i32_const(FLAGS_IN_BLOCK as i32).local_set(state);
         }
-        let entry_check = plan.calls_out && !omit.stop;
-        // A re-entry goes straight to its loop, with no check at the entry: it is not a new call, and `pc`
-        // is not the entry.
-        let reentered = plan.reentry.iter().any(|&id| id != 0);
-        if reentered {
-            e.resume = e.new_local(ValType::I32);
-            let (block, resume) = (e.fixed(G_THREAD_BLOCK), e.resume);
-            let mut s = e.sink();
-            block.push(&mut s);
-            s.i32_load(memarg(MEMORY_STATE, RESUME_OFFSET, 2))
-                .local_tee(resume)
-                .if_(BlockType::Empty);
-            block.push(&mut s);
-            s.i32_const(0)
-                .i32_store(memarg(MEMORY_STATE, RESUME_OFFSET, 2));
-            for bit in plan.resume_live.bits() {
-                let local = e.register(bit);
-                Slot::of_bit(bit).load_into(&mut e.sink(), block, local);
-            }
-            if entry_check {
-                e.sink().else_();
-            }
-        }
-        if entry_check {
+        if plan.calls_out && !omit.stop {
             e.stop_check(Pc::Offset(function.entry), AfterStop::Continue);
-        }
-        if reentered {
-            e.sink().end();
         }
         for bit in plan.live_in[0].bits() {
             let local = e.register(bit);
@@ -1357,7 +1370,6 @@ impl<'a> FullEmitter<'a> {
             flags: self.plan.flags_in[b],
             aligned: self.plan.aligned_in[b],
         };
-        self.resume_hops(b);
         for offset in (block.start..block.end).step_by(4) {
             self.at.offset = offset;
             let mark = self.taken.len();
@@ -1372,33 +1384,6 @@ impl<'a> FullEmitter<'a> {
             let released: Vec<_> = self.taken.drain(mark..).collect();
             self.free.extend(released);
         }
-    }
-
-    /// At a block's start, send a re-entry on towards the block it re-enters.
-    fn resume_hops(&mut self, b: usize) {
-        let hops = self.plan.resume_hops[b].clone();
-        if hops.is_empty() {
-            return;
-        }
-        let resume = self.resume;
-        self.sink().local_get(resume).if_(BlockType::Empty);
-        self.labels.push(Label::Other);
-        for (id, next, last) in hops {
-            let mut s = self.sink();
-            s.local_get(resume)
-                .i32_const(id as i32)
-                .i32_eq()
-                .if_(BlockType::Empty);
-            if last {
-                s.i32_const(0).local_set(resume);
-            }
-            self.labels.push(Label::Other);
-            let depth = self.depth(Label::Merge(next));
-            self.sink().br(depth).end();
-            self.labels.pop();
-        }
-        self.sink().end();
-        self.labels.pop();
     }
 
     fn depth(&self, label: Label) -> u32 {
@@ -1424,7 +1409,12 @@ impl<'a> FullEmitter<'a> {
                     && !self.omit.stop
                 {
                     let start = self.function.blocks[to].start;
-                    self.stop_check(Pc::Offset(start), AfterStop::Reenter(self.plan.reentry[to]));
+                    let after = match self.loops.get(&start) {
+                        _ if to == 0 => AfterStop::Enter(self.own),
+                        Some(&f) => AfterStop::Enter(f),
+                        None => AfterStop::Reload(self.plan.live_in[to], 0),
+                    };
+                    self.stop_check(Pc::Offset(start), after);
                 }
                 let depth = self.depth(label);
                 self.sink().br(depth);
@@ -1445,7 +1435,7 @@ impl<'a> FullEmitter<'a> {
         }
         self.write_back(false);
         self.arguments();
-        match self.index.get(&target) {
+        match self.index.get(&target).or(self.loops.get(&target)) {
             Some(&f) => {
                 self.sink().return_call(f);
             }
@@ -1547,8 +1537,8 @@ impl<'a> FullEmitter<'a> {
         Slot::Pc.store(&mut self.sink());
     }
 
-    /// Call the stop hook if the flag is raised. If the thread carries on, nothing has changed, so registers
-    /// come back from the block just written rather than being kept across the call.
+    /// Call the stop hook if the flag is raised, then carry on as `after` says: when the hook says carry on,
+    /// nothing has changed.
     fn stop_check(&mut self, pc: Pc, after: AfterStop) {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
@@ -1568,17 +1558,9 @@ impl<'a> FullEmitter<'a> {
             .unreachable()
             .end();
         match after {
-            AfterStop::Reenter(id) => {
-                if id != 0 {
-                    let block = self.fixed(G_THREAD_BLOCK);
-                    let mut s = self.sink();
-                    block.push(&mut s);
-                    s.i32_const(id as i32)
-                        .i32_store(memarg(MEMORY_STATE, RESUME_OFFSET, 2));
-                }
+            AfterStop::Enter(f) => {
                 self.arguments();
-                let own = self.own;
-                self.sink().return_call(own);
+                self.sink().return_call(f);
             }
             AfterStop::Reload(live, passed_from) => {
                 self.reload(live, passed_from);
