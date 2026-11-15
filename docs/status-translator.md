@@ -251,8 +251,31 @@ S1, third run (commits 1f7dfee, 86f24d5):
   24 instructions; a 32 bit guest memory would remove them, the owner's call), and x19, x20, x29, x30
   through the thread block (about 15 loads and stores). With every check off fib is 5.1 times native in
   wasmtime and 4.7 in Chrome in this run, so the aim of 4 is out of reach without a cheaper call
-  convention in the engine or a 32 bit guest memory. Not yet measured: re-reading the fixed values from
-  globals after each call instead of keeping them in callee-saved registers.
+  convention in the engine or a 32 bit guest memory. Tried and not kept: in pieces that call, reading
+  every fixed value from the module's globals at each use instead of copying them into locals. fib 2.42 /
+  2.41 s against 2.41 / 2.46, sort 1.44 / 1.48 against 1.50 / 1.47 (A/B, load 70 to 160, so only a rough
+  answer); the machine code shows why: the piece still saves all ten callee-saved registers, because
+  Cranelift merges the reads of an immutable global into one value that lives across the calls anyway.
+
+S1, what remains after the third run (aims with every check, in both engines):
+- Met: sieve and hash (at most 1.5; sieve wasmtime 1.5 to 1.6 at high load, at or just over the aim, so
+  re-measure at low load), search in Chrome and about at the aim in wasmtime (2.6 to 3.0).
+- Matrix (aim 3): wasmtime about 7, Chrome about 4 to 5; no check 2.65. Its inner loop spills (about 30
+  live values for Cranelift's 26 or so registers). Next: cut what the loop keeps alive only for slow
+  paths: the operands of lazily kept flags and registers the next turn sets before reading (x6, x7 here),
+  which stay alive across the jump back only because the next turn's slow paths write them back (write
+  them back at the jump back instead, or let a slow path before their next setting not need them). A
+  proof over the loop's range (base plus index times a step, with the trip count from the loop's compare)
+  would drop both checks and their kept runs; not built.
+- Interpret (aim 3): about 3.8 to 4.1 in both; 2.9 (wasmtime) and 2.0 (Chrome) with no check. What is
+  left on its path: three kept-run checks per dispatch with their bounds spilled, and the switch's target
+  untagged, rotated and clamped twice (ours and the engine's `br_table`) before the jump.
+- fib (aim 4) and sort (aim 2.5): no check is already 5.1 / 3.3 in wasmtime and 4.7 / 2.9 in Chrome, so
+  the aims need a cheaper call than our convention allows in these engines (see above); the status file
+  shows the machine code and the experiments. Still open: whether a 32 bit guest memory (the owner's
+  call) closes the gap; it removes 24 instructions per fib call in wasmtime.
+- The aims are not met for matrix, interpret, fib and sort, and for none of them does this file yet show
+  that the rest cannot be removed without breaking the plan's rules.
 
 ## Done
 
