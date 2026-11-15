@@ -192,6 +192,7 @@ fn vectored2(
     if !allowed {
         return Err(Errno::EBADF);
     }
+    moves_bytes(&file)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     if parts.iter().all(|(_, length)| *length == 0) {
         return Ok(0);

@@ -48,6 +48,10 @@ int main(void) {
     result("write", write(fd, &byte, 1));
     result("read", read(fd, &byte, 1));
     result("pread", pread(fd, &byte, 1, 0));
+    struct iovec none = {&byte, 1};
+    result("preadv2 at the position", preadv2(fd, &none, 0, -1, RWF_NOWAIT));
+    result("pwritev2 at the position", pwritev2(fd, &none, 1, -1, 0));
+    result("preadv2 at an offset", preadv2(fd, &none, 1, 0, 0));
     result("lseek", lseek(fd, 0, SEEK_END));
     result("lseek, unknown origin", lseek(fd, 0, 5));
     result("fallocate", fallocate(fd, 0, 0, PAGE));
