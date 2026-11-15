@@ -4,6 +4,7 @@ use crate::layout::*;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The Docker image the reference runs in.
@@ -13,21 +14,35 @@ fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Build the reference runner for aarch64 Linux and return the directory holding it.
+/// Build the reference runner for aarch64 Linux, once per process, and return a directory holding this
+/// process's own copy of it. Cargo replaces the built file on every build, even with nothing to do, so a
+/// container started from it during another build could find it missing.
 pub fn build() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("reference/Cargo.toml");
-    let target = workspace().join("target/reference");
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args(["build", "--release", "--quiet", "--manifest-path"])
-        .arg(&manifest)
-        .arg("--target-dir")
-        .arg(&target)
-        .current_dir(manifest.parent().unwrap())
-        .status()
-        .expect("run cargo for the reference");
-    assert!(status.success(), "the reference runner did not build");
-    target.join("aarch64-unknown-linux-musl/release")
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("reference/Cargo.toml");
+            let target = workspace().join("target/reference");
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let status = Command::new(cargo)
+                .args(["build", "--release", "--quiet", "--manifest-path"])
+                .arg(&manifest)
+                .arg("--target-dir")
+                .arg(&target)
+                .current_dir(manifest.parent().unwrap())
+                .status()
+                .expect("run cargo for the reference");
+            assert!(status.success(), "the reference runner did not build");
+            let own = target.join("run").join(std::process::id().to_string());
+            std::fs::create_dir_all(&own).unwrap();
+            std::fs::copy(
+                target.join("aarch64-unknown-linux-musl/release/wcontainers-reference"),
+                own.join("wcontainers-reference"),
+            )
+            .unwrap();
+            own
+        })
+        .clone()
 }
 
 /// A container name no other run uses.
