@@ -72,6 +72,7 @@ pub(super) fn write(
     if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
         verify_area(file.borrow().offset, count)?;
     }
+    let append = appends(&file);
     write_at(
         kernel,
         cx,
@@ -80,6 +81,7 @@ pub(super) fn write(
         buffer,
         count.min(MAX_RW_COUNT),
         None,
+        append,
     )
 }
 
@@ -130,6 +132,7 @@ pub(super) fn pwrite64(
         return Err(Errno::EFAULT);
     }
     verify_area(offset, count)?;
+    let append = appends(&file);
     write_at(
         kernel,
         cx,
@@ -138,7 +141,220 @@ pub(super) fn pwrite64(
         buffer,
         count.min(MAX_RW_COUNT),
         Some(offset),
+        append,
     )
+}
+
+/// `preadv2` and `pwritev2`: an offset of -1 is the file's own position, and the flags are checked as
+/// Linux's `kiocb_set_rw_flags` does, only once there is something to move.
+pub(super) fn preadv2(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fd, vector, count, offset, _, flags]: Args,
+) -> Result<u64, Errno> {
+    vectored2(kernel, cx, tid, [fd, vector, count, offset, flags], false)
+}
+
+pub(super) fn pwritev2(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fd, vector, count, offset, _, flags]: Args,
+) -> Result<u64, Errno> {
+    vectored2(kernel, cx, tid, [fd, vector, count, offset, flags], true)
+}
+
+fn vectored2(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fd, vector, count, offset, flags]: [u64; 5],
+    writing: bool,
+) -> Result<u64, Errno> {
+    use crate::linux_extra::{RWF_ATOMIC, RWF_DONTCACHE, RWF_NOAPPEND};
+    let flags = flags as u32;
+    let current = offset as i64 == -1;
+    if !current && (offset as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let file = file(kernel, tid, fd)?;
+    if !current {
+        positioned(&file, offset)?;
+    }
+    let allowed = if writing {
+        file.borrow().writable()
+    } else {
+        file.borrow().readable()
+    };
+    if !allowed {
+        return Err(Errno::EBADF);
+    }
+    let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
+    if parts.iter().all(|(_, length)| *length == 0) {
+        return Ok(0);
+    }
+    let known = RWF_HIPRI | RWF_DSYNC | RWF_SYNC | RWF_NOWAIT | RWF_APPEND | RWF_NOAPPEND;
+    // Atomic writes and uncached access are not offered by tmpfs, nor by anything else here.
+    if flags & !(known | RWF_ATOMIC | RWF_DONTCACHE) != 0
+        || flags & (RWF_ATOMIC | RWF_DONTCACHE) != 0
+    {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let mut append = appends(&file);
+    if flags & RWF_NOAPPEND != 0 {
+        append = false;
+    }
+    if flags & RWF_APPEND != 0 {
+        append = true;
+    }
+    let at = (!current).then_some(offset);
+    vectored(
+        kernel,
+        cx,
+        tid,
+        &file,
+        &parts,
+        at,
+        writing.then_some(append),
+    )
+}
+
+pub(super) fn copy_file_range(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [in_fd, in_offset, out_fd, out_offset, length, flags]: Args,
+) -> Result<u64, Errno> {
+    // In the order of Linux's `copy_file_range`, `vfs_copy_file_range` and `generic_copy_file_checks`.
+    let input = file(kernel, tid, in_fd)?;
+    let output = file(kernel, tid, out_fd)?;
+    if input.borrow().is_path() || output.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    let mut read_offset = |address: u64, file: &FileRef| -> Result<u64, Errno> {
+        if address == 0 {
+            Ok(file.borrow().offset)
+        } else {
+            guest(kernel, cx, tid).read_value::<u64>(address)
+        }
+    };
+    let position_in = read_offset(in_offset, &input)?;
+    let position_out = read_offset(out_offset, &output)?;
+    if flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let node_in = input.borrow().node.clone();
+    let node_out = output.borrow().node.clone();
+    let (type_in, type_out) = (node_in.borrow().file_type(), node_out.borrow().file_type());
+    if type_in == S_IFDIR || type_out == S_IFDIR {
+        return Err(Errno::EISDIR);
+    }
+    if type_in != S_IFREG || type_out != S_IFREG {
+        return Err(Errno::EINVAL);
+    }
+    if !input.borrow().readable() || !output.borrow().writable() || appends(&output) {
+        return Err(Errno::EBADF);
+    }
+    if position_in.checked_add(length).is_none() || position_out.checked_add(length).is_none() {
+        return Err(Errno::EOVERFLOW);
+    }
+    let size_in = node_in.borrow().size();
+    let mut count = if position_in >= size_in {
+        0
+    } else {
+        length.min(size_in - position_in)
+    };
+    count = write_limit(kernel, cx, tid, position_out, count)?;
+    if crate::fs::same_inode(&node_in, &node_out)
+        && position_out + count > position_in
+        && position_out < position_in + count
+    {
+        return Err(Errno::EINVAL);
+    }
+    verify_area(position_in, count)?;
+    verify_area(position_out, count)?;
+    if count == 0 {
+        return Ok(0);
+    }
+    let count = count.min(MAX_RW_COUNT);
+    let bytes = file_bytes(cx, &input, count, position_in)?;
+    let written = write_bytes(kernel, cx, tid, &output, &bytes, Some(position_out), false)?;
+    let mut put_back = |address: u64, file: &FileRef, position: u64| -> Result<(), Errno> {
+        if address == 0 {
+            file.borrow_mut().offset = position;
+            Ok(())
+        } else {
+            guest(kernel, cx, tid).write(address, &position.to_le_bytes())
+        }
+    };
+    put_back(in_offset, &input, position_in + written)?;
+    put_back(out_offset, &output, position_out + written)?;
+    Ok(written)
+}
+
+/// `fadvise64`: tmpfs and the devices have no backing device, so every known piece of advice is taken
+/// and ignored, as Linux's `generic_fadvise` does for them.
+pub(super) fn fadvise64(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [fd, _, length, advice, ..]: Args,
+) -> Result<u64, Errno> {
+    let file = file(kernel, tid, fd)?;
+    if file.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    if file.borrow().node.borrow().file_type() == S_IFIFO {
+        return Err(Errno::ESPIPE);
+    }
+    if (length as i64) < 0 || advice as u32 > POSIX_FADV_NOREUSE {
+        return Err(Errno::EINVAL);
+    }
+    Ok(0)
+}
+
+pub(super) fn readahead(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [fd, _, length, ..]: Args,
+) -> Result<u64, Errno> {
+    let file = file(kernel, tid, fd)?;
+    if !file.borrow().readable() {
+        return Err(Errno::EBADF);
+    }
+    if file.borrow().node.borrow().file_type() != S_IFREG || (length as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(0)
+}
+
+pub(super) fn sync_file_range(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [fd, offset, length, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let file = file(kernel, tid, fd)?;
+    if file.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    let end = offset.wrapping_add(length);
+    if flags as u32 & !SYNC_FILE_RANGE_WRITE_AND_WAIT != 0
+        || (offset as i64) < 0
+        || (end as i64) < 0
+        || end < offset
+    {
+        return Err(Errno::EINVAL);
+    }
+    if !matches!(
+        file.borrow().node.borrow().file_type(),
+        S_IFREG | S_IFBLK | S_IFDIR | S_IFLNK
+    ) {
+        return Err(Errno::ESPIPE);
+    }
+    Ok(0)
 }
 
 /// The checks for a read or write at a given offset: a negative offset is invalid, and a pipe has none.
@@ -244,7 +460,7 @@ pub(super) fn readv(
         return Err(Errno::EBADF);
     }
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
-    vectored(kernel, cx, tid, &file, &parts, None, false)
+    vectored(kernel, cx, tid, &file, &parts, None, None)
 }
 
 pub(super) fn writev(
@@ -258,7 +474,7 @@ pub(super) fn writev(
         return Err(Errno::EBADF);
     }
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
-    vectored(kernel, cx, tid, &file, &parts, None, true)
+    vectored(kernel, cx, tid, &file, &parts, None, Some(appends(&file)))
 }
 
 pub(super) fn preadv(
@@ -276,7 +492,7 @@ pub(super) fn preadv(
         return Err(Errno::EBADF);
     }
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
-    vectored(kernel, cx, tid, &file, &parts, Some(offset), false)
+    vectored(kernel, cx, tid, &file, &parts, Some(offset), None)
 }
 
 pub(super) fn pwritev(
@@ -294,9 +510,28 @@ pub(super) fn pwritev(
         return Err(Errno::EBADF);
     }
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
-    vectored(kernel, cx, tid, &file, &parts, Some(offset), true)
+    vectored(
+        kernel,
+        cx,
+        tid,
+        &file,
+        &parts,
+        Some(offset),
+        Some(appends(&file)),
+    )
 }
 
+/// Whether writes to a file go to its end.
+fn appends(file: &FileRef) -> bool {
+    file.borrow().flags & O_APPEND != 0
+}
+
+/// Reads or writes a list of segments in turn; `writing` says whether it writes, and if so whether at
+/// the file's end.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call shape for every vectored read and write"
+)]
 fn vectored(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -304,12 +539,14 @@ fn vectored(
     file: &FileRef,
     parts: &[(u64, u64)],
     mut offset: Option<u64>,
-    writing: bool,
+    writing: Option<bool>,
 ) -> Result<u64, Errno> {
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
-    if writing && matches!(file.borrow().node.borrow().content, Content::Regular(_)) {
-        let start = if file.borrow().flags & O_APPEND != 0 {
+    if let Some(append) = writing
+        && matches!(file.borrow().node.borrow().content, Content::Regular(_))
+    {
+        let start = if append {
             file.borrow().node.borrow().size()
         } else {
             offset.unwrap_or(file.borrow().offset)
@@ -326,8 +563,8 @@ fn vectored(
         if length == 0 {
             continue;
         }
-        let result = if writing {
-            write_at(kernel, cx, tid, file, base, length, offset)
+        let result = if let Some(append) = writing {
+            write_at(kernel, cx, tid, file, base, length, offset, append)
         } else {
             read_at(kernel, cx, tid, file, base, length, offset)
         };
@@ -401,7 +638,9 @@ pub(super) fn read_at(
     Ok(written as u64)
 }
 
-/// Writes up to `count` bytes from the guest at the file's position, or at `at` without moving it.
+/// Writes up to `count` bytes from the guest at the file's position, or at `at` without moving it, or
+/// at the file's end if `append`.
+#[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
 pub(super) fn write_at(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -410,6 +649,7 @@ pub(super) fn write_at(
     buffer: u64,
     count: u64,
     at: Option<u64>,
+    append: bool,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
     let stream = match &node.borrow().content {
@@ -427,7 +667,7 @@ pub(super) fn write_at(
         )
     };
     let bytes = if regular {
-        let offset = if file.borrow().flags & O_APPEND != 0 {
+        let offset = if append {
             node.borrow().size()
         } else {
             at.unwrap_or(file.borrow().offset)
@@ -442,11 +682,11 @@ pub(super) fn write_at(
     } else if matches!(device, Some(Device::Random | Device::Urandom)) {
         // The random devices take the bytes in; the rest only count them.
         guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
-        return write_bytes(kernel, cx, tid, file, &[], at).map(|_| count);
+        return write_bytes(kernel, cx, tid, file, &[], at, append).map(|_| count);
     } else {
-        return write_bytes(kernel, cx, tid, file, &[], at).map(|_| count);
+        return write_bytes(kernel, cx, tid, file, &[], at, append).map(|_| count);
     };
-    write_bytes(kernel, cx, tid, file, &bytes, at)
+    write_bytes(kernel, cx, tid, file, &bytes, at, append)
 }
 
 /// Writes bytes the kernel holds to a file, at its position or at `at`. Devices that take anything
@@ -458,6 +698,7 @@ fn write_bytes(
     file: &FileRef,
     bytes: &[u8],
     at: Option<u64>,
+    append: bool,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
     let now = kernel.now(cx);
@@ -486,7 +727,6 @@ fn write_bytes(
             return Err(Errno::EINVAL);
         }
     };
-    let append = file.borrow().flags & O_APPEND != 0;
     let offset = if append {
         regular.data.len() as u64
     } else {
@@ -548,7 +788,7 @@ pub(super) fn sendfile(
         let allowed = write_limit(kernel, cx, tid, at, bytes.len() as u64)?;
         bytes.truncate(allowed as usize);
     }
-    let written = write_bytes(kernel, cx, tid, &output, &bytes, None)?;
+    let written = write_bytes(kernel, cx, tid, &output, &bytes, None, false)?;
     match explicit {
         Some(_) => {
             guest(kernel, cx, tid).write(offset_address, &(offset + written).to_le_bytes())?
@@ -788,6 +1028,34 @@ fn nofile_limit(kernel: &Kernel, tid: Tid) -> u64 {
     kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current
 }
 
+pub(super) fn close_range(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [first, last, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    use crate::linux_extra::{CLOSE_RANGE_CLOEXEC, CLOSE_RANGE_UNSHARE};
+    let (first, last, flags) = (first as u32, last as u32, flags as u32);
+    if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 || first > last {
+        return Err(Errno::EINVAL);
+    }
+    // The table is never shared between processes yet, so unsharing it changes nothing.
+    let files = &mut kernel.process_of_mut(tid).files;
+    let fds: Vec<i32> = files
+        .iter()
+        .map(|(fd, _)| fd)
+        .filter(|fd| (first..=last).contains(&(*fd as u32)))
+        .collect();
+    for fd in fds {
+        if flags & CLOSE_RANGE_CLOEXEC != 0 {
+            files.get_mut(fd)?.close_on_exec = true;
+        } else {
+            files.remove(fd)?;
+        }
+    }
+    Ok(0)
+}
+
 pub(super) fn dup(
     kernel: &mut Kernel,
     _: &mut Context<'_>,
@@ -978,43 +1246,39 @@ fn poll_mask(file: &FileRef) -> u16 {
     }
 }
 
-pub(super) fn ppoll(
+/// A wait's timeout as `poll_select_set_timeout` checks it: its length and when it ends.
+fn read_timeout(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [fds, count, timeout, mask, mask_size, _]: Args,
+    timeout: u64,
+) -> Result<Option<(u64, u64)>, Errno> {
+    if timeout == 0 {
+        return Ok(None);
+    }
+    let value: __kernel_timespec = guest(kernel, cx, tid).read_value(timeout)?;
+    if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+        return Err(Errno::EINVAL);
+    }
+    let duration = (value.tv_sec as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(value.tv_nsec as u64);
+    Ok(Some((
+        duration,
+        cx.host.monotonic_nanoseconds().saturating_add(duration),
+    )))
+}
+
+/// As Linux's `poll_select_finish`: the time left goes back into a non-zero timeout, whatever the
+/// result, and a failure to write it is ignored. A wait that parks will time out with none left.
+fn finish_wait(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    timeout: u64,
+    until: Option<(u64, u64)>,
+    result: Result<Option<u64>, Errno>,
 ) -> super::Outcome {
-    // The timeout first; a bad one ends the call before anything else.
-    let until = if timeout != 0 {
-        let value: __kernel_timespec = match guest(kernel, cx, tid).read_value(timeout) {
-            Ok(value) => value,
-            Err(error) => return Err(error).into(),
-        };
-        if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
-            return Err(Errno::EINVAL).into();
-        }
-        let duration = (value.tv_sec as u64)
-            .saturating_mul(1_000_000_000)
-            .saturating_add(value.tv_nsec as u64);
-        Some((
-            duration,
-            cx.host.monotonic_nanoseconds().saturating_add(duration),
-        ))
-    } else {
-        None
-    };
-    let result = ppoll_typed(
-        kernel,
-        cx,
-        tid,
-        fds,
-        count,
-        until.map(|(_, until)| until),
-        mask,
-        mask_size,
-    );
-    // As Linux's `poll_select_finish`: the time left goes back into a non-zero timeout, whatever the
-    // result, and a failure to write it is ignored. A wait that parks will time out with none left.
     if let Some((duration, until)) = until
         && duration != 0
     {
@@ -1033,6 +1297,158 @@ pub(super) fn ppoll(
         Ok(None) => super::Outcome::Parked,
         Err(error) => Err(error).into(),
     }
+}
+
+/// Parks a waiting thread until its timeout, or for ever (until a signal, K2).
+fn park_until(kernel: &mut Kernel, tid: Tid, until: Option<u64>) {
+    kernel.thread_mut(tid).parked = Some(match until {
+        Some(nanoseconds) => crate::process::Parked::Until { nanoseconds },
+        None => crate::process::Parked::Forever,
+    });
+}
+
+pub(super) fn ppoll(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fds, count, timeout, mask, mask_size, _]: Args,
+) -> super::Outcome {
+    // The timeout first; a bad one ends the call before anything else.
+    let until = match read_timeout(kernel, cx, tid, timeout) {
+        Ok(until) => until,
+        Err(error) => return Err(error).into(),
+    };
+    let result = ppoll_typed(
+        kernel,
+        cx,
+        tid,
+        fds,
+        count,
+        until.map(|(_, until)| until),
+        mask,
+        mask_size,
+    );
+    finish_wait(kernel, cx, tid, timeout, until, result)
+}
+
+pub(super) fn pselect6(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [count, read, write, except, timeout, mask_pack]: Args,
+) -> super::Outcome {
+    // The signal mask's address and size first, then the timeout.
+    let (mask, mask_size) = if mask_pack != 0 {
+        match guest(kernel, cx, tid).read(mask_pack, 16) {
+            Ok(bytes) => (
+                u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+                u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes")),
+            ),
+            Err(error) => return Err(error).into(),
+        }
+    } else {
+        (0, 0)
+    };
+    let until = match read_timeout(kernel, cx, tid, timeout) {
+        Ok(until) => until,
+        Err(error) => return Err(error).into(),
+    };
+    let result = select_typed(
+        kernel,
+        cx,
+        tid,
+        count,
+        [read, write, except],
+        until.map(|(_, until)| until),
+        mask,
+        mask_size,
+    );
+    finish_wait(kernel, cx, tid, timeout, until, result)
+}
+
+/// `pselect6` after its timeout is read, as Linux's `core_sys_select`: Some(count) when it returns now,
+/// None when it waits.
+#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+fn select_typed(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    count: u64,
+    sets: [u64; 3],
+    until: Option<u64>,
+    mask: u64,
+    mask_size: u64,
+) -> Result<Option<u64>, Errno> {
+    if mask != 0 {
+        if mask_size != 8 {
+            return Err(Errno::EINVAL);
+        }
+        guest(kernel, cx, tid).read(mask, 8)?;
+    }
+    let count = count as i32;
+    if count < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let files = &kernel.process_of(tid).files;
+    let count = (count as u32).min(files.capacity()) as u64;
+    let bytes = count.div_ceil(64) * 8;
+    let mut wanted = [const { Vec::new() }; 3];
+    for (index, address) in sets.iter().enumerate() {
+        wanted[index] = if *address == 0 {
+            vec![0; bytes as usize]
+        } else {
+            guest(kernel, cx, tid).read(*address, bytes)?
+        };
+    }
+    let asked = |set: &[u8], fd: u64| set[(fd / 8) as usize] & (1 << (fd % 8)) != 0;
+    let files = &kernel.process_of(tid).files;
+    for fd in 0..count {
+        if wanted.iter().any(|set| asked(set, fd)) && files.get(fd as i32).is_err() {
+            return Err(Errno::EBADF);
+        }
+    }
+    // Linux's `POLLIN_SET`, `POLLOUT_SET` and `POLLEX_SET`.
+    let kinds = [
+        POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR,
+        POLLWRBAND | POLLWRNORM | POLLOUT | POLLERR,
+        POLLPRI,
+    ];
+    let mut results = [const { Vec::new() }; 3];
+    let mut ready = 0;
+    for (index, set) in wanted.iter().enumerate() {
+        let mut result = vec![0u8; bytes as usize];
+        for fd in 0..count {
+            if !asked(set, fd) {
+                continue;
+            }
+            let file = files.file(fd as i32)?;
+            // An `O_PATH` descriptor is never ready, as `fdget` does not see it.
+            let mask = if file.borrow().is_path() {
+                0
+            } else {
+                poll_mask(&file)
+            };
+            if u32::from(mask) & kinds[index] != 0 {
+                result[(fd / 8) as usize] |= 1 << (fd % 8);
+                ready += 1;
+            }
+        }
+        results[index] = result;
+    }
+    let returns = ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds());
+    // The sets are written back when the call returns; a timeout returns them empty.
+    if returns || until.is_some() {
+        for (address, result) in sets.iter().zip(&results) {
+            if *address != 0 {
+                guest(kernel, cx, tid).write(*address, result)?;
+            }
+        }
+    }
+    if returns {
+        return Ok(Some(ready));
+    }
+    park_until(kernel, tid, until);
+    Ok(None)
 }
 
 /// `ppoll` after its timeout is read: Some(count) when it returns now, None when it waits.
@@ -1078,9 +1494,6 @@ fn ppoll_typed(
     if ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds()) {
         return Ok(Some(ready));
     }
-    kernel.thread_mut(tid).parked = Some(match until {
-        Some(nanoseconds) => crate::process::Parked::Until { nanoseconds },
-        None => crate::process::Parked::Forever,
-    });
+    park_until(kernel, tid, until);
     Ok(None)
 }

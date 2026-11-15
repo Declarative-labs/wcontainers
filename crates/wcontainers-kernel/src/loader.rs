@@ -280,6 +280,7 @@ fn place(
             end,
             permissions: Permissions::READ | Permissions::WRITE,
             shared: false,
+            locked: crate::memory::Lock::None,
             backing: Backing::Stack,
         },
     )?;
@@ -390,6 +391,7 @@ fn place_elf(
                     end: file_pages_end,
                     permissions,
                     shared: false,
+                    locked: crate::memory::Lock::None,
                     backing: Backing::File {
                         node: program.node.clone(),
                         path: path.to_vec(),
@@ -422,6 +424,7 @@ fn place_elf(
                     end: stop,
                     permissions,
                     shared: false,
+                    locked: crate::memory::Lock::None,
                     backing: Backing::Anonymous,
                 },
             )?;

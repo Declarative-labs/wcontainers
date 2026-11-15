@@ -117,6 +117,17 @@ pub(crate) struct Thread {
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is parked in, if it is waiting.
     pub parked: Option<Parked>,
+    /// How the thread is scheduled: its policy, real-time priority, nice value and whether children
+    /// go back to the default.
+    pub schedule: Schedule,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Schedule {
+    pub policy: u32,
+    pub priority: u32,
+    pub nice: i32,
+    pub reset_on_fork: bool,
 }
 
 /// What a parked thread waits for.
@@ -140,6 +151,7 @@ impl Thread {
             pending: 0,
             alternate_stack: (0, 0, 0),
             parked: None,
+            schedule: Schedule::default(),
         }
     }
 }

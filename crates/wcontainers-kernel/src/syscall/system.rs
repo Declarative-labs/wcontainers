@@ -209,19 +209,36 @@ pub(super) fn getcpu(
     Ok(0)
 }
 
+/// The thread a scheduling call names: 0 or the caller's own number. Others come with fork.
+fn scheduled(kernel: &Kernel, tid: Tid, pid: u64) -> Result<Tid, Errno> {
+    let pid = pid as i32;
+    if pid < 0 {
+        return Err(Errno::EINVAL);
+    }
+    if pid == 0 || pid == tid {
+        return Ok(tid);
+    }
+    if kernel.threads.contains_key(&pid) {
+        Ok(pid)
+    } else {
+        Err(Errno::ESRCH)
+    }
+}
+
 pub(super) fn sched_getscheduler(
     kernel: &mut Kernel,
     _: &mut Context<'_>,
-    _: Tid,
+    tid: Tid,
     [pid, ..]: Args,
 ) -> Result<u64, Errno> {
-    if (pid as i32) < 0 {
-        return Err(Errno::EINVAL);
-    }
-    if pid != 0 && !kernel.threads.contains_key(&(pid as i32)) {
-        return Err(Errno::ESRCH);
-    }
-    Ok(u64::from(SCHED_NORMAL))
+    let target = scheduled(kernel, tid, pid)?;
+    let schedule = kernel.threads[&target].schedule;
+    let reset = if schedule.reset_on_fork {
+        SCHED_RESET_ON_FORK
+    } else {
+        0
+    };
+    Ok(u64::from(schedule.policy | reset))
 }
 
 pub(super) fn sched_getparam(
@@ -230,14 +247,157 @@ pub(super) fn sched_getparam(
     tid: Tid,
     [pid, out, ..]: Args,
 ) -> Result<u64, Errno> {
-    if (pid as i32) < 0 || out == 0 {
+    if out == 0 {
         return Err(Errno::EINVAL);
     }
-    if pid != 0 && !kernel.threads.contains_key(&(pid as i32)) {
-        return Err(Errno::ESRCH);
-    }
-    guest(kernel, cx, tid).write(out, &0i32.to_le_bytes())?;
+    let target = scheduled(kernel, tid, pid)?;
+    let priority = kernel.threads[&target].schedule.priority as i32;
+    guest(kernel, cx, tid).write(out, &priority.to_le_bytes())?;
     Ok(0)
+}
+
+pub(super) fn sched_setscheduler(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [pid, policy, param, ..]: Args,
+) -> Result<u64, Errno> {
+    if (policy as i32) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    set_schedule(kernel, cx, tid, pid, Some(policy as u32), param)
+}
+
+pub(super) fn sched_setparam(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [pid, param, ..]: Args,
+) -> Result<u64, Errno> {
+    set_schedule(kernel, cx, tid, pid, None, param)
+}
+
+/// Linux's `do_sched_setscheduler` and the checks of `__sched_setscheduler` for an unprivileged
+/// caller: a default container has no `CAP_SYS_NICE` and its real-time and nice limits are zero.
+fn set_schedule(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    pid: u64,
+    policy: Option<u32>,
+    param: u64,
+) -> Result<u64, Errno> {
+    if param == 0 || (pid as i32) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let priority: i32 = guest(kernel, cx, tid).read_value(param)?;
+    let target = scheduled(kernel, tid, pid)?;
+    let current = kernel.threads[&target].schedule;
+    let (policy, reset_on_fork) = match policy {
+        None => (current.policy, current.reset_on_fork),
+        Some(policy) => {
+            let reset = policy & SCHED_RESET_ON_FORK != 0;
+            let policy = policy & !SCHED_RESET_ON_FORK;
+            if !matches!(
+                policy,
+                SCHED_NORMAL
+                    | SCHED_FIFO
+                    | SCHED_RR
+                    | SCHED_BATCH
+                    | SCHED_IDLE
+                    | SCHED_DEADLINE
+                    | SCHED_EXT
+            ) {
+                return Err(Errno::EINVAL);
+            }
+            (policy, reset)
+        }
+    };
+    let real_time = matches!(policy, SCHED_FIFO | SCHED_RR);
+    let priority = priority as u32;
+    if priority > 99 || real_time != (priority != 0) {
+        return Err(Errno::EINVAL);
+    }
+    if policy == SCHED_DEADLINE {
+        // Linux checks the deadline parameters, which `sched_setscheduler` cannot carry.
+        return Err(Errno::EINVAL);
+    }
+    let limits = &kernel.process_of(target).limits;
+    let real_time_limit = limits[RLIMIT_RTPRIO as usize].current;
+    let nice_limit = limits[RLIMIT_NICE as usize].current;
+    let mut needs_power = false;
+    if real_time
+        && ((policy != current.policy && real_time_limit == 0)
+            || (priority > current.priority && u64::from(priority) > real_time_limit))
+    {
+        needs_power = true;
+    }
+    // Leaving the idle policy is raising the priority to nice 19's or better.
+    if current.policy == SCHED_IDLE
+        && policy != SCHED_IDLE
+        && (20 - current.nice) as u64 > nice_limit
+    {
+        needs_power = true;
+    }
+    if current.reset_on_fork && !reset_on_fork {
+        needs_power = true;
+    }
+    if needs_power
+        && !kernel
+            .process_of(tid)
+            .credentials
+            .has(crate::linux::general::CAP_SYS_NICE)
+    {
+        return Err(Errno::EPERM);
+    }
+    kernel.thread_mut(target).schedule = crate::process::Schedule {
+        policy,
+        priority,
+        reset_on_fork,
+        ..current
+    };
+    Ok(0)
+}
+
+pub(super) fn sched_get_priority_max(
+    _: &mut Kernel,
+    _: &mut Context<'_>,
+    _: Tid,
+    [policy, ..]: Args,
+) -> Result<u64, Errno> {
+    match policy as u32 {
+        SCHED_FIFO | SCHED_RR => Ok(99),
+        // The reference's kernel has the extensible scheduler class.
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => Ok(0),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+pub(super) fn sched_get_priority_min(
+    _: &mut Kernel,
+    _: &mut Context<'_>,
+    _: Tid,
+    [policy, ..]: Args,
+) -> Result<u64, Errno> {
+    match policy as u32 {
+        SCHED_FIFO | SCHED_RR => Ok(1),
+        // The reference's kernel has the extensible scheduler class.
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => Ok(0),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// Which processes a `getpriority` or `setpriority` names; there is one process, so only it can match.
+fn prioritized(kernel: &Kernel, tid: Tid, which: u64, who: u64) -> Result<bool, Errno> {
+    let who = who as u32;
+    let process = kernel.process_of(tid);
+    Ok(match which as u32 {
+        PRIO_PROCESS => who == 0 || who as i32 == process.pid,
+        PRIO_PGRP => who == 0 || who as i32 == process.group,
+        // Matched by real user; 0 is the caller's own.
+        PRIO_USER => who == 0 || process.credentials.uid == who,
+        _ => return Err(Errno::EINVAL),
+    })
 }
 
 pub(super) fn getpriority(
@@ -246,24 +406,33 @@ pub(super) fn getpriority(
     tid: Tid,
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
-    let who = who as u32;
-    let process = kernel.process_of(tid);
-    // Some process must match: the caller's own number, group, or effective user.
-    let found = match which as u32 {
-        PRIO_PROCESS => who == 0 || who as i32 == process.pid,
-        PRIO_PGRP => who == 0 || who as i32 == process.group,
-        PRIO_USER => {
-            who == 0
-                || kernel
-                    .processes
-                    .values()
-                    .any(|other| other.credentials.uid == who)
-        }
-        _ => return Err(Errno::EINVAL),
-    };
-    if !found {
+    if !prioritized(kernel, tid, which, who)? {
         return Err(Errno::ESRCH);
     }
     // Linux returns 20 minus the nice value, so that the result is never negative.
-    Ok(20)
+    Ok((20 - kernel.threads[&tid].schedule.nice) as u64)
+}
+
+pub(super) fn setpriority(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [which, who, nice, ..]: Args,
+) -> Result<u64, Errno> {
+    // In the order of Linux's `setpriority` and `set_one_prio`.
+    if !prioritized(kernel, tid, which, who)? {
+        return Err(Errno::ESRCH);
+    }
+    let nice = (nice as i32).clamp(-20, 19);
+    let current = kernel.threads[&tid].schedule.nice;
+    let process = kernel.process_of(tid);
+    let powerful = process.credentials.has(crate::linux::general::CAP_SYS_NICE);
+    if nice < current
+        && (20 - nice) as u64 > process.limits[RLIMIT_NICE as usize].current
+        && !powerful
+    {
+        return Err(Errno::EACCES);
+    }
+    kernel.thread_mut(tid).schedule.nice = nice;
+    Ok(0)
 }

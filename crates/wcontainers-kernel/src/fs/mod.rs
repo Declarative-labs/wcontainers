@@ -115,6 +115,9 @@ pub(crate) struct Inode {
     /// For directories only.
     pub place: Place,
     pub content: Content,
+    /// `flock` locks: the open file holding each, and whether it is exclusive. An entry whose open file
+    /// is gone was released when it closed.
+    pub flocks: Vec<(alloc::rc::Weak<RefCell<crate::file::OpenFile>>, bool)>,
 }
 
 pub(crate) enum Content {
@@ -412,6 +415,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Node {
             mount_root: false,
         },
         content: new.content,
+        flocks: Vec::new(),
     }))
 }
 

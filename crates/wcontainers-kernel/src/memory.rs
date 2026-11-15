@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
 
 use crate::fs::Node;
-use crate::linux::general::{RLIMIT_AS, RLIMIT_DATA, RLIMIT_STACK};
+use crate::linux::general::{RLIMIT_AS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_STACK};
 use crate::process::{LIMITS, Limit};
 use crate::{Errno, errno};
 
@@ -47,7 +47,19 @@ pub(crate) struct Mapping {
     /// What the program asked for.
     pub permissions: Permissions,
     pub shared: bool,
+    /// Whether `mlock` holds it in memory (Linux's `VM_LOCKED`).
+    pub locked: Lock,
     pub backing: Backing,
+}
+
+/// Whether a mapping is locked in memory, and if so whether its pages are brought in at once or as
+/// they are touched (`VM_LOCKONFAULT`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Lock {
+    #[default]
+    None,
+    Now,
+    OnFault,
 }
 
 impl Mapping {
@@ -98,6 +110,8 @@ pub(crate) struct AddressMap {
     pub mmap_base: u64,
     pub brk_start: u64,
     pub brk: u64,
+    /// How new mappings are locked, as `mlockall(MCL_FUTURE)` sets (Linux's `def_flags`).
+    pub future_lock: Lock,
 }
 
 impl AddressMap {
@@ -110,6 +124,7 @@ impl AddressMap {
             mmap_base: page_down(end - (128 << 20)),
             brk_start: 0,
             brk: 0,
+            future_lock: Lock::None,
         }
     }
 
@@ -327,6 +342,57 @@ impl AddressMap {
         Ok(())
     }
 
+    /// Locks or unlocks a range, every page of which is mapped.
+    pub fn set_lock(&mut self, start: u64, end: u64, lock: Lock) {
+        for mut mapping in self.remove(start, end) {
+            mapping.locked = lock;
+            self.mappings.insert(mapping.start, mapping);
+        }
+        self.merge_around();
+    }
+
+    /// Locks or unlocks every mapping.
+    pub fn set_lock_all(&mut self, lock: Lock) {
+        for mapping in self.mappings.values_mut() {
+            mapping.locked = lock;
+        }
+        self.merge_around();
+    }
+
+    /// The pages locked in memory (Linux's `locked_vm`), and those of them within a range.
+    pub fn locked_pages(&self, start: u64, end: u64) -> (u64, u64) {
+        self.mappings
+            .values()
+            .filter(|mapping| mapping.locked != Lock::None)
+            .fold((0, 0), |(all, within), mapping| {
+                let from = mapping.start.max(start);
+                let to = mapping.end.min(end);
+                let inside = if from < to {
+                    (to - from) / PAGE_SIZE
+                } else {
+                    0
+                };
+                (
+                    all + (mapping.end - mapping.start) / PAGE_SIZE,
+                    within + inside,
+                )
+            })
+    }
+
+    /// Whether `pages` more locked pages fit `RLIMIT_MEMLOCK` (Linux's `mlock_future_ok`).
+    pub fn may_lock(
+        &self,
+        limits: &[Limit; LIMITS],
+        lock: Lock,
+        pages: u64,
+        powerful: bool,
+    ) -> bool {
+        lock == Lock::None
+            || powerful
+            || self.locked_pages(0, 0).0 + pages
+                <= limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE
+    }
+
     /// Tells the CPU side what a mapping's pages allow, and that its code may run.
     fn apply(
         &mut self,
@@ -394,6 +460,7 @@ impl AddressMap {
                 && last.end == mapping.start
                 && last.permissions == mapping.permissions
                 && last.shared == mapping.shared
+                && last.locked == mapping.locked
                 && matches!(
                     (&last.backing, &mapping.backing),
                     (Backing::Anonymous, Backing::Anonymous)

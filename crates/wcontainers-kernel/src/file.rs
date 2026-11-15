@@ -56,6 +56,8 @@ pub(crate) struct Descriptor {
 #[derive(Clone, Default)]
 pub(crate) struct FdTable {
     slots: BTreeMap<i32, Descriptor>,
+    /// The highest descriptor ever used, which sets how large Linux's table has grown.
+    highest: i32,
 }
 
 impl FdTable {
@@ -70,6 +72,12 @@ impl FdTable {
     /// The open file behind a descriptor.
     pub fn file(&self, fd: i32) -> Result<FileRef, Errno> {
         Ok(self.get(fd)?.file.clone())
+    }
+
+    /// How many descriptors the table has room for, as Linux's `max_fds`: 64 at first, then the
+    /// smallest power of two above the highest descriptor used. It never shrinks.
+    pub fn capacity(&self) -> u32 {
+        (self.highest as u32 + 1).next_power_of_two().max(64)
     }
 
     /// The lowest free descriptor at or above `minimum`, below `limit`.
@@ -96,6 +104,7 @@ impl FdTable {
         limit: u64,
     ) -> Result<i32, Errno> {
         let fd = self.lowest_free(minimum, limit)?;
+        self.highest = self.highest.max(fd);
         self.slots.insert(
             fd,
             Descriptor {
@@ -108,6 +117,7 @@ impl FdTable {
 
     /// Puts a file at a given descriptor, closing what was there.
     pub fn set(&mut self, fd: i32, descriptor: Descriptor) -> Option<Descriptor> {
+        self.highest = self.highest.max(fd);
         self.slots.insert(fd, descriptor)
     }
 

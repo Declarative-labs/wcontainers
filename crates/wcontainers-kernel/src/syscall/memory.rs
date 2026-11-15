@@ -9,7 +9,7 @@ use crate::counters::reason;
 use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::linux::general::*;
-use crate::memory::{Backing, Mapping, STACK_GUARD_GAP, page_down, page_up};
+use crate::memory::{Backing, Lock, Mapping, STACK_GUARD_GAP, page_down, page_up};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel, errno};
 
@@ -81,11 +81,20 @@ pub(super) fn brk(
     {
         return Ok(old);
     }
+    if !map.may_lock(
+        &process.limits,
+        map.future_lock,
+        (new_end - old_end) / PAGE_SIZE,
+        process.credentials.has(CAP_IPC_LOCK),
+    ) {
+        return Ok(old);
+    }
     let heap = Mapping {
         start: old_end,
         end: new_end,
         permissions: Permissions::READ | Permissions::WRITE,
         shared: false,
+        locked: map.future_lock,
         backing: Backing::Heap,
     };
     if map.insert(cx.cpu, process.memory, heap).is_err() {
@@ -169,6 +178,24 @@ pub(super) fn mmap(
     {
         return Err(Errno::EEXIST);
     }
+    // Locked if asked, or if every new mapping is to be; within the limit on locked memory.
+    let locked = if flags & MAP_LOCKED != 0 {
+        Lock::Now
+    } else {
+        map.future_lock
+    };
+    if flags & MAP_LOCKED != 0 && !can_lock(kernel, tid) {
+        return Err(Errno::EPERM);
+    }
+    let process = kernel.process_of(tid);
+    if !process.map.may_lock(
+        &process.limits,
+        locked,
+        length / PAGE_SIZE,
+        process.credentials.has(CAP_IPC_LOCK),
+    ) {
+        return Err(Errno::EAGAIN);
+    }
     // Validated sharing exists only for files.
     let shared = match (flags & MAP_TYPE, file.is_some()) {
         (MAP_PRIVATE, _) => false,
@@ -234,6 +261,7 @@ pub(super) fn mmap(
         end: start + length,
         permissions,
         shared,
+        locked,
         backing,
     };
     // Within the limits, counting what a fixed mapping replaces.
@@ -407,8 +435,26 @@ pub(super) fn madvise(
         }
         return Err(Errno::ENOMEM);
     }
+    // Freeing lazily and wiping on fork are for private anonymous memory only.
+    if matches!(advice, MADV_FREE | MADV_WIPEONFORK)
+        && process
+            .map
+            .iter()
+            .filter(|mapping| mapping.start < end && mapping.end > address)
+            .any(|mapping| mapping.shared || matches!(mapping.backing, Backing::File { .. }))
+    {
+        return Err(Errno::EINVAL);
+    }
+    if matches!(advice, MADV_DONTNEED | MADV_FREE)
+        && process.map.iter().any(|mapping| {
+            mapping.start < end && mapping.end > address && mapping.locked != Lock::None
+        })
+    {
+        return Err(Errno::EINVAL);
+    }
     if advice == MADV_DONTNEED {
-        // Private pages go back to what they were: zero, or the file's bytes.
+        // Private pages go back to what they were: zero, or the file's bytes. Shared pages keep their
+        // bytes in what they share.
         let mut at = address;
         while at < end {
             let Some(mapping) = process.map.next_after(at).cloned() else {
@@ -419,7 +465,9 @@ pub(super) fn madvise(
             }
             let from = mapping.start.max(at);
             let to = mapping.end.min(end);
-            drop_pages(cx, process.memory, &mapping, from, to)?;
+            if !mapping.shared {
+                drop_pages(cx, process.memory, &mapping, from, to)?;
+            }
             at = to;
         }
     }
@@ -512,16 +560,24 @@ fn prepare(kernel: &Kernel, tid: Tid, mapping: &Mapping, request: &Remap) -> Res
     if old_length.min(new_length) > mapping.end - old {
         return Err(Errno::EFAULT);
     }
-    if new_length == old_length {
+    // A shrink counts as its new length, so only growth goes on to the limits.
+    if new_length <= old_length {
         return Ok(());
     }
     let process = kernel.process_of(tid);
-    if !process.map.may_expand(
+    let growth = (new_length - old_length) / PAGE_SIZE;
+    if !process.map.may_lock(
         &process.limits,
-        mapping.is_data(),
-        (new_length - old_length) / PAGE_SIZE,
-        (0, 0),
+        mapping.locked,
+        growth,
+        process.credentials.has(CAP_IPC_LOCK),
     ) {
+        return Err(Errno::EAGAIN);
+    }
+    if !process
+        .map
+        .may_expand(&process.limits, mapping.is_data(), growth, (0, 0))
+    {
         return Err(Errno::ENOMEM);
     }
     Ok(())
@@ -776,8 +832,142 @@ pub(super) fn msync(
         return Err(Errno::EINVAL);
     }
     let end = address.checked_add(page_up(length)).ok_or(Errno::ENOMEM)?;
-    if !kernel.process_of(tid).map.fully_mapped(address, end) {
+    let map = &kernel.process_of(tid).map;
+    if flags & MS_INVALIDATE != 0
+        && map.iter().any(|mapping| {
+            mapping.start < end && mapping.end > address && mapping.locked != Lock::None
+        })
+    {
+        return Err(Errno::EBUSY);
+    }
+    if !map.fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
     }
+    Ok(0)
+}
+
+/// Whether the caller may lock memory at all (Linux's `can_do_mlock`).
+fn can_lock(kernel: &Kernel, tid: Tid) -> bool {
+    let process = kernel.process_of(tid);
+    process.limits[RLIMIT_MEMLOCK as usize].current != 0 || process.credentials.has(CAP_IPC_LOCK)
+}
+
+/// Linux's `do_mlock` and `apply_vma_lock_flags`: the whole range must be mapped and fit the limit on
+/// locked memory.
+fn lock_range(
+    kernel: &mut Kernel,
+    tid: Tid,
+    address: u64,
+    length: u64,
+    lock: Lock,
+) -> Result<u64, Errno> {
+    if lock != Lock::None && !can_lock(kernel, tid) {
+        return Err(Errno::EPERM);
+    }
+    let length = page_up(length.saturating_add(address % PAGE_SIZE));
+    let start = page_down(address);
+    let process = kernel.process_of_mut(tid);
+    if lock != Lock::None {
+        let (locked, within) = process
+            .map
+            .locked_pages(start, start.saturating_add(length));
+        let limit = process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE;
+        if locked + length / PAGE_SIZE - within > limit && !process.credentials.has(CAP_IPC_LOCK) {
+            return Err(Errno::ENOMEM);
+        }
+    }
+    let end = start.checked_add(length).ok_or(Errno::EINVAL)?;
+    if end == start {
+        return Ok(0);
+    }
+    if !process.map.fully_mapped(start, end) {
+        return Err(Errno::ENOMEM);
+    }
+    process.map.set_lock(start, end, lock);
+    Ok(0)
+}
+
+pub(super) fn mlock(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [address, length, ..]: Args,
+) -> Result<u64, Errno> {
+    lock_range(kernel, tid, address, length, Lock::Now)
+}
+
+pub(super) fn mlock2(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [address, length, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let flags = flags as u32;
+    if flags & !MLOCK_ONFAULT != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let lock = if flags & MLOCK_ONFAULT != 0 {
+        Lock::OnFault
+    } else {
+        Lock::Now
+    };
+    lock_range(kernel, tid, address, length, lock)
+}
+
+pub(super) fn munlock(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [address, length, ..]: Args,
+) -> Result<u64, Errno> {
+    lock_range(kernel, tid, address, length, Lock::None)
+}
+
+pub(super) fn mlockall(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let flags = flags as u32;
+    if flags == 0 || flags & !(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT) != 0 || flags == MCL_ONFAULT
+    {
+        return Err(Errno::EINVAL);
+    }
+    if !can_lock(kernel, tid) {
+        return Err(Errno::EPERM);
+    }
+    let process = kernel.process_of_mut(tid);
+    let lock = if flags & MCL_ONFAULT != 0 {
+        Lock::OnFault
+    } else {
+        Lock::Now
+    };
+    if flags & MCL_CURRENT != 0 {
+        let total = process.map.pages_in(0, u64::MAX).0;
+        if total > process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE
+            && !process.credentials.has(CAP_IPC_LOCK)
+        {
+            return Err(Errno::ENOMEM);
+        }
+        process.map.set_lock_all(lock);
+    }
+    process.map.future_lock = if flags & MCL_FUTURE != 0 {
+        lock
+    } else {
+        Lock::None
+    };
+    Ok(0)
+}
+
+pub(super) fn munlockall(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    _: Args,
+) -> Result<u64, Errno> {
+    let map = &mut kernel.process_of_mut(tid).map;
+    map.set_lock_all(Lock::None);
+    map.future_lock = Lock::None;
     Ok(0)
 }

@@ -32,6 +32,14 @@ const UNREACHED_LIMITS: u64 = 0x3a00;
 const CPU_MASKS: u64 = 0x3a40;
 /// Sixteen zero bytes: an empty argument list.
 const NULLS: u64 = 0x3a60;
+/// Four descriptor sets for pselect6, 16 bytes each.
+const FD_SETS: u64 = 0x3a80;
+/// Three signal mask arguments for pselect6: an address and a size.
+const MASK_PACKS: u64 = 0x3ac0;
+/// Four `open_how` for openat2, 32 bytes each (the last 8 zero, or not).
+const HOWS: u64 = 0x3b00;
+/// Scheduling priorities for sched_setscheduler and sched_setparam.
+const PRIORITIES: u64 = 0x3b80;
 
 /// An argument each runner replaces by its caller's process number, so calls can name their own
 /// process although the two runners' numbers differ. Its negation, the caller's own process group, is
@@ -201,6 +209,45 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         let at = (CPU_MASKS + index as u64 * 8) as usize;
         arena[at..at + 8].copy_from_slice(&mask.to_le_bytes());
     }
+    // Descriptor sets name only descriptors 3 to 7 (0 to 2 differ between the runners) and one far
+    // past them.
+    for index in 0..4u64 {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(29);
+        let at = (FD_SETS + index * 16) as usize;
+        arena[at] = (word as u8) & 0xf8;
+        arena[at + 12] = if word >> 60 == 0 { 0x10 } else { 0 };
+    }
+    let packs: [(u64, u64); 3] = [(ARENA + VALUES, 8), (ARENA + VALUES, 16), (0, 8)];
+    for (index, (address, size)) in packs.iter().enumerate() {
+        let at = (MASK_PACKS + index as u64 * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&address.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&size.to_le_bytes());
+    }
+    for index in 0..4u64 {
+        let word = values
+            .get(4 + index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(41);
+        let flags = open_flag_bits(word);
+        let mode = pick(&[0u64, 0o644, 0o10000, 0o777], word >> 40);
+        // Only `resolve` values whose meaning does not depend on what Linux happens to have cached, and
+        // none of the restricted lookups (not built).
+        let resolve = pick(&[0u64, 0, 0x18, 0x40], word >> 44);
+        let at = (HOWS + index * 32) as usize;
+        arena[at..at + 8].copy_from_slice(&flags.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&mode.to_le_bytes());
+        arena[at + 16..at + 24].copy_from_slice(&resolve.to_le_bytes());
+        arena[at + 24] = u8::from(word >> 50 == 0);
+    }
+    for (index, priority) in [0i32, 1, 50, 99, 100, -1].iter().enumerate() {
+        let at = (PRIORITIES + index as u64 * 4) as usize;
+        arena[at..at + 4].copy_from_slice(&priority.to_le_bytes());
+    }
     let mut calls = vec![
         Call {
             number: linux::__NR_mkdirat,
@@ -213,6 +260,32 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     ];
     calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
     Sequence { arena, calls }
+}
+
+/// Flags for an open, each bit present one time in eight.
+fn open_flag_bits(word: u64) -> u64 {
+    let bits = [
+        linux::O_WRONLY,
+        linux::O_RDWR,
+        linux::O_CREAT,
+        linux::O_EXCL,
+        linux::O_TRUNC,
+        linux::O_APPEND,
+        linux::O_DIRECTORY,
+        linux::O_NOFOLLOW,
+        linux::O_CLOEXEC,
+        linux::O_PATH,
+        linux::O_NONBLOCK,
+        linux::O_CREAT,
+        linux::FASYNC,
+    ];
+    let mut flags = 0;
+    for (index, bit) in bits.iter().enumerate() {
+        if (word >> (index * 3)) & 7 == 0 {
+            flags |= bit;
+        }
+    }
+    u64::from(flags)
 }
 
 fn pick<T: Copy>(pool: &[T], word: u64) -> T {
@@ -337,6 +410,26 @@ pub const CALLS: &[u32] = &[
     linux::__NR_msync,
     linux::__NR_mremap,
     linux::__NR_capset,
+    linux::__NR_close_range,
+    linux::__NR_preadv2,
+    linux::__NR_pwritev2,
+    linux::__NR_copy_file_range,
+    linux::__NR_fadvise64,
+    linux::__NR_readahead,
+    linux::__NR_sync_file_range,
+    linux::__NR_pselect6,
+    linux::__NR_flock,
+    linux::__NR_openat2,
+    linux::__NR_setpriority,
+    linux::__NR_sched_setscheduler,
+    linux::__NR_sched_setparam,
+    linux::__NR_sched_get_priority_max,
+    linux::__NR_sched_get_priority_min,
+    linux::__NR_mlock,
+    linux::__NR_mlock2,
+    linux::__NR_munlock,
+    linux::__NR_mlockall,
+    linux::__NR_munlockall,
 ];
 
 /// Turns a generated call into real arguments.
@@ -380,29 +473,7 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         )
     };
     let mode = |word: u64| word % 0o10000;
-    let open_flags = |word: u64| {
-        let bits = [
-            linux::O_WRONLY,
-            linux::O_RDWR,
-            linux::O_CREAT,
-            linux::O_EXCL,
-            linux::O_TRUNC,
-            linux::O_APPEND,
-            linux::O_DIRECTORY,
-            linux::O_NOFOLLOW,
-            linux::O_CLOEXEC,
-            linux::O_PATH,
-            linux::O_NONBLOCK,
-            linux::O_CREAT,
-        ];
-        let mut flags = 0;
-        for (index, bit) in bits.iter().enumerate() {
-            if (word >> (index * 3)) & 7 == 0 {
-                flags |= bit;
-            }
-        }
-        u64::from(flags)
-    };
+    let open_flags = open_flag_bits;
     let at_flags = |word: u64| {
         u64::from(pick(
             &[
@@ -617,7 +688,12 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_madvise => [
             play(a),
             play_length(b),
-            pick(&[0, 1, 2, 3, 4, 8, 9, 100], c),
+            pick(
+                &[
+                    0, 1, 2, 3, 4, 8, 9, 100, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                ],
+                c,
+            ),
             0,
             0,
             0,
@@ -857,6 +933,124 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         linux::__NR_capset => [value(a), value(b), 0, 0, 0, 0],
+        // Never descriptors 0 to 2: the reference's caller reports through them.
+        linux::__NR_close_range => [
+            pick(&[3u64, 4, 5, 6, 100, u32::MAX as u64], a),
+            pick(&[3u64, 5, 6, 100, u32::MAX as u64, 2], b),
+            pick(&[0, 4, 2, 6, 1, 8], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_preadv2 | linux::__NR_pwritev2 => [
+            fd(a),
+            ARENA + IOVECS + (b % 16) * 16,
+            pick(&[0, 1, 2, 3, 16, 1025], c),
+            if d % 3 == 0 { u64::MAX } else { offset(d) },
+            0,
+            pick(&[0, 0, 1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 0x100], f),
+        ],
+        linux::__NR_copy_file_range => [
+            fd(a),
+            if b % 3 == 0 { value(b) } else { 0 },
+            fd(c),
+            if d % 3 == 0 { value(d) } else { 0 },
+            count(e),
+            pick(&[0, 0, 0, 1], f),
+        ],
+        linux::__NR_fadvise64 => [
+            fd(a),
+            offset(b),
+            pick(&[0, 1, 4096, u64::MAX], c),
+            pick(&[0, 1, 2, 3, 4, 5, 6, 100], d),
+            0,
+            0,
+        ],
+        linux::__NR_readahead => [fd(a), offset(b), count(c), 0, 0, 0],
+        linux::__NR_sync_file_range => [
+            fd(a),
+            offset(b),
+            pick(&[0, 1, 4096, u64::MAX], c),
+            pick(&[0, 1, 2, 4, 7, 8], d),
+            0,
+            0,
+        ],
+        linux::__NR_pselect6 => {
+            let set = |word: u64| {
+                if word.is_multiple_of(4) {
+                    0
+                } else {
+                    ARENA + FD_SETS + (word % 4) * 16
+                }
+            };
+            [
+                pick(&[0, 1, 4, 7, 8, 64, 101, 1025, u64::MAX], a),
+                set(b),
+                set(c),
+                set(d),
+                // Always a timeout: with none and nothing ready both sides would wait for ever.
+                ARENA + VALUES + 56 * 8 + (e % 4) * 16,
+                if f % 4 == 0 {
+                    0
+                } else {
+                    ARENA + MASK_PACKS + (f % 3) * 16
+                },
+            ]
+        }
+        // No lock that waits: it would wait for ever, as only this process holds locks.
+        linux::__NR_flock => [fd(a), pick(&[5u64, 6, 8, 12, 32, 0, 7, 9], b), 0, 0, 0, 0],
+        linux::__NR_openat2 => [
+            dirfd(a),
+            path(b),
+            ARENA + HOWS + (c % 4) * 32,
+            pick(&[24, 24, 32, 16, 8192], d),
+            0,
+            0,
+        ],
+        // Not by user: that reaches the reference's runner too, which has no counterpart here, and
+        // a nice value raised cannot be lowered again without power.
+        linux::__NR_setpriority => [
+            pick(&[0, 1, 3], a),
+            pick(&[0, SELF, 99999], b),
+            pick(&[-21i64 as u64, u64::MAX, 0, 5, 19, 20, 100], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sched_setscheduler => [
+            pick(&[0, SELF, 99999, u64::MAX], a),
+            pick(
+                &[0, 1, 2, 3, 5, 6, 7, 0x4000_0000, 0x4000_0003, u64::MAX, 100],
+                b,
+            ),
+            if c % 5 == 0 {
+                0
+            } else {
+                ARENA + PRIORITIES + (c % 6) * 4
+            },
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sched_setparam => [
+            pick(&[0, SELF, 99999, u64::MAX], a),
+            if b % 5 == 0 {
+                0
+            } else {
+                ARENA + PRIORITIES + (b % 6) * 4
+            },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sched_get_priority_max | linux::__NR_sched_get_priority_min => {
+            [pick(&[0, 1, 2, 3, 4, 5, 6, 7, u64::MAX], a), 0, 0, 0, 0, 0]
+        }
+        linux::__NR_mlock | linux::__NR_munlock => [play(a), play_length(b), 0, 0, 0, 0],
+        linux::__NR_mlock2 => [play(a), play_length(b), pick(&[0, 1, 2], c), 0, 0, 0],
+        linux::__NR_mlockall => [pick(&[0, 1, 2, 3, 4, 5, 6, 7, 8], a), 0, 0, 0, 0, 0],
+        linux::__NR_munlockall => [0; 6],
         _ => unreachable!("every call in CALLS is decoded"),
     };
     Call { number, arguments }
@@ -1167,6 +1361,9 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     // The time left, which ppoll writes back even when it fails.
     if call.number == linux::__NR_ppoll && c != 0 {
         out.push((c, 16));
+    }
+    if call.number == linux::__NR_pselect6 && e != 0 {
+        out.push((e, 16));
     }
     // The CPU number, written before a fault on the node number.
     if call.number == linux::__NR_getcpu {

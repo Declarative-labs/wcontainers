@@ -14,3 +14,13 @@ pub(crate) const ST_NOEXEC: u32 = 0x0008;
 /// Always set: the flags are meaningful.
 pub(crate) const ST_VALID: u32 = 0x0020;
 pub(crate) const ST_RELATIME: u32 = 0x1000;
+
+// Values from Linux's uapi headers newer than the ones linux-raw-sys 0.12.1 was generated from.
+
+/// `preadv2` and `pwritev2` flags past `RWF_APPEND` (`linux/fs.h`).
+pub(crate) const RWF_NOAPPEND: u32 = 0x20;
+pub(crate) const RWF_ATOMIC: u32 = 0x40;
+pub(crate) const RWF_DONTCACHE: u32 = 0x80;
+/// `close_range` flags (`linux/close_range.h`).
+pub(crate) const CLOSE_RANGE_UNSHARE: u32 = 1 << 1;
+pub(crate) const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;

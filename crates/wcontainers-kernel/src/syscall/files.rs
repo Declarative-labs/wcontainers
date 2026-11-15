@@ -224,6 +224,71 @@ pub(super) fn openat(
     open(kernel, cx, tid, dirfd, &path, flags as u32, mode as u32)
 }
 
+/// The size of `open_how` as first defined, the least `openat2` takes.
+const OPEN_HOW_SIZE: u64 = 24;
+
+pub(super) fn openat2(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [dirfd, path, how, size, ..]: Args,
+) -> Result<u64, Errno> {
+    // In the order of Linux's `openat2`, `copy_struct_from_user` and `build_open_flags`, which here
+    // checks every argument.
+    if size < OPEN_HOW_SIZE {
+        return Err(Errno::EINVAL);
+    }
+    if size > wcontainers_abi::PAGE_SIZE {
+        return Err(Errno::E2BIG);
+    }
+    if size > OPEN_HOW_SIZE {
+        let rest = guest(kernel, cx, tid).read(how + OPEN_HOW_SIZE, size - OPEN_HOW_SIZE)?;
+        if rest.iter().any(|byte| *byte != 0) {
+            return Err(Errno::E2BIG);
+        }
+    }
+    let how: open_how = guest(kernel, cx, tid).read_value(how)?;
+    let flags = how.flags & !u64::from(O_CLOEXEC);
+    if flags & !u64::from(VALID_OPEN_FLAGS) != 0
+        || how.resolve & !u64::from(VALID_RESOLVE_FLAGS) != 0
+        || how.resolve & u64::from(RESOLVE_BENEATH | RESOLVE_IN_ROOT)
+            == u64::from(RESOLVE_BENEATH | RESOLVE_IN_ROOT)
+    {
+        return Err(Errno::EINVAL);
+    }
+    let flags = flags as u32;
+    let creates = flags & (O_CREAT | (O_TMPFILE & !O_DIRECTORY)) != 0;
+    if (creates && how.mode & !0o7777 != 0) || (!creates && how.mode != 0) {
+        return Err(Errno::EINVAL);
+    }
+    if flags & O_PATH != 0 && flags & !PATH_FLAGS != 0 {
+        return Err(Errno::EINVAL);
+    }
+    open_flags(kernel, cx, flags)?;
+    if how.resolve & u64::from(RESOLVE_CACHED) != 0 && flags & (O_TRUNC | O_CREAT | O_TMPFILE) != 0
+    {
+        return Err(Errno::EAGAIN);
+    }
+    // Lookups restricted by `resolve` are not built; a kernel without them refuses the whole call.
+    if how.resolve & !u64::from(RESOLVE_CACHED) != 0 {
+        kernel
+            .counters
+            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(__NR_openat2));
+        return Err(Errno::ENOSYS);
+    }
+    let path = guest(kernel, cx, tid).read_path(path)?;
+    let flags = flags | (how.flags as u32 & O_CLOEXEC);
+    open(kernel, cx, tid, dirfd, &path, flags, how.mode as u32)
+}
+
+/// Every `resolve` flag Linux knows.
+const VALID_RESOLVE_FLAGS: u32 = RESOLVE_NO_XDEV
+    | RESOLVE_NO_MAGICLINKS
+    | RESOLVE_NO_SYMLINKS
+    | RESOLVE_BENEATH
+    | RESOLVE_IN_ROOT
+    | RESOLVE_CACHED;
+
 /// The flags an open keeps, after `build_open_flags`'s checks.
 fn open_flags(kernel: &mut Kernel, cx: &mut Context<'_>, flags: u32) -> Result<u32, Errno> {
     let mut flags = flags & VALID_OPEN_FLAGS;
@@ -250,6 +315,7 @@ fn open_flags(kernel: &mut Kernel, cx: &mut Context<'_>, flags: u32) -> Result<u
 
 /// The flags `open` keeps; unknown bits are ignored, as Linux does for `open` and `openat`.
 const VALID_OPEN_FLAGS: u32 = O_ACCMODE
+    | FASYNC
     | O_CREAT
     | O_EXCL
     | O_NOCTTY
@@ -1858,4 +1924,79 @@ pub(super) fn fstatfs(
         .clone();
     guest(kernel, cx, tid).write_value(buffer, &statfs_of(&node))?;
     Ok(0)
+}
+
+pub(super) fn flock(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    arguments: Args,
+) -> super::Outcome {
+    match flock_typed(kernel, cx, tid, arguments) {
+        Ok(Some(value)) => super::Outcome::Return(value),
+        Ok(None) => {
+            // The holder is an open file of this process, which cannot let go while its only thread
+            // waits, so the wait lasts until a signal ends it (K2), as on Linux.
+            kernel.thread_mut(tid).parked = Some(crate::process::Parked::Forever);
+            super::Outcome::Parked
+        }
+        Err(error) => Err(error).into(),
+    }
+}
+
+/// `flock`: Some(value) when it is done, None when it must wait for another holder to let go.
+fn flock_typed(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [fd, operation, ..]: Args,
+) -> Result<Option<u64>, Errno> {
+    // In the order of Linux's `flock` and `flock_lock_inode`. Mandatory locks were removed from
+    // Linux; asking for one does nothing, before the descriptor is even looked at.
+    let operation = operation as u32;
+    if operation & LOCK_MAND != 0 {
+        return Ok(Some(0));
+    }
+    let wait = operation & LOCK_NB == 0;
+    let exclusive = match operation & !LOCK_NB {
+        LOCK_SH => Some(false),
+        LOCK_EX => Some(true),
+        LOCK_UN => None,
+        _ => return Err(Errno::EINVAL),
+    };
+    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let usable = {
+        let file = file.borrow();
+        file.readable() || file.writable()
+    };
+    if file.borrow().is_path() || (exclusive.is_some() && !usable) {
+        return Err(Errno::EBADF);
+    }
+    let node = file.borrow().node.clone();
+    let mut inode = node.borrow_mut();
+    let own = alloc::rc::Rc::downgrade(&file);
+    inode.flocks.retain(|(holder, _)| holder.strong_count() > 0);
+    // The file's own lock is dropped first, so a refused change loses it, as on Linux.
+    if let Some(index) = inode
+        .flocks
+        .iter()
+        .position(|(holder, _)| holder.ptr_eq(&own))
+    {
+        if Some(inode.flocks[index].1) == exclusive {
+            return Ok(Some(0));
+        }
+        inode.flocks.remove(index);
+    }
+    let Some(exclusive) = exclusive else {
+        return Ok(Some(0));
+    };
+    let conflict = inode
+        .flocks
+        .iter()
+        .any(|(_, held_exclusive)| exclusive || *held_exclusive);
+    if conflict {
+        return if wait { Ok(None) } else { Err(Errno::EAGAIN) };
+    }
+    inode.flocks.push((own, exclusive));
+    Ok(Some(0))
 }
