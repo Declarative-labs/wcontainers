@@ -64,7 +64,6 @@ pub struct Host {
     /// Addresses code was translated from at run time: the table holds a piece of look-ahead none there.
     translated_from: HashSet<u64>,
     state: Option<SharedMemory>,
-    save_state: Option<TypedFunc<(), ()>>,
     /// The program break the stand-in reports: the page after the highest blob.
     program_break: u64,
     engine: Engine,
@@ -78,7 +77,6 @@ pub struct Machine {
     memory: Memory,
     state: SharedMemory,
     run: TypedFunc<(), ()>,
-    load_state: TypedFunc<(), ()>,
     permission_pages: u64,
     permissions: Vec<Permissions>,
 }
@@ -151,7 +149,6 @@ impl Machine {
                 blobs: Vec::new(),
                 translated_from: HashSet::new(),
                 state: None,
-                save_state: None,
                 program_break: 0,
                 engine: engine.clone(),
                 thread: None,
@@ -195,15 +192,8 @@ impl Machine {
             .expect("thread instance");
 
         let run = thread.get_typed_func(&mut store, contract::RUN).unwrap();
-        let save_state = thread
-            .get_typed_func(&mut store, contract::SAVE_STATE)
-            .unwrap();
-        let load_state = thread
-            .get_typed_func(&mut store, contract::LOAD_STATE)
-            .unwrap();
         let host = store.data_mut();
         host.state = Some(state.clone());
-        host.save_state = Some(save_state);
         host.thread = Some(thread);
         host.memory = Some(memory);
         Machine {
@@ -211,7 +201,6 @@ impl Machine {
             memory,
             state,
             run,
-            load_state,
             permission_pages,
             permissions: vec![Permissions::empty(); permission_pages as usize],
         }
@@ -317,7 +306,6 @@ impl Machine {
 
     pub fn set_registers(&mut self, registers: &RegisterBlock) {
         write_shared(&self.state, BLOCK_AT as usize, registers.as_bytes());
-        self.load_state.call(&mut self.store, ()).unwrap();
     }
 
     pub fn registers(&mut self) -> RegisterBlock {
@@ -401,9 +389,8 @@ fn read_shared(memory: &SharedMemory, at: usize, into: &mut [u8]) {
     }
 }
 
+/// The registers, from the thread block, where they all are whenever a hook runs or the thread has left.
 fn snapshot(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> RegisterBlock {
-    let save = store.as_context().data().save_state.clone().unwrap();
-    save.call(&mut *store, ()).unwrap();
     let mut bytes = [0u8; size_of::<RegisterBlock>()];
     let state = store.as_context().data().state.clone().unwrap();
     read_shared(&state, BLOCK_AT as usize, &mut bytes);

@@ -97,8 +97,6 @@ pub extern "C" fn contract() -> i32 {
         "permissions": PERMISSIONS,
         "permissionPages": PERMISSION_PAGES,
         "run": RUN,
-        "saveState": SAVE_STATE,
-        "loadState": LOAD_STATE,
         "unwindLeave": UNWIND_LEAVE,
         "hookSyscall": HOOK_SYSCALL,
         "hookStop": HOOK_STOP,

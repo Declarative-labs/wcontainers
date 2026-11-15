@@ -1,9 +1,12 @@
 //! What a runner must provide to, and may expect from, the modules the translator makes.
 //!
 //! Two kinds of module run per guest thread. The **thread module** ([`crate::thread_module`]) holds the
-//! registers as globals, the lookup table, the bottom loop and save and load state. **Code modules**
-//! ([`crate::translate`]) hold pieces; they import the thread module's registers and table and add their
-//! pieces to the table when instantiated.
+//! lookup table and the bottom loop. **Code modules** ([`crate::translate`]) hold pieces; they import the
+//! thread module's table and add their pieces to the table when instantiated.
+//!
+//! Registers that are not in a piece's locals live in the thread block in the state memory, so whenever a hook
+//! runs or `run` has returned, the block holds them all ("registers are saved"), and a runner sets registers
+//! by writing the block before `run`.
 
 /// Import module name for what the runner provides.
 pub const ENV: &str = "env";
@@ -24,7 +27,7 @@ pub const SLOT_BASE: &str = "slot_base";
 /// i64: the guest address of lookup table slot zero. Slot `i` holds the piece for `table_base + 4 * i`.
 pub const TABLE_BASE: &str = "table_base";
 /// i32: where in the state memory this thread's block is (a [`wcontainers_abi::RegisterBlock`] followed by
-/// the stop flag).
+/// the stop flag), a multiple of 16.
 pub const THREAD_BLOCK: &str = "thread_block";
 /// i32: where in the state memory the page permission table starts, one byte per page.
 pub const PERMISSIONS: &str = "permissions";
@@ -46,13 +49,9 @@ pub const UNWIND_LEAVE: i32 = 1;
 /// the bottom loop asks [`HOOK_LOAD_CODE`] for code at `pc` first.
 pub const UNWIND_GO_TO_EXACT: i32 = 2;
 
-/// Thread module export: run from the address in `pc` until a hook asks to leave, or no piece can be found
-/// for an address. Takes and returns nothing.
+/// Thread module export: run from the registers in the thread block until a hook asks to leave, or no piece
+/// can be found for an address. Takes and returns nothing.
 pub const RUN: &str = "run";
-/// Thread module export: copy every register into the thread block.
-pub const SAVE_STATE: &str = "save_state";
-/// Thread module export: copy every register from the thread block.
-pub const LOAD_STATE: &str = "load_state";
 
 /// Hook `(number, a0, a1, a2, a3, a4, a5: i64) -> i64`: a system call. The result goes to x0. Registers
 /// are saved and `pc` is the instruction after. To stop the thread, raise its stop flag and return.

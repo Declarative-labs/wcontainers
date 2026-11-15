@@ -4,6 +4,7 @@
 mod code;
 pub mod contract;
 mod full;
+mod state;
 mod thread;
 
 pub use code::{Error, LookAhead, Omit, PASSED, Translation, translate, translate_omitting};

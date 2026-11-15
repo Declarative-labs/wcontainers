@@ -74,8 +74,8 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   }
   const reason = (name) => contract.reasons.indexOf(name);
 
+  // The registers, from the thread block, where they all are whenever a hook runs or the thread has left.
   function registers() {
-    thread.exports[contract.saveState]();
     const view = new DataView(state.buffer, BLOCK_AT);
     const x = [];
     for (let i = 0; i < 31; i++) x.push(view.getBigUint64(contract.registerX + 8 * i, true));
@@ -274,7 +274,6 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     for (let i = 0; i < contract.threadBlockSize; i++) block.setUint8(i, 0);
     block.setBigUint64(contract.registerPc, BigInt(load), true);
     block.setBigUint64(contract.registerSp, BigInt(sp), true);
-    thread.exports[contract.loadState]();
 
     const started = performance.now();
     try {

@@ -4,6 +4,7 @@
 
 use crate::code::*;
 use crate::contract::*;
+use crate::state::{Slot, load_flag, store_flags};
 use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -351,8 +352,8 @@ fn tracked() -> Registers {
 type FlagStates = u32;
 /// The flags are in the piece's flag locals.
 const FLAGS_IN_LOCALS: u32 = 0;
-/// The flags are in the thread's globals, which are up to date.
-const FLAGS_IN_GLOBALS: u32 = 1;
+/// The flags are in the thread block, which is up to date.
+const FLAGS_IN_BLOCK: u32 = 1;
 
 /// How a flag setting that is kept lazily looks, so setters of one shape can share locals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,7 +554,7 @@ impl Plan {
         }
         let flag_state = |d: &Decoded, state: FlagStates| -> FlagStates {
             if d.effects.calls {
-                1 << FLAGS_IN_GLOBALS
+                1 << FLAGS_IN_BLOCK
             } else if let Some(shape) = d.effects.flags.and_then(Shape::of) {
                 1 << (2 + shapes.iter().position(|s| *s == shape).unwrap())
             } else if d.effects.defs.intersect(Registers::FLAGS) != Registers::NONE {
@@ -583,7 +584,7 @@ impl Plan {
         let mut frame_in: Vec<Option<Frame>> = vec![None; n];
         let mut aligned_in = vec![true; n];
         aligned_in[0] = false;
-        flags_in[0] = 1 << FLAGS_IN_GLOBALS;
+        flags_in[0] = 1 << FLAGS_IN_BLOCK;
         frame_in[0] = Some(None);
         let mut changed = true;
         while changed {
@@ -948,7 +949,7 @@ impl<'a> FullEmitter<'a> {
                 offset: function.entry,
                 block: 0,
                 dirty: Registers::NONE,
-                flags: 1 << FLAGS_IN_GLOBALS,
+                flags: 1 << FLAGS_IN_BLOCK,
                 aligned: false,
             },
             fixed: [None; 6],
@@ -961,12 +962,12 @@ impl<'a> FullEmitter<'a> {
         }
         for bit in plan.live_in[0].bits() {
             let local = e.register(bit);
-            let global = global_of(bit);
-            e.sink().global_get(global).local_set(local);
+            let block = e.fixed(G_THREAD_BLOCK);
+            Slot::of_bit(bit).load_into(&mut e.sink(), block, local);
         }
         if plan.dynamic_flags {
             let state = e.flag_state;
-            e.sink().i32_const(FLAGS_IN_GLOBALS as i32).local_set(state);
+            e.sink().i32_const(FLAGS_IN_BLOCK as i32).local_set(state);
         }
         if plan.calls_out && !omit.stop {
             e.stop_check(Pc::Offset(function.entry), plan.live_in[0], 0);
@@ -1255,30 +1256,29 @@ impl<'a> FullEmitter<'a> {
         }
     }
 
-    /// Copy every register whose global may be stale into its global, the flags too, and the passed
-    /// registers when asked.
+    /// Copy every register whose place in the thread block may be stale there, the flags too, and the
+    /// passed registers when asked.
     fn write_back(&mut self, passed: bool) {
+        let block = self.fixed(G_THREAD_BLOCK);
         for bit in self.at.dirty.bits() {
             let local = self.register(bit);
-            self.sink().local_get(local).global_set(global_of(bit));
+            Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
         }
-        for flag in Flag::ALL {
-            if self.at.flags == 1 << FLAGS_IN_GLOBALS {
-                break;
-            }
-            self.push_flag(flag);
-            self.sink().global_set(g_flag(flag));
+        if self.at.flags != 1 << FLAGS_IN_BLOCK {
+            store_flags(self, block, |e, flag| e.push_flag(flag));
         }
         if passed {
-            save_passed(&mut self.sink());
+            save_passed(&mut self.sink(), block);
         }
     }
 
     /// Write back everything, with `pc` set.
     fn save(&mut self, pc: Pc) {
         self.write_back(true);
+        let block = self.fixed(G_THREAD_BLOCK);
+        block.push(&mut self.sink());
         self.push_pc(pc);
-        self.sink().global_set(G_PC);
+        Slot::Pc.store(&mut self.sink());
     }
 
     /// Call the stop hook if the flag is raised. If the thread carries on, nothing has changed, so registers
@@ -1305,17 +1305,19 @@ impl<'a> FullEmitter<'a> {
         self.sink().end();
     }
 
-    /// Load registers from their globals: the tracked ones in `live`, and the passed ones from `passed_from`.
+    /// Load registers from the thread block: the tracked ones in `live`, and the passed ones from
+    /// `passed_from`.
     fn reload(&mut self, live: Registers, passed_from: u32) {
+        let block = self.fixed(G_THREAD_BLOCK);
         for bit in live.intersect(tracked()).bits() {
             let local = self.register(bit);
-            self.sink().global_get(global_of(bit)).local_set(local);
+            Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
         }
         let mut s = self.sink();
         for i in passed_from..4 {
-            s.global_get(g_x(i as u8)).local_set(i);
+            Slot::X(i as u8).load_into(&mut s, block, i);
         }
-        s.global_get(G_SP).local_set(L_SP);
+        Slot::Sp.load_into(&mut s, block, L_SP);
     }
 
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
@@ -1426,8 +1428,9 @@ impl<'a> FullEmitter<'a> {
                 let local = self.flag_locals[i];
                 self.sink().local_get(local);
             }
-            FLAGS_IN_GLOBALS => {
-                self.sink().global_get(g_flag(flag));
+            FLAGS_IN_BLOCK => {
+                let block = self.fixed(G_THREAD_BLOCK);
+                load_flag(&mut self.sink(), block, flag);
             }
             shape => {
                 let flags = self.shape_flags(shape as usize - 2);
@@ -1509,15 +1512,6 @@ impl<'a> FullEmitter<'a> {
             .call(F_WARN);
         self.arguments();
         self.sink().local_get(target).return_call(F_DISPATCH);
-    }
-}
-
-/// The global of a tracked register bit.
-fn global_of(bit: u32) -> u32 {
-    match bit {
-        0..31 => g_x(bit as u8),
-        31 => G_SP,
-        _ => g_v((bit - 64) as u8),
     }
 }
 
@@ -1643,7 +1637,10 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn get_thread_pointer(&mut self) {
-        self.sink().global_get(G_TPIDR);
+        let block = self.fixed(G_THREAD_BLOCK);
+        let mut s = self.sink();
+        block.push(&mut s);
+        Slot::ThreadPointer.load(&mut s);
     }
 
     fn stack_aligned(&mut self) -> bool {
@@ -1651,7 +1648,11 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_thread_pointer(&mut self) {
-        self.sink().global_set(G_TPIDR);
+        let block = self.fixed(G_THREAD_BLOCK);
+        let value = self.temporary(ValType::I64);
+        let mut s = self.sink();
+        s.local_set(value);
+        Slot::ThreadPointer.store_from(&mut s, block, value);
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {
@@ -1767,7 +1768,7 @@ impl Emitter for FullEmitter<'_> {
             s.local_set(i);
         }
         self.at.dirty = Registers::NONE;
-        self.set_flag_state(FLAGS_IN_GLOBALS);
+        self.set_flag_state(FLAGS_IN_BLOCK);
         // What is known about the stack pointer (its frame, its alignment) holds after the call only if the
         // callee gave it back unchanged; otherwise carry on from code that knows nothing.
         let kept =
@@ -1786,9 +1787,10 @@ impl Emitter for FullEmitter<'_> {
             self.sink().local_get(returned_sp).local_set(L_SP);
         }
         let reload = self.plan.live_after[&offset];
+        let block = self.fixed(G_THREAD_BLOCK);
         for bit in reload.bits() {
             let local = self.register(bit);
-            self.sink().global_get(global_of(bit)).local_set(local);
+            Slot::of_bit(bit).load_into(&mut self.sink(), block, local);
         }
     }
 
@@ -1812,11 +1814,13 @@ impl Emitter for FullEmitter<'_> {
         }
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
-        save_passed(&mut s);
-        s.local_get(target)
-            .global_set(G_PC)
-            .i32_const(UNWIND_GO_TO)
-            .throw(0);
+        let block = self.fixed(G_THREAD_BLOCK);
+        let mut s = self.sink();
+        save_passed(&mut s, block);
+        set_pc(&mut s, block, |s| {
+            s.local_get(target);
+        });
+        s.i32_const(UNWIND_GO_TO).throw(0);
     }
 
     fn syscall(&mut self) {
