@@ -83,13 +83,14 @@ fn measure() {
         encoder.write_all(bytes).unwrap();
         encoder.finish().unwrap().len()
     };
-    for (name, optimisation) in [
-        ("integers", "-O0"),
-        ("integers", "-O2"),
-        ("tables", "-O0"),
-        ("tables", "-O2"),
+    for (name, optimisation, library) in [
+        ("integers", "-O0", Library::None),
+        ("integers", "-O2", Library::None),
+        ("tables", "-O0", Library::None),
+        ("tables", "-O2", Library::None),
+        ("hello", "-O2", Library::C),
     ] {
-        let blob = build(name, optimisation, Library::None);
+        let blob = build(name, optimisation, library);
         let code = &blob.bytes[..blob.code_bytes as usize];
         let starts: Vec<u64> = (0..blob.code_bytes / 4).map(|i| 4 * i).collect();
         let mut best = (Duration::MAX, Duration::MAX, Vec::new());

@@ -3,8 +3,10 @@
 use crate::layout::initial_stack;
 use crate::reference::{build as build_reference, container_name};
 use crate::runner::{Machine, Stopped, Syscalls};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wcontainers_abi::{Permissions, RegisterBlock};
 
 /// Where every blob is linked and loaded.
@@ -15,9 +17,21 @@ const STACK_BYTES: u64 = 1 << 20;
 
 /// A flat blob and how much of its start is code.
 pub struct Blob {
+    /// The program and optimisation level, such as "hello-O2".
+    pub name: String,
     pub bytes: Vec<u8>,
     pub code_bytes: u64,
-    pub path: PathBuf,
+}
+
+fn out_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/programs")
+}
+
+/// A file name no other build or run, in this process or another, uses.
+fn unique(stem: &str) -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    format!("{stem}.{}.{n}", std::process::id())
 }
 
 fn source_directory() -> PathBuf {
@@ -43,10 +57,12 @@ pub enum Library {
 
 /// Build `programs/<name>.c` at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
-    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/programs");
+    let out = out_directory();
     std::fs::create_dir_all(&out).unwrap();
     let stem = format!("{name}{optimisation}");
-    let elf = out.join(format!("{stem}.elf"));
+    // Tests build the same program at once, so each build works under its own names.
+    let own = unique(&stem);
+    let elf = out.join(format!("{own}.elf"));
     let source = source_directory().join(format!("{name}.c"));
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
@@ -76,9 +92,9 @@ pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
     let (elf_text, source_text) = (text(&elf), text(&source));
     arguments.extend(["-o", &elf_text, &source_text]);
     zig(&arguments);
-    let path = out.join(format!("{stem}.bin"));
-    let code = out.join(format!("{stem}.text"));
-    zig(&["objcopy", "-O", "binary", &text(&elf), &text(&path)]);
+    let built = out.join(format!("{own}.bin"));
+    let code = out.join(format!("{own}.text"));
+    zig(&["objcopy", "-O", "binary", &text(&elf), &text(&built)]);
     zig(&[
         "objcopy",
         "-O",
@@ -87,11 +103,16 @@ pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
         &text(&elf),
         &text(&code),
     ]);
-    Blob {
-        bytes: std::fs::read(&path).unwrap(),
+    let blob = Blob {
+        bytes: std::fs::read(&built).unwrap(),
         code_bytes: std::fs::metadata(&code).unwrap().len(),
-        path,
-    }
+        name: stem,
+    };
+    std::fs::remove_file(&built).unwrap();
+    std::fs::remove_file(&code).unwrap();
+    // The last build of each is kept for looking at.
+    std::fs::rename(&elf, out.join(format!("{}.elf", blob.name))).unwrap();
+    blob
 }
 
 /// What a program did: its output and exit status.
@@ -102,22 +123,47 @@ pub struct Ran {
     pub status: i32,
 }
 
-/// Run a blob through the translator at look-ahead none, starting at its first byte.
+/// Where a flat blob and its stack go in guest memory, the same for every runner.
+pub struct Placement {
+    /// Size of guest memory: everything up to the top of the stack.
+    pub memory_bytes: u64,
+    /// Page aligned ranges and what they allow: the blob, then the stack.
+    pub regions: Vec<(Range<u64>, Permissions)>,
+    /// The stack pointer to start with, and the bytes to place from it up to the top of the stack.
+    pub sp: u64,
+    pub stack: Vec<u8>,
+}
+
+pub fn placement(blob: &Blob) -> Placement {
+    let end = LOAD + (blob.bytes.len() as u64).next_multiple_of(4096);
+    let (sp, stack) = initial_stack(STACK_TOP);
+    Placement {
+        memory_bytes: STACK_TOP,
+        regions: vec![
+            (LOAD..end, Permissions::all()),
+            (
+                STACK_TOP - STACK_BYTES..STACK_TOP,
+                Permissions::READ | Permissions::WRITE,
+            ),
+        ],
+        sp,
+        stack,
+    }
+}
+
+/// Run a blob through the translator at look-ahead none in wasmtime, starting at its first byte.
 pub fn translated(blob: &Blob) -> (Ran, Machine) {
     let slots = blob.code_bytes.div_ceil(4) as u32;
-    let mut machine = Machine::new(STACK_TOP, LOAD, slots, Syscalls::StandIn);
-    let end = LOAD + (blob.bytes.len() as u64).next_multiple_of(4096);
-    machine.set_permissions(LOAD..end, Permissions::all());
-    machine.set_permissions(
-        STACK_TOP - STACK_BYTES..STACK_TOP,
-        Permissions::READ | Permissions::WRITE,
-    );
+    let place = placement(blob);
+    let mut machine = Machine::new(place.memory_bytes, LOAD, slots, Syscalls::StandIn);
+    for (range, permissions) in place.regions {
+        machine.set_permissions(range, permissions);
+    }
     machine.load(&blob.bytes, 0..blob.code_bytes, LOAD, &[0]);
-    let (sp, stack) = initial_stack(STACK_TOP);
-    machine.write(sp, &stack);
+    machine.write(place.sp, &place.stack);
     let mut registers = RegisterBlock::ZERO;
     registers.pc = LOAD;
-    registers.sp = sp;
+    registers.sp = place.sp;
     machine.set_registers(&registers);
     let (stopped, registers) = machine.run();
     let status = match stopped {
@@ -147,8 +193,11 @@ pub fn translated(blob: &Blob) -> (Ran, Machine) {
 /// Run a blob natively on ARM64 Linux in Docker.
 pub fn native(blob: &Blob) -> Ran {
     let reference = build_reference();
-    let directory = blob.path.parent().unwrap();
-    let file = blob.path.file_name().unwrap().to_str().unwrap();
+    // Every run reads a file of its own that nothing replaces while Docker reads it.
+    let directory = out_directory().join("native");
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = format!("{}.bin", unique(&blob.name));
+    std::fs::write(directory.join(&file), &blob.bytes).unwrap();
     let output = Command::new("docker")
         .args(["run", "--rm", "--network", "none", "--name"])
         .arg(container_name("program"))
@@ -162,6 +211,7 @@ pub fn native(blob: &Blob) -> Ran {
         .arg(format!("{STACK_TOP:#x}"))
         .output()
         .expect("run docker");
+    std::fs::remove_file(directory.join(&file)).unwrap();
     Ran {
         stdout: output.stdout,
         stderr: output.stderr,

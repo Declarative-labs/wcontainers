@@ -48,6 +48,8 @@
               pkgs.csmith
               pkgs.creduce
             ];
+            # driving the installed Chrome from Node, for the browser runner
+            WC_PLAYWRIGHT_CORE = "${pkgs.playwright-driver}";
           };
 
           formatter = pkgs.nixfmt;
