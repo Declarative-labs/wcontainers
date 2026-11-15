@@ -333,6 +333,49 @@ pub(crate) fn permission_exact(
         .local_set(fault_at);
 }
 
+/// The longest single access, in bytes (a pair of 128 bit registers).
+const LONGEST_ACCESS: i64 = 32;
+
+/// Keep the run of pages, from the allowed page in i64 local `page` and at most 8 long, that allow an access
+/// as `this` says: i64 locals `low` (its first address) and `room` (how far past `low` an access may start
+/// and still end within the run).
+pub(crate) fn keep_pages(
+    s: &mut InstructionSink<'_>,
+    table: Table,
+    page: u32,
+    this: u8,
+    low: u32,
+    room: u32,
+) {
+    s.local_get(page).i64_const(12).i64_shl().local_set(low);
+    // The table bytes of the page and the seven after it, when they are all in the table.
+    s.local_get(page).i64_const(8).i64_add();
+    table.pages.push(s);
+    s.i64_le_u().if_(BlockType::Result(ValType::I64));
+    let every = i64::from(this) * 0x0101_0101_0101_0101;
+    s.i64_const(every);
+    table.at.push(s);
+    s.local_get(page)
+        .i32_wrap_i64()
+        .i32_add()
+        .i64_load(memarg(MEMORY_STATE, 0, 0))
+        .i64_const(-1)
+        .i64_xor()
+        .i64_and()
+        // Bytes up to the first page that does not allow it, then the run's length in bytes.
+        .i64_ctz()
+        .i64_const(3)
+        .i64_shr_u()
+        .i64_const(12)
+        .i64_shl()
+        .else_()
+        .i64_const(4096)
+        .end()
+        .i64_const(LONGEST_ACCESS - 1)
+        .i64_sub()
+        .local_set(room);
+}
+
 pub(crate) fn types() -> TypeSection {
     let mut types = TypeSection::new();
     piece_type(&mut types); // 0

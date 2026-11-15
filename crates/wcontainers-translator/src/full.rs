@@ -470,6 +470,8 @@ struct Plan {
     /// Registers that must hold their true value after each instruction.
     live_after: HashMap<u64, Registers>,
     dirty_in: Vec<Registers>,
+    /// By loop header, the registers written back to the thread block when the loop is entered.
+    written_before: Vec<Registers>,
     flags_in: Vec<FlagStates>,
     aligned_in: Vec<bool>,
     /// Shape of every flag setting kept lazily, by its flag state number.
@@ -487,9 +489,9 @@ struct Plan {
     frame_in: Vec<Frame>,
     /// Every loop header but the entry, with the headers of the loops it is not around.
     outside: Vec<(usize, Vec<usize>)>,
-    /// Accesses checked exactly inside a loop that makes no call or system call keep the page last found
-    /// allowed (with the page after it) and check again only on another page. Accesses of one kind (read or
-    /// write) through one base register in one loop share what they keep. Each such access's number for
+    /// Accesses checked exactly inside a loop that makes no call or system call keep the run of pages last
+    /// found to allow them and check again only when an access does not lie within that run. Accesses of
+    /// one kind (read or write) through one base register in one loop share what they keep. Each such access's number for
     /// what it keeps, and by loop header, the numbers forgotten when the loop is entered.
     kept: HashMap<u64, usize>,
     kept_by_loop: Vec<Vec<usize>>,
@@ -696,6 +698,22 @@ impl Plan {
             }
         };
 
+        // Registers a loop's own code neither reads nor writes. Those that may be dirty when the loop is
+        // entered are written back before it, so its slow paths do not keep them alive.
+        let untouched: Vec<Registers> = (0..n)
+            .map(|h| match bodies.get(&h) {
+                Some(body) => (0..n).filter(|&b| body[b]).fold(tracked(), |r, b| {
+                    instructions(b).fold(r, |r, o| {
+                        let e = &decoded[&o].effects;
+                        r.minus(e.defs).minus(e.uses)
+                    })
+                }),
+                None => Registers::NONE,
+            })
+            .collect();
+        let entering = |b: usize, s: usize| bodies.get(&s).is_some_and(|body| !body[b]);
+        let mut written_before = vec![Registers::NONE; n];
+
         // Forward: what may be dirty, where the flags are, and the frame known to be allowed.
         let mut dirty_in = vec![Registers::NONE; n];
         let mut flags_in: Vec<FlagStates> = vec![0; n];
@@ -722,6 +740,11 @@ impl Plan {
                     frame = frame_after(d, frame);
                 }
                 for &s in &blocks[b].succs {
+                    let mut dirty = dirty;
+                    if entering(b, s) {
+                        written_before[s] = written_before[s].union(dirty.intersect(untouched[s]));
+                        dirty = dirty.minus(untouched[s]);
+                    }
                     let joined_dirty = dirty_in[s].union(dirty);
                     let joined_flags = flags_in[s] | flags;
                     let joined_frame = match frame_in[s] {
@@ -758,10 +781,14 @@ impl Plan {
         while changed {
             changed = false;
             for &b in order.iter().rev() {
-                let mut live = blocks[b]
-                    .succs
-                    .iter()
-                    .fold(Registers::NONE, |l, &s| l.union(live_in_blocks[s]));
+                let mut live = blocks[b].succs.iter().fold(Registers::NONE, |l, &s| {
+                    let l = l.union(live_in_blocks[s]);
+                    if entering(b, s) {
+                        l.union(written_before[s])
+                    } else {
+                        l
+                    }
+                });
                 for o in instructions(b).collect::<Vec<_>>().into_iter().rev() {
                     let d = &decoded[&o];
                     live_after.insert(o, live);
@@ -786,7 +813,7 @@ impl Plan {
             frame_across,
         } = checks(function, decoded, &frame_in);
         // The innermost loop around each block, and loops in which nothing can change the permission table:
-        // no call and no system call. (A stop check that carries on in place forgets every kept page.)
+        // no call and no system call. (A stop check that carries on in place forgets every kept run.)
         let innermost = |b: usize| {
             headers
                 .iter()
@@ -847,6 +874,7 @@ impl Plan {
             live_in: live_in_blocks,
             live_after,
             dirty_in,
+            written_before,
             flags_in,
             aligned_in,
             shapes,
@@ -1108,8 +1136,9 @@ struct FullEmitter<'a> {
     fixed: [Option<u32>; 6],
     /// The piece's own function index.
     own: u32,
-    /// For each number in [`Plan::kept`], the i64 local holding the page last found allowed, or -1.
-    kept_pages: Vec<u32>,
+    /// For each number in [`Plan::kept`], the i64 locals holding the run of pages last found allowed: its
+    /// first address and how far past it an access may start (0 when nothing is kept).
+    kept_pages: Vec<(u32, u32)>,
 }
 
 impl<'a> FullEmitter<'a> {
@@ -1150,8 +1179,9 @@ impl<'a> FullEmitter<'a> {
             kept_pages: Vec::new(),
         };
         for _ in plan.kept_by_loop.iter().flatten() {
-            let local = e.new_local(ValType::I64);
-            e.kept_pages.push(local);
+            let low = e.new_local(ValType::I64);
+            let room = e.new_local(ValType::I64);
+            e.kept_pages.push((low, room));
         }
         e.flag_locals = [0; 4].map(|_| e.new_local(ValType::I32));
         e.flag_state = e.new_local(ValType::I32);
@@ -1333,9 +1363,14 @@ impl<'a> FullEmitter<'a> {
             .filter(|&c| self.plan.merge[c])
             .collect();
         if self.plan.loop_header[b] {
+            let block = self.fixed(G_THREAD_BLOCK);
+            for bit in self.plan.written_before[b].bits() {
+                let local = self.register(bit);
+                Slot::of_bit(bit).store_from(&mut self.sink(), block, local);
+            }
             for number in self.plan.kept_by_loop[b].clone() {
-                let local = self.kept_pages[number];
-                self.sink().i64_const(-1).local_set(local);
+                let (_, room) = self.kept_pages[number];
+                self.sink().i64_const(0).local_set(room);
             }
             self.sink().loop_(BlockType::Empty);
             self.labels.push(Label::Loop(b));
@@ -1565,8 +1600,8 @@ impl<'a> FullEmitter<'a> {
             AfterStop::Reload(live, passed_from) => {
                 self.reload(live, passed_from);
                 // The table may have changed during the stop.
-                for local in self.kept_pages.clone() {
-                    self.sink().i64_const(-1).local_set(local);
+                for (_, room) in self.kept_pages.clone() {
+                    self.sink().i64_const(0).local_set(room);
                 }
             }
             AfterStop::Continue => {}
@@ -1951,12 +1986,13 @@ impl Emitter for FullEmitter<'_> {
             CheckPlan::Exact => {
                 let kept = self.plan.kept.get(&offset).map(|&n| self.kept_pages[n]);
                 let mut s = self.sink();
-                if let Some(kept) = kept {
+                if let Some((low, room)) = kept {
+                    // Checked again unless the access starts within the kept run of pages.
                     s.local_get(address)
-                        .i64_const(12)
-                        .i64_shr_u()
-                        .local_get(kept)
-                        .i64_ne()
+                        .local_get(low)
+                        .i64_sub()
+                        .local_get(room)
+                        .i64_ge_u()
                         .if_(BlockType::Empty);
                 }
                 // An address the table allows has a clear top byte, so only one it does not is untagged and
@@ -1973,12 +2009,13 @@ impl Emitter for FullEmitter<'_> {
                     .i32_const(UNWIND_LEAVE)
                     .call(F_UNWIND)
                     .unreachable()
+                    .end()
                     .end();
-                if let Some(kept) = kept {
-                    // This page and the next allow the access: keep the page.
-                    s.else_().local_get(locals.0).local_set(kept).end();
+                if let Some((low, room)) = kept {
+                    // The access is allowed, so the page it starts on allows this kind.
+                    keep_pages(&mut s, table, locals.0, this, low, room);
+                    s.end();
                 }
-                s.end();
             }
             CheckPlan::Group { from, len } => {
                 let start = self.temporary(ValType::I64);
