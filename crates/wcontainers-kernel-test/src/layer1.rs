@@ -28,7 +28,7 @@ const PATHS: u64 = 0;
 const IOVECS: u64 = 0x3000;
 const POLLS: u64 = 0x3600;
 const VALUES: u64 = 0x3800;
-const CPU_LIMITS: u64 = 0x3a00;
+const UNREACHED_LIMITS: u64 = 0x3a00;
 const CPU_MASKS: u64 = 0x3a40;
 /// Sixteen zero bytes: an empty argument list.
 const NULLS: u64 = 0x3a60;
@@ -180,17 +180,19 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at..at + 8].copy_from_slice(&seconds.to_le_bytes());
         arena[at + 8..at + 16].copy_from_slice(&nanoseconds.to_le_bytes());
     }
-    // Limits for RLIMIT_CPU, all too large to be reached: a reachable one ends the process at a moment
-    // that depends on the machine's speed.
+    // Limits for RLIMIT_CPU and RLIMIT_FSIZE, all too large to be reached. Reaching either sends a
+    // signal that ends the reference's caller but not ours, the container's first process, which Linux
+    // keeps from signals it has no handler for; and a CPU limit is reached at a moment that depends on
+    // the machine's speed.
     let infinity = linux::RLIM_INFINITY as u64;
-    let cpu_limits: [(u64, u64); 4] = [
-        (3600, infinity),
-        (3600, 7200),
-        (7200, 3600),
+    let unreached_limits: [(u64, u64); 4] = [
+        (1 << 40, infinity),
+        (1 << 40, 1 << 41),
+        (1 << 41, 1 << 40),
         (infinity, infinity),
     ];
-    for (index, (current, maximum)) in cpu_limits.iter().enumerate() {
-        let at = (CPU_LIMITS + index as u64 * 16) as usize;
+    for (index, (current, maximum)) in unreached_limits.iter().enumerate() {
+        let at = (UNREACHED_LIMITS + index as u64 * 16) as usize;
         arena[at..at + 8].copy_from_slice(&current.to_le_bytes());
         arena[at + 8..at + 16].copy_from_slice(&maximum.to_le_bytes());
     }
@@ -416,10 +418,10 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         ))
     };
     let value = |word: u64| ARENA + VALUES + (word % 52) * 8;
-    // A new limit for a resource: CPU limits only from the ones never reached.
+    // A new limit for a resource: CPU and file size limits only from the ones never reached.
     let new_limit = |resource: u64, word: u64| {
-        if resource == u64::from(linux::RLIMIT_CPU) {
-            ARENA + CPU_LIMITS + (word % 4) * 16
+        if resource == u64::from(linux::RLIMIT_CPU) || resource == u64::from(linux::RLIMIT_FSIZE) {
+            ARENA + UNREACHED_LIMITS + (word % 4) * 16
         } else {
             value(word)
         }

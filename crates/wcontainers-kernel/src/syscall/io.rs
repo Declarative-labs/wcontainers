@@ -149,6 +149,54 @@ fn positioned(file: &FileRef, _offset: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Linux's `generic_write_check_limits` for a write of `count` bytes to a regular file at `offset`:
+/// starting at or past the file size limit is `SIGXFSZ` and `EFBIG`, and a write reaching it is
+/// shortened. Nothing is checked for a write of nothing.
+pub(super) fn write_limit(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    offset: u64,
+    count: u64,
+) -> Result<u64, Errno> {
+    if count == 0 {
+        return Ok(0);
+    }
+    let limit = kernel.process_of(tid).limits[RLIMIT_FSIZE as usize].current;
+    if offset >= limit {
+        // A signal that cannot be acted on is counted where it is sent; the write fails either way.
+        let _ = kernel.send_to_self(cx, tid, SIGXFSZ);
+        return Err(Errno::EFBIG);
+    }
+    let largest = i64::MAX as u64;
+    if offset >= largest {
+        return Err(Errno::EFBIG);
+    }
+    Ok(count.min(limit - offset).min(largest - offset))
+}
+
+/// Linux's `inode_newsize_ok` for a regular file growing from `size` to `new_size`: past the file
+/// size limit is `SIGXFSZ` and `EFBIG`.
+pub(super) fn new_size_ok(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    size: u64,
+    new_size: u64,
+) -> Result<(), Errno> {
+    if new_size > size {
+        let limit = kernel.process_of(tid).limits[RLIMIT_FSIZE as usize].current;
+        if new_size > limit {
+            let _ = kernel.send_to_self(cx, tid, SIGXFSZ);
+            return Err(Errno::EFBIG);
+        }
+        if new_size > i64::MAX as u64 {
+            return Err(Errno::EFBIG);
+        }
+    }
+    Ok(())
+}
+
 /// Linux's `rw_verify_area`: the range must end within the largest file offset.
 fn verify_area(offset: u64, count: u64) -> Result<(), Errno> {
     if (count as i64) < 0
@@ -258,8 +306,23 @@ fn vectored(
     mut offset: Option<u64>,
     writing: bool,
 ) -> Result<u64, Errno> {
+    // The file size limit applies to the whole write at once.
+    let mut parts = parts.to_vec();
+    if writing && matches!(file.borrow().node.borrow().content, Content::Regular(_)) {
+        let start = if file.borrow().flags & O_APPEND != 0 {
+            file.borrow().node.borrow().size()
+        } else {
+            offset.unwrap_or(file.borrow().offset)
+        };
+        let total = parts.iter().map(|(_, length)| length).sum();
+        let mut allowed = write_limit(kernel, cx, tid, start, total)?;
+        for (_, length) in &mut parts {
+            *length = (*length).min(allowed);
+            allowed -= *length;
+        }
+    }
     let mut done = 0;
-    for &(base, length) in parts {
+    for &(base, length) in &parts {
         if length == 0 {
             continue;
         }
@@ -364,6 +427,12 @@ pub(super) fn write_at(
         )
     };
     let bytes = if regular {
+        let offset = if file.borrow().flags & O_APPEND != 0 {
+            node.borrow().size()
+        } else {
+            at.unwrap_or(file.borrow().offset)
+        };
+        let count = write_limit(kernel, cx, tid, offset, count)?;
         // As much of the buffer as can be read.
         let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
         if readable == 0 && count > 0 {
@@ -473,7 +542,12 @@ pub(super) fn sendfile(
         None
     };
     let offset = explicit.unwrap_or(input.borrow().offset);
-    let bytes = file_bytes(cx, &input, count.min(MAX_RW_COUNT), offset)?;
+    let mut bytes = file_bytes(cx, &input, count.min(MAX_RW_COUNT), offset)?;
+    if matches!(output.borrow().node.borrow().content, Content::Regular(_)) {
+        let at = output.borrow().offset;
+        let allowed = write_limit(kernel, cx, tid, at, bytes.len() as u64)?;
+        bytes.truncate(allowed as usize);
+    }
     let written = write_bytes(kernel, cx, tid, &output, &bytes, None)?;
     match explicit {
         Some(_) => {
@@ -856,7 +930,8 @@ pub(super) fn ioctl(
     }
 }
 
-/// `fsync`, `fdatasync` and `syncfs`: everything is in memory, so there is nothing to wait for.
+/// `fsync` and `fdatasync`: everything is in memory, so there is nothing to wait for. Files with no
+/// way to be synced refuse.
 pub(super) fn fsync(
     kernel: &mut Kernel,
     _: &mut Context<'_>,
@@ -871,6 +946,19 @@ pub(super) fn fsync(
         Content::HostStream(_) | Content::Special => Err(Errno::EINVAL),
         _ => Ok(0),
     }
+}
+
+/// `syncfs`: any open file names a file system, and there is nothing to wait for.
+pub(super) fn syncfs(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [fd, ..]: Args,
+) -> Result<u64, Errno> {
+    if file(kernel, tid, fd)?.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    Ok(0)
 }
 
 pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Result<u64, Errno> {

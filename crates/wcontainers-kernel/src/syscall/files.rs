@@ -1564,13 +1564,21 @@ fn truncate_node(
     }
     let may_keep_privileges = credentials(kernel, tid).has(CAP_FSETID);
     let now = kernel.now(cx);
+    {
+        let inode = node.borrow();
+        if !matches!(inode.content, Content::Regular(_)) {
+            return Err(if inode.is_directory() {
+                Errno::EISDIR
+            } else {
+                Errno::EINVAL
+            });
+        }
+    }
+    let size = node.borrow().size();
+    super::io::new_size_ok(kernel, cx, tid, size, length)?;
     let mut inode = node.borrow_mut();
     let Content::Regular(regular) = &mut inode.content else {
-        return Err(if inode.is_directory() {
-            Errno::EISDIR
-        } else {
-            Errno::EINVAL
-        });
+        return Err(Errno::EINVAL);
     };
     regular.truncate(length as usize);
     inode.mtime = now;
@@ -1676,6 +1684,10 @@ pub(super) fn fallocate(
     // Only keeping the size and punching holes exist in tmpfs.
     if mode & !(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE) != 0 {
         return Err(Errno::EOPNOTSUPP);
+    }
+    if mode & FALLOC_FL_KEEP_SIZE == 0 {
+        let size = node.borrow().size();
+        super::io::new_size_ok(kernel, cx, tid, size, end)?;
     }
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
