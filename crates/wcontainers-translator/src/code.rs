@@ -157,7 +157,12 @@ pub(crate) const F_CODE_CHANGED: u32 = 8;
 pub(crate) const F_DISPATCH: u32 = 9;
 pub(crate) const F_UNWIND: u32 = 10;
 pub(crate) const F_EXACT: u32 = 11;
-pub(crate) const F_FIRST_PIECE: u32 = 12;
+pub(crate) const F_SAVE: u32 = 12;
+pub(crate) const F_PERMISSION: u32 = 13;
+/// The functions that work out the flags word on the way to the runner, in the order of
+/// [`crate::full::flags_word_functions`].
+pub(crate) const F_FLAGS_WORD: u32 = 14;
+pub(crate) const F_FIRST_PIECE: u32 = F_FLAGS_WORD + crate::full::FLAGS_WORDS;
 
 /// The function a meaning's hook calls.
 pub(crate) fn hook_function(hook: Hook) -> u32 {
@@ -206,6 +211,7 @@ pub(crate) const MEMORY_STATE: u32 = 1;
 
 /// Where the dispatcher and the pieces of look-ahead none find the thread block.
 const BLOCK: Fixed = Fixed::Global(G_THREAD_BLOCK);
+const BLOCK_LOAD_ADDRESS: Fixed = Fixed::Global(G_LOAD_ADDRESS);
 
 // Parameter locals of every piece.
 pub(crate) const L_SP: u32 = ARGUMENTS;
@@ -226,13 +232,14 @@ pub(crate) fn frame_bytes(locals: &[ValType]) -> i64 {
 
 /// Leave to the bottom loop when the depth in i64 local `depth` is past the budget, with `pc` at the
 /// entry. Only the passed registers may be in locals.
-pub(crate) fn depth_check(s: &mut InstructionSink<'_>, depth: u32, block: Fixed, entry: u64) {
+pub(crate) fn depth_check(s: &mut InstructionSink<'_>, depth: u32, entry: u64) {
     s.local_get(depth)
         .i64_const(STACK_BUDGET)
         .i64_gt_u()
         .if_(BlockType::Empty);
-    save_passed(s, block);
-    set_pc(s, block, |s| address(s, entry));
+    save(s, |s| {
+        s.i64_const(entry as i64);
+    });
     s.i32_const(UNWIND_DEEP).call(F_UNWIND).unreachable().end();
 }
 
@@ -405,6 +412,14 @@ fn module(
     code_section.function(&unwinder());
     functions.function(6);
     code_section.function(&exact());
+    functions.function(11);
+    code_section.function(&saver());
+    functions.function(12);
+    code_section.function(&permission_checker());
+    for (i, (_, function)) in crate::full::flags_word_functions().iter().enumerate() {
+        functions.function(13 + i as u32);
+        code_section.function(function);
+    }
     let others: Vec<wasm_encoder::Function> = units
         .into_iter()
         .map(|unit| {
@@ -593,64 +608,93 @@ pub(crate) fn permission_fast(
 
 /// Open an `if` entered when `len` bytes (at most a page) at the address in i64 local `at` may not all be
 /// accessed as `this` says, with the first address that may not be accessed in i64 local `fault_at`. The
-/// caller writes the slow path and ends the `if`.
+/// caller writes the slow path and ends the `if`. It runs only when the fast test fails, so through the
+/// module's function for it.
 pub(crate) fn permission_exact(
     s: &mut InstructionSink<'_>,
-    table: Table,
     at: u32,
     len: u32,
     this: u8,
-    locals: (u32, u32, u32),
+    fault_at: u32,
 ) {
     // The table's bits reach only to the next page.
     assert!(u64::from(len) <= wcontainers_abi::PAGE_SIZE && len > 0);
-    let (page, allowed, fault_at) = locals;
-    let next = this << 2;
-    permission_byte(s, table, at, page);
-    // Bits wanted and missing: this page's, and the next page's if the access runs onto it.
-    s.local_tee(allowed)
+    s.local_get(at)
+        .i32_const(len as i32)
+        .i32_const(this.into())
+        .call(F_PERMISSION)
+        .local_set(fault_at)
+        .if_(BlockType::Empty);
+}
+
+/// The function [`permission_exact`] calls. Parameters: the address, the length and the permission bits;
+/// results: whether the access may not be made (not zero), then the first address that may not be accessed.
+fn permission_checker() -> wasm_encoder::Function {
+    const AT: u32 = 0;
+    const LEN: u32 = 1;
+    const THIS: u32 = 2;
+    const PAGE: u32 = 3;
+    const ALLOWED: u32 = 4;
+    let mut f = wasm_encoder::Function::new([(1, ValType::I64), (1, ValType::I32)]);
+    let mut s = f.instructions();
+    permission_byte(&mut s, Table::GLOBALS, AT, PAGE);
+    // Bits wanted and missing: this page's, and the next page's (two above) if the access runs onto it.
+    debug_assert_eq!(PAGE_READ << 2, NEXT_PAGE_READ);
+    s.local_tee(ALLOWED)
         .i32_const(-1)
         .i32_xor()
-        .i32_const((this | next).into())
-        .i32_const(this.into())
-        .local_get(at)
+        .local_get(THIS)
+        .local_get(THIS)
+        .i32_const(2)
+        .i32_shl()
+        .i32_or()
+        .local_get(THIS)
+        .local_get(AT)
         .i64_const(0xfff)
         .i64_and()
-        .i64_const(len.into())
+        .local_get(LEN)
+        .i64_extend_i32_u()
         .i64_add()
         .i64_const(0x1000)
         .i64_gt_u()
         .select()
-        .i32_and()
-        .if_(BlockType::Empty);
+        .i32_and();
     // The address itself if this page forbids it, otherwise the start of the next page.
-    s.local_get(at)
-        .local_get(at)
+    s.local_get(AT)
+        .local_get(AT)
         .i64_const(0xfff)
         .i64_or()
         .i64_const(1)
         .i64_add()
-        .local_get(allowed)
-        .i32_const(this.into())
+        .local_get(ALLOWED)
+        .local_get(THIS)
         .i32_and()
-        .i32_const(this.into())
+        .local_get(THIS)
         .i32_ne()
         .select()
-        .local_set(fault_at);
+        .end();
+    f
 }
 
-/// Keep the run of pages, from the allowed page in i64 local `page` and at most 8 long, that allow an access
-/// as `this` says: i64 locals `low` (its first address) and `room` (how far past `low` an access of at most
-/// `longest` bytes may start and still end within the run).
+/// Keep the run of pages, from the allowed page of the address in i64 local `at` and at most 8 long, that
+/// allow an access as `this` says: i64 locals `low` (its first address) and `room` (how far past `low` an
+/// access of at most `longest` bytes may start and still end within the run). i64 local `page` is a
+/// temporary.
 pub(crate) fn keep_pages(
     s: &mut InstructionSink<'_>,
     table: Table,
-    page: u32,
+    (at, page): (u32, u32),
     this: u8,
     longest: u32,
     (low, room): (u32, u32),
 ) {
-    s.local_get(page).i64_const(12).i64_shl().local_set(low);
+    s.local_get(at)
+        .i64_const(12)
+        .i64_shr_u()
+        .local_tee(page)
+        .i64_const(12)
+        .i64_shl()
+        .local_set(low);
     // The table bytes of the page and the seven after it, when they are all in the table.
     s.local_get(page).i64_const(8).i64_add();
     table.pages.push(s);
@@ -700,6 +744,15 @@ pub(crate) fn types() -> TypeSection {
     ); // 8: float
     types.ty().function([], [ValType::I64]); // 9: clock
     types.ty().function([ValType::I64], []); // 10: code_changed
+    types.ty().function([ValType::I64; PASSED as usize + 1], []); // 11: save
+    types.ty().function(
+        [ValType::I64, ValType::I32, ValType::I32],
+        [ValType::I32, ValType::I64],
+    ); // 12: permission
+    // 13 on: the flags word functions.
+    for (params, _) in crate::full::flags_word_functions() {
+        types.ty().function(params, [ValType::I32]);
+    }
     types
 }
 
@@ -800,6 +853,29 @@ pub(crate) fn save_passed(s: &mut InstructionSink<'_>, block: Fixed) {
     for (i, slot) in passed_slots().enumerate() {
         slot.store_from(s, block, i as u32);
     }
+}
+
+/// Store the passed registers, and `pc` at the blob offset `offset` pushes, in the thread block, through the
+/// module's function for it: every way to the runner does this.
+pub(crate) fn save(s: &mut InstructionSink<'_>, offset: impl FnOnce(&mut InstructionSink<'_>)) {
+    for i in 0..PASSED {
+        s.local_get(i);
+    }
+    offset(s);
+    s.call(F_SAVE);
+}
+
+/// The function [`save`] calls. Parameters: the passed registers, then pc as a blob offset.
+fn saver() -> wasm_encoder::Function {
+    let mut f = wasm_encoder::Function::new([]);
+    let mut s = f.instructions();
+    save_passed(&mut s, BLOCK);
+    set_pc(&mut s, BLOCK, |s| {
+        BLOCK_LOAD_ADDRESS.push(s);
+        s.local_get(PASSED).i64_add();
+    });
+    s.end();
+    f
 }
 
 /// Set `pc` in the thread block to the guest address `push` pushes.
@@ -951,7 +1027,7 @@ impl NoneEmitter<'_> {
     /// The checks every piece starts with: each one passes control on.
     fn entry(&mut self) {
         let offset = self.offset;
-        depth_check(&mut self.sink(), L_DEPTH, BLOCK, offset);
+        depth_check(&mut self.sink(), L_DEPTH, offset);
         self.stop_check(0);
     }
 
@@ -966,8 +1042,9 @@ impl NoneEmitter<'_> {
             2,
         ))
         .if_(BlockType::Empty);
-        save_passed(&mut s, BLOCK);
-        set_pc(&mut s, BLOCK, |s| address(s, pc));
+        save(&mut s, |s| {
+            s.i64_const(pc as i64);
+        });
         s.call(F_STOP)
             .if_(BlockType::Empty)
             .i32_const(UNWIND_LEAVE)
@@ -980,9 +1057,9 @@ impl NoneEmitter<'_> {
     /// Save registers with `pc` at this instruction plus `step`.
     fn save(&mut self, step: u64) {
         let pc = self.offset + step;
-        let mut s = self.sink();
-        save_passed(&mut s, BLOCK);
-        set_pc(&mut s, BLOCK, |s| address(s, pc));
+        save(&mut self.sink(), |s| {
+            s.i64_const(pc as i64);
+        });
     }
 
     /// Push the passed registers, then the return address the caller expects and the depth.
@@ -1155,20 +1232,17 @@ impl Emitter for NoneEmitter<'_> {
             Access::Read => PAGE_READ,
             Access::Write => PAGE_WRITE,
         };
-        let locals = (
-            self.local(ValType::I64),
-            self.local(ValType::I32),
-            self.local(ValType::I64),
-        );
+        let (page, fault_at) = (self.local(ValType::I64), self.local(ValType::I64));
         let pc = self.offset;
         let mut s = self.sink();
         wcontainers_arm64::untag(&mut s, address);
         s.local_set(address);
-        permission_fast(&mut s, Table::GLOBALS, address, this, locals.0);
-        permission_exact(&mut s, Table::GLOBALS, address, bytes, this, locals);
-        save_passed(&mut s, BLOCK);
-        set_pc(&mut s, BLOCK, |s| self::address(s, pc));
-        s.local_get(locals.2)
+        permission_fast(&mut s, Table::GLOBALS, address, this, page);
+        permission_exact(&mut s, address, bytes, this, fault_at);
+        save(&mut s, |s| {
+            s.i64_const(pc as i64);
+        });
+        s.local_get(fault_at)
             .i32_const(i32::from(access == Access::Write))
             .call(F_MEMORY_FAULT)
             .i32_const(UNWIND_LEAVE)

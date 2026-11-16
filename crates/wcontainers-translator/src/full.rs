@@ -206,6 +206,177 @@ enum Reach<'a> {
     Within(&'a HashSet<u64>),
 }
 
+/// The flags of a kept shape with every local filled in: for an addition, `b` (when only the value subtracted
+/// was kept) and the result are worked out into `temporaries`, locals of the width's type.
+fn completed(s: &mut InstructionSink<'_>, flags: Flags, temporaries: (u32, u32)) -> Flags {
+    let Flags::Add {
+        width,
+        a,
+        b,
+        carry,
+        subtrahend,
+        ..
+    } = flags
+    else {
+        return flags;
+    };
+    let (inverted, result) = temporaries;
+    let b = match subtrahend {
+        Some(m) => {
+            s.local_get(m);
+            match width {
+                Width::W32 => s.i32_const(-1).i32_xor(),
+                Width::X64 => s.i64_const(-1).i64_xor(),
+            };
+            s.local_set(inverted);
+            inverted
+        }
+        None => b,
+    };
+    s.local_get(a).local_get(b);
+    let add = |s: &mut InstructionSink<'_>| match width {
+        Width::W32 => {
+            s.i32_add();
+        }
+        Width::X64 => {
+            s.i64_add();
+        }
+    };
+    add(s);
+    match carry {
+        Carry::Zero => {}
+        Carry::One => {
+            match width {
+                Width::W32 => s.i32_const(1),
+                Width::X64 => s.i64_const(1),
+            };
+            add(s);
+        }
+        Carry::Local(c) => {
+            s.local_get(c);
+            if width == Width::X64 {
+                s.i64_extend_i32_u();
+            }
+            add(s);
+        }
+    }
+    s.local_set(result);
+    Flags::Add {
+        width,
+        a,
+        b,
+        carry,
+        result,
+        subtrahend,
+    }
+}
+
+/// Push the flags word of the thread block from the four flags, each pushed by `flag` as 0 or 1.
+fn push_word(s: &mut InstructionSink<'_>, mut flag: impl FnMut(&mut InstructionSink<'_>, Flag)) {
+    for (i, f) in Flag::ALL.into_iter().enumerate() {
+        flag(s, f);
+        s.i32_const(f.bit() as i32).i32_shl();
+        if i > 0 {
+            s.i32_or();
+        }
+    }
+}
+
+/// Every shape a kept flag setting may have: a subtraction only ever has a carry of one.
+fn shapes() -> impl Iterator<Item = Shape> {
+    [Width::W32, Width::X64].into_iter().flat_map(|width| {
+        let adds = (0..3).map(move |carry| Shape::Add {
+            width,
+            carry,
+            subtract: false,
+        });
+        adds.chain([
+            Shape::Add {
+                width,
+                carry: 1,
+                subtract: true,
+            },
+            Shape::Logic(width),
+        ])
+    })
+}
+
+/// How many functions work out the flags word: one for flags in locals, one for each shape.
+pub(crate) const FLAGS_WORDS: u32 = 11;
+
+/// The function after [`F_FLAGS_WORD`] that works out the flags word for a shape.
+fn flags_word_function(shape: Shape) -> u32 {
+    let i = shapes()
+        .position(|s| s == shape)
+        .expect("every shape has one");
+    F_FLAGS_WORD + 1 + i as u32
+}
+
+/// The functions that work out the flags word for a write back on the way to the runner, with their
+/// parameters, all locals of the piece: first from the four flags (N, Z, C, V), then for each shape in the
+/// order of [`shapes`] from its kept locals (`a`, then `b` or the value subtracted, then the carry when it is
+/// a local; for logic, the result). Out of line, as such a write back is rare and the same everywhere.
+pub(crate) fn flags_word_functions() -> Vec<(Vec<ValType>, wasm_encoder::Function)> {
+    let mut functions = Vec::new();
+    let mut f = wasm_encoder::Function::new([]);
+    let mut s = f.instructions();
+    push_word(&mut s, |s, flag| {
+        let i = Flag::ALL.iter().position(|f| *f == flag).expect("a flag");
+        s.local_get(i as u32);
+    });
+    s.end();
+    functions.push((vec![ValType::I32; 4], f));
+    for shape in shapes() {
+        let (params, flags) = match shape {
+            Shape::Add {
+                width,
+                carry,
+                subtract,
+            } => {
+                let ty = match width {
+                    Width::W32 => ValType::I32,
+                    Width::X64 => ValType::I64,
+                };
+                let mut params = vec![ty, ty];
+                let carry = match carry {
+                    0 => Carry::Zero,
+                    1 => Carry::One,
+                    _ => {
+                        params.push(ValType::I32);
+                        Carry::Local(2)
+                    }
+                };
+                let flags = Flags::Add {
+                    width,
+                    a: 0,
+                    b: if subtract { u32::MAX } else { 1 },
+                    carry,
+                    result: u32::MAX,
+                    subtrahend: subtract.then_some(1),
+                };
+                (params, flags)
+            }
+            Shape::Logic(width) => {
+                let ty = match width {
+                    Width::W32 => ValType::I32,
+                    Width::X64 => ValType::I64,
+                };
+                (vec![ty], Flags::Logic { width, result: 0 })
+            }
+        };
+        let n = params.len() as u32;
+        let ty = params[0];
+        let mut f = wasm_encoder::Function::new([(2, ty)]);
+        let mut s = f.instructions();
+        let flags = completed(&mut s, flags, (n, n + 1));
+        push_word(&mut s, |s, flag| flag_value(s, flags, flag));
+        s.end();
+        functions.push((params, f));
+    }
+    assert_eq!(functions.len() as u32, FLAGS_WORDS);
+    functions
+}
+
 /// Whether control can leave an instruction other than by going on to the next one or by a call that returns.
 fn ends_block(instruction: &Instruction) -> bool {
     let flow = instruction.flow();
@@ -1531,8 +1702,7 @@ impl<'a> FullEmitter<'a> {
             .local_set(e.depth);
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
-            let block = Fixed::Global(G_THREAD_BLOCK);
-            depth_check(&mut s, L_DEPTH, block, function.entry);
+            depth_check(&mut s, L_DEPTH, function.entry);
         }
         let locals = e.locals.len();
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
@@ -1585,73 +1755,16 @@ impl<'a> FullEmitter<'a> {
     /// The flags of a kept shape with every local filled in: what was not kept is worked out into
     /// temporaries (an engine drops what is not used).
     fn shape_flags(&mut self, id: usize) -> Flags {
-        let Flags::Add {
-            width,
-            a,
-            b,
-            carry,
-            subtrahend,
-            ..
-        } = self.canonical[id]
-        else {
-            return self.canonical[id];
+        let flags = self.canonical[id];
+        let Flags::Add { width, .. } = flags else {
+            return flags;
         };
         let ty = match width {
             Width::W32 => ValType::I32,
             Width::X64 => ValType::I64,
         };
-        let b = match subtrahend {
-            Some(m) => {
-                let inverted = self.temporary(ty);
-                let mut s = self.sink();
-                s.local_get(m);
-                match width {
-                    Width::W32 => s.i32_const(-1).i32_xor(),
-                    Width::X64 => s.i64_const(-1).i64_xor(),
-                };
-                s.local_set(inverted);
-                inverted
-            }
-            None => b,
-        };
-        let result = self.temporary(ty);
-        let mut s = self.sink();
-        s.local_get(a).local_get(b);
-        let add = |s: &mut InstructionSink<'_>| match width {
-            Width::W32 => {
-                s.i32_add();
-            }
-            Width::X64 => {
-                s.i64_add();
-            }
-        };
-        add(&mut s);
-        match carry {
-            Carry::Zero => {}
-            Carry::One => {
-                match width {
-                    Width::W32 => s.i32_const(1),
-                    Width::X64 => s.i64_const(1),
-                };
-                add(&mut s);
-            }
-            Carry::Local(c) => {
-                s.local_get(c);
-                if width == Width::X64 {
-                    s.i64_extend_i32_u();
-                }
-                add(&mut s);
-            }
-        }
-        s.local_set(result);
-        Flags::Add {
-            width,
-            a,
-            b,
-            carry,
-            result,
-            subtrahend,
-        }
+        let temporaries = (self.temporary(ty), self.temporary(ty));
+        completed(&mut self.sink(), flags, temporaries)
     }
 
     /// The local of a register bit: a parameter for the passed ones.
@@ -1739,7 +1852,7 @@ impl<'a> FullEmitter<'a> {
                                 aligned: self.plan.aligned_in[b],
                                 float_mode: false,
                             };
-                            self.write_back(false);
+                            self.write_back();
                             self.arguments();
                             self.sink().return_call(f);
                         }
@@ -1894,7 +2007,7 @@ impl<'a> FullEmitter<'a> {
             self.branch(b);
             return;
         }
-        self.write_back(false);
+        self.write_back();
         self.arguments();
         match self.index.get(&target).or(self.loops.get(&target)) {
             Some(&f) => {
@@ -1917,24 +2030,10 @@ impl<'a> FullEmitter<'a> {
         s.local_get(L_RETURN).local_get(L_DEPTH);
     }
 
-    fn push_pc(&mut self, pc: Pc) {
-        match pc {
-            Pc::Offset(offset) => self.address(offset),
-            Pc::Local(local) => {
-                self.sink().local_get(local);
-            }
-        }
-    }
-
-    /// Copy every register whose place in the thread block may be stale there, the flags too, and the
-    /// passed registers when asked.
-    fn write_back(&mut self, passed: bool) {
+    /// Copy every register whose place in the thread block may be stale there, and the flags too.
+    fn write_back(&mut self) {
         self.write_back_registers();
-        self.write_back_flags();
-        if passed {
-            let block = self.fixed(G_THREAD_BLOCK);
-            save_passed(&mut self.sink(), block);
-        }
+        self.write_back_flags(false);
     }
 
     /// Copy every tracked register that may be stale in the thread block there.
@@ -1947,8 +2046,8 @@ impl<'a> FullEmitter<'a> {
     }
 
     /// Put the flags in the thread block, unless they are there. The word is worked out once for each state
-    /// the flags may be in.
-    fn write_back_flags(&mut self) {
+    /// the flags may be in; on the way to the runner (`out_of_line`) by the module's functions for it.
+    fn write_back_flags(&mut self, out_of_line: bool) {
         let states = self.at.flags;
         if states == 1 << FLAGS_IN_BLOCK {
             return;
@@ -1965,7 +2064,7 @@ impl<'a> FullEmitter<'a> {
                     .i32_eq()
                     .if_(BlockType::Result(ValType::I32));
             }
-            self.push_flags_word(id);
+            self.push_flags_word(id, out_of_line);
             if k + 1 < ids.len() {
                 self.sink().else_();
             }
@@ -1976,28 +2075,58 @@ impl<'a> FullEmitter<'a> {
         Slot::Flags.store(&mut self.sink());
     }
 
-    /// Push the flags word of the thread block, with the flags in one state.
-    fn push_flags_word(&mut self, state: u32) {
-        let shape = match state {
+    /// Push the flags word of the thread block, with the flags in one state, `out_of_line` by the module's
+    /// functions for it.
+    fn push_flags_word(&mut self, state: u32, out_of_line: bool) {
+        match state {
             FLAGS_IN_BLOCK => {
                 let block = self.fixed(G_THREAD_BLOCK);
                 let mut s = self.sink();
                 block.push(&mut s);
                 Slot::Flags.load(&mut s);
-                return;
             }
-            FLAGS_IN_LOCALS => None,
-            shape => Some(self.shape_flags(shape as usize - 2)),
-        };
-        for (i, flag) in Flag::ALL.into_iter().enumerate() {
-            match shape {
-                Some(flags) => flag_value(&mut self.sink(), flags, flag),
-                None => self.push_flag_from(state, flag),
+            FLAGS_IN_LOCALS if out_of_line => {
+                let locals = self.flag_locals;
+                let mut s = self.sink();
+                for local in locals {
+                    s.local_get(local);
+                }
+                s.call(F_FLAGS_WORD);
             }
-            let mut s = self.sink();
-            s.i32_const(flag.bit() as i32).i32_shl();
-            if i > 0 {
-                s.i32_or();
+            FLAGS_IN_LOCALS => {
+                let locals = self.flag_locals;
+                push_word(&mut self.sink(), |s, flag| {
+                    let i = Flag::ALL.iter().position(|f| *f == flag).expect("a flag");
+                    s.local_get(locals[i]);
+                });
+            }
+            id if out_of_line => {
+                let id = id as usize - 2;
+                let function = flags_word_function(self.plan.shapes[id]);
+                let Flags::Add {
+                    a,
+                    b,
+                    carry,
+                    subtrahend,
+                    ..
+                } = self.canonical[id]
+                else {
+                    let Flags::Logic { result, .. } = self.canonical[id] else {
+                        unreachable!("a shape's flags are an addition or logic")
+                    };
+                    self.sink().local_get(result).call(function);
+                    return;
+                };
+                let mut s = self.sink();
+                s.local_get(a).local_get(subtrahend.unwrap_or(b));
+                if let Carry::Local(c) = carry {
+                    s.local_get(c);
+                }
+                s.call(function);
+            }
+            id => {
+                let flags = self.shape_flags(id as usize - 2);
+                push_word(&mut self.sink(), |s, flag| flag_value(s, flags, flag));
             }
         }
     }
@@ -2039,13 +2168,21 @@ impl<'a> FullEmitter<'a> {
         true
     }
 
-    /// Write back everything, with `pc` set.
+    /// Write back everything, with `pc` set, on the way to the runner.
     fn save(&mut self, pc: Pc) {
-        self.write_back(true);
-        let block = self.fixed(G_THREAD_BLOCK);
-        block.push(&mut self.sink());
-        self.push_pc(pc);
-        Slot::Pc.store(&mut self.sink());
+        self.write_back_registers();
+        self.write_back_flags(true);
+        let load = self.fixed(G_LOAD_ADDRESS);
+        save(&mut self.sink(), |s| match pc {
+            Pc::Offset(offset) => {
+                s.i64_const(offset as i64);
+            }
+            Pc::Local(local) => {
+                s.local_get(local);
+                load.push(s);
+                s.i64_sub();
+            }
+        });
     }
 
     /// Call the stop hook if the flag is raised, then carry on as `after` says: when the hook says carry on,
@@ -2074,12 +2211,12 @@ impl<'a> FullEmitter<'a> {
                 .i64_gt_u()
                 .i32_or()
                 .if_(BlockType::Empty);
-            depth_check(&mut s, L_DEPTH, block, entry);
+            depth_check(&mut s, L_DEPTH, entry);
         } else {
             s.if_(BlockType::Empty);
         }
         if let AfterStop::Hand(f) = after {
-            self.write_back(false);
+            self.write_back();
             self.arguments();
             self.sink().return_call(f).end();
             return;
@@ -2136,11 +2273,7 @@ impl<'a> FullEmitter<'a> {
     /// instruction runs from code that checks each access.
     fn frame_check(&mut self, from: i64, len: u32) {
         let at = self.temporary(ValType::I64);
-        let locals = (
-            self.temporary(ValType::I64),
-            self.temporary(ValType::I32),
-            self.temporary(ValType::I64),
-        );
+        let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let table = self.table();
         for chunk in (0..len).step_by(4096) {
             let piece = (len - chunk).min(4096);
@@ -2150,8 +2283,8 @@ impl<'a> FullEmitter<'a> {
                 .i64_add()
                 .local_set(at);
             let mut s = self.sink();
-            permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, locals.0);
-            permission_exact(&mut s, table, at, piece, PAGE_READ | PAGE_WRITE, locals);
+            permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, page);
+            permission_exact(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at);
             let offset = self.at.offset;
             self.leave_to(offset);
             self.sink().end().end();
@@ -2321,7 +2454,7 @@ impl<'a> FullEmitter<'a> {
 
     /// Leave the piece through the lookup, counted.
     fn unrecognised_jump(&mut self, target: u32) {
-        self.write_back(false);
+        self.write_back();
         self.sink()
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
             .local_get(target)
@@ -2526,7 +2659,7 @@ impl Emitter for FullEmitter<'_> {
             self.at.float_mode = true;
         }
         self.sink().local_get(local).if_(BlockType::Empty);
-        self.write_back(false);
+        self.write_back();
         self.arguments();
         self.this_address();
         self.sink().return_call(F_EXACT).end();
@@ -2575,11 +2708,7 @@ impl Emitter for FullEmitter<'_> {
         {
             return;
         }
-        let locals = (
-            self.temporary(ValType::I64),
-            self.temporary(ValType::I32),
-            self.temporary(ValType::I64),
-        );
+        let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let offset = self.at.offset;
         // A kept run's check is rare, so it reads the table's place from the module's globals rather than
         // keeping it alive through the loop.
@@ -2611,13 +2740,13 @@ impl Emitter for FullEmitter<'_> {
                 }
                 // An address the table allows has a clear top byte, so only one it does not is untagged and
                 // tried again.
-                permission_fast(&mut s, table, address, this, locals.0);
+                permission_fast(&mut s, table, address, this, page);
                 untag(&mut s, address);
                 s.local_set(address);
-                permission_exact(&mut s, table, address, bytes, this, locals);
+                permission_exact(&mut s, address, bytes, this, fault_at);
                 self.save(Pc::Offset(offset));
                 let mut s = self.sink();
-                s.local_get(locals.2)
+                s.local_get(fault_at)
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
                     .i32_const(UNWIND_LEAVE)
@@ -2627,7 +2756,7 @@ impl Emitter for FullEmitter<'_> {
                     .end();
                 if let Some(((low, room), longest)) = kept {
                     // The access is allowed, so the page it starts on allows this kind.
-                    keep_pages(&mut s, table, locals.0, this, longest, (low, room));
+                    keep_pages(&mut s, table, (address, page), this, longest, (low, room));
                     s.end();
                 }
             }
@@ -2639,8 +2768,8 @@ impl Emitter for FullEmitter<'_> {
                     .i64_add()
                     .local_set(start);
                 let mut s = self.sink();
-                permission_fast(&mut s, table, start, this, locals.0);
-                permission_exact(&mut s, table, start, len, this, locals);
+                permission_fast(&mut s, table, start, this, page);
+                permission_exact(&mut s, start, len, this, fault_at);
                 self.leave_to(offset);
                 self.sink().end().end();
             }
@@ -2677,7 +2806,7 @@ impl Emitter for FullEmitter<'_> {
         // The callee may change FPCR or FPSR.
         self.at.float_mode = false;
         let offset = self.at.offset;
-        self.write_back(false);
+        self.write_back();
         let looked_up = match target {
             Target::Address(local) => Some(self.look_up(local)),
             Target::Relative(_) => None,
@@ -2755,7 +2884,7 @@ impl Emitter for FullEmitter<'_> {
                     .i64_and()
                     .i32_wrap_i64()
                     .if_(BlockType::Empty);
-                e.write_back_flags();
+                e.write_back_flags(false);
                 e.at.flags = flags;
                 e.sink().end();
             }
@@ -2783,7 +2912,7 @@ impl Emitter for FullEmitter<'_> {
         }
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
-        self.write_back_flags();
+        self.write_back_flags(false);
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         set_pc(&mut s, block, |s| {
