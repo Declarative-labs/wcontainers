@@ -565,6 +565,7 @@ fn place(
         }
         None => (main.entry, 0),
     };
+    crate::shared::show_all(kernel, cx, memory, &map).map_err(fatal)?;
     let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 
     let credentials = &after.credentials;
@@ -749,7 +750,22 @@ fn place_elf(
             if to > file_size {
                 return Err(Errno::ENOEXEC);
             }
-            let available = (page_up(to).min(file_size) - from) as usize;
+            let available = page_up(to).min(file_size) - from;
+            // Linux clears the rest of the last file page only when zeroed data follows and the segment
+            // is writable (`padzero`), which makes that page the process's own copy.
+            let mut copied = alloc::collections::BTreeSet::new();
+            let last_page = page_down(file_end);
+            if segment_memory > segment_file
+                && permissions.contains(Permissions::WRITE)
+                && file_end != file_pages_end
+            {
+                let page_offset = from + (last_page - start);
+                copied.insert(page_offset / PAGE_SIZE);
+                cx.cpu
+                    .write(memory, last_page, &bytes[page_offset as usize..to as usize])
+                    .map_err(errno::from_cpu)?;
+            }
+            // The file's pages are shown once every segment is placed.
             map.insert(
                 cx.cpu,
                 memory,
@@ -766,24 +782,11 @@ fn place_elf(
                         node: program.node.clone(),
                         path: path.to_vec(),
                         offset: from,
-                        file_end: start + page_up(available as u64),
+                        file_end: start + page_up(available),
+                        copied,
                     },
                 },
             )?;
-            cx.cpu
-                .write(
-                    memory,
-                    start,
-                    &bytes[from as usize..from as usize + available],
-                )
-                .map_err(errno::from_cpu)?;
-            // Linux clears the rest of the last file page only when zeroed data follows and the segment
-            // is writable (`padzero`).
-            if segment_memory > segment_file && permissions.contains(Permissions::WRITE) {
-                cx.cpu
-                    .zero(memory, file_end, file_pages_end - file_end)
-                    .map_err(errno::from_cpu)?;
-            }
         }
         if stop > file_pages_end {
             map.insert(

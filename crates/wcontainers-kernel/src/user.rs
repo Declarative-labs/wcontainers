@@ -89,9 +89,17 @@ impl Guest<'_> {
         if self.accessible(address, length, Permissions::WRITE) != length {
             return Err(Errno::EFAULT);
         }
+        self.copy_on_write(address, length)?;
         self.cpu
             .write(self.memory, address, bytes)
             .map_err(errno::from_cpu)
+    }
+
+    /// Makes the private file pages of a range about to be written the process's own copies, as a
+    /// write fault would.
+    fn copy_on_write(&mut self, address: u64, length: u64) -> Result<(), Errno> {
+        self.map
+            .copy_on_write(self.cpu, self.memory, address, address + length)
     }
 
     /// Copies as much of `bytes` as can be written, a page at a time, as a partial `copy_to_user`.
@@ -100,10 +108,11 @@ impl Guest<'_> {
             return 0;
         }
         let length = self.accessible(address, bytes.len() as u64, Permissions::WRITE) as usize;
-        if self
-            .cpu
-            .write(self.memory, address, &bytes[..length])
-            .is_err()
+        if self.copy_on_write(address, length as u64).is_err()
+            || self
+                .cpu
+                .write(self.memory, address, &bytes[..length])
+                .is_err()
         {
             return 0;
         }
@@ -152,7 +161,10 @@ impl Guest<'_> {
                 length
             }
         };
-        if cleared > 0 && self.cpu.zero(self.memory, address, cleared).is_err() {
+        if cleared > 0
+            && (self.copy_on_write(address, cleared).is_err()
+                || self.cpu.zero(self.memory, address, cleared).is_err())
+        {
             return 0;
         }
         cleared
@@ -165,6 +177,7 @@ impl Guest<'_> {
         if length == 0 || from == to {
             return Ok(());
         }
+        self.copy_on_write(to, length)?;
         if from + length <= to || to + length <= from {
             let mut bytes = vec![0; length as usize];
             self.cpu

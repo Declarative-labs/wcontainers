@@ -814,6 +814,19 @@ impl Kernel {
         let pid = self.threads[&tid].process;
         let process = self.processes.get_mut(&pid).expect("process exists");
         let mapping = process.map.find(address).cloned();
+        // A first write to a private file page: it becomes the process's own copy.
+        if access == Access::Write
+            && mapping
+                .as_ref()
+                .is_some_and(|mapping| mapping.copies_on_write(address))
+            && process
+                .map
+                .copy_on_write(cx.cpu, process.memory, address, address + 1)
+                .is_ok()
+        {
+            self.return_to_user(cx, tid, Resume::FromRegisters);
+            return;
+        }
         let wanted = match access {
             Access::Read => wcontainers_abi::Permissions::READ,
             Access::Write => wcontainers_abi::Permissions::WRITE,

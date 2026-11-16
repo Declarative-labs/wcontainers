@@ -46,10 +46,6 @@ pub mod reason {
     /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
     /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
-    /// A file changed that a private mapping holds a copy of, made when the mapping was, or a file
-    /// is mapped both shared and private: Linux's private pages not yet written would show the file's
-    /// later bytes, and the copy does not. Detail: the inode number.
-    pub const PRIVATE_MAPPING_COPY: &str = "private file mapping is a copy";
     /// A memory fault's syndrome in a handler's frame: whether the page was present and at which
     /// level a table was missing are Linux's page tables' own, so a level 3 fault of a page present
     /// when it allows something is given. Detail: the syndrome.

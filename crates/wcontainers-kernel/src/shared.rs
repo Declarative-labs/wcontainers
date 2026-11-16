@@ -1,40 +1,93 @@
-//! Files mapped shared. While any mapping shares a file, the file's first pages live in a block of
-//! shared pages that every such mapping shows, and the file's reads and writes reach the same block, so
-//! all see the same bytes as in Linux's page cache.
+//! Files mapped into memory. While any mapping shows a file, the file's first pages live in a block of
+//! shared pages that every such mapping shows (a private one except where it holds its own copies),
+//! and the file's reads and writes reach the same block, so all see the same bytes as in Linux's page
+//! cache.
 
 use alloc::rc::Rc;
 use wcontainers_abi::{MemoryId, Permissions};
 
 use crate::fs::{Block, Content, Node};
-use crate::memory::{Backing, page_up};
+use crate::memory::{Backing, Mapping, page_up};
 use crate::{Context, Errno, Kernel, errno};
 
-/// Makes `length` bytes at `address` of a memory show the file's pages from `offset`, giving the file
-/// a block, or a larger one, if it needs it.
-pub(crate) fn attach(
+/// The file's block, made or grown so it holds at least the first `length` bytes; `None` for a file
+/// that is not regular.
+pub(crate) fn block_for(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     node: &Node,
-    memory: MemoryId,
-    address: u64,
-    offset: u64,
     length: u64,
-) -> Result<(), Errno> {
-    let needed = offset + length;
+) -> Result<Option<Block>, Errno> {
     let old = match &node.borrow().content {
         Content::Regular(regular) => regular.block,
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
-    if old.is_none_or(|old| old.length < needed) {
-        grow(kernel, cx, node, old, needed)?;
+    if old.is_none_or(|old| old.length < length) {
+        grow(kernel, cx, node, old, length)?;
     }
-    let block = match &node.borrow().content {
-        Content::Regular(regular) => regular.block.expect("the file has a block"),
+    Ok(match &node.borrow().content {
+        Content::Regular(regular) => regular.block,
         _ => unreachable!("the file is regular"),
+    })
+}
+
+/// Makes a file mapping show its file's block, except at a private mapping's own copies.
+pub(crate) fn show(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    memory: MemoryId,
+    mapping: &Mapping,
+) -> Result<(), Errno> {
+    let Backing::File { node, offset, .. } = &mapping.backing else {
+        return Ok(());
     };
-    cx.cpu
-        .shared_map(block.id, offset, memory, address, length)
-        .map_err(errno::from_cpu)
+    let Some(block) = block_for(kernel, cx, node, offset + (mapping.end - mapping.start))? else {
+        return Ok(());
+    };
+    map_shown(cx, block, memory, mapping, *offset)
+}
+
+/// Makes every file mapping of a memory not yet in any process show its file: every block is made
+/// big enough first, so none grows while another mapping already shows it.
+pub(crate) fn show_all(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    memory: MemoryId,
+    map: &crate::memory::AddressMap,
+) -> Result<(), Errno> {
+    for mapping in map.iter() {
+        if let Backing::File { node, offset, .. } = &mapping.backing {
+            block_for(kernel, cx, node, offset + (mapping.end - mapping.start))?;
+        }
+    }
+    for mapping in map.iter() {
+        show(kernel, cx, memory, mapping)?;
+    }
+    Ok(())
+}
+
+/// Maps the block over the parts of `mapping` that show its file.
+fn map_shown(
+    cx: &mut Context<'_>,
+    block: Block,
+    memory: MemoryId,
+    mapping: &Mapping,
+    offset: u64,
+) -> Result<(), Errno> {
+    for (from, to, own) in mapping.runs() {
+        if mapping.shared || !own {
+            cx.cpu
+                .shared_map(
+                    block.id,
+                    offset + (from - mapping.start),
+                    memory,
+                    from,
+                    to - from,
+                )
+                .map_err(errno::from_cpu)?;
+        }
+    }
+    Ok(())
 }
 
 /// Gives the file a block of `length` bytes holding what it held, and moves every mapping that showed
@@ -64,16 +117,8 @@ fn grow(
         Some(old) => {
             for process in kernel.processes.values() {
                 for mapping in process.map.iter() {
-                    if let Some(offset) = shared_offset(&mapping.backing, mapping.shared, node) {
-                        cx.cpu
-                            .shared_map(
-                                id,
-                                offset,
-                                process.memory,
-                                mapping.start,
-                                mapping.end - mapping.start,
-                            )
-                            .map_err(errno::from_cpu)?;
+                    if let Some(offset) = mapped_offset(&mapping.backing, node) {
+                        map_shown(cx, new, process.memory, mapping, offset)?;
                     }
                 }
             }
@@ -90,27 +135,27 @@ pub(crate) fn writably_mapped(kernel: &Kernel, node: &Node) -> bool {
     kernel.processes.values().any(|process| {
         process.map.iter().any(|mapping| {
             mapping.allowed.contains(Permissions::WRITE)
-                && shared_offset(&mapping.backing, mapping.shared, node).is_some()
+                && mapping.shared
+                && mapped_offset(&mapping.backing, node).is_some()
         })
     })
 }
 
-/// The file offset a mapping starts at, if it shares `node`.
-fn shared_offset(backing: &Backing, shared: bool, node: &Node) -> Option<u64> {
+/// The file offset a mapping starts at, if it maps `node`.
+fn mapped_offset(backing: &Backing, node: &Node) -> Option<u64> {
     match backing {
         Backing::File {
             node: mapped,
             offset,
             ..
-        } if shared && Rc::ptr_eq(mapped, node) => Some(*offset),
+        } if Rc::ptr_eq(mapped, node) => Some(*offset),
         _ => None,
     }
 }
 
-/// After a file's bytes or size changed: the pages of shared mappings wholly past its end fault with
-/// `SIGBUS`, and those before it are reachable again.
+/// After a file's bytes or size changed: the pages of its mappings wholly past its end fault with
+/// `SIGBUS`, those before it are reachable again, and code run from it is stale.
 pub(crate) fn changed(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<(), Errno> {
-    copies_stale(kernel, cx, node, false);
     let size = match &node.borrow().content {
         Content::Regular(regular) if regular.block.is_some() => regular.size(),
         _ => return Ok(()),
@@ -119,37 +164,23 @@ pub(crate) fn changed(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) ->
         process
             .map
             .set_file_end(cx.cpu, process.memory, node, page_up(size))?;
+        for mapping in process.map.iter() {
+            if mapping.permissions.contains(Permissions::EXECUTE)
+                && mapped_offset(&mapping.backing, node).is_some()
+            {
+                cx.cpu.code_changed(
+                    process.memory,
+                    mapping.start,
+                    mapping.end - mapping.start,
+                    &[],
+                );
+            }
+        }
     }
     Ok(())
 }
 
-/// Counts a change to a file that a private mapping copied when it was made (or, with `shared`, a
-/// mapping through which it may change unseen): Linux's private pages not yet written would show the
-/// change, and the copies do not.
-pub(crate) fn copies_stale(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node, shared: bool) {
-    let inode = node.borrow();
-    let Content::Regular(regular) = &inode.content else {
-        return;
-    };
-    if !regular.is_mapped() {
-        return;
-    }
-    let copied = kernel.processes.values().any(|process| {
-        process.map.iter().any(|mapping| {
-            mapping.shared == shared
-                && matches!(&mapping.backing, Backing::File { node: mapped, .. } if Rc::ptr_eq(mapped, node))
-        })
-    });
-    let ino = inode.ino;
-    drop(inode);
-    if copied {
-        kernel
-            .counters
-            .count(cx.host, crate::reason::PRIVATE_MAPPING_COPY, ino);
-    }
-}
-
-/// Ends the blocks of files no mapping shares any more, moving their bytes back to the files.
+/// Ends the blocks of files no mapping shows any more, moving their bytes back to the files.
 pub(crate) fn release(kernel: &mut Kernel, cx: &mut Context<'_>) {
     let processes = &kernel.processes;
     kernel.files.shared.retain(|node| {
@@ -157,7 +188,7 @@ pub(crate) fn release(kernel: &mut Kernel, cx: &mut Context<'_>) {
             process
                 .map
                 .iter()
-                .any(|mapping| shared_offset(&mapping.backing, mapping.shared, node).is_some())
+                .any(|mapping| mapped_offset(&mapping.backing, node).is_some())
         });
         if !mapped {
             let mut inode = node.borrow_mut();
