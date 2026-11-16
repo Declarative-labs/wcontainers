@@ -750,7 +750,7 @@ Missing (73, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, end of K2's fourth run; counts under Measurements)
+## Tests (last run 2026-11-16, K2's fifth run; counts under Measurements)
 
 All pass except the ignored known failures listed above. Added in K2's fourth run:
 - partialcopy: guest/partialcopy.c makes 47 kinds of call (stat family, statfs, uname, the clocks,
@@ -952,7 +952,13 @@ pipefs, devpts and secret memory, whose `s_maxbytes` stays as `alloc_super` sets
 TIOCGPTPEER with O_PATH gives a file even for a locked slave (no open is run; seed 510), shmat and
 shmdt keep an address's tag (the tagged address ABI leaves them out: ENOMEM, EINVAL; seeds 514,
 515), and the runners' links to pipes name each machine's own inode numbers, now not compared
-(seed 510).
+(seed 510). Then seeds 514 and 515 passed 20000 (335 s each, six side by side, load 30 to 85);
+511 found shmget's SHM_HUGETLB answering EPERM to a caller outside group 0 without CAP_IPC_LOCK
+(`can_do_hugetlb_shm`; fixed, not rerun). Open, not looked into yet: seed 516, madvise of a tagged
+address 0x5a00000071006000 with length 0x10000000 and advice 17: ours ENOMEM, theirs EINVAL; seed
+517, sendfile with the same descriptor as input and output and an offset from the arena: ours
+EINVAL, theirs EOVERFLOW; seed 518, ioprio_get of the caller after earlier calls: ours 24576, theirs
+16388. Each is replayable with `LAYER1_CASES=20000 LAYER1_SEED=<seed>`.
 
 K2's fourth run: seed 410 (statfs into a buffer that faults part way) passed 20000 after the copy
 fix (337 s, load about 60 to 90). Terminals generated (see "Where things stand"): seed 420 (1000)
@@ -1108,6 +1114,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 fifth run: the whole test suite of both crates 86 passed, 0 failed, 6 ignored, 155 s wall with
+  two test threads beside three layer 1 runs (load 49 at the start, 53 at the end), on head 006b4af
+  (before the last layer 1 fixes, which were checked with the tests they touch). Layer 1 at 20000:
+  335 to 466 s (load 25 to 95). tests/sysvshm.rs and tests/splice.rs under 1 s each.
 - K2 fourth run: the whole test suite of both crates 84 passed, 0 failed, 6 ignored, 180 s wall with
   two test threads beside three layer 1 runs (load 39 at the start, 31 at the end); on the final head
   again 84 passed, 0 failed, 6 ignored, 155 s (load 99 at the start, 131 at the end). Layer 1, 20000
@@ -1345,7 +1355,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
    generation.
 2. Small gaps of K2: a release I/O signal per pipe end when several close at once (only one is sent);
    sendfile into a full blocking terminal waits on Linux (`tty_write`).
-3. After any kernel change for the items above, three fresh layer 1 seeds of 20000 again (443 to 445
-   passed on head 99e83eb; one command each, see Layer 1).
+3. Fix the open layer 1 findings of seeds 516, 517 and 518 (see Layer 1), rerun 511, then three
+   fresh layer 1 seeds of 20000 with every fix in (one command each, see Layer 1). This run's 512 to
+   515 passed at 20000 but before the last fixes.
 4. The missing calls of later milestones; the known gaps above before K6's bar.
 5. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).

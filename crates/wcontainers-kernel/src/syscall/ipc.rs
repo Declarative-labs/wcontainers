@@ -265,6 +265,10 @@ pub(super) fn shmget(
         return Err(Errno::ENOSPC);
     }
     if flags & SHM_HUGETLB != 0 {
+        // `can_do_hugetlb_shm`: CAP_IPC_LOCK or the group `vm.hugetlb_shm_group` names (0).
+        if !credentials.has(CAP_IPC_LOCK) && !credentials.in_group(0, true) {
+            return Err(Errno::EPERM);
+        }
         return Err(kernel.counters.refuse_flag(
             cx.host,
             __NR_shmget,
