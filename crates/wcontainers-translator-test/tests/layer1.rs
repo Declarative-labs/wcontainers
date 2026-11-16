@@ -2,18 +2,63 @@
 //!
 //! `WC_LAYER1_CASES` cases per form (default 64), seeded from `WC_LAYER1_SEED` (default 1) and the form's
 //! name, so any failure replays with the same two values. `WC_LAYER1_FORMS` limits the run to a
-//! comma-separated list of form names.
+//! comma-separated list of form names. `WC_LAYER1_CHROME` cases per form (default 1), from the same seed,
+//! also run in Chrome, a thousand to a page, and are compared with the CPU.
 
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use std::cell::RefCell;
 use wcontainers_arm64::forms;
-use wcontainers_translator_test::layer1::{Case, Stop, cases, compare, covered, translated};
+use wcontainers_translator_test::layer1::{
+    Case, Stop, cases, compare, compare_outcome, covered, translated, translated_in_chrome,
+};
 use wcontainers_translator_test::layout::{CODE, DATA};
 use wcontainers_translator_test::reference::Cases;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
+}
+
+/// The random generator for a form's cases, from the seed and the form's name.
+fn generator(seed: u64, name: &str, config: Config) -> TestRunner {
+    let mut key = [0u8; 32];
+    key[..8].copy_from_slice(&seed.to_le_bytes());
+    for (i, byte) in name.bytes().enumerate() {
+        key[8 + i % 24] ^= byte;
+    }
+    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
+}
+
+#[test]
+fn sample_matches_the_cpu_in_chrome() {
+    let count = setting("WC_LAYER1_CHROME", 1);
+    let seed = setting("WC_LAYER1_SEED", 1);
+    let mut sample: Vec<(String, Case)> = Vec::new();
+    for form in forms::all().iter().filter(|f| covered(f)) {
+        let mut runner = generator(seed, &form.name, Config::default());
+        let strategy = cases(form.clone());
+        for _ in 0..count {
+            let tree = strategy.new_tree(&mut runner).expect("a case");
+            sample.push((form.name.clone(), tree.current()));
+        }
+    }
+    let all: Vec<Case> = sample.iter().map(|(_, case)| case.clone()).collect();
+    let outcomes = translated_in_chrome(&all);
+    let mut reference = Cases::start();
+    let mut failures = Vec::new();
+    for ((name, case), outcome) in sample.iter().zip(outcomes) {
+        if let Err(error) = compare_outcome(&mut reference, case, outcome) {
+            eprintln!("{name} in Chrome: {error}");
+            failures.push(name.clone());
+        }
+    }
+    eprintln!(
+        "layer 1 in Chrome: {} cases ({count} a form), seed {seed}, {} failing: {failures:?}",
+        sample.len(),
+        failures.len()
+    );
+    assert!(failures.is_empty());
 }
 
 #[test]
@@ -37,13 +82,7 @@ fn every_covered_form_matches_the_cpu() {
         let mut config = Config::with_cases(count);
         config.failure_persistence = None;
         config.max_global_rejects = 100 * count;
-        let mut key = [0u8; 32];
-        key[..8].copy_from_slice(&seed.to_le_bytes());
-        for (i, byte) in form.name.bytes().enumerate() {
-            key[8 + i % 24] ^= byte;
-        }
-        let mut runner =
-            TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
+        let mut runner = generator(seed, &form.name, config);
         let result = runner.run(&cases(form.clone()), |case| {
             compare(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)
         });

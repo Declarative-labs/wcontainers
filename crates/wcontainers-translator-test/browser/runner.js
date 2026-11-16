@@ -27,7 +27,23 @@ function constant(value, type) {
   return new WebAssembly.Global({ value: type, mutable: false }, value);
 }
 
-function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp, stack, lookAhead, omit, repeat }) {
+function run({
+  translatorBytes,
+  blob,
+  codeBytes,
+  load,
+  memoryBytes,
+  regions,
+  sp,
+  stack,
+  lookAhead,
+  omit,
+  repeat,
+  cases,
+  caseBytes,
+  areas,
+  stopAtSyscall,
+}) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
     new Uint8Array(translator.memory.buffer, translator.output(), length).slice();
@@ -54,6 +70,8 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   const warnings = [];
   let stopped = null;
   let snapshot = null;
+  // The whole thread state when the thread stopped, which a system call's result may change afterwards.
+  let stateAtStop = null;
   let thread = null;
   const blobs = [];
   // Addresses code was translated from at run time: the table holds a piece of look-ahead none there.
@@ -93,6 +111,7 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
 
   function stop(why) {
     snapshot = registers();
+    stateAtStop = new Uint8Array(state.buffer, BLOCK_AT, contract.threadStateSize).slice();
     stopped = why;
   }
 
@@ -184,7 +203,15 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   }
 
   const hooks = {
-    [contract.hookSyscall]: (number, ...a) => standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v))),
+    [contract.hookSyscall]: (number, ...a) => {
+      // Instruction cases end at a system call, as the reference's do.
+      if (stopAtSyscall) {
+        stop({ kind: "syscall" });
+        raiseStopFlag();
+        return 0n;
+      }
+      return standIn(BigInt.asUintN(64, number), a.map((v) => BigInt.asUintN(64, v)));
+    },
     [contract.hookStop]: () => {
       Atomics.store(flags(), (BLOCK_AT + contract.stopFlag) / 4, 0);
       // The runner raised the flag itself to make the thread leave.
@@ -288,6 +315,48 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   blobs.push({ bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) });
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
   instantiateCode(0, 0n, lookAhead, omit);
+
+  if (cases) return runCases();
+
+  // Instruction cases, one after another in the same memory and instances: each is `codeBytes` of code put
+  // at the blob's place and translated there, the thread state, then the bytes of each of `areas`.
+  // Each gives how it stopped, the thread state after, and the bytes of the areas that changed, as
+  // [offset into the areas, value].
+  function runCases() {
+    const stateSize = contract.threadStateSize;
+    const placed = areas.reduce((sum, [, length]) => sum + length, 0);
+    const size = codeBytes + stateSize + placed;
+    const results = [];
+    for (let i = 0; i < cases; i++) {
+      const bytes = caseBytes.subarray(i * size, (i + 1) * size);
+      const code = bytes.slice(0, codeBytes);
+      guest().set(code, load);
+      blobs[0].bytes = code;
+      translatedFrom.clear();
+      instantiateCode(0, 0n, lookAhead, omit);
+      new Uint8Array(state.buffer, BLOCK_AT, stateSize).set(bytes.subarray(codeBytes, codeBytes + stateSize));
+      let at = codeBytes + stateSize;
+      for (const [address, length] of areas) {
+        guest().set(bytes.subarray(at, at + length), address);
+        at += length;
+      }
+      stopped = null;
+      snapshot = null;
+      stateAtStop = null;
+      thread.exports[contract.run]();
+      const changed = [];
+      let offset = 0;
+      at = codeBytes + stateSize;
+      for (const [address, length] of areas) {
+        const now = guest().subarray(address, address + length);
+        for (let j = 0; j < length; j++) if (now[j] !== bytes[at + j]) changed.push([offset + j, now[j]]);
+        offset += length;
+        at += length;
+      }
+      results.push({ stopped, state: [...stateAtStop], changed });
+    }
+    return { cases: results, counters: [...counters].map(([reason, c]) => ({ reason, ...c })) };
+  }
 
   // Each run starts the program afresh in the same instances: the blob and the stack placed again, the
   // registers as at the start, and the output of earlier runs dropped.

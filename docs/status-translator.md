@@ -66,6 +66,15 @@ eighth run", and what is left under "S1, what remains after the eighth run".
   Linux gives them. `AT_BASE` alone does not work: Alpine's musl then reads an ELF header at that address.
   Layer 3 now also fails a program that Linux ends by a signal, so a blob that did not relocate itself cannot
   match by faulting the same way on both sides.
+- Chrome samples for both layers. Layer 3: `WC_LAYER3_CHROME` Csmith programs (default 1) also run in
+  Chrome at none and full and are compared with Linux. Layer 1: `sample_matches_the_cpu_in_chrome` runs
+  `WC_LAYER1_CHROME` cases a form (default 1, from `WC_LAYER1_SEED`) in Chrome and compares each with the
+  CPU through the same comparison as the wasmtime run. The browser runner got an instruction case mode
+  (`browser::cases`): many one-instruction cases one after another in the same page, memory and instances,
+  each with its thread state and data area given and read back, ending at a system call. A page runs 1000
+  cases (`CASES_A_PAGE`); a page given 6075 at once crashed. Found on the way: the page read the thread state
+  after a system call's result had gone into x0; it now keeps the state from when the thread stopped, as the
+  wasmtime runner does.
 - The layer 3 failure of the first run (Csmith 2000136, clang -O0, SIGSEGV once on Linux): its blob ran 160
   more times on the reference, 8 at a time at load 16: 160 good. Not reproduced, not understood.
 
@@ -1047,9 +1056,10 @@ contract's bits, in both runners).
   one process; several seeds can run side by side.
 - Floating point timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
-- Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (defaults: 64 cases, seed 1). Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>`.
-  The filter drops the runner's warnings (memory faults and stops), one per case.
+- Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_CHROME=100 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
+  (defaults: 64 cases, seed 1, 1 case a form in Chrome, 1000 cases to a Chrome page; 6075 took 25.5 s).
+  Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>` (the wasmtime run only). The
+  filter drops the runners' warnings (memory faults and stops), one per case.
 - Decoding against Arm's forms: `WC_DECODE_CASES` (default 64 per form), `WC_DECODE_WORDS` (random words
   from the whole space, default 200,000), `WC_DECODE_SEED` (default 1).
 - Words in no form against the CPU: part of the layer 1 command; `WC_LAYER1_CASES` words.
@@ -1069,7 +1079,8 @@ contract's bits, in both runners).
   blobs among them; 1 also in Chrome), and the 48 hand-picked builds: 86 compared and matching, 14 did not
   end on Linux in 20 seconds, 0 failing (382 s, load 11 to 21). Every test of the three crates passes (debug
   build, Chrome test and layer 3's defaults included; load 8 to 28). Layer 3, 8 Csmith programs, seed 4,
-  all 8 also in Chrome at none and full: 0 failing (38 s in all, load 10 to 18).
+  all 8 also in Chrome at none and full: 0 failing (38 s in all, load 10 to 18). Layer 1 in Chrome: 1215
+  forms x 1, seed 1, and 1215 x 5, seed 7 (6075 cases, 25.5 s, load 13 to 14): 0 mismatches against the CPU.
 
 - M3, layer 1, release: 1215 forms x 100 cases, seed 2: 0 mismatches (121,500 cases, 177 s, load 18 to 21).
   1215 x 1000, seed 3 (1,215,000 cases, 27 minutes, load 12 to 23): 4 forms failing, all in the software
@@ -1245,14 +1256,11 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M3: the long runs, started by the orchestrator: layer 1 at 10,000 a form, layer 3 at 100,000 Csmith
-   programs with `WC_LAYER3_CHROME` set for the Chrome sample (commands under "How to run").
-2. M3: layer 1 has no Chrome sample (its runner is wasmtime only). The meanings are the same WebAssembly in
-   both engines and `tests/browser.rs` runs the hand-picked programs, `differences.c` included, in Chrome;
-   a Chrome runner for layer 1 cases is what remains if the pass bar's "sample of each in Chrome" must
-   cover layer 1 too.
-3. M3's independent check.
-4. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
+1. M3: the long runs, started by the orchestrator: layer 1 at 10,000 a form with `WC_LAYER1_CHROME` set
+   for its Chrome sample, layer 3 at 100,000 Csmith programs with `WC_LAYER3_CHROME` set (commands under
+   "How to run").
+2. M3's independent check.
+3. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 

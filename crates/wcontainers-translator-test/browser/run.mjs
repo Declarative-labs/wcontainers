@@ -20,6 +20,7 @@ const files = {
   "/translator.wasm": [join(directory, "translator.wasm"), "application/wasm"],
   "/blob.bin": [join(directory, "blob.bin"), "application/octet-stream"],
   "/stack.bin": [join(directory, "stack.bin"), "application/octet-stream"],
+  "/cases.bin": [join(directory, "cases.bin"), "application/octet-stream"],
 };
 const setup = JSON.parse(await readFile(join(directory, "case.json"), "utf8"));
 
@@ -56,6 +57,7 @@ try {
       translatorBytes: await bytes("/translator.wasm"),
       blob: await bytes("/blob.bin"),
       stack: await bytes("/stack.bin"),
+      caseBytes: setup.cases ? await bytes("/cases.bin") : null,
     };
     const worker = new Worker("/runner.js", { type: "module" });
     // V8 runs a function first from its baseline compiler and uses optimised code only from the function's

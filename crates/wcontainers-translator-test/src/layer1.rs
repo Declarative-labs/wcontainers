@@ -7,7 +7,8 @@ use crate::runner::{Machine, Stopped, Syscalls};
 use proptest::prelude::*;
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
 use wcontainers_arm64::forms::Form;
-use wcontainers_translator::LookAhead;
+use wcontainers_translator::{LookAhead, contract};
+use zerocopy::{FromBytes, IntoBytes};
 
 /// Every form of the CPU we present: one some word of which is presented. Forms whose condition limits
 /// fields are found by trying words.
@@ -452,22 +453,30 @@ pub fn reference_outcome(landed: &Landed) -> Outcome {
 /// Memory size of the translator's machine: everything up to the end of the code region.
 const MEMORY: u64 = CODE + CODE_SPAN;
 
-/// Run a case through the translator.
-pub fn translated(case: &Case) -> Outcome {
-    let mut machine = Machine::new(MEMORY, CODE, 1024, Syscalls::Stop);
-    machine.set_permissions(
-        DATA..DATA + DATA_WRITABLE,
-        Permissions::READ | Permissions::WRITE,
-    );
-    machine.set_permissions(DATA + DATA_WRITABLE..DATA + DATA_BYTES, Permissions::READ);
-    machine.set_permissions(
-        CODE - CODE_SPAN..CODE + CODE_SPAN,
-        Permissions::READ | Permissions::EXECUTE,
-    );
+/// The data area, the code region and what each allows.
+fn regions() -> [(std::ops::Range<u64>, Permissions); 3] {
+    [
+        (
+            DATA..DATA + DATA_WRITABLE,
+            Permissions::READ | Permissions::WRITE,
+        ),
+        (DATA + DATA_WRITABLE..DATA + DATA_BYTES, Permissions::READ),
+        (
+            CODE - CODE_SPAN..CODE + CODE_SPAN,
+            Permissions::READ | Permissions::EXECUTE,
+        ),
+    ]
+}
+
+/// The data area's contents at the start of a case.
+fn start_data(case: &Case) -> Vec<u8> {
     let mut data = vec![0u8; DATA_BYTES as usize];
     fill(case.seed, &mut data);
-    machine.write(DATA, &data);
-    machine.load(&case.word.to_le_bytes(), 0..4, CODE, &[0], LookAhead::None);
+    data
+}
+
+/// The registers at the start of a case.
+fn start_registers(case: &Case) -> RegisterBlock {
     let mut registers = RegisterBlock::ZERO;
     registers.x.copy_from_slice(&case.registers[..31]);
     registers.sp = case.registers[31];
@@ -479,7 +488,38 @@ pub fn translated(case: &Case) -> Outcome {
     }
     registers.fpsr = case.float[0];
     registers.fpcr = case.float[1];
-    machine.set_registers(&registers);
+    registers
+}
+
+/// An outcome from how the translated case stopped, its registers after and the data bytes it changed.
+fn outcome(stop: Stop, after: &RegisterBlock, changed: Vec<(u32, u8)>) -> Outcome {
+    let mut out = [0u64; 35];
+    out[..31].copy_from_slice(&after.x);
+    out[31] = after.sp;
+    out[32] = after.pc;
+    out[33] = after.pstate;
+    out[34] = after.tpidr_el0;
+    Outcome {
+        stop,
+        registers: out,
+        vectors: after
+            .v
+            .map(|[low, high]| u128::from(high) << 64 | u128::from(low)),
+        float: [after.fpsr, after.fpcr],
+        changed,
+    }
+}
+
+/// Run a case through the translator.
+pub fn translated(case: &Case) -> Outcome {
+    let mut machine = Machine::new(MEMORY, CODE, 1024, Syscalls::Stop);
+    for (range, permissions) in regions() {
+        machine.set_permissions(range, permissions);
+    }
+    let data = start_data(case);
+    machine.write(DATA, &data);
+    machine.load(&case.word.to_le_bytes(), 0..4, CODE, &[0], LookAhead::None);
+    machine.set_registers(&start_registers(case));
     if case.tracking {
         machine.track_float_flags();
     }
@@ -502,21 +542,69 @@ pub fn translated(case: &Case) -> Outcome {
         .filter(|(_, (a, b))| a != b)
         .map(|(i, (a, _))| (i as u32, *a))
         .collect();
-    let mut out = [0u64; 35];
-    out[..31].copy_from_slice(&after.x);
-    out[31] = after.sp;
-    out[32] = after.pc;
-    out[33] = after.pstate;
-    out[34] = after.tpidr_el0;
-    Outcome {
-        stop,
-        registers: out,
-        vectors: after
-            .v
-            .map(|[low, high]| u128::from(high) << 64 | u128::from(low)),
-        float: [after.fpsr, after.fpcr],
-        changed,
-    }
+    outcome(stop, &after, changed)
+}
+
+/// Cases one Chrome page runs; a page given several thousand ran out of memory.
+const CASES_A_PAGE: usize = 1000;
+
+/// Run cases through the translator in Chrome, [`CASES_A_PAGE`] to a page.
+pub fn translated_in_chrome(cases: &[Case]) -> Vec<Outcome> {
+    cases
+        .chunks(CASES_A_PAGE)
+        .flat_map(translated_in_one_page)
+        .collect()
+}
+
+fn translated_in_one_page(cases: &[Case]) -> Vec<Outcome> {
+    let states: Vec<crate::browser::StateCase> = cases
+        .iter()
+        .map(|case| {
+            let mut state = vec![0u8; contract::THREAD_STATE_SIZE];
+            let registers = start_registers(case);
+            state[..size_of::<RegisterBlock>()].copy_from_slice(registers.as_bytes());
+            if case.tracking {
+                state[contract::FLOAT_TRACKING..contract::FLOAT_TRACKING + 4]
+                    .copy_from_slice(&1u32.to_le_bytes());
+            }
+            crate::browser::StateCase {
+                word: case.word,
+                state,
+                places: vec![start_data(case)],
+            }
+        })
+        .collect();
+    let address = |value: &serde_json::Value| -> u64 {
+        value
+            .as_str()
+            .expect("an address")
+            .parse()
+            .expect("a number")
+    };
+    crate::browser::cases(
+        CODE,
+        MEMORY,
+        &regions(),
+        std::slice::from_ref(&(DATA..DATA + DATA_BYTES)),
+        &states,
+    )
+    .into_iter()
+    .map(|run| {
+        let stopped = &run.stopped;
+        let stop = match stopped["kind"].as_str() {
+            Some("no code") => Stop::Landed(address(&stopped["address"])),
+            Some("undefined" | "unsupported") => Stop::Illegal,
+            Some("breakpoint") => Stop::Breakpoint,
+            Some("syscall") => Stop::Syscall,
+            Some("memory fault") => Stop::MemoryFault(address(&stopped["address"])),
+            Some("alignment") => Stop::Alignment(address(&stopped["detail"])),
+            _ => panic!("no counterpart on the reference: {stopped}"),
+        };
+        let after = RegisterBlock::read_from_bytes(&run.state[..size_of::<RegisterBlock>()])
+            .expect("a register block");
+        outcome(stop, &after, run.changed)
+    })
+    .collect()
 }
 
 /// When a load or store faults, Arm leaves the registers it loads and the memory it stores UNKNOWN: a CPU
@@ -575,6 +663,11 @@ fn unknown_after_fault(case: &Case, expected: &mut Outcome, actual: &Outcome) {
 
 /// Compare one case on both sides; describe the difference if there is one.
 pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
+    compare_outcome(reference, case, translated(case))
+}
+
+/// Compare a translated outcome of a case with the reference's.
+pub fn compare_outcome(reference: &mut Cases, case: &Case, actual: Outcome) -> Result<(), String> {
     let landed = reference.run(
         case.word,
         case.seed,
@@ -583,7 +676,6 @@ pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
         case.float,
     );
     let mut expected = reference_outcome(&landed);
-    let actual = translated(case);
     unknown_after_fault(case, &mut expected, &actual);
     // Without the flags kept and with FPCR zero, the cumulative exception flags are not kept: FPSR keeps
     // what it had there.
