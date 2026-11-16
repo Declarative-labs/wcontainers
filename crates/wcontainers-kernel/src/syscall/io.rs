@@ -1904,10 +1904,7 @@ fn fcntl_other(
                 {
                     return Err(Errno::EPERM);
                 }
-                if wanted & O_DIRECT != 0
-                    && inode.file_type() != S_IFIFO
-                    && !inode.takes_direct_io()
-                {
+                if wanted & O_DIRECT != 0 && inode.file_type() != S_IFIFO && !file.direct_io {
                     return Err(Errno::EINVAL);
                 }
             }

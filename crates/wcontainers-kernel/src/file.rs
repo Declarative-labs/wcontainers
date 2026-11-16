@@ -32,6 +32,9 @@ pub(crate) struct OpenFile {
     /// While `FASYNC` is set through a file that sends I/O signals, the descriptor it was set
     /// through, which the signals carry (Linux's `fa_fd`).
     pub async_fd: Option<i32>,
+    /// Whether `O_DIRECT` may be set on it (`FMODE_CAN_ODIRECT`): an open tmpfs file, but not the file
+    /// `memfd_create` makes, which is not opened through tmpfs's `open`.
+    pub direct_io: bool,
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
@@ -65,6 +68,7 @@ pub(crate) type FileRef = Rc<RefCell<OpenFile>>;
 
 impl OpenFile {
     pub fn new(node: Node, flags: u32, path: Vec<u8>, opener: u64) -> FileRef {
+        let direct_io = node.borrow().takes_direct_io();
         Rc::new(RefCell::new(Self {
             node,
             flags,
@@ -77,6 +81,7 @@ impl OpenFile {
             created: false,
             terminal: None,
             async_fd: None,
+            direct_io,
         }))
     }
 

@@ -137,5 +137,12 @@ int main(int argc, char **argv) {
     }
     show("zero large", read(zero, area, 1 << 20));
     show("zero lseek", lseek(zero, 0, SEEK_CUR));
+    // Direct I/O: not on the file memfd_create makes, but on the same file opened again.
+    int direct = memfd("direct", 0);
+    show("memfd set direct", fcntl(direct, F_SETFL, O_DIRECT));
+    char reopen[64];
+    snprintf(reopen, sizeof reopen, "/proc/self/fd/%d", direct);
+    int again = open(reopen, O_RDWR);
+    show("reopened set direct", fcntl(again, F_SETFL, O_DIRECT) < 0 ? -1 : 0);
     return 0;
 }

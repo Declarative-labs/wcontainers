@@ -90,6 +90,7 @@ pub(super) fn memfd_create(
     path.extend_from_slice(&full_name);
     let opener = kernel.process_of(tid).credentials.serial;
     let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, path, opener);
+    file.borrow_mut().direct_io = false;
     let process = kernel.process_of_mut(tid);
     let added = process
         .files
