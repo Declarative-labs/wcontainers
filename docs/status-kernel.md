@@ -5,10 +5,45 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes): the eighth run declared it done; the independent check that followed found four blocking
-faults, fixed in the ninth run (below). See Next for what is left.
+processes): the eighth run declared it done; two independent checks followed; the ninth run fixed the
+first one's findings and the tenth the second's (below). See Next for what is left.
 
-Built in K2's ninth run (the check's findings):
+Built in K2's tenth run (the second check's findings):
+- A child that has ended and is not yet reaped (tests/zombie.rs, guest/zombie.c, all measured):
+  `/proc/<pid>/stat` and `status` keep its first thread's scheduling values, blocked signals and
+  filter count (`Leader`, kept at its end), show one thread, state Z, the wait status as `exit_code`
+  (stat's last field), no umask or memory lines and a table size of 0; its `cmdline` and `environ`
+  read empty once its memory is gone, `environ` and `auxv` refuse the open (ESRCH) and `mounts`
+  (EINVAL); `exe`, `cwd` and `root` lead nowhere (ENOENT). Its CPU clock reads its time (a thread
+  clock of it is EINVAL); tkill and tgkill find it and drop what they send; setpgid moves it, and a
+  group or session check counts it as a member; prlimit names it. Before, stat and status panicked
+  the kernel and cmdline read a dropped memory. stat's `rsslim` is now RLIMIT_RSS.
+- prlimit names any process (`check_prlimit_permission`: all three ids the caller's, or
+  CAP_SYS_RESOURCE); before it named only the caller.
+- The scheduler's tick is checked at every return from the CPU side, not only at a stop: a thread
+  that has had its share and keeps coming back by system calls gives way. sched_yield puts the caller
+  behind every thread waiting for its turn and gives way (see Departures). tests/turns.rs compares
+  with the reference pinned to one CPU (`reference::run_one_cpu`).
+- RLIMIT_SIGPENDING: every queued signal holds a place in its receiving user's count (`Charge`, given
+  back when it goes); over the limit a real-time signal with information of its own (sigqueue,
+  tkill) is refused with EAGAIN, other signals go without their information (taken as SI_USER from
+  nobody), the kernel's standard signals always fit, and an I/O signal that does not fit becomes
+  SIGIO. RLIMIT_NPROC: fork counts the user's live threads and unreaped processes with the new one
+  (root, CAP_SYS_RESOURCE and CAP_SYS_ADMIN pass), a change of real user over the limit is flagged
+  and the next execve refuses with EAGAIN while it still is. tests/userlimits.rs.
+- fcntl and prctl count as not built only what Linux has: leases, directory notification,
+  F_GETOWNER_UIDS and the delegation commands; every prctl option up to Linux 7.0's newest (79,
+  measured) and PR_SET_VMA except those Linux has only for other architectures. Others are a plain
+  EINVAL. tests/unknown.rs.
+- Saving: a save is a new process holding a copy of the whole test process (fork), which goes on
+  with a new CPU side made from the saved memories and registers and a new host whose monotonic
+  clock starts earlier; the process that was copied only waits for the copy's run. `Kernel::restore`
+  now carries the kernel's monotonic clock over (an offset on the host's, so it never goes back and
+  parked deadlines keep their meaning). tests/saving.rs runs `processes`, `deadlines` and a new
+  `clockwatch` (clocks never go back, sleeps and timeouts last) with 8 saves for each of 3 seeds;
+  with `restore` made a no-op it fails (`the clocks held: 0`), checked by hand.
+
+Built in K2's ninth run (the first check's findings):
 - Deadlines while others compute: a parked call's deadline now ends the running thread's turn (the
   turn's slice is the nearer of the fair share and the earliest deadline), and due calls are woken at
   every return from the CPU side, not only when the kernel is idle. Before, a sleeper waited until
@@ -644,7 +679,11 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   process ignores signals it has no handler for (`SIGNAL_UNKILLABLE`); a fault's forced signal still
   kills it.
 - Resource limits enforced: RLIMIT_FSIZE, RLIMIT_AS, RLIMIT_DATA (with `check_data_rlimit`),
-  RLIMIT_STACK, RLIMIT_MEMLOCK, RLIMIT_NOFILE. RLIMIT_CPU is kept, not enforced (needs timers, K3).
+  RLIMIT_STACK, RLIMIT_MEMLOCK, RLIMIT_NOFILE, RLIMIT_MSGQUEUE, RLIMIT_SIGPENDING, RLIMIT_NPROC,
+  RLIMIT_NICE and RLIMIT_RTPRIO (the priority calls). RLIMIT_CPU is kept, not enforced (needs timers,
+  K3); RLIMIT_CORE, RLIMIT_RSS, RLIMIT_LOCKS and RLIMIT_RTTIME are kept and bind nothing here (no
+  core is written; Linux enforces neither RSS nor LOCKS; no real-time thread can exist, as Docker's
+  hard RLIMIT_RTPRIO is 0).
 - Docker's default seccomp profile (src/seccomp.rs), measured on the reference, and a program's own
   classic BPF filters, checked and run as Linux's.
 - Record locks (src/locks.rs) as `fs/locks.c` keeps them: one list per inode, a descriptor table's
@@ -889,10 +928,31 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K2's ninth run; counts under Measurements)
+## Tests (last run 2026-11-16, K2's tenth run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's ninth run (each guest's
+All pass except the ignored known failures listed above. Added in K2's tenth run (each guest's
 reference output was read and checked against Linux's source):
+- zombie: guest/zombie.c: a child that has ended and is not yet reaped: stat's fields we know
+  (state, parent, group, session, terminal, priority, nice, threads, sizes, rsslim, masks, policy,
+  exit code), status lines, every process file's open and read, the three links and opens through
+  them, the `fd` directory, its CPU clocks, kill, tkill, tgkill and sigqueue, getpgid, getsid and
+  setpgid (it moves), prlimit get and set, affinity, priority, pidfd_open, process_vm_readv,
+  children's times before the reap; after the reap its clock and stat; a group whose only member has
+  ended (kill, joining it, setsid refused while it is unreaped).
+- turns: guest/turns.c against the reference on one CPU: a parent spinning on sched_yield until a
+  child has run (within 100 yields), yields until a blocked child is seen asleep, and a child that
+  only makes system calls beside one that must still run. The old kernel failed it.
+- userlimits: guest/userlimits.c: RLIMIT_SIGPENDING of 5 with sigqueue, kill and tkill of real-time
+  signals, a standard sigqueue, SIGCHLD, every signal taken with its code and value, the place given
+  back; RLIMIT_NPROC for root, after setuid, with another task of the user, over it at setuid (execve
+  refused twice), and beside a task that has ended and is not yet reaped.
+- unknown: fcntl commands and prctl options Linux does not know or has only for other architectures
+  (plain EINVAL, nothing counted), and two Linux has that are counted.
+- saving: `processes`, `deadlines` and guest/clockwatch.c (four processes sleeping, polling and
+  computing while the monotonic and boot clocks are checked) saved 8 times for each of 3 seeds.
+
+Added in K2's ninth run (each guest's reference output was read and checked against Linux's
+source):
 - deadlines: guest/deadlines.c: nanosleep, clock_nanosleep with an absolute time, ppoll, pselect6,
   sigtimedwait, semtimedop and mq_timedreceive of 20 ms each while a child computes for ever (with
   and without system calls in its loop), a sleep beside two such children, and a short sleep that
@@ -1471,16 +1531,14 @@ All on this shared Mac; noisy, not benchmarks.
 - `/proc/sys/{abi,debug,dev,net,sunrpc,user}` exist as empty directories so paths through them resolve.
 - statfs reports a block size of 4096 for every file system, `/proc` included (measured); stat reports
   1024 for `/proc` files (measured).
-- Saving natively moves the kernel's state rather than copying it (its data lives in Rust's heap, not
-  one memory as under WebAssembly); what is proven is that the CPU side holds nothing the kernel
-  needs beyond memories, blocks and register blocks, and that parked calls and pending return values
-  come back. The host's clock is the same across the save here; on a real host the monotonic clock
-  must be set from the saved time (`restore`'s duty on the host, not built until K7). The K2 check
-  asked for a restore into a fresh kernel and host: natively the kernel's state is a graph of Rust
-  heap objects shared through `Rc` (inodes, open files, terminals), so a byte copy into a new
-  `Kernel` is not possible here; tests/saving.rs keeps the same `Kernel` and `TestHost` and makes the
-  CPU side new. A copy into a fresh kernel comes with K7, where the kernel runs in its own WebAssembly
-  memory and saving copies that memory (plan rule 5 is proven there).
+- Saving natively copies the whole test process (fork) rather than only the kernel's memory: the
+  kernel's state is a graph of Rust heap objects shared through `Rc`, which only a copy at the same
+  addresses keeps, as copying a WebAssembly kernel's memory into a new instance will (K7). The copy
+  is a new kernel instance in a new process; it goes on with a new CPU side built from the saved
+  memories, blocks and registers alone and a new host whose clocks read differently, so what is
+  proven is that the kernel needs nothing else and that `restore` carries its clock over. Deep
+  copying the kernel inside one process was not done: it needs a copy routine for every type that
+  shares (`Rc` inodes, files, terminals, counts), which no crate makes for `no_std`.
 
 - Layer 2's clock is not the wall clock: time passes only by a seeded step per turn and by skipped
   waits, so CPU times and the scheduler's choices repeat for a seed. Layer 1 keeps the wall clock (its
@@ -1507,6 +1565,12 @@ All on this shared Mac; noisy, not benchmarks.
 - The made-up machine has one CPU (default time slice 0.7 ms, sched_rr_get_interval in whole 1 ms
   ticks), no permission overlays and no guarded control stacks, like the reference's CPU for the last
   two.
+- sched_yield puts the caller behind every thread waiting for its turn (its virtual runtime raised to
+  the run queue's greatest). The plan's scheduler is CFS, whose yield (a skip buddy) keeps a yielder
+  running while the others are more than the wakeup granularity ahead, which for a new child is
+  about 2 ms of yields; the reference (Linux 7.0, EEVDF) forfeits the yielder's deadline so the
+  others run at once, and programs that spin on sched_yield waiting for another process behave as
+  there only with the reference's way (measured with the reference on one CPU).
 - A mapped file keeps its first pages in a block of shared pages while any mapping shows it, private
   mappings included (their written pages are their own copies); a block covers each mapping's whole
   length, past the file's end too. A tmpfs inode's generation is a keyed hash of its number
@@ -1572,8 +1636,14 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   PIDFD_THREAD for a thread other than the first (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
   shmget's SHM_HUGETLB
   (ENOMEM).
-- "fcntl command not built": the fcntl list under Partial.
-- "prctl option not built": the prctl list under Partial.
+- "fcntl command not built": F_SETLEASE, F_NOTIFY, F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG (EINVAL,
+  as Linux without them). Commands Linux does not know are a plain EINVAL, uncounted.
+- "prctl option not built": options Linux has on ARM64 that are not built (EINVAL; see Partial):
+  PR_SET_MM's forms, PR_GET_TIMING, PR_SET_TIMING, the TSC, perf event, MCE, SVE, SME, pointer
+  authentication, tagged address, speculation, syscall user dispatch, memory merge, MDWE setting,
+  shadow stack, timer id, futex hash and rseq slice options, PR_GET_TID_ADDRESS, PR_SET_SECUREBITS
+  and PR_SET_VMA. Unknown options and those Linux has only for other architectures are a plain
+  EINVAL, uncounted.
 - "line discipline not built": TIOCSETD with a discipline other than `n_tty` (detail: its number).
 - "ioctl request not built": the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
   caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference);
@@ -1590,6 +1660,7 @@ written", "vmsplice pages copied". "wake to run" is a measurement (count and tot
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K2, tenth run: none.
 - K2, ninth run: none.
 
 - K2, eighth run: none.
@@ -1618,6 +1689,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- The stand-in counts instructions by whole blocks, so a turn whose slice runs out in a block that
+  ends in `svc` comes back as a system call, not a stop (K2 check). The kernel's tick at every return
+  (tenth run) gives way either way, so nothing depends on it.
+
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
 - K2's ninth run: sigio failed once in a whole-suite run beside four layer 1 runs (load 36): the
   reference counted no signal for the raw byte a master wrote after the switch to raw mode (ours,
@@ -1641,12 +1716,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2's check findings are all fixed (ninth run) and the milestone's bars are met again: three fresh
-   layer 1 seeds of 20000 with every fix in, the whole suite passing. The next milestone is K3 (see
-   the plan); the known gaps above come before K6's bar. Left open from the check, by choice: a
-   restore into a fresh `Kernel` (needs the kernel in its own WebAssembly memory, K7; see
-   Departures), rseq aborts on preemption (K3), `/proc/<pid>/stat` and `status` pending signals
-   (counted "proc fields not tracked").
+1. Both K2 checks' findings are fixed (ninth and tenth runs). The next milestone is K3 (see the
+   plan); the known gaps above come before K6's bar. Left open, by choice: rseq aborts on preemption
+   (K3), `/proc/<pid>/stat` and `status` pending signals (counted "proc fields not tracked"). A
+   restore into a kernel in its own WebAssembly memory comes with K7.
 2. Test binaries build guest programs into one shared directory, which a reference container may
    read while another cargo invocation rewrites it (Known issues); each binary could build into its
    own.
