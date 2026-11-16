@@ -24,7 +24,9 @@ mod registers;
 
 pub use cpu::{Cpu, CpuError, MemoryId, SharedId, ThreadId};
 pub use exit::{Access, Exit, Next, Resume, Syscall};
-pub use host::{BackendRequestId, ConnectionId, CounterReading, Event, Host, HostError, Warning};
+pub use host::{
+    BackendRequestId, ConnectionId, CounterReading, Event, Host, HostError, Stream, Warning,
+};
 pub use machine::{HWCAP, HWCAP2, hwcap};
 pub use memory::{AddressSpace, LOWEST_ADDRESS, PAGE_SIZE, Permissions};
 pub use registers::{RegisterBlock, STOP_FLAG_OFFSET, THREAD_BLOCK_SIZE, pstate};

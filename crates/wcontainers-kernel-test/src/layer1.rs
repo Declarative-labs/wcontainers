@@ -1,0 +1,3288 @@
+//! Layer 1: random sequences of system calls, made in the reference by a small native runner and in our
+//! kernel with a plain buffer as guest memory. Every return value and the arena after every call are
+//! compared, and the play area (which pages can be read, and their bytes) after the last call: reading
+//! it brings pages in, which would change what later calls see. The few values that must differ
+//! (inode numbers, times, process numbers, `/proc`'s link count) are masked on both sides.
+
+use std::io::{BufReader, Read, Write};
+use std::path::Path;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+use linux_raw_sys::general as linux;
+use linux_raw_sys::ioctl;
+use linux_raw_sys::ptrace as seccomp;
+use wcontainers_abi::{Event, Exit, Next, Syscall};
+use wcontainers_kernel::{Kernel, Start};
+
+use crate::buffer::BufferCpu;
+use crate::driver::TestHost;
+use crate::image::{File, Kind};
+use crate::{guest, reference};
+
+/// Where each sequence's memory is, in both runners.
+pub const ARENA: u64 = 0x7000_0000;
+pub const ARENA_SIZE: u64 = 16 * 4096;
+/// Where the memory calls play: mapped, unmapped and protected by the sequence itself.
+pub const PLAY: u64 = 0x7100_0000;
+pub const PLAY_PAGES: u64 = 16;
+
+/// Offsets in the arena.
+const PATHS: u64 = 0;
+const IOVECS: u64 = 0x3000;
+const POLLS: u64 = 0x3600;
+const VALUES: u64 = 0x3800;
+const UNREACHED_LIMITS: u64 = 0x3a00;
+const CPU_MASKS: u64 = 0x3a40;
+/// Sixteen zero bytes: an empty argument list.
+const NULLS: u64 = 0x3a60;
+/// Four descriptor sets for pselect6, 16 bytes each.
+const FD_SETS: u64 = 0x3a80;
+/// Three signal mask arguments for pselect6: an address and a size.
+const MASK_PACKS: u64 = 0x3ac0;
+/// Four `open_how` for openat2, 32 bytes each (the last 8 zero, or not).
+const HOWS: u64 = 0x3b00;
+/// Scheduling priorities for sched_setscheduler and sched_setparam.
+const PRIORITIES: u64 = 0x3b80;
+/// Where getrandom writes: 96 bytes no call reads, since the two runners' random bytes differ and
+/// would steer later calls apart.
+const RANDOM: u64 = 0x3ba0;
+/// Where uname writes, past the paths: no call reads it, since the runners' release and version
+/// differ (a declared difference) and would steer later calls apart.
+const UNAME: u64 = 0x1800;
+/// Where name_to_handle_at writes the mount number, which differs between the machines; no call reads
+/// it.
+const MOUNT_NUMBER: u64 = 0x1a00;
+/// `struct flock` requests for fcntl's record locks, 32 bytes apart.
+const FLOCKS: u64 = 0x1c00;
+const FLOCK_COUNT: u64 = 8;
+/// `sched_attr` structures for sched_setattr, 128 bytes apart.
+const SCHED_ATTRS: u64 = 0x2000;
+/// `file_handle` headers for name_to_handle_at, 128 bytes apart: room for 128 bytes, the 12 tmpfs
+/// needs, none, and more than Linux allows.
+const HANDLES: u64 = 0x2600;
+const HANDLE_ROOMS: [u32; 4] = [128, 12, 0, 129];
+/// `stack_t` values for sigaltstack, 24 bytes apart.
+const SIGNAL_STACKS: u64 = 0x2800;
+/// Stack limits for RLIMIT_STACK, 16 bytes apart.
+const STACK_LIMITS: u64 = 0x2900;
+/// Seccomp filter programs, `FILTER_SPACING` bytes apart.
+const FILTERS: u64 = 0x2a00;
+const FILTER_COUNT: u64 = 4;
+const FILTER_SPACING: u64 = 0x180;
+/// `sock_fprog` values for seccomp, 16 bytes apart: one for each filter, then an empty one, one too
+/// long, one with no program and one whose program cannot be read.
+const FPROGS: u64 = 0x3100;
+const FPROG_COUNT: u64 = 8;
+/// Actions for SECCOMP_GET_ACTION_AVAIL, 4 bytes apart.
+const ACTIONS: u64 = 0x3180;
+/// How many random words make the filters: for each, a length and up to twelve instructions.
+const FILTER_WORDS: usize = 13;
+/// Where the filters' words start in the generated values.
+const FILTER_VALUES: usize = 72;
+/// Areas for rseq: 64 byte aligned, 32 byte aligned and 16 byte aligned ones.
+const RSEQS: u64 = 0x3200;
+/// The offsets of the rseq areas that can be registered (aligned to 32 bytes at least).
+const RSEQ_AREAS: [u64; 3] = [0, 0x20, 0x40];
+/// Arguments for ioctl's requests, 64 bytes apart: inode flags (to keep, an immutable one, unknown
+/// ones, none), extended flags (to keep, an extent size tmpfs refuses), a clone range from
+/// descriptor 3, a deduplication range for descriptor 3, and preallocation ranges from each origin
+/// and from an unknown one.
+const IOCTL_ARGS: u64 = 0x3300;
+const IOCTL_ARG_COUNT: u64 = 12;
+
+/// Extended attribute names, one after another.
+const XATTR_NAMES: u64 = 0x3c00;
+/// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
+/// 1000 and of 0), and an access control list.
+const XATTR_VALUES: u64 = 0x3f00;
+
+/// An argument each runner replaces by its caller's process number, so calls can name their own
+/// process although the two runners' numbers differ. Its negation, the caller's own process group, is
+/// not generated: our caller is process 1, and -1 means every process.
+pub const SELF: u64 = 0x5e1f_5e1f_0000_0001;
+const OUTPUT: u64 = 0x4000;
+
+/// The sequence's work directory, made and entered by its first two calls and removed afterwards.
+pub const WORK: &str = "/dev/shm/w";
+
+/// The paths calls choose from, laid out one after another from the arena's start. Nothing reaches the
+/// root file system, whose kind differs until the file backend exists.
+const PATH_POOL: &[&str] = &[
+    WORK,
+    "a",
+    "b",
+    "c",
+    "a/x",
+    "a/y",
+    "b/x",
+    "l",
+    "a/",
+    ".",
+    "..",
+    "",
+    "/dev/shm/",
+    "a/../b",
+    "nope/x",
+    "a/x/",
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    // The random devices: what a read of them puts anywhere is zeroed by both runners (see
+    // `CallResult::random`), so every call can be made on them.
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/shm/w/a",
+    "/proc/self/fd/3",
+    "/proc/self/cwd",
+    "l/x",
+    "c/",
+    "/proc/self/",
+    "/proc/self/fd",
+    "/proc/sys",
+    // `/proc` files whose bytes are the same in both runners: a seq_file, one read from memory and a
+    // sysctl, each with its own way of seeking, reading and writing.
+    "/proc/self/comm",
+    "/proc/self/cmdline",
+    "/proc/sys/kernel/ostype",
+    "/proc/self/cgroup",
+    "/proc/self/limits",
+    // devpts's root, which statx and the others answer by its own rules.
+    "/dev/pts",
+];
+
+/// Attribute values, 32 bytes apart from `XATTR_VALUES`.
+const XATTR_VALUE_POOL: &[&[u8]] = &[
+    &[
+        0, 0, 0, 2, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ],
+    &[
+        1, 0, 0, 2, 0x20, 0, 0, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+    ],
+    &[
+        1, 0, 0, 3, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xe8, 3, 0, 0,
+    ],
+    &[
+        0, 0, 0, 3, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ],
+    &[
+        0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff,
+    ],
+    &[
+        2, 0, 0, 0, 1, 0, 6, 0, 0xff, 0xff, 0xff, 0xff, 4, 0, 4, 0, 0xff, 0xff, 0xff, 0xff, 0x20,
+        0, 4, 0, 0xff, 0xff, 0xff, 0xff,
+    ],
+];
+
+/// `sched_attr` values: the size, policy, flags, nice, priority, runtime, deadline and period, then the
+/// clamps, and for one a byte past the structure.
+fn sched_attrs() -> Vec<Vec<u8>> {
+    /// Size, policy, flags, nice, priority, runtime, deadline, period, and a byte past the end.
+    type Attributes = (u32, u32, u64, i32, u32, u64, u64, u64, bool);
+    let attributes: &[Attributes] = &[
+        (56, 0, 0, 5, 0, 0, 0, 0, false),
+        (48, 3, 0, 19, 0, 3_000_000, 0, 0, false),
+        (0, 0, 0, -3, 0, 0, 0, 0, false),
+        (56, 1, 0, 0, 1, 0, 0, 0, false),
+        (56, 6, 0, 0, 0, 1_000_000, 2_000_000, 3_000_000, false),
+        (47, 0, 0, 0, 0, 0, 0, 0, false),
+        (80, 0, 0, 0, 0, 0, 0, 0, true),
+        (56, 5, 0x18, 0, 0, 0, 0, 0, false),
+        (56, 3, 1, 25, 0, 0, 0, 0, false),
+        (56, 3, 0x60, 0, 0, 0, 0, 0, false),
+        (56, 7, 0, 0, 0, 0, 0, 0, false),
+        (56, 3, 0x1000_0000, 0, 0, 0, 0, 0, false),
+    ];
+    attributes
+        .iter()
+        .map(
+            |&(size, policy, flags, nice, priority, runtime, deadline, period, tail)| {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(&size.to_le_bytes());
+                bytes.extend_from_slice(&policy.to_le_bytes());
+                bytes.extend_from_slice(&flags.to_le_bytes());
+                bytes.extend_from_slice(&nice.to_le_bytes());
+                bytes.extend_from_slice(&priority.to_le_bytes());
+                bytes.extend_from_slice(&runtime.to_le_bytes());
+                bytes.extend_from_slice(&deadline.to_le_bytes());
+                bytes.extend_from_slice(&period.to_le_bytes());
+                bytes.extend_from_slice(&[0; 8]);
+                if tail {
+                    bytes.extend_from_slice(&[0, 0, 0, 1]);
+                }
+                bytes
+            },
+        )
+        .collect()
+}
+
+/// Extended attribute names calls choose from, each ending in a zero byte: every namespace, names
+/// with nothing after the prefix, the longest name Linux takes and one longer.
+fn xattr_names() -> Vec<Vec<u8>> {
+    let mut names: Vec<Vec<u8>> = [
+        "user.a",
+        "user.b",
+        "user.",
+        "trusted.a",
+        "security.a",
+        "security.capability",
+        "security.",
+        "system.posix_acl_access",
+        "system.posix_acl_default",
+        "system.a",
+        "other.a",
+        "",
+    ]
+    .iter()
+    .map(|name| name.as_bytes().to_vec())
+    .collect();
+    let mut longest = b"user.".to_vec();
+    longest.resize(255, b'x');
+    names.push(longest.clone());
+    longest.push(b'x');
+    names.push(longest);
+    for name in &mut names {
+        name.push(0);
+    }
+    names
+}
+
+fn xattr_name_offset(index: usize) -> u64 {
+    xattr_names()[..index]
+        .iter()
+        .map(|name| name.len() as u64)
+        .sum()
+}
+
+/// One call: its number and six raw arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Call {
+    pub number: u32,
+    pub arguments: [u64; 6],
+}
+
+#[derive(Clone, Debug)]
+pub struct Sequence {
+    pub arena: Vec<u8>,
+    pub calls: Vec<Call>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallResult {
+    pub value: i64,
+    /// Changed ranges of the arena: offset and the bytes now there.
+    pub changes: Vec<(u32, Vec<u8>)>,
+    /// The call's result depends on what the two runners cannot share: a directory that outlives
+    /// the sequence (`/dev/shm` or `/dev`, whose offsets in the reference count every entry earlier
+    /// sequences made), or a working directory in `/proc` (whose path names the caller's process
+    /// number, and so differs in length), or a read of a random device that moved less than it was
+    /// asked for (where a copy that meets a fault stops differs, a known gap). Only the reference
+    /// reports it.
+    pub unshared: bool,
+    /// The call put a random device's bytes in memory or a file, which the reference's runner then
+    /// zeroed (see `clear_random` in the runner); ours does the same when the reference says so.
+    pub random: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SequenceResult {
+    pub calls: Vec<CallResult>,
+    /// The wait status of the process that made the calls.
+    pub status: i32,
+    /// The play area after the last call, read by process_vm_readv: for each page whether it could
+    /// be read, then its bytes (zeros when not). None when the process did not reach the end.
+    pub play: Option<Vec<u8>>,
+}
+
+/// The size of a play area record: a byte and the bytes of each page.
+const PLAY_RECORD: usize = PLAY_PAGES as usize * 4097;
+
+fn path_offsets() -> (Vec<u8>, Vec<u64>) {
+    let mut bytes = Vec::new();
+    let mut offsets = Vec::new();
+    for path in PATH_POOL {
+        offsets.push(PATHS + bytes.len() as u64);
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+    }
+    // A name longer than Linux allows, then a path longer than Linux allows.
+    offsets.push(PATHS + bytes.len() as u64);
+    bytes.extend(std::iter::repeat_n(b'n', 300));
+    bytes.push(0);
+    offsets.push(PATHS + bytes.len() as u64);
+    for _ in 0..1100 {
+        bytes.extend_from_slice(b"abc/");
+    }
+    bytes.push(0);
+    assert!(
+        PATHS + (bytes.len() as u64) <= UNAME,
+        "the paths reach uname's area"
+    );
+    (bytes, offsets)
+}
+
+/// A generated call before its arguments are decoded: which kind, and random words to pick them with.
+pub type Raw = (u8, [u64; 6]);
+
+/// Builds a sequence from generated parts: the arena's random values and the calls. The first two calls
+/// always make and enter the work directory.
+pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
+    let (paths, path_at) = path_offsets();
+    let mut arena = vec![0u8; OUTPUT as usize];
+    arena[..paths.len()].copy_from_slice(&paths);
+    // Sixteen vectors for readv and writev, each pointing into the output area or somewhere bad.
+    for index in 0..16u64 {
+        let word = values.get(index as usize).copied().unwrap_or(0);
+        let base = match word % 5 {
+            0 => 0,
+            1 => PLAY + (word >> 8) % (PLAY_PAGES * 4096),
+            _ => ARENA + OUTPUT + (word >> 8) % 0x8000,
+        };
+        let length = match (word >> 40) % 4 {
+            0 => 0,
+            1 => (word >> 44) % 16,
+            2 => (word >> 44) % 4096,
+            _ => (word >> 44) % 0x3000,
+        };
+        let at = (IOVECS + index * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&base.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&length.to_le_bytes());
+    }
+    // Eight entries for ppoll: a descriptor and the events asked for.
+    for index in 0..8u64 {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(17);
+        let fd = [3i32, 4, 5, -1, 100, 3, 6, 4][(word % 8) as usize];
+        let events = (word >> 8) as u16;
+        let at = (POLLS + index * 8) as usize;
+        arena[at..at + 4].copy_from_slice(&fd.to_le_bytes());
+        arena[at + 4..at + 6].copy_from_slice(&events.to_le_bytes());
+    }
+    // Record lock requests: each kind, origin, start and length, and sometimes a process number
+    // (which open file locks refuse).
+    for index in 0..FLOCK_COUNT {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(29);
+        let kind: i16 = [0, 1, 2, 0, 1, 7][(word % 6) as usize];
+        let whence: i16 = [0, 0, 0, 1, 2, 3][((word >> 4) % 6) as usize];
+        let start: i64 = [0, 0, 1, 5, 100, -1, i64::MAX, 4096][((word >> 8) % 8) as usize];
+        let length: i64 = [0, 1, 1, 10, -3, 4096, i64::MAX, -1][((word >> 12) % 8) as usize];
+        let pid: i32 = if (word >> 16) % 8 == 0 { 5 } else { 0 };
+        let at = (FLOCKS + index * 32) as usize;
+        arena[at..at + 2].copy_from_slice(&kind.to_le_bytes());
+        arena[at + 2..at + 4].copy_from_slice(&whence.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&start.to_le_bytes());
+        arena[at + 16..at + 24].copy_from_slice(&length.to_le_bytes());
+        arena[at + 24..at + 28].copy_from_slice(&pid.to_le_bytes());
+    }
+    // Values calls read: times, limits, masks, chosen to include the special ones. The last eight hold
+    // the four sleeps `nanosleep` chooses from: short, none, and two invalid ones.
+    for index in 0..56u64 {
+        let word = values.get(16 + index as usize).copied().unwrap_or(0);
+        let value = match word % 8 {
+            0 => 0,
+            1 => (word >> 8) % 1_000_000_000,
+            2 => linux::UTIME_NOW as u64,
+            3 => linux::UTIME_OMIT as u64,
+            4 => u64::MAX,
+            5 => (word >> 8) % 100_000,
+            _ => word >> 8,
+        };
+        let at = (VALUES + index * 8) as usize;
+        arena[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    let sleeps: [(i64, i64); 4] = [(0, 1000), (0, 0), (0, 1_000_000_000), (-1, 0)];
+    for (index, (seconds, nanoseconds)) in sleeps.iter().enumerate() {
+        let at = (VALUES + 56 * 8 + index as u64 * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&seconds.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&nanoseconds.to_le_bytes());
+    }
+    // Limits for RLIMIT_CPU and RLIMIT_FSIZE, all too large to be reached. Reaching either sends a
+    // signal that ends the reference's caller but not ours, the container's first process, which Linux
+    // keeps from signals it has no handler for; and a CPU limit is reached at a moment that depends on
+    // the machine's speed.
+    let infinity = linux::RLIM_INFINITY as u64;
+    let unreached_limits: [(u64, u64); 4] = [
+        (1 << 40, infinity),
+        (1 << 40, 1 << 41),
+        (1 << 41, 1 << 40),
+        (infinity, infinity),
+    ];
+    for (index, (current, maximum)) in unreached_limits.iter().enumerate() {
+        let at = (UNREACHED_LIMITS + index as u64 * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&current.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&maximum.to_le_bytes());
+    }
+    // CPU sets for sched_setaffinity, each with CPU 0: the guest is told it has one CPU.
+    for (index, mask) in [1u64, 3, u64::MAX, 0x11].iter().enumerate() {
+        let at = (CPU_MASKS + index as u64 * 8) as usize;
+        arena[at..at + 8].copy_from_slice(&mask.to_le_bytes());
+    }
+    // Descriptor sets name only descriptors 3 to 7 (0 to 2 differ between the runners) and one far
+    // past them.
+    for index in 0..4u64 {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(29);
+        let at = (FD_SETS + index * 16) as usize;
+        arena[at] = (word as u8) & 0xf8;
+        arena[at + 12] = if word >> 60 == 0 { 0x10 } else { 0 };
+    }
+    let packs: [(u64, u64); 3] = [(ARENA + VALUES, 8), (ARENA + VALUES, 16), (0, 8)];
+    for (index, (address, size)) in packs.iter().enumerate() {
+        let at = (MASK_PACKS + index as u64 * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&address.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&size.to_le_bytes());
+    }
+    for index in 0..4u64 {
+        let word = values
+            .get(4 + index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(41);
+        let flags = open_flag_bits(word);
+        let mode = pick(&[0u64, 0o644, 0o10000, 0o777], word >> 40);
+        // Only `resolve` values whose meaning does not depend on what Linux happens to have cached, and
+        // none of the restricted lookups (not built).
+        let resolve = pick(&[0u64, 0, 0x18, 0x40], word >> 44);
+        let at = (HOWS + index * 32) as usize;
+        arena[at..at + 8].copy_from_slice(&flags.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&mode.to_le_bytes());
+        arena[at + 16..at + 24].copy_from_slice(&resolve.to_le_bytes());
+        arena[at + 24] = u8::from(word >> 50 == 0);
+    }
+    for (index, priority) in [0i32, 1, 50, 99, 100, -1].iter().enumerate() {
+        let at = (PRIORITIES + index as u64 * 4) as usize;
+        arena[at..at + 4].copy_from_slice(&priority.to_le_bytes());
+    }
+    for (index, name) in xattr_names().iter().enumerate() {
+        let at = (XATTR_NAMES + xattr_name_offset(index)) as usize;
+        arena[at..at + name.len()].copy_from_slice(name);
+    }
+    for (index, room) in HANDLE_ROOMS.iter().enumerate() {
+        let at = (HANDLES + index as u64 * 128) as usize;
+        arena[at..at + 4].copy_from_slice(&room.to_le_bytes());
+    }
+    for (index, attributes) in sched_attrs().iter().enumerate() {
+        let at = (SCHED_ATTRS + index as u64 * 128) as usize;
+        arena[at..at + attributes.len()].copy_from_slice(attributes);
+    }
+    // Alternate signal stacks in the play area, never holding either caller's stack pointer (which
+    // differ): enough, too small, disabled, given up in handlers, already on it, and unknown flags.
+    let stacks: [(u64, i32, u64); 6] = [
+        (PLAY, 0, 8192),
+        (PLAY, 0, 1024),
+        (0, linux::SS_DISABLE as i32, 0),
+        (PLAY, linux::SS_AUTODISARM as i32, 65536),
+        (PLAY + 4096, linux::SS_ONSTACK as i32, 1 << 20),
+        (PLAY, 3, 8192),
+    ];
+    for (index, (base, flags, size)) in stacks.iter().enumerate() {
+        let at = (SIGNAL_STACKS + index as u64 * 24) as usize;
+        arena[at..at + 8].copy_from_slice(&base.to_le_bytes());
+        arena[at + 8..at + 12].copy_from_slice(&flags.to_le_bytes());
+        arena[at + 16..at + 24].copy_from_slice(&size.to_le_bytes());
+    }
+    // Stack limits no larger than 1 GiB: in our 4 GiB address space nothing lies between the stack and
+    // the play area, so a larger one would let the stack grow down to it, which the reference's layout
+    // never allows.
+    let stack_limits: [(u64, u64); 4] = [
+        (8 << 20, infinity),
+        (1 << 20, 1 << 30),
+        (1 << 30, 1 << 30),
+        (0, infinity),
+    ];
+    for (index, (current, maximum)) in stack_limits.iter().enumerate() {
+        let at = (STACK_LIMITS + index as u64 * 16) as usize;
+        arena[at..at + 8].copy_from_slice(&current.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&maximum.to_le_bytes());
+    }
+    for (index, value) in XATTR_VALUE_POOL.iter().enumerate() {
+        let at = (XATTR_VALUES + index as u64 * 32) as usize;
+        arena[at..at + value.len()].copy_from_slice(value);
+    }
+    for (index, words) in ioctl_arguments().iter().enumerate() {
+        let at = (IOCTL_ARGS + index as u64 * 64) as usize;
+        for (offset, word) in words.iter().enumerate() {
+            arena[at + offset * 8..at + offset * 8 + 8].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+    let mut calls = vec![
+        Call {
+            number: linux::__NR_mkdirat,
+            arguments: [linux::AT_FDCWD as u64, ARENA + path_at[0], 0o777, 0, 0, 0],
+        },
+        Call {
+            number: linux::__NR_chdir,
+            arguments: [ARENA + path_at[0], 0, 0, 0, 0, 0],
+        },
+    ];
+    // Half the sequences may install seccomp filters, which needs no_new_privs (Docker's root lacks
+    // CAP_SYS_ADMIN).
+    if values
+        .get(FILTER_VALUES + FILTER_WORDS * FILTER_COUNT as usize)
+        .copied()
+        .unwrap_or(0)
+        % 2
+        == 1
+    {
+        calls.push(Call {
+            number: linux::__NR_prctl,
+            arguments: [
+                u64::from(linux_raw_sys::prctl::PR_SET_NO_NEW_PRIVS),
+                1,
+                0,
+                0,
+                0,
+                0,
+            ],
+        });
+    }
+    calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
+    // Each filter first lets through every call the runners make themselves between and after the
+    // sequence's calls (to report, to ask what a descriptor is, to zero bytes, to read the play area),
+    // whose arguments (process numbers, the runners' own buffers) differ between them, and every call
+    // of the sequence that names a process.
+    let mut passed = vec![
+        linux::__NR_write,
+        linux::__NR_exit_group,
+        linux::__NR_name_to_handle_at,
+        linux::__NR_readlinkat,
+        linux::__NR_fstat,
+        linux::__NR_lseek,
+        linux::__NR_pwrite64,
+        linux::__NR_process_vm_readv,
+        linux::__NR_process_vm_writev,
+    ];
+    for call in &calls {
+        if call.arguments.contains(&SELF) && !passed.contains(&call.number) {
+            passed.push(call.number);
+        }
+    }
+    for index in 0..FILTER_COUNT {
+        let start = FILTER_VALUES + FILTER_WORDS * index as usize;
+        let words: Vec<u64> = (start..start + FILTER_WORDS)
+            .map(|at| values.get(at).copied().unwrap_or(0))
+            .collect();
+        let program = filter_program(&words, &passed);
+        let at = (FILTERS + index * FILTER_SPACING) as usize;
+        arena[at..at + program.len()].copy_from_slice(&program);
+        let fprog = (FPROGS + index * 16) as usize;
+        arena[fprog..fprog + 2].copy_from_slice(&((program.len() / 8) as u16).to_le_bytes());
+        arena[fprog + 8..fprog + 16]
+            .copy_from_slice(&(ARENA + FILTERS + index * FILTER_SPACING).to_le_bytes());
+    }
+    let odd: [(u16, u64); 4] = [
+        (0, ARENA + FILTERS),
+        (4097, ARENA + FILTERS),
+        (1, 0),
+        (2, u64::MAX - 4095),
+    ];
+    for (index, (length, address)) in odd.iter().enumerate() {
+        let fprog = (FPROGS + (FILTER_COUNT + index as u64) * 16) as usize;
+        arena[fprog..fprog + 2].copy_from_slice(&length.to_le_bytes());
+        arena[fprog + 8..fprog + 16].copy_from_slice(&address.to_le_bytes());
+    }
+    for (index, action) in SECCOMP_ACTIONS.iter().enumerate() {
+        let at = (ACTIONS + index as u64 * 4) as usize;
+        arena[at..at + 4].copy_from_slice(&action.to_le_bytes());
+    }
+    Sequence { arena, calls }
+}
+
+/// Filter answers: every action, an ERRNO past Linux's largest, data on actions that take none, and
+/// values that are no action.
+const SECCOMP_ACTIONS: [u32; 12] = [
+    seccomp::SECCOMP_RET_ALLOW,
+    seccomp::SECCOMP_RET_ERRNO | 13,
+    seccomp::SECCOMP_RET_ERRNO | 5000,
+    seccomp::SECCOMP_RET_LOG,
+    seccomp::SECCOMP_RET_TRACE | 1,
+    seccomp::SECCOMP_RET_USER_NOTIF,
+    seccomp::SECCOMP_RET_TRAP,
+    seccomp::SECCOMP_RET_KILL_PROCESS,
+    seccomp::SECCOMP_RET_KILL_THREAD | 7,
+    seccomp::SECCOMP_RET_ERRNO,
+    0x0001_0000,
+    0x7fff_0001,
+];
+
+/// A seccomp filter as bytes: it loads the call number and lets `passed` through, then runs up to
+/// eight instructions chosen by `words` (some of them ones Linux refuses, so that its checks are
+/// tested), then lets everything else through. It never loads the instruction pointer, which differs
+/// between the runners.
+fn filter_program(words: &[u64], passed: &[u32]) -> Vec<u8> {
+    use seccomp::*;
+    let constants = |word: u64| -> u32 {
+        pick(
+            &[
+                0,
+                1,
+                2,
+                3,
+                31,
+                32,
+                0xfff,
+                u32::MAX,
+                0x8000_0000,
+                AUDIT_ARCH_AARCH64,
+                linux::__NR_openat,
+                linux::__NR_close,
+                linux::__NR_getpid,
+                ARENA as u32,
+                (word >> 32) as u32,
+            ],
+            word,
+        )
+    };
+    let jumps = |word: u64| pick(&[0u8, 0, 1, 2, 3], word);
+    let body_length = 1 + (words[0] % 8) as usize;
+    let mut body: Vec<(u16, u8, u8, u32)> = Vec::new();
+    // Scratch words stored so far, so that most loads from scratch memory are valid.
+    let mut stored: Vec<u32> = Vec::new();
+    for (index, &word) in words[1..=body_length].iter().enumerate() {
+        // One instruction in sixteen is one Linux refuses.
+        let broken = (word >> 60) == 0;
+        let w = word >> 4;
+        let x_or_k = if w & 1 == 0 { BPF_K } else { BPF_X };
+        // How far a jump from here may go and still land in the program.
+        let reach = (body_length - 1 - index) as u32;
+        let mut instruction = match word % 16 {
+            0..=2 => (
+                BPF_LD | BPF_W | BPF_ABS,
+                0,
+                0,
+                if broken {
+                    pick(&[2u32, 64, 0xffff_f000, 62], w >> 1)
+                } else {
+                    pick(&[0u32, 4, 16, 20, 24, 28, 32, 40, 56, 60], w >> 1)
+                },
+            ),
+            3 => (BPF_LD | BPF_IMM, 0, 0, constants(w)),
+            4 => (BPF_LDX | BPF_IMM, 0, 0, constants(w)),
+            5 if !stored.is_empty() || broken => (
+                pick(&[BPF_LD | BPF_MEM, BPF_LDX | BPF_MEM], w),
+                0,
+                0,
+                if broken {
+                    pick(&[16u32, 3], w >> 1)
+                } else {
+                    pick(&stored, w >> 1)
+                },
+            ),
+            5 | 6 => {
+                let slot = if broken {
+                    16
+                } else {
+                    pick(&[0u32, 1, 15], w >> 1)
+                };
+                stored.push(slot);
+                (pick(&[BPF_ST, BPF_STX], w), 0, 0, slot)
+            }
+            7 => (
+                pick(
+                    &[BPF_MISC | BPF_TAX, BPF_MISC | BPF_TXA, BPF_ALU | BPF_NEG],
+                    w,
+                ),
+                0,
+                0,
+                0,
+            ),
+            8 | 9 => {
+                let operation = if broken {
+                    pick(&[BPF_MOD, BPF_DIV, BPF_LSH], w >> 1)
+                } else {
+                    pick(
+                        &[
+                            BPF_ADD, BPF_SUB, BPF_MUL, BPF_DIV, BPF_OR, BPF_AND, BPF_XOR, BPF_LSH,
+                            BPF_RSH,
+                        ],
+                        w >> 1,
+                    )
+                };
+                let k = if broken && operation != BPF_MOD {
+                    pick(&[0u32, 32, 33], w >> 5)
+                } else {
+                    constants(w >> 5)
+                };
+                (BPF_ALU | x_or_k | operation, 0, 0, k)
+            }
+            10 => (BPF_JMP | BPF_JA, 0, 0, pick(&[0u32, 1, 2, 3], w)),
+            11 | 12 => (
+                BPF_JMP | x_or_k | pick(&[BPF_JEQ, BPF_JGT, BPF_JGE, BPF_JSET], w >> 1),
+                jumps(w >> 3),
+                jumps(w >> 7),
+                constants(w >> 11),
+            ),
+            13 | 15 if !broken => (BPF_RET | BPF_K, 0, 0, pick(&SECCOMP_ACTIONS, w)),
+            14 => (BPF_RET | BPF_A, 0, 0, 0),
+            _ => (
+                (w & 0xffff) as u32,
+                (w >> 16) as u8,
+                (w >> 24) as u8,
+                (w >> 32) as u32,
+            ),
+        };
+        // Jumps past the end, unless this one is to be refused.
+        if instruction.0 & 7 == BPF_JMP {
+            if broken {
+                instruction.1 = instruction.1.saturating_add(reach as u8 + 1);
+                instruction.3 = instruction.3.wrapping_add(reach + 1);
+            } else {
+                instruction.1 = instruction.1.min(reach as u8);
+                instruction.2 = instruction.2.min(reach as u8);
+                if instruction.0 == BPF_JMP | BPF_JA {
+                    instruction.3 = instruction.3.min(reach);
+                }
+            }
+        }
+        let (code, jt, jf, k) = instruction;
+        body.push((code as u16, jt, jf, k));
+    }
+    let total = 1 + passed.len() + body.len() + 1;
+    let mut program = vec![((BPF_LD | BPF_W | BPF_ABS) as u16, 0u8, 0u8, 0u32)];
+    for (index, number) in passed.iter().enumerate() {
+        let to_end = (total - 1) - (1 + index) - 1;
+        program.push(((BPF_JMP | BPF_JEQ | BPF_K) as u16, to_end as u8, 0, *number));
+    }
+    program.extend(body);
+    program.push(((BPF_RET | BPF_K) as u16, 0, 0, SECCOMP_RET_ALLOW));
+    let mut bytes = Vec::new();
+    for (code, jt, jf, k) in program {
+        bytes.extend_from_slice(&code.to_le_bytes());
+        bytes.push(jt);
+        bytes.push(jf);
+        bytes.extend_from_slice(&k.to_le_bytes());
+    }
+    bytes
+}
+
+/// Flags for an open, each bit present one time in eight.
+fn open_flag_bits(word: u64) -> u64 {
+    let bits = [
+        linux::O_WRONLY,
+        linux::O_RDWR,
+        linux::O_CREAT,
+        linux::O_EXCL,
+        linux::O_TRUNC,
+        linux::O_APPEND,
+        linux::O_DIRECTORY,
+        linux::O_NOFOLLOW,
+        linux::O_CLOEXEC,
+        linux::O_PATH,
+        linux::O_NONBLOCK,
+        linux::O_CREAT,
+        linux::FASYNC,
+        linux::O_DIRECT,
+        linux::O_NOATIME,
+    ];
+    let mut flags = 0;
+    for (index, bit) in bits.iter().enumerate() {
+        if (word >> (index * 3)) & 7 == 0 {
+            flags |= bit;
+        }
+    }
+    u64::from(flags)
+}
+
+/// A CPU clock id as Linux's `CPUCLOCK_*` encode it: a process or thread number (0 for the caller's
+/// own), and the clock's low three bits (which time, and whether a thread's).
+const fn cpu_clock(pid: i64, bits: i64) -> u64 {
+    ((!pid << 3) | bits) as u64
+}
+
+/// Clock ids: every fixed one Linux has and some it has not, and CPU clocks of the caller's process
+/// and thread for each time, a clock device on descriptor 0, and a process that does not exist.
+/// Process 1 is left out: it is our caller, but not the reference's.
+const CLOCKS: &[u64] = &[
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    99,
+    cpu_clock(0, 0),
+    cpu_clock(0, 1),
+    cpu_clock(0, 2),
+    cpu_clock(0, 3),
+    cpu_clock(0, 4),
+    cpu_clock(0, 5),
+    cpu_clock(0, 6),
+    cpu_clock(0, 7),
+    cpu_clock(99999, 2),
+    cpu_clock(99999, 6),
+];
+
+/// The process CPU clocks slept on: a relative sleep on one never ends (it does not move while the
+/// caller sleeps), so they are only slept on until a time already past. The profiling and user time
+/// clocks are left out of sleeps: Linux samples them at ticks, so a young process's may still be 0.
+const PROCESS_CPU_CLOCKS: &[u64] = &[2, cpu_clock(0, 2)];
+
+const SLEEP_CLOCKS: &[u64] = &[
+    0,
+    1,
+    2,
+    3,
+    7,
+    8,
+    9,
+    99,
+    cpu_clock(0, 2),
+    cpu_clock(0, 3),
+    cpu_clock(0, 6),
+    cpu_clock(0, 7),
+    cpu_clock(99999, 2),
+];
+
+fn pick<T: Copy>(pool: &[T], word: u64) -> T {
+    pool[(word % pool.len() as u64) as usize]
+}
+
+/// The calls layer 1 makes, by number.
+pub const CALLS: &[u32] = &[
+    linux::__NR_openat,
+    linux::__NR_close,
+    linux::__NR_read,
+    linux::__NR_write,
+    linux::__NR_pread64,
+    linux::__NR_pwrite64,
+    linux::__NR_readv,
+    linux::__NR_writev,
+    linux::__NR_lseek,
+    linux::__NR_getdents64,
+    linux::__NR_dup,
+    linux::__NR_dup3,
+    linux::__NR_fcntl,
+    linux::__NR_ioctl,
+    linux::__NR_fsync,
+    linux::__NR_mkdirat,
+    linux::__NR_mknodat,
+    linux::__NR_symlinkat,
+    linux::__NR_linkat,
+    linux::__NR_unlinkat,
+    linux::__NR_renameat2,
+    linux::__NR_readlinkat,
+    linux::__NR_newfstatat,
+    linux::__NR_fstat,
+    linux::__NR_statx,
+    linux::__NR_faccessat2,
+    linux::__NR_fchmod,
+    linux::__NR_fchmodat,
+    linux::__NR_fchownat,
+    linux::__NR_utimensat,
+    linux::__NR_truncate,
+    linux::__NR_ftruncate,
+    linux::__NR_fallocate,
+    linux::__NR_getcwd,
+    linux::__NR_chdir,
+    linux::__NR_fchdir,
+    linux::__NR_umask,
+    linux::__NR_fstatfs,
+    linux::__NR_sendfile,
+    linux::__NR_mmap,
+    linux::__NR_munmap,
+    linux::__NR_mprotect,
+    linux::__NR_madvise,
+    linux::__NR_uname,
+    linux::__NR_getuid,
+    linux::__NR_geteuid,
+    linux::__NR_getgid,
+    linux::__NR_getegid,
+    linux::__NR_getgroups,
+    linux::__NR_setresuid,
+    linux::__NR_setresgid,
+    linux::__NR_prlimit64,
+    linux::__NR_clock_gettime,
+    linux::__NR_clock_getres,
+    linux::__NR_getrandom,
+    linux::__NR_rt_sigprocmask,
+    linux::__NR_rt_sigaction,
+    linux::__NR_sigaltstack,
+    linux::__NR_prctl,
+    linux::__NR_sched_getaffinity,
+    linux::__NR_nanosleep,
+    linux::__NR_capget,
+    linux::__NR_getpid,
+    linux::__NR_getppid,
+    linux::__NR_gettid,
+    linux::__NR_getpgid,
+    linux::__NR_getsid,
+    linux::__NR_getresuid,
+    linux::__NR_getresgid,
+    linux::__NR_setuid,
+    linux::__NR_setgid,
+    linux::__NR_setreuid,
+    linux::__NR_setregid,
+    linux::__NR_setfsuid,
+    linux::__NR_setfsgid,
+    linux::__NR_setgroups,
+    linux::__NR_getrlimit,
+    linux::__NR_setrlimit,
+    linux::__NR_times,
+    linux::__NR_gettimeofday,
+    linux::__NR_clock_nanosleep,
+    linux::__NR_sysinfo,
+    linux::__NR_getrusage,
+    linux::__NR_getcpu,
+    linux::__NR_statfs,
+    linux::__NR_faccessat,
+    linux::__NR_fchmodat2,
+    linux::__NR_fchown,
+    linux::__NR_renameat,
+    linux::__NR_preadv,
+    linux::__NR_pwritev,
+    linux::__NR_fdatasync,
+    linux::__NR_ppoll,
+    linux::__NR_set_robust_list,
+    linux::__NR_rt_sigpending,
+    linux::__NR_personality,
+    linux::__NR_sched_yield,
+    linux::__NR_getpriority,
+    linux::__NR_kill,
+    linux::__NR_tkill,
+    linux::__NR_tgkill,
+    linux::__NR_setpgid,
+    linux::__NR_setsid,
+    linux::__NR_chroot,
+    linux::__NR_sethostname,
+    linux::__NR_setdomainname,
+    linux::__NR_sync,
+    linux::__NR_syncfs,
+    linux::__NR_get_robust_list,
+    linux::__NR_set_tid_address,
+    linux::__NR_sched_getparam,
+    linux::__NR_sched_getscheduler,
+    linux::__NR_sched_setaffinity,
+    linux::__NR_exit,
+    linux::__NR_exit_group,
+    linux::__NR_execve,
+    linux::__NR_msync,
+    linux::__NR_mremap,
+    linux::__NR_capset,
+    linux::__NR_close_range,
+    linux::__NR_preadv2,
+    linux::__NR_pwritev2,
+    linux::__NR_copy_file_range,
+    linux::__NR_fadvise64,
+    linux::__NR_readahead,
+    linux::__NR_sync_file_range,
+    linux::__NR_pselect6,
+    linux::__NR_flock,
+    linux::__NR_openat2,
+    linux::__NR_setpriority,
+    linux::__NR_sched_setscheduler,
+    linux::__NR_sched_setparam,
+    linux::__NR_sched_get_priority_max,
+    linux::__NR_sched_get_priority_min,
+    linux::__NR_mlock,
+    linux::__NR_mlock2,
+    linux::__NR_munlock,
+    linux::__NR_mlockall,
+    linux::__NR_munlockall,
+    linux::__NR_setxattr,
+    linux::__NR_lsetxattr,
+    linux::__NR_fsetxattr,
+    linux::__NR_getxattr,
+    linux::__NR_lgetxattr,
+    linux::__NR_fgetxattr,
+    linux::__NR_listxattr,
+    linux::__NR_llistxattr,
+    linux::__NR_flistxattr,
+    linux::__NR_removexattr,
+    linux::__NR_lremovexattr,
+    linux::__NR_fremovexattr,
+    linux::__NR_memfd_create,
+    linux::__NR_sched_setattr,
+    linux::__NR_sched_getattr,
+    linux::__NR_sched_rr_get_interval,
+    linux::__NR_mincore,
+    linux::__NR_ioprio_get,
+    linux::__NR_ioprio_set,
+    linux::__NR_execveat,
+    linux::__NR_pkey_mprotect,
+    linux::__NR_pkey_alloc,
+    linux::__NR_pkey_free,
+    linux::__NR_map_shadow_stack,
+    linux::__NR_rseq,
+    linux::__NR_membarrier,
+    linux::__NR_acct,
+    linux::__NR_vhangup,
+    linux::__NR_swapoff,
+    linux::__NR_init_module,
+    linux::__NR_finit_module,
+    linux::__NR_reboot,
+    linux::__NR_syslog,
+    linux::__NR_fsopen,
+    linux::__NR_fspick,
+    linux::__NR_fsmount,
+    linux::__NR_move_mount,
+    linux::__NR_process_vm_readv,
+    linux::__NR_process_vm_writev,
+    linux::__NR_cachestat,
+    linux::__NR_name_to_handle_at,
+    linux::__NR_memfd_secret,
+    // Three times, since most of its sequences need several filters to show anything.
+    linux::__NR_seccomp,
+    linux::__NR_seccomp,
+    linux::__NR_seccomp,
+    // Three more times, since the play area is mapped only by it and most of its calls fail.
+    linux::__NR_mmap,
+    linux::__NR_mmap,
+    linux::__NR_mmap,
+    // Three more times, since most calls need an open file.
+    linux::__NR_openat,
+    linux::__NR_openat,
+    linux::__NR_openat,
+];
+
+/// Turns a generated call into real arguments.
+fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
+    let number = CALLS[*kind as usize % CALLS.len()];
+    let [a, b, c, d, e, f] = *words;
+    let path = |word: u64| ARENA + pick(path_at, word);
+    let fd = |word: u64| pick(&[3u64, 3, 4, 4, 5, 6, u64::MAX, 100], word);
+    let dirfd = |word: u64| {
+        pick(
+            &[linux::AT_FDCWD as u64, linux::AT_FDCWD as u64, 3, 4, 5, 100],
+            word,
+        )
+    };
+    let buffer = |word: u64| match word % 8 {
+        0 => 0,
+        1 => PLAY + (word >> 8) % (PLAY_PAGES * 4096),
+        2 => u64::MAX - 4095,
+        _ => ARENA + OUTPUT + (word >> 8) % 0x8000,
+    };
+    // Mostly the generated filters, else the odd ones and bad addresses.
+    let fprog = |word: u64| match word % 16 {
+        0..=9 => ARENA + FPROGS + (word >> 4) % FILTER_COUNT * 16,
+        10..=13 => {
+            ARENA + FPROGS + (FILTER_COUNT + (word >> 4) % (FPROG_COUNT - FILTER_COUNT)) * 16
+        }
+        14 => 0,
+        _ => buffer(word >> 4),
+    };
+    let count = |word: u64| {
+        pick(
+            &[0u64, 1, 7, 64, 300, 4096, 5000, 0x9000, u64::MAX, 1 << 40],
+            word,
+        )
+    };
+    let offset = |word: u64| {
+        pick(
+            &[
+                0u64,
+                1,
+                3,
+                100,
+                4096,
+                5000,
+                1 << 20,
+                u64::MAX,
+                (1 << 63) - 1,
+            ],
+            word,
+        )
+    };
+    let mode = |word: u64| word % 0o10000;
+    let open_flags = open_flag_bits;
+    let at_flags = |word: u64| {
+        u64::from(pick(
+            &[
+                0,
+                0,
+                linux::AT_SYMLINK_NOFOLLOW,
+                linux::AT_EMPTY_PATH,
+                linux::AT_REMOVEDIR,
+                linux::AT_SYMLINK_FOLLOW,
+                0x8000_0000,
+            ],
+            word,
+        ))
+    };
+    // The stat calls take a null path with AT_EMPTY_PATH as an empty one, which with a descriptor
+    // ignores the other flags.
+    let stat_path = |word: u64| {
+        if word.is_multiple_of(8) {
+            0
+        } else {
+            path(word)
+        }
+    };
+    let stat_flags =
+        |word: u64| at_flags(word) | u64::from(pick(&[0, 0, 0, linux::AT_EMPTY_PATH], word >> 8));
+    let value = |word: u64| ARENA + VALUES + (word % 52) * 8;
+    // A new limit for a resource: CPU and file size limits only from the ones never reached.
+    let new_limit = |resource: u64, word: u64| {
+        // A process limit counts every process of the user on the whole machine, which the reference
+        // shares with other runs.
+        if resource == u64::from(linux::RLIMIT_CPU)
+            || resource == u64::from(linux::RLIMIT_FSIZE)
+            || resource == u64::from(linux::RLIMIT_NPROC)
+        {
+            ARENA + UNREACHED_LIMITS + (word % 4) * 16
+        } else if resource == u64::from(linux::RLIMIT_STACK) {
+            ARENA + STACK_LIMITS + (word % 4) * 16
+        } else if resource == u64::from(linux::RLIMIT_CORE) {
+            // No core size limit above zero: core dumps are not written (counted).
+            ARENA + NULLS
+        } else {
+            value(word)
+        }
+    };
+    // Some carry a top byte tag, which arm64 Linux's memory calls strip and the others do not.
+    let play = |word: u64| {
+        let tag = pick(&[0u64, 0, 0, 0, 0, 0, 0x5a << 56, 0xff << 56], word >> 56);
+        (PLAY + ((word % (PLAY_PAGES + 2)) * 4096) + if word >> 60 == 0 { 1 } else { 0 }) | tag
+    };
+    // Lengths that reach memory stay below the program's own mappings, which lie higher here (in a
+    // 4 GiB address space) than in the reference. The last three reach none: rounded up to a page
+    // they wrap to 0 or overflow the address.
+    let play_length = |word: u64| {
+        pick(
+            &[
+                0u64,
+                1,
+                4096,
+                8192,
+                3 * 4096,
+                PLAY_PAGES * 4096,
+                1 << 28,
+                u64::MAX,
+                u64::MAX - 4094,
+                u64::MAX - 8191,
+            ],
+            word,
+        )
+    };
+    // Signals whose default action is the same for the container's first process (our caller) and for
+    // any other (the reference's caller): nothing, or a refusal of the number.
+    let signal = |word: u64| pick(&[0u64, 17, 18, 23, 28, 65], word);
+    let prot = |word: u64| (word % 8) | if word >> 62 == 3 { 0x100 } else { 0 };
+    let arguments = match number {
+        // One open in eight names a random device, so that later reads reach their bytes.
+        linux::__NR_openat if b % 8 == 0 => {
+            let device = pick(&["/dev/random", "/dev/urandom"], b >> 3);
+            [
+                dirfd(a),
+                ARENA + PATHS + path_offset(device),
+                open_flags(c),
+                mode(d),
+                0,
+                0,
+            ]
+        }
+        linux::__NR_openat => [dirfd(a), path(b), open_flags(c), mode(d), 0, 0],
+        linux::__NR_close | linux::__NR_dup | linux::__NR_fsync | linux::__NR_fchdir => {
+            [fd(a), 0, 0, 0, 0, 0]
+        }
+        linux::__NR_read | linux::__NR_write => [fd(a), buffer(b), count(c), 0, 0, 0],
+        linux::__NR_pread64 | linux::__NR_pwrite64 => [fd(a), buffer(b), count(c), offset(d), 0, 0],
+        linux::__NR_readv | linux::__NR_writev => [
+            fd(a),
+            ARENA + IOVECS + (b % 16) * 16,
+            pick(&[0, 1, 2, 3, 16, 1025], c),
+            0,
+            0,
+            0,
+        ],
+        // The caller's own memory: both sides from the vectors readv and writev use.
+        linux::__NR_process_vm_readv | linux::__NR_process_vm_writev => {
+            // Segment lists the comparison can read: in the arena, or at a bad address.
+            let vectors = |word: u64| match word % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                2 => ARENA + OUTPUT + (word >> 3) % 0x8000,
+                _ => ARENA + IOVECS + ((word >> 3) % 16) * 16,
+            };
+            let counts = |word: u64| pick(&[0, 1, 2, 3, 16, 1025], word);
+            [
+                pick(&[SELF, SELF, SELF, 0, 99999], a),
+                vectors(b),
+                counts(c),
+                vectors(d),
+                counts(e),
+                pick(&[0, 0, 0, 1], f),
+            ]
+        }
+        linux::__NR_memfd_secret => [pick(&[0, 0, 0x80000, 1, 0x80001], a), 0, 0, 0, 0, 0],
+        linux::__NR_name_to_handle_at => [
+            dirfd(a),
+            path(b),
+            match c % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + HANDLES + (c >> 3) % HANDLE_ROOMS.len() as u64 * 128,
+            },
+            match d % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + MOUNT_NUMBER,
+            },
+            pick(
+                &[
+                    0, 0, 0x400, 0x1000, 0x200, 1, 2, 0x202, 0x1002, 4, 0x401, 0x1201,
+                ],
+                e,
+            ),
+            0,
+        ],
+        // The range from the generated values, or a bad address.
+        linux::__NR_cachestat => [
+            fd(a),
+            if b % 8 == 0 {
+                buffer(b >> 3)
+            } else {
+                value(b >> 3)
+            },
+            buffer(c),
+            pick(&[0, 0, 0, 1], d),
+            0,
+            0,
+        ],
+        linux::__NR_lseek => [fd(a), offset(b), pick(&[0, 1, 2, 3, 4, 5], c), 0, 0, 0],
+        linux::__NR_getdents64 => [
+            fd(a),
+            buffer(b),
+            pick(&[0, 10, 24, 64, 4096, 0x8000], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_dup3 => [
+            fd(a),
+            fd(b),
+            pick(&[0, linux::O_CLOEXEC as u64, 1], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_fcntl => {
+            let command = pick(
+                &[
+                    linux::F_DUPFD,
+                    linux::F_GETFD,
+                    linux::F_SETFD,
+                    linux::F_GETFL,
+                    linux::F_SETFL,
+                    linux::F_DUPFD_CLOEXEC,
+                    linux::F_ADD_SEALS,
+                    linux::F_GET_SEALS,
+                    1000,
+                    linux::F_GETOWN,
+                    linux::F_SETOWN,
+                    linux::F_GETOWN_EX,
+                    linux::F_GETSIG,
+                    linux::F_SETSIG,
+                    linux::F_GETLEASE,
+                    linux::F_GETPIPE_SZ,
+                    linux::F_SETPIPE_SZ,
+                    linux::F_GET_RW_HINT,
+                    linux::F_SET_RW_HINT,
+                    linux::F_DUPFD_QUERY,
+                    linux::F_CREATED_QUERY,
+                    // Record locks; not the forms that wait, whose waits here last for ever.
+                    linux::F_GETLK,
+                    linux::F_SETLK,
+                    linux::F_SETLK,
+                    linux::F_OFD_GETLK,
+                    linux::F_OFD_SETLK,
+                    linux::F_OFD_SETLK,
+                ],
+                b,
+            );
+            let argument = match command {
+                // Owners only of numbers in use in both runners or in neither: process and group 1,
+                // none, the smallest int and one past every process number. Setting one from a
+                // structure is compared in layer 2 (tests/options.rs): its number comes from memory.
+                linux::F_SETOWN => pick(&[0, 1, u64::MAX, 0x8000_0000, 4_000_000], c),
+                linux::F_GETOWN_EX | linux::F_GET_RW_HINT | linux::F_SET_RW_HINT => match c % 3 {
+                    0 => ARENA + VALUES + (c >> 2) % 56 * 8,
+                    _ => buffer(c >> 2),
+                },
+                linux::F_DUPFD_QUERY => fd(c),
+                linux::F_GETLK | linux::F_SETLK | linux::F_OFD_GETLK | linux::F_OFD_SETLK => {
+                    match c % 8 {
+                        0 => buffer(c >> 3),
+                        _ => ARENA + FLOCKS + (c >> 3) % FLOCK_COUNT * 32,
+                    }
+                }
+                _ => pick(
+                    &[
+                        0,
+                        1,
+                        5,
+                        100,
+                        0x800,
+                        0x400 | 0x800,
+                        u64::MAX,
+                        8,
+                        0x20,
+                        0x16,
+                        64,
+                        65,
+                    ],
+                    c,
+                ),
+            };
+            [fd(a), command.into(), argument, 0, 0, 0]
+        }
+        linux::__NR_ioctl => {
+            let request = pick(IOCTL_REQUESTS, b);
+            let argument = if request == u64::from(ioctl::FICLONE) {
+                fd(c)
+            } else if request == u64::from(ioctl::FICLONERANGE) {
+                // The range names its source descriptor, which must not be one of 0 to 2: the
+                // reference's runner reports through them.
+                pick(&[ARENA + IOCTL_ARGS + 6 * 64, 0, u64::MAX - 4095], c)
+            } else {
+                match c % 4 {
+                    0 | 1 => ARENA + IOCTL_ARGS + (c >> 2) % IOCTL_ARG_COUNT * 64,
+                    2 => ARENA + OUTPUT + (c >> 2) % 64 * 8,
+                    _ => buffer(c >> 2),
+                }
+            };
+            [fd(a), request, argument, 0, 0, 0]
+        }
+        linux::__NR_mkdirat => [dirfd(a), path(b), mode(c), 0, 0, 0],
+        linux::__NR_mknodat => {
+            // No named pipes: opening one waits for the other end, and pipes come with K2.
+            let kind = pick(&[0u64, 0o100000, 0o020000, 0o040000, 0o140000, 0o170000], c);
+            [
+                dirfd(a),
+                path(b),
+                kind | mode(d) & 0o777,
+                pick(&[0, 0x103], e),
+                0,
+                0,
+            ]
+        }
+        linux::__NR_symlinkat => [path(a), dirfd(b), path(c), 0, 0, 0],
+        linux::__NR_linkat => [dirfd(a), path(b), dirfd(c), path(d), at_flags(e), 0],
+        linux::__NR_unlinkat => [dirfd(a), path(b), at_flags(c), 0, 0, 0],
+        linux::__NR_renameat2 => [
+            dirfd(a),
+            path(b),
+            dirfd(c),
+            path(d),
+            pick(&[0, 1, 2, 3, 4], e),
+            0,
+        ],
+        linux::__NR_readlinkat => [
+            dirfd(a),
+            path(b),
+            buffer(c),
+            pick(&[0, 1, 5, 4096, u64::MAX], d),
+            0,
+            0,
+        ],
+        linux::__NR_newfstatat => [dirfd(a), stat_path(b), buffer(c), stat_flags(d), 0, 0],
+        linux::__NR_fstat => [fd(a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_statx => [
+            dirfd(a),
+            stat_path(b),
+            stat_flags(c),
+            pick(
+                &[
+                    0x7ff,
+                    0xfff,
+                    0x8000_0000,
+                    0,
+                    0x4000,
+                    0x47ff,
+                    0x1000,
+                    0x800,
+                    0x40,
+                    0x5fff,
+                ],
+                d,
+            ),
+            buffer(e),
+            0,
+        ],
+        linux::__NR_faccessat2 => [
+            dirfd(a),
+            path(b),
+            pick(&[0, 1, 2, 4, 7, 8], c),
+            pick(&[0, 0x200, 0x100, 0x1000, 1], d),
+            0,
+            0,
+        ],
+        linux::__NR_fchmod => [fd(a), mode(b), 0, 0, 0, 0],
+        linux::__NR_fchmodat => [dirfd(a), path(b), mode(c), 0, 0, 0],
+        linux::__NR_fchownat => {
+            let id = |word: u64| pick(&[0u64, 1, 1000, u32::MAX as u64], word);
+            [dirfd(a), path(b), id(c), id(d), at_flags(e), 0]
+        }
+        linux::__NR_utimensat => [
+            dirfd(a),
+            if b % 6 == 0 { 0 } else { path(b) },
+            if c % 4 == 0 { 0 } else { value(c) },
+            at_flags(d),
+            0,
+            0,
+        ],
+        linux::__NR_truncate => [path(a), offset(b) % (1 << 21), 0, 0, 0, 0],
+        linux::__NR_ftruncate => [
+            fd(a),
+            pick(&[0u64, 1, 5000, 1 << 20, u64::MAX], b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_fallocate => [
+            fd(a),
+            pick(&[0, 0, 1, 3], b),
+            offset(c) % (1 << 20),
+            pick(&[0, 1, 4096, 10000], d),
+            0,
+            0,
+        ],
+        linux::__NR_getcwd => [buffer(a), pick(&[0, 1, 5, 11, 12, 4096], b), 0, 0, 0, 0],
+        linux::__NR_chdir => [path(a), 0, 0, 0, 0, 0],
+        linux::__NR_umask => [a % 0o1000, 0, 0, 0, 0, 0],
+        linux::__NR_fstatfs => [fd(a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_sendfile => [
+            fd(a),
+            fd(b),
+            if c % 3 == 0 { value(c) } else { 0 },
+            count(d),
+            0,
+            0,
+        ],
+        linux::__NR_mmap => {
+            // The kind (private, shared, validated, droppable, none, every bit), with a file or not,
+            // where it goes, and each other flag one time in eight. Not huge pages of anonymous memory
+            // (hugetlbfs is not built); populating and locking only anonymous memory (which pages a
+            // file mapping's faults bring in is not known here).
+            let kind = pick(&[0x02u64, 0x02, 0x01, 0x01, 0x03, 0x08, 0x00, 0x0f], c);
+            let anonymous = u64::from(linux::MAP_ANONYMOUS) * ((c >> 3) % 2);
+            let place = pick(&[0x10u64, 0x10, 0x10, 0x10_0000, 0], c >> 4);
+            let mut flags = kind | anonymous | place;
+            let extras: &[u32] = &[
+                linux::MAP_GROWSDOWN,
+                linux::MAP_NORESERVE,
+                linux::MAP_NONBLOCK,
+                linux::MAP_STACK,
+                linux::MAP_HUGE_2MB,
+                linux::MAP_SYNC,
+                linux::MAP_UNINITIALIZED,
+                0x20_0000,
+                if anonymous != 0 {
+                    linux::MAP_LOCKED
+                } else {
+                    linux::MAP_HUGETLB
+                },
+                if anonymous != 0 {
+                    linux::MAP_POPULATE
+                } else {
+                    0
+                },
+            ];
+            for (index, extra) in extras.iter().enumerate() {
+                if (c >> (8 + 3 * index)).is_multiple_of(8) {
+                    flags |= u64::from(*extra);
+                }
+            }
+            [
+                play(a),
+                play_length(b),
+                prot(d),
+                flags,
+                fd(e),
+                pick(&[0, 4096, 1], f),
+            ]
+        }
+        linux::__NR_munmap => [play(a), play_length(b), 0, 0, 0, 0],
+        linux::__NR_mprotect => [play(a), play_length(b), prot(c), 0, 0, 0],
+        linux::__NR_pkey_mprotect => [
+            play(a),
+            play_length(b),
+            prot(c),
+            pick(&[0, u64::MAX, 1, 15, 16, 1 << 32, (1 << 32) - 1], d),
+            0,
+            0,
+        ],
+        linux::__NR_pkey_alloc => [
+            pick(&[0, 0, 1, 1 << 32], a),
+            pick(&[0, 1, 4, 8, 15, 16, u64::MAX], b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        // Always only a check: a program that ran would replace the reference's runner.
+        linux::__NR_execveat => {
+            let list = |word: u64| pick(&[ARENA + NULLS, 0, u64::MAX - 4095], word);
+            let flags = pick(
+                &[
+                    0,
+                    linux::AT_EMPTY_PATH,
+                    linux::AT_SYMLINK_NOFOLLOW,
+                    linux::AT_EMPTY_PATH | linux::AT_SYMLINK_NOFOLLOW,
+                    2,
+                ],
+                e,
+            );
+            [
+                dirfd(a),
+                path(b),
+                list(c),
+                list(d),
+                u64::from(flags | linux::AT_EXECVE_CHECK),
+                0,
+            ]
+        }
+        linux::__NR_pkey_free => [pick(&[0, 0, 1, u64::MAX, 1 << 32], a), 0, 0, 0, 0, 0],
+        linux::__NR_map_shadow_stack => [play(a), count(b), value(c), 0, 0, 0],
+        // No time slice extension flag (not built).
+        linux::__NR_rseq => [
+            pick(
+                &[
+                    ARENA + RSEQS,
+                    ARENA + RSEQS,
+                    ARENA + RSEQS + RSEQ_AREAS[1],
+                    ARENA + RSEQS + RSEQ_AREAS[2],
+                    ARENA + RSEQS + 0x10,
+                    0,
+                    0x1000,
+                    u64::MAX - 4095,
+                ],
+                a,
+            ),
+            pick(&[32, 32, 33, 64, 28, 31, 4096, 1 << 32 | 32], b),
+            pick(&[0, 0, 0, 1, 1, 3, 4, 1 << 32], c),
+            pick(&[0, 1, 0x5305_3053], d),
+            0,
+            0,
+        ],
+        linux::__NR_membarrier => [
+            pick(
+                &[
+                    0,
+                    1,
+                    2,
+                    4,
+                    8,
+                    16,
+                    32,
+                    64,
+                    128,
+                    256,
+                    512,
+                    3,
+                    1 << 32,
+                    u64::MAX,
+                    1 << 20,
+                ],
+                a,
+            ),
+            pick(&[0, 0, 1, 2], b),
+            pick(&[0, 5, u64::MAX], c),
+            0,
+            0,
+            0,
+        ],
+        // Each refused for a power a container lacks, whatever the arguments.
+        linux::__NR_acct
+        | linux::__NR_vhangup
+        | linux::__NR_swapoff
+        | linux::__NR_init_module
+        | linux::__NR_finit_module
+        | linux::__NR_reboot
+        | linux::__NR_syslog
+        | linux::__NR_fsopen
+        | linux::__NR_fspick
+        | linux::__NR_fsmount
+        | linux::__NR_move_mount => [path(a), value(b), value(c), 0, 0, 0],
+        linux::__NR_madvise => [
+            play(a),
+            play_length(b),
+            pick(
+                &[
+                    0, 1, 2, 3, 4, 8, 9, 100, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                    23, 24, 26,
+                ],
+                c,
+            ),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_uname => [
+            match a % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + UNAME,
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_getuid | linux::__NR_geteuid | linux::__NR_getgid | linux::__NR_getegid => {
+            [0; 6]
+        }
+        linux::__NR_getgroups => [pick(&[0, 1, 32, u64::MAX], a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_setresuid | linux::__NR_setresgid => {
+            let id = |word: u64| pick(&[0u64, 1000, u32::MAX as u64], word);
+            [id(a), id(b), id(c), 0, 0, 0]
+        }
+        // No other process numbers: the reference's caller is a child, not process 1.
+        linux::__NR_prlimit64 => [
+            pick(&[0, 99999, SELF], a),
+            b % 17,
+            if c % 3 == 0 { new_limit(b % 17, c) } else { 0 },
+            if d % 2 == 0 { buffer(d) } else { 0 },
+            0,
+            0,
+        ],
+        linux::__NR_clock_gettime | linux::__NR_clock_getres => {
+            [pick(CLOCKS, a), buffer(b), 0, 0, 0, 0]
+        }
+        linux::__NR_getrandom => [
+            match a % 8 {
+                0 => 0,
+                1 => u64::MAX - 4095,
+                _ => ARENA + RANDOM,
+            },
+            pick(&[0, 1, 16, 96], b),
+            pick(&[0, 1, 2, 4, 8], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_rt_sigprocmask => [
+            pick(&[0, 1, 2, 3], a),
+            if b % 3 == 0 { 0 } else { value(b) },
+            if c % 2 == 0 { buffer(c) } else { 0 },
+            pick(&[8, 8, 4, 16], d),
+            0,
+            0,
+        ],
+        linux::__NR_rt_sigaction => [
+            // None of the signals `kill` sends: a handler cannot run here yet.
+            pick(&[1, 2, 9, 10, 15, 14, 19, 64, 65, 0], a),
+            if b % 3 == 0 { 0 } else { value(b) },
+            if c % 2 == 0 { buffer(c) } else { 0 },
+            pick(&[8, 8, 4], d),
+            0,
+            0,
+        ],
+        linux::__NR_sigaltstack => [
+            match a % 4 {
+                0 => 0,
+                1 => buffer(a >> 2),
+                _ => ARENA + SIGNAL_STACKS + ((a >> 2) % 6) * 24,
+            },
+            if b % 2 == 0 { buffer(b) } else { 0 },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_prctl => {
+            let option = pick(
+                &[
+                    15u64, 16, 3, 4, 7, 8, 24, 38, 39, 9999, 21, 22, 22, 1, 2, 29, 30, 36, 37, 41,
+                    42, 66, 27, 35, 57, 58, 47, 47,
+                ],
+                a,
+            );
+            // Values for the options that take numbers: signals, slacks, flags and `PR_SET_MM`'s forms.
+            let number = |word: u64| pick(&[0, 1, 2, 9, 14, 15, 64, 65, 1000, u64::MAX], word);
+            match option {
+                1 | 36 => [option, number(b), 0, 0, 0, 0],
+                // PR_SET_TIMERSLACK: slacks a sequence's sleeps end within its deadline whatever they
+                // are. Where in a long slack Linux's timer ends depends on other timers' interrupts
+                // (the machine's load), so long ones are compared in no test.
+                29 => [
+                    option,
+                    pick(&[0, 1, 1000, 50_000, 1_000_000], b),
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                30 | 66 | 27 | 58 => [option, 0, 0, 0, 0, 0],
+                41 | 42 | 57 => [option, number(b), number(c), 0, 0, 0],
+                35 => [option, number(b), buffer(c), number(d), number(e), 0],
+                // PR_SET_SECCOMP: a mode and a filter.
+                22 => [option, pick(&[0, 1, 2, 2, 3], b), fprog(c), 0, 0, 0],
+                // PR_SET_NO_NEW_PRIVS: only 1 is taken.
+                38 if b % 2 == 0 => [option, pick(&[1, 0, 2], b >> 1), 0, 0, 0, 0],
+                // PR_CAP_AMBIENT: each operation and an unknown one, on powers and numbers past them.
+                47 => [
+                    option,
+                    pick(&[1, 2, 3, 4, 0, 5], b),
+                    number(c),
+                    pick(&[0, 0, 0, 1], d),
+                    0,
+                    0,
+                ],
+                _ => [option, buffer(b), 0, 0, 0, 0],
+            }
+        }
+        linux::__NR_seccomp => {
+            use seccomp::*;
+            let operation = pick(
+                &[
+                    u64::from(SECCOMP_SET_MODE_STRICT),
+                    u64::from(SECCOMP_SET_MODE_FILTER),
+                    u64::from(SECCOMP_SET_MODE_FILTER),
+                    u64::from(SECCOMP_SET_MODE_FILTER),
+                    u64::from(SECCOMP_GET_ACTION_AVAIL),
+                    u64::from(SECCOMP_GET_ACTION_AVAIL),
+                    u64::from(SECCOMP_GET_NOTIF_SIZES),
+                    4,
+                    1 << 32 | u64::from(SECCOMP_SET_MODE_FILTER),
+                ],
+                a,
+            );
+            // No listener (not built).
+            let flags = pick(
+                &[
+                    0u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC),
+                    u64::from(SECCOMP_FILTER_FLAG_LOG),
+                    u64::from(SECCOMP_FILTER_FLAG_SPEC_ALLOW),
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC_ESRCH),
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC | SECCOMP_FILTER_FLAG_TSYNC_ESRCH),
+                    u64::from(SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV),
+                    u64::from(SECCOMP_FILTER_FLAG_TSYNC | SECCOMP_FILTER_FLAG_NEW_LISTENER),
+                    64,
+                    1 << 32,
+                ],
+                b,
+            );
+            let argument = match operation as u32 {
+                SECCOMP_SET_MODE_FILTER => fprog(c),
+                SECCOMP_GET_ACTION_AVAIL if c % 4 != 0 => {
+                    ARENA + ACTIONS + (c >> 2) % SECCOMP_ACTIONS.len() as u64 * 4
+                }
+                _ => pick(&[0, buffer(c >> 2)], c),
+            };
+            [operation, flags, argument, 0, 0, 0]
+        }
+        linux::__NR_sched_getaffinity => [
+            pick(&[0, SELF, 99999], c),
+            pick(&[0, 4, 8, 128], a),
+            buffer(b),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_nanosleep => [ARENA + VALUES + 56 * 8 + (a % 4) * 16, 0, 0, 0, 0, 0],
+        linux::__NR_capget => [value(a), if b % 2 == 0 { buffer(b) } else { 0 }, 0, 0, 0, 0],
+        linux::__NR_getpid | linux::__NR_getppid | linux::__NR_gettid | linux::__NR_sched_yield => {
+            [0; 6]
+        }
+        linux::__NR_getpgid | linux::__NR_getsid => {
+            [pick(&[0, 99999, u64::MAX, SELF], a), 0, 0, 0, 0, 0]
+        }
+        linux::__NR_getresuid | linux::__NR_getresgid => [buffer(a), buffer(b), buffer(c), 0, 0, 0],
+        linux::__NR_setuid | linux::__NR_setgid | linux::__NR_setfsuid | linux::__NR_setfsgid => {
+            [pick(&[0u64, 1000, 1, u32::MAX as u64], a), 0, 0, 0, 0, 0]
+        }
+        linux::__NR_setreuid | linux::__NR_setregid => {
+            let id = |word: u64| pick(&[0u64, 1000, u32::MAX as u64], word);
+            [id(a), id(b), 0, 0, 0, 0]
+        }
+        linux::__NR_setgroups => [pick(&[0, 1, 2, 3, 65537], a), value(b), 0, 0, 0, 0],
+        linux::__NR_getrlimit => [b % 17, buffer(a), 0, 0, 0, 0],
+        linux::__NR_setrlimit => [
+            b % 17,
+            if a % 4 == 0 { 0 } else { new_limit(b % 17, a) },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_times => [if a % 3 == 0 { 0 } else { buffer(a) }, 0, 0, 0, 0, 0],
+        linux::__NR_gettimeofday => [
+            if a % 3 == 0 { 0 } else { buffer(a) },
+            if b % 3 == 0 { 0 } else { buffer(b) },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_clock_nanosleep => [
+            pick(SLEEP_CLOCKS, a),
+            if PROCESS_CPU_CLOCKS.contains(&pick(SLEEP_CLOCKS, a)) {
+                1
+            } else {
+                pick(&[0, 1, 2], b)
+            },
+            ARENA + VALUES + 56 * 8 + (c % 4) * 16,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sysinfo | linux::__NR_getcpu => [
+            buffer(a),
+            if b % 2 == 0 { 0 } else { buffer(b) },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_getrusage => [
+            pick(&[0, u64::MAX, u64::MAX - 1, 1, 5], a),
+            buffer(b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_statfs => [path(a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_faccessat => [dirfd(a), path(b), pick(&[0, 1, 2, 4, 7, 8], c), 0, 0, 0],
+        linux::__NR_fchmodat2 => [dirfd(a), path(b), mode(c), at_flags(d), 0, 0],
+        linux::__NR_fchown => {
+            let id = |word: u64| pick(&[0u64, 1, 1000, u32::MAX as u64], word);
+            [fd(a), id(b), id(c), 0, 0, 0]
+        }
+        linux::__NR_renameat => [dirfd(a), path(b), dirfd(c), path(d), 0, 0],
+        linux::__NR_preadv | linux::__NR_pwritev => [
+            fd(a),
+            ARENA + IOVECS + (b % 16) * 16,
+            pick(&[0, 1, 2, 3, 16, 1025], c),
+            offset(d),
+            0,
+            0,
+        ],
+        linux::__NR_fdatasync => [fd(a), 0, 0, 0, 0, 0],
+        linux::__NR_ppoll => [
+            ARENA + POLLS + (a % 8) * 8,
+            pick(&[0, 1, 2, 8, 1 << 21], b),
+            // Always a timeout: with none and nothing ready both sides would wait for ever.
+            ARENA + VALUES + 56 * 8 + (c % 4) * 16,
+            if d % 2 == 0 { 0 } else { value(d) },
+            pick(&[8, 8, 4], e),
+            0,
+        ],
+        linux::__NR_set_robust_list => [value(a), pick(&[24, 0, 16], b), 0, 0, 0, 0],
+        linux::__NR_rt_sigpending => [buffer(a), pick(&[8, 4, 16, 0], b), 0, 0, 0, 0],
+        linux::__NR_personality => [pick(&[0xffff_ffffu64, 0, 8, 0x0040_0000], a), 0, 0, 0, 0, 0],
+        // Not by user: that also counts the reference's runner, which has no counterpart here.
+        linux::__NR_getpriority => [pick(&[0, 1, 3], a), pick(&[0, 99999], b), 0, 0, 0, 0],
+        linux::__NR_kill => [
+            pick(&[SELF, SELF, 0, u64::MAX, 99999, -99999i64 as u64], a),
+            signal(b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_tkill => [
+            pick(&[SELF, SELF, 0, 99999, u64::MAX], a),
+            signal(b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_tgkill => [
+            pick(&[SELF, SELF, 0, 99999], a),
+            pick(&[SELF, SELF, 99999, u64::MAX], b),
+            signal(c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_setpgid => {
+            let pid = |word: u64| pick(&[0, SELF, 99999, u64::MAX], word);
+            [pid(a), pid(b), 0, 0, 0, 0]
+        }
+        linux::__NR_setsid | linux::__NR_sync => [0; 6],
+        linux::__NR_chroot => [path(a), 0, 0, 0, 0, 0],
+        linux::__NR_sethostname | linux::__NR_setdomainname => {
+            [buffer(a), pick(&[0, 5, 64, 65, u64::MAX], b), 0, 0, 0, 0]
+        }
+        linux::__NR_syncfs => [fd(a), 0, 0, 0, 0, 0],
+        linux::__NR_get_robust_list => [pick(&[0, SELF, 99999], a), buffer(b), buffer(c), 0, 0, 0],
+        linux::__NR_set_tid_address => [buffer(a), 0, 0, 0, 0, 0],
+        linux::__NR_sched_getparam => [pick(&[0, SELF, 99999, u64::MAX], a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_sched_getscheduler => [pick(&[0, SELF, 99999, u64::MAX], a), 0, 0, 0, 0, 0],
+        linux::__NR_sched_setaffinity => [
+            pick(&[0, SELF, 99999], a),
+            pick(&[0, 4, 8, 128], b),
+            ARENA + CPU_MASKS + (c % 4) * 8,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_exit | linux::__NR_exit_group => {
+            [pick(&[0, 1, 255, 256, 0x1_0000_0001], a), 0, 0, 0, 0, 0]
+        }
+        // Every path here fails: /dev/shm is mounted without execution and the rest are not programs.
+        linux::__NR_execve => {
+            let list = |word: u64| pick(&[0, ARENA + NULLS, u64::MAX - 4095], word);
+            [path(a), list(b), list(c), 0, 0, 0]
+        }
+        linux::__NR_msync => [
+            play(a),
+            play_length(b),
+            pick(&[0, 1, 2, 4, 3, 5, 6, 8], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_mremap => [
+            play(a),
+            play_length(b),
+            play_length(c),
+            pick(&[0, 1, 3, 5, 2, 8], d),
+            play(e),
+            0,
+        ],
+        linux::__NR_capset => [value(a), value(b), 0, 0, 0, 0],
+        // Never descriptors 0 to 2: the reference's caller reports through them.
+        linux::__NR_close_range => [
+            pick(&[3u64, 4, 5, 6, 100, u32::MAX as u64], a),
+            pick(&[3u64, 5, 6, 100, u32::MAX as u64, 2], b),
+            pick(&[0, 4, 2, 6, 1, 8], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_preadv2 | linux::__NR_pwritev2 => [
+            fd(a),
+            ARENA + IOVECS + (b % 16) * 16,
+            pick(&[0, 1, 2, 3, 16, 1025], c),
+            if d % 3 == 0 { u64::MAX } else { offset(d) },
+            0,
+            pick(&[0, 0, 1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 0x100], f),
+        ],
+        linux::__NR_copy_file_range => [
+            fd(a),
+            if b % 3 == 0 { value(b) } else { 0 },
+            fd(c),
+            if d % 3 == 0 { value(d) } else { 0 },
+            count(e),
+            pick(&[0, 0, 0, 1], f),
+        ],
+        linux::__NR_fadvise64 => [
+            fd(a),
+            offset(b),
+            pick(&[0, 1, 4096, u64::MAX], c),
+            pick(&[0, 1, 2, 3, 4, 5, 6, 100], d),
+            0,
+            0,
+        ],
+        linux::__NR_readahead => [fd(a), offset(b), count(c), 0, 0, 0],
+        linux::__NR_sync_file_range => [
+            fd(a),
+            offset(b),
+            pick(&[0, 1, 4096, u64::MAX], c),
+            pick(&[0, 1, 2, 4, 7, 8], d),
+            0,
+            0,
+        ],
+        linux::__NR_pselect6 => {
+            let set = |word: u64| {
+                if word.is_multiple_of(4) {
+                    0
+                } else {
+                    ARENA + FD_SETS + (word % 4) * 16
+                }
+            };
+            [
+                pick(&[0, 1, 4, 7, 8, 64, 101, 1025, u64::MAX], a),
+                set(b),
+                set(c),
+                set(d),
+                // Always a timeout: with none and nothing ready both sides would wait for ever.
+                ARENA + VALUES + 56 * 8 + (e % 4) * 16,
+                if f % 4 == 0 {
+                    0
+                } else {
+                    ARENA + MASK_PACKS + (f % 3) * 16
+                },
+            ]
+        }
+        // No lock that waits: it would wait for ever, as only this process holds locks.
+        linux::__NR_flock => [fd(a), pick(&[5u64, 6, 8, 12, 32, 0, 7, 9], b), 0, 0, 0, 0],
+        linux::__NR_openat2 => [
+            dirfd(a),
+            path(b),
+            ARENA + HOWS + (c % 4) * 32,
+            pick(&[24, 24, 32, 16, 8192], d),
+            0,
+            0,
+        ],
+        // Not by user: that reaches the reference's runner too, which has no counterpart here, and
+        // a nice value raised cannot be lowered again without power.
+        linux::__NR_setpriority => [
+            pick(&[0, 1, 3], a),
+            pick(&[0, SELF, 99999], b),
+            pick(&[-21i64 as u64, u64::MAX, 0, 5, 19, 20, 100], c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sched_setscheduler => [
+            pick(&[0, SELF, 99999, u64::MAX], a),
+            pick(
+                &[0, 1, 2, 3, 5, 6, 7, 0x4000_0000, 0x4000_0003, u64::MAX, 100],
+                b,
+            ),
+            if c % 5 == 0 {
+                0
+            } else {
+                ARENA + PRIORITIES + (c % 6) * 4
+            },
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sched_setparam => [
+            pick(&[0, SELF, 99999, u64::MAX], a),
+            if b % 5 == 0 {
+                0
+            } else {
+                ARENA + PRIORITIES + (b % 6) * 4
+            },
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_sched_get_priority_max | linux::__NR_sched_get_priority_min => {
+            [pick(&[0, 1, 2, 3, 4, 5, 6, 7, u64::MAX], a), 0, 0, 0, 0, 0]
+        }
+        linux::__NR_mlock | linux::__NR_munlock => [play(a), play_length(b), 0, 0, 0, 0],
+        linux::__NR_mlock2 => [play(a), play_length(b), pick(&[0, 1, 2], c), 0, 0, 0],
+        linux::__NR_mlockall => [pick(&[0, 1, 2, 3, 4, 5, 6, 7, 8], a), 0, 0, 0, 0, 0],
+        linux::__NR_munlockall => [0; 6],
+        linux::__NR_sched_setattr => {
+            let attributes = if b % 4 == 0 {
+                buffer(b >> 2)
+            } else {
+                ARENA + SCHED_ATTRS + ((b >> 2) % sched_attrs().len() as u64) * 128
+            };
+            [
+                pick(&[0, SELF, 99999, u64::MAX], a),
+                attributes,
+                pick(&[0, 0, 0, 1], c),
+                0,
+                0,
+                0,
+            ]
+        }
+        linux::__NR_sched_getattr => [
+            pick(&[0, SELF, 99999, u64::MAX], a),
+            buffer(b),
+            pick(&[0, 47, 48, 56, 64, 120, 4096, 4097], c),
+            pick(&[0, 0, 0, 1], d),
+            0,
+            0,
+        ],
+        linux::__NR_sched_rr_get_interval => {
+            [pick(&[0, SELF, 99999, u64::MAX], a), buffer(b), 0, 0, 0, 0]
+        }
+        linux::__NR_mincore => [play(a), play_length(b), buffer(c), 0, 0, 0],
+        // Not by user: that names the reference's runner too.
+        linux::__NR_ioprio_get | linux::__NR_ioprio_set => [
+            pick(&[0, 1, 1, 2, 4], a),
+            pick(&[0, SELF, 99999], b),
+            pick(
+                &[
+                    0u64,
+                    1,
+                    1 << 13,
+                    2 << 13 | 5,
+                    2 << 13 | 7,
+                    3 << 13,
+                    7 << 13,
+                    2 << 13 | 8,
+                    1 << 16 | 2 << 13,
+                    u64::MAX,
+                ],
+                c,
+            ),
+            0,
+            0,
+            0,
+        ],
+        // Not huge page files (hugetlbfs is not built).
+        linux::__NR_memfd_create => {
+            let names = xattr_names().len() as u64;
+            let name = match a % 4 {
+                0 => 8,
+                1 => ARENA + XATTR_NAMES + xattr_name_offset((a >> 8) as usize % names as usize),
+                _ => path(a >> 8),
+            };
+            let flags = pick(
+                &[0u64, 1, 2, 3, 8, 0x10, 0x18, 0x100, 0x0a, 0x12, 21 << 26],
+                b,
+            );
+            [name, flags, 0, 0, 0, 0]
+        }
+        linux::__NR_setxattr
+        | linux::__NR_lsetxattr
+        | linux::__NR_fsetxattr
+        | linux::__NR_getxattr
+        | linux::__NR_lgetxattr
+        | linux::__NR_fgetxattr
+        | linux::__NR_listxattr
+        | linux::__NR_llistxattr
+        | linux::__NR_flistxattr
+        | linux::__NR_removexattr
+        | linux::__NR_lremovexattr
+        | linux::__NR_fremovexattr => {
+            let by_fd = matches!(
+                number,
+                linux::__NR_fsetxattr
+                    | linux::__NR_fgetxattr
+                    | linux::__NR_flistxattr
+                    | linux::__NR_fremovexattr
+            );
+            let target = if by_fd { fd(a) } else { path(a) };
+            let names = xattr_names().len();
+            let name = ARENA + XATTR_NAMES + xattr_name_offset((b % names as u64) as usize);
+            let name = if b >> 60 == 0 { 8 } else { name };
+            let size = pick(&[0u64, 1, 5, 20, 24, 28, 64, 65536, 65537], d);
+            let value = if c % 3 == 0 {
+                ARENA + XATTR_VALUES + ((c >> 8) % XATTR_VALUE_POOL.len() as u64) * 32
+            } else {
+                buffer(c)
+            };
+            match number {
+                linux::__NR_setxattr | linux::__NR_lsetxattr | linux::__NR_fsetxattr => {
+                    let size = if (ARENA + XATTR_VALUES..ARENA + OUTPUT).contains(&value)
+                        && c >> 60 != 0
+                    {
+                        XATTR_VALUE_POOL[((value - ARENA - XATTR_VALUES) / 32) as usize].len()
+                            as u64
+                    } else {
+                        size
+                    };
+                    [target, name, value, size, pick(&[0, 0, 1, 2, 3, 4], e), 0]
+                }
+                linux::__NR_getxattr | linux::__NR_lgetxattr | linux::__NR_fgetxattr => {
+                    [target, name, buffer(c), size, 0, 0]
+                }
+                linux::__NR_listxattr | linux::__NR_llistxattr | linux::__NR_flistxattr => {
+                    [target, buffer(c), size, 0, 0, 0]
+                }
+                _ => [target, name, 0, 0, 0, 0],
+            }
+        }
+        _ => unreachable!("every call in CALLS is decoded"),
+    };
+    Call { number, arguments }
+}
+
+fn sequence_bytes(sequence: &Sequence) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(sequence.arena.len() as u32).to_le_bytes());
+    out.extend_from_slice(&sequence.arena);
+    out.extend_from_slice(&(sequence.calls.len() as u32).to_le_bytes());
+    for call in &sequence.calls {
+        out.extend_from_slice(&u64::from(call.number).to_le_bytes());
+        for argument in call.arguments {
+            out.extend_from_slice(&argument.to_le_bytes());
+        }
+        let clears = machine_bytes(call);
+        for index in 0..CLEARS {
+            let clear = clears.get(index).copied().unwrap_or_default();
+            for word in [clear.at, clear.length, u64::from(clear.by_value)] {
+                out.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+    }
+    out
+}
+
+/// A range of a call's output that holds bytes no two machines share. Both runners zero it after the
+/// call is reported (`clear_machine` in the runner), so no later call reads them: after a failed call
+/// only in the arena (a play page the call did not write is not brought in), and with `by_value` only
+/// as many bytes as a successful call returned.
+#[derive(Clone, Copy, Debug, Default)]
+struct Clear {
+    at: u64,
+    length: u64,
+    by_value: bool,
+}
+
+/// The most ranges a call clears (the runner's `CLEARS`).
+const CLEARS: usize = 5;
+
+/// What a call writes that two machines cannot share: every range `volatile` masks, and the fields
+/// next to them a later call could read (a stat's link count, which `/proc` gives as its machine's
+/// process count; a whole listing, link or working directory, which can name a process).
+fn machine_bytes(call: &Call) -> Vec<Clear> {
+    let [a, b, c, d, e, _] = call.arguments;
+    let fixed = |at: u64, length: u64| Clear {
+        at,
+        length,
+        by_value: false,
+    };
+    let by_value = |at: u64, length: u64| Clear {
+        at,
+        length,
+        by_value: true,
+    };
+    let clears = match call.number {
+        linux::__NR_ppoll if c != 0 => vec![fixed(c, 16)],
+        linux::__NR_pselect6 if e != 0 => vec![fixed(e, 16)],
+        linux::__NR_fcntl if matches!(b as u32, linux::F_GETLK | linux::F_OFD_GETLK) => {
+            vec![fixed(c + 24, 4)]
+        }
+        linux::__NR_getcpu => vec![fixed(a, 4)],
+        linux::__NR_gettimeofday => vec![fixed(a, 16)],
+        linux::__NR_mincore => vec![fixed(c, b.div_ceil(4096).min(1 << 20))],
+        linux::__NR_name_to_handle_at => vec![fixed(c + 8, 12), fixed(d, 8)],
+        linux::__NR_readlinkat => vec![by_value(c, d)],
+        linux::__NR_getcwd => vec![by_value(a, b)],
+        linux::__NR_getdents64 => vec![by_value(b, c)],
+        linux::__NR_newfstatat => vec![fixed(c, 16), fixed(c + 20, 4), fixed(c + 72, 48)],
+        linux::__NR_fstat => vec![fixed(b, 16), fixed(b + 20, 4), fixed(b + 72, 48)],
+        linux::__NR_statx => vec![
+            fixed(e + 16, 4),
+            fixed(e + 32, 8),
+            fixed(e + 64, 64),
+            fixed(e + 136, 24),
+        ],
+        linux::__NR_statfs | linux::__NR_fstatfs => vec![fixed(b + 40, 24)],
+        linux::__NR_ioctl if b == FS_IOC_GETFSUUID => vec![fixed(c + 1, 16)],
+        linux::__NR_clock_gettime => vec![fixed(b, 16)],
+        linux::__NR_times => vec![fixed(a, 32)],
+        linux::__NR_sysinfo => vec![fixed(a, 112)],
+        linux::__NR_getrusage => vec![fixed(b, 144)],
+        linux::__NR_getrandom => vec![by_value(a, b)],
+        linux::__NR_sched_rr_get_interval => vec![fixed(b, 16)],
+        linux::__NR_sched_getattr if c >= 32 => vec![fixed(b + 24, 8)],
+        linux::__NR_uname => vec![fixed(a + 130, 130)],
+        linux::__NR_sched_getaffinity => vec![by_value(c, b)],
+        _ => Vec::new(),
+    };
+    assert!(clears.len() <= CLEARS, "more clears than the runner takes");
+    clears
+}
+
+/// The runner in a long-lived reference container, taking one sequence at a time.
+pub struct Reference {
+    name: String,
+    child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+}
+
+impl Reference {
+    pub fn start(runner: &Path) -> Self {
+        let name = format!("wc-kernel-layer1-{}", std::process::id());
+        let directory = runner
+            .parent()
+            .expect("runner has a directory")
+            .canonicalize()
+            .expect("directory exists");
+        let mut child = Command::new("docker")
+            .args([
+                "run",
+                "-i",
+                "--rm",
+                "--platform",
+                "linux/arm64",
+                "--name",
+                &name,
+            ])
+            .args(["--hostname", reference::HOSTNAME])
+            .arg("--volume")
+            .arg(format!("{}:/wc:ro", directory.display()))
+            .arg(reference::IMAGE)
+            .arg(Path::new("/wc").join(runner.file_name().expect("runner has a name")))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("running docker");
+        let input = child.stdin.take().expect("stdin");
+        let output = BufReader::new(child.stdout.take().expect("stdout"));
+        Self {
+            name,
+            child,
+            input,
+            output,
+        }
+    }
+
+    pub fn run(&mut self, sequence: &Sequence) -> SequenceResult {
+        self.input
+            .write_all(&sequence_bytes(sequence))
+            .expect("sending a sequence");
+        self.input.flush().expect("sending a sequence");
+        let mut word = [0u8; 4];
+        self.output.read_exact(&mut word).expect("reading a result");
+        let mut reported = vec![0; u32::from_le_bytes(word) as usize];
+        self.output
+            .read_exact(&mut reported)
+            .expect("reading a result");
+        self.output
+            .read_exact(&mut word)
+            .expect("reading the status");
+        let (calls, play) = parse_reports(&reported, sequence.calls.len());
+        SequenceResult {
+            calls,
+            status: i32::from_le_bytes(word),
+            play,
+        }
+    }
+}
+
+/// The calls a child reported, without a last record cut short by the child's death, and the play
+/// area after the last one.
+fn parse_reports(mut bytes: &[u8], count: usize) -> (Vec<CallResult>, Option<Vec<u8>>) {
+    fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Option<&'a [u8]> {
+        let (taken, rest) = bytes.split_at_checked(length)?;
+        *bytes = rest;
+        Some(taken)
+    }
+    fn word(bytes: &mut &[u8]) -> Option<u32> {
+        Some(u32::from_le_bytes(take(bytes, 4)?.try_into().ok()?))
+    }
+    let mut calls = Vec::new();
+    let mut record = || -> Option<CallResult> {
+        let value = i64::from_le_bytes(take(&mut bytes, 8)?.try_into().ok()?);
+        let flags = word(&mut bytes)?;
+        let mut changes = Vec::new();
+        for _ in 0..word(&mut bytes)? {
+            let offset = word(&mut bytes)?;
+            let length = word(&mut bytes)?;
+            changes.push((offset, take(&mut bytes, length as usize)?.to_vec()));
+        }
+        Some(CallResult {
+            value,
+            changes,
+            unshared: flags & 1 != 0,
+            random: flags & 2 != 0,
+        })
+    };
+    while calls.len() < count
+        && let Some(call) = record()
+    {
+        calls.push(call);
+    }
+    let play = (calls.len() == count && bytes.len() == PLAY_RECORD).then(|| bytes.to_vec());
+    (calls, play)
+}
+
+impl Drop for Reference {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &self.name])
+            .output();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The runner program, built once per test target directory.
+pub fn runner(out: &Path) -> std::path::PathBuf {
+    guest::build("layer1", &[], out)
+}
+
+/// The changed ranges between two snapshots, as the runner reports them.
+fn changes(before: &[u8], after: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < after.len() {
+        if after[at] == before[at] {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < after.len() && after[at] != before[at] {
+            at += 1;
+        }
+        out.push((start as u32, after[start..at].to_vec()));
+    }
+    out
+}
+
+/// Where our side keeps what it needs to zero a random device's bytes, below every address a call is
+/// given: an `iovec` pair, then zeros.
+const SCRATCH: u64 = 0x6000_0000;
+const SCRATCH_ZEROS: u64 = 0x1000;
+/// Where the play area is read into at the end.
+const SCRATCH_PLAY: u64 = 0x11000;
+const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * 4096;
+const MAX_RW_COUNT: u64 = 0x7fff_f000;
+/// The reference runner's `DEADLINE_SECONDS`.
+const DEADLINE_SECONDS: u64 = 60;
+
+/// Runs a sequence on our kernel: a fresh container with the runner as its program, whose process makes
+/// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
+/// after a call (`theirs`), the same is done here, by the same calls.
+pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> SequenceResult {
+    let mut cpu = BufferCpu::new();
+    let mut host = TestHost::new(0);
+    let mut kernel = Kernel::new();
+    let files = [
+        File {
+            path: "wc".into(),
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            mtime: 0,
+            kind: Kind::Directory,
+        },
+        File {
+            path: "wc/layer1".into(),
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            mtime: 0,
+            kind: Kind::Regular(runner.to_vec()),
+        },
+        File {
+            path: "dev".into(),
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            mtime: 0,
+            kind: Kind::Directory,
+        },
+        File {
+            path: "proc".into(),
+            mode: 0o555,
+            uid: 0,
+            gid: 0,
+            mtime: 0,
+            kind: Kind::Directory,
+        },
+    ];
+    crate::image::add_files(&mut kernel, &files);
+    let environment: Vec<&[u8]> = reference::ENVIRONMENT
+        .iter()
+        .map(|variable| variable.as_bytes())
+        .collect();
+    let start = Start {
+        path: b"/wc/layer1",
+        arguments: &[b"/wc/layer1"],
+        environment: &environment,
+        working_directory: b"/",
+        hostname: reference::HOSTNAME.as_bytes(),
+        groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
+    };
+    kernel
+        .start(&mut cpu, &mut host, &start)
+        .expect("starting the runner");
+    let memory = wcontainers_abi::MemoryId(1);
+    match kernel.next() {
+        Next::Run { .. } => {}
+        other => panic!("the runner did not start: {other:?}"),
+    }
+    // Makes one call, as if the running thread had reached it, and waits for its value; the process's
+    // wait status if it ended.
+    // The reference's runner kills a sequence that has not ended by its deadline; a sleep that would
+    // end later is killed here too.
+    let deadline =
+        wcontainers_abi::Host::monotonic_nanoseconds(&mut host) + DEADLINE_SECONDS * 1_000_000_000;
+    let call = |kernel: &mut Kernel,
+                cpu: &mut BufferCpu,
+                host: &mut TestHost,
+                call: Call|
+     -> Result<i64, i32> {
+        kernel.exit(
+            cpu,
+            host,
+            Exit::Syscall(Syscall {
+                number: call.number.into(),
+                arguments: call.arguments,
+            }),
+        );
+        loop {
+            match kernel.next() {
+                Next::Run {
+                    resume: wcontainers_abi::Resume::Return(value),
+                    ..
+                } => return Ok(value as i64),
+                Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
+                Next::Finished { status } => return Err(status),
+                // Waiting for ever: the runner kills such a sequence at its deadline.
+                Next::Idle {
+                    until_nanoseconds: None,
+                } => return Err(linux::SIGKILL as i32),
+                Next::Idle {
+                    until_nanoseconds: Some(until),
+                } if until > deadline => return Err(linux::SIGKILL as i32),
+                Next::Idle {
+                    until_nanoseconds: Some(until),
+                } => {
+                    host.skip_to(until);
+                    kernel.event(cpu, host, Event::Timer);
+                }
+            }
+        }
+    };
+    let setup = Call {
+        number: linux::__NR_mmap,
+        arguments: [ARENA, ARENA_SIZE, 3, 0x32, u64::MAX, 0],
+    };
+    assert_eq!(
+        call(&mut kernel, &mut cpu, &mut host, setup),
+        Ok(ARENA as i64)
+    );
+    cpu.write(memory, ARENA, &sequence.arena)
+        .expect("writing the arena");
+    let scratch = Call {
+        number: linux::__NR_mmap,
+        arguments: [SCRATCH, SCRATCH_SIZE, 3, 0x32, u64::MAX, 0],
+    };
+    assert_eq!(
+        call(&mut kernel, &mut cpu, &mut host, scratch),
+        Ok(SCRATCH as i64)
+    );
+    // The reference's runner has remade `/dev/null` before every sequence while the container's first
+    // one stays held, so it is remade here too, while descriptor 0 holds the first one.
+    let null = ARENA + PATHS + path_offset("/dev/null");
+    for number in [
+        linux::__NR_unlinkat,
+        linux::__NR_mknodat,
+        linux::__NR_fchmodat,
+    ] {
+        let third = match number {
+            linux::__NR_mknodat => u64::from(linux::S_IFCHR | 0o666),
+            linux::__NR_fchmodat => 0o666,
+            _ => 0,
+        };
+        let device = if number == linux::__NR_mknodat {
+            0x103
+        } else {
+            0
+        };
+        let remake = Call {
+            number,
+            arguments: [linux::AT_FDCWD as u64, null, third, device, 0, 0],
+        };
+        assert_eq!(call(&mut kernel, &mut cpu, &mut host, remake), Ok(0));
+    }
+    let mut before = vec![0u8; ARENA_SIZE as usize];
+    use wcontainers_abi::Cpu;
+    cpu.read(memory, ARENA, &mut before)
+        .expect("reading the arena");
+    let own = Call {
+        number: linux::__NR_getpid,
+        arguments: [0; 6],
+    };
+    let pid = call(&mut kernel, &mut cpu, &mut host, own).expect("getpid") as u64;
+    // The runner's `clear_range`: zeros up to the first page the process cannot write.
+    let clear = |kernel: &mut Kernel,
+                 cpu: &mut BufferCpu,
+                 host: &mut TestHost,
+                 mut at: u64,
+                 mut length: u64| {
+        while length > 0 {
+            let part = length.min(SCRATCH_SIZE - SCRATCH_ZEROS);
+            let pair = [SCRATCH + SCRATCH_ZEROS, part, at, part];
+            let bytes: Vec<u8> = pair.iter().flat_map(|word| word.to_le_bytes()).collect();
+            cpu.write(memory, SCRATCH, &bytes)
+                .expect("writing the scratch");
+            let write = Call {
+                number: linux::__NR_process_vm_writev,
+                arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
+            };
+            let put = call(kernel, cpu, host, write).unwrap_or(-1);
+            if put <= 0 {
+                return;
+            }
+            at += put as u64;
+            length -= put as u64;
+            if (put as u64) < part {
+                return;
+            }
+        }
+    };
+    let mut results = Vec::new();
+    for (index, each) in sequence.calls.iter().enumerate() {
+        let mut each = *each;
+        for argument in &mut each.arguments {
+            if *argument == SELF {
+                *argument = pid;
+            }
+        }
+        let random = theirs.calls.get(index).is_some_and(|call| call.random);
+        let [a, b, c, ..] = each.arguments;
+        let out_before = if random && each.number == linux::__NR_sendfile {
+            let position = Call {
+                number: linux::__NR_lseek,
+                arguments: [a, 0, u64::from(linux::SEEK_CUR), 0, 0, 0],
+            };
+            call(&mut kernel, &mut cpu, &mut host, position).ok()
+        } else {
+            None
+        };
+        match call(&mut kernel, &mut cpu, &mut host, each) {
+            Ok(value) => {
+                if random && value >= 0 {
+                    // The runner's `clear_random`, by the same calls: the ranges a read was given.
+                    let mut ranges = Vec::new();
+                    match each.number {
+                        linux::__NR_read | linux::__NR_pread64 => {
+                            ranges.push((b, c.min(MAX_RW_COUNT)));
+                        }
+                        linux::__NR_readv | linux::__NR_preadv | linux::__NR_preadv2 => {
+                            let mut parts = vec![0u8; (c as usize).min(1024) * 16];
+                            if cpu.read(memory, b, &mut parts).is_ok() {
+                                let mut total = 0u64;
+                                for part in parts.as_chunks::<16>().0 {
+                                    if total >= MAX_RW_COUNT {
+                                        break;
+                                    }
+                                    let base = u64::from_le_bytes(part[..8].try_into().expect("8"));
+                                    let length =
+                                        u64::from_le_bytes(part[8..].try_into().expect("8"))
+                                            .min(MAX_RW_COUNT - total);
+                                    ranges.push((base, length));
+                                    total += length;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    for (at, length) in ranges {
+                        clear(&mut kernel, &mut cpu, &mut host, at, length);
+                    }
+                    // A sendfile's output is zeroed where the bytes went.
+                    if let Some(before) = out_before {
+                        let mut done = 0;
+                        while done < value {
+                            let part = (value - done).min((SCRATCH_SIZE - SCRATCH_ZEROS) as i64);
+                            let write = Call {
+                                number: linux::__NR_pwrite64,
+                                arguments: [
+                                    a,
+                                    SCRATCH + SCRATCH_ZEROS,
+                                    part as u64,
+                                    (before + done) as u64,
+                                    0,
+                                    0,
+                                ],
+                            };
+                            let put = call(&mut kernel, &mut cpu, &mut host, write).unwrap_or(-1);
+                            if put <= 0 {
+                                break;
+                            }
+                            done += put;
+                        }
+                    }
+                }
+                let mut after = vec![0u8; ARENA_SIZE as usize];
+                cpu.read(memory, ARENA, &mut after)
+                    .expect("reading the arena");
+                results.push(CallResult {
+                    value,
+                    changes: changes(&before, &after),
+                    unshared: false,
+                    random: false,
+                });
+                before = after;
+                // The runner's `clear_machine`: what follows sees zeros where the machines differ.
+                for range in machine_bytes(&each) {
+                    let in_arena = (ARENA..ARENA + ARENA_SIZE).contains(&range.at);
+                    if value < 0 && (range.by_value || !in_arena) {
+                        continue;
+                    }
+                    let length = if range.by_value {
+                        range.length.min(value as u64)
+                    } else {
+                        range.length
+                    };
+                    clear(&mut kernel, &mut cpu, &mut host, range.at, length);
+                }
+            }
+            Err(status) => {
+                return SequenceResult {
+                    calls: results,
+                    status,
+                    play: None,
+                };
+            }
+        }
+    }
+    // The play area, page by page, by the runner's own calls.
+    let mut play = Vec::with_capacity(PLAY_RECORD);
+    for page in 0..PLAY_PAGES {
+        let into = SCRATCH + SCRATCH_PLAY + page * 4096;
+        let pair = [into, 4096, PLAY + page * 4096, 4096];
+        let bytes: Vec<u8> = pair.iter().flat_map(|word| word.to_le_bytes()).collect();
+        cpu.write(memory, SCRATCH, &bytes)
+            .expect("writing the scratch");
+        let read = Call {
+            number: linux::__NR_process_vm_readv,
+            arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
+        };
+        let mut contents = vec![0u8; 4096];
+        // A filter of the sequence's may end the process here, as it does the reference's.
+        let readable = match call(&mut kernel, &mut cpu, &mut host, read) {
+            Ok(value) => value == 4096,
+            Err(status) => {
+                return SequenceResult {
+                    calls: results,
+                    status,
+                    play: None,
+                };
+            }
+        };
+        if readable {
+            cpu.read(memory, into, &mut contents)
+                .expect("reading the scratch");
+        }
+        play.push(u8::from(readable));
+        play.extend_from_slice(&contents);
+    }
+    SequenceResult {
+        calls: results,
+        status: 0,
+        play: Some(play),
+    }
+}
+
+/// What is compared for one call: its value and the whole arena after it, with the bytes that must
+/// differ between two machines cleared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Seen {
+    pub value: i64,
+    pub arena: Vec<u8>,
+}
+
+/// The ranges of a call's output that hold values no two machines share: inode and device numbers,
+/// times, addresses chosen by the kernel, random bytes and the kernel's own version.
+/// Where a path of the pool lies in the arena.
+fn path_offset(wanted: &str) -> u64 {
+    let mut offset = 0;
+    for path in PATH_POOL {
+        if *path == wanted {
+            return offset;
+        }
+        offset += path.len() as u64 + 1;
+    }
+    panic!("{wanted} is not in the path pool")
+}
+
+/// The ioctl requests layer 1 makes: the common ones of every file (`do_vfs_ioctl`), regular files'
+/// (`file_ioctl`), tmpfs's inode flags, terminal and random device requests (which no file here
+/// takes), and unknown ones.
+const IOCTL_REQUESTS: &[u64] = &[
+    ioctl::FIOCLEX as u64,
+    ioctl::FIONCLEX as u64,
+    ioctl::FIONBIO as u64,
+    ioctl::FIOASYNC as u64,
+    ioctl::FIONREAD as u64,
+    ioctl::FIOQSIZE as u64,
+    ioctl::FIGETBSZ as u64,
+    ioctl::FIBMAP as u64,
+    ioctl::FIFREEZE as u64,
+    ioctl::FITHAW as u64,
+    ioctl::FS_IOC_FIEMAP as u64,
+    ioctl::FICLONE as u64,
+    ioctl::FICLONERANGE as u64,
+    ioctl::FIDEDUPERANGE as u64,
+    ioctl::FS_IOC_GETFLAGS as u64,
+    ioctl::FS_IOC_SETFLAGS as u64,
+    ioctl::FS_IOC_FSGETXATTR as u64,
+    ioctl::FS_IOC_FSSETXATTR as u64,
+    FS_IOC_GETFSUUID,
+    FS_IOC_GETFSSYSFSPATH,
+    // FS_IOC_RESVSP, FS_IOC_UNRESVSP64 and FS_IOC_ZERO_RANGE (`linux/falloc.h`, not a uapi header).
+    0x4030_5828,
+    0x4030_582b,
+    0x4030_5839,
+    ioctl::TCGETS as u64,
+    ioctl::TIOCGWINSZ as u64,
+    ioctl::RNDGETENTCNT as u64,
+    ioctl::RNDZAPENTCNT as u64,
+    0x1234,
+    0x8008_6680,
+];
+
+/// `FS_IOC_GETFSUUID` and `FS_IOC_GETFSSYSFSPATH`, which linux-raw-sys's ioctl list lacks: reads of a
+/// 17 byte and a 129 byte structure, numbers 0 and 1 of kind 0x15.
+const FS_IOC_GETFSUUID: u64 = 0x8011_1500;
+const FS_IOC_GETFSSYSFSPATH: u64 = 0x8081_1501;
+
+/// The words of each ioctl argument at `IOCTL_ARGS`.
+fn ioctl_arguments() -> [[u64; 8]; IOCTL_ARG_COUNT as usize] {
+    let flags = |value: u32| [u64::from(value), 0, 0, 0, 0, 0, 0, 0];
+    // `struct fsxattr`: xflags and extent size, then the rest.
+    let xattr = |xflags: u32, extent: u32| {
+        [
+            u64::from(xflags) | u64::from(extent) << 32,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]
+    };
+    // `struct space_resv`: type and origin, start, length.
+    let space = |whence: u16, start: u64, length: u64| {
+        [u64::from(whence) << 16, start, length, 0, 0, 0, 0, 0]
+    };
+    [
+        flags(linux::FS_NODUMP_FL | linux::FS_NOATIME_FL),
+        flags(linux::FS_IMMUTABLE_FL),
+        flags(0x4000_0001),
+        flags(0),
+        xattr(linux::FS_XFLAG_NODUMP, 0),
+        xattr(linux::FS_XFLAG_EXTSIZE, 4096),
+        // `struct file_clone_range`: source descriptor, source offset, length, destination offset.
+        [3, 0, 4096, 0, 0, 0, 0, 0],
+        // `struct file_dedupe_range` with one destination: descriptor 3 at offset 0.
+        [0, 4096, 1, 3, 0, 0, 0, 0],
+        space(0, 0, 8192),
+        space(1, 4096, 4096),
+        space(2, 0, 1 << 40),
+        space(7, 0, 4096),
+    ]
+}
+
+/// statfs's inode total depends on the machine's memory (tmpfs's default is half its pages), so the
+/// free count is compared as the count in use, and the total is masked.
+fn inodes_in_use(arena: &mut [u8], buffer: u64) {
+    if !in_arena(buffer, 56) {
+        return;
+    }
+    let at = (buffer - ARENA) as usize;
+    let word = |arena: &[u8], at: usize| {
+        u64::from_le_bytes(arena[at..at + 8].try_into().expect("eight bytes"))
+    };
+    let used = word(arena, at + 40).wrapping_sub(word(arena, at + 48));
+    arena[at + 48..at + 56].copy_from_slice(&used.to_le_bytes());
+}
+
+/// Whether `length` bytes at `address` lie in the arena.
+fn in_arena(address: u64, length: u64) -> bool {
+    address
+        .checked_sub(ARENA)
+        .is_some_and(|offset| offset.saturating_add(length) <= ARENA_SIZE)
+}
+
+/// A little-endian word of `length` bytes (at most 8) at `address` in the arena.
+fn read_word(arena: &[u8], address: u64, length: usize) -> Option<u64> {
+    address
+        .checked_sub(ARENA)
+        .and_then(|offset| arena.get(offset as usize..(offset as usize).checked_add(length)?))
+        .map(|bytes| {
+            let mut word = [0u8; 8];
+            word[..length].copy_from_slice(bytes);
+            u64::from_le_bytes(word)
+        })
+}
+
+fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
+    let [a, b, c, d, e, _] = call.arguments;
+    let mut out = Vec::new();
+    // The CPU a registered rseq area names, which the reference's kernel rewrites whenever its caller
+    // moves to another CPU, during any call (one CPU here is a declared difference).
+    for offset in RSEQ_AREAS {
+        out.push((ARENA + RSEQS + offset, 8));
+    }
+    // The time left, which ppoll writes back even when it fails.
+    if call.number == linux::__NR_ppoll && c != 0 {
+        out.push((c, 16));
+    }
+    if call.number == linux::__NR_pselect6 && e != 0 {
+        out.push((e, 16));
+    }
+    // The process a test of a record lock found holding it: each runner's own number (an open file's
+    // lock shows -1, none leaves what was there).
+    if call.number == linux::__NR_fcntl
+        && matches!(b as u32, linux::F_GETLK | linux::F_OFD_GETLK)
+        && value == 0
+        && let Some(at) = c.checked_sub(ARENA).map(|at| at as usize + 24)
+        && at + 4 <= arena.len()
+        && i32::from_le_bytes(arena[at..at + 4].try_into().expect("4")) > 0
+    {
+        out.push((c + 24, 4));
+    }
+    // The CPU number, written before a fault on the node number.
+    if call.number == linux::__NR_getcpu {
+        out.push((a, 4));
+    }
+    // The time, written before a fault on the time zone.
+    if call.number == linux::__NR_gettimeofday {
+        out.push((a, 16));
+    }
+    // Which pages are in memory: every mapped one here, the touched ones in the reference (a declared
+    // difference), written up to a gap that fails the call.
+    if call.number == linux::__NR_mincore {
+        out.push((c, b.div_ceil(4096).min(1 << 20)));
+    }
+    // A handle holds inode numbers and a random generation, and the mount number is the machine's;
+    // the mount number is written even when the handle does not fit.
+    if call.number == linux::__NR_name_to_handle_at {
+        out.extend([(c + 8, 12), (d, 8)]);
+    }
+    // Fixed fields, also when a copy that met a fault left part of them behind.
+    match call.number {
+        linux::__NR_newfstatat => out.extend([(c, 16), (c + 72, 48)]),
+        linux::__NR_fstat => out.extend([(b, 16), (b + 72, 48)]),
+        linux::__NR_statx => {
+            out.extend([(e + 32, 8), (e + 64, 64), (e + 136, 16)]);
+            // The unique mount number counts every mount the machine has made.
+            if value == 0 && read_word(arena, e, 4).is_some_and(|mask| mask & 0x4000 != 0) {
+                out.push((e + 144, 8));
+            }
+        }
+        // The inode total and the free count (see `inodes_in_use`) and the identity, which tmpfs
+        // draws at random; a successful call's free count is compared as the count in use.
+        linux::__NR_statfs | linux::__NR_fstatfs if value == 0 => {
+            out.extend([(b + 40, 8), (b + 56, 8)]);
+            if !in_arena(b, 56) {
+                out.push((b + 48, 8));
+            }
+        }
+        linux::__NR_statfs | linux::__NR_fstatfs => out.push((b + 40, 24)),
+        linux::__NR_ioctl if b == FS_IOC_GETFSUUID => out.push((c + 1, 16)),
+        linux::__NR_clock_gettime => out.push((b, 16)),
+        linux::__NR_times => out.push((a, 32)),
+        linux::__NR_sysinfo => out.push((a, 112)),
+        linux::__NR_getrusage => out.push((b, 144)),
+        // The default time slice depends on the machine's CPU count, one here.
+        linux::__NR_sched_rr_get_interval => out.push((b, 16)),
+        linux::__NR_sched_getattr if c >= 32 => out.push((b + 24, 8)),
+        linux::__NR_uname => out.push((a + 130, 130)),
+        _ => {}
+    }
+    if value < 0 {
+        return out;
+    }
+    if call.number == linux::__NR_readlinkat && names_process(c, arena) {
+        out.push((c, d));
+    }
+    if call.number == linux::__NR_getcwd && under_proc(a, arena) {
+        out.push((a, value as u64));
+    }
+    // The link count of `/proc` itself counts every process on the machine (Linux's
+    // `proc_root_getattr`), and the reference shares its machine. `/proc` is inode 1 of a file system
+    // with 1024 byte blocks, and so is devpts's root, whose link count goes too.
+    let proc_root = |ino: u64, blksize: u64| {
+        read_word(arena, ino, 8) == Some(1) && read_word(arena, blksize, 4) == Some(1024)
+    };
+    match call.number {
+        linux::__NR_newfstatat if proc_root(c + 8, c + 56) => out.push((c + 20, 4)),
+        linux::__NR_fstat if proc_root(b + 8, b + 56) => out.push((b + 20, 4)),
+        linux::__NR_statx if proc_root(e + 32, e + 4) => out.push((e + 16, 4)),
+        _ => {}
+    }
+    match call.number {
+        linux::__NR_getrandom => out.push((a, value as u64)),
+        // The guest is told it has one CPU, a declared difference.
+        linux::__NR_sched_getaffinity => out.push((c, value as u64)),
+        linux::__NR_getdents64 => {
+            let mut at = 0u64;
+            while at + 19 <= value as u64 {
+                out.push((b + at, 8));
+                let offset = (b + at + 16).wrapping_sub(ARENA) as usize;
+                let length = arena
+                    .get(offset..offset + 2)
+                    .map_or(0, |bytes| u16::from_le_bytes([bytes[0], bytes[1]]));
+                if length == 0 {
+                    break;
+                }
+                at += u64::from(length);
+            }
+        }
+        _ => {}
+    }
+    let _ = d;
+    out
+}
+
+/// Whether the path written at `address` in the arena lies in `/proc`.
+fn under_proc(address: u64, arena: &[u8]) -> bool {
+    address
+        .checked_sub(ARENA)
+        .and_then(|offset| arena.get(offset as usize..offset as usize + 6))
+        == Some(b"/proc/".as_slice())
+}
+
+/// Whether the path at `address` names a process directory, `/proc/<pid>`, by number.
+fn names_process(address: u64, arena: &[u8]) -> bool {
+    under_proc(address, arena)
+        && address
+            .checked_sub(ARENA)
+            .and_then(|offset| arena.get(offset as usize + 6))
+            .is_some_and(u8::is_ascii_digit)
+}
+
+/// Whether a call's value is an address the kernel chose.
+/// Process numbers differ too: the reference's caller is a child of its runner.
+fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
+    match call.number {
+        // A working directory inside `/proc/<pid>` names the caller's process number.
+        linux::__NR_getcwd => under_proc(call.arguments[0], arena),
+        // So does a link to one, such as `/proc/self/cwd` there.
+        linux::__NR_readlinkat => names_process(call.arguments[2], arena),
+        linux::__NR_mmap => call.arguments[3] & 0x10_0010 == 0,
+        linux::__NR_getpid
+        | linux::__NR_getppid
+        | linux::__NR_gettid
+        | linux::__NR_getpgid
+        | linux::__NR_getsid
+        | linux::__NR_times
+        | linux::__NR_setsid
+        | linux::__NR_set_tid_address => true,
+        // Moved by the kernel to a place of its choosing.
+        linux::__NR_mremap => call.arguments[3] & 3 == 1,
+        _ => false,
+    }
+}
+
+/// Which bytes of the arena and the play area hold values no two machines share.
+struct Mask {
+    arena: Vec<bool>,
+    play: Vec<bool>,
+}
+
+/// The play area's size as far as calls reach into it: its pages and two past them.
+const PLAY_REACH: u64 = (PLAY_PAGES + 2) * 4096;
+
+impl Default for Mask {
+    fn default() -> Self {
+        Mask {
+            arena: vec![false; ARENA_SIZE as usize],
+            play: vec![false; PLAY_REACH as usize],
+        }
+    }
+}
+
+impl Mask {
+    fn slot(&mut self, address: u64) -> Option<&mut bool> {
+        if let Some(offset) = address.checked_sub(ARENA).filter(|at| *at < ARENA_SIZE) {
+            return self.arena.get_mut(offset as usize);
+        }
+        let offset = address.checked_sub(PLAY).filter(|at| *at < PLAY_REACH)?;
+        self.play.get_mut(offset as usize)
+    }
+
+    fn hide(&mut self, start: u64, length: u64) {
+        let length = length.min(ARENA_SIZE + PLAY_REACH);
+        for address in start..start.saturating_add(length) {
+            if let Some(slot) = self.slot(address) {
+                *slot = true;
+            }
+        }
+    }
+
+    fn hidden(&mut self, address: u64) -> bool {
+        self.slot(address).is_some_and(|slot| *slot)
+    }
+}
+
+/// `process_vm_readv` and `process_vm_writev` copy within the caller: a byte copied from a hidden
+/// one is hidden too. The segment lists are read from the arena as it was before the call.
+fn copied_masks(call: &Call, value: i64, before: &[u8], mask: &mut Mask) {
+    let write = match call.number {
+        linux::__NR_process_vm_readv => false,
+        linux::__NR_process_vm_writev => true,
+        _ => return,
+    };
+    if value <= 0 {
+        return;
+    }
+    let [_, local, local_count, remote, remote_count, _] = call.arguments;
+    let addresses = |vector: u64, count: u64| -> Vec<u64> {
+        let mut out = Vec::new();
+        for index in 0..count.min(1024) {
+            let at = vector.wrapping_add(index * 16).wrapping_sub(ARENA) as usize;
+            let Some(entry) = before.get(at..at + 16) else {
+                break;
+            };
+            let base = u64::from_le_bytes(entry[..8].try_into().expect("8 bytes"));
+            let length = u64::from_le_bytes(entry[8..].try_into().expect("8 bytes"));
+            for offset in 0..length.min(value as u64 - out.len() as u64) {
+                out.push(base.wrapping_add(offset));
+            }
+            if out.len() as u64 >= value as u64 {
+                break;
+            }
+        }
+        out
+    };
+    let local = addresses(local, local_count);
+    let remote = addresses(remote, remote_count);
+    let (from, to) = if write {
+        (local, remote)
+    } else {
+        (remote, local)
+    };
+    for (source, target) in from.into_iter().zip(to) {
+        if mask.hidden(source)
+            && let Some(slot) = mask.slot(target)
+        {
+            *slot = true;
+        }
+    }
+}
+
+/// Everything compared for a sequence, call by call, and the final status.
+/// `unshared` marks the calls whose results depend on what the runners cannot share; their values
+/// and what they wrote are not compared.
+pub fn seen(
+    sequence: &Sequence,
+    result: &SequenceResult,
+    unshared: &[bool],
+) -> (Vec<Seen>, i32, Option<Vec<u8>>) {
+    let mut arena = sequence.arena.clone();
+    arena.resize(ARENA_SIZE as usize, 0);
+    let mut mask = Mask::default();
+    let mut out = Vec::new();
+    for (index, (call, each)) in sequence.calls.iter().zip(&result.calls).enumerate() {
+        let unshared = unshared.get(index).copied().unwrap_or(false);
+        let before = arena.clone();
+        for (offset, bytes) in &each.changes {
+            arena[*offset as usize..*offset as usize + bytes.len()].copy_from_slice(bytes);
+        }
+        if each.value == 0 && matches!(call.number, linux::__NR_statfs | linux::__NR_fstatfs) {
+            inodes_in_use(&mut arena, call.arguments[1]);
+        }
+        let mut hidden = volatile(call, each.value, &arena);
+        if unshared {
+            let [a, b, c, ..] = call.arguments;
+            match call.number {
+                linux::__NR_getdents64 => hidden.push((b, c.min(ARENA_SIZE))),
+                linux::__NR_getcwd => hidden.push((a, b.min(ARENA_SIZE))),
+                _ => {}
+            }
+        }
+        for (start, length) in hidden {
+            mask.hide(start, length);
+        }
+        copied_masks(call, each.value, &before, &mut mask);
+        let mut shown = arena.clone();
+        for (byte, masked) in shown.iter_mut().zip(&mask.arena) {
+            if *masked {
+                *byte = 0;
+            }
+        }
+        let value = if unshared || value_is_volatile(call, &arena) && each.value >= 0 {
+            0
+        } else {
+            each.value
+        };
+        out.push(Seen {
+            value,
+            arena: shown,
+        });
+    }
+    // The play area at the end, with what must differ cleared.
+    let play = result.play.as_ref().map(|play| {
+        let mut shown = play.clone();
+        for (page, record) in shown.chunks_mut(4097).enumerate() {
+            for (offset, byte) in record[1..].iter_mut().enumerate() {
+                if mask.play[page * 4096 + offset] {
+                    *byte = 0;
+                }
+            }
+        }
+        shown
+    });
+    (out, result.status, play)
+}
+
+/// A readable account of where two runs of a sequence part.
+pub fn difference(
+    sequence: &Sequence,
+    ours: &SequenceResult,
+    theirs: &SequenceResult,
+) -> Option<String> {
+    let unshared: Vec<bool> = theirs.calls.iter().map(|call| call.unshared).collect();
+    let (our_seen, our_status, our_play) = seen(sequence, ours, &unshared);
+    let (their_seen, their_status, their_play) = seen(sequence, theirs, &unshared);
+    let mut text = String::new();
+    for (index, call) in sequence.calls.iter().enumerate() {
+        let name = wcontainers_kernel::system_call_name(call.number.into()).unwrap_or("?");
+        let line = format!("{index}: {name}({:x?})", call.arguments);
+        match (our_seen.get(index), their_seen.get(index)) {
+            (Some(our), Some(their)) if our == their => {
+                text.push_str(&format!("{line} = {}\n", our.value))
+            }
+            (Some(our), Some(their)) => {
+                text.push_str(&format!(
+                    "{line}: ours {} theirs {}\n",
+                    our.value, their.value
+                ));
+                for (offset, (mine, other)) in our.arena.iter().zip(&their.arena).enumerate() {
+                    if mine != other {
+                        text.push_str(&format!(
+                            "  arena+{offset:#x}: ours {mine:#04x} theirs {other:#04x}\n"
+                        ));
+                    }
+                }
+                return Some(text);
+            }
+            (None, None) => break,
+            (our, their) => {
+                text.push_str(&format!(
+                    "{line}: ours {:?} theirs {:?} (one side ended; status ours {our_status:#x} theirs {their_status:#x})\n",
+                    our.map(|seen| seen.value),
+                    their.map(|seen| seen.value)
+                ));
+                return Some(text);
+            }
+        }
+    }
+    if our_status != their_status {
+        return Some(format!(
+            "{text}status: ours {our_status:#x} theirs {their_status:#x}"
+        ));
+    }
+    if our_play != their_play {
+        text.push_str("play area after the last call:\n");
+        let (ours, theirs) = (our_play.unwrap_or_default(), their_play.unwrap_or_default());
+        if ours.len() != theirs.len() {
+            text.push_str(&format!(
+                "  read by one side only (ours {} bytes, theirs {})\n",
+                ours.len(),
+                theirs.len()
+            ));
+        }
+        for (page, (mine, other)) in ours.chunks(4097).zip(theirs.chunks(4097)).enumerate() {
+            if mine[0] != other[0] {
+                text.push_str(&format!(
+                    "  page {page}: readable ours {} theirs {}\n",
+                    mine[0], other[0]
+                ));
+            }
+            for (offset, (a, b)) in mine[1..].iter().zip(&other[1..]).enumerate() {
+                if a != b {
+                    text.push_str(&format!(
+                        "  play+{:#x}: ours {a:#04x} theirs {b:#04x}\n",
+                        page * 4096 + offset
+                    ));
+                }
+            }
+        }
+        return Some(text);
+    }
+    None
+}
