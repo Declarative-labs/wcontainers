@@ -4,9 +4,11 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M3 (every instruction) is closed out (fourth run, "M3, close-out" below) and waits for its independent check.
-Every one of the 1215 forms of the CPU we present translates and matches the CPU in layer 1 (1215 x 1000
-cases, seed 5: no mismatch), `programs/differences.c` (section 8) matches Linux at every level, at none and
+M3 (every instruction) is closed out (fifth run, "M3, close-out, second run" below, fixing what the check of
+the fourth found) and waits for its independent check. Every one of the 1215 forms of the CPU we present
+translates and matches the CPU in layer 1: the current code at 300 cases a form (seed 13); the most cases a form,
+1000 (seed 5, no mismatch), were run in the first M3 run, before later runs changed decoding and the
+floating point slow path. `programs/differences.c` (section 8) matches Linux at every level, at none and
 full, in wasmtime and Chrome, and layer 3 runs Csmith and hand-picked programs against Linux. The long runs to
 the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million programs, layer 3 at 100,000) are not
 M3's: the orchestrator runs them once at the end of the translator track, as M4 and M5 still change the
@@ -15,7 +17,29 @@ translator. Commands are under "How to run".
 M0, M1, M2 and S1 are built and passed their independent checks. Their work is recorded in the sections
 below, newest first.
 
-## M3, close-out (fourth run)
+## M3, close-out, second run (fifth run)
+
+Fixes from the check of the fourth run:
+- Layer 2 let accesses reach below its area, which since the fourth run is in the blob after the code and the
+  switch tables: a group from near the area's start pre-indexed down by up to 64 bytes an access, and a walk
+  of Q register pairs rounded its step after fitting it, which made a negative step longer (-17 became
+  -32). Stores then overwrote the program's code or tables, and Linux and ours ran garbage. Now a group (and
+  the accesses around a call) starts as far into the area as its accesses reach below their start
+  (`lowest`), and the pair's step is rounded towards zero. The area now ends on a page boundary after zeros,
+  and layer 2 checks after every program that the blob before the area is as built (`area_offset`). With
+  the generator fix undone, that check failed seed 4 within 1000 cases; with it, the checker's seed 4243 at
+  6000 cases and seeds 1, 2, 3, 4, 5, 6, 7 pass (under "Cases actually run").
+- A loop of structure loads and stores post-indexed by their size (`ld1 {v0.16b-v3.16b}, [x1], #64` and the
+  like) is now proven: `memory_access` gives them `PostIndex` by their size, so the proof sees the base as
+  an induction, groups keep following the base, and a pop by one at sp moves the frame. Post-indexing by a
+  register stays an offset of 0 with the base written, as before. Tests: `tests/checks.rs`
+  `structure_loops_are_proven` (ld1 of four, st4, ld4r; failed before: "loop not proven" 0 for a loop
+  running off the blob, now 1) and `structure_frames_off_the_stack` (frames made by st1 at sp and half
+  popped by ld4 post-indexed, 1000 turns and 20,000 that run off the stack, against Linux).
+- The reference runner's own failure (status 101 and its message on stderr) now fails the case in
+  `programs::native`; before, it was only caught by differing from our result.
+- Status corrections: the flake loop gave 4 failures in 20,000 runs, not 5; the summary no longer cites the
+  first M3 run's layer 1 run as the current code's.
 
 - Live fault fixed: a kept run allowed for accesses of at most 32 bytes (`LONGEST_ACCESS`), but LD1 to LD4
   and ST1 to ST4 of three and four Q registers access 48 and 64 bytes, so such an access starting in the
@@ -1127,11 +1151,12 @@ contract's bits, in both runners).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
-- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 WC_LAYER3_JOBS=12 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
+- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 WC_LAYER3_JOBS=6 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
   (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and full, one at
   a time; the hand-picked programs are 48 builds each run). Needs Docker, Chrome, and network once to make
-  the gcc image. At the third run's rate (2000 programs in 14 minutes, 12 at once) 100,000 take about 12
-  hours. Replay one program: the same seed with `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure
+  the gcc image. Keep `WC_LAYER3_JOBS` at 6 or below: wider runs beside the other half's tests pushed the
+  load past 300. At the third run's rate (2000 programs in 14 minutes, 12 at once) 100,000 took about 12
+  hours at 12 at once; at 6, expect about twice that (not measured). Replay one program: the same seed with `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure
   prints its case and its Csmith number, `seed * 1000003 + case`).
 - Floating point and vector timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`
   (`WC_BENCH_RUNS`, `WC_BENCH_WORKLOADS` 1 to 4, `WC_BENCH_CHROME=0` as for the benchmarks).
@@ -1153,6 +1178,16 @@ contract's bits, in both runners).
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
 ## Cases actually run
+
+- M3 close-out, second run (fifth run), release: layer 2 with the area check, the generator fixed and the
+  translator before the structure proof change: seed 4, 1000 cases (none on the CPU; with the generator fix
+  undone it failed, "a store below the area"); seed 4243, 6000 cases, 60 on the CPU (1993 faulted, 392
+  left to an address at full, 129 s); seeds 1, 2, 3, 5, 2000 cases each, 60 on the CPU: 0 mismatches (about
+  48 s each; load 43 to 261 over these runs). With the current translator: seeds 6 and 7, 2000 cases each,
+  40 on the CPU: 0 mismatches (46 s and 41 s, load 95 to 111); the changes test, 1000 random programs seed
+  21 and the C programs (3 seeds): 0 mismatches (45,316 changes, 4921 faults handled; 36 s, load 109 to
+  115). `tests/checks.rs` in full: pass. Layer 1 on the current code, 1215 forms x 300 cases, seed 13, and 1 a form in Chrome: 0
+  failing (548 s, load 64 to 115).
 
 - M3 close-out, release unless said: layer 2, 500 cases seed 121 (40 on the CPU), 2000 seed 122 (20 on the
   CPU), 1000 seed 123 (30 on the CPU), 1000 seed 124 (40 on the CPU), all with vector accesses: 0
@@ -1362,7 +1397,7 @@ contract's bits, in both runners).
 2. M4 (bounded look-ahead and the rare paths), which also makes the changes test strong after a run's first
    handled fault (see "Departures").
 3. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
-   (commands under "How to run"; about 12 hours for layer 3 with 12 at once).
+   (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
