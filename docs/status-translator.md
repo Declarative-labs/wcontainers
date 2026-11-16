@@ -18,12 +18,57 @@ S1 (run speed at full look-ahead) is closed (ninth run): the orchestrator withdr
 2.5 for sort and 3 for interpret (where their remaining cost sits is under "S1, what remains after the
 eighth run"). The close-out added the test of section 9 that changes page permissions at random stops and
 system calls, wrote down the rule the dropped checks rest on, looked into the search measuring variant and
-recorded what each S1 change added to the output's size: see "S1, close-out" just below. S1 waits for its
-independent check. The third run's work is under "S1, third run", the fourth's (measurements only) under
+recorded what each S1 change added to the output's size: see "S1, close-out" below. Its independent check
+found a missed fault (a bounded index proof fooled by a load that writes back its base) and a changes test
+too weak at system calls; the second close-out run fixed both (see "S1, close-out, second run" just
+below). S1 waits for its next independent check. The third run's work is under "S1, third run", the fourth's (measurements only) under
 "S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
 calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
 rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
 eighth run", and what is left under "S1, what remains after the eighth run".
+
+## S1, close-out, second run (tenth run)
+
+- Fixed a missed fault at full: the bounded index proof (`proof.rs`, `index_bound`) took the last
+  instruction writing the index register to be a narrow zero extending load and so bounded it by 255 or
+  65535, without asking whether the register was the load's destination. A post- or pre-indexed load
+  writes back its base, so `ldrb w9, [x14], #1` passed as a bound on the pointer x14 and the loop's copy
+  without checks read a page that allows nothing. Now the load must load into that register; the same
+  fix covers the 32 bit comparison path. Test: `tests/checks.rs`, `index_written_back_by_a_narrow_load`
+  (both forms, against Linux, none and full); it fails without the fix (full exits 0 where Linux and none
+  get SIGSEGV). Nothing in the generators made this shape; not added to them.
+- `tests/changes.rs` was not strong at system calls: two breaks of the system call half of the rule were
+  not caught (C: groups not ended at a system call, `full.rs` `checks`; D: loops holding a system call
+  counted as quiet, so they get kept runs and proofs). Causes found: the layer 2 area (and so every
+  access through x29) is on the stack, which changes leave alone (frames); a group was never split by a
+  system call; no loop over memory held a system call; changes at system calls came only one in `every`;
+  and 3 runs in 4 raised the flag at every pause, so after each system call the stop check forgot the
+  kept runs anyway. Changes made:
+  - every system call now makes a change (stops still one in `every`);
+  - near-register changes pick among registers that point at pages a change may touch (not frames), and
+    pick the register's own page half the time, otherwise the page before or one of the two after;
+  - the plan's `stop_everywhere` became `stops`, the chance that the full run raises its flag again at
+    each pause (1, 1, 1, 0.5, 0.1 or 0), so some system calls are followed by a stop and some are not;
+    the runner's `Paused` gained `raise_stop_flag`;
+  - layer 2: a group may hold a system call between its accesses or just after them (half of groups),
+    a walk may hold one after its access each turn (one in four), and the plain system call op is twice as
+    common. The registers the call sets (x0, x1, x2, x8) are kept off the group's base and the walk's
+    index and step. Old layer 2 seeds give other programs again.
+  - two directed tests in `tests/changes.rs` (`group_across_a_syscall`, `loop_holding_a_syscall`): a
+    page made to allow nothing at the first system call, full must fault as none does. Each fails at once
+    under its break.
+- The random test against all four breaks, 1000 cases each, seeds 1, 2, 3, first failure counting
+  shrinking (patches and `breaks.sh` in scratch `s1-close2/`, run in a copy of the tree, load 5 to 29):
+  every one caught on every seed. A (proof carried on in place after a stop): 200, 136, 138. B (kept runs
+  survive a stop that carries on in place): 619, 114, 60. C: 408, 403, 316. D: 184, 80, 76. Before this
+  run C and D passed 1000 to 5000 cases. In between (before walks held system calls) D passed 1000 cases
+  on seed 3; and with the flag raised at every pause in only 1 run in 4, A and B took longer (B passed
+  1000 on seed 1), which is why `stops` is 1 in half the runs.
+- Not counted: a proof that fails (the loop runs its copy with every check) and a kept run that misses
+  (the access is checked exactly). Both are the ordinary checked path that every loop took before S1, not
+  a slow twin, so no `Reason` was added; a counter on them would need a host call on every loop entry
+  whose proof fails or every page a walk crosses, in code S1 measured for speed. Noted under "Departures".
+- The shared crate's change in b0df319 is now recorded (see "Shared crate").
 
 ## S1, close-out (ninth run)
 
@@ -42,9 +87,9 @@ eighth run", and what is left under "S1, what remains after the eighth run".
   everything; 60% are the page a register points at, the one before it or the two after it (so they land
   on what a loop's proof or a kept run covers, and on the page after the one being accessed), the rest
   any page of the blob, the page after it, the stack below sp or the page below the stack. Pages from
-  sp's page to the top of the stack are left alone (frames, the plan's exception). Changes come at one
-  pause in 1, 4, 32 or 256 (one in 16 or 1024 for the C programs), at stop checks (the full run stops at
-  every check in 3 cases in 4) and after system calls. A fault on such a page is handled as a program's
+  sp's page to the top of the stack are left alone (frames, the plan's exception). Changes came at one
+  pause in 1, 4, 32 or 256 (one in 16 or 1024 for the C programs), at stop checks (the full run stopped
+  at every check in 3 cases in 4) and after system calls; the tenth run changed this (see above). A fault on such a page is handled as a program's
   handler would: the page is made readable and writable and the thread carries on from the faulting
   instruction, up to 64 times a run, so one run meets many faults and every one is compared: why the
   thread came back (fault address and kind), every register, then output, status and every byte of
@@ -817,7 +862,8 @@ contract's bits, in both runners).
 - Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
   (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
 - Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (defaults 64 random programs, seed 1, 3 seeds for each C program; about 2 ms a random program at load 10).
+  (defaults 64 random programs, seed 1, 3 seeds for each C program; since the tenth run about 26 ms a
+  random program at load 14 to 18, as every system call now makes a change).
 - Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
@@ -871,6 +917,11 @@ contract's bits, in both runners).
   `tests/changes.rs`, 5000 random programs seed 11 and the C programs with 6 seeds each (72 runs): 0
   mismatches; 205,661 changes made, 11,178 faults handled and compared (108 s, load 7.5 to 9). Not yet a
   pass bar (the plan's one million random programs applies across layers 2 and 3).
+- S1 close-out, second run, release, after the fix and the new shapes: layer 2, 2000 cases seed 101, 10 on
+  the CPU: 0 mismatches, 715 faulted, 127 left to an address at full (37 s, load 17 to 20).
+  `tests/changes.rs`, 3000 random programs seed 12 and the C programs with 4 seeds each (48 runs): 0
+  mismatches; 142,304 changes made, 10,437 faults handled and compared (78 s, load 14 to 18). Every test
+  of the three crates passes (debug build, Chrome test included).
 
 ## Measurements
 
@@ -1004,6 +1055,11 @@ contract's bits, in both runners).
   features than the one we present).
 
 ## Departures from the plan
+
+- S1: a loop's proof failing and a kept run missing are not counted or warned (rule 5 asks it of every
+  slow twin). Both lead to the ordinary checked path, not a slow one; counting them would put a host call
+  on every failed proof and every page a walk crosses. If the orchestrator wants them counted, the cheap
+  way is a counter in the state memory read by the runner, which needs a place in the shared layout.
 
 - S1 close-out: in `tests/changes.rs` changes never touch the pages from sp's page to the top of the stack,
   because the plan lets a frame's check hold until the next function entry ("What still gets through"), so
@@ -1144,8 +1200,11 @@ contract's bits, in both runners).
   `address`, as Linux does. The kernel half must add a match arm for it. Needed because the independent
   check found the translator carrying on where Linux faults; without it the CPU side cannot report the
   fault. Later LDAR/STLR and exclusives on misaligned addresses will use it too.
-- Seen, not changed: `cargo clippy -p wcontainers-abi --all-targets -- -D warnings` fails on the abi's own
-  layout test (`assertions_on_constants`, registers.rs line 79).
+- Changed once after M2 (commit b0df319, "made the abi layout test pass the linter"): in `registers.rs`'s
+  test module, `assert!(STOP_FLAG_OFFSET + 4 <= THREAD_BLOCK_SIZE)` inside the layout test became a const
+  assertion next to it (`const _: () = assert!(...)`), because clippy with warnings denied failed on it
+  (`assertions_on_constants`). Only a test changed; no type, value or layout. Earlier versions of this
+  file wrongly said nothing in the shared crate changed in S1.
 - S1, first run: the CPU side kept one word for itself in the thread block's padding (offset 804). Since
   the second run's loop pieces it does not: the CPU side uses no byte of the block outside the abi's
-  layout. No change to the shared crate in S1.
+  layout.
