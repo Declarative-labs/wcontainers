@@ -47,8 +47,11 @@ for k in 1 2 3 4 5 6 7 8; do
   best=$(for r in $(seq "$runs"); do
     /usr/bin/time -p wasmtime run --allow-precompiled "$out/bench-$k.cwasm" 2>&1 >/dev/null | awk '/^real/ { print $2 }'
   done | sort -n | head -1)
-  output=$(wasmtime run --allow-precompiled "$out/bench-$k.cwasm" 2>&1 | head -c 200 | tr '\n' ' ')
-  echo "workload $k: elfconv in wasmtime $best s, native $native s, $(echo "$best $native" | awk '{ printf "%.2f", $1 / $2 }') times native; output: $output(load $(load))"
+  if output=$(wasmtime run --allow-precompiled "$out/bench-$k.cwasm" 2>&1); then
+    echo "workload $k: elfconv in wasmtime $best s, native $native s, $(echo "$best $native" | awk '{ printf "%.2f", $1 / $2 }') times native; output: $output (load $(load))"
+  else
+    echo "workload $k: elfconv's program failed (native $native s): $(echo "$output" | head -c 200 | tr '\n' ' ')"
+  fi
 done
 
 # Ours on the same workloads (built without a C library, so only the ratios to native compare).
