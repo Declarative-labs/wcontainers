@@ -189,7 +189,9 @@ or a seek elsewhere, and kept between. They seek as Linux's (`generic_file_llsee
 largest offset for cmdline, environ, auxv and directories; `default_llseek` for sysctls; `seq_lseek`
 for the rest) and take writes as Linux's: comm names the process (`comm_write`), the other process
 files have no write (EINVAL), the files outside process directories EIO (`pde_write`); seq files take
-no positioned writes (ESPIPE); truncation succeeds and changes nothing (`proc_setattr`). Sysctl
+no positioned writes (ESPIPE); truncation succeeds and changes nothing (`proc_setattr`); a sysctl
+read of 4 MiB or more is ENOMEM (`proc_sys_call_handler`'s buffer). Process files and `/dev/null`
+cannot be spliced from, nor `/dev/full` to (sendfile EINVAL, measured). Sysctl
 permissions follow the table's bits with no power over them (`proc_sys_permission`). Rules: a process directory refuses
   writes and changes (EPERM), its own `fd` directory is always usable (0500), `/proc/sys` is Docker's
   read-only mount (EROFS), owners follow `task_dump_owner`, link counts (9 for a process directory, 1
@@ -452,7 +454,17 @@ compares statfs's blocks and inodes in use (see "For the independent check"). Se
 truncate of a sysctl checking the mount before the permission (Linux checks the permission first),
 truncate of a `/proc` file refused (Linux takes it), a rename between `/proc/sys` and `/proc` no
 longer EXDEV (a change of mine), and `/dev`'s hidden inode in the reference (above); all fixed. Seeds
-100 to 103 then passed (1500, then 4000 each, 60 s each, load 27 to 44).
+100 to 103 then passed 4000 each. At 20000: 110 found sendfile moving a device's given offset, and
+then sendfile from `/dev/null` (Linux: EINVAL, no `splice_read`); 111 found RWF_NOWAIT taken on a
+memory file (Linux: EOPNOTSUPP); 112 found a write whose buffer faults leaving no page (Linux keeps
+the page `shmem_write_begin` took); 114 found an open with both access bits asking for no permission
+(Linux's `ACC_MODE` asks for reading and writing), then execve of "a/" (a link to a file) giving
+EACCES (Linux: ENOTDIR); 118 found layer 1 cloning from descriptor 0, which differs between the
+runners (a generator fix); 121 found a sysctl read of more than the kernel's largest buffer taken
+(Linux: ENOMEM). All fixed, with layer 2 cases added (procwrite, opencheck). Along the way 111, 112,
+113, 115 to 120 and 122 passed 20000 on earlier heads. With every fix in (head 817ac6e), seed 121 and
+the fresh seeds 123, 124 and 125 passed 20000 each (316 s each, four side by side, load 8.5 at the
+start, 10.5 at the end).
 Eighth run (second close-out, after the independent check): the check's failing seeds were fixed
 first (4242: open took its descriptor last; 777001: chmod of `/proc` refused; 777002: copy across
 superblocks). Then at 20000 each: 777001 found fstat of an open `/proc/<pid>` directory showing the
@@ -490,8 +502,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
-- Ninth run, layer 1 4000 sequences, three side by side: 60 s each (load 27 at the start, 44 a minute
-  before). The whole test suite of both crates: passed under load 100 to 157 (not timed).
+- Ninth run, layer 1 20000 sequences, four side by side: 294 to 312 s each (load 8 to 15); three
+  side by side: 298 to 305 s (load 10 to 45). 4000 sequences, three side by side: 60 s each (load 27
+  to 44). The whole test suite of both crates passed under load 100 to 157 (not timed).
 - Eighth run, layer 1 20000 sequences, six side by side: 303 s each (load 18 to 20); two side by
   side: 305 s each (load 8 to 17).
 - The whole test suite of both crates, eighth run: 69 s wall (load about 9).
