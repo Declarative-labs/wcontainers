@@ -1,7 +1,8 @@
 //! Layer 1: random sequences of system calls, made in the reference by a small native runner and in our
-//! kernel with a plain buffer as guest memory. Every return value and every byte written into the
-//! sequence's memory is compared; the few values that must differ (inode numbers, times, process
-//! numbers, `/proc`'s link count) are masked on both sides.
+//! kernel with a plain buffer as guest memory. Every return value and the arena after every call are
+//! compared, and the play area (which pages can be read, and their bytes) after the last call: reading
+//! it brings pages in, which would change what later calls see. The few values that must differ
+//! (inode numbers, times, process numbers, `/proc`'s link count) are masked on both sides.
 
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
@@ -285,7 +286,13 @@ pub struct SequenceResult {
     pub calls: Vec<CallResult>,
     /// The wait status of the process that made the calls.
     pub status: i32,
+    /// The play area after the last call, read by process_vm_readv: for each page whether it could
+    /// be read, then its bytes (zeros when not). None when the process did not reach the end.
+    pub play: Option<Vec<u8>>,
 }
+
+/// The size of a play area record: a byte and the bytes of each page.
+const PLAY_RECORD: usize = PLAY_PAGES as usize * 4097;
 
 fn path_offsets() -> (Vec<u8>, Vec<u64>) {
     let mut bytes = Vec::new();
@@ -1023,6 +1030,10 @@ pub const CALLS: &[u32] = &[
     linux::__NR_seccomp,
     linux::__NR_seccomp,
     linux::__NR_seccomp,
+    // Three more times, since the play area is mapped only by it and most of its calls fail.
+    linux::__NR_mmap,
+    linux::__NR_mmap,
+    linux::__NR_mmap,
 ];
 
 /// Turns a generated call into real arguments.
@@ -2153,15 +2164,18 @@ impl Reference {
         self.output
             .read_exact(&mut word)
             .expect("reading the status");
+        let (calls, play) = parse_reports(&reported, sequence.calls.len());
         SequenceResult {
-            calls: parse_reports(&reported),
+            calls,
             status: i32::from_le_bytes(word),
+            play,
         }
     }
 }
 
-/// The calls a child reported, without a last record cut short by the child's death.
-fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
+/// The calls a child reported, without a last record cut short by the child's death, and the play
+/// area after the last one.
+fn parse_reports(mut bytes: &[u8], count: usize) -> (Vec<CallResult>, Option<Vec<u8>>) {
     fn take<'a>(bytes: &mut &'a [u8], length: usize) -> Option<&'a [u8]> {
         let (taken, rest) = bytes.split_at_checked(length)?;
         *bytes = rest;
@@ -2187,10 +2201,13 @@ fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
             random: flags & 2 != 0,
         })
     };
-    while let Some(call) = record() {
+    while calls.len() < count
+        && let Some(call) = record()
+    {
         calls.push(call);
     }
-    calls
+    let play = (calls.len() == count && bytes.len() == PLAY_RECORD).then(|| bytes.to_vec());
+    (calls, play)
 }
 
 impl Drop for Reference {
@@ -2230,7 +2247,9 @@ fn changes(before: &[u8], after: &[u8]) -> Vec<(u32, Vec<u8>)> {
 /// given: an `iovec` pair, then zeros.
 const SCRATCH: u64 = 0x6000_0000;
 const SCRATCH_ZEROS: u64 = 0x1000;
-const SCRATCH_SIZE: u64 = 0x11000;
+/// Where the play area is read into at the end.
+const SCRATCH_PLAY: u64 = 0x11000;
+const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * 4096;
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
 /// The reference runner's `DEADLINE_SECONDS`.
 const DEADLINE_SECONDS: u64 = 60;
@@ -2504,13 +2523,46 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                 return SequenceResult {
                     calls: results,
                     status,
+                    play: None,
                 };
             }
         }
     }
+    // The play area, page by page, by the runner's own calls.
+    let mut play = Vec::with_capacity(PLAY_RECORD);
+    for page in 0..PLAY_PAGES {
+        let into = SCRATCH + SCRATCH_PLAY + page * 4096;
+        let pair = [into, 4096, PLAY + page * 4096, 4096];
+        let bytes: Vec<u8> = pair.iter().flat_map(|word| word.to_le_bytes()).collect();
+        cpu.write(memory, SCRATCH, &bytes)
+            .expect("writing the scratch");
+        let read = Call {
+            number: linux::__NR_process_vm_readv,
+            arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
+        };
+        let mut contents = vec![0u8; 4096];
+        // A filter of the sequence's may end the process here, as it does the reference's.
+        let readable = match call(&mut kernel, &mut cpu, &mut host, read) {
+            Ok(value) => value == 4096,
+            Err(status) => {
+                return SequenceResult {
+                    calls: results,
+                    status,
+                    play: None,
+                };
+            }
+        };
+        if readable {
+            cpu.read(memory, into, &mut contents)
+                .expect("reading the scratch");
+        }
+        play.push(u8::from(readable));
+        play.extend_from_slice(&contents);
+    }
     SequenceResult {
         calls: results,
         status: 0,
+        play: Some(play),
     }
 }
 
@@ -2875,7 +2927,11 @@ fn copied_masks(call: &Call, value: i64, before: &[u8], mask: &mut Mask) {
 /// Everything compared for a sequence, call by call, and the final status.
 /// `unshared` marks the calls whose results depend on what the runners cannot share; their values
 /// and what they wrote are not compared.
-pub fn seen(sequence: &Sequence, result: &SequenceResult, unshared: &[bool]) -> (Vec<Seen>, i32) {
+pub fn seen(
+    sequence: &Sequence,
+    result: &SequenceResult,
+    unshared: &[bool],
+) -> (Vec<Seen>, i32, Option<Vec<u8>>) {
     let mut arena = sequence.arena.clone();
     arena.resize(ARENA_SIZE as usize, 0);
     let mut mask = Mask::default();
@@ -2918,7 +2974,19 @@ pub fn seen(sequence: &Sequence, result: &SequenceResult, unshared: &[bool]) -> 
             arena: shown,
         });
     }
-    (out, result.status)
+    // The play area at the end, with what must differ cleared.
+    let play = result.play.as_ref().map(|play| {
+        let mut shown = play.clone();
+        for (page, record) in shown.chunks_mut(4097).enumerate() {
+            for (offset, byte) in record[1..].iter_mut().enumerate() {
+                if mask.play[page * 4096 + offset] {
+                    *byte = 0;
+                }
+            }
+        }
+        shown
+    });
+    (out, result.status, play)
 }
 
 /// A readable account of where two runs of a sequence part.
@@ -2928,8 +2996,8 @@ pub fn difference(
     theirs: &SequenceResult,
 ) -> Option<String> {
     let unshared: Vec<bool> = theirs.calls.iter().map(|call| call.unshared).collect();
-    let (our_seen, our_status) = seen(sequence, ours, &unshared);
-    let (their_seen, their_status) = seen(sequence, theirs, &unshared);
+    let (our_seen, our_status, our_play) = seen(sequence, ours, &unshared);
+    let (their_seen, their_status, their_play) = seen(sequence, theirs, &unshared);
     let mut text = String::new();
     for (index, call) in sequence.calls.iter().enumerate() {
         let name = wcontainers_kernel::system_call_name(call.number.into()).unwrap_or("?");
@@ -2963,6 +3031,38 @@ pub fn difference(
             }
         }
     }
-    (our_status != their_status)
-        .then(|| format!("{text}status: ours {our_status:#x} theirs {their_status:#x}"))
+    if our_status != their_status {
+        return Some(format!(
+            "{text}status: ours {our_status:#x} theirs {their_status:#x}"
+        ));
+    }
+    if our_play != their_play {
+        text.push_str("play area after the last call:\n");
+        let (ours, theirs) = (our_play.unwrap_or_default(), their_play.unwrap_or_default());
+        if ours.len() != theirs.len() {
+            text.push_str(&format!(
+                "  read by one side only (ours {} bytes, theirs {})\n",
+                ours.len(),
+                theirs.len()
+            ));
+        }
+        for (page, (mine, other)) in ours.chunks(4097).zip(theirs.chunks(4097)).enumerate() {
+            if mine[0] != other[0] {
+                text.push_str(&format!(
+                    "  page {page}: readable ours {} theirs {}\n",
+                    mine[0], other[0]
+                ));
+            }
+            for (offset, (a, b)) in mine[1..].iter().zip(&other[1..]).enumerate() {
+                if a != b {
+                    text.push_str(&format!(
+                        "  play+{:#x}: ours {a:#04x} theirs {b:#04x}\n",
+                        page * 4096 + offset
+                    ));
+                }
+            }
+        }
+        return Some(text);
+    }
+    None
 }

@@ -8,7 +8,9 @@
 // arena's changed
 // byte ranges (u32 count, then u32 offset, u32 length, bytes) into a pipe the parent
 // drains. After each sequence the parent writes everything the child reported (u32 length, bytes), then
-// the child's wait status (u32), and puts back what the sequence may have changed. A child that dies
+// the child's wait status (u32), and puts back what the sequence may have changed. After its last
+// call the child reports the play area: for each page whether process_vm_readv could read it (u8),
+// then its bytes (zeros when not). A child that dies
 // part way through a report leaves a short last record, which the reader drops; one that runs past the
 // deadline is killed. The child first makes itself a session leader, as a container's first process is,
 // and an argument equal to SELF is replaced by its process number.
@@ -42,6 +44,8 @@
 // How long a sequence may take before its child is killed: only one that waits for ever comes near it.
 #define DEADLINE_SECONDS 60
 #define SELF 0x5e1f5e1f00000001ULL
+#define PLAY 0x71000000UL
+#define PLAY_PAGES 16
 
 static unsigned char before[ARENA_SIZE];
 
@@ -367,6 +371,17 @@ int main(void) {
                 write_all(1, &result, 8);
                 write_all(1, &unshared, 4);
                 report_changes(1);
+            }
+            static unsigned char page[4096];
+            for (int index = 0; index < PLAY_PAGES; index++) {
+                struct iovec local = {page, sizeof page};
+                struct iovec remote = {(void *)(PLAY + index * 4096UL), sizeof page};
+                unsigned char readable = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0) == sizeof page;
+                if (!readable) {
+                    memset(page, 0, sizeof page);
+                }
+                write_all(1, &readable, 1);
+                write_all(1, page, sizeof page);
             }
             _exit(0);
         }
