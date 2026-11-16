@@ -1098,7 +1098,11 @@ fn open_peer(
         path,
         serial,
     );
-    open_slave(kernel, cx, tid, &file, pty, flags)?;
+    // An O_PATH file is made without the terminal's open, so even a locked slave is given
+    // (`do_dentry_open`).
+    if flags & O_PATH == 0 {
+        open_slave(kernel, cx, tid, &file, pty, flags)?;
+    }
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .process_of_mut(tid)

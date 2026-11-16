@@ -933,6 +933,20 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K2's fifth run: shmget, shmat, shmdt, shmctl, splice (twice), tee and vmsplice are generated.
+Segment identifiers differ between the runners (the reference's slots and sequence numbers carry
+over between sequences), so an argument `SEGMENT` is replaced by each runner with its sequence's last
+identifier from a successful shmget (4000, a slot neither reaches, before one), as `SELF` is; shmget's
+value, SHM_STAT's, IPC_INFO's and SHM_INFO's (the highest slot) and an unplaced shmat's are not
+compared, nor a status's sequence number, times and processes or SHM_INFO's resident pages. After
+each sequence the reference's runner removes every segment, each as its creator (and makes itself
+dumpable again, which the change of user took away and later sequences would inherit; seed 500
+found that). Sizes stay within our address space. splice, tee and vmsplice always carry
+SPLICE_F_NONBLOCK (vmsplice ignores O_NONBLOCK, and a named pipe opened for reading and writing is
+its own writer), and splice into a terminal is capped like write. Seed 500 (3000) also found our
+runner taking a failed shmget's error as an identifier. Seeds 500, 501 and 502 passed 3000 each
+(52 to 79 s, load 50 to 125).
+
 K2's fourth run: seed 410 (statfs into a buffer that faults part way) passed 20000 after the copy
 fix (337 s, load about 60 to 90). Terminals generated (see "Where things stand"): seed 420 (1000)
 found O_DIRECT on `/dev/tty` and then a reference runner that did not put back `/dev/tty`, `/dev/ptmx`
@@ -1316,14 +1330,14 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2, what is left, in order: the calls the Missing list gives to K2: System V shared memory
-   (shmget, shmat, shmdt, shmctl: a shared mapping of an internal tmpfs file, as section 7 says, with
-   `/SYSV%08x` in maps), then its semaphores and message queues and POSIX message queues; splice,
-   tee and vmsplice (pipes); pidfd_open, pidfd_send_signal, waitid's P_PIDFD and CLONE_PIDFD (process
-   descriptors), process_mrelease; signalfd4 (with K5's waiting on many things if simpler). Each
-   with a guest test against the reference and layer 1 generation.
+1. K2, what is left, in order: the calls the Missing list gives to K2: pidfd_open,
+   pidfd_send_signal, waitid's P_PIDFD and CLONE_PIDFD (process descriptors), process_mrelease;
+   signalfd4 (with K5's waiting on many things if simpler); System V semaphores and message queues
+   and POSIX message queues (src/syscall/ipc.rs has the identifiers, keys and permissions they share
+   with shared memory: `Ids`, `Perm`, `get`). Each with a guest test against the reference and layer 1
+   generation.
 2. Small gaps of K2: a release I/O signal per pipe end when several close at once (only one is sent);
-   sendfile into a full blocking pipe or terminal waits on Linux.
+   sendfile into a full blocking terminal waits on Linux (`tty_write`).
 3. After any kernel change for the items above, three fresh layer 1 seeds of 20000 again (443 to 445
    passed on head 99e83eb; one command each, see Layer 1).
 4. The missing calls of later milestones; the known gaps above before K6's bar.

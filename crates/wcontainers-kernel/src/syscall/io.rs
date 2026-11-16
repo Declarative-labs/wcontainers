@@ -1164,6 +1164,21 @@ fn send(
     // until the count is moved or a round falls short (`splice_direct_to_actor`).
     let (input_node, output_node) = (input.borrow().node.clone(), output.borrow().node.clone());
     let to_pipe = matches!(output_node.borrow().content, Content::Pipe(_));
+    // The largest file either side's file system has: pipefs's is `MAX_NON_LFS`.
+    let on_pipefs = |node: &crate::fs::Node| node.borrow().fs.kind == crate::fs::Kind::Pipe;
+    let max = if on_pipefs(&input_node) || on_pipefs(&output_node) {
+        i32::MAX as u64
+    } else {
+        i64::MAX as u64
+    };
+    let position_now = position as u64;
+    let mut count = count;
+    if position_now + count > max {
+        if position_now >= max {
+            return Err(Errno::EOVERFLOW);
+        }
+        count = max - position_now;
+    }
     if !to_pipe {
         if (output.borrow().offset as i64)
             .checked_add(count as i64)
