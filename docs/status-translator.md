@@ -84,11 +84,47 @@ machine code, Chrome making the modules compiled at first call / at once and how
   bun 3,455,257 / 1,268,611; 8,913 / 6,346; 629,509 / 308,535; 6,234,847 / 2,258,415; 32,887 / 30,158; 257,328
   / 136,310; 54 / 52.
 
-ELFCONV_PLACEHOLDER
+elfconv against ours on the final code, with the one command (`elfconv.sh`, best of 3, wasmtime only; load 26
+to 59 while it ran). Times native, each against its own native build (elfconv's programs are static glibc builds
+by clang 16, ours flat blobs by zig's clang, so only the ratios compare): fib elfconv 9.00 / ours 5.70; sieve
+1.12 / 1.46; hash elfconv's program fails ("No lifted instruction at (0x40103c) was executed") / 0.99; sort
+7.44 / 3.39; interpret 16.56 / 3.70; matrix 1.30 / 3.03; walk 0.95 / 1.00; search 1.50 / 1.95. As in M5:
+elfconv ahead on loops over memory, well behind on calls and the interpreter, and wrong on hash. The script now
+also compares each elfconv program's output with the native one. Not compared in Chrome.
 
 ### P1, the long-run driver
 
-LONG_PLACEHOLDER
+One command, `crates/wcontainers-translator-test/long-runs.sh` (how to start it under "How to run"). What it
+does:
+- Each layer is cut into chunks, each one test run with 6 jobs: layer 1 in ten seeds (`SEED*1000+k`) of 1,000
+  cases a form, 10 a form in Chrome each; layer 2 in 40 chunks of 25,000 programs by case offset
+  (`WC_LAYER2_FROM`), 25 of each on the CPU and 5 in Chrome; layer 3 in 100 chunks of 1,000 Csmith programs by
+  case offset, 10 of each in Chrome. `WC_LONG_PERCENT` scales every count (at 1 percent each layer is one
+  chunk).
+- New knobs it needed: `WC_LAYER1_JOBS`; layer 2's `WC_LAYER2_FROM`, `WC_LAYER2_JOBS` and `WC_LAYER2_CHROME`
+  (layer 2 had no Chrome sample; its cases are now each made from the seed and the case number, so a failing
+  case replays alone). Each layer's cases run on one pool of threads (`src/jobs.rs`, rayon) that the translator
+  and wasmtime share, so a chunk keeps to its jobs: with separate threads and the translator's pool at one
+  thread, layer 2 ran at one core, and at the default pool size it would take three times the jobs.
+- One line a chunk is appended to `ledger.txt` in `WC_LONG_DIR` (tab separated key=value: layer, chunk, knobs,
+  cases, sample on the CPU and in Chrome, mismatches, seconds, load at start and end, commit, result; a failing
+  or stopped chunk adds what failed, a replay command and its log). Each chunk's log is kept under `logs/`.
+- Run again, chunks the ledger holds for an accepted commit (`WC_LONG_ACCEPT` up to HEAD; default HEAD alone)
+  are skipped; a run on a tree with changes to the crates is recorded with `-changed` and never skipped. A chunk
+  past `WC_LONG_LIMIT` minutes (default 90) is stopped, recorded as `stopped`, its reference containers removed,
+  and the run goes on. Do not change the crates while it runs: each chunk's `cargo test` would build the change.
+
+Proven at 1 percent (seed 7, commit c999db7, the whole run 1,758 s, load 24 to 31; ledger and logs in
+scratch `p1/long2`):
+- layer 1: 1 chunk, 1215 forms x 100 cases (121,500) and 1215 in Chrome, 0 mismatches, 60 s, load 26 to 27.
+- layer 2: 1 chunk, 10,000 programs, 10 on the CPU and 2 in Chrome, 0 mismatches, 260 s, load 27 to 31.
+- layer 3: 1 chunk, 1,000 Csmith programs: 888 compared, 112 did not end on Linux in time, 10 also in Chrome,
+  0 mismatches, 1,437 s, load 24 to 31.
+- Run again: all three skipped, in 2 s. A layer 3 chunk with `WC_LONG_LIMIT=1` was stopped after 60 s,
+  recorded as stopped with its replay command, and left no container.
+- So the whole run, from these rates at load about 30 (expected, not measured): layer 1 about 1.7 hours (ten
+  chunks of about 10 minutes), layer 2 about 7.2 hours (40 chunks of about 11 minutes), layer 3 about 40 hours
+  (100 chunks of about 24 minutes): about 49 hours in all. Each chunk is well under the 90 minute limit.
 
 ## M5, fourth run
 
@@ -2001,6 +2037,14 @@ contract's bits, in both runners).
   translates for size). About 15 minutes.
 
 ## Cases actually run
+
+- P1, release unless said: after the merge, every test of the three crates (debug, 69 passed, 7 ignored).
+  After the changes: layer 2, 64 cases seed 1 (8 on the CPU); 64 cases seed 1 with 4 jobs and 1 in Chrome;
+  600 cases seed 1 with 6 jobs, 2 on the CPU, 1 in Chrome (19 s, load 20 to 22); layer 1, 1215 forms x 16
+  cases, seed 1, 6 jobs (12 s); layer 3, 4 Csmith programs seed 1 and the hand-picked builds, then 24 seed 5
+  with 6 jobs, 2 in Chrome (46 s, load 27); checks, Chrome and programs tests; the new binaries test: all
+  passing. The 1 percent run of the long-run driver (seed 7) above: 121,500 layer 1 cases, 10,000 layer 2
+  programs, 1,000 Csmith programs, 0 mismatches.
 
 - M3 close-out, second run (fifth run), release: layer 2 with the area check, the generator fixed and the
   translator before the structure proof change: seed 4, 1000 cases (none on the CPU; with the generator fix
