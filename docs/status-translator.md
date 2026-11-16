@@ -4,11 +4,58 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M5 (real code at scale): built in three runs (under "M5, third run", "M5, second run" and "M5, first run");
-what is left is under "M5, third run, what comes next". M0 to M4 and S1 are built; their work is recorded
+M5 (real code at scale): built in four runs (under "M5, fourth run" back to "M5, first run"); what is
+left is under "M5, fourth run, what comes next". M0 to M4 and S1 are built; their work is recorded
 below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million
 programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
 under "How to run".
+
+## M5, fourth run
+
+Translation speed, profiled again on Bun (macOS `sample`, speed setting, translation only,
+`RAYON_NUM_THREADS=6`):
+- Half the time was one thread in `slice::contains`: a switch table's targets were kept once by searching
+  the list for each entry (`habits::jump_table`), and the addresses a function builds were each searched
+  for in every table's targets (`Finder::explore`). Both are now sets. Bun has a table of 360,445 entries
+  (left unrecognised later, as before), searched again each time the function was explored.
+- Then: loop pieces were found on one thread, and for each loop the set of the function's instructions
+  was made even when nothing used it (only stretches do). Now found per function on every core, the set
+  made once and only for stretches. The checks for irreducible loops and cuts after each round also run
+  on every core.
+- Then: the translator's maps used std's SipHash; now `rustc-hash` (already a dependency) everywhere in
+  `full.rs` and `full/proof.rs`.
+- Bun for speed, best of each step (load 26 to 46): 72.74 s (third run) / 33.71 s (sets) / 30.11 s
+  (loop pieces on every core) / 18.69 s (fast hash; 21.84 s again). Output the same bytes: total sizes the
+  same for Bun, and every module byte for byte the same as before for busybox, musl, rg, python and go in
+  both settings (`cmp` of `WC_BINARIES_DUMP`).
+- What is left of Bun's time is mostly making and emitting its 3.9 GB in parallel; a split translation is
+  still emitted twice (each module's code depends on which pieces it holds).
+
+Size, what is free (section 11, step 1). The meanings' own waste, each change measured by itself on the
+benchmark set (bytes of WebAssembly, speed / size setting) and run speed in both engines:
+- An addition or subtraction that sets no flags is a plain `add` or `sub` (it was `a + (b ^ -1) + 1`
+  through three locals, as the flag setting form needs), adding zero is a copy, and a `mov` or `mvn` (an or
+  or exclusive or with the zero register) is the copy alone. Benchmark set 312,148 / 133,089 to 297,773 /
+  125,813 (-4.6% / -5.5%); musl for size 7,313,689 to 7,121,191 (-2.6%).
+- A load or store with no write back lets the check untag the address in the local it was made in (it was
+  copied to a second local first), and an address the code makes from its own place (`adr`, a literal
+  load, the link register) adds the offset once (it added the instruction's offset, then the rest).
+  Benchmark set 297,773 to 295,287 (speed); musl for size 7,121,191 to 7,012,251 (-1.5%).
+- Run speed, speed setting, the three alternated over three rounds (sort, interpret, matrix; best of 3
+  each; load 26 to 65), base / first / both: wasmtime sort 1.078 / 1.085 / 1.078, interpret 0.514 / 0.511
+  / 0.512, matrix 0.222 / 0.227 / 0.226; Chrome sort 1.068 / 1.069 / 1.069, interpret 0.581 / 0.574 /
+  0.581, matrix 0.156 / 0.155 / 0.156. The whole set once each (load 20 to 50), base / first, speed:
+  wasmtime fib 2.254 / 2.139, sieve 0.640 / 0.613, hash 0.576 / 0.539, walk 2.213 / 2.143, search 0.238 /
+  0.250; size (where loops run with their checks): wasmtime fib 2.784 / 2.702, sieve 1.283 / 1.269, sort
+  1.608 / 1.273, interpret 0.673 / 0.603, matrix 0.303 / 0.336, search 0.408 / 0.280; Chrome sieve 0.668 /
+  0.668, matrix 0.783 / 0.774, search 1.445 / 1.421. No loss shows; kept in both settings.
+- Both together on the binaries (translation only, load about 35), speed / size: busybox 32,574,096
+  (-3.6%) / 13,592,810 (-4.9%); musl 14,572,720 (-3.5%) / 7,012,251 (-4.1%); rg 137,534,970 (-4.1%) /
+  42,064,664 (-5.1%); git 108,125,485 (-4.0%) / 44,008,090 (-5.7%); python 137,874,944 (-3.5%) /
+  57,840,097 (-4.7%); java 544,231,926 (-3.2%) / 235,856,675 (-4.6%); go 348,302,497 (-3.0%) / 148,452,670
+  (-4.3%). Gzipped about 10% less.
+- The bit that tells a callee the caller wants the flags is added into the return address constant (it
+  was an `or` after the add; instructions are 4 byte aligned, so the bit is clear).
 
 ## M5, third run
 
@@ -2055,8 +2102,6 @@ contract's bits, in both runners).
 - M5: translated for size, a long loop in a function entered once stays in V8's baseline code in Chrome (no
   loop pieces to carry on in after a stop), up to 9 times slower than speed on the benchmark set. That is the
   trade the size setting makes; measured under "M5, second run".
-- M5: the Chrome runner cannot split a translation into modules, so a call between modules is timed in
-  wasmtime only.
 
 - FPSR's cumulative exception flags are kept only once the program has written FPSR (or set FPCR); a
   program that reads them without ever writing gets the flags it had, counted and warned as "exact
@@ -2075,10 +2120,8 @@ contract's bits, in both runners).
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
 - A test whose guest never ends hangs rather than fails (nothing bounds how long a translated run may
   take); the hang this run fixed showed as layer 2 and `tests/checks.rs` running for ever.
-- The full piece of a function keeps every local it may need; very large functions could pass V8's 50,000
-  locals or function size limits. Not checked yet (M5).
-- Finding functions explores every entry again when entries are added; fine for the test programs, not
-  measured on large binaries (M5).
+- Finding functions explores every entry again when a round of cuts adds entries (functions of more than
+  `FUNCTION_BLOCKS` blocks); measured on the large binaries under "M5, fourth run".
 - Stand-in brk never moves the break.
 - A stop flag raised from outside is tested in wasmtime only (`tests/smoke.rs`, before a run and by a
   second thread mid-loop). The Chrome runner has the same hook code.

@@ -1254,8 +1254,8 @@ impl Emitter for NoneEmitter<'_> {
         }
     }
 
-    fn this_address(&mut self) {
-        let offset = self.offset;
+    fn this_address(&mut self, by: i64) {
+        let offset = self.offset.wrapping_add_signed(by);
         address(&mut self.sink(), offset);
     }
 
@@ -1341,8 +1341,8 @@ impl Emitter for NoneEmitter<'_> {
         let frame = frame_bytes(&self.locals);
         self.arguments(
             |s| {
-                address(s, next);
-                s.i64_const(FLAGS_WANTED).i64_or();
+                // Instructions are 4 byte aligned, so adding the bit sets it.
+                address(s, next + FLAGS_WANTED as u64);
             },
             frame,
         );

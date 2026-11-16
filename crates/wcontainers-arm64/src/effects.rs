@@ -133,7 +133,7 @@ impl Emitter for Recorder {
         }
     }
 
-    fn this_address(&mut self) {}
+    fn this_address(&mut self, _: i64) {}
 
     fn set_flags(&mut self, flags: Flags) {
         self.effects.flag_settings += 1;

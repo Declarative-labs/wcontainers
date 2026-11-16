@@ -2645,8 +2645,8 @@ impl Emitter for FullEmitter<'_> {
         }
     }
 
-    fn this_address(&mut self) {
-        let offset = self.at.offset;
+    fn this_address(&mut self, by: i64) {
+        let offset = self.at.offset.wrapping_add_signed(by);
         self.address(offset);
     }
 
@@ -2773,7 +2773,7 @@ impl Emitter for FullEmitter<'_> {
         self.sink().local_get(local).if_(BlockType::Empty);
         self.write_back();
         self.arguments();
-        self.this_address();
+        self.this_address(0);
         self.sink().return_call(F_EXACT).end();
         false
     }
@@ -2929,10 +2929,13 @@ impl Emitter for FullEmitter<'_> {
         for i in 0..PASSED {
             s.local_get(i);
         }
-        self.address(offset + 4);
-        if self.flags_needed_after(offset) {
-            self.sink().i64_const(FLAGS_WANTED).i64_or();
-        }
+        // Instructions are 4 byte aligned, so the bit is clear in the address and adding it sets it.
+        let wanted = if self.flags_needed_after(offset) {
+            FLAGS_WANTED as u64
+        } else {
+            0
+        };
+        self.address(offset + 4 + wanted);
         let depth = self.depth;
         self.sink().local_get(depth);
         match target {
