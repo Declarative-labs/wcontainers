@@ -26,6 +26,9 @@ struct Slot {
     read: usize,
     /// Written by a packet-mode writer (`O_DIRECT`): never merged, and a read takes it whole.
     packet: bool,
+    /// Whether a later write may add to it (`PIPE_BUF_FLAG_CAN_MERGE`): a plain write's page, not a
+    /// file's pages spliced in or a copy of part of another slot.
+    merge: bool,
 }
 
 #[derive(Clone)]
@@ -188,7 +191,7 @@ impl Pipe {
             Some(last)
                 if chars > 0
                     && !packet
-                    && !last.packet
+                    && last.merge
                     && last.page.len() + chars <= PAGE_SIZE as usize =>
             {
                 chars
@@ -210,7 +213,77 @@ impl Pipe {
             page: bytes,
             read: 0,
             packet,
+            merge: !packet,
         });
+    }
+
+    /// Adds a slot of spliced bytes, which no write adds to.
+    pub fn push_spliced(&mut self, bytes: Vec<u8>) {
+        debug_assert!(bytes.len() <= PAGE_SIZE as usize && !self.is_full());
+        self.slots.push_back(Slot {
+            page: bytes,
+            read: 0,
+            packet: false,
+            merge: false,
+        });
+    }
+
+    /// Unread bytes of the front slot.
+    pub fn front_len(&self) -> Option<usize> {
+        self.slots.front().map(|slot| slot.page.len() - slot.read)
+    }
+
+    /// Moves up to `length` bytes of the front slot into `other` (`splice_pipe_to_pipe`): the whole
+    /// slot as it is, or a copy of its first bytes that no write adds to. Returns the bytes moved.
+    pub fn move_front(&mut self, other: &mut Pipe, length: usize) -> usize {
+        let slot = self.slots.front_mut().expect("a slot to move");
+        let available = slot.page.len() - slot.read;
+        if length >= available {
+            let slot = self.slots.pop_front().expect("a slot to move");
+            other.slots.push_back(slot);
+            return available;
+        }
+        let copy = Slot {
+            page: slot.page[slot.read..slot.read + length].to_vec(),
+            read: 0,
+            packet: slot.packet,
+            merge: false,
+        };
+        slot.read += length;
+        other.slots.push_back(copy);
+        length
+    }
+
+    /// Copies up to `length` unread bytes of slot `index` into `other` as a slot no write adds to
+    /// (`link_pipe`). Returns the bytes copied, or `None` past the last slot.
+    pub fn copy_slot(&self, index: usize, other: &mut Pipe, length: usize) -> Option<usize> {
+        let slot = self.slots.get(index)?;
+        let count = (slot.page.len() - slot.read).min(length);
+        other.slots.push_back(Slot {
+            page: slot.page[slot.read..slot.read + count].to_vec(),
+            read: 0,
+            packet: slot.packet,
+            merge: false,
+        });
+        Some(count)
+    }
+
+    /// Takes `count` bytes from the front slot, which holds at least that many; whether the slot
+    /// emptied and went.
+    pub fn consume_front(&mut self, count: usize) -> bool {
+        let slot = self.slots.front_mut().expect("a slot to consume");
+        slot.read += count;
+        if slot.read == slot.page.len() {
+            self.slots.pop_front();
+            return true;
+        }
+        false
+    }
+
+    /// The front slot's unread bytes.
+    pub fn front_bytes(&self) -> &[u8] {
+        let slot = self.slots.front().expect("a slot");
+        &slot.page[slot.read..]
     }
 
     /// Passes over empty pages at the front, as a read does.

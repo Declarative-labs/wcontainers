@@ -29,6 +29,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
@@ -570,6 +571,8 @@ int main(void) {
                 syscall(SYS_setresuid, -1, creator, -1);
                 syscall(SYS_shmctl, id, 0, 0);
                 syscall(SYS_setresuid, -1, 0, -1);
+                // A change of user takes away dumpable, which later sequences inherit.
+                prctl(PR_SET_DUMPABLE, 1);
             }
         }
         static char names[65536];

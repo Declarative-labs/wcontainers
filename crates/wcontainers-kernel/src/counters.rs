@@ -52,6 +52,9 @@ pub mod reason {
     pub const FAULT_SYNDROME_APPROXIMATED: &str = "fault syndrome approximated";
     /// The time between a thread being woken and it running, measured, not a slow path. Detail: none.
     pub const WAKE_TO_RUN: &str = "wake to run";
+    /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
+    /// later change to them shows in what is read. Detail: the call number.
+    pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
 

@@ -195,7 +195,7 @@ pub(super) fn note_ends(file: &FileRef) {
 }
 
 /// `kill_fasync` on a pipe's readers (`POLL_IN`) or writers (`POLL_OUT`).
-fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node, readers: bool) {
+pub(super) fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node, readers: bool) {
     let ends = match &node.borrow().content {
         Content::Pipe(pipe) => pipe.async_ends(readers),
         _ => return,
@@ -243,7 +243,7 @@ pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>) {
     }
 }
 
-fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
+pub(super) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
     let Content::Pipe(pipe) = &mut inode.content else {
@@ -445,9 +445,16 @@ pub(super) fn write(
     }
 }
 
-/// Puts kernel bytes into a pipe without waiting, as splicing into a pipe does: as many whole
-/// pages as fit; the host's pipes take everything. Readers with `FASYNC` hear of them.
-pub(super) fn put(cx: &mut Context<'_>, kernel: &mut Kernel, file: &FileRef, bytes: &[u8]) -> u64 {
+/// Puts kernel bytes into a pipe without waiting, as splicing into a pipe does: a slot for each
+/// page the bytes came from (the first starting `in_page` bytes into its page), as many as fit, none
+/// of which a write adds to; the host's pipes take everything. Readers with `FASYNC` hear of them.
+pub(super) fn put(
+    cx: &mut Context<'_>,
+    kernel: &mut Kernel,
+    file: &FileRef,
+    bytes: &[u8],
+    in_page: u64,
+) -> u64 {
     let node = file.borrow().node.clone();
     let mut done = 0;
     let taken = with_pipe(file, |pipe| {
@@ -455,12 +462,12 @@ pub(super) fn put(cx: &mut Context<'_>, kernel: &mut Kernel, file: &FileRef, byt
             cx.host.output(stream, bytes);
             return bytes.len();
         }
-        for chunk in bytes.chunks(PAGE_SIZE as usize) {
-            if pipe.is_full() {
-                break;
-            }
-            pipe.push(chunk.to_vec(), false);
-            done += chunk.len();
+        let mut piece = (PAGE_SIZE - in_page % PAGE_SIZE) as usize;
+        while done < bytes.len() && !pipe.is_full() {
+            let end = (done + piece).min(bytes.len());
+            pipe.push_spliced(bytes[done..end].to_vec());
+            done = end;
+            piece = PAGE_SIZE as usize;
         }
         done
     });

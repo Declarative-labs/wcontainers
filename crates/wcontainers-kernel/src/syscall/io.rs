@@ -29,7 +29,7 @@ pub(super) const MAX_SEGMENTS: u64 = 1024;
 /// The end-of-directory position tmpfs gives (`DIR_OFFSET_EOD`).
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
 
-fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
+pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
     kernel.process_of(tid).files.file(fd as i32)
 }
 
@@ -421,7 +421,7 @@ pub(super) fn sync_file_range(
 /// Whether a file takes reads or writes at a given offset (Linux's `FMODE_PREAD` and `FMODE_PWRITE`):
 /// a pipe and a secret memory file take neither, and a `seq_file` of `/proc` no writes. A descriptor
 /// open only for its path is no descriptor here.
-fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
+pub(super) fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let file = file.borrow();
     if file.is_path() {
         return Err(Errno::EBADF);
@@ -502,7 +502,7 @@ pub(super) fn new_size_ok(
 }
 
 /// Linux's `rw_verify_area`: the range must end within the largest file offset.
-fn verify_area(offset: u64, count: u64) -> Result<(), Errno> {
+pub(super) fn verify_area(offset: u64, count: u64) -> Result<(), Errno> {
     if (count as i64) < 0
         || (offset as i64) < 0
         || (offset as i64).checked_add(count as i64).is_none()
@@ -723,7 +723,7 @@ fn vectored(
 }
 
 /// The bytes a read of up to `count` bytes at `offset` gives, without moving the file's position.
-fn file_bytes(
+pub(super) fn file_bytes(
     cx: &mut Context<'_>,
     file: &FileRef,
     count: u64,
@@ -1028,7 +1028,7 @@ fn write_proc(
 /// asked for: fewer when the caller's buffer stopped being readable. Devices that take anything
 /// report nothing written here; the caller counts what it offered.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
-fn write_bytes(
+pub(super) fn write_bytes(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -1050,7 +1050,7 @@ fn write_bytes(
         Content::Regular(regular) => regular,
         Content::Pipe(_) => {
             drop(inode);
-            return Ok(super::pipe::put(cx, kernel, file, bytes));
+            return Ok(super::pipe::put(cx, kernel, file, bytes, 0));
         }
         Content::Special => {
             return match Device::from_number(rdev) {
@@ -1256,6 +1256,9 @@ fn send(
             Err(Errno::EINVAL)
         } else if super::tty::end(&output).is_some() {
             super::tty::put(kernel, cx, tid, &output, &bytes)
+        } else if to_pipe {
+            let in_page = if regular { pos } else { 0 };
+            Ok(super::pipe::put(cx, kernel, &output, &bytes, in_page))
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
             write_limit(kernel, cx, tid, at, bytes.len() as u64).and_then(|allowed| {
@@ -1469,7 +1472,7 @@ fn touch_atime(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, fl
 /// Makes a `/proc` file's bytes again where Linux would before a read at `offset`: at each read for
 /// a file read from memory or a sysctl, and for a `seq_file` at a read from the start or from
 /// anywhere but where the last read stopped.
-fn refresh_proc(
+pub(super) fn refresh_proc(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,

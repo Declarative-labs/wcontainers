@@ -17,6 +17,7 @@ mod process;
 mod rseq;
 mod seccomp;
 mod signals;
+mod splice;
 mod system;
 mod time;
 pub(crate) mod tty;
@@ -301,6 +302,9 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_sched_setattr, S(system::sched_setattr)),
         (__NR_sched_getattr, S(system::sched_getattr)),
         (__NR_sched_rr_get_interval, S(system::sched_rr_get_interval)),
+        (__NR_splice, S(splice::splice)),
+        (__NR_tee, S(splice::tee)),
+        (__NR_vmsplice, S(splice::vmsplice)),
         (__NR_shmget, S(ipc::shmget)),
         (__NR_shmat, S(ipc::shmat)),
         (__NR_shmdt, S(ipc::shmdt)),
