@@ -82,6 +82,22 @@ pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
 /// The report holds the output of the last run.
 pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> Report {
+    run_in_chrome(blob, look_ahead, omit, repeat, None)
+}
+
+/// [`translated_with`] with V8 given these flags, only for measuring what the engine does (such as compiling
+/// every function when its module is made, not at its first call).
+pub fn translated_with_engine_flags(blob: &Blob, look_ahead: LookAhead, flags: &str) -> Report {
+    run_in_chrome(blob, look_ahead, Omit::default(), 1, Some(flags))
+}
+
+fn run_in_chrome(
+    blob: &Blob,
+    look_ahead: LookAhead,
+    omit: Omit,
+    repeat: u32,
+    flags: Option<&str>,
+) -> Report {
     let place = placement(blob);
     let directory = target().join("cases").join(&blob.name);
     std::fs::create_dir_all(&directory).unwrap();
@@ -114,7 +130,7 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
             | (u8::from(omit.returns) << 2)
             | (u8::from(omit.depth) << 3),
     });
-    let result = launch(&directory, &setup);
+    let result = launch(&directory, &setup, flags);
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
             .as_array()
@@ -167,11 +183,15 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
 }
 
 /// Run the browser runner on a case directory holding `translator.wasm`, `blob.bin`, `stack.bin` and, for
-/// instruction cases, `cases.bin`, with this setup; give its answer.
-fn launch(directory: &Path, setup: &Value) -> Value {
+/// instruction cases, `cases.bin`, with this setup and V8 flags if given; give its answer.
+fn launch(directory: &Path, setup: &Value, flags: Option<&str>) -> Value {
     std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
 
-    let output = Command::new("node")
+    let mut command = Command::new("node");
+    if let Some(flags) = flags {
+        command.env("WC_CHROME_JS_FLAGS", flags);
+    }
+    let output = command
         .arg(package().join("run.mjs"))
         .arg(directory)
         .output()
@@ -249,7 +269,7 @@ pub fn cases(
         "areas": places,
         "stopAtSyscall": true,
     });
-    let result = launch(&directory, &setup);
+    let result = launch(&directory, &setup, None);
     let numbers = |value: &Value| -> Vec<u8> {
         value
             .as_array()

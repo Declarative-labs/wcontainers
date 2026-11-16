@@ -74,7 +74,8 @@ function run({
   // The whole thread state when the thread stopped, which a system call's result may change afterwards.
   let stateAtStop = null;
   let thread = null;
-  const blobs = [];
+  // What each page allows, as the permission table says.
+  const pagePermissions = new Uint8Array(permissionPages);
   // By address, the piece of look-ahead none of the one instruction there, for the table's last slot.
   const exactPieces = new Map();
   let programBreak = 0;
@@ -225,6 +226,9 @@ function run({
       slowPath(reason("memory fault"), BigInt.asUintN(64, address), 0);
       stop({ kind: "memory fault", address: BigInt.asUintN(64, address).toString(), write: access === 1 });
     },
+    // Code runs only from pages that allow it, as on Linux: a jump anywhere else faults there. Otherwise the
+    // code is translated as it is in memory now, which may be code the program wrote: the blob's code, or the
+    // run of pages that allow running code within the addresses the table covers.
     [contract.hookLoadCode]: (address, exact) => {
       address = BigInt.asUintN(64, address);
       const table = thread.exports[contract.lookup];
@@ -233,22 +237,38 @@ function run({
         table.set(last, exactPieces.get(address));
         return 1;
       }
-      const index = blobs.findIndex(
-        (b) => address % 4n === 0n && address >= b.load + b.codeStart && address < b.load + b.codeEnd,
-      );
-      if (index < 0) {
+      const page = Number(address / BigInt(pageSize));
+      const executable = (p) => p >= 0 && p < permissionPages && (pagePermissions[p] & contract.execute) !== 0;
+      if (!executable(page)) {
+        slowPath(reason("memory fault"), address, 0);
+        stop({ kind: "memory fault", address: address.toString(), write: false, execute: true });
+        return 0;
+      }
+      const coveredEnd = tableBase + 4n * BigInt(last);
+      if (address < tableBase || address >= coveredEnd) {
         stop({ kind: "no code", address: address.toString() });
         return 0;
       }
+      let first = page;
+      while (executable(first - 1)) first--;
+      let end = page + 1;
+      while (executable(end)) end++;
+      const known = address >= loaded.load + loaded.codeStart && address < loaded.load + loaded.codeEnd;
+      const runStart = known ? loaded.load + loaded.codeStart : BigInt(Math.max(first * pageSize, Number(tableBase)));
+      const runEnd = known ? loaded.load + loaded.codeEnd : BigInt(Math.min(end * pageSize, Number(coveredEnd)));
       const start = performance.now();
-      const offset = address - blobs[index].load;
+      const code = { bytes: guest().slice(Number(runStart), Number(runEnd)), load: runStart };
+      const offset = address - runStart;
       if (exact) {
-        instantiateCode(index, offset, 2, 0, 1, BigInt(last) - offset / 4n);
+        instantiateCode(code, offset, 2, 0, 1, BigInt(last) - offset / 4n);
         exactPieces.set(address, table.get(last));
       } else {
+        // Code made at run time never takes the place of a piece the table holds.
+        const slot = Number((address - tableBase) / 4n);
+        if (table.get(slot) !== null) throw new Error(`code asked for at 0x${address.toString(16)}, which has a piece`);
         // The reference stays at none throughout.
-        if (lookAhead === 0) instantiateCode(index, offset, 0, 0);
-        else instantiateCode(index, offset, 2, 0, contract.bound);
+        if (lookAhead === 0) instantiateCode(code, offset, 0, 0);
+        else instantiateCode(code, offset, 2, 0, contract.bound);
       }
       slowPath(reason("translated at run time"), address, performance.now() - start);
       return 1;
@@ -283,14 +303,22 @@ function run({
     },
   };
 
-  // Translate blob `index` from `start` and instantiate it, adding its pieces to the lookup table at their
-  // addresses, or from `slotBase` when given.
-  function instantiateCode(index, start, lookAhead, omit, bound = 0, slotBase = null) {
-    const b = blobs[index];
+  // Translate code `b` (its bytes, where they are, and where in them the code is, all of it when not said)
+  // from `start` and instantiate it, adding its pieces to the lookup table at their addresses, or from
+  // `slotBase` when given.
+  function instantiateCode(b, start, lookAhead, omit, bound = 0, slotBase = null) {
     // The translator's memory may grow while it makes room, so its buffer is taken after.
     const at = translator.input(b.bytes.length);
     new Uint8Array(translator.memory.buffer, at, b.bytes.length).set(b.bytes);
-    const length = translator.translate(b.codeStart, b.codeEnd, start, lookAhead, bound, probe, omit);
+    const length = translator.translate(
+      b.codeStart ?? 0n,
+      b.codeEnd ?? BigInt(b.bytes.length),
+      start,
+      lookAhead,
+      bound,
+      probe,
+      omit,
+    );
     if (length < 0) throw new Error(`no translation from ${start}`);
     const module = new WebAssembly.Module(result(length));
     new WebAssembly.Instance(module, {
@@ -310,7 +338,8 @@ function run({
   }
 
   const tableBase = BigInt(load);
-  const threadModule = new WebAssembly.Module(result(translator.thread_module(Math.ceil(codeBytes / 4))));
+  // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
+  const threadModule = new WebAssembly.Module(result(translator.thread_module(Math.ceil(blob.length / 4))));
   thread = new WebAssembly.Instance(threadModule, {
     [contract.hooks]: hooks,
     [contract.env]: {
@@ -320,12 +349,11 @@ function run({
     },
   });
 
-  const table = new Uint8Array(permissionPages);
-  for (const [start, end, permissions] of regions) setPermissions(start, end, permissions, table);
+  for (const [start, end, permissions] of regions) setPermissions(start, end, permissions, pagePermissions);
   guest().set(blob, load);
-  blobs.push({ bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) });
+  const loaded = { bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) };
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
-  instantiateCode(0, 0n, lookAhead, omit, bound);
+  instantiateCode(loaded, 0n, lookAhead, omit, bound);
 
   if (cases) return runCases();
 
@@ -342,9 +370,9 @@ function run({
       const bytes = caseBytes.subarray(i * size, (i + 1) * size);
       const code = bytes.slice(0, codeBytes);
       guest().set(code, load);
-      blobs[0].bytes = code;
+      loaded.bytes = code;
       exactPieces.clear();
-      instantiateCode(0, 0n, lookAhead, omit, bound);
+      instantiateCode(loaded, 0n, lookAhead, omit, bound);
       new Uint8Array(state.buffer, BLOCK_AT, stateSize).set(bytes.subarray(codeBytes, codeBytes + stateSize));
       let at = codeBytes + stateSize;
       for (const [address, length] of areas) {

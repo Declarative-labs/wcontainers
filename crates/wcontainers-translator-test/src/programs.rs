@@ -320,7 +320,8 @@ pub fn ready_with(
     host: wcontainers_arm64::Host,
     load: impl FnOnce(&mut Machine),
 ) -> Machine {
-    let slots = blob.code_bytes.div_ceil(4) as u32;
+    // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
+    let slots = (blob.bytes.len() as u64).div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);

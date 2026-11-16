@@ -153,8 +153,26 @@ fn choose(
     pages
 }
 
-fn apply(paused: &mut Paused<'_, '_>, pages: &[(u64, Permissions)]) {
+/// The pages that may run code, the blob's. Changes leave that as placed: the stand-in drops no pieces when a
+/// page stops allowing it, and translates only from pages that allow it.
+fn runnable(blob: &Blob) -> Range<u64> {
+    let (range, _) = &placement(blob).regions[0];
+    range.start / PAGE_SIZE..range.end / PAGE_SIZE
+}
+
+/// What a page allows with these reading and writing permissions.
+fn with_running(runnable: &Range<u64>, page: u64, permissions: Permissions) -> Permissions {
+    let running = if runnable.contains(&page) {
+        Permissions::EXECUTE
+    } else {
+        Permissions::empty()
+    };
+    permissions.difference(Permissions::EXECUTE) | running
+}
+
+fn apply(paused: &mut Paused<'_, '_>, pages: &[(u64, Permissions)], runnable: &Range<u64>) {
     for &(page, permissions) in pages {
+        let permissions = with_running(runnable, page, permissions);
         paused.set_permissions(page * PAGE_SIZE..(page + 1) * PAGE_SIZE, permissions);
     }
 }
@@ -179,11 +197,13 @@ fn end(
                         .iter()
                         .any(|pages| pages.contains(&(address / PAGE_SIZE))) =>
             {
-                let page = address / PAGE_SIZE * PAGE_SIZE;
-                machine.set_permissions(
-                    page..page + PAGE_SIZE,
+                let page = address / PAGE_SIZE;
+                let permissions = with_running(
+                    &runnable(blob),
+                    page,
                     Permissions::READ | Permissions::WRITE,
                 );
+                machine.set_permissions(page * PAGE_SIZE..(page + 1) * PAGE_SIZE, permissions);
             }
             _ => {
                 let ran = ran(blob, &machine, stopped, &registers);
@@ -208,12 +228,14 @@ fn bytes(machine: &mut Machine, universe: &[Range<u64>]) -> Vec<u8> {
 /// points, and compare how they went. Panics on any difference.
 pub fn compare(blob: &Blob, plan: Plan) -> Compared {
     let universe = universe(blob);
+    let runnable = runnable(blob);
     let made = Rc::new(RefCell::new(Vec::new()));
 
     let full_came_back = Rc::new(Cell::new(0));
     let mut full = ready(blob, LookAhead::Full, Omit::default());
     {
         let made = made.clone();
+        let runnable = runnable.clone();
         let came_back = full_came_back.clone();
         let universe = universe.clone();
         let mut seed = [0u8; 32];
@@ -243,7 +265,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
                 },
                 Pause::Syscall => Point::Syscall(syscalls),
             };
-            apply(paused, &pages);
+            apply(paused, &pages, &runnable);
             made.borrow_mut().push(Change { point, pages });
         });
     }
@@ -259,6 +281,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
     let mut none = ready(blob, LookAhead::None, Omit::default());
     {
         let pending = pending.clone();
+        let runnable = runnable.clone();
         let came_back = none_came_back.clone();
         let universe = universe.clone();
         let mut syscalls = 0;
@@ -289,7 +312,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
                 if !reached {
                     break;
                 }
-                apply(paused, &change.pages);
+                apply(paused, &change.pages, &runnable);
                 pending.pop_front();
             }
         });

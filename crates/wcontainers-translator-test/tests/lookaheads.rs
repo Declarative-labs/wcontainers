@@ -85,14 +85,25 @@ fn measure_translating_at_run_time() {
                 reading.count,
                 reading.nanoseconds as f64 / reading.count as f64 / 1e3,
             );
-            // The Chrome runner makes pieces at run time at the default N only.
+            // The Chrome runner makes pieces at run time at the default N only. V8 compiles a function at its
+            // first call unless told otherwise, so the piece's compile is in the time only with eager
+            // compiling: by its baseline compiler, and by its optimising compiler alone.
             if bound == wcontainers_translator::BOUND {
-                let report = browser::translated_with(&blob, look_ahead, Default::default());
-                let chrome = report.count("translated at run time");
-                println!(
-                    "{name} {optimisation} at bounded {bound} in Chrome: {chrome} pieces, {:.0} us each",
-                    report.time("translated at run time") as f64 / chrome as f64 / 1e3,
-                );
+                for (what, flags) in [
+                    ("compiled at first call, not timed", ""),
+                    ("baseline compile", "--no-wasm-lazy-compilation"),
+                    (
+                        "optimising compile",
+                        "--no-wasm-lazy-compilation --no-liftoff",
+                    ),
+                ] {
+                    let report = browser::translated_with_engine_flags(&blob, look_ahead, flags);
+                    let chrome = report.count("translated at run time");
+                    println!(
+                        "{name} {optimisation} at bounded {bound} in Chrome, {what}: {chrome} pieces, {:.0} us each",
+                        report.time("translated at run time") as f64 / chrome as f64 / 1e3,
+                    );
+                }
             }
         }
     }

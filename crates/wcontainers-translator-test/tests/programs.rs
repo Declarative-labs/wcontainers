@@ -118,6 +118,30 @@ fn stacks_switched_by_the_program_match_linux() {
     }
 }
 
+/// Code the program writes into its own memory and calls, as a JIT does, translated from memory when it is
+/// reached, and written again with other code after `ic ivau`; and a call through a null pointer, which
+/// faults as on Linux. At every look-ahead and in Chrome.
+#[test]
+fn written_code_and_null_calls_match_linux() {
+    for (name, status) in [("written_code", 0), ("null_call", 139)] {
+        for optimisation in ["-O0", "-O2"] {
+            let blob = build(name, optimisation, Library::C);
+            let theirs = native(&blob);
+            assert_eq!(theirs.status, status, "{}", blob.name);
+            every_look_ahead_matches(&blob, &theirs, |what, machine| {
+                if name == "null_call" {
+                    assert!(machine.count(Reason::MemoryFault) == 1, "{what}");
+                }
+            });
+            for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
+                let ours = browser::translated_with(&blob, look_ahead, Default::default());
+                let what = format!("{} at {look_ahead:?} in Chrome", blob.name);
+                assert_eq!(ours.ran, theirs, "{what}");
+            }
+        }
+    }
+}
+
 fn print_counters(what: &str, machine: &Machine) {
     eprintln!("{what}: {:?}", machine.counters());
 }

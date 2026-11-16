@@ -35,7 +35,8 @@ pub enum Syscalls {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stopped {
     Exit(Exit),
-    /// No code is known for this address.
+    /// The address allows running code, but the lookup table has no slot for it, so this runner cannot run
+    /// it.
     NoCode(u64),
     /// The program called `exit` or `exit_group` with this status.
     Finished(i32),
@@ -101,13 +102,6 @@ impl Paused<'_, '_> {
 /// Called at every pause of the thread.
 type PauseFunction = Box<dyn FnMut(Pause, &mut Paused<'_, '_>)>;
 
-/// One blob placed in guest memory and translated.
-struct Blob {
-    bytes: Vec<u8>,
-    code: Range<u64>,
-    load_address: u64,
-}
-
 pub struct Host {
     /// What the engine does where WebAssembly leaves results open; translations are made for it.
     facts: wcontainers_arm64::Host,
@@ -124,7 +118,8 @@ pub struct Host {
     /// How often each slow path was taken at each address or number.
     places: HashMap<(Reason, u64), u64>,
     warnings: Vec<Warning<'static>>,
-    blobs: Vec<Blob>,
+    /// Where the code of each blob loaded is, as guest addresses.
+    code_ranges: Vec<Range<u64>>,
     /// By address, the piece of look-ahead none of the one instruction there, for the table's last slot.
     exact_pieces: HashMap<u64, wasmtime::Func>,
     /// The look-ahead code reached at run time with no piece is translated at, chosen each time.
@@ -247,7 +242,7 @@ impl Machine {
                 counters: HashMap::new(),
                 places: HashMap::new(),
                 warnings: Vec::new(),
-                blobs: Vec::new(),
+                code_ranges: Vec::new(),
                 exact_pieces: HashMap::new(),
                 run_time: Box::new(|| LookAhead::AT_RUN_TIME),
                 loads: Vec::new(),
@@ -321,10 +316,17 @@ impl Machine {
     ) {
         use proptest::prelude::RngExt;
         use proptest::test_runner::{RngAlgorithm, TestRng};
-        let index = self.place(bytes, code, load_address);
+        self.place(bytes, code.clone(), load_address);
         let mut pieces: Vec<HashMap<u64, wasmtime::Func>> = Vec::new();
         for (look_ahead, starts) in translations {
-            let load = translate_load(&mut self.store, index, starts, *look_ahead, Omit::default());
+            let load = translate_load(
+                &mut self.store,
+                (bytes, load_address),
+                code.clone(),
+                starts,
+                *look_ahead,
+                Omit::default(),
+            );
             instantiate(&mut self.store, &load, None);
             pieces.push(placed_pieces(&mut self.store, &load));
             self.store.data_mut().loads.push(load);
@@ -403,24 +405,27 @@ impl Machine {
         look_ahead: LookAhead,
         omit: Omit,
     ) {
-        let index = self.place(bytes, code, load_address);
-        let load = translate_load(&mut self.store, index, starts, look_ahead, omit);
+        self.place(bytes, code.clone(), load_address);
+        let load = translate_load(
+            &mut self.store,
+            (bytes, load_address),
+            code,
+            starts,
+            look_ahead,
+            omit,
+        );
         instantiate(&mut self.store, &load, None);
         self.store.data_mut().loads.push(load);
     }
 
-    /// Put a blob's bytes in guest memory; its index.
-    fn place(&mut self, bytes: &[u8], code: Range<u64>, load_address: u64) -> usize {
+    /// Put a blob's bytes in guest memory.
+    fn place(&mut self, bytes: &[u8], code: Range<u64>, load_address: u64) {
         self.write(load_address, bytes);
         let host = self.store.data_mut();
-        host.blobs.push(Blob {
-            bytes: bytes.to_vec(),
-            code,
-            load_address,
-        });
+        host.code_ranges
+            .push(load_address + code.start..load_address + code.end);
         let end = (load_address + bytes.len() as u64).next_multiple_of(PAGE_SIZE);
         host.program_break = host.program_break.max(end);
-        host.blobs.len() - 1
     }
 
     /// From now on code reached with no piece is translated at the look-ahead `choose` gives each time.
@@ -730,21 +735,51 @@ fn hooks(linker: &mut Linker<Host>) {
                         .unwrap();
                     return 1;
                 }
-                let found = caller.data().blobs.iter().position(|blob| {
-                    let start = blob.load_address + blob.code.start;
-                    let end = blob.load_address + blob.code.end;
-                    (start..end).contains(&address) && address.is_multiple_of(4)
-                });
-                let Some(index) = found else {
-                    stop(&mut caller, Stopped::NoCode(address));
+                // Code runs only from pages that allow it, as on Linux: a jump anywhere else faults there.
+                let Some(run) = executable_run(caller.data(), address) else {
+                    slow_path(
+                        caller.data_mut(),
+                        Reason::MemoryFault,
+                        address,
+                        Duration::ZERO,
+                    );
+                    let access = Access::Execute;
+                    stop(
+                        &mut caller,
+                        Stopped::Exit(Exit::MemoryFault { address, access }),
+                    );
                     return 0;
                 };
+                // The table has slots only for the addresses it covers; the runner cannot run code past them.
+                let table_base = caller.data().table_base;
+                let covered = table_base..table_base + 4 * last;
+                if !covered.contains(&address) {
+                    stop(&mut caller, Stopped::NoCode(address));
+                    return 0;
+                }
                 let start = Instant::now();
-                let offset = address - caller.data().blobs[index].load_address;
+                // The code as it is in memory now, which may be code the program wrote: a blob's code, or the
+                // run of pages that allow running code within what the table covers.
+                let known = caller
+                    .data()
+                    .code_ranges
+                    .iter()
+                    .find(|r| r.contains(&address));
+                let run = match known {
+                    Some(code) => code.clone(),
+                    None => run.start.max(covered.start)..run.end.min(covered.end),
+                };
+                let mut bytes = vec![0; (run.end - run.start) as usize];
+                let memory = caller.data().memory.unwrap();
+                memory
+                    .read(&caller, run.start as usize, &mut bytes)
+                    .expect("code inside guest memory");
+                let offset = address - run.start;
                 if exact == 1 {
                     let slot_base = (last as i64 - (offset / 4) as i64) as i32;
                     let one = LookAhead::Bounded(1);
-                    instantiate_code(&mut caller, index, &[offset], one, Some(slot_base));
+                    let code = (&bytes[..], run.start);
+                    instantiate_code(&mut caller, code, offset, one, Some(slot_base));
                     let Some(wasmtime::Ref::Func(Some(piece))) = table.get(&mut caller, last)
                     else {
                         panic!("the piece is in the last slot");
@@ -752,7 +787,7 @@ fn hooks(linker: &mut Linker<Host>) {
                     caller.data_mut().exact_pieces.insert(address, piece);
                 } else {
                     // Code made at run time never takes the place of a piece the table holds.
-                    let slot = (address - caller.data().table_base) / 4;
+                    let slot = (address - table_base) / 4;
                     assert!(
                         matches!(
                             table.get(&mut caller, slot),
@@ -761,7 +796,8 @@ fn hooks(linker: &mut Linker<Host>) {
                         "code asked for at {address:#x}, which has a piece"
                     );
                     let look_ahead = (caller.data_mut().run_time)();
-                    instantiate_code(&mut caller, index, &[offset], look_ahead, None);
+                    let code = (&bytes[..], run.start);
+                    instantiate_code(&mut caller, code, offset, look_ahead, None);
                 }
                 let time = start.elapsed();
                 slow_path(
@@ -860,6 +896,30 @@ fn hooks(linker: &mut Linker<Host>) {
         .unwrap();
 }
 
+/// The run of pages around an address that allow running code, if its own page does.
+fn executable_run(host: &Host, address: u64) -> Option<Range<u64>> {
+    let executable = |page: u64| {
+        host.permissions
+            .get(page as usize)
+            .is_some_and(|p| p.contains(Permissions::EXECUTE))
+    };
+    let page = address / PAGE_SIZE;
+    if !executable(page) {
+        return None;
+    }
+    let first = (0..page)
+        .rev()
+        .take_while(|&p| executable(p))
+        .last()
+        .unwrap_or(page);
+    let end = (page + 1..)
+        .take_while(|&p| executable(p))
+        .last()
+        .unwrap_or(page)
+        + 1;
+    Some(first * PAGE_SIZE..end * PAGE_SIZE)
+}
+
 /// The thread instance's lookup table.
 fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtime::Table {
     let thread = store.as_context().data().thread.unwrap();
@@ -888,48 +948,42 @@ fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
     }
 }
 
-/// A code module made for a blob: which blob, and the blob offsets of the pieces it puts in the table.
+/// A code module made for a blob: where the blob is, and the blob offsets of the pieces it puts in the table.
 struct Load {
-    index: usize,
+    load_address: u64,
     module: Module,
     pieces: Vec<u64>,
 }
 
-/// Translate blob `index` from `starts` and compile it.
+/// Translate the blob of `bytes` at a load address from `starts` and compile it.
 fn translate_load(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
-    index: usize,
+    (bytes, load_address): (&[u8], u64),
+    code: Range<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
     omit: Omit,
 ) -> Load {
     let host = store.as_context().data();
-    let blob = &host.blobs[index];
-    let translation = translate_omitting(
-        &blob.bytes,
-        blob.code.clone(),
-        starts,
-        look_ahead,
-        host.facts,
-        omit,
-    )
-    .expect("translate");
+    let translation =
+        translate_omitting(bytes, code, starts, look_ahead, host.facts, omit).expect("translate");
     Load {
-        index,
+        load_address,
         module: Module::new(&host.engine, &translation.wasm).expect("code module"),
         pieces: translation.pieces,
     }
 }
 
-/// Translate and instantiate code reached at run time.
+/// Translate and instantiate code reached at run time: the code bytes at a load address, from one start.
 fn instantiate_code(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
-    index: usize,
-    starts: &[u64],
+    code: (&[u8], u64),
+    start: u64,
     look_ahead: LookAhead,
     slot_base: Option<i32>,
 ) {
-    let load = translate_load(store, index, starts, look_ahead, Omit::default());
+    let range = 0..code.0.len() as u64;
+    let load = translate_load(store, code, range, &[start], look_ahead, Omit::default());
     instantiate(store, &load, slot_base);
 }
 
@@ -941,7 +995,7 @@ fn placed_pieces(
     let mut store = store.as_context_mut();
     let table = lookup_table(&mut store);
     let host = store.data();
-    let load_address = host.blobs[load.index].load_address;
+    let load_address = load.load_address;
     let table_base = host.table_base;
     let mut pieces = HashMap::new();
     for offset in &load.pieces {
@@ -985,13 +1039,12 @@ fn instantiate(
 ) {
     let mut store = store.as_context_mut();
     let host = store.data();
-    let blob = &host.blobs[load.index];
     let thread = host.thread.unwrap();
     let memory = host.memory.unwrap();
     let state = host.state.clone().unwrap();
-    let slot_base = slot_base.unwrap_or(((blob.load_address - host.table_base) / 4) as i32);
-    let load_address = blob.load_address;
-    if slot_base_is_own(slot_base, blob.load_address, host.table_base) {
+    let load_address = load.load_address;
+    let slot_base = slot_base.unwrap_or(((load_address - host.table_base) / 4) as i32);
+    if slot_base_is_own(slot_base, load_address, host.table_base) {
         let placed: Vec<u64> = load.pieces.iter().map(|o| load_address + o).collect();
         store.data_mut().placed.extend(placed);
     }
