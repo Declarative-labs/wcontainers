@@ -355,7 +355,8 @@ impl StandIn {
     }
 
     /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
-    /// slice, the stop flag is raised once that much time has passed.
+    /// slice, the stop flag is raised after that many instructions (one a nanosecond), so where a
+    /// turn ends repeats exactly.
     pub fn run(
         &mut self,
         thread: ThreadId,
@@ -377,11 +378,11 @@ impl StandIn {
             .load_registers(&state.registers)
             .expect("loading registers into unicorn");
         *memory.unicorn.get_data_mut() = Stopped::default();
-        // Unicorn takes the time limit in microseconds; zero means none.
-        let timeout = slice_nanoseconds.map_or(0, |nanoseconds| (nanoseconds / 1000).max(1));
+        // Zero means no limit.
+        let count = slice_nanoseconds.map_or(0, |nanoseconds| nanoseconds.max(1) as usize);
         let result = memory
             .unicorn
-            .emu_start(state.registers.pc, u64::MAX, timeout, 0);
+            .emu_start(state.registers.pc, u64::MAX, 0, count);
         memory
             .save_registers(&mut state.registers)
             .expect("reading registers from unicorn");

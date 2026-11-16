@@ -3,7 +3,7 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
     BackendRequestId, ConnectionId, CounterReading, Event, Host, HostError, Next, Stream, Warning,
 };
@@ -59,9 +59,15 @@ pub struct TestHost {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     warnings: Vec<Warned>,
+    /// A clock that moves only when the driver says, so a run repeats exactly; none for the wall
+    /// clock (layer 1, where the reference runs beside it).
+    virtual_now: Option<u64>,
+    /// What a run's choices come from: how long each turn on the CPU side lasts.
+    schedule: StdRng,
 }
 
 impl TestHost {
+    /// A host whose clock is the wall clock's.
     pub fn new(seed: u64) -> Self {
         Self {
             started: Instant::now(),
@@ -70,6 +76,26 @@ impl TestHost {
             stdout: Vec::new(),
             stderr: Vec::new(),
             warnings: Vec::new(),
+            virtual_now: None,
+            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+        }
+    }
+
+    /// A host whose clock moves only with the work run and the waits skipped, both from the seed,
+    /// so the kernel's choices repeat exactly for a seed.
+    pub fn repeatable(seed: u64) -> Self {
+        Self {
+            virtual_now: Some(1_000_000_000),
+            ..Self::new(seed)
+        }
+    }
+
+    /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
+    /// microseconds, drawn from the seed.
+    fn ran(&mut self) {
+        let step = self.schedule.random_range(500..1500);
+        if let Some(now) = &mut self.virtual_now {
+            *now += step;
         }
     }
 }
@@ -84,7 +110,10 @@ impl TestHost {
 
 impl Host for TestHost {
     fn monotonic_nanoseconds(&mut self) -> u64 {
-        self.started.elapsed().as_nanos() as u64 + self.skipped
+        match self.virtual_now {
+            Some(now) => now + self.skipped,
+            None => self.started.elapsed().as_nanos() as u64 + self.skipped,
+        }
     }
 
     fn realtime_nanoseconds(&mut self) -> u64 {
@@ -177,7 +206,7 @@ pub struct Container<'a> {
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
 pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
     let mut cpu = StandIn::new();
-    let mut host = TestHost::new(seed);
+    let mut host = TestHost::repeatable(seed);
     let mut kernel = Kernel::new();
     image::add_files(&mut kernel, container.files);
     let arguments: Vec<&[u8]> = container
@@ -212,6 +241,7 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
                 let exit = cpu
                     .run(thread, resume, slice_nanoseconds)
                     .map_err(Failure::StandIn)?;
+                host.ran();
                 kernel.exit(&mut cpu, &mut host, exit);
             }
             Next::Idle { until_nanoseconds } => {

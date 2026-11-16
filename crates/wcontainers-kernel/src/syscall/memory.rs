@@ -276,15 +276,18 @@ pub(super) fn mmap(
     // Linux's `shmem_zero_setup`: shared anonymous memory and shared `/dev/zero` are a shared
     // mapping of a removed file on its internal tmpfs, from offset 0 for anonymous memory and where
     // asked for `/dev/zero`, so a child sees the same pages.
-    let file = match (file, &zero_device) {
-        (None, zero) if shared => {
-            let offset = if zero.is_some() { offset } else { 0 };
-            Some((
-                shared_zero_file(kernel, cx, offset + length)?,
-                b"/dev/zero".to_vec(),
-            ))
-        }
-        (file, _) => file,
+    // Shared anonymous memory starts at offset 0 of its file, whatever offset was given (`do_mmap`).
+    let offset = if shared && file.is_none() && zero_device.is_none() {
+        0
+    } else {
+        offset
+    };
+    let file = match file {
+        None if shared => Some((
+            shared_zero_file(kernel, cx, offset + length)?,
+            b"/dev/zero".to_vec(),
+        )),
+        file => file,
     };
     let backing = match (&file, zero_device) {
         // A private mapping of `/dev/zero` is anonymous memory that keeps the file

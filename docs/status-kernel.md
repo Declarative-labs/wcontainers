@@ -40,9 +40,10 @@ processes) is partly done; this is its first run. Built in it:
 Not done yet in K2, in order: pseudo-terminals with line handling and job control (section 9), and the
 shell's job control through one; saving and bringing back (section 12); layer 1 generating the new
 calls (pipes, kill, wait, signals) and the three fresh 20000-sequence seeds; private file mappings that
-see later file changes (still copies); FIFOs (named pipes are still refused, counted); seeded
-scheduling for layer 2 (the scheduler is deterministic here, but its slice timer comes from the host's
-clock, see Departures).
+see later file changes (still copies); FIFOs (named pipes are still refused, counted).
+Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
+turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
+instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -886,6 +887,9 @@ All on this shared Mac; noisy, not benchmarks.
 - `/proc/sys/{abi,debug,dev,net,sunrpc,user}` exist as empty directories so paths through them resolve.
 - statfs reports a block size of 4096 for every file system, `/proc` included (measured); stat reports
   1024 for `/proc` files (measured).
+- Layer 2's clock is not the wall clock: time passes only by a seeded step per turn and by skipped
+  waits, so CPU times and the scheduler's choices repeat for a seed. Layer 1 keeps the wall clock (its
+  reference runs beside it).
 - AT_MINSIGSTKSZ is the reference's measured 4720 (typed in linux_extra.rs): arm64 computes it from
   the CPU's records at boot.
 - The vDSO is laid out by hand with `object`'s ELF structures (src/vdso.rs): one function, its
@@ -983,8 +987,7 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
    `sh -i` on the slave); saving and bringing back (copy the kernel state, every memory and block,
    restore into a fresh kernel and stand-in, rerun parked calls; layer 2 test at random moments);
    layer 1 generating pipe2, kill, wait4, waitid and the signal calls, then three fresh seeds of 20000;
-   seeded, repeatable scheduling in layer 2 (the stand-in's slice timer and the test host's clock
-   from executed instructions, not the wall clock); FIFOs; private file mappings that see later file
+   FIFOs; private file mappings that see later file
    changes; a test of rseq critical sections aborted by a handler (built in `rseq_fixup`, untested).
 2. The missing calls above by their milestone; the known gaps above before K6's bar.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
