@@ -647,11 +647,18 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     // A child that has ended is waited for by both runners after the call that made it, so waits
     // need not wait: a wait for a child that never stops or continues would wait for ever.
     let forks = calls.iter().any(|call| call.number == linux::__NR_clone);
+    // Children have small process numbers here and others there, so a process 3 waited for is
+    // one past every process number instead.
     if forks {
         for call in &mut calls {
             match call.number {
                 linux::__NR_wait4 => call.arguments[2] |= u64::from(linux::WNOHANG),
-                linux::__NR_waitid => call.arguments[3] |= u64::from(linux::WNOHANG),
+                linux::__NR_waitid => {
+                    call.arguments[3] |= u64::from(linux::WNOHANG);
+                    if call.arguments[0] == u64::from(linux::P_PID) && call.arguments[1] == 3 {
+                        call.arguments[1] = 4_000_000;
+                    }
+                }
                 _ => {}
             }
         }
@@ -675,9 +682,9 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     if terminal {
         passed.push(linux::__NR_ppoll);
     }
-    // And after a child is made, waits for it to end.
+    // And after a child is made, waits for it to end, and tells it from its parent by getpid.
     if forks {
-        passed.push(linux::__NR_waitid);
+        passed.extend([linux::__NR_waitid, linux::__NR_getpid]);
     }
     for call in &calls {
         if call.arguments.contains(&SELF) && !passed.contains(&call.number) {

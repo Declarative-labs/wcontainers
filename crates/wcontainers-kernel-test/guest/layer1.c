@@ -270,16 +270,26 @@ static long raw(long number, const uint64_t *a) {
     register long x3 __asm__("x3") = a[3];
     register long x4 __asm__("x4") = a[4];
     register long x5 __asm__("x5") = a[5];
+    // A clone answering 0 may also be a filter's ERRNO of 0 in the caller: getpid tells them apart
+    // (sequences with clone let getpid through their filters).
+    register long caller __asm__("x9") = self_pid;
     __asm__ volatile("svc 0\n\t"
                      "cmp x8, %[clone]\n\t"
                      "b.ne 1f\n\t"
                      "cbnz x0, 1f\n\t"
+                     "mov x8, %[getpid]\n\t"
+                     "svc 0\n\t"
+                     "cmp x0, x9\n\t"
+                     "b.eq 2f\n\t"
                      "mov x0, %[status]\n\t"
                      "mov x8, %[exit]\n\t"
                      "svc 0\n"
+                     "2:\n\t"
+                     "mov x0, #0\n"
                      "1:"
                      : "+r"(x0), "+r"(x8)
-                     : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), [clone] "i"(SYS_clone),
+                     : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(caller),
+                       [clone] "i"(SYS_clone), [getpid] "i"(SYS_getpid),
                        [status] "i"(CHILD_STATUS), [exit] "i"(SYS_exit_group)
                      : "memory", "cc");
     return x0;
