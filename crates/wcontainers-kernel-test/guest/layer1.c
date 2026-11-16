@@ -2,7 +2,9 @@
 //
 // Reads sequences from standard input, one at a time, and runs each in a child process so no state
 // carries over. A sequence is: arena bytes (u32 length, bytes), then calls (u32 count, then for each the
-// number and six arguments as u64). For each call the child reports the return value (i64), whether the
+// number and six arguments as u64, then CLEARS ranges of what the call writes that two machines cannot
+// share, each an address, a length and whether the length is the call's value at most, all u64; see
+// `clear_machine`). For each call the child reports the return value (i64), whether the
 // call's result depends on what the runners cannot share (u32: bit 0, see `unshared`; bit 1, the call
 // put a random device's bytes somewhere, which the runner then cleared, see `clear_random`), and the
 // arena's changed
@@ -46,6 +48,9 @@
 #define SELF 0x5e1f5e1f00000001ULL
 #define PLAY 0x71000000UL
 #define PLAY_PAGES 16
+// The ranges sent with each call (`CLEARS` in layer1.rs).
+#define CLEARS 5
+#define CALL_WORDS (7 + 3 * CLEARS)
 
 static unsigned char before[ARENA_SIZE];
 
@@ -125,13 +130,15 @@ static int random_device(uint64_t fd) {
 
 #define MAX_RW_COUNT 0x7ffff000UL
 static unsigned char zeros[65536];
+// The child's process number, asked for once: the sequence's filters must not see the runner's own calls.
+static pid_t self_pid;
 
 // Zeros a range up to the first page the process cannot write, as a copy to it would stop.
 static void clear_range(uint64_t at, uint64_t length) {
     while (length) {
         uint64_t part = length < sizeof zeros ? length : sizeof zeros;
         struct iovec local = {zeros, part}, remote = {(void *)at, part};
-        long put = syscall(SYS_process_vm_writev, getpid(), &local, 1, &remote, 1, 0);
+        long put = syscall(SYS_process_vm_writev, self_pid, &local, 1, &remote, 1, 0);
         if (put <= 0) {
             return;
         }
@@ -196,6 +203,23 @@ static uint32_t clear_random(const uint64_t *call, int64_t result, int64_t out_b
         return 2;
     }
     return 0;
+}
+
+// After a call is reported, zeros what it wrote that two machines cannot share (`machine_bytes` in
+// layer1.rs), so no later call reads it: after a failed call only in the arena, and a range measured by
+// the call's value only after a success.
+static void clear_machine(const uint64_t *clears, int64_t result) {
+    for (int index = 0; index < CLEARS; index++) {
+        uint64_t at = clears[index * 3], length = clears[index * 3 + 1], by_value = clears[index * 3 + 2];
+        int in_arena = at >= (uint64_t)ARENA && at < (uint64_t)ARENA + ARENA_SIZE;
+        if (length == 0 || (result < 0 && (by_value || !in_arena))) {
+            continue;
+        }
+        if (by_value && (uint64_t)result < length) {
+            length = (uint64_t)result;
+        }
+        clear_range(at, length);
+    }
 }
 
 // For a sendfile from a random device to a regular file, the output's position before the call.
@@ -333,8 +357,8 @@ int main(void) {
         if (read_all(0, &calls, 4) != 0) {
             return 1;
         }
-        static uint64_t sequence[4096][7];
-        if (calls > 4096 || read_all(0, sequence, calls * 56) != 0) {
+        static uint64_t sequence[4096][CALL_WORDS];
+        if (calls > 4096 || read_all(0, sequence, calls * sizeof sequence[0]) != 0) {
             return 1;
         }
         int report[2];
@@ -352,7 +376,8 @@ int main(void) {
             memcpy(ARENA, arena_init, length);
             memcpy(before, ARENA, ARENA_SIZE);
             setsid();
-            uint64_t self = (uint64_t)getpid();
+            self_pid = getpid();
+            uint64_t self = (uint64_t)self_pid;
             for (uint32_t index = 0; index < calls; index++) {
                 for (int argument = 1; argument < 7; argument++) {
                     if (sequence[index][argument] == SELF) {
@@ -371,12 +396,13 @@ int main(void) {
                 write_all(1, &result, 8);
                 write_all(1, &unshared, 4);
                 report_changes(1);
+                clear_machine(&sequence[index][7], result);
             }
             static unsigned char page[4096];
             for (int index = 0; index < PLAY_PAGES; index++) {
                 struct iovec local = {page, sizeof page};
                 struct iovec remote = {(void *)(PLAY + index * 4096UL), sizeof page};
-                unsigned char readable = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0) == sizeof page;
+                unsigned char readable = syscall(SYS_process_vm_readv, self_pid, &local, 1, &remote, 1, 0) == sizeof page;
                 if (!readable) {
                     memset(page, 0, sizeof page);
                 }
@@ -462,5 +488,8 @@ int main(void) {
         // `..` from a process directory reaches /proc, which keeps a change of owner or mode.
         chown("/proc", 0, 0);
         chmod("/proc", 0555);
+        // So does devpts's root.
+        chown("/dev/pts", 0, 0);
+        chmod("/dev/pts", 0755);
     }
 }

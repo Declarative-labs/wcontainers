@@ -146,6 +146,8 @@ const PATH_POOL: &[&str] = &[
     "/proc/sys/kernel/ostype",
     "/proc/self/cgroup",
     "/proc/self/limits",
+    // devpts's root, which statx and the others answer by its own rules.
+    "/dev/pts",
 ];
 
 /// Attribute values, 32 bytes apart from `XATTR_VALUES`.
@@ -544,12 +546,21 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         });
     }
     calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
-    // Each filter first lets through the calls the reference's runner reports with and every call of
-    // the sequence that names a process, whose number differs between the runners.
+    // Each filter first lets through every call the runners make themselves between and after the
+    // sequence's calls (to report, to ask what a descriptor is, to zero bytes, to read the play area),
+    // whose arguments (process numbers, the runners' own buffers) differ between them, and every call
+    // of the sequence that names a process.
     let mut passed = vec![
         linux::__NR_write,
         linux::__NR_exit_group,
         linux::__NR_name_to_handle_at,
+        linux::__NR_readlinkat,
+        linux::__NR_fstat,
+        linux::__NR_newfstatat,
+        linux::__NR_lseek,
+        linux::__NR_pwrite64,
+        linux::__NR_process_vm_readv,
+        linux::__NR_process_vm_writev,
     ];
     for call in &calls {
         if call.arguments.contains(&SELF) && !passed.contains(&call.number) {
@@ -1105,6 +1116,17 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             word,
         ))
     };
+    // The stat calls take a null path with AT_EMPTY_PATH as an empty one, which with a descriptor
+    // ignores the other flags.
+    let stat_path = |word: u64| {
+        if word.is_multiple_of(8) {
+            0
+        } else {
+            path(word)
+        }
+    };
+    let stat_flags =
+        |word: u64| at_flags(word) | u64::from(pick(&[0, 0, 0, linux::AT_EMPTY_PATH], word >> 8));
     let value = |word: u64| ARENA + VALUES + (word % 52) * 8;
     // A new limit for a resource: CPU and file size limits only from the ones never reached.
     let new_limit = |resource: u64, word: u64| {
@@ -1370,13 +1392,27 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        linux::__NR_newfstatat => [dirfd(a), path(b), buffer(c), at_flags(d), 0, 0],
+        linux::__NR_newfstatat => [dirfd(a), stat_path(b), buffer(c), stat_flags(d), 0, 0],
         linux::__NR_fstat => [fd(a), buffer(b), 0, 0, 0, 0],
         linux::__NR_statx => [
             dirfd(a),
-            path(b),
-            at_flags(c),
-            pick(&[0x7ff, 0xfff, 0x8000_0000, 0], d),
+            stat_path(b),
+            stat_flags(c),
+            pick(
+                &[
+                    0x7ff,
+                    0xfff,
+                    0x8000_0000,
+                    0,
+                    0x4000,
+                    0x47ff,
+                    0x1000,
+                    0x800,
+                    0x40,
+                    0x5fff,
+                ],
+                d,
+            ),
             buffer(e),
             0,
         ],
@@ -1432,19 +1468,39 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         linux::__NR_mmap => {
-            let flags = pick(
-                &[
-                    0x22u64 | 0x10,
-                    0x21 | 0x10,
-                    0x02 | 0x10,
-                    0x22 | 0x100000,
-                    0x22,
-                    0x23 | 0x10,
-                    0x01 | 0x10,
-                    0x03 | 0x10,
-                ],
-                c,
-            );
+            // The kind (private, shared, validated, droppable, none, every bit), with a file or not,
+            // where it goes, and each other flag one time in eight. Not huge pages of anonymous memory
+            // (hugetlbfs is not built); populating and locking only anonymous memory (which pages a
+            // file mapping's faults bring in is not known here).
+            let kind = pick(&[0x02u64, 0x02, 0x01, 0x01, 0x03, 0x08, 0x00, 0x0f], c);
+            let anonymous = u64::from(linux::MAP_ANONYMOUS) * ((c >> 3) % 2);
+            let place = pick(&[0x10u64, 0x10, 0x10, 0x10_0000, 0], c >> 4);
+            let mut flags = kind | anonymous | place;
+            let extras: &[u32] = &[
+                linux::MAP_GROWSDOWN,
+                linux::MAP_NORESERVE,
+                linux::MAP_NONBLOCK,
+                linux::MAP_STACK,
+                linux::MAP_HUGE_2MB,
+                linux::MAP_SYNC,
+                linux::MAP_UNINITIALIZED,
+                0x20_0000,
+                if anonymous != 0 {
+                    linux::MAP_LOCKED
+                } else {
+                    linux::MAP_HUGETLB
+                },
+                if anonymous != 0 {
+                    linux::MAP_POPULATE
+                } else {
+                    0
+                },
+            ];
+            for (index, extra) in extras.iter().enumerate() {
+                if (c >> (8 + 3 * index)).is_multiple_of(8) {
+                    flags |= u64::from(*extra);
+                }
+            }
             [
                 play(a),
                 play_length(b),
@@ -1561,7 +1617,8 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             play_length(b),
             pick(
                 &[
-                    0, 1, 2, 3, 4, 8, 9, 100, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                    0, 1, 2, 3, 4, 8, 9, 100, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                    23, 24, 26,
                 ],
                 c,
             ),
@@ -2152,8 +2209,82 @@ fn sequence_bytes(sequence: &Sequence) -> Vec<u8> {
         for argument in call.arguments {
             out.extend_from_slice(&argument.to_le_bytes());
         }
+        let clears = machine_bytes(call);
+        for index in 0..CLEARS {
+            let clear = clears.get(index).copied().unwrap_or_default();
+            for word in [clear.at, clear.length, u64::from(clear.by_value)] {
+                out.extend_from_slice(&word.to_le_bytes());
+            }
+        }
     }
     out
+}
+
+/// A range of a call's output that holds bytes no two machines share. Both runners zero it after the
+/// call is reported (`clear_machine` in the runner), so no later call reads them: after a failed call
+/// only in the arena (a play page the call did not write is not brought in), and with `by_value` only
+/// as many bytes as a successful call returned.
+#[derive(Clone, Copy, Debug, Default)]
+struct Clear {
+    at: u64,
+    length: u64,
+    by_value: bool,
+}
+
+/// The most ranges a call clears (the runner's `CLEARS`).
+const CLEARS: usize = 5;
+
+/// What a call writes that two machines cannot share: every range `volatile` masks, and the fields
+/// next to them a later call could read (a stat's link count, which `/proc` gives as its machine's
+/// process count; a whole listing, link or working directory, which can name a process).
+fn machine_bytes(call: &Call) -> Vec<Clear> {
+    let [a, b, c, d, e, _] = call.arguments;
+    let fixed = |at: u64, length: u64| Clear {
+        at,
+        length,
+        by_value: false,
+    };
+    let by_value = |at: u64, length: u64| Clear {
+        at,
+        length,
+        by_value: true,
+    };
+    let clears = match call.number {
+        linux::__NR_ppoll if c != 0 => vec![fixed(c, 16)],
+        linux::__NR_pselect6 if e != 0 => vec![fixed(e, 16)],
+        linux::__NR_fcntl if matches!(b as u32, linux::F_GETLK | linux::F_OFD_GETLK) => {
+            vec![fixed(c + 24, 4)]
+        }
+        linux::__NR_getcpu => vec![fixed(a, 4)],
+        linux::__NR_gettimeofday => vec![fixed(a, 16)],
+        linux::__NR_mincore => vec![fixed(c, b.div_ceil(4096).min(1 << 20))],
+        linux::__NR_name_to_handle_at => vec![fixed(c + 8, 12), fixed(d, 8)],
+        linux::__NR_readlinkat => vec![by_value(c, d)],
+        linux::__NR_getcwd => vec![by_value(a, b)],
+        linux::__NR_getdents64 => vec![by_value(b, c)],
+        linux::__NR_newfstatat => vec![fixed(c, 16), fixed(c + 20, 4), fixed(c + 72, 48)],
+        linux::__NR_fstat => vec![fixed(b, 16), fixed(b + 20, 4), fixed(b + 72, 48)],
+        linux::__NR_statx => vec![
+            fixed(e + 16, 4),
+            fixed(e + 32, 8),
+            fixed(e + 64, 64),
+            fixed(e + 136, 24),
+        ],
+        linux::__NR_statfs | linux::__NR_fstatfs => vec![fixed(b + 40, 24)],
+        linux::__NR_ioctl if b == FS_IOC_GETFSUUID => vec![fixed(c + 1, 16)],
+        linux::__NR_clock_gettime => vec![fixed(b, 16)],
+        linux::__NR_times => vec![fixed(a, 32)],
+        linux::__NR_sysinfo => vec![fixed(a, 112)],
+        linux::__NR_getrusage => vec![fixed(b, 144)],
+        linux::__NR_getrandom => vec![by_value(a, b)],
+        linux::__NR_sched_rr_get_interval => vec![fixed(b, 16)],
+        linux::__NR_sched_getattr if c >= 32 => vec![fixed(b + 24, 8)],
+        linux::__NR_uname => vec![fixed(a + 130, 130)],
+        linux::__NR_sched_getaffinity => vec![by_value(c, b)],
+        _ => Vec::new(),
+    };
+    assert!(clears.len() <= CLEARS, "more clears than the runner takes");
+    clears
 }
 
 /// The runner in a long-lived reference container, taking one sequence at a time.
@@ -2461,6 +2592,33 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         arguments: [0; 6],
     };
     let pid = call(&mut kernel, &mut cpu, &mut host, own).expect("getpid") as u64;
+    // The runner's `clear_range`: zeros up to the first page the process cannot write.
+    let clear = |kernel: &mut Kernel,
+                 cpu: &mut BufferCpu,
+                 host: &mut TestHost,
+                 mut at: u64,
+                 mut length: u64| {
+        while length > 0 {
+            let part = length.min(SCRATCH_SIZE - SCRATCH_ZEROS);
+            let pair = [SCRATCH + SCRATCH_ZEROS, part, at, part];
+            let bytes: Vec<u8> = pair.iter().flat_map(|word| word.to_le_bytes()).collect();
+            cpu.write(memory, SCRATCH, &bytes)
+                .expect("writing the scratch");
+            let write = Call {
+                number: linux::__NR_process_vm_writev,
+                arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
+            };
+            let put = call(kernel, cpu, host, write).unwrap_or(-1);
+            if put <= 0 {
+                return;
+            }
+            at += put as u64;
+            length -= put as u64;
+            if (put as u64) < part {
+                return;
+            }
+        }
+    };
     let mut results = Vec::new();
     for (index, each) in sequence.calls.iter().enumerate() {
         let mut each = *each;
@@ -2508,32 +2666,8 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                         }
                         _ => {}
                     }
-                    let mut clear = |at: u64, length: u64| {
-                        let (mut at, mut length) = (at, length);
-                        while length > 0 {
-                            let part = length.min(SCRATCH_SIZE - SCRATCH_ZEROS);
-                            let pair = [SCRATCH + SCRATCH_ZEROS, part, at, part];
-                            let bytes: Vec<u8> =
-                                pair.iter().flat_map(|word| word.to_le_bytes()).collect();
-                            cpu.write(memory, SCRATCH, &bytes)
-                                .expect("writing the scratch");
-                            let write = Call {
-                                number: linux::__NR_process_vm_writev,
-                                arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
-                            };
-                            let put = call(&mut kernel, &mut cpu, &mut host, write).unwrap_or(-1);
-                            if put <= 0 {
-                                return;
-                            }
-                            at += put as u64;
-                            length -= put as u64;
-                            if (put as u64) < part {
-                                return;
-                            }
-                        }
-                    };
                     for (at, length) in ranges {
-                        clear(at, length);
+                        clear(&mut kernel, &mut cpu, &mut host, at, length);
                     }
                     // A sendfile's output is zeroed where the bytes went.
                     if let Some(before) = out_before {
@@ -2569,6 +2703,19 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                     random: false,
                 });
                 before = after;
+                // The runner's `clear_machine`: what follows sees zeros where the machines differ.
+                for range in machine_bytes(&each) {
+                    let in_arena = (ARENA..ARENA + ARENA_SIZE).contains(&range.at);
+                    if value < 0 && (range.by_value || !in_arena) {
+                        continue;
+                    }
+                    let length = if range.by_value {
+                        range.length.min(value as u64)
+                    } else {
+                        range.length
+                    };
+                    clear(&mut kernel, &mut cpu, &mut host, range.at, length);
+                }
             }
             Err(status) => {
                 return SequenceResult {
@@ -2721,18 +2868,34 @@ fn ioctl_arguments() -> [[u64; 8]; IOCTL_ARG_COUNT as usize] {
 /// statfs's inode total depends on the machine's memory (tmpfs's default is half its pages), so the
 /// free count is compared as the count in use, and the total is masked.
 fn inodes_in_use(arena: &mut [u8], buffer: u64) {
-    let Some(at) = buffer
-        .checked_sub(ARENA)
-        .map(|offset| offset as usize)
-        .filter(|at| at + 56 <= arena.len())
-    else {
+    if !in_arena(buffer, 56) {
         return;
-    };
+    }
+    let at = (buffer - ARENA) as usize;
     let word = |arena: &[u8], at: usize| {
         u64::from_le_bytes(arena[at..at + 8].try_into().expect("eight bytes"))
     };
     let used = word(arena, at + 40).wrapping_sub(word(arena, at + 48));
     arena[at + 48..at + 56].copy_from_slice(&used.to_le_bytes());
+}
+
+/// Whether `length` bytes at `address` lie in the arena.
+fn in_arena(address: u64, length: u64) -> bool {
+    address
+        .checked_sub(ARENA)
+        .is_some_and(|offset| offset.saturating_add(length) <= ARENA_SIZE)
+}
+
+/// A little-endian word of `length` bytes (at most 8) at `address` in the arena.
+fn read_word(arena: &[u8], address: u64, length: usize) -> Option<u64> {
+    address
+        .checked_sub(ARENA)
+        .and_then(|offset| arena.get(offset as usize..(offset as usize).checked_add(length)?))
+        .map(|bytes| {
+            let mut word = [0u8; 8];
+            word[..length].copy_from_slice(bytes);
+            u64::from_le_bytes(word)
+        })
 }
 
 fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
@@ -2779,6 +2942,37 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     if call.number == linux::__NR_name_to_handle_at {
         out.extend([(c + 8, 12), (d, 8)]);
     }
+    // Fixed fields, also when a copy that met a fault left part of them behind.
+    match call.number {
+        linux::__NR_newfstatat => out.extend([(c, 16), (c + 72, 48)]),
+        linux::__NR_fstat => out.extend([(b, 16), (b + 72, 48)]),
+        linux::__NR_statx => {
+            out.extend([(e + 32, 8), (e + 64, 64), (e + 136, 16)]);
+            // The unique mount number counts every mount the machine has made.
+            if value == 0 && read_word(arena, e, 4).is_some_and(|mask| mask & 0x4000 != 0) {
+                out.push((e + 144, 8));
+            }
+        }
+        // The inode total and the free count (see `inodes_in_use`) and the identity, which tmpfs
+        // draws at random; a successful call's free count is compared as the count in use.
+        linux::__NR_statfs | linux::__NR_fstatfs if value == 0 => {
+            out.extend([(b + 40, 8), (b + 56, 8)]);
+            if !in_arena(b, 56) {
+                out.push((b + 48, 8));
+            }
+        }
+        linux::__NR_statfs | linux::__NR_fstatfs => out.push((b + 40, 24)),
+        linux::__NR_ioctl if b == FS_IOC_GETFSUUID => out.push((c + 1, 16)),
+        linux::__NR_clock_gettime => out.push((b, 16)),
+        linux::__NR_times => out.push((a, 32)),
+        linux::__NR_sysinfo => out.push((a, 112)),
+        linux::__NR_getrusage => out.push((b, 144)),
+        // The default time slice depends on the machine's CPU count, one here.
+        linux::__NR_sched_rr_get_interval => out.push((b, 16)),
+        linux::__NR_sched_getattr if c >= 32 => out.push((b + 24, 8)),
+        linux::__NR_uname => out.push((a + 130, 130)),
+        _ => {}
+    }
     if value < 0 {
         return out;
     }
@@ -2790,19 +2984,10 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     }
     // The link count of `/proc` itself counts every process on the machine (Linux's
     // `proc_root_getattr`), and the reference shares its machine. `/proc` is inode 1 of a file system
-    // with 1024 byte blocks.
-    let read = |address: u64, length: usize| {
-        address
-            .checked_sub(ARENA)
-            .and_then(|offset| arena.get(offset as usize..offset as usize + length))
-            .map(|bytes| {
-                let mut word = [0u8; 8];
-                word[..length].copy_from_slice(bytes);
-                u64::from_le_bytes(word)
-            })
+    // with 1024 byte blocks, and so is devpts's root, whose link count goes too.
+    let proc_root = |ino: u64, blksize: u64| {
+        read_word(arena, ino, 8) == Some(1) && read_word(arena, blksize, 4) == Some(1024)
     };
-    let proc_root =
-        |ino: u64, blksize: u64| read(ino, 8) == Some(1) && read(blksize, 4) == Some(1024);
     match call.number {
         linux::__NR_newfstatat if proc_root(c + 8, c + 56) => out.push((c + 20, 4)),
         linux::__NR_fstat if proc_root(b + 8, b + 56) => out.push((b + 20, 4)),
@@ -2810,22 +2995,7 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
         _ => {}
     }
     match call.number {
-        linux::__NR_newfstatat => out.extend([(c, 16), (c + 72, 48)]),
-        linux::__NR_fstat => out.extend([(b, 16), (b + 72, 48)]),
-        linux::__NR_statx => out.extend([(e + 32, 8), (e + 64, 64), (e + 136, 16)]),
-        // The inode total (see `inodes_in_use`) and the identity, which tmpfs draws at random.
-        linux::__NR_fstatfs => out.extend([(b + 40, 8), (b + 56, 8)]),
-        linux::__NR_ioctl if b == FS_IOC_GETFSUUID => out.push((c + 1, 16)),
-        linux::__NR_clock_gettime => out.push((b, 16)),
-        linux::__NR_times => out.push((a, 32)),
-        linux::__NR_sysinfo => out.push((a, 112)),
-        linux::__NR_getrusage => out.push((b, 144)),
-        linux::__NR_statfs => out.extend([(b + 40, 8), (b + 56, 8)]),
         linux::__NR_getrandom => out.push((a, value as u64)),
-        // The default time slice depends on the machine's CPU count, one here.
-        linux::__NR_sched_rr_get_interval => out.push((b, 16)),
-        linux::__NR_sched_getattr if c >= 32 => out.push((b + 24, 8)),
-        linux::__NR_uname => out.push((a + 130, 130)),
         // The guest is told it has one CPU, a declared difference.
         linux::__NR_sched_getaffinity => out.push((c, value as u64)),
         linux::__NR_getdents64 => {
