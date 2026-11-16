@@ -593,7 +593,7 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K2's first run: see Measurements for the counts)
+## Tests (last run 2026-11-16, end of K2's first run: 69 passed, 8 ignored known failures)
 
 All pass except the ignored known failures listed above. Added in K2's first run:
 - processes: guest/processes.c: memory after fork (shared anonymous memory, a shared file mapping,
@@ -734,7 +734,9 @@ caller with the group, not the thread (EPERM first), and waitid writes the infor
 when nothing is found or it fails, EFAULT for a bad pointer) as its wrapper does; seed 303 found a
 pipe mapped with PROT_EXEC refused ENODEV where pipefs's SB_I_NOEXEC gives EPERM first. All fixed; 300
 (2000, 42 s, load 55 to 62), 301 and 302 (3000, 50 s each, three side by side, load 63 to 20) passed
-after their fixes. The milestone's three fresh 20000 seeds are not run yet.
+after their fixes. With every fix in (head 10645dd), seeds 303, 304 and 305 passed 3000 each (49 s
+each, three side by side, load 16 at the start, 10 at the end). The milestone's three fresh 20000
+seeds are not run yet (they run once at the milestone's end).
 
 Thirteenth run (seventh close-out), after the fifth check: with the harness fixes and the sysctl
 fix (head after 321c3cd's kernel work, before the generator was widened) the check's seeds 6060601 and
@@ -838,7 +840,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 All on this shared Mac; noisy, not benchmarks.
 - K2 first run: the whole test suite of both crates (before sigframe and shell were added) 64
-  passed, 0 failed, 8 ignored, 197 s wall (load 75 at the start, 67 at the end). The shell test 9.4 s,
+  passed, 0 failed, 8 ignored, 197 s wall (load 75 at the start, 67 at the end). At the end of the
+  run (head 10645dd): 69 passed, 0 failed, 8 ignored, 94 s wall (load 10 at the start, 13 at the end).
+  Layer 1, 3000 sequences, three side by side: 48 to 50 s each (load 16 to 10). The shell test 9.4 s,
   processes 2 s, sigframe 1.1 s (load 60 to 90).
 - Thirteenth run: the whole test suite of both crates 88 s wall (load 13 to 18), 181 s (load 59 to
   69); layer 1 20000 sequences: two side by side 303 s each (load 10 to 17), six side by side 322 s
