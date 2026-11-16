@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # The long runs to the plan's pass bars (section 9), in chunks, resumable. At 100 percent: layer 1 at 10,000
 # cases a form (100 a form in Chrome), layer 2 at one million programs (1,000 on the real CPU, 200 in Chrome),
-# layer 3 at 100,000 Csmith programs (1,000 in Chrome). Each chunk is one test run; when it ends, one line is
-# appended to the ledger. A chunk the ledger already holds for an accepted commit is skipped, so a stopped run
-# loses at most the chunk it was in. A failing chunk is recorded with its replay command and the run goes on.
+# layer 3 at 100,000 Csmith programs compared with Linux (1,000 in Chrome; programs that do not end on Linux in
+# time are made but not compared, so it runs chunks until that many were compared). Each chunk is one test run;
+# when it ends, one line is appended to the ledger. A chunk the ledger holds as passed on an accepted commit is
+# skipped, so a stopped run loses at most the chunk it was in; a chunk that failed or was stopped runs again. A
+# failing chunk is recorded with its replay command and the run goes on.
 #
 # From the repository root, detached (it runs for many hours):
 #   WC_LONG_DIR=<directory> nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &
@@ -13,14 +15,15 @@
 #   WC_LONG_LAYERS   which layers, comma separated (default 1,2,3).
 #   WC_LONG_SEED     the base seed (default 1): layer 1's chunk k runs seed SEED*1000+k; layers 2 and 3 run
 #                    seed SEED from the chunk's first case.
-#   WC_LONG_ACCEPT   the oldest commit whose ledger lines count (default HEAD): chunks run on it or on any
-#                    commit after it up to HEAD are skipped. Runs on a tree with changes to the code are
+#   WC_LONG_ACCEPT   the oldest commit whose ledger lines count (default HEAD): chunks that passed on it or on
+#                    any commit after it up to HEAD are skipped. Runs on a tree with changes to the code are
 #                    recorded as such and never skipped.
 #   WC_LONG_JOBS     cases or forms at once inside a chunk (default 6, the most this machine allows).
-#   WC_LONG_LIMIT    minutes a chunk may take before it is stopped and recorded as failing (default 90).
+#   WC_LONG_LIMIT    minutes a chunk may take before it is stopped and recorded as stopped (default 90).
 #
-# Ledger lines are tab separated key=value fields: layer, chunk (k/of), knobs (the chunk's environment),
-# cases, sample (cases also on the real CPU or in Chrome), mismatches, seconds, load (at start and end), commit,
+# Ledger lines are tab separated key=value fields: layer, chunk (k/of; layer 3 k alone), knobs (the chunk's
+# environment), cases (for layer 3 the programs compared), sample (cases also on the real CPU or in Chrome;
+# for layer 3 also the programs made and those that did not end on Linux in time), mismatches, seconds, load (at start and end), commit,
 # result (pass, fail or stopped) and, for a failing chunk, failing (what failed) and replay (a command).
 set -u
 root=$(git rev-parse --show-toplevel)
@@ -51,26 +54,35 @@ loadavg() { sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | xargs; }
 part() { local n=$(( $1 * percent / 100 )); echo $(( n > 0 ? n : 1 )); }
 ceil() { echo $(( ($1 + $2 - 1) / $2 )); }
 
-# Whether the ledger holds this chunk for an accepted commit.
+# The cases of this chunk's line in the ledger that passed on an accepted commit; nothing if there is none.
 held() {
   local layer=$1 knobs=$2
-  awk -F'\t' -v layer="layer=$layer" -v knobs="knobs=$knobs" '$1 == layer && $3 == knobs { print $9 }' "$ledger" |
-    sed 's/^commit=//' | grep -qxF -f <(echo "$accepted")
+  awk -F'\t' -v layer="layer=$layer" -v knobs="knobs=$knobs" \
+    '$1 == layer && $3 == knobs && $10 == "result=pass" { sub(/^commit=/, "", $9); sub(/^cases=/, "", $4); print $9, $4 }' "$ledger" |
+    while read -r at n; do grep -qxF "$at" <<< "$accepted" && echo "$n"; done | head -1
 }
 
-# Run one chunk: layer, chunk number, chunks, knobs, test filter; parse its summary with the layer's parser.
+# Run one chunk: layer, chunk number, chunks (empty when not known ahead), knobs, test filter; parse its
+# summary with the layer's parser. Sets ran to the chunk's cases (0 if not known).
 run_chunk() {
   local layer=$1 k=$2 of=$3 knobs=$4 filter=$5
-  if [ "$commit" = "${commit%-changed}" ] && held "$layer" "$knobs"; then
-    echo "layer $layer chunk $k/$of: in the ledger, skipped"
-    return
+  local name=$k${of:+/$of}
+  ran=0
+  if [ "$commit" = "${commit%-changed}" ]; then
+    local passed
+    passed=$(held "$layer" "$knobs")
+    if [ -n "$passed" ]; then
+      echo "layer $layer chunk $name: passed in the ledger, skipped"
+      ran=$passed
+      return
+    fi
   fi
-  local log="$dir/logs/layer$layer-$k-of-$of-${commit:0:12}.log"
+  local log="$dir/logs/layer$layer-$k${of:+-of-$of}-${commit:0:12}.log"
   local command="$knobs $test_command --test layer$layer $filter -- --nocapture"
   local load_before started status
   load_before=$(loadavg)
   started=$(date +%s)
-  echo "layer $layer chunk $k/$of: started $(date '+%F %T'), load $load_before: $command"
+  echo "layer $layer chunk $name: started $(date '+%F %T'), load $load_before: $command"
   env $knobs timeout "$((limit * 60))" $test_command --test "layer$layer" $filter -- --nocapture 2>&1 |
     grep -v "wcontainers warning" > "$log"
   status=${PIPESTATUS[0]}
@@ -88,14 +100,15 @@ run_chunk() {
     result=fail
   fi
   local line
-  line=$(printf 'layer=%s\tchunk=%s/%s\tknobs=%s\tcases=%s\tsample=%s\tmismatches=%s\tseconds=%s\tload=%s / %s\tcommit=%s\tresult=%s' \
-    "$layer" "$k" "$of" "$knobs" "$cases" "$sample" "$mismatches" "$seconds" "$load_before" "$load_after" "$commit" "$result")
+  line=$(printf 'layer=%s\tchunk=%s\tknobs=%s\tcases=%s\tsample=%s\tmismatches=%s\tseconds=%s\tload=%s / %s\tcommit=%s\tresult=%s' \
+    "$layer" "$name" "$knobs" "$cases" "$sample" "$mismatches" "$seconds" "$load_before" "$load_after" "$commit" "$result")
   if [ "$result" != pass ]; then
     [ -n "$replay" ] || replay="$command"
     line=$(printf '%s\tfailing=%s\treplay=%s\tlog=%s' "$line" "$failing" "$replay" "$log")
   fi
   echo "$line" >> "$ledger"
-  echo "layer $layer chunk $k/$of: $result, $cases cases, $mismatches mismatches, $seconds s"
+  echo "layer $layer chunk $name: $result, $cases cases, $mismatches mismatches, $seconds s"
+  [[ "$cases" =~ ^[0-9]+$ ]] && ran=$cases
 }
 
 # Each parser sets cases, sample, mismatches, failing and replay from a chunk's log.
@@ -143,8 +156,8 @@ parse_layer3() {
   local summary
   summary=$(grep -E '^layer 3: [0-9]+ Csmith programs' "$1" | tail -1)
   [ -n "$summary" ] || return
-  cases=$(echo "$summary" | awk '{ print $3 }')
-  sample=$(echo "$summary" | sed -E 's/.*: ([0-9]+) compared \(([0-9]+) also in Chrome\), ([0-9]+) did not end.*/\1 compared, \2 in Chrome, \3 did not end on Linux in time/')
+  cases=$(echo "$summary" | sed -E 's/.*: ([0-9]+) compared.*/\1/')
+  sample=$(echo "$summary" | sed -E 's/^layer 3: ([0-9]+) Csmith programs.*\(([0-9]+) also in Chrome\), ([0-9]+) did not end.*/\2 in Chrome, \1 made, \3 did not end on Linux in time/')
   mismatches=$(echo "$summary" | sed -E 's/.* ([0-9]+) failing.*/\1/')
   failing=$(grep -oE '^csmith [0-9]+ \(case [0-9]+\)' "$1" | sed -E 's/.*case ([0-9]+)\)/\1/' | sort -n | paste -sd, -)
   if [ -n "$failing" ]; then
@@ -183,17 +196,22 @@ if [[ ",$layers," == *,2,* ]]; then
   done
 fi
 
-# Layer 3: chunks of up to 1,000 Csmith programs from one seed, by case offset.
+# Layer 3: chunks of 500 Csmith programs from one seed, by case offset, until the programs compared (in chunks
+# that passed, or ran in this run) reach the bar. At most twice the chunks the bar would take if every program
+# were compared, so a reference that keeps failing cannot hold the run for ever.
 if [[ ",$layers," == *,3,* ]]; then
   total=$(part 100000)
-  chunks=$(ceil "$total" 1000)
+  chunks=$(ceil "$total" 500)
   chrome=$(ceil "$(part 1000)" "$chunks")
-  for ((k = 0; k < chunks; k++)); do
-    cases=$(( k < chunks - 1 ? 1000 : total - 1000 * (chunks - 1) ))
-    knobs="WC_LAYER3_SEED=$base WC_LAYER3_FROM=$((k * 1000)) WC_LAYER3_CASES=$cases WC_LAYER3_CHROME=$chrome WC_LAYER3_JOBS=$jobs"
-    run_chunk 3 $((k + 1)) "$chunks" "$knobs" csmith_programs_match_linux
+  compared=0
+  for ((k = 0; compared < total && k < 2 * chunks; k++)); do
+    knobs="WC_LAYER3_SEED=$base WC_LAYER3_FROM=$((k * 500)) WC_LAYER3_CASES=500 WC_LAYER3_CHROME=$chrome WC_LAYER3_JOBS=$jobs"
+    run_chunk 3 $((k + 1)) "" "$knobs" csmith_programs_match_linux
+    compared=$(( compared + ran ))
   done
+  echo "layer 3: $compared programs compared in $k chunks"
 fi
 
 echo "long runs ended after $(( $(date +%s) - all_started )) s"
-awk -F'\t' '{ split($1, l, "="); split($10, r, "="); n[l[2] " " r[2]]++ } END { for (k in n) print "layer " k ": " n[k] " chunks in the ledger" }' "$ledger" | sort
+awk -F'\t' '{ split($1, l, "="); split($10, r, "="); split($4, c, "="); k = l[2] " " r[2]; n[k]++; s[k] += c[2] }
+  END { for (k in n) print "layer " k ": " n[k] " chunks, " s[k] " cases in the ledger" }' "$ledger" | sort

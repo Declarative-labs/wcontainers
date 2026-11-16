@@ -131,6 +131,47 @@ fn small_binaries_translate_and_load() {
     }
 }
 
+/// An unwind table entry that cannot be read (here a function's entry pointing to no CIE) loses that entry
+/// alone, counted and warned; the entries after it are still read.
+#[test]
+fn a_bad_unwind_entry_loses_only_itself() {
+    use gimli::UnwindSection;
+    use object::{Object, ObjectSection};
+    let source = SOURCES.iter().find(|s| s.name == "musl").unwrap();
+    let bytes = std::fs::read(source.file()).unwrap();
+    let whole = Binary::read(source.name, &bytes);
+    let file = object::File::parse(&*bytes).unwrap();
+    let section = file.section_by_name(".eh_frame").unwrap();
+    let (section_at, _) = section.file_range().unwrap();
+    let data = section.data().unwrap();
+    let bases = gimli::BaseAddresses::default().set_eh_frame(section.address());
+    let mut entries = gimli::EhFrame::new(data, gimli::LittleEndian).entries(&bases);
+    let mut functions = Vec::new();
+    while let Some(entry) = entries.next().unwrap() {
+        if let gimli::CieOrFde::Fde(partial) = entry {
+            functions.push(partial.offset());
+        }
+    }
+    assert!(
+        functions.len() > 10,
+        "musl's unwind tables describe {} functions",
+        functions.len()
+    );
+    // The CIE pointer follows the entry's 4 byte length.
+    let at = section_at as usize + functions[functions.len() / 2] + 4;
+    let mut broken = bytes.clone();
+    broken[at..at + 4].copy_from_slice(&0x7fff_fff0u32.to_le_bytes());
+    let binary = Binary::read("musl with a bad CIE pointer", &broken);
+    assert_eq!(binary.unwind_errors, 1);
+    assert!(binary.starts.unwind.is_subset(&whole.starts.unwind));
+    assert!(
+        binary.starts.unwind.len() + 1 >= whole.starts.unwind.len(),
+        "{} of {} unwind starts read",
+        binary.starts.unwind.len(),
+        whole.starts.unwind.len()
+    );
+}
+
 /// Not a check: each binary's code and starts, its translation at full look-ahead, and what wasmtime makes
 /// of it. One command:
 /// `WC_BINARIES=busybox,musl nix develop -c cargo test --release -p wcontainers-translator-test --test binaries measure_binaries -- --ignored --nocapture`
