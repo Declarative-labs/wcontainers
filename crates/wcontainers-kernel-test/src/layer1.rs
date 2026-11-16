@@ -644,6 +644,18 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     if terminal {
         keep_terminals_settled(&mut arena, &mut calls);
     }
+    // A child that has ended is waited for by both runners after the call that made it, so waits
+    // need not wait: a wait for a child that never stops or continues would wait for ever.
+    let forks = calls.iter().any(|call| call.number == linux::__NR_clone);
+    if forks {
+        for call in &mut calls {
+            match call.number {
+                linux::__NR_wait4 => call.arguments[2] |= u64::from(linux::WNOHANG),
+                linux::__NR_waitid => call.arguments[3] |= u64::from(linux::WNOHANG),
+                _ => {}
+            }
+        }
+    }
     // Each filter first lets through every call the runners make themselves between and after the
     // sequence's calls (to report, to ask what a descriptor is, to zero bytes, to read the play area),
     // whose arguments (process numbers, the runners' own buffers) differ between them, and every call
@@ -662,6 +674,10 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     // With a terminal, the reference's runner also polls every descriptor after each call.
     if terminal {
         passed.push(linux::__NR_ppoll);
+    }
+    // And after a child is made, waits for it to end.
+    if forks {
+        passed.push(linux::__NR_waitid);
     }
     for call in &calls {
         if call.arguments.contains(&SELF) && !passed.contains(&call.number) {
@@ -710,6 +726,16 @@ fn opens_terminal_path(call: &Call) -> bool {
 /// Whether a sequence opens a pseudo-terminal.
 fn opens_terminal(calls: &[Call]) -> bool {
     calls.iter().any(opens_terminal_path)
+}
+
+/// How many children a sequence's calls made in the reference.
+pub fn children_made(sequence: &Sequence, theirs: &SequenceResult) -> u64 {
+    sequence
+        .calls
+        .iter()
+        .zip(&theirs.calls)
+        .filter(|(call, result)| call.number == linux::__NR_clone && result.value > 0)
+        .count() as u64
 }
 
 /// How many of a sequence's calls opened a pseudo-terminal in the reference.
@@ -1189,6 +1215,7 @@ pub const CALLS: &[u32] = &[
     linux::__NR_pipe2,
     linux::__NR_wait4,
     linux::__NR_waitid,
+    linux::__NR_clone,
     linux::__NR_rt_sigqueueinfo,
     linux::__NR_rt_tgsigqueueinfo,
     linux::__NR_rt_sigtimedwait,
@@ -1284,6 +1311,9 @@ pub const CALLS: &[u32] = &[
     linux::__NR_openat,
     linux::__NR_openat,
     linux::__NR_openat,
+    // Two more times, so that waits often find children.
+    linux::__NR_clone,
+    linux::__NR_clone,
 ];
 
 /// Turns a generated call into real arguments.
@@ -2201,7 +2231,35 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        // Neither runner's caller has children, so no wait waits.
+        // Fork and vfork, whose child ends at once with status 7 (see `CHILD_STATUS`), with exit
+        // signals both callers ignore; refusals of flags that ask for threads without what they
+        // need, and of a namespace (Docker's profile). Not the sharing of tables or a parent, nor a
+        // process descriptor, which are not built.
+        linux::__NR_clone => [
+            u64::from(pick(
+                &[
+                    linux::SIGCHLD,
+                    linux::SIGCHLD,
+                    0,
+                    linux::SIGWINCH,
+                    linux::CLONE_VFORK | linux::CLONE_VM | linux::SIGCHLD,
+                    linux::SIGCHLD | linux::CLONE_CHILD_SETTID | linux::CLONE_CHILD_CLEARTID,
+                    linux::SIGCHLD | linux::CLONE_SETTLS | linux::CLONE_UNTRACED,
+                    linux::CLONE_SIGHAND | linux::SIGCHLD,
+                    linux::CLONE_THREAD | linux::SIGCHLD,
+                    linux::CLONE_NEWNS | linux::SIGCHLD,
+                    u32::MAX,
+                ],
+                a,
+            )),
+            0,
+            0,
+            0,
+            buffer(b),
+            0,
+        ],
+        // Waits never wait when a sequence has children (see `build`); without, there is nothing
+        // to wait for.
         linux::__NR_wait4 => [
             pick(&[u64::MAX, 0, SELF, 99999, i32::MIN as u32 as u64], a),
             buffer(b),
@@ -2606,6 +2664,8 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
         linux::__NR_times => vec![fixed(a, 32)],
         linux::__NR_sysinfo => vec![fixed(a, 112)],
         linux::__NR_getrusage => vec![fixed(b, 144)],
+        linux::__NR_wait4 => vec![fixed(d, 144)],
+        linux::__NR_waitid => vec![fixed(c + 16, 4), fixed(c + 32, 16), fixed(e, 144)],
         linux::__NR_getrandom => vec![by_value(a, b)],
         linux::__NR_sched_rr_get_interval => vec![fixed(b, 16)],
         linux::__NR_sched_getattr if c >= 32 => vec![fixed(b + 24, 8)],
@@ -2765,6 +2825,8 @@ const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * 4096;
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
 /// The reference runner's `DEADLINE_SECONDS`.
 const DEADLINE_SECONDS: u64 = 60;
+/// The status a child made by clone ends with at once (the runner's `CHILD_STATUS`).
+const CHILD_STATUS: u64 = 7;
 
 /// Runs a sequence on our kernel: a fresh container with the runner as its program, whose process makes
 /// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
@@ -2855,6 +2917,22 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         );
         loop {
             match kernel.next() {
+                // A child made by clone ends at once, as the reference's does.
+                Next::Run { thread: child, .. } if child != thread => {
+                    let mut registers = wcontainers_abi::RegisterBlock::ZERO;
+                    cpu.registers(child, &mut registers);
+                    registers.x[8] = linux::__NR_exit_group.into();
+                    registers.x[0] = CHILD_STATUS;
+                    cpu.set_registers(child, &registers);
+                    kernel.exit(
+                        cpu,
+                        host,
+                        Exit::Syscall(Syscall {
+                            number: linux::__NR_exit_group.into(),
+                            arguments: [CHILD_STATUS, 0, 0, 0, 0, 0],
+                        }),
+                    );
+                }
                 Next::Run {
                     resume: wcontainers_abi::Resume::Return(value),
                     ..
@@ -2974,7 +3052,26 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         } else {
             None
         };
-        match call(&mut kernel, &mut cpu, &mut host, each) {
+        let outcome = call(&mut kernel, &mut cpu, &mut host, each);
+        // The runner's wait for a child to end, left to be reaped.
+        if let Ok(child) = outcome
+            && each.number == linux::__NR_clone
+            && child > 0
+        {
+            let wait = Call {
+                number: linux::__NR_waitid,
+                arguments: [
+                    u64::from(linux::P_PID),
+                    child as u64,
+                    SCRATCH,
+                    u64::from(linux::WEXITED | linux::WNOWAIT | linux::__WALL),
+                    0,
+                    0,
+                ],
+            };
+            let _ = call(&mut kernel, &mut cpu, &mut host, wait);
+        }
+        match outcome {
             Ok(value) => {
                 if random && value >= 0 {
                     // The runner's `clear_random`, by the same calls: the ranges a read was given.
@@ -3359,6 +3456,9 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
         linux::__NR_times => out.push((a, 32)),
         linux::__NR_sysinfo => out.push((a, 112)),
         linux::__NR_getrusage => out.push((b, 144)),
+        linux::__NR_wait4 => out.push((d, 144)),
+        // A child's process number and times, and its use of the machine.
+        linux::__NR_waitid => out.extend([(c + 16, 4), (c + 32, 16), (e, 144)]),
         // The default time slice depends on the machine's CPU count, one here.
         linux::__NR_sched_rr_get_interval => out.push((b, 16)),
         linux::__NR_sched_getattr if c >= 32 => out.push((b + 24, 8)),
@@ -3443,7 +3543,9 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         | linux::__NR_getsid
         | linux::__NR_times
         | linux::__NR_setsid
-        | linux::__NR_set_tid_address => true,
+        | linux::__NR_set_tid_address
+        | linux::__NR_clone
+        | linux::__NR_wait4 => true,
         // Moved by the kernel to a place of its choosing.
         linux::__NR_mremap => call.arguments[3] & 3 == 1,
         _ => false,

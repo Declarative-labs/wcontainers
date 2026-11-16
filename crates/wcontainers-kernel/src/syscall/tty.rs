@@ -386,11 +386,19 @@ pub(super) fn read(
         total
     };
     let mut bytes = Vec::new();
-    {
+    let room_made = {
         let mut pair = pty.borrow_mut();
         pair.sides[side].take(&mut bytes, limit as usize, packet);
+        // `n_tty_check_unthrottle` for a pty: once little is left, the other side's writers hear
+        // of room (`tty_wakeup`), before the buffer's work moves more in.
+        let other = 1 - side;
+        let wakeup = pair.sides[side].chars_in_buffer()
+            <= crate::linux_extra::TTY_THRESHOLD_UNTHROTTLE
+            && core::mem::take(&mut pair.sides[other].write_wakeup);
         pair.settle();
-    }
+        wakeup.then_some(other)
+    };
+
     // Each piece is copied from the kernel's buffer with arm64's copy routine (`copy_to_iter`),
     // segment by segment, until a copy falls short.
     let mut copied = 0u64;
@@ -399,6 +407,11 @@ pub(super) fn read(
         copied += stored;
         if stored < piece.len() as u64 {
             break;
+        }
+    }
+    if let Some(other) = room_made {
+        for file in async_files(&pty, other) {
+            kernel.send_io_signal(cx, &file, POLL_OUT);
         }
     }
     after(kernel, cx, &pty);
@@ -431,7 +444,7 @@ pub(super) fn write(
     let nonblocking = file.borrow().flags & O_NONBLOCK != 0;
     let mut done = kernel.threads[&tid].call.progress;
     pty.borrow_mut().process_echoes(side);
-    let result = loop {
+    let result: Result<(), Errno> = loop {
         if done == total {
             break Ok(());
         }
@@ -477,12 +490,25 @@ pub(super) fn write(
         kernel.park(tid, channel(&pty));
         return Err(Errno::PARKED);
     };
+    // A write that ended with bytes left asks to hear of room (`n_tty_write`'s end).
+    if done < total && !async_files(&pty, side).is_empty() {
+        pty.borrow_mut().sides[side].write_wakeup = true;
+    }
     after(kernel, cx, &pty);
     if done > 0 {
         update_time(kernel, cx, &pty, side, true);
         return Ok(done);
     }
     result.map(|()| 0)
+}
+
+/// The open files of a side with `FASYNC` set (`tty->fasync`).
+fn async_files(pty: &PtyRef, side: usize) -> Vec<FileRef> {
+    pty.borrow().files[side]
+        .iter()
+        .filter_map(|file| file.upgrade())
+        .filter(|file| file.borrow().flags & FASYNC != 0)
+        .collect()
 }
 
 /// What `poll` reports for a terminal file (`n_tty_poll`, or a hung-up file's).

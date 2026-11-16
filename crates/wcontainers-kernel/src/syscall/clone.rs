@@ -268,6 +268,8 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
     }
     children.sort_by_key(|child| kernel.processes[child].started);
     let keep = options & WNOWAIT != 0;
+    // `notask_error`: a child that has ended counts only for a wait that takes ends.
+    let mut waitable = false;
     for child in children {
         let process = &kernel.processes[&child];
         if let Some(status) = process.ended {
@@ -291,6 +293,7 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
                 value,
             });
         }
+        waitable = true;
         match process.report {
             Some(Report::Stopped(signal)) if options & WSTOPPED != 0 => {
                 if !keep {
@@ -317,7 +320,11 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
             _ => {}
         }
     }
-    Ok(Found::None)
+    if waitable {
+        Ok(Found::None)
+    } else {
+        Err(Errno::ECHILD)
+    }
 }
 
 /// Parks a wait that found nothing yet, unless a signal ends it first.

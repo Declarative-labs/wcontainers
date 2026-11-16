@@ -299,3 +299,7 @@ pub(crate) const BAUD_TABLE: [u32; 31] = [
     115200, 230400, 460800, 500000, 576000, 921600, 1000000, 1152000, 1500000, 2000000, 2500000,
     3000000, 3500000, 4000000,
 ];
+
+/// What n_tty's line discipline holds at most when a pty's reader tells the other side's writers of
+/// room (`TTY_THRESHOLD_UNTHROTTLE`, internal to `n_tty.c`).
+pub const TTY_THRESHOLD_UNTHROTTLE: usize = 128;

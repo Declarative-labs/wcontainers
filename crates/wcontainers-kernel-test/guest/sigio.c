@@ -131,6 +131,43 @@ static void terminals(void) {
     close(master);
 }
 
+// A writer that found no room hears of it once the other side's reader has made some, once for each
+// write that found none (n_tty_write_wakeup). How much fits is not shown: it differs (see the kernel
+// status, departures).
+static void terminal_room(void) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
+    grantpt(master);
+    unlockpt(master);
+    int slave = open(ptsname(master), O_RDWR | O_NOCTTY | O_NONBLOCK);
+    struct termios settings;
+    tcgetattr(slave, &settings);
+    cfmakeraw(&settings);
+    tcsetattr(slave, TCSANOW, &settings);
+    fcntl(master, F_SETOWN, getpid());
+    fcntl(master, F_SETFL, O_ASYNC | O_NONBLOCK);
+    static char block[1024];
+    memset(block, 'z', sizeof block);
+    for (int round = 0; round < 2; round++) {
+        int full = 0;
+        for (int tries = 0; tries < 100 && !full; tries++) {
+            full = write(master, block, sizeof block) < (long)sizeof block;
+            settle(slave);
+        }
+        report(full ? "filled" : "never filled");
+        char buffer[4096];
+        while (read(slave, buffer, sizeof buffer) > 0) {
+            settle(slave);
+        }
+        report("emptied");
+        write(master, block, 10);
+        settle(slave);
+        read(slave, buffer, sizeof buffer);
+        report("a write that fitted, then a read");
+    }
+    close(slave);
+    close(master);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     struct sigaction action = {0};
@@ -142,5 +179,6 @@ int main(void) {
     sigaction(SIGCHLD, &action, NULL);
     pipes();
     terminals();
+    terminal_room();
     return 0;
 }

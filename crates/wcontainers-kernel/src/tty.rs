@@ -222,6 +222,9 @@ pub(crate) struct Tty {
     pub io_error: bool,
     pub other_closed: bool,
     pub exclusive: bool,
+    /// `TTY_DO_WRITE_WAKEUP`: a write here ended with bytes left and a file with `FASYNC` set, so
+    /// the next room the other side's reader makes sends this side's I/O signal.
+    pub write_wakeup: bool,
     /// What the other side wrote that the line discipline has not taken in yet (the port's buffer).
     incoming: VecDeque<u8>,
     ld: Box<Discipline>,
@@ -246,6 +249,7 @@ impl Tty {
             io_error: false,
             other_closed: false,
             exclusive: false,
+            write_wakeup: false,
             incoming: VecDeque::new(),
             ld: Discipline::new(),
         };
@@ -360,6 +364,18 @@ impl Tty {
         } else {
             self.ld.commit_head - self.ld.read_tail >= amount
         }
+    }
+
+    /// n_tty's `chars_in_buffer`: what the line discipline holds up to its last line end, or all it
+    /// holds when not canonical.
+    pub fn chars_in_buffer(&self) -> usize {
+        let ld = &self.ld;
+        let head = if self.lflag(ICANON) {
+            ld.canon_head
+        } else {
+            ld.commit_head
+        };
+        head - ld.read_tail
     }
 
     /// What `TIOCINQ` reports: the bytes a read could take, the end-of-file marks left out in

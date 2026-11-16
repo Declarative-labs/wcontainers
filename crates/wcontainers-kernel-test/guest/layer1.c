@@ -258,6 +258,10 @@ static void write_all(int fd, const void *from, size_t length) {
     }
 }
 
+// A child made by clone ends at once with this status (`CHILD_STATUS` in layer1.rs), before it
+// touches the stack it may share with its parent (vfork).
+#define CHILD_STATUS 7
+
 static long raw(long number, const uint64_t *a) {
     register long x8 __asm__("x8") = number;
     register long x0 __asm__("x0") = a[0];
@@ -266,7 +270,18 @@ static long raw(long number, const uint64_t *a) {
     register long x3 __asm__("x3") = a[3];
     register long x4 __asm__("x4") = a[4];
     register long x5 __asm__("x5") = a[5];
-    __asm__ volatile("svc 0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5) : "memory");
+    __asm__ volatile("svc 0\n\t"
+                     "cmp x8, %[clone]\n\t"
+                     "b.ne 1f\n\t"
+                     "cbnz x0, 1f\n\t"
+                     "mov x0, %[status]\n\t"
+                     "mov x8, %[exit]\n\t"
+                     "svc 0\n"
+                     "1:"
+                     : "+r"(x0), "+r"(x8)
+                     : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), [clone] "i"(SYS_clone),
+                       [status] "i"(CHILD_STATUS), [exit] "i"(SYS_exit_group)
+                     : "memory", "cc");
     return x0;
 }
 
@@ -435,6 +450,11 @@ int main(void) {
                 }
                 int64_t out_before = random_output(sequence[index]);
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
+                // A child is waited for until it has ended, left to be reaped.
+                if (sequence[index][0] == SYS_clone && result > 0) {
+                    siginfo_t info;
+                    waitid(P_PID, (id_t)result, &info, WEXITED | WNOWAIT | __WALL);
+                }
                 uint32_t unshared = clear_random(sequence[index], result, out_before);
                 if (sequence[index][0] == SYS_getdents64 || sequence[index][0] == SYS_lseek) {
                     unshared |= outlives((int)sequence[index][1]) || lists_processes((int)sequence[index][1]);
@@ -495,6 +515,10 @@ int main(void) {
         close(report[0]);
         int status;
         waitpid(child, &status, 0);
+        // The sequence's own children, handed to this first process when it ended, so that no
+        // later sequence finds them (kill of every process would reach them).
+        while (waitpid(-1, NULL, WNOHANG) > 0) {
+        }
         uint32_t header = (uint32_t)used;
         write_all(1, &header, 4);
         write_all(1, reported, used);
