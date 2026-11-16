@@ -466,14 +466,8 @@ impl Kernel {
         }
         let mask = thread.saved_mask.unwrap_or(thread.signal_mask);
         let (fault_address, esr) = thread.fault;
-        let sas_flags = if stack_size == 0 {
-            SS_DISABLE as i32
-        } else if on_alternate {
-            SS_ONSTACK as i32
-        } else {
-            0
-        };
-        let stack_flags_saved = sas_flags | (stack_flags & SS_AUTODISARM as i32);
+        // The frame keeps the flags the stack was set with (`__save_altstack`).
+        let stack_flags_saved = stack_flags;
         let mut writes = Writes::default();
         writes.u64(at + frame::UC_FLAGS, 0);
         writes.u64(at + frame::UC_LINK, 0);
@@ -503,11 +497,10 @@ impl Kernel {
         let mut next = at + frame::RESERVED;
         writes.0.push((next, fpsimd));
         next += u64::from(frame::FPSIMD_SIZE);
-        // A translation fault's level is that of Linux's page tables, which are not kept here.
+        // A memory fault's status (whether the page was present, and at which level a table was
+        // missing) is that of Linux's page tables, which are not kept here.
         let class = esr >> frame::ESR_EC_SHIFT;
-        if (class == frame::ESR_EC_DABT_LOW || class == frame::ESR_EC_IABT_LOW)
-            && esr & 0x3c == 0x04
-        {
+        if class == frame::ESR_EC_DABT_LOW || class == frame::ESR_EC_IABT_LOW {
             self.counters
                 .count(cx.host, reason::FAULT_SYNDROME_APPROXIMATED, esr);
         }
@@ -563,7 +556,6 @@ impl Kernel {
             let action =
                 &mut self.processes.get_mut(&pid).expect("process").actions[signal as usize - 1];
             action.sa_handler_kernel = SIG_DFL;
-            action.sa_flags &= !u64::from(SA_SIGINFO);
         }
         Ok(())
     }
@@ -779,6 +771,10 @@ impl Kernel {
             Access::Write => wcontainers_abi::Permissions::WRITE,
             Access::Execute => wcontainers_abi::Permissions::EXECUTE,
         };
+        // A page that allows nothing has no valid entry: a translation fault even inside a mapping.
+        let present = mapping
+            .as_ref()
+            .is_some_and(|mapping| !crate::memory::cpu_permissions(mapping.permissions).is_empty());
         let (signal, code) = match mapping {
             None => {
                 if process
@@ -813,7 +809,7 @@ impl Kernel {
         } else {
             frame::ESR_EC_DABT_LOW
         };
-        let status = if code == SEGV_ACCERR {
+        let status = if present {
             frame::ESR_FSC_PERMISSION_3
         } else {
             frame::ESR_FSC_TRANSLATION_3

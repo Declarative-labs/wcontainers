@@ -386,7 +386,11 @@ impl StandIn {
             .save_registers(&mut state.registers)
             .expect("reading registers from unicorn");
         let stopped = std::mem::take(memory.unicorn.get_data_mut());
+        // A jump to an address that is not a multiple of 4 faults on alignment before any fetch.
         if let Some((address, access)) = stopped.fault {
+            if access == Access::Execute && !address.is_multiple_of(4) {
+                return Ok(Exit::AlignmentFault { address });
+            }
             return Ok(Exit::MemoryFault { address, access });
         }
         let pc = state.registers.pc;

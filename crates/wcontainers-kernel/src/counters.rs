@@ -50,9 +50,9 @@ pub mod reason {
     /// is mapped both shared and private: Linux's private pages not yet written would show the file's
     /// later bytes, and the copy does not. Detail: the inode number.
     pub const PRIVATE_MAPPING_COPY: &str = "private file mapping is a copy";
-    /// A fault's syndrome in a handler's frame: which translation level faulted and the decoded
-    /// instruction are Linux's page tables' and CPU's own, so a level 3 fault with no instruction
-    /// detail is given. Detail: none.
+    /// A memory fault's syndrome in a handler's frame: whether the page was present and at which
+    /// level a table was missing are Linux's page tables' own, so a level 3 fault of a page present
+    /// when it allows something is given. Detail: the syndrome.
     pub const FAULT_SYNDROME_APPROXIMATED: &str = "fault syndrome approximated";
     /// The time between a thread being woken and it running, measured, not a slow path. Detail: none.
     pub const WAKE_TO_RUN: &str = "wake to run";
