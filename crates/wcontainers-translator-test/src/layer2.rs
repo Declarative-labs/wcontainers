@@ -2108,5 +2108,6 @@ pub fn assemble(program: &Program) -> Blob {
         code_bytes,
         load: crate::programs::LOAD,
         program_headers: None,
+        stack_bytes: crate::programs::STACK_BYTES,
     }
 }

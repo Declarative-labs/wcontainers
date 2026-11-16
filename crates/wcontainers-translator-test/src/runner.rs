@@ -1,7 +1,7 @@
 //! A small wasmtime runner: one guest thread, its memory, the hooks, and a stand-in for the kernel that
 //! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -76,6 +76,26 @@ impl Paused<'_, '_> {
     pub fn raise_stop_flag(&mut self) {
         raise_stop_flag(self.caller);
     }
+
+    /// At a stop: the WebAssembly stack is lost here. The thread leaves, and carries on from its registers in
+    /// a fresh thread instance.
+    pub fn lose_stack(&mut self) {
+        self.caller.data_mut().lose_stack = true;
+    }
+
+    /// Addresses the lookup table has been given a piece for, in this thread instance.
+    pub fn placed(&self) -> &[u64] {
+        &self.caller.data().placed
+    }
+
+    /// The lookup table forgets the piece for an address, as if none had been made yet.
+    pub fn forget(&mut self, address: u64) {
+        let table = lookup_table(self.caller);
+        let slot = (address - self.caller.data().table_base) / 4;
+        table
+            .set(&mut *self.caller, slot, wasmtime::Ref::Func(None))
+            .expect("a slot of the table");
+    }
 }
 
 /// Called at every pause of the thread.
@@ -105,8 +125,21 @@ pub struct Host {
     places: HashMap<(Reason, u64), u64>,
     warnings: Vec<Warning<'static>>,
     blobs: Vec<Blob>,
-    /// Addresses code was translated from at run time: the table holds a piece of look-ahead none there.
-    translated_from: HashSet<u64>,
+    /// By address, the piece of look-ahead none of the one instruction there, for the table's last slot.
+    exact_pieces: HashMap<u64, wasmtime::Func>,
+    /// The look-ahead code reached at run time with no piece is translated at, chosen each time.
+    run_time: Box<dyn FnMut() -> LookAhead>,
+    /// The code translated ahead of time, in the order it was loaded, made again in a fresh thread instance.
+    loads: Vec<Load>,
+    /// After every load, the piece each of these addresses gets: the one of this load.
+    picks: Vec<(u64, usize)>,
+    /// Addresses the lookup table has been given a piece for.
+    placed: Vec<u64>,
+    /// The pause function asked for the stack to be lost: the thread leaves and carries on in a fresh thread
+    /// instance.
+    lose_stack: bool,
+    /// Lookup table entries of the thread module.
+    slots: u32,
     state: Option<SharedMemory>,
     /// The program break the stand-in reports: the page after the highest blob.
     program_break: u64,
@@ -213,7 +246,13 @@ impl Machine {
                 places: HashMap::new(),
                 warnings: Vec::new(),
                 blobs: Vec::new(),
-                translated_from: HashSet::new(),
+                exact_pieces: HashMap::new(),
+                run_time: Box::new(|| LookAhead::AT_RUN_TIME),
+                loads: Vec::new(),
+                picks: Vec::new(),
+                placed: Vec::new(),
+                lose_stack: false,
+                slots,
                 state: None,
                 program_break: 0,
                 engine: engine.clone(),
@@ -232,45 +271,75 @@ impl Machine {
         let state = SharedMemory::new(&engine, MemoryType::shared(state_pages, state_pages))
             .expect("state memory");
 
-        let thread_module = thread_module(&engine, slots);
-        let mut linker = Linker::new(&engine);
-        hooks(&mut linker);
-        linker
-            .define(&store, contract::ENV, contract::STATE, state.clone())
-            .unwrap();
-        let constant = |store: &mut Store<Host>, value: Val| {
-            let ty = value.ty(&*store).unwrap();
-            let ty = wasmtime::GlobalType::new(ty, wasmtime::Mutability::Const);
-            Global::new(&mut *store, ty, value).unwrap()
-        };
-        let table_base_global = constant(&mut store, Val::I64(table_base as i64));
-        let block_global = constant(&mut store, Val::I32(BLOCK_AT as i32));
-        linker
-            .define(
-                &store,
-                contract::ENV,
-                contract::TABLE_BASE,
-                table_base_global,
-            )
-            .unwrap();
-        linker
-            .define(&store, contract::ENV, contract::THREAD_BLOCK, block_global)
-            .unwrap();
-        let thread = linker
-            .instantiate(&mut store, &thread_module)
-            .expect("thread instance");
-
-        let run = thread.get_typed_func(&mut store, contract::RUN).unwrap();
         let host = store.data_mut();
         host.state = Some(state.clone());
-        host.thread = Some(thread);
         host.memory = Some(memory);
+        let run = thread_instance(&mut store);
         Machine {
             store,
             memory,
             state,
             run,
         }
+    }
+
+    /// Lose the WebAssembly stack: carry on from the registers in a fresh thread instance, with the code
+    /// translated ahead of time made again and nothing translated since.
+    fn fresh_thread(&mut self) {
+        self.run = thread_instance(&mut self.store);
+        let host = self.store.data_mut();
+        host.exact_pieces.clear();
+        host.placed.clear();
+        let loads = std::mem::take(&mut host.loads);
+        let mut pieces: Vec<HashMap<u64, wasmtime::Func>> = Vec::new();
+        for load in &loads {
+            instantiate(&mut self.store, load, None);
+            pieces.push(placed_pieces(&mut self.store, load));
+        }
+        let picks = self.store.data().picks.clone();
+        apply_picks(&mut self.store, &pieces, &picks);
+        self.store.data_mut().loads = loads;
+    }
+
+    /// Place a blob at `load_address`, translate it at each look-ahead given, from its starts, and give each
+    /// address that has pieces the piece of one of them, picked at random from `seed`.
+    pub fn load_mixed(
+        &mut self,
+        bytes: &[u8],
+        code: Range<u64>,
+        load_address: u64,
+        translations: &[(LookAhead, Vec<u64>)],
+        seed: u64,
+    ) {
+        use proptest::prelude::RngExt;
+        use proptest::test_runner::{RngAlgorithm, TestRng};
+        let index = self.place(bytes, code, load_address);
+        let mut pieces: Vec<HashMap<u64, wasmtime::Func>> = Vec::new();
+        for (look_ahead, starts) in translations {
+            let load = translate_load(&mut self.store, index, starts, *look_ahead, Omit::default());
+            instantiate(&mut self.store, &load, None);
+            pieces.push(placed_pieces(&mut self.store, &load));
+            self.store.data_mut().loads.push(load);
+        }
+        let mut key = [0u8; 32];
+        key[..8].copy_from_slice(&seed.to_le_bytes());
+        let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &key);
+        let first = self.store.data().loads.len() - translations.len();
+        let mut addresses: Vec<u64> = pieces.iter().flat_map(|p| p.keys().copied()).collect();
+        addresses.sort_unstable();
+        addresses.dedup();
+        let mut picks = Vec::new();
+        for address in addresses {
+            let having: Vec<usize> = (0..pieces.len())
+                .filter(|&k| pieces[k].contains_key(&address))
+                .collect();
+            let k = having[rng.random_range(0..having.len())];
+            picks.push((address, first + k));
+        }
+        let mut all = vec![HashMap::new(); first];
+        all.extend(pieces);
+        apply_picks(&mut self.store, &all, &picks);
+        self.store.data_mut().picks.extend(picks);
     }
 
     pub fn write(&mut self, address: u64, bytes: &[u8]) {
@@ -297,7 +366,7 @@ impl Machine {
     }
 
     /// Place a blob at `load_address`, translate it from `starts` (blob offsets) with a look-ahead and add its
-    /// pieces. Code reached at run time with no piece is translated at look-ahead none.
+    /// pieces. Code reached at run time with no piece is translated as [`Machine::translate_at_run_time`] says.
     pub fn load(
         &mut self,
         bytes: &[u8],
@@ -326,6 +395,14 @@ impl Machine {
         look_ahead: LookAhead,
         omit: Omit,
     ) {
+        let index = self.place(bytes, code, load_address);
+        let load = translate_load(&mut self.store, index, starts, look_ahead, omit);
+        instantiate(&mut self.store, &load, None);
+        self.store.data_mut().loads.push(load);
+    }
+
+    /// Put a blob's bytes in guest memory; its index.
+    fn place(&mut self, bytes: &[u8], code: Range<u64>, load_address: u64) -> usize {
         self.write(load_address, bytes);
         let host = self.store.data_mut();
         host.blobs.push(Blob {
@@ -335,8 +412,12 @@ impl Machine {
         });
         let end = (load_address + bytes.len() as u64).next_multiple_of(PAGE_SIZE);
         host.program_break = host.program_break.max(end);
-        let index = host.blobs.len() - 1;
-        instantiate_code(&mut self.store, index, starts, look_ahead, omit);
+        host.blobs.len() - 1
+    }
+
+    /// From now on code reached with no piece is translated at the look-ahead `choose` gives each time.
+    pub fn translate_at_run_time(&mut self, choose: impl FnMut() -> LookAhead + 'static) {
+        self.store.data_mut().run_time = Box::new(choose);
     }
 
     /// From now on the thread stops at every stop check it reaches (each counted), and carries on each time.
@@ -426,7 +507,12 @@ impl Machine {
     /// Run from the registers set until the thread stops. Returns why, and the registers at that moment.
     pub fn run(&mut self) -> (Stopped, RegisterBlock) {
         self.store.data_mut().stopped = None;
-        match self.run.call(&mut self.store, ()) {
+        let mut outcome = self.run.call(&mut self.store, ());
+        while outcome.is_ok() && std::mem::take(&mut self.store.data_mut().lose_stack) {
+            self.fresh_thread();
+            outcome = self.run.call(&mut self.store, ());
+        }
+        match outcome {
             Ok(()) => {
                 let host = self.store.data();
                 (host.stopped.expect("left without a reason"), host.snapshot)
@@ -591,7 +677,7 @@ fn hooks(linker: &mut Linker<Host>) {
                 raise_stop_flag(&caller);
             }
             pause(&mut caller, Pause::Stop);
-            0
+            i32::from(caller.data().lose_stack)
         })
         .unwrap();
     linker
@@ -624,9 +710,16 @@ fn hooks(linker: &mut Linker<Host>) {
         .func_wrap(
             HOOKS,
             HOOK_LOAD_CODE,
-            |mut caller: Caller<'_, Host>, address: i64| -> i32 {
+            |mut caller: Caller<'_, Host>, address: i64, exact: i32| -> i32 {
                 let address = address as u64;
-                if caller.data().translated_from.contains(&address) {
+                let table = lookup_table(&mut caller);
+                let last = table.size(&caller) - 1;
+                if exact == 1
+                    && let Some(&piece) = caller.data().exact_pieces.get(&address)
+                {
+                    table
+                        .set(&mut caller, last, wasmtime::Ref::Func(Some(piece)))
+                        .unwrap();
                     return 1;
                 }
                 let found = caller.data().blobs.iter().position(|blob| {
@@ -634,32 +727,33 @@ fn hooks(linker: &mut Linker<Host>) {
                     let end = blob.load_address + blob.code.end;
                     (start..end).contains(&address) && address.is_multiple_of(4)
                 });
-                match found {
-                    Some(index) => {
-                        let start = Instant::now();
-                        let offset = address - caller.data().blobs[index].load_address;
-                        instantiate_code(
-                            &mut caller,
-                            index,
-                            &[offset],
-                            LookAhead::None,
-                            Omit::default(),
-                        );
-                        caller.data_mut().translated_from.insert(address);
-                        let time = start.elapsed();
-                        slow_path(
-                            caller.data_mut(),
-                            Reason::TranslatedAtRunTime,
-                            address,
-                            time,
-                        );
-                        1
-                    }
-                    None => {
-                        stop(&mut caller, Stopped::NoCode(address));
-                        0
-                    }
+                let Some(index) = found else {
+                    stop(&mut caller, Stopped::NoCode(address));
+                    return 0;
+                };
+                let start = Instant::now();
+                let offset = address - caller.data().blobs[index].load_address;
+                if exact == 1 {
+                    let slot_base = (last as i64 - (offset / 4) as i64) as i32;
+                    let one = LookAhead::Bounded(1);
+                    instantiate_code(&mut caller, index, &[offset], one, Some(slot_base));
+                    let Some(wasmtime::Ref::Func(Some(piece))) = table.get(&mut caller, last)
+                    else {
+                        panic!("the piece is in the last slot");
+                    };
+                    caller.data_mut().exact_pieces.insert(address, piece);
+                } else {
+                    let look_ahead = (caller.data_mut().run_time)();
+                    instantiate_code(&mut caller, index, &[offset], look_ahead, None);
                 }
+                let time = start.elapsed();
+                slow_path(
+                    caller.data_mut(),
+                    Reason::TranslatedAtRunTime,
+                    address,
+                    time,
+                );
+                1
             },
         )
         .unwrap();
@@ -749,38 +843,50 @@ fn hooks(linker: &mut Linker<Host>) {
         .unwrap();
 }
 
+/// The thread instance's lookup table.
+fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtime::Table {
+    let thread = store.as_context().data().thread.unwrap();
+    let Some(Extern::Table(table)) = thread.get_export(store, contract::LOOKUP) else {
+        panic!("the thread module exports its lookup table");
+    };
+    table
+}
+
 /// `ic ivau`: the stand-in forgets the pieces the lookup table holds for the 64 byte line, so the next jump
 /// there translates the code again.
 fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
     let line = address & !63;
     let table_base = caller.data().table_base;
-    let thread = caller.data().thread.unwrap();
-    let Some(Extern::Table(table)) = thread.get_export(&mut *caller, contract::LOOKUP) else {
-        panic!("the thread module exports its lookup table");
-    };
+    let table = lookup_table(caller);
     for at in (line..line + 64).step_by(4) {
+        caller.data_mut().exact_pieces.remove(&at);
         let Some(slot) = at.checked_sub(table_base).map(|o| o / 4) else {
             continue;
         };
-        if slot < table.size(&*caller) {
+        if slot < table.size(&*caller) - 1 {
             table
                 .set(&mut *caller, slot, wasmtime::Ref::Func(None))
                 .expect("a slot of the table");
-            caller.data_mut().translated_from.remove(&at);
         }
     }
 }
 
-/// Translate blob `index` from `starts` and instantiate it, adding its pieces to the lookup table.
-fn instantiate_code(
+/// A code module made for a blob: which blob, and the blob offsets of the pieces it puts in the table.
+struct Load {
+    index: usize,
+    module: Module,
+    pieces: Vec<u64>,
+}
+
+/// Translate blob `index` from `starts` and compile it.
+fn translate_load(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
     index: usize,
     starts: &[u64],
     look_ahead: LookAhead,
     omit: Omit,
-) {
-    let mut store = store.as_context_mut();
-    let host = store.data();
+) -> Load {
+    let host = store.as_context().data();
     let blob = &host.blobs[index];
     let translation = translate_omitting(
         &blob.bytes,
@@ -791,12 +897,87 @@ fn instantiate_code(
         omit,
     )
     .expect("translate");
-    let module = Module::new(&host.engine, &translation.wasm).expect("code module");
+    Load {
+        index,
+        module: Module::new(&host.engine, &translation.wasm).expect("code module"),
+        pieces: translation.pieces,
+    }
+}
+
+/// Translate and instantiate code reached at run time.
+fn instantiate_code(
+    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+    index: usize,
+    starts: &[u64],
+    look_ahead: LookAhead,
+    slot_base: Option<i32>,
+) {
+    let load = translate_load(store, index, starts, look_ahead, Omit::default());
+    instantiate(store, &load, slot_base);
+}
+
+/// The pieces a load put in the table, by address, as the table holds them now.
+fn placed_pieces(
+    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+    load: &Load,
+) -> HashMap<u64, wasmtime::Func> {
+    let mut store = store.as_context_mut();
+    let table = lookup_table(&mut store);
+    let host = store.data();
+    let load_address = host.blobs[load.index].load_address;
+    let table_base = host.table_base;
+    let mut pieces = HashMap::new();
+    for offset in &load.pieces {
+        let address = load_address + offset;
+        if let Some(wasmtime::Ref::Func(Some(f))) =
+            table.get(&mut store, (address - table_base) / 4)
+        {
+            pieces.insert(address, f);
+        }
+    }
+    pieces
+}
+
+/// Give each address picked the piece of the load picked for it.
+fn apply_picks(
+    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+    pieces: &[HashMap<u64, wasmtime::Func>],
+    picks: &[(u64, usize)],
+) {
+    let mut store = store.as_context_mut();
+    let table = lookup_table(&mut store);
+    let table_base = store.data().table_base;
+    for &(address, load) in picks {
+        let piece = pieces[load][&address];
+        table
+            .set(
+                &mut store,
+                (address - table_base) / 4,
+                wasmtime::Ref::Func(Some(piece)),
+            )
+            .unwrap();
+    }
+}
+
+/// Instantiate a code module, adding its pieces to the lookup table at their addresses, or from
+/// `slot_base` when given.
+fn instantiate(
+    store: &mut impl wasmtime::AsContextMut<Data = Host>,
+    load: &Load,
+    slot_base: Option<i32>,
+) {
+    let mut store = store.as_context_mut();
+    let host = store.data();
+    let blob = &host.blobs[load.index];
     let thread = host.thread.unwrap();
     let memory = host.memory.unwrap();
     let state = host.state.clone().unwrap();
-    let slot_base = (blob.load_address - host.table_base) / 4;
+    let slot_base = slot_base.unwrap_or(((blob.load_address - host.table_base) / 4) as i32);
     let load_address = blob.load_address;
+    if slot_base_is_own(slot_base, blob.load_address, host.table_base) {
+        let placed: Vec<u64> = load.pieces.iter().map(|o| load_address + o).collect();
+        store.data_mut().placed.extend(placed);
+    }
 
     let mut linker = Linker::new(store.engine());
     hooks(&mut linker);
@@ -809,7 +990,7 @@ fn instantiate_code(
     let pages = memory.size(&store);
     for (name, value) in [
         (contract::LOAD_ADDRESS, Val::I64(load_address as i64)),
-        (contract::SLOT_BASE, Val::I32(slot_base as i32)),
+        (contract::SLOT_BASE, Val::I32(slot_base)),
         (
             contract::TABLE_BASE,
             Val::I64(store.data().table_base as i64),
@@ -835,8 +1016,50 @@ fn instantiate_code(
             .unwrap();
     }
     linker
-        .instantiate(&mut store, &module)
+        .instantiate(&mut store, &load.module)
         .expect("code instance");
+}
+
+/// Whether a slot base puts pieces at their own addresses.
+fn slot_base_is_own(slot_base: i32, load_address: u64, table_base: u64) -> bool {
+    slot_base == ((load_address - table_base) / 4) as i32
+}
+
+/// Make a thread instance, with an empty lookup table, for the machine's memories; its run function.
+fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
+    let engine = store.engine().clone();
+    let host = store.data();
+    let module = thread_module(&engine, host.slots);
+    let state = host.state.clone().unwrap();
+    let table_base = host.table_base;
+    let mut linker = Linker::new(&engine);
+    hooks(&mut linker);
+    linker
+        .define(&*store, contract::ENV, contract::STATE, state)
+        .unwrap();
+    let constant = |store: &mut Store<Host>, value: Val| {
+        let ty = value.ty(&*store).unwrap();
+        let ty = wasmtime::GlobalType::new(ty, wasmtime::Mutability::Const);
+        Global::new(&mut *store, ty, value).unwrap()
+    };
+    let table_base_global = constant(store, Val::I64(table_base as i64));
+    let block_global = constant(store, Val::I32(BLOCK_AT as i32));
+    linker
+        .define(
+            &*store,
+            contract::ENV,
+            contract::TABLE_BASE,
+            table_base_global,
+        )
+        .unwrap();
+    linker
+        .define(&*store, contract::ENV, contract::THREAD_BLOCK, block_global)
+        .unwrap();
+    let thread = linker
+        .instantiate(&mut *store, &module)
+        .expect("thread instance");
+    store.data_mut().thread = Some(thread);
+    thread.get_typed_func(&mut *store, contract::RUN).unwrap()
 }
 
 /// Where the stand-in sends what is written to a file descriptor.

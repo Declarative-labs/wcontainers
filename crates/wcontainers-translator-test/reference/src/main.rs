@@ -5,13 +5,13 @@
 //! and returns into the instruction; wherever control then lands raises the next signal, whose frame holds
 //! the registers after it. System calls made from the instruction are caught by seccomp and never run.
 //!
-//! `wcontainers-reference blob <file> <load address> <stack top>` runs a flat blob from its first byte with
-//! all registers zero and the starting stack of `initial_stack`, for real; its output and exit status are the
-//! program's.
+//! `wcontainers-reference blob <file> <load address> <stack top> <stack bytes>` runs a flat blob from its first
+//! byte with all registers zero and the starting stack of `initial_stack`, for real; its output and exit status
+//! are the program's.
 //!
-//! `wcontainers-reference time <runs> <file> <load address> <stack top>` runs the blob that many times, each
-//! in a child process, and writes each run's time in seconds to stderr: from just before the child is made
-//! until it has ended, so the reference's own start-up is not counted.
+//! `wcontainers-reference time <runs> <file> <load address> <stack top> <stack bytes>` runs the blob that many
+//! times, each in a child process, and writes each run's time in seconds to stderr: from just before the child
+//! is made until it has ended, so the reference's own start-up is not counted.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -348,7 +348,7 @@ extern "C" fn timed_out(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c
 }
 
 /// Run a flat blob at `load`; `headers` is where its program headers are and how many.
-fn blob(path: &str, load: u64, stack_top: u64, headers: Option<(u64, u64)>) {
+fn blob(path: &str, load: u64, stack_top: u64, stack_bytes: u64, headers: Option<(u64, u64)>) {
     let bytes = std::fs::read(path).expect("read the blob");
     let length = (bytes.len() as u64).next_multiple_of(PAGE);
     // One mapping for code and data, as a flat blob needs.
@@ -363,8 +363,7 @@ fn blob(path: &str, load: u64, stack_top: u64, headers: Option<(u64, u64)>) {
         synchronise(address);
         address += 64;
     }
-    const STACK: u64 = 1 << 20;
-    map(stack_top - STACK, STACK, libc::PROT_READ | libc::PROT_WRITE);
+    map(stack_top - stack_bytes, stack_bytes, libc::PROT_READ | libc::PROT_WRITE);
     let (sp, stack) = initial_stack(stack_top, headers);
     unsafe { core::ptr::copy_nonoverlapping(stack.as_ptr(), sp as *mut u8, stack.len()) };
     handle(libc::SIGUSR1, enter);
@@ -383,11 +382,18 @@ fn blob(path: &str, load: u64, stack_top: u64, headers: Option<(u64, u64)>) {
     unreachable!("the blob returned without exiting");
 }
 
-fn time(runs: u32, path: &str, load: u64, stack_top: u64, headers: Option<(u64, u64)>) {
+fn time(
+    runs: u32,
+    path: &str,
+    load: u64,
+    stack_top: u64,
+    stack_bytes: u64,
+    headers: Option<(u64, u64)>,
+) {
     for _ in 0..runs {
         let start = std::time::Instant::now();
         match unsafe { libc::fork() } {
-            0 => blob(path, load, stack_top, headers),
+            0 => blob(path, load, stack_top, stack_bytes, headers),
             -1 => panic!("fork failed"),
             child => {
                 let mut status = 0;
@@ -425,17 +431,19 @@ fn main() {
             &arguments[2],
             number(&arguments[3]),
             number(&arguments[4]),
-            headers(&arguments[5..]),
+            number(&arguments[5]),
+            headers(&arguments[6..]),
         ),
         Some("time") => time(
             arguments[2].parse().expect("a number of runs"),
             &arguments[3],
             number(&arguments[4]),
             number(&arguments[5]),
-            headers(&arguments[6..]),
+            number(&arguments[6]),
+            headers(&arguments[7..]),
         ),
         _ => panic!(
-            "usage: wcontainers-reference cases | blob <file> <load> <stack top> [<headers> <count>] | time <runs> <file> <load> <stack top> [<headers> <count>]"
+            "usage: wcontainers-reference cases | blob <file> <load> <stack top> <stack bytes> [<headers> <count>] | time <runs> <file> <load> <stack top> <stack bytes> [<headers> <count>]"
         ),
     }
 }

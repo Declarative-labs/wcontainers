@@ -35,28 +35,30 @@ fn answer(bytes: Vec<u8>) -> i32 {
     length
 }
 
-/// Translate the blob in the input buffer from one start, at look-ahead none (0) or full (1), for the host
-/// the probe found (`probe`, its answer), leaving out the checks set in `omit` (1: stop, 2: permissions, 4:
-/// returns; only to measure them). Returns the length of the code module, or -1 if the start or the code
-/// range is not valid.
+/// Translate the blob in the input buffer from one start, at look-ahead none (0), full (1) or bounded (2, N
+/// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
+/// stop, 2: permissions, 4: returns, 8: depth; only to measure them). Returns the length of the code module,
+/// or -1 if the start, the code range or the bound is not valid.
 #[unsafe(no_mangle)]
 pub extern "C" fn translate(
     code_start: u64,
     code_end: u64,
     start: u64,
     look_ahead: u32,
+    bound: u32,
     probe: i32,
     omit: u32,
 ) -> i32 {
-    let look_ahead = if look_ahead == 1 {
-        LookAhead::Full
-    } else {
-        LookAhead::None
+    let look_ahead = match look_ahead {
+        0 => LookAhead::None,
+        1 => LookAhead::Full,
+        _ => LookAhead::Bounded(bound),
     };
     let omit = Omit {
         stop: omit & 1 != 0,
         permissions: omit & 2 != 0,
         returns: omit & 4 != 0,
+        depth: omit & 8 != 0,
     };
     let result = INPUT.with_borrow(|blob| {
         translate_omitting(
@@ -143,6 +145,7 @@ pub extern "C" fn contract() -> i32 {
         "permissions": PERMISSIONS,
         "permissionPages": PERMISSION_PAGES,
         "run": RUN,
+        "bound": wcontainers_translator::BOUND,
         "unwindLeave": UNWIND_LEAVE,
         "hookSyscall": HOOK_SYSCALL,
         "hookStop": HOOK_STOP,

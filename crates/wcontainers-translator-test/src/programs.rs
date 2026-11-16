@@ -15,9 +15,10 @@ use wcontainers_translator::{LookAhead, Omit};
 pub const LOAD: u64 = 0x40_0000;
 /// Where a position independent blob is loaded, away from where it is linked.
 pub const MOVED: u64 = 0x2345_6000;
-/// The top of the 1 MiB stack, above the reach of the reference's own randomised heap.
+/// The top of the stack, above the reach of the reference's own randomised heap.
 pub const STACK_TOP: u64 = 0x4810_0000;
-const STACK_BYTES: u64 = 1 << 20;
+/// The stack a blob gets unless it asks for more.
+pub const STACK_BYTES: u64 = 1 << 20;
 
 /// A flat blob and how much of its start is code.
 pub struct Blob {
@@ -29,6 +30,8 @@ pub struct Blob {
     pub load: u64,
     /// Where in it its program's ELF program headers are, and how many: the runners tell the program.
     pub program_headers: Option<(u64, u64)>,
+    /// How much stack it gets, below [`STACK_TOP`].
+    pub stack_bytes: u64,
 }
 
 impl Blob {
@@ -158,6 +161,7 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         load: LOAD,
         program_headers: Some((at, headers.len() as u64)),
         name,
+        stack_bytes: STACK_BYTES,
     };
     std::fs::remove_file(&built).unwrap();
     std::fs::remove_file(&code).unwrap();
@@ -192,7 +196,7 @@ pub fn placement(blob: &Blob) -> Placement {
         regions: vec![
             (blob.load..end, Permissions::all()),
             (
-                STACK_TOP - STACK_BYTES..STACK_TOP,
+                STACK_TOP - blob.stack_bytes..STACK_TOP,
                 Permissions::READ | Permissions::WRITE,
             ),
         ],
@@ -255,6 +259,29 @@ pub fn ready_on(
     omit: Omit,
     host: wcontainers_arm64::Host,
 ) -> Machine {
+    ready_with(blob, host, |machine| {
+        machine.load_omitting(
+            &blob.bytes,
+            0..blob.code_bytes,
+            blob.load,
+            &[0],
+            look_ahead,
+            omit,
+        );
+        // The reference stays at none throughout.
+        if look_ahead == LookAhead::None {
+            machine.translate_at_run_time(|| LookAhead::None);
+        }
+    })
+}
+
+/// A machine with the blob's memory and permissions, its code put in place by `load`, and the stack and
+/// registers ready to run from its first byte.
+pub fn ready_with(
+    blob: &Blob,
+    host: wcontainers_arm64::Host,
+    load: impl FnOnce(&mut Machine),
+) -> Machine {
     let slots = blob.code_bytes.div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
@@ -262,14 +289,7 @@ pub fn ready_on(
     for (range, permissions) in place.regions {
         machine.set_permissions(range, permissions);
     }
-    machine.load_omitting(
-        &blob.bytes,
-        0..blob.code_bytes,
-        blob.load,
-        &[0],
-        look_ahead,
-        omit,
-    );
+    load(&mut machine);
     machine.write(place.sp, &place.stack);
     let mut registers = RegisterBlock::ZERO;
     registers.pc = blob.load;
@@ -329,8 +349,9 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
     let script = format!(
-        "/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {} > /dev/null",
+        "/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {:#x} {} > /dev/null",
         blob.load,
+        blob.stack_bytes,
         headers_arguments(blob).join(" ")
     );
     let output = Command::new("docker")
@@ -378,6 +399,7 @@ pub fn native(blob: &Blob) -> Ran {
         .arg(format!("/p/{file}"))
         .arg(format!("{:#x}", blob.load))
         .arg(format!("{STACK_TOP:#x}"))
+        .arg(format!("{:#x}", blob.stack_bytes))
         .args(headers_arguments(blob))
         .output()
         .expect("run docker");

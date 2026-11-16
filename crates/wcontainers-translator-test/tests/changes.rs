@@ -17,7 +17,7 @@ use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::changes::{Compared, Plan, compare};
 use wcontainers_translator_test::layer2::{assemble, program};
-use wcontainers_translator_test::programs::{Blob, LOAD, Library, build, ready};
+use wcontainers_translator_test::programs::{Blob, LOAD, Library, STACK_BYTES, build, ready};
 use wcontainers_translator_test::runner::{Pause, Stopped};
 
 type Ops = VecAssembler<Aarch64Relocation>;
@@ -145,6 +145,7 @@ fn data_blob(name: &str, mut ops: Ops) -> Blob {
         bytes,
         load: LOAD,
         program_headers: None,
+        stack_bytes: STACK_BYTES,
     }
 }
 

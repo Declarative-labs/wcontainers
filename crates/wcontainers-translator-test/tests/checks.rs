@@ -7,7 +7,9 @@ use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::browser;
-use wcontainers_translator_test::programs::{Blob, LOAD, native, reachable_memory, translated};
+use wcontainers_translator_test::programs::{
+    Blob, LOAD, STACK_BYTES, native, reachable_memory, translated,
+};
 use wcontainers_translator_test::runner::Machine;
 
 type Ops = VecAssembler<Aarch64Relocation>;
@@ -52,6 +54,7 @@ fn blob(name: &str, ops: Ops) -> Blob {
         bytes,
         load: LOAD,
         program_headers: None,
+        stack_bytes: STACK_BYTES,
     }
 }
 

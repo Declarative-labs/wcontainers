@@ -1,7 +1,7 @@
 //! Not a check: times the benchmark set (`programs/bench.c` at full size, -O2) natively and at full
 //! look-ahead in wasmtime and Chrome, with and without each check, and prints the size of the translation.
 //! Run with `--ignored --nocapture` in a release build. Knobs: `WC_BENCH_RUNS` (best of, default 3),
-//! `WC_BENCH_WORKLOADS` (numbers from bench.c, default all), `WC_BENCH_VARIANTS` (which of the five check
+//! `WC_BENCH_WORKLOADS` (numbers from bench.c, default all), `WC_BENCH_VARIANTS` (which of the six check
 //! variants, numbered from 1, default all), `WC_BENCH_CHROME` (0 leaves Chrome out), `WC_BENCH_REPEAT` (how
 //! many times Chrome runs the program in the same instances, each run timed by itself, default 1) and
 //! `WC_CHROME_JS_FLAGS` (V8 flags for Chrome).
@@ -26,7 +26,7 @@ const WORKLOADS: [&str; 8] = [
     "search",
 ];
 
-fn variants() -> [(&'static str, Omit); 5] {
+fn variants() -> [(&'static str, Omit); 6] {
     let none = Omit::default();
     [
         ("every check", none),
@@ -46,11 +46,19 @@ fn variants() -> [(&'static str, Omit); 5] {
             },
         ),
         (
+            "no depth check",
+            Omit {
+                depth: true,
+                ..none
+            },
+        ),
+        (
             "no check",
             Omit {
                 stop: true,
                 permissions: true,
                 returns: true,
+                depth: true,
             },
         ),
     ]

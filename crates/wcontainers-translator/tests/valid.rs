@@ -78,6 +78,18 @@ proptest! {
         let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::Full, HOST).unwrap();
         validate(&translation.wasm);
     }
+
+    /// Random words at bounded look-ahead of random N, from a few starts: one piece in the table each.
+    #[test]
+    fn bounded_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
+        let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let mut starts: Vec<u64> = picks.iter().map(|p| 4 * p.index(words.len()) as u64).collect();
+        let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::Bounded(bound), HOST).unwrap();
+        starts.sort();
+        starts.dedup();
+        prop_assert_eq!(&translation.pieces, &starts);
+        validate(&translation.wasm);
+    }
 }
 
 /// Words of every form of the CPU we present, each translated alone at look-ahead none and with others
@@ -133,7 +145,7 @@ fn every_form_is_valid() {
     for chunk in words.chunks(64) {
         let blob: Vec<u8> = chunk.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..chunk.len() as u64).map(|i| 4 * i).collect();
-        for look_ahead in [LookAhead::None, LookAhead::Full] {
+        for look_ahead in [LookAhead::None, LookAhead::Bounded(16), LookAhead::Full] {
             let translation =
                 translate(&blob, 0..blob.len() as u64, &starts, look_ahead, HOST).unwrap();
             validate(&translation.wasm);

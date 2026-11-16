@@ -17,11 +17,23 @@ use wcontainers_arm64::{
 /// How much code the translator sees at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LookAhead {
-    /// One instruction per piece. The permanent reference.
+    /// One instruction per piece. The permanent reference. Every instruction the starts reach is translated.
     None,
+    /// One piece per start: the stretch of at most this many instructions the code reaches from it, with all
+    /// that full look-ahead does inside it. A stretch of one instruction is that instruction's piece of
+    /// look-ahead none, and nothing else.
+    Bounded(u32),
     /// The whole blob: one piece per function found in it.
     Full,
 }
+
+impl LookAhead {
+    /// The look-ahead code reached at run time with no piece is translated at.
+    pub const AT_RUN_TIME: LookAhead = LookAhead::Bounded(BOUND);
+}
+
+/// Tuning number: the default N of bounded look-ahead.
+pub const BOUND: u32 = 256;
 
 /// Checks a translation can leave out, only so that what each costs can be measured. Output without any of
 /// them is not correct.
@@ -34,6 +46,8 @@ pub struct Omit {
     pub permissions: bool,
     /// The check that a return goes where the caller expects.
     pub returns: bool,
+    /// The check at a piece's entry that the engine's stack is not nearly used up.
+    pub depth: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +56,8 @@ pub enum Error {
     BadStart(u64),
     /// The code range is not inside the blob, or not a multiple of four bytes.
     BadCodeRange,
+    /// A bounded look-ahead of no instructions.
+    NoBound,
 }
 
 /// One translation: a code module and where its pieces start.
@@ -101,8 +117,31 @@ const BLOCK: Fixed = Fixed::Global(G_THREAD_BLOCK);
 // Parameter locals of every piece.
 pub(crate) const L_SP: u32 = ARGUMENTS;
 pub(crate) const L_RETURN: u32 = ARGUMENTS + 1;
-/// How many parameters a piece has: the passed registers and the expected return address.
-pub(crate) const PARAMETERS: u32 = PASSED + 1;
+/// i64: the bytes of the engine's stack the piece's callers use, as estimated.
+pub(crate) const L_DEPTH: u32 = ARGUMENTS + 2;
+/// How many parameters a piece has: the passed registers, the expected return address and the depth.
+pub(crate) const PARAMETERS: u32 = PASSED + 2;
+
+/// The bytes of the engine's stack a piece is taken to use: a fixed part and a slot for each local.
+pub(crate) fn frame_bytes(locals: &[ValType]) -> i64 {
+    let slots: i64 = locals
+        .iter()
+        .map(|t| if *t == ValType::V128 { 16 } else { 8 })
+        .sum();
+    64 + 8 * i64::from(PARAMETERS) + slots
+}
+
+/// Leave to the bottom loop when the depth in i64 local `depth` is past the budget, with `pc` at the
+/// entry. Only the passed registers may be in locals.
+pub(crate) fn depth_check(s: &mut InstructionSink<'_>, depth: u32, block: Fixed, entry: u64) {
+    s.local_get(depth)
+        .i64_const(STACK_BUDGET)
+        .i64_gt_u()
+        .if_(BlockType::Empty);
+    save_passed(s, block);
+    set_pc(s, block, |s| address(s, entry));
+    s.i32_const(UNWIND_DEEP).call(F_UNWIND).unreachable().end();
+}
 
 /// Translate a blob from the given starts. `code` is where in the blob the code is; starts and every piece
 /// are blob offsets. The output never holds an absolute address.
@@ -141,8 +180,11 @@ pub fn translate_omitting(
     }
     // The pieces the lookup table holds, and functions only pieces call, whose indices follow theirs.
     let (pieces, others) = match look_ahead {
-        LookAhead::None => (none_pieces(&blob_code, starts), Vec::new()),
-        LookAhead::Full => crate::full::pieces(&blob_code, starts, omit),
+        LookAhead::None => (none_pieces(&blob_code, starts, true), Vec::new()),
+        LookAhead::Bounded(0) => return Err(Error::NoBound),
+        LookAhead::Bounded(1) => (none_pieces(&blob_code, starts, false), Vec::new()),
+        LookAhead::Bounded(n) => crate::full::pieces(&blob_code, starts, Some(n as usize), omit),
+        LookAhead::Full => crate::full::pieces(&blob_code, starts, None, omit),
     };
     let index: BTreeMap<u64, u32> = pieces
         .keys()
@@ -208,8 +250,13 @@ impl Code<'_> {
     }
 }
 
-/// Look-ahead none: follow direct control flow from the starts; every instruction reached is its own piece.
-fn none_pieces(code: &Code<'_>, starts: &[u64]) -> BTreeMap<u64, wasm_encoder::Function> {
+/// Look-ahead none: every instruction is its own piece. With `reach`, every instruction direct control flow
+/// reaches from the starts, else the starts alone.
+fn none_pieces(
+    code: &Code<'_>,
+    starts: &[u64],
+    reach: bool,
+) -> BTreeMap<u64, wasm_encoder::Function> {
     let mut found = BTreeMap::new();
     let mut work: Vec<u64> = starts.to_vec();
     while let Some(offset) = work.pop() {
@@ -218,6 +265,9 @@ fn none_pieces(code: &Code<'_>, starts: &[u64]) -> BTreeMap<u64, wasm_encoder::F
         }
         let instruction = wcontainers_arm64::decode(code.word(offset));
         found.insert(offset, instruction);
+        if !reach {
+            continue;
+        }
         let flow = instruction.flow();
         if flow.falls_through {
             work.push(offset + 4);
@@ -411,7 +461,9 @@ pub(crate) fn types() -> TypeSection {
     types.ty().function([ValType::I64; 7], [ValType::I64]); // 1: syscall
     types.ty().function([], [ValType::I32]); // 2: stop
     types.ty().function([ValType::I64, ValType::I32], []); // 3: memory_fault
-    types.ty().function([ValType::I64], [ValType::I32]); // 4: load_code
+    types
+        .ty()
+        .function([ValType::I64, ValType::I32], [ValType::I32]); // 4: load_code
     types.ty().function([ValType::I32, ValType::I64], []); // 5: warn, trap
     types.ty().function(
         [ValType::I64; PARAMETERS as usize + 1],
@@ -557,6 +609,7 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
     crate::thread::misaligned_code(&mut s, TARGET, F_TRAP);
     s.i32_const(UNWIND_LEAVE).call(F_UNWIND).unreachable().end();
     s.local_get(TARGET)
+        .i32_const(0)
         .call(F_LOAD_CODE)
         .i32_eqz()
         .if_(BlockType::Empty)
@@ -577,8 +630,9 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
     f
 }
 
-/// Carry on at a guest address in code translated there at look-ahead none, which has every slow path in
-/// place, keeping the WebAssembly stack. Parameters: those of the dispatcher.
+/// Run the instruction at a guest address from its piece of look-ahead none, which has every slow path in
+/// place, keeping the WebAssembly stack; it carries on through the table. Parameters: those of the
+/// dispatcher.
 pub(crate) fn exact() -> wasm_encoder::Function {
     const TARGET: u32 = PARAMETERS;
     let mut f = wasm_encoder::Function::new([]);
@@ -591,6 +645,7 @@ pub(crate) fn exact() -> wasm_encoder::Function {
         .local_get(TARGET)
         .call(F_WARN);
     s.local_get(TARGET)
+        .i32_const(1)
         .call(F_LOAD_CODE)
         .i32_eqz()
         .if_(BlockType::Empty)
@@ -598,10 +653,11 @@ pub(crate) fn exact() -> wasm_encoder::Function {
         .call(F_UNWIND)
         .unreachable()
         .end();
-    for i in 0..=PARAMETERS {
+    for i in 0..PARAMETERS {
         s.local_get(i);
     }
-    s.return_call(F_DISPATCH).end();
+    crate::thread::last_slot(&mut s);
+    s.table_get(0).ref_as_non_null().return_call_ref(0).end();
     f
 }
 
@@ -644,7 +700,13 @@ pub(crate) fn description<'a>(
     look_ahead: LookAhead,
     pieces: impl ExactSizeIterator<Item = &'a u64>,
 ) -> CustomSection<'static> {
-    let mut data = vec![1, look_ahead as u8];
+    let (kind, bound) = match look_ahead {
+        LookAhead::None => (0, 0),
+        LookAhead::Full => (1, 0),
+        LookAhead::Bounded(n) => (2, n),
+    };
+    let mut data = vec![2, kind];
+    bound.encode(&mut data);
     data.extend_from_slice(blake3::hash(blob).as_bytes());
     (pieces.len() as u64).encode(&mut data);
     for offset in pieces {
@@ -668,8 +730,10 @@ struct NoneEmitter<'a> {
 }
 
 impl NoneEmitter<'_> {
-    /// The stop check every piece starts with: each one passes control on.
+    /// The checks every piece starts with: each one passes control on.
     fn entry(&mut self) {
+        let offset = self.offset;
+        depth_check(&mut self.sink(), L_DEPTH, BLOCK, offset);
         self.stop_check(0);
     }
 
@@ -703,13 +767,17 @@ impl NoneEmitter<'_> {
         set_pc(&mut s, BLOCK, |s| address(s, pc));
     }
 
-    /// Push the passed registers, then the return address the caller expects.
-    fn arguments(&mut self, ret: impl FnOnce(&mut InstructionSink<'_>)) {
+    /// Push the passed registers, then the return address the caller expects and the depth.
+    fn arguments(&mut self, ret: impl FnOnce(&mut InstructionSink<'_>), depth: i64) {
         let mut s = self.sink();
         for i in 0..PASSED {
             s.local_get(i);
         }
         ret(&mut s);
+        s.local_get(L_DEPTH);
+        if depth != 0 {
+            s.i64_const(depth).i64_add();
+        }
     }
 
     /// Transfer to a target, as a tail call or a plain call, with the return address already pushed.
@@ -759,6 +827,19 @@ impl NoneEmitter<'_> {
         s.local_set(value);
         slot.store_from(&mut s, BLOCK, value);
     }
+}
+
+/// After a return that does not go where its caller expects, with `pc` set to its target: return to the
+/// bottom loop if it is the caller.
+pub(crate) fn bottom_return(s: &mut InstructionSink<'_>) {
+    s.local_get(L_RETURN)
+        .i64_const(BOTTOM_RETURN | FLAGS_WANTED)
+        .i64_eq()
+        .if_(BlockType::Empty);
+    for i in 0..PASSED {
+        s.local_get(i);
+    }
+    s.return_().end();
 }
 
 /// Push the guest address of a blob offset.
@@ -880,9 +961,12 @@ impl Emitter for NoneEmitter<'_> {
     }
 
     fn jump(&mut self, target: Target) {
-        self.arguments(|s| {
-            s.local_get(L_RETURN);
-        });
+        self.arguments(
+            |s| {
+                s.local_get(L_RETURN);
+            },
+            0,
+        );
         self.transfer(target, true);
     }
 
@@ -895,10 +979,14 @@ impl Emitter for NoneEmitter<'_> {
     fn call(&mut self, target: Target) {
         let next = self.offset + 4;
         // The flags are always in the thread block here.
-        self.arguments(|s| {
-            address(s, next);
-            s.i64_const(FLAGS_WANTED).i64_or();
-        });
+        let frame = frame_bytes(&self.locals);
+        self.arguments(
+            |s| {
+                address(s, next);
+                s.i64_const(FLAGS_WANTED).i64_or();
+            },
+            frame,
+        );
         self.transfer(target, false);
         let mut s = self.sink();
         s.local_set(L_SP);
@@ -920,10 +1008,11 @@ impl Emitter for NoneEmitter<'_> {
         }
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
-        save_passed(&mut s, BLOCK);
         set_pc(&mut s, BLOCK, |s| {
             s.local_get(target);
         });
+        bottom_return(&mut s);
+        save_passed(&mut s, BLOCK);
         s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
     }
 

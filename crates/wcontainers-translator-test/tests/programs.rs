@@ -2,6 +2,7 @@
 
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
+use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{
     Library, build, build_with, native, reachable_memory, translated,
     translated_stopping_everywhere,
@@ -32,6 +33,44 @@ fn stack_moved_by_a_callee_matches_linux() {
 #[test]
 fn benchmarks_match_linux() {
     match_linux(&[("bench", Library::None)]);
+}
+
+/// Recursion far deeper than the engine's own stack allows, on Linux's 8 MiB stack: C 150,000 calls deep with
+/// a frame at each level, and a million calls deep through a stack of 8 byte frames. Each look-ahead
+/// matches Linux, and the thread leaves the full engine stack to the bottom loop, counted, and carries on.
+#[test]
+fn deep_recursion_matches_linux() {
+    for (name, optimisation, library, defines) in [
+        ("deep", "-O0", Library::C, &["DEPTH=150000"][..]),
+        ("deep", "-O2", Library::C, &["DEPTH=150000"][..]),
+        ("deep_small_frames", "-O0", Library::None, &[][..]),
+    ] {
+        let mut blob = build_with(name, optimisation, library, defines);
+        blob.stack_bytes = 8 << 20;
+        let theirs = native(&blob);
+        let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
+        assert_eq!(none, theirs, "{} at none", blob.name);
+        for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
+            let what = format!("{} at {look_ahead:?}", blob.name);
+            let (ours, mut machine, registers) = translated(&blob, look_ahead);
+            assert_eq!(ours, theirs, "{what}");
+            assert_eq!(registers, none_registers, "registers of {what}");
+            assert!(
+                reachable_memory(&mut machine, &blob) == reachable_memory(&mut none_machine, &blob),
+                "memory of {what}"
+            );
+            let left = machine.count(Reason::StackNearlyFull);
+            let continued = machine.count(Reason::ContinuedAfterStackLoss);
+            eprintln!("{what}: left a nearly full stack {left} times, continued {continued} times");
+            assert!(left > 0 && continued > 0, "{what}");
+        }
+        for look_ahead in [LookAhead::None, LookAhead::Full] {
+            let ours = browser::translated_with(&blob, look_ahead, Default::default());
+            let what = format!("{} at {look_ahead:?} in Chrome", blob.name);
+            assert_eq!(ours.ran, theirs, "{what}");
+            assert!(ours.count("engine stack nearly full") > 0, "{what}");
+        }
+    }
 }
 
 #[test]

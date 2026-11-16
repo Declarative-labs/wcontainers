@@ -7,6 +7,7 @@ pub mod layer1;
 pub mod layer2;
 pub mod layer3;
 pub mod layout;
+pub mod mixed;
 pub mod programs;
 pub mod reference;
 pub mod runner;

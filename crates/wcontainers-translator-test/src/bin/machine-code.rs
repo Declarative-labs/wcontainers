@@ -23,6 +23,7 @@ fn main() {
         stop: omitted.contains("stop"),
         permissions: omitted.contains("permissions"),
         returns: omitted.contains("returns"),
+        depth: omitted.contains("depth"),
     };
     let blob = build_with(program, optimisation, Library::None, &defines);
     let translation = translate_omitting(

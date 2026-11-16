@@ -94,9 +94,17 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
         "lookAhead": match look_ahead {
             LookAhead::None => 0,
             LookAhead::Full => 1,
+            LookAhead::Bounded(_) => 2,
+        },
+        "bound": match look_ahead {
+            LookAhead::Bounded(n) => n,
+            _ => 0,
         },
         "repeat": repeat,
-        "omit": u8::from(omit.stop) | (u8::from(omit.permissions) << 1) | (u8::from(omit.returns) << 2),
+        "omit": u8::from(omit.stop)
+            | (u8::from(omit.permissions) << 1)
+            | (u8::from(omit.returns) << 2)
+            | (u8::from(omit.depth) << 3),
     });
     let result = launch(&directory, &setup);
     let bytes = |name: &str| -> Vec<u8> {

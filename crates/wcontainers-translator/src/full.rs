@@ -33,6 +33,7 @@ const SWITCH_WINDOW: u64 = 64;
 pub(crate) fn pieces(
     code: &Code<'_>,
     starts: &[u64],
+    bound: Option<usize>,
     omit: Omit,
 ) -> (
     BTreeMap<u64, wasm_encoder::Function>,
@@ -42,7 +43,10 @@ pub(crate) fn pieces(
         code,
         decoded: HashMap::new(),
     };
-    let functions = finder.functions(starts);
+    let functions = match bound {
+        None => finder.functions(starts),
+        Some(limit) => finder.stretches(starts, limit),
+    };
     let entries: BTreeSet<u64> = functions.iter().map(|f| f.entry).collect();
     let index: BTreeMap<u64, u32> = functions
         .iter()
@@ -66,7 +70,13 @@ pub(crate) fn pieces(
             let mut bounds = entries.clone();
             bounds.extend(others.iter().map(|&d| function.blocks[d].start));
             let start = function.blocks[*h].start;
-            let piece = finder.explore(start, &bounds, &mut BTreeSet::new());
+            // A stretch's loop piece stays within the stretch.
+            let within: HashSet<u64> = function_instructions(function).collect();
+            let reach = match bound {
+                None => Reach::All,
+                Some(_) => Reach::Within(&within),
+            };
+            let piece = finder.explore(start, &bounds, &mut BTreeSet::new(), reach);
             // Where a loop piece would need more entries, the stop check carries on in place instead.
             if !irreducible(&piece).is_empty() {
                 continue;
@@ -151,6 +161,16 @@ struct Finder<'a> {
     decoded: HashMap<u64, Decoded>,
 }
 
+/// How far exploring a function may go.
+#[derive(Clone, Copy)]
+enum Reach<'a> {
+    All,
+    /// At most this many instructions.
+    Count(usize),
+    /// Only these instructions.
+    Within(&'a HashSet<u64>),
+}
+
 /// Whether control can leave an instruction other than by going on to the next one or by a call that returns.
 fn ends_block(instruction: &Instruction) -> bool {
     let flow = instruction.flow();
@@ -182,7 +202,7 @@ impl Finder<'_> {
             while let Some(entry) = work.pop() {
                 explored.insert(entry);
                 let mut found = BTreeSet::new();
-                self.explore(entry, &entries, &mut found);
+                self.explore(entry, &entries, &mut found, Reach::All);
                 for offset in found {
                     if self.code.inside(offset) && entries.insert(offset) {
                         work.push(offset);
@@ -191,7 +211,7 @@ impl Finder<'_> {
             }
             let functions: Vec<Function> = entries
                 .iter()
-                .map(|&entry| self.explore(entry, &entries, &mut BTreeSet::new()))
+                .map(|&entry| self.explore(entry, &entries, &mut BTreeSet::new(), Reach::All))
                 .collect();
             let mut more = false;
             for function in &functions {
@@ -205,12 +225,35 @@ impl Finder<'_> {
         }
     }
 
+    /// One stretch per start: what the code reaches from it in its first `limit` instructions, stopping at the
+    /// other starts and at the blocks that would make its control flow irreducible.
+    fn stretches(&mut self, starts: &[u64], limit: usize) -> Vec<Function> {
+        let starts: BTreeSet<u64> = starts.iter().copied().collect();
+        let mut bounds = starts.clone();
+        loop {
+            let stretches: Vec<Function> = starts
+                .iter()
+                .map(|&s| self.explore(s, &bounds, &mut BTreeSet::new(), Reach::Count(limit)))
+                .collect();
+            let mut more = false;
+            for stretch in &stretches {
+                for offset in irreducible(stretch) {
+                    more |= bounds.insert(offset);
+                }
+            }
+            if !more {
+                return stretches;
+            }
+        }
+    }
+
     /// The function at an entry, with what it shows of other entries added to `found`.
     fn explore(
         &mut self,
         entry: u64,
         entries: &BTreeSet<u64>,
         found: &mut BTreeSet<u64>,
+        reach: Reach<'_>,
     ) -> Function {
         let mut body = BTreeSet::new();
         let mut leaders = BTreeSet::from([entry]);
@@ -219,12 +262,19 @@ impl Finder<'_> {
         let mut built = Vec::new();
         let mut work = vec![entry];
         while let Some(offset) = work.pop() {
-            if !self.code.inside(offset) || (offset != entry && entries.contains(&offset)) {
+            if !self.code.inside(offset)
+                || (offset != entry && entries.contains(&offset))
+                || body.contains(&offset)
+            {
                 continue;
             }
-            if !body.insert(offset) {
-                continue;
+            match reach {
+                Reach::All => {}
+                Reach::Count(limit) if body.len() < limit => {}
+                Reach::Within(allowed) if allowed.contains(&offset) => {}
+                _ => continue,
             }
+            body.insert(offset);
             let instruction = self.get(offset).instruction;
             let flow = instruction.flow();
             let mut jumps = Vec::new();
@@ -282,13 +332,14 @@ impl Finder<'_> {
                 jumps.push(offset.wrapping_add_signed(by));
             }
             leaders.extend(&jumps);
+            work.extend(jumps);
+            // The next instruction is seen first, so a bounded stretch follows the code in order.
             if flow.falls_through {
                 if ends_block(&instruction) {
                     leaders.insert(offset + 4);
                 }
                 work.push(offset + 4);
             }
-            work.extend(jumps);
         }
 
         found.extend(
@@ -1301,6 +1352,8 @@ struct FullEmitter<'a> {
     entry_check: bool,
     /// The instruction being emitted has written a register, the flags or a control register.
     written: bool,
+    /// i64 local: the depth the piece passes to what it calls, its callers' and its own.
+    depth: u32,
 }
 
 impl<'a> FullEmitter<'a> {
@@ -1348,7 +1401,9 @@ impl<'a> FullEmitter<'a> {
             unchecked: Vec::new(),
             entry_check: (plan.calls_out || loop_piece) && !omit.stop,
             written: false,
+            depth: 0,
         };
+        e.depth = e.new_local(ValType::I64);
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
             let room = e.new_local(ValType::I64);
@@ -1380,6 +1435,15 @@ impl<'a> FullEmitter<'a> {
             if let Some(local) = local {
                 s.global_get(G_OWN + global as u32).local_set(*local);
             }
+        }
+        s.local_get(L_DEPTH)
+            .i64_const(frame_bytes(&e.locals))
+            .i64_add()
+            .local_set(e.depth);
+        // Only a piece that calls or leaves to others can be part of deep recursion.
+        if (plan.calls_out || loop_piece) && !omit.depth {
+            let block = Fixed::Global(G_THREAD_BLOCK);
+            depth_check(&mut s, e.depth, block, function.entry);
         }
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
         f.raw(entry);
@@ -1727,12 +1791,14 @@ impl<'a> FullEmitter<'a> {
         }
     }
 
+    /// Push the parameters of a tail call: the passed registers, the expected return address and the depth,
+    /// all as this piece was given them.
     fn arguments(&mut self) {
         let mut s = self.sink();
         for i in 0..PASSED {
             s.local_get(i);
         }
-        s.local_get(L_RETURN);
+        s.local_get(L_RETURN).local_get(L_DEPTH);
     }
 
     fn push_pc(&mut self, pc: Pc) {
@@ -2443,6 +2509,8 @@ impl Emitter for FullEmitter<'_> {
         if self.flags_needed_after(offset) {
             self.sink().i64_const(FLAGS_WANTED).i64_or();
         }
+        let depth = self.depth;
+        self.sink().local_get(depth);
         match target {
             Target::Relative(by) => {
                 let to = offset.wrapping_add_signed(by);
@@ -2537,10 +2605,11 @@ impl Emitter for FullEmitter<'_> {
         self.write_back_flags();
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
-        save_passed(&mut s, block);
         set_pc(&mut s, block, |s| {
             s.local_get(target);
         });
+        bottom_return(&mut s);
+        save_passed(&mut s, block);
         s.i32_const(UNWIND_GO_TO).call(F_UNWIND).unreachable();
     }
 
