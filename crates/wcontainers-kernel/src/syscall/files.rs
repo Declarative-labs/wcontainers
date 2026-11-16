@@ -96,7 +96,7 @@ fn credentials(kernel: &Kernel, tid: Tid) -> &Credentials {
 }
 
 /// May the caller make or remove names in this directory.
-fn may_change(kernel: &Kernel, tid: Tid, directory: &Node) -> Result<(), Errno> {
+pub(super) fn may_change(kernel: &Kernel, tid: Tid, directory: &Node) -> Result<(), Errno> {
     let inode = directory.borrow();
     if !inode.is_directory() {
         return Err(Errno::ENOTDIR);
@@ -116,10 +116,15 @@ fn fixed_names(directory: &Node) -> bool {
     matches!(inode.content, Content::Proc(_)) || inode.fs.kind == crate::fs::Kind::Devpts
 }
 
-/// Callers that get this far in a directory with fixed names are refused with EPERM, as Linux does for
-/// a directory with no such operation.
+/// The mqueue file system's root, whose only name operations make and remove queues.
+fn only_queues(directory: &Node) -> bool {
+    directory.borrow().fs.kind == crate::fs::Kind::Mqueue
+}
+
+/// Callers that get this far in a directory with fixed names, or one that only makes and removes
+/// queues, are refused with EPERM, as Linux does for a directory with no such operation.
 fn changes_names(directory: &Node) -> Result<(), Errno> {
-    if fixed_names(directory) {
+    if fixed_names(directory) || only_queues(directory) {
         return Err(Errno::EPERM);
     }
     Ok(())
@@ -196,7 +201,7 @@ fn check_absent(kernel: &Kernel, tid: Tid, parent: &crate::fs::Parent) -> Result
     clippy::too_many_arguments,
     reason = "each is one attribute of the new inode"
 )]
-fn create(
+pub(super) fn create(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -206,6 +211,14 @@ fn create(
     rdev: u64,
     content: Content,
 ) -> Result<Node, Errno> {
+    // A plain file made in the mqueue file system is a queue with the default limits
+    // (`mqueue_create`).
+    let content = match content {
+        Content::Regular(_) if only_queues(directory) => Content::Mqueue(alloc::boxed::Box::new(
+            super::mqueue::new_queue(kernel, tid, None)?,
+        )),
+        other => other,
+    };
     let now = kernel.now(cx);
     let (uid, gid, inherit) = new_owner(directory, credentials(kernel, tid));
     let mut mode = mode;
@@ -296,10 +309,9 @@ pub(super) fn openat2(
     // Lookups restricted by `resolve` are not built. Linux has had them as long as it has had openat2,
     // so these requests are answered as a kernel before openat2 answers the whole call: ENOSYS.
     if how.resolve & !u64::from(RESOLVE_CACHED) != 0 {
-        kernel
+        return Err(kernel
             .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(__NR_openat2));
-        return Err(Errno::ENOSYS);
+            .refuse_flag(cx.host, __NR_openat2, how.resolve, Errno::ENOSYS));
     }
     let path = guest(kernel, cx, tid).read_path(path)?;
     let flags = flags | (how.flags as u32 & O_CLOEXEC);
@@ -373,11 +385,17 @@ pub(super) fn open(
     mode: u32,
 ) -> Result<u64, Errno> {
     let flags = open_flags(flags)?;
+    if kernel.threads[&tid].opening.is_some() {
+        let file = super::pipe::open_named_again(kernel, tid)?;
+        return named_opened(kernel, cx, tid, file, flags);
+    }
     if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
-        kernel
-            .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(O_TMPFILE));
-        return Err(Errno::EOPNOTSUPP);
+        return Err(kernel.counters.refuse_flag(
+            cx.host,
+            __NR_openat,
+            O_TMPFILE.into(),
+            Errno::EOPNOTSUPP,
+        ));
     }
     // Access mode 3 asks for both permissions and gives neither, as on Linux.
     let accmode = flags & O_ACCMODE;
@@ -486,6 +504,7 @@ pub(super) fn open(
     if (flags & O_DIRECTORY != 0 || parent.trailing_slash) && file_type != S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
+    let mut terminal = None;
     if flags & O_PATH == 0 {
         if file_type == S_IFDIR && (accmode != O_RDONLY || flags & O_TRUNC != 0) {
             return Err(Errno::EISDIR);
@@ -524,44 +543,64 @@ pub(super) fn open(
             }
         }
         match file_type {
-            S_IFCHR | S_IFBLK => {
+            // Docker's device rules (`devcgroup_inode_permission`) allow no block device and only
+            // its standard character devices; of those, a driver not built answers as Linux without
+            // it (ENODEV, from the console's and the misc devices' lookups).
+            S_IFBLK => return Err(Errno::EPERM),
+            S_IFCHR => {
                 let rdev = node.borrow().rdev;
                 match Device::from_number(rdev) {
-                    Some(Device::Tty) => return Err(Errno::ENXIO),
-                    Some(Device::Ptmx) => {
-                        kernel
-                            .counters
-                            .count(cx.host, reason::DEVICE_NOT_IMPLEMENTED, rdev);
-                        return Err(Errno::ENODEV);
+                    Some(device @ (Device::Tty | Device::Ptmx | Device::Pts)) => {
+                        terminal = Some(device);
                     }
                     Some(_) => {}
-                    None => return Err(Errno::ENXIO),
+                    None if crate::fs::dev::ALLOWED_NOT_BUILT
+                        .contains(&crate::fs::decode_device(rdev)) =>
+                    {
+                        return Err(kernel.counters.refuse(
+                            cx.host,
+                            reason::DEVICE_NOT_BUILT,
+                            rdev,
+                            Errno::ENODEV,
+                        ));
+                    }
+                    None => return Err(Errno::EPERM),
                 }
             }
-            S_IFIFO if !matches!(node.borrow().content, Content::HostStream(_)) => {
-                let ino = node.borrow().ino;
-                kernel
-                    .counters
-                    .count(cx.host, reason::NAMED_PIPE_NOT_IMPLEMENTED, ino);
-                return Err(Errno::ENXIO);
-            }
+            S_IFIFO => super::pipe::named(&node),
             S_IFSOCK => return Err(Errno::ENXIO),
             _ => {}
         }
-        // A secret memory file cannot be opened again, as through `/proc/self/fd` (`no_open`).
-        if node.borrow().is_secret() {
+        // A secret memory file and the anonymous inode cannot be opened again, as through
+        // `/proc/self/fd` (`no_open`); a process descriptor can, but not truncated.
+        if node.borrow().is_secret() || matches!(node.borrow().content, Content::Anon) {
             return Err(Errno::ENXIO);
         }
+        if flags & O_TRUNC != 0 && node.borrow().is_anonymous() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        if let Content::Proc(entry) = node.borrow().content {
+            proc::open_check(&kernel.processes, &entry)?;
+        }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
-        if flags & O_DIRECT != 0 && !node.borrow().takes_direct_io() {
+        // A named pipe's and a terminal's are refused once they are open (below).
+        if flags & O_DIRECT != 0
+            && file_type != S_IFIFO
+            && terminal.is_none()
+            && !node.borrow().takes_direct_io()
+        {
             return Err(Errno::EINVAL);
         }
         if flags & O_TRUNC != 0 && file_type == S_IFREG {
             let now = kernel.now(cx);
             let mut inode = node.borrow_mut();
-            if let Content::Regular(regular) = &mut inode.content {
-                regular.may_resize(0)?;
-                regular.truncate(cx.cpu, 0);
+            match &mut inode.content {
+                Content::Regular(regular) => {
+                    regular.may_resize(0)?;
+                    regular.truncate(cx.cpu, 0);
+                }
+                Content::Mqueue(queue) => queue.size = 0,
+                _ => {}
             }
             inode.mtime = now;
             inode.ctime = now;
@@ -590,6 +629,41 @@ pub(super) fn open(
         credentials(kernel, tid).serial,
     );
     file.borrow_mut().created = created;
+    if let Some(device) = terminal {
+        super::tty::open(kernel, cx, tid, &file, device, flags)?;
+        return named_opened(kernel, cx, tid, file, flags);
+    }
+    if file_type == S_IFIFO && flags & O_PATH == 0 {
+        super::pipe::open_named(kernel, tid, &file)?;
+        return named_opened(kernel, cx, tid, file, flags);
+    }
+    install(kernel, tid, file, flags)
+}
+
+/// A named pipe or a terminal once open: direct I/O is refused only now (`do_dentry_open` checks it
+/// after the open), closing the file again; otherwise it takes a descriptor.
+fn named_opened(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: crate::file::FileRef,
+    flags: u32,
+) -> Result<u64, Errno> {
+    if flags & O_DIRECT != 0 {
+        kernel.process_of_mut(tid).files.release(file);
+        kernel.files_released(cx);
+        return Err(Errno::EINVAL);
+    }
+    install(kernel, tid, file, flags)
+}
+
+/// Puts an opened file in the lowest free descriptor.
+fn install(
+    kernel: &mut Kernel,
+    tid: Tid,
+    file: crate::file::FileRef,
+    flags: u32,
+) -> Result<u64, Errno> {
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .process_of_mut(tid)
@@ -636,10 +710,7 @@ pub(super) fn proc_contents(
             .count(cx.host, reason::PROC_FIELDS_NOT_TRACKED, detail);
     }
     let pid = kernel.threads[&tid].process;
-    let uptime = cx
-        .host
-        .monotonic_nanoseconds()
-        .saturating_sub(kernel.boot_monotonic);
+    let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic);
     let mut fresh = [0u8; 16];
     cx.host.random(&mut fresh);
     let mounts = mount_table();
@@ -680,6 +751,7 @@ fn mount_table() -> alloc::string::String {
         "tmpfs / tmpfs rw,relatime 0 0\n\
          proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
          tmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0\n\
+         mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime 0 0\n\
          shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k 0 0\n",
     )
 }
@@ -739,7 +811,9 @@ pub(super) fn mknodat(
     if file_type == S_IFREG && fixed_names(&parent.directory) {
         return Err(Errno::EACCES);
     }
-    changes_names(&parent.directory)?;
+    if !(file_type == S_IFREG && only_queues(&parent.directory)) {
+        changes_names(&parent.directory)?;
+    }
     // Devices need `CAP_MKNOD`, except a whiteout (a character device 0:0).
     let whiteout = file_type == S_IFCHR && device == 0;
     if matches!(file_type, S_IFCHR | S_IFBLK)
@@ -917,11 +991,15 @@ pub(super) fn unlinkat(
             Errno::ENOTDIR
         });
     }
+    if !removing_directory {
+        remove_from(kernel, cx, tid, &parent.directory, &parent.name, &node)?;
+        return Ok(0);
+    }
     may_change(kernel, tid, &parent.directory)?;
     if !sticky_allows(&parent.directory, &node, credentials(kernel, tid)) {
         return Err(Errno::EPERM);
     }
-    if removing_directory {
+    {
         if !is_directory {
             return Err(Errno::ENOTDIR);
         }
@@ -936,10 +1014,7 @@ pub(super) fn unlinkat(
         {
             return Err(Errno::ENOTEMPTY);
         }
-    } else if is_directory {
-        return Err(Errno::EISDIR);
     }
-    changes_names(&parent.directory)?;
     let now = kernel.now(cx);
     parent
         .directory
@@ -948,16 +1023,43 @@ pub(super) fn unlinkat(
         .expect("directory")
         .remove(&parent.name);
     touch_directory(&parent.directory, now);
-    let mut inode = node.borrow_mut();
-    if is_directory {
-        inode.nlink = 0;
-        parent.directory.borrow_mut().nlink -= 1;
-    } else {
-        give_back_link(&inode);
-        inode.nlink -= 1;
-    }
-    inode.ctime = now;
+    node.borrow_mut().nlink = 0;
+    parent.directory.borrow_mut().nlink -= 1;
+    node.borrow_mut().ctime = now;
     Ok(0)
+}
+
+/// Removes a name of a file that is not a directory, after `may_delete`'s checks (`vfs_unlink`).
+pub(super) fn remove_from(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    directory: &Node,
+    name: &[u8],
+    node: &Node,
+) -> Result<(), Errno> {
+    may_change(kernel, tid, directory)?;
+    if !sticky_allows(directory, node, credentials(kernel, tid)) {
+        return Err(Errno::EPERM);
+    }
+    if node.borrow().is_directory() {
+        return Err(Errno::EISDIR);
+    }
+    if fixed_names(directory) {
+        return Err(Errno::EPERM);
+    }
+    let now = kernel.now(cx);
+    directory
+        .borrow_mut()
+        .directory_mut()
+        .expect("directory")
+        .remove(name);
+    touch_directory(directory, now);
+    let mut inode = node.borrow_mut();
+    give_back_link(&inode);
+    inode.nlink -= 1;
+    inode.ctime = now;
+    Ok(())
 }
 
 /// A name of a file with others gone gives back the inode space the link took (`shmem_unlink`).
@@ -1249,22 +1351,27 @@ pub(super) fn readlinkat(
     if matches!(node.borrow().content, Content::Symlink(_)) {
         super::io::accessed(kernel, cx, &node, 0);
     }
-    let target = {
+    // Where the kernel's copy of the target lies decides what a buffer that faults part way gets:
+    // a tmpfs link's own allocation, or the end of a page `d_path` filled before its last byte.
+    let (target, source) = {
         let inode = node.borrow();
         match &inode.content {
-            Content::Symlink(target) => target.clone(),
+            Content::Symlink(target) => (target.clone(), 0),
             Content::Proc(entry) if inode.file_type() == S_IFLNK => {
                 let entry = *entry;
                 drop(inode);
                 let pid = kernel.threads[&tid].process;
-                kernel.with_walk(pid, |walk, _| proc::link_target(walk.proc, walk, &entry))?
+                let target =
+                    kernel.with_walk(pid, |walk, _| proc::link_target(walk.proc, walk, &entry))?;
+                let source = wcontainers_abi::PAGE_SIZE.wrapping_sub(1 + target.len() as u64);
+                (target, source)
             }
             // An empty path names `dirfd` itself, and when that is no link Linux says it is not there.
             _ => return Err(if empty { Errno::ENOENT } else { Errno::EINVAL }),
         }
     };
     let length = target.len().min(size as usize);
-    guest(kernel, cx, tid).write(buffer, &target[..length])?;
+    guest(kernel, cx, tid).write_from(buffer, &target[..length], source)?;
     Ok(length as u64)
 }
 
@@ -1294,7 +1401,7 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     stat {
         st_dev: inode.fs.device,
         st_ino: inode.ino,
-        st_mode: inode.mode,
+        st_mode: inode.shown_mode(),
         st_nlink: match inode.content {
             Content::Proc(proc::Entry::Root) => proc::root_links(kernel.processes.len()),
             _ => inode.nlink,
@@ -1474,7 +1581,7 @@ pub(super) fn statx(
     out.stx_nlink = plain.st_nlink;
     out.stx_uid = plain.st_uid;
     out.stx_gid = plain.st_gid;
-    out.stx_mode = inode.mode as u16;
+    out.stx_mode = inode.shown_mode() as u16;
     out.stx_ino = inode.ino;
     out.stx_size = plain.st_size as u64;
     out.stx_blocks = plain.st_blocks as u64;
@@ -1612,6 +1719,9 @@ fn change_mode(
     if node.borrow().fs.read_only() {
         return Err(Errno::EROFS);
     }
+    if node.borrow().is_anonymous() {
+        return Err(Errno::EOPNOTSUPP);
+    }
     // A process's entries refuse mode changes, as Linux's `proc_setattr` does. The others take them.
     if let Content::Proc(entry) = node.borrow().content
         && entry.of_process().is_some()
@@ -1716,6 +1826,9 @@ fn change_owner(
     let mut inode = node.borrow_mut();
     if inode.fs.read_only() {
         return Err(Errno::EROFS);
+    }
+    if inode.is_anonymous() {
+        return Err(Errno::EOPNOTSUPP);
     }
     let changes_uid = uid != u32::MAX && uid != inode.uid;
     let changes_gid = gid != u32::MAX && gid != inode.gid;
@@ -1869,6 +1982,18 @@ pub(super) fn utimensat(
     if inode.fs.read_only() {
         return Err(Errno::EROFS);
     }
+    if inode.is_anonymous() {
+        let omitted = wanted.as_ref().is_some_and(|wanted| {
+            wanted
+                .iter()
+                .all(|time| time.tv_nsec == i64::from(UTIME_OMIT))
+        });
+        return if omitted {
+            Ok(0)
+        } else {
+            Err(Errno::EOPNOTSUPP)
+        };
+    }
     // A process's directory refuses every change (measured on the reference).
     if matches!(
         inode.content,
@@ -1917,6 +2042,9 @@ fn truncate_node(
     if (length as i64) < 0 {
         return Err(Errno::EINVAL);
     }
+    if node.borrow().is_anonymous() {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let may_keep_privileges = credentials(kernel, tid).has(CAP_FSETID);
     let now = kernel.now(cx);
     // A file of `/proc` takes any size its file system allows and keeps none (`proc_setattr`,
@@ -1930,6 +2058,22 @@ fn truncate_node(
         if length > i32::MAX as u64 {
             return Err(Errno::EFBIG);
         }
+        return Ok(0);
+    }
+    // A queue's size is only what it shows (`simple_setattr`), up to its file system's largest.
+    if matches!(node.borrow().content, Content::Mqueue(_)) {
+        let size = node.borrow().size();
+        super::io::new_size_ok(kernel, cx, tid, size, length)?;
+        if length > i32::MAX as u64 {
+            return Err(Errno::EFBIG);
+        }
+        let mut inode = node.borrow_mut();
+        if let Content::Mqueue(queue) = &mut inode.content {
+            queue.size = length;
+        }
+        inode.mtime = now;
+        inode.ctime = now;
+        inode.drop_privileges(!may_keep_privileges);
         return Ok(0);
     }
     {
@@ -2057,11 +2201,15 @@ pub(super) fn fallocate(
             _ => return Err(Errno::ENODEV),
         }
     }
+    let largest = node.borrow().fs.kind.max_bytes();
     let end = offset
         .checked_add(length)
-        .filter(|end| *end <= i64::MAX as u64)
+        .filter(|end| *end <= largest)
         .ok_or(Errno::EFBIG)?;
-    if node.borrow().is_secret() {
+    if node.borrow().is_secret()
+        || node.borrow().is_anonymous()
+        || matches!(node.borrow().content, Content::Mqueue(_))
+    {
         return Err(Errno::EOPNOTSUPP);
     }
     // Only keeping the size and punching holes exist in tmpfs.
@@ -2135,7 +2283,12 @@ pub(super) fn getcwd(
     }
     let mut bytes = path;
     bytes.push(0);
-    guest(kernel, cx, tid).write(buffer, &bytes)?;
+    // The path is made at the end of a page, which is where the copy starts from.
+    guest(kernel, cx, tid).write_from(
+        buffer,
+        &bytes,
+        wcontainers_abi::PAGE_SIZE.wrapping_sub(length),
+    )?;
     Ok(length)
 }
 
@@ -2274,14 +2427,12 @@ pub(super) fn fstatfs(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel
-        .process_of(tid)
-        .files
-        .file(fd as i32)?
-        .borrow()
-        .node
-        .clone();
-    let out = statfs_of(kernel, cx, &node);
+    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let node = file.borrow().node.clone();
+    let mut out = statfs_of(kernel, cx, &node);
+    if file.borrow().internal_mount {
+        out.f_flags = i64::from(crate::linux_extra::ST_VALID);
+    }
     guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)
 }
@@ -2295,9 +2446,12 @@ pub(super) fn flock(
     match flock_typed(kernel, cx, tid, arguments) {
         Ok(Some(value)) => super::Outcome::Return(value),
         Ok(None) => {
-            // The holder is an open file of this process, which cannot let go while its only thread
-            // waits, so the wait lasts until a signal ends it (K2), as on Linux.
-            kernel.park(cx, tid, crate::process::Parked::Forever);
+            // Another open file holds a conflicting lock: the wait lasts until it is let go or a
+            // signal comes.
+            if kernel.signal_pending(tid) {
+                return Err(Errno::ERESTARTSYS).into();
+            }
+            kernel.park(tid, crate::process::Channel::Locks);
             super::Outcome::Parked
         }
         Err(error) => Err(error).into(),
@@ -2346,6 +2500,10 @@ fn flock_typed(
             return Ok(Some(0));
         }
         inode.flocks.remove(index);
+        // Waiters blocked on the lock let go try again (`locks_delete_lock_ctx`).
+        drop(inode);
+        kernel.wake(crate::process::Channel::Locks);
+        inode = node.borrow_mut();
     }
     let Some(exclusive) = exclusive else {
         return Ok(Some(0));

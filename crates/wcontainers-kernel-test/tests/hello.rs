@@ -12,9 +12,5 @@ fn hello_matches_reference() {
     assert_eq!(ours.outcome, theirs);
     assert_eq!(ours.outcome.stdout, b"hello, world\n");
     assert_eq!(ours.outcome.exit_code, 3);
-    assert!(
-        ours.warnings_besides_start().is_empty(),
-        "{:?}",
-        ours.warnings
-    );
+    assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
 }

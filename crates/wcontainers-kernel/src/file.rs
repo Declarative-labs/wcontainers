@@ -27,14 +27,44 @@ pub(crate) struct OpenFile {
     pub owner: Option<Owner>,
     /// The open that made it also made the file (Linux's `FMODE_CREATED`).
     pub created: bool,
+    /// For a terminal, the side it opened.
+    pub terminal: Option<TerminalEnd>,
+    /// While `FASYNC` is set through a file that sends I/O signals, the descriptor it was set
+    /// through, which the signals carry (Linux's `fa_fd`).
+    pub async_fd: Option<i32>,
+    /// Whether `O_DIRECT` may be set on it (`FMODE_CAN_ODIRECT`): an open tmpfs file, but not the file
+    /// `memfd_create` makes, which is not opened through tmpfs's `open`.
+    pub direct_io: bool,
+    /// What a file on the shared anonymous inode is (Linux's `private_data` of such files).
+    pub anon: Option<Anon>,
+    /// Whether it was opened through the kernel's own mount of its file system (mq_open's
+    /// `mq_mnt`), which has no mount flags, rather than through a mount in the file tree.
+    pub internal_mount: bool,
 }
 
-/// Linux's `fown_struct`: a process number of a kind (none is 0) and the signal (0 is `SIGIO`).
+/// The state of a file on the shared anonymous inode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Anon {
+    /// A signal descriptor and the signals it reads.
+    Signals(u64),
+}
+
+/// The terminal side an open file reads and writes, and whether a hangup cut the file off.
+pub(crate) struct TerminalEnd {
+    pub pty: Rc<RefCell<crate::tty::Pty>>,
+    pub side: usize,
+    pub hung_up: bool,
+}
+
+/// Linux's `fown_struct`: a process number of a kind (none is 0), the signal (0 is `SIGIO`), and the
+/// user and effective user of whoever named the owner, which decide whom the signal may reach.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Owner {
     pub pid: i32,
     pub kind: OwnerKind,
     pub signal: i32,
+    pub uid: u32,
+    pub euid: u32,
 }
 
 /// What an owner's number names (Linux's `PIDTYPE_PID`, `PIDTYPE_TGID`, `PIDTYPE_PGID`).
@@ -50,6 +80,7 @@ pub(crate) type FileRef = Rc<RefCell<OpenFile>>;
 
 impl OpenFile {
     pub fn new(node: Node, flags: u32, path: Vec<u8>, opener: u64) -> FileRef {
+        let direct_io = node.borrow().takes_direct_io();
         Rc::new(RefCell::new(Self {
             node,
             flags,
@@ -60,6 +91,11 @@ impl OpenFile {
             opener,
             owner: None,
             created: false,
+            terminal: None,
+            async_fd: None,
+            direct_io,
+            anon: None,
+            internal_mount: false,
         }))
     }
 
@@ -90,6 +126,8 @@ pub(crate) struct FdTable {
     /// Who the record locks taken through this table belong to (Linux's `files_struct` as a lock's
     /// owner).
     lock_owner: u64,
+    /// The files whose descriptors were closed, in order, for the kernel to finish releasing.
+    released: Vec<FileRef>,
 }
 
 impl FdTable {
@@ -155,20 +193,27 @@ impl FdTable {
         Ok(fd)
     }
 
-    /// Puts a file at a given descriptor, closing what was there.
-    pub fn set(&mut self, fd: i32, descriptor: Descriptor) -> Option<Descriptor> {
+    /// Puts a file at a given descriptor, closing what was there; whether something was.
+    pub fn set(&mut self, fd: i32, descriptor: Descriptor) -> bool {
         self.highest = self.highest.max(fd);
         let old = self.slots.insert(fd, descriptor);
-        if let Some(old) = &old {
-            self.closed(old);
-        }
-        old
+        old.map(|old| self.closed(old)).is_some()
     }
 
-    pub fn remove(&mut self, fd: i32) -> Result<Descriptor, Errno> {
+    pub fn remove(&mut self, fd: i32) -> Result<(), Errno> {
         let old = self.slots.remove(&fd).ok_or(Errno::EBADF)?;
-        self.closed(&old);
-        Ok(old)
+        self.closed(old);
+        Ok(())
+    }
+
+    /// Gives up a file this table's process held outside a descriptor.
+    pub fn release(&mut self, file: FileRef) {
+        self.released.push(file);
+    }
+
+    /// The files given up since the last call, in order.
+    pub fn take_released(&mut self) -> Vec<FileRef> {
+        core::mem::take(&mut self.released)
     }
 
     pub fn lock_owner(&self) -> u64 {
@@ -176,19 +221,37 @@ impl FdTable {
     }
 
     /// Closes every descriptor, as a process's end does.
+    /// A copy for a child process: the same open files, its own record locks (`dup_fd`).
+    pub fn duplicate(&self, lock_owner: u64) -> Self {
+        Self {
+            lock_owner,
+            released: Vec::new(),
+            ..self.clone()
+        }
+    }
+
     pub fn close_all(&mut self) {
         for (_, old) in core::mem::take(&mut self.slots) {
-            self.closed(&old);
+            self.closed(old);
         }
     }
 
     /// A descriptor was closed: the table's record locks on the file go (`filp_flush`), unless it
     /// was opened only for its path.
-    fn closed(&self, descriptor: &Descriptor) {
-        let file = descriptor.file.borrow();
-        if !file.is_path() {
-            crate::locks::release_table(&mut file.node.borrow_mut().record_locks, self.lock_owner);
+    fn closed(&mut self, descriptor: Descriptor) {
+        {
+            let file = descriptor.file.borrow();
+            if !file.is_path() {
+                let mut node = file.node.borrow_mut();
+                crate::locks::release_table(&mut node.record_locks, self.lock_owner);
+                // A queue's request to be told goes with a close by its process, whose number the
+                // table's lock owner is (`mqueue_flush_file`).
+                if let crate::fs::Content::Mqueue(queue) = &mut node.content {
+                    queue.flush(self.lock_owner as crate::process::Pid);
+                }
+            }
         }
+        self.release(descriptor.file);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (i32, &Descriptor)> {

@@ -100,6 +100,8 @@ impl ArgumentRoom {
 pub(crate) struct Image {
     pub memory: MemoryId,
     pub map: AddressMap,
+    /// Where `[vvar]` starts, with the vDSO's code after it.
+    pub vdso: u64,
     pub registers: RegisterBlock,
     pub executable: (Node, Vec<u8>),
     pub starting_stack: StartingStack,
@@ -563,6 +565,8 @@ fn place(
         }
         None => (main.entry, 0),
     };
+    crate::shared::show_all(kernel, cx, memory, &map).map_err(fatal)?;
+    let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 
     let credentials = &after.credentials;
     let auxiliary = [
@@ -580,6 +584,8 @@ fn place(
         (AT_GID, credentials.gid.into()),
         (AT_EGID, credentials.egid.into()),
         (AT_SECURE, after.secure.into()),
+        (AT_SYSINFO_EHDR, vdso + crate::vdso::VVAR_PAGES * PAGE_SIZE),
+        (AT_MINSIGSTKSZ, crate::linux_extra::SIGNAL_MINSIGSTKSZ),
     ];
     let (sp, starting_stack) = build_stack(
         cx,
@@ -603,17 +609,12 @@ fn place(
             shared: false,
             locked: crate::memory::Lock::None,
             grows_down: true,
+            on_fork: crate::memory::OnFork::default(),
             backing: Backing::Stack,
         },
     )
     .map_err(fatal)?;
     // The stack's range was never used before, so making its mapping keeps the bytes just written.
-    // No vDSO yet (its page holds the signal return path), and no signal frame size to report.
-    for key in [AT_SYSINFO_EHDR, AT_MINSIGSTKSZ] {
-        kernel
-            .counters
-            .count(cx.host, crate::reason::AUXILIARY_MISSING, key.into());
-    }
     let mut registers = RegisterBlock::ZERO;
     registers.sp = sp;
     registers.pc = entry;
@@ -626,6 +627,7 @@ fn place(
     Ok(Image {
         memory,
         map,
+        vdso,
         registers,
         executable: (program.node, main_path),
         starting_stack,
@@ -633,6 +635,52 @@ fn place(
         after,
         readable,
     })
+}
+
+/// Maps `[vvar]` and the vDSO where `mmap` would put them, and writes the vDSO's code
+/// (`arch_setup_additional_pages`). The data pages hold nothing a program reads here.
+fn place_vdso(cx: &mut Context<'_>, memory: MemoryId, map: &mut AddressMap) -> Result<u64, Errno> {
+    use crate::vdso::{CODE_PAGES, VVAR_PAGES};
+    let length = (VVAR_PAGES + CODE_PAGES) * PAGE_SIZE;
+    let start = map.find_free(length).ok_or(Errno::ENOMEM)?;
+    let code = start + VVAR_PAGES * PAGE_SIZE;
+    let special = |start: u64, end: u64, permissions: Permissions, name: &'static str| Mapping {
+        start,
+        end,
+        permissions,
+        allowed: permissions | Permissions::READ,
+        shared: false,
+        locked: crate::memory::Lock::None,
+        grows_down: false,
+        on_fork: crate::memory::OnFork::default(),
+        backing: Backing::Special(name),
+    };
+    map.insert(
+        cx.cpu,
+        memory,
+        special(start, code, Permissions::READ, "[vvar]"),
+    )?;
+    map.insert(
+        cx.cpu,
+        memory,
+        special(
+            code,
+            start + length,
+            Permissions::READ | Permissions::EXECUTE,
+            "[vdso]",
+        ),
+    )?;
+    let image = crate::vdso::image();
+    cx.cpu
+        .write(memory, code, &image)
+        .map_err(errno::from_cpu)?;
+    cx.cpu.code_changed(
+        memory,
+        code,
+        CODE_PAGES * PAGE_SIZE,
+        &[code + crate::vdso::SIGTRAMP],
+    );
+    Ok(start)
 }
 
 /// Places one ELF file's loadable segments. With no bias given, the file goes wherever free space is,
@@ -702,7 +750,22 @@ fn place_elf(
             if to > file_size {
                 return Err(Errno::ENOEXEC);
             }
-            let available = (page_up(to).min(file_size) - from) as usize;
+            let available = page_up(to).min(file_size) - from;
+            // Linux clears the rest of the last file page only when zeroed data follows and the segment
+            // is writable (`padzero`), which makes that page the process's own copy.
+            let mut copied = alloc::collections::BTreeSet::new();
+            let last_page = page_down(file_end);
+            if segment_memory > segment_file
+                && permissions.contains(Permissions::WRITE)
+                && file_end != file_pages_end
+            {
+                let page_offset = from + (last_page - start);
+                copied.insert(page_offset / PAGE_SIZE);
+                cx.cpu
+                    .write(memory, last_page, &bytes[page_offset as usize..to as usize])
+                    .map_err(errno::from_cpu)?;
+            }
+            // The file's pages are shown once every segment is placed.
             map.insert(
                 cx.cpu,
                 memory,
@@ -714,28 +777,16 @@ fn place_elf(
                     shared: false,
                     locked: crate::memory::Lock::None,
                     grows_down: false,
+                    on_fork: crate::memory::OnFork::default(),
                     backing: Backing::File {
                         node: program.node.clone(),
                         path: path.to_vec(),
                         offset: from,
-                        file_end: start + page_up(available as u64),
+                        file_end: start + page_up(available),
+                        copied,
                     },
                 },
             )?;
-            cx.cpu
-                .write(
-                    memory,
-                    start,
-                    &bytes[from as usize..from as usize + available],
-                )
-                .map_err(errno::from_cpu)?;
-            // Linux clears the rest of the last file page only when zeroed data follows and the segment
-            // is writable (`padzero`).
-            if segment_memory > segment_file && permissions.contains(Permissions::WRITE) {
-                cx.cpu
-                    .zero(memory, file_end, file_pages_end - file_end)
-                    .map_err(errno::from_cpu)?;
-            }
         }
         if stop > file_pages_end {
             map.insert(
@@ -749,6 +800,7 @@ fn place_elf(
                     shared: false,
                     locked: crate::memory::Lock::None,
                     grows_down: false,
+                    on_fork: crate::memory::OnFork::default(),
                     backing: Backing::Anonymous,
                 },
             )?;

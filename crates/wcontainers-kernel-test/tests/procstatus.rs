@@ -18,23 +18,9 @@ fn status_and_maps_match_reference() {
 }
 
 #[test]
-#[ignore = "known failure: a private file mapping is a copy made at mmap, so pages it has not written \
-            do not see later writes to the file (counted \"private file mapping is a copy\")"]
 fn private_mapping_sees_later_writes() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "procstatus", &["private"]);
-}
-
-#[test]
-fn private_mapping_copy_is_counted() {
-    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
-    let program = wcontainers_kernel_test::guest::build("procstatus", &[], &out);
-    let (ours, _) = wcontainers_kernel_test::run_both(&program, &["private"]);
-    assert!(
-        ours.counters
-            .iter()
-            .any(|counter| counter.reason == reason::PRIVATE_MAPPING_COPY)
-    );
 }
 
 #[test]

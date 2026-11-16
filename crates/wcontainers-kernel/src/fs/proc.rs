@@ -13,7 +13,7 @@ use super::{Content, FileSystem, New, Node, Time, Walk, new_inode};
 use crate::Errno;
 use crate::linux::general::*;
 use crate::memory::Backing;
-use crate::process::{Pid, Process, Thread, Tid};
+use crate::process::{Channel, Pid, Process, Thread, Tid};
 
 /// What a walk through `/proc` needs to know about the kernel.
 pub(crate) struct View<'a> {
@@ -131,6 +131,9 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/abi", Global::Directory),
     ("sys/debug", Global::Directory),
     ("sys/dev", Global::Directory),
+    ("sys/dev/tty", Global::Directory),
+    ("sys/dev/tty/ldisc_autoload", Global::File(0o644)),
+    ("sys/dev/tty/legacy_tiocsti", Global::File(0o644)),
     ("sys/fs", Global::Directory),
     ("sys/fs/nr_open", Global::File(0o644)),
     ("sys/kernel", Global::Directory),
@@ -184,6 +187,7 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
     ("sys/abi", "tagged_addr_disabled"),
     ("sys/debug", "exception-trace"),
     ("sys/dev", "scsi tty"),
+    ("sys/dev/tty", "ldisc_autoload legacy_tiocsti"),
     (
         "sys/fs",
         concat!(
@@ -439,6 +443,27 @@ pub(crate) fn dump_owner(processes: &BTreeMap<Pid, Process>, pid: Pid, mode: u32
 }
 
 /// Makes the inode for an entry found in `parent` under `name`.
+/// A process's state as its first thread's (`get_task_state`): ended and not reaped, stopped, parked
+/// (unkillably only for a `vfork` parent's wait), or running.
+fn state(view: &View<'_>, process: &Process) -> (char, &'static str) {
+    let wait = process
+        .threads
+        .first()
+        .and_then(|tid| view.threads.get(tid))
+        .and_then(|thread| thread.call.wait);
+    if process.ended.is_some() {
+        ('Z', "zombie")
+    } else if process.stopped {
+        ('T', "stopped")
+    } else if matches!(wait, Some(Channel::Vfork(_))) {
+        ('D', "disk sleep")
+    } else if wait.is_some() {
+        ('S', "sleeping")
+    } else {
+        ('R', "running")
+    }
+}
+
 pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: Entry) -> Node {
     let (uid, gid) = entry.owner(view);
     let mut mode = entry.mode();
@@ -683,6 +708,15 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
     out
 }
 
+/// The process a process link names: one that has ended has no program, working directory or root
+/// (its memory and file system context are gone), so the link leads nowhere.
+fn linked<'a>(view: &'a View<'_>, pid: Pid) -> Result<&'a Process, Errno> {
+    view.processes
+        .get(&pid)
+        .filter(|process| process.ended.is_none())
+        .ok_or(Errno::ENOENT)
+}
+
 /// Where a symbolic link of the tree points, as `readlink` gives it.
 pub(crate) fn link_target(
     view: &View<'_>,
@@ -696,7 +730,7 @@ pub(crate) fn link_target(
             _ => Err(Errno::EINVAL),
         },
         Entry::ProcessLink(pid, link) => {
-            let process = view.processes.get(pid).ok_or(Errno::ENOENT)?;
+            let process = linked(view, *pid)?;
             match link {
                 ProcessLink::Exe => Ok(process.executable.1.clone()),
                 ProcessLink::Cwd => Ok(walk.path_of(&process.cwd).unwrap_or_default()),
@@ -709,7 +743,9 @@ pub(crate) fn link_target(
             let file = file.borrow();
             let inode = file.node.borrow();
             Ok(match &inode.content {
-                Content::HostStream(_) => format!("pipe:[{}]", inode.ino).into_bytes(),
+                Content::Pipe(_) if inode.fs.kind == super::Kind::Pipe => {
+                    format!("pipe:[{}]", inode.ino).into_bytes()
+                }
                 Content::Directory(_) | Content::Proc(_) if inode.is_directory() => {
                     drop(inode);
                     walk.path_of(&file.node)
@@ -755,7 +791,7 @@ pub(crate) fn follow(
 ) -> Result<Node, Errno> {
     match entry {
         Entry::ProcessLink(pid, link) => {
-            let process = view.processes.get(pid).ok_or(Errno::ENOENT)?;
+            let process = linked(view, *pid)?;
             Ok(match link {
                 ProcessLink::Exe => process.executable.0.clone(),
                 ProcessLink::Cwd => process.cwd.clone(),
@@ -773,6 +809,26 @@ pub(crate) fn follow(
             walk.resolve_from(at, &target, links)
         }
     }
+}
+
+/// What an open of a file of the tree refuses before anything is read: the files of an ended
+/// process that need its memory (`__mem_open` finds none) or its mount namespace
+/// (`mounts_open_common`).
+pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> Result<(), Errno> {
+    let Entry::ProcessFile(pid, file) = entry else {
+        return Ok(());
+    };
+    if processes
+        .get(pid)
+        .is_some_and(|process| process.ended.is_some())
+    {
+        match file {
+            ProcessFile::Environ | ProcessFile::Auxv => return Err(Errno::ESRCH),
+            ProcessFile::Mounts => return Err(Errno::EINVAL),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Makes the bytes of a file of the tree.
@@ -841,6 +897,8 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                         machine.release, machine.version
                     );
                 }
+                // Line disciplines load as modules on demand; TIOCSTI is still built (measured).
+                "sys/dev/tty/ldisc_autoload" | "sys/dev/tty/legacy_tiocsti" => out.push_str("1\n"),
                 "sys/fs/nr_open" => out.push_str("1048576\n"),
                 "sys/kernel/cap_last_cap" => {
                     let _ = writeln!(out, "{CAP_LAST_CAP}");
@@ -857,7 +915,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/kernel/pid_max" => out.push_str("4194304\n"),
                 "sys/kernel/random/boot_id" => out.push_str(&uuid(source.boot_id)),
                 "sys/kernel/random/uuid" => out.push_str(&uuid(source.fresh_random)),
-                "sys/vm/overcommit_memory" => out.push_str("0\n"),
+                "sys/vm/overcommit_memory" => out.push_str("1\n"),
                 _ => return Err(Errno::EISDIR),
             }
         }
@@ -907,6 +965,12 @@ fn process_file(
     let stack = &process.starting_stack;
     let range = |(start, end): (u64, u64)| (start, end - start);
     match file {
+        // An ended process's memory is gone, so its command line and environment read empty
+        // (`environ` and `auxv` are refused at the open; `auxv` opened before keeps the saved
+        // vector).
+        ProcessFile::Cmdline | ProcessFile::Environ if process.ended.is_some() => {
+            return Ok(Vec::new());
+        }
         ProcessFile::Cmdline => {
             let (start, length) = range(stack.arguments);
             return Ok((source.read_memory)(process, start, length));
@@ -960,6 +1024,7 @@ fn process_file(
                     ),
                     Backing::Heap => (0, 0, 0, String::from("[heap]")),
                     Backing::Stack => (0, 0, 0, String::from("[stack]")),
+                    Backing::Special(name) => (0, 0, 0, String::from(*name)),
                     Backing::Anonymous | Backing::Droppable => (0, 0, 0, String::new()),
                 };
                 let (major, minor) = super::decode_device(device);
@@ -984,7 +1049,8 @@ fn process_file(
         ProcessFile::Stat => {
             let name = String::from_utf8_lossy(&process.name);
             let (vsize, _) = sizes(process);
-            let schedule = source.view.threads[&process.threads[0]].schedule;
+            let leader = leader(source.view, process);
+            let schedule = leader.schedule;
             // Linux's `task_prio`: 20 plus nice for the fair policies, below 0 for real time.
             let priority = match schedule.policy {
                 SCHED_FIFO | SCHED_RR => -1 - schedule.priority as i32,
@@ -992,25 +1058,41 @@ fn process_file(
                 _ => 20 + schedule.nice,
             };
             let (ignored, caught) = ignored_and_caught(process);
-            let blocked = source.view.threads[&process.threads[0]].signal_mask;
+            let blocked = leader.signal_mask;
+            // The controlling terminal's device number as `new_encode_dev` packs it, and its
+            // foreground group.
+            let (terminal, foreground) = process.terminal.as_ref().map_or((0, -1), |pty| {
+                let pty = pty.borrow();
+                let index = pty.index;
+                let number = (index & 0xff)
+                    | (crate::linux_extra::UNIX98_PTY_SLAVE_MAJOR << 8)
+                    | ((index & !0xff) << 12);
+                (number, pty.sides[crate::tty::SLAVE].pgrp.unwrap_or(0))
+            });
             let _ = writeln!(
                 out,
-                "{} ({}) R {} {} {} 0 -1 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
+                "{} ({}) {} {} {} {} {} {} 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 {} 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 {}",
                 process.pid,
                 name,
+                state(source.view, process).0,
                 process.parent,
                 process.group,
                 process.session,
+                terminal,
+                foreground,
                 priority,
                 schedule.nice,
-                process.threads.len(),
+                thread_count(process),
                 vsize,
+                process.limits[RLIMIT_RSS as usize].current,
                 // Only the first 31 signals, as Linux's `do_task_stat` shows them.
                 blocked & 0x7fff_ffff,
                 ignored & 0x7fff_ffff,
                 caught & 0x7fff_ffff,
                 schedule.priority,
-                schedule.policy
+                schedule.policy,
+                // The wait status once ended (`exit_code`).
+                process.ended.unwrap_or(0)
             );
         }
         ProcessFile::Statm => {
@@ -1019,14 +1101,21 @@ fn process_file(
         }
         ProcessFile::Status => {
             let credentials = &process.credentials;
-            let filters = source.view.threads[&process.threads[0]].filters.len();
+            let leader = leader(source.view, process);
             let (vsize, _) = sizes(process);
+            let ended = process.ended.is_some();
+            // An ended process has no file system context, descriptor table or memory, so its umask,
+            // table size and memory lines are left out or empty (`task_state`, `task_mem`).
+            let _ = writeln!(out, "Name:\t{}", String::from_utf8_lossy(&process.name));
+            if !ended {
+                let _ = writeln!(out, "Umask:\t{:04o}", process.umask);
+            }
             let _ = write!(
                 out,
-                "Name:\t{}\nUmask:\t{:04o}\nState:\tR (running)\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\
+                "State:\t{} ({})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\
                  TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
-                String::from_utf8_lossy(&process.name),
-                process.umask,
+                state(source.view, process).0,
+                state(source.view, process).1,
                 process.pid,
                 process.pid,
                 process.parent,
@@ -1038,7 +1127,7 @@ fn process_file(
                 credentials.egid,
                 credentials.sgid,
                 credentials.fsgid,
-                process.files.capacity()
+                if ended { 0 } else { process.files.capacity() }
             );
             // Separated by spaces, then always one more (Linux's `task_state`).
             for (index, group) in credentials.groups.iter().enumerate() {
@@ -1046,14 +1135,17 @@ fn process_file(
             }
             out.push(' ');
             let (ignored, caught) = ignored_and_caught(process);
+            out.push('\n');
+            if !ended {
+                let _ = writeln!(out, "VmSize:\t{:8} kB", vsize / 1024);
+            }
             let _ = write!(
                 out,
-                "\nVmSize:\t{:8} kB\nThreads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\
+                "Threads:\t{}\nSigBlk:\t{:016x}\nSigIgn:\t{:016x}\nSigCgt:\t{:016x}\n\
                  CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\nCapAmb:\t{:016x}\n\
                  NoNewPrivs:\t{}\nSeccomp:\t2\nSeccomp_filters:\t{}\n",
-                vsize / 1024,
-                process.threads.len(),
-                source.view.threads[&process.threads[0]].signal_mask,
+                thread_count(process),
+                leader.signal_mask,
                 ignored,
                 caught,
                 credentials.inheritable,
@@ -1063,7 +1155,7 @@ fn process_file(
                 credentials.ambient,
                 u8::from(credentials.no_new_privileges),
                 // Docker's profile, then the first thread's own.
-                1 + filters,
+                1 + leader.filters,
             );
         }
         ProcessFile::Mounts => out.push_str(source.mounts),
@@ -1121,7 +1213,31 @@ fn process_file(
     Ok(out.into_bytes())
 }
 
-/// The total mapped size of a process, and the part that is writable.
+/// What `stat` and `status` show of a process's first thread, kept once the process has ended.
+fn leader(view: &View<'_>, process: &Process) -> crate::process::Leader {
+    match process
+        .threads
+        .first()
+        .and_then(|tid| view.threads.get(tid))
+    {
+        Some(thread) => crate::process::Leader {
+            schedule: thread.schedule,
+            signal_mask: thread.signal_mask,
+            filters: thread.filters.len(),
+        },
+        None => process.ended_leader,
+    }
+}
+
+/// A process's count of threads; an ended one keeps its first until it is reaped.
+fn thread_count(process: &Process) -> usize {
+    if process.ended.is_some() {
+        1
+    } else {
+        process.threads.len()
+    }
+}
+
 /// The signals a process ignores and those it has handlers for, one bit each from bit 0 for signal 1
 /// (Linux's `collect_sigign_sigcatch`).
 fn ignored_and_caught(process: &Process) -> (u64, u64) {
@@ -1136,6 +1252,7 @@ fn ignored_and_caught(process: &Process) -> (u64, u64) {
     (ignored, caught)
 }
 
+/// The total mapped size of a process, and the part that is writable.
 fn sizes(process: &Process) -> (u64, u64) {
     let mut total = 0;
     let mut writable = 0;

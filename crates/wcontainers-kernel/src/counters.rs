@@ -12,32 +12,32 @@ pub mod reason {
     pub const NOT_IMPLEMENTED: &str = "system call not implemented";
     /// A system call number Linux does not have on ARM64. Detail: the call number.
     pub const UNKNOWN_SYSCALL: &str = "system call number unknown";
-    /// A program started without an auxiliary vector entry Linux passes. Detail: the `AT_*` key.
-    pub const AUXILIARY_MISSING: &str = "auxiliary vector entry missing";
-    /// A signal the program set a handler for arrived or was to be let through; handlers do not run
-    /// yet, so the call was refused, or for a fault the process died. Detail: the signal.
-    pub const SIGNAL_HANDLER_NOT_RUN: &str = "signal handler not run";
     pub const CORE_DUMP_NOT_WRITTEN: &str = "core dump not written";
-    /// A signal whose default action stops the process; stopping comes with job control. Detail: the
-    /// signal.
-    pub const PROCESS_STOP_NOT_IMPLEMENTED: &str = "process stop not implemented";
-    /// An `fcntl` command the kernel does not build, known to Linux or not; it answers EINVAL, as
-    /// Linux does for one it does not know or has not configured. Detail: the command.
+    /// An `fcntl` command Linux has and the kernel does not build; it answers EINVAL, as Linux does
+    /// for one it has not configured. Commands Linux does not know are a plain EINVAL. Detail: the
+    /// command.
     pub const FCNTL_NOT_BUILT: &str = "fcntl command not built";
-    /// Opening a device the kernel has no driver for yet. Detail: the device number.
-    pub const DEVICE_NOT_IMPLEMENTED: &str = "device not implemented";
-    /// Opening a named pipe, which needs pipes. Detail: the inode number.
-    pub const NAMED_PIPE_NOT_IMPLEMENTED: &str = "named pipe not implemented";
-    /// A shared mapping of a file, which needs shared pages.
-    pub const SHARED_FILE_MAPPING: &str = "shared file mapping not implemented";
-    /// A `prctl` option or form the kernel does not build, known to Linux or not; it answers EINVAL,
-    /// as Linux does for one it does not know. Detail: the option.
+    /// Opening a device the kernel has no driver for. Detail: the device number.
+    pub const DEVICE_NOT_BUILT: &str = "device not built";
+    /// A `prctl` option or form Linux has on ARM64 and the kernel does not build; it answers EINVAL,
+    /// as Linux does for one it has not configured. Options Linux does not know, or has only for
+    /// other architectures, are a plain EINVAL. Detail: the option.
     pub const PRCTL_NOT_BUILT: &str = "prctl option not built";
-    /// A flag of a memory call the kernel does not implement. Detail: the flag bits.
-    pub const MEMORY_FLAG_NOT_IMPLEMENTED: &str = "memory call flag not implemented";
+    /// A flag or form of a call that the kernel does not build, answered as Linux answers without
+    /// it. Detail: the call number times 2^32, plus the flag bits.
+    pub const FLAG_NOT_BUILT: &str = "call flag not built";
     /// `madvise` advice Linux has that the kernel does not build; it answers EINVAL, as a Linux
     /// without that advice does. Detail: the advice.
     pub const ADVICE_NOT_BUILT: &str = "madvise advice not built";
+    /// An `ioctl` request of a file whose Linux driver has requests this kernel does not build; it
+    /// answers as that driver does for a request it does not know. Detail: the request.
+    pub const IOCTL_NOT_BUILT: &str = "ioctl request not built";
+    /// A terminal line discipline Linux has other than `n_tty`; it answers EINVAL, as a Linux that
+    /// has not registered it does. Detail: the discipline's number.
+    pub const LDISC_NOT_BUILT: &str = "line discipline not built";
+    /// A process's memory, files or other state reached from another process in a way not built.
+    /// Detail: the call number.
+    pub const CROSS_PROCESS_NOT_BUILT: &str = "call on another process not built";
     /// `mincore`, `getrusage`, `sysinfo` or `/proc/meminfo` reported every mapped page as in
     /// memory, or `cachestat` or `statfs` counted a mapped file's pages without those its faults
     /// brought in: which pages a program has touched is not known here. Detail: none.
@@ -51,17 +51,41 @@ pub mod reason {
     /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
     /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
-    /// A file changed that a private mapping holds a copy of, made when the mapping was, or a file
-    /// is mapped both shared and private: Linux's private pages not yet written would show the file's
-    /// later bytes, and the copy does not. Detail: the inode number.
-    pub const PRIVATE_MAPPING_COPY: &str = "private file mapping is a copy";
+    /// A memory fault's syndrome in a handler's frame: whether the page was present and at which
+    /// level a table was missing are Linux's page tables' own, so a level 3 fault of a page present
+    /// when it allows something is given. Detail: the syndrome.
+    pub const FAULT_SYNDROME_APPROXIMATED: &str = "fault syndrome approximated";
+    /// The time between a thread being woken and it running, measured, not a slow path. Detail: none.
+    pub const WAKE_TO_RUN: &str = "wake to run";
+    /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
+    /// later change to them shows in what is read. Detail: the call number.
+    pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
+
+    /// Every reason that means something Linux has is not built here, each answered through
+    /// `Counters::refuse`: the status file's list of what is missing comes
+    /// from these names.
+    pub const NOT_BUILT: &[&str] = &[
+        NOT_IMPLEMENTED,
+        FLAG_NOT_BUILT,
+        FCNTL_NOT_BUILT,
+        PRCTL_NOT_BUILT,
+        IOCTL_NOT_BUILT,
+        LDISC_NOT_BUILT,
+        ADVICE_NOT_BUILT,
+        DEVICE_NOT_BUILT,
+        PROC_ENTRY_NOT_BUILT,
+        SECCOMP_LISTENER_NOT_IMPLEMENTED,
+        CROSS_PROCESS_NOT_BUILT,
+    ];
 }
 
 #[derive(Default)]
 pub(crate) struct Counters {
     counts: BTreeMap<(&'static str, u64), u64>,
+    /// Measured times: how many and their sum in nanoseconds.
+    times: BTreeMap<(&'static str, u64), (u64, u64)>,
     /// Occurrences seen where the host cannot be reached (a path walk), counted at the next flush.
     noted: RefCell<Vec<(&'static str, u64)>>,
 }
@@ -78,6 +102,40 @@ impl Counters {
         });
     }
 
+    /// The one path for something Linux has that is not built here: counts it under one of
+    /// [`reason::NOT_BUILT`], warns, and gives back the error Linux answers when it lacks the
+    /// feature.
+    pub fn refuse(
+        &mut self,
+        host: &mut dyn Host,
+        reason: &'static str,
+        detail: u64,
+        answer: crate::Errno,
+    ) -> crate::Errno {
+        debug_assert!(reason::NOT_BUILT.contains(&reason), "{reason}");
+        self.count(host, reason, detail);
+        answer
+    }
+
+    /// A flag or form of call `number` that is not built, as [`Counters::refuse`] counts it.
+    pub fn refuse_flag(
+        &mut self,
+        host: &mut dyn Host,
+        number: u32,
+        flags: u64,
+        answer: crate::Errno,
+    ) -> crate::Errno {
+        let detail = (u64::from(number) << 32) | (flags & 0xffff_ffff);
+        self.refuse(host, reason::FLAG_NOT_BUILT, detail, answer)
+    }
+
+    /// Adds a measured time under a reason, without a warning: a measurement, not a slow path.
+    pub fn measure(&mut self, reason: &'static str, detail: u64, nanoseconds: u64) {
+        let entry = self.times.entry((reason, detail)).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += nanoseconds;
+    }
+
     /// Notes an occurrence to count at the next [`Counters::flush`].
     pub fn note(&self, reason: &'static str, detail: u64) {
         self.noted.borrow_mut().push((reason, detail));
@@ -91,13 +149,24 @@ impl Counters {
     }
 
     pub fn readings(&self) -> impl Iterator<Item = CounterReading> + '_ {
-        self.counts
+        let counted = self
+            .counts
             .iter()
             .map(|(&(reason, detail), &count)| CounterReading {
                 reason,
                 detail,
                 count,
                 nanoseconds: 0,
-            })
+            });
+        let measured =
+            self.times.iter().map(
+                |(&(reason, detail), &(count, nanoseconds))| CounterReading {
+                    reason,
+                    detail,
+                    count,
+                    nanoseconds,
+                },
+            );
+        counted.chain(measured)
     }
 }

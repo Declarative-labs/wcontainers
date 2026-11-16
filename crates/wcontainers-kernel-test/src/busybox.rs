@@ -112,6 +112,11 @@ pub fn changes(
 
 /// Runs a command of the reference image on our kernel, found on the image's PATH as Docker finds it.
 pub fn run_ours(command: &[&str]) -> driver::Run {
+    run_ours_seeded(command, 0)
+}
+
+/// As [`run_ours`], with the seed the run's choices come from.
+pub fn run_ours_seeded(command: &[&str], seed: u64) -> driver::Run {
     let path = [
         "/usr/local/sbin",
         "/usr/local/bin",
@@ -135,7 +140,7 @@ pub fn run_ours(command: &[&str]) -> driver::Run {
         environment: reference::ENVIRONMENT,
         working_directory: "/",
     };
-    driver::run(&container, 0)
+    driver::run(&container, seed)
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
 }
 

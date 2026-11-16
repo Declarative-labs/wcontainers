@@ -11,7 +11,7 @@ use zerocopy::{FromBytes, FromZeros};
 use super::{Args, Outcome, guest};
 use crate::counters::reason;
 use crate::credentials::CAP_SYS_ADMIN;
-use crate::linux::general::SIGSYS;
+use crate::linux::general::{SIGSYS, SYS_SECCOMP};
 use crate::linux::ptrace::*;
 use crate::process::Tid;
 use crate::seccomp::{DOCKER_PROFILE_LENGTH, Data, Filter, MAX_INSTRUCTIONS_PER_PATH, rank};
@@ -115,12 +115,12 @@ fn set_filter(
     // A listener is how another process answers calls a filter sends it; there are no listeners, so a
     // filter's USER_NOTIF answer is ENOSYS, as Linux gives with none.
     if flags & SECCOMP_FILTER_FLAG_NEW_LISTENER != 0 {
-        kernel.counters.count(
+        return Err(kernel.counters.refuse(
             cx.host,
             reason::SECCOMP_LISTENER_NOT_IMPLEMENTED,
             flags.into(),
-        );
-        return Err(Errno::EINVAL);
+            Errno::EINVAL,
+        ));
     }
     let header = guest(kernel, cx, tid).read(fprog, FPROG_SIZE)?;
     let length = usize::from(u16::from_le_bytes([header[0], header[1]]));
@@ -229,9 +229,20 @@ pub(super) fn filter_call(
         SECCOMP_RET_TRACE | SECCOMP_RET_USER_NOTIF => {
             Some(Outcome::from(Err::<u64, _>(Errno::ENOSYS)))
         }
+        // SIGSYS with the call, its address and the filter's data, the call not made and its
+        // registers left as they were (`seccomp_send_sigsys`, `syscall_rollback`).
         SECCOMP_RET_TRAP => {
-            kernel.kill_by_signal(cx, tid, SIGSYS);
-            Some(Outcome::Gone)
+            let mut registers = wcontainers_abi::RegisterBlock::ZERO;
+            cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+            let mut info = [0u8; 128];
+            info[0..4].copy_from_slice(&SIGSYS.to_le_bytes());
+            info[4..8].copy_from_slice(&value.to_le_bytes());
+            info[8..12].copy_from_slice(&SYS_SECCOMP.to_le_bytes());
+            info[16..24].copy_from_slice(&registers.pc.to_le_bytes());
+            info[24..28].copy_from_slice(&(call.number as u32).to_le_bytes());
+            info[28..32].copy_from_slice(&AUDIT_ARCH_AARCH64.to_le_bytes());
+            kernel.force_signal(tid, info, (0, 0));
+            Some(Outcome::Restart)
         }
         // KILL_THREAD, KILL_PROCESS and anything unknown: the process dies of SIGSYS, whatever its
         // handler, unless only this thread is to go and others remain.

@@ -22,6 +22,16 @@ pub const ENVIRONMENT: &[&str] = &[
 /// Runs `program` as the first process of a default container, with `arguments` after its name. The
 /// program's directory is mounted read-only at `/wc`.
 pub fn run(program: &Path, arguments: &[&str]) -> Outcome {
+    run_with(program, arguments, &[])
+}
+
+/// As [`run`], on one CPU like the made-up machine, for behaviour that depends on who runs while
+/// another waits.
+pub fn run_one_cpu(program: &Path, arguments: &[&str]) -> Outcome {
+    run_with(program, arguments, &["--cpuset-cpus=0"])
+}
+
+fn run_with(program: &Path, arguments: &[&str], options: &[&str]) -> Outcome {
     static RUNS: AtomicU32 = AtomicU32::new(0);
     let name = format!(
         "wc-kernel-reference-{}-{}",
@@ -37,6 +47,7 @@ pub fn run(program: &Path, arguments: &[&str]) -> Outcome {
     let output = Command::new("docker")
         .args(["run", "--rm", "--platform", "linux/arm64", "--name", &name])
         .args(["--hostname", HOSTNAME])
+        .args(options)
         .arg("--volume")
         .arg(format!("{}:/wc:ro", directory.display()))
         .arg(IMAGE)

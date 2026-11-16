@@ -354,9 +354,13 @@ impl Kernel {
         start: &Start<'_>,
     ) -> Result<(), Errno> {
         assert!(self.init.is_none(), "the container has already started");
-        let mut cx = Context { cpu, host };
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+        };
         self.boot = Time::from_nanoseconds(cx.host.realtime_nanoseconds());
-        self.boot_monotonic = cx.host.monotonic_nanoseconds();
+        self.boot_monotonic = cx.monotonic();
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
@@ -387,6 +391,25 @@ impl Kernel {
             personality: 0,
             child_subreaper: false,
             thp_disable: 0,
+            pending: Default::default(),
+            exit_signal: SIGCHLD,
+            ended: None,
+            ended_leader: Default::default(),
+            nproc_exceeded: false,
+            pidfd: None,
+            vfork_parent: None,
+            stopped: false,
+            report: None,
+            ended_time: 0,
+            children_time: 0,
+            children_maxrss: 0,
+            peak_mapped: 0,
+            started: cx.monotonic(),
+            vdso: 0,
+            execed: false,
+            self_exec_id: 0,
+            terminal: None,
+            terminal_old_group: None,
             actions: [kernel_sigaction {
                 sa_handler_kernel: crate::linux_extra::SIG_DFL,
                 sa_flags: 0,
@@ -431,7 +454,7 @@ impl Kernel {
                         gid: 0,
                         rdev: 0,
                         now,
-                        content: Content::HostStream(stream),
+                        content: Content::Pipe(crate::pipe::Pipe::new(Some(stream))),
                         parent: None,
                         name: Vec::new(),
                     },
@@ -504,7 +527,9 @@ impl Kernel {
         self.threads.insert(pid, Thread::new(pid, thread));
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);
-        self.counters.flush(cx.host);
+        self.entry_now = cx.monotonic();
+        self.make_runnable(pid, Resume::FromRegisters);
+        self.settle(cx);
         Ok(())
     }
 
@@ -515,6 +540,9 @@ impl Kernel {
         process.map = image.map;
         process.executable = image.executable;
         process.starting_stack = image.starting_stack;
+        process.vdso = image.vdso;
+        process.execed = true;
+        process.self_exec_id += 1;
         process.set_name(&image.name);
         // Dumpable unless a file could not be read or the ids differ, before or after (Linux's
         // `begin_new_exec` and `commit_creds`).
@@ -559,15 +587,22 @@ impl Kernel {
                 .cpu
                 .thread_new(image.memory)
                 .expect("a thread on the new memory");
-            cx.cpu.memory_drop(old_memory);
         }
         thread.clear_child_tid = 0;
         thread.robust_list = (0, 0);
         thread.alternate_stack = (0, 0, 0);
         cx.cpu.set_registers(thread.cpu, &image.registers);
         thread.resume = Resume::FromRegisters;
-        self.runnable.retain(|other| *other != tid);
-        self.runnable.push_front(tid);
+        // A `vfork` child gives its parent's memory back; any other old memory goes.
+        self.release_vfork(pid);
+        let shown_elsewhere = self
+            .processes
+            .values()
+            .any(|other| other.pid != pid && other.ended.is_none() && other.memory == old_memory);
+        if old_memory.0 != 0 && !shown_elsewhere {
+            cx.cpu.memory_drop(old_memory);
+        }
+        self.files_released(cx);
         crate::shared::release(self, cx);
     }
 
@@ -668,6 +703,22 @@ impl Kernel {
             ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
             Some(shm_space),
         );
+        let mqueue_point = dev
+            .borrow()
+            .directory()
+            .expect("dev")
+            .get(b"mqueue")
+            .expect("mqueue");
+        let mqueue = mount_tmpfs(
+            &mut self.files.numbers,
+            &mqueue_point,
+            0o1777,
+            now,
+            Kind::Mqueue,
+            ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+            None,
+        );
+        self.ipc.mqueue_root = Some(mqueue);
         let pts_point = dev
             .borrow()
             .directory()

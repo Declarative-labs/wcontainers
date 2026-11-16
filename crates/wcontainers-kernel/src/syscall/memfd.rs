@@ -4,7 +4,6 @@
 use alloc::vec::Vec;
 
 use super::{Args, guest};
-use crate::counters::reason;
 use crate::file::OpenFile;
 use crate::fs::{Content, Kind, New, Node, Regular, new_inode};
 use crate::linux::general::*;
@@ -49,12 +48,12 @@ pub(super) fn memfd_create(
     process.files.lowest_free(0, limit)?;
     // Huge page files live on hugetlbfs, which is not built: refused as by a kernel without it.
     if flags & MFD_HUGETLB != 0 {
-        kernel.counters.count(
+        return Err(kernel.counters.refuse_flag(
             cx.host,
-            reason::MEMORY_FLAG_NOT_IMPLEMENTED,
+            __NR_memfd_create,
             MFD_HUGETLB.into(),
-        );
-        return Err(Errno::ENOSYS);
+            Errno::ENOSYS,
+        ));
     }
     let process = kernel.process_of(tid);
     let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
@@ -91,6 +90,7 @@ pub(super) fn memfd_create(
     path.extend_from_slice(&full_name);
     let opener = kernel.process_of(tid).credentials.serial;
     let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, path, opener);
+    file.borrow_mut().direct_io = false;
     let process = kernel.process_of_mut(tid);
     let added = process
         .files

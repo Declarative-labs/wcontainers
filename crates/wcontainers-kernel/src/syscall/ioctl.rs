@@ -53,7 +53,7 @@ fn every_file(
         let inode = node.borrow();
         (
             inode.file_type(),
-            inode.file_type() == S_IFREG && !inode.is_secret(),
+            inode.file_type() == S_IFREG && !inode.is_secret() && !inode.is_anonymous(),
             inode.fs.kind,
             (inode.fs.kind == Kind::Tmpfs).then(|| uuid(kernel, inode.fs.device)),
         )
@@ -84,7 +84,7 @@ fn every_file(
             .and_then(|on| {
                 let changes = (file.borrow().flags & FASYNC != 0) != (on != 0);
                 if changes {
-                    set_async(file, on != 0).ok_or(Errno::ENOTTY)?;
+                    set_async(kernel, tid, file, on != 0, fd).ok_or(Errno::ENOTTY)?;
                 }
                 Ok(0)
             }),
@@ -105,7 +105,7 @@ fn every_file(
         FIGETBSZ => {
             let size = kind.block_size() as i32;
             guest(kernel, cx, tid)
-                .write(argument, &size.to_le_bytes())
+                .put(argument, &size.to_le_bytes())
                 .map(|()| 0)
         }
         FICLONE => clone_range(kernel, tid, file, argument as u32 as i32),
@@ -116,14 +116,14 @@ fn every_file(
         FIONREAD if regular => {
             let left = node.borrow().size() as i64 - file.borrow().offset as i64;
             guest(kernel, cx, tid)
-                .write(argument, &(left as i32).to_le_bytes())
+                .put(argument, &(left as i32).to_le_bytes())
                 .map(|()| 0)
         }
         FIONREAD => return None,
         FS_IOC_GETFLAGS => {
             let flags = attributes(&node.borrow())?;
             guest(kernel, cx, tid)
-                .write(argument, &flags.to_le_bytes())
+                .put(argument, &flags.to_le_bytes())
                 .map(|()| 0)
         }
         FS_IOC_SETFLAGS => {
@@ -180,7 +180,7 @@ fn every_file(
                     if block < 0 {
                         return Err(Errno::EINVAL);
                     }
-                    guest.write(argument, &0i32.to_le_bytes())?;
+                    guest.put(argument, &0i32.to_le_bytes())?;
                     Err(Errno::EINVAL)
                 })
             }
@@ -219,15 +219,21 @@ fn uuid(kernel: &Kernel, device: u64) -> [u8; 16] {
     siphasher::sip128::Hasher128::finish128(&hasher).as_bytes()
 }
 
-/// Sets or clears `FASYNC` through the file's `fasync`, if it has one: pipes and the random
-/// devices. No owner can be named yet (`F_SETOWN`, K2), so no signal is ever sent for it, as on
-/// Linux for a file with no owner.
-pub(super) fn set_async(file: &FileRef, on: bool) -> Option<()> {
+/// Sets or clears `FASYNC` through the file's `fasync`, if it has one (pipes, terminals and the
+/// random devices), which notes the descriptor the I/O signals carry; a terminal with no owner yet
+/// takes its foreground group, or else the caller's process (`__tty_fasync`).
+pub(super) fn set_async(
+    kernel: &mut Kernel,
+    tid: Tid,
+    file: &FileRef,
+    on: bool,
+    fd: i32,
+) -> Option<()> {
     let has_fasync = {
         let file = file.borrow();
         let inode = file.node.borrow();
         match inode.content {
-            Content::HostStream(_) => true,
+            Content::Pipe(_) => true,
             Content::Special => matches!(
                 Device::from_number(inode.rdev),
                 Some(Device::Random | Device::Urandom)
@@ -235,14 +241,26 @@ pub(super) fn set_async(file: &FileRef, on: bool) -> Option<()> {
             _ => false,
         }
     };
-    if !has_fasync {
+    let terminal = super::tty::can_async(file);
+    if !has_fasync && !terminal {
         return None;
     }
-    let mut file = file.borrow_mut();
-    if on {
-        file.flags |= FASYNC;
-    } else {
-        file.flags &= !FASYNC;
+    if on && terminal && file.borrow().owner.is_none_or(|owner| owner.pid == 0) {
+        let (pid, kind) = match super::tty::foreground_group(file) {
+            Some(group) => (group, crate::file::OwnerKind::Group),
+            None => (kernel.process_of(tid).pid, crate::file::OwnerKind::Process),
+        };
+        super::io::set_owner_of(kernel, tid, file, pid, kind);
+    }
+    {
+        let mut file = file.borrow_mut();
+        if on {
+            file.flags |= FASYNC;
+            file.async_fd = Some(fd);
+        } else {
+            file.flags &= !FASYNC;
+            file.async_fd = None;
+        }
     }
     Some(())
 }
@@ -358,23 +376,38 @@ fn own(
     request: u32,
     argument: u64,
 ) -> Result<u64, Errno> {
-    let (content_is_pipe, device) = {
+    if super::tty::end(file).is_some() {
+        return super::tty::ioctl(kernel, cx, tid, file, request, argument);
+    }
+    if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
+        return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
+    }
+    let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();
         (
-            matches!(inode.content, Content::HostStream(_)),
+            match &inode.content {
+                Content::Pipe(pipe) => Some(pipe.unread()),
+                _ => None,
+            },
             match inode.content {
                 Content::Special => Device::from_number(inode.rdev),
                 _ => None,
             },
         )
     };
-    if content_is_pipe {
-        // `pipe_ioctl`: the host takes a stream's bytes as they are written, so none wait unread.
+    if let Some(unread) = unread {
+        // `pipe_ioctl`: the bytes waiting; the host takes a stream's bytes as they are written.
         return match request {
             FIONREAD => guest(kernel, cx, tid)
-                .write(argument, &0i32.to_le_bytes())
+                .put(argument, &(unread as i32).to_le_bytes())
                 .map(|()| 0),
+            IOC_WATCH_QUEUE_SET_SIZE | IOC_WATCH_QUEUE_SET_FILTER => Err(kernel.counters.refuse(
+                cx.host,
+                crate::counters::reason::IOCTL_NOT_BUILT,
+                request.into(),
+                Errno::ENOTTY,
+            )),
             _ => Err(Errno::ENOTTY),
         };
     }
@@ -399,7 +432,7 @@ fn random(
     let capable = kernel.process_of(tid).credentials.has(CAP_SYS_ADMIN);
     let mut guest = guest(kernel, cx, tid);
     match request {
-        RNDGETENTCNT => guest.write(argument, &256i32.to_le_bytes()).map(|()| 0),
+        RNDGETENTCNT => guest.put(argument, &256i32.to_le_bytes()).map(|()| 0),
         RNDADDTOENTCNT | RNDADDENTROPY | RNDZAPENTCNT | RNDCLEARPOOL | RNDRESEEDCRNG
             if !capable =>
         {

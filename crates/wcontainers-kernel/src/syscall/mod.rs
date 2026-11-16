@@ -3,18 +3,28 @@
 //! Each implemented call is one typed Rust function. A call Linux has that is not built yet returns
 //! `ENOSYS`, is counted and warns. So does a number Linux does not have.
 
+mod clone;
 mod files;
 mod handle;
 mod io;
 mod ioctl;
+pub(crate) mod ipc;
 mod list;
 mod memfd;
 mod memory;
+pub(crate) mod mqueue;
+pub(crate) mod pidfd;
+pub(crate) mod pipe;
 mod process;
 mod rseq;
 mod seccomp;
+pub(crate) mod sem;
+mod signalfd;
+mod signals;
+mod splice;
 mod system;
 mod time;
+pub(crate) mod tty;
 mod xattr;
 
 use wcontainers_abi::Syscall;
@@ -43,10 +53,11 @@ pub(crate) enum Outcome {
 
 impl From<Result<u64, Errno>> for Outcome {
     fn from(result: Result<u64, Errno>) -> Self {
-        Outcome::Return(match result {
-            Ok(value) => value,
-            Err(errno) => errno.to_return(),
-        })
+        match result {
+            Ok(value) => Outcome::Return(value),
+            Err(Errno::PARKED) => Outcome::Parked,
+            Err(errno) => Outcome::Return(errno.to_return()),
+        }
     }
 }
 
@@ -115,6 +126,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_sendfile, S(io::sendfile)),
         (__NR_getdents64, S(io::getdents64)),
         (__NR_close, S(io::close)),
+        (__NR_pipe2, S(pipe::pipe2)),
         (__NR_close_range, S(io::close_range)),
         (__NR_preadv2, S(io::preadv2)),
         (__NR_pwritev2, S(io::pwritev2)),
@@ -135,6 +147,10 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_cachestat, S(io::cachestat)),
         (__NR_name_to_handle_at, S(handle::name_to_handle_at)),
         (__NR_memfd_secret, S(memfd::memfd_secret)),
+        (__NR_pidfd_open, S(pidfd::pidfd_open)),
+        (__NR_pidfd_send_signal, S(pidfd::pidfd_send_signal)),
+        (__NR_process_mrelease, S(pidfd::process_mrelease)),
+        (__NR_signalfd4, S(signalfd::signalfd4)),
         (__NR_openat, S(files::openat)),
         (__NR_openat2, S(files::openat2)),
         (__NR_flock, F(files::flock)),
@@ -232,9 +248,18 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_rt_sigprocmask, S(process::rt_sigprocmask)),
         (__NR_rt_sigpending, S(process::rt_sigpending)),
         (__NR_sigaltstack, S(process::sigaltstack)),
-        (__NR_kill, S(process::kill)),
-        (__NR_tkill, S(process::tkill)),
-        (__NR_tgkill, S(process::tgkill)),
+        (__NR_kill, S(signals::kill)),
+        (__NR_tkill, S(signals::tkill)),
+        (__NR_tgkill, S(signals::tgkill)),
+        (__NR_rt_sigqueueinfo, S(signals::rt_sigqueueinfo)),
+        (__NR_rt_tgsigqueueinfo, S(signals::rt_tgsigqueueinfo)),
+        (__NR_rt_sigsuspend, F(signals::rt_sigsuspend)),
+        (__NR_rt_sigtimedwait, F(signals::rt_sigtimedwait)),
+        (__NR_rt_sigreturn, F(signals::rt_sigreturn)),
+        (__NR_restart_syscall, F(time::restart_syscall)),
+        (__NR_clone, F(clone::clone)),
+        (__NR_wait4, F(clone::wait4)),
+        (__NR_waitid, F(clone::waitid)),
         (__NR_prlimit64, S(process::prlimit64)),
         (__NR_getrlimit, S(process::getrlimit)),
         (__NR_setrlimit, S(process::setrlimit)),
@@ -285,6 +310,27 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_sched_setattr, S(system::sched_setattr)),
         (__NR_sched_getattr, S(system::sched_getattr)),
         (__NR_sched_rr_get_interval, S(system::sched_rr_get_interval)),
+        (__NR_splice, S(splice::splice)),
+        (__NR_tee, S(splice::tee)),
+        (__NR_vmsplice, S(splice::vmsplice)),
+        (__NR_shmget, S(ipc::shmget)),
+        (__NR_shmat, S(ipc::shmat)),
+        (__NR_shmdt, S(ipc::shmdt)),
+        (__NR_shmctl, S(ipc::shmctl)),
+        (__NR_msgget, S(ipc::msgget)),
+        (__NR_msgsnd, S(ipc::msgsnd)),
+        (__NR_msgrcv, S(ipc::msgrcv)),
+        (__NR_msgctl, S(ipc::msgctl)),
+        (__NR_semget, S(sem::semget)),
+        (__NR_semop, S(sem::semop)),
+        (__NR_semtimedop, S(sem::semtimedop)),
+        (__NR_semctl, S(sem::semctl)),
+        (__NR_mq_open, S(mqueue::mq_open)),
+        (__NR_mq_unlink, S(mqueue::mq_unlink)),
+        (__NR_mq_timedsend, S(mqueue::mq_timedsend)),
+        (__NR_mq_timedreceive, S(mqueue::mq_timedreceive)),
+        (__NR_mq_notify, S(mqueue::mq_notify)),
+        (__NR_mq_getsetattr, S(mqueue::mq_getsetattr)),
     ];
     let mut index = 0;
     while index < implemented.len() {
@@ -296,17 +342,29 @@ static TABLE: [Entry; LENGTH] = {
     table
 };
 
+/// Runs a system call. `again` is a call a parked thread runs again after a wake: the filters
+/// already let it through.
 pub(crate) fn dispatch(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     call: Syscall,
+    again: bool,
 ) -> Outcome {
     // ARM64 Linux takes the call number from the low 32 bits of x8 only.
     let number = call.number as u32;
     let handler = TABLE
         .get(number as usize)
         .map_or(Handler::Unknown, |entry| entry.handler);
+    if again {
+        return match handler {
+            Handler::Simple(handler) => handler(kernel, cx, tid, call.arguments).into(),
+            Handler::Full(handler) => handler(kernel, cx, tid, call.arguments),
+            Handler::NotImplemented | Handler::Unknown => {
+                unreachable!("only a built call parks")
+            }
+        };
+    }
     let known = !matches!(handler, Handler::Unknown);
     // Docker's profile and the thread's own filters answer first; what they answer is exact, but a
     // number Linux does not have (which the profile always stops) is still counted.
@@ -326,12 +384,13 @@ pub(crate) fn dispatch(
     match handler {
         Handler::Simple(handler) => handler(kernel, cx, tid, call.arguments).into(),
         Handler::Full(handler) => handler(kernel, cx, tid, call.arguments),
-        Handler::NotImplemented => {
-            kernel
-                .counters
-                .count(cx.host, reason::NOT_IMPLEMENTED, number.into());
-            Err(Errno::ENOSYS).into()
-        }
+        Handler::NotImplemented => Err(kernel.counters.refuse(
+            cx.host,
+            reason::NOT_IMPLEMENTED,
+            number.into(),
+            Errno::ENOSYS,
+        ))
+        .into(),
         // Counted above.
         Handler::Unknown => Err(Errno::ENOSYS).into(),
     }
@@ -366,4 +425,32 @@ pub(crate) fn name(number: u64) -> Option<&'static str> {
         .get(usize::try_from(number).ok()?)
         .map(|entry| entry.name)
         .filter(|name| !name.is_empty())
+}
+
+/// The one anonymous inode signal descriptors and their like share: owned by root, readable and
+/// writable by it, with no file type (measured).
+fn anon_node(kernel: &mut Kernel, cx: &mut Context<'_>) -> crate::fs::Node {
+    if let Some(node) = &kernel.files.anon {
+        return node.clone();
+    }
+    let now = kernel.now(cx);
+    let fs = kernel.files.numbers.file_system(crate::fs::Kind::Anon, 0);
+    let ino = kernel.files.numbers.ino();
+    let node = crate::fs::new_inode(
+        fs,
+        ino,
+        crate::fs::New {
+            mode: 0o600,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            now,
+            content: crate::fs::Content::Anon,
+            parent: None,
+            name: b"[anon]".to_vec(),
+        },
+    )
+    .expect("an inode with no space to count against");
+    kernel.files.anon = Some(node.clone());
+    node
 }

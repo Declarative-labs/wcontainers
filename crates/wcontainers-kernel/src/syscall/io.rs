@@ -3,7 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{PAGE_SIZE, Permissions, Stream};
+use wcontainers_abi::{PAGE_SIZE, Permissions};
 
 use super::{Args, guest};
 use crate::counters::reason;
@@ -29,8 +29,17 @@ pub(super) const MAX_SEGMENTS: u64 = 1024;
 /// The end-of-directory position tmpfs gives (`DIR_OFFSET_EOD`).
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
 
-fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
+pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
     kernel.process_of(tid).files.file(fd as i32)
+}
+
+/// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
+pub(super) fn open_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
+    let found = file(kernel, tid, fd)?;
+    if found.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    Ok(found)
 }
 
 pub(super) fn read(
@@ -47,7 +56,7 @@ pub(super) fn read(
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+    if !super::pipe::is_pipe(&file) {
         verify_area(file.borrow().offset, count)?;
     }
     read_at(
@@ -75,7 +84,7 @@ pub(super) fn write(
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+    if !super::pipe::is_pipe(&file) {
         verify_area(file.borrow().offset, count)?;
     }
     let append = appends(&file);
@@ -204,7 +213,7 @@ fn vectored2(
         return Ok(0);
     }
     // The range is checked before the flags, as in `vfs_readv` and `vfs_writev`.
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+    if !super::pipe::is_pipe(&file) {
         let total = parts.iter().map(|(_, length)| length).sum();
         let position = if current {
             file.borrow().offset
@@ -213,8 +222,9 @@ fn vectored2(
         };
         verify_area(position, total)?;
     }
-    // A file without Linux's iterating read or write (directories, and writes to `/dev/full`) is
-    // moved a segment at a time by `do_loop_readv_writev`, which takes no flag but RWF_HIPRI.
+    // A file without Linux's iterating read or write (directories, message queues, and writes to
+    // `/dev/full`) is moved a segment at a time by `do_loop_readv_writev`, which takes no flag but
+    // RWF_HIPRI.
     let looped = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -223,13 +233,14 @@ fn vectored2(
                 && matches!(inode.content, Content::Special)
                 && matches!(Device::from_number(inode.rdev), Some(Device::Full))
             || matches!(inode.content, Content::Proc(entry) if entry.loops(writing))
+            || matches!(inode.content, Content::Mqueue(_))
     };
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files and memory files do not take reads or writes that may not wait (`FMODE_NOWAIT`
-    // unset: memory files are not opened by `do_dentry_open`; measured).
-    let waits = {
+    // `/proc`'s files, memory files and terminals do not take reads or writes that may not wait
+    // (`FMODE_NOWAIT` unset: memory files are not opened by `do_dentry_open`; measured).
+    let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_)) || inode.fs.device == kernel.files.memfd_fs.device
@@ -313,7 +324,7 @@ pub(super) fn copy_file_range(
     } else {
         length.min(size_in - position_in)
     };
-    count = write_limit(kernel, cx, tid, position_out, count)?;
+    count = write_check_limits(kernel, cx, tid, &output, position_out, count)?;
     if crate::fs::same_inode(&node_in, &node_out)
         && position_out + count > position_in
         && position_out < position_in + count
@@ -385,7 +396,11 @@ pub(super) fn readahead(
     // A secret memory file cannot be read ahead (measured).
     let inode = file.borrow().node.clone();
     let inode = inode.borrow();
-    if inode.file_type() != S_IFREG || inode.is_secret() || (length as i64) < 0 {
+    if inode.file_type() != S_IFREG
+        || inode.is_secret()
+        || inode.is_anonymous()
+        || (length as i64) < 0
+    {
         return Err(Errno::EINVAL);
     }
     Ok(0)
@@ -421,7 +436,7 @@ pub(super) fn sync_file_range(
 /// Whether a file takes reads or writes at a given offset (Linux's `FMODE_PREAD` and `FMODE_PWRITE`):
 /// a pipe and a secret memory file take neither, and a `seq_file` of `/proc` no writes. A descriptor
 /// open only for its path is no descriptor here.
-fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
+pub(super) fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let file = file.borrow();
     if file.is_path() {
         return Err(Errno::EBADF);
@@ -429,7 +444,11 @@ fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let sequence = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
-    if matches!(inode.content, Content::HostStream(_)) || inode.is_secret() || (writing && sequence)
+    // Terminals are opened unseekable (`nonseekable_open`).
+    if matches!(inode.content, Content::Pipe(_) | Content::Anon)
+        || inode.is_secret()
+        || (writing && sequence)
+        || file.terminal.is_some()
     {
         return Err(Errno::ESPIPE);
     }
@@ -443,36 +462,64 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let no_write = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
-    if inode.is_secret() || (writing && no_write) {
+    // A signal descriptor only reads; a process descriptor does neither.
+    let anon_write = writing && matches!(inode.content, Content::Anon | Content::Mqueue(_));
+    let pidfd = matches!(inode.content, Content::Pidfd(..));
+    if inode.is_secret() || (writing && no_write) || anon_write || pidfd {
         return Err(Errno::EINVAL);
     }
     Ok(())
 }
 
-/// Linux's `generic_write_check_limits` for a write of `count` bytes to a regular file at `offset`:
-/// starting at or past the file size limit is `SIGXFSZ` and `EFBIG`, and a write reaching it is
-/// shortened. Nothing is checked for a write of nothing.
+/// Linux's `generic_write_checks_count` for a write of `count` bytes at `offset` into `file`: nothing
+/// to write passes, otherwise `generic_write_check_limits`.
 pub(super) fn write_limit(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
+    file: &FileRef,
     offset: u64,
     count: u64,
 ) -> Result<u64, Errno> {
     if count == 0 {
         return Ok(0);
     }
+    write_check_limits(kernel, cx, tid, file, offset, count)
+}
+
+/// Linux's `generic_write_check_limits`: past the file size limit is `SIGXFSZ` and EFBIG, as is a
+/// position at or past the largest file (`s_maxbytes`, or `MAX_NON_LFS` for a file opened without
+/// O_LARGEFILE); the count is cut to both.
+pub(super) fn write_check_limits(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    offset: u64,
+    count: u64,
+) -> Result<u64, Errno> {
+    let mut count = count;
     let limit = kernel.process_of(tid).limits[RLIMIT_FSIZE as usize].current;
-    if offset >= limit {
-        // A signal that cannot be acted on is counted where it is sent; the write fails either way.
-        let _ = kernel.send_to_self(cx, tid, SIGXFSZ);
-        return Err(Errno::EFBIG);
+    if limit != RLIM_INFINITY as u64 {
+        if offset >= limit {
+            // A signal that cannot be acted on is counted where it is sent; the write fails either way.
+            kernel.send_file_size_signal(cx, tid);
+            return Err(Errno::EFBIG);
+        }
+        count = count.min(limit - offset);
     }
-    let largest = i64::MAX as u64;
+    let largest = {
+        let file = file.borrow();
+        if file.flags & O_LARGEFILE == 0 {
+            i32::MAX as u64
+        } else {
+            file.node.borrow().fs.kind.max_bytes()
+        }
+    };
     if offset >= largest {
         return Err(Errno::EFBIG);
     }
-    Ok(count.min(limit - offset).min(largest - offset))
+    Ok(count.min(largest - offset))
 }
 
 /// Linux's `inode_newsize_ok` for a regular file growing from `size` to `new_size`: past the file
@@ -487,7 +534,7 @@ pub(super) fn new_size_ok(
     if new_size > size {
         let limit = kernel.process_of(tid).limits[RLIMIT_FSIZE as usize].current;
         if new_size > limit {
-            let _ = kernel.send_to_self(cx, tid, SIGXFSZ);
+            kernel.send_file_size_signal(cx, tid);
             return Err(Errno::EFBIG);
         }
         if new_size > i64::MAX as u64 {
@@ -498,7 +545,7 @@ pub(super) fn new_size_ok(
 }
 
 /// Linux's `rw_verify_area`: the range must end within the largest file offset.
-fn verify_area(offset: u64, count: u64) -> Result<(), Errno> {
+pub(super) fn verify_area(offset: u64, count: u64) -> Result<(), Errno> {
     if (count as i64) < 0
         || (offset as i64) < 0
         || (offset as i64).checked_add(count as i64).is_none()
@@ -649,9 +696,23 @@ fn vectored(
     if total == 0 {
         return Ok(0);
     }
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
-        verify_area(offset.unwrap_or(file.borrow().offset), total)?;
+    if super::tty::end(file).is_some() {
+        return match writing {
+            Some(_) => super::tty::write(kernel, cx, tid, file, parts),
+            None => super::tty::read(kernel, cx, tid, file, parts),
+        };
     }
+    // A pipe takes or gives the whole vector in one go (`pipe_read`, `pipe_write`).
+    if super::pipe::is_pipe(file) {
+        return match writing {
+            Some(_) => super::pipe::write(kernel, cx, tid, file, parts),
+            None => super::pipe::read(kernel, cx, tid, file, parts),
+        };
+    }
+    if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
+        return super::signalfd::read(kernel, cx, tid, file, parts);
+    }
+    verify_area(offset.unwrap_or(file.borrow().offset), total)?;
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
     if let Some(append) = writing
@@ -663,7 +724,7 @@ fn vectored(
             offset.unwrap_or(file.borrow().offset)
         };
         let total = parts.iter().map(|(_, length)| length).sum();
-        let mut allowed = write_limit(kernel, cx, tid, start, total)?;
+        let mut allowed = write_limit(kernel, cx, tid, file, start, total)?;
         for (_, length) in &mut parts {
             *length = (*length).min(allowed);
             allowed -= *length;
@@ -671,6 +732,16 @@ fn vectored(
     }
     if writing.is_none() && is_sysctl(file) {
         return read_sysctl(kernel, cx, tid, file, &parts, offset);
+    }
+    // The random devices fill the whole vector block by block.
+    if writing.is_none()
+        && matches!(&file.borrow().node.borrow().content, Content::Special)
+        && matches!(
+            Device::from_number(file.borrow().node.borrow().rdev),
+            Some(Device::Random | Device::Urandom)
+        )
+    {
+        return random_bytes(kernel, cx, tid, &parts);
     }
     let mut done = 0;
     for &(base, length) in &parts {
@@ -698,7 +769,7 @@ fn vectored(
 }
 
 /// The bytes a read of up to `count` bytes at `offset` gives, without moving the file's position.
-fn file_bytes(
+pub(super) fn file_bytes(
     cx: &mut Context<'_>,
     file: &FileRef,
     count: u64,
@@ -726,7 +797,22 @@ fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::HostStream(_) | Content::Symlink(_) => return Err(Errno::EINVAL),
+        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(..) | Content::Anon => {
+            return Err(Errno::EINVAL);
+        }
+        // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
+        // as accessed.
+        Content::Mqueue(queue) => {
+            let bytes = window(&queue.text());
+            drop(inode);
+            if !bytes.is_empty() {
+                let now = crate::fs::Time::from_nanoseconds(cx.host.realtime_nanoseconds());
+                let mut inode = node.borrow_mut();
+                inode.atime = now;
+                inode.ctime = now;
+            }
+            bytes
+        }
     })
 }
 
@@ -754,23 +840,77 @@ fn read_sysctl(
     let bytes = file_bytes(cx, file, total, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
     accessed(kernel, cx, &node, flags);
-    let mut done = 0;
-    for &(base, length) in parts {
-        let piece = &bytes[done..(done + length as usize).min(bytes.len())];
-        if piece.is_empty() {
-            break;
-        }
-        if guest(kernel, cx, tid).write_partial(base, piece) < piece.len() {
-            return Err(Errno::EFAULT);
-        }
-        done += piece.len();
+    let done = bytes.len() as u64;
+    if copy_to_segments(&mut guest(kernel, cx, tid), parts, 0, &bytes, 0) < done {
+        return Err(Errno::EFAULT);
     }
-    let done = done as u64;
     file.borrow_mut().read_position = offset + done;
     if at.is_none() {
         file.borrow_mut().offset = offset + done;
     }
     Ok(done)
+}
+
+/// `get_random_bytes_user`: the whole request filled from the host's generator in 64-byte blocks,
+/// each copied with arm64's copy routine, until a copy falls short. The reference's block lies 8
+/// bytes past 16-byte alignment (measured).
+pub(super) fn random_bytes(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    parts: &[(u64, u64)],
+) -> Result<u64, Errno> {
+    const BLOCK: usize = 64;
+    let count: u64 = parts.iter().map(|(_, length)| length).sum();
+    let mut done = 0;
+    let mut bytes = vec![0; count.min(KERNEL_BUFFER) as usize];
+    while done < count {
+        let part = (count - done).min(KERNEL_BUFFER) as usize;
+        cx.host.random(&mut bytes[..part]);
+        let mut guest = guest(kernel, cx, tid);
+        for block in bytes[..part].chunks(BLOCK) {
+            let stored = copy_to_segments(&mut guest, parts, done, block, 8);
+            done += stored;
+            if stored < block.len() as u64 {
+                return if done == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(done)
+                };
+            }
+        }
+    }
+    Ok(done)
+}
+
+/// `copy_to_iter` of `bytes` from a kernel buffer at `source` into the segments, from `done` bytes
+/// into them: one copy per segment it reaches, stopping at the first that falls short. Returns how
+/// many bytes were counted copied.
+pub(super) fn copy_to_segments(
+    guest: &mut crate::user::Guest<'_>,
+    parts: &[(u64, u64)],
+    done: u64,
+    bytes: &[u8],
+    source: u64,
+) -> u64 {
+    let mut copied = 0;
+    let mut start = 0;
+    for &(base, length) in parts {
+        let end = start + length;
+        let at = done + copied;
+        if at < end && copied < bytes.len() as u64 {
+            let within = at - start;
+            let part = (length - within).min(bytes.len() as u64 - copied) as usize;
+            let from = copied as usize;
+            let stored = guest.copy_out(base + within, &bytes[from..from + part], source + copied);
+            copied += stored;
+            if stored < part as u64 {
+                break;
+            }
+        }
+        start = end;
+    }
+    copied
 }
 
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
@@ -783,6 +923,15 @@ pub(super) fn read_at(
     count: u64,
     at: Option<u64>,
 ) -> Result<u64, Errno> {
+    if super::tty::end(file).is_some() {
+        return super::tty::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::pipe::is_pipe(file) {
+        return super::pipe::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::signalfd::mask_of(&file.borrow()).is_some() {
+        return super::signalfd::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
     // more is cleared (`read_iter_zero`).
@@ -794,23 +943,8 @@ pub(super) fn read_at(
             _ => None,
         }
     };
-    // The random devices fill the whole request, block by block, up to where the buffer stops being
-    // writable (`get_random_bytes_user`).
     if matches!(device, Some(Device::Random | Device::Urandom)) {
-        let mut done = 0;
-        while done < count {
-            let mut bytes = vec![0; (count - done).min(KERNEL_BUFFER) as usize];
-            cx.host.random(&mut bytes);
-            let written = guest(kernel, cx, tid).write_partial(buffer + done, &bytes) as u64;
-            done += written;
-            if written < bytes.len() as u64 {
-                break;
-            }
-        }
-        if done == 0 && count > 0 {
-            return Err(Errno::EFAULT);
-        }
-        return Ok(done);
+        return random_bytes(kernel, cx, tid, &[(buffer, count)]);
     }
     if let Some(device) = device.filter(|device| matches!(device, Device::Zero | Device::Full)) {
         let mut guest = guest(kernel, cx, tid);
@@ -838,7 +972,15 @@ pub(super) fn read_at(
     let bytes = file_bytes(cx, file, count, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
     accessed(kernel, cx, &node, flags);
-    let written = guest(kernel, cx, tid).write_partial(buffer, &bytes);
+    // A `seq_file` copies from its kernel buffer with arm64's copy routine; pages of files and the
+    // process's memory reach exactly up to a fault (measured).
+    let sequence = matches!(node.borrow().content, Content::Proc(entry)
+        if entry.style() == Style::Sequence);
+    let written = if sequence {
+        guest(kernel, cx, tid).copy_out(buffer, &bytes, offset) as usize
+    } else {
+        guest(kernel, cx, tid).write_partial(buffer, &bytes)
+    };
     if written == 0 && !bytes.is_empty() {
         return Err(Errno::EFAULT);
     }
@@ -865,12 +1007,11 @@ pub(super) fn write_at(
     append: bool,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
-    let stream = match &node.borrow().content {
-        Content::HostStream(stream) => Some(*stream),
-        _ => None,
-    };
-    if let Some(stream) = stream {
-        return write_host_stream(kernel, cx, tid, stream, buffer, count);
+    if super::tty::end(file).is_some() {
+        return super::tty::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::pipe::is_pipe(file) {
+        return super::pipe::write(kernel, cx, tid, file, &[(buffer, count)]);
     }
     moves_bytes(file, true)?;
     let entry = match &node.borrow().content {
@@ -893,7 +1034,7 @@ pub(super) fn write_at(
         } else {
             at.unwrap_or(file.borrow().offset)
         };
-        let count = write_limit(kernel, cx, tid, offset, count)?;
+        let count = write_limit(kernel, cx, tid, file, offset, count)?;
         // As much of the buffer as can be read; where it stops, the write ends (`write_bytes`).
         let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
         let bytes = guest(kernel, cx, tid).read(buffer, readable)?;
@@ -951,7 +1092,7 @@ fn write_proc(
 /// asked for: fewer when the caller's buffer stopped being readable. Devices that take anything
 /// report nothing written here; the caller counts what it offered.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
-fn write_bytes(
+pub(super) fn write_bytes(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -971,9 +1112,9 @@ fn write_bytes(
     let rdev = inode.rdev;
     let regular = match &mut inode.content {
         Content::Regular(regular) => regular,
-        Content::HostStream(stream) => {
-            cx.host.output(*stream, bytes);
-            return Ok(bytes.len() as u64);
+        Content::Pipe(_) => {
+            drop(inode);
+            return Ok(super::pipe::put(cx, kernel, file, bytes, 0));
         }
         Content::Special => {
             return match Device::from_number(rdev) {
@@ -984,7 +1125,12 @@ fn write_bytes(
                 _ => Err(Errno::ENXIO),
             };
         }
-        Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) => {
+        Content::Directory(_)
+        | Content::Proc(_)
+        | Content::Symlink(_)
+        | Content::Pidfd(..)
+        | Content::Anon
+        | Content::Mqueue(_) => {
             return Err(Errno::EINVAL);
         }
     };
@@ -1048,7 +1194,10 @@ pub(super) fn sendfile(
     }
     let mut offset: i64 = guest(kernel, cx, tid).read_value(offset_address)?;
     let result = send(kernel, cx, tid, out_fd, in_fd, Some(&mut offset), count);
-    guest(kernel, cx, tid).write(offset_address, &offset.to_le_bytes())?;
+    if result == Err(Errno::PARKED) {
+        return result;
+    }
+    guest(kernel, cx, tid).put(offset_address, &offset.to_le_bytes())?;
     result
 }
 
@@ -1082,28 +1231,64 @@ fn send(
     if output.borrow().is_path() || !output.borrow().writable() {
         return Err(Errno::EBADF);
     }
-    // The standard streams are pipes: the input is spliced into them once, as much as an empty pipe
-    // holds (`splice_file_to_pipe`). Anything else goes through a private pipe, round after round,
+    // `rw_verify_area` of the output at its own position.
+    if (output.borrow().offset as i64)
+        .checked_add(count as i64)
+        .is_none()
+    {
+        return Err(Errno::EINVAL);
+    }
+    // A pipe takes the input spliced into it once, as much as it has room for
+    // (`splice_file_to_pipe`). Anything else goes through a private pipe, round after round,
     // until the count is moved or a round falls short (`splice_direct_to_actor`).
     let (input_node, output_node) = (input.borrow().node.clone(), output.borrow().node.clone());
-    let to_pipe = matches!(output_node.borrow().content, Content::HostStream(_));
-    if !to_pipe {
-        if (output.borrow().offset as i64)
-            .checked_add(count as i64)
-            .is_none()
-        {
-            return Err(Errno::EINVAL);
+    let to_pipe = matches!(output_node.borrow().content, Content::Pipe(_));
+    // The largest file either side's file system has.
+    let max = input_node
+        .borrow()
+        .fs
+        .kind
+        .max_bytes()
+        .min(output_node.borrow().fs.kind.max_bytes());
+    let position_now = position as u64;
+    let mut count = count;
+    if position_now + count > max {
+        if position_now >= max {
+            return Err(Errno::EOVERFLOW);
         }
+        count = max - position_now;
+    }
+    if !to_pipe {
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe as input cannot seek, and secret memory cannot be read at all, even for nothing
-        // (measured; into a pipe nothing is moved without asking it).
-        if matches!(input_node.borrow().content, Content::HostStream(_))
+        // A pipe or a terminal as input cannot seek (`FMODE_LSEEK`); secret memory, process and
+        // signal descriptors cannot be read at all, even for nothing (measured; into a pipe nothing
+        // is moved without asking it).
+        if matches!(input_node.borrow().content, Content::Pipe(_))
+            || super::tty::end(&input).is_some()
             || input_node.borrow().is_secret()
+            || input_node.borrow().is_anonymous()
         {
             return Err(Errno::EINVAL);
         }
+    }
+    // Into a pipe: `splice_file_to_pipe`, which waits for room unless the pipe's descriptor is
+    // nonblocking.
+    if to_pipe {
+        let nonblock = output.borrow().flags & O_NONBLOCK != 0;
+        let mut pos = position as u64;
+        let moved = super::splice::file_to_pipe(
+            kernel, cx, tid, &input, &output, &mut pos, count, nonblock,
+        )?;
+        if moved > 0 {
+            input.borrow_mut().read_position = pos;
+            match explicit {
+                Some(offset) => *offset = pos as i64,
+                None => input.borrow_mut().offset = pos,
+            }
+        }
+        return Ok(moved);
     }
     let device = |node: &crate::fs::Node| {
         let inode = node.borrow();
@@ -1113,10 +1298,18 @@ fn send(
         }
     };
     let flags = input.borrow().flags;
-    let mut pos = position as u64;
-    let mut moved = 0;
+    // A call that waited for a terminal's room goes on after what it wrote, reading the rest of
+    // that round again (Linux keeps the round in its private pipe).
+    let resumed = kernel.threads[&tid].call.progress;
+    let mut pos = position as u64
+        + if device(&input_node).is_some() {
+            0
+        } else {
+            resumed
+        };
+    let mut moved = resumed;
     let mut failure = None;
-    let mut remaining = count;
+    let mut remaining = count - resumed;
     while remaining > 0 {
         // What cannot be spliced from (no `splice_read`: directories, secret memory, `/dev/null`,
         // the process files of `/proc`), or into (secret memory has no `splice_write`), fails at the
@@ -1143,18 +1336,20 @@ fn send(
         } else {
             room
         });
-        let bytes = match refresh_proc(kernel, cx, tid, &input, pos)
-            .and_then(|()| file_bytes(cx, &input, wanted, pos))
-        {
+        // A terminal (only into a pipe: it cannot seek) is read as `copy_splice_read` reads it.
+        let read = if super::tty::end(&input).is_some() {
+            super::tty::take(kernel, cx, tid, &input, wanted)
+        } else {
+            refresh_proc(kernel, cx, tid, &input, pos)
+                .and_then(|()| file_bytes(cx, &input, wanted, pos))
+        };
+        let bytes = match read {
             Ok(bytes) => bytes,
             Err(error) => {
                 failure = Some(error);
                 break;
             }
         };
-        if to_pipe && regular {
-            accessed(kernel, cx, &input_node, flags);
-        }
         if bytes.is_empty() {
             break;
         }
@@ -1171,9 +1366,11 @@ fn send(
             || matches!(output_node.borrow().content, Content::Proc(_))
         {
             Err(Errno::EINVAL)
+        } else if super::tty::end(&output).is_some() {
+            super::tty::put(kernel, cx, tid, &output, &bytes)
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
-            write_limit(kernel, cx, tid, at, bytes.len() as u64).and_then(|allowed| {
+            write_limit(kernel, cx, tid, &output, at, bytes.len() as u64).and_then(|allowed| {
                 bytes.truncate(allowed as usize);
                 write_bytes(kernel, cx, tid, &output, &bytes, allowed, None, false)
             })
@@ -1201,16 +1398,18 @@ fn send(
         remaining -= written;
         if written < read {
             pos += written;
+            // A full terminal: a blocking one is waited for.
+            if super::tty::end(&output).is_some() {
+                match super::tty::wait_for_room(kernel, tid, &output, moved) {
+                    Errno::PARKED => return Err(Errno::PARKED),
+                    error => failure = Some(error),
+                }
+            }
             break;
         }
         pos = read_to;
-        if to_pipe {
-            break;
-        }
     }
-    if !to_pipe {
-        touch_atime(kernel, cx, &input_node, flags);
-    }
+    touch_atime(kernel, cx, &input_node, flags);
     if moved == 0 {
         return failure.map_or(Ok(0), Err);
     }
@@ -1219,30 +1418,6 @@ fn send(
         None => input.borrow_mut().offset = pos,
     }
     Ok(moved)
-}
-
-/// The host takes a stream's bytes at once, so this is a write to an empty pipe, as the reference's
-/// standard streams are: whole pages from the buffer, and the first page that cannot be read in full
-/// ends the write and is dropped (`EFAULT` if nothing was written), as Linux's `pipe_write` does.
-fn write_host_stream(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    tid: Tid,
-    stream: Stream,
-    buffer: u64,
-    count: u64,
-) -> Result<u64, Errno> {
-    let mut done = 0;
-    while done < count {
-        let at = buffer + done;
-        let length = (count - done).min(PAGE_SIZE);
-        match guest(kernel, cx, tid).read(at, length) {
-            Ok(bytes) => cx.host.output(stream, &bytes),
-            Err(error) => return if done == 0 { Err(error) } else { Ok(done) },
-        }
-        done += length;
-    }
-    Ok(done)
 }
 
 pub(super) fn lseek(
@@ -1262,7 +1437,7 @@ pub(super) fn lseek(
     if whence > SEEK_MAX {
         return Err(Errno::EINVAL);
     }
-    if file.node.borrow().is_secret() {
+    if file.node.borrow().is_secret() || file.terminal.is_some() {
         return Err(Errno::ESPIPE);
     }
     let current = || {
@@ -1273,7 +1448,22 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::HostStream(_) => return Err(Errno::ESPIPE),
+        Content::Pipe(_) | Content::Pidfd(..) => return Err(Errno::ESPIPE),
+        // Signal descriptors keep their position at 0 (`noop_llseek`).
+        Content::Anon => file.offset as i64,
+        // A queue seeks as `default_llseek` does over the size it shows.
+        Content::Mqueue(queue) => {
+            let size = queue.size as i64;
+            match whence {
+                SEEK_SET => offset,
+                SEEK_CUR => current()?,
+                SEEK_END => size.checked_add(offset).ok_or(Errno::EINVAL)?,
+                SEEK_DATA if offset < size => offset,
+                SEEK_HOLE if offset < size => size,
+                SEEK_DATA | SEEK_HOLE => return Err(Errno::ENXIO),
+                _ => return Err(Errno::EINVAL),
+            }
+        }
         Content::Special => match Device::from_number(inode.rdev) {
             // `/dev/null`, `/dev/zero` and `/dev/full` always seek to 0 (`null_lseek`); the random
             // devices keep their position (`noop_llseek`).
@@ -1408,7 +1598,7 @@ fn touch_atime(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, fl
 /// Makes a `/proc` file's bytes again where Linux would before a read at `offset`: at each read for
 /// a file read from memory or a sysctl, and for a `seq_file` at a read from the start or from
 /// anywhere but where the last read stopped.
-fn refresh_proc(
+pub(super) fn refresh_proc(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -1452,8 +1642,7 @@ pub(super) fn getdents64(
     let count = count as u32 as u64;
     let node = file.borrow().node.clone();
     let position = file.borrow().offset;
-    // Every entry from the position on: name, inode number, type, and the position after it.
-    let mut entries: Vec<(Vec<u8>, u64, u8, u64)> = Vec::new();
+    let mut entries: Vec<Listed> = Vec::new();
     {
         if !node.borrow().is_directory() {
             return Err(Errno::ENOTDIR);
@@ -1470,20 +1659,26 @@ pub(super) fn getdents64(
             .and_then(|parent| parent.upgrade())
             .map_or(inode.ino, |parent| parent.borrow().ino);
         match &inode.content {
-            // devpts lists by count (`dcache_readdir`): `.` at 0, `..` at 1, then each entry at the
-            // next number, newest first.
-            Content::Directory(directory) if inode.fs.kind == crate::fs::Kind::Devpts => {
+            // devpts and mqueue list by count (`dcache_readdir`): `.` at 0, `..` at 1, then each
+            // entry at the next number, newest first.
+            Content::Directory(directory)
+                if matches!(
+                    inode.fs.kind,
+                    crate::fs::Kind::Devpts | crate::fs::Kind::Mqueue
+                ) =>
+            {
                 if position == 0 {
-                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 1));
+                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 0, 1));
                 }
                 if position <= 1 {
-                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 2));
+                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 1, 2));
                 }
                 for (index, (_, name, child)) in directory.listed_from(2).enumerate() {
                     let own = index as u64 + 2;
                     if own >= position {
                         let child = child.borrow();
-                        entries.push((name.to_vec(), child.ino, child.dirent_type(), own + 1));
+                        let kind = child.dirent_type();
+                        entries.push((name.to_vec(), child.ino, kind, own, own + 1));
                     }
                 }
             }
@@ -1492,24 +1687,26 @@ pub(super) fn getdents64(
                 // position.
                 let newest = directory.listed_from(2).next().map(|(at, _, _)| at);
                 if position == 0 {
-                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 1));
+                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 0, 1));
                 }
                 if position <= 1 {
                     entries.push((
                         b"..".to_vec(),
                         parent_ino,
                         DT_DIR as u8,
+                        1,
                         newest.unwrap_or(END_OF_DIRECTORY),
                     ));
                 }
                 if position != END_OF_DIRECTORY {
                     let listed: Vec<_> = directory.listed_from(position).collect();
-                    for (index, (_, name, child)) in listed.iter().enumerate() {
+                    for (index, (at, name, child)) in listed.iter().enumerate() {
                         let next = listed
                             .get(index + 1)
                             .map_or(END_OF_DIRECTORY, |(at, _, _)| *at);
                         let child = child.borrow();
-                        entries.push((name.to_vec(), child.ino, child.dirent_type(), next));
+                        let kind = child.dirent_type();
+                        entries.push((name.to_vec(), child.ino, kind, *at, next));
                     }
                 }
             }
@@ -1544,7 +1741,7 @@ pub(super) fn getdents64(
                 let ino = node.borrow().ino;
                 let fds = matches!(entry, Entry::Fds(_));
                 if position == 0 {
-                    entries.push((b".".to_vec(), ino, DT_DIR as u8, 1));
+                    entries.push((b".".to_vec(), ino, DT_DIR as u8, 0, 1));
                 }
                 if position <= 1 {
                     let after = if fds {
@@ -1552,7 +1749,7 @@ pub(super) fn getdents64(
                     } else {
                         2
                     };
-                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, after));
+                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 1, after));
                 }
                 let nexts: Vec<u64> = listed
                     .iter()
@@ -1562,51 +1759,121 @@ pub(super) fn getdents64(
                     .collect();
                 for ((name, ino, kind, own, jumps), next) in listed.into_iter().zip(nexts) {
                     if own >= position {
-                        entries.push((name, ino, kind, if jumps { next } else { own + 1 }));
+                        let after = if jumps { next } else { own + 1 };
+                        entries.push((name, ino, kind, own, after));
                     }
                 }
             }
             _ => return Err(Errno::ENOTDIR),
         }
     }
-    let mut out = Vec::new();
-    let mut new_position = position;
-    for (name, ino, kind, next) in entries {
-        let length = (19 + name.len() + 1).next_multiple_of(8);
-        if (out.len() + length) as u64 > count {
-            if out.is_empty() {
+    // The entries that fit, each at its offset in the buffer.
+    let mut placed = Vec::new();
+    let mut size = 0;
+    for entry in entries {
+        let length = (19 + entry.0.len() + 1).next_multiple_of(8) as u64;
+        if size + length > count {
+            if placed.is_empty() {
                 return Err(Errno::EINVAL);
             }
             break;
         }
-        out.extend_from_slice(&ino.to_le_bytes());
-        out.extend_from_slice(&next.to_le_bytes());
-        out.extend_from_slice(&(length as u16).to_le_bytes());
-        out.push(kind);
-        out.extend_from_slice(&name);
-        out.resize(out.len() + length - 19 - name.len(), 0);
-        new_position = next;
+        placed.push((size, length, entry));
+        size += length;
     }
-    if !out.is_empty() {
-        guest(kernel, cx, tid).write(buffer, &out)?;
+    let (complete, size) = store_entries(&mut guest(kernel, cx, tid), buffer, &placed);
+    if complete == 0 && !placed.is_empty() {
+        return Err(Errno::EFAULT);
     }
-    if !out.is_empty() || position <= 1 {
-        file.borrow_mut().offset = if out.is_empty() {
-            position
-        } else {
-            new_position
+    if complete > 0 || position <= 1 {
+        file.borrow_mut().offset = match complete {
+            0 => position,
+            complete => placed[complete - 1].2.4,
         };
     }
-    Ok(out.len() as u64)
+    Ok(size)
+}
+
+/// A directory entry to list: name, inode number, type, its own position and the one after it.
+type Listed = (Vec<u8>, u64, u8, u64, u64);
+
+/// Stores listed entries as `filldir64` does, entry by entry: the previous entry's `d_off` (for the
+/// first, its own position), `d_ino`, `d_reclen`, `d_type`, the name's closing zero, then the name
+/// in pieces of 8, 4, 2 and 1 bytes, and at the end the last entry's `d_off`; padding is not written.
+/// A store that faults ends the listing there. Returns how many entries were stored whole and their
+/// size.
+fn store_entries(
+    guest: &mut crate::user::Guest<'_>,
+    buffer: u64,
+    placed: &[(u64, u64, Listed)],
+) -> (usize, u64) {
+    let Some(&(last_at, last_length, _)) = placed.last() else {
+        return (0, 0);
+    };
+    let extent = last_at + last_length;
+    let writable = if crate::user::access_ok(buffer, extent) {
+        guest.accessible(buffer, extent, wcontainers_abi::Permissions::WRITE)
+    } else {
+        0
+    };
+    if writable == extent {
+        // Nothing faults: each entry's bytes as they end up, in one store each.
+        for (at, _, (name, ino, kind, _, next)) in placed {
+            let mut bytes = Vec::with_capacity(20 + name.len());
+            bytes.extend_from_slice(&ino.to_le_bytes());
+            bytes.extend_from_slice(&next.to_le_bytes());
+            bytes.extend_from_slice(
+                &((19 + name.len() + 1).next_multiple_of(8) as u16).to_le_bytes(),
+            );
+            bytes.push(*kind);
+            bytes.extend_from_slice(name);
+            bytes.push(0);
+            if guest.put(buffer + at, &bytes).is_err() {
+                return (0, 0);
+            }
+        }
+        return (placed.len(), extent);
+    }
+    let mut stores: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut ends = Vec::new();
+    for (index, (at, length, (name, ino, kind, own, _))) in placed.iter().enumerate() {
+        let previous = if index == 0 { *at } else { placed[index - 1].0 };
+        stores.push((previous + 8, own.to_le_bytes().to_vec()));
+        stores.push((*at, ino.to_le_bytes().to_vec()));
+        stores.push((at + 16, (*length as u16).to_le_bytes().to_vec()));
+        stores.push((at + 18, alloc::vec![*kind]));
+        stores.push((at + 19 + name.len() as u64, alloc::vec![0]));
+        let mut done = 0;
+        for size in [8, 4, 2, 1] {
+            while name.len() - done >= size {
+                stores.push((at + 19 + done as u64, name[done..done + size].to_vec()));
+                done += size;
+            }
+        }
+        ends.push(stores.len());
+    }
+    let borrowed: Vec<(u64, &[u8])> = stores
+        .iter()
+        .map(|(offset, bytes)| (*offset, bytes.as_slice()))
+        .collect();
+    let made = guest.put_each(buffer, &borrowed);
+    let complete = ends.iter().take_while(|end| **end <= made).count();
+    if complete == 0 {
+        return (0, 0);
+    }
+    let (at, length, (.., next)) = &placed[complete - 1];
+    let _ = guest.put(buffer + at + 8, &next.to_le_bytes());
+    (complete, at + length)
 }
 
 pub(super) fn close(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     kernel.process_of_mut(tid).files.remove(fd as i32)?;
+    kernel.files_released(cx);
     Ok(0)
 }
 
@@ -1616,7 +1883,7 @@ fn nofile_limit(kernel: &Kernel, tid: Tid) -> u64 {
 
 pub(super) fn close_range(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [first, last, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1632,12 +1899,16 @@ pub(super) fn close_range(
         .map(|(fd, _)| fd)
         .filter(|fd| (first..=last).contains(&(*fd as u32)))
         .collect();
+    let closes = flags & CLOSE_RANGE_CLOEXEC == 0 && !fds.is_empty();
     for fd in fds {
         if flags & CLOSE_RANGE_CLOEXEC != 0 {
             files.get_mut(fd)?.close_on_exec = true;
         } else {
             files.remove(fd)?;
         }
+    }
+    if closes {
+        kernel.files_released(cx);
     }
     Ok(0)
 }
@@ -1656,7 +1927,7 @@ pub(super) fn dup(
 
 pub(super) fn dup3(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [old, new, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1673,13 +1944,16 @@ pub(super) fn dup3(
     }
     let files = &mut kernel.process_of_mut(tid).files;
     let file = files.file(old)?;
-    files.set(
+    let replaced = files.set(
         new,
         Descriptor {
             file,
             close_on_exec: flags & O_CLOEXEC != 0,
         },
     );
+    if replaced {
+        kernel.files_released(cx);
+    }
     Ok(new as u64)
 }
 
@@ -1695,9 +1969,11 @@ pub(super) fn fcntl(
     match fcntl_typed(kernel, cx, tid, arguments) {
         Ok(Some(value)) => super::Outcome::Return(value),
         Ok(None) => {
-            // A lock another holder of this process has: it cannot let go while the only thread
-            // waits, so the wait lasts until a signal ends it (K2), as on Linux.
-            kernel.park(cx, tid, crate::process::Parked::Forever);
+            // A lock another holder has: the wait lasts until it is let go or a signal comes.
+            if kernel.signal_pending(tid) {
+                return Err(Errno::ERESTARTSYS).into();
+            }
+            kernel.park(tid, crate::process::Channel::Locks);
             super::Outcome::Parked
         }
         Err(error) => Err(error).into(),
@@ -1848,11 +2124,64 @@ fn record_lock(
         guest(kernel, cx, tid).write(argument, &raw)?;
         return Ok(Some(0));
     }
-    match crate::locks::set(&mut node.borrow_mut().record_locks, request, unlock) {
-        Ok(()) => Ok(Some(0)),
-        Err(_) if matches!(command, F_SETLKW | F_OFD_SETLKW) => Ok(None),
+    let asking = match &request.owner {
+        LockOwner::Table(table) => Some(*table),
+        LockOwner::File(_) => None,
+    };
+    let result = crate::locks::set(&mut node.borrow_mut().record_locks, request, unlock);
+    match result {
+        Ok(()) => {
+            // Waiters blocked on a lock this changed try again (`locks_wake_up_blocks`).
+            kernel.wake(crate::process::Channel::Locks);
+            Ok(Some(0))
+        }
+        Err(held) if matches!(command, F_SETLKW | F_OFD_SETLKW) => {
+            let holder = match held.owner {
+                LockOwner::Table(table) => Some(table),
+                LockOwner::File(_) => None,
+            };
+            // An open file's request is not looked at for deadlocks, nor kept where others look.
+            if let Some(asking) = asking {
+                if posix_locks_deadlock(kernel, asking, holder) {
+                    return Err(Errno::EDEADLK);
+                }
+                kernel.thread_mut(tid).call.lock_wait = Some((asking, holder));
+            }
+            Ok(None)
+        }
         Err(_) => Err(Errno::EAGAIN),
     }
+}
+
+/// Linux's `posix_locks_deadlock`: whether following who the lock in the way's holder waits for
+/// comes back to the table asking, giving up after `MAX_DEADLK_ITERATIONS`.
+fn posix_locks_deadlock(kernel: &Kernel, asking: u64, mut holder: Option<u64>) -> bool {
+    const MAX_DEADLK_ITERATIONS: usize = 10;
+    let waiting_for = |table: u64| {
+        kernel
+            .threads
+            .values()
+            .find_map(|thread| match thread.call {
+                crate::process::Call {
+                    wait: Some(crate::process::Channel::Locks),
+                    lock_wait: Some((waiter, blocker)),
+                    ..
+                } if waiter == table => Some(blocker),
+                _ => None,
+            })
+    };
+    let mut iterations = 0;
+    while let Some(blocker) = holder.and_then(waiting_for) {
+        if iterations > MAX_DEADLK_ITERATIONS {
+            return false;
+        }
+        iterations += 1;
+        if blocker == Some(asking) {
+            return true;
+        }
+        holder = blocker;
+    }
+    false
 }
 
 /// Every other `fcntl` command.
@@ -1898,17 +2227,20 @@ fn fcntl_other(
                 {
                     return Err(Errno::EPERM);
                 }
-                if wanted & O_DIRECT != 0
-                    && inode.file_type() != S_IFIFO
-                    && !inode.takes_direct_io()
-                {
+                if wanted & O_DIRECT != 0 && inode.file_type() != S_IFIFO && !file.direct_io {
                     return Err(Errno::EINVAL);
                 }
             }
             // A change of `FASYNC` goes to the file's `fasync`, if it has one, which sets the flag.
             if (wanted ^ file.flags) & FASYNC != 0 {
                 drop(file);
-                let _ = super::ioctl::set_async(&descriptor.file, wanted & FASYNC != 0);
+                let _ = super::ioctl::set_async(
+                    kernel,
+                    tid,
+                    &descriptor.file,
+                    wanted & FASYNC != 0,
+                    fd,
+                );
                 file = descriptor.file.borrow_mut();
             }
             // `O_APPEND` cannot be taken off an append-only file; nothing here is append-only.
@@ -1941,7 +2273,7 @@ fn fcntl_other(
             } else {
                 OwnerKind::Process
             };
-            set_owner(kernel, &descriptor.file, who.abs(), kind)
+            set_owner(kernel, tid, &descriptor.file, who.abs(), kind)
         }
         F_GETOWN_EX if !path_only => {
             let owner = descriptor.file.borrow().owner.unwrap_or_default();
@@ -1970,7 +2302,7 @@ fn fcntl_other(
                 F_OWNER_PGRP => OwnerKind::Group,
                 _ => return Err(Errno::EINVAL),
             };
-            set_owner(kernel, &descriptor.file, word(4), kind)
+            set_owner(kernel, tid, &descriptor.file, word(4), kind)
         }
         F_GETSIG if !path_only => Ok(descriptor
             .file
@@ -1986,15 +2318,31 @@ fn fcntl_other(
             file.owner.get_or_insert_default().signal = signal;
             Ok(0)
         }
-        // Only pipes have a size (`pipe_fcntl`); the standard streams' pipes are not built.
-        F_GETPIPE_SZ | F_SETPIPE_SZ
-            if !path_only
-                && !matches!(
-                    descriptor.file.borrow().node.borrow().content,
-                    Content::HostStream(_)
-                ) =>
-        {
-            Err(Errno::EBADF)
+        // Only pipes have a size (`pipe_fcntl`).
+        F_GETPIPE_SZ | F_SETPIPE_SZ if !path_only => {
+            let node = descriptor.file.borrow().node.clone();
+            let may_exceed = kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE);
+            let mut inode = node.borrow_mut();
+            let Content::Pipe(pipe) = &mut inode.content else {
+                return Err(Errno::EBADF);
+            };
+            if command == F_GETPIPE_SZ {
+                return Ok(pipe.capacity as u64 * PAGE_SIZE);
+            }
+            // `pipe_set_size`: rounded up to pages, within the largest size, not below what it
+            // holds.
+            let size = crate::pipe::round_size(u64::from(argument as u32)).ok_or(Errno::EINVAL)?;
+            if size > crate::pipe::MAX_SIZE && !may_exceed {
+                return Err(Errno::EPERM);
+            }
+            let slots = (size / PAGE_SIZE) as usize;
+            if slots < pipe.occupancy() {
+                return Err(Errno::EBUSY);
+            }
+            pipe.capacity = slots;
+            drop(inode);
+            kernel.wake(super::pipe::channel(&node));
+            Ok(size)
         }
         F_GET_RW_HINT if !path_only => {
             let hint = descriptor.file.borrow().node.borrow().write_hint;
@@ -2019,12 +2367,19 @@ fn fcntl_other(
         }
         F_GET_SEALS if !path_only => super::memfd::get_seals(&descriptor.file.borrow()),
         _ if path_only => Err(Errno::EBADF),
-        _ => {
-            kernel
-                .counters
-                .count(cx.host, reason::FCNTL_NOT_BUILT, command.into());
-            Err(Errno::EINVAL)
-        }
+        // Leases, directory notification, the owner's ids (`CONFIG_CHECKPOINT_RESTORE`) and
+        // delegations are not built.
+        F_SETLEASE
+        | F_NOTIFY
+        | F_GETOWNER_UIDS
+        | crate::linux_extra::F_GETDELEG
+        | crate::linux_extra::F_SETDELEG => Err(kernel.counters.refuse(
+            cx.host,
+            reason::FCNTL_NOT_BUILT,
+            command.into(),
+            Errno::EINVAL,
+        )),
+        _ => Err(Errno::EINVAL),
     }
 }
 
@@ -2051,15 +2406,31 @@ fn owner_lives(kernel: &Kernel, owner: &Owner) -> bool {
 
 /// `f_setown` and `f_setown_ex`: a number in use, or 0 for none, becomes the file's owner; the signal
 /// stays.
-fn set_owner(kernel: &Kernel, file: &FileRef, pid: i32, kind: OwnerKind) -> Result<u64, Errno> {
+fn set_owner(
+    kernel: &Kernel,
+    tid: Tid,
+    file: &FileRef,
+    pid: i32,
+    kind: OwnerKind,
+) -> Result<u64, Errno> {
     if pid != 0 && !pid_in_use(kernel, pid) {
         return Err(Errno::ESRCH);
     }
+    set_owner_of(kernel, tid, file, pid, kind);
+    Ok(0)
+}
+
+/// Linux's `f_modown`: the owner, with the caller's users when it names one.
+pub(super) fn set_owner_of(kernel: &Kernel, tid: Tid, file: &FileRef, pid: i32, kind: OwnerKind) {
+    let credentials = &kernel.process_of(tid).credentials;
     let mut file = file.borrow_mut();
     let owner = file.owner.get_or_insert_default();
     owner.pid = pid;
     owner.kind = kind;
-    Ok(0)
+    if pid != 0 {
+        owner.uid = credentials.uid;
+        owner.euid = credentials.euid;
+    }
 }
 
 /// `fsync` and `fdatasync`: everything is in memory, so there is nothing to wait for. Files with no
@@ -2079,7 +2450,12 @@ pub(super) fn fsync(
     let file = file.borrow();
     let inode = file.node.borrow();
     match inode.content {
-        Content::HostStream(_) | Content::Special | Content::Proc(_) => Err(Errno::EINVAL),
+        Content::Pipe(_)
+        | Content::Special
+        | Content::Proc(_)
+        | Content::Pidfd(..)
+        | Content::Anon
+        | Content::Mqueue(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }
@@ -2104,32 +2480,44 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 
 /// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
 /// or what the file's own says. The host's pipes always have room.
-fn poll_mask(file: &FileRef) -> u16 {
+fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
+    if super::tty::end(file).is_some() {
+        return super::tty::poll(file);
+    }
     let file = file.borrow();
     if file.is_path() {
         return POLLNVAL as u16;
     }
     let node = file.node.borrow();
-    match node.content {
-        Content::HostStream(_) => (POLLOUT | POLLWRNORM) as u16,
+    match &node.content {
+        Content::Pipe(pipe) => crate::pipe::poll(pipe, &file),
         // `random_poll`: the generator is ready from the start here. `/dev/urandom` has no poll.
         Content::Special if Device::from_number(node.rdev) == Some(Device::Random) => {
             (POLLIN | POLLRDNORM) as u16
         }
         // `mounts_poll`: the mount table cannot change within the container.
         Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts)) => (POLLIN | POLLRDNORM) as u16,
+        Content::Pidfd(..) => {
+            drop(node);
+            super::pidfd::poll(kernel, &file)
+        }
+        Content::Mqueue(queue) => queue.poll(),
+        Content::Anon => match super::signalfd::mask_of(&file) {
+            Some(mask) => super::signalfd::poll(kernel, tid, mask),
+            None => 0,
+        },
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
 }
 
-/// A wait's timeout as `poll_select_set_timeout` checks it: its length and when it ends.
+/// A wait's timeout as `poll_select_set_timeout` checks it: its length.
 fn read_timeout(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     timeout: u64,
-) -> Result<Option<(u64, u64)>, Errno> {
+) -> Result<Option<u64>, Errno> {
     if timeout == 0 {
         return Ok(None);
     }
@@ -2137,68 +2525,104 @@ fn read_timeout(
     if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
         return Err(Errno::EINVAL);
     }
-    let duration = (value.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(value.tv_nsec as u64);
-    Ok(Some((
-        duration,
-        cx.host.monotonic_nanoseconds().saturating_add(duration),
-    )))
+    Ok(Some(
+        (value.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(value.tv_nsec as u64),
+    ))
+}
+
+/// The first run of `ppoll` or `pselect6`: when the wait ends (kept in the call's slot as the time
+/// asked for, and with `select_estimate_accuracy`'s slack as when the thread is woken), then the
+/// temporary signal mask (`set_user_sigmask`).
+fn start_wait(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    duration: Option<u64>,
+    mask: u64,
+    mask_size: u64,
+) -> Result<(), Errno> {
+    let now = cx.monotonic();
+    let new_mask = if mask != 0 {
+        if mask_size != 8 {
+            return Err(Errno::EINVAL);
+        }
+        Some(guest(kernel, cx, tid).read_value::<u64>(mask)?)
+    } else {
+        None
+    };
+    let thread = kernel.thread_mut(tid);
+    if let Some(duration) = duration {
+        let until = now.saturating_add(duration);
+        let slack = if thread.timer_slack == 0 {
+            0
+        } else {
+            // 0.1% of the time left (0.5% for a nice thread), at most 100 ms, at least the slack.
+            const MAX_SLACK: u64 = 100_000_000;
+            let divisor = if thread.schedule.nice > 0 { 200 } else { 1000 };
+            (duration / divisor).min(MAX_SLACK).max(thread.timer_slack)
+        };
+        thread.call.progress = until;
+        thread.call.deadline = Some(until.saturating_add(slack));
+    }
+    if let Some(new_mask) = new_mask {
+        thread.saved_mask = Some(thread.signal_mask);
+        thread.signal_mask = new_mask & !crate::signal::UNBLOCKABLE;
+    }
+    thread.call.started = true;
+    Ok(())
+}
+
+/// After a run of `ppoll` or `pselect6` found nothing ready: it ends with none when its time is up,
+/// is interrupted by a signal, or parks until a file's readiness changes.
+fn nothing_ready(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+) -> Option<Result<u64, Errno>> {
+    let call = kernel.threads[&tid].call;
+    if call
+        .deadline
+        .is_some_and(|_| call.progress <= cx.monotonic())
+    {
+        return Some(Ok(0));
+    }
+    if kernel.signal_pending(tid) {
+        return Some(Err(Errno::ERESTARTNOHAND));
+    }
+    kernel.park(tid, crate::process::Channel::Readiness);
+    None
 }
 
 /// As Linux's `poll_select_finish`: the time left goes back into a non-zero timeout, whatever the
-/// result, and a failure to write it is ignored. A wait that parks will time out with none left.
+/// result (so a restarted call waits only what is left), a failure to write it is ignored, and the
+/// signal mask goes back unless a handler is to run first.
 fn finish_wait(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     timeout: u64,
-    until: Option<(u64, u64)>,
-    result: Result<Option<u64>, Errno>,
+    result: Option<Result<u64, Errno>>,
 ) -> super::Outcome {
-    if let Some((duration, until)) = until
-        && duration != 0
-    {
-        let left = match result {
-            Ok(Some(_)) | Err(_) => until.saturating_sub(cx.host.monotonic_nanoseconds()),
-            Ok(None) => 0,
-        };
+    let Some(result) = result else {
+        return super::Outcome::Parked;
+    };
+    let call = kernel.threads[&tid].call;
+    if timeout != 0 && call.deadline.is_some() {
+        let left = call.progress.saturating_sub(cx.monotonic());
         let value = __kernel_timespec {
             tv_sec: (left / 1_000_000_000) as i64,
             tv_nsec: (left % 1_000_000_000) as i64,
         };
         let _ = guest(kernel, cx, tid).write_value(timeout, &value);
     }
-    match result {
-        Ok(Some(ready)) => super::Outcome::Return(ready),
-        Ok(None) => super::Outcome::Parked,
-        Err(error) => Err(error).into(),
+    if result != Err(Errno::ERESTARTNOHAND)
+        && let Some(saved) = kernel.thread_mut(tid).saved_mask.take()
+    {
+        kernel.thread_mut(tid).signal_mask = saved;
     }
-}
-
-/// Parks a waiting thread until its timeout, or for ever (until a signal, K2). The timer may end as
-/// late as `select_estimate_accuracy`'s slack after the timeout, and with nothing else to wake the
-/// machine it does.
-fn park_until(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, until: Option<u64>) {
-    let parked = match until {
-        Some(until) => {
-            let thread = &kernel.threads[&tid];
-            let slack = if thread.timer_slack == 0 {
-                0
-            } else {
-                // 0.1% of the time left (0.5% for a nice thread), at most 100 ms, at least the slack.
-                const MAX_SLACK: u64 = 100_000_000;
-                let divisor = if thread.schedule.nice > 0 { 200 } else { 1000 };
-                let left = until.saturating_sub(cx.host.monotonic_nanoseconds());
-                (left / divisor).min(MAX_SLACK).max(thread.timer_slack)
-            };
-            crate::process::Parked::Until {
-                nanoseconds: until.saturating_add(slack),
-            }
-        }
-        None => crate::process::Parked::Forever,
-    };
-    kernel.park(cx, tid, parked);
+    result.into()
 }
 
 pub(super) fn ppoll(
@@ -2207,22 +2631,22 @@ pub(super) fn ppoll(
     tid: Tid,
     [fds, count, timeout, mask, mask_size, _]: Args,
 ) -> super::Outcome {
-    // The timeout first; a bad one ends the call before anything else.
-    let until = match read_timeout(kernel, cx, tid, timeout) {
-        Ok(until) => until,
-        Err(error) => return Err(error).into(),
+    if !kernel.threads[&tid].call.started {
+        // The timeout first; a bad one ends the call before anything else. A zero timeout never
+        // waits.
+        let duration = match read_timeout(kernel, cx, tid, timeout) {
+            Ok(duration) => duration,
+            Err(error) => return Err(error).into(),
+        };
+        if let Err(error) = start_wait(kernel, cx, tid, duration, mask, mask_size) {
+            return Err(error).into();
+        }
+    }
+    let result = match ppoll_typed(kernel, cx, tid, fds, count) {
+        Ok(0) => nothing_ready(kernel, cx, tid),
+        result => Some(result),
     };
-    let result = ppoll_typed(
-        kernel,
-        cx,
-        tid,
-        fds,
-        count,
-        until.map(|(_, until)| until),
-        mask,
-        mask_size,
-    );
-    finish_wait(kernel, cx, tid, timeout, until, result)
+    finish_wait(kernel, cx, tid, timeout, result)
 }
 
 pub(super) fn pselect6(
@@ -2231,54 +2655,54 @@ pub(super) fn pselect6(
     tid: Tid,
     [count, read, write, except, timeout, mask_pack]: Args,
 ) -> super::Outcome {
-    // The signal mask's address and size first, then the timeout.
-    let (mask, mask_size) = if mask_pack != 0 {
-        match guest(kernel, cx, tid).read(mask_pack, 16) {
-            Ok(bytes) => (
-                u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
-                u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes")),
-            ),
+    if !kernel.threads[&tid].call.started {
+        // The signal mask's address and size first, then the timeout.
+        let (mask, mask_size) = if mask_pack != 0 {
+            match guest(kernel, cx, tid).read(mask_pack, 16) {
+                Ok(bytes) => (
+                    u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+                    u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes")),
+                ),
+                Err(error) => return Err(error).into(),
+            }
+        } else {
+            (0, 0)
+        };
+        let duration = match read_timeout(kernel, cx, tid, timeout) {
+            Ok(duration) => duration,
             Err(error) => return Err(error).into(),
+        };
+        if let Err(error) = start_wait(kernel, cx, tid, duration, mask, mask_size) {
+            return Err(error).into();
         }
-    } else {
-        (0, 0)
+    }
+    let result = match select_typed(kernel, cx, tid, count, [read, write, except]) {
+        Ok(None) => nothing_ready(kernel, cx, tid).map(|result| {
+            // A timeout writes back the sets, empty.
+            if result == Ok(0) {
+                select_typed(kernel, cx, tid, count, [read, write, except])
+                    .map(|ready| ready.unwrap_or(0))
+                    .and(Ok(0))
+            } else {
+                result
+            }
+        }),
+        Ok(Some(ready)) => Some(Ok(ready)),
+        Err(error) => Some(Err(error)),
     };
-    let until = match read_timeout(kernel, cx, tid, timeout) {
-        Ok(until) => until,
-        Err(error) => return Err(error).into(),
-    };
-    let result = select_typed(
-        kernel,
-        cx,
-        tid,
-        count,
-        [read, write, except],
-        until.map(|(_, until)| until),
-        mask,
-        mask_size,
-    );
-    finish_wait(kernel, cx, tid, timeout, until, result)
+    finish_wait(kernel, cx, tid, timeout, result)
 }
 
-/// `pselect6` after its timeout is read, as Linux's `core_sys_select`: Some(count) when it returns now,
-/// None when it waits.
-#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+/// One look at `pselect6`'s sets, as Linux's `core_sys_select`: Some(count) and the sets written
+/// back when something is ready, None when nothing is (the sets are then written back empty only
+/// when the call returns).
 fn select_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     count: u64,
     sets: [u64; 3],
-    until: Option<u64>,
-    mask: u64,
-    mask_size: u64,
 ) -> Result<Option<u64>, Errno> {
-    if mask != 0 {
-        if mask_size != 8 {
-            return Err(Errno::EINVAL);
-        }
-        guest(kernel, cx, tid).read(mask, 8)?;
-    }
     let count = count as i32;
     if count < 0 {
         return Err(Errno::EINVAL);
@@ -2317,7 +2741,7 @@ fn select_typed(
             }
             // `select_poll_one`: an `O_PATH` descriptor is not found, so it is invalid, which every
             // set reports.
-            let mask = poll_mask(&files.file(fd as i32)?);
+            let mask = poll_mask(kernel, tid, &files.file(fd as i32)?);
             if u32::from(mask) & kinds[index] != 0 {
                 result[(fd / 8) as usize] |= 1 << (fd % 8);
                 ready += 1;
@@ -2325,40 +2749,29 @@ fn select_typed(
         }
         results[index] = result;
     }
-    let returns = ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds());
-    // The sets are written back when the call returns; a timeout returns them empty.
-    if returns || until.is_some() {
-        for (address, result) in sets.iter().zip(&results) {
-            if *address != 0 {
-                guest(kernel, cx, tid).write(*address, result)?;
-            }
+    if ready == 0 {
+        let call = kernel.threads[&tid].call;
+        let over = call.deadline.is_some() && call.progress <= cx.monotonic();
+        if !over {
+            return Ok(None);
         }
     }
-    if returns {
-        return Ok(Some(ready));
+    for (address, result) in sets.iter().zip(&results) {
+        if *address != 0 {
+            guest(kernel, cx, tid).write(*address, result)?;
+        }
     }
-    park_until(kernel, cx, tid, until);
-    Ok(None)
+    Ok(Some(ready))
 }
 
-/// `ppoll` after its timeout is read: Some(count) when it returns now, None when it waits.
-#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+/// One look at `ppoll`'s descriptors: how many are ready, each one's events written back.
 fn ppoll_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     fds: u64,
     count: u64,
-    until: Option<u64>,
-    mask: u64,
-    mask_size: u64,
-) -> Result<Option<u64>, Errno> {
-    if mask != 0 {
-        if mask_size != 8 {
-            return Err(Errno::EINVAL);
-        }
-        guest(kernel, cx, tid).read(mask, 8)?;
-    }
+) -> Result<u64, Errno> {
     if count > nofile_limit(kernel, tid) {
         return Err(Errno::EINVAL);
     }
@@ -2371,7 +2784,9 @@ fn ppoll_typed(
             0
         } else {
             match kernel.process_of(tid).files.file(fd) {
-                Ok(file) => poll_mask(&file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16),
+                Ok(file) => {
+                    poll_mask(kernel, tid, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
+                }
                 Err(_) => POLLNVAL as u16,
             }
         };
@@ -2380,12 +2795,18 @@ fn ppoll_typed(
             ready += 1;
         }
     }
-    guest(kernel, cx, tid).write(fds, &entries)?;
-    if ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds()) {
-        return Ok(Some(ready));
+    // Only each entry's `revents` is stored, one store each.
+    let stores: Vec<(u64, &[u8])> = entries
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (8 * index as u64 + 6, &entry[6..]))
+        .collect();
+    if guest(kernel, cx, tid).put_each(fds, &stores) < stores.len() {
+        return Err(Errno::EFAULT);
     }
-    park_until(kernel, cx, tid, until);
-    Ok(None)
+    Ok(ready)
 }
 
 /// `cachestat`: how many of a file's pages are in memory. Only tmpfs files hold pages here (as in

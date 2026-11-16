@@ -29,6 +29,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
@@ -46,6 +47,13 @@
 // How long a sequence may take before its child is killed: only one that waits for ever comes near it.
 #define DEADLINE_SECONDS 60
 #define SELF 0x5e1f5e1f00000001ULL
+// Replaced by the last identifier shmget gave in the sequence (`SEGMENT` in layer1.rs).
+#define SEGMENT 0x5e1f5e1f00000002ULL
+#define NO_SEGMENT 4000
+// Replaced by the last identifier msgget gave (`QUEUE` in layer1.rs).
+#define QUEUE 0x5e1f5e1f00000003ULL
+// Replaced by the last identifier semget gave (`SEMAPHORES` in layer1.rs).
+#define SEMAPHORES 0x5e1f5e1f00000004ULL
 #define PLAY 0x71000000UL
 #define PLAY_PAGES 16
 // The ranges sent with each call (`CLEARS` in layer1.rs).
@@ -123,10 +131,18 @@ static uint32_t lists_processes(int fd) {
 
 // Whether a descriptor is on /dev/random or /dev/urandom, whose bytes differ between the runners. By
 // the bare call: musl's fstat may also call fcntl, which a sequence's filter would see.
+// The device of the mqueue file system, found at the start.
+static dev_t mqueue_device;
+
+// A random device, or a message queue, whose file reads as its notification's process number,
+// which differs between the runners.
 static int random_device(uint64_t fd) {
     struct stat st;
-    return syscall(SYS_fstat, (int)fd, &st) == 0 && S_ISCHR(st.st_mode) && major(st.st_rdev) == 1 &&
-           (minor(st.st_rdev) == 8 || minor(st.st_rdev) == 9);
+    if (syscall(SYS_fstat, (int)fd, &st) != 0) {
+        return 0;
+    }
+    return (S_ISCHR(st.st_mode) && major(st.st_rdev) == 1 && (minor(st.st_rdev) == 8 || minor(st.st_rdev) == 9)) ||
+           (S_ISREG(st.st_mode) && st.st_dev == mqueue_device);
 }
 
 #define MAX_RW_COUNT 0x7ffff000UL
@@ -169,7 +185,7 @@ static uint32_t clear_random(const uint64_t *call, int64_t result, int64_t out_b
         }
         uint64_t wanted = a[2] < MAX_RW_COUNT ? a[2] : MAX_RW_COUNT;
         clear_range(a[1], wanted);
-        return 2 | ((uint64_t)result < wanted);
+        return 2;
     }
     case SYS_readv:
     case SYS_preadv:
@@ -187,7 +203,7 @@ static uint32_t clear_random(const uint64_t *call, int64_t result, int64_t out_b
             clear_range((uint64_t)parts[index].iov_base, length);
             total += length;
         }
-        return 2 | ((uint64_t)result < total);
+        return 2;
     }
     case SYS_sendfile:
         if (out_before < 0) {
@@ -258,6 +274,10 @@ static void write_all(int fd, const void *from, size_t length) {
     }
 }
 
+// A child made by clone ends at once with this status (`CHILD_STATUS` in layer1.rs), before it
+// touches the stack it may share with its parent (vfork).
+#define CHILD_STATUS 7
+
 static long raw(long number, const uint64_t *a) {
     register long x8 __asm__("x8") = number;
     register long x0 __asm__("x0") = a[0];
@@ -266,7 +286,28 @@ static long raw(long number, const uint64_t *a) {
     register long x3 __asm__("x3") = a[3];
     register long x4 __asm__("x4") = a[4];
     register long x5 __asm__("x5") = a[5];
-    __asm__ volatile("svc 0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5) : "memory");
+    // A clone answering 0 may also be a filter's ERRNO of 0 in the caller: getpid tells them apart
+    // (sequences with clone let getpid through their filters).
+    register long caller __asm__("x9") = self_pid;
+    __asm__ volatile("svc 0\n\t"
+                     "cmp x8, %[clone]\n\t"
+                     "b.ne 1f\n\t"
+                     "cbnz x0, 1f\n\t"
+                     "mov x8, %[getpid]\n\t"
+                     "svc 0\n\t"
+                     "cmp x0, x9\n\t"
+                     "b.eq 2f\n\t"
+                     "mov x0, %[status]\n\t"
+                     "mov x8, %[exit]\n\t"
+                     "svc 0\n"
+                     "2:\n\t"
+                     "mov x0, #0\n"
+                     "1:"
+                     : "+r"(x0), "+r"(x8)
+                     : "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5), "r"(caller),
+                       [clone] "i"(SYS_clone), [getpid] "i"(SYS_getpid),
+                       [status] "i"(CHILD_STATUS), [exit] "i"(SYS_exit_group)
+                     : "memory", "cc");
     return x0;
 }
 
@@ -327,18 +368,66 @@ static void remove_tree(int directory_fd, const char *name) {
 // Remakes the devices a sequence can name. The container's first /dev/null stays held from outside
 // the container once removed (measured: its inode is never given back), so it is remade once before
 // the first sequence too, and each sequence starts with one hidden inode in /dev, as ours does.
+// Whether a sequence opens a pseudo-terminal (`opens_terminal` in layer1.rs).
+static int opens_terminal(uint64_t (*sequence)[CALL_WORDS], uint32_t calls) {
+    for (uint32_t index = 0; index < calls; index++) {
+        uint64_t path = sequence[index][2];
+        if ((sequence[index][0] == SYS_openat || sequence[index][0] == SYS_openat2) &&
+            path >= (uint64_t)ARENA && path < (uint64_t)ARENA + ARENA_SIZE - 16) {
+            const char *name = (const char *)path;
+            if (strcmp(name, "/dev/ptmx") == 0 || (strncmp(name, "/dev/pts/", 9) == 0 && name[9])) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// Polls every descriptor, twice: Linux moves what one side of a pseudo-terminal wrote into the other
+// side's line discipline later, from a work queue, and a poll runs that work (`n_tty_poll`); echoes
+// it makes need the second round. Ours moves it at once.
+static void settle_terminals(void) {
+    static struct pollfd fds[64];
+    struct timespec zero = {0, 0};
+    for (int round = 0; round < 2; round++) {
+        for (int start = 3; start < 1024; start += 64) {
+            for (int index = 0; index < 64; index++) {
+                fds[index].fd = start + index;
+                fds[index].events = POLLIN;
+            }
+            if (syscall(SYS_ppoll, fds, 64, &zero, 0, 8) < 0) {
+                // Fewer descriptors allowed than 64: one at a time.
+                for (int index = 0; index < 64; index++) {
+                    syscall(SYS_ppoll, &fds[index], 1, &zero, 0, 8);
+                }
+            }
+        }
+    }
+}
+
 static void remake_devices(void) {
-    static const struct { const char *path; int minor; } devices[] = {
-        {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}, {"/dev/random", 8}, {"/dev/urandom", 9}};
-    for (int index = 0; index < 5; index++) {
+    static const struct { const char *path; int major, minor; } devices[] = {
+        {"/dev/null", 1, 3}, {"/dev/zero", 1, 5}, {"/dev/full", 1, 7}, {"/dev/random", 1, 8},
+        {"/dev/urandom", 1, 9}, {"/dev/tty", 5, 0}};
+    for (int index = 0; index < 6; index++) {
         remove_tree(AT_FDCWD, devices[index].path);
-        mknod(devices[index].path, S_IFCHR | 0666, makedev(1, devices[index].minor));
+        mknod(devices[index].path, S_IFCHR | 0666, makedev(devices[index].major, devices[index].minor));
         chmod(devices[index].path, 0666);
     }
+    // The master's link into devpts, and the node it names.
+    remove_tree(AT_FDCWD, "/dev/ptmx");
+    symlink("pts/ptmx", "/dev/ptmx");
+    chown("/dev/pts/ptmx", 0, 0);
+    chmod("/dev/pts/ptmx", 0666);
 }
 
 int main(void) {
     remake_devices();
+    struct stat mqueue_root;
+    if (stat("/dev/mqueue", &mqueue_root) != 0) {
+        return 1;
+    }
+    mqueue_device = mqueue_root.st_dev;
     static unsigned char arena_init[ARENA_SIZE];
     static const char *const outliving_paths[] = {"/dev/shm", "/dev"};
     for (int index = 0; index < 2; index++) {
@@ -383,14 +472,41 @@ int main(void) {
             setsid();
             self_pid = getpid();
             uint64_t self = (uint64_t)self_pid;
+            int terminal = opens_terminal(sequence, calls);
+            uint64_t segment = NO_SEGMENT;
+            uint64_t queue = NO_SEGMENT;
+            uint64_t semaphores = NO_SEGMENT;
             for (uint32_t index = 0; index < calls; index++) {
                 for (int argument = 1; argument < 7; argument++) {
                     if (sequence[index][argument] == SELF) {
                         sequence[index][argument] = self;
                     }
+                    if (sequence[index][argument] == SEGMENT) {
+                        sequence[index][argument] = segment;
+                    }
+                    if (sequence[index][argument] == QUEUE) {
+                        sequence[index][argument] = queue;
+                    }
+                    if (sequence[index][argument] == SEMAPHORES) {
+                        sequence[index][argument] = semaphores;
+                    }
                 }
                 int64_t out_before = random_output(sequence[index]);
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
+                if (sequence[index][0] == SYS_shmget && result >= 0) {
+                    segment = (uint64_t)result;
+                }
+                if (sequence[index][0] == SYS_msgget && result >= 0) {
+                    queue = (uint64_t)result;
+                }
+                if (sequence[index][0] == SYS_semget && result >= 0) {
+                    semaphores = (uint64_t)result;
+                }
+                // A child is waited for until it has ended, left to be reaped.
+                if (sequence[index][0] == SYS_clone && result > 0) {
+                    siginfo_t info;
+                    waitid(P_PID, (id_t)result, &info, WEXITED | WNOWAIT | __WALL);
+                }
                 uint32_t unshared = clear_random(sequence[index], result, out_before);
                 if (sequence[index][0] == SYS_getdents64 || sequence[index][0] == SYS_lseek) {
                     unshared |= outlives((int)sequence[index][1]) || lists_processes((int)sequence[index][1]);
@@ -402,6 +518,9 @@ int main(void) {
                 write_all(1, &unshared, 4);
                 report_changes(1);
                 clear_machine(&sequence[index][7], result);
+                if (terminal) {
+                    settle_terminals();
+                }
             }
             static unsigned char page[4096];
             for (int index = 0; index < PLAY_PAGES; index++) {
@@ -448,6 +567,10 @@ int main(void) {
         close(report[0]);
         int status;
         waitpid(child, &status, 0);
+        // The sequence's own children, handed to this first process when it ended, so that no
+        // later sequence finds them (kill of every process would reach them).
+        while (waitpid(-1, NULL, WNOHANG) > 0) {
+        }
         uint32_t header = (uint32_t)used;
         write_all(1, &header, 4);
         write_all(1, reported, used);
@@ -467,6 +590,50 @@ int main(void) {
         }
         chown("/dev/shm", 0, 0);
         chmod("/dev/shm", 01777);
+        // Every shared memory segment goes; the slots and sequence numbers carry over.
+        static unsigned char segment_status[112];
+        long highest = syscall(SYS_shmctl, 0, 3, segment_status);
+        for (long slot = 0; slot <= highest; slot++) {
+            long id = syscall(SYS_shmctl, slot, 15, segment_status);
+            if (id >= 0) {
+                // As its creator, who may remove it whoever owns it now.
+                uint32_t creator;
+                memcpy(&creator, segment_status + 12, 4);
+                syscall(SYS_setresuid, -1, creator, -1);
+                syscall(SYS_shmctl, id, 0, 0);
+                syscall(SYS_setresuid, -1, 0, -1);
+                // A change of user takes away dumpable, which later sequences inherit.
+                prctl(PR_SET_DUMPABLE, 1);
+            }
+        }
+        // So does every message queue.
+        static unsigned char queue_status[120];
+        highest = syscall(SYS_msgctl, 0, 3, queue_status);
+        for (long slot = 0; slot <= highest; slot++) {
+            long id = syscall(SYS_msgctl, slot, 13, queue_status);
+            if (id >= 0) {
+                uint32_t creator;
+                memcpy(&creator, queue_status + 12, 4);
+                syscall(SYS_setresuid, -1, creator, -1);
+                syscall(SYS_msgctl, id, 0, 0);
+                syscall(SYS_setresuid, -1, 0, -1);
+                prctl(PR_SET_DUMPABLE, 1);
+            }
+        }
+        // And every semaphore set.
+        static unsigned char set_status[88];
+        highest = syscall(SYS_semctl, 0, 0, 3, set_status);
+        for (long slot = 0; slot <= highest; slot++) {
+            long id = syscall(SYS_semctl, slot, 0, 20, set_status);
+            if (id >= 0) {
+                uint32_t creator;
+                memcpy(&creator, set_status + 12, 4);
+                syscall(SYS_setresuid, -1, creator, -1);
+                syscall(SYS_semctl, id, 0, 0, 0);
+                syscall(SYS_setresuid, -1, 0, -1);
+                prctl(PR_SET_DUMPABLE, 1);
+            }
+        }
         static char names[65536];
         long names_length = listxattr("/dev/shm", names, sizeof names);
         for (long at = 0; at < names_length; at += strlen(names + at) + 1) {
@@ -489,6 +656,18 @@ int main(void) {
                 removexattr(above[index], names + at);
             }
         }
+        // Every message queue goes, and the mqueue root gets back its owner and mode.
+        DIR *queues = opendir("/dev/mqueue");
+        for (struct dirent *entry; queues && (entry = readdir(queues));) {
+            if (entry->d_name[0] != '.') {
+                unlinkat(dirfd(queues), entry->d_name, 0);
+            }
+        }
+        if (queues) {
+            closedir(queues);
+        }
+        chown("/dev/mqueue", 0, 0);
+        chmod("/dev/mqueue", 01777);
         remake_devices();
         // `..` from a process directory reaches /proc, which keeps a change of owner or mode.
         chown("/proc", 0, 0);

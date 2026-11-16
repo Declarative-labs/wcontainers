@@ -95,6 +95,7 @@ pub(super) fn brk(
         shared: false,
         locked: map.future_lock,
         grows_down: false,
+        on_fork: crate::memory::OnFork::default(),
         backing: Backing::Heap,
     };
     if map.insert(cx.cpu, process.memory, heap).is_err() {
@@ -125,17 +126,33 @@ pub(super) fn mmap(
         }
         Some(file)
     };
+    do_mmap(kernel, cx, tid, address, length, prot, flags, file, offset)
+}
+
+/// Linux's `do_mmap`: maps `file` (or anonymous memory) at `offset`, which is page aligned.
+#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+pub(super) fn do_mmap(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    length: u64,
+    prot: u64,
+    flags: u32,
+    file: Option<crate::file::FileRef>,
+    offset: u64,
+) -> Result<u64, Errno> {
     // `ksys_mmap_pgoff`: only a hugetlbfs file takes huge pages, and none can be made here.
     if flags & MAP_HUGETLB != 0 && file.is_some() {
         return Err(Errno::EINVAL);
     }
     if flags & MAP_HUGETLB != 0 {
-        kernel.counters.count(
+        return Err(kernel.counters.refuse_flag(
             cx.host,
-            reason::MEMORY_FLAG_NOT_IMPLEMENTED,
+            __NR_mmap,
             MAP_HUGETLB.into(),
-        );
-        return Err(Errno::ENOMEM);
+            Errno::ENOMEM,
+        ));
     }
     if length == 0 {
         return Err(Errno::EINVAL);
@@ -157,7 +174,7 @@ pub(super) fn mmap(
         if length > map.end || address > map.end - length {
             return Err(Errno::ENOMEM);
         }
-        if address % PAGE_SIZE != 0 {
+        if !address.is_multiple_of(PAGE_SIZE) {
             return Err(Errno::EINVAL);
         }
         if address < LOWEST_ADDRESS {
@@ -272,15 +289,23 @@ pub(super) fn mmap(
             }
         }
     };
+    // Linux's `shmem_zero_setup`: shared anonymous memory and shared `/dev/zero` are a shared
+    // mapping of a removed file on its internal tmpfs, from offset 0 for anonymous memory and where
+    // asked for `/dev/zero`, so a child sees the same pages.
+    // Shared anonymous memory starts at offset 0 of its file, whatever offset was given (`do_mmap`).
+    let offset = if shared && file.is_none() && zero_device.is_none() {
+        0
+    } else {
+        offset
+    };
+    let file = match file {
+        None if shared => Some((
+            shared_zero_file(kernel, cx, offset + length)?,
+            b"/dev/zero".to_vec(),
+        )),
+        file => file,
+    };
     let backing = match (&file, zero_device) {
-        // Linux's `shmem_zero_setup`: a removed file on its internal tmpfs, from offset 0 for
-        // anonymous memory and where asked for `/dev/zero`.
-        (None, zero) if shared => Backing::Zero {
-            device: kernel.files.memfd_fs.device,
-            ino: kernel.files.numbers.ino(),
-            offset: if zero.is_some() { offset } else { 0 },
-            name: b"/dev/zero (deleted)".to_vec(),
-        },
         // A private mapping of `/dev/zero` is anonymous memory that keeps the file
         // (`mmap_zero_private_success`).
         (None, Some((device, ino, path))) => Backing::Zero {
@@ -305,6 +330,7 @@ pub(super) fn mmap(
                 path: path.clone(),
                 offset,
                 file_end: start + file_pages.min(length),
+                copied: alloc::collections::BTreeSet::new(),
             }
         }
     };
@@ -318,6 +344,7 @@ pub(super) fn mmap(
         shared,
         locked,
         grows_down,
+        on_fork: crate::memory::OnFork::default(),
         backing,
     };
     // Within the limits, counting what a fixed mapping replaces.
@@ -348,51 +375,91 @@ pub(super) fn mmap(
     }
     let memory = process.memory;
     map.insert(cx.cpu, memory, mapping.clone())?;
-    show_file(kernel, cx, memory, &mapping, start, length)?;
+    crate::shared::show(kernel, cx, memory, &mapping)?;
+    // `do_mmap`'s populate: a locked mapping, or one asked to be filled at once, is faulted in, and
+    // writing a private one copies its file pages.
+    if mapping.locked == Lock::Now || flags & (MAP_POPULATE | MAP_NONBLOCK) == MAP_POPULATE {
+        populate(kernel, cx, tid, start, start + length, true);
+    }
     crate::shared::release(kernel, cx);
     Ok(start)
 }
 
-/// Makes `[start, start + length)` of a file mapping show the file: its block of shared pages for a
-/// shared mapping, a copy of its bytes for a private one.
-fn show_file(
+/// Linux's `__mm_populate` over `[start, end)`, mapping by mapping in order until a page cannot be
+/// brought in (then on at the next mapping if `ignore_errors`): a writable private file mapping is
+/// faulted in for writing, which copies its file pages. Which pages are in memory is not tracked
+/// otherwise.
+fn populate(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    memory: wcontainers_abi::MemoryId,
-    mapping: &Mapping,
+    tid: Tid,
     start: u64,
-    length: u64,
-) -> Result<(), Errno> {
-    let Backing::File { node, offset, .. } = &mapping.backing else {
-        return Ok(());
-    };
-    let offset = offset + (start - mapping.start);
-    // A shared mapping beside private copies of the file, or a private copy of a file mapped shared,
-    // lets the file change unseen by the copies.
-    crate::shared::copies_stale(kernel, cx, node, !mapping.shared);
-    if mapping.shared {
-        crate::shared::attach(kernel, cx, node, memory, start, offset, length)
-    } else {
-        copy_file_pages(cx, memory, node, offset, start, length)
+    end: u64,
+    ignore_errors: bool,
+) {
+    let process = kernel.process_of_mut(tid);
+    let mut at = start;
+    while at < end {
+        let Some(mapping) = process.map.next_after(at).cloned() else {
+            return;
+        };
+        if mapping.start >= end {
+            return;
+        }
+        let from = mapping.start.max(at);
+        let to = mapping.end.min(end);
+        if mapping.permissions.is_empty() {
+            if !ignore_errors {
+                return;
+            }
+            at = to;
+            continue;
+        }
+        let reach = match &mapping.backing {
+            Backing::File { file_end, .. } => to.min(*file_end).max(from),
+            _ => to,
+        };
+        if mapping.permissions.contains(Permissions::WRITE)
+            && process
+                .map
+                .copy_on_write(cx.cpu, process.memory, from, reach)
+                .is_err()
+        {
+            return;
+        }
+        if reach < to && !ignore_errors {
+            return;
+        }
+        at = to;
     }
 }
 
-/// Copies a file's bytes into a private mapping of it: the bytes from `offset` up to the mapping's
-/// length or the file's end. The rest is zero already.
-fn copy_file_pages(
+/// The removed file on the internal tmpfs that shared anonymous memory is (`shmem_kernel_file_setup`).
+fn shared_zero_file(
+    kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    memory: wcontainers_abi::MemoryId,
-    node: &crate::fs::Node,
-    offset: u64,
-    start: u64,
-    length: u64,
-) -> Result<(), Errno> {
-    let inode = node.borrow();
-    let Content::Regular(regular) = &inode.content else {
-        return Ok(());
-    };
-    let bytes = regular.read(cx.cpu, offset, length);
-    cx.cpu.write(memory, start, &bytes).map_err(errno::from_cpu)
+    size: u64,
+) -> Result<crate::fs::Node, Errno> {
+    let now = kernel.now(cx);
+    let ino = kernel.files.numbers.ino();
+    let mut regular = crate::fs::Regular::default();
+    regular.truncate(cx.cpu, size);
+    let node = crate::fs::new_inode(
+        kernel.files.memfd_fs.clone(),
+        ino,
+        crate::fs::New {
+            mode: S_IFREG | 0o777,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            now,
+            content: Content::Regular(regular),
+            parent: None,
+            name: b"dev/zero".to_vec(),
+        },
+    )?;
+    node.borrow_mut().nlink = 0;
+    Ok(node)
 }
 
 pub(super) fn munmap(
@@ -409,7 +476,7 @@ pub(super) fn munmap(
 }
 
 /// Linux's `do_vmi_munmap`: the range must lie below `TASK_SIZE` before its length is rounded up.
-fn unmap(
+pub(super) fn unmap(
     map: &mut crate::memory::AddressMap,
     cx: &mut Context<'_>,
     memory: wcontainers_abi::MemoryId,
@@ -579,10 +646,12 @@ pub(super) fn madvise(
         advice,
         MADV_COLLAPSE | MADV_GUARD_INSTALL | MADV_GUARD_REMOVE
     ) {
-        kernel
-            .counters
-            .count(cx.host, reason::ADVICE_NOT_BUILT, advice.into());
-        return Err(Errno::EINVAL);
+        return Err(kernel.counters.refuse(
+            cx.host,
+            reason::ADVICE_NOT_BUILT,
+            advice.into(),
+            Errno::EINVAL,
+        ));
     }
     if !known {
         return Err(Errno::EINVAL);
@@ -653,8 +722,8 @@ pub(super) fn madvise(
         }
         return Ok(0);
     }
-    // Freeing lazily and wiping on fork are for private anonymous memory only.
-    if matches!(advice, MADV_FREE | MADV_WIPEONFORK)
+    // Freeing lazily is for private anonymous memory only.
+    if advice == MADV_FREE
         && process
             .map
             .iter()
@@ -685,9 +754,7 @@ pub(super) fn madvise(
             }
             let from = mapping.start.max(at);
             let to = mapping.end.min(end);
-            if !mapping.shared {
-                drop_pages(cx, process.memory, &mapping, from, to)?;
-            }
+            drop_pages(cx, process.memory, &mut process.map, &mapping, from, to)?;
             at = to;
         }
     }
@@ -699,15 +766,65 @@ pub(super) fn madvise(
         } else {
             Permissions::READ
         };
+        // Writing a private file mapping's pages copies them; a page wholly past its file's end
+        // faults with SIGBUS, which is EFAULT here.
         let mut at = address;
         while at < end {
-            match process.map.find(at) {
-                None => return Err(Errno::ENOMEM),
-                Some(mapping) if !mapping.permissions.contains(wanted) => {
-                    return Err(Errno::EINVAL);
-                }
-                Some(mapping) => at = mapping.end,
+            let Some(mapping) = process.map.find(at).cloned() else {
+                return Err(Errno::ENOMEM);
+            };
+            if !mapping.permissions.contains(wanted) {
+                return Err(Errno::EINVAL);
             }
+            let to = mapping.end.min(end);
+            let reach = match &mapping.backing {
+                Backing::File { file_end, .. } => to.min(*file_end).max(at),
+                _ => to,
+            };
+            if advice == MADV_POPULATE_WRITE {
+                process
+                    .map
+                    .copy_on_write(cx.cpu, process.memory, at, reach)?;
+            }
+            if reach < to {
+                return Err(Errno::EFAULT);
+            }
+            at = mapping.end;
+        }
+    }
+    // What a fork gives the child and whether a core dump holds it, mapping by mapping as
+    // `madvise_vma_behavior`: a mapping that refuses the advice ends the walk with the ones before it
+    // changed. Wiping is for private anonymous memory; droppable memory is always wiped and never
+    // dumped; the kernel's own pages (`VM_SPECIAL`) are never dumped.
+    let change: Option<fn(&mut crate::memory::OnFork)> = match advice {
+        MADV_DONTFORK => Some(|on_fork| on_fork.skip = true),
+        MADV_DOFORK => Some(|on_fork| on_fork.skip = false),
+        MADV_WIPEONFORK => Some(|on_fork| on_fork.wipe = true),
+        MADV_KEEPONFORK => Some(|on_fork| on_fork.wipe = false),
+        _ => None,
+    };
+    let mapped: Vec<(u64, u64, bool)> = process
+        .map
+        .iter()
+        .filter(|mapping| mapping.start < end && mapping.end > address)
+        .map(|mapping| {
+            let refused = match advice {
+                MADV_WIPEONFORK => {
+                    mapping.shared || matches!(mapping.backing, Backing::File { .. })
+                }
+                MADV_KEEPONFORK => matches!(mapping.backing, Backing::Droppable),
+                MADV_DODUMP => matches!(mapping.backing, Backing::Droppable | Backing::Special(_)),
+                _ => false,
+            };
+            (mapping.start.max(address), mapping.end.min(end), refused)
+        })
+        .collect();
+    for (from, to, refused) in mapped {
+        if refused {
+            return Err(Errno::EINVAL);
+        }
+        if let Some(change) = change {
+            process.map.set_on_fork(from, to, change);
         }
     }
     if !process.map.fully_mapped(address, end) {
@@ -858,7 +975,7 @@ fn remap_at(
             *file_end = (*file_end).min(grown_end).max(old_end);
         }
         map.insert(cx.cpu, memory, extra.clone())?;
-        show_file(kernel, cx, memory, &extra, old_end, grown_end - old_end)?;
+        crate::shared::show(kernel, cx, memory, &extra)?;
         return Ok(old);
     }
     if request.flags & MREMAP_MAYMOVE == 0 {
@@ -994,8 +1111,9 @@ fn move_range(
     let memory = process.memory;
     let map = &mut process.map;
     let old_end = old + old_length;
-    // A shared file mapping shows its file wherever it goes; anything else takes its bytes along.
-    let kept = if mapping.shares_file() {
+    // A file mapping shows its file wherever it goes; its own pages, and anything else, take their
+    // bytes along.
+    let kept = if mapping.shared {
         0
     } else {
         old_length.min(new_length)
@@ -1012,46 +1130,46 @@ fn move_range(
         *file_end = shift((*file_end).clamp(old, old + new_length));
     }
     if request.flags & MREMAP_DONTUNMAP != 0 {
-        drop_pages(cx, memory, mapping, old, old_end)?;
+        drop_pages(cx, memory, map, mapping, old, old_end)?;
     } else {
         map.unmap(cx.cpu, memory, old, old_end)?;
     }
     map.insert(cx.cpu, memory, moved.clone())?;
-    cx.cpu
-        .write(memory, destination, &bytes)
-        .map_err(errno::from_cpu)?;
-    let shown = destination + kept;
-    show_file(kernel, cx, memory, &moved, shown, moved.end - shown)?;
+    let kept_end = destination + kept;
+    for (from, to, own) in moved.runs() {
+        let to = to.min(kept_end);
+        if own && !moved.shared && from < to {
+            let at = (from - destination) as usize;
+            cx.cpu
+                .write(memory, from, &bytes[at..at + (to - from) as usize])
+                .map_err(errno::from_cpu)?;
+        }
+    }
+    crate::shared::show(kernel, cx, memory, &moved)?;
     crate::shared::release(kernel, cx);
     Ok(destination)
 }
 
 /// Puts a private range back to what it held before it was touched: zero, or the file's bytes. A
-/// shared file mapping's pages are the file's and stay.
+/// shared mapping's pages are what it shares and stay.
 fn drop_pages(
     cx: &mut Context<'_>,
     memory: wcontainers_abi::MemoryId,
+    map: &mut crate::memory::AddressMap,
     mapping: &Mapping,
     from: u64,
     to: u64,
 ) -> Result<(), Errno> {
-    if mapping.shares_file() {
+    if mapping.shared {
         return Ok(());
     }
-    cx.cpu
-        .zero(memory, from, to - from)
-        .map_err(errno::from_cpu)?;
-    if let Backing::File { node, offset, .. } = &mapping.backing {
-        copy_file_pages(
-            cx,
-            memory,
-            node,
-            offset + (from - mapping.start),
-            from,
-            to - from,
-        )?;
+    match mapping.backing {
+        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to),
+        _ => cx
+            .cpu
+            .zero(memory, from, to - from)
+            .map_err(errno::from_cpu),
     }
-    Ok(())
 }
 
 pub(super) fn msync(
@@ -1095,6 +1213,7 @@ fn can_lock(kernel: &Kernel, tid: Tid) -> bool {
 /// locked memory.
 fn lock_range(
     kernel: &mut Kernel,
+    cx: &mut Context<'_>,
     tid: Tid,
     address: u64,
     length: u64,
@@ -1134,7 +1253,20 @@ fn lock_range(
             mapping.permissions.is_empty()
                 || matches!(mapping.backing, Backing::File { file_end, .. } if file_end < end.min(mapping.end))
         });
-    if lock == Lock::Now && unreadable {
+    // Droppable memory that allows nothing is ENOMEM to either kind of lock (measured).
+    let droppable_closed = process.map.iter().any(|mapping| {
+        mapping.start < end
+            && mapping.end > start
+            && matches!(mapping.backing, Backing::Droppable)
+            && mapping.permissions.is_empty()
+    });
+    if lock == Lock::Now {
+        populate(kernel, cx, tid, start, end, false);
+        if unreadable {
+            return Err(Errno::ENOMEM);
+        }
+    }
+    if lock != Lock::None && droppable_closed {
         return Err(Errno::ENOMEM);
     }
     Ok(0)
@@ -1142,16 +1274,16 @@ fn lock_range(
 
 pub(super) fn mlock(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, ..]: Args,
 ) -> Result<u64, Errno> {
-    lock_range(kernel, tid, address, length, Lock::Now)
+    lock_range(kernel, cx, tid, address, length, Lock::Now)
 }
 
 pub(super) fn mlock2(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1164,22 +1296,22 @@ pub(super) fn mlock2(
     } else {
         Lock::Now
     };
-    lock_range(kernel, tid, address, length, lock)
+    lock_range(kernel, cx, tid, address, length, lock)
 }
 
 pub(super) fn munlock(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let address = crate::user::untagged(address);
-    lock_range(kernel, tid, address, length, Lock::None)
+    lock_range(kernel, cx, tid, address, length, Lock::None)
 }
 
 pub(super) fn mlockall(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1211,6 +1343,9 @@ pub(super) fn mlockall(
     } else {
         Lock::None
     };
+    if flags & MCL_CURRENT != 0 && lock == Lock::Now {
+        populate(kernel, cx, tid, 0, u64::MAX, true);
+    }
     Ok(0)
 }
 
@@ -1371,17 +1506,17 @@ fn process_vm(
     };
     if target.process != kernel.threads[&tid].process {
         // Another process's memory needs Linux's `ptrace_may_access`, which comes with processes.
-        kernel.counters.count(
+        let number = if write {
+            __NR_process_vm_writev
+        } else {
+            __NR_process_vm_readv
+        };
+        return Err(kernel.counters.refuse(
             cx.host,
-            reason::NOT_IMPLEMENTED,
-            if write {
-                __NR_process_vm_writev
-            } else {
-                __NR_process_vm_readv
-            }
-            .into(),
-        );
-        return Err(Errno::ENOSYS);
+            reason::CROSS_PROCESS_NOT_BUILT,
+            number.into(),
+            Errno::ENOSYS,
+        ));
     }
     let mut guest = super::guest(kernel, cx, tid);
     let mut local = local.into_iter().filter(|(_, length)| *length > 0);

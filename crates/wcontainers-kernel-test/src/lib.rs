@@ -36,6 +36,17 @@ pub fn run_both(program: &Path, arguments: &[&str]) -> (driver::Run, driver::Out
 /// Runs `path` with `arguments` (the first is its name) in a container of the reference image with
 /// `directory` at `/wc`.
 pub fn run_ours(directory: &Path, path: &str, arguments: &[&str]) -> driver::Run {
+    run_ours_saving(directory, path, arguments, 0, 0)
+}
+
+/// As [`run_ours`], with the run's seed and saved and brought back `saves` times.
+pub fn run_ours_saving(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    saves: usize,
+) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, "wc"));
     let container = driver::Container {
@@ -45,7 +56,7 @@ pub fn run_ours(directory: &Path, path: &str, arguments: &[&str]) -> driver::Run
         environment: reference::ENVIRONMENT,
         working_directory: "/",
     };
-    driver::run(&container, 0)
+    driver::run_saving(&container, seed, saves)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
 }
 

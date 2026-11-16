@@ -47,6 +47,8 @@ pub enum Unsupported {
 struct Stopped {
     exception: Option<u32>,
     fault: Option<(u64, Access)>,
+    /// Instructions of the blocks entered, for how long the turn took.
+    instructions: u64,
 }
 
 struct Memory {
@@ -58,6 +60,8 @@ struct Memory {
     mapped: BTreeMap<u64, (u64, Permissions)>,
     /// Ranges that show a block: start to (end, the block's host memory for the start).
     shared: BTreeMap<u64, (u64, *mut u8)>,
+    /// Pages that may hold something other than zeros, one bit each, so a copy copies only those.
+    touched: Vec<u64>,
 }
 
 /// A block of shared pages, in host memory that lives until the block is dropped.
@@ -79,6 +83,8 @@ pub struct StandIn {
     last_memory: u32,
     last_thread: u32,
     last_block: u32,
+    /// How many instructions the last turn ran, about: whole blocks are counted.
+    pub last_instructions: u64,
 }
 
 fn prot(permissions: Permissions) -> Prot {
@@ -125,6 +131,11 @@ impl Memory {
                 unicorn.emu_stop().expect("stopping unicorn");
             })
             .expect("adding the interrupt hook");
+        unicorn
+            .add_block_hook(1, 0, |unicorn, _, size| {
+                unicorn.get_data_mut().instructions += u64::from(size / 4);
+            })
+            .expect("adding the block hook");
         let invalid = HookType(
             HookType::MEM_READ_UNMAPPED.0
                 | HookType::MEM_WRITE_UNMAPPED.0
@@ -152,7 +163,33 @@ impl Memory {
             pages: vec![Permissions::empty(); (ADDRESS_SPACE_END / PAGE_SIZE) as usize],
             mapped: BTreeMap::new(),
             shared: BTreeMap::new(),
+            touched: vec![0; (ADDRESS_SPACE_END / PAGE_SIZE / 64) as usize],
         })
+    }
+
+    /// Notes that the pages over `[start, end)` may hold bytes.
+    fn touch(&mut self, start: u64, end: u64) {
+        for page in start / PAGE_SIZE..end.div_ceil(PAGE_SIZE) {
+            self.touched[(page / 64) as usize] |= 1 << (page % 64);
+        }
+    }
+
+    /// A copy with the same bytes, permissions and shared ranges, on a new unicorn instance.
+    fn duplicate(&self) -> Result<Self, CpuError> {
+        let mut copy = Self::new()?;
+        for (word, bits) in self.touched.iter().enumerate() {
+            if *bits == 0 {
+                continue;
+            }
+            let start = word as u64 * 64 * PAGE_SIZE;
+            let range = start as usize..(start + 64 * PAGE_SIZE) as usize;
+            copy.bytes[range.clone()].copy_from_slice(&self.bytes[range]);
+        }
+        copy.touched.clone_from(&self.touched);
+        copy.pages.clone_from(&self.pages);
+        copy.shared.clone_from(&self.shared);
+        copy.remap(0, ADDRESS_SPACE_END);
+        Ok(copy)
     }
 
     /// Where the byte at `address` lives in host memory, and how many bytes from it are contiguous
@@ -326,8 +363,72 @@ impl StandIn {
         Self::default()
     }
 
+    /// A new CPU side holding what this one holds, as bringing back a saved container makes it: every
+    /// memory, block of shared pages and thread's registers copied under the same handles, on new
+    /// emulator instances with nothing translated or cached.
+    pub fn restored(&self) -> Self {
+        let mut blocks = HashMap::new();
+        let mut moved = Vec::new();
+        for (id, block) in &self.blocks {
+            let mut bytes = MmapMut::map_anon(block.bytes.len()).expect("host memory for a block");
+            bytes.copy_from_slice(&block.bytes);
+            moved.push((
+                block.bytes.as_ptr() as usize,
+                block.bytes.len(),
+                bytes.as_mut_ptr(),
+            ));
+            blocks.insert(*id, Block { bytes });
+        }
+        let translate = |pointer: *mut u8| {
+            let address = pointer as usize;
+            let (old, _, new) = moved
+                .iter()
+                .find(|(old, length, _)| (*old..old + length).contains(&address))
+                .expect("a shared range shows a block");
+            // SAFETY: the same offset inside the copy, which is as long as the original.
+            unsafe { new.add(address - old) }
+        };
+        let memories = self
+            .memories
+            .iter()
+            .map(|(id, memory)| {
+                let mut copy = memory.duplicate().expect("a new emulator instance");
+                copy.shared = memory
+                    .shared
+                    .iter()
+                    .map(|(start, (end, base))| (*start, (*end, translate(*base))))
+                    .collect();
+                copy.remap(0, ADDRESS_SPACE_END);
+                (*id, copy)
+            })
+            .collect();
+        let threads = self
+            .threads
+            .iter()
+            .map(|(id, thread)| {
+                (
+                    *id,
+                    Thread {
+                        memory: thread.memory,
+                        registers: thread.registers,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            memories,
+            threads,
+            blocks,
+            last_memory: self.last_memory,
+            last_thread: self.last_thread,
+            last_block: self.last_block,
+            last_instructions: 0,
+        }
+    }
+
     /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
-    /// slice, the stop flag is raised once that much time has passed.
+    /// slice, the stop flag is raised after that many instructions (one a nanosecond), so where a
+    /// turn ends repeats exactly.
     pub fn run(
         &mut self,
         thread: ThreadId,
@@ -349,16 +450,21 @@ impl StandIn {
             .load_registers(&state.registers)
             .expect("loading registers into unicorn");
         *memory.unicorn.get_data_mut() = Stopped::default();
-        // Unicorn takes the time limit in microseconds; zero means none.
-        let timeout = slice_nanoseconds.map_or(0, |nanoseconds| (nanoseconds / 1000).max(1));
+        // Zero means no limit.
+        let count = slice_nanoseconds.map_or(0, |nanoseconds| nanoseconds.max(1) as usize);
         let result = memory
             .unicorn
-            .emu_start(state.registers.pc, u64::MAX, timeout, 0);
+            .emu_start(state.registers.pc, u64::MAX, 0, count);
         memory
             .save_registers(&mut state.registers)
             .expect("reading registers from unicorn");
         let stopped = std::mem::take(memory.unicorn.get_data_mut());
+        self.last_instructions = stopped.instructions;
+        // A jump to an address that is not a multiple of 4 faults on alignment before any fetch.
         if let Some((address, access)) = stopped.fault {
+            if access == Access::Execute && !address.is_multiple_of(4) {
+                return Ok(Exit::AlignmentFault { address });
+            }
             return Ok(Exit::MemoryFault { address, access });
         }
         let pc = state.registers.pc;
@@ -417,8 +523,12 @@ impl Cpu for StandIn {
         Ok(id)
     }
 
-    fn memory_duplicate(&mut self, _source: MemoryId) -> Result<MemoryId, CpuError> {
-        Err(CpuError::NotSupported)
+    fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+        let memory = self.memories[&source].duplicate()?;
+        self.last_memory += 1;
+        let id = MemoryId(self.last_memory);
+        self.memories.insert(id, memory);
+        Ok(id)
     }
 
     fn memory_drop(&mut self, memory: MemoryId) {
@@ -436,7 +546,9 @@ impl Cpu for StandIn {
         let memory = self.memories.get_mut(&memory).expect("memory exists");
         memory.pieces(address, from.len() as u64, |piece, at| {
             piece.copy_from_slice(&from[at..at + piece.len()]);
-        })
+        })?;
+        memory.touch(address, address + from.len() as u64);
+        Ok(())
     }
 
     fn zero(&mut self, memory: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
@@ -461,6 +573,9 @@ impl Cpu for StandIn {
         let range = memory.range(address, length)?;
         let pages = range.start / PAGE_SIZE as usize..range.end / PAGE_SIZE as usize;
         memory.pages[pages].fill(permissions);
+        if !permissions.is_empty() {
+            memory.touch(address, address + length);
+        }
         memory.remap(address, address + length);
         Ok(())
     }
@@ -518,6 +633,7 @@ impl Cpu for StandIn {
             // SAFETY: the block holds `end - start` bytes from `base`.
             let bytes = unsafe { std::slice::from_raw_parts(base, (end - start) as usize) };
             memory.bytes[start as usize..end as usize].copy_from_slice(bytes);
+            memory.touch(start, end);
         }
         memory.remap(address, address + length);
         Ok(())

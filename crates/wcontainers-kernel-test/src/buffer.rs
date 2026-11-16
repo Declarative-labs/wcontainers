@@ -16,7 +16,7 @@ type Page = Box<[u8; PAGE_SIZE as usize]>;
 /// Pages that hold something other than zeros, by page number.
 type Pages = BTreeMap<u64, Page>;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Memory {
     pages: Pages,
     /// Ranges that show a block of shared pages: first page to (page after the last, block, the
@@ -138,8 +138,12 @@ impl Cpu for BufferCpu {
         Ok(id)
     }
 
-    fn memory_duplicate(&mut self, _source: MemoryId) -> Result<MemoryId, CpuError> {
-        Err(CpuError::NotSupported)
+    fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+        let copy = self.memories[&source].clone();
+        self.last_memory += 1;
+        let id = MemoryId(self.last_memory);
+        self.memories.insert(id, copy);
+        Ok(id)
     }
 
     fn memory_drop(&mut self, memory: MemoryId) {

@@ -4,7 +4,6 @@
 //! restartable sequence is never interrupted by another thread on its CPU.
 
 use super::{Args, guest};
-use crate::counters::reason;
 use crate::linux::general::membarrier_cmd::*;
 use crate::linux::general::{__NR_rseq, membarrier_cmd_flag};
 use crate::linux_extra::*;
@@ -50,9 +49,9 @@ pub(super) fn rseq(
     }
     // Time slice extensions are not built; a kernel without them refuses the flag.
     if flags == RSEQ_FLAG_SLICE_EXT_DEFAULT_ON {
-        kernel
+        return Err(kernel
             .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(__NR_rseq));
+            .refuse_flag(cx.host, __NR_rseq, flags.into(), Errno::EINVAL));
     }
     if flags != 0 {
         return Err(Errno::EINVAL);

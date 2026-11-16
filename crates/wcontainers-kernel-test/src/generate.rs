@@ -49,6 +49,8 @@ const BYTES: &[&str] = &[
     "fsxattr",
     "file_clone_range",
     "fsuuid2",
+    "termios",
+    "termios2",
 ];
 
 /// One file the generator writes, relative to the workspace root, and what it holds.
