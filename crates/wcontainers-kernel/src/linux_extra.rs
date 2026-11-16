@@ -303,3 +303,110 @@ pub(crate) const BAUD_TABLE: [u32; 31] = [
 /// What n_tty's line discipline holds at most when a pty's reader tells the other side's writers of
 /// room (`TTY_THRESHOLD_UNTHROTTLE`, internal to `n_tty.c`).
 pub const TTY_THRESHOLD_UNTHROTTLE: usize = 128;
+
+// System V IPC (`linux/ipc.h`, `linux/shm.h`, `asm-generic/ipcbuf.h`, `asm-generic/shmbuf.h`), which
+// linux-raw-sys does not generate.
+
+/// The key that always makes a new object (`IPC_PRIVATE`).
+pub(crate) const IPC_PRIVATE: i32 = 0;
+/// `*get` flags: make the object if the key has none, and fail if it has one.
+pub(crate) const IPC_CREAT: u32 = 0o1000;
+pub(crate) const IPC_EXCL: u32 = 0o2000;
+/// `*ctl` commands every kind of object takes.
+pub(crate) const IPC_RMID: i32 = 0;
+pub(crate) const IPC_SET: i32 = 1;
+pub(crate) const IPC_STAT: i32 = 2;
+pub(crate) const IPC_INFO: i32 = 3;
+/// `shmctl`'s own commands.
+pub(crate) const SHM_LOCK: i32 = 11;
+pub(crate) const SHM_UNLOCK: i32 = 12;
+pub(crate) const SHM_STAT: i32 = 13;
+pub(crate) const SHM_INFO: i32 = 14;
+pub(crate) const SHM_STAT_ANY: i32 = 15;
+/// `shmget` flags: huge pages, and no reservation of memory.
+pub(crate) const SHM_HUGETLB: u32 = 0o4000;
+/// `shmat` flags.
+pub(crate) const SHM_RDONLY: u32 = 0o10000;
+pub(crate) const SHM_RND: u32 = 0o20000;
+pub(crate) const SHM_REMAP: u32 = 0o40000;
+pub(crate) const SHM_EXEC: u32 = 0o100000;
+/// Mode bits a segment's status shows: removed once nothing is attached, locked in memory.
+pub(crate) const SHM_DEST: u32 = 0o1000;
+pub(crate) const SHM_LOCKED: u32 = 0o2000;
+/// The smallest segment, and the largest and the most pages of all segments in a new IPC namespace
+/// (`SHMMIN`, `SHMMAX`, `SHMALL`), and the most segments (`SHMMNI`).
+pub(crate) const SHMMIN: u64 = 1;
+pub(crate) const SHMMAX: u64 = u64::MAX - (1 << 24);
+pub(crate) const SHMALL: u64 = u64::MAX - (1 << 24);
+pub(crate) const SHMMNI: u64 = 4096;
+/// Identifiers: the slot in the low 15 bits, the sequence number above (`IPCMNI_SHIFT`), with no
+/// more than `IPCMNI` slots, and slots handed out in a cycle at least `ipc_min_cycle` long.
+pub(crate) const IPCMNI_SHIFT: u32 = 15;
+pub(crate) const IPCMNI: u32 = 1 << IPCMNI_SHIFT;
+pub(crate) const IPC_MIN_CYCLE: u32 = 64;
+
+/// An object's owners and mode as the `*ctl` calls show them (`struct ipc64_perm`).
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct ipc64_perm {
+    pub key: i32,
+    pub uid: u32,
+    pub gid: u32,
+    pub cuid: u32,
+    pub cgid: u32,
+    pub mode: u32,
+    pub seq: u16,
+    pub pad2: u16,
+    pub pad3: u32,
+    pub unused1: u64,
+    pub unused2: u64,
+}
+
+/// A segment's status (`struct shmid64_ds`).
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct shmid64_ds {
+    pub shm_perm: ipc64_perm,
+    pub shm_segsz: u64,
+    pub shm_atime: i64,
+    pub shm_dtime: i64,
+    pub shm_ctime: i64,
+    pub shm_cpid: i32,
+    pub shm_lpid: i32,
+    pub shm_nattch: u64,
+    pub unused4: u64,
+    pub unused5: u64,
+}
+
+/// The limits `IPC_INFO` shows (`struct shminfo64`).
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct shminfo64 {
+    pub shmmax: u64,
+    pub shmmin: u64,
+    pub shmmni: u64,
+    pub shmseg: u64,
+    pub shmall: u64,
+    pub unused: [u64; 4],
+}
+
+/// What `SHM_INFO` shows (`struct shm_info`).
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct shm_info {
+    pub used_ids: i32,
+    pub pad: u32,
+    pub shm_tot: u64,
+    pub shm_rss: u64,
+    pub shm_swp: u64,
+    pub swap_attempts: u64,
+    pub swap_successes: u64,
+}

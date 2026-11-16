@@ -767,7 +767,7 @@ impl AddressMap {
     }
 
     /// Joins neighbouring mappings that are the same, as Linux merges areas: anonymous ones, and shared
-    /// ones of the same file at following offsets (private file pages may have their own copies, which
+    /// ones of the same file at following offsets except System V segments' (private file pages may have their own copies, which
     /// Linux merges only in cases not modelled here).
     fn merge_around(&mut self) {
         let mut merged: BTreeMap<u64, Mapping> = BTreeMap::new();
@@ -801,6 +801,7 @@ impl AddressMap {
                         },
                     ) if mapping.shared
                         && alloc::rc::Rc::ptr_eq(node, next_node)
+                        && !node.borrow().is_segment()
                         && offset + (last.end - last.start) == *next_offset
                         && (*file_end == last.end || *next_file_end == mapping.start) =>
                     {

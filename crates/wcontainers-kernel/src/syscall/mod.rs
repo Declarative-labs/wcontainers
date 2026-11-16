@@ -8,6 +8,7 @@ mod files;
 mod handle;
 mod io;
 mod ioctl;
+pub(crate) mod ipc;
 mod list;
 mod memfd;
 mod memory;
@@ -300,6 +301,10 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_sched_setattr, S(system::sched_setattr)),
         (__NR_sched_getattr, S(system::sched_getattr)),
         (__NR_sched_rr_get_interval, S(system::sched_rr_get_interval)),
+        (__NR_shmget, S(ipc::shmget)),
+        (__NR_shmat, S(ipc::shmat)),
+        (__NR_shmdt, S(ipc::shmdt)),
+        (__NR_shmctl, S(ipc::shmctl)),
     ];
     let mut index = 0;
     while index < implemented.len() {

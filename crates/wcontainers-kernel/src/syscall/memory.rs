@@ -126,6 +126,22 @@ pub(super) fn mmap(
         }
         Some(file)
     };
+    do_mmap(kernel, cx, tid, address, length, prot, flags, file, offset)
+}
+
+/// Linux's `do_mmap`: maps `file` (or anonymous memory) at `offset`, which is page aligned.
+#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+pub(super) fn do_mmap(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    length: u64,
+    prot: u64,
+    flags: u32,
+    file: Option<crate::file::FileRef>,
+    offset: u64,
+) -> Result<u64, Errno> {
     // `ksys_mmap_pgoff`: only a hugetlbfs file takes huge pages, and none can be made here.
     if flags & MAP_HUGETLB != 0 && file.is_some() {
         return Err(Errno::EINVAL);
@@ -158,7 +174,7 @@ pub(super) fn mmap(
         if length > map.end || address > map.end - length {
             return Err(Errno::ENOMEM);
         }
-        if address % PAGE_SIZE != 0 {
+        if !address.is_multiple_of(PAGE_SIZE) {
             return Err(Errno::EINVAL);
         }
         if address < LOWEST_ADDRESS {
@@ -460,7 +476,7 @@ pub(super) fn munmap(
 }
 
 /// Linux's `do_vmi_munmap`: the range must lie below `TASK_SIZE` before its length is rounded up.
-fn unmap(
+pub(super) fn unmap(
     map: &mut crate::memory::AddressMap,
     cx: &mut Context<'_>,
     memory: wcontainers_abi::MemoryId,

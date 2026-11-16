@@ -865,7 +865,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/kernel/pid_max" => out.push_str("4194304\n"),
                 "sys/kernel/random/boot_id" => out.push_str(&uuid(source.boot_id)),
                 "sys/kernel/random/uuid" => out.push_str(&uuid(source.fresh_random)),
-                "sys/vm/overcommit_memory" => out.push_str("0\n"),
+                "sys/vm/overcommit_memory" => out.push_str("1\n"),
                 _ => return Err(Errno::EISDIR),
             }
         }

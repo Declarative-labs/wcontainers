@@ -119,6 +119,8 @@ pub struct Kernel {
     last_credentials: u64,
     counters: Counters,
     files: Files,
+    /// The container's System V IPC objects.
+    ipc: syscall::ipc::Ipc,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -166,6 +168,7 @@ impl Kernel {
             finished: None,
             last_credentials: 0,
             counters: Counters::default(),
+            ipc: Default::default(),
             files: Files {
                 numbers,
                 root,

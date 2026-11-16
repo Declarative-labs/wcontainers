@@ -46,6 +46,9 @@
 // How long a sequence may take before its child is killed: only one that waits for ever comes near it.
 #define DEADLINE_SECONDS 60
 #define SELF 0x5e1f5e1f00000001ULL
+// Replaced by the last identifier shmget gave in the sequence (`SEGMENT` in layer1.rs).
+#define SEGMENT 0x5e1f5e1f00000002ULL
+#define NO_SEGMENT 4000
 #define PLAY 0x71000000UL
 #define PLAY_PAGES 16
 // The ranges sent with each call (`CLEARS` in layer1.rs).
@@ -452,14 +455,21 @@ int main(void) {
             self_pid = getpid();
             uint64_t self = (uint64_t)self_pid;
             int terminal = opens_terminal(sequence, calls);
+            uint64_t segment = NO_SEGMENT;
             for (uint32_t index = 0; index < calls; index++) {
                 for (int argument = 1; argument < 7; argument++) {
                     if (sequence[index][argument] == SELF) {
                         sequence[index][argument] = self;
                     }
+                    if (sequence[index][argument] == SEGMENT) {
+                        sequence[index][argument] = segment;
+                    }
                 }
                 int64_t out_before = random_output(sequence[index]);
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
+                if (sequence[index][0] == SYS_shmget && result >= 0) {
+                    segment = (uint64_t)result;
+                }
                 // A child is waited for until it has ended, left to be reaped.
                 if (sequence[index][0] == SYS_clone && result > 0) {
                     siginfo_t info;
@@ -548,6 +558,20 @@ int main(void) {
         }
         chown("/dev/shm", 0, 0);
         chmod("/dev/shm", 01777);
+        // Every shared memory segment goes; the slots and sequence numbers carry over.
+        static unsigned char segment_status[112];
+        long highest = syscall(SYS_shmctl, 0, 3, segment_status);
+        for (long slot = 0; slot <= highest; slot++) {
+            long id = syscall(SYS_shmctl, slot, 15, segment_status);
+            if (id >= 0) {
+                // As its creator, who may remove it whoever owns it now.
+                uint32_t creator;
+                memcpy(&creator, segment_status + 12, 4);
+                syscall(SYS_setresuid, -1, creator, -1);
+                syscall(SYS_shmctl, id, 0, 0);
+                syscall(SYS_setresuid, -1, 0, -1);
+            }
+        }
         static char names[65536];
         long names_length = listxattr("/dev/shm", names, sizeof names);
         for (long at = 0; at < names_length; at += strlen(names + at) + 1) {

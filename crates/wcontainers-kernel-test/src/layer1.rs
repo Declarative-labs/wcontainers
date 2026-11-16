@@ -104,6 +104,12 @@ const XATTR_VALUES: u64 = 0x3f00;
 /// process although the two runners' numbers differ. Its negation, the caller's own process group, is
 /// not generated: our caller is process 1, and -1 means every process.
 pub const SELF: u64 = 0x5e1f_5e1f_0000_0001;
+/// An argument each runner replaces by the identifier its sequence's last successful shmget gave, or
+/// by `NO_SEGMENT` before one: identifiers differ between the runners (the reference's slots and
+/// sequence numbers carry over from earlier sequences).
+pub const SEGMENT: u64 = 0x5e1f_5e1f_0000_0002;
+/// An identifier whose slot neither runner reaches.
+pub const NO_SEGMENT: u64 = 4000;
 const OUTPUT: u64 = 0x4000;
 
 /// The sequence's work directory, made and entered by its first two calls and removed afterwards.
@@ -687,7 +693,9 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         passed.extend([linux::__NR_waitid, linux::__NR_getpid]);
     }
     for call in &calls {
-        if call.arguments.contains(&SELF) && !passed.contains(&call.number) {
+        if (call.arguments.contains(&SELF) || call.arguments.contains(&SEGMENT))
+            && !passed.contains(&call.number)
+        {
             passed.push(call.number);
         }
     }
@@ -1321,6 +1329,13 @@ pub const CALLS: &[u32] = &[
     // Two more times, so that waits often find children.
     linux::__NR_clone,
     linux::__NR_clone,
+    linux::__NR_shmget,
+    linux::__NR_shmget,
+    linux::__NR_shmat,
+    linux::__NR_shmat,
+    linux::__NR_shmdt,
+    linux::__NR_shmctl,
+    linux::__NR_shmctl,
 ];
 
 /// Turns a generated call into real arguments.
@@ -1449,6 +1464,12 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     // any other (the reference's caller): nothing, or a refusal of the number.
     let signal = |word: u64| pick(&[0u64, 17, 18, 23, 28, 65], word);
     let prot = |word: u64| (word % 8) | if word >> 62 == 3 { 0x100 } else { 0 };
+    let segment = |word: u64| {
+        pick(
+            &[SEGMENT, SEGMENT, SEGMENT, SEGMENT, u64::MAX, NO_SEGMENT],
+            word,
+        )
+    };
     let arguments = match number {
         // One open in eight names a random device, so that later reads reach their bytes.
         linux::__NR_openat if b % 8 == 0 => {
@@ -1815,6 +1836,43 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             ]
         }
         linux::__NR_munmap => [play(a), play_length(b), 0, 0, 0, 0],
+        // Keys from a small pool, sizes the address space holds or that are refused, and the mode in
+        // the low bits.
+        linux::__NR_shmget => [
+            pick(&[0u64, 0x1234, 0x1234, 0x5678, 0xffff_ffff], a),
+            pick(
+                &[0u64, 1, 100, 4096, 5000, 0x9000, 1 << 20, u64::MAX, 1 << 63],
+                b,
+            ),
+            pick(
+                &[0u64, 0o1000, 0o1000, 0o3000, 0o4000, 0o10000, 0o11000],
+                c >> 9,
+            ) | (c % 0o1000),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_shmat => [
+            segment(a),
+            pick(&[0, 0, 100, play(b)], b >> 2),
+            // SHM_RDONLY, SHM_RND, SHM_REMAP and SHM_EXEC in every mix, and an unknown bit.
+            ((c % 16) << 12) | if c >> 60 == 0 { 1 << 20 } else { 0 },
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_shmdt => [pick(&[0, play(a)], a >> 2), 0, 0, 0, 0, 0],
+        linux::__NR_shmctl => [
+            segment(a),
+            pick(
+                &[0u64, 1, 2, 3, 11, 12, 13, 14, 15, 2, 2, 99, u64::MAX, 0x102],
+                b,
+            ),
+            buffer(c),
+            0,
+            0,
+            0,
+        ],
         linux::__NR_mprotect => [play(a), play_length(b), prot(c), 0, 0, 0],
         linux::__NR_pkey_mprotect => [
             play(a),
@@ -3041,11 +3099,15 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         }
     };
     let mut results = Vec::new();
+    let mut segment = NO_SEGMENT;
     for (index, each) in sequence.calls.iter().enumerate() {
         let mut each = *each;
         for argument in &mut each.arguments {
             if *argument == SELF {
                 *argument = pid;
+            }
+            if *argument == SEGMENT {
+                *argument = segment;
             }
         }
         let random = theirs.calls.get(index).is_some_and(|call| call.random);
@@ -3060,6 +3122,12 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
             None
         };
         let outcome = call(&mut kernel, &mut cpu, &mut host, each);
+        if let Ok(id) = outcome
+            && each.number == linux::__NR_shmget
+            && id >= 0
+        {
+            segment = id as u64;
+        }
         // The runner's wait for a child to end, left to be reaped.
         if let Ok(child) = outcome
             && each.number == linux::__NR_clone
@@ -3420,6 +3488,14 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     {
         out.push((c + 24, 4));
     }
+    // A segment's sequence number, times and processes; the pages all segments hold in memory.
+    if call.number == linux::__NR_shmctl && value >= 0 {
+        match b {
+            2 | 13 | 15 => out.extend([(c + 24, 2), (c + 56, 32)]),
+            14 => out.push((c + 16, 8)),
+            _ => {}
+        }
+    }
     // The CPU number, written before a fault on the node number.
     if call.number == linux::__NR_getcpu {
         out.push((a, 4));
@@ -3555,6 +3631,10 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         | linux::__NR_wait4 => true,
         // Moved by the kernel to a place of its choosing.
         linux::__NR_mremap => call.arguments[3] & 3 == 1,
+        // Identifiers and slots (see `SEGMENT`), and a segment placed by the kernel.
+        linux::__NR_shmget => true,
+        linux::__NR_shmctl => matches!(call.arguments[1], 3 | 13 | 14 | 15),
+        linux::__NR_shmat => call.arguments[1] < 4096,
         _ => false,
     }
 }

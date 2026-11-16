@@ -140,6 +140,9 @@ impl Kernel {
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
         let outcome = syscall::dispatch(self, cx, tid, call, again);
+        if let Some(thread) = self.threads.get(&tid) {
+            syscall::ipc::settle(self, cx, thread.process);
+        }
         // A call may have ended its own thread's process (a signal it sent itself).
         if !self.threads.contains_key(&tid) {
             return;
@@ -407,6 +410,7 @@ impl Kernel {
             cx.cpu.memory_drop(memory);
         }
         syscall::tty::disassociate(self, cx, pid, true);
+        syscall::ipc::settle(self, cx, pid);
         crate::shared::release(self, cx);
         self.files_released(cx);
         if self.init == Some(pid) {

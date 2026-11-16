@@ -286,8 +286,10 @@ pub(crate) enum Content {
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
 pub(crate) struct Regular {
-    /// The file's bytes; those the block holds are stale here while there is one.
+    /// The file's first bytes, up to the last one written; the rest up to `size` read as zero. Those
+    /// the block holds are stale here while there is one.
     data: Vec<u8>,
+    size: u64,
     /// While a mapping shares the file: the block of shared pages holding its first bytes.
     pub block: Option<Block>,
     pub pages: alloc::collections::BTreeSet<u64>,
@@ -301,18 +303,23 @@ pub(crate) struct Regular {
     mapped: bool,
     /// The tmpfs its pages count against.
     space: Option<Rc<Space>>,
+    /// Whether it is a System V shared memory segment, whose mappings are never merged (Linux's
+    /// `shm_vm_ops` has a `close`).
+    pub segment: bool,
 }
 
 impl Default for Regular {
     fn default() -> Self {
         Self {
             data: Vec::new(),
+            size: 0,
             block: None,
             pages: alloc::collections::BTreeSet::new(),
             allocated: alloc::collections::BTreeSet::new(),
             seals: F_SEAL_SEAL,
             mapped: false,
             space: None,
+            segment: false,
         }
     }
 }
@@ -405,7 +412,7 @@ impl Regular {
         }
         // Page by page, as `shmem_write_begin`: the seals, then a page from tmpfs if the file holds
         // none there.
-        let size = self.data.len() as u64;
+        let size = self.size;
         let end = offset + length;
         let mut free = self
             .space
@@ -437,7 +444,7 @@ impl Regular {
 
     /// Whether the seals allow a change of size (tmpfs's `shmem_setattr`).
     pub fn may_resize(&self, length: u64) -> Result<(), Errno> {
-        let size = self.data.len() as u64;
+        let size = self.size;
         if (length < size && self.seals & F_SEAL_SHRINK != 0)
             || (length > size && self.seals & F_SEAL_GROW != 0)
         {
@@ -450,19 +457,25 @@ impl Regular {
     pub fn with_bytes(bytes: Vec<u8>) -> Self {
         let mut regular = Self::default();
         regular.mark_written(0, bytes.len() as u64);
+        regular.size = bytes.len() as u64;
         regular.data = bytes;
         regular
     }
 
     pub fn size(&self) -> u64 {
-        self.data.len() as u64
+        self.size
     }
 
     /// Up to `count` bytes from `offset`, stopping at the end of the file.
     pub fn read(&self, cpu: &mut dyn Cpu, offset: u64, count: u64) -> Vec<u8> {
         let start = offset.min(self.size());
         let end = start.saturating_add(count).min(self.size());
-        let mut bytes = self.data[start as usize..end as usize].to_vec();
+        let mut bytes = vec![0; (end - start) as usize];
+        let held = (self.data.len() as u64).clamp(start, end);
+        if held > start {
+            bytes[..(held - start) as usize]
+                .copy_from_slice(&self.data[start as usize..held as usize]);
+        }
         if let Some(block) = self.block
             && start < block.length
         {
@@ -480,9 +493,10 @@ impl Regular {
 
     pub fn write(&mut self, cpu: &mut dyn Cpu, offset: u64, bytes: &[u8]) {
         let end = offset + bytes.len() as u64;
-        if self.size() < end {
+        if (self.data.len() as u64) < end {
             self.data.resize(end as usize, 0);
         }
+        self.size = self.size.max(end);
         self.data[offset as usize..end as usize].copy_from_slice(bytes);
         if let Some(block) = self.block
             && offset < block.length
@@ -521,7 +535,8 @@ impl Regular {
     /// Punches a hole in `[offset, end)`: its bytes read as zero and its whole pages are given back.
     pub fn punch(&mut self, cpu: &mut dyn Cpu, offset: u64, end: u64) {
         let (from, to) = (offset.min(self.size()), end.min(self.size()));
-        self.data[from as usize..to as usize].fill(0);
+        let held = self.data.len() as u64;
+        self.data[from.min(held) as usize..to.min(held) as usize].fill(0);
         self.zero_block(cpu, from, to);
         let first = offset.div_ceil(4096);
         let last = end / 4096;
@@ -546,7 +561,8 @@ impl Regular {
         {
             self.zero_block(cpu, length, block.length);
         }
-        self.data.resize(length as usize, 0);
+        self.data.truncate(length as usize);
+        self.size = length;
         let pages = length.div_ceil(4096);
         self.drop_pages(|page| page < pages);
     }
@@ -555,6 +571,9 @@ impl Regular {
     pub fn take_block(&mut self, cpu: &mut dyn Cpu) -> Option<Block> {
         let block = self.block.take()?;
         let end = block.length.min(self.size());
+        if (self.data.len() as u64) < end {
+            self.data.resize(end as usize, 0);
+        }
         cpu.shared_read(block.id, 0, &mut self.data[..end as usize])
             .expect("the block holds the file's first pages");
         Some(block)
@@ -794,6 +813,11 @@ impl Inode {
     /// Whether an open file of this inode takes direct I/O (Linux's `FMODE_CAN_ODIRECT`): only tmpfs's
     /// regular files do.
     /// A secret memory file: no reads, writes or positions, one size change, only shared mappings.
+    /// Whether it is a System V shared memory segment's file.
+    pub fn is_segment(&self) -> bool {
+        matches!(&self.content, Content::Regular(regular) if regular.segment)
+    }
+
     pub fn is_secret(&self) -> bool {
         self.fs.kind == Kind::Secretmem
     }
