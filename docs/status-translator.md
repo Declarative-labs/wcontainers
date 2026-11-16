@@ -1187,7 +1187,8 @@ contract's bits, in both runners).
   40 on the CPU: 0 mismatches (46 s and 41 s, load 95 to 111); the changes test, 1000 random programs seed
   21 and the C programs (3 seeds): 0 mismatches (45,316 changes, 4921 faults handled; 36 s, load 109 to
   115). `tests/checks.rs` in full: pass. Layer 1 on the current code, 1215 forms x 300 cases, seed 13, and 1 a form in Chrome: 0
-  failing (548 s, load 64 to 115).
+  failing (548 s, load 64 to 115). Last, every test of the three crates passes (debug build, Chrome tests
+  and layer 3's defaults included; 59 passed, 2 ignored; 6.9 minutes, load 58 to 64).
 
 - M3 close-out, release unless said: layer 2, 500 cases seed 121 (40 on the CPU), 2000 seed 122 (20 on the
   CPU), 1000 seed 123 (30 on the CPU), 1000 seed 124 (40 on the CPU), all with vector accesses: 0
