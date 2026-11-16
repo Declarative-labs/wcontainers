@@ -30,6 +30,16 @@ const FRAME_FLOOR: u32 = 544;
 /// Where random accesses through sp start.
 const STACK_SLOTS: u32 = 32;
 
+/// Vector registers in an access through sp.
+#[derive(Clone, Copy, Debug)]
+pub enum StackVector {
+    No,
+    /// ldp or stp of two Q registers.
+    Pair,
+    /// ld4 of four Q registers at sp itself.
+    Structure,
+}
+
 /// Where a group of accesses through one register starts.
 #[derive(Clone, Copy, Debug)]
 pub enum GroupBase {
@@ -156,6 +166,7 @@ pub enum Op {
         load: bool,
         rt: u8,
         slot: u8,
+        vector: StackVector,
     },
     /// Point a register at `start`, then access memory through it, with a system call like `Syscall`'s
     /// before the access numbered `syscall` (from 1; one past the last puts it after them), and then the
@@ -883,11 +894,22 @@ fn plain_op() -> impl Strategy<Value = Op> {
                 slot,
             }
         }),
-        (any::<bool>(), register(), 0u8..64).prop_map(|(load, rt, slot)| Op::Stack {
-            load,
-            rt,
-            slot
-        }),
+        (
+            any::<bool>(),
+            register(),
+            0u8..64,
+            prop_oneof![
+                4 => Just(StackVector::No),
+                1 => Just(StackVector::Pair),
+                1 => Just(StackVector::Structure),
+            ]
+        )
+            .prop_map(|(load, rt, slot, vector)| Op::Stack {
+                load,
+                rt,
+                slot,
+                vector
+            }),
         group(),
     ]
 }
@@ -1186,12 +1208,27 @@ fn emit_op(ops: &mut Ops, edge: DynamicLabel, op: &Op) {
                 dynasm!(ops ; .arch aarch64 ; stp X(rt), X(rt2), [x29, #at]);
             }
         }
-        Op::Stack { load, rt, slot } => {
+        Op::Stack {
+            load,
+            rt,
+            slot,
+            vector,
+        } => {
             let at = STACK_SLOTS + u32::from(slot) * 8;
-            if load {
-                dynasm!(ops ; .arch aarch64 ; ldr X(rt), [sp, #at]);
-            } else {
-                dynasm!(ops ; .arch aarch64 ; str X(rt), [sp, #at]);
+            let v = u32::from(rt);
+            match vector {
+                StackVector::No if load => dynasm!(ops ; .arch aarch64 ; ldr X(rt), [sp, #at]),
+                StackVector::No => dynasm!(ops ; .arch aarch64 ; str X(rt), [sp, #at]),
+                StackVector::Pair => {
+                    // ldp or stp of q registers rt and the next, 16 bytes up per slot from `STACK_SLOTS`.
+                    let units = (STACK_SLOTS + u32::from(slot % 31) * 16) / 16;
+                    let word = 0xad00_0000 | u32::from(load) << 22 | units << 15;
+                    dynasm!(ops ; .arch aarch64 ; .u32 word | ((v + 1) % 32) << 10 | 31 << 5 | v);
+                }
+                StackVector::Structure => {
+                    // ld4 {vN.2d-...}, [sp]: the frame's first 64 bytes, read only (they hold saved registers).
+                    dynasm!(ops ; .arch aarch64 ; .u32 0x4c40_0c00 | 31 << 5 | v);
+                }
             }
         }
         Op::Group {
