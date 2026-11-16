@@ -130,7 +130,8 @@ pub struct Kernel {
     /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
     /// releasing.
     released: Vec<file::FileRef>,
-    /// Parked threads whose wait ended, whose calls are run again before anything else happens.
+    /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
+    /// comes.
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
     signalled: VecDeque<Tid>,
@@ -431,6 +432,9 @@ impl Kernel {
             let mut table = table.into_inner();
             table.close_all(closer);
             self.released.extend(table.take_released());
+            if table.take_let_go_locks() {
+                self.wake(process::Channel::Locks);
+            }
         }
     }
 

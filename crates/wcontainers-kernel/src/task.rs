@@ -19,15 +19,7 @@ impl Kernel {
         let tid = match self.current.filter(|_| !self.resched) {
             Some(tid) => tid,
             None => {
-                if let Some(previous) = self.current.take() {
-                    let thread = &self.threads[&previous];
-                    self.run_queue.insert(
-                        previous,
-                        thread.vruntime,
-                        schedule::weight(&thread.schedule),
-                    );
-                }
-                self.resched = false;
+                self.give_way();
                 let threads = &self.threads;
                 let Some(tid) = self
                     .run_queue
@@ -40,15 +32,8 @@ impl Kernel {
                             .map(|at| at.wrapping_sub(self.monotonic_offset)),
                     };
                 };
-                let thread = self.threads.get_mut(&tid).expect("queued thread exists");
-                self.picked_runtime = thread.runtime;
-                if let Some(woken) = thread.woken_at.take() {
-                    self.counters.measure(
-                        reason::WAKE_TO_RUN,
-                        0,
-                        self.last_now.saturating_sub(woken),
-                    );
-                }
+                debug_assert!(!self.woken.contains(&tid), "a woken call runs first");
+                self.take_turn(tid);
                 tid
             }
         };
@@ -248,13 +233,14 @@ impl Kernel {
             if !self.files.terminals.is_empty() {
                 syscall::tty::released(self, cx);
             }
-            if let Some(tid) = self.woken.pop_front() {
-                let Some(thread) = self.threads.get(&tid) else {
-                    continue;
-                };
-                if thread.call.wait.is_some() {
-                    continue;
-                }
+            // A woken thread's call runs again when its turn comes, as Linux's waiter goes on in its
+            // call once it is scheduled.
+            if let Some(tid) = self.next_to_run()
+                && let Some(index) = self.woken.iter().position(|woken| *woken == tid)
+            {
+                self.woken.remove(index);
+                self.take_out_of_line(tid);
+                let thread = &self.threads[&tid];
                 let mut registers = RegisterBlock::ZERO;
                 cx.cpu.registers(thread.cpu, &mut registers);
                 let x = &registers.x;
@@ -263,6 +249,12 @@ impl Kernel {
                     arguments: [x[0], x[1], x[2], x[3], x[4], x[5]],
                 };
                 self.system_call(cx, tid, call, true);
+                // A call that went back to its program has its thread's turn.
+                if self.run_queue.contains(tid) {
+                    self.take_out_of_line(tid);
+                    self.give_way();
+                    self.take_turn(tid);
+                }
                 continue;
             }
             if let Some(tid) = self.signalled.pop_front() {
@@ -270,7 +262,12 @@ impl Kernel {
                     continue;
                 };
                 let stopped = self.processes[&thread.process].stopped;
-                if thread.call.wait.is_some() || stopped || self.woken.contains(&tid) {
+                if thread.call.wait.is_some() || stopped {
+                    continue;
+                }
+                // A woken thread of a process just continued goes back in line to run its call.
+                if self.woken.contains(&tid) {
+                    self.make_runnable(tid, Resume::FromRegisters);
                     continue;
                 }
                 // A thread waiting its turn, the current one, or one of a process just continued
@@ -287,6 +284,45 @@ impl Kernel {
             self.counters.count(cx.host, reason::HOST_CANNOT, 0);
         }
         self.counters.flush(cx.host);
+    }
+
+    /// The current thread goes back in line.
+    fn give_way(&mut self) {
+        if let Some(previous) = self.current.take() {
+            let thread = &self.threads[&previous];
+            self.run_queue.insert(
+                previous,
+                thread.vruntime,
+                schedule::weight(&thread.schedule),
+            );
+        }
+        self.resched = false;
+    }
+
+    /// Gives `tid`, out of line, the CPU, measuring how long it waited since it was woken.
+    fn take_turn(&mut self, tid: Tid) {
+        let thread = self.threads.get_mut(&tid).expect("thread exists");
+        self.picked_runtime = thread.runtime;
+        if let Some(woken) = thread.woken_at.take() {
+            self.counters
+                .measure(reason::WAKE_TO_RUN, 0, self.last_now.saturating_sub(woken));
+        }
+        self.current = Some(tid);
+    }
+
+    /// The thread `pick` would run now: the current one unless it is to give way, else the one in
+    /// line with the least time, the current one going back in line behind those with as little.
+    fn next_to_run(&self) -> Option<Tid> {
+        if let Some(current) = self.current.filter(|_| !self.resched) {
+            return Some(current);
+        }
+        match (self.run_queue.leftmost(), self.current) {
+            (Some((vruntime, _)), Some(current)) if vruntime > self.threads[&current].vruntime => {
+                Some(current)
+            }
+            (Some((_, tid)), _) => Some(tid),
+            (None, current) => current,
+        }
     }
 
     /// Parks a thread in its call until `channel` changes, its deadline comes or a signal arrives.
@@ -336,7 +372,7 @@ impl Kernel {
         }
     }
 
-    /// Ends a thread's wait; its call runs again before the kernel hands back control.
+    /// Ends a thread's wait; it goes in line and its call runs again when its turn comes.
     pub(crate) fn wake_thread(&mut self, tid: Tid) {
         let entry_now = self.entry_now;
         let thread = self.thread_mut(tid);
@@ -345,6 +381,8 @@ impl Kernel {
             let deadline = thread.call.deadline;
             self.parked.remove(tid, channel, deadline);
             self.woken.push_back(tid);
+            // Its registers still hold the call, which runs again before it goes on.
+            self.make_runnable(tid, Resume::FromRegisters);
         }
     }
 
@@ -804,20 +842,35 @@ impl Kernel {
         self.wake_waiters_of(parent);
     }
 
-    /// Descriptors were closed: locks may have been let go and pipes and terminals may have lost an
-    /// end, so every wait on a file looks again.
+    /// Descriptors were closed: pipes and terminals may have lost an end, so every wait on a file
+    /// looks again, and waits for locks do if locks were let go.
     pub(crate) fn files_released(&mut self, cx: &mut Context<'_>) {
         let mut files = core::mem::take(&mut self.released);
+        let mut let_go = false;
         for thread in self.threads.values() {
-            files.extend(thread.files.borrow_mut().take_released());
+            let mut table = thread.files.borrow_mut();
+            files.extend(table.take_released());
+            let_go |= table.take_let_go_locks();
         }
+        let nodes: alloc::vec::Vec<_> = files
+            .iter()
+            .map(|file| file.borrow().node.clone())
+            .collect();
         crate::syscall::pipe::released(self, cx, files);
-        let woken = self.parked.on(|channel| {
-            matches!(
-                channel,
-                Channel::Object(_) | Channel::Readiness | Channel::Locks
-            )
-        });
+        // An open file's last close lets go of its record and flock locks.
+        for node in nodes {
+            let mut node = node.borrow_mut();
+            let_go |= crate::locks::release_dead(&mut node.record_locks);
+            let flocks = node.flocks.len();
+            node.flocks.retain(|(holder, _)| holder.strong_count() > 0);
+            let_go |= node.flocks.len() != flocks;
+        }
+        if let_go {
+            self.wake(Channel::Locks);
+        }
+        let woken = self
+            .parked
+            .on(|channel| matches!(channel, Channel::Object(_) | Channel::Readiness));
         for tid in woken {
             self.wake_thread(tid);
         }

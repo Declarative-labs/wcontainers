@@ -2144,9 +2144,11 @@ fn record_lock(
     };
     let result = crate::locks::set(&mut node.borrow_mut().record_locks, request, unlock);
     match result {
-        Ok(()) => {
+        Ok(changed) => {
             // Waiters blocked on a lock this changed try again (`locks_wake_up_blocks`).
-            kernel.wake(crate::process::Channel::Locks);
+            if changed {
+                kernel.wake(crate::process::Channel::Locks);
+            }
             Ok(Some(0))
         }
         Err(held) if matches!(command, F_SETLKW | F_OFD_SETLKW) => {

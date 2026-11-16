@@ -234,7 +234,7 @@ pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<Fil
 }
 
 /// `pipe_lock`: waits, without a signal ending the wait, while another thread's call holds the
-/// pipe's lock.
+/// pipe's lock, parked or woken and not yet run again.
 pub(super) fn lock(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), Errno> {
     let node = file.borrow().node.clone();
     let Channel::Object(address) = channel(&node) else {
@@ -243,9 +243,10 @@ pub(super) fn lock(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), 
     let holder = with_pipe(file, |pipe| pipe.held_by);
     let held = holder.is_some_and(|holder| {
         holder != tid
-            && kernel.threads.get(&holder).is_some_and(|thread| {
-                thread.call.wait.is_some() && thread.call.holds == Some(address)
-            })
+            && kernel
+                .threads
+                .get(&holder)
+                .is_some_and(|thread| thread.call.holds == Some(address))
     });
     if held {
         kernel.park(tid, Channel::Object(address));

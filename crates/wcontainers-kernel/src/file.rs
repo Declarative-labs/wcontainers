@@ -133,6 +133,8 @@ pub(crate) struct FdTable {
     lock_owner: u64,
     /// The files whose descriptors were closed, in order, for the kernel to finish releasing.
     released: Vec<FileRef>,
+    /// Whether a close let go of record locks, whose waiters try again.
+    let_go_locks: bool,
 }
 
 impl FdTable {
@@ -227,6 +229,11 @@ impl FdTable {
         core::mem::take(&mut self.released)
     }
 
+    /// Whether record locks were let go since the last call.
+    pub fn take_let_go_locks(&mut self) -> bool {
+        core::mem::take(&mut self.let_go_locks)
+    }
+
     pub fn lock_owner(&self) -> u64 {
         self.lock_owner
     }
@@ -236,6 +243,7 @@ impl FdTable {
         Self {
             lock_owner,
             released: Vec::new(),
+            let_go_locks: false,
             ..self.clone()
         }
     }
@@ -255,7 +263,8 @@ impl FdTable {
             let file = descriptor.file.borrow();
             if !file.is_path() {
                 let mut node = file.node.borrow_mut();
-                crate::locks::release_table(&mut node.record_locks, self.lock_owner);
+                self.let_go_locks |=
+                    crate::locks::release_table(&mut node.record_locks, self.lock_owner);
                 // A queue's request to be told goes with a close by its process
                 // (`mqueue_flush_file`).
                 if let crate::fs::Content::Mqueue(queue) = &mut node.content {

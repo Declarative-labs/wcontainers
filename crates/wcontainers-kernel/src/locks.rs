@@ -86,12 +86,13 @@ pub(crate) fn test(
 }
 
 /// Linux's `posix_lock_inode`: takes the range for its owner, or lets it go with `unlock`. Another
-/// owner's lock in the way is the error.
+/// owner's lock in the way is the error. Says whether any of the owner's locks was cut, joined or
+/// let go, which wakes the requests it blocked.
 pub(crate) fn set(
     locks: &mut Vec<RecordLock>,
     request: RecordLock,
     unlock: bool,
-) -> Result<(), RecordLock> {
+) -> Result<bool, RecordLock> {
     locks.retain(|held| held.owner.alive());
     if !unlock && let Some(held) = locks.iter().find(|held| request.conflicts(held)) {
         return Err(held.clone());
@@ -105,11 +106,18 @@ pub(crate) fn set(
         .collect();
     // The owner's ranges with the request's cut out, then the request.
     let mut kept = Vec::with_capacity(own.len() + 2);
+    let mut changed = false;
     for held in own {
         if held.end < request.start || held.start > request.end {
+            // A neighbour of the same kind is joined to the request.
+            changed |= !unlock
+                && held.write == request.write
+                && (held.end.checked_add(1) == Some(request.start)
+                    || request.end.checked_add(1) == Some(held.start));
             kept.push(held);
             continue;
         }
+        changed = true;
         if held.start < request.start {
             kept.push(RecordLock {
                 end: request.start - 1,
@@ -139,10 +147,21 @@ pub(crate) fn set(
         joined.push(held);
     }
     locks.splice(at..at, joined);
-    Ok(())
+    Ok(changed)
 }
 
-/// Lets go of every lock a descriptor table holds on a file (`locks_remove_posix`).
-pub(crate) fn release_table(locks: &mut Vec<RecordLock>, table: u64) {
+/// Lets go of every lock a descriptor table holds on a file (`locks_remove_posix`); says whether it
+/// held any.
+pub(crate) fn release_table(locks: &mut Vec<RecordLock>, table: u64) -> bool {
+    let before = locks.len();
     locks.retain(|held| !matches!(held.owner, LockOwner::Table(owner) if owner == table));
+    locks.len() != before
+}
+
+/// Lets go of the locks of open files that are gone (`locks_remove_file`); says whether there were
+/// any.
+pub(crate) fn release_dead(locks: &mut Vec<RecordLock>) -> bool {
+    let before = locks.len();
+    locks.retain(|held| held.owner.alive());
+    locks.len() != before
 }

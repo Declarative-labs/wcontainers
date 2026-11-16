@@ -1,5 +1,5 @@
-// A splice from a terminal into a pipe waits holding the pipe's lock, so a reader that comes to the
-// pipe afterwards waits for the next line. Each command runs with a pseudo-terminal as its
+// A splice from a terminal into a pipe waits holding the pipe's lock, so a reader, whether it waits
+// at the pipe already or comes to it afterwards, waits for the next line. Each command runs with a pseudo-terminal as its
 // controlling terminal; "abc\n" is typed and what the terminal shows within a while is printed.
 
 #define _GNU_SOURCE
@@ -58,6 +58,7 @@ static void run(const char *command) {
 
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
+    run("cat /dev/tty | cat");
     run("cat /dev/tty | (sleep 1; cat)");
     run("cat /dev/tty | (sleep 1; head -c 2)");
     run("head -n 1 /dev/tty | cat");
