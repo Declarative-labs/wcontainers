@@ -1052,7 +1052,8 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 All on this shared Mac; noisy, not benchmarks.
 - K2 fourth run: the whole test suite of both crates 84 passed, 0 failed, 6 ignored, 180 s wall with
-  two test threads beside three layer 1 runs (load 39 at the start, 31 at the end). Layer 1, 20000
+  two test threads beside three layer 1 runs (load 39 at the start, 31 at the end); on the final head
+  again 84 passed, 0 failed, 6 ignored, 155 s (load 99 at the start, 131 at the end). Layer 1, 20000
   sequences, three side by side: 325 to 331 s each (load 20 to 63).
   Layer 1, 5000 sequences, three side by side: 82 to 86 s each (load 50 to 90);
   20000 sequences alone: 337 s (load 60 to 90); 2000 sequences alone: 34 to 67 s (load 50 to 90).
