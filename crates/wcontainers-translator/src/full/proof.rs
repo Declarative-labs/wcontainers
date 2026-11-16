@@ -124,7 +124,7 @@ pub(super) struct Versioned {
 pub(super) struct LoopShape<'a> {
     pub(super) function: &'a Function,
     pub(super) decoded: &'a super::Decodes,
-    pub(super) checks: &'a HashMap<u64, CheckPlan>,
+    pub(super) checks: &'a FxHashMap<u64, CheckPlan>,
     pub(super) body: &'a [bool],
     /// Blocks of the body inside a loop within it.
     pub(super) nested: &'a [bool],
@@ -147,7 +147,7 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
                 .map(move |o| (b, o))
         })
     };
-    let mut defs: HashMap<u32, Vec<(usize, u64)>> = HashMap::new();
+    let mut defs: FxHashMap<u32, Vec<(usize, u64)>> = FxHashMap::default();
     for (b, o) in instructions() {
         for bit in shape.decoded[&o]
             .effects

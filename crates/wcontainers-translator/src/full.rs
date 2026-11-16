@@ -10,7 +10,8 @@ use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::DfsPostOrder;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_arm64::{
     Access, Address, BranchRegister, Carry, Cond, Control, Effects, Emitter, Flag, Flags, Hook,
@@ -66,40 +67,39 @@ pub(crate) fn plan<'a>(
 
     // Loop pieces, by the function they come from; with no stop checks nothing enters them. Translated for
     // size, there are none: a stop at a jump back carries on in place.
-    let mut found: Vec<Vec<(Function, Seed)>> = Vec::new();
     let pieced = !omit.stop && optimise == Optimise::Speed;
-    for (function, plan) in functions.iter().zip(&plans) {
-        let mut own = Vec::new();
-        for (h, others) in plan.outside.iter().filter(|_| pieced) {
-            let headers: Vec<u64> = others.iter().map(|&d| function.blocks[d].start).collect();
-            let start = function.blocks[*h].start;
-            // A stretch's loop piece stays within the stretch.
-            let within: HashSet<u64> = function_instructions(function).collect();
-            let reach = match bound {
-                None => Reach::All,
-                Some(_) => Reach::Within(&within),
-            };
-            let bounds = (&entries, &headers[..]);
-            let piece = finder.explore(start, bounds, &mut BTreeSet::new(), reach);
-            // Where a loop piece would need more entries, the stop check carries on in place instead.
-            if !irreducible(&piece).is_empty() {
-                continue;
+    let loops: Vec<Vec<(Function, Plan)>> = functions
+        .par_iter()
+        .zip(&plans)
+        .map(|(function, plan)| {
+            if !pieced || plan.outside.is_empty() {
+                return Vec::new();
             }
-            let seed = Seed {
-                frame: plan.frame_in[*h],
-                aligned: plan.aligned_in[*h],
+            // A stretch's loop piece stays within the stretch.
+            let within: Option<FxHashSet<u64>> =
+                bound.map(|_| function_instructions(function).collect());
+            let reach = match &within {
+                None => Reach::All,
+                Some(within) => Reach::Within(within),
             };
-            own.push((piece, seed));
-        }
-        found.push(own);
-    }
-    let loops: Vec<Vec<(Function, Plan)>> = found
-        .into_par_iter()
-        .map(|own| {
-            own.into_iter()
-                .map(|(piece, seed)| {
+            plan.outside
+                .iter()
+                .filter_map(|(h, others)| {
+                    let headers: Vec<u64> =
+                        others.iter().map(|&d| function.blocks[d].start).collect();
+                    let start = function.blocks[*h].start;
+                    let bounds = (&entries, &headers[..]);
+                    let piece = finder.explore(start, bounds, &mut BTreeSet::new(), reach);
+                    // Where a loop piece would need more entries, the stop check carries on in place instead.
+                    if !irreducible(&piece).is_empty() {
+                        return None;
+                    }
+                    let seed = Seed {
+                        frame: plan.frame_in[*h],
+                        aligned: plan.aligned_in[*h],
+                    };
                     let plan = Plan::new(&piece, &finder.decoded, seed);
-                    (piece, plan)
+                    Some((piece, plan))
                 })
                 .collect()
         })
@@ -136,7 +136,7 @@ impl Planned<'_> {
             .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
             .collect();
         let mut next = F_FIRST_PIECE + group.len() as u32;
-        let loop_index: Vec<HashMap<u64, u32>> = group
+        let loop_index: Vec<FxHashMap<u64, u32>> = group
             .clone()
             .map(|i| {
                 self.loops[i]
@@ -213,7 +213,7 @@ struct Function {
     entry: u64,
     blocks: Vec<Block>,
     /// Block index by start offset.
-    at: HashMap<u64, usize>,
+    at: FxHashMap<u64, usize>,
 }
 
 struct Finder<'a> {
@@ -222,7 +222,7 @@ struct Finder<'a> {
 }
 
 /// Decoded instructions by offset.
-type Decodes = rustc_hash::FxHashMap<u64, Decoded>;
+type Decodes = FxHashMap<u64, Decoded>;
 
 /// How far exploring a function may go.
 #[derive(Clone, Copy)]
@@ -231,7 +231,7 @@ enum Reach<'a> {
     /// At most this many instructions.
     Count(usize),
     /// Only these instructions.
-    Within(&'a HashSet<u64>),
+    Within(&'a FxHashSet<u64>),
 }
 
 /// The flags of a kept shape with every local filled in: for an addition, `b` (when only the value subtracted
@@ -465,15 +465,18 @@ impl Finder<'_> {
                     self.explore(entry, (&entries, &[]), &mut BTreeSet::new(), Reach::All)
                 })
                 .collect();
+            let more_entries: Vec<Vec<u64>> = functions
+                .par_iter()
+                .map(|function| {
+                    let parts = function.blocks.len().div_ceil(FUNCTION_BLOCKS);
+                    let mut offsets = irreducible(function);
+                    offsets.extend(cuts(function, parts));
+                    offsets
+                })
+                .collect();
             let mut more = false;
-            for function in &functions {
-                let parts = function.blocks.len().div_ceil(FUNCTION_BLOCKS);
-                for offset in irreducible(function)
-                    .into_iter()
-                    .chain(cuts(function, parts))
-                {
-                    more |= entries.insert(offset);
-                }
+            for offset in more_entries.into_iter().flatten() {
+                more |= entries.insert(offset);
             }
             if !more {
                 self.keep(&functions);
@@ -520,7 +523,7 @@ impl Finder<'_> {
     ) -> Function {
         let mut body = BTreeSet::new();
         let mut leaders = BTreeSet::from([entry]);
-        let mut tables: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut tables: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
         // Addresses the code builds; those a jump table of this function goes to are its own blocks.
         let mut built = Vec::new();
         let mut work = vec![entry];
@@ -605,11 +608,8 @@ impl Finder<'_> {
             }
         }
 
-        found.extend(
-            built
-                .into_iter()
-                .filter(|b| !tables.values().any(|t| t.contains(b))),
-        );
+        let switched: FxHashSet<u64> = tables.values().flatten().copied().collect();
+        found.extend(built.into_iter().filter(|b| !switched.contains(b)));
 
         // Cut the body into blocks, the entry's first.
         let mut blocks: Vec<Block> = Vec::new();
@@ -634,7 +634,7 @@ impl Finder<'_> {
         }
         let first = blocks.iter().position(|b| b.start == entry).unwrap();
         blocks.swap(0, first);
-        let at: HashMap<u64, usize> = blocks
+        let at: FxHashMap<u64, usize> = blocks
             .iter()
             .enumerate()
             .map(|(i, b)| (b.start, i))
@@ -695,7 +695,7 @@ fn cuts(function: &Function, parts: usize) -> Vec<u64> {
     let mut order: Vec<usize> = (0..function.blocks.len()).collect();
     order.sort_unstable_by_key(|&b| rank[b]);
     // Each instruction's place in that order.
-    let mut place: HashMap<u64, usize> = HashMap::new();
+    let mut place: FxHashMap<u64, usize> = FxHashMap::default();
     for &b in &order {
         let block = &function.blocks[b];
         for offset in (block.start..block.end).step_by(4) {
@@ -840,7 +840,7 @@ struct Plan {
     /// Registers that must hold their true value at the start of each block; the entry's are loaded.
     live_in: Vec<Registers>,
     /// Registers that must hold their true value after each instruction.
-    live_after: HashMap<u64, Registers>,
+    live_after: FxHashMap<u64, Registers>,
     dirty_in: Vec<Registers>,
     /// By loop header, the registers written back to the thread block when the loop is entered.
     written_before: Vec<Registers>,
@@ -850,11 +850,11 @@ struct Plan {
     shapes: Vec<Shape>,
     /// Some point does not know statically where the flags are, so a local says.
     dynamic_flags: bool,
-    checks: HashMap<u64, CheckPlan>,
+    checks: FxHashMap<u64, CheckPlan>,
     /// Ranges relative to the stack pointer before the instruction, checked as the stack grows.
-    frame_checks: HashMap<u64, (i64, u32)>,
+    frame_checks: FxHashMap<u64, (i64, u32)>,
     /// Calls after which a frame is known, so the stack pointer must come back unchanged.
-    frame_across: HashSet<u64>,
+    frame_across: FxHashSet<u64>,
     /// The piece calls or jumps to other pieces, so its entry needs the stop check.
     calls_out: bool,
     /// What is known at each block's start about the stack: its frame and whether it is aligned.
@@ -866,19 +866,19 @@ struct Plan {
     /// one kind (read or write) through one base register in one loop share what they keep. Each such access's number for
     /// what it keeps, by number the longest of those accesses in bytes, and by loop header, the numbers
     /// forgotten when the loop is entered.
-    kept: HashMap<u64, usize>,
+    kept: FxHashMap<u64, usize>,
     kept_longest: Vec<u32>,
     kept_by_loop: Vec<Vec<usize>>,
     /// By loop header, the loops that have a copy without the checks their accesses are proven not to need.
-    versioned: HashMap<usize, proof::Versioned>,
+    versioned: FxHashMap<usize, proof::Versioned>,
     /// By the header of such a loop, the blocks outside it placed after both copies (and no longer under the
     /// block in the loop that dominates them), so either copy reaches them by a branch.
     after: Vec<Vec<usize>>,
     /// The accesses whose checks those copies leave out, with the header of the loop whose proof covers them.
-    proven: HashMap<u64, usize>,
+    proven: FxHashMap<u64, usize>,
     /// By edge leaving loops, registers those loops keep in the thread block: the ones needed after it are
     /// loaded there.
-    reload_on_exit: HashMap<(usize, usize), Registers>,
+    reload_on_exit: FxHashMap<(usize, usize), Registers>,
 }
 
 /// How the stack pointer moves at an instruction: by a known amount (before or after its access), or to
@@ -1002,7 +1002,7 @@ impl Plan {
             }
             inside
         };
-        let bodies: HashMap<usize, Vec<bool>> = headers.iter().map(|&h| (h, body(h))).collect();
+        let bodies: FxHashMap<usize, Vec<bool>> = headers.iter().map(|&h| (h, body(h))).collect();
         let outside = headers
             .iter()
             .copied()
@@ -1103,7 +1103,7 @@ impl Plan {
         // Registers kept in the thread block rather than in locals through a loop that neither reads nor
         // writes them, so they take no engine register while it runs: loaded again where it is left. Not
         // done for a loop left through a jump table, whose edges have no place for the loads.
-        let through: HashMap<usize, Registers> = bodies
+        let through: FxHashMap<usize, Registers> = bodies
             .iter()
             .map(|(&h, body)| {
                 let switch = (0..n).any(|b| body[b] && blocks[b].table.is_some());
@@ -1123,7 +1123,7 @@ impl Plan {
                 .filter(|(_, body)| body[b] && !body[s])
                 .fold(Registers::NONE, |r, (h, _)| r.union(through[h]))
         };
-        let mut reload_on_exit = HashMap::new();
+        let mut reload_on_exit = FxHashMap::default();
         for (b, block) in blocks.iter().enumerate() {
             for &s in &block.succs {
                 let r = leaving(b, s);
@@ -1196,7 +1196,7 @@ impl Plan {
         // Backward: registers that must hold their true value. Every register that may be dirty at a block's
         // start counts as needed there, so no path reaches a write back with a stale local.
         let mut live_in_blocks = vec![Registers::NONE; n];
-        let mut live_after = HashMap::new();
+        let mut live_after = FxHashMap::default();
         let mut changed = true;
         while changed {
             changed = false;
@@ -1252,7 +1252,7 @@ impl Plan {
                 })
             })
         };
-        let mut kept = HashMap::new();
+        let mut kept = FxHashMap::default();
         let mut kept_longest = Vec::new();
         let mut kept_by_loop = vec![Vec::new(); n];
         let mut keys = Vec::new();
@@ -1293,7 +1293,7 @@ impl Plan {
             doms.dominators(NodeIndex::new(b))
                 .is_some_and(|mut d| d.any(|x| x.index() == a))
         };
-        let mut versioned = HashMap::new();
+        let mut versioned = FxHashMap::default();
         let mut after = vec![Vec::new(); n];
         let mut homed = vec![false; n];
         let mut outermost_first = headers.clone();
@@ -1430,21 +1430,21 @@ fn block_end(function: &Function, offset: u64) -> u64 {
 
 /// Which accesses need a check, where the stack's frame is checked, and the calls a frame is kept across.
 struct Checks {
-    plans: HashMap<u64, CheckPlan>,
-    frame_checks: HashMap<u64, (i64, u32)>,
-    frame_across: HashSet<u64>,
+    plans: FxHashMap<u64, CheckPlan>,
+    frame_checks: FxHashMap<u64, (i64, u32)>,
+    frame_across: FxHashSet<u64>,
 }
 
 fn checks(function: &Function, decoded: &Decodes, frame_in: &[Frame]) -> Checks {
-    let mut plans = HashMap::new();
-    let mut frame_checks = HashMap::new();
-    let mut frame_across = HashSet::new();
+    let mut plans = FxHashMap::default();
+    let mut frame_checks = FxHashMap::default();
+    let mut frame_across = FxHashSet::default();
     for (b, block) in function.blocks.iter().enumerate() {
         let mut frame = frame_in[b];
         // Per base register: how far its value has moved from where its current groups are measured.
-        let mut moved: HashMap<u8, i64> = HashMap::new();
+        let mut moved: FxHashMap<u8, i64> = FxHashMap::default();
         // Open groups by base register and write: first access, its start, and the bytes covered.
-        let mut open: HashMap<(u8, bool), usize> = HashMap::new();
+        let mut open: FxHashMap<(u8, bool), usize> = FxHashMap::default();
         let mut groups: Vec<(u64, i64, i64, i64, u32)> = Vec::new();
         for o in (block.start..block.end).step_by(4) {
             let d = &decoded[&o];
@@ -1628,7 +1628,7 @@ struct FullEmitter<'a> {
     decoded: &'a Decodes,
     index: &'a BTreeMap<u64, u32>,
     /// The loop pieces of the function this piece comes from, by header offset.
-    loops: &'a HashMap<u64, u32>,
+    loops: &'a FxHashMap<u64, u32>,
     omit: Omit,
     optimise: Optimise,
     host: Host,
@@ -1639,7 +1639,7 @@ struct FullEmitter<'a> {
     locals: Vec<ValType>,
     free: Vec<(ValType, u32)>,
     taken: Vec<(ValType, u32)>,
-    registers: HashMap<u32, u32>,
+    registers: FxHashMap<u32, u32>,
     flag_locals: [u32; 4],
     /// Which flag state holds, when that is only known at run time.
     flag_state: u32,
@@ -1672,7 +1672,7 @@ impl<'a> FullEmitter<'a> {
         plan: &'a Plan,
         decoded: &'a Decodes,
         index: &'a BTreeMap<u64, u32>,
-        loops: &'a HashMap<u64, u32>,
+        loops: &'a FxHashMap<u64, u32>,
         own: u32,
         (omit, optimise, host): (Omit, Optimise, Host),
     ) -> (wasm_encoder::Function, usize, Sites) {
@@ -1692,7 +1692,7 @@ impl<'a> FullEmitter<'a> {
             locals: Vec::new(),
             free: Vec::new(),
             taken: Vec::new(),
-            registers: HashMap::new(),
+            registers: FxHashMap::default(),
             flag_locals: [0; 4],
             flag_state: 0,
             canonical: Vec::new(),
