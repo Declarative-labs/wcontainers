@@ -161,6 +161,32 @@ pub(super) fn tgkill(
     )
 }
 
+/// The size of Linux's `struct kernel_siginfo`, the part of a `siginfo` the kernel keeps.
+const KERNEL_SIGINFO: u64 = 48;
+
+/// `known_siginfo_layout`: whether Linux knows the layout of a signal's information by its code.
+fn known_layout(signal: u32, code: i32) -> bool {
+    if code == SI_KERNEL as i32 {
+        return true;
+    }
+    if code > SI_USER as i32 {
+        // The signals with codes of their own, and how many each has (`sig_sicodes`).
+        let limit = match signal {
+            SIGILL => Some(NSIGILL),
+            SIGFPE => Some(NSIGFPE),
+            SIGSEGV => Some(NSIGSEGV),
+            SIGBUS => Some(NSIGBUS),
+            SIGTRAP => Some(NSIGTRAP),
+            SIGCHLD => Some(NSIGCHLD),
+            SIGPOLL => Some(NSIGPOLL),
+            SIGSYS => Some(NSIGSYS),
+            _ => None,
+        };
+        return code <= limit.unwrap_or(NSIGPOLL) as i32;
+    }
+    code >= SI_DETHREAD || code == SI_ASYNCNL
+}
+
 /// The `siginfo` a program queues: refused if it claims to come from the kernel or `tkill` and the
 /// target is not the caller itself (`do_rt_sigqueueinfo`, `do_rt_tgsigqueueinfo`).
 fn queued_info(
@@ -171,10 +197,19 @@ fn queued_info(
     signal: u32,
     address: u64,
 ) -> Result<[u8; 128], Errno> {
-    let bytes = guest(kernel, cx, tid).read(address, 128)?;
+    // `copy_siginfo_from_user`: the kernel's part of the structure, and for a layout Linux does not
+    // know, the rest, which must be zero.
+    let bytes = guest(kernel, cx, tid).read(address, KERNEL_SIGINFO)?;
     let mut info = [0u8; 128];
-    info.copy_from_slice(&bytes);
+    info[..KERNEL_SIGINFO as usize].copy_from_slice(&bytes);
+    let signo = u32::from_le_bytes(info[0..4].try_into().expect("four bytes"));
     let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
+    if !known_layout(signo, code) {
+        let rest = guest(kernel, cx, tid).read(address + KERNEL_SIGINFO, 128 - KERNEL_SIGINFO)?;
+        if rest.iter().any(|byte| *byte != 0) {
+            return Err(Errno::E2BIG);
+        }
+    }
     if (code >= 0 || code == SI_TKILL) && tid != target {
         return Err(Errno::EPERM);
     }

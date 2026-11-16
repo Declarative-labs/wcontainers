@@ -77,8 +77,7 @@ Built in K2's first run:
 - Layer 1 generates pipe2 (always nonblocking), wait4, waitid, rt_sigqueueinfo, rt_tgsigqueueinfo
   and rt_sigtimedwait (always with a timeout).
 
-Not done yet in K2, in order: the three fresh 20000-sequence layer 1 seeds (see Layer 1 for this
-run's); terminal calls in layer 1 (`/dev/ptmx` is not in the path pool; tests/terminal.rs covers
+Not done yet in K2, in order: terminal calls in layer 1 (`/dev/ptmx` is not in the path pool; tests/terminal.rs covers
 them); private file mappings that see later file changes (still copies); FIFOs (named pipes are
 still refused, counted); fork and clone in layer 1 (each runner would have to compare a child's
 calls too); a test of a restartable sequence aborted by a handler (`rseq_fixup` is untested).
@@ -783,6 +782,13 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K2's second run: the milestone's fresh 20000-sequence seeds. Seeds 400 and 402 passed; 401 found that
+rt_sigqueueinfo read the whole 128-byte `siginfo` and checked the target first, where Linux copies
+the kernel's 48 bytes, then for a code whose layout it does not know (`known_siginfo_layout`) checks
+the other 80 bytes are zero (E2BIG) before anything else. Fixed. With every fix in, seed 401 and the
+fresh seeds 403, 404 and 405 passed 20000 each (320 s each, four side by side, load 84 at the start,
+31 at the end). Layer 1 still generates no terminal calls (see Next).
+
 K2's first run: with the new calls, seeds 300 (2000), 301 and 302 (3000 each) found three things:
 shared anonymous memory took mmap's offset (Linux starts it at 0), rt_tgsigqueueinfo compared the
 caller with the group, not the thread (EPERM first), and waitid writes the information's fields (zeros
@@ -894,6 +900,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 second run: the whole test suite of both crates 76 passed, 0 failed, 8 ignored, 131 s wall
+  (load 25 at the start, 29 at the end; three layer 1 runs started part way). Layer 1, 20000
+  sequences, four side by side: 320 s each (load 84 to 31). tests/terminal.rs 1.5 to 1.7 s (load 30
+  to 100).
 - K2 first run: the whole test suite of both crates (before sigframe and shell were added) 64
   passed, 0 failed, 8 ignored, 197 s wall (load 75 at the start, 67 at the end). At the end of the
   run (head 10645dd): 69 passed, 0 failed, 8 ignored, 94 s wall (load 10 at the start, 13 at the end).
@@ -1082,8 +1092,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2, what is left, in order: three fresh layer 1 seeds of 20000 (seeds 300 to 399 were used in
-   the first run; see Layer 1 for this run's); terminal calls in layer 1 (`/dev/ptmx` and a slave in
+1. K2, what is left, in order (the three fresh 20000 seeds passed this run; seeds up to 405 are
+   used): terminal calls in layer 1 (`/dev/ptmx` and a slave in
    the path pool, with the reference's buffer work waited for as the guests do); FIFOs (named pipes:
    `fifo_open`'s waits and counters); private file mappings that see later file changes; a test of
    rseq critical sections aborted by a handler (built in `rseq_fixup`, untested); SIGIO for O_ASYNC.
