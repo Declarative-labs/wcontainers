@@ -6,9 +6,16 @@ use std::path::Path;
 use wcontainers_kernel::reason;
 use wcontainers_kernel_test::{guest, run_both};
 
+/// Built once for all tests here: a program renamed over while a reference container starts it can be
+/// missing in the container's view of the shared directory.
 fn program() -> std::path::PathBuf {
-    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
-    guest::build("syscall", &["-nostdlib"], &out)
+    static PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+            guest::build("syscall", &["-nostdlib"], &out)
+        })
+        .clone()
 }
 
 #[test]

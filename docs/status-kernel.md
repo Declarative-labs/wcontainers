@@ -5,7 +5,42 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done after two runs. Built in K2's second run:
+processes) is partly done after three runs. Built in K2's third run:
+- Private file mappings as Linux's copy on write: a private mapping shows the file's block of shared
+  pages (the same one shared mappings use, src/shared.rs), with writing turned off at the CPU side
+  for each page not yet written; the first write faults and the page becomes the process's own copy
+  (`Backing::File`'s `copied`, by file page number). The kernel's own writes into such pages (read
+  into a mapping, signal frames) copy first, as do MAP_POPULATE, MAP_LOCKED, mlock, mlockall and
+  MADV_POPULATE_WRITE on writable mappings (`__mm_populate` with FOLL_WRITE); MADV_DONTNEED drops the
+  copies; truncation drops copies wholly past the new end (`even_cows`), a hole punch keeps them; mremap
+  takes copies along; a fork's child shares the pages neither has written. Programs and their loader
+  are mapped the same way (exec's padzero page is a copy). MADV_POPULATE_* past a file's end is
+  EFAULT. The counter "private file mapping is a copy" is gone. tests/privatemap.rs.
+- Named pipes as `fifo_open`: a buffer made at the first open and dropped when the last end closes,
+  open counters for readers and writers, a reader waiting for a writer and a writer for a reader
+  (parked, counted as an end while waiting, its file kept in the thread's `opening` slot), ENXIO for a
+  nonblocking writer with no reader, never a wait for reading and writing, EINVAL for access mode 3,
+  ERESTARTSYS on a signal (the end given up), POLLHUP held back for a nonblocking reader until a writer
+  has opened (`f_pipe`), and `/proc/<pid>/fd` showing the path. tests/fifo.rs.
+- Device opens by Docker's device rules (measured): no block device and only the standard character
+  devices may be opened, the rest EPERM; the console (5:1) and `/dev/net/tun` (10:200), which Docker
+  allows, are not built: counted "device not built", ENODEV. tests/devopen.rs.
+- I/O signals (`kill_fasync`, `send_sigio`): pipes signal their readers after a write and before a
+  writer waits, their writers after a read and before a reader waits, both when the last end of one
+  kind closes, and readers for spliced bytes; a terminal side signals when a line (or, not canonical,
+  any byte) comes in. The descriptor O_ASYNC was set through is kept (`fa_fd`); O_ASYNC given at open
+  arms nothing, as on Linux; a terminal with no owner takes its foreground group or the caller;
+  F_SETSIG's signal carries the band and descriptor (SI_SIGIO for signals with codes of their own);
+  owners keep the users of whoever named them (`sigio_perm`). tests/sigio.rs.
+- close_range and dup3 over an open descriptor now wake waiters on files (they did not, so a reader
+  waiting for a pipe's end missed a writer closed that way).
+- A test of restartable sequences aborted by a handler: a signal after a call inside the section and
+  a fault inside it move the thread to the abort address, a signal outside does not, and an abort
+  address without the signature kills with SIGSEGV (tests/rseqabort.rs).
+- Layer 1 generates named pipes: a quarter of the sequences start with one made at one name, which
+  mknodat and openat choose (opens of it are nonblocking unless for reading and writing).
+
+Built in K2's second run:
 - Pseudo-terminals (src/tty.rs for the pair and `n_tty`, src/syscall/tty.rs for files, waits and job
   control): `/dev/ptmx` makes a pair with the lowest free number and its slave node in devpts
   (`devpts_pty_new`: inode number+3, mode 0620, the opener's fsuid, group 5), locked until
@@ -77,10 +112,10 @@ Built in K2's first run:
 - Layer 1 generates pipe2 (always nonblocking), wait4, waitid, rt_sigqueueinfo, rt_tgsigqueueinfo
   and rt_sigtimedwait (always with a timeout).
 
-Not done yet in K2, in order: terminal calls in layer 1 (`/dev/ptmx` is not in the path pool; tests/terminal.rs covers
-them); private file mappings that see later file changes (still copies); FIFOs (named pipes are
-still refused, counted); fork and clone in layer 1 (each runner would have to compare a child's
-calls too); a test of a restartable sequence aborted by a handler (`rseq_fixup` is untested).
+Not done yet in K2, in order: terminal calls in layer 1 (`/dev/ptmx` is not in the path pool;
+tests/terminal.rs covers them; the reference's runner would have to make Linux's buffer work happen
+after each call, which a poll of each terminal descriptor does, since `n_tty_poll` flushes it); fork
+and clone in layer 1 (each runner would have to compare a child's calls too).
 Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
 turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
 instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
@@ -119,9 +154,6 @@ Ignored tests (each attribute gives the reason):
   bytes were writable; 1 where fewer than 8 were), by where arm64's copy routine had stored when the
   fault came (the kernel's 64-byte block sits 8 bytes off 16-byte alignment); ours stops at the fault.
   Reads of files and `/dev/zero` stop where Linux's do (measured).
-- procstatus `private_mapping_sees_later_writes`: a private file mapping is a copy made at mmap, so
-  pages it has not written do not see later writes to the file, as Linux's do (counted "private file
-  mapping is a copy"; procstatus `private_mapping_copy_is_counted` checks the counter).
 
 Comparisons that are subsets rather than equality, and why:
 - tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
@@ -207,7 +239,9 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   one.
 
 What layer 1 does not generate, and why:
-- Named pipes (opening one waits; pipes are K2); descriptors 0 to 2 (the reference's runner reports
+- Named pipes other than the one at `p` in the work directory, made at the start of a quarter of the
+  sequences; opens of it are nonblocking unless for reading and writing (a reopen through
+  `/proc/self/fd` could still wait, which both runners end at the reference's deadline); descriptors 0 to 2 (the reference's runner reports
   through them); process 1 and the caller's own group negated (our caller is process 1, so -1 means
   every process); memory lengths above 256 MiB that reach memory (our programs' own mappings lie higher in a 4 GiB
   space; lengths that wrap to 0 in the last page or overflow the address are generated, and one play
@@ -338,12 +372,11 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   Linux has that is not built is counted "proc entry not built"; opening stat, statm, status or
   mounts is counted "proc fields not tracked" (zeroed or missing fields, below).
 - Memory (src/memory.rs): ranges with what the program asked for, top-down placement below
-  end-128 MiB, reused ranges cleared, brk, mmap (anonymous, private file copies, `/dev/zero`, shared
-  file mappings through shared blocks), munmap, mprotect, madvise, mremap, msync, mlock family. Shared
+  end-128 MiB, reused ranges cleared, brk, mmap (anonymous, file mappings through the file's
+  shared block, private ones copied page by page at the first write, `/dev/zero`), munmap, mprotect, madvise, mremap, msync, mlock family. Shared
   anonymous memory and shared `/dev/zero` show in maps as Linux's removed `/dev/zero` on its internal
   tmpfs (device 0:1, an inode each, never merged with another), a private `/dev/zero` mapping as the
-  device's file. A change to a file a private mapping copied is counted "private file mapping is a
-  copy".
+  device's file.
   Pages wholly past a file's end are inaccessible (SIGBUS). The stack and MAP_GROWSDOWN memory grow
   on a fault (or a copy) below them as `expand_downwards` allows: 1 MiB clear of an accessible mapping
   below that does not grow down, within the stack, address space and locked memory limits; new
@@ -448,14 +481,11 @@ Partial (inside the list above), each with its reason:
   pool cannot change the host's generator.
 - mmap: MAP_HUGETLB on anonymous memory counted, ENOMEM (no huge pages; on a plain file EINVAL, as
   Linux). MAP_DROPPABLE memory is never dropped (nothing presses on memory here) and must be wiped at
-  fork (K2). MAP_SHARED anonymous is private memory here,
-  exact while there is no fork (K2). A private file mapping is a copy made at mmap, so pages not yet
-  written do not see later changes to the file: counted "private file mapping is a copy" when such a
-  file is written, truncated or allocated, or is mapped both shared and private (the CPU side does not
-  say which pages were written, so the count includes pages a program had already written). MAP_SYNC
+  fork (K2). MAP_SHARED anonymous is a shared mapping of
+  an internal file. A private file mapping copies a page at its first write (above). MAP_SYNC
   EOPNOTSUPP, as tmpfs.
-- openat, openat2: O_TMPFILE counted, EOPNOTSUPP; named pipes counted, ENXIO (pipes, K2); `/dev/ptmx`
-  counted, ENODEV (terminals, K2). openat2's restricted lookups (RESOLVE_NO_XDEV, NO_MAGICLINKS,
+- openat, openat2: O_TMPFILE counted, EOPNOTSUPP; devices by Docker's rules (EPERM; the console and
+  the tunnel counted, ENODEV). openat2's restricted lookups (RESOLVE_NO_XDEV, NO_MAGICLINKS,
   NO_SYMLINKS, BENEATH, IN_ROOT) are not built: counted "system call not implemented", ENOSYS, as a
   kernel before openat2 answers the whole call (Linux has had them as long as openat2); they need the
   path walk to refuse mount crossings, links and escapes, before K6's bar. RESOLVE_CACHED taken.
@@ -581,13 +611,15 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   cached). Entries outside the process directories keep their changes (above).
 - `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts, `/dev/pts`, `/dev/mqueue`
   or `/sys` (counted "proc fields not tracked", detail 3).
-- RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; private file
-  mappings that see later file changes; O_TMPFILE.
+- RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; O_TMPFILE.
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
 - An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
   whether ours answers the same since the vDSO was built is not checked.
-- SIGIO for `O_ASYNC` files (pipes, terminals) is never sent: FASYNC is kept and the owner set,
-  but no input sends the signal yet.
+- I/O signals not sent: a terminal's when room comes back after a write that did not fit
+  (`n_tty_write_wakeup`) and at a hangup; a random device's (nothing is ever waited for there).
+  A fallback to SIGIO when a chosen real-time signal cannot be queued is not made.
+- Several ends of a pipe closed at once (one close_range, an exit) send one release I/O signal; Linux
+  sends one per end.
 - The reference has four CPUs, so a forked child runs at once beside its parent; here it waits for
   the CPU under the fair scheduler. Tests wait for what a person would see (a job's program
   running) rather than for time.
@@ -628,9 +660,28 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, end of K2's second run; counts under Measurements)
+## Tests (last run 2026-11-16, end of K2's third run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's second run:
+All pass except the ignored known failures listed above. Added in K2's third run (each guest's
+reference output was read and checked against Linux's source):
+- privatemap: guest/privatemap.c: later writes by pwrite and by a shared mapping seen by pages not
+  written, the kernel's read into a page, MADV_DONTNEED, mprotect, MAP_POPULATE writable and read
+  only, MADV_POPULATE_WRITE and READ, mlock, truncation (SIGBUS for copies past the end, the pages
+  showing the file after growing), a punched hole, mremap, fork. procstatus
+  `private_mapping_sees_later_writes` now passes.
+- fifo: guest/fifo.c: nonblocking opens, read and write opens, ENXIO, polls before and after writers,
+  the buffer and its size dropped at the last close, stat, lseek, the `/proc` link, a reader waiting
+  for a forked writer, a nonblocking writer let in by a waiting reader, a signal ending a wait
+  (EINTR) and restarting it (SA_RESTART).
+- devopen: guest/devopen.c: device nodes made with mknod (EPERM outside Docker's rules); the tunnel's
+  counted ENODEV against the reference's working device.
+- rseqabort: guest/rseqabort.c (above).
+- sigio: guest/sigio.c: pipe readers and writers with SIGIO and F_SETSIG, a duplicate closed, the last
+  writer closed, SIGCHLD chosen (SI_SIGIO), O_ASYNC at open, a terminal's partial line, line end and
+  raw byte, a master taking the caller as owner (each terminal check polls first, as Linux's buffer
+  work runs later; the master's echo is read so its poll takes in the next input).
+
+Added in K2's second run:
 - terminal: guest/tty.c (one part per test): making pairs (the locked slave, stat of the slave and
   the master, `/proc` links, TIOCGDEV, numbering, devpts's listing, TIOCGPTPEER, default settings,
   window size, and the answers of TIOCSTI, TIOCEXCL, TIOCSETD, TIOCSIG, TIOCSCTTY, TIOCNOTTY,
@@ -1007,8 +1058,9 @@ All on this shared Mac; noisy, not benchmarks.
 - The made-up machine has one CPU (default time slice 0.7 ms, sched_rr_get_interval in whole 1 ms
   ticks), no permission overlays and no guarded control stacks, like the reference's CPU for the last
   two.
-- A file mapped shared keeps its first pages in a block of shared pages while any mapping shares it;
-  private file mappings stay copies. A tmpfs inode's generation is a keyed hash of its number
+- A mapped file keeps its first pages in a block of shared pages while any mapping shows it, private
+  mappings included (their written pages are their own copies); a block covers each mapping's whole
+  length, past the file's end too. A tmpfs inode's generation is a keyed hash of its number
   (siphasher, no_std). The stand-in maps a block's host memory into unicorn wherever it is shown.
 - ARM64 Linux's user copy routine (`copy_template.S`) is modelled in src/user.rs for what overlapping
   copies within one process leave behind.
@@ -1038,6 +1090,14 @@ All on this shared Mac; noisy, not benchmarks.
   `sysinfo` and `stack_t` have padding, so their fields are placed by `offset_of!` on linux-raw-sys's
   structures instead of zerocopy.
 
+- Docker's device rules (which devices a container may open) are modelled from runc's default list
+  and measured in the reference (mknod then open: 1:1, 4:1, 200:7 and block devices EPERM, a missing
+  pty slave EIO, the tunnel opens); with cgroup v2 they are an eBPF program in Linux, a table here.
+- A named pipe's open waiting for the other end keeps the file it makes in the thread's `opening`
+  slot beside the call slot (the plan's one fixed slot holds only plain values): the file must count
+  as an end while it waits, as Linux's does. It is given up when the call ends any other way or the
+  thread ends.
+
 ## Not built, by counter
 
 Every answer to something Linux has and this kernel does not build goes through `Counters::refuse`
@@ -1053,15 +1113,18 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "ioctl request not built": the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
   caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference).
 - "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
-- "device not built": named pipes (ENXIO; detail the inode).
+- "device not built": the console (5:1) and `/dev/net/tun` (10:200), which Docker's rules allow
+  (ENODEV; detail the device number).
 - "proc entry not built": the `/proc` entries not built (detail: directory and name index).
 - "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
 Approximations that are not refusals have their own counters: "page residency not tracked", "proc
-fields not tracked", "private file mapping is a copy", "fault syndrome approximated", "core dump not
+fields not tracked", "fault syndrome approximated", "core dump not
 written". "wake to run" is a measurement (count and total nanoseconds), not a slow path.
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K2, third run: none.
 
 - K2, second run: none. (`Event::TerminalInput` and `TerminalResized`, for a container's own
   terminal, are still counted "event with no waiter": the container's first process has pipes, as
