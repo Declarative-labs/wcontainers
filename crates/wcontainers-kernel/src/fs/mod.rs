@@ -207,12 +207,12 @@ impl Kind {
         }
     }
 
-    /// The largest file the file system has (`s_maxbytes`): tmpfs's `MAX_LFS_FILESIZE`, and for the
-    /// rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
+    /// The largest file the file system has (`s_maxbytes`): tmpfs's and pidfs's `MAX_LFS_FILESIZE`
+    /// (measured for pidfs), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
     pub fn max_bytes(self) -> u64 {
         match self {
-            Kind::Tmpfs => i64::MAX as u64,
-            Kind::Devpts | Kind::Proc | Kind::Pipe | Kind::Secretmem | Kind::Pidfs | Kind::Anon => {
+            Kind::Tmpfs | Kind::Pidfs => i64::MAX as u64,
+            Kind::Devpts | Kind::Proc | Kind::Pipe | Kind::Secretmem | Kind::Anon => {
                 i32::MAX as u64
             }
         }
@@ -837,6 +837,22 @@ impl Inode {
     /// Whether it is a System V shared memory segment's file.
     pub fn is_segment(&self) -> bool {
         matches!(&self.content, Content::Regular(regular) if regular.segment)
+    }
+
+    /// An inode of process descriptors (regular inside, shown with no file type) or the anonymous
+    /// inode (with none): no attributes change and there is no `fallocate` (`pidfs_setattr`,
+    /// `anon_inode_setattr`; measured).
+    pub fn is_anonymous(&self) -> bool {
+        matches!(self.fs.kind, Kind::Pidfs | Kind::Anon)
+    }
+
+    /// The mode `stat` shows.
+    pub fn shown_mode(&self) -> u32 {
+        if self.is_anonymous() {
+            self.mode & !S_IFMT
+        } else {
+            self.mode
+        }
     }
 
     pub fn is_secret(&self) -> bool {

@@ -558,9 +558,13 @@ pub(super) fn open(
             S_IFSOCK => return Err(Errno::ENXIO),
             _ => {}
         }
-        // A secret memory file cannot be opened again, as through `/proc/self/fd` (`no_open`).
-        if node.borrow().is_secret() {
+        // A secret memory file and the anonymous inode cannot be opened again, as through
+        // `/proc/self/fd` (`no_open`); a process descriptor can, but not truncated.
+        if node.borrow().is_secret() || matches!(node.borrow().content, Content::Anon) {
             return Err(Errno::ENXIO);
+        }
+        if flags & O_TRUNC != 0 && node.borrow().is_anonymous() {
+            return Err(Errno::EOPNOTSUPP);
         }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
         // A named pipe's and a terminal's are refused once they are open (below).
@@ -1349,7 +1353,7 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     stat {
         st_dev: inode.fs.device,
         st_ino: inode.ino,
-        st_mode: inode.mode,
+        st_mode: inode.shown_mode(),
         st_nlink: match inode.content {
             Content::Proc(proc::Entry::Root) => proc::root_links(kernel.processes.len()),
             _ => inode.nlink,
@@ -1529,7 +1533,7 @@ pub(super) fn statx(
     out.stx_nlink = plain.st_nlink;
     out.stx_uid = plain.st_uid;
     out.stx_gid = plain.st_gid;
-    out.stx_mode = inode.mode as u16;
+    out.stx_mode = inode.shown_mode() as u16;
     out.stx_ino = inode.ino;
     out.stx_size = plain.st_size as u64;
     out.stx_blocks = plain.st_blocks as u64;
@@ -1667,6 +1671,9 @@ fn change_mode(
     if node.borrow().fs.read_only() {
         return Err(Errno::EROFS);
     }
+    if node.borrow().is_anonymous() {
+        return Err(Errno::EOPNOTSUPP);
+    }
     // A process's entries refuse mode changes, as Linux's `proc_setattr` does. The others take them.
     if let Content::Proc(entry) = node.borrow().content
         && entry.of_process().is_some()
@@ -1771,6 +1778,9 @@ fn change_owner(
     let mut inode = node.borrow_mut();
     if inode.fs.read_only() {
         return Err(Errno::EROFS);
+    }
+    if inode.is_anonymous() {
+        return Err(Errno::EOPNOTSUPP);
     }
     let changes_uid = uid != u32::MAX && uid != inode.uid;
     let changes_gid = gid != u32::MAX && gid != inode.gid;
@@ -1924,6 +1934,18 @@ pub(super) fn utimensat(
     if inode.fs.read_only() {
         return Err(Errno::EROFS);
     }
+    if inode.is_anonymous() {
+        let omitted = wanted.as_ref().is_some_and(|wanted| {
+            wanted
+                .iter()
+                .all(|time| time.tv_nsec == i64::from(UTIME_OMIT))
+        });
+        return if omitted {
+            Ok(0)
+        } else {
+            Err(Errno::EOPNOTSUPP)
+        };
+    }
     // A process's directory refuses every change (measured on the reference).
     if matches!(
         inode.content,
@@ -1971,6 +1993,9 @@ fn truncate_node(
 ) -> Result<u64, Errno> {
     if (length as i64) < 0 {
         return Err(Errno::EINVAL);
+    }
+    if node.borrow().is_anonymous() {
+        return Err(Errno::EOPNOTSUPP);
     }
     let may_keep_privileges = credentials(kernel, tid).has(CAP_FSETID);
     let now = kernel.now(cx);
@@ -2112,11 +2137,12 @@ pub(super) fn fallocate(
             _ => return Err(Errno::ENODEV),
         }
     }
+    let largest = node.borrow().fs.kind.max_bytes();
     let end = offset
         .checked_add(length)
-        .filter(|end| *end <= i64::MAX as u64)
+        .filter(|end| *end <= largest)
         .ok_or(Errno::EFBIG)?;
-    if node.borrow().is_secret() {
+    if node.borrow().is_secret() || node.borrow().is_anonymous() {
         return Err(Errno::EOPNOTSUPP);
     }
     // Only keeping the size and punching holes exist in tmpfs.

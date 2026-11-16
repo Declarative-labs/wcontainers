@@ -29,12 +29,15 @@ pub(super) fn signalfd4(
     tid: Tid,
     [fd, mask_address, size, flags, ..]: Args,
 ) -> Result<u64, Errno> {
-    let flags = flags as u32;
-    if flags & !(SFD_CLOEXEC | SFD_NONBLOCK) != 0 || size != 8 {
+    // The size, the mask, then the flags; SIGKILL and SIGSTOP are never read.
+    if size != 8 {
         return Err(Errno::EINVAL);
     }
-    // SIGKILL and SIGSTOP are never read.
     let mask: u64 = guest(kernel, cx, tid).read_value(mask_address)?;
+    let flags = flags as u32;
+    if flags & !(SFD_CLOEXEC | SFD_NONBLOCK) != 0 {
+        return Err(Errno::EINVAL);
+    }
     let mask = mask & !(bit(SIGKILL) | bit(SIGSTOP));
     if fd as i32 != -1 {
         // An existing descriptor takes the new mask; its flags stay.

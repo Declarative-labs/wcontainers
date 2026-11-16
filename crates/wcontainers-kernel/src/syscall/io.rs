@@ -385,7 +385,11 @@ pub(super) fn readahead(
     // A secret memory file cannot be read ahead (measured).
     let inode = file.borrow().node.clone();
     let inode = inode.borrow();
-    if inode.file_type() != S_IFREG || inode.is_secret() || (length as i64) < 0 {
+    if inode.file_type() != S_IFREG
+        || inode.is_secret()
+        || inode.is_anonymous()
+        || (length as i64) < 0
+    {
         return Err(Errno::EINVAL);
     }
     Ok(0)
@@ -2298,7 +2302,11 @@ pub(super) fn fsync(
     let file = file.borrow();
     let inode = file.node.borrow();
     match inode.content {
-        Content::Pipe(_) | Content::Special | Content::Proc(_) => Err(Errno::EINVAL),
+        Content::Pipe(_)
+        | Content::Special
+        | Content::Proc(_)
+        | Content::Pidfd(_)
+        | Content::Anon => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }

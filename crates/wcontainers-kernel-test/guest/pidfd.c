@@ -11,9 +11,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -367,6 +370,52 @@ static void inherited(void) {
     close(self);
 }
 
+// The calls every file takes, on a process descriptor and a signal descriptor.
+static void generic(const char *what, int fd) {
+    char path[64];
+    snprintf(path, sizeof path, "/proc/self/fd/%d", fd);
+    printf("%s:\n", what);
+    show("  fchmod", fchmod(fd, 0600));
+    show("  fchown", fchown(fd, 0, 0));
+    show("  fchown other", fchown(fd, 1000, 1000));
+    show("  chmod path", chmod(path, 0600));
+    show("  ftruncate", ftruncate(fd, 0));
+    show("  truncate path", truncate(path, 0));
+    show("  fallocate", fallocate(fd, 0, 0, 10));
+    show("  fallocate past the largest", fallocate(fd, 0, 0x7fffffff, 10));
+    show("  fsync", fsync(fd));
+    show("  fdatasync", fdatasync(fd));
+    struct timespec omit[2] = {{0, UTIME_OMIT}, {0, UTIME_OMIT}};
+    show("  utimens omit", futimens(fd, omit));
+    show("  utimens now", futimens(fd, NULL));
+    show("  mmap", (long)mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0) == -1 ? -1 : 0);
+    show("  mmap private", (long)mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 0) == -1 ? -1 : 0);
+    int reopened = open(path, O_RDONLY);
+    show("  reopen", reopened);
+    if (reopened >= 0)
+        close(reopened);
+    show("  reopen for writing", open(path, O_WRONLY));
+    char *argv[] = {path, NULL};
+    show("  execve", execve(path, argv, argv + 1));
+    show("  set append", fcntl(fd, F_SETFL, O_APPEND | fcntl(fd, F_GETFL)));
+    printf("  getfl %o\n", fcntl(fd, F_GETFL));
+    show("  fadvise", posix_fadvise(fd, 0, 0, POSIX_FADV_NORMAL) ? (errno = posix_fadvise(fd, 0, 0, 0), -1) : 0);
+    show("  readahead", readahead(fd, 0, 10));
+    show("  flock", flock(fd, LOCK_EX));
+    struct flock lock = {F_WRLCK, SEEK_SET, 0, 1, 0};
+    show("  record lock", fcntl(fd, F_SETLK, &lock));
+    show("  sync_file_range", sync_file_range(fd, 0, 1, 0));
+    char buffer[16];
+    show("  getdents", syscall(SYS_getdents64, fd, buffer, sizeof buffer));
+    show("  sendfile from", syscall(SYS_sendfile, 1, fd, NULL, 1));
+    int ends[2];
+    pipe(ends);
+    show("  splice from", splice(fd, NULL, ends[1], NULL, 1, SPLICE_F_NONBLOCK));
+    show("  copy_file_range", copy_file_range(fd, NULL, ends[1], NULL, 1, 0));
+    close(ends[0]);
+    close(ends[1]);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     opens();
@@ -376,5 +425,14 @@ int main(void) {
     clones();
     releases();
     inherited();
+    int fd = open_pid(getpid(), 0);
+    generic("process descriptor", fd);
+    close(fd);
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    fd = signalfd(-1, &set, 0);
+    generic("signal descriptor", fd);
+    close(fd);
     return 0;
 }

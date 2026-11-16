@@ -78,7 +78,7 @@ pub(super) fn make(
                 fs,
                 ino,
                 New {
-                    mode: 0o700,
+                    mode: S_IFREG | 0o700,
                     uid: 0,
                     gid: 0,
                     rdev: 0,

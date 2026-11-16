@@ -53,7 +53,7 @@ fn every_file(
         let inode = node.borrow();
         (
             inode.file_type(),
-            inode.file_type() == S_IFREG && !inode.is_secret(),
+            inode.file_type() == S_IFREG && !inode.is_secret() && !inode.is_anonymous(),
             inode.fs.kind,
             (inode.fs.kind == Kind::Tmpfs).then(|| uuid(kernel, inode.fs.device)),
         )
