@@ -3,7 +3,9 @@
 // Reads sequences from standard input, one at a time, and runs each in a child process so no state
 // carries over. A sequence is: arena bytes (u32 length, bytes), then calls (u32 count, then for each the
 // number and six arguments as u64). For each call the child reports the return value (i64), whether the
-// call's result depends on what the runners cannot share (u32, see `unshared`), and the arena's changed
+// call's result depends on what the runners cannot share (u32: bit 0, see `unshared`; bit 1, the call
+// put a random device's bytes somewhere, which the runner then cleared, see `clear_random`), and the
+// arena's changed
 // byte ranges (u32 count, then u32 offset, u32 length, bytes) into a pipe the parent
 // drains. After each sequence the parent writes everything the child reported (u32 length, bytes), then
 // the child's wait status (u32), and puts back what the sequence may have changed. A child that dies
@@ -27,6 +29,7 @@
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
+#include <sys/uio.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 
@@ -107,6 +110,98 @@ static uint32_t lists_processes(int fd) {
         }
     }
     return 1;
+}
+
+// Whether a descriptor is on /dev/random or /dev/urandom, whose bytes differ between the runners.
+static int random_device(uint64_t fd) {
+    struct stat st;
+    return fstat((int)fd, &st) == 0 && S_ISCHR(st.st_mode) && major(st.st_rdev) == 1 &&
+           (minor(st.st_rdev) == 8 || minor(st.st_rdev) == 9);
+}
+
+#define MAX_RW_COUNT 0x7ffff000UL
+static unsigned char zeros[65536];
+
+// Zeros a range up to the first page the process cannot write, as a copy to it would stop.
+static void clear_range(uint64_t at, uint64_t length) {
+    while (length) {
+        uint64_t part = length < sizeof zeros ? length : sizeof zeros;
+        struct iovec local = {zeros, part}, remote = {(void *)at, part};
+        long put = syscall(SYS_process_vm_writev, getpid(), &local, 1, &remote, 1, 0);
+        if (put <= 0) {
+            return;
+        }
+        at += put;
+        length -= put;
+        if ((uint64_t)put < part) {
+            return;
+        }
+    }
+}
+
+// After a call that read a random device, zeros what it could have written (the whole range it was
+// given, up to the first page it cannot write; for sendfile, the bytes it put in a regular file), so
+// the bytes go no further. Returns 2 if so, and 1 more if a read moved less than it was asked for:
+// how far a copy that meets a fault gets differs (a known gap), so its count is not compared.
+// `out_before` is a regular sendfile output's position before the call, or -1.
+static uint32_t clear_random(const uint64_t *call, int64_t result, int64_t out_before) {
+    const uint64_t *a = call + 1;
+    if (result < 0) {
+        return 0;
+    }
+    switch (call[0]) {
+    case SYS_read:
+    case SYS_pread64: {
+        if (!random_device(a[0])) {
+            return 0;
+        }
+        uint64_t wanted = a[2] < MAX_RW_COUNT ? a[2] : MAX_RW_COUNT;
+        clear_range(a[1], wanted);
+        return 2 | ((uint64_t)result < wanted);
+    }
+    case SYS_readv:
+    case SYS_preadv:
+    case SYS_preadv2: {
+        if (!random_device(a[0])) {
+            return 0;
+        }
+        const struct iovec *parts = (const struct iovec *)a[1];
+        uint64_t total = 0;
+        for (uint64_t index = 0; index < a[2] && total < MAX_RW_COUNT; index++) {
+            uint64_t length = parts[index].iov_len;
+            if (length > MAX_RW_COUNT - total) {
+                length = MAX_RW_COUNT - total;
+            }
+            clear_range((uint64_t)parts[index].iov_base, length);
+            total += length;
+        }
+        return 2 | ((uint64_t)result < total);
+    }
+    case SYS_sendfile:
+        if (out_before < 0) {
+            return 0;
+        }
+        for (int64_t done = 0; done < result;) {
+            int64_t part = result - done < (int64_t)sizeof zeros ? result - done : (int64_t)sizeof zeros;
+            long put = pwrite((int)a[0], zeros, part, out_before + done);
+            if (put <= 0) {
+                break;
+            }
+            done += put;
+        }
+        return 2;
+    }
+    return 0;
+}
+
+// For a sendfile from a random device to a regular file, the output's position before the call.
+static int64_t random_output(const uint64_t *call) {
+    struct stat st;
+    if (call[0] != SYS_sendfile || !random_device(call[2]) || fstat((int)call[1], &st) != 0 ||
+        !S_ISREG(st.st_mode)) {
+        return -1;
+    }
+    return lseek((int)call[1], 0, SEEK_CUR);
 }
 
 static int read_all(int fd, void *into, size_t length) {
@@ -201,8 +296,8 @@ static void remove_tree(int directory_fd, const char *name) {
 // the first sequence too, and each sequence starts with one hidden inode in /dev, as ours does.
 static void remake_devices(void) {
     static const struct { const char *path; int minor; } devices[] = {
-        {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}};
-    for (int index = 0; index < 3; index++) {
+        {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}, {"/dev/random", 8}, {"/dev/urandom", 9}};
+    for (int index = 0; index < 5; index++) {
         remove_tree(AT_FDCWD, devices[index].path);
         mknod(devices[index].path, S_IFCHR | 0666, makedev(1, devices[index].minor));
         chmod(devices[index].path, 0666);
@@ -260,13 +355,14 @@ int main(void) {
                         sequence[index][argument] = self;
                     }
                 }
+                int64_t out_before = random_output(sequence[index]);
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
-                uint32_t unshared = 0;
+                uint32_t unshared = clear_random(sequence[index], result, out_before);
                 if (sequence[index][0] == SYS_getdents64 || sequence[index][0] == SYS_lseek) {
-                    unshared = outlives((int)sequence[index][1]) || lists_processes((int)sequence[index][1]);
+                    unshared |= outlives((int)sequence[index][1]) || lists_processes((int)sequence[index][1]);
                 }
                 if (sequence[index][0] == SYS_getcwd) {
-                    unshared = in_proc(AT_FDCWD);
+                    unshared |= in_proc(AT_FDCWD);
                 }
                 write_all(1, &result, 8);
                 write_all(1, &unshared, 4);

@@ -123,6 +123,10 @@ const PATH_POOL: &[&str] = &[
     "/dev/null",
     "/dev/zero",
     "/dev/full",
+    // The random devices: what a read of them puts anywhere is zeroed by both runners (see
+    // `CallResult::random`), so every call can be made on them.
+    "/dev/random",
+    "/dev/urandom",
     "/dev/shm/w/a",
     "/proc/self/fd/3",
     "/proc/self/cwd",
@@ -264,8 +268,13 @@ pub struct CallResult {
     /// The call's result depends on what the two runners cannot share: a directory that outlives
     /// the sequence (`/dev/shm` or `/dev`, whose offsets in the reference count every entry earlier
     /// sequences made), or a working directory in `/proc` (whose path names the caller's process
-    /// number, and so differs in length). Only the reference reports it.
+    /// number, and so differs in length), or a read of a random device that moved less than it was
+    /// asked for (where a copy that meets a fault stops differs, a known gap). Only the reference
+    /// reports it.
     pub unshared: bool,
+    /// The call put a random device's bytes in memory or a file, which the reference's runner then
+    /// zeroed (see `clear_random` in the runner); ours does the same when the reference says so.
+    pub random: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1189,20 +1198,50 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     linux::F_ADD_SEALS,
                     linux::F_GET_SEALS,
                     1000,
+                    linux::F_GETOWN,
+                    linux::F_SETOWN,
+                    linux::F_GETOWN_EX,
+                    linux::F_GETSIG,
+                    linux::F_SETSIG,
+                    linux::F_GETLEASE,
+                    linux::F_GETPIPE_SZ,
+                    linux::F_SETPIPE_SZ,
+                    linux::F_GET_RW_HINT,
+                    linux::F_SET_RW_HINT,
+                    linux::F_DUPFD_QUERY,
+                    linux::F_CREATED_QUERY,
                 ],
                 b,
             );
-            [
-                fd(a),
-                command.into(),
-                pick(
-                    &[0, 1, 5, 100, 0x800, 0x400 | 0x800, u64::MAX, 8, 0x20, 0x16],
+            let argument = match command {
+                // Owners only of numbers in use in both runners or in neither: process and group 1,
+                // none, the smallest int and one past every process number. Setting one from a
+                // structure is compared in layer 2 (tests/options.rs): its number comes from memory.
+                linux::F_SETOWN => pick(&[0, 1, u64::MAX, 0x8000_0000, 4_000_000], c),
+                linux::F_GETOWN_EX | linux::F_GET_RW_HINT | linux::F_SET_RW_HINT => match c % 3 {
+                    0 => ARENA + VALUES + (c >> 2) % 56 * 8,
+                    _ => buffer(c >> 2),
+                },
+                linux::F_DUPFD_QUERY => fd(c),
+                _ => pick(
+                    &[
+                        0,
+                        1,
+                        5,
+                        100,
+                        0x800,
+                        0x400 | 0x800,
+                        u64::MAX,
+                        8,
+                        0x20,
+                        0x16,
+                        64,
+                        65,
+                    ],
                     c,
                 ),
-                0,
-                0,
-                0,
-            ]
+            };
+            [fd(a), command.into(), argument, 0, 0, 0]
         }
         linux::__NR_ioctl => {
             let request = pick(IOCTL_REQUESTS, b);
@@ -1526,8 +1565,20 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         linux::__NR_prctl => {
-            let option = pick(&[15u64, 16, 3, 4, 7, 8, 24, 38, 39, 9999, 21, 22, 22], a);
+            let option = pick(
+                &[
+                    15u64, 16, 3, 4, 7, 8, 24, 38, 39, 9999, 21, 22, 22, 1, 2, 29, 30, 36, 37, 41,
+                    42, 66, 27, 35, 57, 58,
+                ],
+                a,
+            );
+            // Values for the options that take numbers: signals, slacks, flags and `PR_SET_MM`'s forms.
+            let number = |word: u64| pick(&[0, 1, 2, 9, 14, 15, 64, 65, 1000, u64::MAX], word);
             match option {
+                1 | 29 | 36 => [option, number(b), 0, 0, 0, 0],
+                30 | 66 | 27 | 58 => [option, 0, 0, 0, 0, 0],
+                41 | 42 | 57 => [option, number(b), number(c), 0, 0, 0],
+                35 => [option, number(b), buffer(c), number(d), number(e), 0],
                 // PR_SET_SECCOMP: a mode and a filter.
                 22 => [option, pick(&[0, 1, 2, 2, 3], b), fprog(c), 0, 0, 0],
                 // PR_SET_NO_NEW_PRIVS: only 1 is taken.
@@ -2086,7 +2137,7 @@ fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
     let mut calls = Vec::new();
     let mut record = || -> Option<CallResult> {
         let value = i64::from_le_bytes(take(&mut bytes, 8)?.try_into().ok()?);
-        let unshared = word(&mut bytes)? != 0;
+        let flags = word(&mut bytes)?;
         let mut changes = Vec::new();
         for _ in 0..word(&mut bytes)? {
             let offset = word(&mut bytes)?;
@@ -2096,7 +2147,8 @@ fn parse_reports(mut bytes: &[u8]) -> Vec<CallResult> {
         Some(CallResult {
             value,
             changes,
-            unshared,
+            unshared: flags & 1 != 0,
+            random: flags & 2 != 0,
         })
     };
     while let Some(call) = record() {
@@ -2138,9 +2190,17 @@ fn changes(before: &[u8], after: &[u8]) -> Vec<(u32, Vec<u8>)> {
     out
 }
 
+/// Where our side keeps what it needs to zero a random device's bytes, below every address a call is
+/// given: an `iovec` pair, then zeros.
+const SCRATCH: u64 = 0x6000_0000;
+const SCRATCH_ZEROS: u64 = 0x1000;
+const SCRATCH_SIZE: u64 = 0x11000;
+const MAX_RW_COUNT: u64 = 0x7fff_f000;
+
 /// Runs a sequence on our kernel: a fresh container with the runner as its program, whose process makes
-/// the calls with no instructions run.
-pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
+/// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
+/// after a call (`theirs`), the same is done here, by the same calls.
+pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> SequenceResult {
     let mut cpu = BufferCpu::new();
     let mut host = TestHost::new(0);
     let mut kernel = Kernel::new();
@@ -2245,6 +2305,14 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
     );
     cpu.write(memory, ARENA, &sequence.arena)
         .expect("writing the arena");
+    let scratch = Call {
+        number: linux::__NR_mmap,
+        arguments: [SCRATCH, SCRATCH_SIZE, 3, 0x32, u64::MAX, 0],
+    };
+    assert_eq!(
+        call(&mut kernel, &mut cpu, &mut host, scratch),
+        Ok(SCRATCH as i64)
+    );
     // The reference's runner has remade `/dev/null` before every sequence while the container's first
     // one stays held, so it is remade here too, while descriptor 0 holds the first one.
     let null = ARENA + PATHS + path_offset("/dev/null");
@@ -2279,15 +2347,103 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
     };
     let pid = call(&mut kernel, &mut cpu, &mut host, own).expect("getpid") as u64;
     let mut results = Vec::new();
-    for each in &sequence.calls {
+    for (index, each) in sequence.calls.iter().enumerate() {
         let mut each = *each;
         for argument in &mut each.arguments {
             if *argument == SELF {
                 *argument = pid;
             }
         }
+        let random = theirs.calls.get(index).is_some_and(|call| call.random);
+        let [a, b, c, ..] = each.arguments;
+        let out_before = if random && each.number == linux::__NR_sendfile {
+            let position = Call {
+                number: linux::__NR_lseek,
+                arguments: [a, 0, u64::from(linux::SEEK_CUR), 0, 0, 0],
+            };
+            call(&mut kernel, &mut cpu, &mut host, position).ok()
+        } else {
+            None
+        };
         match call(&mut kernel, &mut cpu, &mut host, each) {
             Ok(value) => {
+                if random && value >= 0 {
+                    // The runner's `clear_random`, by the same calls: the ranges a read was given.
+                    let mut ranges = Vec::new();
+                    match each.number {
+                        linux::__NR_read | linux::__NR_pread64 => {
+                            ranges.push((b, c.min(MAX_RW_COUNT)));
+                        }
+                        linux::__NR_readv | linux::__NR_preadv | linux::__NR_preadv2 => {
+                            let mut parts = vec![0u8; (c as usize).min(1024) * 16];
+                            if cpu.read(memory, b, &mut parts).is_ok() {
+                                let mut total = 0u64;
+                                for part in parts.as_chunks::<16>().0 {
+                                    if total >= MAX_RW_COUNT {
+                                        break;
+                                    }
+                                    let base = u64::from_le_bytes(part[..8].try_into().expect("8"));
+                                    let length =
+                                        u64::from_le_bytes(part[8..].try_into().expect("8"))
+                                            .min(MAX_RW_COUNT - total);
+                                    ranges.push((base, length));
+                                    total += length;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    let mut clear = |at: u64, length: u64| {
+                        let (mut at, mut length) = (at, length);
+                        while length > 0 {
+                            let part = length.min(SCRATCH_SIZE - SCRATCH_ZEROS);
+                            let pair = [SCRATCH + SCRATCH_ZEROS, part, at, part];
+                            let bytes: Vec<u8> =
+                                pair.iter().flat_map(|word| word.to_le_bytes()).collect();
+                            cpu.write(memory, SCRATCH, &bytes)
+                                .expect("writing the scratch");
+                            let write = Call {
+                                number: linux::__NR_process_vm_writev,
+                                arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
+                            };
+                            let put = call(&mut kernel, &mut cpu, &mut host, write).unwrap_or(-1);
+                            if put <= 0 {
+                                return;
+                            }
+                            at += put as u64;
+                            length -= put as u64;
+                            if (put as u64) < part {
+                                return;
+                            }
+                        }
+                    };
+                    for (at, length) in ranges {
+                        clear(at, length);
+                    }
+                    // A sendfile's output is zeroed where the bytes went.
+                    if let Some(before) = out_before {
+                        let mut done = 0;
+                        while done < value {
+                            let part = (value - done).min((SCRATCH_SIZE - SCRATCH_ZEROS) as i64);
+                            let write = Call {
+                                number: linux::__NR_pwrite64,
+                                arguments: [
+                                    a,
+                                    SCRATCH + SCRATCH_ZEROS,
+                                    part as u64,
+                                    (before + done) as u64,
+                                    0,
+                                    0,
+                                ],
+                            };
+                            let put = call(&mut kernel, &mut cpu, &mut host, write).unwrap_or(-1);
+                            if put <= 0 {
+                                break;
+                            }
+                            done += put;
+                        }
+                    }
+                }
                 let mut after = vec![0u8; ARENA_SIZE as usize];
                 cpu.read(memory, ARENA, &mut after)
                     .expect("reading the arena");
@@ -2295,6 +2451,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
                     value,
                     changes: changes(&before, &after),
                     unshared: false,
+                    random: false,
                 });
                 before = after;
             }

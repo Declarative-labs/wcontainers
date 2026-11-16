@@ -39,16 +39,22 @@ fn sequences_match_reference() {
         proptest::collection::vec(any::<u64>(), 125),
         proptest::collection::vec((any::<u8>(), any::<[u64; 6]>()), 1..16),
     );
+    // How many calls put a random device's bytes somewhere, to show they are reached.
+    let random = std::cell::Cell::new(0u64);
     let result = runner.run(&strategy, |(values, raw)| {
         let sequence = layer1::build(&values, &raw);
-        let ours = layer1::run_ours(&sequence, &program);
         let theirs = reference.borrow_mut().run(&sequence);
+        random.set(random.get() + theirs.calls.iter().filter(|call| call.random).count() as u64);
+        let ours = layer1::run_ours(&sequence, &program, &theirs);
         match layer1::difference(&sequence, &ours, &theirs) {
             None => Ok(()),
             Some(text) => Err(TestCaseError::fail(text)),
         }
     });
-    eprintln!("layer 1: {cases} sequences, seed {seed}");
+    eprintln!(
+        "layer 1: {cases} sequences, seed {seed}, {} calls with a random device's bytes",
+        random.get()
+    );
     if let Err(error) = result {
         panic!("layer 1 (seed {seed}): {error}");
     }
