@@ -157,14 +157,26 @@ pub(super) fn signal_thread(
     signal: u32,
     info: Option<[u8; 128]>,
 ) -> Result<u64, Errno> {
-    let Some(thread) = kernel.threads.get(&target) else {
-        return Err(Errno::ESRCH);
+    // An ended process's first thread is found until it is reaped; what it is sent is dropped
+    // (`prepare_signal` for a group that is exiting).
+    let (process, ended) = match kernel.threads.get(&target) {
+        Some(thread) => (thread.process, false),
+        None if kernel
+            .processes
+            .get(&target)
+            .is_some_and(|process| process.ended.is_some()) =>
+        {
+            (target, true)
+        }
+        None => return Err(Errno::ESRCH),
     };
-    let process = thread.process;
     if group.is_some_and(|group| group != process) {
         return Err(Errno::ESRCH);
     }
     may_signal(kernel, tid, process, signal)?;
+    if ended {
+        return Ok(0);
+    }
     let info = info.unwrap_or_else(|| {
         let sender = kernel.process_of(tid);
         sender_info(signal, SI_TKILL, sender.pid, sender.credentials.uid)

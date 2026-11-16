@@ -701,7 +701,7 @@ fn named_tasks(kernel: &Kernel, tid: Tid, which: u32, who: u64) -> Result<Vec<Ta
 fn task_schedule(kernel: &Kernel, task: Task) -> crate::process::Schedule {
     match task {
         Task::Thread(tid) => kernel.threads[&tid].schedule,
-        Task::Ended(pid) => kernel.processes[&pid].ended_schedule,
+        Task::Ended(pid) => kernel.processes[&pid].ended_leader.schedule,
     }
 }
 
@@ -720,7 +720,8 @@ fn task_schedule_mut(kernel: &mut Kernel, task: Task) -> &mut crate::process::Sc
                 .processes
                 .get_mut(&pid)
                 .expect("process exists")
-                .ended_schedule
+                .ended_leader
+                .schedule
         }
     }
 }

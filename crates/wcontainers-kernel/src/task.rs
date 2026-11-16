@@ -405,9 +405,13 @@ impl Kernel {
             let process = self.processes.get_mut(&pid).expect("process exists");
             process.ended_time += thread.runtime;
             if tid == pid {
-                process.ended_schedule = crate::process::Schedule {
-                    io_priority: 0,
-                    ..thread.schedule
+                process.ended_leader = crate::process::Leader {
+                    schedule: crate::process::Schedule {
+                        io_priority: 0,
+                        ..thread.schedule
+                    },
+                    signal_mask: thread.signal_mask,
+                    filters: thread.filters.len(),
                 };
             }
         }

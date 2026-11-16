@@ -579,6 +579,9 @@ pub(super) fn open(
         if flags & O_TRUNC != 0 && node.borrow().is_anonymous() {
             return Err(Errno::EOPNOTSUPP);
         }
+        if let Content::Proc(entry) = node.borrow().content {
+            proc::open_check(&kernel.processes, &entry)?;
+        }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
         // A named pipe's and a terminal's are refused once they are open (below).
         if flags & O_DIRECT != 0

@@ -93,9 +93,8 @@ pub(crate) struct Process {
     pub exit_signal: u32,
     /// Once every thread has ended: the wait status a parent's wait will reap (a zombie).
     pub ended: Option<i32>,
-    /// A zombie's scheduling values, which its leader keeps until reaped (its I/O priority is gone
-    /// with its I/O context).
-    pub ended_schedule: Schedule,
+    /// What a zombie's first thread keeps until it is reaped.
+    pub ended_leader: Leader,
     /// The inode its process descriptors share, once one is made.
     pub pidfd: Option<Node>,
     /// A `vfork` child: the parent's thread that waits until the child lets go of the memory it
@@ -240,6 +239,16 @@ pub(crate) struct Thread {
 
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
 pub(crate) const TIMER_SLACK: u64 = 50_000;
+
+/// What an ended process's first thread keeps for `/proc` and the scheduling calls until it is
+/// reaped: its scheduling values (its I/O priority is gone with its I/O context), its blocked signals
+/// and how many seccomp filters it installed.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Leader {
+    pub schedule: Schedule,
+    pub signal_mask: u64,
+    pub filters: usize,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Schedule {

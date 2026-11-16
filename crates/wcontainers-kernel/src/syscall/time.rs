@@ -6,13 +6,18 @@ use crate::linux_extra::{
     CLOCKFD, CLOCKFD_MASK, CPUCLOCK_CLOCK_MASK, CPUCLOCK_MAX, CPUCLOCK_PERTHREAD_MASK,
     CPUCLOCK_SCHED,
 };
-use crate::process::{Channel, Restart, Tid};
+use crate::process::{Channel, Pid, Restart, Tid};
 use crate::{Context, Errno, Kernel};
 
 /// The CPU time the caller's process has used: the time its threads have run, as charged when each
 /// came back, and that of its threads that have ended.
 pub(super) fn cpu_time(kernel: &Kernel, _: &mut Context<'_>, tid: Tid) -> u64 {
-    let process = kernel.process_of(tid);
+    process_cpu_time(kernel, kernel.threads[&tid].process)
+}
+
+/// The CPU time a process has used, one that has ended included.
+fn process_cpu_time(kernel: &Kernel, pid: Pid) -> u64 {
+    let process = &kernel.processes[&pid];
     process.ended_time
         + process
             .threads
@@ -21,30 +26,31 @@ pub(super) fn cpu_time(kernel: &Kernel, _: &mut Context<'_>, tid: Tid) -> u64 {
             .sum::<u64>()
 }
 
-/// The thread a CPU clock id below zero names, as Linux's `pid_for_clock`: a process's or a thread's
-/// clock, 0 meaning the caller's own; `gettime` also takes a thread of the process for the process.
-/// None when the id names no clock.
-fn cpu_clock_target(kernel: &Kernel, tid: Tid, id: i32, gettime: bool) -> Option<Tid> {
+/// The process whose time a CPU clock id below zero reads, as Linux's `pid_for_clock`: a process's or
+/// a thread's clock, 0 meaning the caller's own; `gettime` also takes a thread of the process for the
+/// process. A process that has ended and is not yet reaped keeps its clock. None when the id names no
+/// clock.
+fn cpu_clock_target(kernel: &Kernel, tid: Tid, id: i32, gettime: bool) -> Option<Pid> {
     if id & CPUCLOCK_CLOCK_MASK >= CPUCLOCK_MAX {
         return None;
     }
     let thread = id & CPUCLOCK_PERTHREAD_MASK != 0;
     let pid = !(id >> 3);
-    if pid == 0 {
-        return Some(tid);
-    }
     let caller = kernel.threads[&tid].process;
+    if pid == 0 {
+        return Some(caller);
+    }
     if thread {
         return kernel
             .threads
             .get(&pid)
             .filter(|target| target.process == caller)
-            .map(|_| pid);
+            .map(|_| caller);
     }
     if gettime && pid == tid {
-        return Some(tid);
+        return Some(caller);
     }
-    kernel.processes.get(&pid).map(|process| process.threads[0])
+    kernel.processes.contains_key(&pid).then_some(pid)
 }
 
 /// Whether a clock id below zero names a clock device by descriptor (none exist here).
@@ -60,7 +66,7 @@ fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<
             return Err(Errno::EINVAL);
         }
         let target = cpu_clock_target(kernel, tid, id, true).ok_or(Errno::EINVAL)?;
-        return Ok(cpu_time(kernel, cx, target));
+        return Ok(process_cpu_time(kernel, target));
     }
     Ok(match clock as u32 {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE | CLOCK_REALTIME_ALARM | CLOCK_TAI => {

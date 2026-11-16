@@ -390,7 +390,7 @@ impl Kernel {
             pending: Default::default(),
             exit_signal: SIGCHLD,
             ended: None,
-            ended_schedule: Default::default(),
+            ended_leader: Default::default(),
             pidfd: None,
             vfork_parent: None,
             stopped: false,

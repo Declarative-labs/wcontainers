@@ -333,11 +333,9 @@ pub(super) fn setpgid(
         return Err(Errno::EINVAL);
     }
     let session = kernel.processes[&caller].session;
-    let Some(process) = kernel
-        .processes
-        .get(&pid)
-        .filter(|process| process.ended.is_none())
-    else {
+    // A process that has ended keeps its place in its group until it is reaped, so it can be moved
+    // and counts as a member.
+    let Some(process) = kernel.processes.get(&pid) else {
         return Err(Errno::ESRCH);
     };
     if process.parent == caller && pid != caller {
@@ -357,7 +355,7 @@ pub(super) fn setpgid(
         && !kernel
             .processes
             .values()
-            .any(|other| other.group == group && other.session == session && other.ended.is_none())
+            .any(|other| other.group == group && other.session == session)
     {
         return Err(Errno::EPERM);
     }
@@ -371,12 +369,13 @@ pub(super) fn setsid(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    // A process group of its number must not exist (`setsid`'s `pid_task(sid, PIDTYPE_PGID)`).
+    // A process group of its number must not exist (`setsid`'s `pid_task(sid, PIDTYPE_PGID)`),
+    // counting members that have ended and are not yet reaped.
     let pid = kernel.threads[&tid].process;
     if kernel
         .processes
         .values()
-        .any(|process| process.group == pid && process.ended.is_none())
+        .any(|process| process.group == pid)
     {
         return Err(Errno::EPERM);
     }
@@ -1024,12 +1023,35 @@ pub(super) fn prlimit64(
     } else {
         None
     };
-    own_pid(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
+    // Any thread's number names its process; an ended one is found until it is reaped.
+    let caller = kernel.threads[&tid].process;
+    let target = match pid as i32 {
+        0 => caller,
+        number => kernel
+            .threads
+            .get(&number)
+            .map(|thread| thread.process)
+            .or_else(|| kernel.processes.contains_key(&number).then_some(number))
+            .ok_or(Errno::ESRCH)?,
+    };
+    // `check_prlimit_permission`: another process needs every id to be the caller's, or
+    // CAP_SYS_RESOURCE.
+    if target != caller {
+        let (mine, theirs) = (
+            &kernel.processes[&caller].credentials,
+            &kernel.processes[&target].credentials,
+        );
+        let same = [theirs.uid, theirs.euid, theirs.suid] == [mine.uid; 3]
+            && [theirs.gid, theirs.egid, theirs.sgid] == [mine.gid; 3];
+        if !same && !mine.has(CAP_SYS_RESOURCE) {
+            return Err(Errno::EPERM);
+        }
+    }
     if resource as usize >= LIMITS {
         return Err(Errno::EINVAL);
     }
     let resource = resource as usize;
-    let current = kernel.process_of(tid).limits[resource];
+    let current = kernel.processes[&target].limits[resource];
     if let Some(wanted) = &wanted {
         if wanted.rlim_cur > wanted.rlim_max {
             return Err(Errno::EINVAL);
@@ -1038,10 +1060,13 @@ pub(super) fn prlimit64(
             return Err(Errno::EPERM);
         }
         // Raising a hard limit needs `CAP_SYS_RESOURCE`, which a default container does not have.
-        if wanted.rlim_max > current.maximum {
+        if wanted.rlim_max > current.maximum
+            && !kernel.processes[&caller].credentials.has(CAP_SYS_RESOURCE)
+        {
             return Err(Errno::EPERM);
         }
-        kernel.process_of_mut(tid).limits[resource] = Limit {
+        let process = kernel.processes.get_mut(&target).expect("process exists");
+        process.limits[resource] = Limit {
             current: wanted.rlim_cur,
             maximum: wanted.rlim_max,
         };
