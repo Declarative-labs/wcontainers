@@ -9,8 +9,38 @@ processes): the eighth run declared it done; two independent checks followed; th
 first one's findings and the tenth the second's (below). K3 (threads): the first run fixed the K2
 check's last findings and built threads, futexes and timers; the second built the per-thread `/proc`,
 layer 2's libc-test, scheduling between threads and clone's sharing flags; the third clone's last
-combinations and per-thread credentials (below); K3 is not complete,
-see Next.
+combinations and per-thread credentials; the fourth woken calls run at their turn, RLIMIT_CPU and
+the shared dumpable flag (below). K3 is complete; see Next.
+
+Built in K3's fourth run:
+- Woken calls run again when their thread's turn comes, not at once (`settle`, `next_to_run`,
+  `give_way`, `take_turn` in task.rs). `wake_thread` puts the thread in line with
+  `Resume::FromRegisters` and keeps it in `woken`; `settle` runs a woken call only when its thread is
+  the one `pick` would choose, and a call that goes back to its program then has the turn. A woken
+  thread of a stopped process goes back in line when the process is continued. `pipe::lock` counts a
+  woken holder as holding. This fixes the K2 check's `cat /dev/tty | cat` (the splicer takes the
+  pipe's lock again before the woken reader runs; ttylock's first case, tests/terminal.rs).
+- Lock waiters are woken only when locks change: a record lock request wakes them only when it cut,
+  joined or let go of one of its owner's locks (`locks::set` says so), a close only when it let go of
+  record locks (`FdTable::take_let_go_locks`) or an open file's last close let go of its record or
+  flock locks (`locks::release_dead`, in `files_released`). Before, every close (even of a `/proc`
+  file) woke every lock waiter; with calls run at their turn, a waiter woken for nothing dropped out
+  of `posix_locks_deadlock`'s loops until it ran again, and lockwaits' "two processes in a loop" then
+  missed its EDEADLK (measured: the reference answers EDEADLK in both loops, 3 of 3 runs).
+- RLIMIT_CPU (timer.rs `cpu_limit`, as `check_process_timers`): at the hard limit SIGKILL, at the
+  soft limit SIGXCPU with the soft limit raised a second; the running thread's turn ends when the
+  limit is due. tests/cpulimit.rs (guest/cpulimit.c: a soft limit of 0 kills by SIGXCPU's default
+  action; soft 1 and hard 2 give one SIGXCPU with the soft limit then 2, then SIGKILL). The kernel's
+  `exit` no longer touches a thread that a timer's signal or the limit killed.
+- PR_SET_DUMPABLE's flag lives in the address map (`AddressMap::dumpable`, Linux's `mm->flags`), so
+  processes made with CLONE_VM share it (guest/clonevm.c, measured: the caller reads 0 after the
+  child clears it), fork copies it and an ended process's `/proc` owner is its credentials' as
+  Linux's `task_dump_owner` without a memory.
+- Test fixes: clonevm and threadcreds waited for a thread id to be cleared with a value read twice,
+  which in the reference could read 0 the second time and wait for ever (seen once in 8 runs); and
+  clonevm polled a thread's descriptor after its id was cleared but before Linux released it (the
+  reference showed POLLIN without POLLHUP once in 9 runs); it now waits until
+  `/proc/self/task/<tid>` is gone. 12 reference runs of each gave identical output after.
 
 Built in K3's third run:
 - clone's last combinations. The address map is shared (`process::Map`, Linux's `mm_struct`) by
@@ -38,7 +68,7 @@ Built in K3's third run:
 - A message queue's notification request goes at a close by any thread of its process: descriptor
   closes are told the closing process (`FdTable::remove`, `set`, `close_all`, `close_on_exec`),
   not the table's lock owner (in threadcreds).
-- Tried and taken back: woken calls run again at their thread's turn (see Known gaps and Next).
+- Tried and taken back: woken calls run again at their thread's turn (built in the fourth run).
 
 Built in K3's second run:
 - `/proc/<pid>/task/<tid>/` (Linux's `tid_base_stuff` order and positions; the files built for a
@@ -828,8 +858,7 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   kills it.
 - Resource limits enforced: RLIMIT_FSIZE, RLIMIT_AS, RLIMIT_DATA (with `check_data_rlimit`),
   RLIMIT_STACK, RLIMIT_MEMLOCK, RLIMIT_NOFILE, RLIMIT_MSGQUEUE, RLIMIT_SIGPENDING, RLIMIT_NPROC,
-  RLIMIT_NICE and RLIMIT_RTPRIO (the priority calls). RLIMIT_CPU is kept, not enforced (needs timers,
-  K3); RLIMIT_CORE, RLIMIT_RSS, RLIMIT_LOCKS and RLIMIT_RTTIME are kept and bind nothing here (no
+  RLIMIT_NICE and RLIMIT_RTPRIO (the priority calls), RLIMIT_CPU (K3's fourth run); RLIMIT_CORE, RLIMIT_RSS, RLIMIT_LOCKS and RLIMIT_RTTIME are kept and bind nothing here (no
   core is written; Linux enforces neither RSS nor LOCKS; no real-time thread can exist, as Docker's
   hard RLIMIT_RTPRIO is 0).
 - Docker's default seccomp profile (src/seccomp.rs), measured on the reference, and a program's own
@@ -1009,14 +1038,13 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
 
 ## Known gaps (with reasons)
 
-- Woken calls run again at once (`settle`), not when their thread next gets the CPU. A terminal splice
-  into a pipe that a reader waits on hands the reader the line before the splicer runs again, so
-  `cat /dev/tty | cat` (busybox `cat` uses sendfile) shows the first line at once here; in the
-  reference the splicer has taken the pipe's lock again before the reader wakes (K2 check, 7 of 7
-  runs), and the first line waits for the second. A reader that comes to the pipe after the splicer
-  waits does wait (tests/terminal.rs `splice_holds_the_pipe`).
-- `PR_SET_DUMPABLE`'s flag is kept per process; Linux keeps it in the memory (`mm->flags`), so two
-  processes made with CLONE_VM share it there and not here.
+- Lock waiters wait on one channel for all files: a change to any owner's record locks, or the last
+  close of an open file holding locks, wakes every lock waiter, where Linux wakes only those blocked
+  on the lock that changed. A waiter woken for nothing is out of `posix_locks_deadlock`'s loops until
+  its turn comes and it waits again, so a deadlock asked about in that window is not seen.
+- CPU timers and RLIMIT_CPU are looked at whenever a thread comes back from running (and its turn
+  ends when one is due); Linux looks at its timer tick, so there a limit already passed when it is set
+  takes up to a tick. tests/cpulimit.rs prints nothing in that window.
 
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
   addresses and the pending signals are 0 (the loader knows the addresses but does not keep them).
@@ -1034,7 +1062,7 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   on Linux; utimensat on them succeeds with no effect (Linux keeps the times while the inode is
   cached). Entries outside the process directories keep their changes (above).
 - `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts, `/dev/pts` or `/sys` (counted "proc fields not tracked", detail 3).
-- RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; O_TMPFILE.
+- xattr space limits; huge page memory files; O_TMPFILE.
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
 - An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
   whether ours answers the same since the vDSO was built is not checked.
@@ -1089,9 +1117,11 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K3's second run; counts under Measurements)
+## Tests (last run 2026-11-16, K3's fourth run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K3's first run (seeded ones run
+All pass except the ignored known failures listed above. Added in K3's fourth run: cpulimit
+(guest/cpulimit.c, RLIMIT_CPU's SIGXCPU and SIGKILL against the reference); terminal's ttylock now
+starts with `cat /dev/tty | cat`; clonevm checks the shared dumpable flag. Added in K3's first run (seeded ones run
 under `SCHEDULE_SEEDS` seeds, 3 by default; 4 to 6 were run by hand):
 - threads: guest/threads.c (pthread creation and joining, mutex counting, condition variables in
   turn, barriers, read-write locks, semaphores, thread ids, robust locks after a thread's and a
@@ -1372,6 +1402,14 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K3's fourth run: with woken calls run at their turn and the lock wake change in (head 39cd8a2),
+fresh seeds 3006, 3007 and 3008 passed 20000 sequences each (333 s each, three side by side beside
+the whole suite, load 12 at the start, 17 at the end). Then, with every fix of the milestone in
+(head 82981eb, after the dumpable and RLIMIT_CPU changes, which layer 1's prctl, setresuid and
+setrlimit reach), the milestone's three fresh seeds 3009, 3010 and 3011 passed 20000 sequences each
+(318 s each, three side by side beside the whole suite, load 48 at the start, 39 at the end). Seeds
+used: up to 737, the checks' seeds, 3001 to 3011.
+
 K3's third run, with its clone and credential changes in (before the deferred rerun, which was taken
 back): fresh seeds 3004 and 3005 passed 20000 sequences each (324 s each, side by side with 3003,
 load 23 at the start, 14 at the end). Seed 3003 found readv on a nonblocking timer descriptor with
@@ -1599,6 +1637,19 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K3, fourth run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`) with the deferred rerun in (head 39cd8a2): 119
+  passed, 1 failed, 5 ignored, 5 min 47 s, load 12.08 at the start, 16.20 at the end; the failure was
+  clonevm, whose new dumpable line was built before the kernel change (the reference shares the
+  flag). At the end (head 82981eb, `RUST_TEST_THREADS=3`, beside three layer 1 runs): 120 passed, 1
+  failed (sigio, the reference's known race: it counted 0 signals for the raw byte and 2 for the
+  output to the master; three reruns passed), 5 ignored; 6 min 1 s, load 47.08 at the start, 32.96
+  at the end.
+- K3, fourth run, libc-test at head 82981eb: the 43 thread, signal, timer and IPC tests under seeds
+  200 to 209 (`SCHEDULE_SEEDS=10 SCHEDULE_SEED=200`), without saves and with saves (430 runs each),
+  all matched the reference; 486 s, load 36.61 at the start, 57.72 at the end.
+- K3, fourth run: guest/cpulimit.c takes about 15 s here (2 s of guest CPU time at one instruction
+  a nanosecond, load 37 to 45); 2.3 s in the reference.
 - K3, third run, at its end (timerfd fix in): the whole suite passed but for sigio (119 passed, 1
   failed, 5 ignored; 4 min 26 s, load 19.83 at the start, 13.74 at the end); sigio's reference
   counted no signal for output to the master where ours, and three reruns of both, counted one (see
@@ -1897,6 +1948,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K3, fourth run: none.
 - K3, third run: none.
 - K3, second run: none.
 - K3, first run: none.
@@ -1930,6 +1982,9 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K3, fourth run: sigio's reference race came again once in a whole-suite run beside three layer 1
+  runs (load 47): it counted the raw byte's signal with the next section's (0 and 2 where ours, and
+  every rerun, has 1 and 1).
 - K3, third run: sigio failed once in a whole-suite run beside a layer 1 run (load about 20): the
   reference counted 0 signals for "output to the master" (ours 1, as three reruns of both). The
   same family as the ninth run's sigio entry below: the reference's terminal buffer work races
@@ -1964,27 +2019,12 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K3, in order:
-1. Woken calls run again when their thread's turn comes rather than at once (`settle`; Known gaps,
-   the terminal splice finding). The third run built it and took it back; its diff is kept at
-   pyro-parked/wcontainers-scratch/kernel/deferred-rerun.diff (outside the repository). What it
-   did: `wake_thread` puts the thread in line with `Resume::FromRegisters` (a stale
-   `Resume::Return` would overwrite x0, the call's first argument, at a restore) and keeps it in
-   `woken`; `settle` runs a woken call only when it is the thread `pick` would choose
-   (`next_to_run`), and a call that goes back to its program then has the turn (`give_way`,
-   `take_turn`, split out of `pick`), so the waker is not overtaken by a tie in the run queue;
-   `pipe::lock` counts a woken holder as holding (`call.holds` alone). With it ttylock's new first
-   case `cat /dev/tty | cat` matched the reference, and terminal, pidfd and threads passed, but
-   two tests broke: lockwaits hangs in "a wait for an open file's lock is never a loop" (after the
-   open file unlock wakes b and e, b takes byte 0 and ends, and e, run again only after b's end,
-   finds byte 1 still in its way and waits for ever; with calls run at once e ran before b's end
-   and was woken by it; find what holds byte 1 then; note that `posix_locks_deadlock` sees only waiters parked on
-   `Channel::Locks`, so a woken waiter not yet run again drops out of its loops, which Linux's
-   `__locks_wake_up_blocks` also does), and saving's clockwatch reported "the clocks
-   held: 0" (seen before the x0 fix; not run again after it).
-2. Three fresh layer 1 seeds of 20000 once the milestone's fixes are all in (the third run ran 3003,
-   3004 and 3005 with its own changes; see Measurements). Used so far: up to 737, the checks'
-   seeds, 3001 to 3005.
+K3 is complete (fourth run). Next is K4 (see the plan). Left open, by choice, and not holding K3:
+1. Lock waiters share one channel (Known gaps): waking only the waiters blocked on the lock that
+   changed (Linux's `fl_blocked_requests`) would keep woken-for-nothing waiters in the deadlock loops.
+2. sigio's reference race (Known issues), seen three times in whole-suite runs under load; the guest
+   could wait for the byte with a timeout rather than a poll of 0.
+3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
 
 Earlier:
 
