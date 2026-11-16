@@ -31,8 +31,9 @@ done'
 
 # Native times of the same glibc executables.
 docker run --rm --name wc-translator-elfconv-native -v "$out":/work --entrypoint /bin/bash "$image" -c "
+TIMEFORMAT=%R
 for k in 1 2 3 4 5 6 7 8; do
-  t=\$(for r in \$(seq $runs); do { /usr/bin/time -f %e /work/bench-\$k.elf > /dev/null; } 2>&1; done | sort -n | head -1)
+  t=\$(for r in \$(seq $runs); do { time /work/bench-\$k.elf > /dev/null; } 2>&1; done | sort -n | head -1)
   echo \$k \$t
 done" > "$out/native.txt"
 
