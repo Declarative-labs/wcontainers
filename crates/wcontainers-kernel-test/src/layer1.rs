@@ -1034,6 +1034,10 @@ pub const CALLS: &[u32] = &[
     linux::__NR_mmap,
     linux::__NR_mmap,
     linux::__NR_mmap,
+    // Three more times, since most calls need an open file.
+    linux::__NR_openat,
+    linux::__NR_openat,
+    linux::__NR_openat,
 ];
 
 /// Turns a generated call into real arguments.
@@ -1135,6 +1139,18 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     let signal = |word: u64| pick(&[0u64, 17, 18, 23, 28, 65], word);
     let prot = |word: u64| (word % 8) | if word >> 62 == 3 { 0x100 } else { 0 };
     let arguments = match number {
+        // One open in eight names a random device, so that later reads reach their bytes.
+        linux::__NR_openat if b % 8 == 0 => {
+            let device = pick(&["/dev/random", "/dev/urandom"], b >> 3);
+            [
+                dirfd(a),
+                ARENA + PATHS + path_offset(device),
+                open_flags(c),
+                mode(d),
+                0,
+                0,
+            ]
+        }
         linux::__NR_openat => [dirfd(a), path(b), open_flags(c), mode(d), 0, 0],
         linux::__NR_close | linux::__NR_dup | linux::__NR_fsync | linux::__NR_fchdir => {
             [fd(a), 0, 0, 0, 0, 0]
@@ -1622,7 +1638,18 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             // Values for the options that take numbers: signals, slacks, flags and `PR_SET_MM`'s forms.
             let number = |word: u64| pick(&[0, 1, 2, 9, 14, 15, 64, 65, 1000, u64::MAX], word);
             match option {
-                1 | 29 | 36 => [option, number(b), 0, 0, 0, 0],
+                1 | 36 => [option, number(b), 0, 0, 0, 0],
+                // PR_SET_TIMERSLACK: slacks a sequence's sleeps end within its deadline whatever they
+                // are. Where in a long slack Linux's timer ends depends on other timers' interrupts
+                // (the machine's load), so long ones are compared in no test.
+                29 => [
+                    option,
+                    pick(&[0, 1, 1000, 50_000, 1_000_000], b),
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
                 30 | 66 | 27 | 58 => [option, 0, 0, 0, 0, 0],
                 41 | 42 | 57 => [option, number(b), number(c), 0, 0, 0],
                 35 => [option, number(b), buffer(c), number(d), number(e), 0],

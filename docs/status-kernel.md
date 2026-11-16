@@ -16,9 +16,17 @@ checked; `#!` lines are split as `load_script` splits them; `/proc` lists in Lin
 positions; fcntl and prctl gained what one process uses (owners, signals, hints, queries, the parent's
 death signal, timer slack, the subreaper, huge page disabling, the saved auxiliary vector, the forms
 that need powers), record locks answer as Linux without file locking; a fault with its signal
-ignored is no longer counted as a handler not run. Layer 1 now reaches the random devices. See Layer
-1 for the fresh seeds. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's
-ruling it runs once at the end of the kernel track. Next is K2.
+ignored is no longer counted as a handler not run. Layer 1 now reaches the random devices. The
+eleventh run (the fifth close-out run) fixed the fourth check's five blocking problems: sleeps and
+waits now end as late as the thread's timer slack (seed 3141592 hung on a sleep with the largest
+slack, which the reference never ends); the loader follows Linux's error rules for the named loader
+(EIO, ELIBBAD, the property note) and kills the process with SIGSEGV after the point of no return; a
+start with no arguments gets an empty one; argument room is `bprm_stack_limits`'s; record locks are
+built (process and open file owners, joined and split ranges, let go at close); layer 1 compares the
+play area after each sequence's last call. Of the minor ones, prctl's ambient powers are built; the
+rest are recorded below with their reasons. See Layer 1 for the fresh seeds. The
+one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
+end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -27,8 +35,9 @@ Needs Docker running; the reference uses alpine:3.22. Containers are named `wc-k
 Layer 1 long run (one command, for the orchestrator):
 `LAYER1_CASES=1000000 LAYER1_SEED=<n> nix develop -c cargo test -p wcontainers-kernel-test --test layer1`
 `LAYER1_CASES` is the number of sequences (default 64), `LAYER1_SEED` the seed (default 0). A failure is
-shrunk and printed call by call with the seed. A sequence that runs past 60 s in the reference is
-killed there (SIGKILL), which our side reports for a wait that never ends. Seeds 100 and up are fresh
+shrunk and printed call by call with the seed; shrinking stops after 30 minutes (a step whose sequence
+waits costs the reference's deadline). A sequence that runs past 60 s in the reference is killed there
+(SIGKILL), which our side reports for a wait that never ends or a sleep that would end after 60 s. Seeds 100 and up are fresh
 (the independent check used 4242, 5353, 6464 and 777001 to 777003).
 
 ## For the independent check
@@ -100,6 +109,16 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   sequence's own directories are compared in full.
 - A call's random or machine bytes are kept out of later calls by writing them only to areas no later
   call reads (getrandom, uname, name_to_handle_at).
+- The play area (the 16 pages at 0x71000000 that sequences map, protect, move and advise, and that 1 in
+  8 buffers point into) is compared once, after the last call: which pages process_vm_readv can read,
+  and their bytes, with the same masks as the arena. Not after every call: reading a page brings it in
+  (on tmpfs a read fault of a hole takes a page, which statfs and stat's blocks show), so reading it
+  between calls would change what later calls see. What a call put there and a later call overwrote
+  is not seen. A sequence that ends early (a fault, a filter's kill) has no play area compared. Seed
+  152 (1000 sequences, mmap chosen four times as often as other calls): 2% of sequences ended with a
+  readable play page, none with bytes other than zeros there, so the bytes are compared thinly.
+- fcntl's F_GETLK and F_OFD_GETLK: the l_pid a test writes when it finds a process's lock (each
+  runner's own process number); -1 (an open file's lock) and 0 are compared.
 - The random devices are in the path pool. After a read, pread64, readv, preadv or preadv2 of one,
   both runners zero the whole range the call was given (up to the first page they cannot write, by
   process_vm_writev), and after a sendfile from one into a regular file they zero what it put there
@@ -147,7 +166,10 @@ What layer 1 does not generate, and why:
   flags, extended flags, clone, deduplication and preallocation ranges, bad pointers and descriptors.
 - fcntl's F_SETOWN only with numbers in use in both runners or in neither (0, 1, -1, the smallest int,
   4000000): the runners' other process numbers differ. F_SETOWN_EX is not generated (its number comes
-  from memory); tests/options.rs compares it. Record locks are not generated (not built, below).
+  from memory); tests/options.rs compares it. Record locks are generated (F_GETLK, F_SETLK and the
+  open file forms, from eight requests in the arena that tests rewrite), but not F_SETLKW and
+  F_OFD_SETLKW: in one process they wait only on another open file's lock, for ever, which costs the
+  reference's 60 s deadline; tests/recordlocks.rs runs them where they do not wait.
 - prctl's PR_GET_AUXV is not generated (the vector holds addresses and lacks the vDSO's entries here);
   tests/options.rs compares it.
 
@@ -248,7 +270,18 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   Linux's rules for VM_MAYWRITE, VM_MAYEXEC, MAP_SHARED_VALIDATE, seals, MADV_REMOVE, mremap and merging.
 - Loader: ELF with PT_INTERP (the named loader placed where mmap would put it, AT_BASE), ET_DYN at 2/3
   of the address space, `#!` scripts (one argument, 4 levels, 256 byte line), execve and execveat,
-  close on exec, handlers reset. The auxiliary vector as the reference's, in its order, except
+  close on exec, handlers reset. Errors in `load_elf_binary`'s order before the point of no return:
+  the program's magic, kind, machine and program headers (ENOEXEC; class, byte order and version are
+  not checked, as Linux's are not), the loader's name (ENOEXEC for its size or a missing zero, EIO for
+  a short read, EINVAL for an offset no file position holds), the loader's header (EIO when short), its
+  magic, machine and program headers (ELIBBAD), then the GNU property note (`parse_elf_properties` and
+  arm64's FEATURE_1_AND size). An empty loader name opens the working directory (EACCES). After the
+  point of no return (`begin_new_exec`) a failure to place the program, its loader or the stack kills
+  the process with SIGSEGV (`bprm_execve`); for the first process the container ends with it. A start
+  with no arguments gets an empty first one (`do_execveat_common`). The strings' room is
+  `bprm_stack_limits`'s (a quarter of RLIMIT_STACK, at most 6 MiB, at least ARG_MAX, less a pointer
+  each), taken in Linux's order: both lists counted, the file name, the environment, the arguments,
+  then a script's names. The auxiliary vector as the reference's, in its order, except
   AT_SYSINFO_EHDR and AT_MINSIGSTKSZ (counted and warned at each start; they come with the vDSO and
   signal frames in K2). Set-user and set-group bits, file capabilities, AT_SECURE, dumpability.
 - Credentials: uid/euid/suid/fsuid and gids, supplementary groups (Docker's), Docker's 14 powers,
@@ -258,7 +291,11 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   serial it was opened with (`f_cred`): linkat with AT_EMPTY_PATH walks from a descriptor only with
   the same credentials or CAP_DAC_READ_SEARCH (which Docker's root lacks), else ENOENT.
 - Time: clocks from the host, coarse clocks at 1 ms resolution (measured), sleeps park the thread and
-  the kernel goes idle until the time; the test host jumps its clocks instead of waiting. CPU time is
+  the kernel goes idle until the time; the test host jumps its clocks instead of waiting. Sleeps
+  (nanosleep, clock_nanosleep) end at the time plus the thread's timer slack, and ppoll and pselect6
+  at the timeout plus `select_estimate_accuracy`'s slack (0.1% of the wait, 0.5% for a nice thread, at
+  most 100 ms, at least the thread's slack); real-time policies have none, and leaving them brings the
+  default back (`__setscheduler_params`). CPU time is
   the time since the container started less the time the process's threads spent parked. CPU clock
   ids below zero (`clock_getcpuclockid`, `pthread_getcpuclockid`) as Linux's `pid_for_clock`: own
   process and thread, any process, a thread of the caller's; profiling and user time at 1 ms
@@ -272,6 +309,13 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   RLIMIT_STACK, RLIMIT_MEMLOCK, RLIMIT_NOFILE. RLIMIT_CPU is kept, not enforced (needs timers, K3).
 - Docker's default seccomp profile (src/seccomp.rs), measured on the reference, and a program's own
   classic BPF filters, checked and run as Linux's.
+- Record locks (src/locks.rs) as `fs/locks.c` keeps them: one list per inode, a descriptor table's
+  locks (F_SETLK) and an open file's (F_OFD_SETLK) as owners, a process's own never in conflict, ranges
+  joined and split, the first conflicting lock in list order reported by F_GETLK (an open file's with
+  l_pid -1), let go when any descriptor of the file closes (not an O_PATH one) or, for an open file's,
+  when its last reference goes; every check of `flock64_to_posix_lock`, `fcntl_getlk` and
+  `fcntl_setlk` in order. A wait (F_SETLKW) for another holder in the same process lasts until a signal
+  (K2), as on Linux.
 - flock between open files; extended attributes on tmpfs (src/syscall/xattr.rs); memfd_create with
   seals; memfd_secret; name_to_handle_at; rseq; membarrier; protection keys as on a CPU without
   permission overlays; sched_setattr family; process_vm_readv and process_vm_writev on the caller;
@@ -304,12 +348,10 @@ sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, u
 utimensat, write, writev.
 
 Partial (inside the list above), each with its reason:
-- fcntl: record locks (F_GETLK, F_SETLK, F_SETLKW and the OFD forms) are not built: the lock is read
-  (EFAULT), then they answer as Linux built without file locking (GETLK EINVAL, SETLK EACCES), counted
-  "file locks not implemented". They need a lock table per inode with owners (process or open file),
-  range merging and splitting, release at close, and waits; K2, where other processes make them
-  matter, before K6's bar. Not built either, each counted "fcntl command not built" and EINVAL (Linux's
-  answer when the feature is not configured): F_SETLEASE (leases: K2), F_NOTIFY (directory
+- fcntl: record locks are built (above); between processes (K2) a wait must also wake when a holder
+  lets go, and `posix_locks_deadlock` must refuse waits that close a loop (EDEADLK); within one process
+  neither can happen. Not built, each counted "fcntl command not built" and EINVAL (Linux's answer when
+  the feature is not configured): F_SETLEASE (leases: K2), F_NOTIFY (directory
   notification signals: K2), F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG, and F_GETPIPE_SZ and
   F_SETPIPE_SZ on the standard stream pipes (pipes: K2; on anything else they are EBADF as Linux's).
   Built in the tenth run: owners (F_SETOWN, F_GETOWN, F_SETOWN_EX, F_GETOWN_EX), F_SETSIG and
@@ -327,8 +369,10 @@ Partial (inside the list above), each with its reason:
   say which pages were written, so the count includes pages a program had already written). MAP_SYNC
   EOPNOTSUPP, as tmpfs.
 - openat, openat2: O_TMPFILE counted, EOPNOTSUPP; named pipes counted, ENXIO (pipes, K2); `/dev/ptmx`
-  counted, ENODEV (terminals, K2). openat2's restricted lookups counted, ENOSYS, as a kernel without
-  them; RESOLVE_CACHED taken.
+  counted, ENODEV (terminals, K2). openat2's restricted lookups (RESOLVE_NO_XDEV, NO_MAGICLINKS,
+  NO_SYMLINKS, BENEATH, IN_ROOT) are not built: counted "system call not implemented", ENOSYS, as a
+  kernel before openat2 answers the whole call (Linux has had them as long as openat2); they need the
+  path walk to refuse mount crossings, links and escapes, before K6's bar. RESOLVE_CACHED taken.
 - kill, tkill, tgkill: only to the caller itself; others ESRCH (no other process in K1).
 - execve, execveat: only from a process with one thread (threads, K3).
 - rt_sigaction, rt_sigprocmask, sigaltstack: handlers recorded, not run (K2).
@@ -339,7 +383,8 @@ Partial (inside the list above), each with its reason:
   I/O are counted yet).
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
 - prctl: built: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, CAPBSET_DROP,
-  GET/SET_NO_NEW_PRIVS, GET/SET_SECCOMP, SET/GET_CHILD_SUBREAPER (kept; it acts on orphans, K2),
+  GET/SET_NO_NEW_PRIVS, GET/SET_SECCOMP, CAP_AMBIENT (eleventh run: is-set, raise, lower, clear, with
+  `cap_task_prctl`'s checks), SET/GET_CHILD_SUBREAPER (kept; it acts on orphans, K2),
   SET/GET_PDEATHSIG (kept per thread, cleared on a change of ids or a secure exec; sent when the parent
   ends, K2), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
   huge pages here), GET_MDWE (0: none can be set), GET_AUXV, GET_SECUREBITS (the keep-capabilities bit;
@@ -348,7 +393,8 @@ Partial (inside the list above), each with its reason:
   option not built" and EINVAL (Linux's answer for an option it does not know): SET_MDWE (needs
   mmap and mprotect to refuse writable and executable memory), SET/GET_TAGGED_ADDR_CTRL (needs every
   call to strip pointer tags; EINVAL is Linux's answer without the tagged address ABI),
-  SET_SECUREBITS, CAP_AMBIENT, GET/SET_SPECULATION_CTRL (the made-up machine's answers), SET_MM's map
+  SET_SECUREBITS (needs the no-root, no-setuid-fixup, no-ambient-raise and exec bits applied in
+  execve's and the id setters' power rules), GET/SET_SPECULATION_CTRL (the made-up machine's answers), SET_MM's map
   form and its other forms with CAP_SYS_RESOURCE, SET_VMA, the timer, MCE, FP mode, SVE, SME, pointer
   authentication, syscall user dispatch, memory merging, shadow stack and the other arch options. All
   before K6's bar.
@@ -448,10 +494,39 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   shows it). Files and `/dev/zero` match.
 - sendfile into the standard stream pipes moves at most an empty pipe's worth (the host drains them);
   a reference pipe Docker has not drained holds less room.
+- An alignment fault's BUS_ADRALN and address, and a memory fault's code and address, are not kept:
+  only a handler can read them, and they belong in the pending signal's information, which comes with
+  K2's signal queue and frames.
+- Two opens of one `/proc` file are two inodes here (made at each lookup), so their open file locks
+  (and flock locks) do not conflict as Linux's do.
+- An open file's record locks go at its last close here; Linux keeps them while a mapping still holds
+  the file.
+- Loader: a segment whose file bytes lie past the file's end kills the process here (SIGSEGV); Linux
+  maps it, and touching those pages is SIGBUS. PT_GNU_STACK's executable stack is not applied (the
+  stack is never executable here). A program that can be placed anywhere and names no loader goes at
+  2/3 of the address space here; Linux places it where mmap would. Running a program does not move its
+  access time.
+- Timer slack: a sleep ends at the end of its slack here; Linux's timer may end anywhere in the slack
+  when another interrupt comes after the soft end (measured: a 50 s slack slept 49.964 s).
 
-## Tests (last run 2026-11-15, tenth run: 56 passed, 8 ignored known failures)
+## Tests (last run 2026-11-15, eleventh run: 61 passed, 8 ignored known failures)
 
-All pass except the ignored known failures listed above. Added in the tenth run:
+All pass except the ignored known failures listed above. Added in the eleventh run:
+- loaderrors: guest/loaderrors.c makes ELF programs and loaders: missing, a script, 5 bytes,
+  unreadable, mode 0644, only a header, zeros, x86-64, no or short program headers, another kind with a
+  bad note; loader names of sizes 0, 1, 4097, past the file, at offsets no file position holds, without
+  a final zero, empty, cut by a zero; programs with bad magic, kind, machine, header size, count, offset,
+  another class, and bad property notes; argument room at its edges (pointers, strings, one long one).
+  A second case places a fixed loader at 0 (SIGSEGV after the point of no return, 139); a third starts
+  itself with no arguments (argc 1, an empty argv[0], cmdline of one zero). Same output.
+- recordlocks: guest/recordlocks.c: ranges joined, split, cut and bridged, to the end; own locks and
+  F_GETLK; open file locks against the process's and each other's; F_OFD_GETLK of an unlock; waits
+  that need not wait; release by closing another descriptor, not an O_PATH one, and an open file's at
+  its last copy; SEEK_CUR and SEEK_END; every range, kind, pid, access and pointer error; locks on
+  `/dev/null`, the output pipe, a `/proc` file, a directory and a memory file. Same output.
+- options: ambient powers; four sleeps with a 2 s timer slack last at least 1 s on both sides.
+- busybox: `setpriv --dump`, and with an ambient power raised.
+Added in the tenth run:
 - transfer: guest/transfer.c: reads of 64 MiB, 70000, 100000 and 2 MiB (vectored) from the random
   devices, reads and writes of them at a fault, getrandom of 64 MiB, sendfile from `/dev/zero` and
   `/dev/urandom` to a file and `/dev/null` with positions, from a file across pages, and with counts of
@@ -522,6 +597,13 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+Eleventh run (fifth close-out): the check's seed 3141592 (failing at case 9982 on a sleep after
+PR_SET_TIMERSLACK of the largest value) passed 10000 after the slack fix (235 s, load 7 to 8). Record
+locks and ambient powers are generated, mmap is chosen four times as often, and the play area is
+compared after each sequence's last call. Seeds 140 (1500), 141 to 143 (3000 each, 44 s side by side,
+load 17) and 160 to 162 (5000 each, 81 s side by side, load 14 to 15) passed on the way; 160 to 162
+first found our runner reading the play area after a sequence's filter had killed it (a test runner
+fix). RESULTS_13
 Tenth run (fourth close-out): layer 1 now reaches the random devices (bytes zeroed by both runners),
 fcntl's owners, signals, hints, queries and pipe sizes, and prctl's parent death signal, timer slack,
 subreaper, huge page, deny-write-execute, secure bits, SET_MM and I/O flusher options. Seeds 130 and
@@ -626,8 +708,8 @@ All on this shared Mac; noisy, not benchmarks.
   sizes, RWF_NOAPPEND, RWF_ATOMIC, RWF_DONTCACHE, RWF_NOSIGNAL, CLOSE_RANGE_UNSHARE, CLOSE_RANGE_CLOEXEC,
   PIPE_DEF_BUFFERS, PR_THP_DISABLE_EXCEPT_ADVISED, SECBIT_KEEP_CAPS, AT_VECTOR_SIZE (arm64's 2 and
   the generic 24, which gives the 432 bytes PR_GET_AUXV reports, measured).
-- Record locks are answered as Linux built without file locking answers, not built (see Partial): the
-  check of K1 asked whether they belong to K1; they matter between processes, so they come with K2.
+- A sleep ends at the end of its timer slack (the timer's hard end), since the made-up machine has no
+  other interrupt to end it sooner (see Known gaps).
 - `/proc`'s listing order and positions come from the reference's getdents listing (names and their
   order depend on the configuration); `.reset` in `/proc`'s list is the reference's.
 - The generator copies linux-raw-sys's `system`, `ioctl`, `prctl`, `net` and `ptrace` modules, and gives
@@ -681,8 +763,8 @@ All on this shared Mac; noisy, not benchmarks.
   address }` (the translator's side) and moved a layout assertion in registers.rs to a constant
   assertion; the kernel handles the new exit (SIGBUS) and the stand-in reports it for misaligned
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
-  packages, only additions). The eighth, ninth and tenth runs changed nothing in the shared crate
-(origin/phase-1 had nothing new to merge in the ninth and tenth).
+  packages, only additions). The eighth to eleventh runs changed nothing in the shared crate
+  (origin/phase-1 had nothing new to merge in the ninth to eleventh).
 
 ## Questions for the orchestrator (boundary)
 
@@ -695,6 +777,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
   killed; three reruns passed at once. Cause not found; not seen since.
 - The test driver prints a counter's detail with a call name even for counters whose detail is not a
   call number (cosmetic).
+- Test binaries running side by side build guest programs into one directory; the dispatch test read
+  that directory while another test was writing it and failed once (fixed in the eleventh run: a file
+  gone since the listing is skipped).
+- The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
 

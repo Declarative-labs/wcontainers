@@ -451,46 +451,44 @@ fn protect(
     if key != -1 && !key_allocated(&process.map, key) {
         return Err(Errno::EINVAL);
     }
-    if !process.map.fully_mapped(address, end) {
-        return Err(Errno::ENOMEM);
-    }
-    // Mapping by mapping, the change stops at the first that may not have it.
-    let refused = process
-        .map
-        .iter()
-        .filter(|mapping| mapping.start < end && mapping.end > address)
-        .find(|mapping| !mapping.allowed.contains(permissions))
-        .map(|mapping| mapping.start.max(address));
-    let end = refused.unwrap_or(end);
-    // Private pages turning writable become data, within its limit.
-    if permissions.contains(Permissions::WRITE) {
-        let becoming: u64 = process
+    // `do_mprotect_pkey`: the start must be mapped; then mapping by mapping, keeping what it changed
+    // before, the change stops at a hole (ENOMEM), at a mapping that may not have it (EACCES), or at
+    // private pages that turning writable would take past the data limit (ENOMEM).
+    let mut at = address;
+    while at < end {
+        let Some((stop, allowed, becomes_data)) = process
             .map
             .iter()
-            .filter(|mapping| mapping.start < end && mapping.end > address)
-            .filter(|mapping| {
-                !mapping.is_data()
-                    && crate::memory::is_data(permissions, mapping.shared, &mapping.backing)
+            .find(|mapping| mapping.start <= at && mapping.end > at)
+            .map(|mapping| {
+                (
+                    mapping.end.min(end),
+                    mapping.allowed,
+                    permissions.contains(Permissions::WRITE)
+                        && !mapping.is_data()
+                        && crate::memory::is_data(permissions, mapping.shared, &mapping.backing),
+                )
             })
-            .map(|mapping| (mapping.end.min(end) - mapping.start.max(address)) / PAGE_SIZE)
-            .sum();
-        if becoming > 0
+        else {
+            return Err(Errno::ENOMEM);
+        };
+        if !allowed.contains(permissions) {
+            return Err(Errno::EACCES);
+        }
+        let pages = (stop - at) / PAGE_SIZE;
+        if becomes_data
             && !process
                 .map
-                .may_expand(&process.limits, true, becoming, (becoming, 0))
+                .may_expand(&process.limits, true, pages, (pages, 0))
         {
             return Err(Errno::ENOMEM);
         }
-    }
-    if end > address {
         process
             .map
-            .protect(cx.cpu, process.memory, address, end, permissions)?;
+            .protect(cx.cpu, process.memory, at, stop, permissions)?;
+        at = stop;
     }
-    match refused {
-        Some(_) => Err(Errno::EACCES),
-        None => Ok(0),
-    }
+    Ok(0)
 }
 
 pub(super) fn madvise(
