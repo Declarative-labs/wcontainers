@@ -239,29 +239,68 @@ fn measure() {
     }
 }
 
-/// Timing of a floating point workload (`programs/floats.c`, SCALE=1) at -O2: native, and through the
-/// translator at full in wasmtime, best of `WC_BENCH_RUNS` (default 3). Only measures; one command:
+/// Timing of the floating point and vector workloads (`programs/floats.c`, SCALE=1) at -O2, each on its own:
+/// native, and through the translator at full in wasmtime and Chrome, best of `WC_BENCH_RUNS` (default 3).
+/// `WC_BENCH_WORKLOADS` picks workloads (default 1,2,3,4), `WC_BENCH_CHROME=0` leaves Chrome out. Only
+/// measures; one command:
 /// `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn floats_speed() {
+    use wcontainers_translator_test::browser;
     use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
+    const WORKLOADS: [&str; 4] = ["n-body", "matrix", "vector matrix", "byte differences"];
     let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
-    let blob = build_with("floats", "-O2", Library::C, &["SCALE=1"]);
-    let theirs = native(&blob);
-    let native = native_seconds(&blob, runs);
-    let mut best = f64::MAX;
-    for _ in 0..runs {
-        let (ours, _, _, time) = translated_omitting(
-            &blob,
-            LookAhead::Full,
-            wcontainers_translator::Omit::default(),
+    let chosen: Vec<usize> = std::env::var("WC_BENCH_WORKLOADS").map_or((1..=4).collect(), |v| {
+        v.split(',').map(|n| n.parse().unwrap()).collect()
+    });
+    let chrome = std::env::var("WC_BENCH_CHROME").map_or(true, |v| v != "0");
+    let load = || {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "vm.loadavg"])
+            .output()
+            .expect("sysctl");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    for k in chosen {
+        let name = WORKLOADS[k - 1];
+        let workload = format!("WORKLOAD={k}");
+        let blob = build_with("floats", "-O2", Library::C, &["SCALE=1", &workload]);
+        let theirs = native(&blob);
+        let native = native_seconds(&blob, runs);
+        let mut best = f64::MAX;
+        for _ in 0..runs {
+            let (ours, _, _, time) = translated_omitting(
+                &blob,
+                LookAhead::Full,
+                wcontainers_translator::Omit::default(),
+            );
+            assert_eq!(ours, theirs);
+            best = best.min(time.as_secs_f64());
+        }
+        eprintln!(
+            "floats {name}: native {native:.3} s, wasmtime {best:.3} s, {:.2} times native (load {})",
+            best / native,
+            load()
         );
-        assert_eq!(ours, theirs);
-        best = best.min(time.as_secs_f64());
+        if !chrome {
+            continue;
+        }
+        let mut best = f64::MAX;
+        for _ in 0..runs {
+            let report = browser::repeated(
+                &blob,
+                LookAhead::Full,
+                wcontainers_translator::Omit::default(),
+                1,
+            );
+            assert_eq!(report.ran, theirs, "{name} in Chrome");
+            best = best.min(report.runs[0]);
+        }
+        eprintln!(
+            "floats {name}: Chrome {best:.3} s, {:.2} times native (load {})",
+            best / native,
+            load()
+        );
     }
-    eprintln!(
-        "floats -O2: native {native:.3} s, full {best:.3} s, {:.2} times native",
-        best / native
-    );
 }
