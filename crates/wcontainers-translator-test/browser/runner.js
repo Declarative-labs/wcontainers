@@ -32,6 +32,11 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
   const result = (length) =>
     new Uint8Array(translator.memory.buffer, translator.output(), length).slice();
   const contract = JSON.parse(new TextDecoder().decode(result(translator.contract())));
+  // What this engine does where WebAssembly leaves results open.
+  const probe = new WebAssembly.Instance(new WebAssembly.Module(result(translator.probe_module()))).exports[
+    contract.probe
+  ]();
+  const startedAt = performance.now();
 
   const pageSize = contract.pageSize;
   // The table covers the whole memory, and one more byte, always zero, follows it.
@@ -209,6 +214,30 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
       return 1;
     },
     [contract.hookWarn]: (reasonIndex, detail) => slowPath(reasonIndex, BigInt.asUintN(64, detail), 0),
+    [contract.hookFloat]: (operation, a, b, c) => {
+      const block = new DataView(state.buffer, BLOCK_AT, contract.threadStateSize);
+      const fpcr = block.getUint32(contract.registerFpcr, true);
+      const tracking = block.getUint32(contract.floatTracking, true);
+      const value = translator.float(operation, a, b, c, fpcr, block.getUint32(contract.registerFpsr, true));
+      block.setUint32(contract.registerFpsr, translator.float_status(), true);
+      const fused = translator.float_reason(operation, fpcr, tracking) === 1;
+      // Registers are not saved here, so the detail is the operation, not the address.
+      slowPath(reason(fused ? "software fused multiply-add" : "exact floating point requested"), operation >>> 0, 0);
+      return value;
+    },
+    [contract.hookClock]: () => BigInt(Math.round((performance.now() - startedAt) * 1e6)),
+    // ic ivau: forget the pieces the table holds for the 64 byte line.
+    [contract.hookCodeChanged]: (address) => {
+      const line = BigInt.asUintN(64, address) & ~63n;
+      const table = thread.exports[contract.lookup];
+      for (let at = line; at < line + 64n; at += 4n) {
+        const slot = (at - tableBase) / 4n;
+        if (at >= tableBase && slot < BigInt(table.length)) {
+          table.set(Number(slot), null);
+          translatedFrom.delete(at);
+        }
+      }
+    },
     [contract.hookTrap]: (kind, detail) => {
       const name = contract.trapKinds[kind];
       stop({ kind: name, detail: BigInt.asUintN(64, detail).toString() });
@@ -223,7 +252,7 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     // The translator's memory may grow while it makes room, so its buffer is taken after.
     const at = translator.input(b.bytes.length);
     new Uint8Array(translator.memory.buffer, at, b.bytes.length).set(b.bytes);
-    const length = translator.translate(b.codeStart, b.codeEnd, start, lookAhead, omit);
+    const length = translator.translate(b.codeStart, b.codeEnd, start, lookAhead, probe, omit);
     if (length < 0) throw new Error(`no translation from ${start}`);
     const module = new WebAssembly.Module(result(length));
     new WebAssembly.Instance(module, {
@@ -272,8 +301,8 @@ function run({ translatorBytes, blob, codeBytes, load, memoryBytes, regions, sp,
     stderr.length = 0;
     stopped = null;
     snapshot = null;
-    const block = new DataView(state.buffer, BLOCK_AT, contract.threadBlockSize);
-    for (let i = 0; i < contract.threadBlockSize; i++) block.setUint8(i, 0);
+    const block = new DataView(state.buffer, BLOCK_AT, contract.threadStateSize);
+    for (let i = 0; i < contract.threadStateSize; i++) block.setUint8(i, 0);
     block.setBigUint64(contract.registerPc, BigInt(load), true);
     block.setBigUint64(contract.registerSp, BigInt(sp), true);
 

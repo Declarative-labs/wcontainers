@@ -1,6 +1,8 @@
 //! The translator as a WebAssembly module for the browser runner. The page writes its input into the buffer
 //! from [`input`], calls an operation, and reads the result from [`output`].
 
+#![recursion_limit = "256"]
+
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
 use wcontainers_translator::contract;
@@ -33,15 +35,17 @@ fn answer(bytes: Vec<u8>) -> i32 {
     length
 }
 
-/// Translate the blob in the input buffer from one start, at look-ahead none (0) or full (1), leaving out the
-/// checks set in `omit` (1: stop, 2: permissions, 4: returns; only to measure them). Returns the length of
-/// the code module, or -1 if the start or the code range is not valid.
+/// Translate the blob in the input buffer from one start, at look-ahead none (0) or full (1), for the host
+/// the probe found (`probe`, its answer), leaving out the checks set in `omit` (1: stop, 2: permissions, 4:
+/// returns; only to measure them). Returns the length of the code module, or -1 if the start or the code
+/// range is not valid.
 #[unsafe(no_mangle)]
 pub extern "C" fn translate(
     code_start: u64,
     code_end: u64,
     start: u64,
     look_ahead: u32,
+    probe: i32,
     omit: u32,
 ) -> i32 {
     let look_ahead = if look_ahead == 1 {
@@ -55,12 +59,54 @@ pub extern "C" fn translate(
         returns: omit & 4 != 0,
     };
     let result = INPUT.with_borrow(|blob| {
-        translate_omitting(blob, code_start..code_end, &[start], look_ahead, omit)
+        translate_omitting(
+            blob,
+            code_start..code_end,
+            &[start],
+            look_ahead,
+            wcontainers_arm64::Host::from_probe(probe),
+            omit,
+        )
     });
     match result {
         Ok(translation) => answer(translation.wasm),
         Err(_) => -1,
     }
+}
+
+/// The module whose `probe` export finds what the engine does where WebAssembly leaves results open. Returns
+/// its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn probe_module() -> i32 {
+    answer(wcontainers_arm64::host::probe_module())
+}
+
+thread_local! {
+    static STATUS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The float hook's work: one operation in software under `fpcr`, from `fpsr`. Returns the result; the new
+/// FPSR is then read with [`float_status`].
+#[unsafe(no_mangle)]
+pub extern "C" fn float(operation: i32, a: u64, b: u64, c: u64, fpcr: u32, fpsr: u32) -> u64 {
+    let mut status = fpsr;
+    let result = wcontainers_arm64::exact::run(operation, a, b, c, fpcr, &mut status);
+    STATUS.set(status);
+    result
+}
+
+/// FPSR after the last [`float`].
+#[unsafe(no_mangle)]
+pub extern "C" fn float_status() -> u32 {
+    STATUS.get()
+}
+
+/// Whether the last [`float`] was the fused multiply-add of a host that does not fuse (1), not exact floating
+/// point the program asked for (0), given FPCR and whether the flags are kept.
+#[unsafe(no_mangle)]
+pub extern "C" fn float_reason(operation: i32, fpcr: u32, tracking: u32) -> u32 {
+    let (kind, _) = wcontainers_arm64::exact::Operation::decode(operation);
+    u32::from(kind.fused() && fpcr == 0 && tracking == 0)
 }
 
 /// The thread module with a lookup table of `slots` entries. Returns its length.
@@ -104,6 +150,15 @@ pub extern "C" fn contract() -> i32 {
         "hookLoadCode": HOOK_LOAD_CODE,
         "hookWarn": HOOK_WARN,
         "hookTrap": HOOK_TRAP,
+        "hookFloat": HOOK_FLOAT,
+        "hookClock": HOOK_CLOCK,
+        "hookCodeChanged": HOOK_CODE_CHANGED,
+        "lookup": LOOKUP,
+        "probe": wcontainers_arm64::host::PROBE,
+        "threadStateSize": THREAD_STATE_SIZE,
+        "floatTracking": FLOAT_TRACKING,
+        "registerFpsr": offset_of!(RegisterBlock, fpsr),
+        "registerFpcr": offset_of!(RegisterBlock, fpcr),
         "pageRead": PAGE_READ,
         "pageWrite": PAGE_WRITE,
         "nextPageRead": NEXT_PAGE_READ,

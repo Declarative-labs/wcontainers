@@ -87,6 +87,28 @@ pub const HOOK_WARN: &str = "warn";
 /// Hook `(kind: i32, detail: i64)`: the instruction at `pc` stops the thread; see [`TrapKind`]. Registers
 /// are saved. The thread then leaves.
 pub const HOOK_TRAP: &str = "trap";
+/// Hook `(operation: i32, a: i64, b: i64, c: i64) -> i64`: one floating point operation in software,
+/// [`wcontainers_arm64::exact::run`] with this thread's FPCR, adding to its FPSR. It is a slow path: counted as
+/// "software fused multiply-add" when FPCR is zero and the flags are not kept (the host's engine does not
+/// fuse), else as "exact floating point requested". Registers are not saved.
+pub const HOOK_FLOAT: &str = "float";
+/// Hook `() -> i64`: the monotonic clock in nanoseconds, for the counter.
+pub const HOOK_CLOCK: &str = "clock";
+/// Hook `(address: i64)`: `ic ivau` says the code at the address may have changed. Registers are not saved.
+pub const HOOK_CODE_CHANGED: &str = "code_changed";
+
+/// Bytes a runner gives each thread at its block's place: the abi's block (registers, then the stop flag),
+/// then words of the CPU side's own, which start zero when the thread is made and which the kernel never
+/// sees.
+pub const THREAD_STATE_SIZE: usize = wcontainers_abi::THREAD_BLOCK_SIZE + 32;
+/// i32: not zero once the program wrote FPSR, so its flags are kept exact.
+pub const FLOAT_TRACKING: usize = wcontainers_abi::THREAD_BLOCK_SIZE;
+/// i32: the size of the access a load exclusive remembered, 0 for none.
+pub const EXCLUSIVE_BYTES: usize = FLOAT_TRACKING + 4;
+/// i64: the address it remembered.
+pub const EXCLUSIVE_ADDRESS: usize = FLOAT_TRACKING + 8;
+/// Two i64: the value it loaded.
+pub const EXCLUSIVE_VALUE: usize = FLOAT_TRACKING + 16;
 
 /// Permission table byte: the page may be read.
 pub const PAGE_READ: u8 = 1;

@@ -25,9 +25,15 @@ fn main() {
         returns: omitted.contains("returns"),
     };
     let blob = build_with(program, optimisation, Library::None, &defines);
-    let translation =
-        translate_omitting(&blob.bytes, 0..blob.code_bytes, &[0], LookAhead::Full, omit)
-            .expect("translation");
+    let translation = translate_omitting(
+        &blob.bytes,
+        0..blob.code_bytes,
+        &[0],
+        LookAhead::Full,
+        wcontainers_translator_test::runner::probe(),
+        omit,
+    )
+    .expect("translation");
     std::fs::create_dir_all(out).unwrap();
     let base = format!("{out}/{}", blob.name);
     std::fs::write(format!("{base}.wasm"), &translation.wasm).unwrap();

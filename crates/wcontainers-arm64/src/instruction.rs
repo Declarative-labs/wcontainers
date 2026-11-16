@@ -168,51 +168,290 @@ pub struct Arrangement {
     pub whole: bool,
 }
 
-/// AdvSIMD operations on two registers, element by element.
+/// An AdvSIMD data processing operation. Each works on elements of the instruction's `element` size, the
+/// size Arm's `size` field names: for long operations that is the narrow source, for narrowing ones the
+/// narrow result. `Signed` and `Unsigned` pairs are one variant with a flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VectorBinary {
+pub enum SimdOp {
+    // Integer, every element of `rn` with the same element of `rm`.
     And,
-    /// bic: and with the inverse of the second.
+    /// bic
     AndNot,
     Or,
-    /// orn: or with the inverse of the second.
+    /// orn
     OrNot,
     Xor,
-    /// bsl: the destination selects, bit by bit, from the first (set) or second (clear).
+    /// bsl: the destination selects, bit by bit, from `rn` (set) or `rm` (clear).
     Select,
-    /// bit: the second selects where the first is inserted into the destination.
+    /// bit: `rm` selects where `rn` is inserted into the destination.
     InsertIfTrue,
-    /// bif: the inverse of the second selects where the first is inserted.
+    /// bif: the inverse of `rm` selects where `rn` is inserted.
     InsertIfFalse,
     Add,
     Sub,
     Mul,
+    /// mla and mls: the destination plus or minus the product.
+    MulAdd,
+    MulSub,
+    /// pmul: carry-less multiply of bytes.
+    PolyMul,
     /// The compares give all ones where they hold, zero where not.
     Equal,
-    SignedGreater,
-    SignedGreaterOrEqual,
-    UnsignedGreater,
-    UnsignedGreaterOrEqual,
+    Greater {
+        signed: bool,
+    },
+    GreaterOrEqual {
+        signed: bool,
+    },
     /// cmtst: the two have a set bit in common.
     Test,
-}
-
-/// AdvSIMD operations on one register, element by element.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VectorUnary {
-    Not,
-    /// cnt: set bits in each byte.
+    /// shadd, srhadd and shsub: half the sum or difference, rounded up when `rounding`.
+    HalvingAdd {
+        signed: bool,
+        rounding: bool,
+    },
+    HalvingSub {
+        signed: bool,
+    },
+    SaturatingAdd {
+        signed: bool,
+    },
+    SaturatingSub {
+        signed: bool,
+    },
+    /// sshl, srshl, sqshl, sqrshl and the unsigned ones: shift by the signed low byte of `rm`, right when
+    /// negative.
+    ShiftByRegister {
+        signed: bool,
+        rounding: bool,
+        saturating: bool,
+    },
+    Max {
+        signed: bool,
+    },
+    Min {
+        signed: bool,
+    },
+    AbsDiff {
+        signed: bool,
+    },
+    /// saba: the destination plus the absolute difference.
+    AbsDiffAccumulate {
+        signed: bool,
+    },
+    /// The pairwise operations work on the elements of `rn` then `rm` taken two by two.
+    AddPairwise,
+    MaxPairwise {
+        signed: bool,
+    },
+    MinPairwise {
+        signed: bool,
+    },
+    /// sqdmulh and sqrdmulh: the high half of twice the product, saturated.
+    DoublingMulHigh {
+        rounding: bool,
+    },
+    // Integer, on one register.
+    /// rev16, rev32, rev64: reverse the elements in each group of this many bytes.
+    Reverse {
+        group: u8,
+    },
+    /// saddlp, sadalp: add neighbouring pairs into elements twice as wide, adding to the destination when
+    /// `accumulate`.
+    AddLongPairwise {
+        signed: bool,
+        accumulate: bool,
+    },
+    /// suqadd (signed) and usqadd: add `rn`, of the other signedness, to the destination, saturating.
+    SaturatingAccumulate {
+        signed: bool,
+    },
+    CountLeadingSign,
+    CountLeadingZeros,
     CountBits,
+    Not,
+    ReverseBits,
+    SaturatingAbs,
+    SaturatingNegate,
+    Abs,
+    Negate,
+    /// cmgt, cmge, cmeq, cmle and cmlt with zero, by condition code.
+    CompareZero(Cond),
+    /// xtn
+    Narrow,
+    /// sqxtn, uqxtn, sqxtun: saturate from `from_signed` to `to_signed`.
+    SaturatingNarrow {
+        from_signed: bool,
+        to_signed: bool,
+    },
+    /// shll: widen and shift left by the element's width in bits.
+    ShiftLeftLongByWidth,
+    /// urecpe and ursqrte on 32 bit fixed point.
+    ReciprocalEstimateInteger,
+    ReciprocalSqrtEstimateInteger,
+    // Integer shifts by an immediate (`shift`).
+    /// sshr, ssra, srshr, srsra and the unsigned ones.
+    ShiftRight {
+        signed: bool,
+        rounding: bool,
+        accumulate: bool,
+    },
+    ShiftLeft,
+    /// sqshl, uqshl and sqshlu by an immediate.
+    SaturatingShiftLeft {
+        from_signed: bool,
+        to_signed: bool,
+    },
+    /// shrn and rshrn.
+    ShiftRightNarrow {
+        rounding: bool,
+    },
+    /// sqshrn, sqrshrn, uqshrn, uqrshrn, sqshrun, sqrshrun.
+    SaturatingShiftRightNarrow {
+        from_signed: bool,
+        to_signed: bool,
+        rounding: bool,
+    },
+    /// sshll and ushll.
+    ShiftLeftLong {
+        signed: bool,
+    },
+    /// sri and sli: shift, keeping the destination's bits the shift leaves out.
+    ShiftRightInsert,
+    ShiftLeftInsert,
+    // Long, wide and narrow on three registers.
+    AddLong {
+        signed: bool,
+    },
+    SubLong {
+        signed: bool,
+    },
+    /// saddw: the wide `rn` plus the widened `rm`.
+    AddWide {
+        signed: bool,
+    },
+    SubWide {
+        signed: bool,
+    },
+    /// addhn and raddhn: the high half of the wide sum.
+    AddNarrowHigh {
+        rounding: bool,
+    },
+    SubNarrowHigh {
+        rounding: bool,
+    },
+    AbsDiffLong {
+        signed: bool,
+    },
+    AbsDiffAccumulateLong {
+        signed: bool,
+    },
+    MulLong {
+        signed: bool,
+    },
+    MulAddLong {
+        signed: bool,
+    },
+    MulSubLong {
+        signed: bool,
+    },
+    /// sqdmull, sqdmlal, sqdmlsl.
+    DoublingMulLong,
+    DoublingMulAddLong,
+    DoublingMulSubLong,
+    /// pmull: carry-less multiply of bytes, or of 64 bit elements, to twice the width.
+    PolyMulLong,
+    // Floating point, elementwise.
+    FloatAdd,
+    FloatSub,
+    FloatMul,
+    FloatDiv,
+    FloatMax,
+    FloatMin,
+    FloatMaxNumber,
+    FloatMinNumber,
+    /// fmulx: as fmul, but zero times infinity is two with the sign of the product.
+    FloatMulExtended,
+    /// fmla and fmls: fused.
+    FloatMulAdd,
+    FloatMulSub,
+    FloatAbsDiff,
+    FloatEqual,
+    FloatGreaterOrEqual,
+    FloatGreater,
+    FloatAbsGreaterOrEqual,
+    FloatAbsGreater,
+    /// frecps: 2 - a * b, fused; frsqrts: (3 - a * b) / 2.
+    FloatReciprocalStep,
+    FloatReciprocalSqrtStep,
+    FloatAddPairwise,
+    FloatMaxPairwise,
+    FloatMinPairwise,
+    FloatMaxNumberPairwise,
+    FloatMinNumberPairwise,
+    FloatAbs,
+    FloatNegate,
+    FloatSqrt,
+    FloatRound(Rounding),
+    /// fcmgt, fcmge, fcmeq, fcmle and fcmlt with zero, by condition code.
+    FloatCompareZero(Cond),
+    /// fcvt*s and fcvt*u, with `shift` fraction bits.
+    FloatToInteger {
+        signed: bool,
+        rounding: Rounding,
+    },
+    /// scvtf and ucvtf, with `shift` fraction bits.
+    IntegerToFloat {
+        signed: bool,
+    },
+    /// fcvtn and fcvtxn (round to odd): to half the width.
+    FloatNarrow {
+        odd: bool,
+    },
+    /// fcvtl: to twice the width.
+    FloatWiden,
+    FloatReciprocalEstimate,
+    FloatReciprocalSqrtEstimate,
+    FloatReciprocalExponent,
+    // Across all elements, to one element in the low bits of the destination.
+    AddAcross,
+    /// saddlv, uaddlv: the sum, twice as wide.
+    AddLongAcross {
+        signed: bool,
+    },
+    MaxAcross {
+        signed: bool,
+    },
+    MinAcross {
+        signed: bool,
+    },
+    FloatMaxAcross,
+    FloatMinAcross,
+    FloatMaxNumberAcross,
+    FloatMinNumberAcross,
+    /// The scalar pairwise faddp: the sum of the two elements.
+    FloatAddAcross,
 }
 
-/// AdvSIMD reductions across all elements to one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VectorAcross {
-    Add,
-    SignedMax,
-    SignedMin,
-    UnsignedMax,
-    UnsignedMin,
+pub enum Permute {
+    Zip1,
+    Zip2,
+    Unzip1,
+    Unzip2,
+    Transpose1,
+    Transpose2,
+}
+
+/// The shape of an AdvSIMD data processing instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shape {
+    /// Element size in bytes, as Arm's `size` field names it.
+    pub element: u8,
+    /// Arm's `Q`: the whole 128 bits, or for long and narrow operations the upper half.
+    pub q: bool,
+    /// One element only, the rest of the destination cleared.
+    pub scalar: bool,
 }
 
 /// What a vector immediate does with its register.
@@ -231,6 +470,85 @@ pub enum VectorImmediate {
 pub enum SystemRegister {
     Nzcv,
     TpidrEl0,
+    /// Floating point control: rounding mode, flush to zero, default not-a-number, alternative half
+    /// precision.
+    Fpcr,
+    /// Floating point status: the cumulative exception flags and the saturation flag.
+    Fpsr,
+    /// The virtual counter, ticking at [`COUNTER_FREQUENCY`].
+    Counter,
+    /// A register that reads as a fixed value and ignores writes or cannot be written: the counter's
+    /// frequency, the cache type, the zeroing block size, the read-only thread pointer, and the identity
+    /// registers as Linux answers them.
+    Fixed(u64),
+}
+
+/// The counter frequency we present, in Hz: one tick a nanosecond.
+pub const COUNTER_FREQUENCY: u64 = 1_000_000_000;
+
+/// The bits of FPCR the CPU we present has: alternative half precision, default not-a-number, flush to zero
+/// and the rounding mode.
+pub const FPCR_BITS: u32 = 0x07c0_0000;
+/// The bits of FPSR the CPU we present has: saturation and the cumulative exception flags.
+pub const FPSR_BITS: u32 = 0x0800_009f;
+
+/// What a single instruction atomic does to memory with the register's value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtomicOp {
+    Add,
+    /// ldclr: and with the inverse.
+    Clear,
+    Xor,
+    /// ldset: or.
+    Set,
+    SignedMax,
+    SignedMin,
+    UnsignedMax,
+    UnsignedMin,
+    Swap,
+}
+
+/// How a floating point value is rounded to an integer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rounding {
+    /// To nearest, ties to even.
+    Nearest,
+    /// To nearest, ties away from zero.
+    Away,
+    /// Towards minus infinity.
+    Floor,
+    /// Towards plus infinity.
+    Ceiling,
+    /// Towards zero.
+    Zero,
+    /// As FPCR says.
+    Current,
+    /// As FPCR says, raising inexact when the value changes (frintx).
+    CurrentExact,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatUnary {
+    Move,
+    Abs,
+    Negate,
+    Sqrt,
+    Round(Rounding),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatBinary {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Max,
+    Min,
+    /// The number when one side is a quiet not-a-number.
+    MaxNumber,
+    MinNumber,
+    /// The product, negated.
+    NegatedMul,
 }
 
 /// One decoded instruction.
@@ -415,25 +733,52 @@ pub enum Instruction {
         imm: u64,
         whole: bool,
     },
-    VectorBinary {
-        op: VectorBinary,
-        arrangement: Arrangement,
+    /// AdvSIMD data processing. `index` names an element of `rm` used for every element (by element
+    /// forms); `shift` is a shift or a number of fraction bits.
+    Simd {
+        op: SimdOp,
+        shape: Shape,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        index: Option<u8>,
+        shift: u8,
+    },
+    /// zip, uzp and trn.
+    Permute {
+        op: Permute,
+        element: u8,
+        whole: bool,
         rd: u8,
         rn: u8,
         rm: u8,
     },
-    VectorUnary {
-        op: VectorUnary,
-        arrangement: Arrangement,
+    /// tbl and tbx: bytes of `registers` consecutive registers from `rn`, picked by the bytes of `rm`. Out of
+    /// range picks give zero, or with `extend` keep the destination's byte.
+    Table {
+        extend: bool,
+        registers: u8,
+        whole: bool,
         rd: u8,
         rn: u8,
+        rm: u8,
     },
-    /// The result is one element in the low bits of `rd`; the rest of `rd` is cleared.
-    VectorAcross {
-        op: VectorAcross,
-        arrangement: Arrangement,
-        rd: u8,
-        rn: u8,
+    /// ld1 to ld4 and st1 to st4, multiple structures, one lane, or one structure to every lane
+    /// (`replicate`).
+    SimdMemory {
+        load: bool,
+        /// Elements per structure, 1 to 4, spread over that many registers.
+        structure: u8,
+        /// Registers in all, from `rt` upwards (wrapping at 31).
+        registers: u8,
+        element: u8,
+        whole: bool,
+        lane: Option<u8>,
+        replicate: bool,
+        rt: u8,
+        rn: Reg,
+        /// After the access, the base moves by the bytes accessed (`Zero`) or by a register.
+        post: Option<Reg>,
     },
     /// dup (general): every element becomes the low bits of a general register.
     DuplicateGeneral {
@@ -444,6 +789,13 @@ pub enum Instruction {
     /// dup (element): every element becomes element `index` of `rn`.
     DuplicateElement {
         arrangement: Arrangement,
+        index: u8,
+        rd: u8,
+        rn: u8,
+    },
+    /// dup (scalar): element `index` of `rn` becomes the low bits of `rd`, the rest cleared.
+    ScalarElement {
+        bytes: u8,
         index: u8,
         rd: u8,
         rn: u8,
@@ -486,6 +838,147 @@ pub enum Instruction {
         rd: u8,
         rn: u8,
         rm: u8,
+    },
+    /// crc32 and crc32c: the checksum in `rn` updated with the low `bytes` of `rm`.
+    Crc32 {
+        castagnoli: bool,
+        bytes: u8,
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
+    /// A single instruction atomic: memory at `rn` becomes `op` of itself and `rs`; `rt` gets the old value.
+    Atomic {
+        op: AtomicOp,
+        bytes: u8,
+        rs: Reg,
+        rt: Reg,
+        rn: Reg,
+    },
+    /// cas: if memory at `rn` equals `rs`, it becomes `rt`; `rs` gets the old value. With `pair`, `rs` and
+    /// `rt` name even registers whose next register holds the second half.
+    CompareSwap {
+        bytes: u8,
+        pair: bool,
+        rs: Reg,
+        rt: Reg,
+        rn: Reg,
+    },
+    /// ldxr and ldxp, plain and acquiring: load and remember the address and value.
+    LoadExclusive {
+        bytes: u8,
+        pair: bool,
+        rt: Reg,
+        rt2: Reg,
+        rn: Reg,
+    },
+    /// stxr and stxp, plain and releasing: store if the address is still remembered and memory still
+    /// holds the value loaded; `rs` gets 0 if stored, 1 if not.
+    StoreExclusive {
+        bytes: u8,
+        pair: bool,
+        rs: Reg,
+        rt: Reg,
+        rt2: Reg,
+        rn: Reg,
+    },
+    /// ldar and stlr: a plain access at `rn` that must be aligned.
+    LoadAcquire {
+        bytes: u8,
+        rt: Reg,
+        rn: Reg,
+    },
+    StoreRelease {
+        bytes: u8,
+        rt: Reg,
+        rn: Reg,
+    },
+    /// clrex: forget the remembered address.
+    ClearExclusive,
+    /// dc zva: zero the 64 byte block holding the address in `rn`.
+    ZeroBlock {
+        rn: Reg,
+    },
+    /// dc cvau, cvac, civac: cache maintenance, which needs only that the address may be read.
+    CleanCache {
+        rn: Reg,
+    },
+    /// ic ivau: the code at the address in `rn` may have changed.
+    CodeChanged {
+        rn: Reg,
+    },
+    /// Scalar floating point on `size` bytes (4 or 8): one source.
+    Float {
+        op: FloatUnary,
+        size: u8,
+        rd: u8,
+        rn: u8,
+    },
+    /// fcvt: between half (2), single (4) and double (8) precision.
+    FloatConvert {
+        from: u8,
+        to: u8,
+        rd: u8,
+        rn: u8,
+    },
+    FloatBinary {
+        op: FloatBinary,
+        size: u8,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+    },
+    /// fmadd and its negations: `rd = (±ra) + (±rn) * rm`, fused, each negation applied to the operand.
+    FloatMulAdd {
+        negate_addend: bool,
+        negate_product: bool,
+        size: u8,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        ra: u8,
+    },
+    /// fcmp and fcmpe: with zero when `rm` is `None`. `signaling` raises invalid for quiet not-a-numbers too.
+    FloatCompare {
+        signaling: bool,
+        size: u8,
+        rn: u8,
+        rm: Option<u8>,
+    },
+    /// fccmp and fccmpe: compare if the condition holds, else the flags become `nzcv`.
+    FloatCondCompare {
+        signaling: bool,
+        size: u8,
+        rn: u8,
+        rm: u8,
+        nzcv: u8,
+        cond: Cond,
+    },
+    FloatSelect {
+        size: u8,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        cond: Cond,
+    },
+    /// fcvt*s and fcvt*u: a float of `size` bytes, times 2 to the `fraction_bits`, rounded, saturated.
+    FloatToInteger {
+        size: u8,
+        width: Width,
+        signed: bool,
+        rounding: Rounding,
+        fraction_bits: u8,
+        rd: Reg,
+        rn: u8,
+    },
+    /// scvtf and ucvtf: an integer divided by 2 to the `fraction_bits`.
+    IntegerToFloat {
+        size: u8,
+        width: Width,
+        signed: bool,
+        fraction_bits: u8,
+        rd: u8,
+        rn: Reg,
     },
     /// svc
     Syscall,
@@ -541,6 +1034,82 @@ impl Instruction {
             }
             I::StorePair { bytes, address, .. } | I::StoreVectorPair { bytes, address, .. } => {
                 (address, 2 * u32::from(bytes), true)
+            }
+            I::Atomic { bytes, rn, .. }
+            | I::StoreRelease { bytes, rn, .. }
+            | I::CompareSwap {
+                bytes,
+                pair: false,
+                rn,
+                ..
+            }
+            | I::StoreExclusive {
+                bytes,
+                pair: false,
+                rn,
+                ..
+            } => (
+                Address::Offset {
+                    base: rn,
+                    offset: 0,
+                },
+                u32::from(bytes),
+                true,
+            ),
+            I::CompareSwap { bytes, rn, .. } | I::StoreExclusive { bytes, rn, .. } => (
+                Address::Offset {
+                    base: rn,
+                    offset: 0,
+                },
+                2 * u32::from(bytes),
+                true,
+            ),
+            I::LoadAcquire { bytes, rn, .. }
+            | I::LoadExclusive {
+                bytes,
+                pair: false,
+                rn,
+                ..
+            } => (
+                Address::Offset {
+                    base: rn,
+                    offset: 0,
+                },
+                u32::from(bytes),
+                false,
+            ),
+            I::LoadExclusive { bytes, rn, .. } => (
+                Address::Offset {
+                    base: rn,
+                    offset: 0,
+                },
+                2 * u32::from(bytes),
+                false,
+            ),
+            I::SimdMemory {
+                load,
+                structure,
+                registers,
+                element,
+                whole,
+                lane,
+                replicate,
+                rn,
+                ..
+            } => {
+                let bytes = if lane.is_some() || replicate {
+                    u32::from(structure) * u32::from(element)
+                } else {
+                    u32::from(registers) * if whole { 16 } else { 8 }
+                };
+                (
+                    Address::Offset {
+                        base: rn,
+                        offset: 0,
+                    },
+                    bytes,
+                    !load,
+                )
             }
             _ => return None,
         };

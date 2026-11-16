@@ -68,6 +68,14 @@ pub fn presented(word: u32) -> bool {
     })
 }
 
+/// The form a word is on the CPU we present, if it is one of its instructions.
+pub fn form(word: u32) -> Option<&'static Form> {
+    candidates(word)
+        .iter()
+        .map(|&i| &all()[usize::from(i)])
+        .find(|form| form.presented(word))
+}
+
 /// The bits of a word that pick its bucket of candidate forms: bits 31 to 21.
 const KEY_LOW: u32 = 21;
 const KEY_BUCKETS: u32 = 1 << (32 - KEY_LOW);

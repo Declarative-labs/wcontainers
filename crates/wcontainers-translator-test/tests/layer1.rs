@@ -95,6 +95,8 @@ fn alignment_faults_match_the_cpu() {
             word,
             registers,
             vectors: [0; 32],
+            float: [0; 2],
+            tracking: false,
             seed: 1,
         };
         compare(&mut reference, &case).unwrap_or_else(|report| panic!("{report}"));
@@ -115,6 +117,8 @@ fn vector_registers_reach_the_cpu() {
         word,
         registers: [0; 34],
         vectors,
+        float: [0; 2],
+        tracking: false,
         seed: 1,
     };
     let mut reference = Cases::start();
@@ -151,6 +155,8 @@ fn words_in_no_form_are_illegal_as_on_the_cpu() {
             word,
             registers,
             vectors: [0; 32],
+            float: [0; 2],
+            tracking: false,
             seed,
         };
         compare(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)?;

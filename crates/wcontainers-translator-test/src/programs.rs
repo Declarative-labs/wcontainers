@@ -213,9 +213,20 @@ fn run_blob(
 
 /// A machine with a blob placed, translated and ready to run from its first byte.
 pub fn ready(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine {
+    ready_on(blob, look_ahead, omit, crate::runner::probe())
+}
+
+/// [`ready`], translated for a host with these facts instead of the probe's.
+pub fn ready_on(
+    blob: &Blob,
+    look_ahead: LookAhead,
+    omit: Omit,
+    host: wcontainers_arm64::Host,
+) -> Machine {
     let slots = blob.code_bytes.div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, LOAD, slots, Syscalls::StandIn);
+    machine.set_host(host);
     for (range, permissions) in place.regions {
         machine.set_permissions(range, permissions);
     }

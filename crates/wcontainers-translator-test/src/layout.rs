@@ -52,13 +52,13 @@ pub const CODE: u64 = 0x5000_0000;
 pub const CODE_SPAN: u64 = 128 << 20;
 
 /// A case: the instruction word, the data seed, then x0 to x30, sp, the flags (at their `pstate` bits) and
-/// the thread pointer, then v0 to v31, all little endian.
-pub const REQUEST_BYTES: usize = 4 + 8 + 34 * 8 + 32 * 16;
+/// the thread pointer, then v0 to v31, then FPSR and FPCR (4 bytes each), all little endian.
+pub const REQUEST_BYTES: usize = 4 + 8 + 34 * 8 + 32 * 16 + 8;
 
 /// A result: signal, `si_code`, `si_addr`, then x0 to x30, sp, pc, the flags and the thread pointer, then v0
-/// to v31, then the number of changed data bytes and each one as a 4 byte offset from `DATA` and its new
-/// value.
-pub const RESULT_HEADER_BYTES: usize = 4 + 4 + 8 + 35 * 8 + 32 * 16 + 4;
+/// to v31, then FPSR and FPCR, then the number of changed data bytes and each one as a 4 byte offset from
+/// `DATA` and its new value.
+pub const RESULT_HEADER_BYTES: usize = 4 + 4 + 8 + 35 * 8 + 32 * 16 + 8 + 4;
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {

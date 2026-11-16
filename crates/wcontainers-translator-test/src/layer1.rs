@@ -6,128 +6,36 @@ use crate::reference::{Cases, Landed};
 use crate::runner::{Machine, Stopped, Syscalls};
 use proptest::prelude::*;
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
-use wcontainers_arm64::forms::{self, Form};
+use wcontainers_arm64::forms::Form;
 use wcontainers_translator::LookAhead;
 
-/// The SIMD and floating point data processing forms translated so far.
-const VECTOR_FORMS: &[&str] = &[
-    "MOVI_asimdimm_L_sl",
-    "ORR_asimdimm_L_sl",
-    "MOVI_asimdimm_L_hl",
-    "ORR_asimdimm_L_hl",
-    "MOVI_asimdimm_M_sm",
-    "MOVI_asimdimm_N_b",
-    "FMOV_asimdimm_S_s",
-    "MVNI_asimdimm_L_sl",
-    "BIC_asimdimm_L_sl",
-    "MVNI_asimdimm_L_hl",
-    "BIC_asimdimm_L_hl",
-    "MVNI_asimdimm_M_sm",
-    "MOVI_asimdimm_D_ds",
-    "MOVI_asimdimm_D2_d",
-    "FMOV_asimdimm_D2_d",
-    "AND_asimdsame_only",
-    "BIC_asimdsame_only",
-    "ORR_asimdsame_only",
-    "ORN_asimdsame_only",
-    "EOR_asimdsame_only",
-    "BSL_asimdsame_only",
-    "BIT_asimdsame_only",
-    "BIF_asimdsame_only",
-    "ADD_asimdsame_only",
-    "SUB_asimdsame_only",
-    "MUL_asimdsame_only",
-    "CMEQ_asimdsame_only",
-    "CMTST_asimdsame_only",
-    "CMGT_asimdsame_only",
-    "CMGE_asimdsame_only",
-    "CMHI_asimdsame_only",
-    "CMHS_asimdsame_only",
-    "CNT_asimdmisc_R",
-    "NOT_asimdmisc_R",
-    "ADDV_asimdall_only",
-    "SMAXV_asimdall_only",
-    "SMINV_asimdall_only",
-    "UMAXV_asimdall_only",
-    "UMINV_asimdall_only",
-    "DUP_asimdins_DV_v",
-    "DUP_asimdins_DR_r",
-    "SMOV_asimdins_W_w",
-    "UMOV_asimdins_W_w",
-    "INS_asimdins_IR_r",
-    "SMOV_asimdins_X_x",
-    "UMOV_asimdins_X_x",
-    "INS_asimdins_IV_v",
-    "EXT_asimdext_only",
-    "FMOV_32S_float2int",
-    "FMOV_S32_float2int",
-    "FMOV_64D_float2int",
-    "FMOV_D64_float2int",
-    "FMOV_64VX_float2int",
-    "FMOV_V64I_float2int",
+/// Every form of the CPU we present: one some word of which is presented. Forms whose condition limits
+/// fields are found by trying words.
+pub fn covered(form: &Form) -> bool {
+    (0..256u32).any(|i| form.presented(form.word(i.wrapping_mul(0x9e37_79b9) ^ i << 5)))
+}
+
+/// System registers layer 1 picks from for `mrs` and `msr`, as o0:op1:CRn:CRm:op2: NZCV, TPIDR_EL0, FPCR,
+/// FPSR and TPIDRRO_EL0. Others come from random fields.
+const SYSTEM_REGISTERS: [u32; 5] = [
+    (1 << 14) | (3 << 11) | (4 << 7) | (2 << 3),
+    (1 << 14) | (3 << 11) | (13 << 7) | 2,
+    (1 << 14) | (3 << 11) | (4 << 7) | (4 << 3),
+    (1 << 14) | (3 << 11) | (4 << 7) | (4 << 3) | 1,
+    (1 << 14) | (3 << 11) | (13 << 7) | 3,
 ];
 
-/// Every feature the form's condition names is one we offer.
-fn offered(form: &Form) -> bool {
-    form.features
-        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .filter(|token| token.starts_with("FEAT_"))
-        .all(|feature| forms::OFFERED_FEATURES.contains(&feature))
-}
-
-/// The forms layer 1 covers now: the base integer instructions, the SIMD and floating point register
-/// loads and stores, and [`VECTOR_FORMS`]. System register moves are limited to the registers
-/// [`restrict`] allows. The rest of floating point and vectors, atomics, exclusives, load-acquire and
-/// store-release and the other system instructions come with milestone 3.
-pub fn covered(form: &Form) -> bool {
-    const GROUPS: &[&str] = &[
-        "dpimm/",
-        "dpreg/",
-        "control/branch_imm",
-        "control/branch_reg",
-        "control/compbranch",
-        "control/condbranch",
-        "control/testbranch",
-        "control/exception",
-        "control/hints",
-        "control/barriers",
-        "control/systemmove",
-        "ldst/ldst_pos",
-        "ldst/ldst_unscaled",
-        "ldst/ldst_immpre",
-        "ldst/ldst_immpost",
-        "ldst/ldst_regoff",
-        "ldst/ldst_unpriv",
-        "ldst/ldstpair_off",
-        "ldst/ldstpair_pre",
-        "ldst/ldstpair_post",
-        "ldst/ldstnapair_offs",
-        "ldst/loadlit",
-        "reserved/perm_undef",
-    ];
-    if VECTOR_FORMS.contains(&form.name.as_str()) {
-        return true;
-    }
-    let vector = form.field(form.value, "VR") == Some(1);
-    // Integer forms of the base set: their condition names no feature, though it may limit their fields.
-    let base = !form.features.contains("FEAT_") && !vector;
-    let vector_access = vector && form.group.starts_with("ldst/") && offered(form);
-    (base || vector_access) && GROUPS.iter().any(|g| form.group.starts_with(g))
-}
-
-/// Narrow a word where milestone 0 covers only part of a form: system register moves only reach NZCV and
-/// TPIDR_EL0.
-fn restrict(form: &Form, word: u32, choice: bool) -> u32 {
-    if form.group == "control/systemmove" {
-        // o0:op1:CRn:CRm:op2 of NZCV (3,3,4,2,0) or TPIDR_EL0 (3,3,13,0,2).
-        let register: u32 = if choice {
-            (1 << 14) | (3 << 11) | (4 << 7) | (2 << 3)
-        } else {
-            (1 << 14) | (3 << 11) | (13 << 7) | 2
-        };
-        return (word & !(0x7fff << 5)) | (register << 5);
+/// Narrow a word toward the system registers that matter, most of the time.
+fn restrict(form: &Form, word: u32, pick: u8) -> u32 {
+    if form.group == "control/systemmove" && usize::from(pick) < SYSTEM_REGISTERS.len() {
+        return (word & !(0x7fff << 5)) | (SYSTEM_REGISTERS[usize::from(pick)] << 5);
     }
     word
+}
+
+/// o0:op1:CRn:CRm:op2 of a system register move.
+fn system_register(word: u32) -> u32 {
+    (word >> 5) & 0x7fff
 }
 
 /// Why a word is left out of the comparison, if it is. Each is an encoding the architecture leaves
@@ -155,6 +63,59 @@ pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
     if form.group.starts_with("control/") && offset == Some(0) {
         return Some("branch to itself");
     }
+    let exclusive = form.group.starts_with("ldst/ldstexcl");
+    if exclusive && field("L") == Some(0) {
+        let rs = field("Rs");
+        let pair = form.group.ends_with('p');
+        if rs == field("Rt") || (pair && rs == field("Rt2")) || (rs == rn && rn != Some(31)) {
+            return Some("store exclusive whose status register is also transferred or the base");
+        }
+    }
+    if exclusive
+        && field("L") == Some(1)
+        && form.group.ends_with('p')
+        && field("Rt") == field("Rt2")
+    {
+        return Some("load pair into one register");
+    }
+    let shift_group = form.group.ends_with("asimdshf") || form.group.ends_with("asisdshf");
+    let fp_conversion = ["SCVTF", "UCVTF", "FCVTZS", "FCVTZU"]
+        .iter()
+        .any(|stem| form.name.starts_with(&format!("{stem}_")));
+    if shift_group && fp_conversion && field("immh").is_some_and(|immh| immh >> 1 == 1) {
+        return Some("half precision, which needs FEAT_FP16: the reference CPU has it, we do not");
+    }
+    if form.name.starts_with("PMULL_") && field("size") == Some(3) {
+        return Some("64 bit pmull, which needs FEAT_PMULL: the reference CPU has it, we do not");
+    }
+    if form.group == "control/systemmove" {
+        let r = system_register(word);
+        let (op1, crn, crm, op2) = ((r >> 11) & 7, (r >> 7) & 15, (r >> 3) & 15, r & 7);
+        let by_design = matches!((op1, crn, crm, op2), (3, 14, 0, 0 | 2) | (3, 0, 0, 1 | 7))
+            || (r >> 14 == 1 && op1 == 0 && crn == 0);
+        if by_design {
+            return Some("a register we answer by design, not as the reference CPU does");
+        }
+        // DIT, TCO and CNTVCTSS_EL0.
+        if matches!((op1, crn, crm, op2), (3, 4, 2, 5 | 7) | (3, 14, 0, 6)) {
+            return Some("a register of a feature the reference CPU has and we do not");
+        }
+    }
+    if form.name == "MSR_SI_pstate"
+        && field("op1") == Some(3)
+        && matches!(field("op2"), Some(2 | 4))
+    {
+        return Some("DIT and TCO, of features the reference CPU has and we do not");
+    }
+    if form.group == "control/systeminstrs"
+        && (field("op1"), field("CRn")) == (Some(3), Some(7))
+        && matches!(
+            (field("CRm").unwrap_or(0), field("op2").unwrap_or(0)),
+            (4, 3 | 4) | (10, 3 | 5) | (12, 1 | 3 | 5) | (13, 1 | 3 | 5) | (14, 3 | 5)
+        )
+    {
+        return Some("cache operations of features the reference CPU has and we do not");
+    }
     if form.group == "control/hints" {
         let (crm, op2) = (field("CRm").unwrap_or(0), field("op2").unwrap_or(0));
         if crm == 1 || crm == 3 || (crm == 0 && op2 == 7) || crm >= 4 {
@@ -171,6 +132,10 @@ pub struct Case {
     pub word: u32,
     pub registers: [u64; 34],
     pub vectors: [u128; 32],
+    /// FPSR and FPCR.
+    pub float: [u32; 2],
+    /// The flags are kept exact, as after a program wrote FPSR.
+    pub tracking: bool,
     pub seed: u64,
 }
 
@@ -200,8 +165,116 @@ fn value() -> impl Strategy<Value = u64> {
     ]
 }
 
+/// Single and double precision values that matter: not-a-numbers of both kinds with payloads,
+/// infinities, zeros, denormals, the edges of the normal range, halves and integers.
+fn float_bits(double: bool) -> impl Strategy<Value = u64> {
+    let special: Vec<u64> = if double {
+        [
+            0.0f64,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            1.5,
+            2.5,
+            -2.5,
+            3.0,
+            0.1,
+            1e300,
+            -1e-300,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            4503599627370496.5,
+            9.223_372_036_854_776e18,
+            -9.223_372_036_854_776e18,
+            1.8446744073709552e19,
+            2147483648.0,
+            -2147483649.0,
+            4294967296.0,
+            65504.0,
+            65520.0,
+            6.1e-5,
+            6e-8,
+        ]
+        .iter()
+        .map(|v| v.to_bits())
+        .chain([
+            0x7ff8_0000_0000_0000,
+            0x7ff0_0000_0000_0001,
+            0xfff4_0000_0000_dead,
+            0x7ffc_0000_beef_0000,
+            1,
+            0x000f_ffff_ffff_ffff,
+            0x8000_0000_0000_0001,
+        ])
+        .collect()
+    } else {
+        [
+            0.0f32,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            1.5,
+            2.5,
+            -2.5,
+            3.0,
+            0.1,
+            1e30,
+            -1e-30,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::MAX,
+            f32::MIN_POSITIVE,
+            8388608.5,
+            2147483648.0,
+            -2147483649.0,
+            4294967296.0,
+            9.223372e18,
+            65504.0,
+            65520.0,
+            6.1e-5,
+            6e-8,
+        ]
+        .iter()
+        .map(|v| u64::from(v.to_bits()))
+        .chain([
+            0x7fc0_0000,
+            0x7f80_0001,
+            0xffa0_dead,
+            0x7fe0_beef,
+            1,
+            0x007f_ffff,
+            0x8000_0001,
+        ])
+        .collect()
+    };
+    let width = if double { 64 } else { 32 };
+    prop_oneof![
+        3 => prop::sample::select(special),
+        1 => any::<u64>().prop_map(move |v| if width == 64 { v } else { v & 0xffff_ffff }),
+        // Exponents near the denormal edge.
+        1 => (any::<u64>(), any::<bool>()).prop_map(move |(v, neg)| {
+            let (fraction, exponent, sign) = if width == 64 { (52, 1u64, 63) } else { (23, 1, 31) };
+            (v & ((1 << fraction) - 1)) | ((v >> 60) % 2 * exponent) << fraction | u64::from(neg) << sign
+        }),
+    ]
+}
+
 fn vector_value() -> impl Strategy<Value = u128> {
     prop_oneof![
+        2 => prop::collection::vec(float_bits(false), 4).prop_map(|v| {
+            v.iter().enumerate().fold(0u128, |all, (i, &x)| all | u128::from(x) << (32 * i))
+        }),
+        2 => prop::collection::vec(float_bits(true), 2)
+            .prop_map(|v| u128::from(v[1]) << 64 | u128::from(v[0])),
+        // Half precision lanes.
+        1 => prop::collection::vec(prop_oneof![
+            Just(0x7c00u64), Just(0xfc00), Just(0x7e01), Just(0x7d00), Just(0x0001), Just(0x03ff),
+            Just(0x3c00), Just(0x7bff), Just(0x8000), any::<u16>().prop_map(u64::from)
+        ], 8).prop_map(|v| v.iter().enumerate().fold(0u128, |all, (i, &x)| all | u128::from(x) << (16 * i))),
         2 => any::<u128>(),
         2 => (value(), value()).prop_map(|(low, high)| u128::from(high) << 64 | u128::from(low)),
         // Bytes from a few values, so elements of different registers are often equal.
@@ -212,6 +285,17 @@ fn vector_value() -> impl Strategy<Value = u128> {
 
 fn data_pointer() -> impl Strategy<Value = u64> {
     (0..DATA_BYTES, any::<bool>()).prop_map(|(at, align)| DATA + if align { at & !7 } else { at })
+}
+
+/// FPCR and whether the flags are kept: half the cases in the fast mode (FPCR zero, flags not kept), the
+/// rest with flags kept, and FPCR's bits random in half of those.
+fn float_control() -> impl Strategy<Value = (u32, bool)> {
+    prop_oneof![
+        2 => Just((0, false)),
+        1 => Just((0, true)),
+        1 => (any::<u32>(), any::<bool>())
+            .prop_map(|(bits, tracking)| (bits & wcontainers_arm64::FPCR_BITS, tracking)),
+    ]
 }
 
 /// Cases for one form.
@@ -237,10 +321,23 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
         data_pointer(),
         small,
         prop::collection::vec(vector_value(), 32),
+        (0u8..8, float_control(), any::<u32>()),
     )
         .prop_map(
-            move |(free, choice, x, sp, flags, thread_pointer, seed, base, index, v)| {
-                let word = restrict(&form, form.word(free), choice);
+            move |(
+                free,
+                _,
+                x,
+                sp,
+                flags,
+                thread_pointer,
+                seed,
+                base,
+                index,
+                v,
+                (pick, (fpcr, tracking), fpsr),
+            )| {
+                let word = restrict(&form, form.word(free), pick);
                 let mut registers = [0u64; 34];
                 registers[..31].copy_from_slice(&x);
                 registers[31] = sp;
@@ -255,11 +352,38 @@ pub fn cases(form: Form) -> impl Strategy<Value = Case> {
                     if let Some(rm) = form.field(word, "Rm").filter(|&r| r < 31) {
                         registers[rm as usize] = index;
                     }
+                    // The reference CPU runs unaligned atomics (FEAT_LSE2) and exclusives, where the CPU
+                    // we present faults: keep their addresses aligned here; the fault is tested on its own.
+                    let atomic = [
+                        "memop",
+                        "comswap",
+                        "comswappr",
+                        "ldstord",
+                        "ldstexclr",
+                        "ldstexclp",
+                    ]
+                    .iter()
+                    .any(|g| form.group.ends_with(g));
+                    if let Some(rn) = form.field(word, "Rn").filter(|&r| r < 31 && atomic) {
+                        registers[rn as usize] &= !15;
+                    }
+                }
+                // Only the FPCR bits we present: the reference CPU has more.
+                if form.name.starts_with("MSR_SR")
+                    && system_register(word) == SYSTEM_REGISTERS[2]
+                    && let Some(rt) = form.field(word, "Rt").filter(|&r| r < 31)
+                {
+                    registers[rt as usize] &= u64::from(wcontainers_arm64::FPCR_BITS);
                 }
                 Case {
                     word,
                     registers,
                     vectors: v.try_into().unwrap(),
+                    float: [
+                        fpsr & wcontainers_arm64::FPSR_BITS & if pick & 1 == 0 { 0 } else { !0 },
+                        fpcr,
+                    ],
+                    tracking,
                     seed,
                 }
             },
@@ -276,6 +400,8 @@ pub struct Outcome {
     pub stop: Stop,
     pub registers: [u64; 35],
     pub vectors: [u128; 32],
+    /// FPSR and FPCR.
+    pub float: [u32; 2],
     pub changed: Vec<(u32, u8)>,
 }
 
@@ -318,6 +444,7 @@ pub fn reference_outcome(landed: &Landed) -> Outcome {
         stop,
         registers: landed.registers,
         vectors: landed.vectors,
+        float: landed.float,
         changed: landed.changed.clone(),
     }
 }
@@ -350,7 +477,12 @@ pub fn translated(case: &Case) -> Outcome {
     for (to, from) in registers.v.iter_mut().zip(case.vectors) {
         *to = [from as u64, (from >> 64) as u64];
     }
+    registers.fpsr = case.float[0];
+    registers.fpcr = case.float[1];
     machine.set_registers(&registers);
+    if case.tracking {
+        machine.track_float_flags();
+    }
     let (stopped, after) = machine.run();
     let stop = match stopped {
         Stopped::NoCode(address) => Stop::Landed(address),
@@ -382,6 +514,7 @@ pub fn translated(case: &Case) -> Outcome {
         vectors: after
             .v
             .map(|[low, high]| u128::from(high) << 64 | u128::from(low)),
+        float: [after.fpsr, after.fpcr],
         changed,
     }
 }
@@ -401,6 +534,23 @@ fn unknown_after_fault(case: &Case, expected: &mut Outcome, actual: &Outcome) {
         wcontainers_arm64::Reg::X(n) => Some(usize::from(n)),
         _ => None,
     };
+    if let I::SimdMemory {
+        load,
+        rt,
+        registers,
+        ..
+    } = wcontainers_arm64::decode(case.word)
+    {
+        if load {
+            for k in 0..registers {
+                let n = usize::from((rt + k) % 32);
+                expected.vectors[n] = actual.vectors[n];
+            }
+        } else {
+            expected.changed.clear();
+        }
+        return;
+    }
     let (general, vector) = match wcontainers_arm64::decode(case.word) {
         I::Load { rt, .. } => ([reg(rt), None], [None, None]),
         I::LoadPair { rt, rt2, .. } => ([reg(rt), reg(rt2)], [None, None]),
@@ -425,10 +575,29 @@ fn unknown_after_fault(case: &Case, expected: &mut Outcome, actual: &Outcome) {
 
 /// Compare one case on both sides; describe the difference if there is one.
 pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
-    let landed = reference.run(case.word, case.seed, &case.registers, &case.vectors);
+    let landed = reference.run(
+        case.word,
+        case.seed,
+        &case.registers,
+        &case.vectors,
+        case.float,
+    );
     let mut expected = reference_outcome(&landed);
     let actual = translated(case);
     unknown_after_fault(case, &mut expected, &actual);
+    // Without the flags kept and with FPCR zero, the cumulative exception flags are not kept: FPSR keeps
+    // what it had there.
+    let writes_fpsr = matches!(
+        wcontainers_arm64::decode(case.word),
+        wcontainers_arm64::Instruction::WriteSystem {
+            register: wcontainers_arm64::SystemRegister::Fpsr,
+            ..
+        }
+    );
+    if !case.tracking && case.float[1] == 0 && !writes_fpsr {
+        const CUMULATIVE: u32 = 0x9f;
+        expected.float[0] = (expected.float[0] & !CUMULATIVE) | (case.float[0] & CUMULATIVE);
+    }
     if expected == actual {
         return Ok(());
     }
@@ -463,6 +632,12 @@ pub fn compare(reference: &mut Cases, case: &Case) -> Result<(), String> {
                 expected.vectors[i], actual.vectors[i]
             );
         }
+    }
+    if expected.float != actual.float {
+        report += &format!(
+            "  fpsr, fpcr: reference {:#x?}, translated {:#x?}, before {:#x?} (flags kept: {})\n",
+            expected.float, actual.float, case.float, case.tracking
+        );
     }
     if expected.changed != actual.changed {
         report += &format!(

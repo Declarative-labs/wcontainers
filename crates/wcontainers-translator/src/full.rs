@@ -12,9 +12,9 @@ use petgraph::visit::DfsPostOrder;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_arm64::{
-    Access, Address, BranchRegister, Carry, Cond, Effects, Emitter, Flag, Flags, Instruction,
-    Operand, Reg, Registers, Target, Trap, Width, condition_direct, condition_from_flags, emit,
-    flag_value, habits, untag,
+    Access, Address, BranchRegister, Carry, Cond, Control, Effects, Emitter, Flag, Flags, Hook,
+    Host, Instruction, Operand, Reg, Registers, Target, Trap, Width, condition_direct,
+    condition_from_flags, emit, flag_value, habits, untag,
 };
 
 mod proof;
@@ -89,8 +89,16 @@ pub(crate) fn pieces(
         .enumerate()
         .map(|(i, (function, plan))| {
             let own = index[&function.entry];
-            let piece =
-                FullEmitter::piece(function, plan, decoded, &index, &loop_index[i], own, omit);
+            let piece = FullEmitter::piece(
+                function,
+                plan,
+                decoded,
+                &index,
+                &loop_index[i],
+                own,
+                omit,
+                code.host,
+            );
             (function.entry, piece)
         })
         .collect();
@@ -98,7 +106,16 @@ pub(crate) fn pieces(
         .iter()
         .map(|(i, function, plan)| {
             let own = loop_index[*i][&function.entry];
-            FullEmitter::piece(function, plan, decoded, &index, &loop_index[*i], own, omit)
+            FullEmitter::piece(
+                function,
+                plan,
+                decoded,
+                &index,
+                &loop_index[*i],
+                own,
+                omit,
+                code.host,
+            )
         })
         .collect();
     (table, extra)
@@ -1247,6 +1264,7 @@ struct FullEmitter<'a> {
     /// The loop pieces of the function this piece comes from, by header offset.
     loops: &'a HashMap<u64, u32>,
     omit: Omit,
+    host: Host,
     body: Vec<u8>,
     locals: Vec<ValType>,
     free: Vec<(ValType, u32)>,
@@ -1274,6 +1292,7 @@ struct FullEmitter<'a> {
 }
 
 impl<'a> FullEmitter<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn piece(
         function: &'a Function,
         plan: &'a Plan,
@@ -1282,6 +1301,7 @@ impl<'a> FullEmitter<'a> {
         loops: &'a HashMap<u64, u32>,
         own: u32,
         omit: Omit,
+        host: Host,
     ) -> wasm_encoder::Function {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
@@ -1291,6 +1311,7 @@ impl<'a> FullEmitter<'a> {
             index,
             loops,
             omit,
+            host,
             body: Vec::new(),
             locals: Vec::new(),
             free: Vec::new(),
@@ -2193,23 +2214,31 @@ impl Emitter for FullEmitter<'_> {
         self.at.dirty = self.at.dirty.union(Registers(1 << bit));
     }
 
-    fn get_thread_pointer(&mut self) {
+    fn get_control(&mut self, control: Control) {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
-        Slot::ThreadPointer.load(&mut s);
+        Slot::Control(control).load(&mut s);
+    }
+
+    fn hook(&mut self, hook: Hook) {
+        self.sink().call(hook_function(hook));
+    }
+
+    fn host(&self) -> Host {
+        self.host
     }
 
     fn stack_aligned(&mut self) -> bool {
         self.at.aligned
     }
 
-    fn set_thread_pointer(&mut self) {
+    fn set_control(&mut self, control: Control) {
         let block = self.fixed(G_THREAD_BLOCK);
-        let value = self.temporary(ValType::I64);
+        let value = self.temporary(Slot::Control(control).ty());
         let mut s = self.sink();
         s.local_set(value);
-        Slot::ThreadPointer.store_from(&mut s, block, value);
+        Slot::Control(control).store_from(&mut s, block, value);
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {
@@ -2220,7 +2249,13 @@ impl Emitter for FullEmitter<'_> {
             Access::Read => PAGE_READ,
             Access::Write => PAGE_WRITE,
         };
-        let plan = self.plan.checks[&self.at.offset];
+        // An instruction whose access the plan does not know (cache maintenance) checks exactly.
+        let plan = self
+            .plan
+            .checks
+            .get(&self.at.offset)
+            .copied()
+            .unwrap_or(CheckPlan::Exact);
         if let CheckPlan::Skip = plan {
             return;
         }

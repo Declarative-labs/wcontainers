@@ -75,8 +75,14 @@ fn size(blob: &Blob) {
     let mut best = (Duration::MAX, Duration::MAX, Vec::new());
     for _ in 0..5 {
         let start = Instant::now();
-        let translation =
-            translate(&blob.bytes, 0..blob.code_bytes, &[0], LookAhead::Full).unwrap();
+        let translation = translate(
+            &blob.bytes,
+            0..blob.code_bytes,
+            &[0],
+            LookAhead::Full,
+            wcontainers_translator_test::runner::probe(),
+        )
+        .unwrap();
         let translating = start.elapsed();
         let compiling = compile_time(&translation.wasm);
         best = (

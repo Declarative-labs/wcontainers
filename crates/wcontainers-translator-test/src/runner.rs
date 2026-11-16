@@ -89,6 +89,10 @@ struct Blob {
 }
 
 pub struct Host {
+    /// What the engine does where WebAssembly leaves results open; translations are made for it.
+    facts: wcontainers_arm64::Host,
+    /// When the machine was made, for the clock.
+    started: Instant,
     syscalls: Syscalls,
     stopped: Option<Stopped>,
     /// Registers at the moment the thread stopped.
@@ -143,6 +147,22 @@ fn thread_module(engine: &Engine, slots: u32) -> Module {
         .clone()
 }
 
+/// The probe of this engine, run once per process.
+pub fn probe() -> wcontainers_arm64::Host {
+    static FACTS: OnceLock<wcontainers_arm64::Host> = OnceLock::new();
+    *FACTS.get_or_init(|| {
+        let engine = engine();
+        let module =
+            Module::new(&engine, wcontainers_arm64::host::probe_module()).expect("probe module");
+        let mut store = Store::new(&engine, ());
+        let instance = Instance::new(&mut store, &module, &[]).expect("probe instance");
+        let probe = instance
+            .get_typed_func::<(), i32>(&mut store, wcontainers_arm64::host::PROBE)
+            .expect("probe export");
+        wcontainers_arm64::Host::from_probe(probe.call(&mut store, ()).expect("probe runs"))
+    })
+}
+
 fn new_engine() -> Engine {
     let mut config = Config::new();
     config
@@ -182,6 +202,8 @@ impl Machine {
         let mut store = Store::new(
             &engine,
             Host {
+                facts: probe(),
+                started: Instant::now(),
                 syscalls,
                 stopped: None,
                 snapshot: RegisterBlock::ZERO,
@@ -346,6 +368,21 @@ impl Machine {
 
     pub fn set_registers(&mut self, registers: &RegisterBlock) {
         write_shared(&self.state, BLOCK_AT as usize, registers.as_bytes());
+    }
+
+    /// Keep FPSR's flags exact from now on, as if the program had written FPSR.
+    pub fn track_float_flags(&mut self) {
+        write_shared(
+            &self.state,
+            BLOCK_AT as usize + contract::FLOAT_TRACKING,
+            &1u32.to_le_bytes(),
+        );
+    }
+
+    /// Translate for other facts about the engine than the probe found, to test the paths other hosts
+    /// take. Only blobs loaded afterwards are affected.
+    pub fn set_host(&mut self, facts: wcontainers_arm64::Host) {
+        self.store.data_mut().facts = facts;
     }
 
     pub fn registers(&mut self) -> RegisterBlock {
@@ -639,6 +676,56 @@ fn hooks(linker: &mut Linker<Host>) {
     linker
         .func_wrap(
             HOOKS,
+            HOOK_FLOAT,
+            |mut caller: Caller<'_, Host>, operation: i32, a: i64, b: i64, c: i64| -> i64 {
+                let state = caller.data().state.clone().unwrap();
+                let word = |at: usize| {
+                    let mut bytes = [0u8; 4];
+                    read_shared(&state, BLOCK_AT as usize + at, &mut bytes);
+                    u32::from_le_bytes(bytes)
+                };
+                let fpsr_at = core::mem::offset_of!(RegisterBlock, fpsr);
+                let fpcr = word(core::mem::offset_of!(RegisterBlock, fpcr));
+                let mut fpsr = word(fpsr_at);
+                let tracking = word(contract::FLOAT_TRACKING);
+                let result = wcontainers_arm64::exact::run(
+                    operation, a as u64, b as u64, c as u64, fpcr, &mut fpsr,
+                );
+                write_shared(&state, BLOCK_AT as usize + fpsr_at, &fpsr.to_le_bytes());
+                let (kind, _) = wcontainers_arm64::exact::Operation::decode(operation);
+                let reason = if kind.fused() && fpcr == 0 && tracking == 0 {
+                    Reason::SoftwareFusedMultiplyAdd
+                } else {
+                    Reason::ExactFloatingPointRequested
+                };
+                // Registers are not saved here, so the detail is the operation, not the address.
+                slow_path(
+                    caller.data_mut(),
+                    reason,
+                    u64::from(operation as u32),
+                    Duration::ZERO,
+                );
+                result as i64
+            },
+        )
+        .unwrap();
+    linker
+        .func_wrap(HOOKS, HOOK_CLOCK, |caller: Caller<'_, Host>| -> i64 {
+            caller.data().started.elapsed().as_nanos() as i64
+        })
+        .unwrap();
+    linker
+        .func_wrap(
+            HOOKS,
+            HOOK_CODE_CHANGED,
+            |mut caller: Caller<'_, Host>, address: i64| {
+                forget_code(&mut caller, address as u64);
+            },
+        )
+        .unwrap();
+    linker
+        .func_wrap(
+            HOOKS,
             HOOK_TRAP,
             |mut caller: Caller<'_, Host>, kind: i32, detail: i64| {
                 let kind = TrapKind::from_i32(kind).expect("known trap");
@@ -662,6 +749,28 @@ fn hooks(linker: &mut Linker<Host>) {
         .unwrap();
 }
 
+/// `ic ivau`: the stand-in forgets the pieces the lookup table holds for the 64 byte line, so the next jump
+/// there translates the code again.
+fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
+    let line = address & !63;
+    let table_base = caller.data().table_base;
+    let thread = caller.data().thread.unwrap();
+    let Some(Extern::Table(table)) = thread.get_export(&mut *caller, contract::LOOKUP) else {
+        panic!("the thread module exports its lookup table");
+    };
+    for at in (line..line + 64).step_by(4) {
+        let Some(slot) = at.checked_sub(table_base).map(|o| o / 4) else {
+            continue;
+        };
+        if slot < table.size(&*caller) {
+            table
+                .set(&mut *caller, slot, wasmtime::Ref::Func(None))
+                .expect("a slot of the table");
+            caller.data_mut().translated_from.remove(&at);
+        }
+    }
+}
+
 /// Translate blob `index` from `starts` and instantiate it, adding its pieces to the lookup table.
 fn instantiate_code(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
@@ -673,8 +782,15 @@ fn instantiate_code(
     let mut store = store.as_context_mut();
     let host = store.data();
     let blob = &host.blobs[index];
-    let translation = translate_omitting(&blob.bytes, blob.code.clone(), starts, look_ahead, omit)
-        .expect("translate");
+    let translation = translate_omitting(
+        &blob.bytes,
+        blob.code.clone(),
+        starts,
+        look_ahead,
+        host.facts,
+        omit,
+    )
+    .expect("translate");
     let module = Module::new(&host.engine, &translation.wasm).expect("code module");
     let thread = host.thread.unwrap();
     let memory = host.memory.unwrap();
