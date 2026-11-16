@@ -105,6 +105,13 @@ int main(int argc, char **argv) {
         close(fd);
     }
     R(open("/proc/sys/kernel/ostype", O_WRONLY));
+    // Both access bits open for ioctl only, and ask for reading and writing.
+    R(open("/proc/sys/kernel/ostype", 3));
+    int ioctl_only = open("/proc/self/comm", 3);
+    R(ioctl_only >= 0);
+    R(read(ioctl_only, buffer, 1));
+    R(write(ioctl_only, buffer, 1));
+    close(ioctl_only);
     int ostype = open("/proc/sys/kernel/ostype", O_RDONLY);
     R(write(ostype, "x", 1));
 

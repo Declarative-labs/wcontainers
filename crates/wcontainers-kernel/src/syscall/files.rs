@@ -489,11 +489,13 @@ pub(super) fn open(
             return Err(Errno::EROFS);
         }
         if !created {
+            // Linux's `ACC_MODE`: both access bits (an open for ioctl only) ask for reading and
+            // writing.
             let mut mask = 0;
-            if matches!(accmode, O_RDONLY | O_RDWR) {
+            if accmode != O_WRONLY {
                 mask |= R_OK;
             }
-            if matches!(accmode, O_WRONLY | O_RDWR) || flags & O_TRUNC != 0 {
+            if accmode != O_RDONLY || flags & O_TRUNC != 0 {
                 mask |= W_OK;
             }
             let inode = node.borrow();
