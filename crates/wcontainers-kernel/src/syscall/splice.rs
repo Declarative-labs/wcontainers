@@ -400,7 +400,7 @@ fn pipe_to_file(
         let written = if terminal {
             super::tty::put(kernel, cx, tid, output, &bytes)
         } else if regular {
-            write_limit(kernel, cx, tid, *at, bytes.len() as u64).and_then(|allowed| {
+            write_limit(kernel, cx, tid, output, *at, bytes.len() as u64).and_then(|allowed| {
                 let bytes = &bytes[..allowed as usize];
                 write_bytes(kernel, cx, tid, output, bytes, allowed, Some(*at), false)
             })

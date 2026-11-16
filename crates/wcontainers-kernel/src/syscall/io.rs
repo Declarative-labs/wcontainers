@@ -324,7 +324,7 @@ pub(super) fn copy_file_range(
     } else {
         length.min(size_in - position_in)
     };
-    count = write_limit(kernel, cx, tid, position_out, count)?;
+    count = write_check_limits(kernel, cx, tid, &output, position_out, count)?;
     if crate::fs::same_inode(&node_in, &node_out)
         && position_out + count > position_in
         && position_out < position_in + count
@@ -471,30 +471,55 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Linux's `generic_write_check_limits` for a write of `count` bytes to a regular file at `offset`:
-/// starting at or past the file size limit is `SIGXFSZ` and `EFBIG`, and a write reaching it is
-/// shortened. Nothing is checked for a write of nothing.
+/// Linux's `generic_write_checks_count` for a write of `count` bytes at `offset` into `file`: nothing
+/// to write passes, otherwise `generic_write_check_limits`.
 pub(super) fn write_limit(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
+    file: &FileRef,
     offset: u64,
     count: u64,
 ) -> Result<u64, Errno> {
     if count == 0 {
         return Ok(0);
     }
+    write_check_limits(kernel, cx, tid, file, offset, count)
+}
+
+/// Linux's `generic_write_check_limits`: past the file size limit is `SIGXFSZ` and EFBIG, as is a
+/// position at or past the largest file (`s_maxbytes`, or `MAX_NON_LFS` for a file opened without
+/// O_LARGEFILE); the count is cut to both.
+pub(super) fn write_check_limits(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    offset: u64,
+    count: u64,
+) -> Result<u64, Errno> {
+    let mut count = count;
     let limit = kernel.process_of(tid).limits[RLIMIT_FSIZE as usize].current;
-    if offset >= limit {
-        // A signal that cannot be acted on is counted where it is sent; the write fails either way.
-        kernel.send_file_size_signal(cx, tid);
-        return Err(Errno::EFBIG);
+    if limit != RLIM_INFINITY as u64 {
+        if offset >= limit {
+            // A signal that cannot be acted on is counted where it is sent; the write fails either way.
+            kernel.send_file_size_signal(cx, tid);
+            return Err(Errno::EFBIG);
+        }
+        count = count.min(limit - offset);
     }
-    let largest = i64::MAX as u64;
+    let largest = {
+        let file = file.borrow();
+        if file.flags & O_LARGEFILE == 0 {
+            i32::MAX as u64
+        } else {
+            file.node.borrow().fs.kind.max_bytes()
+        }
+    };
     if offset >= largest {
         return Err(Errno::EFBIG);
     }
-    Ok(count.min(limit - offset).min(largest - offset))
+    Ok(count.min(largest - offset))
 }
 
 /// Linux's `inode_newsize_ok` for a regular file growing from `size` to `new_size`: past the file
@@ -699,7 +724,7 @@ fn vectored(
             offset.unwrap_or(file.borrow().offset)
         };
         let total = parts.iter().map(|(_, length)| length).sum();
-        let mut allowed = write_limit(kernel, cx, tid, start, total)?;
+        let mut allowed = write_limit(kernel, cx, tid, file, start, total)?;
         for (_, length) in &mut parts {
             *length = (*length).min(allowed);
             allowed -= *length;
@@ -1009,7 +1034,7 @@ pub(super) fn write_at(
         } else {
             at.unwrap_or(file.borrow().offset)
         };
-        let count = write_limit(kernel, cx, tid, offset, count)?;
+        let count = write_limit(kernel, cx, tid, file, offset, count)?;
         // As much of the buffer as can be read; where it stops, the write ends (`write_bytes`).
         let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
         let bytes = guest(kernel, cx, tid).read(buffer, readable)?;
@@ -1345,7 +1370,7 @@ fn send(
             super::tty::put(kernel, cx, tid, &output, &bytes)
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
-            write_limit(kernel, cx, tid, at, bytes.len() as u64).and_then(|allowed| {
+            write_limit(kernel, cx, tid, &output, at, bytes.len() as u64).and_then(|allowed| {
                 bytes.truncate(allowed as usize);
                 write_bytes(kernel, cx, tid, &output, &bytes, allowed, None, false)
             })
