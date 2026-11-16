@@ -4,6 +4,13 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
+M3 (every instruction) is in progress, first run: every one of the 1215 forms of the CPU we present
+translates and matches the CPU in layer 1 (16 cases a form, and 64 in the debug run of every test), the
+decoding test shows no offered form left untranslated, and a C program of section 8's differences matches
+Linux at every level, at none and full, also on a host made to need the software fused multiply-add and the
+not-a-number fix-up. Not done yet: layer 3 (Csmith, gcc, position independent blobs), the long layer 1 run,
+measuring vector registers in locals. See "M3, first run" below.
+
 M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
 pushed. M2 (full look-ahead) is built and tested: every part of the plan's list is in, hello and the
 benchmark set match none register by register and byte by byte, layer 2 runs, and size and speed numbers
@@ -28,6 +35,89 @@ below). S1 waits for its next independent check. The third run's work is under "
 calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
 rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
 eighth run", and what is left under "S1, what remains after the eighth run".
+
+## M3, first run
+
+What is built:
+- Decoding by Arm's forms (`wcontainers-arm64/src/decode_forms.rs`, `decode_simd.rs`): `forms::form(word)`
+  gives the form a word is on the CPU we present, and its name and fields give the instruction. The first
+  path (yaxpeax-arm) keeps the families it had. A word of an offered form that neither path gives an
+  instruction for is undefined (a reserved field value; layer 1 checks each against the CPU), no longer
+  "unsupported".
+- New instructions: CRC32; single instruction atomics (every `memop`, CAS, CASP); exclusives (LDXR, STXR and
+  pairs, plain and ordered) as a compare and exchange against the remembered address, size and value;
+  LDAR and STLR; CLREX; system registers FPCR, FPSR, TPIDRRO_EL0, the counter (CNTVCT_EL0 through a clock
+  hook, CNTFRQ_EL0 1 GHz), CTR_EL0, DCZID_EL0 and the identity registers as Linux answers them for the
+  CPU we present (MIDR 0x410fd083, a generic Arm core; ID_AA64ISAR0 shows CRC32 and atomics; PFR0 FP and
+  vectors without half precision; every other identity register zero; CRm 0 other than MIDR, MPIDR, REVIDR
+  and CRm 1 raise illegal instruction, as Linux does); DC ZVA (64 bytes), DC CVAU/CVAC/CIVAC (a read check),
+  IC IVAU (a read check and the new "code changed" hook); MSR to PSTATE fields is undefined (none is open
+  to EL0 on the CPU we present under Linux). A system call clears the exclusive monitor.
+- Scalar floating point (every floatdp1/2/3, compare, conditional compare, select, immediate, conversions
+  to and from integers and fixed point, FCVT between half, single and double), and every AdvSIMD form: one
+  `Instruction::Simd { op, shape, .. }` covers the same, misc, shift, three-different, by-element, across
+  and scalar pairwise groups; plus permutes, TBL/TBX, scalar DUP and LD1-LD4/ST1-ST4 (multiple, one lane,
+  replicate, post-indexed). Meanings: `simd.rs` (integer: WebAssembly SIMD where it has the operation, else
+  element by element on i64; FPSR.QC is always kept), `float.rs` and `float_simd.rs` (floating point),
+  `memory.rs` (atomics, exclusives, cache maintenance, structures). The old VectorBinary/Unary/Across are
+  gone; their forms are in `Simd`.
+- Floating point has two paths. Fast: WebAssembly's own operations (exact for numbers, as FPCR is at its
+  default whenever it runs). Slow: `exact.rs`, Arm's rules (not-a-number choice, flush to zero, default
+  not-a-number, alternative half precision, underflow after rounding, overflow when rounding gives the
+  largest number, the estimates) over `rustc_apfloat` 0.2.3 and `ieee-apsqrt` 0.1.1 for the arithmetic,
+  through the new `float` hook, one call per element. The slow path runs when FPCR is not zero or the
+  program has written FPSR (a CPU-side word, `FLOAT_TRACKING`, is set then; until then the cumulative flags
+  are not kept), and always for fused multiply-adds on a host whose relaxed multiply-add does not fuse.
+  The runner counts it as "software fused multiply-add" (FPCR zero, flags not kept) or "exact floating point
+  requested". Reading FPSR while its flags are not kept is counted and warned too.
+- The start-up probe (`wcontainers-arm64/src/host.rs`): a module whose one export answers whether relaxed
+  multiply-add fuses and whether 34 not-a-number cases come out as Arm gives them. Its answer
+  (`wcontainers_arm64::Host`) is a new parameter of `translate` and part of the cache key. On a host whose
+  answer is no, a fix-up after each arithmetic operation puts Arm's not-a-number in. Conversions between
+  precisions always work out the not-a-number themselves. On this Mac (wasmtime 50) both answers are yes.
+- The translator's contract: three new hooks (`float`, `clock`, `code_changed`), and 32 bytes of the
+  CPU side's own after the abi's thread block (`THREAD_STATE_SIZE`: the float tracking word and the
+  exclusive monitor). Both runners give them; the browser translator exports `probe_module`, `float`,
+  `float_status` and `float_reason` for the page's hooks.
+
+Tests:
+- Layer 1 covers every offered form (`covered` is now "the form has a presented word"). Cases carry FPSR and
+  FPCR both ways (the reference sets them in the signal frame): half the cases in the fast mode, the rest
+  with flags kept, half of those with FPCR's bits random. In the fast mode the cumulative flags of FPSR are
+  not compared (they are not kept there by design), QC is. New value strategies: single, double and half
+  precision edge values and not-a-numbers with payloads.
+- `tests/layer1.rs` `designed_answers_and_faults`: the values we answer by design, FPCR keeping only its
+  bits, and alignment faults of unaligned atomics, load-acquire and exclusives.
+- `tests/decoding.rs` `every_offered_form_is_translated`.
+- `tests/valid.rs` `every_form_is_valid`: 16 words of every form, at none and full, on a host needing every
+  fix-up: valid WebAssembly (relaxed SIMD now in the validator's features).
+- `wcontainers-arm64/tests/exact.rs`: the software path on known cases.
+- `programs/differences.c` (`tests/programs.rs`): division by zero and overflow, every rounding conversion of
+  edge values, fused multiply-add single and double, not-a-number bits through add, multiply, divide, max,
+  minnm and fmadd, the four rounding modes, each exception flag through fenv, flush to zero, LSE atomics,
+  CASP, an LDAXR/STLXR loop, a failing STXR after CLREX, C11 atomics, the counter, DCZID, DC ZVA, cache
+  maintenance and IC IVAU, pointer signing and branch marks, printf of numbers, qsort, strtod and vector
+  loops. Built at the five levels (3 distinct blobs), at none and full: output equal to Linux, full equal
+  to none in registers and memory. `differences_match_linux_on_other_hosts`: -O0 and -O2 translated for a
+  host that does not fuse and needs the fix-up: output equal to Linux, both slow paths counted.
+
+Found by layer 1 and fixed on the way (each was a wrong meaning): selects with their operands swapped in
+saturating 64 bit add and subtract, signed shifts by register, half precision signs, rounding to infinity
+on overflow, polynomial multiply; a mask built as `cond - 0`; the denormal normalisation of FRSQRTE; FRECPX
+of denormals; unsigned saturation of unsigned 64 bit sources; apfloat not raising overflow when rounding
+gives the largest number; AHP not-a-numbers keeping their sign. Found by `differences.c`: the saturation
+local reused uncleared at full (meanings must clear the locals they read; fresh locals at none hid it).
+
+Layer 1 exclusions added, each with its reason in `excluded`: store exclusives whose status register is
+also transferred or the base, and load exclusive pairs into one register (constrained unpredictable);
+half precision encodings of the fixed point conversions and 64 bit PMULL (FEAT_FP16 and FEAT_PMULL, which
+the reference CPU has); system registers and PSTATE fields of DIT, TCO and CNTVCTSS (features the
+reference CPU has); MTE and DC CVAP/CVADP cache operations (likewise); registers we answer by design
+(CNTFRQ, CNTVCT, CTR, DCZID, the identity registers). Atomics, ordered accesses and exclusives get aligned
+bases, as the reference CPU runs unaligned ones (it has FEAT_LSE2, and even its exclusives do not fault);
+the faults are checked by `designed_answers_and_faults`. The reference CPU's answers that settled these
+were probed once (scratch `m3/`): it runs DIT, TCO, CFINV/XAFLAG/AXFLAG, CNTVCTSS and the MTE cache
+operations, reads CTR_EL0 as 0x9444c004 (IDC set, TminLine 9), CNTFRQ as 24 MHz, MIDR as 0x610f0000.
 
 ## S1, close-out, third run (eleventh run)
 
@@ -895,6 +985,7 @@ contract's bits, in both runners).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
+- Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
 - Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (defaults: 64 cases, seed 1). Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>`.
   The filter drops the runner's warnings (memory faults and stops), one per case.
@@ -911,6 +1002,10 @@ contract's bits, in both runners).
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
 ## Cases actually run
+
+- M3, release: layer 1, 1215 forms x 16 cases, seed 1: 0 mismatches (after the fixes above; 8 cases a form
+  first gave 104 failing forms, then 17). Debug run of every test: 1215 forms x 64, seed 1, 0 mismatches
+  after the last three fixes; those forms then 200 cases each, 0 mismatches. Load 4 to 6.
 
 - Layer 1: 261 forms x 64 cases, seed 1: 0 mismatches.
 - Layer 1: 261 forms x 1000 cases, seed 2: 0 mismatches (261,000 cases). This was before SP could be
@@ -1064,17 +1159,22 @@ contract's bits, in both runners).
 
 ## Next
 
-1. S1's independent check. Then the long runs for the pass bars (layer 1, layer 2, `tests/changes.rs`),
-   started by the orchestrator; commands under "How to run".
-2. Measure the second lookup design (M5 says settle it; nothing built yet).
-3. M3: every instruction.
+1. M3: layer 3 (Csmith and the hand-picked programs, built with clang and gcc at every level, fixed address
+   and position independent, at none and full against Linux), then the long layer 1 run (10,000 a form).
+2. M3: measure vector registers in locals at full (they are locals since M2) on a floating point workload.
+3. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
-- Not translated yet (M3): floating point arithmetic, vector forms outside `VECTOR_FORMS`, CRC32, LSE
-  atomics, exclusives, LDAR/STLR family, system instructions (SYS, DC ZVA, IC IVAU, MSR to PSTATE), system
-  registers other than NZCV and TPIDR_EL0 (FPCR and FPSR included).
-- Layer 1 does not carry FPSR and FPCR yet; nothing translated so far reads or writes them.
+- FPSR's cumulative exception flags are kept only once the program has written FPSR (or set FPCR); a
+  program that reads them without ever writing gets the flags it had, counted and warned as "exact
+  floating point requested". A thread made by the kernel (fork, a new thread) starts with them not kept.
+- CASP of 64 bit pairs is a plain load, compare and store: exact with one thread, not atomic with more
+  (WebAssembly has no 128 bit compare and exchange).
+- The "code changed" stand-in forgets the lookup table's pieces of the 64 byte line only; full pieces that
+  hold the code inline elsewhere keep it. Code that changes is out of phase one.
+- The float hook's counters carry the operation as their detail, not the address (registers are not saved
+  at that hook).
 - Flat blobs have no program headers, so thread local data is not supported in test programs.
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
 - The WebAssembly stack overflowing on deep guest recursion is not handled, at either look-ahead: every
@@ -1103,6 +1203,21 @@ contract's bits, in both runners).
   features than the one we present).
 
 ## Departures from the plan
+
+- M3: decoding of the new families goes by Arm's forms (names and fields from the machine readable
+  specification already in the repository), not yaxpeax-arm, whose AdvSIMD and system decoding leaves out
+  or misnames too much; yaxpeax-arm still decodes what it did.
+- M3: the plan's "a program that changes the mode gets floating point done in software" is done per
+  operation at run time (each floating point instruction tests FPCR and the tracking word), not by
+  translating again; and status flags are kept from the first write of FPSR, not from the start.
+- M3: the estimate instructions (FRECPE, FRSQRTE, FRECPX) have their table algorithm twice: as WebAssembly
+  for the fast path and in `exact.rs` for the slow one, which must also flush and raise flags. Every other
+  meaning is once as WebAssembly, with the software floating point library behind the slow path.
+- M3: the CPU side keeps two things of its own after the abi's thread block (the float tracking word and
+  the exclusive monitor), in the state memory; the kernel never sees them. A monitor lost at a stop only
+  makes a store exclusive fail, which programs retry.
+- M3: we answer CNTFRQ_EL0 as 1 GHz (the counter is the clock in nanoseconds) and CTR_EL0 with IDC and
+  DIC clear, so programs that write code tell us with IC IVAU.
 
 - S1: a loop's proof failing and a kept run missing are not counted or warned (rule 5 asks it of every
   slow twin). Both lead to the ordinary checked path, not a slow one; counting them would put a host call
