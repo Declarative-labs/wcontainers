@@ -56,9 +56,11 @@ pub(crate) struct FileSystem {
     pub space: Option<Rc<Space>>,
 }
 
+/// The same file system mounted the same way: a read-only bind mount (`/proc/sys`) is another
+/// mount of the same device.
 impl PartialEq for FileSystem {
     fn eq(&self, other: &Self) -> bool {
-        self.device == other.device
+        (self.kind, self.device, self.flags) == (other.kind, other.device, other.flags)
     }
 }
 

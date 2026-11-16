@@ -196,7 +196,21 @@ static void remove_tree(int directory_fd, const char *name) {
     unlinkat(directory_fd, name, AT_REMOVEDIR);
 }
 
+// Remakes the devices a sequence can name. The container's first /dev/null stays held from outside
+// the container once removed (measured: its inode is never given back), so it is remade once before
+// the first sequence too, and each sequence starts with one hidden inode in /dev, as ours does.
+static void remake_devices(void) {
+    static const struct { const char *path; int minor; } devices[] = {
+        {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}};
+    for (int index = 0; index < 3; index++) {
+        remove_tree(AT_FDCWD, devices[index].path);
+        mknod(devices[index].path, S_IFCHR | 0666, makedev(1, devices[index].minor));
+        chmod(devices[index].path, 0666);
+    }
+}
+
 int main(void) {
+    remake_devices();
     static unsigned char arena_init[ARENA_SIZE];
     static const char *const outliving_paths[] = {"/dev/shm", "/dev"};
     for (int index = 0; index < 2; index++) {
@@ -333,13 +347,7 @@ int main(void) {
                 removexattr(above[index], names + at);
             }
         }
-        static const struct { const char *path; int minor; } devices[] = {
-            {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}};
-        for (int index = 0; index < 3; index++) {
-            remove_tree(AT_FDCWD, devices[index].path);
-            mknod(devices[index].path, S_IFCHR | 0666, makedev(1, devices[index].minor));
-            chmod(devices[index].path, 0666);
-        }
+        remake_devices();
         // `..` from a process directory reaches /proc, which keeps a change of owner or mode.
         chown("/proc", 0, 0);
         chmod("/proc", 0555);

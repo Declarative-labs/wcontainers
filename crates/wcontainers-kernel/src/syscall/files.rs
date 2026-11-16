@@ -1847,6 +1847,19 @@ fn truncate_node(
     }
     let may_keep_privileges = credentials(kernel, tid).has(CAP_FSETID);
     let now = kernel.now(cx);
+    // A file of `/proc` takes any size its file system allows and keeps none (`proc_setattr`,
+    // `proc_notify_change`): proc's largest is `MAX_NON_LFS`.
+    let proc_file = {
+        let inode = node.borrow();
+        matches!(inode.content, Content::Proc(_)) && inode.file_type() == S_IFREG
+    };
+    if proc_file {
+        super::io::new_size_ok(kernel, cx, tid, 0, length)?;
+        if length > i32::MAX as u64 {
+            return Err(Errno::EFBIG);
+        }
+        return Ok(0);
+    }
     {
         let inode = node.borrow();
         if !matches!(inode.content, Content::Regular(_)) {
@@ -1894,11 +1907,11 @@ pub(super) fn truncate(
     if node.borrow().file_type() != S_IFREG {
         return Err(Errno::EINVAL);
     }
+    // The permission comes before the mount's write access (measured).
+    let caller = kernel.threads[&tid].process;
+    crate::fs::permission(&node.borrow(), credentials(kernel, tid), W_OK, caller)?;
     if node.borrow().fs.read_only() {
         return Err(Errno::EROFS);
-    }
-    if !node.borrow().permits(credentials(kernel, tid), W_OK, true) {
-        return Err(Errno::EACCES);
     }
     truncate_node(kernel, cx, tid, &node, length)
 }

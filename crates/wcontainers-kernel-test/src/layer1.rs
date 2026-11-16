@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use linux_raw_sys::general as linux;
+use linux_raw_sys::ioctl;
 use linux_raw_sys::ptrace as seccomp;
 use wcontainers_abi::{Event, Exit, Next, Syscall};
 use wcontainers_kernel::{Kernel, Start};
@@ -78,6 +79,13 @@ const FILTER_VALUES: usize = 72;
 const RSEQS: u64 = 0x3200;
 /// The offsets of the rseq areas that can be registered (aligned to 32 bytes at least).
 const RSEQ_AREAS: [u64; 3] = [0, 0x20, 0x40];
+/// Arguments for ioctl's requests, 64 bytes apart: inode flags (to keep, an immutable one, unknown
+/// ones, none), extended flags (to keep, an extent size tmpfs refuses), a clone range from
+/// descriptor 3, a deduplication range for descriptor 3, and preallocation ranges from each origin
+/// and from an unknown one.
+const IOCTL_ARGS: u64 = 0x3300;
+const IOCTL_ARG_COUNT: u64 = 12;
+
 /// Extended attribute names, one after another.
 const XATTR_NAMES: u64 = 0x3c00;
 /// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
@@ -123,6 +131,13 @@ const PATH_POOL: &[&str] = &[
     "/proc/self/",
     "/proc/self/fd",
     "/proc/sys",
+    // `/proc` files whose bytes are the same in both runners: a seq_file, one read from memory and a
+    // sysctl, each with its own way of seeking, reading and writing.
+    "/proc/self/comm",
+    "/proc/self/cmdline",
+    "/proc/sys/kernel/ostype",
+    "/proc/self/cgroup",
+    "/proc/self/limits",
 ];
 
 /// Attribute values, 32 bytes apart from `XATTR_VALUES`.
@@ -451,6 +466,12 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     for (index, value) in XATTR_VALUE_POOL.iter().enumerate() {
         let at = (XATTR_VALUES + index as u64 * 32) as usize;
         arena[at..at + value.len()].copy_from_slice(value);
+    }
+    for (index, words) in ioctl_arguments().iter().enumerate() {
+        let at = (IOCTL_ARGS + index as u64 * 64) as usize;
+        for (offset, word) in words.iter().enumerate() {
+            arena[at + offset * 8..at + offset * 8 + 8].copy_from_slice(&word.to_le_bytes());
+        }
     }
     let mut calls = vec![
         Call {
@@ -1184,8 +1205,17 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             ]
         }
         linux::__NR_ioctl => {
-            let request = pick(&[0x5451u64, 0x5450, 0x5401, 0x5413, 0x5421, 0x1234], b);
-            [fd(a), request, ARENA + OUTPUT + (c % 64) * 8, 0, 0, 0]
+            let request = pick(IOCTL_REQUESTS, b);
+            let argument = if request == u64::from(ioctl::FICLONE) {
+                fd(c)
+            } else {
+                match c % 4 {
+                    0 | 1 => ARENA + IOCTL_ARGS + (c >> 2) % IOCTL_ARG_COUNT * 64,
+                    2 => ARENA + OUTPUT + (c >> 2) % 64 * 8,
+                    _ => buffer(c >> 2),
+                }
+            };
+            [fd(a), request, argument, 0, 0, 0]
         }
         linux::__NR_mkdirat => [dirfd(a), path(b), mode(c), 0, 0, 0],
         linux::__NR_mknodat => {
@@ -2211,6 +2241,30 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8]) -> SequenceResult {
     );
     cpu.write(memory, ARENA, &sequence.arena)
         .expect("writing the arena");
+    // The reference's runner has remade `/dev/null` before every sequence while the container's first
+    // one stays held, so it is remade here too, while descriptor 0 holds the first one.
+    let null = ARENA + PATHS + path_offset("/dev/null");
+    for number in [
+        linux::__NR_unlinkat,
+        linux::__NR_mknodat,
+        linux::__NR_fchmodat,
+    ] {
+        let third = match number {
+            linux::__NR_mknodat => u64::from(linux::S_IFCHR | 0o666),
+            linux::__NR_fchmodat => 0o666,
+            _ => 0,
+        };
+        let device = if number == linux::__NR_mknodat {
+            0x103
+        } else {
+            0
+        };
+        let remake = Call {
+            number,
+            arguments: [linux::AT_FDCWD as u64, null, third, device, 0, 0],
+        };
+        assert_eq!(call(&mut kernel, &mut cpu, &mut host, remake), Ok(0));
+    }
     let mut before = vec![0u8; ARENA_SIZE as usize];
     use wcontainers_abi::Cpu;
     cpu.read(memory, ARENA, &mut before)
@@ -2264,6 +2318,114 @@ pub struct Seen {
 
 /// The ranges of a call's output that hold values no two machines share: inode and device numbers,
 /// times, addresses chosen by the kernel, random bytes and the kernel's own version.
+/// Where a path of the pool lies in the arena.
+fn path_offset(wanted: &str) -> u64 {
+    let mut offset = 0;
+    for path in PATH_POOL {
+        if *path == wanted {
+            return offset;
+        }
+        offset += path.len() as u64 + 1;
+    }
+    panic!("{wanted} is not in the path pool")
+}
+
+/// The ioctl requests layer 1 makes: the common ones of every file (`do_vfs_ioctl`), regular files'
+/// (`file_ioctl`), tmpfs's inode flags, terminal and random device requests (which no file here
+/// takes), and unknown ones.
+const IOCTL_REQUESTS: &[u64] = &[
+    ioctl::FIOCLEX as u64,
+    ioctl::FIONCLEX as u64,
+    ioctl::FIONBIO as u64,
+    ioctl::FIOASYNC as u64,
+    ioctl::FIONREAD as u64,
+    ioctl::FIOQSIZE as u64,
+    ioctl::FIGETBSZ as u64,
+    ioctl::FIBMAP as u64,
+    ioctl::FIFREEZE as u64,
+    ioctl::FITHAW as u64,
+    ioctl::FS_IOC_FIEMAP as u64,
+    ioctl::FICLONE as u64,
+    ioctl::FICLONERANGE as u64,
+    ioctl::FIDEDUPERANGE as u64,
+    ioctl::FS_IOC_GETFLAGS as u64,
+    ioctl::FS_IOC_SETFLAGS as u64,
+    ioctl::FS_IOC_FSGETXATTR as u64,
+    ioctl::FS_IOC_FSSETXATTR as u64,
+    FS_IOC_GETFSUUID,
+    FS_IOC_GETFSSYSFSPATH,
+    // FS_IOC_RESVSP, FS_IOC_UNRESVSP64 and FS_IOC_ZERO_RANGE (`linux/falloc.h`, not a uapi header).
+    0x4030_5828,
+    0x4030_582b,
+    0x4030_5839,
+    ioctl::TCGETS as u64,
+    ioctl::TIOCGWINSZ as u64,
+    ioctl::RNDGETENTCNT as u64,
+    ioctl::RNDZAPENTCNT as u64,
+    0x1234,
+    0x8008_6680,
+];
+
+/// `FS_IOC_GETFSUUID` and `FS_IOC_GETFSSYSFSPATH`, which linux-raw-sys's ioctl list lacks: reads of a
+/// 17 byte and a 129 byte structure, numbers 0 and 1 of kind 0x15.
+const FS_IOC_GETFSUUID: u64 = 0x8011_1500;
+const FS_IOC_GETFSSYSFSPATH: u64 = 0x8081_1501;
+
+/// The words of each ioctl argument at `IOCTL_ARGS`.
+fn ioctl_arguments() -> [[u64; 8]; IOCTL_ARG_COUNT as usize] {
+    let flags = |value: u32| [u64::from(value), 0, 0, 0, 0, 0, 0, 0];
+    // `struct fsxattr`: xflags and extent size, then the rest.
+    let xattr = |xflags: u32, extent: u32| {
+        [
+            u64::from(xflags) | u64::from(extent) << 32,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]
+    };
+    // `struct space_resv`: type and origin, start, length.
+    let space = |whence: u16, start: u64, length: u64| {
+        [u64::from(whence) << 16, start, length, 0, 0, 0, 0, 0]
+    };
+    [
+        flags(linux::FS_NODUMP_FL | linux::FS_NOATIME_FL),
+        flags(linux::FS_IMMUTABLE_FL),
+        flags(0x4000_0001),
+        flags(0),
+        xattr(linux::FS_XFLAG_NODUMP, 0),
+        xattr(linux::FS_XFLAG_EXTSIZE, 4096),
+        // `struct file_clone_range`: source descriptor, source offset, length, destination offset.
+        [3, 0, 4096, 0, 0, 0, 0, 0],
+        // `struct file_dedupe_range` with one destination: descriptor 3 at offset 0.
+        [0, 4096, 1, 3, 0, 0, 0, 0],
+        space(0, 0, 8192),
+        space(1, 4096, 4096),
+        space(2, 0, 1 << 40),
+        space(7, 0, 4096),
+    ]
+}
+
+/// statfs's inode total depends on the machine's memory (tmpfs's default is half its pages), so the
+/// free count is compared as the count in use, and the total is masked.
+fn inodes_in_use(arena: &mut [u8], buffer: u64) {
+    let Some(at) = buffer
+        .checked_sub(ARENA)
+        .map(|offset| offset as usize)
+        .filter(|at| at + 56 <= arena.len())
+    else {
+        return;
+    };
+    let word = |arena: &[u8], at: usize| {
+        u64::from_le_bytes(arena[at..at + 8].try_into().expect("eight bytes"))
+    };
+    let used = word(arena, at + 40).wrapping_sub(word(arena, at + 48));
+    arena[at + 48..at + 56].copy_from_slice(&used.to_le_bytes());
+}
+
 fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     let [a, b, c, d, e, _] = call.arguments;
     let mut out = Vec::new();
@@ -2331,12 +2493,14 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
         linux::__NR_newfstatat => out.extend([(c, 16), (c + 72, 48)]),
         linux::__NR_fstat => out.extend([(b, 16), (b + 72, 48)]),
         linux::__NR_statx => out.extend([(e + 32, 8), (e + 64, 64), (e + 136, 16)]),
-        linux::__NR_fstatfs => out.push((b + 16, 48)),
+        // The inode total (see `inodes_in_use`) and the identity, which tmpfs draws at random.
+        linux::__NR_fstatfs => out.extend([(b + 40, 8), (b + 56, 8)]),
+        linux::__NR_ioctl if b == FS_IOC_GETFSUUID => out.push((c + 1, 16)),
         linux::__NR_clock_gettime => out.push((b, 16)),
         linux::__NR_times => out.push((a, 32)),
         linux::__NR_sysinfo => out.push((a, 112)),
         linux::__NR_getrusage => out.push((b, 144)),
-        linux::__NR_statfs => out.push((b + 16, 48)),
+        linux::__NR_statfs => out.extend([(b + 40, 8), (b + 56, 8)]),
         linux::__NR_getrandom => out.push((a, value as u64)),
         // The default time slice depends on the machine's CPU count, one here.
         linux::__NR_sched_rr_get_interval => out.push((b, 16)),
@@ -2504,6 +2668,9 @@ pub fn seen(sequence: &Sequence, result: &SequenceResult, unshared: &[bool]) -> 
         let before = arena.clone();
         for (offset, bytes) in &each.changes {
             arena[*offset as usize..*offset as usize + bytes.len()].copy_from_slice(bytes);
+        }
+        if each.value == 0 && matches!(call.number, linux::__NR_statfs | linux::__NR_fstatfs) {
+            inodes_in_use(&mut arena, call.arguments[1]);
         }
         let mut hidden = volatile(call, each.value, &arena);
         if unshared {

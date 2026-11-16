@@ -25,8 +25,6 @@ pub mod reason {
     pub const LOCKS_NOT_IMPLEMENTED: &str = "file locks not implemented";
     /// An `fcntl` command the kernel does not know. Detail: the command.
     pub const FCNTL_UNKNOWN: &str = "fcntl command unknown";
-    /// An `ioctl` request on a device the kernel has no answer for. Detail: the request.
-    pub const IOCTL_UNKNOWN: &str = "ioctl request unknown";
     /// Opening a device the kernel has no driver for yet. Detail: the device number.
     pub const DEVICE_NOT_IMPLEMENTED: &str = "device not implemented";
     /// Opening a named pipe, which needs pipes. Detail: the inode number.
