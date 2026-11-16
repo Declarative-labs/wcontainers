@@ -790,9 +790,25 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K2's fifth run; counts under Measurements)
+## Tests (last run 2026-11-16, K2's sixth run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's fourth run:
+All pass except the ignored known failures listed above. Added in K2's sixth run (each guest's
+reference output was read and checked against Linux's source):
+- priorities: nice values and I/O priorities of one process, a group with a running child, an ended
+  child and another user's child, a user's processes, refusals and their order, inheritance by fork.
+- pidfd: pidfd_open's flags and refusals, the file (status, flags, link, file system, handle), poll
+  through a process's life, pidfd_send_signal in every scope and with information, waitid on a
+  descriptor (nonblocking, stops, continues), CLONE_PIDFD, process_mrelease, and every generic call
+  (attributes, truncation, fallocate, sync, mmap, reopen, exec, locks, splice) on a process descriptor
+  and a signal descriptor.
+- signalfd: the file, flags, sizes and refusals, reads of every information layout, several at once,
+  into a bad buffer, waits and polls woken by another process, the mask changed, inheritance by fork.
+- sysvmsg: msgget, msgsnd and msgrcv with every search and flag, limits, IPC_SET, the info commands,
+  three receivers handed messages in the order they waited (one E2BIG), a sender waiting for room, a
+  removal waking a receiver (EIDRM), a signal ending a wait (EINTR even with SA_RESTART), another
+  user's refusals.
+
+Added in K2's fourth run:
 - partialcopy: guest/partialcopy.c makes 47 kinds of call (stat family, statfs, uname, the clocks,
   sysinfo, rusage, times, limits, signal masks and actions, pipe2, getcwd, scheduling, readlink of a
   `/proc` link and a tmpfs link, getdents64, reads of a tmpfs file, a pipe, a terminal, `/proc` seq
@@ -972,6 +988,16 @@ commands: same stdout, stderr, exit code and files changed), xattr, memfd, sched
 one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, procaccess, layer1.
 
 ## Layer 1
+
+K2's sixth run: with the fixes for 516, 517 and 518 in (head 603f689), those seeds passed 20000 each
+(335 to 344 s, three side by side, load 82 at the start, 40 to 48 at the end). Then process
+descriptors, signal descriptors and message queues are generated (see "Where things stand"). Seeds
+600, 601 and 602 (3000 each) found writev, fsync, fallocate and truncate on a process descriptor
+(Linux: no write, no fsync, pidfs's setattr refuses), signalfd4 reading its mask before its flags, and
+mmap of a process descriptor with PROT_EXEC (pidfs is `SB_I_NOEXEC`: EPERM); 603 to 605 (3000 each)
+found MSG_COPY loading the caller's buffer before the queue (EFAULT) and sendfile from a process
+descriptor (EINVAL even for nothing). All fixed; then 600 to 605 passed 3000 each (49 to 51 s, three
+side by side, load 14 to 40).
 
 K2's fifth run: shmget, shmat, shmdt, shmctl, splice (twice), tee and vmsplice are generated.
 Segment identifiers differ between the runners (the reference's slots and sequence numbers carry
@@ -1154,6 +1180,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 sixth run: the whole test suite of both crates 90 passed, 0 failed, 6 ignored, 144 s wall beside
+  four 20000-sequence layer 1 runs (load 16 at the start, 34 at the end), on head 1f9cffe. Layer 1 at
+  3000: 36 to 58 s each, three side by side (load 8 to 60). tests/pidfd.rs, signalfd.rs,
+  priorities.rs under 1.1 s each, sysvmsg.rs 1.5 s (its waits sleep 0.1 s in places).
 - K2 fifth run: the whole test suite of both crates 86 passed, 0 failed, 6 ignored, 155 s wall with
   two test threads beside three layer 1 runs (load 49 at the start, 53 at the end), on head 006b4af
   (before the last layer 1 fixes, which were checked with the tests they touch). Layer 1 at 20000:
@@ -1206,6 +1236,10 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- A fatal signal ends a process at once here, where Linux ends it when it next runs. So
+  process_mrelease never finds a dying process with memory to free: a running process is EINVAL and an
+  ended one ESRCH; Linux answers 0 in the window before the victim runs (a race in the reference).
 
 - The root file system is in memory (tmpfs) in K1: the file backend is K4. Tests fill it from
   `docker export` of the reference image with `Kernel::add_file`. What shows the file system's own kind
@@ -1389,16 +1423,18 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2, what is left, in order: the calls the Missing list gives to K2: pidfd_open,
-   pidfd_send_signal, waitid's P_PIDFD and CLONE_PIDFD (process descriptors), process_mrelease;
-   signalfd4 (with K5's waiting on many things if simpler); System V semaphores and message queues
-   and POSIX message queues (src/syscall/ipc.rs has the identifiers, keys and permissions they share
-   with shared memory: `Ids`, `Perm`, `get`). Each with a guest test against the reference and layer 1
-   generation.
-2. Small gaps of K2: a release I/O signal per pipe end when several close at once (only one is sent);
-   sendfile into a full blocking terminal waits on Linux (`tty_write`).
-3. Fix the open layer 1 findings of seeds 516, 517 and 518 (see Layer 1), rerun 511, then three
-   fresh layer 1 seeds of 20000 with every fix in (one command each, see Layer 1). This run's 512 to
-   515 passed at 20000 but before the last fixes.
+1. K2, what is left, in order: System V semaphores (semget, semop, semtimedop, semctl, SEM_UNDO undone
+   at a process's end; blocked operations kept as data in the array and completed by the change that
+   lets them, in queue order, as `update_queue` does, the way `Ipc::handed` does it for message queues)
+   and POSIX message queues (mq_open and the rest, on the mqueue file system Docker mounts at
+   `/dev/mqueue`, which is a plain directory here now). Each with a guest test against the reference
+   and layer 1 generation (src/syscall/ipc.rs has the identifiers, keys and permissions).
+2. Small gaps of K2: when several ends of a pipe close at once (close_range, a process's end), one
+   release I/O signal is sent; Linux sends one per end released whose release leaves readers without
+   writers or the other way round (`pipe_release`, in descriptor order), which needs the releases
+   themselves, not counts. sendfile into a full blocking terminal answers what fit; Linux waits for room
+   (`tty_write`). The sched_* calls do not find an ended process not yet reaped (Linux does).
+3. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
+   the milestone. Seeds up to 608 are used.
 4. The missing calls of later milestones; the known gaps above before K6's bar.
 5. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).

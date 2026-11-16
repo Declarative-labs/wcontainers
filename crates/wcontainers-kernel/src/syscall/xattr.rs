@@ -298,7 +298,10 @@ fn set(
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
     permission(&inode, &credentials, caller, &name, true)?;
-    security_check(&credentials, &name, false)?;
+    // The security layer passes over private inodes (`IS_PRIVATE`): descriptors' inodes.
+    if !inode.is_anonymous() {
+        security_check(&credentials, &name, false)?;
+    }
     resolve_name(&inode, &name)?;
     // tmpfs takes the value's space before it looks for the name (`shmem_xattr_handler_set`).
     inode.reserve_xattr(&name, &value)?;
@@ -422,7 +425,10 @@ fn remove(
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
     permission(&inode, &credentials, caller, &name, true)?;
-    security_check(&credentials, &name, true)?;
+    // The security layer passes over private inodes (`IS_PRIVATE`): descriptors' inodes.
+    if !inode.is_anonymous() {
+        security_check(&credentials, &name, true)?;
+    }
     resolve_name(&inode, &name)?;
     inode.remove_xattr(&name).ok_or(Errno::ENODATA)?;
     inode.ctime = now;

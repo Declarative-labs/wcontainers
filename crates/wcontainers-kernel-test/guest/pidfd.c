@@ -18,6 +18,7 @@
 #include <sys/syscall.h>
 #include <sys/file.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #define PIDFD_NONBLOCK O_NONBLOCK
@@ -414,6 +415,15 @@ static void generic(const char *what, int fd) {
     show("  copy_file_range", copy_file_range(fd, NULL, ends[1], NULL, 1, 0));
     close(ends[0]);
     close(ends[1]);
+    const char *names[] = {"user.a", "trusted.a", "security.a", "security.capability",
+                           "system.posix_acl_access", "bogus.a", "user."};
+    for (int n = 0; n < 7; n++) {
+        printf("  %s:", names[n]);
+        show(" set", fsetxattr(fd, names[n], "v", 1, 0));
+        show("  get", fgetxattr(fd, names[n], buffer, sizeof buffer));
+        show("  remove", fremovexattr(fd, names[n]));
+    }
+    show("  list", flistxattr(fd, buffer, sizeof buffer));
 }
 
 int main(void) {
