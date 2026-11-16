@@ -143,8 +143,18 @@ impl Kernel {
         use wcontainers_abi::Exit;
         match exit {
             Exit::Syscall(call) => self.system_call(cx, tid, call, false),
-            // The slice timer, or a signal or event that needed the thread back.
-            Exit::Stop => self.return_to_user(cx, tid, Resume::Continue),
+            // The slice timer, or a signal or event that needed the thread back; one that gives
+            // way leaves its restartable sequence.
+            Exit::Stop => {
+                let resume = if self.resched {
+                    self.rseq_preempted(cx, tid)
+                } else {
+                    Some(Resume::Continue)
+                };
+                if let Some(resume) = resume {
+                    self.return_to_user(cx, tid, resume);
+                }
+            }
             Exit::MemoryFault { address, access } => self.memory_fault(cx, tid, address, access),
             Exit::MemoryFaultWithoutRegisters => self.fatal_fault(cx, tid, SIGSEGV),
             Exit::AlignmentFault { address } => {

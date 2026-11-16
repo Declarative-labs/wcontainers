@@ -569,6 +569,28 @@ impl Kernel {
         Some(resume)
     }
 
+    /// A thread taken off the CPU while it ran its own code (`rseq_sched_switch_event`): inside its
+    /// restartable sequence it continues at the abort handler. Returns how it continues, or none if
+    /// a bad area killed its process.
+    pub(crate) fn rseq_preempted(&mut self, cx: &mut Context<'_>, tid: Tid) -> Option<Resume> {
+        if self.threads[&tid].rseq.is_none() {
+            return Some(Resume::Continue);
+        }
+        let mut registers = RegisterBlock::ZERO;
+        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        let before = registers.pc;
+        if self.rseq_fixup(cx, tid, &mut registers).is_err() {
+            let pid = self.threads[&tid].process;
+            self.die_of(cx, pid, SIGSEGV);
+            return None;
+        }
+        if registers.pc == before {
+            return Some(Resume::Continue);
+        }
+        cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
+        Some(Resume::FromRegisters)
+    }
+
     /// Linux's `rseq_ip_fixup` before a handler runs: a thread inside its registered restartable
     /// sequence's critical section goes to the sequence's abort handler, whose signature must match;
     /// the area's current sequence is cleared. A bad area is an error (SIGSEGV).
