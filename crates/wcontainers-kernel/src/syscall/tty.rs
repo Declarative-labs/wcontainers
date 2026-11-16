@@ -542,8 +542,8 @@ pub(super) fn write(
     result.map(|()| 0)
 }
 
-/// Kernel bytes into a terminal without waiting, as sendfile's splicing writes them (`tty_write`
-/// through `iter_file_splice_write`): what fits, EAGAIN when nothing does.
+/// Kernel bytes into a terminal, as sendfile's and splice's `iter_file_splice_write` hands them to
+/// `tty_write`: what fits now. A caller left with bytes waits through [`wait_for_room`].
 pub(super) fn put(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -557,6 +557,9 @@ pub(super) fn put(
     }
     if pty.borrow().sides[side].tostop() {
         check_change(kernel, cx, tid, &pty, side, SIGTTOU)?;
+    }
+    if kernel.signal_pending(tid) {
+        return Err(Errno::ERESTARTSYS);
     }
     if side == SLAVE && pty.borrow().count(MASTER) == 0 {
         return Err(Errno::EIO);
@@ -576,9 +579,20 @@ pub(super) fn put(
     after(kernel, cx, &pty);
     if done > 0 {
         update_time(kernel, cx, &pty, side, true);
-        return Ok(done as u64);
     }
-    Err(Errno::EAGAIN)
+    Ok(done as u64)
+}
+
+/// `n_tty_write` with no room left: EAGAIN for a nonblocking file, else the thread parks until the
+/// terminal has room, with `done` bytes of its call written.
+pub(super) fn wait_for_room(kernel: &mut Kernel, tid: Tid, file: &FileRef, done: u64) -> Errno {
+    if file.borrow().flags & O_NONBLOCK != 0 {
+        return Errno::EAGAIN;
+    }
+    let (pty, ..) = end(file).expect("a terminal");
+    kernel.thread_mut(tid).call.progress = done;
+    kernel.park(tid, channel(&pty));
+    Errno::PARKED
 }
 
 /// The open files of a side with `FASYNC` set (`tty->fasync`).

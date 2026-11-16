@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
@@ -490,13 +491,110 @@ static void closing(void) {
 }
 
 // Runs every part, or only the one named.
+// Waits until process `pid` sleeps in a call.
+static void until_asleep(pid_t pid) {
+    char path[64], text[256];
+    snprintf(path, sizeof path, "/proc/%d/stat", pid);
+    for (;;) {
+        int fd = open(path, O_RDONLY);
+        long n = read(fd, text, sizeof text - 1);
+        close(fd);
+        text[n > 0 ? n : 0] = 0;
+        char *state = strrchr(text, ')');
+        if (state && state[2] == 'S')
+            return;
+        usleep(1000);
+    }
+}
+
+// Reads the master until `total` bytes came or nothing more comes for two seconds.
+static long take_all(long total) {
+    char buf[4096];
+    long got = 0;
+    while (got < total) {
+        struct pollfd p = {.fd = master, .events = POLLIN};
+        if (poll(&p, 1, 2000) <= 0)
+            break;
+        long n = read(master, buf, sizeof buf);
+        if (n <= 0)
+            break;
+        got += n;
+    }
+    return got;
+}
+
+static void interrupted(int signal) { (void)signal; }
+
+// sendfile and splice into a full terminal whose file blocks wait for room, as `tty_write` does; a
+// signal ends the wait with what was written.
+static void waiting(void) {
+    printf("== waiting for room\n");
+    char block[65536];
+    memset(block, 'x', sizeof block);
+    int file = open("/tmp/ttyblock", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    write(file, block, sizeof block);
+    struct sigaction action = {.sa_handler = interrupted};
+    sigaction(SIGUSR1, &action, NULL);
+    for (int kind = 0; kind < 3; kind++) {
+        open_pair();
+        fcntl(slave, F_SETFL, O_RDWR);
+        struct termios t;
+        tcgetattr(slave, &t);
+        cfmakeraw(&t);
+        tcsetattr(slave, TCSANOW, &t);
+        int ends[2];
+        pipe(ends);
+        if (kind == 1)
+            write(ends[1], block, 60000);
+        // How much a full terminal holds differs from Linux by a few hundred bytes (see the
+        // status), so an interrupted call shows only that it wrote part and moved the offset by it.
+        int report[2];
+        pipe(report);
+        pid_t child = fork();
+        if (child == 0) {
+            off_t offset = 100;
+            long r = kind == 1 ? splice(ends[0], NULL, slave, NULL, 60000, 0)
+                               : sendfile(slave, file, &offset, 65000);
+            long out[3] = {r, r < 0 ? errno : 0, (long)offset};
+            write(report[1], out, sizeof out);
+            _exit(0);
+        }
+        until_asleep(child);
+        long got;
+        if (kind == 2) {
+            kill(child, SIGUSR1);
+            waitpid(child, NULL, 0);
+            got = take_all(65000);
+        } else {
+            got = take_all(kind == 1 ? 60000 : 65000);
+            waitpid(child, NULL, 0);
+        }
+        long out[3];
+        read(report[0], out, sizeof out);
+        close(report[0]);
+        close(report[1]);
+        if (kind == 2)
+            printf("sendfile interrupted: part %d errno %ld offset moved by it %d, read it all %d\n",
+                   out[0] > 0 && out[0] < 65000, out[1], out[2] == 100 + out[0], got == out[0]);
+        else
+            printf("%s: %ld errno %ld offset %ld, read %ld\n", kind ? "splice" : "sendfile", out[0],
+                   out[1], out[2], got);
+        close(ends[0]);
+        close(ends[1]);
+        close_pair();
+    }
+    close(file);
+    unlink("/tmp/ttyblock");
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     static const struct {
         const char *name;
         void (*run)(void);
     } parts[] = {{"making", making}, {"editing", editing}, {"raw", raw_reads},
-                 {"flow", flow_and_size}, {"closing", closing}};
+                 {"flow", flow_and_size}, {"closing", closing},
+                 {"waiting", waiting}};
     for (unsigned i = 0; i < sizeof parts / sizeof parts[0]; i++)
         if (argc < 2 || strcmp(argv[1], parts[i].name) == 0)
             parts[i].run();

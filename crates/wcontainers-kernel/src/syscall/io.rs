@@ -1158,6 +1158,9 @@ pub(super) fn sendfile(
     }
     let mut offset: i64 = guest(kernel, cx, tid).read_value(offset_address)?;
     let result = send(kernel, cx, tid, out_fd, in_fd, Some(&mut offset), count);
+    if result == Err(Errno::PARKED) {
+        return result;
+    }
     guest(kernel, cx, tid).put(offset_address, &offset.to_le_bytes())?;
     result
 }
@@ -1259,10 +1262,18 @@ fn send(
         }
     };
     let flags = input.borrow().flags;
-    let mut pos = position as u64;
-    let mut moved = 0;
+    // A call that waited for a terminal's room goes on after what it wrote, reading the rest of
+    // that round again (Linux keeps the round in its private pipe).
+    let resumed = kernel.threads[&tid].call.progress;
+    let mut pos = position as u64
+        + if device(&input_node).is_some() {
+            0
+        } else {
+            resumed
+        };
+    let mut moved = resumed;
     let mut failure = None;
-    let mut remaining = count;
+    let mut remaining = count - resumed;
     while remaining > 0 {
         // What cannot be spliced from (no `splice_read`: directories, secret memory, `/dev/null`,
         // the process files of `/proc`), or into (secret memory has no `splice_write`), fails at the
@@ -1351,6 +1362,13 @@ fn send(
         remaining -= written;
         if written < read {
             pos += written;
+            // A full terminal: a blocking one is waited for.
+            if super::tty::end(&output).is_some() {
+                match super::tty::wait_for_room(kernel, tid, &output, moved) {
+                    Errno::PARKED => return Err(Errno::PARKED),
+                    error => failure = Some(error),
+                }
+            }
             break;
         }
         pos = read_to;

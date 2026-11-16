@@ -380,7 +380,8 @@ fn pipe_to_file(
     if !writable {
         return Err(Errno::EINVAL);
     }
-    let mut done = 0u64;
+    // A call that waited for a terminal's room goes on after what it wrote.
+    let mut done = kernel.threads[&tid].call.progress;
     let mut emptied = false;
     let result = loop {
         if done == length {
@@ -427,15 +428,26 @@ fn pipe_to_file(
             Ok(written) => written,
             Err(error) => break Err(error),
         };
-        if written == 0 {
-            break Ok(());
+        if written > 0 {
+            emptied |= with_pipe(input, |pipe| pipe.consume_front(written as usize));
         }
-        emptied |= with_pipe(input, |pipe| pipe.consume_front(written as usize));
         done += written;
         if moves {
             *at += written;
         }
         if written < bytes.len() as u64 {
+            // A full terminal: a blocking one is waited for.
+            if terminal {
+                match super::tty::wait_for_room(kernel, tid, output, done) {
+                    Errno::PARKED => {
+                        if emptied {
+                            writers_woken(kernel, cx, input);
+                        }
+                        return Err(Errno::PARKED);
+                    }
+                    error => break Err(error),
+                }
+            }
             break Ok(());
         }
     };

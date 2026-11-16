@@ -48,6 +48,11 @@ fn closing_sides() {
 }
 
 #[test]
+fn waiting_for_room() {
+    compare("tty", &["waiting"]);
+}
+
+#[test]
 fn job_control() {
     compare("jobs", &[]);
 }

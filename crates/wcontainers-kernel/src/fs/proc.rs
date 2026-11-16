@@ -13,7 +13,7 @@ use super::{Content, FileSystem, New, Node, Time, Walk, new_inode};
 use crate::Errno;
 use crate::linux::general::*;
 use crate::memory::Backing;
-use crate::process::{Pid, Process, Thread, Tid};
+use crate::process::{Channel, Pid, Process, Thread, Tid};
 
 /// What a walk through `/proc` needs to know about the kernel.
 pub(crate) struct View<'a> {
@@ -443,6 +443,27 @@ pub(crate) fn dump_owner(processes: &BTreeMap<Pid, Process>, pid: Pid, mode: u32
 }
 
 /// Makes the inode for an entry found in `parent` under `name`.
+/// A process's state as its first thread's (`get_task_state`): ended and not reaped, stopped, parked
+/// (unkillably only for a `vfork` parent's wait), or running.
+fn state(view: &View<'_>, process: &Process) -> (char, &'static str) {
+    let wait = process
+        .threads
+        .first()
+        .and_then(|tid| view.threads.get(tid))
+        .and_then(|thread| thread.call.wait);
+    if process.ended.is_some() {
+        ('Z', "zombie")
+    } else if process.stopped {
+        ('T', "stopped")
+    } else if matches!(wait, Some(Channel::Vfork(_))) {
+        ('D', "disk sleep")
+    } else if wait.is_some() {
+        ('S', "sleeping")
+    } else {
+        ('R', "running")
+    }
+}
+
 pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: Entry) -> Node {
     let (uid, gid) = entry.owner(view);
     let mut mode = entry.mode();
@@ -1014,9 +1035,10 @@ fn process_file(
             });
             let _ = writeln!(
                 out,
-                "{} ({}) R {} {} {} {} {} 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
+                "{} ({}) {} {} {} {} {} {} 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
                 process.pid,
                 name,
+                state(source.view, process).0,
                 process.parent,
                 process.group,
                 process.session,
@@ -1044,10 +1066,12 @@ fn process_file(
             let (vsize, _) = sizes(process);
             let _ = write!(
                 out,
-                "Name:\t{}\nUmask:\t{:04o}\nState:\tR (running)\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\
+                "Name:\t{}\nUmask:\t{:04o}\nState:\t{} ({})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\
                  TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
                 String::from_utf8_lossy(&process.name),
                 process.umask,
+                state(source.view, process).0,
+                state(source.view, process).1,
                 process.pid,
                 process.pid,
                 process.parent,
