@@ -1,10 +1,11 @@
 //! Layer 2: random small ARM64 programs built to always end, assembled with dynasm. Each has loops with
-//! counters, calls, bounded recursion, tail calls, calls and jumps through registers, compiler-style jump
-//! tables, flags carried across instructions, stack frames of every size (some running off the stack), and
-//! memory use inside a fixed area, through the stack pointer, and in groups through other registers, some
-//! near a page that allows nothing, groups and loops across calls, accesses below sp once a frame is popped,
-//! and system calls that write nothing. At the end it stores its registers and flags after the area and
-//! writes the whole area out; a program that faults ends with SIGSEGV instead.
+//! counters, calls (some to a function that makes a system call), bounded recursion, tail calls, calls and
+//! jumps through registers, compiler-style jump tables, flags carried across instructions, stack frames of
+//! every size (some running off the stack), and memory use inside a fixed area, through the stack pointer,
+//! and in groups through other registers, some near a page that allows nothing, groups and loops across
+//! calls, accesses below sp once a frame is popped, and system calls that write nothing. At the end it
+//! stores its registers and flags after the area and writes the whole area out; a program that faults ends
+//! with SIGSEGV instead.
 
 // dynasm's expansion converts register numbers to their own type.
 #![allow(clippy::useless_conversion)]
@@ -160,20 +161,20 @@ pub enum Chunk {
         cond: u8,
         ops: Vec<Op>,
     },
-    /// Run the ops `count` times, counting in x16, calling a function after them each turn when `call`.
+    /// Run the ops `count` times, counting in x16, with a call after them each turn when `call`.
     Loop {
         count: u8,
         ops: Vec<Op>,
-        call: Option<usize>,
+        call: Option<Callee>,
     },
     /// A loop counting in x16 that accesses memory through x18 at an address moving by a fixed step.
     Walk(Walk),
     /// A loop counting in x16 that accesses memory at a base plus an index read from the area or worked
     /// out each turn, and bounded by a comparison or by the load that read it.
     Lookup(Lookup),
-    /// Call a function by number, directly or through x18, inside a group through x28 when `around`.
+    /// A call, directly or through x18, inside a group through x28 when `around`.
     Call {
-        function: usize,
+        callee: Callee,
         through_register: bool,
         around: Option<Around>,
     },
@@ -196,6 +197,15 @@ pub enum Chunk {
         through_register: bool,
         ops: Vec<Op>,
     },
+}
+
+/// What a call calls.
+#[derive(Clone, Copy, Debug)]
+pub enum Callee {
+    /// A function by number.
+    Function(usize),
+    /// A function that makes a system call like `Op::Syscall`'s and returns, leaving x16, x18 and x28.
+    Writer,
 }
 
 /// A group through x28 with a call between its accesses `before` and `after`.
@@ -261,9 +271,9 @@ pub struct Walk {
     /// A system call like `Op::Syscall`'s after the access each turn (then the index and the step are not
     /// in registers the call sets).
     pub syscall: bool,
-    /// A direct call of this function after the access each turn (only when the base moves, as functions
-    /// keep x16 and x18 but not an index).
-    pub call: Option<usize>,
+    /// A direct call after the access each turn (only when the base moves, as functions keep x16 and x18
+    /// but not an index).
+    pub call: Option<Callee>,
 }
 
 /// A loop whose access goes through a table: `base` plus `index` (read as `extend`: 0 uxtw, 1 sxtw, 2 lsl,
@@ -452,12 +462,16 @@ fn below() -> impl Strategy<Value = Chunk> {
         })
 }
 
-/// A function to call from inside a loop or a group, now and then, when there is one.
-fn call_in(callable: usize) -> BoxedStrategy<Option<usize>> {
+/// A function numbered below `callable`, or the writer.
+fn callee(callable: usize) -> BoxedStrategy<Callee> {
     if callable == 0 {
-        Just(None).boxed()
+        Just(Callee::Writer).boxed()
     } else {
-        prop::option::weighted(0.3, 0..callable).boxed()
+        prop_oneof![
+            (0..callable).prop_map(Callee::Function),
+            Just(Callee::Writer)
+        ]
+        .boxed()
     }
 }
 
@@ -814,15 +828,15 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
 
 /// A chunk that may call functions numbered below `callable`.
 fn chunk(callable: usize) -> BoxedStrategy<Chunk> {
-    let mut choices = vec![
+    let choices = vec![
         ops().prop_map(Chunk::Ops).boxed(),
         (0u8..14, ops())
             .prop_map(|(cond, ops)| Chunk::Skip { cond, ops })
             .boxed(),
-        (1u8..6, ops(), call_in(callable))
+        (1u8..6, ops(), prop::option::weighted(0.4, callee(callable)))
             .prop_map(|(count, ops, call)| Chunk::Loop { count, ops, call })
             .boxed(),
-        (walk(), call_in(callable))
+        (walk(), prop::option::weighted(0.4, callee(callable)))
             .prop_map(|(mut walk, call)| {
                 walk.call = call.filter(|_| matches!(walk.moves, WalkMove::Base(_)));
                 Chunk::Walk(walk)
@@ -839,22 +853,18 @@ fn chunk(callable: usize) -> BoxedStrategy<Chunk> {
                 ops,
             })
             .boxed(),
+        (
+            callee(callable),
+            any::<bool>(),
+            prop::option::weighted(0.5, around()),
+        )
+            .prop_map(|(callee, through_register, around)| Chunk::Call {
+                callee,
+                through_register,
+                around,
+            })
+            .boxed(),
     ];
-    if callable > 0 {
-        choices.push(
-            (
-                0..callable,
-                any::<bool>(),
-                prop::option::weighted(0.4, around()),
-            )
-                .prop_map(|(function, through_register, around)| Chunk::Call {
-                    function,
-                    through_register,
-                    around,
-                })
-                .boxed(),
-        );
-    }
     prop::strategy::Union::new(choices).boxed()
 }
 
@@ -1252,9 +1262,19 @@ fn ccmp_narrow(ops: &mut Ops, rn: u8, rm: u8, nzcv: u32, cond: u8) {
 /// Labels the whole program refers to, and jump tables to place after the code.
 struct Layout {
     functions: Vec<DynamicLabel>,
+    writer: DynamicLabel,
     /// The end of the blob.
     edge: DynamicLabel,
     tables: Vec<(DynamicLabel, Vec<u8>)>,
+}
+
+impl Layout {
+    fn target(&self, callee: Callee) -> DynamicLabel {
+        match callee {
+            Callee::Function(f) => self.functions[f],
+            Callee::Writer => self.writer,
+        }
+    }
 }
 
 fn emit_chunks(ops: &mut Ops, layout: &mut Layout, chunks: &[Chunk]) {
@@ -1276,8 +1296,8 @@ fn emit_chunks(ops: &mut Ops, layout: &mut Layout, chunks: &[Chunk]) {
                 let count = u32::from(*count);
                 dynasm!(ops ; .arch aarch64 ; movz x16, #count ; =>top);
                 list.iter().for_each(|op| emit_op(ops, layout.edge, op));
-                if let Some(f) = *call {
-                    let target = layout.functions[f];
+                if let Some(callee) = *call {
+                    let target = layout.target(callee);
                     dynasm!(ops ; .arch aarch64 ; bl =>target);
                 }
                 dynasm!(ops ; .arch aarch64 ; subs x16, x16, #1 ; b.ne =>top);
@@ -1285,7 +1305,7 @@ fn emit_chunks(ops: &mut Ops, layout: &mut Layout, chunks: &[Chunk]) {
             Chunk::Walk(w) => emit_walk(ops, layout, w),
             Chunk::Lookup(l) => emit_lookup(ops, layout, l),
             Chunk::Call {
-                function,
+                callee,
                 through_register,
                 around,
             } => {
@@ -1293,7 +1313,7 @@ fn emit_chunks(ops: &mut Ops, layout: &mut Layout, chunks: &[Chunk]) {
                     point(ops, layout.edge, 28, a.start);
                     a.before.iter().for_each(|a| emit_group_access(ops, 28, a));
                 }
-                let target = layout.functions[*function];
+                let target = layout.target(*callee);
                 if *through_register {
                     dynasm!(ops ; .arch aarch64 ; adr x18, =>target ; blr x18);
                 } else {
@@ -1574,8 +1594,8 @@ fn emit_walk(ops: &mut Ops, layout: &Layout, w: &Walk) {
     if w.syscall {
         emit_syscall(ops);
     }
-    if let Some(f) = w.call {
-        let target = layout.functions[f];
+    if let Some(callee) = w.call {
+        let target = layout.target(callee);
         dynasm!(ops ; .arch aarch64 ; bl =>target);
     }
     // The counter: changed, compared and branched on in the form chosen.
@@ -1766,6 +1786,7 @@ pub fn assemble(program: &Program) -> Blob {
             .iter()
             .map(|_| ops.new_dynamic_label())
             .collect(),
+        writer: ops.new_dynamic_label(),
         edge: ops.new_dynamic_label(),
         tables: Vec::new(),
     };
@@ -1834,6 +1855,10 @@ pub fn assemble(program: &Program) -> Blob {
             None => dynasm!(ops ; .arch aarch64 ; ret),
         }
     }
+    let writer = layout.writer;
+    dynasm!(ops ; .arch aarch64 ; =>writer);
+    emit_syscall(&mut ops);
+    dynasm!(ops ; .arch aarch64 ; ret);
     let code_bytes = ops.offset().0 as u64;
     for (label, entries) in &layout.tables {
         dynasm!(ops ; .arch aarch64 ; =>*label);
