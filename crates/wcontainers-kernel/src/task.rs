@@ -52,7 +52,7 @@ impl Kernel {
         self.current = Some(tid);
         self.running = Some(tid);
         let thread = &self.threads[&tid];
-        let slice_nanoseconds = (self.run_queue.len() > 0).then(|| {
+        let fair = (self.run_queue.len() > 0).then(|| {
             let weight = schedule::weight(&thread.schedule);
             let ideal = schedule::slice(
                 weight,
@@ -63,6 +63,14 @@ impl Kernel {
                 .saturating_sub(thread.runtime - self.picked_runtime)
                 .max(1)
         });
+        // A parked call's deadline ends the turn as Linux's timer interrupt would.
+        let timer = self
+            .next_deadline()
+            .map(|at| at.saturating_sub(self.last_now).max(1));
+        let slice_nanoseconds = match (fair, timer) {
+            (Some(fair), Some(timer)) => Some(fair.min(timer)),
+            (fair, timer) => fair.or(timer),
+        };
         Next::Run {
             thread: thread.cpu,
             resume: thread.resume,
@@ -303,10 +311,9 @@ impl Kernel {
         }
     }
 
-    /// Wakes the threads whose deadline has come.
-    pub(crate) fn wake_due(&mut self, cx: &mut Context<'_>) {
-        let now = cx.host.monotonic_nanoseconds();
-        self.entry_now = now;
+    /// Wakes the threads whose deadline has come by the time the kernel was entered.
+    pub(crate) fn wake_due(&mut self) {
+        let now = self.entry_now;
         let due: alloc::vec::Vec<Tid> = self
             .threads
             .iter()

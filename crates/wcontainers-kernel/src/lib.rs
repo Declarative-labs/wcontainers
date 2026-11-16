@@ -230,6 +230,7 @@ impl Kernel {
             .expect("an exit was handed back with no thread running");
         let mut cx = Context { cpu, host };
         self.account(&mut cx, tid);
+        self.wake_due();
         self.came_back(&mut cx, tid, exit);
         self.settle(&mut cx);
     }
@@ -239,7 +240,8 @@ impl Kernel {
         let mut cx = Context { cpu, host };
         let detail = match event {
             Event::Timer => {
-                self.wake_due(&mut cx);
+                self.entry_now = cx.host.monotonic_nanoseconds();
+                self.wake_due();
                 self.settle(&mut cx);
                 return;
             }
