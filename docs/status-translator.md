@@ -4,11 +4,159 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M4 (bounded look-ahead and the rare paths): built in the first run; the second run fixed every finding of the
-check of the first (under "M4, second run") and waits for the next check. M0 to M3 and S1 are built and
-passed their independent checks; their work is recorded below, newest first. The long runs to the plan's pass
-bars (layer 1 at 10,000 a form, layer 2 at one million programs, layer 3 at 100,000) are run once by the
-orchestrator at the end of the translator track; commands under "How to run".
+M5 (real code at scale): partly built in its first run (under "M5, first run"; what is left is listed there
+under "M5, what comes next"). The first run also fixed the findings of the check of M4's second run. M0 to M4
+and S1 are built; their work is recorded below, newest first. The long runs to the plan's pass bars (layer 1
+at 10,000 a form, layer 2 at one million programs, layer 3 at 100,000) are run once by the orchestrator at the
+end of the translator track; commands under "How to run".
+
+## M5, first run
+
+Fixes from the check of M4's second run:
+- Code the program writes while running now runs (the JIT pattern). The stand-in's load code hook translates
+  from guest memory as it is at that moment, not from the file's bytes: from the blob's code range when the
+  address is in it, otherwise from the run of pages that allow running code around the address (within what
+  the lookup table covers). Both runners' tables now cover the whole blob, not only its code. Test
+  `tests/programs.rs` `written_code_and_null_calls_match_linux` (`programs/written_code.c`: writes `add`,
+  `mul`, calls them in a loop, then writes `sub` over `add` and calls it again; -O0 and -O2 against Linux at
+  none, full, bounded and mixed, and in Chrome at full and bounded). Found on the way: the C library's
+  `__clear_cache` (zig's compiler-rt) leaves out the `dsb ish` after `ic ivau`, and real ARM64 Linux then ran
+  the old code (printed 1499000, not 1498000); the program uses Arm's full sequence itself.
+- A jump or call to an address with no code (null or not allowing running code) is now a memory fault
+  (`Exit::MemoryFault`, access `Execute`, pc and address the target), counted and warned as "memory fault",
+  SIGSEGV (status 139) as on Linux, in both runners. Test: the same one, with `programs/null_call.c` (Linux
+  139, "before"; ours the same at every look-ahead and in Chrome, one memory fault counted). `Stopped::NoCode`
+  is left only for an address that allows running code but has no slot in the runner's table (layer 1 uses a
+  one-slot table for this, so control that lands outside its instruction stops there; layer 1 maps an execute
+  fault to "landed", as its reference does with SIGSEGV at pc).
+- The changes test now keeps "may run code" as placed on every page (the stand-in drops no pieces when a page
+  stops allowing it, plan section 7), so its changes still touch reading and writing only.
+- The share of the changes test's run at full (M4 second run): the figure still comes from the instrumented
+  copy in scratch; its patch is now kept at `pyro-parked/wcontainers-scratch/translator/m4r2-share/share.patch`
+  (apply to commit 94db52f). It is approximate: a block's whole length is counted when it is entered, even if
+  it faults or leaves early. Not put in the repository: a per-block counter in the translator for one figure
+  would be measuring-only code with no other use.
+- Pieces made at run time from the middle of a function (after a lost stack, a go to address, a forgotten
+  piece) lose what full pieces recognise: switch tables and loop proofs. Counted and warned, never hidden, but
+  slower: the check measured `mine_deepthrow -O0` with 273,040 "jump through a register not recognised" at
+  full against 4,095,513 at Bounded(7) and Bounded(256), and 1,456,194 "loop not proven" in Chrome at
+  Bounded(256), none at full. Recorded under "Known gaps"; `measure_bound` times only bench.c.
+- Chrome's figure for translating and loading one piece at run time now includes the engine's compile: the
+  measurement runs Chrome three ways (V8 flags given only to the measuring run). Load 8 to 10, release:
+  bench -O2 at bounded 256, 26 pieces: wasmtime 2572 us a piece; Chrome 543 us compiling at first call (not
+  timed), 692 us with its baseline compiler eagerly (`--no-wasm-lazy-compilation`), 3915 us with its optimising
+  compiler alone (`--no-liftoff` too). hello -O2, 55 pieces: wasmtime 3669 us; Chrome 729, 924 and 6947 us.
+  At bounded 16 in wasmtime: bench 128 pieces at 1051 us, hello 127 at 975 us. (bench made 15 pieces at 256
+  in M4's figure and 26 now; not looked into.)
+- The Chrome runner now refuses (throws) to put code made at run time over a piece its table holds, as the
+  wasmtime runner asserts.
+
+What M5's first run built:
+- `src/binaries.rs` (test crate only; `object` 0.40 and `gimli` 0.34, both established crates): each binary is
+  taken once from its Docker image into `target/binaries` and read as the translator's input: the blob is the
+  whole loaded image (every loadable segment in place); the code range is from the first section of
+  instructions to the end of the last (the runnable segment also holds headers and read-only data, which would
+  only grow the lookup table); starts by means: the entry point and DT_INIT/DT_FINI; function symbols of both
+  symbol tables; every FDE of `.eh_frame`; the init, preinit and fini arrays (through their relocations);
+  addresses in data that point into code (what RELATIVE, ABS64, GLOB_DAT and JUMP_SLOT relocations and RELR
+  places hold; in a file that is not moved, every aligned word of its data segments).
+- Translations can be several code modules (`Translation { modules }`). The translator emits every piece for
+  one module first; if that passes an engine limit (1 GiB a module less 64 MiB, a million functions less a
+  thousand), it groups pieces in order and emits each group for a module of its own, where direct calls to
+  pieces of other modules go through the lookup (the dispatcher). A piece's loop pieces stay in its module. A
+  function whose body passes 7,654,321 bytes or 50,000 locals is cut in two (more starts) and all is done
+  again. Test-only entry `translate_in_modules` (measure feature) splits small programs into tiny modules:
+  `cut_functions_and_split_translations_match_linux` runs hello, differences, exceptions and many_blocks in
+  modules of 4 KiB and 64 KiB against Linux and none (registers and memory).
+- A function of more than `FUNCTION_BLOCKS` (2048, a new tuning number) blocks is cut in parts: blocks in depth
+  first order, cut into runs, and every place control passes from one run to another made an entry. Test
+  `programs/many_blocks.c` (one function of thousands of blocks) at every look-ahead, mixed, and in Chrome.
+- Emitting a function no longer recurses down chains of merges: the subtree a node's code ends with is
+  emitted by a loop. Bun overflowed the test thread's 2 MiB stack before; a chain of 4000 branches now
+  translates on a 256 KiB stack (`valid.rs` `long_chains_translate_on_a_small_stack`; before the change 1000
+  branches needed between 512 KiB and 1 MiB).
+- Translation speed: making loop pieces cloned the set of every entry once per loop (quadratic). Profiling
+  Bun showed it on top; fixed. Java went from 15.8 s to 12.2 s, Node (Alpine's package) from 42.7 s to 27.8 s
+  (load 20 to 60, so partly noise); Bun did not finish in 3 minutes before.
+- `tests/binaries.rs` `measure_binaries` (one command under "How to run"): for each binary its code and starts,
+  the translation at full (time, pieces, found by the translator, modules, size raw and gzipped), every module
+  validated (wasmparser), loaded in Chrome (made and instantiated, compiled lazily and eagerly), and compiled
+  and instantiated in wasmtime with the bytes of machine code it made.
+
+Measured (release; one run each, load in brackets; "a byte" is per byte of ARM64 code, gzip default level).
+"Chrome" is Chrome 157 making the modules and their instances: compiled at first call (V8's default, so the
+time is mostly not compiling) and compiled at once by its baseline compiler (`--no-wasm-lazy-compilation`).
+wasmtime 50 compiles with Cranelift on all cores at once; "machine code" is the size of what it made.
+- busybox (Alpine 3.22): code 704,368 bytes (176,092 instructions); starts 420 (entry 3, symbols 7, unwind 4,
+  init/fini 2, data 412); translated in 0.64 s (1.1 MB/s); 3520 pieces, 3100 found by the translator; 1 module,
+  38,951,871 bytes (55.3 a byte), 8,247,353 gzipped (19.5 a gzipped byte); wasmtime compile 1.17 s to 54.3 MB
+  of machine code, instantiate under 1 ms (load 60 to 70); Chrome 0.01 s at first call, 0.07 s at once,
+  instances 1 ms (load 56).
+- musl (`ld-musl-aarch64.so.1`): code 370,304 (92,576 instructions); starts 1513 (symbols 1483, unwind 22, data
+  15); 0.31 s; 1824 pieces, 311 found; 17,166,135 bytes (46.4), 3,604,109 gzipped (16.9); wasmtime 0.51 s,
+  23.8 MB; Chrome 0.00 s and 0.04 s.
+- rg: code 2,023,452 (505,863); starts 5073 (unwind 5070, data 1803); 2.44 s (0.83 MB/s); 5963 pieces, 890
+  found; 161,005,794 bytes (79.6), 29,171,765 gzipped (30.5); wasmtime 6.69 s, 199.3 MB; Chrome 0.03 s and 0.29 s
+  (load 90).
+- git: code 2,181,904 (545,476); starts 6084; 2.08 s; 9309 pieces, 3225 found; 126,781,906 bytes (58.1),
+  25,384,531 gzipped (20.0); wasmtime 3.99 s, 177.5 MB; Chrome 0.03 s and 0.25 s.
+- python (`libpython3.13.so.1.0`): code 2,959,628 (739,907); starts 5878 (symbols 1471, unwind 5538, data
+  4059); 2.81 s; 8242 pieces, 2364 found; 161,447,763 bytes (54.6), 29,420,342 gzipped (21.6); wasmtime 5.53 s,
+  223.1 MB; Chrome 0.04 s and 0.33 s. Peak memory of the whole measurement of rg, git and python: 7.7 GB.
+- java (`libjvm.so`): code 13,193,824 (3,298,456 instructions); starts 46,890 (symbols 46,874, unwind 46,871,
+  init/fini 790, data 19,348); 13.25 s (1.0 MB/s); 49,263 pieces, 2373 found; 1 module, 640,062,103 bytes
+  (48.5), 110,653,245 gzipped (20.4); wasmtime 30.5 s to 925.0 MB of machine code, instantiate 4 ms; Chrome
+  0.16 s and 1.31 s, instances 5 and 18 ms; peak memory 9.3 GB (load 90 to 97).
+- node (`node:24-alpine3.22`): code 40,012,104 (10,003,026 instructions); starts 99,365 (symbols 99,247,
+  unwind 96,688, init/fini 162, data 24,539); 98.7 s (0.41 MB/s; 65.1 s in an earlier run at load 60); 120,586
+  pieces, 21,221 found; 3 modules, 2,990,303,191 bytes (74.7), 529,078,428 gzipped (30.7); wasmtime 89.6 s to
+  4.04 GB of machine code, instantiate 11 ms; peak memory 22.2 GB; Chrome refused it: its table of 10,003,027
+  entries is past V8's 10,000,000 (load 55 to 100).
+- bun (`oven/bun:1.3-alpine`): code 52,050,800 (13,012,700 instructions); starts 64,343 (symbols 551, unwind
+  63,291, init/fini 5, data 15,375); 165.3 s (0.31 MB/s; 136.8 s in an earlier run); 143,538 pieces, 79,195
+  found; 5 modules, 4,452,427,570 bytes (85.5), 770,736,310 gzipped (35.2); wasmtime 169.8 s to 5.88 GB of
+  machine code, instantiate 13 ms; peak memory 27.7 GB; Chrome refused it (table of 13,012,701 entries)
+  (load 85 to 100). Before the switch table limit wasmtime refused it: one `br_table` of 360,445 targets.
+- go (the `go` command): code 5,860,244 (1,465,061 instructions); starts 17,595 (symbols 14,259, no unwind
+  tables, data 6482); 5.32 s (1.1 MB/s); 20,859 pieces, 3264 found; 1 module, 408,650,746 bytes (69.7),
+  64,816,902 gzipped (25.2); wasmtime 13.2 s to 578.6 MB, instantiate 1 ms; Chrome 0.07 s and 0.60 s; peak
+  memory 6.4 GB (load 98 to 84).
+- Every module of all nine validates (wasmparser) and wasmtime compiles and instantiates it; Chrome loads
+  seven of nine (all but Node and Bun, refused for the table's size only). The figures above for Chrome
+  compiling at once look fast (161 MB in 0.29 s); whether V8's synchronous compile waits for every function
+  was not checked.
+- Where the bytes go (rg and busybox, before the module split): loop pieces are 45% (busybox) and 64% (rg) of
+  the code; the largest piece is 4.76 MB (rg, a function of 12,966 instructions, 367 bytes an instruction).
+  Pieces carry much that the engine removes anyway (copies between locals, constant flag parts, a value pushed
+  and dropped) and every check's slow path inline. The size work of section 11 has not started.
+- Chrome allows 10,000,000 table entries. With one slot per 4 bytes of code, Node's 10,003,026 instruction
+  slots cannot be one table, so the compact lookup design is needed.
+
+M5, what comes next (most important first):
+1. The compact lookup design (section 5: one slot per piece, and an array in memory from code offset to
+   slot), built beside the present one and measured on the benchmark set (calls through registers: interpret,
+   sort) and in memory; then choose against the engine limits. Node and Bun cannot be loaded in Chrome without
+   it. Questions to settle: where the array lives (state memory, per process or per thread; the table is per
+   thread instance), who writes it (a code module's start function, or the runner), and pieces made at run
+   time (the table must grow).
+2. Size (section 11), in its order. First what is free in both modes, each measured by itself on the nine
+   binaries and the benchmark set: what the engine removes anyway (copies between locals, `x | 0` for moves,
+   flag parts that are constant, values pushed and dropped); loop pieces that hold more than their loop (the
+   code after a loop up to the next loop header is copied into every loop piece that reaches it); slow paths
+   shared per piece instead of inline at every check. Then the size mode, one trade at a time (for example no
+   loop pieces, carrying on in place after a stop; slow paths out of line).
+3. For each binary in each mode: output size, the memory each engine uses for compiled code (wasmtime's is
+   recorded now as bytes of machine code; Chrome's is not measured yet), and what a call between two modules
+   costs (a direct call becomes a call through the lookup; not measured yet).
+4. elfconv (the benchmark to beat): not set up yet. It builds with remill and LLVM in Docker; how long that
+   takes is not known yet.
+5. Translation speed: Node 65 s and Bun 137 s (single thread, 0.4 to 0.6 MB of code a second, against 1 MB/s
+   on small binaries). Not yet profiled after the fix above; the module split emits everything twice when it
+   splits, and finding functions explores every entry again each round.
+6. Counters for each binary: nothing runs yet, so only what translation can count. Not recorded yet.
+7. The translator's input for a program's own pieces past the code range (PLT stubs are in it; data words
+   that look like code in fixed files make starts that are wrong guesses): look at how many pieces those
+   are.
 
 ## M4, second run
 
@@ -1368,6 +1516,10 @@ contract's bits, in both runners).
 - Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (defaults 64 random programs, seed 1, 3 seeds for each C program; since the eleventh run about 33 ms
   a random program at load 16 to 21, as every program now calls a function that makes a system call).
+- Real binaries (M5): `WC_BINARIES=busybox,musl nix develop -c cargo test --release -p wcontainers-translator-test --test binaries measure_binaries -- --ignored --nocapture 2>&1 | grep -v "^chrome:"`
+  (names: busybox, musl, rg, git, node, python, bun, java, go; all when unset; each is taken from its Docker
+  image into `target/binaries` once, which needs network). Node and Bun take minutes each and 15 to 20 GB of
+  memory (wasmtime compiling several GB of WebAssembly); run them alone.
 - Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
@@ -1588,12 +1740,22 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M4's independent check (of the second run).
-2. M5 (real code at scale).
-3. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
+1. M5's remaining work (see "M5, what comes next").
+2. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
    (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
+
+- M5: pieces made at run time from the middle of a function (after a lost stack, a go to address or a
+  forgotten piece) do not recognise switch tables or prove loops the way the function's full piece does: much
+  slower on unwinder-heavy code (figures under "M5, first run"), counted and warned.
+- M5: code the program writes and calls directly is translated from memory when reached; a piece of
+  look-ahead none or full that holds written code inline (reached by a direct branch inside a stretch made
+  from the run of runnable pages) keeps the old code after `ic ivau`, as the "code changed" gap below says.
+- M5: a switch table of more than 65,520 slots (an engine limit for `br_table`) is left unrecognised (counted
+  as "jump through a register not recognised"); Bun has one of 360,445.
+- M5: only the lookup design of one slot per 4 bytes is built. Chrome allows 10,000,000 table entries, so
+  Node (10,003,026 instruction slots) and Bun (13,012,700) cannot be loaded in Chrome with it.
 
 - FPSR's cumulative exception flags are kept only once the program has written FPSR (or set FPCR); a
   program that reads them without ever writing gets the flags it had, counted and warned as "exact
@@ -1626,6 +1788,26 @@ contract's bits, in both runners).
   features than the one we present).
 
 ## Departures from the plan
+
+- M5: Node is taken from the official `node:24-alpine3.22` image (Node 24.16.0, 125 MB, 40 MB of code, 10.0
+  million instructions), not Alpine's own `nodejs` package (Node 22, 51 MB, 25 MB of code): the plan's figures
+  (9.13 million instruction slots) are of a Node of that size. The other kinds: Python is
+  `libpython3.13.so.1.0` of `python:3.13-alpine3.22` (the interpreter is in it), Bun `oven/bun:1.3-alpine`,
+  Java `libjvm.so` of `eclipse-temurin:21-jre-alpine`, Go the `go` command of `golang:1.25-alpine3.22`.
+- M5: the code range given for a binary is from its first section of instructions to the end of its last,
+  not the whole runnable segment (which also holds headers and read-only data); the blob is the whole loaded
+  image, so jump tables and constants in read-only data are there.
+- M5: a translation is one or more code modules (`Translation { modules }`); pieces of one module reach
+  another's through the lookup. Grouping is in order of entry; a module holds at most 1 GiB less 64 MiB of
+  code and a million functions less a thousand. A test-only entry (`translate_in_modules`, measure feature)
+  splits small programs to test it.
+- M5: a new tuning number, `FUNCTION_BLOCKS` (2048): a function with more blocks is cut in parts at places
+  control passes between runs of its blocks in depth first order. Bodies or locals past the engine's limits
+  for one function cut it in two again. Not measured for speed: cut parts tail call each other.
+- M5: the stand-in's load code hook translates from guest memory as it is, from the blob's code range or, for
+  other addresses, from the run of pages that allow running code; a jump to a page that does not is a memory
+  fault with access `Execute`. The runners' tables cover the whole blob. The changes test keeps "may run code"
+  as placed.
 
 - M4, second run: "the stop flag is raised at a random check" (section 9) is done as a stop at every stop
   check of a mixed run, with the stack lost or a piece forgotten at random stops among them; the only way to
@@ -1818,6 +2000,8 @@ contract's bits, in both runners).
   `memory_may_move(false)`).
 
 ## Shared crate (wcontainers-abi)
+
+- M5: no change. A jump to code that may not run uses the existing `Access::Execute`.
 
 - M4: no change. The new unwind payload, hook argument, reason and the piece's depth parameter are in the
   translator's contract (`contract.rs`), not in the abi.
