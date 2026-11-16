@@ -12,7 +12,9 @@ wasmtime and Chrome, and also on a host made to need the software fused multiply
 fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc, six levels, fixed position code and
 position independent code loaded away from where it is linked). The second run took floating point's slow
 path out of the hot function (floats at full: 4.41 to 2.43 times native), loaded position independent blobs
-at another address, and measured vector registers in locals. See "M3, second run" and "M3, first run" below.
+at another address, measured vector registers in locals, and added Chrome samples to layers 1 and 3. Layers
+1 and 3 each have a one command long run with its Chrome sample under "How to run"; neither has reached the
+plan's pass bar yet (layer 2 has no Chrome sample; it is not M3's). See "M3, second run" and "M3, first run" below.
 
 M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
 pushed. M2 (full look-ahead) is built and tested: every part of the plan's list is in, hello and the
@@ -1081,6 +1083,7 @@ contract's bits, in both runners).
   build, Chrome test and layer 3's defaults included; load 8 to 28). Layer 3, 8 Csmith programs, seed 4,
   all 8 also in Chrome at none and full: 0 failing (38 s in all, load 10 to 18). Layer 1 in Chrome: 1215
   forms x 1, seed 1, and 1215 x 5, seed 7 (6075 cases, 25.5 s, load 13 to 14): 0 mismatches against the CPU.
+  Last, every test of the three crates passes (debug build, Chrome tests included; 6.2 minutes, load 15 to 21).
 
 - M3, layer 1, release: 1215 forms x 100 cases, seed 2: 0 mismatches (121,500 cases, 177 s, load 18 to 21).
   1215 x 1000, seed 3 (1,215,000 cases, 27 minutes, load 12 to 23): 4 forms failing, all in the software
