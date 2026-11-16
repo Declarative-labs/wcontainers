@@ -8,7 +8,7 @@
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator_test::layer2::{OUTPUT, assemble, program};
+use wcontainers_translator_test::layer2::{OUTPUT, area_offset, assemble, program};
 use wcontainers_translator_test::programs::{
     native, reachable_memory, translated, translated_stopping_everywhere,
 };
@@ -45,6 +45,17 @@ fn full_matches_none_and_the_cpu() {
             139 => faulted.set(faulted.get() + 1),
             other => panic!("status {other} at none"),
         }
+        // Accesses stay above the area's start: the code and tables are as built.
+        let below = area_offset(&blob);
+        let changed = reachable_memory(&mut none_machine, &blob)[..below]
+            .iter()
+            .zip(&blob.bytes)
+            .rposition(|(now, built)| now != built);
+        assert_eq!(
+            changed.map(|at| at as i64 - below as i64),
+            None,
+            "a store this many bytes from the area's start"
+        );
         assert_eq!(full, none, "output at full against none");
         assert_eq!(
             full_registers, none_registers,

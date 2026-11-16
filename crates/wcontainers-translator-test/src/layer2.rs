@@ -24,6 +24,13 @@ const REGISTERS: [u8; 26] = [
 ];
 /// Bytes written out at the end: the area, then `REGISTERS` and NZCV.
 pub const OUTPUT: u32 = AREA + (REGISTERS.len() as u32 + 1) * 8;
+/// Bytes the area and what is written out after it take in the blob.
+const AREA_BYTES: usize = OUTPUT.next_multiple_of(16) as usize;
+
+/// Where a program's area starts in its blob: no access reaches below it, into the code and tables.
+pub fn area_offset(blob: &Blob) -> usize {
+    blob.bytes.len() - 4096 - AREA_BYTES
+}
 /// Bytes of the stack every function frame keeps below what random accesses through sp reach: x30, x28, x16
 /// and x18, which every function saves and restores, so a caller's loop or group across a call keeps them.
 const FRAME_FLOOR: u32 = 544;
@@ -416,6 +423,46 @@ fn fitted(mut a: GroupAccess) -> GroupAccess {
     a
 }
 
+/// The lowest byte accesses made one after another through one base reach, from where the base starts.
+fn lowest(accesses: &[GroupAccess]) -> i32 {
+    let mut base = 0;
+    let mut low = 0;
+    for a in accesses {
+        let by = i32::from(a.offset);
+        match a.indexing {
+            Indexing::Offset => {
+                let unit = match (a.bytes, a.vector) {
+                    (16, false) => 8,
+                    (16 | 32, true) => 16,
+                    (_, true) => 0,
+                    (bytes, false) => i32::from(bytes),
+                };
+                low = low.min(base + by * unit);
+            }
+            Indexing::Pre => {
+                base += by;
+                low = low.min(base);
+            }
+            Indexing::Post => {
+                low = low.min(base);
+                base += by;
+            }
+        }
+    }
+    low
+}
+
+/// A start in the area moved up as far as the accesses from it reach below it, so they stay in the area.
+fn above(start: GroupBase, accesses: &[GroupAccess]) -> GroupBase {
+    match start {
+        GroupBase::Area(at) => {
+            let at = (i32::from(at).max(-lowest(accesses)) as u32).next_multiple_of(8);
+            GroupBase::Area(at as u16)
+        }
+        edge => edge,
+    }
+}
+
 /// `r`, or the next of `REGISTERS` after it that is not in `not`.
 fn other(r: u8, not: &[u8]) -> u8 {
     let mut r = r;
@@ -440,10 +487,11 @@ fn group() -> impl Strategy<Value = Op> {
             } else {
                 base
             };
+            let accesses = through(base, accesses, false);
             Op::Group {
                 base,
-                start,
-                accesses: through(base, accesses, false),
+                start: above(start, &accesses),
+                accesses,
                 syscall,
             }
         })
@@ -486,10 +534,15 @@ fn around() -> impl Strategy<Value = Around> {
         prop::collection::vec(group_access(), 1..4),
         prop::collection::vec(group_access(), 1..4),
     )
-        .prop_map(|(start, before, after)| Around {
-            start,
-            before: through(28, before, true),
-            after: through(28, after, true),
+        .prop_map(|(start, before, after)| {
+            let before = through(28, before, true);
+            let after = through(28, after, true);
+            let all: Vec<GroupAccess> = before.iter().chain(&after).copied().collect();
+            Around {
+                start: above(start, &all),
+                before,
+                after,
+            }
         })
 }
 
@@ -663,10 +716,11 @@ fn walk() -> impl Strategy<Value = Walk> {
                     && !matches!(indexing, Indexing::Offset)
                     && !structure
                 {
-                    // Pre and post indexing move by -64 to 63 bytes, a pair of Q registers by multiples of 16.
+                    // Pre and post indexing move by -64 to 63 bytes, a pair of Q registers by multiples of 16;
+                    // both only shorten the step, so the walk stays where it was fitted.
                     step = step.clamp(-32, 31);
                     if vector && bytes == 32 {
-                        step &= !15;
+                        step = step / 16 * 16;
                     }
                 }
                 Walk {
@@ -1960,11 +2014,11 @@ pub fn assemble(program: &Program) -> Blob {
         edge: ops.new_dynamic_label(),
         tables: Vec::new(),
     };
-    let area = OUTPUT.next_multiple_of(16);
     let area_label = ops.new_dynamic_label();
     // The area is in the blob, so it is no function's frame and its pages may change under any access; main
     // still makes a frame of that size for its accesses through sp. The registers start from the program's
     // values.
+    let area = AREA_BYTES as u32;
     dynasm!(ops ; .arch aarch64 ; sub sp, sp, #area ; adr x29, =>area_label);
     for (&r, &value) in REGISTERS.iter().zip(&program.registers) {
         for hw in 0..4u32 {
@@ -2039,13 +2093,12 @@ pub fn assemble(program: &Program) -> Blob {
             dynasm!(ops ; .arch aarch64 ; .u8 e as _);
         }
     }
-    let align = (16 - ops.offset().0 % 16) % 16;
+    // Zeros up to where the area ends on a page boundary, then a page of zeros, so accesses near the edge reach
+    // no code, table or area.
+    let align = (4096 - (ops.offset().0 + AREA_BYTES) % 4096) % 4096;
     ops.extend(std::iter::repeat_n(0u8, align));
     dynasm!(ops ; .arch aarch64 ; =>area_label);
-    ops.extend(std::iter::repeat_n(0u8, area as usize));
-    // A page and more of zeros up to a page boundary, so accesses near the edge reach no code, table or area.
-    let padding = 4096 + (4096 - ops.offset().0 % 4096) % 4096;
-    ops.extend(std::iter::repeat_n(0u8, padding));
+    ops.extend(std::iter::repeat_n(0u8, AREA_BYTES + 4096));
     let edge = layout.edge;
     dynasm!(ops ; .arch aarch64 ; =>edge);
     let bytes = ops.finalize().expect("labels resolve");
