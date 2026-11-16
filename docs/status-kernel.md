@@ -28,7 +28,8 @@ processes) is partly done after five runs. Built in K2's fifth run:
   takes them, SIGPIPE, waits that park before anything moves, tee's copies, vmsplice both ways. Slots
   spliced into a pipe (also by sendfile) are ones no later write adds to (`PIPE_BUF_FLAG_CAN_MERGE`),
   measured. vmsplice copies the caller's pages when called (counted "vmsplice pages copied"); Linux
-  puts the pages themselves in the pipe. tests/splice.rs.
+  puts the pages themselves in the pipe. sendfile into a pipe is now `splice_file_to_pipe` itself, so
+  it waits for room in a full blocking pipe as Linux does. tests/splice.rs.
 - A regular file holds its bytes only up to the last one written; past that it reads as zero up to its
   size, so a large size costs nothing (a 1 TiB segment, measured to succeed in the reference).
 - Layer 1 generates shmget, shmat, shmdt, shmctl, splice, tee and vmsplice (see Layer 1).
@@ -712,8 +713,9 @@ Missing (73, each counted "system call not implemented" and ENOSYS), with what e
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
-- sendfile into a full pipe or terminal that blocks returns what fit (nothing); Linux waits for room
-  (`splice_file_to_pipe`'s and `tty_write`'s waits). Nonblocking ones answer as Linux.
+- sendfile into a full terminal that blocks returns what fit (nothing); Linux waits for room
+  (`tty_write`'s wait). A nonblocking one answers as Linux. (Into a pipe it is now
+  `splice_file_to_pipe`, which waits; tests/splice.rs.)
 - Where the kernel's source of a copy lies within 16 bytes decides what a buffer that faults part
   way receives; it is measured for the calls tests/partialcopy.rs makes and assumed aligned to 8
   elsewhere (Linux's stack layout of each call is its compiler's). Calls Linux copies field by field

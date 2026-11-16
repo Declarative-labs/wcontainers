@@ -280,7 +280,7 @@ fn pipe_to_pipe(
 /// `splice_file_to_pipe`: room first, then the file's bytes read into slots, one for each of the
 /// file's pages, as many as fit.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn file_to_pipe(
+pub(super) fn file_to_pipe(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -291,7 +291,10 @@ fn file_to_pipe(
     nonblock: bool,
 ) -> Result<u64, Errno> {
     output_ready(kernel, cx, tid, output, nonblock, true)?;
-    // `do_splice_read`: no more than the pipe has room for.
+    // `do_splice_read`: nothing asked is nothing read; no more than the pipe has room for.
+    if length == 0 {
+        return Ok(0);
+    }
     let free = with_pipe(output, |pipe| {
         if pipe.host.is_some() {
             pipe.capacity as u64

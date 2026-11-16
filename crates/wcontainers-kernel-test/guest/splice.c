@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -263,6 +264,20 @@ static void waiting(void) {
     waitpid(child, &status, 0);
     printf("child read %d\n", WEXITSTATUS(status));
     drain("after the wait", b[0]);
+    // sendfile into a full pipe waits for room as well.
+    int file = open("/tmp/splice", O_RDONLY);
+    fill(b[1], 4096, 'm');
+    fflush(stdout);
+    child = fork();
+    if (child == 0) {
+        struct timespec pause = {0, 50000000};
+        nanosleep(&pause, NULL);
+        _exit((int)read(b[0], buffer, 4096) / 16);
+    }
+    result("sendfile waited for room", sendfile(b[1], file, NULL, 100));
+    waitpid(child, &status, 0);
+    printf("child read %d\n", WEXITSTATUS(status));
+    drain("after sendfile", b[0]);
 }
 
 int main(void) {

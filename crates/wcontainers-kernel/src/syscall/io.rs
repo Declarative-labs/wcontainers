@@ -1159,8 +1159,8 @@ fn send(
     if output.borrow().is_path() || !output.borrow().writable() {
         return Err(Errno::EBADF);
     }
-    // The standard streams are pipes: the input is spliced into them once, as much as an empty pipe
-    // holds (`splice_file_to_pipe`). Anything else goes through a private pipe, round after round,
+    // A pipe takes the input spliced into it once, as much as it has room for
+    // (`splice_file_to_pipe`). Anything else goes through a private pipe, round after round,
     // until the count is moved or a round falls short (`splice_direct_to_actor`).
     let (input_node, output_node) = (input.borrow().node.clone(), output.borrow().node.clone());
     let to_pipe = matches!(output_node.borrow().content, Content::Pipe(_));
@@ -1182,6 +1182,23 @@ fn send(
         {
             return Err(Errno::EINVAL);
         }
+    }
+    // Into a pipe: `splice_file_to_pipe`, which waits for room unless the pipe's descriptor is
+    // nonblocking.
+    if to_pipe {
+        let nonblock = output.borrow().flags & O_NONBLOCK != 0;
+        let mut pos = position as u64;
+        let moved = super::splice::file_to_pipe(
+            kernel, cx, tid, &input, &output, &mut pos, count, nonblock,
+        )?;
+        if moved > 0 {
+            input.borrow_mut().read_position = pos;
+            match explicit {
+                Some(offset) => *offset = pos as i64,
+                None => input.borrow_mut().offset = pos,
+            }
+        }
+        return Ok(moved);
     }
     let device = |node: &crate::fs::Node| {
         let inode = node.borrow();
@@ -1235,9 +1252,6 @@ fn send(
                 break;
             }
         };
-        if to_pipe && regular {
-            accessed(kernel, cx, &input_node, flags);
-        }
         if bytes.is_empty() {
             break;
         }
@@ -1256,9 +1270,6 @@ fn send(
             Err(Errno::EINVAL)
         } else if super::tty::end(&output).is_some() {
             super::tty::put(kernel, cx, tid, &output, &bytes)
-        } else if to_pipe {
-            let in_page = if regular { pos } else { 0 };
-            Ok(super::pipe::put(cx, kernel, &output, &bytes, in_page))
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
             write_limit(kernel, cx, tid, at, bytes.len() as u64).and_then(|allowed| {
@@ -1292,13 +1303,8 @@ fn send(
             break;
         }
         pos = read_to;
-        if to_pipe {
-            break;
-        }
     }
-    if !to_pipe {
-        touch_atime(kernel, cx, &input_node, flags);
-    }
+    touch_atime(kernel, cx, &input_node, flags);
     if moved == 0 {
         return failure.map_or(Ok(0), Err);
     }
