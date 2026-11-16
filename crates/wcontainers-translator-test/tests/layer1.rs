@@ -170,6 +170,68 @@ fn vector_registers_reach_the_cpu() {
     assert_eq!(outcome.vectors[1..3], vectors[1..3]);
 }
 
+/// FRECPS and FRSQRTS of the smallest denormals against infinities, in every shape, with the flags kept
+/// and not: the fast path's overflow branch must not turn an exact infinity into not-a-number.
+#[test]
+fn step_edges_match_the_cpu() {
+    let lanes32 = |l: [u32; 4]| l.iter().rev().fold(0u128, |v, &x| v << 32 | u128::from(x));
+    let lanes64 = |l: [u64; 2]| u128::from(l[1]) << 64 | u128::from(l[0]);
+    let (inf32, inf64) = (0x7f80_0000u32, 0x7ff0_0000_0000_0000u64);
+    let pairs = [
+        (
+            lanes32([1, 0x8000_0001, inf32, inf32 | 1 << 31]),
+            lanes32([inf32, inf32, 1, 0x8000_0001]),
+        ),
+        (
+            lanes32([0x8000_0001, 1, 0x0000_0002, 0x7f7f_ffff]),
+            lanes32([inf32 | 1 << 31, inf32 | 1 << 31, inf32, 0x7f7f_ffff]),
+        ),
+        (
+            lanes64([1, inf64]),
+            lanes64([inf64 | 1 << 63, 0x8000_0000_0000_0001]),
+        ),
+        (
+            lanes64([0x8000_0000_0000_0001, 0x7fef_ffff_ffff_ffff]),
+            lanes64([inf64, 0x7fef_ffff_ffff_ffff]),
+        ),
+    ];
+    // frsqrts and frecps v0, v1, v2: 2s, 4s, 2d, s, d.
+    let words = [
+        0x0ea2_fc20u32,
+        0x4ea2_fc20,
+        0x4ee2_fc20,
+        0x5ea2_fc20,
+        0x5ee2_fc20,
+        0x0e22_fc20,
+        0x4e22_fc20,
+        0x4e62_fc20,
+        0x5e22_fc20,
+        0x5e62_fc20,
+    ];
+    let mut reference = Cases::start();
+    for word in words {
+        for (a, b) in pairs {
+            for tracking in [false, true] {
+                let mut vectors = [0u128; 32];
+                vectors[1] = a;
+                vectors[2] = b;
+                let mut registers = [0u64; 34];
+                registers[31] = DATA + 0x1000;
+                let case = Case {
+                    word,
+                    registers,
+                    vectors,
+                    float: [0; 2],
+                    tracking,
+                    seed: 1,
+                };
+                compare(&mut reference, &case)
+                    .unwrap_or_else(|report| panic!("{word:#010x}: {report}"));
+            }
+        }
+    }
+}
+
 /// Words in no form of Arm's list, for any feature, are illegal on the CPU and in ours. Random words,
 /// `WC_LAYER1_CASES` of them (default 64), seeded from `WC_LAYER1_SEED`.
 #[test]
