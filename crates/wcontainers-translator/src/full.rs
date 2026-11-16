@@ -22,23 +22,31 @@ mod proof;
 /// How far back a jump through a register looks for the switch it may come from.
 const SWITCH_WINDOW: u64 = 64;
 
-/// The pieces of a full translation: those the lookup table holds, by entry offset, and then the loop pieces,
-/// whose function indices follow the others in order.
+/// The functions of a full or bounded translation, found and planned, ready to be emitted in groups.
 ///
-/// A loop piece starts at the header of a loop of a function and holds that loop and what follows it up to
-/// the header of any other loop, going on there in that loop's piece. Only a stop check that carries on at a jump back enters one,
-/// so it may rely on what its function knows at the loop. That way a thread carries on in a new call, which
-/// runs whatever code the engine has made for the function by then, and the function itself has no second
-/// way into its loops.
-pub(crate) fn pieces(
-    code: &Code<'_>,
+/// Each function becomes the piece the lookup table holds for its entry, and each of its loops with a loop
+/// piece one more function. A loop piece starts at the header of a loop of a function and holds that loop and
+/// what follows it up to the header of any other loop, going on there in that loop's piece. Only a stop check
+/// that carries on at a jump back enters one, so it may rely on what its function knows at the loop. That way
+/// a thread carries on in a new call, which runs whatever code the engine has made for the function by then,
+/// and the function itself has no second way into its loops.
+pub(crate) struct Planned<'a> {
+    finder: Finder<'a>,
+    functions: Vec<Function>,
+    plans: Vec<Plan>,
+    /// Each function's loop pieces, with their plans.
+    loops: Vec<Vec<(Function, Plan)>>,
+    omit: Omit,
+}
+
+/// Find and plan the functions of a translation from `starts`: the whole blob's (`bound` none) or one stretch
+/// of at most `bound` instructions from each start.
+pub(crate) fn plan<'a>(
+    code: &'a Code<'a>,
     starts: &[u64],
     bound: Option<usize>,
     omit: Omit,
-) -> (
-    BTreeMap<u64, wasm_encoder::Function>,
-    Vec<wasm_encoder::Function>,
-) {
+) -> Planned<'a> {
     let mut finder = Finder {
         code,
         decoded: HashMap::new(),
@@ -48,27 +56,17 @@ pub(crate) fn pieces(
         Some(limit) => finder.stretches(starts, limit),
     };
     let entries: BTreeSet<u64> = functions.iter().map(|f| f.entry).collect();
-    let index: BTreeMap<u64, u32> = functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
-        .collect();
     let plans: Vec<Plan> = functions
         .iter()
         .map(|f| Plan::new(f, &finder.decoded, Seed::NOTHING))
         .collect();
 
     // Loop pieces, by the function they come from; with no stop checks nothing enters them.
-    let mut loops: Vec<(usize, Function, Plan)> = Vec::new();
-    let mut loop_index: Vec<HashMap<u64, u32>> = vec![HashMap::new(); functions.len()];
-    let mut next = F_FIRST_PIECE + functions.len() as u32;
-    for (i, (function, plan)) in functions.iter().zip(&plans).enumerate() {
-        if omit.stop {
-            break;
-        }
-        for (h, others) in &plan.outside {
-            let mut bounds = entries.clone();
-            bounds.extend(others.iter().map(|&d| function.blocks[d].start));
+    let mut loops: Vec<Vec<(Function, Plan)>> = Vec::new();
+    for (function, plan) in functions.iter().zip(&plans) {
+        let mut own = Vec::new();
+        for (h, others) in plan.outside.iter().filter(|_| !omit.stop) {
+            let headers: Vec<u64> = others.iter().map(|&d| function.blocks[d].start).collect();
             let start = function.blocks[*h].start;
             // A stretch's loop piece stays within the stretch.
             let within: HashSet<u64> = function_instructions(function).collect();
@@ -76,7 +74,8 @@ pub(crate) fn pieces(
                 None => Reach::All,
                 Some(_) => Reach::Within(&within),
             };
-            let piece = finder.explore(start, &bounds, &mut BTreeSet::new(), reach);
+            let bounds = (&entries, &headers[..]);
+            let piece = finder.explore(start, bounds, &mut BTreeSet::new(), reach);
             // Where a loop piece would need more entries, the stop check carries on in place instead.
             if !irreducible(&piece).is_empty() {
                 continue;
@@ -86,49 +85,79 @@ pub(crate) fn pieces(
                 aligned: plan.aligned_in[*h],
             };
             let piece_plan = Plan::new(&piece, &finder.decoded, seed);
-            loop_index[i].insert(start, next);
-            next += 1;
-            loops.push((i, piece, piece_plan));
+            own.push((piece, piece_plan));
         }
+        loops.push(own);
+    }
+    Planned {
+        finder,
+        functions,
+        plans,
+        loops,
+        omit,
+    }
+}
+
+impl Planned<'_> {
+    /// The entries of the pieces the lookup table holds, in order.
+    pub(crate) fn entries(&self) -> Vec<u64> {
+        self.functions.iter().map(|f| f.entry).collect()
     }
 
-    let decoded = &finder.decoded;
-    let table = functions
-        .iter()
-        .zip(&plans)
-        .enumerate()
-        .map(|(i, (function, plan))| {
-            let own = index[&function.entry];
-            let piece = FullEmitter::piece(
-                function,
-                plan,
-                decoded,
-                &index,
-                &loop_index[i],
-                own,
-                omit,
-                code.host,
-            );
-            (function.entry, piece)
-        })
-        .collect();
-    let extra = loops
-        .iter()
-        .map(|(i, function, plan)| {
-            let own = loop_index[*i][&function.entry];
-            FullEmitter::piece(
-                function,
-                plan,
-                decoded,
-                &index,
-                &loop_index[*i],
-                own,
-                omit,
-                code.host,
-            )
-        })
-        .collect();
-    (table, extra)
+    /// Offsets that cut the `i`th function in two, as starts.
+    pub(crate) fn halves(&self, i: usize) -> Vec<u64> {
+        cuts(&self.functions[i], 2)
+    }
+
+    /// The pieces `group` of the table's (by their order), each with its loop pieces, emitted for a module that
+    /// holds that group alone: the table's pieces take the function indices from [`F_FIRST_PIECE`] in order,
+    /// then the loop pieces follow in order. Code outside the group is reached through the lookup.
+    pub(crate) fn emit(&self, group: std::ops::Range<usize>) -> Vec<Unit> {
+        let host = self.finder.code.host;
+        let index: BTreeMap<u64, u32> = self.functions[group.clone()]
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.entry, F_FIRST_PIECE + i as u32))
+            .collect();
+        let mut next = F_FIRST_PIECE + group.len() as u32;
+        let loop_index: Vec<HashMap<u64, u32>> = group
+            .clone()
+            .map(|i| {
+                self.loops[i]
+                    .iter()
+                    .map(|(piece, _)| {
+                        next += 1;
+                        (piece.entry, next - 1)
+                    })
+                    .collect()
+            })
+            .collect();
+        let decoded = &self.finder.decoded;
+        group
+            .clone()
+            .zip(&loop_index)
+            .map(|(i, loops)| {
+                let function = &self.functions[i];
+                let emit = |function, plan, own| {
+                    FullEmitter::piece(function, plan, decoded, &index, loops, own, self.omit, host)
+                };
+                let (piece, mut locals) = emit(function, &self.plans[i], index[&function.entry]);
+                let others = self.loops[i]
+                    .iter()
+                    .map(|(piece, plan)| {
+                        let (f, n) = emit(piece, plan, loops[&piece.entry]);
+                        locals = locals.max(n);
+                        f
+                    })
+                    .collect();
+                Unit {
+                    piece,
+                    others,
+                    locals,
+                }
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -193,7 +222,8 @@ impl Finder<'_> {
     }
 
     /// Every function: the starts, targets of direct calls, addresses the code builds that point into code,
-    /// and the extra entries that keep every function's control flow reducible.
+    /// the extra entries that keep every function's control flow reducible, and those that cut functions too
+    /// large in parts.
     fn functions(&mut self, starts: &[u64]) -> Vec<Function> {
         let mut entries: BTreeSet<u64> = starts.iter().copied().collect();
         let mut explored = BTreeSet::new();
@@ -202,7 +232,7 @@ impl Finder<'_> {
             while let Some(entry) = work.pop() {
                 explored.insert(entry);
                 let mut found = BTreeSet::new();
-                self.explore(entry, &entries, &mut found, Reach::All);
+                self.explore(entry, (&entries, &[]), &mut found, Reach::All);
                 for offset in found {
                     if self.code.inside(offset) && entries.insert(offset) {
                         work.push(offset);
@@ -211,11 +241,17 @@ impl Finder<'_> {
             }
             let functions: Vec<Function> = entries
                 .iter()
-                .map(|&entry| self.explore(entry, &entries, &mut BTreeSet::new(), Reach::All))
+                .map(|&entry| {
+                    self.explore(entry, (&entries, &[]), &mut BTreeSet::new(), Reach::All)
+                })
                 .collect();
             let mut more = false;
             for function in &functions {
-                for offset in irreducible(function) {
+                let parts = function.blocks.len().div_ceil(FUNCTION_BLOCKS);
+                for offset in irreducible(function)
+                    .into_iter()
+                    .chain(cuts(function, parts))
+                {
                     more |= entries.insert(offset);
                 }
             }
@@ -233,11 +269,15 @@ impl Finder<'_> {
         loop {
             let stretches: Vec<Function> = starts
                 .iter()
-                .map(|&s| self.explore(s, &bounds, &mut BTreeSet::new(), Reach::Count(limit)))
+                .map(|&s| {
+                    let reach = Reach::Count(limit);
+                    self.explore(s, (&bounds, &[]), &mut BTreeSet::new(), reach)
+                })
                 .collect();
             let mut more = false;
             for stretch in &stretches {
-                for offset in irreducible(stretch) {
+                let parts = stretch.blocks.len().div_ceil(FUNCTION_BLOCKS);
+                for offset in irreducible(stretch).into_iter().chain(cuts(stretch, parts)) {
                     more |= bounds.insert(offset);
                 }
             }
@@ -247,11 +287,12 @@ impl Finder<'_> {
         }
     }
 
-    /// The function at an entry, with what it shows of other entries added to `found`.
+    /// The function at an entry, stopping at the other entries and at the other offsets given with them,
+    /// with what it shows of other entries added to `found`.
     fn explore(
         &mut self,
         entry: u64,
-        entries: &BTreeSet<u64>,
+        (entries, others): (&BTreeSet<u64>, &[u64]),
         found: &mut BTreeSet<u64>,
         reach: Reach<'_>,
     ) -> Function {
@@ -263,7 +304,7 @@ impl Finder<'_> {
         let mut work = vec![entry];
         while let Some(offset) = work.pop() {
             if !self.code.inside(offset)
-                || (offset != entry && entries.contains(&offset))
+                || (offset != entry && (entries.contains(&offset) || others.contains(&offset)))
                 || body.contains(&offset)
             {
                 continue;
@@ -419,6 +460,45 @@ impl Finder<'_> {
             .all(|&t| self.code.inside(t))
             .then_some(targets)
     }
+}
+
+/// Offsets that cut a function in `parts`: the places control passes from one run of its instructions to
+/// another, with blocks in the order a depth first walk first reaches them, so that what follows a block
+/// tends to be in its run. Made entries, they leave each run a function of its own.
+fn cuts(function: &Function, parts: usize) -> Vec<u64> {
+    if parts <= 1 {
+        return Vec::new();
+    }
+    let (_, rank) = ranks(function);
+    let mut order: Vec<usize> = (0..function.blocks.len()).collect();
+    order.sort_unstable_by_key(|&b| rank[b]);
+    // Each instruction's place in that order.
+    let mut place: HashMap<u64, usize> = HashMap::new();
+    for &b in &order {
+        let block = &function.blocks[b];
+        for offset in (block.start..block.end).step_by(4) {
+            let next = place.len();
+            place.insert(offset, next);
+        }
+    }
+    let count = place.len();
+    let part = |offset: u64| place[&offset] * parts / count;
+    let mut found = Vec::new();
+    for block in &function.blocks {
+        for offset in (block.start + 4..block.end).step_by(4) {
+            if part(offset) != part(offset - 4) {
+                found.push(offset);
+            }
+        }
+        let from = part(block.end - 4);
+        for &s in &block.succs {
+            let to = function.blocks[s].start;
+            if part(to) != from {
+                found.push(to);
+            }
+        }
+    }
+    found
 }
 
 /// The order blocks are first reached in a depth first walk from the entry, reversed: each block's rank.
@@ -1367,7 +1447,7 @@ impl<'a> FullEmitter<'a> {
         own: u32,
         omit: Omit,
         host: Host,
-    ) -> wasm_encoder::Function {
+    ) -> (wasm_encoder::Function, usize) {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
             function,
@@ -1447,10 +1527,11 @@ impl<'a> FullEmitter<'a> {
             let block = Fixed::Global(G_THREAD_BLOCK);
             depth_check(&mut s, L_DEPTH, block, function.entry);
         }
+        let locals = e.locals.len();
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
         f.raw(entry);
         f.raw(e.body);
-        f
+        (f, locals)
     }
 
     fn new_local(&mut self, ty: ValType) -> u32 {
@@ -1593,7 +1674,18 @@ impl<'a> FullEmitter<'a> {
 
     // Structure, after Ramsey's "Beyond Relooper".
 
+    /// Emit the subtree of the dominator tree at block `b`. The subtree that follows a node's own code last is
+    /// emitted in turn by this loop, not by recursion, so the translator's stack grows only with how deeply
+    /// the code nests.
     fn tree(&mut self, b: usize) {
+        let mut next = Some(b);
+        while let Some(b) = next {
+            next = self.node(b);
+        }
+    }
+
+    /// Emit block `b` and its subtree, except the subtree at the block returned, which follows it last.
+    fn node(&mut self, b: usize) -> Option<usize> {
         let merges: Vec<usize> = self.plan.children[b]
             .iter()
             .copied()
@@ -1657,20 +1749,26 @@ impl<'a> FullEmitter<'a> {
                 }
                 None => self.loop_of(b, &merges),
             }
+            let mut last = None;
             for &y in after.iter().rev() {
+                if let Some(t) = last.replace(y) {
+                    self.tree(t);
+                }
                 self.sink().end();
                 self.labels.pop();
-                self.tree(y);
             }
+            last
         } else {
-            self.within(b, &merges);
+            self.within(b, &merges)
         }
     }
 
     fn loop_of(&mut self, b: usize, merges: &[usize]) {
         self.sink().loop_(BlockType::Empty);
         self.labels.push(Label::Loop(b));
-        self.within(b, merges);
+        if let Some(t) = self.within(b, merges) {
+            self.tree(t);
+        }
         self.sink().end();
         self.labels.pop();
     }
@@ -1684,17 +1782,24 @@ impl<'a> FullEmitter<'a> {
                 || (pieced(b) && self.plan.versioned[&b].inner.iter().all(|&g| pieced(g))))
     }
 
-    fn within(&mut self, b: usize, merges: &[usize]) {
+    /// Emit block `b` inside a block for each merge, each merge's subtree after its block; the subtree that
+    /// comes last is returned instead, for the caller to emit.
+    fn within(&mut self, b: usize, merges: &[usize]) -> Option<usize> {
         match merges.split_first() {
             Some((&m, rest)) => {
                 self.sink().block(BlockType::Empty);
                 self.labels.push(Label::Merge(m));
-                self.within(b, rest);
+                if let Some(t) = self.within(b, rest) {
+                    self.tree(t);
+                }
                 self.sink().end();
                 self.labels.pop();
-                self.tree(m);
+                Some(m)
             }
-            None => self.block_code(b),
+            None => {
+                self.block_code(b);
+                None
+            }
         }
     }
 

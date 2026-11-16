@@ -320,7 +320,13 @@ function run({
       omit,
     );
     if (length < 0) throw new Error(`no translation from ${start}`);
-    const module = new WebAssembly.Module(result(length));
+    const modules = [result(length)];
+    for (let i = 0; i < translator.more_modules(); i++) modules.push(result(translator.more_module(i)));
+    for (const bytes of modules) instantiateModule(bytes, b, slotBase);
+  }
+
+  function instantiateModule(bytes, b, slotBase) {
+    const module = new WebAssembly.Module(bytes);
     new WebAssembly.Instance(module, {
       [contract.hooks]: hooks,
       [contract.env]: {

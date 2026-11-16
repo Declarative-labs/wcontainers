@@ -11,7 +11,7 @@ use wasm_encoder::{
     TableType, TagKind, TagType, TypeSection, ValType,
 };
 use wcontainers_arm64::{
-    Access, Control, Emitter, Flag, Flags, Hook, Host, Reg, Target, Trap, flag_value,
+    Access, Control, Emitter, Flag, Flags, Hook, Host, Instruction, Reg, Target, Trap, flag_value,
 };
 
 /// How much code the translator sees at once.
@@ -60,11 +60,70 @@ pub enum Error {
     NoBound,
 }
 
-/// One translation: a code module and where its pieces start.
+/// One translation: its code modules, which together hold every piece. There is more than one only where one
+/// module would pass an engine's limits; code in one module reaches another's through the lookup.
 pub struct Translation {
+    pub modules: Vec<CodeModule>,
+}
+
+/// One code module and where its pieces start.
+pub struct CodeModule {
     pub wasm: Vec<u8>,
-    /// Blob offsets of the pieces, in order.
+    /// Blob offsets of the pieces the module puts in the lookup table, in order.
     pub pieces: Vec<u64>,
+}
+
+impl Translation {
+    /// Blob offsets of every piece the translation puts in the lookup table, in order.
+    pub fn pieces(&self) -> impl Iterator<Item = u64> + '_ {
+        self.modules.iter().flat_map(|m| m.pieces.iter().copied())
+    }
+}
+
+/// Engine limits, V8's (wasmtime's validator has the same): a module's bytes and functions, and a function
+/// body's bytes and locals.
+const ENGINE_MODULE_BYTES: usize = 1 << 30;
+const ENGINE_FUNCTIONS: usize = 1_000_000;
+const ENGINE_BODY_BYTES: usize = 7_654_321;
+const ENGINE_LOCALS: usize = 50_000;
+
+/// Tuning number: the bytes of code a module may hold before the translation is split, the engine's limit
+/// less room for the rest of the module.
+const MODULE_BYTES: usize = ENGINE_MODULE_BYTES - (64 << 20);
+/// Tuning number: the functions a module may hold before the translation is split.
+const MODULE_FUNCTIONS: usize = ENGINE_FUNCTIONS - 1000;
+/// Tuning number: the blocks a function may have before it is cut in parts. It bounds how deep translating
+/// one function nests, and so the translator's own stack.
+pub(crate) const FUNCTION_BLOCKS: usize = 2048;
+
+/// One piece the lookup table holds, with the functions only it calls (its loop pieces).
+pub(crate) struct Unit {
+    pub(crate) piece: wasm_encoder::Function,
+    pub(crate) others: Vec<wasm_encoder::Function>,
+    /// The most locals any of them has.
+    pub(crate) locals: usize,
+}
+
+impl Unit {
+    /// The bytes it adds to a module: its bodies, and a few for each function's entries in other sections.
+    fn bytes(&self) -> usize {
+        std::iter::once(&self.piece)
+            .chain(&self.others)
+            .map(|f| f.byte_len() + 8)
+            .sum()
+    }
+
+    fn functions(&self) -> usize {
+        1 + self.others.len()
+    }
+
+    /// Whether a function of it passes an engine's limit for one function.
+    fn too_large(&self) -> bool {
+        self.locals > ENGINE_LOCALS
+            || std::iter::once(&self.piece)
+                .chain(&self.others)
+                .any(|f| f.byte_len() > ENGINE_BODY_BYTES)
+    }
 }
 
 /// How many argument registers, from x0 up, a piece takes as parameters and gives back as results.
@@ -165,6 +224,33 @@ pub fn translate_omitting(
     host: Host,
     omit: Omit,
 ) -> Result<Translation, Error> {
+    translate_within(blob, code, starts, look_ahead, host, omit, MODULE_BYTES)
+}
+
+/// [`translate`] split into modules of at most `module_bytes` of code each, only to test calls between
+/// modules on small programs.
+#[cfg(feature = "measure")]
+pub fn translate_in_modules(
+    blob: &[u8],
+    code: Range<u64>,
+    starts: &[u64],
+    look_ahead: LookAhead,
+    host: Host,
+    module_bytes: usize,
+) -> Result<Translation, Error> {
+    let omit = Omit::default();
+    translate_within(blob, code, starts, look_ahead, host, omit, module_bytes)
+}
+
+fn translate_within(
+    blob: &[u8],
+    code: Range<u64>,
+    starts: &[u64],
+    look_ahead: LookAhead,
+    host: Host,
+    omit: Omit,
+    module_bytes: usize,
+) -> Result<Translation, Error> {
     if code.end > blob.len() as u64 || code.start > code.end || !code.start.is_multiple_of(4) {
         return Err(Error::BadCodeRange);
     }
@@ -178,20 +264,87 @@ pub fn translate_omitting(
             return Err(Error::BadStart(start));
         }
     }
-    // The pieces the lookup table holds, and functions only pieces call, whose indices follow theirs.
-    let (pieces, others) = match look_ahead {
-        LookAhead::None => (none_pieces(&blob_code, starts, true), Vec::new()),
+    let modules = match look_ahead {
         LookAhead::Bounded(0) => return Err(Error::NoBound),
-        LookAhead::Bounded(1) => (none_pieces(&blob_code, starts, false), Vec::new()),
-        LookAhead::Bounded(n) => crate::full::pieces(&blob_code, starts, Some(n as usize), omit),
-        LookAhead::Full => crate::full::pieces(&blob_code, starts, None, omit),
+        LookAhead::None | LookAhead::Bounded(1) => {
+            let found = none_found(&blob_code, starts, look_ahead == LookAhead::None);
+            let entries: Vec<u64> = found.iter().map(|f| f.0).collect();
+            let first = none_emit(&blob_code, &found, 0..found.len());
+            modules(blob, look_ahead, &entries, first, module_bytes, |group| {
+                none_emit(&blob_code, &found, group)
+            })
+        }
+        LookAhead::Bounded(_) | LookAhead::Full => {
+            let bound = match look_ahead {
+                LookAhead::Bounded(n) => Some(n as usize),
+                _ => None,
+            };
+            // A function too large for an engine is cut in two by more starts, until none is.
+            let mut starts = starts.to_vec();
+            loop {
+                let planned = crate::full::plan(&blob_code, &starts, bound, omit);
+                let entries = planned.entries();
+                let first = planned.emit(0..entries.len());
+                let over: Vec<usize> = (0..first.len()).filter(|&i| first[i].too_large()).collect();
+                if over.is_empty() {
+                    let emit = |group| planned.emit(group);
+                    break modules(blob, look_ahead, &entries, first, module_bytes, emit);
+                }
+                for i in over {
+                    starts.extend(planned.halves(i));
+                }
+            }
+        }
     };
-    let index: BTreeMap<u64, u32> = pieces
-        .keys()
+    Ok(Translation { modules })
+}
+
+/// The code modules of a translation whose pieces the lookup table holds are at `entries`: `first`, every
+/// unit emitted for one module, if that holds at most `module_bytes` of code and passes no engine limit,
+/// otherwise as many modules as needed, each emitted for its group of units by `emit`.
+fn modules(
+    blob: &[u8],
+    look_ahead: LookAhead,
+    entries: &[u64],
+    first: Vec<Unit>,
+    module_bytes: usize,
+    emit: impl Fn(Range<usize>) -> Vec<Unit>,
+) -> Vec<CodeModule> {
+    let mut groups: Vec<Range<usize>> = Vec::new();
+    let (mut bytes, mut functions) = (0, 0);
+    for (i, unit) in first.iter().enumerate() {
+        match groups.last_mut() {
+            Some(group)
+                if bytes + unit.bytes() <= module_bytes
+                    && functions + unit.functions() <= MODULE_FUNCTIONS =>
+            {
+                group.end = i + 1;
+                bytes += unit.bytes();
+                functions += unit.functions();
+            }
+            _ => {
+                groups.push(i..i + 1);
+                (bytes, functions) = (unit.bytes(), unit.functions());
+            }
+        }
+    }
+    if groups.len() <= 1 {
+        return vec![module(blob, look_ahead, entries, first)];
+    }
+    drop(first);
+    groups
+        .into_iter()
+        .map(|group| module(blob, look_ahead, &entries[group.clone()], emit(group)))
+        .collect()
+}
+
+/// A code module holding these units, the table's pieces at `entries`.
+fn module(blob: &[u8], look_ahead: LookAhead, entries: &[u64], units: Vec<Unit>) -> CodeModule {
+    let index: BTreeMap<u64, u32> = entries
+        .iter()
         .enumerate()
         .map(|(i, &offset)| (offset, F_FIRST_PIECE + i as u32))
         .collect();
-
     let mut module = Module::new();
     module.section(&types());
     module.section(&imports());
@@ -203,7 +356,18 @@ pub fn translate_omitting(
     code_section.function(&unwinder());
     functions.function(6);
     code_section.function(&exact());
-    for function in pieces.values().chain(&others) {
+    let others: Vec<wasm_encoder::Function> = units
+        .into_iter()
+        .map(|unit| {
+            functions.function(0);
+            code_section.function(&unit.piece);
+            unit.others
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flatten()
+        .collect();
+    for function in &others {
         functions.function(0);
         code_section.function(function);
     }
@@ -211,11 +375,11 @@ pub fn translate_omitting(
     module.section(&own_globals());
     module.section(&elements(&index));
     module.section(&code_section);
-    module.section(&description(blob, look_ahead, pieces.keys()));
-    Ok(Translation {
+    module.section(&description(blob, look_ahead, entries.iter()));
+    CodeModule {
         wasm: module.finish(),
-        pieces: pieces.into_keys().collect(),
-    })
+        pieces: entries.to_vec(),
+    }
 }
 
 /// The blob and where its code is.
@@ -251,12 +415,8 @@ impl Code<'_> {
 }
 
 /// Look-ahead none: every instruction is its own piece. With `reach`, every instruction direct control flow
-/// reaches from the starts, else the starts alone.
-fn none_pieces(
-    code: &Code<'_>,
-    starts: &[u64],
-    reach: bool,
-) -> BTreeMap<u64, wasm_encoder::Function> {
+/// reaches from the starts, else the starts alone. The instructions, in order.
+fn none_found(code: &Code<'_>, starts: &[u64], reach: bool) -> Vec<(u64, Instruction)> {
     let mut found = BTreeMap::new();
     let mut work: Vec<u64> = starts.to_vec();
     while let Some(offset) = work.pop() {
@@ -276,18 +436,24 @@ fn none_pieces(
             work.push(offset.wrapping_add_signed(target));
         }
     }
+    found.into_iter().collect()
+}
+
+/// The pieces of look-ahead none of the instructions `group` of those found, for a module holding them alone.
+fn none_emit(code: &Code<'_>, found: &[(u64, Instruction)], group: Range<usize>) -> Vec<Unit> {
+    let found = &found[group];
     let index: BTreeMap<u64, u32> = found
-        .keys()
+        .iter()
         .enumerate()
-        .map(|(i, &offset)| (offset, F_FIRST_PIECE + i as u32))
+        .map(|(i, &(offset, _))| (offset, F_FIRST_PIECE + i as u32))
         .collect();
     found
         .iter()
-        .map(|(&offset, instruction)| {
+        .map(|(offset, instruction)| {
             let mut emitter = NoneEmitter {
                 host: code.host,
-                offset,
-                word: code.word(offset),
+                offset: *offset,
+                word: code.word(*offset),
                 pieces: &index,
                 body: Vec::new(),
                 locals: Vec::new(),
@@ -295,9 +461,14 @@ fn none_pieces(
             emitter.entry();
             wcontainers_arm64::emit(&mut emitter, instruction);
             emitter.sink().end();
+            let locals = emitter.locals.len();
             let mut function = wasm_encoder::Function::new_with_locals_types(emitter.locals);
             function.raw(emitter.body);
-            (offset, function)
+            Unit {
+                piece: function,
+                others: Vec::new(),
+                locals,
+            }
         })
         .collect()
 }

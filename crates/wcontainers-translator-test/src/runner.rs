@@ -14,7 +14,9 @@ use wcontainers_abi::{
     Warning,
 };
 use wcontainers_translator::contract::{self, Reason};
-use wcontainers_translator::{LookAhead, Omit, translate_omitting};
+use wcontainers_translator::{
+    LookAhead, Omit, Translation, translate_in_modules, translate_omitting,
+};
 use zerocopy::{FromBytes, IntoBytes};
 
 /// Where the thread block sits in the state memory.
@@ -416,6 +418,57 @@ impl Machine {
         );
         instantiate(&mut self.store, &load, None);
         self.store.data_mut().loads.push(load);
+    }
+
+    /// [`Machine::load`] at full look-ahead with the translation split into code modules of at most
+    /// `module_bytes` of code each, so that pieces reach each other across modules.
+    pub fn load_split(
+        &mut self,
+        bytes: &[u8],
+        code: Range<u64>,
+        load_address: u64,
+        starts: &[u64],
+        module_bytes: usize,
+    ) {
+        self.place(bytes, code.clone(), load_address);
+        let host = self.store.data();
+        let translation = translate_in_modules(
+            bytes,
+            code,
+            starts,
+            LookAhead::Full,
+            host.facts,
+            module_bytes,
+        )
+        .expect("translate");
+        let load = compile(&host.engine, load_address, translation);
+        instantiate(&mut self.store, &load, None);
+        self.store.data_mut().loads.push(load);
+    }
+
+    /// Place a blob and load a translation made of it: how long wasmtime took to compile its modules, how long
+    /// to instantiate them, and the bytes of machine code it made.
+    pub fn load_translation(
+        &mut self,
+        bytes: &[u8],
+        code: Range<u64>,
+        load_address: u64,
+        translation: Translation,
+    ) -> (Duration, Duration, usize) {
+        self.place(bytes, code, load_address);
+        let started = Instant::now();
+        let load = compile(self.store.engine(), load_address, translation);
+        let compiled = started.elapsed();
+        let machine_code = load
+            .modules
+            .iter()
+            .map(|m| m.image_range().end as usize - m.image_range().start as usize)
+            .sum();
+        let started = Instant::now();
+        instantiate(&mut self.store, &load, None);
+        let instantiated = started.elapsed();
+        self.store.data_mut().loads.push(load);
+        (compiled, instantiated, machine_code)
     }
 
     /// Put a blob's bytes in guest memory.
@@ -948,10 +1001,11 @@ fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
     }
 }
 
-/// A code module made for a blob: where the blob is, and the blob offsets of the pieces it puts in the table.
+/// The code modules made for a blob: where the blob is, and the blob offsets of the pieces they put in the
+/// table.
 struct Load {
     load_address: u64,
-    module: Module,
+    modules: Vec<Module>,
     pieces: Vec<u64>,
 }
 
@@ -967,10 +1021,19 @@ fn translate_load(
     let host = store.as_context().data();
     let translation =
         translate_omitting(bytes, code, starts, look_ahead, host.facts, omit).expect("translate");
+    compile(&host.engine, load_address, translation)
+}
+
+/// Compile a translation's code modules.
+fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load {
     Load {
         load_address,
-        module: Module::new(&host.engine, &translation.wasm).expect("code module"),
-        pieces: translation.pieces,
+        pieces: translation.pieces().collect(),
+        modules: translation
+            .modules
+            .iter()
+            .map(|m| Module::new(engine, &m.wasm).expect("code module"))
+            .collect(),
     }
 }
 
@@ -1085,9 +1148,11 @@ fn instantiate(
             .define(&store, contract::THREAD, &name, item)
             .unwrap();
     }
-    linker
-        .instantiate(&mut store, &load.module)
-        .expect("code instance");
+    for module in &load.modules {
+        linker
+            .instantiate(&mut store, module)
+            .expect("code instance");
+    }
 }
 
 /// Whether a slot base puts pieces at their own addresses.

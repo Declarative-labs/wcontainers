@@ -26,7 +26,7 @@ fn main() {
         depth: omitted.contains("depth"),
     };
     let blob = build_with(program, optimisation, Library::None, &defines);
-    let translation = translate_omitting(
+    let mut translation = translate_omitting(
         &blob.bytes,
         0..blob.code_bytes,
         &[0],
@@ -35,6 +35,8 @@ fn main() {
         omit,
     )
     .expect("translation");
+    // A test program is far below every engine limit, so its translation is one module.
+    let translation = translation.modules.remove(0);
     std::fs::create_dir_all(out).unwrap();
     let base = format!("{out}/{}", blob.name);
     std::fs::write(format!("{base}.wasm"), &translation.wasm).unwrap();

@@ -83,7 +83,7 @@ fn size(blob: &Blob) {
     let mut best = (Duration::MAX, Duration::MAX, Vec::new());
     for _ in 0..5 {
         let start = Instant::now();
-        let translation = translate(
+        let mut translation = translate(
             &blob.bytes,
             0..blob.code_bytes,
             &[0],
@@ -92,11 +92,11 @@ fn size(blob: &Blob) {
         )
         .unwrap();
         let translating = start.elapsed();
-        let compiling = compile_time(&translation.wasm);
+        let compiling = compile_time(&translation.modules[0].wasm);
         best = (
             best.0.min(translating),
             best.1.min(compiling),
-            translation.wasm,
+            translation.modules.remove(0).wasm,
         );
     }
     let wasm = &best.2;

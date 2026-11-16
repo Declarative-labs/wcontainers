@@ -37,8 +37,8 @@ fn answer(bytes: Vec<u8>) -> i32 {
 
 /// Translate the blob in the input buffer from one start, at look-ahead none (0), full (1) or bounded (2, N
 /// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
-/// stop, 2: permissions, 4: returns, 8: depth; only to measure them). Returns the length of the code module,
-/// or -1 if the start, the code range or the bound is not valid.
+/// stop, 2: permissions, 4: returns, 8: depth; only to measure them). Returns the length of the first code
+/// module, or -1 if the start, the code range or the bound is not valid; [`more_modules`] gives the rest.
 #[unsafe(no_mangle)]
 pub extern "C" fn translate(
     code_start: u64,
@@ -71,9 +71,32 @@ pub extern "C" fn translate(
         )
     });
     match result {
-        Ok(translation) => answer(translation.wasm),
+        Ok(translation) => {
+            let mut modules = translation.modules.into_iter().map(|m| m.wasm);
+            let first = modules.next().expect("a translation has a module");
+            MORE.set(modules.collect());
+            answer(first)
+        }
         Err(_) => -1,
     }
+}
+
+thread_local! {
+    /// The code modules of the last translation after its first.
+    static MORE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many code modules the last translation has after the one [`translate`] gave.
+#[unsafe(no_mangle)]
+pub extern "C" fn more_modules() -> u32 {
+    MORE.with_borrow(|more| more.len() as u32)
+}
+
+/// The `i`th code module of the last translation after its first. Returns its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn more_module(i: u32) -> i32 {
+    let module = MORE.with_borrow(|more| more[i as usize].clone());
+    answer(module)
 }
 
 /// The module whose `probe` export finds what the engine does where WebAssembly leaves results open. Returns

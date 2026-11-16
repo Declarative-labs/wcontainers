@@ -5,7 +5,7 @@ use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Library, Ran, build, build_with, native, reachable_memory, translated,
+    Blob, Library, Ran, build, build_with, native, ran, reachable_memory, ready_with, translated,
     translated_stopping_everywhere,
 };
 use wcontainers_translator_test::runner::Machine;
@@ -138,6 +138,64 @@ fn written_code_and_null_calls_match_linux() {
                 let what = format!("{} at {look_ahead:?} in Chrome", blob.name);
                 assert_eq!(ours.ran, theirs, "{what}");
             }
+        }
+    }
+}
+
+/// A function of more blocks than one piece may hold, cut in parts, at every look-ahead as on Linux, and in
+/// Chrome. Then programs whose translation at full is split into many small code modules, so that their
+/// pieces call each other and return across modules, as on Linux.
+#[test]
+fn cut_functions_and_split_translations_match_linux() {
+    for optimisation in ["-O0", "-O2"] {
+        let blob = build("many_blocks", optimisation, Library::C);
+        let theirs = native(&blob);
+        assert_eq!(theirs.status, 0, "{}", blob.name);
+        every_look_ahead_matches(&blob, &theirs, |_, _| {});
+        let ours = browser::translated_with(&blob, LookAhead::Full, Default::default());
+        assert_eq!(ours.ran, theirs, "{} at full in Chrome", blob.name);
+    }
+    for (name, optimisation) in [
+        ("hello", "-O2"),
+        ("differences", "-O0"),
+        ("exceptions", "-O2"),
+        ("many_blocks", "-O2"),
+    ] {
+        let blob = build(name, optimisation, Library::C);
+        let theirs = native(&blob);
+        let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
+        assert_eq!(none, theirs, "{} at none", blob.name);
+        for module_bytes in [1 << 12, 1 << 16] {
+            let modules = wcontainers_translator::translate_in_modules(
+                &blob.bytes,
+                0..blob.code_bytes,
+                &[0],
+                LookAhead::Full,
+                wcontainers_translator_test::runner::probe(),
+                module_bytes,
+            )
+            .unwrap()
+            .modules
+            .len();
+            assert!(modules > 1, "{} in {modules} modules", blob.name);
+            let mut machine =
+                ready_with(&blob, wcontainers_translator_test::runner::probe(), |m| {
+                    m.load_split(
+                        &blob.bytes,
+                        0..blob.code_bytes,
+                        blob.load,
+                        &[0],
+                        module_bytes,
+                    )
+                });
+            let (stopped, registers) = machine.run();
+            let what = format!("{} in modules of {module_bytes} bytes", blob.name);
+            assert_eq!(ran(&blob, &machine, stopped, &registers), theirs, "{what}");
+            assert_eq!(registers, none_registers, "registers of {what}");
+            assert!(
+                reachable_memory(&mut machine, &blob) == reachable_memory(&mut none_machine, &blob),
+                "memory of {what}"
+            );
         }
     }
 }
@@ -351,7 +409,7 @@ fn measure() {
         let mut best = (Duration::MAX, Duration::MAX, Vec::new());
         for _ in 0..5 {
             let start = Instant::now();
-            let translation = translate(
+            let mut translation = translate(
                 &blob.bytes,
                 0..blob.code_bytes,
                 &starts,
@@ -360,11 +418,11 @@ fn measure() {
             )
             .unwrap();
             let translating = start.elapsed();
-            let compiling = compile_time(&translation.wasm);
+            let compiling = compile_time(&translation.modules[0].wasm);
             best = (
                 best.0.min(translating),
                 best.1.min(compiling),
-                translation.wasm,
+                translation.modules.remove(0).wasm,
             );
         }
         let wasm = &best.2;
