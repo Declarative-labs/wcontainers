@@ -1535,6 +1535,8 @@ fn grow(frame: Frame, delta: i64) -> Frame {
 enum Label {
     Loop(usize),
     Merge(usize),
+    /// Where the proof of the loop at a header is made again, before both its copies.
+    Reprove(usize),
     Other,
 }
 
@@ -1565,6 +1567,9 @@ enum AfterStop {
     Continue,
     /// Load back the tracked registers in the set, and the passed ones from the number given, and go on.
     Reload(Registers, u32),
+    /// Load back the tracked registers in the set and make the proof of the loop at this header again: the
+    /// stop may have changed what it proved.
+    Reprove(Registers, usize),
 }
 
 /// What a stop check or write back sets `pc` to.
@@ -1839,6 +1844,12 @@ impl<'a> FullEmitter<'a> {
             }
             match self.plan.versioned.get(&b).filter(|_| self.copies(b)) {
                 Some(v) => {
+                    // With no loop piece to go on in after a stop, the copy without checks comes back here.
+                    let reprove = !self.loops.contains_key(&self.function.blocks[b].start);
+                    if reprove {
+                        self.sink().loop_(BlockType::Empty);
+                        self.labels.push(Label::Reprove(b));
+                    }
                     self.proof(v);
                     self.sink().if_(BlockType::Empty);
                     self.labels.push(Label::Other);
@@ -1873,6 +1884,10 @@ impl<'a> FullEmitter<'a> {
                     }
                     self.sink().end();
                     self.labels.pop();
+                    if reprove {
+                        self.sink().end();
+                        self.labels.pop();
+                    }
                 }
                 None => self.loop_of(b, &merges),
             }
@@ -1902,13 +1917,16 @@ impl<'a> FullEmitter<'a> {
 
     /// Whether the loop at block `b` gets its copy without proven checks: after a stop at a jump back in it
     /// or in any loop inside it, the thread must carry on where the proof is made again, at a loop's entry.
-    /// Translated for size, a loop has only its copy with checks.
+    /// Translated for speed that is a loop piece; for size, with no loop pieces, only a loop with no loop
+    /// inside it has the copy, and a stop at its own jump back makes its proof again.
     fn copies(&self, b: usize) -> bool {
         let pieced = |h: usize| h == 0 || self.loops.contains_key(&self.function.blocks[h].start);
-        self.optimise == Optimise::Speed
-            && !self.omit.permissions
-            && (self.omit.stop
-                || (pieced(b) && self.plan.versioned[&b].inner.iter().all(|&g| pieced(g))))
+        let inner = &self.plan.versioned[&b].inner;
+        let stops_handled = match self.optimise {
+            Optimise::Speed => pieced(b) && inner.iter().all(|&g| pieced(g)),
+            Optimise::Size => inner.is_empty(),
+        };
+        !self.omit.permissions && (self.omit.stop || stops_handled)
     }
 
     /// Emit block `b` inside a block for each merge, each merge's subtree after its block; the subtree that
@@ -1993,6 +2011,9 @@ impl<'a> FullEmitter<'a> {
                         _ if to == 0 && self.entry_check => AfterStop::Hand(self.own),
                         _ if to == 0 => AfterStop::Enter(self.own),
                         Some(&f) => AfterStop::Hand(f),
+                        None if self.unchecked.contains(&to) => {
+                            AfterStop::Reprove(self.plan.live_in[to], to)
+                        }
                         None => AfterStop::Reload(self.plan.live_in[to], 0),
                     };
                     self.stop_check(Pc::Offset(start), after);
@@ -2175,11 +2196,29 @@ impl<'a> FullEmitter<'a> {
         true
     }
 
-    /// Write back everything, with `pc` set, on the way to the runner.
-    fn save(&mut self, pc: Pc) {
+    /// Write back everything, with `pc` set, on the way to the runner. Translated for size, on a path the
+    /// thread never comes back on (`leaving`), through the module's functions; otherwise in place: calls even
+    /// on such a path make the engine's code for a loop around it slower.
+    fn save(&mut self, pc: Pc, leaving: bool) {
+        let out_of_line = leaving && self.optimise == Optimise::Size;
         self.write_back_registers();
-        self.write_back_flags(true);
+        self.write_back_flags(out_of_line);
         let load = self.fixed(G_LOAD_ADDRESS);
+        if !out_of_line {
+            let block = self.fixed(G_THREAD_BLOCK);
+            let mut s = self.sink();
+            save_passed(&mut s, block);
+            set_pc(&mut s, block, |s| match pc {
+                Pc::Offset(offset) => {
+                    load.push(s);
+                    s.i64_const(offset as i64).i64_add();
+                }
+                Pc::Local(local) => {
+                    s.local_get(local);
+                }
+            });
+            return;
+        }
         save(&mut self.sink(), |s| match pc {
             Pc::Offset(offset) => {
                 s.i64_const(offset as i64);
@@ -2232,7 +2271,7 @@ impl<'a> FullEmitter<'a> {
             self.sink().return_call(f).end();
             return;
         }
-        self.save(pc);
+        self.save(pc, false);
         self.sink()
             .call(F_STOP)
             .if_(BlockType::Empty)
@@ -2251,6 +2290,15 @@ impl<'a> FullEmitter<'a> {
                 for (_, room) in self.kept_pages.clone() {
                     self.sink().i64_const(0).local_set(room);
                 }
+            }
+            AfterStop::Reprove(live, header) => {
+                self.reload(live, 0);
+                for (_, room) in self.kept_pages.clone() {
+                    self.sink().i64_const(0).local_set(room);
+                }
+                // Out of the stop check's `if` too.
+                let depth = self.depth(Label::Reprove(header)) + 1;
+                self.sink().br(depth);
             }
             AfterStop::Continue | AfterStop::Hand(_) => {}
         }
@@ -2274,7 +2322,7 @@ impl<'a> FullEmitter<'a> {
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
     fn leave_to(&mut self, offset: u64) {
         self.sites[Reason::LeftToAddress as usize] += 1;
-        self.save(Pc::Offset(offset));
+        self.save(Pc::Offset(offset), true);
         self.sink()
             .i32_const(UNWIND_GO_TO_EXACT)
             .call(F_UNWIND)
@@ -2768,7 +2816,7 @@ impl Emitter for FullEmitter<'_> {
                 s.local_set(address);
                 permission_exact(&mut s, address, bytes, this, fault_at, exact);
                 self.sites[Reason::MemoryFault as usize] += 1;
-                self.save(Pc::Offset(offset));
+                self.save(Pc::Offset(offset), true);
                 let mut s = self.sink();
                 s.local_get(fault_at)
                     .i32_const(i32::from(access == Access::Write))
@@ -2950,7 +2998,7 @@ impl Emitter for FullEmitter<'_> {
     fn syscall(&mut self) {
         self.at.float_mode = false;
         let next = self.at.offset + 4;
-        self.save(Pc::Offset(next));
+        self.save(Pc::Offset(next), false);
         self.get(Reg::X(8));
         for i in 0..6 {
             self.get(Reg::X(i));
@@ -2969,7 +3017,7 @@ impl Emitter for FullEmitter<'_> {
             self.sites[Reason::UnsupportedInstructionReached as usize] += 1;
         }
         let offset = self.at.offset;
-        self.save(Pc::Offset(offset));
+        self.save(Pc::Offset(offset), true);
         let word = i64::from(self.decoded().word);
         let mut s = self.sink();
         match trap {
