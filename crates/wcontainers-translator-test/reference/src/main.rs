@@ -411,9 +411,9 @@ fn number(text: &str) -> u64 {
 }
 
 fn main() {
-    // A failure of the runner itself ends with status 101, which no guest result is taken for. (An abort is
-    // not enough: in Docker the runner is the first process, which ignores its own SIGABRT, so musl's abort
-    // ends it with SIGSEGV, as if the guest had faulted.)
+    // A failure of the runner itself ends with status 101 after this message on stderr, which `programs::native`
+    // fails the case on. (An abort is not enough: in Docker the runner is the first process, which ignores its
+    // own SIGABRT, so musl's abort ends it with SIGSEGV, as if the guest had faulted.)
     std::panic::set_hook(Box::new(|info| {
         eprintln!("wcontainers-reference: {info}");
         unsafe { libc::_exit(101) };

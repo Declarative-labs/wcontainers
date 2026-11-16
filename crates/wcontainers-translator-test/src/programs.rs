@@ -382,9 +382,24 @@ pub fn native(blob: &Blob) -> Ran {
         .output()
         .expect("run docker");
     std::fs::remove_file(directory.join(&file)).unwrap();
+    let status = output.status.code().expect("an exit status");
+    // The runner's own failure is no result of the guest's: it fails the case, never compares.
+    assert!(
+        !(status == RUNNER_FAILED
+            && output
+                .stderr
+                .windows(RUNNER_FAILED_SAYS.len())
+                .any(|w| w == RUNNER_FAILED_SAYS)),
+        "the reference runner failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ran {
         stdout: output.stdout,
         stderr: output.stderr,
-        status: output.status.code().expect("an exit status"),
+        status,
     }
 }
+
+/// How the reference runner ends when it fails itself, and what it writes on stderr before.
+const RUNNER_FAILED: i32 = 101;
+const RUNNER_FAILED_SAYS: &[u8] = b"wcontainers-reference: ";
