@@ -1567,7 +1567,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 - K3, second run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
   wcontainers-kernel -p wcontainers-kernel-test`, default case counts) passed: 118 tests, 0 failed,
-  5 ignored, about 212 s of test time, load 24.26 at the start and 16.56 at the end.
+  5 ignored, about 212 s of test time, load 24.26 at the start and 16.56 at the end; again at the
+  end of the run with CLONE_VFORK threads: 118 passed, 0 failed, 5 ignored, about 244 s, load 24.85
+  at the start and 26.23 at the end.
 - K3, second run, libc-test: the 97 other tests under seed 1 and the 43 thread, signal, timer and
   IPC tests under seeds 1 to 3 with and without 4 saves (129 runs each) matched (72.5 s for all
   three, load about 33). Seeds 100 to 109 (430 runs each): without saves all matched (load about
