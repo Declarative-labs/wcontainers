@@ -10,8 +10,15 @@ run) fixed the second check's six: ioctl's generic file requests, tmpfs's size a
 statfs reporting them, writes to `/proc/<pid>/comm` and the other `/proc` writes, seeks on cmdline,
 environ and auxv, layer 1's narrow coverage of `/proc` files, ioctl and statfs, and sysinfo's free
 memory. It also made `/proc` files' bytes at Linux's moments (not at open) and access times move on
-reads. See Layer 1 for the fresh seeds. The one-million-sequence layer 1 run is not part of K1: by the
-orchestrator's ruling it runs once at the end of the kernel track. Next is K2.
+reads. The tenth run (the fourth close-out run) fixed the third check's eight: random device reads,
+getrandom and sendfile now move the whole count; sendfile of nothing succeeds before the input is
+checked; `#!` lines are split as `load_script` splits them; `/proc` lists in Linux's order at Linux's
+positions; fcntl and prctl gained what one process uses (owners, signals, hints, queries, the parent's
+death signal, timer slack, the subreaper, huge page disabling, the saved auxiliary vector, the forms
+that need powers), record locks answer as Linux without file locking; a fault with its signal
+ignored is no longer counted as a handler not run. Layer 1 now reaches the random devices. See Layer
+1 for the fresh seeds. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's
+ruling it runs once at the end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -41,21 +48,30 @@ Ignored tests (each attribute gives the reason):
   counted by the reference and not known here (counted "page residency not tracked").
 - proclist `thread_listings_are_a_subset_of_the_reference`: `/proc/<pid>/task` is not built (threads,
   K3).
+- transfer `partial_copies_match_reference`: a read of a random device (or getrandom) into a buffer
+  that faults part way stops up to 15 bytes short of the fault in the reference (measured: 88 where 96
+  bytes were writable; 1 where fewer than 8 were), by where arm64's copy routine had stored when the
+  fault came (the kernel's 64-byte block sits 8 bytes off 16-byte alignment); ours stops at the fault.
+  Reads of files and `/dev/zero` stop where Linux's do (measured).
 - procstatus `private_mapping_sees_later_writes`: a private file mapping is a copy made at mmap, so
   pages it has not written do not see later writes to the file, as Linux's do (counted "private file
   mapping is a copy"; procstatus `private_mapping_copy_is_counted` checks the counter).
 
 Comparisons that are subsets rather than equality, and why:
 - tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
-  `/proc/self`, `/proc/1`, `/proc/self/fd` and `/proc/sys/...`: every entry we list must be in the
-  reference's listing with the same type, mode, owner, group and link count. The reference has about
+  `/proc/self`, `/proc/1`, `/proc/self/fd` and `/proc/sys/...`: the entries we list must be the
+  reference's entries that we build, in the reference's order, each with the same position after it
+  (d_off), type, mode, owner, group and link count. The reference has about
   330 more entries (printed by the test): `/proc` holds a chosen subset (plan section 15). A lookup of
   any of Linux's entries that is not built is counted "proc entry not built" and warned (the list of
   Linux's names per directory is in fs/proc.rs, from the reference; procstatus
   `entries_not_built_are_counted` checks it). The link counts of `/proc` itself (Linux counts every
   process on the machine) and of `/` (the root file system's kind) are left out.
-- `/dev`, `/dev/pts` and `/dev/shm` are compared whole and in order (proclist
+- `/dev`, `/dev/pts` and `/dev/shm` are compared whole and in order with d_off (proclist
   `device_listings_match_the_reference`), except the link count of `..` of `/dev`, which is `/`.
+- tests/options.rs prints process numbers only as whether they are the caller's, its group or 0, and
+  checks PR_GET_AUXV's bytes against `/proc/self/auxv` on each side (the vector itself lacks the vDSO's
+  two entries here, a known gap).
 - tests/sharedmap.rs sorts `/proc/self/maps` (placement differs: no address randomization here).
 - tests/schedattr.rs shows time slices relative to the default (the CPU count differs).
 - tests/fileioctl.rs prints FIONREAD's value on standard output only as success: what waits unread in
@@ -84,6 +100,13 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   sequence's own directories are compared in full.
 - A call's random or machine bytes are kept out of later calls by writing them only to areas no later
   call reads (getrandom, uname, name_to_handle_at).
+- The random devices are in the path pool. After a read, pread64, readv, preadv or preadv2 of one,
+  both runners zero the whole range the call was given (up to the first page they cannot write, by
+  process_vm_writev), and after a sendfile from one into a regular file they zero what it put there
+  (pwrite at the output's old position); the reference's runner says when it did, and ours does the
+  same calls. The bytes are then compared (as zeros) with everything else. A read of one that moved less
+  than it was asked for (a fault part way) has its count not compared: where the copy stops differs (the
+  known failure above). The test prints how many calls put a random device's bytes somewhere.
 - Before each sequence both runners remake `/dev/null` once: the reference container's first
   `/dev/null` is held from outside the container once removed (measured: its inode is never given
   back), and the reference's runner remakes the devices after every sequence, so `/dev` always has one
@@ -112,16 +135,21 @@ What layer 1 does not generate, and why:
   a young process's may still be 0 and a sleep until a past time may never end there (seed 777002);
   here they are always the time not parked. The scheduler time clocks are slept on. tests/clocks.rs compares every kind of clock id, process 1's and the caller's own
   number included, in a program that is process 1 on both sides.
-- Paths reach `/dev/shm/w` (the sequence's directory), the three zero devices, `/proc/self/...` and
+- Paths reach `/dev/shm/w` (the sequence's directory), the three zero devices, the two random devices
+  (their bytes zeroed, above), `/proc/self/...` and
   five `/proc` files whose bytes are the same in both runners (`/proc/self/comm`, `cmdline`,
   `cgroup`, `limits` and `/proc/sys/kernel/ostype`: a seq_file, one read from memory, a sysctl), so
   every call is made on them; never the root file system, and no `/proc` file whose bytes differ by
   machine (status, stat, maps, auxv, environ, cpuinfo and the like are compared in layer 2 only where a
-  test reads them: procwrite, procstatus, procsignals, the busybox commands, execveat, memfd). The
-  random devices are not in the pool (their bytes differ); fileioctl compares their requests.
+  test reads them: procwrite, procstatus, procsignals, the busybox commands, execveat, memfd).
 - ioctl requests: every request of Linux's `do_vfs_ioctl` and `file_ioctl`, tmpfs's flags, two
   terminal requests, two random device requests and two unknown ones, with arguments from a pool of
   flags, extended flags, clone, deduplication and preallocation ranges, bad pointers and descriptors.
+- fcntl's F_SETOWN only with numbers in use in both runners or in neither (0, 1, -1, the smallest int,
+  4000000): the runners' other process numbers differ. F_SETOWN_EX is not generated (its number comes
+  from memory); tests/options.rs compares it. Record locks are not generated (not built, below).
+- prctl's PR_GET_AUXV is not generated (the vector holds addresses and lacks the vDSO's entries here);
+  tests/options.rs compares it.
 
 ## What exists
 
@@ -132,8 +160,8 @@ What layer 1 does not generate, and why:
 - Exits: system calls, stops, memory faults (stack growth, SIGSEGV, SIGBUS past a file's end),
   `MemoryFaultWithoutRegisters` (SIGSEGV), `AlignmentFault` (SIGBUS as Linux's `do_sp_pc_abort`;
   BUS_ADRALN and the address reach only a handler, and handlers run in K2), illegal instructions
-  (SIGILL), breakpoints (SIGTRAP). With no handler the process dies of the signal as on Linux; with a
-  handler it dies too, counted "signal handler not run".
+  (SIGILL), breakpoints (SIGTRAP). With no handler, or the signal ignored (a forced signal resets it), the
+  process dies of the signal as on Linux; with a handler it dies too, counted "signal handler not run".
 - File layer (src/fs): inodes shared by `Rc`, mounts, path walk with symlinks (40 at most), `..`
   across mounts, `d_path` paths (a removed directory gets " (deleted)", one outside the caller's root
   its path from the top; getcwd's "(unreachable)" is separate), permission checks
@@ -170,8 +198,10 @@ What layer 1 does not generate, and why:
   FIONREAD, the random devices' `random_ioctl`; files with none answer ENOTTY as Linux does. tmpfs
   keeps its inode flags (no-dump and no-access-time can be set; immutable and append-only need
   CAP_LINUX_IMMUTABLE, which Docker's root lacks; statx shows them). FASYNC is set through a file's
-  `fasync` (pipes, random devices) by FIOASYNC and F_SETFL; no owner can be named yet, so no signal
-  is sent, as on Linux for a file with no owner.
+  `fasync` (pipes, random devices) by FIOASYNC and F_SETFL, and fcntl names an owner; no signal is
+  sent yet: the random devices signal only when the generator first becomes ready (before any
+  program), and the standard stream pipes would signal when Docker reads them (pipes and signal
+  delivery, K2; a known gap).
 - Access times: reads, listings, `readlink` and mappings of tmpfs files move the access time as
   `touch_atime` does (`relatime` on `/`, `/dev/shm`; `strictatime` on `/dev`), except with O_NOATIME
   or the no-access-time flag.
@@ -274,8 +304,18 @@ sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, u
 utimensat, write, writev.
 
 Partial (inside the list above), each with its reason:
-- fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS: they matter between processes, K2); no
-  leases, owners or signals (K2).
+- fcntl: record locks (F_GETLK, F_SETLK, F_SETLKW and the OFD forms) are not built: the lock is read
+  (EFAULT), then they answer as Linux built without file locking (GETLK EINVAL, SETLK EACCES), counted
+  "file locks not implemented". They need a lock table per inode with owners (process or open file),
+  range merging and splitting, release at close, and waits; K2, where other processes make them
+  matter, before K6's bar. Not built either, each counted "fcntl command not built" and EINVAL (Linux's
+  answer when the feature is not configured): F_SETLEASE (leases: K2), F_NOTIFY (directory
+  notification signals: K2), F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG, and F_GETPIPE_SZ and
+  F_SETPIPE_SZ on the standard stream pipes (pipes: K2; on anything else they are EBADF as Linux's).
+  Built in the tenth run: owners (F_SETOWN, F_GETOWN, F_SETOWN_EX, F_GETOWN_EX), F_SETSIG and
+  F_GETSIG (no file here has an `fasync`, so no signal is ever sent, as on Linux for these files),
+  F_GET_RW_HINT and F_SET_RW_HINT, F_DUPFD_QUERY, F_CREATED_QUERY, F_GETLEASE (F_UNLCK: no lease can
+  be taken).
 - ioctl: terminals are K2 (no terminal can be opened yet, so their requests reach no file).
   FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
   them they answer as tmpfs does (nothing to freeze or thaw, no block map) and what is given to the
@@ -298,8 +338,23 @@ Partial (inside the list above), each with its reason:
   mapped size, counted "page residency not tracked"; the other fields are 0 (no faults, switches or
   I/O are counted yet).
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
-- prctl: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, GET/SET_NO_NEW_PRIVS,
-  GET_SECCOMP, SET_SECCOMP, GET_CHILD_SUBREAPER; others counted, EINVAL.
+- prctl: built: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, CAPBSET_DROP,
+  GET/SET_NO_NEW_PRIVS, GET/SET_SECCOMP, SET/GET_CHILD_SUBREAPER (kept; it acts on orphans, K2),
+  SET/GET_PDEATHSIG (kept per thread, cleared on a change of ids or a secure exec; sent when the parent
+  ends, K2), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
+  huge pages here), GET_MDWE (0: none can be set), GET_AUXV, GET_SECUREBITS (the keep-capabilities bit;
+  the others cannot be set), SET_MM (EPERM without CAP_SYS_RESOURCE, which Docker's root lacks; the map
+  size form), SET/GET_IO_FLUSHER (EPERM without CAP_SYS_RESOURCE). Not built, each counted "prctl
+  option not built" and EINVAL (Linux's answer for an option it does not know): SET_MDWE (needs
+  mmap and mprotect to refuse writable and executable memory), SET/GET_TAGGED_ADDR_CTRL (needs every
+  call to strip pointer tags; EINVAL is Linux's answer without the tagged address ABI),
+  SET_SECUREBITS, CAP_AMBIENT, GET/SET_SPECULATION_CTRL (the made-up machine's answers), SET_MM's map
+  form and its other forms with CAP_SYS_RESOURCE, SET_VMA, the timer, MCE, FP mode, SVE, SME, pointer
+  authentication, syscall user dispatch, memory merging, shadow stack and the other arch options. All
+  before K6's bar.
+- sendfile: moves the whole count in rounds of a pipe's 16 pages, as `splice_direct_to_actor` does,
+  or one round into the standard stream pipes (`splice_file_to_pipe`); nothing to move succeeds before
+  the input is checked; a round that falls short ends it, the position following Linux's.
 - statfs, sysinfo, `/proc/meminfo`: pages a mapping's faults bring in are not known (counted); free
   memory is the made-up machine's size less every mapped and tmpfs page (counted "page residency not
   tracked"); `/proc/meminfo` has only some of Linux's lines (counted "proc fields not tracked", 4).
@@ -388,10 +443,28 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
+- A copy of the random devices' bytes (read, getrandom) to a buffer that faults part way stops at the
+  fault here and up to 15 bytes short of it in the reference (arm64's copy routine; an ignored test
+  shows it). Files and `/dev/zero` match.
+- sendfile into the standard stream pipes moves at most an empty pipe's worth (the host drains them);
+  a reference pipe Docker has not drained holds less room.
 
-## Tests (last run 2026-11-15, ninth run: 53 passed, 7 ignored known failures)
+## Tests (last run 2026-11-15, tenth run: 57 passed, 8 ignored known failures)
 
-All pass except the ignored known failures listed above. Added in the ninth run:
+All pass except the ignored known failures listed above. Added in the tenth run:
+- transfer: guest/transfer.c: reads of 64 MiB, 70000, 100000 and 2 MiB (vectored) from the random
+  devices, reads and writes of them at a fault, getrandom of 64 MiB, sendfile from `/dev/zero` and
+  `/dev/urandom` to a file and `/dev/null` with positions, from a file across pages, and with counts of
+  0 and 1 from a directory, `/dev/null`, `/proc/self/stat`, `/proc/self/cmdline`, to `/dev/full`, the
+  stdout pipe and an append-only file. Same output; partial copies are the ignored known failure.
+- scriptline: guest/scriptline.c: execve of `#!` lines with no name, blanks only, a zero first, a zero
+  after the name or argument, a directory as interpreter, and names cut at 256 bytes. Same errors.
+  script.rs also runs four lines with zeros and blanks. Same output.
+- options: guest/options.c: every fcntl and prctl option built in this run with good and bad
+  arguments, and a change of ids clearing the parent's death signal. Same output.
+- faults: a read fault with SIGSEGV ignored dies of it with no counter.
+- proclist: compares order and d_off (above).
+Added in the ninth run:
 - fileioctl: guest/fileioctl.c: every generic request, both bad and good arguments, on a tmpfs file,
   directory, memory file, secret memory, `/dev/null` as fd 0, the stdout pipe, `/dev/null`, `/dev/zero`,
   both random devices, `/proc/self/comm`, `/proc/cpuinfo`, a sysctl, `/proc/self` and `/dev/pts`;
@@ -539,7 +612,13 @@ All on this shared Mac; noisy, not benchmarks.
   `SIG_IGN`, the `ST_*` statfs flags, MAX_RW_COUNT, UIO_MAXIOV, MAX_ARG_STRLEN, BINPRM_BUF_SIZE,
   MAXSYMLINKS, MINSIGSTKSZ, the tmpfs directory positions, BOGO_DIRENT_SIZE, the ACL tags and version,
   `sched_attr` and its sizes, SCHED_FLAG_SUGOV, the ioprio classes, PER_CLEAR_ON_SETID, rseq's flags and
-  sizes, RWF_NOAPPEND, RWF_ATOMIC, RWF_DONTCACHE, RWF_NOSIGNAL, CLOSE_RANGE_UNSHARE, CLOSE_RANGE_CLOEXEC.
+  sizes, RWF_NOAPPEND, RWF_ATOMIC, RWF_DONTCACHE, RWF_NOSIGNAL, CLOSE_RANGE_UNSHARE, CLOSE_RANGE_CLOEXEC,
+  PIPE_DEF_BUFFERS, PR_THP_DISABLE_EXCEPT_ADVISED, SECBIT_KEEP_CAPS, AT_VECTOR_SIZE (arm64's 2 and
+  the generic 24, which gives the 432 bytes PR_GET_AUXV reports, measured).
+- Record locks are answered as Linux built without file locking answers, not built (see Partial): the
+  check of K1 asked whether they belong to K1; they matter between processes, so they come with K2.
+- `/proc`'s listing order and positions come from the reference's getdents listing (names and their
+  order depend on the configuration); `.reset` in `/proc`'s list is the reference's.
 - The generator copies linux-raw-sys's `system`, `ioctl`, `prctl`, `net` and `ptrace` modules, and gives
   a named list of structures zerocopy's byte derives.
 - Mount flags are modelled per file system (`/dev` nosuid; `/dev/shm` and `/proc` nosuid, nodev,
@@ -591,8 +670,8 @@ All on this shared Mac; noisy, not benchmarks.
   address }` (the translator's side) and moved a layout assertion in registers.rs to a constant
   assertion; the kernel handles the new exit (SIGBUS) and the stand-in reports it for misaligned
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
-  packages, only additions). The eighth and ninth runs changed nothing in the shared crate (origin/phase-1
-had nothing new to merge in the ninth).
+  packages, only additions). The eighth, ninth and tenth runs changed nothing in the shared crate
+(origin/phase-1 had nothing new to merge in the ninth and tenth).
 
 ## Questions for the orchestrator (boundary)
 
