@@ -133,6 +133,11 @@ Instances took at most 18 ms in wasmtime and 177 ms in Chrome everywhere.
 - Chrome's memory for compiled code is not measured (nothing reads V8's code space yet); wasmtime's is the
   machine code bytes above.
 
+Cases run on this run's code (all passing): after each change, the program, layer 2, look-ahead, changes,
+Chrome, smoke and checks tests at their defaults (release; mixed runs now hold pieces of both settings).
+Last, every test of the three crates on the final code (debug, Chrome and layer 3's defaults included): 69
+passed, 7 ignored (the measurements), 13.5 minutes, load 36 to 55. No long random run was made this run.
+
 M5, what comes next (most important first):
 1. Size, free reductions not yet done: slow paths are 28% of the output (each writes back its registers, the
    flags word, the passed registers and pc, inline): a shared function per module for the part that is the
