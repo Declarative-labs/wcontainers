@@ -965,8 +965,12 @@ pub(super) fn msgrcv(
     if id < 0 || (size as i64) < 0 {
         return Err(Errno::EINVAL);
     }
-    if flags & MSG_COPY != 0 && (flags & MSG_EXCEPT != 0 || flags & IPC_NOWAIT == 0) {
-        return Err(Errno::EINVAL);
+    if flags & MSG_COPY != 0 {
+        if flags & MSG_EXCEPT != 0 || flags & IPC_NOWAIT == 0 {
+            return Err(Errno::EINVAL);
+        }
+        // `prepare_copy` loads the caller's buffer as a message first.
+        guest(kernel, cx, tid).read(buffer, size.min(MSGMAX))?;
     }
     let search = Search::new(kind, flags);
     let index = kernel

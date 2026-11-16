@@ -5,7 +5,46 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done after five runs. Built in K2's fifth run:
+processes) is partly done after six runs. Built in K2's sixth run:
+- The three open layer 1 findings: MADV_DODUMP and MADV_KEEPONFORK refused on droppable memory and
+  DODUMP on the kernel's own pages, mapping by mapping (`madvise_vma_behavior`: the mappings before the
+  refusing one keep the change; MADV_WIPEONFORK the same way); sendfile takes the largest file of
+  either side's file system from `Kind::max_bytes` (proc's is `MAX_NON_LFS`) and checks the output's
+  position before it; and the priority calls (getpriority, setpriority, ioprio_get, ioprio_set) name
+  every process now, not only the caller: one thread, a group (newest member first, as the group's list
+  holds them), a user's processes, ended ones not yet reaped with the nice value they had and no I/O
+  priority, with `set_one_prio`'s and `set_task_ioprio`'s permission and limit checks.
+  tests/priorities.rs. Seeds 516, 517 and 518 then passed 20000 each.
+- Process descriptors (src/syscall/pidfd.rs): pidfd_open (PIDFD_NONBLOCK, PIDFD_THREAD for a process's
+  first thread; another thread's is counted "call flag not built", EINVAL), pidfd_send_signal (the
+  caller's own numbers PIDFD_SELF_THREAD and PIDFD_SELF_THREAD_GROUP, the three scope flags, information
+  checked as `do_pidfd_send_signal`), waitid's P_PIDFD (a nonblocking descriptor answers EAGAIN),
+  clone's CLONE_PIDFD (its number written before the child exists), process_mrelease (a fatal signal
+  ends a process here at once, so there is never a dying process: EINVAL for a running one, ESRCH for
+  an ended one). One pidfs inode per process (regular inside, shown with no type, mode 0700, root's,
+  `anon_inode:[pidfd]` in `/proc`, file handles of type `FILEID_KERNFS`), readable once the process
+  ends and hung up once reaped, pollers woken at both. No read, write, attribute change, fallocate or
+  mapping, as measured. tests/pidfd.rs.
+- Signal descriptors (src/syscall/signalfd.rs) on one shared anonymous inode (`Content::Anon`, mode 0600
+  with no type; what each file is lies in `OpenFile::anon`): signalfd4 (size, mask, then flags; an
+  existing descriptor takes a new mask), reads of the reader's own pending signals of the mask as
+  `signalfd_siginfo` filled by `siginfo_layout` (measured for every layout), several per read, a record
+  that cannot be stored lost, waits parked on the thread's signals, poll readable while one is pending
+  (a queued signal wakes its process's pollers), lseek staying at 0, reopen through `/proc` ENXIO.
+  tests/signalfd.rs.
+- System V message queues (src/syscall/ipc.rs) as `ipc/msg.c`: msgget, msgsnd (waits for room parked
+  on the queue's senders' address, EIDRM if removed meanwhile, ERESTARTNOHAND on a signal), msgrcv with
+  every search (type, except, lowest at or below, MSG_COPY's position), MSG_NOERROR, E2BIG, waits for a
+  message: receivers queue in order and a send hands its message to the first one it suits
+  (`pipelined_send`, kept in `Ipc::handed` until the receiver's call runs again; E2BIG handed to one
+  whose buffer is too small), a removal hands EIDRM; msgctl's IPC_STAT, MSG_STAT, MSG_STAT_ANY,
+  IPC_INFO, MSG_INFO, IPC_SET (qbytes above MSGMNB needs CAP_SYS_RESOURCE), IPC_RMID. tests/sysvmsg.rs.
+- Layer 1 generates pidfd_open, pidfd_send_signal, process_mrelease, CLONE_PIDFD, signalfd4 (always
+  nonblocking), msgget, msgsnd, msgrcv and msgctl (always IPC_NOWAIT; a placeholder `QUEUE` is the
+  sequence's last msgget identifier, as `SEGMENT` is shmget's; the reference's runner removes every
+  queue after each sequence as its creator).
+
+Built in K2's fifth run:
 - System V shared memory (src/syscall/ipc.rs) as `ipc/shm.c` in a container's own IPC namespace:
   identifiers as `ipc_idr_alloc` hands them out (slots in a cycle of at least 64, the sequence number
   grows when a slot at or below the last comes round; measured), keys, `ipcperms` (Docker's root has
@@ -316,7 +355,7 @@ What layer 1 does not generate, and why:
   them.
 - A child that runs calls of its own (the child of clone ends at once), threads and shared tables
   (CLONE_THREAD with what it needs, CLONE_FILES, CLONE_FS: not built until K3), CLONE_PARENT (our
-  caller is the first process, which Linux refuses it to), CLONE_PIDFD (not built), CLONE_PARENT_SETTID
+  caller is the first process, which Linux refuses it to), CLONE_PARENT_SETTID
   (it writes a process number into the arena), waits without WNOHANG in sequences with a child.
 - Named pipes other than the one at `p` in the work directory, made at the start of a quarter of the
   sequences; opens of it are nonblocking unless for reading and writing (a reopen through
@@ -627,9 +666,12 @@ Partial (inside the list above), each with its reason:
 - process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
   `ptrace_may_access`, counted "call on another process not built", ENOSYS.
 - clone: the fork and vfork forms. Threads and shared tables (CLONE_THREAD, CLONE_FILES, CLONE_FS,
-  CLONE_SIGHAND), CLONE_VM without CLONE_VFORK, and CLONE_PIDFD are counted "call flag not built",
-  ENOSYS (K3 for threads). Namespaces are refused by Docker's profile as in the reference.
-- waitid: P_PIDFD counted "call flag not built", EBADF (no process descriptors yet).
+  CLONE_SIGHAND) and CLONE_VM without CLONE_VFORK are counted "call flag not built", ENOSYS (K3 for
+  threads). Namespaces are refused by Docker's profile as in the reference.
+- pidfd_open: PIDFD_THREAD for a thread other than a process's first is counted "call flag not built",
+  EINVAL (threads, K3). process_mrelease never frees anything: there is no dying process to free.
+- getpriority, sched_getscheduler and the other sched_* calls: a process that has ended and is not yet
+  reaped is found by the priority calls but not yet by the sched_* calls (ESRCH; Linux finds it).
 - pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
 - shmget: SHM_HUGETLB counted "call flag not built", ENOMEM (the reference, with no huge pages
@@ -653,10 +695,8 @@ file_getattr, file_setattr, acct, vhangup, swapoff, init_module, finit_module, r
 fspick, fsmount, move_mount, sethostname, setdomainname, fanotify_init. (sethostname and
 setdomainname keep handlers the profile keeps out of reach.)
 
-Missing (73, each counted "system call not implemented" and ENOSYS), with what each needs:
-- Processes (K2, after terminals): ptrace (tracing is out of phase one), pidfd_open,
-  pidfd_send_signal, process_mrelease.
-- signalfd4 (K2, with the descriptors that wait on many things, K5).
+Missing (65, each counted "system call not implemented" and ENOSYS), with what each needs:
+- Processes: ptrace (tracing is out of phase one).
 - Futexes (K3, with threads): futex, futex_waitv, futex_wake, futex_wait, futex_requeue.
 - Timers (K3, through the kernel's one timer queue): getitimer, setitimer, timer_create,
   timer_gettime, timer_getoverrun, timer_settime, timer_delete, timerfd_create, timerfd_settime,
@@ -668,8 +708,8 @@ Missing (73, each counted "system call not implemented" and ENOSYS), with what e
 - Asynchronous I/O (K5 or later, needs the waiting design for many requests): io_setup, io_destroy,
   io_submit, io_cancel, io_getevents, io_pgetevents.
 - System V semaphores and message queues and POSIX message queues (K2, shared between processes):
-  mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv,
-  msgsnd, semget, semctl, semtimedop, semop.
+  mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, semget, semctl,
+  semtimedop, semop.
 - Single-process calls not built, each before K6's bar: adjtimex and clock_adjtime (reading the
   clock's adjustment state: the made-up machine's values; setting needs CAP_SYS_TIME, which Docker's
   root lacks), remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping),
@@ -1292,8 +1332,9 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
   flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
   (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), execve from a
-  process with more than one thread (ENOSYS), clone's thread and table sharing and CLONE_PIDFD
-  (ENOSYS), waitid's P_PIDFD (EBADF), pipe2's O_NOTIFICATION_PIPE (EINVAL), shmget's SHM_HUGETLB
+  process with more than one thread (ENOSYS), clone's thread and table sharing (ENOSYS), pidfd_open's
+  PIDFD_THREAD for a thread other than the first (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
+  shmget's SHM_HUGETLB
   (ENOMEM).
 - "fcntl command not built": the fcntl list under Partial.
 - "prctl option not built": the prctl list under Partial.
@@ -1311,6 +1352,7 @@ written", "vmsplice pages copied". "wake to run" is a measurement (count and tot
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K2, sixth run: none.
 - K2, fifth run: none.
 - K2, fourth run: none.
 - K2, third run: none.
