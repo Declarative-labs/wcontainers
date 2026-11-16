@@ -4,44 +4,75 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M3 (every instruction) is built, third run done; waiting for the long runs to the pass bars and an
-independent check. Every one of the 1215 forms of the CPU we present translates and matches the CPU in
-layer 1 (1215 x 1000 cases, seed 5: no mismatch), the decoding test shows no offered form left untranslated,
-`programs/differences.c` (section 8, printed as bits) matches Linux at every level, at none and full, in
-wasmtime and Chrome, and also on a host made to need the software fused multiply-add and the not-a-number
-fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc, six levels, fixed position code and
-position independent code loaded away from where it is linked). The third run made layer 3's long run one
-command that runs cases side by side (`WC_LAYER3_JOBS`; 2000 programs in 14 minutes with 12 at once), and
-made instructions of features we do not offer count and warn as "unsupported instruction reached" while still
-raising illegal instruction. It ran 12,000 Csmith programs (all matching but one reference flake, see "M3,
-third run") and layer 1 with 100 cases a form in Chrome (no mismatch). Layers 1 and 3 each have a one command long run with its Chrome sample under "How
-to run"; neither has reached the plan's pass bar yet (layer 2 has no Chrome sample; it is not M3's). See "M3,
-third run", "M3, second run" and "M3, first run" below.
+M3 (every instruction) is closed out (fourth run, "M3, close-out" below) and waits for its independent check.
+Every one of the 1215 forms of the CPU we present translates and matches the CPU in layer 1 (1215 x 1000
+cases, seed 5: no mismatch), `programs/differences.c` (section 8) matches Linux at every level, at none and
+full, in wasmtime and Chrome, and layer 3 runs Csmith and hand-picked programs against Linux. The long runs to
+the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million programs, layer 3 at 100,000) are not
+M3's: the orchestrator runs them once at the end of the translator track, as M4 and M5 still change the
+translator. Commands are under "How to run".
 
-M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
-pushed. M2 (full look-ahead) is built and tested: every part of the plan's list is in, hello and the
-benchmark set match none register by register and byte by byte, layer 2 runs, and size and speed numbers
-are below. The second M2 run fixed the two faults the independent check found (a frame and the stack
-alignment were relied on after a call that moved sp) and made checks cheaper by reading fixed values from
-locals. The third M2 run fixed a hang the next check found (a frame or group check failing on a function's
-first instruction looped for ever), added `tests/checks.rs`, and made layer 2 programs use stack frames of
-every size, x19 to x28, accesses through sp and groups through other registers, and fault. Speed is still
-far from the plan's hopes on call heavy and memory heavy code; see "Next".
+M0, M1, M2 and S1 are built and passed their independent checks. Their work is recorded in the sections
+below, newest first.
 
-S1 (run speed at full look-ahead) is closed (ninth run): the orchestrator withdrew the aims of 4 for fib,
-2.5 for sort and 3 for interpret (where their remaining cost sits is under "S1, what remains after the
-eighth run"). The close-out added the test of section 9 that changes page permissions at random stops and
-system calls, wrote down the rule the dropped checks rest on, looked into the search measuring variant and
-recorded what each S1 change added to the output's size: see "S1, close-out" below. Its independent check
-found a missed fault (a bounded index proof fooled by a load that writes back its base) and a changes test
-too weak at system calls; the second close-out run fixed both (see "S1, close-out, second run"). Its
-independent check found a missed fault (memory a popped frame left below sp was kept as known) and a
-changes test too weak at calls; the third close-out run fixed both (see "S1, close-out, third run" just
-below). S1 waits for its next independent check. The third run's work is under "S1, third run", the fourth's (measurements only) under
-"S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
-calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
-rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
-eighth run", and what is left under "S1, what remains after the eighth run".
+## M3, close-out (fourth run)
+
+- Live fault fixed: a kept run allowed for accesses of at most 32 bytes (`LONGEST_ACCESS`), but LD1 to LD4
+  and ST1 to ST4 of three and four Q registers access 48 and 64 bytes, so such an access starting in the
+  last 63 bytes of a kept run ran onto the next page unchecked. Now each kept run allows for the longest
+  access that shares it (`kept_longest`, the largest `memory_access().bytes` among them), and the access
+  check asserts its size fits; `permission_exact` asserts a length of at most a page (the table's bits
+  reach only the next page). The other places a size is used already took the true size: groups (at most a
+  page in all), the frame check (a page at a time), proofs over a loop's range (`len` of the access or
+  group). Tests written first, both failed before the fix: `tests/checks.rs`
+  `structure_loops_running_onto_a_forbidden_page` (ld1, st1, ld4, st4 of four, ld1 and st3 of three
+  registers, steps 16, 32, 64, against Linux; full faulted two turns late) and `tests/changes.rs`
+  `longest_access_onto_a_page_changed_at_a_stop` (a proven loop of 64 byte loads and stores, the page after
+  made to allow nothing at its first stop; full ran to the end). `denied_at_the_first` now stops full at
+  every check only up to the change, so kept runs live after it.
+- Layer 2 now makes vector accesses: groups and walks load and store one Q register, a pair (LDP/STP Q)
+  and structures of three and four registers (LD1/ST1 of several, LD3/ST3, LD4/ST4, base only or
+  post-indexed), walks also index a Q register by a register; accesses through sp include LDP/STP Q and an
+  LD4 at sp. With the kept-run fix undone, layer 2 failed on seeds 1, 2 and 3 within 1000 cases.
+- A loop whose proof fails at its entry is counted and warned as the new reason "loop not proven" (12,
+  `Reason::LoopNotProven`, at the loop's address): one warn hook call where the copy with checks runs, once
+  per entry, nothing per access. Test: `tests/checks.rs` `loop_not_proven_is_counted` (a loop proven, 0;
+  one running off the blob, 1). A kept run that misses is not counted (ruling; see "Departures").
+- The changes test now changes pages of memory on the stack's side that is no frame: layer 2's area moved
+  from main's frame into the blob (main keeps a frame of the same size for its accesses through sp), so
+  groups, walks, kept runs and proofs through x29 and x18 have changes made under them. Tally, 1000 random
+  programs, seed 21: 45,358 changes, 4926 faults handled (the eleventh run: 2000 programs, 88,517 changes,
+  5418 faults). Deliberate breaks, 1000 cases, first failure counting shrinking (run in a copy of the tree,
+  scratch `m3-close/breaks.sh`, load 25 to 110): proof 156, 53, 95 (seeds 1 to 3; before 231, 248, 139);
+  kept run 221, 257, 143 (before 254, 325, 283); seed 1 only: groups not ended at a system call 625, loops
+  with a system call counted quiet 171, frame kept below sp 346, groups not ended at a call 180, loops with a call counted quiet 42. The new break "kept runs allow 32
+  bytes" passed 1000 programs of the changes test on seed 1 (it is caught by layer 2 and both directed tests).
+- The reference flake is found and fixed: it was the runner, not Linux. The runner is a static executable
+  at 0x200000, and Linux puts its heap (brk) at a random place up to 1 GiB after it. Now and then that place
+  is inside the range a blob is then mapped to, so `map` failed (`MAP_FIXED_NOREPLACE`: "File exists") and
+  the runner panicked. With `panic = "abort"`, musl's abort raises SIGABRT, which the first process of a
+  container ignores, and then ends itself by a fault, so Docker reported status 139, as if the guest had
+  ended by SIGSEGV. Evidence (scratch `m3-close/flake`, the blob of Csmith 2000136, a runner printing the
+  file's size and hash, and at a fault the address, registers, words at pc and /proc/self/maps): 20,000
+  runs in four containers (load 26 to 92): 5 failed, status 134 (the runner not the first process), each the
+  map panic with the heap inside 0x400000 to 0x455000; about 10,000 runs each in a fresh container as layer
+  3 runs them (five at once, load 49 to 117): 3 failed, status 139, the same panic. Fixes: the runner is
+  linked at 2 GiB (`--image-base=0x80000000` in `reference/.cargo/config.toml`), above every address a test
+  gives the guest, so its heap never reaches a blob or a stack; and a panic of the runner now ends it with
+  status 101 (a panic hook calling `_exit`), never a signal a guest could end with. After the fix (the same printing runner, linked at 2 GiB): about 10,200 runs, each in a fresh
+  container, three at once (load 27 to 113), all ended 0 with the checksum; 300 runs in one container, the
+  same. While looping, a script of mine ran two workers on one output file, which lost output and looked
+  like a Docker fault; it was not.
+- Vector and floating point registers in locals, measured on their own: `floats.c` now has four workloads
+  (`WORKLOAD` 1 to 4: an n-body step in double precision, a single precision matrix product with the sum
+  innermost, the product in i, k, j order which clang vectorises, and sums of absolute differences of
+  bytes, also vectorised), longer at SCALE=1, and `floats_speed` times each in wasmtime and Chrome. Best of
+  3, seconds at full (load 67 to 90 for both): with locals / with v0 to v31 read and written in the thread
+  block (scratch `m3-close/no-vector-locals.py`): n-body wasmtime 0.83 / 1.45, Chrome 0.55 / 1.60; matrix
+  wasmtime 1.11 / 1.11, Chrome 1.23 / 1.66; vector matrix wasmtime 0.62 / 0.83, Chrome 0.37 / 0.80; byte
+  differences wasmtime 0.90 / 1.40, Chrome 0.75 / 1.20. Locals kept. Times native with locals (native
+  0.43, 0.24, 0.17, 0.25 s): wasmtime 1.9, 4.6, 3.6, 3.6; Chrome 1.3, 5.1, 2.1, 3.0. The scalar matrix
+  product at 4.6 to 5 times native is the slowest; not looked into.
 
 ## M3, third run
 
@@ -1101,7 +1132,8 @@ contract's bits, in both runners).
   the gcc image. At the third run's rate (2000 programs in 14 minutes, 12 at once) 100,000 take about 12
   hours. Replay one program: the same seed with `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure
   prints its case and its Csmith number, `seed * 1000003 + case`).
-- Floating point timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
+- Floating point and vector timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`
+  (`WC_BENCH_RUNS`, `WC_BENCH_WORKLOADS` 1 to 4, `WC_BENCH_CHROME=0` as for the benchmarks).
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
 - Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_CHROME=100 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
   (defaults: 64 cases, seed 1, 1 case a form in Chrome, 1000 cases to a Chrome page; 6075 took 25.5 s).
@@ -1120,6 +1152,16 @@ contract's bits, in both runners).
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
 ## Cases actually run
+
+- M3 close-out, release unless said: layer 2, 500 cases seed 121 (40 on the CPU), 2000 seed 122 (20 on the
+  CPU), 1000 seed 123 (30 on the CPU), 1000 seed 124 (40 on the CPU), all with vector accesses: 0
+  mismatches (seed 124: 341 faulted, 61 left to an address at full; 22 s, load 83 to 90). The changes test,
+  300 random programs seed 1 and the C programs (3 seeds), then 1000 random programs seed 21: 0 mismatches.
+  `tests/checks.rs` and `tests/changes.rs` in full: pass. Every test of the three crates passes (debug build, Chrome tests
+  and layer 3's defaults included; 57 passed, 2 ignored; 8.7 minutes, load 49 to 93). Layer 3 after the
+  reference fixes, 200 Csmith programs seed 13, 3 at once, 2 also in Chrome: 174 compared and matching, 26
+  did not end on Linux in time, 0 failing (290 s, load 50 to 113). `floats_speed` (all four workloads, both
+  engines): output equal to Linux.
 
 - M3, third run, release: layer 3, 2000 Csmith programs, seed 11, 12 at once, 10 also in Chrome: 1751 compared
   and matching, 249 did not end on Linux in 20 seconds, 0 failing (852 s, load 15 to 70). Layer 1, 1215 forms
@@ -1315,12 +1357,11 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M3: the long runs, started by the orchestrator: layer 1 at 10,000 a form with `WC_LAYER1_CHROME` set
-   for its Chrome sample, layer 3 at 100,000 Csmith programs with `WC_LAYER3_CHROME` and `WC_LAYER3_JOBS`
-   set (commands under "How to run"; about 12 hours for layer 3 with 12 at once). Expect a few reference
-   flakes in layer 3 (see "M3, third run"); replay each.
-2. M3's independent check.
-3. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
+1. M3's independent check.
+2. M4 (bounded look-ahead and the rare paths), which also makes the changes test strong after a run's first
+   handled fault (see "Departures").
+3. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
+   (commands under "How to run"; about 12 hours for layer 3 with 12 at once).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
@@ -1363,8 +1404,6 @@ contract's bits, in both runners).
   second thread mid-loop). The Chrome runner has the same hook code.
 - Slow paths taken inside translated code (left to an address) and hook calls that do no work are counted
   with zero time; only the runner's own work is timed.
-- Layer 3's reference flake (2 in about 12,300 programs: Linux faults a clang -O0 blob once, then runs it
-  correctly) is not understood. The case fails when it happens.
 - Layer 1 checks only words the CPU we present has. Whether undefined words really raise SIGILL on a CPU
   without the feature is checked against Arm's list, not against a CPU (the reference CPU has newer
   features than the one we present).
@@ -1396,17 +1435,20 @@ contract's bits, in both runners).
 - M3: we answer CNTFRQ_EL0 as 1 GHz (the counter is the clock in nanoseconds) and CTR_EL0 with IDC and
   DIC clear, so programs that write code tell us with IC IVAU.
 
-- S1: a loop's proof failing and a kept run missing are not counted or warned (rule 5 asks it of every
-  slow twin). Both lead to the ordinary checked path, not a slow one; counting them would put a host call
-  on every failed proof and every page a walk crosses. If the orchestrator wants them counted, the cheap
-  way is a counter in the state memory read by the runner, which needs a place in the shared layout.
+- A kept run that misses is not counted or warned: it is the ordinary exact check, not a slow path
+  (orchestrator's ruling, M3 close-out). A loop whose proof fails is counted ("loop not proven").
 
 - S1 close-out: in `tests/changes.rs` changes never touch the pages from sp's page to the top of the stack,
   because the plan lets a frame's check hold until the next function entry ("What still gets through"), so
-  full and none may differ there by design. The page below sp's page is changed (often, since the
-  eleventh run), and with it memory a popped frame left below sp. Faults the test handles make the page readable and writable;
-  the plan's section 9 asks only that faults reach the hook with the same registers as none, the handling
-  is there so a run meets many faults.
+  full and none may differ there by design. Memory there that is no frame is still covered: layer 2's area
+  is in the blob since the M3 close-out, so its pages change. The page below sp's page is changed (often,
+  since the eleventh run), and with it memory a popped frame left below sp. Faults the test handles make
+  the page readable and writable; the plan's section 9 asks only that faults reach the hook with the same
+  registers as none, the handling is there so a run meets many faults. The test is weaker than its tally of
+  faults suggests: after the first fault it handles, the run carries on from the faulting instruction
+  through code translated at none, which replaces the table's pieces of every address it reaches, and the
+  functions on the stack resume at none too. So mostly the changes before a run's first fault test full
+  pieces; changes and faults after it mostly compare none with none. Bounded look-ahead (M4) is the fix.
 
 - Two kinds of module per thread: a thread module (lookup table, unwind tag, bottom loop) and code modules
   (pieces only, importing the thread module's table). The plan has every module export run and save/load;
@@ -1535,6 +1577,8 @@ contract's bits, in both runners).
 
 ## Shared crate (wcontainers-abi)
 
+- M3 close-out: no change. The new reason "loop not proven" is in the translator's contract
+  (`contract::Reason`), not in the abi.
 - M3, third run: no change.
 - M3, second run: no change.
 - M3: no change. The CPU side's own words (float tracking, exclusive monitor) are after the abi's block, in
