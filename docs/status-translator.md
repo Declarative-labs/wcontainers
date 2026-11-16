@@ -4,11 +4,89 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M5 (real code at scale): partly built in its first run (under "M5, first run"; what is left is listed there
-under "M5, what comes next"). The first run also fixed the findings of the check of M4's second run. M0 to M4
-and S1 are built; their work is recorded below, newest first. The long runs to the plan's pass bars (layer 1
-at 10,000 a form, layer 2 at one million programs, layer 3 at 100,000) are run once by the orchestrator at the
-end of the translator track; commands under "How to run".
+M5 (real code at scale): partly built in two runs (under "M5, second run" and "M5, first run"; what is left is
+under "M5, what comes next" in the second run's section). M0 to M4 and S1 are built; their work is recorded
+below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million
+programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
+under "How to run".
+
+## M5, second run
+
+Lookup design (plan section 5), both built and measured, compact chosen:
+- Built: the lookup table now holds one slot per piece, and an array of slots in the state memory (one i32
+  per 4 bytes of guest address from `table_base`, 0 for no piece) gives each address its slot. A lookup is
+  the old range and alignment test, one i32 load from the array, and `table.get`. Slot 0 stays empty (so an
+  address with no piece finds none) and slot 1 (`EXACT_SLOT`) holds the exact path's one-instruction piece,
+  in place of the old last slot. Code modules put their pieces in order from `slot_base` (one element
+  segment); the runner gives each module its slots, grows the table and writes the array from
+  `CodeModule::pieces` (the Chrome runner reads the same list from the module's description section). The
+  array is per process and the table per thread, so a module gets the same slot base in every thread. New
+  imports `slots` and `slots_cover` (contract.rs).
+- Measured (benchmark set, -O2, full, best of 3, release; the old design run from a copy of commit 0d312ab,
+  rounds alternated, load 30 to 57; seconds, old round 1 / round 2 against new round 1 / round 2):
+  wasmtime fib 2.246 / 2.418 against 2.253 / 2.400; sieve 0.642 / 0.648 against 0.660 / 0.649; sort 1.133 /
+  1.215 against 1.162 / 1.318; interpret 0.525 / 0.561 against 0.551 / 0.626; matrix 0.237 / 0.251 against
+  0.249 / 0.262; walk 2.092 / 2.145 against 2.235 / 2.222; search 0.240 / 0.200 against 0.231 / 0.227.
+  Chrome fib 2.015 / 2.179 against 2.007 / 2.126; sort 1.072 / 1.170 against 1.109 / 1.237; interpret 0.585 /
+  0.604 against 0.589 / 0.637; the others within 0.01 s. Every difference is inside this machine's 10 to 15%
+  noise; the best of each points to the compact design costing up to a few percent on calls through
+  registers (sort 2.6%, interpret 5% in wasmtime). Not settled.
+- Memory: the old table had a slot (a pointer, 8 bytes in both engines) per 4 bytes of code; Node's
+  10,003,026 slots were 80 MB in every thread. Now the table has one slot per piece (Node 120,586) per thread,
+  and the array 4 bytes per 4 bytes of code once per process (40 MB for Node), in a shared memory where
+  untouched pages cost nothing. Measured only as these sizes, not as process memory.
+- Chosen: the compact design. It is the only one within Chrome's 10,000,000 table entries for Node and Bun,
+  and no speed difference could be shown. The old design is gone (one primitive).
+
+What a call between two modules costs (`measure_calls_between_modules`, `programs/calls.c` -O2, 100 million
+direct calls of a small function, the program in one module against every piece in a module of its own;
+best of 3, wasmtime): 2.60 ns more a call (0.208 s against 0.468 s; native 0.047 s; load 30 to 32), again
+2.95 and 2.91 ns in a later run (speed and size; load 25). Not measured in Chrome: the Chrome runner cannot
+split a translation into modules yet.
+
+Size, first what is free (section 11, step 1), each measured by itself (translation only, release, bytes of
+WebAssembly; before / after):
+- Flags written back: the NZCV word was built flag by flag, and for flags whose state is known only at run
+  time each of the four flags had its own choice between states, each working out the kept comparison again.
+  Now the word is worked out once for each state. busybox 38,916,859 / 33,934,500 (-12.8%), musl 17,145,765 /
+  15,157,213 (-11.6%), rg 160,947,565 / 143,614,742 (-10.8%), git 126,677,601 / 112,987,851 (-10.8%), python
+  161,387,477 / 143,036,317 (-11.4%), java 639,562,571 / 563,342,889 (-11.9%), go 408,425,275 / 359,573,773
+  (-12.0%); the benchmark set 360,994 / 312,018 (load 34 to 40). Run speed (benchmark set, best of 3, load
+  27 to 33, against the lookup rounds above): fib 2.405, sieve 0.650, sort 1.092, interpret 0.547, matrix
+  0.234, search 0.232 in wasmtime; Chrome fib 2.123, sort 1.079, interpret 0.603, matrix 0.168: no loss.
+  Kept in both settings.
+- Where the rest goes (the benchmark set after the change, `wasm-tools print` and a script in scratch,
+  `m5r2/slow.py`): 28% of the instructions are in slow paths that end in `unreachable` (623 of them, about 70
+  instructions each: registers written back, the flags word, the passed registers and pc, the hook call);
+  `main` alone is 32,440 of 154,391 lines of text. Not reduced yet.
+
+The setting (section 11): `Optimise::{Speed, Size}`, a parameter of `translate` (also of `translate_omitting`
+and `translate_in_modules`), written in the description section (format version 3: a byte after the
+look-ahead). Speed is the default and gives up nothing. The runners take it (`Machine::optimise_for`, used
+for code made at run time too; the Chrome runner's setup `optimise`). Mixed runs (layers 2 and 3, the program
+tests) now load full look-ahead translations in both settings, a bounded one in a random setting, and make
+code at run time in a random setting, so pieces of both settings meet in every mixed run. The size mode,
+one trade at a time:
+- Trade 1, no copy of a proven loop without its checks (every loop keeps only its checked copy). Size:
+  busybox 33,524,703 (-1.2% from speed), musl 14,671,148 (-3.2%), rg 139,745,007 (-2.7%), git 111,660,457
+  (-1.2%), python 140,363,235 (-1.9%), java 555,484,478 (-1.4%), go 355,632,306 (-1.1%); benchmark set
+  284,057 (-9%). Speed (benchmark set, best of 3, load 35 to 52, against speed's figures above): wasmtime
+  matrix 0.637 s (2.7 times slower), search 0.418 (1.8 times), interpret 0.595 (9%), others the same; Chrome
+  matrix 0.251 (1.5 times), search 0.362 (1.5 times), sieve 0.623 (18%). A poor trade on its own; kept
+  because trade 2 needs it (a loop without its own loop piece cannot carry on after a stop where its proof is
+  made again).
+- Trade 2, no loop pieces: a stop at a jump back carries on in place (what irreducible loops already did).
+  Size, from trade 1: busybox 19,077,708 (-43%; 27.1 bytes a byte of code), musl 8,646,183 (-41%), rg
+  53,558,478 (-62%), git 62,767,687 (-44%), python 80,524,723 (-43%), java 337,272,362 (-39%), go
+  222,990,220 (-37%); the benchmark set 130,762 (-54%) (load 42 to 49). Gzipped 7.9 to 12.8 bytes a gzipped
+  byte of code, against 14.2 to 25.9 for speed. Speed (best of 3, load 21 to 28): wasmtime about as trade 1
+  (sieve 0.803, matrix 0.507, search 0.478, interpret 0.639; fib, hash, sort, walk unchanged); Chrome much
+  slower where a long loop runs in a function entered once, because V8 only tiers a function up when it is
+  called again: matrix 1.360 s (8 times speed's 0.168), search 2.170 (9 times), hash 1.453 (2.5 times),
+  sieve 0.918 (1.7 times), interpret 0.800 (1.3 times); fib, sort, walk unchanged.
+- Translation is faster in size mode (busybox 0.50 s against 0.59 s; rg 1.53 against 2.31).
+
+elfconv (the benchmark to beat): see "elfconv" below.
 
 ## M5, first run
 
@@ -1527,8 +1605,13 @@ contract's bits, in both runners).
   (names: busybox, musl, rg, git, node, python, bun, java, go; all when unset; each is taken from its Docker
   image into `target/binaries` once, which needs network). Node and Bun take minutes each and 15 to 20 GB of
   memory (wasmtime compiling several GB of WebAssembly); run them alone.
+- What a call between code modules costs (wasmtime): `nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks measure_calls -- --ignored --nocapture`
+  (`WC_CALLS`, default 100 million; `WC_BENCH_RUNS`).
+- Size only, no engines: `WC_BINARIES_ENGINES=0` on the real binaries command; `WC_OPTIMISE=speed` or `size`
+  for one setting (both by default); `WC_BINARIES_DUMP=<dir>` writes each module.
 - Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
+  (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out, `WC_OPTIMISE=size`
+  translates for size). About 15 minutes.
 
 ## Cases actually run
 
@@ -1761,8 +1844,11 @@ contract's bits, in both runners).
   from the run of runnable pages) keeps the old code after `ic ivau`, as the "code changed" gap below says.
 - M5: a switch table of more than 65,520 slots (an engine limit for `br_table`) is left unrecognised (counted
   as "jump through a register not recognised"); Bun has one of 360,445.
-- M5: only the lookup design of one slot per 4 bytes is built. Chrome allows 10,000,000 table entries, so
-  Node (10,003,026 instruction slots) and Bun (13,012,700) cannot be loaded in Chrome with it.
+- M5: translated for size, a long loop in a function entered once stays in V8's baseline code in Chrome (no
+  loop pieces to carry on in after a stop), up to 9 times slower than speed on the benchmark set. That is the
+  trade the size setting makes; measured under "M5, second run".
+- M5: the Chrome runner cannot split a translation into modules, so a call between modules is timed in
+  wasmtime only.
 
 - FPSR's cumulative exception flags are kept only once the program has written FPSR (or set FPCR); a
   program that reads them without ever writing gets the flags it had, counted and warned as "exact
@@ -1795,6 +1881,13 @@ contract's bits, in both runners).
   features than the one we present).
 
 ## Departures from the plan
+
+- M5, second run: the compact lookup's array of slots is in the state memory, per process, written by the
+  runner (later the kernel) from each code module's list of pieces; the table is per thread and grows; slot 0
+  is always empty and slot 1 holds the exact path's piece (the plan says only "an array in memory from code
+  offset to slot").
+- M5, second run: size mode's trades are no proven loop copies and no loop pieces; the first costs much in
+  loops and saves little, but the second needs it.
 
 - M5: Node is taken from the official `node:24-alpine3.22` image (Node 24.16.0, 125 MB, 40 MB of code, 10.0
   million instructions), not Alpine's own `nodejs` package (Node 22, 51 MB, 25 MB of code): the plan's figures
@@ -2007,6 +2100,9 @@ contract's bits, in both runners).
   `memory_may_move(false)`).
 
 ## Shared crate (wcontainers-abi)
+
+- M5, second run: no change. The array of slots, its imports and the exact slot are in the translator's
+  contract (`contract.rs`).
 
 - M5: no change. A jump to code that may not run uses the existing `Access::Execute`.
 

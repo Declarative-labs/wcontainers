@@ -63,11 +63,13 @@ pub(crate) fn plan<'a>(
         .map(|f| Plan::new(f, &finder.decoded, Seed::NOTHING))
         .collect();
 
-    // Loop pieces, by the function they come from; with no stop checks nothing enters them.
+    // Loop pieces, by the function they come from; with no stop checks nothing enters them. Translated for
+    // size, there are none: a stop at a jump back carries on in place.
     let mut loops: Vec<Vec<(Function, Plan)>> = Vec::new();
+    let pieced = !omit.stop && optimise == Optimise::Speed;
     for (function, plan) in functions.iter().zip(&plans) {
         let mut own = Vec::new();
-        for (h, others) in plan.outside.iter().filter(|_| !omit.stop) {
+        for (h, others) in plan.outside.iter().filter(|_| pieced) {
             let headers: Vec<u64> = others.iter().map(|&d| function.blocks[d].start).collect();
             let start = function.blocks[*h].start;
             // A stretch's loop piece stays within the stretch.
