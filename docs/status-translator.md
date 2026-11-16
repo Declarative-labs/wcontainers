@@ -42,7 +42,24 @@ checkout, and the tests build the reference runner and the browser translator fr
 on a fix in the checkout would have run in the next chunk under the old commit. Now the driver refuses a tree
 with uncommitted changes, exports the commit (`git archive`) to `WC_LONG_DIR/trees/<commit>`, and builds and
 runs there (target directory `WC_LONG_DIR/target`, shared by every copy). To run a fix, stop the driver,
-commit, and start it again with `WC_LONG_ACCEPT`.
+commit, and start it again with `WC_LONG_ACCEPT`. Checked: layer 1 at 1 percent from the copy (seed 31,
+commit a31bb6f) passed, 121,500 cases and 1,215 in Chrome, 70 s, load 10 to 11; the copy built its own
+reference runner and browser translator.
+
+The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three layers at 100 percent, 6 at once):
+- Directory: `/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long`
+  (`ledger.txt`, `driver.log`, `logs/`, `trees/`, `target/`).
+- Alive? `pgrep -fl long-runs.sh` (one line; never start a second beside it). What it is doing: `tail -3
+  .../p2/long/driver.log`. Done so far: `cut -f1,2,4,6,7,10 .../p2/long/ledger.txt`.
+- Restart after a stop or a fix (from the checkout root, all committed):
+  `WC_LONG_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long WC_LONG_SEED=100 WC_LONG_ACCEPT=c38b4ad nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh >> .../p2/long/driver.log 2>&1 &`
+  It skips every chunk that passed on c38b4ad or later and runs the rest. To stop it: `pkill -f long-runs.sh`,
+  then stop its `cargo test` and remove its containers (`docker ps -aq --filter name=wc-translator- | xargs
+  docker rm -f`).
+- After the last fix: the confirmation, 5 percent of each layer on the final commit with base seed 200 (not
+  used before): the same command with `WC_LONG_PERCENT=5 WC_LONG_SEED=200` and a new `WC_LONG_DIR`.
+- Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
+  load.
 
 ## P1: close-out of M5 and the long-run driver
 
