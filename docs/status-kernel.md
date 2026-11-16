@@ -678,6 +678,8 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
+- sendfile into a full pipe or terminal that blocks returns what fit (nothing); Linux waits for room
+  (`splice_file_to_pipe`'s and `tty_write`'s waits). Nonblocking ones answer as Linux.
 - Where the kernel's source of a copy lies within 16 bytes decides what a buffer that faults part
   way receives; it is measured for the calls tests/partialcopy.rs makes and assumed aligned to 8
   elsewhere (Linux's stack layout of each call is its compiler's). Calls Linux copies field by field
@@ -712,10 +714,20 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, end of K2's third run; counts under Measurements)
+## Tests (last run 2026-11-16, end of K2's fourth run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's third run (each guest's
-reference output was read and checked against Linux's source):
+All pass except the ignored known failures listed above. Added in K2's fourth run:
+- partialcopy: guest/partialcopy.c makes 47 kinds of call (stat family, statfs, uname, the clocks,
+  sysinfo, rusage, times, limits, signal masks and actions, pipe2, getcwd, scheduling, readlink of a
+  `/proc` link and a tmpfs link, getdents64, reads of a tmpfs file, a pipe, a terminal, `/proc` seq
+  files, cmdline, a sysctl, the random devices, getrandom, getresuid, getgroups, getcpu, wait4,
+  ppoll, pselect6, prctl, FIONREAD, sendfile's offset) with its buffer ending 0 to N bytes before a
+  read-only page, and prints the end of what each stored and whether it failed. Same output.
+- transfer `partial_copies_match_reference` is no longer ignored (it passes).
+- sigio: a terminal writer that found no room hears of it when the reader empties the other side,
+  once per write that found none.
+
+Added in K2's third run (each guest's reference output was read and checked against Linux's source):
 - privatemap: guest/privatemap.c: later writes by pwrite and by a shared mapping seen by pages not
   written, the kernel's read into a page, MADV_DONTNEED, mprotect, MAP_POPULATE writable and read
   only, MADV_POPULATE_WRITE and READ, mlock, truncation (SIGBUS for copies past the end, the pages
@@ -885,6 +897,19 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K2's fourth run: seed 410 (statfs into a buffer that faults part way) passed 20000 after the copy
+fix (337 s, load about 60 to 90). Terminals generated (see "Where things stand"): seed 420 (1000)
+found O_DIRECT on `/dev/tty` and then a reference runner that did not put back `/dev/tty`, `/dev/ptmx`
+and `/dev/pts/ptmx` after a sequence changed them (the runner now remakes them); seed 423 (2000)
+found sendfile from a terminal and RWF_NOWAIT on one; all fixed, then 423 (2000) and 424, 425, 426
+(5000 each, 83 s, three side by side, load 50 to 90) passed with about 2500 terminal opens each.
+Fork generated: seed 427 (2000) found the reference's runner keeping the orphans of earlier
+sequences, which `kill(-1)` then reached (the runner now reaps them); seed 428 (5000) found a wait
+for stops alone answered 0 with only an ended child (Linux: ECHILD), and that the runner's wait for a
+child with no exit signal needs __WALL; seed 431 (5000) found sendfile into a terminal. All fixed;
+428, 429, 430, 431 and 432 passed 5000 each (82 to 86 s, load 50 to 90), with 100 to 300 children
+made per 5000 sequences.
+
 K2's third run: with named pipes generated, seed 409 found that a named pipe opened with O_DIRECT
 answers its open's own error first (ENXIO) and EINVAL only after the open (`do_dentry_open`); seed
 410 found that locking droppable memory that allows nothing is ENOMEM (measured; readable droppable
@@ -1015,6 +1040,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 fourth run: layer 1, 5000 sequences, three side by side: 82 to 86 s each (load 50 to 90);
+  20000 sequences alone: 337 s (load 60 to 90); 2000 sequences alone: 34 to 67 s (load 50 to 90).
+  tests/partialcopy.rs 2.3 to 3 s (load 60 to 90).
 - K2 third run: the whole test suite of both crates 82 passed, 0 failed, 7 ignored, 129 s wall with
   two test threads beside four layer 1 runs (load 48 at the start, 20 at the end); earlier 77
   passed, 118 s (load up to 283, the other half's heavy run). Layer 1, 20000 sequences, five side by
@@ -1162,6 +1190,13 @@ All on this shared Mac; noisy, not benchmarks.
 - Docker's device rules (which devices a container may open) are modelled from runc's default list
   and measured in the reference (mknod then open: 1:1, 4:1, 200:7 and block devices EPERM, a missing
   pty slave EIO, the tunnel opens); with cgroup v2 they are an eBPF program in Linux, a table here.
+- What a buffer that faults part way receives depends on where the reference kernel's own copy lies
+  within 16 bytes (its compiler's stack layout); that is measured for the calls tests/partialcopy.rs
+  makes (uname's lies 1 past alignment, the random devices' block 8 past) and taken as aligned to 8
+  elsewhere.
+- Layer 1's reference runner polls every descriptor twice after each call of a sequence with a
+  pseudo-terminal (Linux's buffer work runs later from a work queue; ours at once), and such
+  sequences write at most 256 bytes a call. A child made by clone in layer 1 ends at once.
 - A named pipe's open waiting for the other end keeps the file it makes in the thread's `opening`
   slot beside the call slot (the plan's one fixed slot holds only plain values): the file must count
   as an end while it waits, as Linux's does. It is given up when the call ends any other way or the
@@ -1193,6 +1228,7 @@ written". "wake to run" is a measurement (count and total nanoseconds), not a sl
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K2, fourth run: none.
 - K2, third run: none.
 
 - K2, second run: none. (`Event::TerminalInput` and `TerminalResized`, for a container's own
@@ -1227,14 +1263,14 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2, what is left, in order: a `copy_to_user` that faults part way writes the bytes before the
-   fault, as arm64's copy routine stores them (seed 410's last finding, replay with
-   `LAYER1_CASES=20000 LAYER1_SEED=410`; `Guest::write` is all or nothing, user.rs already models the
-   copy template for overlaps; the transfer test's ignored known failure is the same routine);
-   terminal calls in layer 1 (`/dev/ptmx` and a slave in the path pool; the reference's runner polls
-   every terminal descriptor after each call so Linux's buffer work has run, since `n_tty_poll` flushes
-   it, and our runner makes the same calls; FIONREAD and TIOCINQ do not flush, so they must come after
-   such a poll; large writes to a terminal differ by the buffer limit departure); fork and clone in
-   layer 1.
-2. The missing calls above by their milestone; the known gaps above before K6's bar.
-3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
+1. K2, what is left, in order: the calls the Missing list gives to K2: System V shared memory
+   (shmget, shmat, shmdt, shmctl: a shared mapping of an internal tmpfs file, as section 7 says, with
+   `/SYSV%08x` in maps), then its semaphores and message queues and POSIX message queues; splice,
+   tee and vmsplice (pipes); pidfd_open, pidfd_send_signal, waitid's P_PIDFD and CLONE_PIDFD (process
+   descriptors), process_mrelease; signalfd4 (with K5's waiting on many things if simpler). Each
+   with a guest test against the reference and layer 1 generation.
+2. Small gaps of K2: a release I/O signal per pipe end when several close at once (only one is sent);
+   sendfile into a full blocking pipe or terminal waits on Linux.
+3. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1).
+4. The missing calls of later milestones; the known gaps above before K6's bar.
+5. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
