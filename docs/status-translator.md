@@ -1171,6 +1171,14 @@ contract's bits, in both runners).
 - Translator proptest: `PROPTEST_CASES`, `PROPTEST_RNG_SEED` (default seed 1).
 - Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
   (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
+- Bounded look-ahead of random N against none (C programs, every piece but the first made at run time):
+  `WC_LOOKAHEAD_CASES=<n> WC_LOOKAHEAD_SEED=<s> nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads -- --nocapture`
+  (defaults 4 a program, seed 1). Layers 2 and 3 also run every case at bounded look-ahead of a random N and
+  mixed with events injected (`src/mixed.rs`): layer 2's N and mixing seed come from its proptest case, layer
+  3's from a hash of the blob, so the same knobs replay them.
+- Time to translate and load one piece at run time, wasmtime and Chrome:
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads measure_translating -- --ignored --nocapture`.
+- The cost of the stack budget check: the benchmarks with `WC_BENCH_VARIANTS=1,5` (every check, no depth check).
 - Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (defaults 64 random programs, seed 1, 3 seeds for each C program; since the eleventh run about 33 ms
   a random program at load 16 to 21, as every program now calls a function that makes a system call).
@@ -1394,9 +1402,8 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M3's independent check.
-2. M4 (bounded look-ahead and the rare paths), which also makes the changes test strong after a run's first
-   handled fault (see "Departures").
+1. M4's independent check.
+2. M5 (real code at scale).
 3. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
    (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
 
@@ -1411,25 +1418,13 @@ contract's bits, in both runners).
   hold the code inline elsewhere keep it. Code that changes is out of phase one.
 - The float hook's counters carry the operation as their detail, not the address (registers are not saved
   at that hook).
-- Flat blobs carry their program headers after the image (since M3's second run), but the image has no
-  PT_PHDR and `flat.ld` places no thread local sections, so thread local data is not supported in test
-  programs.
-- At full, a floating point instruction that must take the slow path leaves for code at none from that
-  instruction, translated at run time, and the rest of that function call runs at none. The runner's code
-  translated at run time then holds the table's place at every address it reaches (the M2 departure on code
-  translated at run time), so calls through the table into those functions run at none afterwards too.
-  Exact either way; bounded look-ahead (M4) is the plan's answer.
+- Flat blobs carry their program headers after the image, but the image has no PT_PHDR, so musl finds
+  thread local data (placed by `flat.ld` since M4) only in a blob that is not moved.
+- At full, a floating point instruction that must take the slow path runs alone from its piece of look-ahead
+  none (the table's last slot), then the function carries on in pieces of bounded look-ahead made from the
+  next instruction. Exact either way.
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
-- The WebAssembly stack overflowing on deep guest recursion is not handled, at either look-ahead: every
-  guest call is a WebAssembly call at none too. The engine stops the guest ("call stack exhausted"), the
-  registers are lost and the runner panics; nothing is counted or warned. The independent check found it
-  with recursion 50,000 deep in 16 byte frames (800 KB of a 1 MiB stack), which Linux runs. The plan's way
-  out is the "stack is lost" path (M4): count call depth and, past a limit, leave to the bottom loop and
-  carry on from the guest's own stack. Not built; its cost on calls is unmeasured.
-- Not yet in the across-layer tests: pieces of different look-aheads mixed at random, and injected rare
-  events other than the stop flag (stack lost, missing piece) (M4 per the plan's milestones). Faults with
-  the table changed at random stops and system calls are in `tests/changes.rs` since S1's close-out;
-  bounded look-ahead does not exist yet, so only full is compared with none there.
+- Programs that switch stacks themselves were not tried (plan section 13).
 - A test whose guest never ends hangs rather than fails (nothing bounds how long a translated run may
   take); the hang this run fixed showed as layer 2 and `tests/checks.rs` running for ever.
 - The full piece of a function keeps every local it may need; very large functions could pass V8's 50,000
@@ -1481,11 +1476,11 @@ contract's bits, in both runners).
   is in the blob since the M3 close-out, so its pages change. The page below sp's page is changed (often,
   since the eleventh run), and with it memory a popped frame left below sp. Faults the test handles make
   the page readable and writable; the plan's section 9 asks only that faults reach the hook with the same
-  registers as none, the handling is there so a run meets many faults. The test is weaker than its tally of
-  faults suggests: after the first fault it handles, the run carries on from the faulting instruction
-  through code translated at none, which replaces the table's pieces of every address it reaches, and the
-  functions on the stack resume at none too. So mostly the changes before a run's first fault test full
-  pieces; changes and faults after it mostly compare none with none. Bounded look-ahead (M4) is the fix.
+  registers as none, the handling is there so a run meets many faults. Before M4 the test was weaker than its
+  tally of faults suggests: after the first fault it handled, the run carried on through code translated at
+  none, which replaced the table's pieces of every address it reached. Since M4 the run carries on in pieces
+  of bounded look-ahead put only at their own address, so every function's full piece stays in the table;
+  see "M4, first run".
 
 - Two kinds of module per thread: a thread module (lookup table, unwind tag, bottom loop) and code modules
   (pieces only, importing the thread module's table). The plan has every module export run and save/load;
@@ -1547,13 +1542,11 @@ contract's bits, in both runners).
 - After a system call, and after the stop hook says carry on at a switch's jump back, registers are loaded
   back from the thread block instead of being kept across the call (it keeps registers out of
   callee-saved registers). Elsewhere since S1 a piece does not reload after carrying on: see S1.
-- A frame or group permission check that fails leaves to the instruction and carries on at none from
-  there ("left to an address"), instead of working out the exact fault in the piece. Exact either way.
-  For this the contract has a third unwind payload, `UNWIND_GO_TO_EXACT`, and the load code hook may be
-  asked for code at an address that has a piece (it puts one translated at none there, unless the one
-  there already is). After that the table holds none code at that address, so calls through the table run
-  it at none; direct calls still reach the full piece, whose check fails and leaves again each time
-  (counted and warned each time; the runner does not translate again).
+- A frame or group permission check that fails leaves to the instruction (`UNWIND_GO_TO_EXACT`, counted
+  as "left to an address") instead of working out the exact fault in the piece. Since M4 that one
+  instruction runs alone from its piece of look-ahead none, which the load code hook puts in the lookup
+  table's last slot (a slot for no address), and the thread carries on through the table from the next
+  instruction, in pieces of bounded look-ahead. The table's pieces are never replaced for it.
 - The permission check of none changed shape too (fast test, then exact test), so both look-aheads share
   it; layer 1 passed after the change.
 - Without the permission check (`Omit::permissions`, only for measuring) addresses are not untagged either,
@@ -1568,13 +1561,9 @@ contract's bits, in both runners).
 - Layer 2 compares against the real CPU only for the first `WC_LAYER2_NATIVE` cases, because the
   reference runs one blob per container; full against none is compared for every case.
 - Layer 2 writes `mrs`/`msr nzcv` as raw words, because dynasm has no name for the register.
-- Code translated at run time is at look-ahead none, and its pieces replace whatever the table held for
-  every address it reaches (including full pieces). Correct; after a "go to address" later calls through
-  the table may reach none pieces. So one "left to an address" (a group or frame check that fails, a
-  tagged pointer in a group, a callee that moves sp, a jump through a table to a target not in it) runs
-  the rest of that function, and what it reaches, at none. The independent check measured this (one
-  unrecognised jump taken twice: 3 translations at run time). Left as is in M2: bounded look-ahead (M4)
-  is the plan's answer, and its pieces will not need to replace full ones.
+- Code translated at run time (M4): the load code hook puts one piece, of bounded look-ahead from the
+  address asked for, at that address only, and only where the table holds none (the wasmtime runner
+  asserts it). A runner's reference machine at none translates code reached at run time at none.
 - Vector registers, FPSR and FPCR at the start of a flat blob: the runners and the reference start v0 to
   v31 at zero, as Linux does at exec. The reference leaves FPSR and FPCR as its own process had them.
 

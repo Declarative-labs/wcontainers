@@ -80,15 +80,20 @@ fn measure_translating_at_run_time() {
                 .into_iter()
                 .find(|c| c.reason == Reason::TranslatedAtRunTime.name())
                 .expect("translated at run time");
-            let report = browser::translated_with(&blob, look_ahead, Default::default());
-            let chrome = report.count("translated at run time");
             println!(
-                "{name} {optimisation} at bounded {bound}: wasmtime {} pieces, {:.0} us each; Chrome {chrome} pieces, \
-                 {:.0} us each",
+                "{name} {optimisation} at bounded {bound} in wasmtime: {} pieces, {:.0} us each",
                 reading.count,
                 reading.nanoseconds as f64 / reading.count as f64 / 1e3,
-                report.time("translated at run time") as f64 / chrome as f64 / 1e3,
             );
+            // The Chrome runner makes pieces at run time at the default N only.
+            if bound == wcontainers_translator::BOUND {
+                let report = browser::translated_with(&blob, look_ahead, Default::default());
+                let chrome = report.count("translated at run time");
+                println!(
+                    "{name} {optimisation} at bounded {bound} in Chrome: {chrome} pieces, {:.0} us each",
+                    report.time("translated at run time") as f64 / chrome as f64 / 1e3,
+                );
+            }
         }
     }
 }

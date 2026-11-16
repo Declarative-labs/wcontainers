@@ -1420,7 +1420,9 @@ impl<'a> FullEmitter<'a> {
             e.sink().i32_const(FLAGS_IN_BLOCK as i32).local_set(state);
         }
         if e.entry_check {
-            e.stop_check(Pc::Offset(function.entry), AfterStop::Continue);
+            // One branch for both entry checks: the stop flag, and the stack budget.
+            let depth = (!omit.depth).then_some(function.entry);
+            e.stop_check_or_deep(Pc::Offset(function.entry), AfterStop::Continue, depth);
         }
         for bit in plan.live_in[0].bits() {
             let local = e.register(bit);
@@ -1441,7 +1443,7 @@ impl<'a> FullEmitter<'a> {
             .i64_add()
             .local_set(e.depth);
         // Only a piece that calls or leaves to others can be part of deep recursion.
-        if (plan.calls_out || loop_piece) && !omit.depth {
+        if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
             let block = Fixed::Global(G_THREAD_BLOCK);
             depth_check(&mut s, e.depth, block, function.entry);
         }
@@ -1887,16 +1889,32 @@ impl<'a> FullEmitter<'a> {
     /// Call the stop hook if the flag is raised, then carry on as `after` says: when the hook says carry on,
     /// nothing has changed.
     fn stop_check(&mut self, pc: Pc, after: AfterStop) {
+        self.stop_check_or_deep(pc, after, None);
+    }
+
+    /// [`Self::stop_check`], at a piece's entry also leaving to the bottom loop when the depth is past the
+    /// budget, with `pc` at the entry given.
+    fn stop_check_or_deep(&mut self, pc: Pc, after: AfterStop, deep: Option<u64>) {
         self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
+        let depth = self.depth;
         let mut s = self.sink();
         block.push(&mut s);
         s.i32_load(memarg(
             MEMORY_STATE,
             wcontainers_abi::STOP_FLAG_OFFSET as u64,
             2,
-        ))
-        .if_(BlockType::Empty);
+        ));
+        if let Some(entry) = deep {
+            s.local_get(depth)
+                .i64_const(STACK_BUDGET)
+                .i64_gt_u()
+                .i32_or()
+                .if_(BlockType::Empty);
+            depth_check(&mut s, depth, block, entry);
+        } else {
+            s.if_(BlockType::Empty);
+        }
         if let AfterStop::Hand(f) = after {
             self.write_back(false);
             self.arguments();
