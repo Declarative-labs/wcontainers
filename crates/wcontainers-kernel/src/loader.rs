@@ -13,7 +13,7 @@ use wcontainers_abi::{
 
 use crate::fs::{Content, Node};
 use crate::linux::auxvec::*;
-use crate::linux::general::{R_OK, S_IFLNK, S_IFMT, S_IFREG, X_OK};
+use crate::linux::general::{ARG_MAX, PATH_MAX, R_OK, S_IFLNK, S_IFMT, S_IFREG, X_OK};
 use crate::memory::{AddressMap, Backing, Mapping, STACK_LIMIT, page_down, page_up};
 use crate::process::{Pid, StartingStack};
 use crate::{Context, Errno, Kernel, errno};
@@ -32,6 +32,69 @@ const SCRIPT_LINE: usize = 256;
 
 /// What the stack is given beyond the arguments when a program starts (Linux's `stack_expand`).
 const STACK_EXPAND: u64 = 128 << 10;
+
+/// An ELF file header and program header as Linux reads them.
+type Header = elf::FileHeader64<LittleEndian>;
+type Segment = elf::ProgramHeader64<LittleEndian>;
+
+/// Why a program could not be started.
+pub(crate) enum Failed {
+    /// Before the point of no return: the caller's program carries on and gets the error.
+    Refused(Errno),
+    /// After it (`begin_new_exec`): there is nothing to go back to, and the process dies of SIGSEGV
+    /// (`bprm_execve`).
+    Fatal,
+}
+
+impl From<Errno> for Failed {
+    fn from(error: Errno) -> Self {
+        Self::Refused(error)
+    }
+}
+
+fn fatal(_: Errno) -> Failed {
+    Failed::Fatal
+}
+
+/// The room Linux gives the strings a program starts with (`bprm_stack_limits`): a quarter of the
+/// stack limit, at most three quarters of 8 MiB and at least `ARG_MAX`, less a pointer to each
+/// argument (at least one) and variable.
+pub(crate) struct ArgumentRoom(u64);
+
+impl ArgumentRoom {
+    pub(crate) fn new(
+        stack_limit: u64,
+        arguments: usize,
+        environment: usize,
+    ) -> Result<Self, Errno> {
+        let limit = (STACK_LIMIT / 4 * 3)
+            .min(stack_limit / 4)
+            .max(u64::from(ARG_MAX));
+        let pointers = (arguments.max(1) as u64 + environment as u64) * 8;
+        if limit <= pointers {
+            return Err(Errno::E2BIG);
+        }
+        Ok(Self(limit - pointers))
+    }
+
+    /// Takes room for one string and its terminating zero (`bprm_hit_stack_limit`).
+    pub(crate) fn take(&mut self, string: &[u8]) -> Result<(), Errno> {
+        self.0 = self
+            .0
+            .checked_sub(string.len() as u64 + 1)
+            .ok_or(Errno::E2BIG)?;
+        Ok(())
+    }
+
+    /// With no arguments, Linux gives the program an empty first one (`do_execveat_common`).
+    pub(crate) fn first_argument(&mut self, arguments: &mut Vec<Vec<u8>>) -> Result<(), Errno> {
+        if arguments.is_empty() {
+            self.take(b"")?;
+            arguments.push(Vec::new());
+        }
+        Ok(())
+    }
+}
 
 /// A program placed in a new memory, ready to replace the process's old one.
 pub(crate) struct Image {
@@ -71,6 +134,21 @@ pub(crate) fn open_program(
 ) -> Result<Program, Errno> {
     let cwd = kernel.processes[&pid].cwd.clone();
     open_program_at(kernel, cpu, pid, &cwd, path, true)
+}
+
+/// Finds a file to run by a name the kernel made (`open_exec`): one that may be empty
+/// (`getname_kernel`), which names the working directory and so no program.
+fn open_named_program(
+    kernel: &Kernel,
+    cpu: &mut dyn Cpu,
+    pid: Pid,
+    path: &[u8],
+) -> Result<Program, Errno> {
+    if path.is_empty() {
+        let cwd = kernel.processes[&pid].cwd.clone();
+        return program_of(kernel, cpu, pid, cwd, Vec::new());
+    }
+    open_program(kernel, cpu, pid, path)
 }
 
 /// The same from `start`; not following a link as the last part makes one ELOOP.
@@ -133,6 +211,10 @@ pub(crate) fn program_of(
 
 /// Loads the program at `path` into a new memory for process `pid`. Nothing about the process changes;
 /// on failure nothing is left behind.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the parts of one exec, each distinct"
+)]
 pub(crate) fn load(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -141,8 +223,10 @@ pub(crate) fn load(
     program: Program,
     arguments: Vec<Vec<u8>>,
     environment: Vec<Vec<u8>>,
-) -> Result<Image, Errno> {
+    room: ArgumentRoom,
+) -> Result<Image, Failed> {
     let mut arguments = arguments;
+    let mut room = room;
     let mut file_name = path.to_vec();
     let mut program = program;
     let mut readable = program.readable;
@@ -152,26 +236,28 @@ pub(crate) fn load(
             break;
         }
         if depth == MAX_INTERPRETERS {
-            return Err(Errno::ELOOP);
+            return Err(Errno::ELOOP.into());
         }
         let (interpreter, argument) = parse_script_line(&program.bytes)?;
         // The interpreter would open the script by a path the new program cannot reach.
         if !program.reopenable {
-            return Err(Errno::ENOENT);
+            return Err(Errno::ENOENT.into());
         }
+        // `remove_arg_zero`, then the file's name, the argument and the interpreter's name.
+        if let Some(first) = arguments.first() {
+            room.0 += first.len() as u64 + 1;
+        }
+        room.take(&file_name)?;
+        if let Some(argument) = &argument {
+            room.take(argument)?;
+        }
+        room.take(&interpreter)?;
         let mut new_arguments = vec![interpreter.clone()];
         new_arguments.extend(argument);
         new_arguments.push(file_name.clone());
         new_arguments.extend(arguments.into_iter().skip(1));
         arguments = new_arguments;
-        program = if interpreter.is_empty() {
-            // A name the kernel makes may be empty (`getname_kernel`), which names the working
-            // directory: no program.
-            let cwd = kernel.processes[&pid].cwd.clone();
-            program_of(kernel, cx.cpu, pid, cwd, Vec::new())?
-        } else {
-            open_program(kernel, cx.cpu, pid, &interpreter)?
-        };
+        program = open_named_program(kernel, cx.cpu, pid, &interpreter)?;
         readable &= program.readable;
         file_name = interpreter;
     }
@@ -238,6 +324,104 @@ fn parse_script_line(bytes: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), Errno> 
     Ok((string(name), argument.map(string)))
 }
 
+/// Bytes of a file from `offset`, as many as it has up to `length`, as Linux's `kernel_read`: an
+/// offset a file position cannot hold is EINVAL (`rw_verify_area`).
+fn file_bytes(bytes: &[u8], offset: u64, length: u64) -> Result<&[u8], Errno> {
+    let end = offset
+        .checked_add(length)
+        .filter(|end| *end <= i64::MAX as u64)
+        .ok_or(Errno::EINVAL)?;
+    let clamp = |at: u64| usize::try_from(at).unwrap_or(usize::MAX).min(bytes.len());
+    Ok(&bytes[clamp(offset).min(clamp(end))..clamp(end)])
+}
+
+/// The same, all of it or EIO (`elf_read`).
+fn elf_read(bytes: &[u8], offset: u64, length: u64) -> Result<&[u8], Errno> {
+    let read = file_bytes(bytes, offset, length)?;
+    if read.len() as u64 != length {
+        return Err(Errno::EIO);
+    }
+    Ok(read)
+}
+
+/// A program's file header as Linux sees it: its first bytes, padded with zeros.
+fn file_header(bytes: &[u8]) -> Header {
+    let mut buffer = [0u8; size_of::<Header>()];
+    let length = bytes.len().min(buffer.len());
+    buffer[..length].copy_from_slice(&bytes[..length]);
+    *object::pod::from_bytes::<Header>(&buffer)
+        .expect("a header's bytes")
+        .0
+}
+
+/// The program headers, as Linux's `load_elf_phdrs`: entries of Linux's size, at least one and at
+/// most 64 KiB of them, all in the file.
+fn program_headers(bytes: &[u8], header: &Header) -> Option<Vec<Segment>> {
+    let endian = LittleEndian;
+    if usize::from(header.e_phentsize(endian)) != size_of::<Segment>() {
+        return None;
+    }
+    let count = usize::from(header.e_phnum(endian));
+    let size = (size_of::<Segment>() * count) as u64;
+    if size == 0 || size > 65536 {
+        return None;
+    }
+    let raw = elf_read(bytes, header.e_phoff(endian), size).ok()?;
+    let (segments, _) = object::pod::slice_from_bytes::<Segment>(raw, count).ok()?;
+    Some(segments.to_vec())
+}
+
+/// Linux's `parse_elf_properties` and arm64's `arch_parse_elf_property` on the file whose properties
+/// count (the loader's when there is one): one GNU property note of at most 1 KiB whose properties
+/// are whole, sorted and unique. The CPU has no branch target identification, so what they ask for
+/// changes nothing.
+fn check_properties(bytes: &[u8], segment: Option<&Segment>) -> Result<(), Errno> {
+    let Some(segment) = segment else {
+        return Ok(());
+    };
+    let endian = LittleEndian;
+    // `struct elf_note`, the name "GNU" and the alignment of properties on a 64 bit machine.
+    const NOTE_HEADER: usize = 12;
+    const ALIGN: usize = 8;
+    if segment.p_filesz(endian) > 1024 {
+        return Err(Errno::ENOEXEC);
+    }
+    let note = file_bytes(bytes, segment.p_offset(endian), segment.p_filesz(endian))?;
+    if note.len() < NOTE_HEADER + 4 {
+        return Err(Errno::EIO);
+    }
+    let word = |at: usize| u32::from_le_bytes(note[at..at + 4].try_into().expect("four bytes"));
+    if word(8) != elf::NT_GNU_PROPERTY_TYPE_0.0
+        || word(0) != 4
+        || &note[NOTE_HEADER..NOTE_HEADER + 4] != b"GNU\0"
+    {
+        return Err(Errno::ENOEXEC);
+    }
+    let mut at = (NOTE_HEADER + 4).next_multiple_of(ALIGN);
+    if word(4) as usize > note.len() - at {
+        return Err(Errno::ENOEXEC);
+    }
+    let end = at + word(4) as usize;
+    let mut previous = None;
+    while at != end {
+        let left = end - at;
+        if left < 8 {
+            return Err(Errno::ENOEXEC);
+        }
+        let (kind, size) = (word(at), word(at + 4) as usize);
+        let step = size.next_multiple_of(ALIGN);
+        if size > left - 8 || step > left - 8 || previous.is_some_and(|previous| kind <= previous) {
+            return Err(Errno::ENOEXEC);
+        }
+        previous = Some(kind);
+        if kind == elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND.0 && size != 4 {
+            return Err(Errno::ENOEXEC);
+        }
+        at += 8 + step;
+    }
+    Ok(())
+}
+
 /// An ELF file placed in memory.
 struct Placed {
     /// Where the file's first byte would be (the load bias plus the lowest address).
@@ -267,39 +451,73 @@ fn place(
     arguments: &[Vec<u8>],
     environment: &[Vec<u8>],
     readable: bool,
-) -> Result<Image, Errno> {
+) -> Result<Image, Failed> {
     let end = cx.cpu.address_space().end;
     let mut map = AddressMap::new(end);
-    let header = elf::FileHeader64::<LittleEndian>::parse(program.bytes.as_slice())
-        .map_err(|_| Errno::ENOEXEC)?;
-    let endian = header.endian().map_err(|_| Errno::ENOEXEC)?;
-    if header.e_machine(endian) != elf::EM_AARCH64 {
-        return Err(Errno::ENOEXEC);
+    let endian = LittleEndian;
+    // In the order of Linux's `load_elf_binary`: the program's header and program headers, its
+    // loader's name and header, the loader's program headers, then the properties.
+    let header = file_header(&program.bytes);
+    if header.e_ident.magic != elf::ELFMAG
+        || !matches!(header.e_type(endian), elf::ET_EXEC | elf::ET_DYN)
+        || header.e_machine(endian) != elf::EM_AARCH64
+    {
+        return Err(Errno::ENOEXEC.into());
     }
-    let segments = header
-        .program_headers(endian, program.bytes.as_slice())
-        .map_err(|_| Errno::ENOEXEC)?;
-    let mut interpreter_path = None;
-    for segment in segments {
-        if segment.p_type(endian) == elf::PT_INTERP {
-            let bytes = segment
-                .data(endian, program.bytes.as_slice())
-                .map_err(|_| Errno::ENOEXEC)?;
-            let path = bytes.split(|byte| *byte == 0).next().unwrap_or_default();
-            interpreter_path = Some(path.to_vec());
+    let segments = program_headers(&program.bytes, &header).ok_or(Errno::ENOEXEC)?;
+    let mut property = None;
+    let mut interpreter = None;
+    for segment in &segments {
+        match segment.p_type(endian) {
+            elf::PT_GNU_PROPERTY => property = Some(*segment),
+            elf::PT_INTERP => {
+                let size = segment.p_filesz(endian);
+                if !(2..=u64::from(PATH_MAX)).contains(&size) {
+                    return Err(Errno::ENOEXEC.into());
+                }
+                let name = elf_read(&program.bytes, segment.p_offset(endian), size)?;
+                let (last, name) = name.split_last().expect("two bytes at least");
+                if *last != 0 {
+                    return Err(Errno::ENOEXEC.into());
+                }
+                let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
+                let found = open_named_program(kernel, cx.cpu, pid, name)?;
+                elf_read(&found.bytes, 0, size_of::<Header>() as u64)?;
+                interpreter = Some(found);
+                break;
+            }
+            _ => {}
         }
     }
-    let interpreter = match &interpreter_path {
-        Some(path) => Some(open_program(kernel, cx.cpu, pid, path)?),
+    let interpreter = match interpreter {
+        Some(found) => {
+            let header = file_header(&found.bytes);
+            if header.e_ident.magic != elf::ELFMAG || header.e_machine(endian) != elf::EM_AARCH64 {
+                return Err(Errno::ELIBBAD.into());
+            }
+            let segments = program_headers(&found.bytes, &header).ok_or(Errno::ELIBBAD)?;
+            property = segments
+                .iter()
+                .rfind(|segment| segment.p_type(endian) == elf::PT_GNU_PROPERTY)
+                .copied();
+            Some((found, header, segments))
+        }
         None => None,
     };
-    let bias = match header.e_type(endian) {
-        elf::ET_EXEC => 0,
-        // Where Linux puts a program that can be placed anywhere: two thirds of the way up.
-        elf::ET_DYN => page_down(end / 3 * 2),
-        _ => return Err(Errno::ENOEXEC),
+    let properties_of = interpreter
+        .as_ref()
+        .map_or(&program.bytes, |(found, ..)| &found.bytes);
+    check_properties(properties_of, property.as_ref())?;
+    // Where Linux puts a program that can be placed anywhere: two thirds of the way up.
+    let bias = if header.e_type(endian) == elf::ET_EXEC {
+        0
+    } else {
+        page_down(end / 3 * 2)
     };
-    let readable = readable && interpreter.as_ref().is_none_or(|program| program.readable);
+    let readable = readable
+        && interpreter
+            .as_ref()
+            .is_none_or(|(program, ..)| program.readable);
     let after = {
         let inode = program.node.borrow();
         kernel.processes[&pid]
@@ -315,15 +533,32 @@ fn place(
                     .map(Vec::as_slice),
             })?
     };
+    // The point of no return: from here a failure kills the process.
     let main_path = program.path.clone();
-    let main = place_elf(cx, memory, &mut map, &program, &main_path, Some(bias))?;
+    let main = place_elf(
+        cx,
+        memory,
+        &mut map,
+        (&program, &header, &segments),
+        &main_path,
+        Some(bias),
+    )
+    .map_err(fatal)?;
     map.brk_start = page_up(main.end);
     map.brk = map.brk_start;
     map.data_size = main.data;
 
     let (entry, interpreter_base) = match &interpreter {
-        Some(interpreter) => {
-            let placed = place_elf(cx, memory, &mut map, interpreter, &interpreter.path, None)?;
+        Some((found, header, segments)) => {
+            let placed = place_elf(
+                cx,
+                memory,
+                &mut map,
+                (found, header, segments),
+                &found.path,
+                None,
+            )
+            .map_err(fatal)?;
             (placed.entry, placed.base)
         }
         None => (main.entry, 0),
@@ -354,7 +589,8 @@ fn place(
         arguments,
         environment,
         &auxiliary,
-    )?;
+    )
+    .map_err(fatal)?;
     let stack_start = page_down(sp).saturating_sub(STACK_EXPAND);
     map.insert(
         cx.cpu,
@@ -368,7 +604,8 @@ fn place(
             locked: crate::memory::Lock::None,
             backing: Backing::Stack,
         },
-    )?;
+    )
+    .map_err(fatal)?;
     // The stack's range was never used before, so making its mapping keeps the bytes just written.
     // No vDSO yet (its page holds the signal return path), and no signal frame size to report.
     for key in [AT_SYSINFO_EHDR, AT_MINSIGSTKSZ] {
@@ -403,19 +640,12 @@ fn place_elf(
     cx: &mut Context<'_>,
     memory: MemoryId,
     map: &mut AddressMap,
-    program: &Program,
+    (program, header, segments): (&Program, &Header, &[Segment]),
     path: &[u8],
     bias: Option<u64>,
 ) -> Result<Placed, Errno> {
     let bytes = program.bytes.as_slice();
-    let header = elf::FileHeader64::<LittleEndian>::parse(bytes).map_err(|_| Errno::ENOEXEC)?;
-    let endian = header.endian().map_err(|_| Errno::ENOEXEC)?;
-    if header.e_machine(endian) != elf::EM_AARCH64 {
-        return Err(Errno::ENOEXEC);
-    }
-    let segments = header
-        .program_headers(endian, bytes)
-        .map_err(|_| Errno::ENOEXEC)?;
+    let endian = LittleEndian;
     let loads: Vec<_> = segments
         .iter()
         .filter(|segment| segment.p_type(endian) == elf::PT_LOAD)
@@ -614,10 +844,6 @@ fn build_stack(
     ]);
     let words = 1 + arguments.len() + 1 + environment.len() + 1 + 2 * vector.len();
     let sp = (random - 8 * words as u64) & !15;
-    // Linux allows arguments and environment a quarter of the stack limit.
-    if top - sp > STACK_LIMIT / 4 {
-        return Err(Errno::E2BIG);
-    }
 
     let mut table = Vec::with_capacity(words * 8);
     table.extend_from_slice(&(arguments.len() as u64).to_le_bytes());

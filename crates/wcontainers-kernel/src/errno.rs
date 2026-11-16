@@ -22,6 +22,7 @@ impl Errno {
     pub const EINVAL: Self = Self(errno::EINVAL);
     pub const EIO: Self = Self(errno::EIO);
     pub const EISDIR: Self = Self(errno::EISDIR);
+    pub const ELIBBAD: Self = Self(errno::ELIBBAD);
     pub const ELOOP: Self = Self(errno::ELOOP);
     pub const EMFILE: Self = Self(errno::EMFILE);
     pub const EMLINK: Self = Self(errno::EMLINK);

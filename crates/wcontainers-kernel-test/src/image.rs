@@ -195,18 +195,28 @@ pub fn host_directory(directory: &Path, at: &str) -> Vec<File> {
         .collect();
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        let metadata = entry.metadata().expect("metadata");
+        // Another test may be building a program here: a file gone since the listing is skipped.
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("metadata: {error}"),
+        };
         if !metadata.is_file() {
             continue;
         }
         use std::os::unix::fs::PermissionsExt;
+        let bytes = match std::fs::read(entry.path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("reading a file: {error}"),
+        };
         files.push(File {
             path: format!("{at}/{}", entry.file_name().to_string_lossy()),
             mode: metadata.permissions().mode() & 0o7777,
             uid: 0,
             gid: 0,
             mtime: 0,
-            kind: Kind::Regular(std::fs::read(entry.path()).expect("reading a file")),
+            kind: Kind::Regular(bytes),
         });
     }
     files

@@ -54,11 +54,8 @@ const MAX_ARG_STRINGS: usize = 0x7fff_ffff;
 /// The longest one argument or variable may be (`MAX_ARG_STRLEN`).
 const MAX_ARG_STRLEN: u64 = 32 * 4096;
 
-/// Reads a null-terminated list of string pointers, as `execve` does.
-fn read_strings(
-    guest: &mut crate::user::Guest<'_>,
-    mut address: u64,
-) -> Result<Vec<Vec<u8>>, Errno> {
+/// Reads a null-terminated list of string pointers, as `execve`'s `count` does.
+fn read_pointers(guest: &mut crate::user::Guest<'_>, mut address: u64) -> Result<Vec<u64>, Errno> {
     let mut out = Vec::new();
     if address == 0 {
         return Ok(out);
@@ -71,8 +68,21 @@ fn read_strings(
         if out.len() >= MAX_ARG_STRINGS {
             return Err(Errno::E2BIG);
         }
+        out.push(pointer);
+        address += 8;
+    }
+}
+
+/// Reads the strings a list points to, each taking its room, as `copy_strings` does.
+fn read_strings(
+    guest: &mut crate::user::Guest<'_>,
+    pointers: &[u64],
+    room: &mut crate::loader::ArgumentRoom,
+) -> Result<Vec<Vec<u8>>, Errno> {
+    let mut out = Vec::with_capacity(pointers.len());
+    for pointer in pointers {
         let string = guest
-            .read_string(pointer, MAX_ARG_STRLEN)
+            .read_string(*pointer, MAX_ARG_STRLEN)
             .map_err(|error| {
                 if error == Errno::ENAMETOOLONG {
                     Errno::E2BIG
@@ -80,9 +90,10 @@ fn read_strings(
                     error
                 }
             })?;
+        room.take(&string)?;
         out.push(string);
-        address += 8;
     }
+    Ok(out)
 }
 
 pub(super) fn execve(
@@ -93,6 +104,7 @@ pub(super) fn execve(
 ) -> Outcome {
     match exec(kernel, cx, tid, AT_FDCWD as u64, path, argv, envp, 0) {
         Ok(Exec::Started) => Outcome::Restart,
+        Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
     }
@@ -106,6 +118,7 @@ pub(super) fn execveat(
 ) -> Outcome {
     match exec(kernel, cx, tid, dirfd, path, argv, envp, flags as u32) {
         Ok(Exec::Started) => Outcome::Restart,
+        Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
     }
@@ -116,6 +129,8 @@ enum Exec {
     Started,
     /// `AT_EXECVE_CHECK`: the file could be run; nothing changed.
     Checked,
+    /// It failed after the point of no return, and the process died.
+    Died,
 }
 
 /// Linux's `do_execveat_common`.
@@ -177,9 +192,21 @@ fn exec(
             flags & AT_SYMLINK_NOFOLLOW == 0,
         )?
     };
+    // In the order of Linux's `do_execveat_common`: both lists counted, the room they have, then the
+    // file name, the environment and the arguments copied.
+    let stack_limit = kernel.processes[&pid].limits[RLIMIT_STACK as usize].current;
     let mut guest = guest(kernel, cx, tid);
-    let arguments = read_strings(&mut guest, argv)?;
-    let environment = read_strings(&mut guest, envp)?;
+    let argument_pointers = read_pointers(&mut guest, argv)?;
+    let environment_pointers = read_pointers(&mut guest, envp)?;
+    let mut room = crate::loader::ArgumentRoom::new(
+        stack_limit,
+        argument_pointers.len(),
+        environment_pointers.len(),
+    )?;
+    room.take(&file_name)?;
+    let environment = read_strings(&mut guest, &environment_pointers, &mut room)?;
+    let mut arguments = read_strings(&mut guest, &argument_pointers, &mut room)?;
+    room.first_argument(&mut arguments)?;
     if flags & AT_EXECVE_CHECK != 0 {
         return Ok(Exec::Checked);
     }
@@ -191,8 +218,24 @@ fn exec(
     }
     let mut program = program;
     program.reopenable = reachable;
-    let mut image =
-        crate::loader::load(kernel, cx, pid, &file_name, program, arguments, environment)?;
+    let loaded = crate::loader::load(
+        kernel,
+        cx,
+        pid,
+        &file_name,
+        program,
+        arguments,
+        environment,
+        room,
+    );
+    let mut image = match loaded {
+        Ok(image) => image,
+        Err(crate::loader::Failed::Refused(error)) => return Err(error),
+        Err(crate::loader::Failed::Fatal) => {
+            kernel.die_of(cx, pid, SIGSEGV);
+            return Ok(Exec::Died);
+        }
+    };
     // Run from a descriptor, the process is named after the file run (a script's interpreter), not
     // `/dev/fd/<n>`.
     if from_descriptor {

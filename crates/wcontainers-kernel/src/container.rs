@@ -457,23 +457,49 @@ impl Kernel {
             )?;
         }
         let program = crate::loader::open_program(self, cx.cpu, pid, start.path)?;
-        let image = crate::loader::load(
+        // The strings in the order and room of Linux's `do_execveat_common`.
+        let stack_limit = self.processes[&pid].limits[RLIMIT_STACK as usize].current;
+        let mut room = crate::loader::ArgumentRoom::new(
+            stack_limit,
+            start.arguments.len(),
+            start.environment.len(),
+        )?;
+        room.take(start.path)?;
+        let environment: Vec<Vec<u8>> = start
+            .environment
+            .iter()
+            .map(|variable| variable.to_vec())
+            .collect();
+        let mut arguments: Vec<Vec<u8>> = start
+            .arguments
+            .iter()
+            .map(|argument| argument.to_vec())
+            .collect();
+        for string in environment.iter().chain(&arguments) {
+            room.take(string)?;
+        }
+        room.first_argument(&mut arguments)?;
+        let image = match crate::loader::load(
             self,
             cx,
             pid,
             start.path,
             program,
-            start
-                .arguments
-                .iter()
-                .map(|argument| argument.to_vec())
-                .collect(),
-            start
-                .environment
-                .iter()
-                .map(|variable| variable.to_vec())
-                .collect(),
-        )?;
+            arguments,
+            environment,
+            room,
+        ) {
+            Ok(image) => image,
+            Err(crate::loader::Failed::Refused(error)) => return Err(error),
+            // Past the point of no return the first process dies of SIGSEGV before it runs.
+            Err(crate::loader::Failed::Fatal) => {
+                self.processes.remove(&pid);
+                self.init = Some(pid);
+                self.finished = Some(SIGSEGV as i32);
+                self.counters.flush(cx.host);
+                return Ok(());
+            }
+        };
         let thread = cx.cpu.thread_new(image.memory).map_err(errno::from_cpu)?;
         self.threads.insert(pid, Thread::new(pid, thread));
         self.install_image(cx, pid, pid, image);
