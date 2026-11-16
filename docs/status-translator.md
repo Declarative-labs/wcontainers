@@ -106,9 +106,9 @@ CPU, each case also at bounded of a random N and mixed (641 faulted, 133 left to
 stacks lost in mixed runs; 128 s, load 87 to 46); the changes test, 1000 random programs seed 21 and the C
 programs (3 seeds) (39 s, load 113); layer 3, 200 Csmith programs seed 14, 3 at once, 2 also in Chrome,
 each also at a bounded N and mixed: 173 compared, 27 did not end on Linux in time (336 s, load 87 to 30);
-`tests/lookaheads.rs`, 40 random N for each of five C programs, seed 2 (35 s, load 35 to 31). Debug, on the
-code before the stack check moved into the stop check's branch: every test of the three crates (7 minutes,
-load 91 to 36). The unwinding and deep recursion tests: as above.
+`tests/lookaheads.rs`, 40 random N for each of five C programs, seed 2 (35 s, load 35 to 31). Last, every test of
+the three crates on the final code (debug, Chrome and layer 3's defaults included): 64 passed, 2 ignored (10
+minutes, load 27 to 34). The unwinding and deep recursion tests: as above.
 
 Measured (release, best of 5 unless said; load in brackets):
 - The stack budget check, on the call benchmarks (fib, sort), every check against the same without it.
