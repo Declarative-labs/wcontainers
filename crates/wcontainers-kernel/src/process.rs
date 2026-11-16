@@ -115,6 +115,9 @@ pub(crate) struct Process {
     pub started: u64,
     /// Where the vDSO is mapped; its signal return code is there.
     pub vdso: u64,
+    /// A change of user left the new user over RLIMIT_NPROC (`PF_NPROC_EXCEEDED`), which the next
+    /// `execve` refuses if it still is.
+    pub nproc_exceeded: bool,
     /// Whether it has started a program since it was made (`setpgid` from its parent is refused).
     pub execed: bool,
     /// How many programs it has run (Linux's `self_exec_id`, which a fork copies).
@@ -138,6 +141,33 @@ pub(crate) enum Report {
 pub(crate) struct Queued {
     pub signal: u32,
     pub info: [u8; 128],
+    /// Its place in the count of the receiving user's queued signals, held until it goes; none for
+    /// a signal whose information was lost to a full queue.
+    #[allow(dead_code, reason = "held for what its drop does")]
+    pub charge: Option<Charge>,
+}
+
+/// One queued signal in a user's count (Linux's `UCOUNT_RLIMIT_SIGPENDING`), which
+/// RLIMIT_SIGPENDING bounds: the count goes up when one is made or copied and down when it goes.
+pub(crate) struct Charge(Rc<core::cell::Cell<u64>>);
+
+impl Charge {
+    pub fn new(count: &Rc<core::cell::Cell<u64>>) -> Self {
+        count.set(count.get() + 1);
+        Self(count.clone())
+    }
+}
+
+impl Clone for Charge {
+    fn clone(&self) -> Self {
+        Self::new(&self.0)
+    }
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
 }
 
 /// Signals sent and not yet taken: one set, and their information in the order sent. A standard
@@ -149,12 +179,27 @@ pub(crate) struct Pending {
 }
 
 impl Pending {
-    /// Takes the first queued instance of `signal`, clearing its bit when no other is left.
+    /// Takes the first queued instance of `signal`, clearing its bit when no other is left. A
+    /// signal pending with no information left (its queue was full) comes as if sent by `kill` from
+    /// nobody (`collect_signal`).
     pub fn take(&mut self, signal: u32) -> Option<Queued> {
-        let index = self
-            .queue
-            .iter()
-            .position(|queued| queued.signal == signal)?;
+        let bit = crate::signal::bit(signal);
+        if self.set & bit == 0 {
+            return None;
+        }
+        let Some(index) = self.queue.iter().position(|queued| queued.signal == signal) else {
+            self.set &= !bit;
+            return Some(Queued {
+                signal,
+                info: crate::signal::sender_info(
+                    signal,
+                    crate::linux::general::SI_USER as i32,
+                    0,
+                    0,
+                ),
+                charge: None,
+            });
+        };
         let queued = self.queue.remove(index);
         if !self.queue.iter().any(|other| other.signal == signal) {
             self.set &= !crate::signal::bit(signal);

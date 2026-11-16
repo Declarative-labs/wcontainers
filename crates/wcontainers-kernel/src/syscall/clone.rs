@@ -111,6 +111,20 @@ fn make_child(
             Errno::ENOSYS,
         ));
     }
+    // RLIMIT_NPROC counts the child among its user's tasks; root and a caller with the powers to
+    // pass it are not held (`copy_process`).
+    let credentials = &kernel.processes[&pid].credentials;
+    if kernel.over_process_limit(pid, credentials.uid, 1)
+        && !credentials.has(CAP_SYS_RESOURCE)
+        && !credentials.has(CAP_SYS_ADMIN)
+    {
+        return Err(Errno::EAGAIN);
+    }
+    kernel
+        .processes
+        .get_mut(&pid)
+        .expect("process exists")
+        .nproc_exceeded = false;
     // The parent's descriptor for the child: its number is written before the child exists, and
     // nothing is made if that faults.
     if flags & CLONE_PIDFD != 0 {

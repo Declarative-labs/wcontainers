@@ -391,6 +391,7 @@ impl Kernel {
             exit_signal: SIGCHLD,
             ended: None,
             ended_leader: Default::default(),
+            nproc_exceeded: false,
             pidfd: None,
             vfork_parent: None,
             stopped: false,

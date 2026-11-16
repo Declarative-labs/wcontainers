@@ -136,7 +136,8 @@ impl Kernel {
         (thread.pending.set | process.pending.set) & !thread.signal_mask != 0
     }
 
-    /// Sends a signal to one thread (`tkill`, a fault, a timer).
+    /// Sends a signal to one thread (`tkill`, a fault, a timer); one that does not fit the user's
+    /// queue is lost as [`Self::queue_to_thread`] says.
     pub(crate) fn send_to_thread(
         &mut self,
         cx: &mut Context<'_>,
@@ -144,7 +145,19 @@ impl Kernel {
         signal: u32,
         info: [u8; 128],
     ) {
-        self.send(cx, Target::Thread(tid), signal, info);
+        let _ = self.send(cx, Target::Thread(tid), signal, info);
+    }
+
+    /// As [`Self::send_to_thread`], telling the sender (EAGAIN) of a real-time signal with
+    /// information of its own that does not fit the receiving user's queue.
+    pub(crate) fn queue_to_thread(
+        &mut self,
+        cx: &mut Context<'_>,
+        tid: Tid,
+        signal: u32,
+        info: [u8; 128],
+    ) -> Result<(), crate::Errno> {
+        self.send(cx, Target::Thread(tid), signal, info)
     }
 
     /// SIGXFSZ for a write past the file size limit, as `send_sig` sends it.
@@ -167,7 +180,18 @@ impl Kernel {
         signal: u32,
         info: [u8; 128],
     ) {
-        self.send(cx, Target::Process(pid), signal, info);
+        let _ = self.send(cx, Target::Process(pid), signal, info);
+    }
+
+    /// As [`Self::send_to_process`], telling the sender as [`Self::queue_to_thread`] does.
+    pub(crate) fn queue_to_process(
+        &mut self,
+        cx: &mut Context<'_>,
+        pid: Pid,
+        signal: u32,
+        info: [u8; 128],
+    ) -> Result<(), crate::Errno> {
+        self.send(cx, Target::Process(pid), signal, info)
     }
 
     /// Linux's `send_sigio`: the I/O signal of an open file with `FASYNC` set, to its owner's tasks
@@ -243,7 +267,10 @@ impl Kernel {
                 put(&mut info, 24, &fd.to_le_bytes());
                 (signal, info)
             };
-            self.send(cx, target, signal, info);
+            // A real-time signal that does not fit becomes SIGIO (`send_sigio_to_task`).
+            if self.send(cx, target, signal, info).is_err() {
+                let _ = self.send(cx, target, SIGIO, kernel_info(SIGIO));
+            }
         }
     }
 
@@ -269,15 +296,21 @@ impl Kernel {
 
     /// Linux's `send_signal_locked`: the side effects of stopping and continuing, dropping what is
     /// ignored, queueing, then waking or ending what it concerns.
-    fn send(&mut self, cx: &mut Context<'_>, target: Target, signal: u32, info: [u8; 128]) {
+    fn send(
+        &mut self,
+        cx: &mut Context<'_>,
+        target: Target,
+        signal: u32,
+        info: [u8; 128],
+    ) -> Result<(), crate::Errno> {
         if signal == 0 {
-            return;
+            return Ok(());
         }
         let (pid, leader) = match target {
             Target::Thread(tid) => (self.threads[&tid].process, tid),
             Target::Process(pid) => match self.processes[&pid].threads.first() {
                 Some(tid) => (pid, *tid),
-                None => return,
+                None => return Ok(()),
             },
         };
         // `prepare_signal`.
@@ -290,20 +323,62 @@ impl Kernel {
         let blocked = self.threads[&leader].signal_mask & bit(signal) != 0;
         if !blocked && self.dropped(pid, signal) {
             // A wait for this signal still sees it (`sigtimedwait` blocks what it waits for).
-            return;
+            return Ok(());
         }
+        // A standard signal already pending is not queued again (`legacy_queue`).
+        let pending = match target {
+            Target::Thread(tid) => &self.threads[&tid].pending,
+            Target::Process(pid) => &self.processes[&pid].pending,
+        };
+        if signal < SIGRTMIN && pending.set & bit(signal) != 0 {
+            return Ok(());
+        }
+        let charge = self.charge_signal(pid, signal, &info)?;
         let pending = match target {
             Target::Thread(tid) => &mut self.thread_mut(tid).pending,
             Target::Process(pid) => &mut self.processes.get_mut(&pid).expect("process").pending,
         };
-        // A standard signal already pending is not queued again (`legacy_queue`).
-        if signal < SIGRTMIN && pending.set & bit(signal) != 0 {
-            return;
-        }
         pending.set |= bit(signal);
-        pending.queue.push_back(Queued { signal, info });
+        if charge.is_some() {
+            pending.queue.push_back(Queued {
+                signal,
+                info,
+                charge,
+            });
+        }
         self.wake_readiness_of(pid);
         self.complete(cx, pid, target, signal);
+        Ok(())
+    }
+
+    /// Linux's `__sigqueue_alloc` against the receiving user's RLIMIT_SIGPENDING: a place in the
+    /// user's count, or none when the queue is full and the signal goes without its information.
+    /// Standard signals from the kernel or `kill` always fit; a real-time one with information of
+    /// its own that does not fit is not sent (EAGAIN). The kernel's own information
+    /// (`SEND_SIG_PRIV`) is the one with SI_KERNEL.
+    fn charge_signal(
+        &mut self,
+        pid: Pid,
+        signal: u32,
+        info: &[u8; 128],
+    ) -> Result<Option<crate::process::Charge>, crate::Errno> {
+        let process = &self.processes[&pid];
+        let limit = process.limits[RLIMIT_SIGPENDING as usize].current;
+        let count = self
+            .signal_users
+            .entry(process.credentials.uid)
+            .or_default()
+            .clone();
+        let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
+        let special = code == SI_KERNEL as i32;
+        let overrides = signal < SIGRTMIN && (special || code >= 0);
+        if overrides || count.get() < limit {
+            return Ok(Some(crate::process::Charge::new(&count)));
+        }
+        if signal >= SIGRTMIN && !special && code != SI_USER as i32 {
+            return Err(crate::Errno::EAGAIN);
+        }
+        Ok(None)
     }
 
     /// Linux's `complete_signal`: a fatal signal that a thread does not block ends the process now;
@@ -828,10 +903,16 @@ impl Kernel {
         if blocked || action.sa_handler_kernel == SIG_IGN {
             action.sa_handler_kernel = SIG_DFL;
         }
-        let pending = &mut self.thread_mut(tid).pending;
-        if pending.set & bit(signal) == 0 {
+        if self.threads[&tid].pending.set & bit(signal) == 0 {
+            // A fault's information is the kernel's own and always fits.
+            let charge = self.charge_signal(pid, signal, &info).ok().flatten();
+            let pending = &mut self.thread_mut(tid).pending;
             pending.set |= bit(signal);
-            pending.queue.push_back(Queued { signal, info });
+            pending.queue.push_back(Queued {
+                signal,
+                info,
+                charge,
+            });
         }
     }
 

@@ -125,6 +125,8 @@ pub struct Kernel {
     last_credentials: u64,
     counters: Counters,
     files: Files,
+    /// Each user's count of queued signals, by real user id.
+    signal_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
     /// The container's System V IPC objects.
     ipc: syscall::ipc::Ipc,
     machine: Machine,
@@ -176,6 +178,7 @@ impl Kernel {
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),
+            signal_users: BTreeMap::new(),
             files: Files {
                 numbers,
                 root,

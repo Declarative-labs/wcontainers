@@ -472,6 +472,23 @@ impl Kernel {
         self.notify_parent(cx, pid);
     }
 
+    /// Whether a user's tasks, with `more` added (or taken away), are over a process's RLIMIT_NPROC
+    /// (`is_rlimit_overlimit` on `UCOUNT_RLIMIT_NPROC`): every live thread of the user's processes
+    /// and every one ended and not yet reaped counts. Root's are never over it.
+    pub(crate) fn over_process_limit(&self, pid: Pid, uid: u32, more: i64) -> bool {
+        let limit = self.processes[&pid].limits[RLIMIT_NPROC as usize].current;
+        if uid == 0 || limit == RLIM_INFINITY as u64 {
+            return false;
+        }
+        let tasks: i64 = self
+            .processes
+            .values()
+            .filter(|process| process.credentials.uid == uid)
+            .map(|process| (process.threads.len() as i64).max(1))
+            .sum();
+        i128::from(tasks + more) > i128::from(limit.min(i64::MAX as u64))
+    }
+
     /// Whether another live process shows the same memory (a `vfork` parent or child).
     fn memory_in_use_elsewhere(&self, pid: Pid, memory: wcontainers_abi::MemoryId) -> bool {
         self.processes

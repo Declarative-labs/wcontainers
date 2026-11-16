@@ -156,6 +156,16 @@ fn exec(
         guest(kernel, cx, tid).read_path(path)?
     };
     let pid = kernel.threads[&tid].process;
+    // A change of user that went over RLIMIT_NPROC fails here, if it still is over.
+    let uid = kernel.processes[&pid].credentials.uid;
+    if kernel.processes[&pid].nproc_exceeded && kernel.over_process_limit(pid, uid, 0) {
+        return Err(Errno::EAGAIN);
+    }
+    kernel
+        .processes
+        .get_mut(&pid)
+        .expect("process exists")
+        .nproc_exceeded = false;
     let dirfd = dirfd as i32;
     // A path from a descriptor is named through `/dev/fd`, as Linux's `alloc_bprm` names it; a script
     // cannot be run through one closed at exec, which its interpreter could not open.
@@ -718,6 +728,18 @@ fn changing(
     }
     let commit = result.is_ok() && (always || process.credentials != old);
     let pid = process.pid;
+    // A new real user over RLIMIT_NPROC is not refused here but at the next `execve`
+    // (`flag_nproc_exceeded`, counting the user's other tasks).
+    let uid = process.credentials.uid;
+    let own = process.threads.len() as i64;
+    if commit && uid != old.uid {
+        let over = kernel.over_process_limit(pid, uid, -own);
+        kernel
+            .processes
+            .get_mut(&pid)
+            .expect("process exists")
+            .nproc_exceeded = over;
+    }
     if loses {
         kernel.thread_mut(tid).parent_death_signal = 0;
     }

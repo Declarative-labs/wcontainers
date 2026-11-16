@@ -42,8 +42,7 @@ pub(super) fn signal_process(
     info: [u8; 128],
 ) -> Result<(), Errno> {
     may_signal(kernel, tid, target, signal)?;
-    kernel.send_to_process(cx, target, signal, info);
-    Ok(())
+    kernel.queue_to_process(cx, target, signal, info)
 }
 
 /// What `kill` sends: SI_USER from the caller.
@@ -181,7 +180,7 @@ pub(super) fn signal_thread(
         let sender = kernel.process_of(tid);
         sender_info(signal, SI_TKILL, sender.pid, sender.credentials.uid)
     });
-    kernel.send_to_thread(cx, target, signal, info);
+    kernel.queue_to_thread(cx, target, signal, info)?;
     Ok(0)
 }
 
