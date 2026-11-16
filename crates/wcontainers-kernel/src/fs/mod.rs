@@ -352,6 +352,18 @@ impl Regular {
         (first..end).filter(|page| !self.holds(*page)).count() as u64
     }
 
+    /// Holds a page of zeros where it held none, as a write whose copy failed leaves it; its space
+    /// is known to be free.
+    pub fn hold_page(&mut self, page: u64) {
+        if !self.holds(page)
+            && let Some(space) = &self.space
+        {
+            space.take_blocks(1);
+        }
+        self.allocated.remove(&page);
+        self.pages.insert(page);
+    }
+
     /// Reserves a page for `fallocate` if it holds none; `false` when tmpfs is full.
     pub fn reserve(&mut self, page: u64) -> bool {
         if self.holds(page) {

@@ -4,11 +4,14 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is complete: the seventh run closed it out; an independent check then
-found ten problems, and the eighth run (the second close-out run) fixed them all and five more that
-its layer 1 runs found. With every fix in, the fresh seeds 97, 98 and 99 passed 20000 sequences each
-(see Layer 1). The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it
-runs once at the end of the kernel track. Next is K2.
+K0 is done. K1 (one process) is complete. The seventh run closed it out; two independent checks
+followed. The eighth run fixed the first check's ten problems. The ninth run (the third close-out
+run) fixed the second check's six: ioctl's generic file requests, tmpfs's size and inode limits with
+statfs reporting them, writes to `/proc/<pid>/comm` and the other `/proc` writes, seeks on cmdline,
+environ and auxv, layer 1's narrow coverage of `/proc` files, ioctl and statfs, and sysinfo's free
+memory. It also made `/proc` files' bytes at Linux's moments (not at open) and access times move on
+reads. See Layer 1 for the fresh seeds. The one-million-sequence layer 1 run is not part of K1: by the
+orchestrator's ruling it runs once at the end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -55,11 +58,19 @@ Comparisons that are subsets rather than equality, and why:
   `device_listings_match_the_reference`), except the link count of `..` of `/dev`, which is `/`.
 - tests/sharedmap.rs sorts `/proc/self/maps` (placement differs: no address randomization here).
 - tests/schedattr.rs shows time slices relative to the default (the CPU count differs).
+- tests/fileioctl.rs prints FIONREAD's value on standard output only as success: what waits unread in
+  the reference's output pipe depends on when Docker drained it; here the host takes bytes as they are
+  written, so it is always 0. tests/tmpfsfull.rs prints inodes in use, not totals (below).
 
 What layer 1 does not compare, and why (masked on both sides, so a difference there cannot show):
-- Inode and device numbers and times in stat and statx, d_ino in getdents64, statfs counts and fsid:
-  machine-specific.
-- The values of clock_gettime, gettimeofday, times, sysinfo and getrusage, getrandom's bytes, uname's
+- Inode and device numbers and times in stat and statx, d_ino in getdents64: machine-specific.
+- statfs and fstatfs: the inode total and the identity (fsid). tmpfs's default inode total is half
+  the machine's pages, so the free inode count is compared as the count in use (total less free, on
+  both sides). Block totals and free blocks are compared exactly (Docker's 64 MiB `/dev` and
+  `/dev/shm`). FS_IOC_GETFSUUID's 16 bytes: tmpfs draws its identity at random.
+- The values of clock_gettime, gettimeofday, times, sysinfo (memory sizes are the made-up machine's;
+  free memory here is the size less every mapped and tmpfs page, counted "page residency not
+  tracked") and getrusage, getrandom's bytes, uname's
   release and version, the CPU set and number (one CPU is declared), the time ppoll, pselect6 and
   sched_rr_get_interval write back, sched_getattr's runtime, mincore's vector (residency).
 - Process numbers, set_tid_address's value, getcwd inside `/proc/<pid>`, a link naming a process
@@ -73,6 +84,11 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   sequence's own directories are compared in full.
 - A call's random or machine bytes are kept out of later calls by writing them only to areas no later
   call reads (getrandom, uname, name_to_handle_at).
+- Before each sequence both runners remake `/dev/null` once: the reference container's first
+  `/dev/null` is held from outside the container once removed (measured: its inode is never given
+  back), and the reference's runner remakes the devices after every sequence, so `/dev` always has one
+  hidden inode there; ours is held by descriptor 0. Without this the inodes in use in `/dev` differ by
+  one.
 
 What layer 1 does not generate, and why:
 - Named pipes (opening one waits; pipes are K2); descriptors 0 to 2 (the reference's runner reports
@@ -96,9 +112,16 @@ What layer 1 does not generate, and why:
   a young process's may still be 0 and a sleep until a past time may never end there (seed 777002);
   here they are always the time not parked. The scheduler time clocks are slept on. tests/clocks.rs compares every kind of clock id, process 1's and the caller's own
   number included, in a program that is process 1 on both sides.
-- Paths reach `/dev/shm/w` (the sequence's directory), the three zero devices and `/proc/self/...`
-  through a fixed pool; never the root file system, never `/proc` files' contents (those are compared
-  in layer 2 only where a test reads them: procsignals, the busybox commands, execveat, memfd).
+- Paths reach `/dev/shm/w` (the sequence's directory), the three zero devices, `/proc/self/...` and
+  five `/proc` files whose bytes are the same in both runners (`/proc/self/comm`, `cmdline`,
+  `cgroup`, `limits` and `/proc/sys/kernel/ostype`: a seq_file, one read from memory, a sysctl), so
+  every call is made on them; never the root file system, and no `/proc` file whose bytes differ by
+  machine (status, stat, maps, auxv, environ, cpuinfo and the like are compared in layer 2 only where a
+  test reads them: procwrite, procstatus, procsignals, the busybox commands, execveat, memfd). The
+  random devices are not in the pool (their bytes differ); fileioctl compares their requests.
+- ioctl requests: every request of Linux's `do_vfs_ioctl` and `file_ioctl`, tmpfs's flags, two
+  terminal requests, two random device requests and two unknown ones, with arguments from a pool of
+  flags, extended flags, clone, deduplication and preallocation ranges, bad pointers and descriptors.
 
 ## What exists
 
@@ -130,6 +153,28 @@ What layer 1 does not generate, and why:
   (`build_open_how`); F_GETFL reports the file's own flags. open, openat and openat2 take the
   descriptor right after checking the flags (`do_sys_openat2`'s `FD_ADD`), so at the limit EMFILE
   comes before any path error; a trailing slash on an existing name asks for a directory (ENOTDIR).
+- tmpfs's limits (`shmem_sb_info`): pages and inode space are counted per mount: each inode, each
+  extra hard link and each extended attribute (40 bytes plus name and value, not the ACLs) take inode
+  space, each page a file holds (written or reserved) and each link target longer than 127 bytes takes
+  a page. Writes stop at the last page that fits (ENOSPC if none), fallocate refuses a range larger
+  than the mount and gives back what it took when it runs out, creating anything fails with ENOSPC
+  when no inode space is left. Docker's `/dev` and `/dev/shm` hold 64 MiB; `/` and the internal mount
+  of memory files have tmpfs's defaults (half the machine's pages, in pages and inodes; the internal
+  mount has no limit). statfs reports them as `shmem_statfs` does (no limit: zeros); other file
+  systems report zeros (`simple_statfs`). Pages a mapping's faults bring in are not known, so statfs
+  on a file system with a mapped file is counted "page residency not tracked".
+- ioctl (src/syscall/ioctl.rs): Linux's `do_vfs_ioctl` and `file_ioctl` for every file (FIOCLEX,
+  FIONCLEX, FIONBIO, FIOASYNC, FIOQSIZE, FIFREEZE, FITHAW, FS_IOC_FIEMAP, FIGETBSZ, FICLONE,
+  FICLONERANGE, FIDEDUPERANGE, FIONREAD, the inode flag and extended flag requests, FS_IOC_GETFSUUID,
+  FS_IOC_GETFSSYSFSPATH, FIBMAP and the preallocation requests), then each file's own: pipes'
+  FIONREAD, the random devices' `random_ioctl`; files with none answer ENOTTY as Linux does. tmpfs
+  keeps its inode flags (no-dump and no-access-time can be set; immutable and append-only need
+  CAP_LINUX_IMMUTABLE, which Docker's root lacks; statx shows them). FASYNC is set through a file's
+  `fasync` (pipes, random devices) by FIOASYNC and F_SETFL; no owner can be named yet, so no signal
+  is sent, as on Linux for a file with no owner.
+- Access times: reads, listings, `readlink` and mappings of tmpfs files move the access time as
+  `touch_atime` does (`relatime` on `/`, `/dev/shm`; `strictatime` on `/dev`), except with O_NOATIME
+  or the no-access-time flag.
 - Devices: reads and writes leave a device's position alone; `/dev/null`, `/dev/zero` and `/dev/full`
   always seek to 0 (`null_lseek`), the random devices keep their position (`noop_llseek`).
 - copy_file_range needs one superblock (EXDEV otherwise; no file system here has its own copy).
@@ -137,7 +182,15 @@ What layer 1 does not generate, and why:
   cgroup, exe, cwd, root, fd/ (magic links); cpuinfo, meminfo, uptime, loadavg, stat, version,
   filesystems, mounts, sys/kernel/{hostname, osrelease, ostype, pid_max, ngroups_max, cap_last_cap,
   random/boot_id, random/uuid}, sys/fs/nr_open, sys/vm/overcommit_memory (each with the mode of Linux's
-  sysctl table: 0644 for the writable ones). Bytes are made at open. Rules: a process directory refuses
+  sysctl table: 0644 for the writable ones). Bytes are made as Linux makes them: cmdline and environ
+from the process's memory and auxv from the saved vector at each read, sysctls at each read, every
+other file as a `seq_file` at a read from the start or from anywhere but where the last read stopped,
+or a seek elsewhere, and kept between. They seek as Linux's (`generic_file_llseek` with proc's
+largest offset for cmdline, environ, auxv and directories; `default_llseek` for sysctls; `seq_lseek`
+for the rest) and take writes as Linux's: comm names the process (`comm_write`), the other process
+files have no write (EINVAL), the files outside process directories EIO (`pde_write`); seq files take
+no positioned writes (ESPIPE); truncation succeeds and changes nothing (`proc_setattr`). Sysctl
+permissions follow the table's bits with no power over them (`proc_sys_permission`). Rules: a process directory refuses
   writes and changes (EPERM), its own `fd` directory is always usable (0500), `/proc/sys` is Docker's
   read-only mount (EROFS), owners follow `task_dump_owner`, link counts (9 for a process directory, 1
   for sysctl directories), an `fd` directory's size is its number of descriptors, its listing
@@ -221,8 +274,10 @@ utimensat, write, writev.
 Partial (inside the list above), each with its reason:
 - fcntl: no record locks (F_GETLK/SETLK/OFD: counted, ENOSYS: they matter between processes, K2); no
   leases, owners or signals (K2).
-- ioctl: FIOCLEX, FIONCLEX, FIONBIO; terminal requests ENOTTY (terminals are K2); others ENOTTY,
-  counted when the file is a device.
+- ioctl: terminals are K2 (no terminal can be opened yet, so their requests reach no file).
+  FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
+  them they answer as tmpfs does (nothing to freeze or thaw, no block map) and what is given to the
+  pool cannot change the host's generator.
 - mmap: MAP_HUGETLB counted, ENOMEM (no huge pages). MAP_SHARED anonymous is private memory here,
   exact while there is no fork (K2). A private file mapping is a copy made at mmap, so pages not yet
   written do not see later changes to the file: counted "private file mapping is a copy" when such a
@@ -243,7 +298,9 @@ Partial (inside the list above), each with its reason:
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
 - prctl: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, GET/SET_NO_NEW_PRIVS,
   GET_SECCOMP, SET_SECCOMP, GET_CHILD_SUBREAPER; others counted, EINVAL.
-- statfs: block and inode counts are made up (64 MiB like Docker's tmpfs).
+- statfs, sysinfo, `/proc/meminfo`: pages a mapping's faults bring in are not known (counted); free
+  memory is the made-up machine's size less every mapped and tmpfs page (counted "page residency not
+  tracked"); `/proc/meminfo` has only some of Linux's lines (counted "proc fields not tracked", 4).
 - ppoll, pselect6: every file is always ready (Linux's default poll mask; the host's pipes always have
   room); a wait with nothing ready sleeps until its timeout, or for ever (until K2's signals). The
   signal mask they take is read, not applied (K2).
@@ -324,10 +381,31 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
 - RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; private file
   mappings that see later file changes; O_TMPFILE.
 - K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
+- Running a program does not move its access time (Linux's `kernel_read` of the program does).
+- A `seq_file` with many records (maps, mounts) is made whole at the read from the start; Linux makes
+  each record as the reader reaches it, so a change between two reads of one open file can show
+  partly there and not here.
+- FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
 
-## Tests (last run 2026-11-15, eighth run: 49 passed, 7 ignored known failures)
+## Tests (last run 2026-11-15, ninth run: 53 passed, 7 ignored known failures)
 
-All pass except the ignored known failures listed above. Added in the eighth run:
+All pass except the ignored known failures listed above. Added in the ninth run:
+- fileioctl: guest/fileioctl.c: every generic request, both bad and good arguments, on a tmpfs file,
+  directory, memory file, secret memory, `/dev/null` as fd 0, the stdout pipe, `/dev/null`, `/dev/zero`,
+  both random devices, `/proc/self/comm`, `/proc/cpuinfo`, a sysctl, `/proc/self` and `/dev/pts`;
+  tmpfs's inode flags and extended flags set and refused, by owner and not, with statx's attributes,
+  and an access time kept under the flag. Same output.
+- procwrite: guest/procwrite.c: writes to comm (long, with newline, empty, bad buffer, huge count,
+  vectored, positioned), writes to 18 other `/proc` files, seeks of every kind on eight files, when
+  status, comm, cmdline and a sysctl make their bytes, preadv2 and pwritev2 flags on six files. Same
+  output.
+- tmpfsfull: guest/tmpfsfull.c: `/dev/shm` filled by writes to ENOSPC, fallocate past the limit and
+  part way, truncation, holes, long and short links, hard links and extended attributes, all with
+  statfs's blocks and inodes in use; `/dev`'s own limit; statfs of `/proc`, `/dev/pts`, a pipe and a
+  memory file. Same output.
+- atime: guest/atime.c: which reads move the access time on `/dev/shm` (relatime) and `/dev`
+  (strictatime). Same output.
+Added in the eighth run:
 - opencheck: guest/opencheck.c: opens of "f/", "lf/", "ld/", "/dev/null/", "/etc/passwd/" and
   `/proc` entries with a slash, with O_PATH, O_NOFOLLOW and O_CREAT; copy_file_range between memory
   files, secret memory and `/dev/shm`; linkat with AT_EMPTY_PATH before and after no-op and real
@@ -369,6 +447,12 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+Ninth run (third close-out): layer 1 now opens five `/proc` files, makes every file ioctl request and
+compares statfs's blocks and inodes in use (see "For the independent check"). Seed 100 at 1500 found
+truncate of a sysctl checking the mount before the permission (Linux checks the permission first),
+truncate of a `/proc` file refused (Linux takes it), a rename between `/proc/sys` and `/proc` no
+longer EXDEV (a change of mine), and `/dev`'s hidden inode in the reference (above); all fixed. Seeds
+100 to 103 then passed (1500, then 4000 each, 60 s each, load 27 to 44).
 Eighth run (second close-out, after the independent check): the check's failing seeds were fixed
 first (4242: open took its descriptor last; 777001: chmod of `/proc` refused; 777002: copy across
 superblocks). Then at 20000 each: 777001 found fstat of an open `/proc/<pid>` directory showing the
@@ -406,6 +490,8 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Ninth run, layer 1 4000 sequences, three side by side: 60 s each (load 27 at the start, 44 a minute
+  before). The whole test suite of both crates: passed under load 100 to 157 (not timed).
 - Eighth run, layer 1 20000 sequences, six side by side: 303 s each (load 18 to 20); two side by
   side: 305 s each (load 8 to 17).
 - The whole test suite of both crates, eighth run: 69 s wall (load about 9).
@@ -474,6 +560,13 @@ All on this shared Mac; noisy, not benchmarks.
   the standard links), measured from the reference's listing and matching runc's source.
 - The internal tmpfs (memory files, shared anonymous memory) has device 0:1, as Linux's `shm_mnt`
   mounted first at boot (measured in the reference's maps).
+- tmpfs's identity (FS_IOC_GETFSUUID), which Linux draws at random at each mount, is a keyed hash of
+  the mount's device number with the key drawn at random when the container starts (siphasher).
+- The preallocation requests (`FS_IOC_RESVSP` and the rest) and `struct space_resv`'s size are typed
+  in linux_extra.rs: they are in Linux's internal `linux/falloc.h`, not a uapi header. The file system
+  identity requests are built there with `_IOR`'s rule from linux-raw-sys's structures. Layer 1 types
+  the same numbers (the test crate cannot see the kernel's internal constants).
+- devpts reports 1024 byte blocks (`devpts_fill_super`; measured through FIGETBSZ).
 - `struct tms` (`linux/times.h`) is typed in linux_extra.rs (linux-raw-sys does not generate it);
   `sysinfo` and `stack_t` have padding, so their fields are placed by `offset_of!` on linux-raw-sys's
   structures instead of zerocopy.
@@ -485,7 +578,8 @@ All on this shared Mac; noisy, not benchmarks.
   address }` (the translator's side) and moved a layout assertion in registers.rs to a constant
   assertion; the kernel handles the new exit (SIGBUS) and the stand-in reports it for misaligned
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
-  packages, only additions). The eighth run changed nothing in the shared crate.
+  packages, only additions). The eighth and ninth runs changed nothing in the shared crate (origin/phase-1
+had nothing new to merge in the ninth).
 
 ## Questions for the orchestrator (boundary)
 

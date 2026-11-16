@@ -223,8 +223,13 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files do not take reads that may not wait (`FMODE_NOWAIT` unset).
-    let waits = matches!(file.borrow().node.borrow().content, Content::Proc(_));
+    // `/proc`'s files and memory files do not take reads or writes that may not wait (`FMODE_NOWAIT`
+    // unset: memory files are not opened by `do_dentry_open`; measured).
+    let waits = {
+        let file = file.borrow();
+        let inode = file.node.borrow();
+        matches!(inode.content, Content::Proc(_)) || inode.fs.device == kernel.files.memfd_fs.device
+    };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
@@ -319,7 +324,16 @@ pub(super) fn copy_file_range(
     let count = count.min(MAX_RW_COUNT);
     let bytes = file_bytes(cx, &input, count, position_in)?;
     accessed(kernel, cx, &node_in, input.borrow().flags);
-    let written = write_bytes(kernel, cx, tid, &output, &bytes, Some(position_out), false)?;
+    let written = write_bytes(
+        kernel,
+        cx,
+        tid,
+        &output,
+        &bytes,
+        bytes.len() as u64,
+        Some(position_out),
+        false,
+    )?;
     let mut put_back = |address: u64, file: &FileRef, position: u64| -> Result<(), Errno> {
         if address == 0 {
             file.borrow_mut().offset = position;
@@ -803,27 +817,23 @@ pub(super) fn write_at(
             Device::from_number(inode.rdev),
         )
     };
-    let bytes = if regular {
+    if regular {
         let offset = if append {
             node.borrow().size()
         } else {
             at.unwrap_or(file.borrow().offset)
         };
         let count = write_limit(kernel, cx, tid, offset, count)?;
-        // As much of the buffer as can be read.
+        // As much of the buffer as can be read; where it stops, the write ends (`write_bytes`).
         let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
-        if readable == 0 && count > 0 {
-            return Err(Errno::EFAULT);
-        }
-        guest(kernel, cx, tid).read(buffer, readable)?
-    } else if matches!(device, Some(Device::Random | Device::Urandom)) {
-        // The random devices take the bytes in; the rest only count them.
+        let bytes = guest(kernel, cx, tid).read(buffer, readable)?;
+        return write_bytes(kernel, cx, tid, file, &bytes, count, at, append);
+    }
+    // The random devices take the bytes in; the rest only count them.
+    if matches!(device, Some(Device::Random | Device::Urandom)) {
         guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
-        return write_bytes(kernel, cx, tid, file, &[], at, append).map(|_| count);
-    } else {
-        return write_bytes(kernel, cx, tid, file, &[], at, append).map(|_| count);
-    };
-    write_bytes(kernel, cx, tid, file, &bytes, at, append)
+    }
+    write_bytes(kernel, cx, tid, file, &[], 0, at, append).map(|_| count)
 }
 
 /// A write to a file of `/proc`, which takes no position and moves none.
@@ -862,14 +872,17 @@ fn write_proc(
     }
 }
 
-/// Writes bytes the kernel holds to a file, at its position or at `at`. Devices that take anything
+/// Writes bytes the kernel holds to a file, at its position or at `at`, of the `wanted` the caller
+/// asked for: fewer when the caller's buffer stopped being readable. Devices that take anything
 /// report nothing written here; the caller counts what it offered.
+#[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
 fn write_bytes(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     file: &FileRef,
     bytes: &[u8],
+    wanted: u64,
     at: Option<u64>,
     append: bool,
 ) -> Result<u64, Errno> {
@@ -912,12 +925,26 @@ fn write_bytes(
         return Err(Errno::EFBIG);
     }
     let mut bytes = bytes;
-    if !bytes.is_empty() {
+    if wanted > 0 {
         // The times change and privileges go before the seals are looked at, as in tmpfs.
-        let allowed = regular.writable(offset, bytes.len() as u64);
-        if let Ok(allowed) = allowed {
-            bytes = &bytes[..allowed as usize];
+        let mut allowed = regular.writable(offset, bytes.len() as u64);
+        if let Ok(written) = allowed {
+            bytes = &bytes[..written as usize];
             regular.write(cx.cpu, offset, bytes);
+            // Where the buffer stopped being readable, Linux's `generic_perform_write` has already
+            // taken the next page from tmpfs (`shmem_write_begin`) when the copy into it fails: the
+            // page stays, holding zeros, and the write ends there, EFAULT if nothing was written.
+            let next = offset + written;
+            if written < wanted && written as usize == bytes.len() {
+                let chunk = ((next / 4096 + 1) * 4096 - next).min(wanted - written);
+                let page = regular.writable(next, chunk);
+                if page.is_ok() {
+                    regular.hold_page(next / 4096);
+                }
+                if written == 0 {
+                    allowed = page.and(Err(Errno::EFAULT));
+                }
+            }
         }
         inode.mtime = now;
         inode.ctime = now;
@@ -1003,12 +1030,23 @@ fn send(
         let allowed = write_limit(kernel, cx, tid, at, bytes.len() as u64)?;
         bytes.truncate(allowed as usize);
     }
-    let written = write_bytes(kernel, cx, tid, &output, &bytes, None, false)?;
+    let written = write_bytes(
+        kernel,
+        cx,
+        tid,
+        &output,
+        &bytes,
+        bytes.len() as u64,
+        None,
+        false,
+    )?;
     input.borrow_mut().read_position = offset + written;
+    // A device's reads leave the position alone, the one given too (`copy_splice_read` keeps what
+    // the device's read left).
+    let device = matches!(input.borrow().node.borrow().content, Content::Special);
     match explicit {
+        _ if device => {}
         Some(offset) => *offset = (position as u64 + written) as i64,
-        // A device's reads leave the position alone.
-        None if matches!(input.borrow().node.borrow().content, Content::Special) => {}
         None => input.borrow_mut().offset = offset + written,
     }
     Ok(written)
