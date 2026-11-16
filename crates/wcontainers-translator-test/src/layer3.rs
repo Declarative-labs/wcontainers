@@ -110,6 +110,47 @@ pub fn csmith(seed: u64) -> PathBuf {
 
 /// Build a C file with the C library into a flat blob.
 pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Blob {
+    let (elf, own, name) = compile(source, compiler, optimisation, position, true);
+    let mut blob = flatten(&elf, &own, name);
+    if position == Position::Independent {
+        blob.load = crate::programs::MOVED;
+    }
+    blob
+}
+
+/// Build a C file as an ordinary static Linux executable and run it on Linux for at most 20 seconds, so a
+/// blob's fault can be told to be the program's own.
+pub fn ordinary(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Ran {
+    let (elf, ..) = compile(source, compiler, optimisation, position, false);
+    let output = Command::new("docker")
+        .args(["run", "--rm", "--network", "none", "--name"])
+        .arg(crate::reference::container_name("ordinary"))
+        .arg("-v")
+        .arg(format!("{}:/o:ro", out_directory().display()))
+        .args(["alpine:latest", "sh", "-c"])
+        .arg(format!(
+            "timeout -s KILL 20 /o/{}",
+            elf.file_name().unwrap().to_str().unwrap()
+        ))
+        .output()
+        .expect("run docker");
+    std::fs::remove_file(&elf).unwrap();
+    Ran {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        status: output.status.code().expect("an exit status"),
+    }
+}
+
+/// Compile and link a C file, for a flat blob (with `flat.ld`) or as an ordinary executable. Gives the ELF
+/// file, its own unique stem and the program's name.
+fn compile(
+    source: &Path,
+    compiler: Compiler,
+    optimisation: &str,
+    position: Position,
+    flat: bool,
+) -> (PathBuf, String, String) {
     let stem = source.file_stem().unwrap().to_str().unwrap();
     let name = format!(
         "{stem}-{}{optimisation}{}",
@@ -141,22 +182,18 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
             );
             let mut arguments = vec!["cc", "-target", "aarch64-linux-musl", optimisation];
             arguments.extend(code);
-            arguments.extend([
-                "-fno-sanitize=all",
-                "-w",
-                &include,
-                &script,
-                "-Wl,--build-id=none",
-                "-o",
-                &elf,
-                &source,
-            ]);
+            arguments.extend(["-fno-sanitize=all", "-w", &include]);
+            if flat {
+                arguments.push(&script);
+            }
+            arguments.extend(["-Wl,--build-id=none", "-o", &elf, &source]);
             zig(&arguments);
         }
         Compiler::Gcc => {
             gcc_image();
             let source_directory = source.parent().unwrap();
-            let status = Command::new("docker")
+            let mut command = Command::new("docker");
+            command
                 .args(["run", "--rm", "--network", "none", "--name"])
                 .arg(crate::reference::container_name("gcc"))
                 .arg("-v")
@@ -169,7 +206,12 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
                 .arg(format!("{}:/o", out.display()))
                 .args([GCC_IMAGE, "gcc", optimisation, "-w"])
                 .args(code)
-                .args(["-I/i", "-T/l/flat.ld", "-Wl,--build-id=none", "-o"])
+                .arg("-I/i");
+            if flat {
+                command.arg("-T/l/flat.ld");
+            }
+            let status = command
+                .args(["-Wl,--build-id=none", "-o"])
                 .arg(format!("/o/{own}.elf"))
                 .arg(format!(
                     "/s/{}",
@@ -180,11 +222,7 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
             assert!(status.success(), "gcc failed for {name}");
         }
     }
-    let mut blob = flatten(&elf, &own, name);
-    if position == Position::Independent {
-        blob.load = crate::programs::MOVED;
-    }
-    blob
+    (elf, own, name)
 }
 
 /// The native run, or `None` when the program does not end in time (Csmith's programs may not).

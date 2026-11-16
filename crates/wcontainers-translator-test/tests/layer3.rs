@@ -14,7 +14,7 @@ use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::layer3::{
-    Compiler, LEVELS, Position, build, csmith, native_in_time,
+    Compiler, LEVELS, Position, build, csmith, native_in_time, ordinary,
 };
 use wcontainers_translator_test::programs::{Blob, Ran, native, reachable_memory, translated};
 
@@ -23,20 +23,25 @@ fn setting(name: &str, default: u64) -> u64 {
 }
 
 /// Run a blob at none and full; compare with Linux, and full with none in registers and memory. Gives
-/// Linux's run, or nothing when the program did not end in time there.
-fn compare(blob: &Blob) -> Result<Option<Ran>, String> {
+/// Linux's run, or nothing when the program did not end in time there. `ordinary` runs the program built
+/// as an ordinary Linux executable.
+fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, String> {
     let Some(theirs) = native_in_time(blob) else {
         return Ok(None);
     };
-    // Every program here ends normally, so ending by a signal (a moved blob that did not relocate itself,
-    // say) would make agreement meaningless.
+    // A blob that Linux ends by a signal is compared only when the program, built as an ordinary
+    // executable, ends the same way: otherwise both sides could agree on a blob that is broken (a moved blob
+    // that did not relocate itself, say).
     if theirs.status >= 128 {
-        // Whether Linux does it again tells a fault of the program from one of the reference.
-        let again: Vec<i32> = (0..3).map(|_| native(blob).status).collect();
-        return Err(format!(
-            "{}: Linux ended with status {}, then {again:?} when run again",
-            blob.name, theirs.status
-        ));
+        let program = ordinary();
+        if (program.status, &program.stdout) != (theirs.status, &theirs.stdout) {
+            // Whether Linux does it again tells a fault of the blob from one of the reference.
+            let again: Vec<i32> = (0..3).map(|_| native(blob).status).collect();
+            return Err(format!(
+                "{}: Linux ended the blob with status {}, then {again:?} when run again, the ordinary executable with status {}",
+                blob.name, theirs.status, program.status
+            ));
+        }
     }
     let mut finals = Vec::new();
     for look_ahead in [LookAhead::None, LookAhead::Full] {
@@ -80,8 +85,8 @@ fn compare_in_chrome(blob: &Blob, theirs: &Ran) -> Result<(), String> {
     Ok(())
 }
 
-/// The blob for Csmith case `number`, with the compiler, level and position picked from it.
-fn csmith_blob(number: u64) -> Blob {
+/// The source, compiler, level and position of Csmith case `number`.
+fn csmith_case(number: u64) -> (std::path::PathBuf, Compiler, &'static str, Position) {
     let compiler = if number.is_multiple_of(2) {
         Compiler::Clang
     } else {
@@ -93,7 +98,7 @@ fn csmith_blob(number: u64) -> Blob {
     } else {
         Position::Independent
     };
-    build(&csmith(number), compiler, level, position)
+    (csmith(number), compiler, level, position)
 }
 
 #[test]
@@ -113,8 +118,10 @@ fn csmith_programs_match_linux() {
                 return;
             }
             let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
-            let blob = csmith_blob(number);
-            let checked = compare(&blob).and_then(|theirs| match theirs {
+            let (source, compiler, level, position) = csmith_case(number);
+            let blob = build(&source, compiler, level, position);
+            let own = || ordinary(&source, compiler, level, position);
+            let checked = compare(&blob, own).and_then(|theirs| match theirs {
                 Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
                     compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
                 }
@@ -163,13 +170,10 @@ fn hand_picked_programs_match_linux() {
         for compiler in [Compiler::Clang, Compiler::Gcc] {
             for level in LEVELS {
                 for position in [Position::Fixed, Position::Independent] {
-                    let blob = build(
-                        &directory.join(format!("{name}.c")),
-                        compiler,
-                        level,
-                        position,
-                    );
-                    match compare(&blob) {
+                    let source = directory.join(format!("{name}.c"));
+                    let blob = build(&source, compiler, level, position);
+                    let own = || ordinary(&source, compiler, level, position);
+                    match compare(&blob, own) {
                         Ok(Some(_)) => {}
                         Ok(None) => failures.push(format!("{}: did not end on Linux", blob.name)),
                         Err(report) => failures.push(report),
