@@ -21,9 +21,6 @@ pub mod reason {
     /// A signal whose default action stops the process; stopping comes with job control. Detail: the
     /// signal.
     pub const PROCESS_STOP_NOT_IMPLEMENTED: &str = "process stop not implemented";
-    /// Record locks through `fcntl`, answered as Linux without file locking answers. Detail: the
-    /// command.
-    pub const LOCKS_NOT_IMPLEMENTED: &str = "file locks not implemented";
     /// An `fcntl` command the kernel does not build, known to Linux or not; it answers EINVAL, as
     /// Linux does for one it does not know or has not configured. Detail: the command.
     pub const FCNTL_NOT_BUILT: &str = "fcntl command not built";

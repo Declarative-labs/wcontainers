@@ -51,6 +51,9 @@ const UNAME: u64 = 0x1800;
 /// Where name_to_handle_at writes the mount number, which differs between the machines; no call reads
 /// it.
 const MOUNT_NUMBER: u64 = 0x1a00;
+/// `struct flock` requests for fcntl's record locks, 32 bytes apart.
+const FLOCKS: u64 = 0x1c00;
+const FLOCK_COUNT: u64 = 8;
 /// `sched_attr` structures for sched_setattr, 128 bytes apart.
 const SCHED_ATTRS: u64 = 0x2000;
 /// `file_handle` headers for name_to_handle_at, 128 bytes apart: room for 128 bytes, the 12 tmpfs
@@ -347,6 +350,26 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         let at = (POLLS + index * 8) as usize;
         arena[at..at + 4].copy_from_slice(&fd.to_le_bytes());
         arena[at + 4..at + 6].copy_from_slice(&events.to_le_bytes());
+    }
+    // Record lock requests: each kind, origin, start and length, and sometimes a process number
+    // (which open file locks refuse).
+    for index in 0..FLOCK_COUNT {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(29);
+        let kind: i16 = [0, 1, 2, 0, 1, 7][(word % 6) as usize];
+        let whence: i16 = [0, 0, 0, 1, 2, 3][((word >> 4) % 6) as usize];
+        let start: i64 = [0, 0, 1, 5, 100, -1, i64::MAX, 4096][((word >> 8) % 8) as usize];
+        let length: i64 = [0, 1, 1, 10, -3, 4096, i64::MAX, -1][((word >> 12) % 8) as usize];
+        let pid: i32 = if (word >> 16) % 8 == 0 { 5 } else { 0 };
+        let at = (FLOCKS + index * 32) as usize;
+        arena[at..at + 2].copy_from_slice(&kind.to_le_bytes());
+        arena[at + 2..at + 4].copy_from_slice(&whence.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&start.to_le_bytes());
+        arena[at + 16..at + 24].copy_from_slice(&length.to_le_bytes());
+        arena[at + 24..at + 28].copy_from_slice(&pid.to_le_bytes());
     }
     // Values calls read: times, limits, masks, chosen to include the special ones. The last eight hold
     // the four sleeps `nanosleep` chooses from: short, none, and two invalid ones.
@@ -1210,6 +1233,13 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     linux::F_SET_RW_HINT,
                     linux::F_DUPFD_QUERY,
                     linux::F_CREATED_QUERY,
+                    // Record locks; not the forms that wait, whose waits here last for ever.
+                    linux::F_GETLK,
+                    linux::F_SETLK,
+                    linux::F_SETLK,
+                    linux::F_OFD_GETLK,
+                    linux::F_OFD_SETLK,
+                    linux::F_OFD_SETLK,
                 ],
                 b,
             );
@@ -1223,6 +1253,12 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     _ => buffer(c >> 2),
                 },
                 linux::F_DUPFD_QUERY => fd(c),
+                linux::F_GETLK | linux::F_SETLK | linux::F_OFD_GETLK | linux::F_OFD_SETLK => {
+                    match c % 8 {
+                        0 => buffer(c >> 3),
+                        _ => ARENA + FLOCKS + (c >> 3) % FLOCK_COUNT * 32,
+                    }
+                }
                 _ => pick(
                     &[
                         0,
@@ -2610,6 +2646,17 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     }
     if call.number == linux::__NR_pselect6 && e != 0 {
         out.push((e, 16));
+    }
+    // The process a test of a record lock found holding it: each runner's own number (an open file's
+    // lock shows -1, none leaves what was there).
+    if call.number == linux::__NR_fcntl
+        && matches!(b as u32, linux::F_GETLK | linux::F_OFD_GETLK)
+        && value == 0
+        && let Some(at) = c.checked_sub(ARENA).map(|at| at as usize + 24)
+        && at + 4 <= arena.len()
+        && i32::from_le_bytes(arena[at..at + 4].try_into().expect("4")) > 0
+    {
+        out.push((c + 24, 4));
     }
     // The CPU number, written before a fault on the node number.
     if call.number == linux::__NR_getcpu {

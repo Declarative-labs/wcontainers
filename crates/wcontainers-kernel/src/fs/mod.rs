@@ -233,6 +233,8 @@ pub(crate) struct Inode {
     /// `flock` locks: the open file holding each, and whether it is exclusive. An entry whose open file
     /// is gone was released when it closed.
     pub flocks: Vec<(alloc::rc::Weak<RefCell<crate::file::OpenFile>>, bool)>,
+    /// Record locks (`fcntl`'s).
+    pub record_locks: Vec<crate::locks::RecordLock>,
     /// Extended attributes by full name, for file systems that keep them.
     pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
     /// tmpfs's inode flags (`FS_*_FL`, as `FS_IOC_GETFLAGS` shows them).
@@ -1008,6 +1010,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         },
         content,
         flocks: Vec::new(),
+        record_locks: Vec::new(),
         xattrs: BTreeMap::new(),
         fsflags: 0,
         write_hint: 0,

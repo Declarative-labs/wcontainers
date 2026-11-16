@@ -374,7 +374,7 @@ impl Kernel {
             memory: wcontainers_abi::MemoryId(0),
             map: crate::memory::AddressMap::new(cx.cpu.address_space().end),
             threads: vec![pid],
-            files: FdTable::default(),
+            files: FdTable::new(pid as u64),
             root: root.clone(),
             cwd: root.clone(),
             umask: 0o022,

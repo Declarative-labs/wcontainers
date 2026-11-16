@@ -1642,20 +1642,191 @@ pub(super) fn fcntl(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
+    arguments: Args,
+) -> super::Outcome {
+    match fcntl_typed(kernel, cx, tid, arguments) {
+        Ok(Some(value)) => super::Outcome::Return(value),
+        Ok(None) => {
+            // A lock another holder of this process has: it cannot let go while the only thread
+            // waits, so the wait lasts until a signal ends it (K2), as on Linux.
+            kernel.park(cx, tid, crate::process::Parked::Forever);
+            super::Outcome::Parked
+        }
+        Err(error) => Err(error).into(),
+    }
+}
+
+/// `fcntl`: Some(value) when it is done, None when a lock must wait for its holder to let go.
+fn fcntl_typed(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
     [fd, command, argument, ..]: Args,
-) -> Result<u64, Errno> {
+) -> Result<Option<u64>, Errno> {
     let fd = fd as i32;
+    let command = command as u32;
+    if matches!(
+        command,
+        F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW
+    ) {
+        let file = kernel.process_of(tid).files.file(fd)?;
+        if file.borrow().is_path() {
+            return Err(Errno::EBADF);
+        }
+        return record_lock(kernel, cx, tid, &file, command, argument);
+    }
+    fcntl_other(kernel, cx, tid, fd, command, argument).map(Some)
+}
+
+/// fcntl's record locks, as Linux's `fcntl_getlk` and `fcntl_setlk`: the request is read, checked,
+/// tested or applied, and for a test written back.
+fn record_lock(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &crate::file::FileRef,
+    command: u32,
+    argument: u64,
+) -> Result<Option<u64>, Errno> {
+    use crate::locks::{LockOwner, OFFSET_MAX, RecordLock};
+    use core::mem::offset_of;
+    let mut raw = guest(kernel, cx, tid).read(argument, size_of::<flock>() as u64)?;
+    let short = |raw: &[u8], at: usize| i16::from_le_bytes([raw[at], raw[at + 1]]);
+    let long = |raw: &[u8], at: usize| i64::from_le_bytes(raw[at..at + 8].try_into().expect("8"));
+    let kind = short(&raw, offset_of!(flock, l_type)) as i32;
+    let whence = short(&raw, offset_of!(flock, l_whence)) as u32;
+    let (l_start, l_len) = (
+        long(&raw, offset_of!(flock, l_start)),
+        long(&raw, offset_of!(flock, l_len)),
+    );
+    let l_pid = i32::from_le_bytes(
+        raw[offset_of!(flock, l_pid)..offset_of!(flock, l_pid) + 4]
+            .try_into()
+            .expect("4"),
+    );
+    let getting = matches!(command, F_GETLK | F_OFD_GETLK);
+    let private = matches!(command, F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW);
+    if command == F_GETLK && kind != F_RDLCK as i32 && kind != F_WRLCK as i32 {
+        return Err(Errno::EINVAL);
+    }
+    // `flock64_to_posix_lock`: the range from where it is measured, then the kind.
+    let (offset, size) = {
+        let file = file.borrow();
+        (file.offset as i64, file.node.borrow().size() as i64)
+    };
+    let base = match whence {
+        SEEK_SET => 0,
+        SEEK_CUR => offset,
+        SEEK_END => size,
+        _ => return Err(Errno::EINVAL),
+    };
+    let max = OFFSET_MAX as i64;
+    if l_start > max - base {
+        return Err(Errno::EOVERFLOW);
+    }
+    let mut start = base + l_start;
+    if start < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let end = if l_len > 0 {
+        if l_len - 1 > max - start {
+            return Err(Errno::EOVERFLOW);
+        }
+        start + (l_len - 1)
+    } else if l_len < 0 {
+        if start + l_len < 0 {
+            return Err(Errno::EINVAL);
+        }
+        let end = start - 1;
+        start += l_len;
+        end
+    } else {
+        max
+    };
+    let (write, unlock) = match kind as u32 {
+        F_RDLCK => (false, false),
+        F_WRLCK => (true, false),
+        F_UNLCK => (false, true),
+        _ => return Err(Errno::EINVAL),
+    };
+    // A lock needs the file open for its kind (`check_fmode_for_setlk`).
+    if !getting && !unlock {
+        let file = file.borrow();
+        if (write && !file.writable()) || (!write && !file.readable()) {
+            return Err(Errno::EBADF);
+        }
+    }
+    if private && l_pid != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let pid = kernel.threads[&tid].process;
+    let request = RecordLock {
+        owner: if private {
+            LockOwner::File(alloc::rc::Rc::downgrade(file))
+        } else {
+            LockOwner::Table(kernel.processes[&pid].files.lock_owner())
+        },
+        pid,
+        write,
+        start: start as u64,
+        end: end as u64,
+    };
+    let node = file.borrow().node.clone();
+    if getting {
+        let found = crate::locks::test(&mut node.borrow_mut().record_locks, &request, unlock);
+        let put_short = |raw: &mut [u8], at: usize, value: i16| {
+            raw[at..at + 2].copy_from_slice(&value.to_le_bytes())
+        };
+        match found {
+            None => put_short(&mut raw, offset_of!(flock, l_type), F_UNLCK as i16),
+            Some(held) => {
+                let kind = if held.write { F_WRLCK } else { F_RDLCK };
+                put_short(&mut raw, offset_of!(flock, l_type), kind as i16);
+                put_short(&mut raw, offset_of!(flock, l_whence), SEEK_SET as i16);
+                let length = if held.end == OFFSET_MAX {
+                    0
+                } else {
+                    held.end - held.start + 1
+                };
+                let at = offset_of!(flock, l_start);
+                raw[at..at + 8].copy_from_slice(&held.start.to_le_bytes());
+                let at = offset_of!(flock, l_len);
+                raw[at..at + 8].copy_from_slice(&length.to_le_bytes());
+                let shown = if held.owner.is_file() { -1 } else { held.pid };
+                let at = offset_of!(flock, l_pid);
+                raw[at..at + 4].copy_from_slice(&shown.to_le_bytes());
+            }
+        }
+        guest(kernel, cx, tid).write(argument, &raw)?;
+        return Ok(Some(0));
+    }
+    match crate::locks::set(&mut node.borrow_mut().record_locks, request, unlock) {
+        Ok(()) => Ok(Some(0)),
+        Err(_) if matches!(command, F_SETLKW | F_OFD_SETLKW) => Ok(None),
+        Err(_) => Err(Errno::EAGAIN),
+    }
+}
+
+/// Every other `fcntl` command.
+fn fcntl_other(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    fd: i32,
+    command: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
     let limit = nofile_limit(kernel, tid);
     let files = &mut kernel.process_of_mut(tid).files;
     let descriptor = files.get(fd)?.clone();
     let path_only = descriptor.file.borrow().is_path();
-    match command as u32 {
+    match command {
         F_DUPFD | F_DUPFD_CLOEXEC => {
             let minimum = argument as i32;
             if minimum < 0 || minimum as u64 >= limit {
                 return Err(Errno::EINVAL);
             }
-            let close_on_exec = command as u32 == F_DUPFD_CLOEXEC;
+            let close_on_exec = command == F_DUPFD_CLOEXEC;
             Ok(files.add(descriptor.file, close_on_exec, minimum, limit)? as u64)
         }
         F_GETFD => Ok(u64::from(descriptor.close_on_exec)),
@@ -1700,18 +1871,6 @@ pub(super) fn fcntl(
         F_DUPFD_QUERY => {
             let other = files.file(argument as i32)?;
             Ok(u64::from(alloc::rc::Rc::ptr_eq(&other, &descriptor.file)))
-        }
-        // Record locks are not built: the lock is read, then answered as Linux without file locking
-        // answers (`fcntl_getlk` and `fcntl_setlk`'s stubs).
-        F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW if !path_only => {
-            guest(kernel, cx, tid).read(argument, size_of::<flock>() as u64)?;
-            kernel
-                .counters
-                .count(cx.host, reason::LOCKS_NOT_IMPLEMENTED, command);
-            match command as u32 {
-                F_GETLK | F_OFD_GETLK => Err(Errno::EINVAL),
-                _ => Err(Errno::EACCES),
-            }
         }
         // No lease can be taken, so a file never holds one.
         F_GETLEASE if !path_only => Ok(u64::from(F_UNLCK)),
@@ -1815,7 +1974,7 @@ pub(super) fn fcntl(
         _ => {
             kernel
                 .counters
-                .count(cx.host, reason::FCNTL_NOT_BUILT, command);
+                .count(cx.host, reason::FCNTL_NOT_BUILT, command.into());
             Err(Errno::EINVAL)
         }
     }

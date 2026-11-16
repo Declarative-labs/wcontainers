@@ -19,6 +19,7 @@ mod fs;
 pub mod linux;
 mod linux_extra;
 mod loader;
+mod locks;
 mod memory;
 mod process;
 mod seccomp;
@@ -397,7 +398,8 @@ impl Kernel {
 
     /// Ends a whole process with a wait status, as `exit_group` and fatal signals do.
     pub(crate) fn end_process(&mut self, cx: &mut Context<'_>, pid: Pid, wait_status: i32) {
-        let process = self.processes.remove(&pid).expect("process exists");
+        let mut process = self.processes.remove(&pid).expect("process exists");
+        process.files.close_all();
         for tid in &process.threads {
             let thread = self.threads.remove(tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);

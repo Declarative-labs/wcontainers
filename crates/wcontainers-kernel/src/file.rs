@@ -87,9 +87,20 @@ pub(crate) struct FdTable {
     slots: BTreeMap<i32, Descriptor>,
     /// The highest descriptor ever used, which sets how large Linux's table has grown.
     highest: i32,
+    /// Who the record locks taken through this table belong to (Linux's `files_struct` as a lock's
+    /// owner).
+    lock_owner: u64,
 }
 
 impl FdTable {
+    /// An empty table whose record locks belong to `lock_owner`.
+    pub fn new(lock_owner: u64) -> Self {
+        Self {
+            lock_owner,
+            ..Self::default()
+        }
+    }
+
     pub fn get(&self, fd: i32) -> Result<&Descriptor, Errno> {
         self.slots.get(&fd).ok_or(Errno::EBADF)
     }
@@ -147,11 +158,37 @@ impl FdTable {
     /// Puts a file at a given descriptor, closing what was there.
     pub fn set(&mut self, fd: i32, descriptor: Descriptor) -> Option<Descriptor> {
         self.highest = self.highest.max(fd);
-        self.slots.insert(fd, descriptor)
+        let old = self.slots.insert(fd, descriptor);
+        if let Some(old) = &old {
+            self.closed(old);
+        }
+        old
     }
 
     pub fn remove(&mut self, fd: i32) -> Result<Descriptor, Errno> {
-        self.slots.remove(&fd).ok_or(Errno::EBADF)
+        let old = self.slots.remove(&fd).ok_or(Errno::EBADF)?;
+        self.closed(&old);
+        Ok(old)
+    }
+
+    pub fn lock_owner(&self) -> u64 {
+        self.lock_owner
+    }
+
+    /// Closes every descriptor, as a process's end does.
+    pub fn close_all(&mut self) {
+        for (_, old) in core::mem::take(&mut self.slots) {
+            self.closed(&old);
+        }
+    }
+
+    /// A descriptor was closed: the table's record locks on the file go (`filp_flush`), unless it
+    /// was opened only for its path.
+    fn closed(&self, descriptor: &Descriptor) {
+        let file = descriptor.file.borrow();
+        if !file.is_path() {
+            crate::locks::release_table(&mut file.node.borrow_mut().record_locks, self.lock_owner);
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (i32, &Descriptor)> {
@@ -160,6 +197,14 @@ impl FdTable {
 
     /// Closes every descriptor marked close-on-exec, as `execve` does.
     pub fn close_on_exec(&mut self) {
-        self.slots.retain(|_, descriptor| !descriptor.close_on_exec);
+        let closing: Vec<i32> = self
+            .slots
+            .iter()
+            .filter(|(_, descriptor)| descriptor.close_on_exec)
+            .map(|(fd, _)| *fd)
+            .collect();
+        for fd in closing {
+            let _ = self.remove(fd);
+        }
     }
 }
