@@ -4,8 +4,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M5 (real code at scale): built in four runs (under "M5, fourth run" back to "M5, first run"); what is
-left is under "M5, fourth run, what comes next". M0 to M4 and S1 are built; their work is recorded
+M5 (real code at scale): built in four runs (under "M5, fourth run" back to "M5, first run"); every part
+is built and recorded, and refinements are listed under "M5, fourth run, what comes next". M0 to M4 and S1 are built; their work is recorded
 below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million
 programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
 under "How to run".
@@ -56,6 +56,44 @@ benchmark set (bytes of WebAssembly, speed / size setting) and run speed in both
   (-4.3%). Gzipped about 10% less.
 - The bit that tells a callee the caller wants the flags is added into the return address constant (it
   was an `or` after the add; instructions are 4 byte aligned, so the bit is clear).
+
+Each binary on this run's final code, translation only (`measure_binaries`, `WC_BINARIES_ENGINES=0`,
+`RAYON_NUM_THREADS=6`, one run, load 30 to 62). Bytes of WebAssembly (bytes a byte of code), gzipped, and
+translation time, speed / size:
+- busybox 32,472,392 (46.1), 6,103,289, 0.18 s / 13,533,418 (19.2), 3,012,555, 0.11 s.
+- musl 14,546,689 (39.3), 2,763,532, 0.08 s / 6,996,354 (18.9), 1,413,770, 0.05 s.
+- rg 137,298,326 (67.9), 22,141,772, 0.51 s / 41,973,706 (20.7), 7,555,446, 0.29 s.
+- git 107,719,042 (49.4), 18,926,550, 0.47 s / 43,777,767 (20.1), 9,368,089, 0.34 s.
+- python 137,603,117 (46.5), 21,758,085, 0.58 s / 57,678,120 (19.5), 10,426,703, 0.56 s.
+- java 543,298,928 (41.2), 81,396,412, 2.48 s / 235,237,352 (17.8), 40,699,810, 2.02 s.
+- go 347,710,233 (59.3), 47,273,601, 1.14 s / 148,076,420 (25.3), 24,231,195, 0.87 s.
+- bun 3,761,902,687 in 4 modules (72.3), 558,499,321, 24.97 s / 1,058,185,079 in 2 modules (20.3),
+  176,121,046, 10.92 s (third run: 72.74 s / 52.08 s).
+- node 2,515,099,638 in 3 modules (62.9), 380,762,969, 14.74 s / 895,334,387 in 1 module (22.4),
+  155,537,459, 8.11 s (third run: 18.79 s / 9.27 s).
+- The engines' figures (compile time, machine code, Chrome's memory) under "M5, third run" are for that
+  run's code, 3 to 6% larger; not taken again.
+
+What a call between two modules costs, again on this run's code (`measure_calls`, best of 3, load 24 to 32):
+wasmtime speed 2.81 ns, size 2.20 ns; Chrome speed 2.71 ns (0.135 s in one module, 0.406 s a module a
+piece), size 2.75 ns. Chrome's figures now agree across two runs (third run 2.65 and 2.75 ns).
+
+Cases run on this run's code: after the translation speed change, smoke, checks, programs and layer 2 at
+their defaults (release); after the size changes, smoke, checks, programs, layer 2, look-ahead, changes and
+layer 1 at 200 cases a form (release; layer 1 at 300 a form after the first size change), all passing.
+Last, every test of the three crates on the final code (debug, `RAYON_NUM_THREADS=4`, Chrome and layer 3's
+defaults included): 69 passed, 7 ignored (the measurements), 16 minutes, load 34 to 61. No long random run
+was made this run.
+
+M5, fourth run, what comes next (the milestone's parts are all built and recorded; these are refinements):
+1. Size: slow paths still write back their registers in place, the floating point ones with every live
+   vector register (`v128.store` is 1.4% of musl's instructions, size setting). A shared exit per function
+   would need every register's local to hold its value at every exit; not tried.
+2. Size mode: a proven loop with loops inside it still has only its checked copy.
+3. A split translation is emitted twice (Node and Bun only), as each module's code depends on which pieces
+   it holds.
+4. The engines' compile times and memory on this run's code alone, without Chrome or the other half beside
+   them.
 
 ## M5, third run
 
@@ -2085,7 +2123,7 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M5's remaining work (see "M5, third run, what comes next").
+1. M5 is built; refinements under "M5, fourth run, what comes next". Then M6 as the plan says.
 2. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
    (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
 
@@ -2133,6 +2171,9 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
+- M5, fourth run: the translator's maps use `rustc-hash` (an established crate, already a dependency)
+  instead of std's SipHash: keys are guest offsets, and translation speed is a goal while hash flooding is
+  not a risk here (a hostile binary can only slow its own translation).
 - M5, third run: section 11 asks first for what makes the output smaller at no cost in run speed. The slow
   paths out of line (shared functions for the write back on paths that never come back) were built as that,
   and measured free on the benchmark set in the speed setting, but they slow loops that run with their checks
