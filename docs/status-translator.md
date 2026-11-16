@@ -123,6 +123,12 @@ Instances took at most 18 ms in wasmtime and 177 ms in Chrome everywhere.
   eagerly here; wasmtime was not reached in these runs (the first run's figure: 89.6 s to 4.04 GB). Size:
   1,253,423,350 in 2 modules (31.3 a byte), translated in 48 s; Chrome 0.28 s at first call and 2.57 s at once
   (instances 24 and 177 ms); wasmtime 49.2 s to 1.88 GB of machine code.
+- bun (load 33 to 54): speed 3,922,908,246 in 4 modules (75.4 a byte), translated in 139 s; Chrome makes its
+  modules at first call in 1.06 s (instances 34 ms); compiled at once its page crashed; wasmtime 154.8 s to
+  5.51 GB of machine code. Size 1,408,316,068 in 2 modules (27.1 a byte), translated in 86 s; Chrome 0.32 s at
+  first call and 4.30 s at once (instances 31 and 193 ms); wasmtime 61.7 s to 2.06 GB.
+- So all nine binaries now load in Chrome (compiled at first call) in both settings; compiled at once, Node
+  and Bun load only for size.
 - A crashed page is now reported as a refusal, so the measurement goes on to wasmtime.
 - Chrome's memory for compiled code is not measured (nothing reads V8's code space yet); wasmtime's is the
   machine code bytes above.
