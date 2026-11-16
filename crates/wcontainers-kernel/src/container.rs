@@ -15,7 +15,7 @@ use crate::linux::general::*;
 use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RELATIME};
 use crate::loader::Image;
 use crate::process::{Pid, Process, SIGNALS, Thread, Tid, docker_limits};
-use crate::{Context, Errno, Kernel, errno};
+use crate::{Context, Errno, Kernel};
 
 /// The permission bits, owner and time of a file added before the container starts.
 #[derive(Clone, Copy, Debug)]
@@ -358,6 +358,7 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
         self.boot = Time::from_nanoseconds(cx.host.realtime_nanoseconds());
         self.boot_monotonic = cx.monotonic();
@@ -400,6 +401,7 @@ impl Kernel {
             vfork_parent: None,
             stopped: false,
             report: None,
+            continued_unsent: false,
             ended_time: 0,
             children_time: 0,
             children_maxrss: 0,
@@ -421,6 +423,8 @@ impl Kernel {
         let result = self.start_first(&mut cx, pid, start);
         if result.is_err() {
             self.processes.remove(&pid);
+            // Counts what was refused on the way.
+            self.settle(&mut cx);
         }
         result
     }
@@ -523,7 +527,10 @@ impl Kernel {
                 return Ok(());
             }
         };
-        let thread = cx.cpu.thread_new(image.memory).map_err(errno::from_cpu)?;
+        let thread = cx
+            .cpu
+            .thread_new(image.memory)
+            .map_err(|error| cx.cpu_error(error))?;
         self.threads.insert(pid, Thread::new(pid, thread));
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);

@@ -2170,23 +2170,26 @@ pub(super) fn fallocate(
     if (offset as i64) < 0 || (length as i64) <= 0 {
         return Err(Errno::EINVAL);
     }
-    let known = FALLOC_FL_KEEP_SIZE
-        | FALLOC_FL_PUNCH_HOLE
+    let modes = FALLOC_FL_PUNCH_HOLE
         | FALLOC_FL_COLLAPSE_RANGE
         | FALLOC_FL_ZERO_RANGE
         | FALLOC_FL_INSERT_RANGE
-        | FALLOC_FL_UNSHARE_RANGE;
-    if mode & !known != 0 {
+        | FALLOC_FL_UNSHARE_RANGE
+        | FALLOC_FL_WRITE_ZEROES;
+    if mode & !(modes | FALLOC_FL_KEEP_SIZE) != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
+    // The modes are exclusive; some need the size kept and some forbid it.
+    let keep = mode & FALLOC_FL_KEEP_SIZE != 0;
     let punch = mode & FALLOC_FL_PUNCH_HOLE != 0;
-    if punch && mode != FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE {
+    let allowed = match mode & modes {
+        FALLOC_FL_ALLOCATE_RANGE | FALLOC_FL_UNSHARE_RANGE | FALLOC_FL_ZERO_RANGE => true,
+        FALLOC_FL_PUNCH_HOLE => keep,
+        FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE | FALLOC_FL_WRITE_ZEROES => !keep,
+        _ => false,
+    };
+    if !allowed {
         return Err(Errno::EOPNOTSUPP);
-    }
-    if mode & (FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE) != 0
-        && mode & !(FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_INSERT_RANGE) != 0
-    {
-        return Err(Errno::EINVAL);
     }
     if !file.borrow().writable() {
         return Err(Errno::EBADF);

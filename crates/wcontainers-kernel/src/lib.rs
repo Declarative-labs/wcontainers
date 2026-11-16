@@ -54,9 +54,20 @@ pub(crate) struct Context<'a> {
     /// What is added to the host's monotonic clock to give the kernel's (see
     /// [`Kernel::restore`]).
     monotonic_offset: u64,
+    /// Requests the CPU side answered it cannot do at all, counted when the kernel hands back control.
+    refused: u32,
 }
 
 impl Context<'_> {
+    /// What a refused request to make a memory, thread or shared block means to the guest; a host
+    /// that cannot do it at all is counted.
+    pub fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
+        if error == wcontainers_abi::CpuError::NotSupported {
+            self.refused += 1;
+        }
+        errno::from_cpu(error)
+    }
+
     /// The kernel's monotonic clock, which never goes backwards, also across a restore on another
     /// host.
     pub fn monotonic(&mut self) -> u64 {
@@ -255,10 +266,12 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
         self.account(&mut cx, tid);
         self.tick(tid);
         self.wake_due();
+        self.tell_continued(&mut cx, tid);
         self.came_back(&mut cx, tid, exit);
         self.settle(&mut cx);
     }
@@ -269,6 +282,7 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
         let detail = match event {
             Event::Timer => {
@@ -302,6 +316,7 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
         self.entry_now = cx.monotonic();
         let tids: Vec<Tid> = self.threads.keys().copied().collect();

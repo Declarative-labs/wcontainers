@@ -140,7 +140,7 @@ fn make_child(
     } else {
         cx.cpu
             .memory_duplicate(parent.memory)
-            .map_err(errno::from_cpu)?
+            .map_err(|error| cx.cpu_error(error))?
     };
     let mut map = parent.map.clone();
     if !borrow {
@@ -184,6 +184,7 @@ fn make_child(
     process.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     process.stopped = false;
     process.report = None;
+    process.continued_unsent = false;
     process.ended_time = 0;
     process.children_time = 0;
     process.children_maxrss = 0;
@@ -200,7 +201,10 @@ fn make_child(
         process.parent = pid;
         process.exit_signal = exit_signal;
     }
-    let thread_cpu = cx.cpu.thread_new(memory).map_err(errno::from_cpu)?;
+    let thread_cpu = cx
+        .cpu
+        .thread_new(memory)
+        .map_err(|error| cx.cpu_error(error))?;
     let mut registers = RegisterBlock::ZERO;
     cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;

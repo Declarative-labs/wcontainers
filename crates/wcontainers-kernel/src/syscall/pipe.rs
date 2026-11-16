@@ -230,6 +230,37 @@ pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<Fil
     }
 }
 
+/// `pipe_lock`: waits, without a signal ending the wait, while another thread's call holds the
+/// pipe's lock.
+pub(super) fn lock(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), Errno> {
+    let node = file.borrow().node.clone();
+    let Channel::Object(address) = channel(&node) else {
+        unreachable!("a pipe's channel is its object");
+    };
+    let holder = with_pipe(file, |pipe| pipe.held_by);
+    let held = holder.is_some_and(|holder| {
+        holder != tid
+            && kernel.threads.get(&holder).is_some_and(|thread| {
+                thread.call.wait.is_some() && thread.call.holds == Some(address)
+            })
+    });
+    if held {
+        kernel.park(tid, Channel::Object(address));
+        return Err(Errno::PARKED);
+    }
+    Ok(())
+}
+
+/// Holds the pipe's lock while the call waits (it parked).
+pub(super) fn hold(kernel: &mut Kernel, tid: Tid, file: &FileRef) {
+    let node = file.borrow().node.clone();
+    let Channel::Object(address) = channel(&node) else {
+        unreachable!("a pipe's channel is its object");
+    };
+    with_pipe(file, |pipe| pipe.held_by = Some(tid));
+    kernel.thread_mut(tid).call.holds = Some(address);
+}
+
 pub(super) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
@@ -251,6 +282,7 @@ pub(super) fn read(
     if total == 0 {
         return Ok(0);
     }
+    lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
     // Empty pages a faulted write left are passed over.
     with_pipe(file, |pipe| pipe.drop_empty());
@@ -321,6 +353,7 @@ pub(super) fn write(
     if total == 0 {
         return Ok(0);
     }
+    lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
     let host = with_pipe(file, |pipe| pipe.host);
     let first_run = !kernel.threads[&tid].call.started;

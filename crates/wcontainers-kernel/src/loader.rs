@@ -263,7 +263,7 @@ pub(crate) fn load(
         readable &= program.readable;
         file_name = interpreter;
     }
-    let memory = cx.cpu.memory_new().map_err(errno::from_cpu)?;
+    let memory = cx.cpu.memory_new().map_err(|error| cx.cpu_error(error))?;
     let result = place(
         kernel,
         cx,

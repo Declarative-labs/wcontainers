@@ -9,7 +9,7 @@ use wcontainers_abi::{Next, RegisterBlock, Resume, Syscall};
 
 use crate::counters::reason;
 use crate::linux::general::*;
-use crate::process::{Call, Channel, Pid, Report, Tid};
+use crate::process::{Channel, Pid, Report, Tid};
 use crate::schedule;
 use crate::{Context, Kernel, syscall};
 
@@ -194,7 +194,11 @@ impl Kernel {
     /// Clears a finished call's slot; a named pipe's open still waiting gives up its end.
     fn finish_call(&mut self, tid: Tid) {
         let thread = self.thread_mut(tid);
-        thread.call = Call::default();
+        let holds = core::mem::take(&mut thread.call).holds;
+        if let Some(address) = holds {
+            self.wake(Channel::Object(address));
+        }
+        let thread = self.thread_mut(tid);
         let opening = thread.opening.take();
         self.give_up_opening(opening);
     }
@@ -267,6 +271,9 @@ impl Kernel {
             break;
         }
         self.last_now = cx.monotonic();
+        for _ in 0..core::mem::take(&mut cx.refused) {
+            self.counters.count(cx.host, reason::HOST_CANNOT, 0);
+        }
         self.counters.flush(cx.host);
     }
 
@@ -389,6 +396,10 @@ impl Kernel {
         let call = self.threads[&tid].call;
         if let Some(channel) = call.wait {
             self.parked.remove(tid, channel, call.deadline);
+        }
+        if let Some(address) = call.holds {
+            self.thread_mut(tid).call.holds = None;
+            self.wake(Channel::Object(address));
         }
         if self.current == Some(tid) {
             self.current = None;
@@ -700,11 +711,16 @@ impl Kernel {
         }
     }
 
-    /// The report a stopped or continued child leaves for its parent, and the parent told.
+    /// The report a stopped child leaves for its parent, and the parent told.
     pub(crate) fn report_to_parent(&mut self, cx: &mut Context<'_>, pid: Pid, report: Report) {
-        let process = self.processes.get_mut(&pid).expect("process exists");
-        process.report = Some(report);
-        let parent = process.parent;
+        self.processes.get_mut(&pid).expect("process exists").report = Some(report);
+        self.tell_parent(cx, pid, report);
+    }
+
+    /// Sends a stopped or continued child's parent SIGCHLD, unless it asked not to be told, and
+    /// wakes its waits (`do_notify_parent_cldstop`).
+    pub(crate) fn tell_parent(&mut self, cx: &mut Context<'_>, pid: Pid, report: Report) {
+        let parent = self.processes[&pid].parent;
         let Some(parent_process) = self.processes.get(&parent) else {
             return;
         };

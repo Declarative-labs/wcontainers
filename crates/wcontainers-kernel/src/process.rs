@@ -103,6 +103,9 @@ pub(crate) struct Process {
     /// Job control: whether the process is stopped, and what a parent's wait has yet to see.
     pub stopped: bool,
     pub report: Option<Report>,
+    /// Continued and the parent not yet sent its SIGCHLD, which the process sends when it next runs
+    /// (`SIGNAL_CLD_CONTINUED`).
+    pub continued_unsent: bool,
     /// CPU time of threads that have ended, and of reaped children with their own reaped children
     /// (`cutime`), in nanoseconds.
     pub ended_time: u64,
@@ -325,6 +328,9 @@ pub(crate) struct Call {
     /// For F_SETLKW's wait: the descriptor table asking, and the table holding the lock in the way
     /// (none for an open file's lock), as Linux's `blocked_hash` finds them.
     pub lock_wait: Option<(u64, Option<u64>)>,
+    /// The pipe (its channel's address) whose lock the call holds while it waits, as
+    /// `splice_file_to_pipe` holds it around a terminal's read.
+    pub holds: Option<usize>,
 }
 
 /// What a parked call waits for, besides its deadline and a signal.

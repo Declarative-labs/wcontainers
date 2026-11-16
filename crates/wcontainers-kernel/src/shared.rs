@@ -84,7 +84,7 @@ fn map_shown(
                     from,
                     to - from,
                 )
-                .map_err(errno::from_cpu)?;
+                .map_err(|error| cx.cpu_error(error))?;
         }
     }
     Ok(())
@@ -99,7 +99,10 @@ fn grow(
     old: Option<Block>,
     length: u64,
 ) -> Result<(), Errno> {
-    let id = cx.cpu.shared_new(length).map_err(errno::from_cpu)?;
+    let id = cx
+        .cpu
+        .shared_new(length)
+        .map_err(|error| cx.cpu_error(error))?;
     let new = Block { id, length };
     {
         let mut inode = node.borrow_mut();

@@ -155,6 +155,11 @@ pub(super) fn splice(
     }
     let nonblock = flags & SPLICE_F_NONBLOCK != 0;
     let file_nonblock = |file: &FileRef| file.borrow().flags & O_NONBLOCK != 0;
+    for (pipe, file) in [(in_pipe, &input), (out_pipe, &output)] {
+        if pipe {
+            super::pipe::lock(kernel, tid, file)?;
+        }
+    }
     let (moved, written_back) = match (in_pipe, out_pipe) {
         (true, true) => {
             if same_pipe(&input, &output) {
@@ -320,7 +325,12 @@ pub(super) fn file_to_pipe(
         return Err(Errno::EINVAL);
     }
     let bytes = if super::tty::end(input).is_some() {
-        super::tty::take(kernel, cx, tid, input, length)?
+        // The terminal's read waits holding the pipe's lock.
+        let taken = super::tty::take(kernel, cx, tid, input, length);
+        if taken == Err(Errno::PARKED) {
+            super::pipe::hold(kernel, tid, output);
+        }
+        taken?
     } else {
         refresh_proc(kernel, cx, tid, input, *at)?;
         file_bytes(cx, input, length, *at)?

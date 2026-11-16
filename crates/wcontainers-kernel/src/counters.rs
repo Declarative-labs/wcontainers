@@ -62,6 +62,9 @@ pub mod reason {
     pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
+    /// The CPU side answered that this host cannot make a memory, a thread or a block of shared
+    /// pages at all; the guest's call fails with ENOSYS. Detail: none.
+    pub const HOST_CANNOT: &str = "host cannot do this";
 
     /// Every reason that means something Linux has is not built here, each answered through
     /// `Counters::refuse`: the status file's list of what is missing comes

@@ -20,3 +20,10 @@ fn signal_fields_match_reference() {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
     assert_eq!(ours.outcome, theirs);
 }
+
+/// A continued child's SIGCHLD comes when the child next runs, not inside the sender's kill.
+#[test]
+fn continued_child_tells_its_parent_when_it_runs() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "continued", &[]);
+}

@@ -620,24 +620,53 @@ impl Kernel {
         for tid in self.processes[&pid].threads.clone() {
             self.unschedule(tid);
         }
-        self.processes.get_mut(&pid).expect("process").stopped = true;
+        let process = self.processes.get_mut(&pid).expect("process");
+        process.stopped = true;
+        process.continued_unsent = false;
         self.report_to_parent(cx, pid, Report::Stopped(signal));
     }
 
     /// Continues a stopped process (SIGCONT's `prepare_signal`): its threads go back to acting on
-    /// their signals and running, and its parent is told.
+    /// their signals and running; a wait sees it at once and the parent is sent SIGCHLD when one of
+    /// its threads next comes back from running (`get_signal`), or now if every one is parked.
     fn continue_process(&mut self, cx: &mut Context<'_>, pid: Pid) {
         let process = self.processes.get_mut(&pid).expect("process");
         if !process.stopped {
             return;
         }
         process.stopped = false;
+        process.report = Some(Report::Continued);
+        let mut runs = false;
         for tid in process.threads.clone() {
-            if self.threads[&tid].call.wait.is_none() && !self.signalled.contains(&tid) {
-                self.signalled.push_back(tid);
+            if self.threads[&tid].call.wait.is_none() {
+                runs = true;
+                if !self.signalled.contains(&tid) {
+                    self.signalled.push_back(tid);
+                }
             }
         }
-        self.report_to_parent(cx, pid, Report::Continued);
+        if runs {
+            self.processes
+                .get_mut(&pid)
+                .expect("process")
+                .continued_unsent = true;
+        } else {
+            self.tell_parent(cx, pid, Report::Continued);
+        }
+    }
+
+    /// A thread back from running tells its parent of its process's continuing, if it has not been.
+    pub(crate) fn tell_continued(&mut self, cx: &mut Context<'_>, tid: Tid) {
+        let pid = self.threads[&tid].process;
+        if core::mem::take(
+            &mut self
+                .processes
+                .get_mut(&pid)
+                .expect("process")
+                .continued_unsent,
+        ) {
+            self.tell_parent(cx, pid, Report::Continued);
+        }
     }
 
     /// Writes a handler's frame below the thread's stack (or on its alternate stack) and points the

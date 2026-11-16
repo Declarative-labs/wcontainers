@@ -238,12 +238,13 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files, memory files and terminals do not take reads or writes that may not wait
-    // (`FMODE_NOWAIT` unset: memory files are not opened by `do_dentry_open`; measured).
+    // `/proc`'s files, tmpfs's regular files and terminals do not take reads or writes that may
+    // not wait (`FMODE_NOWAIT` unset; measured: devices and pipes take them).
     let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
-        matches!(inode.content, Content::Proc(_)) || inode.fs.device == kernel.files.memfd_fs.device
+        matches!(inode.content, Content::Proc(_))
+            || inode.fs.kind == crate::fs::Kind::Tmpfs && inode.file_type() == S_IFREG
     };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -1276,6 +1277,7 @@ fn send(
     // Into a pipe: `splice_file_to_pipe`, which waits for room unless the pipe's descriptor is
     // nonblocking.
     if to_pipe {
+        super::pipe::lock(kernel, tid, &output)?;
         let nonblock = output.borrow().flags & O_NONBLOCK != 0;
         let mut pos = position as u64;
         let moved = super::splice::file_to_pipe(
