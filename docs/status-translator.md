@@ -20,12 +20,54 @@ eighth run"). The close-out added the test of section 9 that changes page permis
 system calls, wrote down the rule the dropped checks rest on, looked into the search measuring variant and
 recorded what each S1 change added to the output's size: see "S1, close-out" below. Its independent check
 found a missed fault (a bounded index proof fooled by a load that writes back its base) and a changes test
-too weak at system calls; the second close-out run fixed both (see "S1, close-out, second run" just
+too weak at system calls; the second close-out run fixed both (see "S1, close-out, second run"). Its
+independent check found a missed fault (memory a popped frame left below sp was kept as known) and a
+changes test too weak at calls; the third close-out run fixed both (see "S1, close-out, third run" just
 below). S1 waits for its next independent check. The third run's work is under "S1, third run", the fourth's (measurements only) under
 "S1, fourth run", the fifth's (the proof over a loop's range) under "S1, fifth run", the sixth's (cheaper
 calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
 rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
 eighth run", and what is left under "S1, what remains after the eighth run".
+
+## S1, close-out, third run (eleventh run)
+
+- Fixed a missed fault at full: when sp moved back up (`add sp, sp, #N`), `full.rs` kept the area the
+  pop left below sp as a frame known to be allowed, so later accesses there (`ldur x9, [sp, #-8]`) were
+  not checked, also after a system call or stop that changed that page. Memory below sp is no function's
+  frame, so the plan's exception does not cover it. Now `shift` drops what is left below sp. The contract's
+  text says so too ("at or above the stack pointer"). Tests in `tests/changes.rs`:
+  `below_sp_after_a_pop_across_a_syscall` and `below_sp_after_a_pop_in_a_loop` (change at a stop). Both
+  fail without the fix.
+- Made the changes test strong at calls, the half of the rule the tenth run left weak. With breaks F
+  (groups not ended at a call, `checks`) and G (loops holding a call counted as quiet, `quiet`), the old
+  generator passed 1000 cases on some seeds. Changes:
+  - every layer 2 function now saves and restores x28, x16 and x18 (its frame's first 32 bytes, so
+    accesses through sp start at 32 and frames are at least 544 bytes). A group through x28 can then hold
+    a call (`Chunk::Call` with `around`, half of calls), and loops counting in x16 (`Chunk::Loop`) and
+    walks through x18 whose base moves can call each turn (4 in 10 of them);
+  - a "writer" function that makes a system call and returns. Calls go to it or to a numbered function,
+    half and half. So calls are in every program, and a call often leads to a change. Before the writer,
+    F and G were caught late or not at all: F at 1942 (counting shrinking) on seed 1, passed 1000 on seed 2,
+    caught at 552 on seed 3; G passed 1000 on seed 1, caught at 2268 and 780 on seeds 2 and 3;
+  - a new layer 2 shape, `Chunk::Below`: move sp to its page's start, make and pop a frame there, then
+    access below sp straight away, after a system call, or in a loop. `changes.rs` now also picks the
+    page below sp's page as a page near a pointer;
+  - two directed tests, `group_across_a_call` and `loop_holding_a_call`, where the callee makes the
+    system call. They fail at once under F and G.
+  Old layer 2 seeds give other programs again.
+- The random test, 1000 cases each, seeds 1, 2 and 3, against all seven breaks. Numbers are the case of
+  the first failure, counting shrinking. Patches are in scratch `s1-close3/break.py`, run with
+  `breaks.sh`, at load 10 to 104. Every break was caught on every seed:
+  - A (proof survives a stop): 231, 248, 139.
+  - B (kept runs survive a stop): 254, 325, 283.
+  - C (groups not ended at a system call): 479, 475, 305.
+  - D (loops with a system call counted as quiet): 263, 282, 270.
+  - E (frame kept below sp): 54, 216, 92.
+  - F (groups not ended at a call): 176, 378, 162.
+  - G (loops with a call counted as quiet): 169, 285, 332.
+  F and G on the checker's seeds 4242 and 777, which passed before: F 265 and 428, G 141 and 403.
+- Not changed: a failed proof and a kept run that misses are still not counted (see "Departures"); the
+  orchestrator should rule on it.
 
 ## S1, close-out, second run (tenth run)
 
@@ -76,7 +118,8 @@ eighth run", and what is left under "S1, what remains after the eighth run".
   may change"): what a piece has found out about page permissions (a check another covers, a kept run,
   a proof over a loop's range, a bounded index) holds only until the next point where its thread can stop:
   a stop check whose hook runs, a system call, or leaving `run`. The one exception is the plan's own: a
-  frame checked when sp moved down holds until the next function entry. So whoever changes a process's
+  frame checked when sp moved down holds until the next function entry, for memory at or above sp only
+  (since the eleventh run; before, the code also kept what a pop left below sp, see the third run). So whoever changes a process's
   page permissions must first bring every other running thread of that process to a stop (raise its flag
   and wait for its hook, or for it to leave `run`), as a real kernel interrupts the other processors
   before it changes a page table. With one host thread this happens by itself; the later host-threads
@@ -862,8 +905,8 @@ contract's bits, in both runners).
 - Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
   (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
 - Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (defaults 64 random programs, seed 1, 3 seeds for each C program; since the tenth run about 26 ms a
-  random program at load 14 to 18, as every system call now makes a change).
+  (defaults 64 random programs, seed 1, 3 seeds for each C program; since the eleventh run about 33 ms
+  a random program at load 16 to 21, as every program now calls a function that makes a system call).
 - Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
@@ -922,6 +965,11 @@ contract's bits, in both runners).
   `tests/changes.rs`, 3000 random programs seed 12 and the C programs with 4 seeds each (48 runs): 0
   mismatches; 142,304 changes made, 10,437 faults handled and compared (78 s, load 14 to 18). Every test
   of the three crates passes (debug build, Chrome test included).
+- S1 close-out, third run, release, with the new shapes: layer 2, 1000 cases seed 111, 40 on the CPU:
+  0 mismatches, 352 faulted, 97 left to an address at full (25 s, load 33 to 37). `tests/changes.rs`,
+  2000 random programs seed 13 and the C programs with 3 seeds each (36 runs): 0 mismatches; 88,517
+  changes made, 5418 faults handled and compared in the random programs (66 s, load 16 to 21).
+  Every test of the three crates passes (debug build, Chrome test included; load 3 to 10).
 
 ## Measurements
 
@@ -1063,7 +1111,8 @@ contract's bits, in both runners).
 
 - S1 close-out: in `tests/changes.rs` changes never touch the pages from sp's page to the top of the stack,
   because the plan lets a frame's check hold until the next function entry ("What still gets through"), so
-  full and none may differ there by design. Faults the test handles make the page readable and writable;
+  full and none may differ there by design. The page below sp's page is changed (often, since the
+  eleventh run), and with it memory a popped frame left below sp. Faults the test handles make the page readable and writable;
   the plan's section 9 asks only that faults reach the hook with the same registers as none, the handling
   is there so a run meets many faults.
 
