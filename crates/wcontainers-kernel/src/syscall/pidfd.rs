@@ -390,7 +390,7 @@ fn pidfd_info(
             put(64, dump);
             mask |= PIDFD_INFO_COREDUMP;
         }
-        let c = kernel.credentials(tid);
+        let c = kernel.task_credentials(pid);
         for (at, id) in [
             (28, c.uid),
             (32, c.gid),

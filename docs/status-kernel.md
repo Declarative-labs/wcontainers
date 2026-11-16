@@ -8,8 +8,37 @@ K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 sec
 processes): the eighth run declared it done; two independent checks followed; the ninth run fixed the
 first one's findings and the tenth the second's (below). K3 (threads): the first run fixed the K2
 check's last findings and built threads, futexes and timers; the second built the per-thread `/proc`,
-layer 2's libc-test, scheduling between threads and clone's sharing flags (below); K3 is not
-complete, see Next.
+layer 2's libc-test, scheduling between threads and clone's sharing flags; the third clone's last
+combinations and per-thread credentials (below); K3 is not complete,
+see Next.
+
+Built in K3's third run:
+- clone's last combinations. The address map is shared (`process::Map`, Linux's `mm_struct`) by
+  processes made with CLONE_VM, with or without CLONE_VFORK (a vfork child no longer copies the map
+  back at its end; the memory goes with the last process showing it, `memory_in_use_elsewhere`).
+  Signal handlers are shared (`process::Handlers`, `sighand_struct`) by processes made with
+  CLONE_SIGHAND, copied otherwise, and copied before `execve` resets them (`unshare_sighand`). A
+  process on the caller's memory without CLONE_VFORK has no alternate stack (a thread with
+  CLONE_VFORK keeps it). CLONE_THREAD|CLONE_PIDFD gives a PIDFD_THREAD descriptor; pidfd_open takes
+  PIDFD_THREAD for any thread (a thread other than the first without it: ENOENT, measured). A thread
+  other than the first holds its own pidfs inode (`Thread::pidfd`), woken at its end; poll, signals,
+  PIDFD_GET_INFO (pid the thread, tgid its process), process_mrelease and the namespace requests
+  find a thread's process. tests/threads.rs `clone_sharing_matches_reference` (guest/clonevm.c:
+  both processes running on one memory and taking turns by futex, mappings made and removed by the
+  child, the child's thread id cleared; handlers set by one seen by the other, a child's `execve`
+  leaving the caller's; thread descriptors live, ended and reaped; the first thread's descriptor
+  with PIDFD_THREAD while it has ended alone and when the process ends).
+- Credentials and personality per thread (`Thread::credentials`, `Thread::personality`;
+  `Kernel::credentials(tid)` for the caller, `Kernel::task_credentials(pid)` for a task a number
+  names, which a first thread that ended keeps in `Leader`). The id and power changes, `capget`
+  and `/proc/<pid>/task/<tid>/status` are the thread's; `/proc` owners, kill permission, SIGCHLD's
+  uid and pidfd information are the named task's; RLIMIT_NPROC and PRIO_USER count threads by
+  their own user. tests/threads.rs `thread_credentials_match_reference` (guest/threadcreds.c, raw
+  setresuid and personality in one thread).
+- A message queue's notification request goes at a close by any thread of its process: descriptor
+  closes are told the closing process (`FdTable::remove`, `set`, `close_all`, `close_on_exec`),
+  not the table's lock owner (in threadcreds).
+- Tried and taken back: woken calls run again at their thread's turn (see Known gaps and Next).
 
 Built in K3's second run:
 - `/proc/<pid>/task/<tid>/` (Linux's `tid_base_stuff` order and positions; the files built for a
@@ -980,19 +1009,14 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
 
 ## Known gaps (with reasons)
 
-- A thread's credentials and personality are its process's here; Linux keeps them per thread (the
-  C libraries change ids in every thread together, so only a raw setuid in one thread shows the
-  difference). `/proc/<pid>/task/<tid>/status` shows the process's ids.
-- A message queue's notification request goes when a descriptor of it is closed through a table
-  whose record lock owner is the requesting process's number (`FdTable::closed`); Linux compares
-  the closing thread's process (`mqueue_flush_file`), so a close through a thread's own table
-  (CLONE_THREAD without CLONE_FILES) leaves the request here.
 - Woken calls run again at once (`settle`), not when their thread next gets the CPU. A terminal splice
   into a pipe that a reader waits on hands the reader the line before the splicer runs again, so
   `cat /dev/tty | cat` (busybox `cat` uses sendfile) shows the first line at once here; in the
   reference the splicer has taken the pipe's lock again before the reader wakes (K2 check, 7 of 7
   runs), and the first line waits for the second. A reader that comes to the pipe after the splicer
   waits does wait (tests/terminal.rs `splice_holds_the_pipe`).
+- `PR_SET_DUMPABLE`'s flag is kept per process; Linux keeps it in the memory (`mm->flags`), so two
+  processes made with CLONE_VM share it there and not here.
 
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
   addresses and the pending signals are 0 (the loader knows the addresses but does not keep them).
@@ -1565,6 +1589,11 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K3, third run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`, default case counts) with the clone and
+  credential changes: 119 passed, 1 failed (pidfd: PIDFD_GET_INFO gave the caller's ids, fixed and
+  pidfd run again alone, passed), 5 ignored; 4 min 42 s, load 35.10 at the start and 30.40 at the
+  end.
 - K3, second run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
   wcontainers-kernel -p wcontainers-kernel-test`, default case counts) passed: 118 tests, 0 failed,
   5 ignored, about 212 s of test time, load 24.26 at the start and 16.56 at the end; again at the
@@ -1824,10 +1853,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "system call not implemented": the Missing list above (detail: the call number).
 - "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
   flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
-  (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), clone's
-  handlers or memory shared between processes and its CLONE_PIDFD threads (ENOSYS), NUMA futexes
-  (EINVAL), pidfd_open's
-  PIDFD_THREAD for a thread other than the first (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
+  (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), NUMA
+  futexes (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
   shmget's SHM_HUGETLB
   (ENOMEM).
 - "fcntl command not built": F_SETLEASE, F_NOTIFY, F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG (EINVAL,
@@ -1856,6 +1883,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K3, third run: none.
 - K3, second run: none.
 - K3, first run: none.
 
@@ -1919,17 +1947,24 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K3, in order:
-1. The clone combinations still counted as not built: processes sharing memory while both run
-   (CLONE_VM without CLONE_VFORK: the address map would become shared like the tables, see
-   `Thread::files`) and signal handlers (CLONE_SIGHAND between processes), and threads with
-   CLONE_PIDFD (needs process descriptors for threads, PIDFD_THREAD).
-2. Per-thread credentials and personality (`Process::credentials` would move to the thread, 120
-   uses).
-3. Woken calls run again when their thread next gets the CPU rather than at once (`settle`; see
-   Known gaps, the terminal splice finding). `Kernel::next` has no CPU or host, so the rerun would
-   happen at the end of `exit` and `event`, picking as `pick` does.
-4. Three fresh layer 1 seeds of 20000 at the end of the milestone (used so far: up to 737, the
-   checks' seeds, 3001 and 3002).
+1. Woken calls run again when their thread's turn comes rather than at once (`settle`; Known gaps,
+   the terminal splice finding). The third run built it and took it back; its diff is kept at
+   pyro-parked/wcontainers-scratch/kernel/deferred-rerun.diff (outside the repository). What it
+   did: `wake_thread` puts the thread in line with `Resume::FromRegisters` (a stale
+   `Resume::Return` would overwrite x0, the call's first argument, at a restore) and keeps it in
+   `woken`; `settle` runs a woken call only when it is the thread `pick` would choose
+   (`next_to_run`), and a call that goes back to its program then has the turn (`give_way`,
+   `take_turn`, split out of `pick`), so the waker is not overtaken by a tie in the run queue;
+   `pipe::lock` counts a woken holder as holding (`call.holds` alone). With it ttylock's new first
+   case `cat /dev/tty | cat` matched the reference, and terminal, pidfd and threads passed, but
+   two tests broke: lockwaits hangs in "a wait for an open file's lock is never a loop" (after the
+   open file unlock wakes b and e, b takes byte 0 and ends, and e, run again only after b's end,
+   finds byte 1 still in its way and waits for ever; with calls run at once e ran before b's end
+   and was woken by it; find what holds byte 1 then), and saving's clockwatch reported "the clocks
+   held: 0" (seen before the x0 fix; not run again after it).
+2. Three fresh layer 1 seeds of 20000 once the milestone's fixes are all in (the third run ran 3003,
+   3004 and 3005 with its own changes; see Measurements). Used so far: up to 737, the checks'
+   seeds, 3001 to 3005.
 
 Earlier:
 
