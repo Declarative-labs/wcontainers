@@ -50,6 +50,11 @@ processes) is partly done after seven runs. Built in K2's seventh run:
 - The sched_* calls and the affinity calls find a process that has ended and is not yet reaped, as
   Linux does (its scheduling values kept as `getpriority` keeps them); tests/priorities.rs.
 - Seed 701 passed 20000 sequences with semaphores in; seed 710 passed 2000 with message queues in.
+- Seed 711 (20000, message queues in) failed at its 18th call, a difference older than this run:
+  TIOCSETD on `/dev/ptmx` with a generated discipline answers EINVAL here and 0 in the reference.
+  Probed on the reference: disciplines 0, 3, 14 and 27 are accepted (registered in linuxkit's
+  kernel), 2 is EPERM, the rest of -1 to 31 EINVAL (scratch `ldisc/l.c`). src/syscall/tty.rs's comment
+  that the reference has no other discipline is wrong. Open for the next run.
 
 Built in K2's sixth run:
 - The three open layer 1 findings: MADV_DODUMP and MADV_KEEPONFORK refused on droppable memory and
@@ -1245,7 +1250,7 @@ All on this shared Mac; noisy, not benchmarks.
   35 at the end) had terminal's `making_pairs` fail in the reference (`exec /wc/tty: no such file`,
   the known race of test binaries sharing the guest directory; see Known issues), and cargo stopped
   there; terminal and the four test binaries after it then passed alone. Layer 1: seed 701, 20000
-  sequences, 349 s (load 44 to 92); seed 710, 2000 sequences, 36 s (load 78). tests/sysvsem.rs 3.7 to
+  sequences, 349 s (load 44 to 92); seed 711 failed after 373 s with shrinking (load 37 to 74); seed 710, 2000 sequences, 36 s (load 78). tests/sysvsem.rs 3.7 to
   3.9 s, tests/posixmq.rs 2.6 to 3.3 s (their waits sleep 0.1 s in places).
 - K2 sixth run: the whole test suite of both crates 90 passed, 0 failed, 6 ignored, 144 s wall beside
   four 20000-sequence layer 1 runs (load 16 at the start, 34 at the end), on head 1f9cffe. Layer 1 at
@@ -1506,8 +1511,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
    writers or the other way round (`pipe_release`, in descriptor order), which needs the releases
    themselves, not counts. sendfile into a full blocking terminal answers what fit; Linux waits for room
    (`tty_write`).
+   TIOCSETD (seed 711, above): the disciplines linuxkit registers (3, 14, 27) are not built, so they
+   must go through `Counters::refuse` as not built, and layer 1 must keep to the ones both sides
+   answer alike; find why 2 is EPERM (`tty_ldisc_get`, the discipline's own open) and match it.
 2. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
-   the milestone. Seeds up to 711 are used (711, 20000 sequences with message queues, was started at
-   the end of the seventh run; see Measurements for its result if recorded).
+   the milestone. Seeds up to 711 are used.
 3. The missing calls of later milestones; the known gaps above before K6's bar.
 4. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
