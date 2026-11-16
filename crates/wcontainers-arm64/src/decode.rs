@@ -16,6 +16,8 @@ pub fn decode(word: u32) -> Instruction {
         }
         // A hint carved out for a feature we do not offer is still that hint.
         None if crate::forms::presented(word) => {}
+        // Raises illegal instruction like an undefined word, but is counted and warned.
+        None if crate::forms::of_feature_not_offered(word) => return Instruction::Unsupported,
         None => return Instruction::Undefined,
     }
     // Every form is translated, so a word of a form that neither path gives an instruction for is one

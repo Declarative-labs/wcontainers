@@ -147,7 +147,8 @@ pub const BOTTOM_RETURN: i64 = -2;
 pub enum TrapKind {
     /// Not an instruction of the CPU we present. Detail: the instruction word.
     Undefined = 0,
-    /// An instruction we present but do not translate yet. Detail: the instruction word.
+    /// An instruction of a feature we do not offer: illegal instruction, counted and warned. Detail: the
+    /// instruction word.
     Unsupported = 1,
     /// `brk`. Detail: its comment field.
     Breakpoint = 2,

@@ -39,9 +39,56 @@ fn system_register(word: u32) -> u32 {
     (word >> 5) & 0x7fff
 }
 
+/// Why a word of a form we present is an instruction only of a feature we do not offer, if it is: Arm's
+/// decode makes it undefined without the feature. We raise illegal instruction for it (counted as
+/// unsupported); the reference CPU has these features and runs it.
+pub fn of_feature_not_offered(form: &Form, word: u32) -> Option<&'static str> {
+    let field = |name| form.field(word, name);
+    let shift_group = form.group.ends_with("asimdshf") || form.group.ends_with("asisdshf");
+    let fp_conversion = ["SCVTF", "UCVTF", "FCVTZS", "FCVTZU"]
+        .iter()
+        .any(|stem| form.name.starts_with(&format!("{stem}_")));
+    if shift_group && fp_conversion && field("immh").is_some_and(|immh| immh >> 1 == 1) {
+        return Some("half precision, which needs FEAT_FP16");
+    }
+    if form.name.starts_with("PMULL_") && field("size") == Some(3) {
+        return Some("64 bit pmull, which needs FEAT_PMULL");
+    }
+    if form.group == "control/systemmove" {
+        let r = system_register(word);
+        let (o0, op1, crn, crm, op2) =
+            (r >> 14, (r >> 11) & 7, (r >> 7) & 15, (r >> 3) & 15, r & 7);
+        // SSBS, DIT, TCO and CNTVCTSS_EL0; RNDR and RNDRRS (read only).
+        let read = field("L") == Some(1);
+        if o0 == 1 && matches!((op1, crn, crm, op2), (3, 4, 2, 5..=7) | (3, 14, 0, 6))
+            || o0 == 1 && read && matches!((op1, crn, crm, op2), (3, 2, 4, 0 | 1))
+        {
+            return Some("a register of a feature we do not offer");
+        }
+    }
+    if form.name == "MSR_SI_pstate"
+        && field("op1") == Some(3)
+        && matches!(field("op2"), Some(1..=4))
+    {
+        return Some("SSBS, DIT, the streaming mode and TCO, of features we do not offer");
+    }
+    if form.group == "control/systeminstrs"
+        && field("L") == Some(0)
+        && (field("op1"), field("CRn")) == (Some(3), Some(7))
+        && matches!(
+            (field("CRm").unwrap_or(0), field("op2").unwrap_or(0)),
+            (4, 3 | 4) | (10 | 14, 3 | 5) | (12 | 13, 1 | 3 | 5)
+        )
+    {
+        return Some("cache operations of features we do not offer");
+    }
+    None
+}
+
 /// Why a word is left out of the comparison, if it is. Each is an encoding the architecture leaves
-/// CONSTRAINED UNPREDICTABLE, a branch to itself (which never finishes), or a hint whose meaning depends on
-/// features the reference CPU has and the CPU we present does not.
+/// CONSTRAINED UNPREDICTABLE, a branch to itself (which never finishes), an instruction or a hint whose
+/// meaning depends on features the reference CPU has and the CPU we present does not, or a register we
+/// answer by design.
 pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
     let field = |name| form.field(word, name);
     let writeback = ["immpre", "immpost", "pair_pre", "pair_post"]
@@ -79,15 +126,8 @@ pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
     {
         return Some("load pair into one register");
     }
-    let shift_group = form.group.ends_with("asimdshf") || form.group.ends_with("asisdshf");
-    let fp_conversion = ["SCVTF", "UCVTF", "FCVTZS", "FCVTZU"]
-        .iter()
-        .any(|stem| form.name.starts_with(&format!("{stem}_")));
-    if shift_group && fp_conversion && field("immh").is_some_and(|immh| immh >> 1 == 1) {
-        return Some("half precision, which needs FEAT_FP16: the reference CPU has it, we do not");
-    }
-    if form.name.starts_with("PMULL_") && field("size") == Some(3) {
-        return Some("64 bit pmull, which needs FEAT_PMULL: the reference CPU has it, we do not");
+    if let Some(reason) = of_feature_not_offered(form, word) {
+        return Some(reason);
     }
     if form.group == "control/systemmove" {
         let r = system_register(word);
@@ -97,25 +137,6 @@ pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
         if by_design {
             return Some("a register we answer by design, not as the reference CPU does");
         }
-        // DIT, TCO and CNTVCTSS_EL0.
-        if matches!((op1, crn, crm, op2), (3, 4, 2, 5 | 7) | (3, 14, 0, 6)) {
-            return Some("a register of a feature the reference CPU has and we do not");
-        }
-    }
-    if form.name == "MSR_SI_pstate"
-        && field("op1") == Some(3)
-        && matches!(field("op2"), Some(2 | 4))
-    {
-        return Some("DIT and TCO, of features the reference CPU has and we do not");
-    }
-    if form.group == "control/systeminstrs"
-        && (field("op1"), field("CRn")) == (Some(3), Some(7))
-        && matches!(
-            (field("CRm").unwrap_or(0), field("op2").unwrap_or(0)),
-            (4, 3 | 4) | (10, 3 | 5) | (12, 1 | 3 | 5) | (13, 1 | 3 | 5) | (14, 3 | 5)
-        )
-    {
-        return Some("cache operations of features the reference CPU has and we do not");
     }
     if form.group == "control/hints" {
         let (crm, op2) = (field("CRm").unwrap_or(0), field("op2").unwrap_or(0));

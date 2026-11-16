@@ -63,7 +63,7 @@ pub(crate) fn decode(word: u32, form: &Form) -> Option<Instruction> {
         "barriers" if stem == "CLREX" => Some(Instruction::ClearExclusive),
         "systeminstrs" => Some(system_instruction(&f)),
         "systemmove" => Some(system_move(&f)),
-        "pstate" => Some(Instruction::Undefined),
+        "pstate" => Some(pstate(&f)),
         "floatimm" => Some(float_immediate(&f)),
         "floatdp1" | "floatdp2" | "floatdp3" | "floatcmp" | "floatccmp" | "floatsel"
         | "float2fix" => float(&f, stem, group),
@@ -170,6 +170,15 @@ fn ordered(f: &Fields) -> Instruction {
     }
 }
 
+/// `msr` to a PSTATE field. None is open to EL0 on the CPU we present; SSBS, DIT, the streaming mode
+/// and TCO are, on CPUs with their features.
+fn pstate(f: &Fields) -> Instruction {
+    match (f.get("op1"), f.get("op2")) {
+        (3, 1..=4) => Instruction::Unsupported,
+        _ => Instruction::Undefined,
+    }
+}
+
 /// `sys`: the cache and code maintenance unprivileged code may use. Everything else is undefined at EL0.
 fn system_instruction(f: &Fields) -> Instruction {
     if f.bit("L") {
@@ -180,6 +189,10 @@ fn system_instruction(f: &Fields) -> Instruction {
         (3, 7, 4, 1) => Instruction::ZeroBlock { rn },
         (3, 7, 11, 1) | (3, 7, 10, 1) | (3, 7, 14, 1) => Instruction::CleanCache { rn },
         (3, 7, 5, 1) => Instruction::CodeChanged { rn },
+        // The tag (MTE) and persistence (DPB, DPB2) cache operations EL0 may use on CPUs with them.
+        (3, 7, 4, 3 | 4) | (3, 7, 10 | 14, 3 | 5) | (3, 7, 12 | 13, 1 | 3 | 5) => {
+            Instruction::Unsupported
+        }
         _ => Instruction::Undefined,
     }
 }
@@ -235,6 +248,9 @@ fn system_move(f: &Fields) -> Instruction {
         (3, 3, 14, 0, 0) if read => SystemRegister::Fixed(COUNTER_FREQUENCY),
         (3, 3, 0, 0, 1) if read => SystemRegister::Fixed(CACHE_TYPE),
         (3, 3, 0, 0, 7) if read => SystemRegister::Fixed(ZERO_BLOCK_ID),
+        // SSBS, DIT, TCO, RNDR, RNDRRS and CNTVCTSS_EL0: EL0 may use them on CPUs with their features.
+        (3, 3, 4, 2, 5..=7) | (3, 3, 14, 0, 6) => return Instruction::Unsupported,
+        (3, 3, 2, 4, 0 | 1) if read => return Instruction::Unsupported,
         (3, 0, 0, crm, op2) if read && (crm == 0 || (2..8).contains(&crm)) => {
             match identity(crm, op2) {
                 Some(value) => SystemRegister::Fixed(value),

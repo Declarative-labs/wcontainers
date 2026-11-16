@@ -998,7 +998,8 @@ pub enum Instruction {
     },
     /// Not an instruction of the CPU we present.
     Undefined,
-    /// An instruction of the CPU we present that is not translated yet.
+    /// An instruction of a feature the CPU we present does not offer (an instruction of the CPU we present
+    /// is always translated).
     Unsupported,
 }
 

@@ -523,6 +523,10 @@ pub(crate) fn decode(word: u32, form: &Form, stem: &str, group: &str) -> Option<
                 | SimdOp::ShiftLeftLong { .. }
         );
         shift = if left { immhb - bits } else { 2 * bits - immhb } as u8;
+        // Half precision needs FEAT_FP16, which we do not offer.
+        if float && element == 2 {
+            return Some(Instruction::Unsupported);
+        }
         if float && element < 4 {
             return Some(Instruction::Undefined);
         }
@@ -575,6 +579,10 @@ pub(crate) fn decode(word: u32, form: &Form, stem: &str, group: &str) -> Option<
         }
         rm = r as u8;
         index = Some(i as u8);
+    }
+    // 64 bit polynomial multiply needs FEAT_PMULL, which we do not offer.
+    if op == SimdOp::PolyMulLong && element == 8 {
+        return Some(Instruction::Unsupported);
     }
     if !allowed(op, group, element, q, scalar) {
         return Some(Instruction::Undefined);
