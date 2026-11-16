@@ -147,9 +147,20 @@ static void terminals(void) {
     char buffer[64];
     read(slave, buffer, sizeof buffer);
     // The echo waits in the master; it is taken so a later poll there takes in what comes next.
+    // Linux's buffer work may hand the echo over in parts under load, so it is read until it is
+    // whole (five bytes) or nothing more comes.
     fcntl(master, F_SETFL, O_NONBLOCK);
-    settle(master);
-    printf("echo: %ld\n", (long)read(master, buffer, sizeof buffer));
+    long echoed = 0;
+    while (echoed < 5) {
+        struct pollfd entry = {.fd = master, .events = POLLIN};
+        if (poll(&entry, 1, 2000) <= 0)
+            break;
+        long n = read(master, buffer, sizeof buffer);
+        if (n <= 0)
+            break;
+        echoed += n;
+    }
+    printf("echo: %ld\n", echoed);
     struct termios settings;
     tcgetattr(slave, &settings);
     cfmakeraw(&settings);
