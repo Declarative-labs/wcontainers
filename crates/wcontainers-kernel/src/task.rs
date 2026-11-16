@@ -452,6 +452,9 @@ impl Kernel {
             return;
         }
         self.orphan_children(cx, pid);
+        // Its own group may be left orphaned by its going (`kill_orphaned_pgrp` at exit).
+        let parent = self.processes[&pid].parent;
+        self.kill_orphaned_group(cx, parent, pid);
         self.notify_parent(cx, pid);
     }
 
@@ -515,7 +518,10 @@ impl Kernel {
             self.init.expect("the container has started")
         };
         for child in children {
-            self.processes.get_mut(&child).expect("child").parent = reaper;
+            let process = self.processes.get_mut(&child).expect("child");
+            process.parent = reaper;
+            // A new parent always hears of the end by SIGCHLD (`reparent_leader`).
+            process.exit_signal = SIGCHLD;
             let threads = self.processes[&child].threads.clone();
             for tid in threads {
                 let signal = self.threads[&tid].parent_death_signal;
@@ -533,15 +539,18 @@ impl Kernel {
         self.wake_waiters_of(reaper);
     }
 
-    /// When a process's going leaves its child's group orphaned with stopped members, the group is
-    /// sent SIGHUP then SIGCONT (`kill_orphaned_pgrp`).
-    fn kill_orphaned_group(&mut self, cx: &mut Context<'_>, dying: Pid, child: Pid) {
+    /// When a process's going leaves `member`'s group orphaned with stopped members, the group is
+    /// sent SIGHUP then SIGCONT (`kill_orphaned_pgrp`): `outside` is the member's link outside the
+    /// group, the dying process for its child or the parent of the dying process itself.
+    fn kill_orphaned_group(&mut self, cx: &mut Context<'_>, outside: Pid, member: Pid) {
         let (group, session) = {
-            let process = &self.processes[&child];
+            let process = &self.processes[&member];
             (process.group, process.session)
         };
-        let dying_process = &self.processes[&dying];
-        if dying_process.group == group || dying_process.session != session {
+        let Some(outside) = self.processes.get(&outside) else {
+            return;
+        };
+        if outside.group == group || outside.session != session {
             return;
         }
         if self.group_orphaned(group) && self.group_has_stopped(group) {
@@ -550,13 +559,13 @@ impl Kernel {
         }
     }
 
-    /// Whether no member of a process group has a parent in another group of the same session
-    /// (`will_become_orphaned_pgrp` with no one leaving).
+    /// Whether no live member of a process group has a parent in another group of the same session
+    /// (`will_become_orphaned_pgrp`; the container's first process is not the machine's init, so
+    /// it counts as a parent like any other).
     pub(crate) fn group_orphaned(&self, group: Pid) -> bool {
         !self.processes.values().any(|process| {
             process.group == group
                 && process.ended.is_none()
-                && self.init != Some(process.parent)
                 && self.processes.get(&process.parent).is_some_and(|parent| {
                     parent.group != group && parent.session == process.session
                 })
