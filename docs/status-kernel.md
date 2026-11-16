@@ -5,8 +5,38 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is done after eight runs: with every fix in, fresh layer 1 seeds 726, 727 and 728 passed
-20000 sequences each and the whole suite passed. Built in K2's eighth run:
+processes): the eighth run declared it done; the independent check that followed found four blocking
+faults, fixed in the ninth run (below). See Next for what is left.
+
+Built in K2's ninth run (the check's findings):
+- Deadlines while others compute: a parked call's deadline now ends the running thread's turn (the
+  turn's slice is the nearer of the fair share and the earliest deadline), and due calls are woken at
+  every return from the CPU side, not only when the kernel is idle. Before, a sleeper waited until
+  every other thread parked, so a process that computed kept a sleeping one asleep for ever.
+  tests/deadlines.rs: nanosleep, clock_nanosleep, ppoll, pselect6, sigtimedwait, semtimedop and
+  mq_timedreceive time out beside one or two children that compute with and without system calls.
+- Lock waits between processes: any record lock change (a lock, unlock or change of kind) and a
+  flock unlock or conversion wake the lock waiters, which try again (`locks_wake_up_blocks`; closes
+  already woke them). F_SETLKW refuses a wait that closes a loop of descriptor tables with EDEADLK
+  (`posix_locks_deadlock`, at most 11 steps, open file locks never followed); each waiting request
+  keeps its table and the table holding the lock in its way in the call slot. tests/lockwaits.rs.
+- pidfs's requests (`pidfd_ioctl`): FS_IOC_GETVERSION (generation 0), PIDFD_GET_INFO in every size
+  from 64 bytes (numbers, credentials, cgroup, the wait status once reaped, the core dump bits, the
+  supported mask, `copy_struct_to_user`'s tail), and the ten namespace requests with their checks
+  (ESRCH, EINVAL, EACCES by `ptrace_may_access`); nsfs is not built, so a request that passes them is
+  counted "ioctl request not built", EOPNOTSUPP (Linux's answer for a namespace it lacks). The made-up
+  machine's cgroup id is 1. Before, every pidfs request answered ENOTTY without a count.
+- Orphaned groups: a dying process's own group is checked at its end (`kill_orphaned_pgrp` at
+  exit); the container's first process counts as a parent outside a group (it is not the machine's
+  init); an orphan's exit signal becomes SIGCHLD (`reparent_leader`). tests/orphans.rs.
+- fstatfs of a queue mq_open gives reports no mount flags (it lies on the IPC namespace's own mount);
+  one opened by path under `/dev/mqueue` keeps Docker's. tests/posixmq.rs.
+- Parked threads are found by channel and by deadline, and queued threads by number, through indexes
+  (`schedule::Parked`, the run queue's positions) instead of walks over every thread.
+- A pass over every catch-all answer in the kernel for requests, commands, flags and entries Linux
+  has: the only silent one left was pidfs's (above); the others answer values Linux does not know.
+
+Built in K2's eighth run:
 - TIOCSETD as `tty_set_ldisc`: a number outside 0 to 30 EINVAL, `n_tty` kept as it is, `N_MOUSE`
   (2) EPERM without CAP_SYS_ADMIN (`serport_ldisc_open`'s check; the reference has serport
   registered), every other discipline counted "line discipline not built" and EINVAL, as a Linux
@@ -262,6 +292,7 @@ Built in K2's first run:
 - The waiting rule: a call that cannot finish parks its thread on a `Channel` (src/process.rs) and
   returns; when the channel changes, its deadline comes or a signal arrives, the same call runs again
   from the thread's saved registers, with what it must remember in the thread's one `Call` slot.
+  A deadline ends the running thread's turn as a timer interrupt would (since the ninth run).
   Going cold is `Next::Idle` with the earliest deadline. src/task.rs holds the main loop.
 - The scheduler: Linux's CFS for one CPU (src/schedule.rs): weights by nice value, virtual runtime,
   sleepers placed half a period back, new children a slice back, wakeup preemption by granularity,
@@ -339,8 +370,7 @@ Comparisons that are subsets rather than equality, and why:
 - `/dev`, `/dev/pts` and `/dev/shm` are compared whole and in order with d_off (proclist
   `device_listings_match_the_reference`), except the link count of `..` of `/dev`, which is `/`.
 - tests/options.rs prints process numbers only as whether they are the caller's, its group or 0, and
-  checks PR_GET_AUXV's bytes against `/proc/self/auxv` on each side (the vector itself lacks the vDSO's
-  two entries here, a known gap).
+  checks PR_GET_AUXV's bytes against `/proc/self/auxv` on each side (the vector holds addresses).
 - tests/sharedmap.rs sorts `/proc/self/maps` (placement differs: no address randomization here).
 - tests/schedattr.rs shows time slices relative to the default (the CPU count differs).
 - tests/fileioctl.rs prints FIONREAD's value on standard output only as success: what waits unread in
@@ -436,7 +466,7 @@ What layer 1 does not generate, and why:
   space; lengths that wrap to 0 in the last page or overflow the address are generated, and one play
   address in four carries a top byte tag); ppoll and pselect6 without a timeout; flock waits (they wait for ever).
 - Signals whose default action ends or stops a process, and rt_sigaction on the signals kill sends
-  (our caller is the container's first process, which Linux protects; theirs is not; handlers are K2).
+  (our caller is the container's first process, which Linux protects; theirs is not).
 - RLIMIT_CPU and RLIMIT_FSIZE limits that can be reached, process limits that can be reached (Linux
   counts the user's processes machine-wide), stack limits above 1 GiB (our stack could grow into the
   play area), core size limits above zero (core dumps are not written, counted).
@@ -471,7 +501,7 @@ What layer 1 does not generate, and why:
   open file forms, from eight requests in the arena that tests rewrite), but not F_SETLKW and
   F_OFD_SETLKW: in one process they wait only on another open file's lock, for ever, which costs the
   reference's 60 s deadline; tests/recordlocks.rs runs them where they do not wait.
-- prctl's PR_GET_AUXV is not generated (the vector holds addresses and lacks the vDSO's entries here);
+- prctl's PR_GET_AUXV is not generated (the vector holds addresses);
   tests/options.rs compares it. PR_SET_TIMERSLACK only with slacks up to 1 ms: where in a long slack
   the reference's sleep ends depends on other timers' interrupts (its load), and a slack past the
   reference's 60 s deadline ends the sequence there or not by load (see Known gaps). The check's seed
@@ -525,10 +555,10 @@ What layer 1 does not generate, and why:
   FIONREAD, the random devices' `random_ioctl`; files with none answer ENOTTY as Linux does. tmpfs
   keeps its inode flags (no-dump and no-access-time can be set; immutable and append-only need
   CAP_LINUX_IMMUTABLE, which Docker's root lacks; statx shows them). FASYNC is set through a file's
-  `fasync` (pipes, random devices) by FIOASYNC and F_SETFL, and fcntl names an owner; no signal is
-  sent yet: the random devices signal only when the generator first becomes ready (before any
-  program), and the standard stream pipes would signal when Docker reads them (pipes and signal
-  delivery, K2; a known gap).
+  `fasync` (pipes, terminals, random devices) by FIOASYNC and F_SETFL, and fcntl names an owner;
+  pipes and terminals send I/O signals (K2's third run); the random devices signal only when the
+  generator first becomes ready (before any program), so never here. Terminals' requests are in
+  src/syscall/tty.rs and pidfs's in src/syscall/pidfd.rs.
 - Access times: reads, listings, `readlink` and mappings of tmpfs files move the access time as
   `touch_atime` does (`relatime` on `/`, `/dev/shm`; `strictatime` on `/dev`), except with O_NOATIME
   or the no-access-time flag.
@@ -587,9 +617,8 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   with no arguments gets an empty first one (`do_execveat_common`). The strings' room is
   `bprm_stack_limits`'s (a quarter of RLIMIT_STACK, at most 6 MiB, at least ARG_MAX, less a pointer
   each), taken in Linux's order: both lists counted, the file name, the environment, the arguments,
-  then a script's names. The auxiliary vector as the reference's, in its order, except
-  AT_SYSINFO_EHDR and AT_MINSIGSTKSZ (counted and warned at each start; they come with the vDSO and
-  signal frames in K2). Set-user and set-group bits, file capabilities, AT_SECURE, dumpability.
+  then a script's names. The auxiliary vector as the reference's, in its order,
+  AT_SYSINFO_EHDR and AT_MINSIGSTKSZ included. Set-user and set-group bits, file capabilities, AT_SECURE, dumpability.
 - Credentials: uid/euid/suid/fsuid and gids, supplementary groups (Docker's), Docker's 14 powers,
   Linux's rules for changing ids and what that does to powers and `dumpable`, capget/capset. Each
   change Linux commits (`commit_creds`: the id setters unless a no-op, setgroups, capset, keepcaps,
@@ -619,8 +648,8 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   joined and split, the first conflicting lock in list order reported by F_GETLK (an open file's with
   l_pid -1), let go when any descriptor of the file closes (not an O_PATH one) or, for an open file's,
   when its last reference goes; every check of `flock64_to_posix_lock`, `fcntl_getlk` and
-  `fcntl_setlk` in order. A wait (F_SETLKW) for another holder in the same process lasts until a signal
-  (K2), as on Linux.
+  `fcntl_setlk` in order. A wait (F_SETLKW) ends when the lock in its way is let go or changed, or by
+  a signal; one that would close a loop of holders is EDEADLK (`posix_locks_deadlock`).
 - flock between open files; extended attributes on tmpfs (src/syscall/xattr.rs); memfd_create with
   seals; memfd_secret; name_to_handle_at; rseq; membarrier; protection keys as on a CPU without
   permission overlays; sched_setattr family; process_vm_readv and process_vm_writev on the caller;
@@ -631,7 +660,7 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (187): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+Done (205): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
 clock_nanosleep, clone, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit,
 exit_group, faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2,
 fchown, fchownat, fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat,
@@ -639,39 +668,37 @@ fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid,
 getgroups, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit,
 getrusage, getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill,
 lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
-membarrier, memfd_create, memfd_secret, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap,
-mprotect, mremap, msync, munlock, munlockall, munmap, name_to_handle_at, nanosleep, newfstatat,
-openat, openat2, personality, pipe2, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64,
+membarrier, memfd_create, memfd_secret, mincore, mq_getsetattr, mq_notify, mq_open,
+mq_timedreceive, mq_timedsend, mq_unlink, mkdirat, mknodat, mlock, mlock2, mlockall, mmap,
+mprotect, mremap, msgctl, msgget, msgrcv, msgsnd, msync, munlock, munlockall, munmap, name_to_handle_at, nanosleep, newfstatat,
+openat, openat2, personality, pidfd_open, pidfd_send_signal, pipe2, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64,
 preadv, preadv2, prlimit64, process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev,
-pwritev2, read, readahead, readlinkat, readv, removexattr, renameat, renameat2, restart_syscall,
+pwritev2, process_mrelease, read, readahead, readlinkat, readv, removexattr, renameat, renameat2, restart_syscall,
 rseq, rt_sigaction, rt_sigpending, rt_sigprocmask, rt_sigqueueinfo, rt_sigreturn, rt_sigsuspend,
 rt_sigtimedwait, rt_tgsigqueueinfo, sched_get_priority_max, sched_get_priority_min,
 sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler, sched_rr_get_interval,
 sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler, sched_yield, seccomp,
-sendfile, set_robust_list, set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid,
+semctl, semget, semop, semtimedop, sendfile, set_robust_list, set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid,
 setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr, shmat,
-shmctl, shmdt, shmget, sigaltstack, splice, statfs, statx, symlinkat, sync, sync_file_range, syncfs,
+shmctl, shmdt, shmget, sigaltstack, signalfd4, splice, statfs, statx, symlinkat, sync, sync_file_range, syncfs,
 sysinfo, tee, tgkill, times, tkill, truncate, umask, uname, unlinkat, utimensat, vmsplice, wait4,
 waitid, write, writev.
 
 Partial (inside the list above), each with its reason:
-- fcntl: record locks are built (above); between processes (K2) a wait must also wake when a holder
-  lets go, and `posix_locks_deadlock` must refuse waits that close a loop (EDEADLK); within one process
-  neither can happen. Not built, each counted "fcntl command not built" and EINVAL (Linux's answer when
-  the feature is not configured): F_SETLEASE (leases: K2), F_NOTIFY (directory
-  notification signals: K2), F_GETOWNER_UIDS, F_GETDELEG and F_SETDELEG, and F_GETPIPE_SZ and
-  F_SETPIPE_SZ on the standard stream pipes (pipes: K2; on anything else they are EBADF as Linux's).
-  Built in the tenth run: owners (F_SETOWN, F_GETOWN, F_SETOWN_EX, F_GETOWN_EX), F_SETSIG and
-  F_GETSIG (no file here has an `fasync`, so no signal is ever sent, as on Linux for these files),
-  F_GET_RW_HINT and F_SET_RW_HINT, F_DUPFD_QUERY, F_CREATED_QUERY, F_GETLEASE (F_UNLCK: no lease can
-  be taken).
-- ioctl: terminals are K2 (no terminal can be opened yet, so their requests reach no file).
-  FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
+- fcntl: record locks are built (above), waits between processes and EDEADLK included. Not built,
+  each counted "fcntl command not built" and EINVAL (Linux's answer when the feature is not
+  configured): F_SETLEASE (leases), F_NOTIFY (directory notification signals), F_GETOWNER_UIDS,
+  F_GETDELEG and F_SETDELEG. Built: owners (F_SETOWN, F_GETOWN, F_SETOWN_EX, F_GETOWN_EX), F_SETSIG
+  and F_GETSIG (pipes and terminals send the chosen signal), F_GET_RW_HINT and F_SET_RW_HINT,
+  F_DUPFD_QUERY, F_CREATED_QUERY, F_GETLEASE (F_UNLCK: no lease can be taken), F_GETPIPE_SZ and
+  F_SETPIPE_SZ on every pipe (EBADF on anything else, as Linux's).
+- ioctl: terminals' requests are built (K2's second run), pidfs's (ninth run; its namespace files
+  counted). FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
   them they answer as tmpfs does (nothing to freeze or thaw, no block map) and what is given to the
   pool cannot change the host's generator.
 - mmap: MAP_HUGETLB on anonymous memory counted, ENOMEM (no huge pages; on a plain file EINVAL, as
-  Linux). MAP_DROPPABLE memory is never dropped (nothing presses on memory here) and must be wiped at
-  fork (K2). MAP_SHARED anonymous is a shared mapping of
+  Linux). MAP_DROPPABLE memory is never dropped (nothing presses on memory here); it is wiped at
+  fork. MAP_SHARED anonymous is a shared mapping of
   an internal file. A private file mapping copies a page at its first write (above). MAP_SYNC
   EOPNOTSUPP, as tmpfs.
 - openat, openat2: O_TMPFILE counted, EOPNOTSUPP; devices by Docker's rules (EPERM; the console and
@@ -688,9 +715,9 @@ Partial (inside the list above), each with its reason:
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
 - prctl: built: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, CAPBSET_DROP,
   GET/SET_NO_NEW_PRIVS, GET/SET_SECCOMP, CAP_AMBIENT (eleventh run: is-set, raise, lower, clear, with
-  `cap_task_prctl`'s checks), SET/GET_CHILD_SUBREAPER (kept; it acts on orphans, K2),
+  `cap_task_prctl`'s checks), SET/GET_CHILD_SUBREAPER (orphans go to the nearest subreaper),
   SET/GET_PDEATHSIG (kept per thread, cleared on a change of ids or a secure exec; sent when the parent
-  ends, K2), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
+  ends), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
   huge pages here), GET_MDWE (0: none can be set), GET_AUXV, GET_SECUREBITS (the keep-capabilities bit;
   the others cannot be set), SET_MM (EPERM without CAP_SYS_RESOURCE, which Docker's root lacks; the map
   size form), SET/GET_IO_FLUSHER (EPERM without CAP_SYS_RESOURCE). Not built, each counted "prctl
@@ -710,16 +737,17 @@ Partial (inside the list above), each with its reason:
 - statfs, sysinfo, `/proc/meminfo`: pages a mapping's faults bring in are not known (counted); free
   memory is the made-up machine's size less every mapped and tmpfs page (counted "page residency not
   tracked"); `/proc/meminfo` has only some of Linux's lines (counted "proc fields not tracked", 4).
-- ppoll, pselect6: they park until a file's readiness may have changed (any pipe or lock change, any
-  close), their deadline or a signal, with their signal mask applied while they wait. Files other than
-  pipes are always ready: Linux's default poll mask, readable only for
-  `/dev/random` (`random_poll`, the generator ready from the start) and the mounts files
-  (`mounts_poll`), invalid for O_PATH (in every select set, as `select_poll_one`); the host's pipes
-  always have room; a wait with nothing ready sleeps until its timeout, or for ever (until K2's signals). The
-  signal mask they take is read, not applied (K2).
-- flock: a wait for a conflicting lock never ends (one process).
-- sched_setscheduler, sched_setparam, sched_setattr: kept per thread with Linux's checks; nothing is
-  scheduled by them yet (K3). Custom slices kept; no utilisation clamps (EOPNOTSUPP, as the reference).
+- ppoll, pselect6: they park until a file's readiness may have changed (any change to a pipe,
+  terminal, queue, process descriptor or signal descriptor, any close), their deadline or a signal,
+  with their signal mask applied while they wait. Pipes, terminals, named pipes, message queues and
+  process and signal descriptors have their own poll; other files are always ready: Linux's default
+  poll mask, readable only for `/dev/random` (`random_poll`, the generator ready from the start) and
+  the mounts files (`mounts_poll`), invalid for O_PATH (in every select set, as `select_poll_one`);
+  the host's pipes always have room.
+- sched_setscheduler, sched_setparam, sched_setattr: kept per thread with Linux's checks. The fair
+  scheduler weighs nice values and SCHED_BATCH and SCHED_IDLE; the real-time and deadline policies
+  are kept but scheduled as normal threads (K3). Custom slices kept; no utilisation clamps
+  (EOPNOTSUPP, as the reference).
 - mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
 - madvise: MADV_COLLAPSE (making huge pages now: needs huge pages and knowing which pages a mapping
   holds), MADV_GUARD_INSTALL and MADV_GUARD_REMOVE (guard markers: pages that fault whatever their
@@ -732,8 +760,9 @@ Partial (inside the list above), each with its reason:
 - ioprio_get, ioprio_set: kept per thread; nothing does I/O by it.
 - seccomp: no listener (counted, EINVAL as a kernel without listeners). TRAP sends SIGSYS with the
   call, its address and the filter's data.
-- rseq: a critical section is never aborted yet (signal delivery K2, preemption K3). The time slice
-  extension flag is counted and refused with EINVAL; the reference takes it.
+- rseq: a critical section is aborted when a handler runs (tests/rseqabort.rs); not yet when the
+  thread is preempted by another (Linux's `rseq_preempt`; K3, with threads, which use it). The time
+  slice extension flag is counted and refused with EINVAL; the reference takes it.
 - process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
   `ptrace_may_access`, counted "call on another process not built", ENOSYS.
 - clone: the fork and vfork forms. Threads and shared tables (CLONE_THREAD, CLONE_FILES, CLONE_FS,
@@ -741,8 +770,6 @@ Partial (inside the list above), each with its reason:
   threads). Namespaces are refused by Docker's profile as in the reference.
 - pidfd_open: PIDFD_THREAD for a thread other than a process's first is counted "call flag not built",
   EINVAL (threads, K3). process_mrelease never frees anything: there is no dying process to free.
-- getpriority, sched_getscheduler and the other sched_* calls: a process that has ended and is not yet
-  reaped is found by the priority calls but not yet by the sched_* calls (ESRCH; Linux finds it).
 - pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
 - shmget: SHM_HUGETLB counted "call flag not built", ENOMEM (the reference, with no huge pages
@@ -788,8 +815,8 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
 
 - `/proc/<pid>/task` is not built (threads, K3); listing it is ENOENT here (an ignored test shows it).
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
-  addresses and the pending signals are 0 (the loader knows the addresses but does not keep them;
-  pending signals are one set per thread here while Linux keeps shared and thread pending apart, K2).
+  addresses and the pending signals are 0 (the loader knows the addresses but does not keep them).
+
   statm shows only the size (resident pages are not known; text and data need the loader's addresses).
   `/proc/<pid>/status` has only some of Linux's lines (no memory, SigQ, SigPnd, ShdPnd or context
   switch lines). Each open of these is counted "proc fields not tracked". Built with K2's processes,
