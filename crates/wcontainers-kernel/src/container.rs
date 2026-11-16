@@ -394,7 +394,6 @@ impl Kernel {
             ended_leader: Default::default(),
             nproc_exceeded: false,
             pidfd: None,
-            vfork_parent: None,
             stopped: false,
             report: None,
             continued_unsent: false,
@@ -612,7 +611,7 @@ impl Kernel {
         cx.cpu.set_registers(thread.cpu, &image.registers);
         thread.resume = Resume::FromRegisters;
         // A `vfork` child gives its parent's memory back; any other old memory goes.
-        self.release_vfork(pid);
+        self.release_vfork(tid);
         let shown_elsewhere = self
             .processes
             .values()

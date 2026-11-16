@@ -424,6 +424,7 @@ impl Kernel {
     pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
         syscall::futex::thread_end(self, cx, tid, true);
         self.unschedule(tid);
+        self.release_vfork(tid);
         syscall::sem::forget(self, tid);
         syscall::sem::exit_sem(self, cx, tid);
         syscall::mqueue::forget(self, tid);
@@ -489,6 +490,7 @@ impl Kernel {
         }
         for tid in threads {
             self.unschedule(tid);
+            self.release_vfork(tid);
             syscall::sem::forget(self, tid);
             syscall::sem::exit_sem(self, cx, tid);
             syscall::mqueue::forget(self, tid);
@@ -501,7 +503,6 @@ impl Kernel {
             }
             tables.push(thread.files);
         }
-        self.release_vfork(pid);
         syscall::timer::process_end(self, pid, false);
         let process = self.processes.get_mut(&pid).expect("process exists");
         process.threads.clear();
@@ -563,17 +564,17 @@ impl Kernel {
             .any(|other| other.pid != pid && other.ended.is_none() && other.memory == memory)
     }
 
-    /// A `vfork` child lets go of its parent's memory: the parent sees the mappings as the child
-    /// left them, and its wait ends.
-    pub(crate) fn release_vfork(&mut self, child: Pid) {
-        let Some(parent_thread) = self
-            .processes
-            .get_mut(&child)
-            .and_then(|process| process.vfork_parent.take())
-        else {
+    /// A `vfork` child thread starts a program or ends (`mm_release`): a child process gives its
+    /// parent's memory back, the parent seeing the mappings as the child left them, and the parent
+    /// thread's wait ends.
+    pub(crate) fn release_vfork(&mut self, child: Tid) {
+        let Some(thread) = self.threads.get_mut(&child) else {
             return;
         };
-        let map = self.processes[&child].map.clone();
+        let Some(parent_thread) = thread.vfork_parent.take() else {
+            return;
+        };
+        let pid = thread.process;
         let Some(parent) = self
             .threads
             .get(&parent_thread)
@@ -581,13 +582,25 @@ impl Kernel {
         else {
             return;
         };
-        let memory = self.processes[&child].memory;
-        if let Some(parent) = self.processes.get_mut(&parent)
+        let map = self.processes[&pid].map.clone();
+        let memory = self.processes[&pid].memory;
+        if parent != pid
+            && let Some(parent) = self.processes.get_mut(&parent)
             && parent.memory == memory
         {
             parent.map = map;
         }
         self.wake(Channel::Vfork(child));
+    }
+
+    /// Whether a process is a `vfork` child still using its parent's memory.
+    pub(crate) fn borrows_memory(&self, pid: Pid) -> bool {
+        self.processes[&pid].threads.iter().any(|tid| {
+            self.threads[tid]
+                .vfork_parent
+                .and_then(|parent| self.threads.get(&parent))
+                .is_some_and(|parent| parent.process != pid)
+        })
     }
 
     /// Hands a dying process's children to the nearest subreaper above it or the first process

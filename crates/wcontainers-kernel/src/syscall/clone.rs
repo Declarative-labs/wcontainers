@@ -60,11 +60,11 @@ pub(super) fn clone(
 }
 
 /// A `vfork` parent waits, not to be interrupted, until its child starts a program or ends.
-fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Pid) -> Outcome {
+fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
     let borrowing = kernel
-        .processes
+        .threads
         .get(&child)
-        .is_some_and(|process| process.vfork_parent == Some(tid));
+        .is_some_and(|thread| thread.vfork_parent == Some(tid));
     if borrowing {
         kernel.park(tid, Channel::Vfork(child));
         return Outcome::Parked;
@@ -101,7 +101,7 @@ fn make_child(
     // the caller's signal handlers or its memory while both run, is not built.
     let thread = flags & CLONE_THREAD != 0;
     let unbuilt = if thread {
-        flags & (CLONE_VFORK | CLONE_PIDFD)
+        flags & CLONE_PIDFD
     } else {
         let shares_memory = flags & CLONE_VM != 0 && flags & CLONE_VFORK == 0;
         (flags & CLONE_SIGHAND) | if shares_memory { CLONE_VM } else { 0 }
@@ -186,7 +186,6 @@ fn make_child(
     process.threads = alloc::vec![child];
     process.pending = Default::default();
     process.ended = None;
-    process.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     process.stopped = false;
     process.report = None;
     process.continued_unsent = false;
@@ -223,6 +222,7 @@ fn make_child(
     cx.cpu.set_registers(thread_cpu, &registers);
     let mut thread = kernel.threads[&tid].clone();
     share_or_copy(&mut thread, flags, child);
+    thread.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     thread.process = child;
     thread.cpu = thread_cpu;
     thread.resume = Resume::FromRegisters;
@@ -306,6 +306,7 @@ fn make_thread(
     cx.cpu.set_registers(thread_cpu, &registers);
     let mut thread = kernel.threads[&tid].clone();
     share_or_copy(&mut thread, flags, child);
+    thread.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     thread.cpu = thread_cpu;
     thread.resume = Resume::FromRegisters;
     thread.pending = Default::default();

@@ -31,6 +31,10 @@ Built in K3's second run:
   CLOSE_RANGE_UNSHARE now does. `/proc` reads a task's table and context. tests/threads.rs
   `clone_tables_match_reference` (guest/clonetables.c, raw clone for threads since musl's wrapper
   refuses CLONE_THREAD with EINVAL).
+- A thread made with CLONE_VFORK: the maker waits until it ends or starts a program
+  (`Thread::vfork_parent`, which a vfork child process's thread holds too; `release_vfork` at each
+  thread's end and at execve). Measured in clonetables: the thread's number is cleared before the
+  maker's clone returns.
 - Descriptor searches start at Linux's `next_fd` (every descriptor below it in use): libc-test's
   daemon-failure fills the whole 2^20 table with dup, which took quadratic time before.
 - Layer 2: musl's libc-test (MIT; its common, functional and regression tests vendored in
@@ -924,11 +928,11 @@ Partial (inside the list above), each with its reason:
 - process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
   `ptrace_may_access`, counted "call on another process not built", ENOSYS.
 - clone: fork, vfork and threads, with descriptor tables, file system contexts and semaphore undo
-  lists shared or copied as the flags say. The process holds its signal handlers and its memory, so
-  a process sharing the caller's handlers (CLONE_SIGHAND without CLONE_THREAD) or its memory while
-  both run (CLONE_VM without CLONE_VFORK), and a thread with CLONE_VFORK or CLONE_PIDFD (thread
-  process descriptors are not built), are counted "call flag not built", ENOSYS (Linux accepts
-  them). Namespaces are refused by Docker's profile as in the reference.
+  lists shared or copied as the flags say, and threads made with CLONE_VFORK. The process holds its
+  signal handlers and its memory, so a process sharing the caller's handlers (CLONE_SIGHAND without
+  CLONE_THREAD) or its memory while both run (CLONE_VM without CLONE_VFORK), and a thread with
+  CLONE_PIDFD (thread process descriptors are not built), are counted "call flag not built",
+  ENOSYS (Linux accepts them). Namespaces are refused by Docker's profile as in the reference.
 - futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL. A shared
   futex in a private file mapping is keyed by memory and address even before the page is copied
   (Linux keys an unwritten page by the file).
@@ -1061,7 +1065,7 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K3's first run; counts under Measurements)
+## Tests (last run 2026-11-16, K3's second run; counts under Measurements)
 
 All pass except the ignored known failures listed above. Added in K3's first run (seeded ones run
 under `SCHEDULE_SEEDS` seeds, 3 by default; 4 to 6 were run by hand):
@@ -1819,7 +1823,7 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
   flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
   (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), clone's
-  handlers or memory shared between processes and its CLONE_VFORK and CLONE_PIDFD threads (ENOSYS), NUMA futexes
+  handlers or memory shared between processes and its CLONE_PIDFD threads (ENOSYS), NUMA futexes
   (EINVAL), pidfd_open's
   PIDFD_THREAD for a thread other than the first (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
   shmget's SHM_HUGETLB
@@ -1850,6 +1854,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K3, second run: none.
 - K3, first run: none.
 
 - K2, tenth run: none.
@@ -1914,9 +1919,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 K3, in order:
 1. The clone combinations still counted as not built: processes sharing memory while both run
    (CLONE_VM without CLONE_VFORK: the address map would become shared like the tables, see
-   `Thread::files`) and signal handlers (CLONE_SIGHAND between processes), threads with CLONE_VFORK
-   (`Process::vfork_parent` would move to the thread) and CLONE_PIDFD (needs process descriptors
-   for threads, PIDFD_THREAD).
+   `Thread::files`) and signal handlers (CLONE_SIGHAND between processes), and threads with
+   CLONE_PIDFD (needs process descriptors for threads, PIDFD_THREAD).
 2. Per-thread credentials and personality (`Process::credentials` would move to the thread, 120
    uses).
 3. Woken calls run again when their thread next gets the CPU rather than at once (`settle`; see

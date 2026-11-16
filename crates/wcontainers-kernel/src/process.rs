@@ -94,9 +94,6 @@ pub(crate) struct Process {
     pub ended_leader: Leader,
     /// The inode its process descriptors share, once one is made.
     pub pidfd: Option<Node>,
-    /// A `vfork` child: the parent's thread that waits until the child lets go of the memory it
-    /// borrows by starting a program or ending.
-    pub vfork_parent: Option<Tid>,
     /// Job control: whether the process is stopped, and what a parent's wait has yet to see.
     pub stopped: bool,
     pub report: Option<Report>,
@@ -264,6 +261,9 @@ pub(crate) struct Thread {
     pub name: Vec<u8>,
     /// How the thread continues the next time it runs.
     pub resume: Resume,
+    /// Made with CLONE_VFORK: the thread that made it, which waits until this one starts a program
+    /// or ends (`vfork_done`).
+    pub vfork_parent: Option<Tid>,
     /// `set_tid_address`: where to clear and wake when the thread ends.
     pub clear_child_tid: u64,
     /// `set_robust_list`: the head and its length.
@@ -384,8 +384,8 @@ pub(crate) enum Channel {
     Signals,
     /// A record lock or `flock` lock let go anywhere.
     Locks,
-    /// A `vfork` child letting go of the memory.
-    Vfork(Pid),
+    /// A thread made with CLONE_VFORK starting a program or ending.
+    Vfork(Tid),
     /// A futex wake, requeue or lock handed over (the futexes know which).
     Futex,
 }
@@ -417,6 +417,7 @@ impl Thread {
             fs,
             name: Vec::new(),
             resume: Resume::FromRegisters,
+            vfork_parent: None,
             clear_child_tid: 0,
             robust_list: (0, 0),
             signal_mask: 0,

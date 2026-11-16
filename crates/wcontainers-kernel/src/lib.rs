@@ -479,7 +479,7 @@ impl Kernel {
         let mapped: u64 = self
             .processes
             .values()
-            .filter(|process| process.vfork_parent.is_none())
+            .filter(|process| !self.borrows_memory(process.pid))
             .flat_map(|process| process.map.iter())
             .map(|mapping| mapping.end - mapping.start)
             .sum();

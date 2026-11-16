@@ -105,6 +105,15 @@ static int takes(void *argument) {
     return 0;
 }
 
+// Sleeps a little, then notes that it ran.
+static int naps(void *argument) {
+    (void)argument;
+    struct timespec pause = {0, 20 * 1000 * 1000};
+    raw(SYS_nanosleep, (long)&pause, 0, 0);
+    seen[0] = 1;
+    return 0;
+}
+
 static int descriptor_open(int fd) { return fcntl(fd, F_GETFD) >= 0; }
 
 int main(void) {
@@ -175,7 +184,14 @@ int main(void) {
            semctl(semid, 0, GETVAL));
     semctl(semid, 0, IPC_RMID);
 
-    // Combinations still refused.
+    // A thread made with CLONE_VFORK: the caller waits until it ends.
+    seen[0] = 0;
+    long made = start(naps, THREAD | CLONE_FILES | CLONE_FS | CLONE_VFORK);
+    printf("vfork thread %d: ran %ld before clone returned, number cleared %d\n", made > 0, seen[0],
+           child_tid == 0);
+    join();
+
+    // Combinations refused.
     printf("thread without sighand %ld\n",
            syscall(SYS_clone, CLONE_VM | CLONE_THREAD, stack + sizeof stack, 0, 0, 0) < 0 ? errno
                                                                                           : 0L);
