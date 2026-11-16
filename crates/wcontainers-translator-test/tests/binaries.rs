@@ -2,11 +2,15 @@
 //! makes of them, and whether the engines take it.
 
 use std::io::Write;
+use std::time::Duration;
 use std::time::Instant;
-use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
+use wcontainers_translator::{LookAhead, Means, Optimise, Translation};
 use wcontainers_translator_test::binaries::{Binary, SOURCES};
 use wcontainers_translator_test::runner::{Machine, Syscalls, probe};
+
+/// Where the binaries' images are placed in guest memory.
+const LOAD: u64 = 0x10_0000;
 
 /// The binaries named in `WC_BINARIES` (comma separated), or all of them.
 fn chosen() -> Vec<&'static wcontainers_translator_test::binaries::Source> {
@@ -18,8 +22,7 @@ fn chosen() -> Vec<&'static wcontainers_translator_test::binaries::Source> {
 }
 
 /// The settings named in `WC_OPTIMISE` (`speed` or `size`), or both.
-fn settings() -> Vec<wcontainers_translator::Optimise> {
-    use wcontainers_translator::Optimise;
+fn settings() -> Vec<Optimise> {
     match std::env::var("WC_OPTIMISE").as_deref() {
         Ok("speed") => vec![Optimise::Speed],
         Ok("size") => vec![Optimise::Size],
@@ -50,6 +53,84 @@ fn validate(wasm: &[u8]) {
         .expect("a valid module");
 }
 
+/// A binary translated at full look-ahead from every start its file offers.
+fn translated(binary: &Binary, optimise: Optimise) -> Translation {
+    wcontainers_translator::translate(
+        &binary.image,
+        binary.code.clone(),
+        &binary.starts.all(),
+        LookAhead::Full,
+        optimise,
+        probe(),
+    )
+    .expect("translate")
+}
+
+/// What wasmtime makes of a translation: compile time, instantiation time and bytes of machine code.
+fn load_in_wasmtime(binary: &Binary, translation: Translation) -> (Duration, Duration, usize) {
+    let memory = (LOAD + binary.image.len() as u64).next_multiple_of(1 << 16);
+    // The lookup table covers the code alone.
+    let slots = ((binary.code.end - binary.code.start) / 4) as u32;
+    let table_base = LOAD + binary.code.start;
+    let mut machine = Machine::new(memory, table_base, slots, Syscalls::StandIn);
+    machine.load_translation(&binary.image, binary.code.clone(), LOAD, translation)
+}
+
+/// Chrome makes the modules of a translation and their instances, each function compiled at its first call or
+/// all at once (`flags`).
+fn load_in_chrome(
+    name: &str,
+    binary: &Binary,
+    translation: &Translation,
+    flags: &str,
+) -> Result<wcontainers_translator_test::browser::Loaded, String> {
+    let wasm: Vec<&[u8]> = translation.modules.iter().map(|m| &m.wasm[..]).collect();
+    let code = binary.code.clone();
+    wcontainers_translator_test::browser::load_modules(
+        name,
+        &binary.image,
+        LOAD,
+        code,
+        &wasm,
+        flags,
+    )
+}
+
+/// busybox and the C library, whole: in both settings every module is valid and loads in wasmtime and in
+/// Chrome, and every piece is counted once by the means that found it.
+#[test]
+fn small_binaries_translate_and_load() {
+    for source in SOURCES
+        .iter()
+        .filter(|s| matches!(s.name, "busybox" | "musl"))
+    {
+        let binary = Binary::read(source.name, &std::fs::read(source.file()).unwrap());
+        assert_eq!(binary.unwind_errors, 0, "{}", binary.name);
+        let starts = binary.starts.all();
+        for optimise in [Optimise::Speed, Optimise::Size] {
+            let name = format!("{} for {optimise:?}", binary.name);
+            let translation = translated(&binary, optimise);
+            let pieces = translation.pieces().count() as u64;
+            assert_eq!(translation.found.iter().sum::<u64>(), pieces, "{name}");
+            assert_eq!(
+                translation.found[Means::Given as usize],
+                starts.len() as u64,
+                "{name}"
+            );
+            for module in &translation.modules {
+                validate(&module.wasm);
+            }
+            let loaded = load_in_chrome(&name, &binary, &translation, "");
+            assert!(loaded.is_ok(), "{name}: Chrome refused: {:?}", loaded.err());
+            let (compiled, _, machine_code) = load_in_wasmtime(&binary, translation);
+            eprintln!(
+                "{name}: {pieces} pieces, wasmtime compiled it in {:.2} s to {machine_code} bytes",
+                compiled.as_secs_f64()
+            );
+        }
+    }
+}
+
 /// Not a check: each binary's code and starts, its translation at full look-ahead, and what wasmtime makes
 /// of it. One command:
 /// `WC_BINARIES=busybox,musl nix develop -c cargo test --release -p wcontainers-translator-test --test binaries measure_binaries -- --ignored --nocapture`
@@ -59,7 +140,6 @@ fn validate(wasm: &[u8]) {
 #[test]
 #[ignore]
 fn measure_binaries() {
-    let host = probe();
     for source in chosen() {
         let file = std::fs::read(source.file()).unwrap();
         let started = Instant::now();
@@ -74,40 +154,34 @@ fn measure_binaries() {
             .map(|(what, set)| format!("{what} {}", set.len()))
             .collect();
         println!(
-            "{}: image {} bytes, code {} bytes ({} gzipped, {} instructions), read in {reading:.2} s; {} starts ({})",
+            "{}: image {} bytes, code {} bytes ({} gzipped, {} instructions), read in {reading:.2} s; {} starts ({}); {} unwind table entries not read",
             binary.name,
             binary.image.len(),
             code.len(),
             gzipped(code),
             code.len() / 4,
             starts.len(),
-            means.join(", ")
+            means.join(", "),
+            binary.unwind_errors
         );
         for optimise in settings() {
             let name = format!("{} for {optimise:?}", binary.name);
             let started = Instant::now();
-            let translation = wcontainers_translator::translate(
-                &binary.image,
-                binary.code.clone(),
-                &starts,
-                LookAhead::Full,
-                optimise,
-                host,
-            )
-            .expect("translate");
+            let translation = translated(&binary, optimise);
             let seconds = started.elapsed().as_secs_f64();
-            let pieces: Vec<u64> = translation.pieces().collect();
-            let found = pieces
+            let pieces = translation.pieces().count();
+            let found: Vec<String> = Means::ALL
                 .iter()
-                .filter(|p| starts.binary_search(p).is_err())
-                .count();
+                .map(|&m| format!("{} {}", m.name(), translation.found[m as usize]))
+                .collect();
             let bytes: usize = translation.modules.iter().map(|m| m.wasm.len()).sum();
             let compressed: usize = translation.modules.iter().map(|m| gzipped(&m.wasm)).sum();
             println!(
-                "{}: translated in {seconds:.2} s ({:.2} MB of code a second); {} pieces, {found} found by the translator; {} modules, {bytes} bytes ({:.1} a byte of code), {compressed} gzipped ({:.1} a gzipped byte)",
+                "{}: translated in {seconds:.2} s ({:.2} MB of code a second); {} pieces ({}); {} modules, {bytes} bytes ({:.1} a byte of code), {compressed} gzipped ({:.1} a gzipped byte)",
                 name,
                 code.len() as f64 / seconds / 1e6,
-                pieces.len(),
+                pieces,
+                found.join(", "),
                 translation.modules.len(),
                 bytes as f64 / code.len() as f64,
                 compressed as f64 / gzipped(code) as f64,
@@ -142,22 +216,13 @@ fn measure_binaries() {
             if std::env::var("WC_BINARIES_ENGINES").is_ok_and(|v| v == "0") {
                 continue;
             }
-            let load = 0x10_0000;
-            let wasm: Vec<&[u8]> = translation.modules.iter().map(|m| &m.wasm[..]).collect();
             for (what, flags) in [
                 ("compiled at first call", ""),
                 ("compiled at once", "--no-wasm-lazy-compilation"),
             ] {
                 // What Chrome's processes hold after making the modules and their instances, beyond what
                 // they held before; compiled at once less compiled at first call is the compiled code.
-                match wcontainers_translator_test::browser::load_modules(
-                    &name,
-                    &binary.image,
-                    load,
-                    binary.code.clone(),
-                    &wasm,
-                    flags,
-                ) {
+                match load_in_chrome(&name, &binary, &translation, flags) {
                     Ok(loaded) => println!(
                         "{}: Chrome, {what}, made its modules in {:.2} s and their instances in {:.3} s; its processes grew by {:.1} MB",
                         name,
@@ -168,13 +233,7 @@ fn measure_binaries() {
                     Err(error) => println!("{}: Chrome, {what}, refused: {error}", binary.name),
                 }
             }
-            let memory = (load + binary.image.len() as u64).next_multiple_of(1 << 16);
-            // The lookup table covers the code alone.
-            let slots = ((binary.code.end - binary.code.start) / 4) as u32;
-            let table_base = load + binary.code.start;
-            let mut machine = Machine::new(memory, table_base, slots, Syscalls::StandIn);
-            let (compiled, instantiated, machine_code) =
-                machine.load_translation(&binary.image, binary.code.clone(), load, translation);
+            let (compiled, instantiated, machine_code) = load_in_wasmtime(&binary, translation);
             println!(
                 "{}: wasmtime compiled it in {:.2} s to {machine_code} bytes of machine code, instantiated it in {:.3} s",
                 name,

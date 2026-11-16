@@ -8,7 +8,7 @@ mod state;
 mod thread;
 
 pub use code::{
-    BOUND, CodeModule, Error, LookAhead, Optimise, PASSED, Sites, Translation, translate,
+    BOUND, CodeModule, Error, LookAhead, Means, Optimise, PASSED, Sites, Translation, translate,
 };
 #[cfg(feature = "measure")]
 pub use code::{Omit, translate_in_modules, translate_omitting};
