@@ -338,7 +338,8 @@ pub(super) fn shmat(
 ) -> Result<u64, Errno> {
     // `do_shmat`.
     let (id, flags) = (id as i32, flags as u32);
-    let mut address = crate::user::untagged(address);
+    // Tags are not taken off: the tagged address ABI leaves shmat and shmdt out.
+    let mut address = address;
     if id < 0 {
         return Err(Errno::EINVAL);
     }
@@ -405,7 +406,6 @@ pub(super) fn shmdt(
 ) -> Result<u64, Errno> {
     // `ksys_shmdt`: the first segment mapping at or above `address` that starts where its segment
     // would if attached there goes, then every piece of the same segment within its size.
-    let address = crate::user::untagged(address);
     if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
     }

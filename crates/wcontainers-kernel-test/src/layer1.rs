@@ -3578,7 +3578,7 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     if value < 0 {
         return out;
     }
-    if call.number == linux::__NR_readlinkat && names_process(c, arena) {
+    if call.number == linux::__NR_readlinkat && (names_process(c, arena) || names_pipe(c, arena)) {
         out.push((c, d));
     }
     if call.number == linux::__NR_getcwd && under_proc(a, arena) {
@@ -3628,6 +3628,15 @@ fn under_proc(address: u64, arena: &[u8]) -> bool {
         == Some(b"/proc/".as_slice())
 }
 
+/// Whether a link read to `address` names a pipe, whose inode number each machine hands out from
+/// its own count (`get_next_ino`).
+fn names_pipe(address: u64, arena: &[u8]) -> bool {
+    address
+        .checked_sub(ARENA)
+        .and_then(|offset| arena.get(offset as usize..offset as usize + 6))
+        .is_some_and(|bytes| bytes == b"pipe:[")
+}
+
 /// Whether the path at `address` names a process directory, `/proc/<pid>`, by number.
 fn names_process(address: u64, arena: &[u8]) -> bool {
     under_proc(address, arena)
@@ -3644,7 +3653,9 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         // A working directory inside `/proc/<pid>` names the caller's process number.
         linux::__NR_getcwd => under_proc(call.arguments[0], arena),
         // So does a link to one, such as `/proc/self/cwd` there.
-        linux::__NR_readlinkat => names_process(call.arguments[2], arena),
+        linux::__NR_readlinkat => {
+            names_process(call.arguments[2], arena) || names_pipe(call.arguments[2], arena)
+        }
         linux::__NR_mmap => call.arguments[3] & 0x10_0010 == 0,
         linux::__NR_getpid
         | linux::__NR_getppid
