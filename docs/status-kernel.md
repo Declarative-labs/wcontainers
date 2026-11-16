@@ -790,8 +790,6 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
 - Once in the third run (load about 20 to 50) the stand-in test binary hung for over 12 minutes and was
   killed; three reruns passed at once. Cause not found; not seen since.
-- The test driver prints a counter's detail with a call name even for counters whose detail is not a
-  call number (cosmetic).
 - Test binaries running side by side build guest programs into one directory; the dispatch test read
   that directory while another test was writing it and failed once (fixed in the eleventh run: a file
   gone since the listing is skipped).

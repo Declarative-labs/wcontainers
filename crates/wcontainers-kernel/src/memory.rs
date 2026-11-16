@@ -18,6 +18,11 @@ pub(crate) fn page_up(address: u64) -> u64 {
     page_down(address.saturating_add(PAGE_SIZE - 1))
 }
 
+/// Linux's `PAGE_ALIGN` of a length a program passes: it wraps, so the last page's lengths become 0.
+pub(crate) fn page_align(length: u64) -> u64 {
+    page_down(length.wrapping_add(PAGE_SIZE - 1))
+}
+
 /// Linux's default stack limit, `RLIMIT_STACK`, which places a new program's mappings.
 pub(crate) const STACK_LIMIT: u64 = 8 << 20;
 

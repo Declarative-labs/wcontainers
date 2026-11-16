@@ -11,7 +11,7 @@ use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::linux::general::*;
 use crate::linux_extra::LEGACY_MAP_MASK;
-use crate::memory::{Backing, Lock, Mapping, STACK_GUARD_GAP, page_down, page_up};
+use crate::memory::{Backing, Lock, Mapping, STACK_GUARD_GAP, page_align, page_down, page_up};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel, errno};
 
@@ -141,7 +141,7 @@ pub(super) fn mmap(
         return Err(Errno::EINVAL);
     }
     let permissions = permissions(prot, false)?;
-    let length = page_up(length);
+    let length = page_align(length);
     if length == 0 {
         return Err(Errno::ENOMEM);
     }
@@ -389,21 +389,32 @@ pub(super) fn munmap(
     tid: Tid,
     [address, length, ..]: Args,
 ) -> Result<u64, Errno> {
-    if address % PAGE_SIZE != 0 || length == 0 {
-        return Err(Errno::EINVAL);
-    }
-    let length = page_up(length);
     let process = kernel.process_of_mut(tid);
-    let end = address.checked_add(length).ok_or(Errno::EINVAL)?;
-    if end > crate::user::ADDRESS_LIMIT {
-        return Err(Errno::EINVAL);
-    }
-    let end = end.min(process.map.end);
-    if address < end {
-        process.map.unmap(cx.cpu, process.memory, address, end)?;
-    }
+    unmap(&mut process.map, cx, process.memory, address, length)?;
     crate::shared::release(kernel, cx);
     Ok(0)
+}
+
+/// Linux's `do_vmi_munmap`: the range must lie below `TASK_SIZE` before its length is rounded up.
+fn unmap(
+    map: &mut crate::memory::AddressMap,
+    cx: &mut Context<'_>,
+    memory: wcontainers_abi::MemoryId,
+    start: u64,
+    length: u64,
+) -> Result<(), Errno> {
+    if !start.is_multiple_of(PAGE_SIZE) || start > TASK_SIZE || length > TASK_SIZE - start {
+        return Err(Errno::EINVAL);
+    }
+    let end = start + page_align(length);
+    if end == start {
+        return Err(Errno::EINVAL);
+    }
+    let end = end.min(map.end);
+    if start < end {
+        map.unmap(cx.cpu, memory, start, end)?;
+    }
+    Ok(())
 }
 
 pub(super) fn mprotect(
@@ -441,7 +452,7 @@ fn protect(
     if length == 0 {
         return Ok(0);
     }
-    let length = page_up(length);
+    let length = page_align(length);
     let end = address
         .checked_add(length)
         .filter(|end| *end > address)
@@ -530,7 +541,12 @@ pub(super) fn madvise(
     if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
     }
-    let length = page_up(length);
+    // `is_valid_madvise`: a length rounded up to 0 from the last page is refused, 0 itself is not.
+    let aligned = page_align(length);
+    if length != 0 && aligned == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let length = aligned;
     let end = address.checked_add(length).ok_or(Errno::EINVAL)?;
     if length == 0 {
         return Ok(0);
@@ -659,8 +675,8 @@ pub(super) fn mremap(
 ) -> Result<u64, Errno> {
     // In the order of Linux's `do_mremap` and `check_mremap_params`.
     let flags = flags as u32;
-    let old_length = page_up(old_length);
-    let new_length = page_up(new_length);
+    let old_length = page_align(old_length);
+    let new_length = page_align(new_length);
     if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 || old % PAGE_SIZE != 0 {
         return Err(Errno::EINVAL);
     }
@@ -673,7 +689,7 @@ pub(super) fn mremap(
             || new_address % PAGE_SIZE != 0
             || flags & MREMAP_MAYMOVE == 0
             || (flags & MREMAP_DONTUNMAP != 0 && old_length != new_length)
-            || (old.saturating_add(old_length) > new_address && new_address + new_length > old))
+            || (old.wrapping_add(old_length) > new_address && new_address + new_length > old))
     {
         return Err(Errno::EINVAL);
     }
@@ -775,12 +791,7 @@ fn remap_at(
         return Ok(old);
     }
     if new_length < old_length {
-        map.unmap(
-            cx.cpu,
-            memory,
-            old + new_length,
-            old.saturating_add(old_length),
-        )?;
+        unmap(map, cx, memory, old + new_length, old_length - new_length)?;
         return Ok(old);
     }
     // Grow in place when the range is the end of its mapping and the space after is free.
@@ -820,11 +831,12 @@ fn remap_to(
         }
     }
     if request.new_length < request.old_length {
-        map.unmap(
-            cx.cpu,
+        unmap(
+            map,
+            cx,
             memory,
             request.old + request.new_length,
-            request.old.saturating_add(request.old_length),
+            request.old_length - request.new_length,
         )?;
         request.old_length = request.new_length;
     }
@@ -1000,7 +1012,9 @@ pub(super) fn msync(
     {
         return Err(Errno::EINVAL);
     }
-    let end = address.checked_add(page_up(length)).ok_or(Errno::ENOMEM)?;
+    let end = address
+        .checked_add(page_align(length))
+        .ok_or(Errno::ENOMEM)?;
     let map = &kernel.process_of(tid).map;
     if flags & MS_INVALIDATE != 0
         && map.iter().any(|mapping| {
@@ -1033,7 +1047,7 @@ fn lock_range(
     if lock != Lock::None && !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }
-    let length = page_up(length.saturating_add(address % PAGE_SIZE));
+    let length = page_align(length.wrapping_add(address % PAGE_SIZE));
     let start = page_down(address);
     let process = kernel.process_of_mut(tid);
     if lock != Lock::None {

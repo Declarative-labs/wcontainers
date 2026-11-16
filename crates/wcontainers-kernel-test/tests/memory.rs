@@ -11,7 +11,7 @@ fn memory_matches_reference() {
     let program = guest::build("memory", &[], &out);
     let cases = [
         "protect", "none", "unmap", "zero", "beyond", "private", "grow", "overflow", "brk",
-        "execute",
+        "execute", "wrap",
     ];
     let mut failed = Vec::new();
     for kind in cases {

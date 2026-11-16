@@ -1,10 +1,13 @@
 // Page protection and faults: each argument names one case; the program prints what it saw and may die
 // of the fault the case provokes.
 
+#define _GNU_SOURCE
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static volatile char sink;
@@ -92,6 +95,37 @@ int main(int argc, char **argv) {
         printf("ran\n");
         mprotect(code, page, PROT_READ);
         ((void (*)(void))code)();
+    } else if (!strcmp(kind, "wrap")) {
+        // Lengths in the last page wrap to 0 when rounded up; the others overflow the address. Raw
+        // calls, since the C library refuses some lengths itself.
+        char *p = mmap(0, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        unsigned char vector[2];
+        long lengths[] = {-1, -4095, -4096, -8192, 1L << 62};
+        for (int i = 0; i < 5; i++) {
+            long n = lengths[i];
+            printf("length %ld:", n);
+            printf(" msync %ld", syscall(SYS_msync, p, n, MS_ASYNC) ? -errno : 0L);
+            printf(" msync_invalidate %ld", syscall(SYS_msync, p, n, MS_SYNC | MS_INVALIDATE) ? -errno : 0L);
+            printf(" mlock %ld", syscall(SYS_mlock, p, n) ? -errno : 0L);
+            printf(" mlock_offset %ld", syscall(SYS_mlock, p + 1, n) ? -errno : 0L);
+            printf(" mlock2 %ld", syscall(SYS_mlock2, p, n, 1) ? -errno : 0L);
+            printf(" munlock %ld", syscall(SYS_munlock, p, n) ? -errno : 0L);
+            printf(" mprotect %ld", syscall(SYS_mprotect, p, n, PROT_READ) ? -errno : 0L);
+            printf(" madvise %ld", syscall(SYS_madvise, p, n, MADV_NORMAL) ? -errno : 0L);
+            printf(" mincore %ld", syscall(SYS_mincore, p, n, vector) ? -errno : 0L);
+            printf(" munmap %ld", syscall(SYS_munmap, p, n) ? -errno : 0L);
+            long mapped = syscall(SYS_mmap, 0, n, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            printf(" mmap %ld", mapped == -1 ? -errno : 0L);
+            long moved = syscall(SYS_mremap, p, n, page, 0, 0);
+            printf(" mremap_old %ld", moved == -1 ? -errno : (long)(moved == (long)p));
+            moved = syscall(SYS_mremap, p, page, n, MREMAP_MAYMOVE, 0);
+            printf(" mremap_new %ld", moved == -1 ? -errno : (long)(moved == (long)p));
+            printf("\n");
+        }
+        printf("restore %d\n", mprotect(p, 2 * page, PROT_READ | PROT_WRITE));
+        p[0] = 1;
+        p[page] = 2;
+        printf("still mapped %d %d\n", p[0], p[page]);
     }
     printf("end\n");
     return 0;

@@ -1126,11 +1126,23 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     };
     let play =
         |word: u64| PLAY + ((word % (PLAY_PAGES + 2)) * 4096) + if word >> 60 == 0 { 1 } else { 0 };
-    // Lengths stay below the program's own mappings, which lie higher here (in a 4 GiB address
-    // space) than in the reference.
+    // Lengths that reach memory stay below the program's own mappings, which lie higher here (in a
+    // 4 GiB address space) than in the reference. The last three reach none: rounded up to a page
+    // they wrap to 0 or overflow the address.
     let play_length = |word: u64| {
         pick(
-            &[0u64, 1, 4096, 8192, 3 * 4096, PLAY_PAGES * 4096, 1 << 28],
+            &[
+                0u64,
+                1,
+                4096,
+                8192,
+                3 * 4096,
+                PLAY_PAGES * 4096,
+                1 << 28,
+                u64::MAX,
+                u64::MAX - 4094,
+                u64::MAX - 8191,
+            ],
             word,
         )
     };
