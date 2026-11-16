@@ -60,6 +60,12 @@ static void wait_word(volatile int *at, int value) {
 
 static void wake_word(volatile int *at) { syscall(SYS_futex, at, FUTEX_WAKE, 1); }
 
+// Waits until a thread id address is cleared, each wait on the value just read.
+static void wait_cleared(volatile int *at) {
+    int value;
+    while ((value = *at) != 0) syscall(SYS_futex, at, FUTEX_WAIT, value, NULL);
+}
+
 static short ready(int fd) {
     struct pollfd p = {fd, POLLIN | POLLOUT | POLLPRI, 0};
     int n = poll(&p, 1, 0);
@@ -233,8 +239,7 @@ int main(int argc, char **argv) {
            syscall(SYS_pidfd_open, thread, 0) < 0 ? errno : 0);
     turn = 1;
     wake_word(&turn);
-    wait_word(&child_tid, child_tid);
-    while (child_tid != 0) wait_word(&child_tid, child_tid);
+    wait_cleared(&child_tid);
     // Its number is cleared before Linux lets go of it; it is gone when its directory is.
     char task[64];
     snprintf(task, sizeof task, "/proc/self/task/%ld", thread);

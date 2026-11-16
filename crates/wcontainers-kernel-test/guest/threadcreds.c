@@ -53,7 +53,9 @@ static void wait_word(volatile int *at, int value) {
 static void wake_word(volatile int *at) { syscall(SYS_futex, at, FUTEX_WAKE, 1); }
 
 static void join(void) {
-    while (child_tid != 0) wait_word(&child_tid, child_tid);
+    // Each wait is on the value just read, so a clear in between is not missed.
+    int value;
+    while ((value = child_tid) != 0) syscall(SYS_futex, &child_tid, FUTEX_WAIT, value, NULL);
 }
 
 static void start(int (*fn)(void), long flags) {
