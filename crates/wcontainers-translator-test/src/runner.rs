@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use wasmtime::{
     Caller, Config, Engine, Extern, Global, Instance, Linker, Memory, MemoryType, Module,
@@ -93,11 +93,7 @@ impl Paused<'_, '_> {
 
     /// The lookup table forgets the piece for an address, as if none had been made yet.
     pub fn forget(&mut self, address: u64) {
-        let table = lookup_table(self.caller);
-        let slot = (address - self.caller.data().table_base) / 4;
-        table
-            .set(&mut *self.caller, slot, wasmtime::Ref::Func(None))
-            .expect("a slot of the table");
+        set_slot(self.caller.data(), address, 0);
     }
 }
 
@@ -135,8 +131,12 @@ pub struct Host {
     /// The pause function asked for the stack to be lost: the thread leaves and carries on in a fresh thread
     /// instance.
     lose_stack: bool,
-    /// Lookup table entries of the thread module.
+    /// Entries of the array of slots: the instructions from `table_base` it covers.
     slots: u32,
+    /// Where the array of slots is in the state memory.
+    slots_at: u32,
+    /// The lookup table's next free slot.
+    next_slot: u32,
     state: Option<SharedMemory>,
     /// The program break the stand-in reports: the page after the highest blob.
     program_break: u64,
@@ -166,15 +166,12 @@ fn engine() -> Engine {
     ENGINE.get_or_init(new_engine).clone()
 }
 
-/// The thread module for a table size, compiled once.
-fn thread_module(engine: &Engine, slots: u32) -> Module {
-    static MODULES: OnceLock<Mutex<HashMap<u32, Module>>> = OnceLock::new();
-    let mut modules = MODULES.get_or_init(Default::default).lock().unwrap();
-    modules
-        .entry(slots)
-        .or_insert_with(|| {
-            Module::new(engine, wcontainers_translator::thread_module(slots))
-                .expect("thread module")
+/// The thread module, compiled once.
+fn thread_module(engine: &Engine) -> Module {
+    static MODULE: OnceLock<Module> = OnceLock::new();
+    MODULE
+        .get_or_init(|| {
+            Module::new(engine, wcontainers_translator::thread_module()).expect("thread module")
         })
         .clone()
 }
@@ -225,8 +222,8 @@ pub fn compile_time(wasm: &[u8]) -> std::time::Duration {
 }
 
 impl Machine {
-    /// A machine with `memory_bytes` of guest memory, nothing allowed anywhere, and a lookup table of
-    /// `slots` entries starting at guest address `table_base`.
+    /// A machine with `memory_bytes` of guest memory, nothing allowed anywhere, and an array of slots of
+    /// `slots` entries, for the instructions from guest address `table_base`.
     pub fn new(memory_bytes: u64, table_base: u64, slots: u32, syscalls: Syscalls) -> Self {
         let engine = engine();
         // The table covers the whole memory, and one more byte, always zero, follows it.
@@ -252,6 +249,8 @@ impl Machine {
                 placed: Vec::new(),
                 lose_stack: false,
                 slots,
+                slots_at: 0,
+                next_slot: contract::EXACT_SLOT as u32 + 1,
                 state: None,
                 program_break: 0,
                 engine: engine.clone(),
@@ -272,13 +271,15 @@ impl Machine {
         let pages = memory_bytes.div_ceil(65536);
         let memory =
             Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).expect("memory");
-        let state_pages = (u64::from(PERMISSIONS_AT) + permission_pages + 1).div_ceil(65536) as u32;
+        let slots_at = (u64::from(PERMISSIONS_AT) + permission_pages + 1).next_multiple_of(4);
+        let state_pages = (slots_at + 4 * u64::from(slots)).div_ceil(65536) as u32;
         let state = SharedMemory::new(&engine, MemoryType::shared(state_pages, state_pages))
             .expect("state memory");
 
         let host = store.data_mut();
         host.state = Some(state.clone());
         host.memory = Some(memory);
+        host.slots_at = slots_at as u32;
         let run = thread_instance(&mut store);
         Machine {
             store,
@@ -295,11 +296,17 @@ impl Machine {
         let host = self.store.data_mut();
         host.exact_pieces.clear();
         host.placed.clear();
+        host.next_slot = contract::EXACT_SLOT as u32 + 1;
+        let entries = host.slots as usize * 4;
+        write_shared(
+            host.state.as_ref().unwrap(),
+            host.slots_at as usize,
+            &vec![0; entries],
+        );
         let loads = std::mem::take(&mut host.loads);
-        let mut pieces: Vec<HashMap<u64, wasmtime::Func>> = Vec::new();
+        let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
         for load in &loads {
-            instantiate(&mut self.store, load, None);
-            pieces.push(placed_pieces(&mut self.store, load));
+            pieces.push(instantiate(&mut self.store, load, false));
         }
         let picks = self.store.data().picks.clone();
         apply_picks(&mut self.store, &pieces, &picks);
@@ -319,7 +326,7 @@ impl Machine {
         use proptest::prelude::RngExt;
         use proptest::test_runner::{RngAlgorithm, TestRng};
         self.place(bytes, code.clone(), load_address);
-        let mut pieces: Vec<HashMap<u64, wasmtime::Func>> = Vec::new();
+        let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
         for (look_ahead, starts) in translations {
             let load = translate_load(
                 &mut self.store,
@@ -329,8 +336,7 @@ impl Machine {
                 *look_ahead,
                 Omit::default(),
             );
-            instantiate(&mut self.store, &load, None);
-            pieces.push(placed_pieces(&mut self.store, &load));
+            pieces.push(instantiate(&mut self.store, &load, false));
             self.store.data_mut().loads.push(load);
         }
         let mut key = [0u8; 32];
@@ -416,7 +422,7 @@ impl Machine {
             look_ahead,
             omit,
         );
-        instantiate(&mut self.store, &load, None);
+        instantiate(&mut self.store, &load, false);
         self.store.data_mut().loads.push(load);
     }
 
@@ -442,7 +448,7 @@ impl Machine {
         )
         .expect("translate");
         let load = compile(&host.engine, load_address, translation);
-        instantiate(&mut self.store, &load, None);
+        instantiate(&mut self.store, &load, false);
         self.store.data_mut().loads.push(load);
     }
 
@@ -465,7 +471,7 @@ impl Machine {
             .map(|m| m.image_range().end as usize - m.image_range().start as usize)
             .sum();
         let started = Instant::now();
-        instantiate(&mut self.store, &load, None);
+        instantiate(&mut self.store, &load, false);
         let instantiated = started.elapsed();
         self.store.data_mut().loads.push(load);
         (compiled, instantiated, machine_code)
@@ -779,12 +785,12 @@ fn hooks(linker: &mut Linker<Host>) {
             |mut caller: Caller<'_, Host>, address: i64, exact: i32| -> i32 {
                 let address = address as u64;
                 let table = lookup_table(&mut caller);
-                let last = table.size(&caller) - 1;
+                let exact_slot = contract::EXACT_SLOT as u64;
                 if exact == 1
                     && let Some(&piece) = caller.data().exact_pieces.get(&address)
                 {
                     table
-                        .set(&mut caller, last, wasmtime::Ref::Func(Some(piece)))
+                        .set(&mut caller, exact_slot, wasmtime::Ref::Func(Some(piece)))
                         .unwrap();
                     return 1;
                 }
@@ -803,9 +809,8 @@ fn hooks(linker: &mut Linker<Host>) {
                     );
                     return 0;
                 };
-                // The table has slots only for the addresses it covers; the runner cannot run code past them.
-                let table_base = caller.data().table_base;
-                let covered = table_base..table_base + 4 * last;
+                // The array has slots only for the addresses it covers; the runner cannot run code past them.
+                let covered = covered(caller.data());
                 if !covered.contains(&address) {
                     stop(&mut caller, Stopped::NoCode(address));
                     return 0;
@@ -829,28 +834,24 @@ fn hooks(linker: &mut Linker<Host>) {
                     .expect("code inside guest memory");
                 let offset = address - run.start;
                 if exact == 1 {
-                    let slot_base = (last as i64 - (offset / 4) as i64) as i32;
                     let one = LookAhead::Bounded(1);
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, one, Some(slot_base));
-                    let Some(wasmtime::Ref::Func(Some(piece))) = table.get(&mut caller, last)
+                    instantiate_code(&mut caller, code, offset, one, true);
+                    let Some(wasmtime::Ref::Func(Some(piece))) = table.get(&mut caller, exact_slot)
                     else {
-                        panic!("the piece is in the last slot");
+                        panic!("the piece is in the exact slot");
                     };
                     caller.data_mut().exact_pieces.insert(address, piece);
                 } else {
-                    // Code made at run time never takes the place of a piece the table holds.
-                    let slot = (address - table_base) / 4;
-                    assert!(
-                        matches!(
-                            table.get(&mut caller, slot),
-                            Some(wasmtime::Ref::Func(None))
-                        ),
+                    // Code made at run time never takes the place of a piece the lookup finds.
+                    assert_eq!(
+                        slot(caller.data(), address),
+                        0,
                         "code asked for at {address:#x}, which has a piece"
                     );
                     let look_ahead = (caller.data_mut().run_time)();
                     let code = (&bytes[..], run.start);
-                    instantiate_code(&mut caller, code, offset, look_ahead, None);
+                    instantiate_code(&mut caller, code, offset, look_ahead, false);
                 }
                 let time = start.elapsed();
                 slow_path(
@@ -982,22 +983,40 @@ fn lookup_table(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> wasmtim
     table
 }
 
-/// `ic ivau`: the stand-in forgets the pieces the lookup table holds for the 64 byte line, so the next jump
-/// there translates the code again.
+/// `ic ivau`: the stand-in forgets the pieces the lookup finds for the 64 byte line, so the next jump there
+/// translates the code again.
 fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
     let line = address & !63;
-    let table_base = caller.data().table_base;
-    let table = lookup_table(caller);
     for at in (line..line + 64).step_by(4) {
         caller.data_mut().exact_pieces.remove(&at);
-        let Some(slot) = at.checked_sub(table_base).map(|o| o / 4) else {
-            continue;
-        };
-        if slot < table.size(&*caller) - 1 {
-            table
-                .set(&mut *caller, slot, wasmtime::Ref::Func(None))
-                .expect("a slot of the table");
-        }
+        set_slot(caller.data(), at, 0);
+    }
+}
+
+/// The guest addresses the array of slots covers.
+fn covered(host: &Host) -> Range<u64> {
+    host.table_base..host.table_base + 4 * u64::from(host.slots)
+}
+
+/// Where in the state memory the array holds the slot for an address, if it covers it.
+fn slot_entry(host: &Host, address: u64) -> Option<usize> {
+    (covered(host).contains(&address) && address.is_multiple_of(4))
+        .then(|| host.slots_at as usize + (address - host.table_base) as usize)
+}
+
+/// The lookup table slot of the piece for an address, 0 for none.
+fn slot(host: &Host, address: u64) -> u32 {
+    slot_entry(host, address).map_or(0, |at| {
+        let mut bytes = [0; 4];
+        read_shared(host.state.as_ref().unwrap(), at, &mut bytes);
+        u32::from_le_bytes(bytes)
+    })
+}
+
+/// Give an address the piece in a lookup table slot, 0 for none.
+fn set_slot(host: &Host, address: u64, slot: u32) {
+    if let Some(at) = slot_entry(host, address) {
+        write_shared(host.state.as_ref().unwrap(), at, &slot.to_le_bytes());
     }
 }
 
@@ -1006,6 +1025,8 @@ fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
 struct Load {
     load_address: u64,
     modules: Vec<Module>,
+    /// The blob offsets of each module's pieces, in slot order.
+    module_pieces: Vec<Vec<u64>>,
     pieces: Vec<u64>,
 }
 
@@ -1029,6 +1050,11 @@ fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load
     Load {
         load_address,
         pieces: translation.pieces().collect(),
+        module_pieces: translation
+            .modules
+            .iter()
+            .map(|m| m.pieces.clone())
+            .collect(),
         modules: translation
             .modules
             .iter()
@@ -1043,76 +1069,59 @@ fn instantiate_code(
     code: (&[u8], u64),
     start: u64,
     look_ahead: LookAhead,
-    slot_base: Option<i32>,
+    exact: bool,
 ) {
     let range = 0..code.0.len() as u64;
     let load = translate_load(store, code, range, &[start], look_ahead, Omit::default());
-    instantiate(store, &load, slot_base);
+    instantiate(store, &load, exact);
 }
 
-/// The pieces a load put in the table, by address, as the table holds them now.
-fn placed_pieces(
-    store: &mut impl wasmtime::AsContextMut<Data = Host>,
-    load: &Load,
-) -> HashMap<u64, wasmtime::Func> {
-    let mut store = store.as_context_mut();
-    let table = lookup_table(&mut store);
-    let host = store.data();
-    let load_address = load.load_address;
-    let table_base = host.table_base;
-    let mut pieces = HashMap::new();
-    for offset in &load.pieces {
-        let address = load_address + offset;
-        if let Some(wasmtime::Ref::Func(Some(f))) =
-            table.get(&mut store, (address - table_base) / 4)
-        {
-            pieces.insert(address, f);
-        }
-    }
-    pieces
-}
-
-/// Give each address picked the piece of the load picked for it.
+/// Give each address picked the piece of the load picked for it, from each load's pieces by address and
+/// their slots.
 fn apply_picks(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
-    pieces: &[HashMap<u64, wasmtime::Func>],
+    pieces: &[HashMap<u64, u32>],
     picks: &[(u64, usize)],
 ) {
-    let mut store = store.as_context_mut();
-    let table = lookup_table(&mut store);
-    let table_base = store.data().table_base;
+    let host = store.as_context().data();
     for &(address, load) in picks {
-        let piece = pieces[load][&address];
-        table
-            .set(
-                &mut store,
-                (address - table_base) / 4,
-                wasmtime::Ref::Func(Some(piece)),
-            )
-            .unwrap();
+        set_slot(host, address, pieces[load][&address]);
     }
 }
 
-/// Instantiate a code module, adding its pieces to the lookup table at their addresses, or from
-/// `slot_base` when given.
+/// Instantiate a load's code modules, putting their pieces in new slots of the lookup table and giving each
+/// piece's address its slot. Returns the slot of each piece, by address. With `exact`, the load is one
+/// piece, put in [`contract::EXACT_SLOT`] and given to no address.
 fn instantiate(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
     load: &Load,
-    slot_base: Option<i32>,
-) {
+    exact: bool,
+) -> HashMap<u64, u32> {
     let mut store = store.as_context_mut();
+    let table = lookup_table(&mut store);
     let host = store.data();
     let thread = host.thread.unwrap();
     let memory = host.memory.unwrap();
     let state = host.state.clone().unwrap();
     let load_address = load.load_address;
-    let slot_base = slot_base.unwrap_or(own_slot_base(load_address, host.table_base));
-    if slot_base_is_own(slot_base, load_address, host.table_base) {
+    let first = if exact {
+        contract::EXACT_SLOT as u32
+    } else {
+        host.next_slot
+    };
+    if !exact {
+        let pieces = load.pieces.len() as u32;
+        let more = (first + pieces).saturating_sub(table.size(&store) as u32);
+        table
+            .grow(&mut store, u64::from(more), wasmtime::Ref::Func(None))
+            .expect("a lookup table that grows");
+        store.data_mut().next_slot = first + pieces;
         let placed: Vec<u64> = load.pieces.iter().map(|o| load_address + o).collect();
         store.data_mut().placed.extend(placed);
     }
 
     let mut linker = Linker::new(store.engine());
+    linker.allow_shadowing(true);
     hooks(&mut linker);
     linker
         .define(&store, contract::ENV, contract::MEMORY, memory)
@@ -1123,7 +1132,6 @@ fn instantiate(
     let pages = memory.size(&store);
     for (name, value) in [
         (contract::LOAD_ADDRESS, Val::I64(load_address as i64)),
-        (contract::SLOT_BASE, Val::I32(slot_base)),
         (
             contract::TABLE_BASE,
             Val::I64(store.data().table_base as i64),
@@ -1133,6 +1141,11 @@ fn instantiate(
         (
             contract::PERMISSION_PAGES,
             Val::I64((pages * 65536 / PAGE_SIZE) as i64),
+        ),
+        (contract::SLOTS, Val::I32(store.data().slots_at as i32)),
+        (
+            contract::SLOTS_COVER,
+            Val::I64(4 * i64::from(store.data().slots)),
         ),
     ] {
         let ty = wasmtime::GlobalType::new(value.ty(&store).unwrap(), wasmtime::Mutability::Const);
@@ -1148,31 +1161,35 @@ fn instantiate(
             .define(&store, contract::THREAD, &name, item)
             .unwrap();
     }
-    for module in &load.modules {
+    let mut slot = first;
+    let mut slots = HashMap::new();
+    for (module, pieces) in load.modules.iter().zip(&load.module_pieces) {
+        let base = wasmtime::GlobalType::new(wasmtime::ValType::I32, wasmtime::Mutability::Const);
+        let base = Global::new(&mut store, base, Val::I32(slot as i32)).unwrap();
+        linker
+            .define(&store, contract::ENV, contract::SLOT_BASE, base)
+            .unwrap();
         linker
             .instantiate(&mut store, module)
             .expect("code instance");
+        for offset in pieces {
+            slots.insert(load_address + offset, slot);
+            if !exact {
+                set_slot(store.data(), load_address + offset, slot);
+            }
+            slot += 1;
+        }
     }
-}
-
-/// Whether a slot base puts pieces at their own addresses.
-fn slot_base_is_own(slot_base: i32, load_address: u64, table_base: u64) -> bool {
-    slot_base == own_slot_base(load_address, table_base)
-}
-
-/// The slot base that puts a blob's pieces at their own addresses; below zero when the table starts past the
-/// blob's start.
-fn own_slot_base(load_address: u64, table_base: u64) -> i32 {
-    (load_address.wrapping_sub(table_base) as i64 / 4) as i32
+    slots
 }
 
 /// Make a thread instance, with an empty lookup table, for the machine's memories; its run function.
 fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
     let engine = store.engine().clone();
     let host = store.data();
-    let module = thread_module(&engine, host.slots);
+    let module = thread_module(&engine);
     let state = host.state.clone().unwrap();
-    let table_base = host.table_base;
+    let (table_base, slots_at, slots) = (host.table_base, host.slots_at, host.slots);
     let mut linker = Linker::new(&engine);
     hooks(&mut linker);
     linker
@@ -1183,19 +1200,15 @@ fn thread_instance(store: &mut Store<Host>) -> TypedFunc<(), ()> {
         let ty = wasmtime::GlobalType::new(ty, wasmtime::Mutability::Const);
         Global::new(&mut *store, ty, value).unwrap()
     };
-    let table_base_global = constant(store, Val::I64(table_base as i64));
-    let block_global = constant(store, Val::I32(BLOCK_AT as i32));
-    linker
-        .define(
-            &*store,
-            contract::ENV,
-            contract::TABLE_BASE,
-            table_base_global,
-        )
-        .unwrap();
-    linker
-        .define(&*store, contract::ENV, contract::THREAD_BLOCK, block_global)
-        .unwrap();
+    for (name, value) in [
+        (contract::TABLE_BASE, Val::I64(table_base as i64)),
+        (contract::THREAD_BLOCK, Val::I32(BLOCK_AT as i32)),
+        (contract::SLOTS, Val::I32(slots_at as i32)),
+        (contract::SLOTS_COVER, Val::I64(4 * i64::from(slots))),
+    ] {
+        let global = constant(store, value);
+        linker.define(&*store, contract::ENV, name, global).unwrap();
+    }
     let thread = linker
         .instantiate(&mut *store, &module)
         .expect("thread instance");

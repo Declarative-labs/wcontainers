@@ -134,10 +134,10 @@ pub extern "C" fn float_reason(operation: i32, fpcr: u32, tracking: u32) -> u32 
     u32::from(kind.fused() && fpcr == 0 && tracking == 0)
 }
 
-/// The thread module with a lookup table of `slots` entries. Returns its length.
+/// The thread module. Returns its length.
 #[unsafe(no_mangle)]
-pub extern "C" fn thread_module(slots: u32) -> i32 {
-    answer(wcontainers_translator::thread_module(slots))
+pub extern "C" fn thread_module() -> i32 {
+    answer(wcontainers_translator::thread_module())
 }
 
 /// Everything the runner must agree on with the translator and the shared crate, as JSON. Returns its
@@ -164,6 +164,10 @@ pub extern "C" fn contract() -> i32 {
         "loadAddress": LOAD_ADDRESS,
         "slotBase": SLOT_BASE,
         "tableBase": TABLE_BASE,
+        "slots": SLOTS,
+        "slotsCover": SLOTS_COVER,
+        "exactSlot": EXACT_SLOT,
+        "descriptionSection": DESCRIPTION_SECTION,
         "threadBlock": THREAD_BLOCK,
         "permissions": PERMISSIONS,
         "permissionPages": PERMISSION_PAGES,

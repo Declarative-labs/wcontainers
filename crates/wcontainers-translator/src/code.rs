@@ -69,7 +69,7 @@ pub struct Translation {
 /// One code module and where its pieces start.
 pub struct CodeModule {
     pub wasm: Vec<u8>,
-    /// Blob offsets of the pieces the module puts in the lookup table, in order.
+    /// Blob offsets of the pieces the module puts in the lookup table, in order from its slot base.
     pub pieces: Vec<u64>,
 }
 
@@ -165,10 +165,32 @@ pub(crate) const G_TABLE_BASE: u32 = 2;
 pub(crate) const G_THREAD_BLOCK: u32 = 3;
 pub(crate) const G_PERMISSIONS: u32 = 4;
 pub(crate) const G_PERMISSION_PAGES: u32 = 5;
+pub(crate) const G_SLOTS: u32 = 6;
+pub(crate) const G_SLOTS_COVER: u32 = 7;
+/// How many values a code module imports.
+pub(crate) const IMPORTED_VALUES: usize = 8;
 
-/// Each of the six imported values above is copied into a global of the module's own, at this index plus
-/// the import's: wasmtime reads an imported global through a pointer, and a module's own directly.
-pub(crate) const G_OWN: u32 = 6;
+/// Each of the imported values above is copied into a global of the module's own, at this index plus the
+/// import's: wasmtime reads an imported global through a pointer, and a module's own directly.
+pub(crate) const G_OWN: u32 = IMPORTED_VALUES as u32;
+
+/// The type of each imported value.
+pub(crate) fn imported_value_type(global: u32) -> ValType {
+    match global {
+        G_LOAD_ADDRESS | G_TABLE_BASE | G_PERMISSION_PAGES | G_SLOTS_COVER => ValType::I64,
+        _ => ValType::I32,
+    }
+}
+
+/// Where a code module's lookups find the array of slots.
+pub(crate) fn slots(table_base: Fixed, at: Fixed, cover: Fixed) -> crate::thread::Slots {
+    crate::thread::Slots {
+        memory: MEMORY_STATE,
+        table_base: table_base.value(),
+        at: at.value(),
+        cover: cover.value(),
+    }
+}
 
 pub(crate) const MEMORY_STATE: u32 = 1;
 
@@ -342,11 +364,6 @@ fn modules(
 
 /// A code module holding these units, the table's pieces at `entries`.
 fn module(blob: &[u8], look_ahead: LookAhead, entries: &[u64], units: Vec<Unit>) -> CodeModule {
-    let index: BTreeMap<u64, u32> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, &offset)| (offset, F_FIRST_PIECE + i as u32))
-        .collect();
     let mut module = Module::new();
     module.section(&types());
     module.section(&imports());
@@ -375,7 +392,7 @@ fn module(blob: &[u8], look_ahead: LookAhead, entries: &[u64], units: Vec<Unit>)
     }
     module.section(&functions);
     module.section(&own_globals());
-    module.section(&elements(&index));
+    module.section(&elements(entries.len() as u32));
     module.section(&code_section);
     module.section(&description(blob, look_ahead, entries.iter()));
     CodeModule {
@@ -485,10 +502,14 @@ pub(crate) enum Fixed {
 
 impl Fixed {
     pub(crate) fn push(self, s: &mut InstructionSink<'_>) {
+        self.value().push(s);
+    }
+
+    fn value(self) -> crate::thread::Value {
         match self {
-            Fixed::Global(g) => s.global_get(G_OWN + g),
-            Fixed::Local(l) => s.local_get(l),
-        };
+            Fixed::Global(g) => crate::thread::Value::Global(G_OWN + g),
+            Fixed::Local(l) => crate::thread::Value::Local(l),
+        }
     }
 }
 
@@ -686,15 +707,20 @@ pub(crate) fn imports() -> ImportSection {
             shared: false,
         })
     };
-    for (name, ty) in [
-        (LOAD_ADDRESS, ValType::I64),
-        (SLOT_BASE, ValType::I32),
-        (TABLE_BASE, ValType::I64),
-        (THREAD_BLOCK, ValType::I32),
-        (PERMISSIONS, ValType::I32),
-        (PERMISSION_PAGES, ValType::I64),
-    ] {
-        imports.import(ENV, name, global(ty));
+    for (g, name) in [
+        LOAD_ADDRESS,
+        SLOT_BASE,
+        TABLE_BASE,
+        THREAD_BLOCK,
+        PERMISSIONS,
+        PERMISSION_PAGES,
+        SLOTS,
+        SLOTS_COVER,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        imports.import(ENV, name, global(imported_value_type(g as u32)));
     }
     imports.import(
         THREAD,
@@ -721,16 +747,9 @@ pub(crate) fn imports() -> ImportSection {
 /// The module's own copies of the imported values.
 fn own_globals() -> GlobalSection {
     let mut globals = GlobalSection::new();
-    for (g, ty) in [
-        (G_LOAD_ADDRESS, ValType::I64),
-        (G_SLOT_BASE, ValType::I32),
-        (G_TABLE_BASE, ValType::I64),
-        (G_THREAD_BLOCK, ValType::I32),
-        (G_PERMISSIONS, ValType::I32),
-        (G_PERMISSION_PAGES, ValType::I64),
-    ] {
+    for g in 0..G_OWN {
         let ty = GlobalType {
-            val_type: ty,
+            val_type: imported_value_type(g),
             mutable: false,
             shared: false,
         };
@@ -776,7 +795,12 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
         s.local_get(TARGET);
     });
     s.loop_(BlockType::Empty);
-    crate::thread::lookup(&mut s, TARGET, G_OWN + G_TABLE_BASE, OFFSET, PIECE);
+    let slots = slots(
+        Fixed::Global(G_TABLE_BASE),
+        Fixed::Global(G_SLOTS),
+        Fixed::Global(G_SLOTS_COVER),
+    );
+    crate::thread::lookup(&mut s, TARGET, slots, OFFSET, PIECE);
     s.local_get(PIECE).ref_is_null().if_(BlockType::Empty);
     save_passed(&mut s, BLOCK);
     crate::thread::misaligned_code(&mut s, TARGET, F_TRAP);
@@ -829,8 +853,11 @@ pub(crate) fn exact() -> wasm_encoder::Function {
     for i in 0..PARAMETERS {
         s.local_get(i);
     }
-    crate::thread::last_slot(&mut s);
-    s.table_get(0).ref_as_non_null().return_call_ref(0).end();
+    s.i32_const(EXACT_SLOT)
+        .table_get(0)
+        .ref_as_non_null()
+        .return_call_ref(0)
+        .end();
     f
 }
 
@@ -842,29 +869,17 @@ pub(crate) fn unwinder() -> wasm_encoder::Function {
     f
 }
 
-/// Put every piece in the lookup table at instantiation, one segment per run of consecutive pieces.
-pub(crate) fn elements(index: &BTreeMap<u64, u32>) -> ElementSection {
+/// Put every piece in the lookup table at instantiation, in order from the slot base.
+pub(crate) fn elements(pieces: u32) -> ElementSection {
     let mut elements = ElementSection::new();
-    let mut runs: Vec<(u64, Vec<u32>)> = Vec::new();
-    for (&offset, &function) in index {
-        match runs.last_mut() {
-            Some((start, run)) if *start + 4 * run.len() as u64 == offset => run.push(function),
-            _ => runs.push((offset, vec![function])),
-        }
-    }
-    for (start, run) in runs {
-        let at = ConstExpr::extended([
-            wasm_encoder::Instruction::GlobalGet(G_SLOT_BASE),
-            wasm_encoder::Instruction::I32Const((start / 4) as i32),
-            wasm_encoder::Instruction::I32Add,
-        ]);
-        let refs: Vec<ConstExpr> = run.into_iter().map(ConstExpr::ref_func).collect();
-        elements.active(
-            Some(0),
-            &at,
-            Elements::Expressions(piece_ref(), refs.into()),
-        );
-    }
+    let refs: Vec<ConstExpr> = (0..pieces)
+        .map(|i| ConstExpr::ref_func(F_FIRST_PIECE + i))
+        .collect();
+    elements.active(
+        Some(0),
+        &ConstExpr::global_get(G_SLOT_BASE),
+        Elements::Expressions(piece_ref(), refs.into()),
+    );
     elements
 }
 

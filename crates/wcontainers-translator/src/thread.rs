@@ -42,8 +42,9 @@ pub(crate) fn memarg(memory: u32, offset: u64, align: u32) -> MemArg {
     }
 }
 
-/// Build the thread module, with a lookup table of `slots` entries for addresses and the last slot.
-pub fn thread_module(slots: u32) -> Vec<u8> {
+/// Build the thread module. Its lookup table starts with [`EXACT_SLOT`] and the slot before it; the runner
+/// grows it for the pieces it adds.
+pub fn thread_module() -> Vec<u8> {
     let mut types = TypeSection::new();
     piece_type(&mut types); // 0
     types
@@ -58,6 +59,8 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     const TRAP: u32 = 2;
     const TABLE_BASE_G: u32 = 0;
     const BLOCK: u32 = 1;
+    const SLOTS_G: u32 = 2;
+    const SLOTS_COVER_G: u32 = 3;
     // The state memory is this module's only memory.
     const STATE_M: u32 = 0;
 
@@ -75,13 +78,15 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     };
     imports.import(ENV, TABLE_BASE, constant(ValType::I64));
     imports.import(ENV, THREAD_BLOCK, constant(ValType::I32));
+    imports.import(ENV, SLOTS, constant(ValType::I32));
+    imports.import(ENV, SLOTS_COVER, constant(ValType::I64));
 
     let mut tables = TableSection::new();
     tables.table(TableType {
         element_type: piece_ref(),
         table64: false,
-        minimum: u64::from(slots) + 1,
-        maximum: Some(u64::from(slots) + 1),
+        minimum: EXACT_SLOT as u64 + 1,
+        maximum: None,
         shared: false,
     });
     let mut tags = TagSection::new();
@@ -100,7 +105,7 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
         (1, ValType::Ref(piece_ref())),
         (2, ValType::I32),
     ]);
-    // `exact`: the piece to call next is the one in the last slot.
+    // `exact`: the piece to call next is the one in the exact slot.
     let (pc, offset, piece, payload, exact) = (0, 1, 2, 3, 4);
     let mut s = f.instructions();
     s.loop_(BlockType::Empty);
@@ -108,13 +113,18 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     s.try_table(BlockType::Empty, [Catch::One { tag: 0, label: 0 }]);
     s.local_get(exact).if_(BlockType::Empty);
     s.i32_const(0).local_set(exact);
-    last_slot(&mut s);
-    s.table_get(0).local_set(piece);
+    s.i32_const(EXACT_SLOT).table_get(0).local_set(piece);
     s.else_();
     s.global_get(BLOCK);
     Slot::Pc.load_from(&mut s, STATE_M);
     s.local_set(pc);
-    lookup(&mut s, pc, TABLE_BASE_G, offset, piece);
+    let slots = Slots {
+        memory: STATE_M,
+        table_base: Value::Global(TABLE_BASE_G),
+        at: Value::Global(SLOTS_G),
+        cover: Value::Global(SLOTS_COVER_G),
+    };
+    lookup(&mut s, pc, slots, offset, piece);
     s.local_get(piece).ref_is_null().if_(BlockType::Empty);
     misaligned_code(&mut s, pc, TRAP);
     s.return_().end();
@@ -204,11 +214,6 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     module.finish()
 }
 
-/// Push the index of the lookup table's last slot, which holds a piece for no address.
-pub(crate) fn last_slot(s: &mut wasm_encoder::InstructionSink<'_>) {
-    s.table_size(0).i32_const(1).i32_sub();
-}
-
 /// Open an `if` that is entered, after the trap hook has been called with an alignment fault, when the
 /// i64 local `address` (where control is going, already in `pc`) is not a multiple of 4. The caller ends
 /// it by leaving.
@@ -224,35 +229,57 @@ pub(crate) fn misaligned_code(s: &mut wasm_encoder::InstructionSink<'_>, address
         .call(trap);
 }
 
-/// Leave the piece for the guest address in i64 local `pc` in local `piece`, or null if there is none.
-/// `table_base` is the global holding [`TABLE_BASE`]; `offset` is an i64 scratch local.
+/// A global or a local.
+#[derive(Clone, Copy)]
+pub(crate) enum Value {
+    Global(u32),
+    Local(u32),
+}
+
+impl Value {
+    pub(crate) fn push(self, s: &mut wasm_encoder::InstructionSink<'_>) {
+        match self {
+            Value::Global(g) => s.global_get(g),
+            Value::Local(l) => s.local_get(l),
+        };
+    }
+}
+
+/// Where a lookup finds the array of slots: the memory it is in, and the values of [`TABLE_BASE`],
+/// [`SLOTS`] and [`SLOTS_COVER`].
+#[derive(Clone, Copy)]
+pub(crate) struct Slots {
+    pub(crate) memory: u32,
+    pub(crate) table_base: Value,
+    pub(crate) at: Value,
+    pub(crate) cover: Value,
+}
+
+/// Leave the piece for the guest address in i64 local `pc` in local `piece`, or null if there is none:
+/// the array of slots gives its slot in the lookup table. `offset` is an i64 scratch local.
 pub(crate) fn lookup(
     s: &mut wasm_encoder::InstructionSink<'_>,
     pc: u32,
-    table_base: u32,
+    slots: Slots,
     offset: u32,
     piece: u32,
 ) {
     s.ref_null(HeapType::Concrete(0)).local_set(piece);
-    s.local_get(pc)
-        .global_get(table_base)
-        .i64_sub()
+    s.local_get(pc);
+    slots.table_base.push(s);
+    s.i64_sub()
         .local_tee(offset)
         .i64_const(3)
         .i64_and()
         .i64_eqz()
-        .local_get(offset)
-        .i64_const(2)
-        .i64_shr_u();
-    last_slot(s);
-    s.i64_extend_i32_u()
-        .i64_lt_u()
-        .i32_and()
-        .if_(BlockType::Empty)
-        .local_get(offset)
-        .i64_const(2)
-        .i64_shr_u()
+        .local_get(offset);
+    slots.cover.push(s);
+    s.i64_lt_u().i32_and().if_(BlockType::Empty);
+    slots.at.push(s);
+    s.local_get(offset)
         .i32_wrap_i64()
+        .i32_add()
+        .i32_load(memarg(slots.memory, 0, 2))
         .table_get(0)
         .local_set(piece)
         .end();

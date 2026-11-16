@@ -61,7 +61,14 @@ function run({
   // The table covers the whole memory, and one more byte, always zero, follows it.
   const permissionPages = (Math.ceil(memoryBytes / 65536) * 65536) / pageSize;
   const memory = memory64(Math.ceil(memoryBytes / 65536));
-  const statePages = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 65536);
+  // Modules translated ahead of time from an image have an array of slots for their code alone, from its
+  // start.
+  const tableBase = BigInt(load + (codeStart ?? 0));
+  // The array covers the whole blob, every page of it that may run code, so code the program writes runs;
+  // for modules translated ahead of time from an image, its code.
+  const slots = Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / 4);
+  const slotsAt = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 4) * 4;
+  const statePages = Math.ceil((slotsAt + 4 * slots) / 65536);
   const state = new WebAssembly.Memory({ initial: statePages, maximum: statePages, shared: true });
   const guest = () => new Uint8Array(memory.buffer);
   const flags = () => new Int32Array(state.buffer);
@@ -78,8 +85,23 @@ function run({
   let thread = null;
   // What each page allows, as the permission table says.
   const pagePermissions = new Uint8Array(permissionPages);
-  // By address, the piece of look-ahead none of the one instruction there, for the table's last slot.
+  // By address, the piece of look-ahead none of the one instruction there, for the exact slot.
   const exactPieces = new Map();
+  // The lookup table's next free slot.
+  let nextSlot = contract.exactSlot + 1;
+  // Where the array holds the slot for an address, as an index of 32 bit words, or null if it covers none.
+  function slotEntry(address) {
+    if (address < tableBase || address >= tableBase + 4n * BigInt(slots) || address % 4n !== 0n) return null;
+    return (slotsAt + Number(address - tableBase)) / 4;
+  }
+  function setSlot(address, slot) {
+    const at = slotEntry(address);
+    if (at !== null) new Uint32Array(state.buffer)[at] = slot;
+  }
+  const slotOf = (address) => {
+    const at = slotEntry(address);
+    return at === null ? 0 : new Uint32Array(state.buffer)[at];
+  };
   let programBreak = 0;
 
   // Count a slow path taken at an address (or for a number) and the time it took; warn once per address
@@ -234,9 +256,8 @@ function run({
     [contract.hookLoadCode]: (address, exact) => {
       address = BigInt.asUintN(64, address);
       const table = thread.exports[contract.lookup];
-      const last = table.length - 1;
       if (exact && exactPieces.has(address)) {
-        table.set(last, exactPieces.get(address));
+        table.set(contract.exactSlot, exactPieces.get(address));
         return 1;
       }
       const page = Number(address / BigInt(pageSize));
@@ -246,7 +267,7 @@ function run({
         stop({ kind: "memory fault", address: address.toString(), write: false, execute: true });
         return 0;
       }
-      const coveredEnd = tableBase + 4n * BigInt(last);
+      const coveredEnd = tableBase + 4n * BigInt(slots);
       if (address < tableBase || address >= coveredEnd) {
         stop({ kind: "no code", address: address.toString() });
         return 0;
@@ -262,12 +283,11 @@ function run({
       const code = { bytes: guest().slice(Number(runStart), Number(runEnd)), load: runStart };
       const offset = address - runStart;
       if (exact) {
-        instantiateCode(code, offset, 2, 0, 1, BigInt(last) - offset / 4n);
-        exactPieces.set(address, table.get(last));
+        instantiateCode(code, offset, 2, 0, 1, true);
+        exactPieces.set(address, table.get(contract.exactSlot));
       } else {
-        // Code made at run time never takes the place of a piece the table holds.
-        const slot = Number((address - tableBase) / 4n);
-        if (table.get(slot) !== null) throw new Error(`code asked for at 0x${address.toString(16)}, which has a piece`);
+        // Code made at run time never takes the place of a piece the lookup finds.
+        if (slotOf(address) !== 0) throw new Error(`code asked for at 0x${address.toString(16)}, which has a piece`);
         // The reference stays at none throughout.
         if (lookAhead === 0) instantiateCode(code, offset, 0, 0);
         else instantiateCode(code, offset, 2, 0, contract.bound);
@@ -288,13 +308,11 @@ function run({
       return value;
     },
     [contract.hookClock]: () => BigInt(Math.round((performance.now() - startedAt) * 1e6)),
-    // ic ivau: forget the pieces the table holds for the 64 byte line.
+    // ic ivau: forget the pieces the lookup finds for the 64 byte line.
     [contract.hookCodeChanged]: (address) => {
       const line = BigInt.asUintN(64, address) & ~63n;
-      const table = thread.exports[contract.lookup];
       for (let at = line; at < line + 64n; at += 4n) {
-        const slot = (at - tableBase) / 4n;
-        if (at >= tableBase && slot < BigInt(table.length - 1)) table.set(Number(slot), null);
+        setSlot(at, 0);
         exactPieces.delete(at);
       }
     },
@@ -306,9 +324,8 @@ function run({
   };
 
   // Translate code `b` (its bytes, where they are, and where in them the code is, all of it when not said)
-  // from `start` and instantiate it, adding its pieces to the lookup table at their addresses, or from
-  // `slotBase` when given.
-  function instantiateCode(b, start, lookAhead, omit, bound = 0, slotBase = null) {
+  // from `start` and instantiate it, as `instantiateModule` says.
+  function instantiateCode(b, start, lookAhead, omit, bound = 0, exact = false) {
     // The translator's memory may grow while it makes room, so its buffer is taken after.
     const at = translator.input(b.bytes.length);
     new Uint8Array(translator.memory.buffer, at, b.bytes.length).set(b.bytes);
@@ -324,39 +341,68 @@ function run({
     if (length < 0) throw new Error(`no translation from ${start}`);
     const modules = [result(length)];
     for (let i = 0; i < translator.more_modules(); i++) modules.push(result(translator.more_module(i)));
-    for (const bytes of modules) instantiateModule(bytes, b, slotBase);
+    for (const bytes of modules) instantiateModule(new WebAssembly.Module(bytes), b, exact);
   }
 
-  function instantiateModule(bytes, b, slotBase) {
-    const module = new WebAssembly.Module(bytes);
+  // The blob offsets of a code module's pieces, in slot order, from its description section.
+  function pieceOffsets(module) {
+    const [section] = WebAssembly.Module.customSections(module, contract.descriptionSection);
+    const bytes = new Uint8Array(section);
+    let at = 2;
+    const leb = () => {
+      let value = 0n;
+      let shift = 0n;
+      for (;;) {
+        const byte = bytes[at++];
+        value |= BigInt(byte & 0x7f) << shift;
+        shift += 7n;
+        if (byte < 0x80) return value;
+      }
+    };
+    leb();
+    at += 32;
+    const count = Number(leb());
+    return Array.from({ length: count }, leb);
+  }
+
+  // Instantiate a code module for code `b`, putting its pieces in new slots of the lookup table and giving
+  // each piece's address its slot; with `exact`, its one piece goes to the exact slot and to no address.
+  function instantiateModule(module, b, exact) {
+    const offsets = pieceOffsets(module);
+    const table = thread.exports[contract.lookup];
+    const first = exact ? contract.exactSlot : nextSlot;
+    if (!exact) {
+      nextSlot += offsets.length;
+      if (nextSlot > table.length) table.grow(nextSlot - table.length);
+    }
     new WebAssembly.Instance(module, {
       [contract.hooks]: hooks,
       [contract.env]: {
         [contract.memory]: memory,
         [contract.state]: state,
         [contract.loadAddress]: constant(b.load, "i64"),
-        [contract.slotBase]: constant(Number(BigInt.asIntN(32, slotBase ?? (b.load - tableBase) / 4n)), "i32"),
+        [contract.slotBase]: constant(first, "i32"),
         [contract.tableBase]: constant(tableBase, "i64"),
         [contract.threadBlock]: constant(BLOCK_AT, "i32"),
         [contract.permissions]: constant(PERMISSIONS_AT, "i32"),
         [contract.permissionPages]: constant(BigInt(permissionPages), "i64"),
+        [contract.slots]: constant(slotsAt, "i32"),
+        [contract.slotsCover]: constant(4n * BigInt(slots), "i64"),
       },
       [contract.thread]: thread.exports,
     });
+    if (!exact) offsets.forEach((offset, i) => setSlot(b.load + offset, first + i));
   }
 
-  // Modules translated ahead of time from an image have a table for their code alone, from its start.
-  const tableBase = BigInt(load + (codeStart ?? 0));
-  // The table covers the whole blob, every page of it that may run code, so code the program writes runs;
-  // for modules translated ahead of time from an image, its code.
-  const slots = Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / 4);
-  const threadModule = new WebAssembly.Module(result(translator.thread_module(slots)));
+  const threadModule = new WebAssembly.Module(result(translator.thread_module()));
   thread = new WebAssembly.Instance(threadModule, {
     [contract.hooks]: hooks,
     [contract.env]: {
       [contract.state]: state,
       [contract.tableBase]: constant(tableBase, "i64"),
       [contract.threadBlock]: constant(BLOCK_AT, "i32"),
+      [contract.slots]: constant(slotsAt, "i32"),
+      [contract.slotsCover]: constant(4n * BigInt(slots), "i64"),
     },
   });
 
@@ -377,20 +423,7 @@ function run({
       const started = performance.now();
       const module = new WebAssembly.Module(bytes);
       const compiled = performance.now();
-      new WebAssembly.Instance(module, {
-        [contract.hooks]: hooks,
-        [contract.env]: {
-          [contract.memory]: memory,
-          [contract.state]: state,
-          [contract.loadAddress]: constant(BigInt(load), "i64"),
-          [contract.slotBase]: constant(Number(BigInt.asIntN(32, (BigInt(load) - tableBase) / 4n)), "i32"),
-          [contract.tableBase]: constant(tableBase, "i64"),
-          [contract.threadBlock]: constant(BLOCK_AT, "i32"),
-          [contract.permissions]: constant(PERMISSIONS_AT, "i32"),
-          [contract.permissionPages]: constant(BigInt(permissionPages), "i64"),
-        },
-        [contract.thread]: thread.exports,
-      });
+      instantiateModule(module, loaded, false);
       compiling += compiled - started;
       instantiating += performance.now() - compiled;
     }

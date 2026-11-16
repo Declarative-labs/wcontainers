@@ -37,7 +37,7 @@ fn check(wasm: &[u8]) -> Result<(), String> {
 
 #[test]
 fn thread_module_is_valid() {
-    validate(&thread_module(1024));
+    validate(&thread_module());
 }
 
 /// The environment's settings, with a fixed seed when none is given.

@@ -2,7 +2,13 @@
 //!
 //! Two kinds of module run per guest thread. The **thread module** ([`crate::thread_module`]) holds the
 //! lookup table and the bottom loop. **Code modules** ([`crate::translate`]) hold pieces; they import the
-//! thread module's table and add their pieces to the table when instantiated.
+//! thread module's table and put their pieces in it, in order from [`SLOT_BASE`], when instantiated.
+//!
+//! **Looking up an address.** The lookup table holds one slot per piece. An array of slots in the state
+//! memory ([`SLOTS`]), one i32 per 4 bytes of guest address from [`TABLE_BASE`], gives the slot of the piece
+//! for each address, 0 for none. The runner writes the array: each code module's pieces are
+//! [`crate::CodeModule::pieces`]. The array is per process; every thread's table must hold the same piece
+//! in the same slot, so a code module is instantiated with the same [`SLOT_BASE`] in every thread.
 //!
 //! Registers that are not in a piece's locals live in the thread block in the state memory, so whenever a hook
 //! runs or `run` has returned, the block holds them all ("registers are saved"), and a runner sets registers
@@ -37,10 +43,14 @@ pub const MEMORY: &str = "memory";
 pub const STATE: &str = "state";
 /// i64: the guest address where the blob's first byte sits.
 pub const LOAD_ADDRESS: &str = "load_address";
-/// i32: the lookup table slot of the blob's first byte, `(load_address - table_base) / 4`.
+/// i32: the lookup table slot of the code module's first piece; the others follow in order.
 pub const SLOT_BASE: &str = "slot_base";
-/// i64: the guest address of lookup table slot zero. Slot `i` holds the piece for `table_base + 4 * i`.
+/// i64: the guest address of the first entry of the array of slots. Entry `i` is for `table_base + 4 * i`.
 pub const TABLE_BASE: &str = "table_base";
+/// i32: where in the state memory the array of slots starts.
+pub const SLOTS: &str = "slots";
+/// i64: the bytes of guest address, from [`TABLE_BASE`], the array of slots covers (4 for each entry).
+pub const SLOTS_COVER: &str = "slots_cover";
 /// i32: where in the state memory this thread's block is (a [`wcontainers_abi::RegisterBlock`] followed by
 /// the stop flag), a multiple of 16.
 pub const THREAD_BLOCK: &str = "thread_block";
@@ -51,9 +61,12 @@ pub const PERMISSIONS: &str = "permissions";
 /// or above `pages * PAGE_SIZE` fault.
 pub const PERMISSION_PAGES: &str = "permission_pages";
 
-/// The lookup table, exported by the thread module. Its last slot holds a piece for no address: it is where
-/// [`HOOK_LOAD_CODE`] puts the piece of one instruction a thread must carry on in exactly.
+/// The lookup table, exported by the thread module. Slot 0 is always empty, so an address with no piece finds
+/// none. Slot [`EXACT_SLOT`] holds a piece for no address. The runner grows the table for the pieces it adds.
 pub const LOOKUP: &str = "lookup";
+/// The lookup table slot where [`HOOK_LOAD_CODE`] puts the piece of one instruction a thread must carry on in
+/// exactly.
+pub const EXACT_SLOT: i32 = 1;
 /// The exception tag that unwinds to the bottom loop, exported by the thread module. Its i32 payload is
 /// [`UNWIND_GO_TO`], [`UNWIND_GO_TO_EXACT`], [`UNWIND_DEEP`] or [`UNWIND_LEAVE`].
 pub const UNWIND: &str = "unwind";
@@ -63,7 +76,7 @@ pub const UNWIND_GO_TO: i32 = 0;
 pub const UNWIND_LEAVE: i32 = 1;
 /// Unwind payload: carry on at the address in `pc` from code that checks every access exactly. A check that
 /// covers several accesses failed there, so the bottom loop runs that one instruction from the piece of
-/// look-ahead none [`HOOK_LOAD_CODE`] puts in the table's last slot, and carries on from the table after it.
+/// look-ahead none [`HOOK_LOAD_CODE`] puts in [`EXACT_SLOT`], and carries on from the table after it.
 pub const UNWIND_GO_TO_EXACT: i32 = 2;
 /// Unwind payload: the engine's stack is nearly used up. Carry on at the address in `pc` (a piece's entry)
 /// with the WebAssembly stack empty; the functions in progress continue when they return to the bottom loop.
@@ -82,10 +95,10 @@ pub const HOOK_STOP: &str = "stop";
 /// Hook `(address: i64, access: i32)`: an access the page permissions do not allow. Access is 0 for a read
 /// and 1 for a write. Registers are saved and `pc` is the instruction. The thread then leaves.
 pub const HOOK_MEMORY_FAULT: &str = "memory_fault";
-/// Hook `(address: i64, exact: i32) -> i32`: with `exact` 0, the lookup table holds no piece for this
-/// address: put one there, translated from it (at bounded look-ahead). With `exact` 1, put the piece of the
-/// one instruction at the address, of look-ahead none, in the table's last slot, whatever the table holds
-/// for the address. Return 1 once the piece is in place, or 0 to leave. Registers are saved and `pc` is the
+/// Hook `(address: i64, exact: i32) -> i32`: with `exact` 0, the lookup finds no piece for this address:
+/// put one there, translated from it (at bounded look-ahead). With `exact` 1, put the piece of the one
+/// instruction at the address, of look-ahead none, in [`EXACT_SLOT`], whatever the lookup finds for the
+/// address. Return 1 once the piece is in place, or 0 to leave. Registers are saved and `pc` is the
 /// address.
 pub const HOOK_LOAD_CODE: &str = "load_code";
 /// Hook `(reason: i32, detail: i64)`: a slow path was taken; see [`Reason`].

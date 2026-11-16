@@ -1419,7 +1419,7 @@ struct FullEmitter<'a> {
     labels: Vec<Label>,
     at: At,
     /// Locals the immutable imported globals (by index) are copied into at the entry, once used.
-    fixed: [Option<u32>; 6],
+    fixed: [Option<u32>; IMPORTED_VALUES],
     /// The piece's own function index.
     own: u32,
     /// For each number in [`Plan::kept`], the i64 locals holding the run of pages last found allowed: its
@@ -1475,7 +1475,7 @@ impl<'a> FullEmitter<'a> {
                 aligned: false,
                 float_mode: false,
             },
-            fixed: [None; 6],
+            fixed: [None; IMPORTED_VALUES],
             own,
             kept_pages: Vec::new(),
             unchecked: Vec::new(),
@@ -2106,11 +2106,7 @@ impl<'a> FullEmitter<'a> {
         let local = match self.fixed[global as usize] {
             Some(local) => local,
             None => {
-                let ty = match global {
-                    G_LOAD_ADDRESS | G_TABLE_BASE | G_PERMISSION_PAGES => ValType::I64,
-                    _ => ValType::I32,
-                };
-                let local = self.new_local(ty);
+                let local = self.new_local(imported_value_type(global));
                 self.fixed[global as usize] = Some(local);
                 local
             }
@@ -2282,13 +2278,12 @@ impl<'a> FullEmitter<'a> {
     fn look_up(&mut self, target: u32) -> u32 {
         let offset = self.temporary(ValType::I64);
         let piece = self.temporary(ValType::Ref(crate::thread::piece_ref()));
-        crate::thread::lookup(
-            &mut self.sink(),
-            target,
-            G_OWN + G_TABLE_BASE,
-            offset,
-            piece,
+        let slots = crate::code::slots(
+            self.fixed(G_TABLE_BASE),
+            self.fixed(G_SLOTS),
+            self.fixed(G_SLOTS_COVER),
         );
+        crate::thread::lookup(&mut self.sink(), target, slots, offset, piece);
         piece
     }
 

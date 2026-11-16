@@ -42,7 +42,8 @@ fn validate(wasm: &[u8]) {
 /// Not a check: each binary's code and starts, its translation at full look-ahead, and what wasmtime makes
 /// of it. One command:
 /// `WC_BINARIES=busybox,musl nix develop -c cargo test --release -p wcontainers-translator-test --test binaries measure_binaries -- --ignored --nocapture`
-/// (all nine when `WC_BINARIES` is not set; each is taken from its Docker image once).
+/// (all nine when `WC_BINARIES` is not set; each is taken from its Docker image once). `WC_BINARIES_DUMP`
+/// names a directory to write each module to, for looking into.
 #[test]
 #[ignore]
 fn measure_binaries() {
@@ -96,8 +97,12 @@ fn measure_binaries() {
             bytes as f64 / code.len() as f64,
             compressed as f64 / gzipped(code) as f64,
         );
-        for module in &translation.modules {
+        for (i, module) in translation.modules.iter().enumerate() {
             validate(&module.wasm);
+            if let Ok(directory) = std::env::var("WC_BINARIES_DUMP") {
+                let path = format!("{directory}/{}-{i}.wasm", binary.name);
+                std::fs::write(path, &module.wasm).unwrap();
+            }
         }
         let load = 0x10_0000;
         let wasm: Vec<&[u8]> = translation.modules.iter().map(|m| &m.wasm[..]).collect();
