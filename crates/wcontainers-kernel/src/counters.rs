@@ -21,18 +21,21 @@ pub mod reason {
     /// A signal whose default action stops the process; stopping comes with job control. Detail: the
     /// signal.
     pub const PROCESS_STOP_NOT_IMPLEMENTED: &str = "process stop not implemented";
-    /// File locks through `fcntl`. Detail: the command.
+    /// Record locks through `fcntl`, answered as Linux without file locking answers. Detail: the
+    /// command.
     pub const LOCKS_NOT_IMPLEMENTED: &str = "file locks not implemented";
-    /// An `fcntl` command the kernel does not know. Detail: the command.
-    pub const FCNTL_UNKNOWN: &str = "fcntl command unknown";
+    /// An `fcntl` command the kernel does not build, known to Linux or not; it answers EINVAL, as
+    /// Linux does for one it does not know or has not configured. Detail: the command.
+    pub const FCNTL_NOT_BUILT: &str = "fcntl command not built";
     /// Opening a device the kernel has no driver for yet. Detail: the device number.
     pub const DEVICE_NOT_IMPLEMENTED: &str = "device not implemented";
     /// Opening a named pipe, which needs pipes. Detail: the inode number.
     pub const NAMED_PIPE_NOT_IMPLEMENTED: &str = "named pipe not implemented";
     /// A shared mapping of a file, which needs shared pages.
     pub const SHARED_FILE_MAPPING: &str = "shared file mapping not implemented";
-    /// A `prctl` option the kernel does not know. Detail: the option.
-    pub const PRCTL_UNKNOWN: &str = "prctl option unknown";
+    /// A `prctl` option or form the kernel does not build, known to Linux or not; it answers EINVAL,
+    /// as Linux does for one it does not know. Detail: the option.
+    pub const PRCTL_NOT_BUILT: &str = "prctl option not built";
     /// A flag of a memory call the kernel does not implement. Detail: the flag bits.
     pub const MEMORY_FLAG_NOT_IMPLEMENTED: &str = "memory call flag not implemented";
     /// `mincore`, `getrusage`, `sysinfo` or `/proc/meminfo` reported every mapped page as in

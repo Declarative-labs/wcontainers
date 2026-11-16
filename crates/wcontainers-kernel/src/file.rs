@@ -23,6 +23,27 @@ pub(crate) struct OpenFile {
     pub read_position: u64,
     /// The serial of the credentials it was opened with (Linux's `f_cred`).
     pub opener: u64,
+    /// Who its I/O signals go to and which signal, once set (Linux's `f_owner`).
+    pub owner: Option<Owner>,
+    /// The open that made it also made the file (Linux's `FMODE_CREATED`).
+    pub created: bool,
+}
+
+/// Linux's `fown_struct`: a process number of a kind (none is 0) and the signal (0 is `SIGIO`).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Owner {
+    pub pid: i32,
+    pub kind: OwnerKind,
+    pub signal: i32,
+}
+
+/// What an owner's number names (Linux's `PIDTYPE_PID`, `PIDTYPE_TGID`, `PIDTYPE_PGID`).
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum OwnerKind {
+    #[default]
+    Thread,
+    Process,
+    Group,
 }
 
 pub(crate) type FileRef = Rc<RefCell<OpenFile>>;
@@ -37,6 +58,8 @@ impl OpenFile {
             contents: None,
             read_position: 0,
             opener,
+            owner: None,
+            created: false,
         }))
     }
 

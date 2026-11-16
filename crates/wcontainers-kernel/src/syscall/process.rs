@@ -648,11 +648,16 @@ fn changing(
     let process = kernel.process_of_mut(tid);
     let old = process.credentials.clone();
     let result = change(&mut process.credentials);
-    if process.credentials.loses_dumpable(&old) {
+    let loses = process.credentials.loses_dumpable(&old);
+    if loses {
         process.dumpable = false;
     }
-    if result.is_ok() && (always || process.credentials != old) {
-        let pid = process.pid;
+    let commit = result.is_ok() && (always || process.credentials != old);
+    let pid = process.pid;
+    if loses {
+        kernel.thread_mut(tid).parent_death_signal = 0;
+    }
+    if commit {
         kernel.commit_credentials(pid);
     }
     result
@@ -1160,14 +1165,116 @@ pub(super) fn prctl(
         // Docker's profile puts every process in filter mode.
         PR_GET_SECCOMP => Ok(crate::linux::ptrace::SECCOMP_MODE_FILTER.into()),
         PR_SET_SECCOMP => super::seccomp::prctl_set(kernel, cx, tid, second, third),
-        PR_GET_CHILD_SUBREAPER => {
-            guest(kernel, cx, tid).write(second, &0i32.to_le_bytes())?;
+        PR_SET_CHILD_SUBREAPER => {
+            kernel.process_of_mut(tid).child_subreaper = second != 0;
             Ok(0)
+        }
+        PR_GET_CHILD_SUBREAPER => {
+            let value = i32::from(kernel.process_of(tid).child_subreaper);
+            guest(kernel, cx, tid).write(second, &value.to_le_bytes())?;
+            Ok(0)
+        }
+        PR_SET_PDEATHSIG => {
+            if second > SIGNALS as u64 {
+                return Err(Errno::EINVAL);
+            }
+            kernel.thread_mut(tid).parent_death_signal = second as i32;
+            Ok(0)
+        }
+        PR_GET_PDEATHSIG => {
+            let signal = kernel.threads[&tid].parent_death_signal;
+            guest(kernel, cx, tid).write(second, &signal.to_le_bytes())?;
+            Ok(0)
+        }
+        PR_GET_TIMERSLACK => Ok(kernel.threads[&tid].timer_slack),
+        PR_SET_TIMERSLACK => {
+            // Real-time threads keep theirs; zero restores the one the thread was born with.
+            let thread = kernel.thread_mut(tid);
+            if !matches!(
+                thread.schedule.policy,
+                SCHED_FIFO | SCHED_RR | SCHED_DEADLINE
+            ) {
+                thread.timer_slack = if second == 0 {
+                    crate::process::TIMER_SLACK
+                } else {
+                    second
+                };
+            }
+            Ok(0)
+        }
+        PR_GET_THP_DISABLE => {
+            if second != 0 || !rest_zero {
+                return Err(Errno::EINVAL);
+            }
+            Ok(kernel.process_of(tid).thp_disable)
+        }
+        PR_SET_THP_DISABLE => {
+            use crate::linux_extra::PR_THP_DISABLE_EXCEPT_ADVISED;
+            if fourth != 0 || fifth != 0 {
+                return Err(Errno::EINVAL);
+            }
+            if (second == 0 && third != 0) || third & !PR_THP_DISABLE_EXCEPT_ADVISED != 0 {
+                return Err(Errno::EINVAL);
+            }
+            kernel.process_of_mut(tid).thp_disable = if second == 0 { 0 } else { 1 | third };
+            Ok(0)
+        }
+        // No memory deny-write-execute policy can be set (below), so none is in force.
+        PR_GET_MDWE => {
+            if second != 0 || !rest_zero {
+                return Err(Errno::EINVAL);
+            }
+            Ok(0)
+        }
+        PR_GET_AUXV => {
+            if fourth != 0 || fifth != 0 {
+                return Err(Errno::EINVAL);
+            }
+            // `saved_auxv`: the vector as the program started with it, then zeros.
+            let mut saved = kernel.process_of(tid).starting_stack.auxiliary.clone();
+            saved.resize(crate::linux_extra::AT_VECTOR_SIZE * 8, 0);
+            let size = (saved.len() as u64).min(third);
+            if size > 0 {
+                guest(kernel, cx, tid).write(second, &saved[..size as usize])?;
+            }
+            Ok(saved.len() as u64)
+        }
+        PR_GET_SECUREBITS => Ok(if kernel.process_of(tid).credentials.keep_capabilities {
+            crate::linux_extra::SECBIT_KEEP_CAPS
+        } else {
+            0
+        }),
+        PR_SET_MM => {
+            // `prctl_set_mm`: the whole-map forms first, then every other form needs CAP_SYS_RESOURCE.
+            let form = second as u32;
+            if fifth != 0
+                || (fourth != 0
+                    && !matches!(form, PR_SET_MM_AUXV | PR_SET_MM_MAP | PR_SET_MM_MAP_SIZE))
+            {
+                return Err(Errno::EINVAL);
+            }
+            if form == PR_SET_MM_MAP_SIZE {
+                let size = size_of::<prctl_mm_map>() as u32;
+                guest(kernel, cx, tid).write(third, &size.to_le_bytes())?;
+                return Ok(0);
+            }
+            if form != PR_SET_MM_MAP && !kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE) {
+                return Err(Errno::EPERM);
+            }
+            kernel
+                .counters
+                .count(cx.host, reason::PRCTL_NOT_BUILT, option);
+            Err(Errno::EINVAL)
+        }
+        PR_SET_IO_FLUSHER | PR_GET_IO_FLUSHER
+            if !kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE) =>
+        {
+            Err(Errno::EPERM)
         }
         _ => {
             kernel
                 .counters
-                .count(cx.host, reason::PRCTL_UNKNOWN, option);
+                .count(cx.host, reason::PRCTL_NOT_BUILT, option);
             Err(Errno::EINVAL)
         }
     }

@@ -385,6 +385,8 @@ impl Kernel {
             starting_stack: Default::default(),
             dumpable: true,
             personality: 0,
+            child_subreaper: false,
+            thp_disable: 0,
             actions: [kernel_sigaction {
                 sa_handler_kernel: crate::linux_extra::SIG_DFL,
                 sa_flags: 0,
@@ -492,6 +494,7 @@ impl Kernel {
         // `begin_new_exec` and `commit_creds`).
         let old = &process.credentials;
         let new = &image.after.credentials;
+        let lose_parent_death_signal = image.after.secure || new.loses_dumpable(old);
         process.dumpable = image.readable
             && old.euid == old.uid
             && old.egid == old.gid
@@ -518,8 +521,12 @@ impl Kernel {
             action.sa_mask = kernel_sigset_t { sig: [0] };
         }
         let thread = self.threads.get_mut(&tid).expect("thread");
-        // The new program has not registered its area.
+        // The new program has not registered its area. A program in secure mode, or one whose ids
+        // change, cannot be signalled by its parent's end.
         thread.rseq = None;
+        if lose_parent_death_signal {
+            thread.parent_death_signal = 0;
+        }
         if old_memory.0 != 0 {
             cx.cpu.thread_drop(thread.cpu);
             thread.cpu = cx

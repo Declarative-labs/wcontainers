@@ -81,6 +81,10 @@ pub(crate) struct Process {
     pub dumpable: bool,
     /// Signal handlers as `rt_sigaction` set them, by signal number less one.
     pub actions: [kernel_sigaction; SIGNALS],
+    /// `PR_SET_CHILD_SUBREAPER`: orphaned descendants come to this process.
+    pub child_subreaper: bool,
+    /// `PR_SET_THP_DISABLE`'s value as `PR_GET_THP_DISABLE` reports it; kept across `execve`.
+    pub thp_disable: u64,
 }
 
 /// Linux's `TASK_COMM_LEN` less the terminating zero.
@@ -129,7 +133,14 @@ pub(crate) struct Thread {
     pub rseq: Option<(u64, u32, u32)>,
     /// The seccomp filters the thread installed, oldest first; Docker's profile is not among them.
     pub filters: Vec<Rc<crate::seccomp::Filter>>,
+    /// `PR_SET_PDEATHSIG`: the signal sent when the parent ends; cleared when the ids change.
+    pub parent_death_signal: i32,
+    /// `PR_SET_TIMERSLACK`: how late a timer may end, in nanoseconds.
+    pub timer_slack: u64,
 }
+
+/// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
+pub(crate) const TIMER_SLACK: u64 = 50_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Schedule {
@@ -171,6 +182,8 @@ impl Thread {
             schedule: Schedule::default(),
             rseq: None,
             filters: Vec::new(),
+            parent_death_signal: 0,
+            timer_slack: TIMER_SLACK,
         }
     }
 }

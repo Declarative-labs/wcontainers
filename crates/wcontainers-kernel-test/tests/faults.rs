@@ -16,6 +16,7 @@ fn faults_match_reference() {
         ("breakpoint", 133),
         ("undefined", 132),
         ("jump", 135),
+        ("ignored", 139),
         ("none", 0),
     ];
     for (kind, exit_code) in expected {

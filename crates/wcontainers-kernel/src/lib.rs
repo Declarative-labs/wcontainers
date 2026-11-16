@@ -460,12 +460,13 @@ impl Kernel {
         self.kill_by_signal(cx, tid, signal);
     }
 
-    /// A signal with no handler that kills: the process dies of it, as Linux's default action does. A
-    /// handler the program set cannot run yet, which is counted.
+    /// A forced signal (a fault's, seccomp's): the process dies of it, as Linux's default action does,
+    /// which an ignored signal is reset to (`force_sig_info_to_task`). A handler the program set
+    /// cannot run yet, which is counted.
     pub(crate) fn kill_by_signal(&mut self, cx: &mut Context<'_>, tid: Tid, signal: u32) {
         let pid = self.threads[&tid].process;
         let handler = self.processes[&pid].actions[signal as usize - 1].sa_handler_kernel;
-        if handler != linux_extra::SIG_DFL {
+        if handler != linux_extra::SIG_DFL && handler != linux_extra::SIG_IGN {
             self.counters
                 .count(cx.host, reason::SIGNAL_HANDLER_NOT_RUN, signal.into());
         }

@@ -237,6 +237,8 @@ pub(crate) struct Inode {
     pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
     /// tmpfs's inode flags (`FS_*_FL`, as `FS_IOC_GETFLAGS` shows them).
     pub fsflags: u32,
+    /// How long data written is expected to live (`RWH_WRITE_LIFE_*`, Linux's `i_write_hint`).
+    pub write_hint: u64,
 }
 
 impl Drop for Inode {
@@ -1008,6 +1010,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         flocks: Vec::new(),
         xattrs: BTreeMap::new(),
         fsflags: 0,
+        write_hint: 0,
     })))
 }
 

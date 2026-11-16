@@ -164,7 +164,14 @@ pub(crate) fn load(
         new_arguments.push(file_name.clone());
         new_arguments.extend(arguments.into_iter().skip(1));
         arguments = new_arguments;
-        program = open_program(kernel, cx.cpu, pid, &interpreter)?;
+        program = if interpreter.is_empty() {
+            // A name the kernel makes may be empty (`getname_kernel`), which names the working
+            // directory: no program.
+            let cwd = kernel.processes[&pid].cwd.clone();
+            program_of(kernel, cx.cpu, pid, cwd, Vec::new())?
+        } else {
+            open_program(kernel, cx.cpu, pid, &interpreter)?
+        };
         readable &= program.readable;
         file_name = interpreter;
     }
@@ -186,53 +193,49 @@ pub(crate) fn load(
     result
 }
 
-/// The interpreter and its one optional argument from a `#!` line, as Linux's `load_script` splits it.
+/// The interpreter and its one optional argument from a `#!` line, as Linux's `load_script` splits
+/// it: in the file's first bytes padded with zeros, a zero ends the name, and a line of nothing but
+/// blanks and zeros names the empty interpreter.
 fn parse_script_line(bytes: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), Errno> {
-    let window = &bytes[2..bytes.len().min(SCRIPT_LINE)];
-    let line = match window.iter().position(|byte| *byte == b'\n') {
-        Some(end) => &window[..end],
+    let mut buffer = [0u8; SCRIPT_LINE];
+    let length = bytes.len().min(SCRIPT_LINE);
+    buffer[..length].copy_from_slice(&bytes[..length]);
+    let last = SCRIPT_LINE - 1;
+    let blank = |byte: u8| byte == b' ' || byte == b'\t';
+    let non_blank = |from: usize, to: usize| (from..=to).find(|&at| !blank(buffer[at]));
+    let terminator =
+        |from: usize, to: usize| (from..=to).find(|&at| blank(buffer[at]) || buffer[at] == 0);
+    let mut end = match buffer.iter().position(|byte| *byte == b'\n') {
+        Some(end) => end,
         None => {
-            // A line longer than the buffer is accepted only if the interpreter's name ends inside it.
-            let trimmed = trim_start(window);
-            if trimmed.iter().all(|byte| !is_blank(*byte)) && bytes.len() > SCRIPT_LINE {
-                return Err(Errno::ENOEXEC);
-            }
-            window
+            // Without a newline the name must end inside the buffer, or it may be cut short.
+            let first = non_blank(2, last).ok_or(Errno::ENOEXEC)?;
+            terminator(first, last).ok_or(Errno::ENOEXEC)?;
+            last
         }
     };
-    let line = trim_start(line);
-    let line = trim_end(line);
-    if line.is_empty() {
-        return Err(Errno::ENOEXEC);
+    while blank(buffer[end - 1]) {
+        end -= 1;
     }
-    let name_end = line
-        .iter()
-        .position(|byte| is_blank(*byte))
-        .unwrap_or(line.len());
-    let interpreter = line[..name_end].to_vec();
-    let rest = trim_start(&line[name_end..]);
-    let argument = (!rest.is_empty()).then(|| rest.to_vec());
-    Ok((interpreter, argument))
-}
-
-fn is_blank(byte: u8) -> bool {
-    byte == b' ' || byte == b'\t'
-}
-
-fn trim_start(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !is_blank(*byte))
-        .unwrap_or(bytes.len());
-    &bytes[start..]
-}
-
-fn trim_end(bytes: &[u8]) -> &[u8] {
-    let end = bytes
-        .iter()
-        .rposition(|byte| !is_blank(*byte))
-        .map_or(0, |end| end + 1);
-    &bytes[..end]
+    let name = non_blank(2, end)
+        .filter(|&name| name != end)
+        .ok_or(Errno::ENOEXEC)?;
+    let separator = terminator(name, end);
+    let argument = separator
+        .filter(|&at| buffer[at] != 0)
+        .and_then(|at| non_blank(at, end));
+    buffer[end] = 0;
+    if let (Some(at), Some(_)) = (separator, argument) {
+        buffer[at] = 0;
+    }
+    let string = |from: usize| -> Vec<u8> {
+        buffer[from..]
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .copied()
+            .collect()
+    };
+    Ok((string(name), argument.map(string)))
 }
 
 /// An ELF file placed in memory.

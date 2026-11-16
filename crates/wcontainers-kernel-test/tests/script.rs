@@ -20,6 +20,11 @@ fn scripts_match_reference() {
         ),
         ("missing", "#!/nonexistent/interpreter\necho never\n"),
         ("busybox", "#!/bin/busybox echo\n"),
+        // A zero ends the interpreter's name, and its argument.
+        ("zero_after_name", "#!/bin/echo\0junk here\n"),
+        ("zero_in_argument", "#!/bin/echo a\0b\n"),
+        ("zero_after_blank", "#!/bin/echo  \0arg\n"),
+        ("blanks_around", "#! \t/bin/echo \t one  two \t\n"),
     ];
     let mut failed = Vec::new();
     for (name, text) in scripts {

@@ -130,9 +130,6 @@ pub(super) fn sysinfo(
     Ok(0)
 }
 
-/// The most one `getrandom` call gives.
-const RANDOM_MAX: u64 = 0x01ff_ffff;
-
 pub(super) fn getrandom(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -145,7 +142,8 @@ pub(super) fn getrandom(
     {
         return Err(Errno::EINVAL);
     }
-    let length = length.min(RANDOM_MAX).min(super::io::MAX_RW_COUNT);
+    // `import_ubuf` bounds the request as any read's.
+    let length = length.min(super::io::MAX_RW_COUNT);
     if !crate::user::access_ok(buffer, length) {
         return Err(Errno::EFAULT);
     }

@@ -578,6 +578,7 @@ pub(super) fn open(
         full_path,
         credentials(kernel, tid).serial,
     );
+    file.borrow_mut().created = created;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .process_of_mut(tid)

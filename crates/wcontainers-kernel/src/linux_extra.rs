@@ -175,3 +175,19 @@ pub(crate) const FS_IOC_GETFSSYSFSPATH: u32 = ioc(
 /// The largest buffer the kernel's allocator gives (`KMALLOC_MAX_SIZE`, `linux/slab.h`: a page shifted
 /// by `MAX_PAGE_ORDER`, 10 for 4 KiB pages), which a sysctl's read or write allocates for its count.
 pub(crate) const KMALLOC_MAX_SIZE: u64 = 4096 << 10;
+
+/// `prctl` values newer than linux-raw-sys 0.12.1's headers (`linux/prctl.h`): disable transparent
+/// huge pages except where advised.
+pub(crate) const PR_THP_DISABLE_EXCEPT_ADVISED: u64 = 1 << 1;
+
+/// `linux/securebits.h`'s bit for keeping capabilities across a change of ids
+/// (`issecure_mask(SECURE_KEEP_CAPS)`), which linux-raw-sys does not generate.
+pub(crate) const SECBIT_KEEP_CAPS: u64 = 1 << 4;
+
+/// The words Linux keeps of a program's auxiliary vector (`AT_VECTOR_SIZE`: twice arm64's 2 and the
+/// 24 generic entries and the end).
+pub(crate) const AT_VECTOR_SIZE: usize = 2 * (2 + 24 + 1);
+
+/// The pages a new pipe holds (`PIPE_DEF_BUFFERS`, Linux's internal `linux/pipe_fs_i.h`), which bounds
+/// one splice through a pipe.
+pub(crate) const PIPE_DEF_BUFFERS: u64 = 16;

@@ -7,7 +7,7 @@ use wcontainers_abi::{PAGE_SIZE, Permissions, Stream};
 
 use super::{Args, guest};
 use crate::counters::reason;
-use crate::file::{Descriptor, FileRef};
+use crate::file::{Descriptor, FileRef, Owner, OwnerKind};
 use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::fs::proc::{Style, Writing};
@@ -18,6 +18,10 @@ use crate::{Context, Errno, Kernel};
 
 /// The most one read or write moves, as Linux's `MAX_RW_COUNT`.
 pub(super) const MAX_RW_COUNT: u64 = 0x7fff_f000;
+
+/// The most bytes the kernel makes at once for a transfer it fills itself, so a large request is
+/// filled in pieces rather than held whole.
+const KERNEL_BUFFER: u64 = PAGE_SIZE * 16;
 
 /// The most segments `readv` and `writev` take (`UIO_MAXIOV`).
 pub(super) const MAX_SEGMENTS: u64 = 1024;
@@ -711,9 +715,9 @@ fn file_bytes(
         Content::Proc(_) => window(file.borrow().contents.as_deref().unwrap_or_default()),
         Content::Special => match Device::from_number(inode.rdev) {
             Some(Device::Null) => Vec::new(),
-            Some(Device::Zero | Device::Full) => vec![0; count.min(PAGE_SIZE * 16) as usize],
+            Some(Device::Zero | Device::Full) => vec![0; count as usize],
             Some(Device::Random | Device::Urandom) => {
-                let mut bytes = vec![0; count.min(PAGE_SIZE * 16) as usize];
+                let mut bytes = vec![0; count as usize];
                 cx.host.random(&mut bytes);
                 bytes
             }
@@ -736,16 +740,33 @@ pub(super) fn read_at(
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
     // more is cleared (`read_iter_zero`).
-    let zero_device = {
+    let device = {
         let file = file.borrow();
         let inode = file.node.borrow();
         match inode.content {
-            Content::Special => Device::from_number(inode.rdev)
-                .filter(|device| matches!(device, Device::Zero | Device::Full)),
+            Content::Special => Device::from_number(inode.rdev),
             _ => None,
         }
     };
-    if let Some(device) = zero_device {
+    // The random devices fill the whole request, block by block, up to where the buffer stops being
+    // writable (`get_random_bytes_user`).
+    if matches!(device, Some(Device::Random | Device::Urandom)) {
+        let mut done = 0;
+        while done < count {
+            let mut bytes = vec![0; (count - done).min(KERNEL_BUFFER) as usize];
+            cx.host.random(&mut bytes);
+            let written = guest(kernel, cx, tid).write_partial(buffer + done, &bytes) as u64;
+            done += written;
+            if written < bytes.len() as u64 {
+                break;
+            }
+        }
+        if done == 0 && count > 0 {
+            return Err(Errno::EFAULT);
+        }
+        return Ok(done);
+    }
+    if let Some(device) = device.filter(|device| matches!(device, Device::Zero | Device::Full)) {
         let mut guest = guest(kernel, cx, tid);
         let mut cleared = guest.clear_partial(buffer, count);
         if device == Device::Full {
@@ -835,9 +856,14 @@ pub(super) fn write_at(
         let bytes = guest(kernel, cx, tid).read(buffer, readable)?;
         return write_bytes(kernel, cx, tid, file, &bytes, count, at, append);
     }
-    // The random devices take the bytes in; the rest only count them.
+    // The random devices take in as much of the buffer as can be read (`write_pool_user`); the rest
+    // only count the bytes.
     if matches!(device, Some(Device::Random | Device::Urandom)) {
-        guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
+        let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
+        if readable == 0 && count > 0 {
+            return Err(Errno::EFAULT);
+        }
+        return Ok(readable);
     }
     write_bytes(kernel, cx, tid, file, &[], 0, at, append).map(|_| count)
 }
@@ -1013,75 +1039,138 @@ fn send(
     if output.borrow().is_path() || !output.borrow().writable() {
         return Err(Errno::EBADF);
     }
-    if (output.borrow().offset as i64)
-        .checked_add(count as i64)
-        .is_none()
-    {
-        return Err(Errno::EINVAL);
+    // The standard streams are pipes: the input is spliced into them once, as much as an empty pipe
+    // holds (`splice_file_to_pipe`). Anything else goes through a private pipe, round after round,
+    // until the count is moved or a round falls short (`splice_direct_to_actor`).
+    let (input_node, output_node) = (input.borrow().node.clone(), output.borrow().node.clone());
+    let to_pipe = matches!(output_node.borrow().content, Content::HostStream(_));
+    if !to_pipe {
+        if (output.borrow().offset as i64)
+            .checked_add(count as i64)
+            .is_none()
+        {
+            return Err(Errno::EINVAL);
+        }
+        if output.borrow().flags & O_APPEND != 0 {
+            return Err(Errno::EINVAL);
+        }
+        // A pipe as input cannot seek.
+        if matches!(input_node.borrow().content, Content::HostStream(_)) {
+            return Err(Errno::EINVAL);
+        }
     }
-    if output.borrow().flags & O_APPEND != 0 {
-        return Err(Errno::EINVAL);
-    }
-    // What cannot be spliced from (no `splice_read`: directories, secret memory, `/dev/null`, the
-    // process files of `/proc`), measured.
-    let device = |file: &FileRef| {
-        let file = file.borrow();
-        let inode = file.node.borrow();
+    let device = |node: &crate::fs::Node| {
+        let inode = node.borrow();
         match inode.content {
             Content::Special => Device::from_number(inode.rdev),
             _ => None,
         }
     };
-    let unspliceable = {
-        let file = input.borrow();
-        let inode = file.node.borrow();
-        inode.is_directory()
-            || inode.is_secret()
-            || matches!(
-                inode.content,
-                Content::Proc(crate::fs::proc::Entry::ProcessFile(..))
+    let flags = input.borrow().flags;
+    let mut pos = position as u64;
+    let mut moved = 0;
+    let mut failure = None;
+    let mut remaining = count;
+    while remaining > 0 {
+        // What cannot be spliced from (no `splice_read`: directories, secret memory, `/dev/null`,
+        // the process files of `/proc`) fails at the first round that asks for bytes.
+        let unspliceable = {
+            let inode = input_node.borrow();
+            inode.is_directory()
+                || inode.is_secret()
+                || matches!(
+                    inode.content,
+                    Content::Proc(crate::fs::proc::Entry::ProcessFile(..))
+                )
+        };
+        if unspliceable || device(&input_node) == Some(Device::Null) {
+            failure = Some(Errno::EINVAL);
+            break;
+        }
+        // One round fills a pipe's pages; tmpfs puts each page's part in its own buffer.
+        let room = crate::linux_extra::PIPE_DEF_BUFFERS * PAGE_SIZE;
+        let regular = matches!(input_node.borrow().content, Content::Regular(_));
+        let wanted = remaining.min(if regular {
+            room - pos % PAGE_SIZE
+        } else {
+            room
+        });
+        let bytes = match refresh_proc(kernel, cx, tid, &input, pos)
+            .and_then(|()| file_bytes(cx, &input, wanted, pos))
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        };
+        if to_pipe && regular {
+            accessed(kernel, cx, &input_node, flags);
+        }
+        if bytes.is_empty() {
+            break;
+        }
+        // A device's read leaves the position alone (`copy_splice_read` keeps what the read left).
+        let read_to = if device(&input_node).is_some() {
+            pos
+        } else {
+            pos + bytes.len() as u64
+        };
+        // The output takes what was read; `/dev/full` and `/proc` files have no `splice_write`.
+        let read = bytes.len() as u64;
+        let mut bytes = bytes;
+        let written = if device(&output_node) == Some(Device::Full)
+            || matches!(output_node.borrow().content, Content::Proc(_))
+        {
+            Err(Errno::EINVAL)
+        } else if matches!(output_node.borrow().content, Content::Regular(_)) {
+            let at = output.borrow().offset;
+            write_limit(kernel, cx, tid, at, bytes.len() as u64).and_then(|allowed| {
+                bytes.truncate(allowed as usize);
+                write_bytes(kernel, cx, tid, &output, &bytes, allowed, None, false)
+            })
+        } else {
+            write_bytes(
+                kernel,
+                cx,
+                tid,
+                &output,
+                &bytes,
+                bytes.len() as u64,
+                None,
+                false,
             )
-    };
-    if unspliceable || device(&input) == Some(Device::Null) {
-        return Err(Errno::EINVAL);
+        };
+        let written = match written {
+            Ok(written) => written,
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        };
+        input.borrow_mut().read_position = pos + written;
+        moved += written;
+        remaining -= written;
+        if written < read {
+            pos += written;
+            break;
+        }
+        pos = read_to;
+        if to_pipe {
+            break;
+        }
     }
-    let offset = position as u64;
-    refresh_proc(kernel, cx, tid, &input, offset)?;
-    let mut bytes = file_bytes(cx, &input, count, offset)?;
-    let (node, flags) = (input.borrow().node.clone(), input.borrow().flags);
-    accessed(kernel, cx, &node, flags);
-    // Only what was read goes to the output, which `/dev/full` cannot take (no `splice_write`).
-    if bytes.is_empty() {
-        return Ok(0);
+    if !to_pipe {
+        touch_atime(kernel, cx, &input_node, flags);
     }
-    if device(&output) == Some(Device::Full) {
-        return Err(Errno::EINVAL);
+    if moved == 0 {
+        return failure.map_or(Ok(0), Err);
     }
-    if matches!(output.borrow().node.borrow().content, Content::Regular(_)) {
-        let at = output.borrow().offset;
-        let allowed = write_limit(kernel, cx, tid, at, bytes.len() as u64)?;
-        bytes.truncate(allowed as usize);
-    }
-    let written = write_bytes(
-        kernel,
-        cx,
-        tid,
-        &output,
-        &bytes,
-        bytes.len() as u64,
-        None,
-        false,
-    )?;
-    input.borrow_mut().read_position = offset + written;
-    // A device's reads leave the position alone, the one given too (`copy_splice_read` keeps what
-    // the device's read left).
-    let device = matches!(input.borrow().node.borrow().content, Content::Special);
     match explicit {
-        _ if device => {}
-        Some(offset) => *offset = (position as u64 + written) as i64,
-        None => input.borrow_mut().offset = offset + written,
+        Some(offset) => *offset = pos as i64,
+        None => input.borrow_mut().offset = pos,
     }
-    Ok(written)
+    Ok(moved)
 }
 
 /// The host takes a stream's bytes at once, so this is a write to an empty pipe, as the reference's
@@ -1236,15 +1325,21 @@ pub(super) fn lseek(
 /// no-access-time inode flag or a read-only mount; on a `relatime` mount only when the access time
 /// is not after the last change or is a day old; else whenever it is not already now.
 pub(super) fn accessed(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, flags: u32) {
-    let now = kernel.now(cx);
-    let mut inode = node.borrow_mut();
     // Devices' own reads leave the time alone.
     let kept = matches!(
-        inode.content,
+        node.borrow().content,
         Content::Regular(_) | Content::Directory(_) | Content::Symlink(_)
     );
+    if kept {
+        touch_atime(kernel, cx, node, flags);
+    }
+}
+
+/// Linux's `touch_atime` itself, which a splice also makes for a device it read.
+fn touch_atime(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, flags: u32) {
+    let now = kernel.now(cx);
+    let mut inode = node.borrow_mut();
     if inode.fs.kind != crate::fs::Kind::Tmpfs
-        || !kept
         || flags & O_NOATIME != 0
         || inode.fsflags & FS_NOATIME_FL != 0
         || inode.fs.read_only()
@@ -1582,11 +1677,116 @@ pub(super) fn fcntl(
             file.flags = (file.flags & !SETTABLE_FLAGS) | (wanted & SETTABLE_FLAGS);
             Ok(0)
         }
+        F_CREATED_QUERY => Ok(u64::from(descriptor.file.borrow().created)),
+        F_DUPFD_QUERY => {
+            let other = files.file(argument as i32)?;
+            Ok(u64::from(alloc::rc::Rc::ptr_eq(&other, &descriptor.file)))
+        }
+        // Record locks are not built: the lock is read, then answered as Linux without file locking
+        // answers (`fcntl_getlk` and `fcntl_setlk`'s stubs).
         F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW if !path_only => {
+            guest(kernel, cx, tid).read(argument, size_of::<flock>() as u64)?;
             kernel
                 .counters
                 .count(cx.host, reason::LOCKS_NOT_IMPLEMENTED, command);
-            Err(Errno::ENOSYS)
+            match command as u32 {
+                F_GETLK | F_OFD_GETLK => Err(Errno::EINVAL),
+                _ => Err(Errno::EACCES),
+            }
+        }
+        // No lease can be taken, so a file never holds one.
+        F_GETLEASE if !path_only => Ok(u64::from(F_UNLCK)),
+        F_GETOWN if !path_only => {
+            let owner = descriptor.file.borrow().owner;
+            Ok(owner.map_or(0, |owner| match owner_lives(kernel, &owner) {
+                true if owner.kind == OwnerKind::Group => -owner.pid,
+                true => owner.pid,
+                false => 0,
+            }) as i64 as u64)
+        }
+        F_SETOWN if !path_only => {
+            // `f_setown`: below zero names a group.
+            let who = argument as i32;
+            if who == i32::MIN {
+                return Err(Errno::EINVAL);
+            }
+            let kind = if who < 0 {
+                OwnerKind::Group
+            } else {
+                OwnerKind::Process
+            };
+            set_owner(kernel, &descriptor.file, who.abs(), kind)
+        }
+        F_GETOWN_EX if !path_only => {
+            let owner = descriptor.file.borrow().owner.unwrap_or_default();
+            let pid = if owner_lives(kernel, &owner) {
+                owner.pid
+            } else {
+                0
+            };
+            let kind = match owner.kind {
+                OwnerKind::Thread => F_OWNER_TID,
+                OwnerKind::Process => F_OWNER_PID,
+                OwnerKind::Group => F_OWNER_PGRP,
+            };
+            let mut bytes = [0u8; size_of::<f_owner_ex>()];
+            bytes[..4].copy_from_slice(&kind.to_le_bytes());
+            bytes[4..].copy_from_slice(&pid.to_le_bytes());
+            guest(kernel, cx, tid).write(argument, &bytes)?;
+            Ok(0)
+        }
+        F_SETOWN_EX if !path_only => {
+            let bytes = guest(kernel, cx, tid).read(argument, size_of::<f_owner_ex>() as u64)?;
+            let word = |at: usize| i32::from_le_bytes(bytes[at..at + 4].try_into().expect("4"));
+            let kind = match word(0) as u32 {
+                F_OWNER_TID => OwnerKind::Thread,
+                F_OWNER_PID => OwnerKind::Process,
+                F_OWNER_PGRP => OwnerKind::Group,
+                _ => return Err(Errno::EINVAL),
+            };
+            set_owner(kernel, &descriptor.file, word(4), kind)
+        }
+        F_GETSIG if !path_only => Ok(descriptor
+            .file
+            .borrow()
+            .owner
+            .map_or(0, |owner| owner.signal as u64)),
+        F_SETSIG if !path_only => {
+            let signal = argument as i32;
+            if !(0..=crate::process::SIGNALS as i32).contains(&signal) {
+                return Err(Errno::EINVAL);
+            }
+            let mut file = descriptor.file.borrow_mut();
+            file.owner.get_or_insert_default().signal = signal;
+            Ok(0)
+        }
+        // Only pipes have a size (`pipe_fcntl`); the standard streams' pipes are not built.
+        F_GETPIPE_SZ | F_SETPIPE_SZ
+            if !path_only
+                && !matches!(
+                    descriptor.file.borrow().node.borrow().content,
+                    Content::HostStream(_)
+                ) =>
+        {
+            Err(Errno::EBADF)
+        }
+        F_GET_RW_HINT if !path_only => {
+            let hint = descriptor.file.borrow().node.borrow().write_hint;
+            guest(kernel, cx, tid).write(argument, &hint.to_le_bytes())?;
+            Ok(0)
+        }
+        F_SET_RW_HINT if !path_only => {
+            let node = descriptor.file.borrow().node.clone();
+            let credentials = &kernel.process_of(tid).credentials;
+            if !credentials.owns_or_capable(node.borrow().uid) {
+                return Err(Errno::EPERM);
+            }
+            let hint: u64 = guest(kernel, cx, tid).read_value(argument)?;
+            if hint > u64::from(RWH_WRITE_LIFE_EXTREME) {
+                return Err(Errno::EINVAL);
+            }
+            node.borrow_mut().write_hint = hint;
+            Ok(0)
         }
         F_ADD_SEALS if !path_only => {
             super::memfd::add_seals(kernel, &descriptor.file.borrow(), argument)
@@ -1596,10 +1796,44 @@ pub(super) fn fcntl(
         _ => {
             kernel
                 .counters
-                .count(cx.host, reason::FCNTL_UNKNOWN, command);
+                .count(cx.host, reason::FCNTL_NOT_BUILT, command);
             Err(Errno::EINVAL)
         }
     }
+}
+
+/// Whether a number is in use by a thread, process, group or session (Linux's `find_vpid`).
+fn pid_in_use(kernel: &Kernel, pid: i32) -> bool {
+    kernel.threads.contains_key(&pid)
+        || kernel
+            .processes
+            .values()
+            .any(|process| process.pid == pid || process.group == pid || process.session == pid)
+}
+
+/// Whether a task of the owner's kind lives under its number (`pid_task`).
+fn owner_lives(kernel: &Kernel, owner: &Owner) -> bool {
+    match owner.kind {
+        OwnerKind::Thread => kernel.threads.contains_key(&owner.pid),
+        OwnerKind::Process => kernel.processes.contains_key(&owner.pid),
+        OwnerKind::Group => kernel
+            .processes
+            .values()
+            .any(|process| process.group == owner.pid),
+    }
+}
+
+/// `f_setown` and `f_setown_ex`: a number in use, or 0 for none, becomes the file's owner; the signal
+/// stays.
+fn set_owner(kernel: &Kernel, file: &FileRef, pid: i32, kind: OwnerKind) -> Result<u64, Errno> {
+    if pid != 0 && !pid_in_use(kernel, pid) {
+        return Err(Errno::ESRCH);
+    }
+    let mut file = file.borrow_mut();
+    let owner = file.owner.get_or_insert_default();
+    owner.pid = pid;
+    owner.kind = kind;
+    Ok(0)
 }
 
 /// `fsync` and `fdatasync`: everything is in memory, so there is nothing to wait for. Files with no
