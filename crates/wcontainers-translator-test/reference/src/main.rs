@@ -342,6 +342,11 @@ fn cases() {
     }
 }
 
+/// The blob ran out of time: the status of a process killed by SIGALRM.
+extern "C" fn timed_out(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c_void) {
+    unsafe { libc::_exit(128 + libc::SIGALRM) };
+}
+
 fn blob(path: &str, load: u64, stack_top: u64) {
     let bytes = std::fs::read(path).expect("read the blob");
     let length = (bytes.len() as u64).next_multiple_of(PAGE);
@@ -367,7 +372,10 @@ fn blob(path: &str, load: u64, stack_top: u64) {
         *guest = [0; 35];
         guest[31] = sp;
         guest[32] = load;
-        // A program that does not end in this time is killed by SIGALRM (random programs may loop).
+        // A program that does not end in this time ends as if killed by SIGALRM (random programs may
+        // loop). In Docker the runner is the first process, which a signal's default action never kills,
+        // so a handler ends it.
+        handle(libc::SIGALRM, timed_out);
         libc::alarm(BLOB_SECONDS);
         libc::raise(libc::SIGUSR1);
     }

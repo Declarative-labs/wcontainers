@@ -101,6 +101,28 @@ Tests:
   to none in registers and memory. `differences_match_linux_on_other_hosts`: -O0 and -O2 translated for a
   host that does not fuse and needs the fix-up: output equal to Linux, both slow paths counted.
 
+Layer 3 (`src/layer3.rs`, `tests/layer3.rs`): Csmith 2.4 programs (`--max-funcs 8 --max-block-depth 4`)
+and the hand-picked programs (hello: printf; differences: number printing, qsort, strtod and section 8),
+built with clang (zig cc) or gcc 15.2 (Alpine's, in the Docker image `wc-translator-gcc`, made once by the
+test) at -O0, -O1, -O2, -O3, -Os and -Oz, as flat blobs with fixed position code (`-fno-pic`) or position
+independent code (`-fPIE`, data through the global offset table), linked at the fixed load address. At none
+and full: output and status equal to Linux, full equal to none in registers and memory. A Csmith program
+that does not end on Linux in 20 seconds (the reference's blob mode now has that alarm) is not compared,
+and counted. `flat.ld` keeps unwind tables as read-only data now, as gcc's start files refer to them.
+Not done: a position independent blob loaded at an address other than its link address. That needs the
+program's own relocation at start (musl's rcrt1 finds itself through AT_PHDR, and flat blobs have no
+program headers), which is ELF loading, the kernel phase's job; see "Next".
+
+Measured (floating point, `tests/programs.rs` `floats_speed`, ignored, one command; `programs/floats.c`
+at -O2 SCALE=1: an n-body step in double precision and a single precision matrix product; wasmtime, full,
+best of 3, load 13 to 31): 4.9 times native as first built (native 0.101 s), 4.3 to 4.5 with the float mode
+kept in a local at full (kept). Experiments not kept, each one run at load 15 to 165: with the mode test
+taken out, 2.3; with the test kept but the slow path made `unreachable`, 2.5; with one hook call in the
+slow path instead of one a lane, 4.2. So the cost is any call on the slow path inside the hot function, not
+the test itself: the next step is a slow path that leaves the piece (a tail call, or carrying on at none
+from the instruction) instead of calling the hook in place. Vector registers are locals at full since M2;
+how much locals gain for them alone is not measured (there is no variant without).
+
 Found by layer 1 and fixed on the way (each was a wrong meaning): selects with their operands swapped in
 saturating 64 bit add and subtract, signed shifts by register, half precision signs, rounding to infinity
 on overflow, polynomial multiply; a mask built as `cond - 0`; the denormal normalisation of FRSQRTE; FRECPX
@@ -985,6 +1007,10 @@ contract's bits, in both runners).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
+- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
+  (defaults 4 Csmith programs, seed 1; the hand-picked programs are 48 builds each run). Needs Docker, and
+  network once to make the gcc image.
+- Floating point timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
 - Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (defaults: 64 cases, seed 1). Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>`.
@@ -1002,6 +1028,16 @@ contract's bits, in both runners).
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
 ## Cases actually run
+
+- M3, layer 3, release: 4 Csmith programs seed 1 and the 48 hand-picked builds (hello and differences x
+  clang, gcc x six levels x two positions): all match (59 s, load 5 to 6). 300 Csmith programs, seed 2
+  (18.8 minutes, load 5 to 30): 256 compared and matching, 43 did not end on Linux in 20 seconds, 1
+  failing: Csmith 2000136 (clang -O0), where Linux gave SIGSEGV and no output and ours printed the
+  checksum. The same blob on the reference afterwards: 15 runs of 15 print that same checksum, as does the
+  program built as an ordinary Linux executable, with a 1 MiB stack too. So the failure looks like a flake
+  of the reference's blob mode under load, not understood; the test is left as it is (it fails when that
+  happens) and this is recorded. A first 300 run hung: the reference is the first process in its container,
+  which SIGALRM's default action never kills; the blob mode now ends from a handler.
 
 - M3, release: layer 1, 1215 forms x 16 cases, seed 1: 0 mismatches (after the fixes above; 8 cases a form
   first gave 104 failing forms, then 17). Debug run of every test: 1215 forms x 64, seed 1, 0 mismatches
@@ -1159,9 +1195,12 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M3: layer 3 (Csmith and the hand-picked programs, built with clang and gcc at every level, fixed address
-   and position independent, at none and full against Linux), then the long layer 1 run (10,000 a form).
-2. M3: measure vector registers in locals at full (they are locals since M2) on a floating point workload.
+1. M3: move floating point's slow path out of the hot function (see the measurement in "M3, first run"):
+   it doubles floating point code at full now.
+2. M3: the long runs, started by the orchestrator: layer 1 at 10,000 a form, layer 3 at 100,000 Csmith
+   programs (commands under "How to run"); a sample of each in Chrome.
+3. M3: a position independent blob loaded away from its link address (needs program headers in flat blobs
+   and AT_PHDR in the starting stack, or the kernel phase's ELF loading).
 3. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
@@ -1357,6 +1396,9 @@ contract's bits, in both runners).
   `memory_may_move(false)`).
 
 ## Shared crate (wcontainers-abi)
+
+- M3: no change. The CPU side's own words (float tracking, exclusive monitor) are after the abi's block, in
+  the translator's contract (`THREAD_STATE_SIZE`), not in the abi.
 
 - Added `Exit::AlignmentFault { address }` (one new variant, additive): a load or store through an SP that
   is not a multiple of 16 (`pc` at the instruction, `address` = SP), or a jump to an address that is not a
