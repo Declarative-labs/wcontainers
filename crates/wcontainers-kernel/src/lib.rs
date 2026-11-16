@@ -158,6 +158,8 @@ pub struct Kernel {
     ipc: syscall::ipc::Ipc,
     /// Every futex with waiters.
     futexes: syscall::futex::Futexes,
+    /// Every timer.
+    timers: syscall::timer::Timers,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -209,6 +211,7 @@ impl Kernel {
             counters: Counters::default(),
             ipc: Default::default(),
             futexes: Default::default(),
+            timers: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,
@@ -274,6 +277,8 @@ impl Kernel {
         self.account(&mut cx, tid);
         self.tick(tid);
         self.wake_due();
+        syscall::timer::fire_due(self, &mut cx);
+        syscall::timer::cpu_check(self, &mut cx, tid);
         self.tell_continued(&mut cx, tid);
         self.came_back(&mut cx, tid, exit);
         self.settle(&mut cx);
@@ -291,6 +296,7 @@ impl Kernel {
             Event::Timer => {
                 self.entry_now = cx.monotonic();
                 self.wake_due();
+                syscall::timer::fire_due(self, &mut cx);
                 self.settle(&mut cx);
                 return;
             }

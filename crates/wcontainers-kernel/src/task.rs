@@ -70,10 +70,9 @@ impl Kernel {
         let timer = self
             .next_deadline()
             .map(|at| at.saturating_sub(self.last_now).max(1));
-        let slice_nanoseconds = match (fair, timer) {
-            (Some(fair), Some(timer)) => Some(fair.min(timer)),
-            (fair, timer) => fair.or(timer),
-        };
+        // So does a CPU timer of the thread's or its process's.
+        let cpu = syscall::timer::cpu_slice(self, tid);
+        let slice_nanoseconds = [fair, timer, cpu].into_iter().flatten().min();
         Next::Run {
             thread: thread.cpu,
             resume: thread.resume,
@@ -83,7 +82,10 @@ impl Kernel {
 
     /// The earliest time a parked call ends anyway.
     fn next_deadline(&self) -> Option<u64> {
-        self.parked.earliest()
+        match (self.parked.earliest(), self.timers.earliest()) {
+            (Some(parked), Some(timer)) => Some(parked.min(timer)),
+            (parked, timer) => parked.or(timer),
+        }
     }
 
     /// Charges the thread that ran for the time since it was handed out.
@@ -483,6 +485,7 @@ impl Kernel {
             }
         }
         self.release_vfork(pid);
+        syscall::timer::process_end(self, pid, false);
         syscall::sem::exit_sem(self, cx, pid);
         let process = self.processes.get_mut(&pid).expect("process exists");
         process.threads.clear();

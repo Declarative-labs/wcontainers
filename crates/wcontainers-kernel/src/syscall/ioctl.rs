@@ -382,6 +382,15 @@ fn own(
     if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
         return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
     }
+    // `timerfd_ioctl`.
+    if super::timer::of(&file.borrow()).is_some() {
+        return match request {
+            crate::linux::ioctl::TFD_IOC_SET_TICKS => {
+                super::timer::set_ticks(kernel, cx, tid, file, argument)
+            }
+            _ => Err(Errno::ENOTTY),
+        };
+    }
     let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();

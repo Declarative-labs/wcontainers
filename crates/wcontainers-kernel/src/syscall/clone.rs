@@ -196,6 +196,7 @@ fn make_child(
     process.stopped = false;
     process.report = None;
     process.continued_unsent = false;
+    process.next_timer = 0;
     process.ended_time = 0;
     process.children_time = 0;
     process.children_maxrss = 0;

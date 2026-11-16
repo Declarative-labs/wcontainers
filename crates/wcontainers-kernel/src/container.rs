@@ -402,6 +402,7 @@ impl Kernel {
             stopped: false,
             report: None,
             continued_unsent: false,
+            next_timer: 0,
             ended_time: 0,
             children_time: 0,
             children_maxrss: 0,

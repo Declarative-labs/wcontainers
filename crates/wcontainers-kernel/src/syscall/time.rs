@@ -16,7 +16,7 @@ pub(super) fn cpu_time(kernel: &Kernel, _: &mut Context<'_>, tid: Tid) -> u64 {
 }
 
 /// The CPU time a process has used, one that has ended included.
-fn process_cpu_time(kernel: &Kernel, pid: Pid) -> u64 {
+pub(super) fn process_cpu_time(kernel: &Kernel, pid: Pid) -> u64 {
     let process = &kernel.processes[&pid];
     process.ended_time
         + process
@@ -66,6 +66,13 @@ fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<
             return Err(Errno::EINVAL);
         }
         let target = cpu_clock_target(kernel, tid, id, true).ok_or(Errno::EINVAL)?;
+        if id & CPUCLOCK_PERTHREAD_MASK != 0 {
+            let thread = match !(id >> 3) {
+                0 => tid,
+                other => other,
+            };
+            return Ok(kernel.threads.get(&thread).map_or(0, |found| found.runtime));
+        }
         return Ok(process_cpu_time(kernel, target));
     }
     Ok(match clock as u32 {
@@ -77,7 +84,8 @@ fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<
         | CLOCK_MONOTONIC_COARSE
         | CLOCK_BOOTTIME
         | CLOCK_BOOTTIME_ALARM => cx.monotonic(),
-        CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => cpu_time(kernel, cx, tid),
+        CLOCK_PROCESS_CPUTIME_ID => cpu_time(kernel, cx, tid),
+        CLOCK_THREAD_CPUTIME_ID => kernel.threads[&tid].runtime,
         _ => return Err(Errno::EINVAL),
     })
 }

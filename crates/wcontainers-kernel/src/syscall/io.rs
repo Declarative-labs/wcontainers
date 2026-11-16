@@ -713,6 +713,9 @@ fn vectored(
     if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, parts);
     }
+    if writing.is_none() && super::timer::of(&file.borrow()).is_some() {
+        return super::timer::read(kernel, cx, tid, file, parts);
+    }
     verify_area(offset.unwrap_or(file.borrow().offset), total)?;
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
@@ -932,6 +935,9 @@ pub(super) fn read_at(
     }
     if super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::timer::of(&file.borrow()).is_some() {
+        return super::timer::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
@@ -2505,9 +2511,10 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             super::pidfd::poll(kernel, &file)
         }
         Content::Mqueue(queue) => queue.poll(),
-        Content::Anon => match super::signalfd::mask_of(&file) {
-            Some(mask) => super::signalfd::poll(kernel, tid, mask),
-            None => 0,
+        Content::Anon => match (super::signalfd::mask_of(&file), super::timer::of(&file)) {
+            (Some(mask), _) => super::signalfd::poll(kernel, tid, mask),
+            (_, Some(timer)) => super::timer::poll(kernel, timer),
+            _ => 0,
         },
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }

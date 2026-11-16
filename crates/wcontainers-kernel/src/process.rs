@@ -83,6 +83,8 @@ pub(crate) struct Process {
     pub dumpable: bool,
     /// Signal handlers as `rt_sigaction` set them, by signal number less one.
     pub actions: [kernel_sigaction; SIGNALS],
+    /// The number the next POSIX timer it makes gets.
+    pub next_timer: i32,
     /// `PR_SET_CHILD_SUBREAPER`: orphaned descendants come to this process.
     pub child_subreaper: bool,
     /// `PR_SET_THP_DISABLE`'s value as `PR_GET_THP_DISABLE` reports it; kept across `execve`.
@@ -148,6 +150,9 @@ pub(crate) struct Queued {
     /// a signal whose information was lost to a full queue.
     #[allow(dead_code, reason = "held for what its drop does")]
     pub charge: Option<Charge>,
+    /// Sent by a POSIX timer (Linux's preallocated `sigqueue` of the timer), which decides at
+    /// delivery whether it still counts.
+    pub timer: bool,
 }
 
 /// One queued signal in a user's count (Linux's `UCOUNT_RLIMIT_SIGPENDING`), which
@@ -201,6 +206,7 @@ impl Pending {
                     0,
                 ),
                 charge: None,
+                timer: false,
             });
         };
         let queued = self.queue.remove(index);

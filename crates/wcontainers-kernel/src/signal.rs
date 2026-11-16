@@ -344,6 +344,7 @@ impl Kernel {
                 signal,
                 info,
                 charge,
+                timer: false,
             });
         }
         self.wake_readiness_of(pid);
@@ -450,15 +451,22 @@ impl Kernel {
             };
             Some(first.trailing_zeros() + 1)
         };
-        if let Some(signal) = choose(self.threads[&tid].pending.set) {
-            return self.thread_mut(tid).pending.take(signal);
+        loop {
+            let mut queued = if let Some(signal) = choose(self.threads[&tid].pending.set) {
+                self.thread_mut(tid).pending.take(signal)
+            } else {
+                let signal = choose(self.processes[&pid].pending.set)?;
+                self.processes
+                    .get_mut(&pid)
+                    .expect("process")
+                    .pending
+                    .take(signal)
+            }?;
+            // A stale timer's signal is dropped and the next one taken.
+            if crate::syscall::timer::taken(self, pid, &mut queued) {
+                return Some(queued);
+            }
         }
-        let signal = choose(self.processes[&pid].pending.set)?;
-        self.processes
-            .get_mut(&pid)
-            .expect("process")
-            .pending
-            .take(signal)
     }
 
     /// On a thread's way back to the guest, after a call (`resume` carries its answer), a stop or a
@@ -947,6 +955,7 @@ impl Kernel {
                 signal,
                 info,
                 charge,
+                timer: false,
             });
         }
     }

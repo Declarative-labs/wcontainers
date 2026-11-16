@@ -261,7 +261,9 @@ fn exec(
             .unwrap_or_default()
             .to_vec();
     }
-    // `de_thread`: the other threads end, and the caller takes the process's number.
+    // `de_thread`: the other threads end, and the caller takes the process's number; the POSIX
+    // timers go (`exit_itimers`).
+    super::timer::process_end(kernel, pid, true);
     let tid = kernel.only_thread(cx, pid, tid);
     kernel.install_image(cx, pid, tid, image);
     Ok(Exec::Started(tid))

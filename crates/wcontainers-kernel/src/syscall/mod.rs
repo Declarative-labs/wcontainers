@@ -25,6 +25,7 @@ mod signals;
 mod splice;
 mod system;
 mod time;
+pub(crate) mod timer;
 pub(crate) mod tty;
 mod xattr;
 
@@ -287,6 +288,16 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_nanosleep, F(time::nanosleep)),
         (__NR_clock_nanosleep, F(time::clock_nanosleep)),
         (__NR_times, S(time::times)),
+        (__NR_getitimer, S(timer::getitimer)),
+        (__NR_setitimer, S(timer::setitimer)),
+        (__NR_timer_create, S(timer::timer_create)),
+        (__NR_timer_settime, S(timer::timer_settime)),
+        (__NR_timer_gettime, S(timer::timer_gettime)),
+        (__NR_timer_getoverrun, S(timer::timer_getoverrun)),
+        (__NR_timer_delete, S(timer::timer_delete)),
+        (__NR_timerfd_create, S(timer::timerfd_create)),
+        (__NR_timerfd_settime, S(timer::timerfd_settime)),
+        (__NR_timerfd_gettime, S(timer::timerfd_gettime)),
         // The machine.
         (__NR_uname, S(system::uname)),
         (__NR_sethostname, S(system::sethostname)),

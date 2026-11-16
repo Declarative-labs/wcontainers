@@ -47,6 +47,8 @@ pub(crate) struct OpenFile {
 pub(crate) enum Anon {
     /// A signal descriptor and the signals it reads.
     Signals(u64),
+    /// A timer descriptor and its timer.
+    Timer(u64),
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
