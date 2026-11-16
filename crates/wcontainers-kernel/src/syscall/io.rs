@@ -1605,9 +1605,14 @@ pub(super) fn getdents64(
             .and_then(|parent| parent.upgrade())
             .map_or(inode.ino, |parent| parent.borrow().ino);
         match &inode.content {
-            // devpts lists by count (`dcache_readdir`): `.` at 0, `..` at 1, then each entry at the
-            // next number, newest first.
-            Content::Directory(directory) if inode.fs.kind == crate::fs::Kind::Devpts => {
+            // devpts and mqueue list by count (`dcache_readdir`): `.` at 0, `..` at 1, then each
+            // entry at the next number, newest first.
+            Content::Directory(directory)
+                if matches!(
+                    inode.fs.kind,
+                    crate::fs::Kind::Devpts | crate::fs::Kind::Mqueue
+                ) =>
+            {
                 if position == 0 {
                     entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 0, 1));
                 }

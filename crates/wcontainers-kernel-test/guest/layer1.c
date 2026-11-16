@@ -131,10 +131,18 @@ static uint32_t lists_processes(int fd) {
 
 // Whether a descriptor is on /dev/random or /dev/urandom, whose bytes differ between the runners. By
 // the bare call: musl's fstat may also call fcntl, which a sequence's filter would see.
+// The device of the mqueue file system, found at the start.
+static dev_t mqueue_device;
+
+// A random device, or a message queue, whose file reads as its notification's process number,
+// which differs between the runners.
 static int random_device(uint64_t fd) {
     struct stat st;
-    return syscall(SYS_fstat, (int)fd, &st) == 0 && S_ISCHR(st.st_mode) && major(st.st_rdev) == 1 &&
-           (minor(st.st_rdev) == 8 || minor(st.st_rdev) == 9);
+    if (syscall(SYS_fstat, (int)fd, &st) != 0) {
+        return 0;
+    }
+    return (S_ISCHR(st.st_mode) && major(st.st_rdev) == 1 && (minor(st.st_rdev) == 8 || minor(st.st_rdev) == 9)) ||
+           (S_ISREG(st.st_mode) && st.st_dev == mqueue_device);
 }
 
 #define MAX_RW_COUNT 0x7ffff000UL
@@ -415,6 +423,11 @@ static void remake_devices(void) {
 
 int main(void) {
     remake_devices();
+    struct stat mqueue_root;
+    if (stat("/dev/mqueue", &mqueue_root) != 0) {
+        return 1;
+    }
+    mqueue_device = mqueue_root.st_dev;
     static unsigned char arena_init[ARENA_SIZE];
     static const char *const outliving_paths[] = {"/dev/shm", "/dev"};
     for (int index = 0; index < 2; index++) {
@@ -643,6 +656,18 @@ int main(void) {
                 removexattr(above[index], names + at);
             }
         }
+        // Every message queue goes, and the mqueue root gets back its owner and mode.
+        DIR *queues = opendir("/dev/mqueue");
+        for (struct dirent *entry; queues && (entry = readdir(queues));) {
+            if (entry->d_name[0] != '.') {
+                unlinkat(dirfd(queues), entry->d_name, 0);
+            }
+        }
+        if (queues) {
+            closedir(queues);
+        }
+        chown("/dev/mqueue", 0, 0);
+        chmod("/dev/mqueue", 01777);
         remake_devices();
         // `..` from a process directory reaches /proc, which keeps a change of owner or mode.
         chown("/proc", 0, 0);

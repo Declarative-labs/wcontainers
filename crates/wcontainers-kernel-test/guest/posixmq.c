@@ -106,7 +106,7 @@ static void listing(const char *what) {
     printf("%s:", what);
     struct dirent *e;
     while ((e = readdir(d)))
-        printf(" %s(%d)", e->d_name, e->d_type);
+        printf(" %s(%d %lld)", e->d_name, e->d_type, (long long)e->d_off);
     printf("\n");
     closedir(d);
 }

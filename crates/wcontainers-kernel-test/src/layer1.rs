@@ -64,6 +64,10 @@ const FLOCK_COUNT: u64 = 8;
 const SEMBUFS: u64 = 0x1d00;
 const SEMBUF_COUNT: u64 = 16;
 const SEMBUFS_NOWAIT: u64 = 12;
+/// Four `struct mq_attr` for mq_open and mq_getsetattr, 64 bytes apart.
+const MQ_ATTRS: u64 = 0x1d80;
+/// Four `struct sigevent` for mq_notify, 64 bytes apart, and the cookie a thread notification reads.
+const SIGEVENTS: u64 = 0x1e80;
 /// `sched_attr` structures for sched_setattr, 128 bytes apart.
 const SCHED_ATTRS: u64 = 0x2000;
 /// `file_handle` headers for name_to_handle_at, 128 bytes apart: room for 128 bytes, the 12 tmpfs
@@ -172,6 +176,9 @@ const PATH_POOL: &[&str] = &[
     "/proc/self/limits",
     // devpts's root, which statx and the others answer by its own rules.
     "/dev/pts",
+    // The mqueue file system and a queue in it, which mq_open names "a".
+    "/dev/mqueue",
+    "/dev/mqueue/a",
     // Pseudo-terminals: the master, the first two slaves, and the controlling terminal, which no
     // sequence has (every open is O_NOCTTY).
     "/dev/ptmx",
@@ -430,6 +437,40 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at..at + 2].copy_from_slice(&num.to_le_bytes());
         arena[at + 2..at + 4].copy_from_slice(&op.to_le_bytes());
         arena[at + 4..at + 6].copy_from_slice(&(undo | nowait).to_le_bytes());
+    }
+    // Queue attributes: flags (O_NONBLOCK or not, or another bit), limits within and past the
+    // namespace's.
+    for index in 0..4u64 {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(41);
+        let flags: i64 = [0, 0o4000, 0o4000, 1][(word % 4) as usize];
+        let most: i64 = [10, 4, 1, 0, 11, -1][((word >> 2) % 6) as usize];
+        let size: i64 = [8192, 16, 1, 0, 8193, 100][((word >> 5) % 6) as usize];
+        let at = (MQ_ATTRS + index * 64) as usize;
+        arena[at..at + 64].fill(0);
+        for (field, value) in [flags, most, size].iter().enumerate() {
+            arena[at + field * 8..at + field * 8 + 8].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    // Notification requests: a value or cookie address, a signal whose default action is nothing
+    // in both runners (or none, or past the last), and how to tell.
+    for index in 0..4u64 {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(47);
+        let value = [ARENA + SIGEVENTS + 256, 8, 0x1234][(word % 3) as usize];
+        let signal: u32 = [0, 17, 18, 23, 28, 65][((word >> 2) % 6) as usize];
+        let how: u32 = [0, 0, 1, 2, 7][((word >> 5) % 5) as usize];
+        let at = (SIGEVENTS + index * 64) as usize;
+        arena[at..at + 64].fill(0);
+        arena[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        arena[at + 8..at + 12].copy_from_slice(&signal.to_le_bytes());
+        arena[at + 12..at + 16].copy_from_slice(&how.to_le_bytes());
     }
     // Record lock requests: each kind, origin, start and length, and sometimes a process number
     // (which open file locks refuse).
@@ -1390,6 +1431,15 @@ pub const CALLS: &[u32] = &[
     linux::__NR_semtimedop,
     linux::__NR_semctl,
     linux::__NR_semctl,
+    linux::__NR_mq_open,
+    linux::__NR_mq_open,
+    linux::__NR_mq_unlink,
+    linux::__NR_mq_timedsend,
+    linux::__NR_mq_timedsend,
+    linux::__NR_mq_timedreceive,
+    linux::__NR_mq_timedreceive,
+    linux::__NR_mq_notify,
+    linux::__NR_mq_getsetattr,
 ];
 
 /// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
@@ -2136,6 +2186,52 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 0,
             ]
         }
+        // Message queues: names from the path pool, opens never waiting, sends and receives always
+        // with a time that has passed or is refused, so nothing waits.
+        linux::__NR_mq_open => [
+            path(a),
+            u64::from(linux::O_NONBLOCK)
+                | (b % 4)
+                | pick(&[0, 0o100, 0o100, 0o300, 0o40000, 0o1000, 1 << 25], b >> 2),
+            c % 0o1000,
+            pick(&[0, 0, ARENA + MQ_ATTRS, u64::MAX - 4095], d)
+                + (d >> 3) % 4 * 64 * u64::from(d % 4 == 2),
+            0,
+            0,
+        ],
+        linux::__NR_mq_unlink => [path(a), 0, 0, 0, 0, 0],
+        linux::__NR_mq_timedsend => [
+            fd(a),
+            buffer(b),
+            pick(&[0, 1, 16, 100, 8192, 8193], c),
+            pick(&[0, 1, 5, 5, 32767, 32768, 1 << 32], d),
+            ARENA + VALUES + 56 * 8 + (e % 4) * 16,
+            0,
+        ],
+        linux::__NR_mq_timedreceive => [
+            fd(a),
+            buffer(b),
+            pick(&[0, 16, 8192, 9000, u64::MAX], c),
+            pick(&[0, buffer(d)], d >> 3),
+            ARENA + VALUES + 56 * 8 + (e % 4) * 16,
+            0,
+        ],
+        linux::__NR_mq_notify => [
+            fd(a),
+            pick(&[0, ARENA + SIGEVENTS, 8], b) + (b >> 3) % 4 * 64 * u64::from(b % 3 == 1),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_mq_getsetattr => [
+            fd(a),
+            pick(&[0, ARENA + MQ_ATTRS, 8], b) + (b >> 3) % 4 * 64 * u64::from(b % 3 == 1),
+            pick(&[0, buffer(c)], c >> 3),
+            0,
+            0,
+            0,
+        ],
         linux::__NR_mprotect => [play(a), play_length(b), prot(c), 0, 0, 0],
         linux::__NR_pkey_mprotect => [
             play(a),
