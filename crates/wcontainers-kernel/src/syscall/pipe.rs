@@ -57,10 +57,20 @@ pub(super) fn pipe2(
             name: Vec::new(),
         },
     )?;
-    let kept = flags & (O_NONBLOCK | O_DIRECT);
+    // Only the writing end takes packet mode (`create_pipe_files`).
     let opener = kernel.process_of(tid).credentials.serial;
-    let reader = OpenFile::new(node.clone(), O_RDONLY | kept, Vec::new(), opener);
-    let writer = OpenFile::new(node.clone(), O_WRONLY | kept, Vec::new(), opener);
+    let reader = OpenFile::new(
+        node.clone(),
+        O_RDONLY | (flags & O_NONBLOCK),
+        Vec::new(),
+        opener,
+    );
+    let writer = OpenFile::new(
+        node.clone(),
+        O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT)),
+        Vec::new(),
+        opener,
+    );
     attach(&node, &reader);
     attach(&node, &writer);
     let close_on_exec = flags & O_CLOEXEC != 0;
