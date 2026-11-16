@@ -6,7 +6,57 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
 processes): the eighth run declared it done; two independent checks followed; the ninth run fixed the
-first one's findings and the tenth the second's (below). See Next for what is left.
+first one's findings and the tenth the second's (below). K3 (threads): the first run fixed the K2
+check's last findings and built threads, futexes and timers (below); K3 is not complete, see Next.
+
+Built in K3's first run:
+- The K2 check's findings: preadv2 and pwritev2 with RWF_NOWAIT refuse every regular tmpfs file
+  (EOPNOTSUPP; devices and pipes take it; measured, tests/rwmodes.rs); fallocate's modes follow Linux
+  7.0's switch on FALLOC_FL_MODE_MASK (FALLOC_FL_WRITE_ZEROES known; every mode 0 to 255 compared in
+  rwmodes); a continued child's CLD_CONTINUED SIGCHLD is sent when one of its threads next comes back
+  from running (`get_signal`), or at once if every thread is parked, while a wait sees it at once
+  (`Process::continued_unsent`, tests/procsignals.rs `continued`); a splice or sendfile from a terminal
+  into a pipe holds the pipe's lock while it waits (`Pipe::held_by` and `Call::holds`; reads, writes,
+  splices and sendfile into that pipe wait, signals do not end that wait; tests/terminal.rs
+  `splice_holds_the_pipe`), see Known gaps for what is left; a CPU side that cannot make a memory,
+  thread or shared block is counted "host cannot do this" (`Context::cpu_error`); the missing count
+  in the status file is fixed.
+- Threads (src/syscall/clone.rs `make_thread`): clone with CLONE_THREAD on the caller's process and
+  memory, its own stack and thread pointer, CLONE_PARENT_SETTID, CLONE_CHILD_SETTID,
+  CLONE_CHILD_CLEARTID, no alternate stack and no rseq area, a reset scheduling policy with
+  SCHED_RESET_ON_FORK; Linux's flag checks (CLONE_THREAD needs CLONE_SIGHAND, which needs CLONE_VM;
+  CLONE_NEWPID and CLONE_NEWUSER with it EINVAL). A thread ending alone runs `mm_release` (its robust
+  list, its priority inheriting locks handed on, its thread id address cleared and woken); the last
+  thread's status is the group's (`synchronize_group_exit`, measured: the first thread exiting with 3
+  and the last with 7 reports 7). exit_group and fatal signals end every thread, each through
+  `mm_release`. execve from any thread ends the others and the caller takes the process's number
+  (`Kernel::only_thread`, `de_thread`). A stopped process's parked threads stay parked (before, a
+  stop took them out of the parked index and they were never woken). tests/threads.rs `threadlife`.
+- Futexes (src/syscall/futex.rs): FUTEX_WAIT, WAKE, WAIT_BITSET, WAKE_BITSET, REQUEUE, CMP_REQUEUE,
+  WAKE_OP (every op and comparison), LOCK_PI, LOCK_PI2, UNLOCK_PI, TRYLOCK_PI, WAIT_REQUEUE_PI,
+  CMP_REQUEUE_PI; futex_waitv, futex_wake, futex_wait and futex_requeue. Keys as `get_futex_key`
+  (private: memory and address; shared in a shared mapping: the file and offset). Waiters queue in
+  arrival order (all threads have one priority here, so Linux's priority list is that order) and park
+  on `Channel::Futex`; a wake takes the waiter off its queue first, so the call run again knows. Time
+  outs on both clocks with the thread's slack for FUTEX_WAIT and none for futex2; a signal ends a wait
+  with ERESTARTSYS, or with a timeout continues from `restart_syscall` (`Restart::Futex`); LOCK_PI
+  answers ERESTARTNOINTR. tests/threads.rs `futexes` (every operation's checks, waits, requeues,
+  wake-op, PI handover, futex2) and `threads` (pthread locks, conditions, barriers, read-write locks,
+  semaphores, robust locks between threads and between processes, a PI mutex).
+- Timers (src/syscall/timer.rs) on the kernel's one timer queue: getitimer and setitimer (ITIMER_REAL
+  rearmed when SIGALRM is taken, the CPU ones on the process's CPU time), timer_create (every clock,
+  SIGEV_NONE, SIGEV_SIGNAL, SIGEV_THREAD, SIGEV_THREAD_ID, the default event, numbers taken even by a
+  failed create), timer_settime, timer_gettime, timer_getoverrun (overruns counted until the signal is
+  taken, then rearmed as `posixtimer_deliver_signal` does; a signal sent before the timer was set
+  again or deleted is dropped when taken, measured), timer_delete; timerfd_create, timerfd_settime,
+  timerfd_gettime, reads, poll, TFD_IOC_SET_TICKS. A CPU timer ends the running thread's turn when it
+  is due (`timer::cpu_slice`). CLOCK_THREAD_CPUTIME_ID and per-thread CPU clocks read the thread's own
+  time (they read the process's before). tests/timers.rs.
+- Seeded schedules: the test driver ends each turn at a point in its slice drawn from the seed
+  (driver.rs), so a run repeats for a seed and threads interleave differently under different
+  seeds. `assert_same_output_seeded` runs ours under `SCHEDULE_SEEDS` seeds (3 if unset) from
+  `SCHEDULE_SEED` (1 if unset), optionally with saves; tests/threads.rs `threads_survive_saving` saves
+  and brings back 6 times per seed with threads waiting and running.
 
 Built in K2's tenth run (the second check's findings):
 - A child that has ended and is not yet reaped (tests/zombie.rs, guest/zombie.c, all measured):
@@ -703,12 +753,12 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (205): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+Done (220): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
 clock_nanosleep, clone, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit,
 exit_group, faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2,
 fchown, fchownat, fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat,
-fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
-getgroups, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit,
+fstatfs, fsync, ftruncate, futex, futex_requeue, futex_wait, futex_waitv, futex_wake, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
+getgroups, getitimer, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit,
 getrusage, getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill,
 lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
 membarrier, memfd_create, memfd_secret, mincore, mq_getsetattr, mq_notify, mq_open,
@@ -722,9 +772,10 @@ rt_sigtimedwait, rt_tgsigqueueinfo, sched_get_priority_max, sched_get_priority_m
 sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler, sched_rr_get_interval,
 sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler, sched_yield, seccomp,
 semctl, semget, semop, semtimedop, sendfile, set_robust_list, set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid,
-setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr, shmat,
+setitimer, setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr, shmat,
 shmctl, shmdt, shmget, sigaltstack, signalfd4, splice, statfs, statx, symlinkat, sync, sync_file_range, syncfs,
-sysinfo, tee, tgkill, times, tkill, truncate, umask, uname, unlinkat, utimensat, vmsplice, wait4,
+sysinfo, tee, tgkill, timer_create, timer_delete, timer_getoverrun, timer_gettime,
+timer_settime, timerfd_create, timerfd_gettime, timerfd_settime, times, tkill, truncate, umask, uname, unlinkat, utimensat, vmsplice, wait4,
 waitid, write, writev.
 
 Partial (inside the list above), each with its reason:
@@ -749,7 +800,6 @@ Partial (inside the list above), each with its reason:
   NO_SYMLINKS, BENEATH, IN_ROOT) are not built: counted "system call not implemented", ENOSYS, as a
   kernel before openat2 answers the whole call (Linux has had them as long as openat2); they need the
   path walk to refuse mount crossings, links and escapes, before K6's bar. RESOLVE_CACHED taken.
-- execve, execveat: only from a process with one thread (threads, K3).
 - getrusage, times, CPU-time clocks: CPU time is time not parked since the container started, all of
   it user time, never sampled at ticks as Linux's user and system times are (so a young process's
   profiling and user clocks are not 0 here as they may be there); with several threads (K3) a thread waiting for its turn would count. ru_maxrss is the
@@ -808,9 +858,18 @@ Partial (inside the list above), each with its reason:
   slice extension flag is counted and refused with EINVAL; the reference takes it.
 - process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
   `ptrace_may_access`, counted "call on another process not built", ENOSYS.
-- clone: the fork and vfork forms. Threads and shared tables (CLONE_THREAD, CLONE_FILES, CLONE_FS,
-  CLONE_SIGHAND) and CLONE_VM without CLONE_VFORK are counted "call flag not built", ENOSYS (K3 for
-  threads). Namespaces are refused by Docker's profile as in the reference.
+- clone: fork, vfork and threads. The process holds its descriptor table, file system context,
+  handlers and semaphore undo list, so a thread without CLONE_FILES, CLONE_FS or CLONE_SYSVSEM, a
+  thread with CLONE_VFORK or CLONE_PIDFD, and a process sharing the caller's tables (CLONE_FILES,
+  CLONE_FS, CLONE_SIGHAND without CLONE_THREAD) or its memory while both run (CLONE_VM without
+  CLONE_VFORK) are counted "call flag not built", ENOSYS (Linux accepts them). Every C library makes
+  its threads with all three. Namespaces are refused by Docker's profile as in the reference.
+- futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL. A shared
+  futex in a private file mapping is keyed by memory and address even before the page is copied
+  (Linux keys an unwritten page by the file).
+- timer_create: the timer's preallocated signal is not counted against RLIMIT_SIGPENDING (Linux
+  refuses a timer with EAGAIN over it). clock_nanosleep on a process's CPU clock still never ends
+  while the caller sleeps, even when other threads run.
 - pidfd_open: PIDFD_THREAD for a thread other than a process's first is counted "call flag not built",
   EINVAL (threads, K3). process_mrelease never frees anything: there is no dying process to free.
 - pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
@@ -836,12 +895,8 @@ file_getattr, file_setattr, acct, vhangup, swapoff, init_module, finit_module, r
 fspick, fsmount, move_mount, sethostname, setdomainname, fanotify_init. (sethostname and
 setdomainname keep handlers the profile keeps out of reach.)
 
-Missing (65, each counted "system call not implemented" and ENOSYS), with what each needs:
+Missing (40, each counted "system call not implemented" and ENOSYS), with what each needs:
 - Processes: ptrace (tracing is out of phase one).
-- Futexes (K3, with threads): futex, futex_waitv, futex_wake, futex_wait, futex_requeue.
-- Timers (K3, through the kernel's one timer queue): getitimer, setitimer, timer_create,
-  timer_gettime, timer_getoverrun, timer_settime, timer_delete, timerfd_create, timerfd_settime,
-  timerfd_gettime.
 - Waiting on many things (K5): epoll_create1, epoll_ctl, epoll_pwait, epoll_pwait2, eventfd2,
   inotify_init1, inotify_add_watch, inotify_rm_watch, fanotify_mark.
 - Sockets (K5): socket, socketpair, bind, listen, accept, accept4, connect, getsockname, getpeername,
@@ -855,6 +910,19 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   path walk).
 
 ## Known gaps (with reasons)
+
+- A thread's credentials, `comm` name and personality are its process's here; Linux keeps them per
+  thread (the C libraries change ids in every thread together, so only a raw setuid in one thread
+  shows the difference; PR_SET_NAME in a thread renames the process here). `/proc/<pid>/task` is
+  still not built (musl's pthread_setname_np writes `/proc/self/task/<tid>/comm`).
+- Woken calls run again at once (`settle`), not when their thread next gets the CPU. A terminal splice
+  into a pipe that a reader waits on hands the reader the line before the splicer runs again, so
+  `cat /dev/tty | cat` (busybox `cat` uses sendfile) shows the first line at once here; in the
+  reference the splicer has taken the pipe's lock again before the reader wakes (K2 check, 7 of 7
+  runs), and the first line waits for the second. A reader that comes to the pipe after the splicer
+  waits does wait (tests/terminal.rs `splice_holds_the_pipe`).
+- rseq critical sections are aborted when a handler runs, not yet when another thread takes the CPU
+  (`rseq_preempt`).
 
 - `/proc/<pid>/task` is not built (threads, K3); listing it is ENOENT here (an ignored test shows it).
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
@@ -1411,6 +1479,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K3, first run: layer 1 seed 93103 (the K2 check's) passed 25000 sequences with the RWF_NOWAIT fix,
+  378.88 s beside other work (load 36.75 at the start, 29.12 at the end).
+
 All on this shared Mac; noisy, not benchmarks.
 - K2 tenth run: the whole test suite of both crates 102 passed, 0 failed, 6 ignored, 3 min 2 s wall
   beside three 20000-sequence layer 1 runs (load 32 at the start, 30 at the end), head d4731cf.
@@ -1637,8 +1708,9 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "system call not implemented": the Missing list above (detail: the call number).
 - "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
   flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
-  (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), execve from a
-  process with more than one thread (ENOSYS), clone's thread and table sharing (ENOSYS), pidfd_open's
+  (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), clone's
+  table sharing between processes and threads that keep their own tables (ENOSYS), NUMA futexes
+  (EINVAL), pidfd_open's
   PIDFD_THREAD for a thread other than the first (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
   shmget's SHM_HUGETLB
   (ENOMEM).
@@ -1662,9 +1734,13 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
 Approximations that are not refusals have their own counters: "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
-written", "vmsplice pages copied". "wake to run" is a measurement (count and total nanoseconds), not a slow path.
+written", "vmsplice pages copied". "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
+this" counts a CPU side that answered it cannot make a memory, thread or shared block (ENOSYS to the
+guest).
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K3, first run: none.
 
 - K2, tenth run: none.
 - K2, ninth run: none.
@@ -1721,6 +1797,19 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K3, in order:
+1. `/proc/<pid>/task/<tid>/` (stat, status, comm, and the rest of a process directory per thread)
+   and per-thread `comm` (PR_SET_NAME, pthread_setname_np).
+2. rseq aborts on preemption; the scheduling calls and CFS weights with threads compared on one
+   CPU (tests/turns.rs pinned), sched_yield between threads.
+3. Layer 1: generate futex (nonblocking forms), the futex2 calls, the timer calls and timerfd.
+4. Layer 2: the C library's own thread tests (musl's libc-test functional pthread and timer tests)
+   under several seeds.
+5. Per-thread credentials and the clone combinations counted as not built.
+6. Three fresh layer 1 seeds of 20000 at the end of the milestone.
+
+Earlier:
 
 1. Both K2 checks' findings are fixed (ninth and tenth runs). The next milestone is K3 (see the
    plan); the known gaps above come before K6's bar. Left open, by choice: rseq aborts on preemption
