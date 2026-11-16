@@ -48,7 +48,10 @@ made by open or mknod; fixed), and FS_IOC_FSSETXATTR answering ENOTTY for extend
 not know on files that keep none (Linux refuses them first, EOPNOTSUPP; and it drops the report-only
 flags PREALLOC, ATOMICWRITES and HASATTR on tmpfs, measured; fixed), and sendfile from secret memory
 of nothing succeeding (Linux refuses secret memory as input even then, unless the output is a pipe,
-and as output at the first byte; measured; fixed). Layer 1 now generates every mmap flag,
+and as output at the first byte; measured; fixed). It also found a harness race under load 60 to 80:
+the reference's runner counted the arena's changed ranges and then wrote them in a second pass, while
+the reference kernel rewrote a registered rseq area's CPU number between the passes, which garbled
+the report (it now reports from one copy). Layer 1 now generates every mmap flag,
 more advice, statx masks, null stat paths and `/dev/pts`. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
 end of the kernel track. Next is K2.
 
@@ -688,6 +691,16 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+Thirteenth run (seventh close-out), after the fifth check: with the harness fixes and the sysctl
+fix (head after 321c3cd's kernel work, before the generator was widened) the check's seeds 6060601 and
+6060602 passed 20000 each (303 s, two side by side, load 10 to 17); 6060606 had passed 20000 on the
+old head once the masked bytes were zeroed. With the wider generator, seeds 200, 202 and 6060601
+passed and 201, 6060602 and 6060606 found devpts's root taking names; after that fix 201, 6060602,
+6060606, 211 and 212 passed (322 s each, six side by side, load 12 to 15) and 210 found the extended
+flags; after that, 210, 221 and 222 passed (340 s each, four side by side, load 18 to 59) and 220
+found sendfile from secret memory; after that, 220, 231 and 232 passed (384 s each, load 70 to 64)
+and 230 found the report race. On the final head 9955ebd, seed 230 and the fresh seeds 240, 241 and
+242 passed 20000 each (334 s each, four side by side, load 34 at the start, 83 at the end).
 Eleventh run (fifth close-out): the check's seed 3141592 (failing at case 9982 on a sleep after
 PR_SET_TIMERSLACK of the largest value) passed 10000 after the slack fix (235 s, load 7 to 8). Record
 locks and ambient powers are generated, mmap is chosen four times as often, and the play area is
@@ -779,9 +792,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
-- Thirteenth run: the whole test suite of both crates 88 s wall (load 13 to 18); layer 1 20000
-  sequences, two or three side by side: 303 to 322 s each (load 9 to 17); 1500 sequences alone 23 s
-  (load 15).
+- Thirteenth run: the whole test suite of both crates 88 s wall (load 13 to 18), 181 s (load 59 to
+  69); layer 1 20000 sequences: two side by side 303 s each (load 10 to 17), six side by side 322 s
+  (load 12 to 15), four side by side 334 to 384 s (load 34 to 83); 1500 sequences alone 23 s (load
+  15).
 - Twelfth run, layer 1 20000 sequences: three side by side 297 s each (load 20 to 14); five side by
   side 320 s each (load 22 to 16); 3000 sequences alone 48 s (load 16 to 22). The whole test suite of
   both crates: 88 s wall (load 10 to 20).
