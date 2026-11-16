@@ -641,7 +641,7 @@ Twelfth run (sixth close-out): on head c156ebd the fresh seeds 180, 181 and 182 
 (297 s each, three side by side, load 20 at the start, 14 at the end; 10, 8 and 6 calls putting a
 random device's bytes somewhere). Reading Linux's msync, mlock, madvise, munmap and mremap against
 ours then showed lengths in the last page wrapping to 0 under `PAGE_ALIGN`, which layer 1 never
-generated: the play lengths now include -1, -4094 and -8192 (fixed: msync and mlock succeed as
+generated: the play lengths now include -1, -4095 and -8192 (fixed: msync and mlock succeed as
 Linux's; an mremap shrink by such a length is refused by munmap's rule instead of unmapping
 everything; layer 2 case memory "wrap"). arm64 Linux strips a top byte tag from those calls'
 addresses, so one play address in four is now tagged (fixed; memory "tagged"). Seed 190 (3000)
