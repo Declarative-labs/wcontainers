@@ -189,10 +189,12 @@ pub enum Reason {
     StoppedByFlag = 9,
     MemoryFault = 10,
     FaultWithoutExactRegisters = 11,
+    /// A loop's accesses were not proven allowed at its entry, so it runs its copy with every check.
+    LoopNotProven = 12,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 12] = [
+    pub const ALL: [Reason; 13] = [
         Reason::TranslatedAtRunTime,
         Reason::LeftToAddress,
         Reason::ContinuedAfterStackLoss,
@@ -205,6 +207,7 @@ impl Reason {
         Reason::StoppedByFlag,
         Reason::MemoryFault,
         Reason::FaultWithoutExactRegisters,
+        Reason::LoopNotProven,
     ];
 
     pub fn from_i32(value: i32) -> Option<Self> {
@@ -225,6 +228,7 @@ impl Reason {
             Reason::StoppedByFlag => "stopped by the flag",
             Reason::MemoryFault => "memory fault",
             Reason::FaultWithoutExactRegisters => "fault without exact registers",
+            Reason::LoopNotProven => "loop not proven",
         }
     }
 }

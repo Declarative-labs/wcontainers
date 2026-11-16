@@ -8,6 +8,7 @@ use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{Blob, LOAD, native, reachable_memory, translated};
+use wcontainers_translator_test::runner::Machine;
 
 type Ops = VecAssembler<Aarch64Relocation>;
 
@@ -54,9 +55,9 @@ fn blob(name: &str, ops: Ops) -> Blob {
     }
 }
 
-/// Linux, none and full agree, and full ends with the registers and memory of none. Returns how often full
-/// left to an address.
-fn compare(blob: &Blob) -> u64 {
+/// Linux, none and full agree, and full ends with the registers and memory of none. Returns the machine that
+/// ran at full, for its counters.
+fn compare(blob: &Blob) -> Machine {
     let theirs = native(blob);
     let (none, mut none_machine, none_registers) = translated(blob, LookAhead::None);
     let (full, mut full_machine, full_registers) = translated(blob, LookAhead::Full);
@@ -74,7 +75,7 @@ fn compare(blob: &Blob) -> u64 {
         "{}: memory",
         blob.name
     );
-    full_machine.count(Reason::LeftToAddress)
+    full_machine
 }
 
 /// Recursion with 4 KiB frames, each made by the function's first instruction; 300 deep runs off the 1 MiB
@@ -112,7 +113,7 @@ fn recursion(depth: u32) -> Blob {
 #[test]
 fn recursion_off_the_stack() {
     for depth in [100, 300] {
-        let left = compare(&recursion(depth));
+        let left = compare(&recursion(depth)).count(Reason::LeftToAddress);
         assert_eq!(left > 0, depth == 300, "left to an address {left} times");
     }
 }
@@ -140,7 +141,7 @@ fn group_entry() -> Blob {
 
 #[test]
 fn group_at_a_function_entry() {
-    assert!(compare(&group_entry()) > 0);
+    assert!(compare(&group_entry()).count(Reason::LeftToAddress) > 0);
 }
 
 /// A function entered twice whose frame reaches below the stack but is used only in its mapped part, then
@@ -177,7 +178,7 @@ fn frame_below(fault: bool) -> Blob {
 #[test]
 fn frame_partly_below_the_stack() {
     for fault in [false, true] {
-        assert!(compare(&frame_below(fault)) > 0);
+        assert!(compare(&frame_below(fault)).count(Reason::LeftToAddress) > 0);
     }
 }
 
@@ -354,5 +355,28 @@ fn structure_loops_running_onto_a_forbidden_page() {
             ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
             compare(&blob(&format!("structure-step-{step}-{name}"), ops));
         }
+    }
+}
+
+/// A counted loop of loads whose range is proven allowed at its entry, or not when its last turns run onto
+/// the page after the blob: the loop that is not proven is counted once for each entry.
+#[test]
+fn loop_not_proven_is_counted() {
+    for (turns, entries) in [(1000u32, 0u64), (4000, 1)] {
+        let mut ops: Ops = VecAssembler::new(0);
+        zero(&mut ops);
+        dynasm!(ops ; .arch aarch64
+            ; movz x1, #0x40, lsl #16
+            ; movz x3, turns
+            ; ->turn:
+            ; ldr x2, [x1], #8
+            ; add x4, x4, x2
+            ; subs x3, x3, #1
+            ; b.ne ->turn
+        );
+        dump(&mut ops);
+        ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+        let full = compare(&blob(&format!("not-proven-{turns}"), ops));
+        assert_eq!(full.count(Reason::LoopNotProven), entries, "{turns} turns");
     }
 }

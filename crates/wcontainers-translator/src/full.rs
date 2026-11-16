@@ -1578,7 +1578,13 @@ impl<'a> FullEmitter<'a> {
                             self.arguments();
                             self.sink().return_call(f);
                         }
-                        _ => self.loop_of(b, &merges),
+                        _ => {
+                            // Counted at each entry whose proof fails, warned once for the loop.
+                            self.sink().i32_const(Reason::LoopNotProven as i32);
+                            self.address(self.function.blocks[b].start);
+                            self.sink().call(F_WARN);
+                            self.loop_of(b, &merges);
+                        }
                     }
                     self.sink().end();
                     self.labels.pop();
