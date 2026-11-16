@@ -91,6 +91,13 @@ pub(crate) const PIDFD_SIGNAL_PROCESS_GROUP: u32 = 4;
 pub(crate) const SFD_CLOEXEC: u32 = crate::linux::general::O_CLOEXEC;
 pub(crate) const SFD_NONBLOCK: u32 = crate::linux::general::O_NONBLOCK;
 
+/// Linux 7.0's newest `fcntl` commands, delegations (`F_GETDELEG`, `F_SETDELEG`) and its newest
+/// `prctl` option (`PR_RSEQ_SLICE_EXTENSION`), newer than linux-raw-sys's headers; measured in the
+/// reference, which knows no command or option past them.
+pub(crate) const F_GETDELEG: u32 = 1039;
+pub(crate) const F_SETDELEG: u32 = 1040;
+pub(crate) const PR_RSEQ_SLICE_EXTENSION: u32 = 79;
+
 /// `rseq`'s flags (`linux/rseq.h`, which linux-raw-sys does not generate): unregister, and turn time
 /// slice extensions on from the start.
 pub(crate) const RSEQ_FLAG_UNREGISTER: u32 = 1;

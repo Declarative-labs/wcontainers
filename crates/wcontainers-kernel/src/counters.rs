@@ -13,13 +13,15 @@ pub mod reason {
     /// A system call number Linux does not have on ARM64. Detail: the call number.
     pub const UNKNOWN_SYSCALL: &str = "system call number unknown";
     pub const CORE_DUMP_NOT_WRITTEN: &str = "core dump not written";
-    /// An `fcntl` command the kernel does not build, known to Linux or not; it answers EINVAL, as
-    /// Linux does for one it does not know or has not configured. Detail: the command.
+    /// An `fcntl` command Linux has and the kernel does not build; it answers EINVAL, as Linux does
+    /// for one it has not configured. Commands Linux does not know are a plain EINVAL. Detail: the
+    /// command.
     pub const FCNTL_NOT_BUILT: &str = "fcntl command not built";
     /// Opening a device the kernel has no driver for. Detail: the device number.
     pub const DEVICE_NOT_BUILT: &str = "device not built";
-    /// A `prctl` option or form the kernel does not build, known to Linux or not; it answers EINVAL,
-    /// as Linux does for one it does not know. Detail: the option.
+    /// A `prctl` option or form Linux has on ARM64 and the kernel does not build; it answers EINVAL,
+    /// as Linux does for one it has not configured. Options Linux does not know, or has only for
+    /// other architectures, are a plain EINVAL. Detail: the option.
     pub const PRCTL_NOT_BUILT: &str = "prctl option not built";
     /// A flag or form of a call that the kernel does not build, answered as Linux answers without
     /// it. Detail: the call number times 2^32, plus the flag bits.

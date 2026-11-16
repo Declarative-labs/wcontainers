@@ -2367,12 +2367,19 @@ fn fcntl_other(
         }
         F_GET_SEALS if !path_only => super::memfd::get_seals(&descriptor.file.borrow()),
         _ if path_only => Err(Errno::EBADF),
-        _ => Err(kernel.counters.refuse(
+        // Leases, directory notification, the owner's ids (`CONFIG_CHECKPOINT_RESTORE`) and
+        // delegations are not built.
+        F_SETLEASE
+        | F_NOTIFY
+        | F_GETOWNER_UIDS
+        | crate::linux_extra::F_GETDELEG
+        | crate::linux_extra::F_SETDELEG => Err(kernel.counters.refuse(
             cx.host,
             reason::FCNTL_NOT_BUILT,
             command.into(),
             Errno::EINVAL,
         )),
+        _ => Err(Errno::EINVAL),
     }
 }
 

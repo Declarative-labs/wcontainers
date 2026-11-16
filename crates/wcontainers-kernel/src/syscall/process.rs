@@ -1359,11 +1359,39 @@ pub(super) fn prctl(
         {
             Err(Errno::EPERM)
         }
+        _ if !(1..=crate::linux_extra::PR_RSEQ_SLICE_EXTENSION).contains(&(option as u32))
+            && option != u64::from(PR_SET_VMA) =>
+        {
+            Err(Errno::EINVAL)
+        }
+        _ if OTHER_ARCHITECTURES.contains(&(option as u32)) => Err(Errno::EINVAL),
         _ => Err(kernel
             .counters
             .refuse(cx.host, reason::PRCTL_NOT_BUILT, option, Errno::EINVAL)),
     }
 }
+
+/// `prctl` options Linux has only for other architectures, which ARM64 answers EINVAL whatever is
+/// asked.
+const OTHER_ARCHITECTURES: [u32; 17] = [
+    PR_GET_UNALIGN,
+    PR_SET_UNALIGN,
+    PR_GET_FPEMU,
+    PR_SET_FPEMU,
+    PR_GET_FPEXC,
+    PR_SET_FPEXC,
+    PR_GET_ENDIAN,
+    PR_SET_ENDIAN,
+    PR_MPX_ENABLE_MANAGEMENT,
+    PR_MPX_DISABLE_MANAGEMENT,
+    PR_SET_FP_MODE,
+    PR_GET_FP_MODE,
+    PR_RISCV_V_SET_CONTROL,
+    PR_RISCV_V_GET_CONTROL,
+    PR_RISCV_SET_ICACHE_FLUSH_CTX,
+    PR_PPC_GET_DEXCR,
+    PR_PPC_SET_DEXCR,
+];
 
 /// Linux's `cap_validate_magic`: the header, and how many 32 bit words of each set its version moves.
 /// An unknown version is replaced by the one Linux prefers, and is EINVAL.
