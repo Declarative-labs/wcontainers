@@ -833,6 +833,18 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K2's third run: with named pipes generated, seed 409 found that a named pipe opened with O_DIRECT
+answers its open's own error first (ENXIO) and EINVAL only after the open (`do_dentry_open`); seed
+410 found that locking droppable memory that allows nothing is ENOMEM (measured; readable droppable
+memory locks with no error and is not counted), then that the file memfd_create makes refuses
+O_DIRECT in F_SETFL (it is not opened through tmpfs's `open`, so lacks FMODE_CAN_ODIRECT; the same
+file opened again takes it). All fixed. Seeds 409, 412, 413 and 414 passed 20000 each before the last
+fix (memfd). With every fix in, the fresh seeds 415, 416 and 417 passed 20000 each (319 s each, four
+side by side, load 48 at the start, 12 at the end). Seed 410 then found one more difference, not
+fixed (see Next): statfs into a buffer that crosses into an unmapped page fails EFAULT in both, but
+Linux's `copy_to_user` has written the bytes before the fault and ours writes none (`Guest::write`
+is all or nothing). Seeds up to 417 are used.
+
 K2's second run: the milestone's fresh 20000-sequence seeds. Seeds 400 and 402 passed; 401 found that
 rt_sigqueueinfo read the whole 128-byte `siginfo` and checked the target first, where Linux copies
 the kernel's 48 bytes, then for a code whose layout it does not know (`known_siginfo_layout`) checks
@@ -951,6 +963,11 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 third run: the whole test suite of both crates 82 passed, 0 failed, 7 ignored, 129 s wall with
+  two test threads beside four layer 1 runs (load 48 at the start, 20 at the end); earlier 77
+  passed, 118 s (load up to 283, the other half's heavy run). Layer 1, 20000 sequences, five side by
+  side: 335 to 393 s each (load 74 to 79); a failing seed stopped after 90 to 255 s. The load reached
+  224 to 283 at times this run.
 - K2 second run: the whole test suite of both crates 76 passed, 0 failed, 8 ignored, 131 s wall
   (load 25 at the start, 29 at the end; three layer 1 runs started part way). Layer 1, 20000
   sequences, four side by side: 320 s each (load 84 to 31). tests/terminal.rs 1.5 to 1.7 s (load 30
@@ -1146,6 +1163,9 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Known issues
 
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
+- The dispatch test failed twice in whole-suite runs beside layer 1 runs: the reference container
+  found no `/wc/syscall` (its five tests each built the program and renamed it over the others while
+  a container started it, through Docker's shared directory). It now builds the program once.
 - Once in the third run (load about 20 to 50) the stand-in test binary hung for over 12 minutes and was
   killed; three reruns passed at once. Cause not found; not seen since.
 - Test binaries running side by side build guest programs into one directory; the dispatch test read
@@ -1155,10 +1175,14 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2, what is left, in order (the three fresh 20000 seeds passed this run; seeds up to 405 are
-   used): terminal calls in layer 1 (`/dev/ptmx` and a slave in
-   the path pool, with the reference's buffer work waited for as the guests do); FIFOs (named pipes:
-   `fifo_open`'s waits and counters); private file mappings that see later file changes; a test of
-   rseq critical sections aborted by a handler (built in `rseq_fixup`, untested); SIGIO for O_ASYNC.
+1. K2, what is left, in order: a `copy_to_user` that faults part way writes the bytes before the
+   fault, as arm64's copy routine stores them (seed 410's last finding, replay with
+   `LAYER1_CASES=20000 LAYER1_SEED=410`; `Guest::write` is all or nothing, user.rs already models the
+   copy template for overlaps; the transfer test's ignored known failure is the same routine);
+   terminal calls in layer 1 (`/dev/ptmx` and a slave in the path pool; the reference's runner polls
+   every terminal descriptor after each call so Linux's buffer work has run, since `n_tty_poll` flushes
+   it, and our runner makes the same calls; FIONREAD and TIOCINQ do not flush, so they must come after
+   such a poll; large writes to a terminal differ by the buffer limit departure); fork and clone in
+   layer 1.
 2. The missing calls above by their milestone; the known gaps above before K6's bar.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
