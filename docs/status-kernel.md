@@ -1412,6 +1412,12 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 tenth run: the whole test suite of both crates 102 passed, 0 failed, 6 ignored, 3 min 2 s wall
+  beside three 20000-sequence layer 1 runs (load 32 at the start, 30 at the end), head d4731cf.
+  Layer 1 fresh seeds 735, 736 and 737 passed 20000 sequences each with every fix in (394, 330 and
+  331 s, three side by side, load 35 at the start, 16 to 24 at the end). tests/saving.rs (three
+  programs, 3 seeds, 8 saves each by fork) about 19 s; turns, zombie, userlimits and unknown under
+  1 s each.
 - K2 ninth run: the whole test suite of both crates 96 passed, 0 failed, 6 ignored, 166 s wall alone
   (load 25 at the start, 35 at the end), on the final head. An earlier whole run beside four layer 1
   runs (170 s, load 36 to 18) had sigio fail once in the reference (Known issues). Layer 1 at
@@ -1724,5 +1730,5 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
    read while another cargo invocation rewrites it (Known issues); each binary could build into its
    own.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator). Seeds up
-   to 734 are used (and the checks' 91001 to 91003).
+   to 737 are used (and the checks' 91001 to 91003 and 8181801 to 8181803).
 
