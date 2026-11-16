@@ -321,3 +321,38 @@ fn loops_running_onto_a_forbidden_page() {
         }
     }
 }
+
+/// The same with the longest accesses there are, structures of three and four 128 bit registers (48 and 64
+/// bytes), so the access that runs onto the forbidden page starts well inside the last allowed one.
+#[test]
+fn structure_loops_running_onto_a_forbidden_page() {
+    // ld1 and st1 of four registers, ld4 and st4, ld1 and st3 of three, all of 16 bytes, through x7.
+    let forms = [
+        ("ld1x4", 0x4c40_20e0u32),
+        ("st1x4", 0x4c00_20e0),
+        ("ld4", 0x4c40_00e0),
+        ("st4", 0x4c00_00e0),
+        ("ld1x3", 0x4c40_60e0),
+        ("st3", 0x4c00_40e0),
+    ];
+    for step in [16u32, 32, 64] {
+        for (name, word) in forms {
+            let mut ops: Ops = VecAssembler::new(0);
+            zero(&mut ops);
+            dynasm!(ops ; .arch aarch64
+                ; movz x1, #0x40, lsl #16
+                ; movz x3, #0x200
+                ; movz x6, step
+                ; ->turn:
+                ; add x7, x1, x3
+                ; .u32 word
+                ; add x3, x3, x6
+                ; add x5, x5, #1
+                ; b ->turn
+            );
+            dump(&mut ops);
+            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            compare(&blob(&format!("structure-step-{step}-{name}"), ops));
+        }
+    }
+}

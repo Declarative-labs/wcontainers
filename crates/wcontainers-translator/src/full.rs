@@ -511,8 +511,10 @@ struct Plan {
     /// Accesses checked exactly inside a loop that makes no call or system call keep the run of pages last
     /// found to allow them and check again only when an access does not lie within that run. Accesses of
     /// one kind (read or write) through one base register in one loop share what they keep. Each such access's number for
-    /// what it keeps, and by loop header, the numbers forgotten when the loop is entered.
+    /// what it keeps, by number the longest of those accesses in bytes, and by loop header, the numbers
+    /// forgotten when the loop is entered.
     kept: HashMap<u64, usize>,
+    kept_longest: Vec<u32>,
     kept_by_loop: Vec<Vec<usize>>,
     /// By loop header, the loops that have a copy without the checks their accesses are proven not to need.
     versioned: HashMap<usize, proof::Versioned>,
@@ -898,6 +900,7 @@ impl Plan {
             })
         };
         let mut kept = HashMap::new();
+        let mut kept_longest = Vec::new();
         let mut kept_by_loop = vec![Vec::new(); n];
         let mut keys = Vec::new();
         for b in 0..n {
@@ -920,10 +923,12 @@ impl Plan {
                             Some(number) => number,
                             None => {
                                 keys.push(key);
+                                kept_longest.push(0);
                                 kept_by_loop[h].push(keys.len() - 1);
                                 keys.len() - 1
                             }
                         };
+                        kept_longest[number] = kept_longest[number].max(access.bytes);
                         kept.insert(o, number);
                     }
                 }
@@ -1023,6 +1028,7 @@ impl Plan {
             frame_in,
             outside,
             kept,
+            kept_longest,
             kept_by_loop,
             versioned,
             after,
@@ -2332,9 +2338,16 @@ impl Emitter for FullEmitter<'_> {
         match plan {
             CheckPlan::Skip => {}
             CheckPlan::Exact => {
-                let kept = self.plan.kept.get(&offset).map(|&n| self.kept_pages[n]);
+                let kept = self.plan.kept.get(&offset).map(|&n| {
+                    let longest = self.plan.kept_longest[n];
+                    assert!(
+                        bytes <= longest,
+                        "an access longer than its kept run allows for"
+                    );
+                    (self.kept_pages[n], longest)
+                });
                 let mut s = self.sink();
-                if let Some((low, room)) = kept {
+                if let Some(((low, room), _)) = kept {
                     // Checked again unless the access starts within the kept run of pages.
                     s.local_get(address)
                         .local_get(low)
@@ -2359,9 +2372,9 @@ impl Emitter for FullEmitter<'_> {
                     .unreachable()
                     .end()
                     .end();
-                if let Some((low, room)) = kept {
+                if let Some(((low, room), longest)) = kept {
                     // The access is allowed, so the page it starts on allows this kind.
-                    keep_pages(&mut s, table, locals.0, this, low, room);
+                    keep_pages(&mut s, table, locals.0, this, longest, (low, room));
                     s.end();
                 }
             }

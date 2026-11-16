@@ -134,11 +134,11 @@ fn write_nothing(ops: &mut Ops) {
     dynasm!(ops ; .arch aarch64 ; movz x0, #1 ; mov x1, x5 ; movz x2, #0 ; movz x8, #64 ; svc #0);
 }
 
-/// Exit with 0 after the program's code, and a page of data after the code page.
+/// Exit with 0 after the program's code, and two pages of data after the code page.
 fn data_blob(name: &str, mut ops: Ops) -> Blob {
     dynasm!(ops ; .arch aarch64 ; movz x0, #0 ; movz x8, #94 ; svc #0);
     let mut bytes = ops.finalize().expect("labels");
-    bytes.resize(2 * PAGE_SIZE as usize, 0);
+    bytes.resize(3 * PAGE_SIZE as usize, 0);
     Blob {
         name: name.into(),
         code_bytes: PAGE_SIZE,
@@ -149,8 +149,8 @@ fn data_blob(name: &str, mut ops: Ops) -> Blob {
 }
 
 /// At the first system call, or at the first stop at `stop_at` (an address and x16 there), the page at `page`
-/// is made to allow nothing; full must fault exactly as none does. With `stop_at`, both runs stop at every
-/// stop check.
+/// is made to allow nothing; full must fault exactly as none does. With `stop_at`, none stops at every
+/// instruction and full at every stop check up to that point.
 fn denied_at_the_first(blob: &Blob, stop_at: Option<(u64, u64)>, page: u64) {
     let run = |look_ahead| {
         let mut machine = ready(blob, look_ahead, Omit::default());
@@ -160,8 +160,12 @@ fn denied_at_the_first(blob: &Blob, stop_at: Option<(u64, u64)>, page: u64) {
             let reached = match stop_at {
                 None => at == Pause::Syscall,
                 Some((pc, x16)) => {
-                    paused.raise_stop_flag();
-                    at == Pause::Stop && registers.pc == pc && registers.x[16] == x16
+                    let reached = at == Pause::Stop && registers.pc == pc && registers.x[16] == x16;
+                    // Full stops at every check until the point, then runs on without stopping.
+                    if first && !reached {
+                        paused.raise_stop_flag();
+                    }
+                    reached
                 }
             };
             if reached && std::mem::take(&mut first) {
@@ -313,4 +317,32 @@ fn below_sp_after_a_pop_in_a_loop() {
         Some((head, 3)),
         BELOW,
     );
+}
+
+/// A counted loop of 64 byte loads walking to the end of `DATA`, the last one 32 bytes onto the page after,
+/// which is made to allow nothing at the first stop: the loop's proof fails and its checked copy keeps the run
+/// of pages it finds allowed, which must not let that last load through.
+#[test]
+fn longest_access_onto_a_page_changed_at_a_stop() {
+    // ld1 {v0.16b-v3.16b}, [x7]
+    let ld1x4 = 0x4c40_20e0u32;
+    for (name, word) in [("ld1x4", ld1x4), ("st1x4", ld1x4 & !(1 << 22))] {
+        let mut ops: Ops = VecAssembler::new(0);
+        start(&mut ops);
+        dynasm!(ops ; .arch aarch64 ; add x7, x5, #0xf80 ; movz x16, #4);
+        let head = LOAD + ops.offset().0 as u64;
+        let top = ops.new_dynamic_label();
+        dynasm!(ops ; .arch aarch64
+            ; =>top
+            ; .u32 word
+            ; add x7, x7, #32
+            ; subs x16, x16, #1
+            ; b.ne =>top
+        );
+        denied_at_the_first(
+            &data_blob(&format!("longest-access-{name}"), ops),
+            Some((head, 3)),
+            DATA + PAGE_SIZE,
+        );
+    }
 }

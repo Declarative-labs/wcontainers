@@ -328,6 +328,8 @@ pub(crate) fn permission_exact(
     this: u8,
     locals: (u32, u32, u32),
 ) {
+    // The table's bits reach only to the next page.
+    assert!(u64::from(len) <= wcontainers_abi::PAGE_SIZE && len > 0);
     let (page, allowed, fault_at) = locals;
     let next = this << 2;
     permission_byte(s, table, at, page);
@@ -363,19 +365,16 @@ pub(crate) fn permission_exact(
         .local_set(fault_at);
 }
 
-/// The longest single access, in bytes (a pair of 128 bit registers).
-const LONGEST_ACCESS: i64 = 32;
-
 /// Keep the run of pages, from the allowed page in i64 local `page` and at most 8 long, that allow an access
-/// as `this` says: i64 locals `low` (its first address) and `room` (how far past `low` an access may start
-/// and still end within the run).
+/// as `this` says: i64 locals `low` (its first address) and `room` (how far past `low` an access of at most
+/// `longest` bytes may start and still end within the run).
 pub(crate) fn keep_pages(
     s: &mut InstructionSink<'_>,
     table: Table,
     page: u32,
     this: u8,
-    low: u32,
-    room: u32,
+    longest: u32,
+    (low, room): (u32, u32),
 ) {
     s.local_get(page).i64_const(12).i64_shl().local_set(low);
     // The table bytes of the page and the seven after it, when they are all in the table.
@@ -401,7 +400,7 @@ pub(crate) fn keep_pages(
         .else_()
         .i64_const(4096)
         .end()
-        .i64_const(LONGEST_ACCESS - 1)
+        .i64_const(i64::from(longest) - 1)
         .i64_sub()
         .local_set(room);
 }
