@@ -2196,6 +2196,8 @@ const SCRATCH: u64 = 0x6000_0000;
 const SCRATCH_ZEROS: u64 = 0x1000;
 const SCRATCH_SIZE: u64 = 0x11000;
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
+/// The reference runner's `DEADLINE_SECONDS`.
+const DEADLINE_SECONDS: u64 = 60;
 
 /// Runs a sequence on our kernel: a fresh container with the runner as its program, whose process makes
 /// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
@@ -2261,6 +2263,10 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
     }
     // Makes one call, as if the running thread had reached it, and waits for its value; the process's
     // wait status if it ended.
+    // The reference's runner kills a sequence that has not ended by its deadline; a sleep that would
+    // end later is killed here too.
+    let deadline =
+        wcontainers_abi::Host::monotonic_nanoseconds(&mut host) + DEADLINE_SECONDS * 1_000_000_000;
     let call = |kernel: &mut Kernel,
                 cpu: &mut BufferCpu,
                 host: &mut TestHost,
@@ -2286,6 +2292,9 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                 Next::Idle {
                     until_nanoseconds: None,
                 } => return Err(linux::SIGKILL as i32),
+                Next::Idle {
+                    until_nanoseconds: Some(until),
+                } if until > deadline => return Err(linux::SIGKILL as i32),
                 Next::Idle {
                     until_nanoseconds: Some(until),
                 } => {

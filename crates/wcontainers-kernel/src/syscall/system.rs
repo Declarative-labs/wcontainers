@@ -449,7 +449,14 @@ fn change_schedule(
     if policy == SCHED_DEADLINE {
         schedule.deadline = (request.runtime, request.deadline, request.period);
     }
-    kernel.thread_mut(target).schedule = schedule;
+    let thread = kernel.thread_mut(target);
+    thread.schedule = schedule;
+    // `__setscheduler_params`: real-time threads have no timer slack; leaving that brings it back.
+    if is_real_time(policy) || policy == SCHED_DEADLINE {
+        thread.timer_slack = 0;
+    } else if thread.timer_slack == 0 {
+        thread.timer_slack = crate::process::TIMER_SLACK;
+    }
     Ok(0)
 }
 

@@ -176,9 +176,11 @@ fn nanoseconds(value: &__kernel_timespec) -> u64 {
         .saturating_add(value.tv_nsec as u64)
 }
 
-/// Parks the thread until a time on the monotonic clock.
+/// Parks the thread until a time on the monotonic clock, as Linux's `hrtimer_nanosleep`: the timer
+/// may end as late as the thread's slack after it, and with nothing else to wake the machine it does.
 fn sleep_until(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, until: u64) -> Outcome {
-    kernel.park(cx, tid, Parked::Until { nanoseconds: until });
+    let nanoseconds = until.saturating_add(kernel.threads[&tid].timer_slack);
+    kernel.park(cx, tid, Parked::Until { nanoseconds });
     Outcome::Parked
 }
 

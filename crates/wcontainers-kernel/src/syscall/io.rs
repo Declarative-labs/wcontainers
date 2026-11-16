@@ -1961,10 +1961,26 @@ fn finish_wait(
     }
 }
 
-/// Parks a waiting thread until its timeout, or for ever (until a signal, K2).
+/// Parks a waiting thread until its timeout, or for ever (until a signal, K2). The timer may end as
+/// late as `select_estimate_accuracy`'s slack after the timeout, and with nothing else to wake the
+/// machine it does.
 fn park_until(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, until: Option<u64>) {
     let parked = match until {
-        Some(nanoseconds) => crate::process::Parked::Until { nanoseconds },
+        Some(until) => {
+            let thread = &kernel.threads[&tid];
+            let slack = if thread.timer_slack == 0 {
+                0
+            } else {
+                // 0.1% of the time left (0.5% for a nice thread), at most 100 ms, at least the slack.
+                const MAX_SLACK: u64 = 100_000_000;
+                let divisor = if thread.schedule.nice > 0 { 200 } else { 1000 };
+                let left = until.saturating_sub(cx.host.monotonic_nanoseconds());
+                (left / divisor).min(MAX_SLACK).max(thread.timer_slack)
+            };
+            crate::process::Parked::Until {
+                nanoseconds: until.saturating_add(slack),
+            }
+        }
         None => crate::process::Parked::Forever,
     };
     kernel.park(cx, tid, parked);

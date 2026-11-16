@@ -6,10 +6,13 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/select.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #define R(expr)                                                                                    \
@@ -137,6 +140,26 @@ int main(void) {
     R(prctl(PR_GET_TIMERSLACK));
     R(prctl(PR_SET_TIMERSLACK, 0));
     R(prctl(PR_GET_TIMERSLACK));
+    // A sleep's timer may end as late as the slack after it; with nothing else to wake the machine
+    // it does. Only that the sleep lasted at least half the slack is shown.
+    R(prctl(PR_SET_TIMERSLACK, 2000000000));
+    for (int kind = 0; kind < 4; kind++) {
+        struct timespec start, end, short_sleep = {0, 1000};
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        if (kind == 0) {
+            R(nanosleep(&short_sleep, 0));
+        } else if (kind == 1) {
+            R(clock_nanosleep(CLOCK_REALTIME, 0, &short_sleep, 0));
+        } else if (kind == 2) {
+            R(ppoll(0, 0, &short_sleep, 0));
+        } else {
+            R(select(0, 0, 0, 0, &(struct timeval){0, 1}));
+        }
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        long waited = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000;
+        printf("sleep %d lasted half the slack: %d\n", kind, waited >= 1000);
+    }
+    R(prctl(PR_SET_TIMERSLACK, 0));
     int reaper = -1;
     R(prctl(PR_GET_CHILD_SUBREAPER, &reaper));
     printf("subreaper %d\n", reaper);

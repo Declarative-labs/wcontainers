@@ -29,6 +29,8 @@ fn sequences_match_reference() {
         cases,
         failure_persistence: None,
         max_shrink_iters: 2000,
+        // A case that waits costs the reference's 60 s deadline at each step.
+        max_shrink_time: 30 * 60 * 1000,
         ..Config::default()
     };
     let mut runner = TestRunner::new_with_rng(
