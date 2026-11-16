@@ -270,8 +270,12 @@ static long raw(long number, const uint64_t *a) {
     return x0;
 }
 
-// The changed ranges of the arena since `before`, written to `out` (fd 1 of the parent).
+// The changed ranges of the arena since `before`, written to `out` (fd 1 of the parent). Both passes
+// read one copy of the arena: the kernel may rewrite a registered rseq area's CPU number whenever the
+// child returns to user space, so the arena itself can change between them.
 static void report_changes(int out) {
+    static unsigned char now[ARENA_SIZE];
+    memcpy(now, ARENA, ARENA_SIZE);
     uint32_t count = 0;
     for (int pass = 0; pass < 2; pass++) {
         if (pass == 1) {
@@ -279,12 +283,12 @@ static void report_changes(int out) {
         }
         int at = 0;
         while (at < ARENA_SIZE) {
-            if (ARENA[at] == before[at]) {
+            if (now[at] == before[at]) {
                 at++;
                 continue;
             }
             int start = at;
-            while (at < ARENA_SIZE && ARENA[at] != before[at]) {
+            while (at < ARENA_SIZE && now[at] != before[at]) {
                 at++;
             }
             if (pass == 0) {
@@ -292,11 +296,11 @@ static void report_changes(int out) {
             } else {
                 uint32_t header[2] = {(uint32_t)start, (uint32_t)(at - start)};
                 write_all(out, header, 8);
-                write_all(out, ARENA + start, at - start);
+                write_all(out, now + start, at - start);
             }
         }
     }
-    memcpy(before, ARENA, ARENA_SIZE);
+    memcpy(before, now, ARENA_SIZE);
 }
 
 static void remove_tree(int directory_fd, const char *name) {
