@@ -173,6 +173,10 @@ int main(int argc, char **argv) {
     dump("ostype", buffer, n);
     n = read(ostype, buffer, 10);
     dump("ostype rest", buffer, n);
+    // A sysctl's read takes a kernel buffer of the size asked for, up to the largest it may have.
+    R(pread(ostype, buffer, (4L << 20) - 1, 0));
+    R(pread(ostype, buffer, 4L << 20, 0));
+
 
     // Vectored reads and writes with flags, and positioned ones.
     const char *flagged[] = {"/proc/self/cmdline", "/proc/self/comm", "/proc/self/status",

@@ -764,6 +764,12 @@ pub(super) fn read_at(
     }
     moves_bytes(file, false)?;
     let offset = at.unwrap_or(file.borrow().offset);
+    // A sysctl reads into a kernel buffer of the size asked for (`proc_sys_call_handler`).
+    let sysctl = matches!(file.borrow().node.borrow().content, Content::Proc(entry)
+        if entry.style() == Style::Sysctl);
+    if sysctl && count >= crate::linux_extra::KMALLOC_MAX_SIZE {
+        return Err(Errno::ENOMEM);
+    }
     refresh_proc(kernel, cx, tid, file, offset)?;
     let bytes = file_bytes(cx, file, count, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);

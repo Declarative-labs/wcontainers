@@ -171,3 +171,7 @@ pub(crate) const FS_IOC_GETFSSYSFSPATH: u32 = ioc(
     1,
     size_of::<crate::linux::general::fs_sysfs_path>(),
 );
+
+/// The largest buffer the kernel's allocator gives (`KMALLOC_MAX_SIZE`, `linux/slab.h`: a page shifted
+/// by `MAX_PAGE_ORDER`, 10 for 4 KiB pages), which a sysctl's read or write allocates for its count.
+pub(crate) const KMALLOC_MAX_SIZE: u64 = 4096 << 10;
