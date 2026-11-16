@@ -50,14 +50,32 @@ pub enum Indexing {
 #[derive(Clone, Copy, Debug)]
 pub struct GroupAccess {
     pub load: bool,
-    /// 1, 2, 4 or 8, or 16 for a pair of X registers.
+    /// 1, 2, 4 or 8, or 16 for a pair of X registers; with `vector`, 16 for one Q register, 32 for a pair
+    /// of them, and 48 and 64 for a structure of three or four (ld1 to ld4, st1 to st4).
     pub bytes: u8,
+    /// The transfer registers are vector registers, from `rt` on.
+    pub vector: bool,
     pub rt: u8,
     pub rt2: u8,
     pub indexing: Indexing,
-    /// In units of `bytes` (of 8 for a pair) for an offset, in bytes (-64 to 63) when indexing.
+    /// In units of `bytes` (of 8 for a pair of X registers, of 16 for Q registers) for an offset, which is
+    /// 0 for a structure; in bytes (-64 to 63) when indexing, `bytes` for a structure, which has only
+    /// post-indexing.
     pub offset: i16,
 }
+
+/// The sizes of a group access, and whether its registers are vector registers.
+const ACCESS_KINDS: [(u8, bool); 9] = [
+    (1, false),
+    (2, false),
+    (4, false),
+    (8, false),
+    (16, false),
+    (16, true),
+    (32, true),
+    (48, true),
+    (64, true),
+];
 
 /// One straight-line instruction.
 #[derive(Clone, Debug)]
@@ -262,8 +280,9 @@ pub struct Walk {
     pub compare_first: bool,
     pub at: GroupBase,
     pub load: bool,
-    /// 1 or 8.
+    /// 1 or 8, or with `vector` 16, 32, 48 or 64 (as in [`GroupAccess`]).
     pub bytes: u8,
+    pub vector: bool,
     pub rt: u8,
     pub moves: WalkMove,
     /// Bytes the address moves by each turn, before any shift by the access size.
@@ -336,7 +355,7 @@ fn register() -> impl Strategy<Value = u8> {
 fn group_access() -> impl Strategy<Value = GroupAccess> {
     (
         any::<bool>(),
-        prop::sample::select(vec![1u8, 2, 4, 8, 16]),
+        prop::sample::select(ACCESS_KINDS.as_slice()),
         register(),
         register(),
         prop_oneof![
@@ -346,19 +365,44 @@ fn group_access() -> impl Strategy<Value = GroupAccess> {
         ],
         -64i16..64,
     )
-        .prop_map(|(load, bytes, rt, rt2, indexing, offset)| GroupAccess {
-            load,
-            bytes,
-            rt,
-            rt2,
-            indexing,
-            offset: match indexing {
-                Indexing::Offset if bytes == 16 => offset.clamp(-8, 7),
-                Indexing::Offset => offset.rem_euclid(32),
-                _ if bytes == 16 => offset & !7,
-                _ => offset,
-            },
+        .prop_map(|(load, (bytes, vector), rt, rt2, indexing, offset)| {
+            fitted(GroupAccess {
+                load,
+                bytes,
+                vector,
+                rt,
+                rt2,
+                indexing,
+                offset,
+            })
         })
+}
+
+/// An access with its offset and indexing made encodable: `offset` is taken as a random number from -64 to
+/// 63, or as the step in bytes when indexing.
+fn fitted(mut a: GroupAccess) -> GroupAccess {
+    let structure = a.vector && a.bytes >= 48;
+    if structure && !matches!(a.indexing, Indexing::Offset) {
+        a.indexing = Indexing::Post;
+    }
+    a.offset = match (a.indexing, a.bytes, a.vector) {
+        (_, _, true) if structure => match a.indexing {
+            Indexing::Offset => 0,
+            _ => a.bytes.into(),
+        },
+        (Indexing::Offset, 16, false) => a.offset.clamp(-8, 7),
+        (Indexing::Offset, 16, true) => a.offset.rem_euclid(16),
+        (Indexing::Offset, 32, true) => a.offset.clamp(-4, 3),
+        (Indexing::Offset, ..) => a.offset.rem_euclid(32),
+        (_, 16, false) => a.offset & !7,
+        (_, 32, true) => a.offset & !15,
+        _ => a.offset,
+    };
+    if a.vector {
+        // A pair of Q registers loads into two different ones.
+        a.rt2 = (a.rt + 1) % 32;
+    }
+    a
 }
 
 /// `r`, or the next of `REGISTERS` after it that is not in `not`.
@@ -405,7 +449,7 @@ fn through(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Vec<GroupAccess>
             if writes_back || (keep && a.load) {
                 a.rt = other(a.rt, &[base]);
             }
-            if a.bytes == 16 {
+            if a.bytes == 16 && !a.vector {
                 let base = (writes_back || (keep && a.load)).then_some(base);
                 let first = a.load.then_some(a.rt);
                 let not: Vec<u8> = base.into_iter().chain(first).collect();
@@ -525,7 +569,10 @@ fn walk() -> impl Strategy<Value = Walk> {
         ],
         (
             any::<bool>(),
-            prop::sample::select(vec![1u8, 8]),
+            prop_oneof![
+                3 => prop::sample::select(vec![(1u8, false), (8, false)]),
+                1 => prop::sample::select(vec![(16u8, true), (32, true), (48, true), (64, true)]),
+            ],
             register(),
         ),
         moves,
@@ -536,12 +583,26 @@ fn walk() -> impl Strategy<Value = Walk> {
             |(
                 (counter, wide, turns, by, cond, compare_first),
                 at,
-                (load, bytes, rt),
+                (load, (bytes, vector), rt),
                 moves,
                 step,
                 syscall,
             )| {
                 let mut moves = moves;
+                let mut step = step;
+                // Pairs and structures of vector registers have no register offset form.
+                if vector && bytes > 16 && matches!(moves, WalkMove::Index { .. }) {
+                    moves = WalkMove::Base(Indexing::Offset);
+                }
+                // A structure moves its base only by its size, after the access.
+                let structure = vector && bytes >= 48;
+                if let WalkMove::Base(indexing) = &mut moves
+                    && structure
+                    && !matches!(indexing, Indexing::Offset)
+                {
+                    *indexing = Indexing::Post;
+                    step = bytes as i8;
+                }
                 if let WalkMove::Index {
                     shift,
                     reg,
@@ -549,7 +610,7 @@ fn walk() -> impl Strategy<Value = Walk> {
                     ..
                 } = &mut moves
                 {
-                    *shift &= bytes == 8;
+                    *shift &= bytes == 8 && !vector;
                     if syscall {
                         *reg = other(*reg, &SYSCALL_SETS);
                         *step_in = step_in
@@ -561,22 +622,26 @@ fn walk() -> impl Strategy<Value = Walk> {
                     WalkMove::Index { shift: true, .. } => 8,
                     _ => 1,
                 };
-                let mut step = step;
                 let mut at = at;
                 // The most bytes a walk may cover: the turns, two more for the counter's forms, and the
                 // access itself.
-                let span = |step: i8| (i32::from(turns) + 2) * i32::from(step).abs() * scale + 8;
+                let longest = i32::from(bytes.max(8));
+                let span =
+                    |step: i8| (i32::from(turns) + 2) * i32::from(step).abs() * scale + longest;
                 match at {
                     // Forward only near the edge, onto the page that allows nothing.
                     GroupBase::Edge(_) => step = step.abs(),
                     GroupBase::Area(start) => {
+                        if structure && span(step) > AREA as i32 {
+                            moves = WalkMove::Base(Indexing::Offset);
+                        }
                         while span(step) > AREA as i32 {
                             step /= 2;
                         }
                         let room = AREA as i32 - span(step);
                         let first = i32::from(start) % (room + 1);
                         let first = if step < 0 {
-                            AREA as i32 - 8 - first
+                            AREA as i32 - longest - first
                         } else {
                             first
                         };
@@ -585,9 +650,13 @@ fn walk() -> impl Strategy<Value = Walk> {
                 }
                 if let WalkMove::Base(indexing) = moves
                     && !matches!(indexing, Indexing::Offset)
+                    && !structure
                 {
-                    // Pre and post indexing move by -64 to 63 bytes.
+                    // Pre and post indexing move by -64 to 63 bytes, a pair of Q registers by multiples of 16.
                     step = step.clamp(-32, 31);
+                    if vector && bytes == 32 {
+                        step &= !15;
+                    }
                 }
                 Walk {
                     counter,
@@ -599,6 +668,7 @@ fn walk() -> impl Strategy<Value = Walk> {
                     at,
                     load,
                     bytes,
+                    vector,
                     rt,
                     moves,
                     step,
@@ -1166,7 +1236,52 @@ fn emit_syscall(ops: &mut Ops) {
     dynasm!(ops ; .arch aarch64 ; movz x0, #1 ; mov x1, x29 ; movz x2, #0 ; movz x8, #64 ; svc #0);
 }
 
+/// Vector loads and stores, as words: `rt`, `rt2` and `b` are put in by the caller.
+fn emit_vector_access(ops: &mut Ops, b: u8, a: &GroupAccess) {
+    let load = u32::from(a.load);
+    let by = i32::from(a.offset);
+    let (rt, rt2, rn) = (u32::from(a.rt), u32::from(a.rt2), u32::from(b) << 5);
+    let word = match (a.bytes, a.indexing) {
+        (16, Indexing::Offset) => 0x3d80_0000 | load << 22 | (by as u32) << 10,
+        (16, Indexing::Pre) => 0x3c80_0c00 | load << 22 | (by as u32 & 0x1ff) << 12,
+        (16, Indexing::Post) => 0x3c80_0400 | load << 22 | (by as u32 & 0x1ff) << 12,
+        (32, indexing) => {
+            let units = match indexing {
+                Indexing::Offset => by,
+                _ => by / 16,
+            } as u32
+                & 0x7f;
+            let kind = match indexing {
+                Indexing::Offset => 0xad00_0000,
+                Indexing::Pre => 0xad80_0000,
+                Indexing::Post => 0xac80_0000,
+            };
+            kind | load << 22 | units << 15 | rt2 << 10
+        }
+        (bytes, indexing) => {
+            // ld1 or st1 of several registers, or ld3, st3, ld4 and st4 (by `rt2`'s low bit, with its next
+            // two bits as the element size), base only or post-indexed by the size.
+            let opcode = match (bytes, rt2 & 1) {
+                (48, 0) => 0b0110,
+                (48, _) => 0b0100,
+                (_, 0) => 0b0010,
+                _ => 0b0000,
+            };
+            let post = match indexing {
+                Indexing::Post => 0x0080_0000 | 31 << 16,
+                _ => 0,
+            };
+            0x4c00_0000 | post | load << 22 | opcode << 12 | (rt2 >> 1 & 3) << 10
+        }
+    };
+    dynasm!(ops ; .arch aarch64 ; .u32 word | rn | rt);
+}
+
 fn emit_group_access(ops: &mut Ops, b: u8, a: &GroupAccess) {
+    if a.vector {
+        emit_vector_access(ops, b, a);
+        return;
+    }
     let GroupAccess {
         load,
         bytes,
@@ -1174,6 +1289,7 @@ fn emit_group_access(ops: &mut Ops, b: u8, a: &GroupAccess) {
         rt2,
         indexing,
         offset,
+        ..
     } = *a;
     let by = i32::from(offset);
     match (bytes, indexing) {
@@ -1518,8 +1634,9 @@ fn emit_walk(ops: &mut Ops, layout: &Layout, w: &Walk) {
             let access = GroupAccess {
                 load: w.load,
                 bytes: w.bytes,
+                vector: w.vector,
                 rt,
-                rt2: 0,
+                rt2: (rt + 1) % 32,
                 indexing,
                 offset: if matches!(indexing, Indexing::Offset) {
                     0
@@ -1546,44 +1663,60 @@ fn emit_walk(ops: &mut Ops, layout: &Layout, w: &Walk) {
             if first {
                 index_step(ops);
             }
-            match (w.bytes, w.load, extend, shift) {
-                (1, true, 0, _) => dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [x18, W(reg), uxtw]),
-                (1, true, 1, _) => dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [x18, W(reg), sxtw]),
-                (1, true, _, _) => dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [x18, X(reg)]),
-                (1, false, 0, _) => dynasm!(ops ; .arch aarch64 ; strb W(rt), [x18, W(reg), uxtw]),
-                (1, false, 1, _) => dynasm!(ops ; .arch aarch64 ; strb W(rt), [x18, W(reg), sxtw]),
-                (1, false, _, _) => dynasm!(ops ; .arch aarch64 ; strb W(rt), [x18, X(reg)]),
-                (_, true, 0, false) => {
-                    dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), uxtw])
-                }
-                (_, true, 0, true) => {
-                    dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), uxtw #3])
-                }
-                (_, true, 1, false) => {
-                    dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), sxtw])
-                }
-                (_, true, 1, true) => {
-                    dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), sxtw #3])
-                }
-                (_, true, _, false) => dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, X(reg)]),
-                (_, true, _, true) => {
-                    dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, X(reg), lsl #3])
-                }
-                (_, false, 0, false) => {
-                    dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), uxtw])
-                }
-                (_, false, 0, true) => {
-                    dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), uxtw #3])
-                }
-                (_, false, 1, false) => {
-                    dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), sxtw])
-                }
-                (_, false, 1, true) => {
-                    dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), sxtw #3])
-                }
-                (_, false, _, false) => dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, X(reg)]),
-                (_, false, _, true) => {
-                    dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, X(reg), lsl #3])
+            if w.vector {
+                // ldr or str of a Q register, the index extended as `extend` says, not shifted.
+                let option = [0b010, 0b110, 0b011][usize::from(extend.min(2))];
+                let word =
+                    0x3ca0_0800 | u32::from(w.load) << 22 | u32::from(reg) << 16 | option << 13;
+                dynasm!(ops ; .arch aarch64 ; .u32 word | 18 << 5 | u32::from(rt));
+            } else {
+                match (w.bytes, w.load, extend, shift) {
+                    (1, true, 0, _) => {
+                        dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [x18, W(reg), uxtw])
+                    }
+                    (1, true, 1, _) => {
+                        dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [x18, W(reg), sxtw])
+                    }
+                    (1, true, _, _) => dynasm!(ops ; .arch aarch64 ; ldrb W(rt), [x18, X(reg)]),
+                    (1, false, 0, _) => {
+                        dynasm!(ops ; .arch aarch64 ; strb W(rt), [x18, W(reg), uxtw])
+                    }
+                    (1, false, 1, _) => {
+                        dynasm!(ops ; .arch aarch64 ; strb W(rt), [x18, W(reg), sxtw])
+                    }
+                    (1, false, _, _) => dynasm!(ops ; .arch aarch64 ; strb W(rt), [x18, X(reg)]),
+                    (_, true, 0, false) => {
+                        dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), uxtw])
+                    }
+                    (_, true, 0, true) => {
+                        dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), uxtw #3])
+                    }
+                    (_, true, 1, false) => {
+                        dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), sxtw])
+                    }
+                    (_, true, 1, true) => {
+                        dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, W(reg), sxtw #3])
+                    }
+                    (_, true, _, false) => dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, X(reg)]),
+                    (_, true, _, true) => {
+                        dynasm!(ops ; .arch aarch64 ; ldr X(rt), [x18, X(reg), lsl #3])
+                    }
+                    (_, false, 0, false) => {
+                        dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), uxtw])
+                    }
+                    (_, false, 0, true) => {
+                        dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), uxtw #3])
+                    }
+                    (_, false, 1, false) => {
+                        dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), sxtw])
+                    }
+                    (_, false, 1, true) => {
+                        dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, W(reg), sxtw #3])
+                    }
+                    (_, false, _, false) => dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, X(reg)]),
+                    (_, false, _, true) => {
+                        dynasm!(ops ; .arch aarch64 ; str X(rt), [x18, X(reg), lsl #3])
+                    }
                 }
             }
             if !first {
