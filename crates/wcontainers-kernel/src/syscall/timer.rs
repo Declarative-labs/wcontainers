@@ -185,12 +185,14 @@ fn forward(expires: u64, now: u64, interval: u64) -> (u64, u64) {
     (count, expires + count * interval)
 }
 
-/// A thread came back from running: CPU timers of its process and its own that are due fire.
+/// A thread came back from running: its process's CPU time limit is looked at, and CPU timers of
+/// its process and its own that are due fire.
 pub(crate) fn cpu_check(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
-    if kernel.timers.cpu.is_empty() {
+    let pid = kernel.threads[&tid].process;
+    cpu_limit(kernel, cx, pid);
+    if kernel.timers.cpu.is_empty() || !kernel.threads.contains_key(&tid) {
         return;
     }
-    let pid = kernel.threads[&tid].process;
     let due: alloc::vec::Vec<u64> = kernel
         .timers
         .cpu
@@ -210,12 +212,48 @@ pub(crate) fn cpu_check(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
     }
 }
 
-/// How long the thread may run before a CPU timer of its own or its process's is due.
-pub(crate) fn cpu_slice(kernel: &Kernel, tid: Tid) -> Option<u64> {
-    if kernel.timers.cpu.is_empty() {
-        return None;
+/// RLIMIT_CPU, as Linux's `check_process_timers`: at the hard limit the process is killed; at the
+/// soft limit it is sent SIGXCPU and the soft limit goes up a second.
+fn cpu_limit(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid) {
+    let Some((soft, hard)) = cpu_limit_times(kernel, pid) else {
+        return;
+    };
+    let used = super::time::process_cpu_time(kernel, pid);
+    if hard.is_some_and(|hard| used >= hard) {
+        kernel.send_to_process(cx, pid, SIGKILL, crate::signal::kernel_info(SIGKILL));
+    } else if used >= soft {
+        let limit =
+            &mut kernel.processes.get_mut(&pid).expect("process").limits[RLIMIT_CPU as usize];
+        limit.current += 1;
+        kernel.send_to_process(cx, pid, SIGXCPU, crate::signal::kernel_info(SIGXCPU));
     }
+}
+
+/// A process's RLIMIT_CPU soft and hard limits in nanoseconds of CPU time, if a soft one is set.
+fn cpu_limit_times(kernel: &Kernel, pid: Pid) -> Option<(u64, Option<u64>)> {
+    let limit = kernel.processes[&pid].limits[RLIMIT_CPU as usize];
+    let infinite = RLIM_INFINITY as u64;
+    let nanoseconds = |seconds: u64| seconds.saturating_mul(1_000_000_000);
+    (limit.current != infinite).then(|| {
+        (
+            nanoseconds(limit.current),
+            (limit.maximum != infinite).then(|| nanoseconds(limit.maximum)),
+        )
+    })
+}
+
+/// How long the thread may run before its process reaches its CPU time limit or a CPU timer of its
+/// own or its process's is due.
+pub(crate) fn cpu_slice(kernel: &Kernel, tid: Tid) -> Option<u64> {
     let pid = kernel.threads[&tid].process;
+    let limit = cpu_limit_times(kernel, pid).map(|(soft, hard)| {
+        soft.min(hard.unwrap_or(u64::MAX))
+            .saturating_sub(super::time::process_cpu_time(kernel, pid))
+            .max(1)
+    });
+    if kernel.timers.cpu.is_empty() {
+        return limit;
+    }
     kernel
         .timers
         .cpu
@@ -232,6 +270,7 @@ pub(crate) fn cpu_slice(kernel: &Kernel, tid: Tid) -> Option<u64> {
                     .max(1),
             )
         })
+        .chain(limit)
         .min()
 }
 

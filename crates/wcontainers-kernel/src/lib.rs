@@ -283,9 +283,14 @@ impl Kernel {
         self.tick(tid);
         self.wake_due();
         syscall::timer::fire_due(self, &mut cx);
-        syscall::timer::cpu_check(self, &mut cx, tid);
-        self.tell_continued(&mut cx, tid);
-        self.came_back(&mut cx, tid, exit);
+        // A timer's signal or the CPU time limit may have killed the thread's process.
+        if self.threads.contains_key(&tid) {
+            syscall::timer::cpu_check(self, &mut cx, tid);
+        }
+        if self.threads.contains_key(&tid) {
+            self.tell_continued(&mut cx, tid);
+            self.came_back(&mut cx, tid, exit);
+        }
         self.settle(&mut cx);
     }
 
