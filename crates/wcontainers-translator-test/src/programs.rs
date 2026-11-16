@@ -25,22 +25,22 @@ pub struct Blob {
     pub code_bytes: u64,
 }
 
-fn out_directory() -> PathBuf {
+pub(crate) fn out_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/programs")
 }
 
 /// A file name no other build or run, in this process or another, uses.
-fn unique(stem: &str) -> String {
+pub(crate) fn unique(stem: &str) -> String {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     format!("{stem}.{}.{n}", std::process::id())
 }
 
-fn source_directory() -> PathBuf {
+pub(crate) fn source_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs")
 }
 
-fn zig(arguments: &[&str]) {
+pub(crate) fn zig(arguments: &[&str]) {
     let status = Command::new("zig")
         .args(arguments)
         .status()
@@ -110,26 +110,33 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     let (elf_text, source_text) = (text(&elf), text(&source));
     arguments.extend(["-o", &elf_text, &source_text]);
     zig(&arguments);
+    flatten(&elf, &own, stem)
+}
+
+/// The flat blob of a linked program, `own` being the unique name its build works under. The ELF file is
+/// kept, under the blob's name, for looking at.
+pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
+    let out = out_directory();
+    let text = |p: &Path| p.to_str().unwrap().to_string();
     let built = out.join(format!("{own}.bin"));
     let code = out.join(format!("{own}.text"));
-    zig(&["objcopy", "-O", "binary", &text(&elf), &text(&built)]);
+    zig(&["objcopy", "-O", "binary", &text(elf), &text(&built)]);
     zig(&[
         "objcopy",
         "-O",
         "binary",
         "--only-section=.text",
-        &text(&elf),
+        &text(elf),
         &text(&code),
     ]);
     let blob = Blob {
         bytes: std::fs::read(&built).unwrap(),
         code_bytes: std::fs::metadata(&code).unwrap().len(),
-        name: stem,
+        name,
     };
     std::fs::remove_file(&built).unwrap();
     std::fs::remove_file(&code).unwrap();
-    // The last build of each is kept for looking at.
-    std::fs::rename(&elf, out.join(format!("{}.elf", blob.name))).unwrap();
+    std::fs::rename(elf, out.join(format!("{}.elf", blob.name))).unwrap();
     blob
 }
 

@@ -1230,6 +1230,8 @@ struct At {
     flags: FlagStates,
     /// The stack pointer is known to be a multiple of 16.
     aligned: bool,
+    /// The float mode local holds whether floating point takes the slow path.
+    float_mode: bool,
 }
 
 /// How a piece carries on when the stop hook says so.
@@ -1265,6 +1267,8 @@ struct FullEmitter<'a> {
     loops: &'a HashMap<u64, u32>,
     omit: Omit,
     host: Host,
+    /// Whether floating point takes the slow path, loaded once until something may change it.
+    float_mode_local: Option<u32>,
     body: Vec<u8>,
     locals: Vec<ValType>,
     free: Vec<(ValType, u32)>,
@@ -1312,6 +1316,7 @@ impl<'a> FullEmitter<'a> {
             loops,
             omit,
             host,
+            float_mode_local: None,
             body: Vec::new(),
             locals: Vec::new(),
             free: Vec::new(),
@@ -1327,6 +1332,7 @@ impl<'a> FullEmitter<'a> {
                 dirty: Registers::NONE,
                 flags: 1 << FLAGS_IN_BLOCK,
                 aligned: false,
+                float_mode: false,
             },
             fixed: [None; 6],
             own,
@@ -1557,6 +1563,7 @@ impl<'a> FullEmitter<'a> {
                                 dirty: self.plan.dirty_in[b],
                                 flags: self.plan.flags_in[b],
                                 aligned: self.plan.aligned_in[b],
+                                float_mode: false,
                             };
                             self.write_back(false);
                             self.arguments();
@@ -1618,6 +1625,7 @@ impl<'a> FullEmitter<'a> {
             dirty: self.plan.dirty_in[b],
             flags: self.plan.flags_in[b],
             aligned: self.plan.aligned_in[b],
+            float_mode: false,
         };
         for offset in (block.start..block.end).step_by(4) {
             self.at.offset = offset;
@@ -1797,6 +1805,7 @@ impl<'a> FullEmitter<'a> {
     /// Call the stop hook if the flag is raised, then carry on as `after` says: when the hook says carry on,
     /// nothing has changed.
     fn stop_check(&mut self, pc: Pc, after: AfterStop) {
+        self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
@@ -2229,11 +2238,32 @@ impl Emitter for FullEmitter<'_> {
         self.host
     }
 
+    fn float_mode(&mut self) {
+        let local = match self.float_mode_local {
+            Some(l) => l,
+            None => {
+                let l = self.new_local(ValType::I32);
+                self.float_mode_local = Some(l);
+                l
+            }
+        };
+        if !self.at.float_mode {
+            self.get_control(Control::Fpcr);
+            self.get_control(Control::FloatTracking);
+            self.sink().i32_or().local_set(local);
+            self.at.float_mode = true;
+        }
+        self.sink().local_get(local);
+    }
+
     fn stack_aligned(&mut self) -> bool {
         self.at.aligned
     }
 
     fn set_control(&mut self, control: Control) {
+        if matches!(control, Control::Fpcr | Control::FloatTracking) {
+            self.at.float_mode = false;
+        }
         let block = self.fixed(G_THREAD_BLOCK);
         let value = self.temporary(Slot::Control(control).ty());
         let mut s = self.sink();
@@ -2359,6 +2389,8 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn call(&mut self, target: Target) {
+        // The callee may change FPCR or FPSR.
+        self.at.float_mode = false;
         let offset = self.at.offset;
         self.write_back(false);
         let looked_up = match target {
@@ -2475,6 +2507,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn syscall(&mut self) {
+        self.at.float_mode = false;
         let next = self.at.offset + 4;
         self.save(Pc::Offset(next));
         self.get(Reg::X(8));

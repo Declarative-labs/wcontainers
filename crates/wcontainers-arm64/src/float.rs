@@ -9,15 +9,13 @@
 
 use crate::exact::Operation;
 use crate::instruction::*;
-use crate::meaning::{Control, Emitter, Flags, Hook};
+use crate::meaning::{Emitter, Flags, Hook};
 use crate::simd::{extract, replace};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 
 /// Push whether the slow path must be taken, as an i32.
 pub(crate) fn exact_mode<E: Emitter + ?Sized>(e: &mut E) {
-    e.get_control(Control::Fpcr);
-    e.get_control(Control::FloatTracking);
-    e.sink().i32_or();
+    e.float_mode();
 }
 
 /// A v128 whose `element` byte elements all hold `bits`.

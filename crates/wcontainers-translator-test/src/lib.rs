@@ -5,6 +5,7 @@ pub mod browser;
 pub mod changes;
 pub mod layer1;
 pub mod layer2;
+pub mod layer3;
 pub mod layout;
 pub mod programs;
 pub mod reference;

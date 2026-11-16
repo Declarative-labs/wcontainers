@@ -234,3 +234,30 @@ fn measure() {
         );
     }
 }
+
+/// Timing of a floating point workload (`programs/floats.c`, SCALE=1) at -O2: native, and through the
+/// translator at full in wasmtime, best of `WC_BENCH_RUNS` (default 3). Only measures; one command:
+/// `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn floats_speed() {
+    use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
+    let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
+    let blob = build_with("floats", "-O2", Library::C, &["SCALE=1"]);
+    let theirs = native(&blob);
+    let native = native_seconds(&blob, runs);
+    let mut best = f64::MAX;
+    for _ in 0..runs {
+        let (ours, _, _, time) = translated_omitting(
+            &blob,
+            LookAhead::Full,
+            wcontainers_translator::Omit::default(),
+        );
+        assert_eq!(ours, theirs);
+        best = best.min(time.as_secs_f64());
+    }
+    eprintln!(
+        "floats -O2: native {native:.3} s, full {best:.3} s, {:.2} times native",
+        best / native
+    );
+}

@@ -21,6 +21,8 @@ use std::io::{Read, Write};
 include!("../../src/layout.rs");
 
 const PAGE: u64 = 4096;
+/// How long a blob may run.
+const BLOB_SECONDS: u32 = 20;
 const NZCV: u64 = 0xf000_0000;
 
 /// The registers the guest starts with: x0 to x30, sp, pc, pstate, thread pointer.
@@ -365,6 +367,8 @@ fn blob(path: &str, load: u64, stack_top: u64) {
         *guest = [0; 35];
         guest[31] = sp;
         guest[32] = load;
+        // A program that does not end in this time is killed by SIGALRM (random programs may loop).
+        libc::alarm(BLOB_SECONDS);
         libc::raise(libc::SIGUSR1);
     }
     unreachable!("the blob returned without exiting");

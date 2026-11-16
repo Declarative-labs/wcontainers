@@ -1,12 +1,13 @@
 /* A flat blob: code first, starting with _start (the C library's, from crt1.o, when there is one), then
    read-only data, then data with its zeroed part included. A flat copy leaves out zeroed data at the end, so
-   one byte with contents follows it. There are no program headers, so thread local data is not supported. */
+   one byte with contents follows it. Unwind tables are kept as read-only data (gcc's start files refer to
+   them). There are no program headers, so thread local data is not supported. */
 ENTRY(_start)
 SECTIONS {
   . = 0x400000;
   .text : { *crt1.o(.text .text.*) *(.text._start) *(.text .text.*) *(.init) *(.fini) }
   . = ALIGN(16);
-  .rodata : { *(.rodata .rodata.*) }
+  .rodata : { *(.rodata .rodata.*) *(.eh_frame*) *(.gcc_except_table*) }
   . = ALIGN(16);
   .data : {
     PROVIDE_HIDDEN(__init_array_start = .);
@@ -19,5 +20,5 @@ SECTIONS {
   }
   .end : { BYTE(0) }
   PROVIDE_HIDDEN(__blob_end = .);
-  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) *(.ARM.attributes) }
+  /DISCARD/ : { *(.comment) *(.note*) *(.ARM.attributes) }
 }
