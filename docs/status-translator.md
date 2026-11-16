@@ -4,15 +4,15 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M3 (every instruction) is in progress, first run: every one of the 1215 forms of the CPU we present
-translates and matches the CPU in layer 1 (1215 x 1000 cases, seed 5: no mismatch), the decoding test shows no
-offered form left untranslated, `programs/differences.c` (section 8, printed as bits) matches Linux at every
-level, at none and full, in wasmtime and Chrome, and also on a host made to need the software fused
-multiply-add and the not-a-number fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc,
-six levels, fixed and position independent code; 256 Csmith programs compared, one failure recorded as a
-suspected reference flake). Not done: floating point's slow path makes floating point code at full about twice
-as slow as without it (measured; the fix is known, see "Next"); a position independent blob loaded away from
-its link address; the long runs to the pass bars. See "M3, first run" below.
+M3 (every instruction) is built, second run done; waiting for the long runs to the pass bars and an
+independent check. Every one of the 1215 forms of the CPU we present translates and matches the CPU in
+layer 1 (1215 x 1000 cases, seed 5: no mismatch), the decoding test shows no offered form left untranslated,
+`programs/differences.c` (section 8, printed as bits) matches Linux at every level, at none and full, in
+wasmtime and Chrome, and also on a host made to need the software fused multiply-add and the not-a-number
+fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc, six levels, fixed position code and
+position independent code loaded away from where it is linked). The second run took floating point's slow
+path out of the hot function (floats at full: 4.41 to 2.43 times native), loaded position independent blobs
+at another address, and measured vector registers in locals. See "M3, second run" and "M3, first run" below.
 
 M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
 pushed. M2 (full look-ahead) is built and tested: every part of the plan's list is in, hello and the
@@ -38,6 +38,36 @@ below). S1 waits for its next independent check. The third run's work is under "
 calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
 rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
 eighth run", and what is left under "S1, what remains after the eighth run".
+
+## M3, second run
+
+- Floating point's slow path at full leaves the piece. `Emitter::float_mode` now returns whether the meaning
+  writes both paths (`float::paths` is the one place meanings use it). At none it pushes the mode and the
+  slow path is in place, as before. At full the instruction tests the mode (kept in a local) and, when it is
+  set, writes back and tail calls the code module's new function `exact` (`F_EXACT`, so pieces start at 12),
+  which saves the passed registers and `pc`, warns "left to an address", asks `load_code` for code at none
+  there (replacing a piece there, as after `UNWIND_GO_TO_EXACT`) and dispatches to it. The WebAssembly stack
+  is kept, unlike the throwing `UNWIND_GO_TO_EXACT`. Nothing of the instruction may be written before the
+  test; the full emitter asserts it (`every_form_is_valid` runs every form at full through it). The software
+  fused multiply-add on hosts that need it stays in place (it is not a slow twin but the only path there).
+  `differences_match_linux_on_other_hosts` now also asserts that full leaves the piece for it.
+- Measured (`floats_speed`, wasmtime, full, best of 3): 4.41 times native before (load 6), 2.43 to 2.45
+  after (three runs, load 4 to 5; again 2.42 to 2.45 at load 20 to 23). The first run's experiment with the
+  slow path made `unreachable` gave 2.5, so the test that stays costs little.
+- Vector registers in locals at full, measured alone (an experiment not kept: at full, vector registers read
+  and written in the thread block, as at none): `floats_speed` 3.84 to 3.85 times native, against 2.42 to
+  2.45 with locals (best of 3 each, load 17 to 23). Locals kept.
+- Position independent blobs are now loaded away from where they are linked (`programs::MOVED`, 0x23456000;
+  `Blob::load`). Layer 3 builds them as static position independent programs (`-static-pie -fPIE -z
+  norelro`; `flat.ld` keeps their dynamic sections), whose start (musl's `rcrt1`) relocates itself. It finds
+  where it is through `AT_PHDR`, so `flatten` places the ELF file's program headers after the blob (read with
+  the `object` crate) and both runners and the reference give `AT_PHDR`, `AT_PHENT` and `AT_PHNUM`
+  (`layout::initial_stack`; the reference takes two more arguments). Every C program blob now gets them, as
+  Linux gives them. `AT_BASE` alone does not work: Alpine's musl then reads an ELF header at that address.
+  Layer 3 now also fails a program that Linux ends by a signal, so a blob that did not relocate itself cannot
+  match by faulting the same way on both sides.
+- The layer 3 failure of the first run (Csmith 2000136, clang -O0, SIGSEGV once on Linux): its blob ran 160
+  more times on the reference, 8 at a time at load 16: 160 good. Not reproduced, not understood.
 
 ## M3, first run
 
@@ -114,9 +144,7 @@ independent code (`-fPIE`, data through the global offset table), linked at the 
 and full: output and status equal to Linux, full equal to none in registers and memory. A Csmith program
 that does not end on Linux in 20 seconds (the reference's blob mode now has that alarm) is not compared,
 and counted. `flat.ld` keeps unwind tables as read-only data now, as gcc's start files refer to them.
-Not done: a position independent blob loaded at an address other than its link address. That needs the
-program's own relocation at start (musl's rcrt1 finds itself through AT_PHDR, and flat blobs have no
-program headers), which is ELF loading, the kernel phase's job; see "Next".
+(Since the second run position independent blobs are loaded away from their link address; see there.)
 
 Measured (floating point, `tests/programs.rs` `floats_speed`, ignored, one command; `programs/floats.c`
 at -O2 SCALE=1: an n-body step in double precision and a single precision matrix product; wasmtime, full,
@@ -1012,9 +1040,11 @@ contract's bits, in both runners).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
-- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (defaults 4 Csmith programs, seed 1; the hand-picked programs are 48 builds each run). Needs Docker, and
-  network once to make the gcc image.
+- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
+  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and full; the
+  hand-picked programs are 48 builds each run). Needs Docker, Chrome, and network once to
+  make the gcc image. At the first run's rate (300 programs in 18.8 minutes) 100,000 take about 4.4 days in
+  one process; several seeds can run side by side.
 - Floating point timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
 - Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
@@ -1033,6 +1063,13 @@ contract's bits, in both runners).
   (`WC_BENCH_WORKLOADS=1,2` picks workloads, `WC_BENCH_CHROME=0` leaves Chrome out). About 15 minutes.
 
 ## Cases actually run
+
+- M3, second run, release, after its changes: layer 1, 1215 forms x 200 cases, seed 6: 0 mismatches
+  (243,000 cases, 292 s, load 15 to 21). Layer 3, 100 Csmith programs, seed 3 (moved position independent
+  blobs among them; 1 also in Chrome), and the 48 hand-picked builds: 86 compared and matching, 14 did not
+  end on Linux in 20 seconds, 0 failing (382 s, load 11 to 21). Every test of the three crates passes (debug
+  build, Chrome test and layer 3's defaults included; load 8 to 28). Layer 3, 8 Csmith programs, seed 4,
+  all 8 also in Chrome at none and full: 0 failing (38 s in all, load 10 to 18).
 
 - M3, layer 1, release: 1215 forms x 100 cases, seed 2: 0 mismatches (121,500 cases, 177 s, load 18 to 21).
   1215 x 1000, seed 3 (1,215,000 cases, 27 minutes, load 12 to 23): 4 forms failing, all in the software
@@ -1208,13 +1245,14 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M3: move floating point's slow path out of the hot function (see the measurement in "M3, first run"):
-   it doubles floating point code at full now.
-2. M3: the long runs, started by the orchestrator: layer 1 at 10,000 a form, layer 3 at 100,000 Csmith
-   programs (commands under "How to run"); a sample of each in Chrome.
-3. M3: a position independent blob loaded away from its link address (needs program headers in flat blobs
-   and AT_PHDR in the starting stack, or the kernel phase's ELF loading).
-3. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
+1. M3: the long runs, started by the orchestrator: layer 1 at 10,000 a form, layer 3 at 100,000 Csmith
+   programs with `WC_LAYER3_CHROME` set for the Chrome sample (commands under "How to run").
+2. M3: layer 1 has no Chrome sample (its runner is wasmtime only). The meanings are the same WebAssembly in
+   both engines and `tests/browser.rs` runs the hand-picked programs, `differences.c` included, in Chrome;
+   a Chrome runner for layer 1 cases is what remains if the pass bar's "sample of each in Chrome" must
+   cover layer 1 too.
+3. M3's independent check.
+4. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
@@ -1227,7 +1265,14 @@ contract's bits, in both runners).
   hold the code inline elsewhere keep it. Code that changes is out of phase one.
 - The float hook's counters carry the operation as their detail, not the address (registers are not saved
   at that hook).
-- Flat blobs have no program headers, so thread local data is not supported in test programs.
+- Flat blobs carry their program headers after the image (since M3's second run), but the image has no
+  PT_PHDR and `flat.ld` places no thread local sections, so thread local data is not supported in test
+  programs.
+- At full, a floating point instruction that must take the slow path leaves for code at none from that
+  instruction, translated at run time, and the rest of that function call runs at none. The runner's code
+  translated at run time then holds the table's place at every address it reaches (the M2 departure on code
+  translated at run time), so calls through the table into those functions run at none afterwards too.
+  Exact either way; bounded look-ahead (M4) is the plan's answer.
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
 - The WebAssembly stack overflowing on deep guest recursion is not handled, at either look-ahead: every
   guest call is a WebAssembly call at none too. The engine stops the guest ("call stack exhausted"), the
@@ -1256,6 +1301,12 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
+- M3, second run: at full the floating point slow path leaves the piece by a tail call to code at none
+  from the instruction (counted as "left to an address" besides the float hook's own count), instead of
+  calling the software path in place; a call in place doubled floating point code's time.
+- M3, second run: flat C blobs carry the ELF file's program headers after the image, and runners give
+  `AT_PHDR`, `AT_PHENT` and `AT_PHNUM`, so a static position independent program can relocate itself when
+  loaded away from its link address. This is test tooling standing in for the kernel phase's ELF loading.
 - M3: decoding of the new families goes by Arm's forms (names and fields from the machine readable
   specification already in the repository), not yaxpeax-arm, whose AdvSIMD and system decoding leaves out
   or misnames too much; yaxpeax-arm still decodes what it did.
@@ -1410,6 +1461,7 @@ contract's bits, in both runners).
 
 ## Shared crate (wcontainers-abi)
 
+- M3, second run: no change.
 - M3: no change. The CPU side's own words (float tracking, exclusive monitor) are after the abi's block, in
   the translator's contract (`THREAD_STATE_SIZE`), not in the abi.
 
