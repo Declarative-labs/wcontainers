@@ -326,12 +326,13 @@ pub(crate) fn dispatch(
     match handler {
         Handler::Simple(handler) => handler(kernel, cx, tid, call.arguments).into(),
         Handler::Full(handler) => handler(kernel, cx, tid, call.arguments),
-        Handler::NotImplemented => {
-            kernel
-                .counters
-                .count(cx.host, reason::NOT_IMPLEMENTED, number.into());
-            Err(Errno::ENOSYS).into()
-        }
+        Handler::NotImplemented => Err(kernel.counters.refuse(
+            cx.host,
+            reason::NOT_IMPLEMENTED,
+            number.into(),
+            Errno::ENOSYS,
+        ))
+        .into(),
         // Counted above.
         Handler::Unknown => Err(Errno::ENOSYS).into(),
     }

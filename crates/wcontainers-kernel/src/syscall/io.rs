@@ -2019,12 +2019,12 @@ fn fcntl_other(
         }
         F_GET_SEALS if !path_only => super::memfd::get_seals(&descriptor.file.borrow()),
         _ if path_only => Err(Errno::EBADF),
-        _ => {
-            kernel
-                .counters
-                .count(cx.host, reason::FCNTL_NOT_BUILT, command.into());
-            Err(Errno::EINVAL)
-        }
+        _ => Err(kernel.counters.refuse(
+            cx.host,
+            reason::FCNTL_NOT_BUILT,
+            command.into(),
+            Errno::EINVAL,
+        )),
     }
 }
 

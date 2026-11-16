@@ -296,10 +296,9 @@ pub(super) fn openat2(
     // Lookups restricted by `resolve` are not built. Linux has had them as long as it has had openat2,
     // so these requests are answered as a kernel before openat2 answers the whole call: ENOSYS.
     if how.resolve & !u64::from(RESOLVE_CACHED) != 0 {
-        kernel
+        return Err(kernel
             .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(__NR_openat2));
-        return Err(Errno::ENOSYS);
+            .refuse_flag(cx.host, __NR_openat2, how.resolve, Errno::ENOSYS));
     }
     let path = guest(kernel, cx, tid).read_path(path)?;
     let flags = flags | (how.flags as u32 & O_CLOEXEC);
@@ -374,10 +373,12 @@ pub(super) fn open(
 ) -> Result<u64, Errno> {
     let flags = open_flags(flags)?;
     if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
-        kernel
-            .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(O_TMPFILE));
-        return Err(Errno::EOPNOTSUPP);
+        return Err(kernel.counters.refuse_flag(
+            cx.host,
+            __NR_openat,
+            O_TMPFILE.into(),
+            Errno::EOPNOTSUPP,
+        ));
     }
     // Access mode 3 asks for both permissions and gives neither, as on Linux.
     let accmode = flags & O_ACCMODE;
@@ -529,10 +530,12 @@ pub(super) fn open(
                 match Device::from_number(rdev) {
                     Some(Device::Tty) => return Err(Errno::ENXIO),
                     Some(Device::Ptmx) => {
-                        kernel
-                            .counters
-                            .count(cx.host, reason::DEVICE_NOT_IMPLEMENTED, rdev);
-                        return Err(Errno::ENODEV);
+                        return Err(kernel.counters.refuse(
+                            cx.host,
+                            reason::DEVICE_NOT_BUILT,
+                            rdev,
+                            Errno::ENODEV,
+                        ));
                     }
                     Some(_) => {}
                     None => return Err(Errno::ENXIO),
@@ -540,10 +543,12 @@ pub(super) fn open(
             }
             S_IFIFO if !matches!(node.borrow().content, Content::HostStream(_)) => {
                 let ino = node.borrow().ino;
-                kernel
-                    .counters
-                    .count(cx.host, reason::NAMED_PIPE_NOT_IMPLEMENTED, ino);
-                return Err(Errno::ENXIO);
+                return Err(kernel.counters.refuse(
+                    cx.host,
+                    reason::DEVICE_NOT_BUILT,
+                    ino,
+                    Errno::ENXIO,
+                ));
             }
             S_IFSOCK => return Err(Errno::ENXIO),
             _ => {}

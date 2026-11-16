@@ -115,12 +115,12 @@ fn set_filter(
     // A listener is how another process answers calls a filter sends it; there are no listeners, so a
     // filter's USER_NOTIF answer is ENOSYS, as Linux gives with none.
     if flags & SECCOMP_FILTER_FLAG_NEW_LISTENER != 0 {
-        kernel.counters.count(
+        return Err(kernel.counters.refuse(
             cx.host,
             reason::SECCOMP_LISTENER_NOT_IMPLEMENTED,
             flags.into(),
-        );
-        return Err(Errno::EINVAL);
+            Errno::EINVAL,
+        ));
     }
     let header = guest(kernel, cx, tid).read(fprog, FPROG_SIZE)?;
     let length = usize::from(u16::from_le_bytes([header[0], header[1]]));

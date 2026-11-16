@@ -211,10 +211,9 @@ fn exec(
         return Ok(Exec::Checked);
     }
     if kernel.processes[&pid].threads.len() > 1 {
-        kernel
+        return Err(kernel
             .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(__NR_execve));
-        return Err(Errno::ENOSYS);
+            .refuse_flag(cx.host, __NR_execve, 0, Errno::ENOSYS));
     }
     let mut program = program;
     program.reopenable = reachable;
@@ -1344,22 +1343,18 @@ pub(super) fn prctl(
             if form != PR_SET_MM_MAP && !kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE) {
                 return Err(Errno::EPERM);
             }
-            kernel
+            Err(kernel
                 .counters
-                .count(cx.host, reason::PRCTL_NOT_BUILT, option);
-            Err(Errno::EINVAL)
+                .refuse(cx.host, reason::PRCTL_NOT_BUILT, option, Errno::EINVAL))
         }
         PR_SET_IO_FLUSHER | PR_GET_IO_FLUSHER
             if !kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE) =>
         {
             Err(Errno::EPERM)
         }
-        _ => {
-            kernel
-                .counters
-                .count(cx.host, reason::PRCTL_NOT_BUILT, option);
-            Err(Errno::EINVAL)
-        }
+        _ => Err(kernel
+            .counters
+            .refuse(cx.host, reason::PRCTL_NOT_BUILT, option, Errno::EINVAL)),
     }
 }
 

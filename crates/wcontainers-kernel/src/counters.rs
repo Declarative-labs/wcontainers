@@ -24,20 +24,23 @@ pub mod reason {
     /// An `fcntl` command the kernel does not build, known to Linux or not; it answers EINVAL, as
     /// Linux does for one it does not know or has not configured. Detail: the command.
     pub const FCNTL_NOT_BUILT: &str = "fcntl command not built";
-    /// Opening a device the kernel has no driver for yet. Detail: the device number.
-    pub const DEVICE_NOT_IMPLEMENTED: &str = "device not implemented";
-    /// Opening a named pipe, which needs pipes. Detail: the inode number.
-    pub const NAMED_PIPE_NOT_IMPLEMENTED: &str = "named pipe not implemented";
-    /// A shared mapping of a file, which needs shared pages.
-    pub const SHARED_FILE_MAPPING: &str = "shared file mapping not implemented";
+    /// Opening a device the kernel has no driver for. Detail: the device number.
+    pub const DEVICE_NOT_BUILT: &str = "device not built";
     /// A `prctl` option or form the kernel does not build, known to Linux or not; it answers EINVAL,
     /// as Linux does for one it does not know. Detail: the option.
     pub const PRCTL_NOT_BUILT: &str = "prctl option not built";
-    /// A flag of a memory call the kernel does not implement. Detail: the flag bits.
-    pub const MEMORY_FLAG_NOT_IMPLEMENTED: &str = "memory call flag not implemented";
+    /// A flag or form of a call that the kernel does not build, answered as Linux answers without
+    /// it. Detail: the call number times 2^32, plus the flag bits.
+    pub const FLAG_NOT_BUILT: &str = "call flag not built";
     /// `madvise` advice Linux has that the kernel does not build; it answers EINVAL, as a Linux
     /// without that advice does. Detail: the advice.
     pub const ADVICE_NOT_BUILT: &str = "madvise advice not built";
+    /// An `ioctl` request of a file whose Linux driver has requests this kernel does not build; it
+    /// answers as that driver does for a request it does not know. Detail: the request.
+    pub const IOCTL_NOT_BUILT: &str = "ioctl request not built";
+    /// A process's memory, files or other state reached from another process in a way not built.
+    /// Detail: the call number.
+    pub const CROSS_PROCESS_NOT_BUILT: &str = "call on another process not built";
     /// `mincore`, `getrusage`, `sysinfo` or `/proc/meminfo` reported every mapped page as in
     /// memory, or `cachestat` or `statfs` counted a mapped file's pages without those its faults
     /// brought in: which pages a program has touched is not known here. Detail: none.
@@ -57,6 +60,24 @@ pub mod reason {
     pub const PRIVATE_MAPPING_COPY: &str = "private file mapping is a copy";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
+
+    /// Every reason that means something Linux has is not built here, each answered through
+    /// `Counters::refuse`: the status file's list of what is missing comes
+    /// from these names.
+    pub const NOT_BUILT: &[&str] = &[
+        NOT_IMPLEMENTED,
+        FLAG_NOT_BUILT,
+        FCNTL_NOT_BUILT,
+        PRCTL_NOT_BUILT,
+        IOCTL_NOT_BUILT,
+        ADVICE_NOT_BUILT,
+        DEVICE_NOT_BUILT,
+        PROC_ENTRY_NOT_BUILT,
+        SECCOMP_LISTENER_NOT_IMPLEMENTED,
+        CROSS_PROCESS_NOT_BUILT,
+        SIGNAL_HANDLER_NOT_RUN,
+        PROCESS_STOP_NOT_IMPLEMENTED,
+    ];
 }
 
 #[derive(Default)]
@@ -76,6 +97,33 @@ impl Counters {
             count: *count,
             detail,
         });
+    }
+
+    /// The one path for something Linux has that is not built here: counts it under one of
+    /// [`reason::NOT_BUILT`], warns, and gives back the error Linux answers when it lacks the
+    /// feature.
+    pub fn refuse(
+        &mut self,
+        host: &mut dyn Host,
+        reason: &'static str,
+        detail: u64,
+        answer: crate::Errno,
+    ) -> crate::Errno {
+        debug_assert!(reason::NOT_BUILT.contains(&reason), "{reason}");
+        self.count(host, reason, detail);
+        answer
+    }
+
+    /// A flag or form of call `number` that is not built, as [`Counters::refuse`] counts it.
+    pub fn refuse_flag(
+        &mut self,
+        host: &mut dyn Host,
+        number: u32,
+        flags: u64,
+        answer: crate::Errno,
+    ) -> crate::Errno {
+        let detail = (u64::from(number) << 32) | (flags & 0xffff_ffff);
+        self.refuse(host, reason::FLAG_NOT_BUILT, detail, answer)
     }
 
     /// Notes an occurrence to count at the next [`Counters::flush`].

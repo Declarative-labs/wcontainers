@@ -130,12 +130,12 @@ pub(super) fn mmap(
         return Err(Errno::EINVAL);
     }
     if flags & MAP_HUGETLB != 0 {
-        kernel.counters.count(
+        return Err(kernel.counters.refuse_flag(
             cx.host,
-            reason::MEMORY_FLAG_NOT_IMPLEMENTED,
+            __NR_mmap,
             MAP_HUGETLB.into(),
-        );
-        return Err(Errno::ENOMEM);
+            Errno::ENOMEM,
+        ));
     }
     if length == 0 {
         return Err(Errno::EINVAL);
@@ -579,10 +579,12 @@ pub(super) fn madvise(
         advice,
         MADV_COLLAPSE | MADV_GUARD_INSTALL | MADV_GUARD_REMOVE
     ) {
-        kernel
-            .counters
-            .count(cx.host, reason::ADVICE_NOT_BUILT, advice.into());
-        return Err(Errno::EINVAL);
+        return Err(kernel.counters.refuse(
+            cx.host,
+            reason::ADVICE_NOT_BUILT,
+            advice.into(),
+            Errno::EINVAL,
+        ));
     }
     if !known {
         return Err(Errno::EINVAL);
@@ -1371,17 +1373,17 @@ fn process_vm(
     };
     if target.process != kernel.threads[&tid].process {
         // Another process's memory needs Linux's `ptrace_may_access`, which comes with processes.
-        kernel.counters.count(
+        let number = if write {
+            __NR_process_vm_writev
+        } else {
+            __NR_process_vm_readv
+        };
+        return Err(kernel.counters.refuse(
             cx.host,
-            reason::NOT_IMPLEMENTED,
-            if write {
-                __NR_process_vm_writev
-            } else {
-                __NR_process_vm_readv
-            }
-            .into(),
-        );
-        return Err(Errno::ENOSYS);
+            reason::CROSS_PROCESS_NOT_BUILT,
+            number.into(),
+            Errno::ENOSYS,
+        ));
     }
     let mut guest = super::guest(kernel, cx, tid);
     let mut local = local.into_iter().filter(|(_, length)| *length > 0);
