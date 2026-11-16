@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/sendfile.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -203,5 +204,26 @@ int main(int argc, char **argv) {
     R(syscall(SYS_pwritev2, cpuw, parts, 1, -1L, 0, 0));
     R(pread(1, buffer, 1, 0));
     R(pwrite(0, buffer, 1, 0));
+
+    // What can be spliced from and to.
+    const char *sources[] = {"/proc/self/comm", "/proc/self/cmdline", "/proc/self/status",
+                             "/proc/cpuinfo", "/proc/sys/kernel/ostype", "/dev/null",
+                             "/dev/zero", "/dev/full", "/dev/urandom"};
+    int sink = open("/dev/null", O_WRONLY);
+    int full = open("/dev/full", O_WRONLY);
+    for (unsigned i = 0; i < sizeof(sources) / sizeof(*sources); i++) {
+        int fd = open(sources[i], O_RDONLY);
+        errno = 0;
+        long r = sendfile(sink, fd, 0, 64);
+        printf("sendfile from %-24s = %ld (%s)\n", sources[i], r > 0 ? 1 : r, r < 0 ? strerror(errno) : "-");
+        errno = 0;
+        r = sendfile(full, fd, 0, 64);
+        printf("sendfile to /dev/full from %-24s = %ld (%s)\n", sources[i], r > 0 ? 1 : r, r < 0 ? strerror(errno) : "-");
+        close(fd);
+    }
+    int comm_out = open("/proc/self/comm", O_WRONLY);
+    int zero = open("/dev/zero", O_RDONLY);
+    R(sendfile(comm_out, zero, 0, 8));
+    current();
     return 0;
 }

@@ -1016,8 +1016,27 @@ fn send(
     if output.borrow().flags & O_APPEND != 0 {
         return Err(Errno::EINVAL);
     }
-    // Neither a directory nor secret memory can be spliced from (no `splice_read`).
-    if input.borrow().node.borrow().is_directory() || input.borrow().node.borrow().is_secret() {
+    // What cannot be spliced from (no `splice_read`: directories, secret memory, `/dev/null`, the
+    // process files of `/proc`), measured.
+    let device = |file: &FileRef| {
+        let file = file.borrow();
+        let inode = file.node.borrow();
+        match inode.content {
+            Content::Special => Device::from_number(inode.rdev),
+            _ => None,
+        }
+    };
+    let unspliceable = {
+        let file = input.borrow();
+        let inode = file.node.borrow();
+        inode.is_directory()
+            || inode.is_secret()
+            || matches!(
+                inode.content,
+                Content::Proc(crate::fs::proc::Entry::ProcessFile(..))
+            )
+    };
+    if unspliceable || device(&input) == Some(Device::Null) {
         return Err(Errno::EINVAL);
     }
     let offset = position as u64;
@@ -1025,6 +1044,13 @@ fn send(
     let mut bytes = file_bytes(cx, &input, count, offset)?;
     let (node, flags) = (input.borrow().node.clone(), input.borrow().flags);
     accessed(kernel, cx, &node, flags);
+    // Only what was read goes to the output, which `/dev/full` cannot take (no `splice_write`).
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    if device(&output) == Some(Device::Full) {
+        return Err(Errno::EINVAL);
+    }
     if matches!(output.borrow().node.borrow().content, Content::Regular(_)) {
         let at = output.borrow().offset;
         let allowed = write_limit(kernel, cx, tid, at, bytes.len() as u64)?;
