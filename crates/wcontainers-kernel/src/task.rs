@@ -646,7 +646,12 @@ impl Kernel {
     /// Descriptors were closed: locks may have been let go and pipes and terminals may have lost an
     /// end, so every wait on a file looks again.
     pub(crate) fn files_released(&mut self, cx: &mut Context<'_>) {
-        crate::syscall::pipe::released(self, cx);
+        let files: alloc::vec::Vec<_> = self
+            .processes
+            .values_mut()
+            .flat_map(|process| process.files.take_released())
+            .collect();
+        crate::syscall::pipe::released(self, cx, files);
         let woken: alloc::vec::Vec<Tid> = self
             .threads
             .iter()

@@ -81,6 +81,7 @@ pub(super) fn pipe2(
         Ok(fd) => fd,
         Err(error) => {
             let _ = files.remove(read_fd);
+            kernel.files_released(cx);
             return Err(error);
         }
     };
@@ -91,6 +92,7 @@ pub(super) fn pipe2(
         let files = &mut kernel.process_of_mut(tid).files;
         let _ = files.remove(read_fd);
         let _ = files.remove(write_fd);
+        kernel.files_released(cx);
         return Err(error);
     }
     Ok(0)
@@ -196,14 +198,6 @@ pub(super) fn open_named_again(kernel: &mut Kernel, tid: Tid) -> Result<FileRef,
     Err(Errno::PARKED)
 }
 
-/// Counts a pipe's ends anew once `FASYNC` changes on one, so a later close is told from earlier ones.
-pub(super) fn note_ends(file: &FileRef) {
-    let node = file.borrow().node.clone();
-    if let Content::Pipe(pipe) = &mut node.borrow_mut().content {
-        pipe.note_counts();
-    }
-}
-
 /// `kill_fasync` on a pipe's readers (`POLL_IN`) or writers (`POLL_OUT`).
 pub(super) fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node, readers: bool) {
     let ends = match &node.borrow().content {
@@ -216,37 +210,20 @@ pub(super) fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node
     }
 }
 
-/// After descriptors closed: `pipe_release`'s I/O signals to both kinds of end of a pipe left with
-/// readers and no writers or the other way round. Only pipes with an end with `FASYNC` set are
-/// looked at, the only ones the signals reach.
-pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>) {
-    let mut nodes: Vec<Node> = Vec::new();
-    for process in kernel.processes.values() {
-        for (_, descriptor) in process.files.iter() {
-            let file = descriptor.file.borrow();
-            if file.flags & FASYNC != 0
-                && matches!(file.node.borrow().content, Content::Pipe(_))
-                && !nodes
-                    .iter()
-                    .any(|node| alloc::rc::Rc::ptr_eq(node, &file.node))
-            {
-                nodes.push(file.node.clone());
-            }
-        }
-    }
-    for node in nodes {
-        let lost_an_end = {
-            let mut inode = node.borrow_mut();
-            let Content::Pipe(pipe) = &mut inode.content else {
-                continue;
-            };
-            let (readers, writers) = (pipe.readers(), pipe.writers());
-            let lost = (readers < pipe.counted.0 || writers < pipe.counted.1)
-                && (readers == 0) != (writers == 0);
-            pipe.note_counts();
-            lost
+/// `pipe_release` of each file given up that was its last holder: a pipe left with readers and no
+/// writers or the other way round sends both kinds of end their I/O signals. Releases run last given
+/// up first, as `fput`'s task works do on the way back to the program, and the file is gone from the
+/// pipe's ends first, as `__fput` takes it off before the release.
+pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<FileRef>) {
+    for file in files.into_iter().rev() {
+        let node = file.borrow().node.clone();
+        let last = alloc::rc::Rc::strong_count(&file) == 1;
+        drop(file);
+        let lost_a_side = match &node.borrow().content {
+            Content::Pipe(pipe) => last && (pipe.readers() == 0) != (pipe.writers() == 0),
+            _ => false,
         };
-        if lost_an_end {
+        if lost_a_side {
             signal_ends(kernel, cx, &node, true);
             signal_ends(kernel, cx, &node, false);
         }

@@ -1897,7 +1897,7 @@ pub(super) fn dup3(
             close_on_exec: flags & O_CLOEXEC != 0,
         },
     );
-    if replaced.is_some() {
+    if replaced {
         kernel.files_released(cx);
     }
     Ok(new as u64)

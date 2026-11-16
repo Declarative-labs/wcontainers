@@ -122,6 +122,8 @@ pub(crate) struct FdTable {
     /// Who the record locks taken through this table belong to (Linux's `files_struct` as a lock's
     /// owner).
     lock_owner: u64,
+    /// The files whose descriptors were closed, in order, for the kernel to finish releasing.
+    released: Vec<FileRef>,
 }
 
 impl FdTable {
@@ -187,20 +189,27 @@ impl FdTable {
         Ok(fd)
     }
 
-    /// Puts a file at a given descriptor, closing what was there.
-    pub fn set(&mut self, fd: i32, descriptor: Descriptor) -> Option<Descriptor> {
+    /// Puts a file at a given descriptor, closing what was there; whether something was.
+    pub fn set(&mut self, fd: i32, descriptor: Descriptor) -> bool {
         self.highest = self.highest.max(fd);
         let old = self.slots.insert(fd, descriptor);
-        if let Some(old) = &old {
-            self.closed(old);
-        }
-        old
+        old.map(|old| self.closed(old)).is_some()
     }
 
-    pub fn remove(&mut self, fd: i32) -> Result<Descriptor, Errno> {
+    pub fn remove(&mut self, fd: i32) -> Result<(), Errno> {
         let old = self.slots.remove(&fd).ok_or(Errno::EBADF)?;
-        self.closed(&old);
-        Ok(old)
+        self.closed(old);
+        Ok(())
+    }
+
+    /// Gives up a file this table's process held outside a descriptor.
+    pub fn release(&mut self, file: FileRef) {
+        self.released.push(file);
+    }
+
+    /// The files given up since the last call, in order.
+    pub fn take_released(&mut self) -> Vec<FileRef> {
+        core::mem::take(&mut self.released)
     }
 
     pub fn lock_owner(&self) -> u64 {
@@ -212,29 +221,33 @@ impl FdTable {
     pub fn duplicate(&self, lock_owner: u64) -> Self {
         Self {
             lock_owner,
+            released: Vec::new(),
             ..self.clone()
         }
     }
 
     pub fn close_all(&mut self) {
         for (_, old) in core::mem::take(&mut self.slots) {
-            self.closed(&old);
+            self.closed(old);
         }
     }
 
     /// A descriptor was closed: the table's record locks on the file go (`filp_flush`), unless it
     /// was opened only for its path.
-    fn closed(&self, descriptor: &Descriptor) {
-        let file = descriptor.file.borrow();
-        if !file.is_path() {
-            let mut node = file.node.borrow_mut();
-            crate::locks::release_table(&mut node.record_locks, self.lock_owner);
-            // A queue's request to be told goes with a close by its process, whose number the
-            // table's lock owner is (`mqueue_flush_file`).
-            if let crate::fs::Content::Mqueue(queue) = &mut node.content {
-                queue.flush(self.lock_owner as crate::process::Pid);
+    fn closed(&mut self, descriptor: Descriptor) {
+        {
+            let file = descriptor.file.borrow();
+            if !file.is_path() {
+                let mut node = file.node.borrow_mut();
+                crate::locks::release_table(&mut node.record_locks, self.lock_owner);
+                // A queue's request to be told goes with a close by its process, whose number the
+                // table's lock owner is (`mqueue_flush_file`).
+                if let crate::fs::Content::Mqueue(queue) = &mut node.content {
+                    queue.flush(self.lock_owner as crate::process::Pid);
+                }
             }
         }
+        self.release(descriptor.file);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (i32, &Descriptor)> {

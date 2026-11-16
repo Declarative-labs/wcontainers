@@ -44,8 +44,6 @@ pub(crate) struct Pipe {
     /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
     pub opened_readers: u32,
     pub opened_writers: u32,
-    /// Its readers and writers when last counted, to find the closes of ends since.
-    pub counted: (usize, usize),
 }
 
 impl Pipe {
@@ -68,7 +66,6 @@ impl Pipe {
             host: None,
             opened_readers: 0,
             opened_writers: 0,
-            counted: (0, 0),
         }
     }
 
@@ -77,12 +74,6 @@ impl Pipe {
         self.ends.retain(|(end, _)| end.strong_count() > 0);
         self.ends
             .push((alloc::rc::Rc::downgrade(file), seen_writers));
-        self.note_counts();
-    }
-
-    /// Counts its readers and writers now.
-    pub fn note_counts(&mut self) {
-        self.counted = (self.readers(), self.writers());
     }
 
     /// The open files of its reading (or writing) ends with `FASYNC` set, which I/O signals go to.

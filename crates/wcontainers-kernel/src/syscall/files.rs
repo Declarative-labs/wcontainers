@@ -647,7 +647,7 @@ fn named_opened(
     flags: u32,
 ) -> Result<u64, Errno> {
     if flags & O_DIRECT != 0 {
-        drop(file);
+        kernel.process_of_mut(tid).files.release(file);
         kernel.files_released(cx);
         return Err(Errno::EINVAL);
     }

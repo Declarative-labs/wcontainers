@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -80,6 +81,43 @@ static void pipes(void) {
     report("SIGCHLD chosen");
     close(ends[0]);
     close(ends[1]);
+
+    // Each release that leaves readers with no writer signals again (`pipe_release`), last closed
+    // first, and so does a writer replaced by dup2.
+    char path[64];
+    pipe(ends);
+    snprintf(path, sizeof path, "/proc/self/fd/%d", ends[0]);
+    int second = open(path, O_RDONLY | O_NONBLOCK);
+    int third = open(path, O_RDONLY | O_NONBLOCK);
+    fcntl(ends[0], F_SETOWN, getpid());
+    fcntl(ends[0], F_SETSIG, SIGRTMIN + 3);
+    fcntl(ends[0], F_SETFL, O_ASYNC | O_NONBLOCK);
+    printf("close_range: %ld\n", syscall(SYS_close_range, ends[1], third, 0));
+    report("the writer and then two readers closed at once");
+    close(ends[0]);
+    pipe(ends);
+    second = open(path, O_RDONLY | O_NONBLOCK);
+    third = open(path, O_RDONLY | O_NONBLOCK);
+    int writer = fcntl(ends[1], F_DUPFD, third + 1);
+    close(ends[1]);
+    fcntl(ends[0], F_SETOWN, getpid());
+    fcntl(ends[0], F_SETSIG, SIGRTMIN + 3);
+    fcntl(ends[0], F_SETFL, O_ASYNC | O_NONBLOCK);
+    printf("close_range: %ld\n", syscall(SYS_close_range, second, writer, 0));
+    report("two readers and then the writer closed at once");
+    close(ends[0]);
+    pipe(ends);
+    second = open(path, O_RDONLY | O_NONBLOCK);
+    fcntl(ends[0], F_SETOWN, getpid());
+    fcntl(ends[0], F_SETSIG, SIGRTMIN + 3);
+    fcntl(ends[0], F_SETFL, O_ASYNC | O_NONBLOCK);
+    dup2(second, ends[1]);
+    report("the writer replaced by dup2");
+    close(second);
+    report("another reader closed");
+    close(ends[1]);
+    report("the last other reader closed");
+    close(ends[0]);
 
     // FASYNC given at open is shown but arms nothing.
     unlink("/tmp/sigio");
@@ -176,6 +214,7 @@ int main(void) {
     sigaction(SIGIO, &action, NULL);
     sigaction(SIGRTMIN + 1, &action, NULL);
     sigaction(SIGRTMIN + 2, &action, NULL);
+    sigaction(SIGRTMIN + 3, &action, NULL);
     sigaction(SIGCHLD, &action, NULL);
     pipes();
     terminals();

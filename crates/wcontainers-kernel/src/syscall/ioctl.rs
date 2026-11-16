@@ -262,7 +262,6 @@ pub(super) fn set_async(
             file.async_fd = None;
         }
     }
-    super::pipe::note_ends(file);
     Some(())
 }
 
