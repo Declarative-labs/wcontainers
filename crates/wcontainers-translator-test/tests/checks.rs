@@ -7,7 +7,7 @@ use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::browser;
-use wcontainers_translator_test::programs::{Blob, native, reachable_memory, translated};
+use wcontainers_translator_test::programs::{Blob, LOAD, native, reachable_memory, translated};
 
 type Ops = VecAssembler<Aarch64Relocation>;
 
@@ -49,6 +49,8 @@ fn blob(name: &str, ops: Ops) -> Blob {
         name: name.into(),
         code_bytes: bytes.len() as u64,
         bytes,
+        load: LOAD,
+        program_headers: None,
     }
 }
 
@@ -226,6 +228,38 @@ fn group_crossing_onto_a_forbidden_page() {
     );
     dump(&mut ops);
     compare(&blob("group-postindex", ops));
+}
+
+/// A loop indexing through a register that a narrow load writes back as its base (post- or pre-indexed), so
+/// the load does not bound it: the indexed load reaches a page that allows nothing.
+#[test]
+fn index_written_back_by_a_narrow_load() {
+    for pre in [false, true] {
+        let mut ops: Ops = VecAssembler::new(0);
+        zero(&mut ops);
+        let top = ops.new_dynamic_label();
+        dynasm!(ops ; .arch aarch64
+            ; movz x8, #0x40, lsl #16
+            ; movz x14, #0x0100
+            ; movk x14, #0x40, lsl #16
+            ; movz x16, #4
+            ; =>top
+        );
+        if pre {
+            dynasm!(ops ; .arch aarch64 ; ldrb w9, [x14, #1]!);
+        } else {
+            dynasm!(ops ; .arch aarch64 ; ldrb w9, [x14], #1);
+        }
+        dynasm!(ops ; .arch aarch64
+            ; ldrb w15, [x8, x14]
+            ; add x14, x14, #1
+            ; add x4, x4, x15
+            ; subs x16, x16, #1
+            ; b.ne =>top
+        );
+        dump(&mut ops);
+        compare(&blob(&format!("index-written-back-{pre}"), ops));
+    }
 }
 
 /// A loop that moves the stack down 16 bytes each turn; 70,000 turns run off the stack.

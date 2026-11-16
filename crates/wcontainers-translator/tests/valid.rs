@@ -4,9 +4,22 @@
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
 use wasmparser::{Validator, WasmFeatures};
+use wcontainers_arm64::Host;
 use wcontainers_translator::{LookAhead, thread_module, translate};
 
+/// A host that needs every fix-up and the software fused multiply-add, so their code is checked too.
+const HOST: Host = Host {
+    fused_multiply_add: false,
+    arm_nans: false,
+};
+
 fn validate(wasm: &[u8]) {
+    if let Err(error) = check(wasm) {
+        panic!("invalid module: {error}");
+    }
+}
+
+fn check(wasm: &[u8]) -> Result<(), String> {
     let features = WasmFeatures::default()
         | WasmFeatures::TAIL_CALL
         | WasmFeatures::FUNCTION_REFERENCES
@@ -14,10 +27,12 @@ fn validate(wasm: &[u8]) {
         | WasmFeatures::THREADS
         | WasmFeatures::MEMORY64
         | WasmFeatures::MULTI_MEMORY
-        | WasmFeatures::EXTENDED_CONST;
-    if let Err(error) = Validator::new_with_features(features).validate_all(wasm) {
-        panic!("invalid module: {error}");
-    }
+        | WasmFeatures::EXTENDED_CONST
+        | WasmFeatures::RELAXED_SIMD;
+    Validator::new_with_features(features)
+        .validate_all(wasm)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[test]
@@ -39,7 +54,7 @@ fn config() -> Config {
 fn target_below_zero() {
     // tbz x0, #0, -32768
     let blob = 0x3604_0000u32.to_le_bytes();
-    let translation = translate(&blob, 0..4, &[0], LookAhead::None).unwrap();
+    let translation = translate(&blob, 0..4, &[0], LookAhead::None, HOST).unwrap();
     assert_eq!(translation.pieces, [0]);
     validate(&translation.wasm);
 }
@@ -50,7 +65,7 @@ proptest! {
     fn code_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64)) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..words.len() as u64).map(|i| 4 * i).collect();
-        let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::None).unwrap();
+        let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::None, HOST).unwrap();
         validate(&translation.wasm);
     }
 
@@ -60,7 +75,68 @@ proptest! {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
-        let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::Full).unwrap();
+        let translation = translate(&blob, 0..blob.len() as u64, &starts, LookAhead::Full, HOST).unwrap();
         validate(&translation.wasm);
+    }
+}
+
+/// Words of every form of the CPU we present, each translated alone at look-ahead none and with others
+/// at full, on a host that needs every fix-up: valid modules. `WC_VALID_WORDS` words a form (default 16).
+#[test]
+fn every_form_is_valid() {
+    use proptest::test_runner::{RngAlgorithm, TestRng};
+    let count: u32 = std::env::var("WC_VALID_WORDS").map_or(16, |v| v.parse().unwrap());
+    let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &[7; 32]);
+    let mut words = Vec::new();
+    for form in wcontainers_arm64::forms::all() {
+        for _ in 0..count {
+            let word = form.word(rng.random());
+            if form.presented(word) {
+                words.push(word);
+            }
+        }
+    }
+    let mut failures = Vec::new();
+    std::panic::set_hook(Box::new(|_| {}));
+    for &word in &words {
+        let translated = std::panic::catch_unwind(|| {
+            translate(&word.to_le_bytes(), 0..4, &[0], LookAhead::None, HOST).unwrap()
+        });
+        let translation = match translated {
+            Ok(t) => t,
+            Err(panic) => {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                failures.push(format!("{word:#010x}: panicked: {message}"));
+                continue;
+            }
+        };
+        if let Err(error) = check(&translation.wasm) {
+            failures.push(format!(
+                "{word:#010x} {:?}: {error}",
+                wcontainers_arm64::decode(word)
+            ));
+        }
+    }
+    let _ = std::panic::take_hook();
+    failures.sort();
+    failures.dedup_by(|a, b| a.split(':').nth(1) == b.split(':').nth(1));
+    assert!(
+        failures.is_empty(),
+        "{} invalid:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    for chunk in words.chunks(64) {
+        let blob: Vec<u8> = chunk.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let starts: Vec<u64> = (0..chunk.len() as u64).map(|i| 4 * i).collect();
+        for look_ahead in [LookAhead::None, LookAhead::Full] {
+            let translation =
+                translate(&blob, 0..blob.len() as u64, &starts, look_ahead, HOST).unwrap();
+            validate(&translation.wasm);
+        }
     }
 }

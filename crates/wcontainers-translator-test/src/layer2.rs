@@ -1,9 +1,11 @@
 //! Layer 2: random small ARM64 programs built to always end, assembled with dynasm. Each has loops with
-//! counters, calls, bounded recursion, tail calls, calls and jumps through registers, compiler-style jump
-//! tables, flags carried across instructions, stack frames of every size (some running off the stack), and
-//! memory use inside a fixed area, through the stack pointer, and in groups through other registers, some
-//! near a page that allows nothing. At the end it stores its registers and flags after the area and writes
-//! the whole area out; a program that faults ends with SIGSEGV instead.
+//! counters, calls (some to a function that makes a system call), bounded recursion, tail calls, calls and
+//! jumps through registers, compiler-style jump tables, flags carried across instructions, stack frames of
+//! every size (some running off the stack), and memory use inside a fixed area, through the stack pointer,
+//! and in groups through other registers, some near a page that allows nothing, groups and loops across
+//! calls, accesses below sp once a frame is popped, and system calls that write nothing. At the end it
+//! stores its registers and flags after the area and writes the whole area out; a program that faults ends
+//! with SIGSEGV instead.
 
 // dynasm's expansion converts register numbers to their own type.
 #![allow(clippy::useless_conversion)]
@@ -22,8 +24,11 @@ const REGISTERS: [u8; 26] = [
 ];
 /// Bytes written out at the end: the area, then `REGISTERS` and NZCV.
 pub const OUTPUT: u32 = AREA + (REGISTERS.len() as u32 + 1) * 8;
-/// Bytes of the stack every function frame keeps below what random accesses through sp reach.
-const FRAME_FLOOR: u32 = 528;
+/// Bytes of the stack every function frame keeps below what random accesses through sp reach: x30, x28, x16
+/// and x18, which every function saves and restores, so a caller's loop or group across a call keeps them.
+const FRAME_FLOOR: u32 = 544;
+/// Where random accesses through sp start.
+const STACK_SLOTS: u32 = 32;
 
 /// Where a group of accesses through one register starts.
 #[derive(Clone, Copy, Debug)]
@@ -128,18 +133,24 @@ pub enum Op {
         rt2: u8,
         slot: u8,
     },
-    /// An access through sp, 16 bytes up plus 8 per slot.
+    /// An access through sp, `STACK_SLOTS` bytes up plus 8 per slot.
     Stack {
         load: bool,
         rt: u8,
         slot: u8,
     },
-    /// Point a register at `start`, then access memory through it.
+    /// Point a register at `start`, then access memory through it, with a system call like `Syscall`'s
+    /// before the access numbered `syscall` (from 1; one past the last puts it after them), and then the
+    /// base is not one the call sets.
     Group {
         base: u8,
         start: GroupBase,
         accesses: Vec<GroupAccess>,
+        syscall: Option<usize>,
     },
+    /// A system call that writes nothing to standard output: x0 = 1, x1 = the area, x2 = 0, x8 = 64 (write),
+    /// leaving x0 = 0.
+    Syscall,
 }
 
 #[derive(Clone, Debug)]
@@ -150,20 +161,31 @@ pub enum Chunk {
         cond: u8,
         ops: Vec<Op>,
     },
-    /// Run the ops `count` times, counting in x16.
+    /// Run the ops `count` times, counting in x16, with a call after them each turn when `call`.
     Loop {
         count: u8,
         ops: Vec<Op>,
+        call: Option<Callee>,
     },
     /// A loop counting in x16 that accesses memory through x18 at an address moving by a fixed step.
     Walk(Walk),
     /// A loop counting in x16 that accesses memory at a base plus an index read from the area or worked
     /// out each turn, and bounded by a comparison or by the load that read it.
     Lookup(Lookup),
-    /// Call a function by number, directly or through x18.
+    /// A call, directly or through x18, inside a group through x28 when `around`.
     Call {
-        function: usize,
+        callee: Callee,
         through_register: bool,
+        around: Option<Around>,
+    },
+    /// Move sp down to its page's start, make and pop a frame of `frame` bytes there, then access memory
+    /// `below` bytes below sp (in the page below), after `between`, and put sp back.
+    Below {
+        frame: u16,
+        below: u16,
+        load: bool,
+        rt: u8,
+        between: Between,
     },
     /// A switch on the low bits of a register, through a table of byte entries.
     Switch {
@@ -175,6 +197,33 @@ pub enum Chunk {
         through_register: bool,
         ops: Vec<Op>,
     },
+}
+
+/// What a call calls.
+#[derive(Clone, Copy, Debug)]
+pub enum Callee {
+    /// A function by number.
+    Function(usize),
+    /// A function that makes a system call like `Op::Syscall`'s and returns, leaving x16, x18 and x28.
+    Writer,
+}
+
+/// A group through x28 with a call between its accesses `before` and `after`.
+#[derive(Clone, Debug)]
+pub struct Around {
+    pub start: GroupBase,
+    pub before: Vec<GroupAccess>,
+    pub after: Vec<GroupAccess>,
+}
+
+/// What comes between popping a frame and accessing below sp.
+#[derive(Clone, Copy, Debug)]
+pub enum Between {
+    Nothing,
+    /// A system call like `Op::Syscall`'s.
+    Syscall,
+    /// The access is made this many times in a loop counting in x16.
+    Loop(u8),
 }
 
 /// How a walk's address moves: its base (x18) by indexing or by an add after the access, or an index
@@ -219,6 +268,12 @@ pub struct Walk {
     pub moves: WalkMove,
     /// Bytes the address moves by each turn, before any shift by the access size.
     pub step: i8,
+    /// A system call like `Op::Syscall`'s after the access each turn (then the index and the step are not
+    /// in registers the call sets).
+    pub syscall: bool,
+    /// A direct call after the access each turn (only when the base moves, as functions keep x16 and x18
+    /// but not an index).
+    pub call: Option<Callee>,
 }
 
 /// A loop whose access goes through a table: `base` plus `index` (read as `extend`: 0 uxtw, 1 sxtw, 2 lsl,
@@ -249,6 +304,9 @@ pub struct Lookup {
     /// After the access, a switch through the table's first two bytes on the turn's choice (2 skips it).
     pub switch: bool,
     pub choices: Vec<u8>,
+    /// The loop goes back to its head through a switch whose cases are the head and the way out, as a
+    /// compiler may make of a `continue` in a switch. Only with a loaded index (the switch uses its register).
+    pub back: bool,
 }
 
 /// A function may call only functions with lower numbers, so calls always end.
@@ -303,49 +361,118 @@ fn group_access() -> impl Strategy<Value = GroupAccess> {
         })
 }
 
+/// `r`, or the next of `REGISTERS` after it that is not in `not`.
+fn other(r: u8, not: &[u8]) -> u8 {
+    let mut r = r;
+    while not.contains(&r) {
+        r = REGISTERS[(REGISTERS.iter().position(|&x| x == r).unwrap() + 1) % REGISTERS.len()];
+    }
+    r
+}
+
 fn group() -> impl Strategy<Value = Op> {
     (
         register(),
-        prop_oneof![
-            (0u16..24).prop_map(|slot| GroupBase::Area(slot * 8)),
-            // Near the edge often enough to cross it now and then.
-            (0u16..96).prop_map(GroupBase::Edge),
-            (96u16..2048).prop_map(GroupBase::Edge),
-        ],
+        group_start(),
         prop::collection::vec(group_access(), 1..5),
+        prop::option::weighted(0.5, 0usize..4),
     )
-        .prop_map(|(base, start, accesses)| {
-            // Arm leaves a transfer register that is also a base written back, or a pair loaded into one
-            // register, unpredictable (the CPU may raise illegal instruction).
-            let other = |r: u8, not: &[u8]| {
-                let mut r = r;
-                while not.contains(&r) {
-                    r = REGISTERS[(REGISTERS.iter().position(|&x| x == r).unwrap() + 1) % 26];
-                }
-                r
+        .prop_map(|(base, start, accesses, syscall)| {
+            // Inside the group or just after it, where a loop goes back to its first access.
+            let syscall = syscall.map(|at| 1 + at % accesses.len());
+            let base = if syscall.is_some() {
+                other(base, &SYSCALL_SETS)
+            } else {
+                base
             };
-            let accesses = accesses
-                .into_iter()
-                .map(|mut a| {
-                    let writes_back = !matches!(a.indexing, Indexing::Offset);
-                    if writes_back {
-                        a.rt = other(a.rt, &[base]);
-                    }
-                    if a.bytes == 16 {
-                        let base = writes_back.then_some(base);
-                        let first = a.load.then_some(a.rt);
-                        let not: Vec<u8> = base.into_iter().chain(first).collect();
-                        a.rt2 = other(a.rt2, &not);
-                    }
-                    a
-                })
-                .collect();
             Op::Group {
                 base,
                 start,
-                accesses,
+                accesses: through(base, accesses, false),
+                syscall,
             }
         })
+}
+
+/// Accesses fitted to their base: Arm leaves a transfer register that is also a base written back, or a pair
+/// loaded into one register, unpredictable (the CPU may raise illegal instruction). With `keep`, no access
+/// loads into the base either.
+fn through(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Vec<GroupAccess> {
+    accesses
+        .into_iter()
+        .map(|mut a| {
+            let writes_back = !matches!(a.indexing, Indexing::Offset);
+            if writes_back || (keep && a.load) {
+                a.rt = other(a.rt, &[base]);
+            }
+            if a.bytes == 16 {
+                let base = (writes_back || (keep && a.load)).then_some(base);
+                let first = a.load.then_some(a.rt);
+                let not: Vec<u8> = base.into_iter().chain(first).collect();
+                a.rt2 = other(a.rt2, &not);
+            }
+            a
+        })
+        .collect()
+}
+
+fn group_start() -> impl Strategy<Value = GroupBase> {
+    prop_oneof![
+        (0u16..24).prop_map(|slot| GroupBase::Area(slot * 8)),
+        // Near the edge often enough to cross it now and then.
+        (0u16..96).prop_map(GroupBase::Edge),
+        (96u16..2048).prop_map(GroupBase::Edge),
+    ]
+}
+
+fn around() -> impl Strategy<Value = Around> {
+    (
+        group_start(),
+        prop::collection::vec(group_access(), 1..4),
+        prop::collection::vec(group_access(), 1..4),
+    )
+        .prop_map(|(start, before, after)| Around {
+            start,
+            before: through(28, before, true),
+            after: through(28, after, true),
+        })
+}
+
+fn below() -> impl Strategy<Value = Chunk> {
+    (
+        1u16..17,
+        any::<u16>(),
+        any::<bool>(),
+        register(),
+        prop_oneof![
+            Just(Between::Nothing),
+            Just(Between::Syscall),
+            (1u8..6).prop_map(Between::Loop)
+        ],
+    )
+        .prop_map(|(frame, below, load, rt, between)| {
+            let frame = frame * 16;
+            Chunk::Below {
+                frame,
+                below: 8 + below % (frame - 7) / 8 * 8,
+                load,
+                rt,
+                between,
+            }
+        })
+}
+
+/// A function numbered below `callable`, or the writer.
+fn callee(callable: usize) -> BoxedStrategy<Callee> {
+    if callable == 0 {
+        Just(Callee::Writer).boxed()
+    } else {
+        prop_oneof![
+            (0..callable).prop_map(Callee::Function),
+            Just(Callee::Writer)
+        ]
+        .boxed()
+    }
 }
 
 fn walk() -> impl Strategy<Value = Walk> {
@@ -403,6 +530,7 @@ fn walk() -> impl Strategy<Value = Walk> {
         ),
         moves,
         -32i8..33,
+        prop::bool::weighted(0.25),
     )
         .prop_map(
             |(
@@ -411,10 +539,23 @@ fn walk() -> impl Strategy<Value = Walk> {
                 (load, bytes, rt),
                 moves,
                 step,
+                syscall,
             )| {
                 let mut moves = moves;
-                if let WalkMove::Index { shift, .. } = &mut moves {
+                if let WalkMove::Index {
+                    shift,
+                    reg,
+                    step_in,
+                    ..
+                } = &mut moves
+                {
                     *shift &= bytes == 8;
+                    if syscall {
+                        *reg = other(*reg, &SYSCALL_SETS);
+                        *step_in = step_in
+                            .map(|r| other(r, &SYSCALL_SETS))
+                            .filter(|&r| r != *reg);
+                    }
                 }
                 let scale = match moves {
                     WalkMove::Index { shift: true, .. } => 8,
@@ -461,6 +602,8 @@ fn walk() -> impl Strategy<Value = Walk> {
                     rt,
                     moves,
                     step,
+                    syscall,
+                    call: None,
                 }
             },
         )
@@ -489,7 +632,11 @@ fn lookup() -> impl Strategy<Value = Lookup> {
             (0u16..512).prop_map(GroupBase::Area),
             (0u16..2048).prop_map(GroupBase::Edge),
         ],
-        (any::<bool>(), prop::collection::vec(0u8..3, 24)),
+        (
+            any::<bool>(),
+            prop::collection::vec(0u8..3, 24),
+            prop::bool::weighted(0.3),
+        ),
         prop::bool::weighted(0.3),
     )
         .prop_map(
@@ -499,7 +646,7 @@ fn lookup() -> impl Strategy<Value = Lookup> {
                 guard,
                 (extend, shift, load, bytes),
                 at,
-                (switch, choices),
+                (switch, choices, back),
                 tight,
             )| {
                 // Four different registers.
@@ -558,12 +705,17 @@ fn lookup() -> impl Strategy<Value = Lookup> {
                     at,
                     switch,
                     choices,
+                    back: back && loaded,
                 }
             },
         )
 }
 
 fn op() -> impl Strategy<Value = Op> {
+    prop_oneof![10 => plain_op(), 1 => Just(Op::Syscall)]
+}
+
+fn plain_op() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0u8..13, any::<bool>(), register(), register(), register()).prop_map(
             |(kind, wide, rd, rn, rm)| Op::Arithmetic {
@@ -676,15 +828,21 @@ fn ops() -> impl Strategy<Value = Vec<Op>> {
 
 /// A chunk that may call functions numbered below `callable`.
 fn chunk(callable: usize) -> BoxedStrategy<Chunk> {
-    let mut choices = vec![
+    let choices = vec![
         ops().prop_map(Chunk::Ops).boxed(),
         (0u8..14, ops())
             .prop_map(|(cond, ops)| Chunk::Skip { cond, ops })
             .boxed(),
-        (1u8..6, ops())
-            .prop_map(|(count, ops)| Chunk::Loop { count, ops })
+        (1u8..6, ops(), prop::option::weighted(0.4, callee(callable)))
+            .prop_map(|(count, ops, call)| Chunk::Loop { count, ops, call })
             .boxed(),
-        walk().prop_map(Chunk::Walk).boxed(),
+        (walk(), prop::option::weighted(0.4, callee(callable)))
+            .prop_map(|(mut walk, call)| {
+                walk.call = call.filter(|_| matches!(walk.moves, WalkMove::Base(_)));
+                Chunk::Walk(walk)
+            })
+            .boxed(),
+        below().boxed(),
         lookup().prop_map(Chunk::Lookup).boxed(),
         (register(), prop::collection::vec(ops(), 1..6))
             .prop_map(|(index, cases)| Chunk::Switch { index, cases })
@@ -695,17 +853,18 @@ fn chunk(callable: usize) -> BoxedStrategy<Chunk> {
                 ops,
             })
             .boxed(),
+        (
+            callee(callable),
+            any::<bool>(),
+            prop::option::weighted(0.5, around()),
+        )
+            .prop_map(|(callee, through_register, around)| Chunk::Call {
+                callee,
+                through_register,
+                around,
+            })
+            .boxed(),
     ];
-    if callable > 0 {
-        choices.push(
-            (0..callable, any::<bool>())
-                .prop_map(|(function, through_register)| Chunk::Call {
-                    function,
-                    through_register,
-                })
-                .boxed(),
-        );
-    }
     prop::strategy::Union::new(choices).boxed()
 }
 
@@ -958,7 +1117,7 @@ fn emit_op(ops: &mut Ops, edge: DynamicLabel, op: &Op) {
             }
         }
         Op::Stack { load, rt, slot } => {
-            let at = 16 + u32::from(slot) * 8;
+            let at = STACK_SLOTS + u32::from(slot) * 8;
             if load {
                 dynasm!(ops ; .arch aarch64 ; ldr X(rt), [sp, #at]);
             } else {
@@ -969,22 +1128,42 @@ fn emit_op(ops: &mut Ops, edge: DynamicLabel, op: &Op) {
             base,
             start,
             ref accesses,
+            syscall,
         } => {
-            match start {
-                GroupBase::Area(at) => {
-                    let at = u32::from(at);
-                    dynasm!(ops ; .arch aarch64 ; add XSP(base), x29, #at);
+            point(ops, edge, base, start);
+            for (i, access) in accesses.iter().enumerate() {
+                if syscall == Some(i) {
+                    emit_syscall(ops);
                 }
-                GroupBase::Edge(by) => {
-                    let by = u32::from(by);
-                    dynasm!(ops ; .arch aarch64 ; adr X(base), =>edge ; sub XSP(base), XSP(base), #by);
-                }
-            }
-            for access in accesses {
                 emit_group_access(ops, base, access);
             }
+            if syscall == Some(accesses.len()) {
+                emit_syscall(ops);
+            }
+        }
+        Op::Syscall => emit_syscall(ops),
+    }
+}
+
+/// Point a group's base at its start.
+fn point(ops: &mut Ops, edge: DynamicLabel, base: u8, start: GroupBase) {
+    match start {
+        GroupBase::Area(at) => {
+            let at = u32::from(at);
+            dynasm!(ops ; .arch aarch64 ; add XSP(base), x29, #at);
+        }
+        GroupBase::Edge(by) => {
+            let by = u32::from(by);
+            dynasm!(ops ; .arch aarch64 ; adr X(base), =>edge ; sub XSP(base), XSP(base), #by);
         }
     }
+}
+
+/// The registers `Op::Syscall` sets.
+const SYSCALL_SETS: [u8; 4] = [0, 1, 2, 8];
+
+fn emit_syscall(ops: &mut Ops) {
+    dynasm!(ops ; .arch aarch64 ; movz x0, #1 ; mov x1, x29 ; movz x2, #0 ; movz x8, #64 ; svc #0);
 }
 
 fn emit_group_access(ops: &mut Ops, b: u8, a: &GroupAccess) {
@@ -1083,9 +1262,19 @@ fn ccmp_narrow(ops: &mut Ops, rn: u8, rm: u8, nzcv: u32, cond: u8) {
 /// Labels the whole program refers to, and jump tables to place after the code.
 struct Layout {
     functions: Vec<DynamicLabel>,
+    writer: DynamicLabel,
     /// The end of the blob.
     edge: DynamicLabel,
     tables: Vec<(DynamicLabel, Vec<u8>)>,
+}
+
+impl Layout {
+    fn target(&self, callee: Callee) -> DynamicLabel {
+        match callee {
+            Callee::Function(f) => self.functions[f],
+            Callee::Writer => self.writer,
+        }
+    }
 }
 
 fn emit_chunks(ops: &mut Ops, layout: &mut Layout, chunks: &[Chunk]) {
@@ -1098,25 +1287,80 @@ fn emit_chunks(ops: &mut Ops, layout: &mut Layout, chunks: &[Chunk]) {
                 list.iter().for_each(|op| emit_op(ops, layout.edge, op));
                 dynasm!(ops ; .arch aarch64 ; =>after);
             }
-            Chunk::Loop { count, ops: list } => {
+            Chunk::Loop {
+                count,
+                ops: list,
+                call,
+            } => {
                 let top = ops.new_dynamic_label();
                 let count = u32::from(*count);
                 dynasm!(ops ; .arch aarch64 ; movz x16, #count ; =>top);
                 list.iter().for_each(|op| emit_op(ops, layout.edge, op));
+                if let Some(callee) = *call {
+                    let target = layout.target(callee);
+                    dynasm!(ops ; .arch aarch64 ; bl =>target);
+                }
                 dynasm!(ops ; .arch aarch64 ; subs x16, x16, #1 ; b.ne =>top);
             }
-            Chunk::Walk(w) => emit_walk(ops, layout.edge, w),
+            Chunk::Walk(w) => emit_walk(ops, layout, w),
             Chunk::Lookup(l) => emit_lookup(ops, layout, l),
             Chunk::Call {
-                function,
+                callee,
                 through_register,
+                around,
             } => {
-                let target = layout.functions[*function];
+                if let Some(a) = around {
+                    point(ops, layout.edge, 28, a.start);
+                    a.before.iter().for_each(|a| emit_group_access(ops, 28, a));
+                }
+                let target = layout.target(*callee);
                 if *through_register {
                     dynasm!(ops ; .arch aarch64 ; adr x18, =>target ; blr x18);
                 } else {
                     dynasm!(ops ; .arch aarch64 ; bl =>target);
                 }
+                if let Some(a) = around {
+                    a.after.iter().for_each(|a| emit_group_access(ops, 28, a));
+                }
+            }
+            &Chunk::Below {
+                frame,
+                below,
+                load,
+                rt,
+                between,
+            } => {
+                let frame = u32::from(frame);
+                let below = -i32::from(below);
+                dynasm!(ops ; .arch aarch64
+                    ; mov x18, sp
+                    ; and sp, x18, #0xffff_ffff_ffff_f000
+                    ; sub sp, sp, #frame
+                    ; str x18, [sp]
+                    ; add sp, sp, #frame
+                );
+                let access = |ops: &mut Ops| {
+                    if load {
+                        dynasm!(ops ; .arch aarch64 ; ldur X(rt), [sp, #below]);
+                    } else {
+                        dynasm!(ops ; .arch aarch64 ; stur X(rt), [sp, #below]);
+                    }
+                };
+                match between {
+                    Between::Nothing => access(ops),
+                    Between::Syscall => {
+                        emit_syscall(ops);
+                        access(ops);
+                    }
+                    Between::Loop(turns) => {
+                        let top = ops.new_dynamic_label();
+                        let turns = u32::from(turns);
+                        dynasm!(ops ; .arch aarch64 ; movz x16, #turns ; =>top);
+                        access(ops);
+                        dynasm!(ops ; .arch aarch64 ; subs x16, x16, #1 ; b.ne =>top);
+                    }
+                }
+                dynasm!(ops ; .arch aarch64 ; mov sp, x18);
             }
             Chunk::Switch { index, cases } => {
                 let n = cases.len() as u32;
@@ -1180,7 +1424,8 @@ fn set(ops: &mut Ops, r: u8, value: u64) {
     }
 }
 
-fn emit_walk(ops: &mut Ops, edge: DynamicLabel, w: &Walk) {
+fn emit_walk(ops: &mut Ops, layout: &Layout, w: &Walk) {
+    let edge = layout.edge;
     let top = ops.new_dynamic_label();
     match w.at {
         GroupBase::Area(at) => {
@@ -1346,6 +1591,13 @@ fn emit_walk(ops: &mut Ops, edge: DynamicLabel, w: &Walk) {
             }
         }
     }
+    if w.syscall {
+        emit_syscall(ops);
+    }
+    if let Some(callee) = w.call {
+        let target = layout.target(callee);
+        dynasm!(ops ; .arch aarch64 ; bl =>target);
+    }
     // The counter: changed, compared and branched on in the form chosen.
     let wide = w.wide;
     let change = |ops: &mut Ops| match (w.counter, wide) {
@@ -1419,6 +1671,7 @@ fn emit_lookup(ops: &mut Ops, layout: &mut Layout, l: &Lookup) {
     let turns = u32::from(l.turns);
     let start = u32::from(l.start);
     dynasm!(ops ; .arch aarch64 ; adr X(tab), =>table ; movz W(index), #start ; movz x16, #turns ; =>top);
+    let top_at = ops.offset().0;
     if l.loaded {
         dynasm!(ops ; .arch aarch64 ; add x18, XSP(tab), #25 ; ldrb W(index), [x18, x16]);
     } else {
@@ -1486,7 +1739,27 @@ fn emit_lookup(ops: &mut Ops, layout: &mut Layout, l: &Lookup) {
             ; eor X(rt), X(rt), x16
         );
     }
-    dynasm!(ops ; .arch aarch64 ; =>skip ; subs x16, x16, #1 ; b.ne =>top);
+    if l.back {
+        // Entry 0 is the head, entry 1 the way out, chosen by whether the count has reached 0.
+        let (back, out) = (ops.new_dynamic_label(), ops.new_dynamic_label());
+        dynasm!(ops ; .arch aarch64
+            ; =>skip
+            ; subs x16, x16, #1
+            ; cset w18, eq
+            ; cmp w18, #1
+            ; b.hi =>out
+            ; adr X(index), =>back
+            ; ldrb w18, [X(index), x18]
+            ; adr X(index), =>top
+            ; add X(index), X(index), x18, lsl #2
+            ; br X(index)
+            ; =>out
+        );
+        let entry = u8::try_from((ops.offset().0 - top_at) / 4).expect("a short loop");
+        layout.tables.push((back, vec![0, entry]));
+    } else {
+        dynasm!(ops ; .arch aarch64 ; =>skip ; subs x16, x16, #1 ; b.ne =>top);
+    }
     // Turn t (counting down from `turns` to 1) reads byte t + 1 for its choice and t + 25 for its index.
     let mut bytes = vec![1, 0];
     bytes.extend(&l.choices);
@@ -1513,6 +1786,7 @@ pub fn assemble(program: &Program) -> Blob {
             .iter()
             .map(|_| ops.new_dynamic_label())
             .collect(),
+        writer: ops.new_dynamic_label(),
         edge: ops.new_dynamic_label(),
         tables: Vec::new(),
     };
@@ -1559,9 +1833,9 @@ pub fn assemble(program: &Program) -> Blob {
             ; movz x17, #recursion
             ; =>again
         );
-        // Each call, recursive ones too, makes its own frame with x30 at the bottom.
+        // Each call, recursive ones too, makes its own frame with x30, x28, x16 and x18 at the bottom.
         stack_pointer(&mut ops, function.frame, true);
-        dynasm!(ops ; .arch aarch64 ; str x30, [sp]);
+        dynasm!(ops ; .arch aarch64 ; stp x30, x28, [sp] ; stp x16, x18, [sp, #16]);
         emit_chunks(&mut ops, &mut layout, &function.body);
         // Bounded recursion: call itself again while x17 counts down.
         dynasm!(ops ; .arch aarch64
@@ -1569,7 +1843,8 @@ pub fn assemble(program: &Program) -> Blob {
             ; sub x17, x17, #1
             ; bl =>again
             ; =>done
-            ; ldr x30, [sp]
+            ; ldp x30, x28, [sp]
+            ; ldp x16, x18, [sp, #16]
         );
         stack_pointer(&mut ops, function.frame, false);
         match function.tail {
@@ -1580,6 +1855,10 @@ pub fn assemble(program: &Program) -> Blob {
             None => dynasm!(ops ; .arch aarch64 ; ret),
         }
     }
+    let writer = layout.writer;
+    dynasm!(ops ; .arch aarch64 ; =>writer);
+    emit_syscall(&mut ops);
+    dynasm!(ops ; .arch aarch64 ; ret);
     let code_bytes = ops.offset().0 as u64;
     for (label, entries) in &layout.tables {
         dynasm!(ops ; .arch aarch64 ; =>*label);
@@ -1597,5 +1876,7 @@ pub fn assemble(program: &Program) -> Blob {
         name: "layer2".into(),
         bytes,
         code_bytes,
+        load: crate::programs::LOAD,
+        program_headers: None,
     }
 }

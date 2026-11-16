@@ -1,9 +1,9 @@
 //! The browser runner: a flat blob run in Chrome by `browser/runner.js`, with the translator built for wasm32
 //! from `browser/` so that code is translated at run time there too.
 
-use crate::programs::{Blob, LOAD, Ran, placement};
+use crate::programs::{Blob, Ran, placement};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use wcontainers_translator::{LookAhead, Omit};
@@ -87,7 +87,7 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
         .collect();
     let setup = serde_json::json!({
         "codeBytes": blob.code_bytes,
-        "load": LOAD,
+        "load": blob.load,
         "memoryBytes": place.memory_bytes,
         "regions": regions,
         "sp": place.sp,
@@ -98,23 +98,7 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
         "repeat": repeat,
         "omit": u8::from(omit.stop) | (u8::from(omit.permissions) << 1) | (u8::from(omit.returns) << 2),
     });
-    std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
-
-    let output = Command::new("node")
-        .arg(package().join("run.mjs"))
-        .arg(&directory)
-        .output()
-        .expect("run node (from the Nix shell)");
-    let errors = String::from_utf8_lossy(&output.stderr);
-    eprint!("{errors}");
-    assert!(output.status.success(), "the browser runner failed");
-    let result: Value = serde_json::from_slice(&output.stdout).expect("the runner's JSON");
-    if let Some(error) = result.get("error") {
-        panic!(
-            "the browser runner failed: {}",
-            error.as_str().unwrap_or_default()
-        );
-    }
+    let result = launch(&directory, &setup);
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
             .as_array()
@@ -163,4 +147,118 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
             .collect(),
         user_agent: result["userAgent"].as_str().unwrap_or_default().to_string(),
     }
+}
+
+/// Run the browser runner on a case directory holding `translator.wasm`, `blob.bin`, `stack.bin` and, for
+/// instruction cases, `cases.bin`, with this setup; give its answer.
+fn launch(directory: &Path, setup: &Value) -> Value {
+    std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
+
+    let output = Command::new("node")
+        .arg(package().join("run.mjs"))
+        .arg(directory)
+        .output()
+        .expect("run node (from the Nix shell)");
+    let errors = String::from_utf8_lossy(&output.stderr);
+    eprint!("{errors}");
+    assert!(output.status.success(), "the browser runner failed");
+    let result: Value = serde_json::from_slice(&output.stdout).expect("the runner's JSON");
+    if let Some(error) = result.get("error") {
+        panic!(
+            "the browser runner failed: {}",
+            error.as_str().unwrap_or_default()
+        );
+    }
+    result
+}
+
+/// One instruction case: its code word, the thread state to start from (the contract's
+/// `THREAD_STATE_SIZE` bytes) and the bytes to put at each place.
+pub struct StateCase {
+    pub word: u32,
+    pub state: Vec<u8>,
+    pub places: Vec<Vec<u8>>,
+}
+
+/// How an instruction case ended in Chrome: the runner's stop (its `kind` and details), the thread state
+/// after, and the bytes of the places that changed, as offsets into the places taken one after another.
+pub struct StateRun {
+    pub stopped: Value,
+    pub state: Vec<u8>,
+    pub changed: Vec<(u32, u8)>,
+}
+
+/// Run instruction cases one after another in one Chrome page at look-ahead none, each word at `code` in a
+/// memory of `memory_bytes` with these regions, ending at a system call or where control lands.
+pub fn cases(
+    code: u64,
+    memory_bytes: u64,
+    regions: &[(std::ops::Range<u64>, wcontainers_abi::Permissions)],
+    places: &[std::ops::Range<u64>],
+    cases: &[StateCase],
+) -> Vec<StateRun> {
+    let directory = target().join("cases").join("instructions");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
+    std::fs::write(directory.join("blob.bin"), cases[0].word.to_le_bytes()).unwrap();
+    std::fs::write(directory.join("stack.bin"), []).unwrap();
+    let mut bytes = Vec::new();
+    for case in cases {
+        bytes.extend(case.word.to_le_bytes());
+        bytes.extend(&case.state);
+        for place in &case.places {
+            bytes.extend(place);
+        }
+    }
+    std::fs::write(directory.join("cases.bin"), bytes).unwrap();
+    let regions: Vec<Value> = regions
+        .iter()
+        .map(|(range, permissions)| serde_json::json!([range.start, range.end, permissions.bits()]))
+        .collect();
+    let places: Vec<Value> = places
+        .iter()
+        .map(|range| serde_json::json!([range.start, range.end - range.start]))
+        .collect();
+    let setup = serde_json::json!({
+        "codeBytes": 4,
+        "load": code,
+        "memoryBytes": memory_bytes,
+        "regions": regions,
+        "sp": 0,
+        "lookAhead": 0,
+        "repeat": 0,
+        "omit": 0,
+        "cases": cases.len(),
+        "areas": places,
+        "stopAtSyscall": true,
+    });
+    let result = launch(&directory, &setup);
+    let numbers = |value: &Value| -> Vec<u8> {
+        value
+            .as_array()
+            .expect("bytes")
+            .iter()
+            .map(|b| b.as_u64().unwrap() as u8)
+            .collect()
+    };
+    result["cases"]
+        .as_array()
+        .expect("the cases' results")
+        .iter()
+        .map(|run| StateRun {
+            stopped: run["stopped"].clone(),
+            state: numbers(&run["state"]),
+            changed: run["changed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|pair| {
+                    (
+                        pair[0].as_u64().unwrap() as u32,
+                        pair[1].as_u64().unwrap() as u8,
+                    )
+                })
+                .collect(),
+        })
+        .collect()
 }

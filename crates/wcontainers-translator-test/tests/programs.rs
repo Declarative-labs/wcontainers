@@ -47,6 +47,57 @@ fn hello_matches_linux() {
     match_linux(&[("hello", Library::C)]);
 }
 
+/// Section 8 of the plan: each place ARM64 and WebAssembly differ, printed as bits.
+#[test]
+fn differences_match_linux() {
+    match_linux(&[("differences", Library::C)]);
+}
+
+/// The same on a host whose fused multiply-add does not fuse and whose not-a-number results do not
+/// follow Arm's rules: the software fused multiply-add and the fix-up give Linux's output too, and the
+/// slow paths are counted.
+#[test]
+fn differences_match_linux_on_other_hosts() {
+    use wcontainers_translator_test::programs::{ran, ready_on};
+    let host = wcontainers_arm64::Host {
+        fused_multiply_add: false,
+        arm_nans: false,
+    };
+    for optimisation in ["-O0", "-O2"] {
+        let blob = build("differences", optimisation, Library::C);
+        let theirs = native(&blob);
+        for look_ahead in [LookAhead::None, LookAhead::Full] {
+            let mut machine = ready_on(
+                &blob,
+                look_ahead,
+                wcontainers_translator::Omit::default(),
+                host,
+            );
+            let (stopped, registers) = machine.run();
+            let ours = ran(&blob, &machine, stopped, &registers);
+            let what = format!("differences at {optimisation}, look-ahead {look_ahead:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&ours.stdout),
+                String::from_utf8_lossy(&theirs.stdout),
+                "output of {what}"
+            );
+            assert_eq!(ours.status, theirs.status, "exit status of {what}");
+            assert!(
+                machine.count(Reason::SoftwareFusedMultiplyAdd) > 0,
+                "{what}"
+            );
+            assert!(
+                machine.count(Reason::ExactFloatingPointRequested) > 0,
+                "{what}"
+            );
+            // At full the slow path is reached by leaving the piece.
+            if look_ahead == LookAhead::Full {
+                assert!(machine.count(Reason::LeftToAddress) > 0, "{what}");
+            }
+        }
+    }
+}
+
 /// Every program, at every optimisation level, at look-ahead none and full: the same output and exit status
 /// as on Linux, and at full the same registers and memory at the end as at none. Levels that build to the
 /// same bytes as an earlier one are run once.
@@ -155,8 +206,14 @@ fn measure() {
         let mut best = (Duration::MAX, Duration::MAX, Vec::new());
         for _ in 0..5 {
             let start = Instant::now();
-            let translation =
-                translate(&blob.bytes, 0..blob.code_bytes, &starts, LookAhead::None).unwrap();
+            let translation = translate(
+                &blob.bytes,
+                0..blob.code_bytes,
+                &starts,
+                LookAhead::None,
+                wcontainers_translator_test::runner::probe(),
+            )
+            .unwrap();
             let translating = start.elapsed();
             let compiling = compile_time(&translation.wasm);
             best = (
@@ -180,4 +237,31 @@ fn measure() {
             best.1
         );
     }
+}
+
+/// Timing of a floating point workload (`programs/floats.c`, SCALE=1) at -O2: native, and through the
+/// translator at full in wasmtime, best of `WC_BENCH_RUNS` (default 3). Only measures; one command:
+/// `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn floats_speed() {
+    use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
+    let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
+    let blob = build_with("floats", "-O2", Library::C, &["SCALE=1"]);
+    let theirs = native(&blob);
+    let native = native_seconds(&blob, runs);
+    let mut best = f64::MAX;
+    for _ in 0..runs {
+        let (ours, _, _, time) = translated_omitting(
+            &blob,
+            LookAhead::Full,
+            wcontainers_translator::Omit::default(),
+        );
+        assert_eq!(ours, theirs);
+        best = best.min(time.as_secs_f64());
+    }
+    eprintln!(
+        "floats -O2: native {native:.3} s, full {best:.3} s, {:.2} times native",
+        best / native
+    );
 }

@@ -12,9 +12,9 @@ use petgraph::visit::DfsPostOrder;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_arm64::{
-    Access, Address, BranchRegister, Carry, Cond, Effects, Emitter, Flag, Flags, Instruction,
-    Operand, Reg, Registers, Target, Trap, Width, condition_direct, condition_from_flags, emit,
-    flag_value, habits, untag,
+    Access, Address, BranchRegister, Carry, Cond, Control, Effects, Emitter, Flag, Flags, Hook,
+    Host, Instruction, Operand, Reg, Registers, Target, Trap, Width, condition_direct,
+    condition_from_flags, emit, flag_value, habits, untag,
 };
 
 mod proof;
@@ -89,8 +89,16 @@ pub(crate) fn pieces(
         .enumerate()
         .map(|(i, (function, plan))| {
             let own = index[&function.entry];
-            let piece =
-                FullEmitter::piece(function, plan, decoded, &index, &loop_index[i], own, omit);
+            let piece = FullEmitter::piece(
+                function,
+                plan,
+                decoded,
+                &index,
+                &loop_index[i],
+                own,
+                omit,
+                code.host,
+            );
             (function.entry, piece)
         })
         .collect();
@@ -98,7 +106,16 @@ pub(crate) fn pieces(
         .iter()
         .map(|(i, function, plan)| {
             let own = loop_index[*i][&function.entry];
-            FullEmitter::piece(function, plan, decoded, &index, &loop_index[*i], own, omit)
+            FullEmitter::piece(
+                function,
+                plan,
+                decoded,
+                &index,
+                &loop_index[*i],
+                own,
+                omit,
+                code.host,
+            )
         })
         .collect();
     (table, extra)
@@ -570,9 +587,13 @@ fn aligned_after(d: &Decoded, aligned: bool) -> bool {
     }
 }
 
-/// Shift a frame to a stack pointer moved by `delta`.
+/// Shift a frame to a stack pointer moved by `delta`. What is left below the stack pointer is no frame, so
+/// it is dropped.
 fn shift(frame: Frame, delta: i64) -> Frame {
-    frame.map(|(lo, hi)| (lo - delta, hi - delta))
+    frame.and_then(|(lo, hi)| {
+        let (lo, hi) = ((lo - delta).max(0), hi - delta);
+        (lo < hi).then_some((lo, hi))
+    })
 }
 
 fn covers(frame: Frame, lo: i64, hi: i64) -> bool {
@@ -1209,6 +1230,8 @@ struct At {
     flags: FlagStates,
     /// The stack pointer is known to be a multiple of 16.
     aligned: bool,
+    /// The float mode local holds whether floating point takes the slow path.
+    float_mode: bool,
 }
 
 /// How a piece carries on when the stop hook says so.
@@ -1243,6 +1266,9 @@ struct FullEmitter<'a> {
     /// The loop pieces of the function this piece comes from, by header offset.
     loops: &'a HashMap<u64, u32>,
     omit: Omit,
+    host: Host,
+    /// Whether floating point takes the slow path, loaded once until something may change it.
+    float_mode_local: Option<u32>,
     body: Vec<u8>,
     locals: Vec<ValType>,
     free: Vec<(ValType, u32)>,
@@ -1267,9 +1293,12 @@ struct FullEmitter<'a> {
     /// The piece checks the stop flag at its entry: when it calls or leaves to other pieces, and always for
     /// a loop piece, which a stop check at a jump back enters.
     entry_check: bool,
+    /// The instruction being emitted has written a register, the flags or a control register.
+    written: bool,
 }
 
 impl<'a> FullEmitter<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn piece(
         function: &'a Function,
         plan: &'a Plan,
@@ -1278,6 +1307,7 @@ impl<'a> FullEmitter<'a> {
         loops: &'a HashMap<u64, u32>,
         own: u32,
         omit: Omit,
+        host: Host,
     ) -> wasm_encoder::Function {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
@@ -1287,6 +1317,8 @@ impl<'a> FullEmitter<'a> {
             index,
             loops,
             omit,
+            host,
+            float_mode_local: None,
             body: Vec::new(),
             locals: Vec::new(),
             free: Vec::new(),
@@ -1302,12 +1334,14 @@ impl<'a> FullEmitter<'a> {
                 dirty: Registers::NONE,
                 flags: 1 << FLAGS_IN_BLOCK,
                 aligned: false,
+                float_mode: false,
             },
             fixed: [None; 6],
             own,
             kept_pages: Vec::new(),
             unchecked: Vec::new(),
             entry_check: (plan.calls_out || loop_piece) && !omit.stop,
+            written: false,
         };
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
@@ -1532,6 +1566,7 @@ impl<'a> FullEmitter<'a> {
                                 dirty: self.plan.dirty_in[b],
                                 flags: self.plan.flags_in[b],
                                 aligned: self.plan.aligned_in[b],
+                                float_mode: false,
                             };
                             self.write_back(false);
                             self.arguments();
@@ -1593,9 +1628,11 @@ impl<'a> FullEmitter<'a> {
             dirty: self.plan.dirty_in[b],
             flags: self.plan.flags_in[b],
             aligned: self.plan.aligned_in[b],
+            float_mode: false,
         };
         for offset in (block.start..block.end).step_by(4) {
             self.at.offset = offset;
+            self.written = false;
             let mark = self.taken.len();
             if let Some(&(from, len)) = self.plan.frame_checks.get(&offset)
                 && !self.omit.permissions
@@ -1772,6 +1809,7 @@ impl<'a> FullEmitter<'a> {
     /// Call the stop hook if the flag is raised, then carry on as `after` says: when the hook says carry on,
     /// nothing has changed.
     fn stop_check(&mut self, pc: Pc, after: AfterStop) {
+        self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
@@ -2090,6 +2128,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set(&mut self, r: Reg) {
+        self.written = true;
         match Registers::bit(r) {
             Some(bit) => {
                 let local = self.register(bit);
@@ -2108,6 +2147,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_flags(&mut self, flags: Flags) {
+        self.written = true;
         let lazy = self.decoded().effects.flags.is_some();
         match Shape::of(flags).filter(|_| lazy) {
             Some(shape) => {
@@ -2183,29 +2223,71 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_vector(&mut self, n: u8) {
+        self.written = true;
         let bit = Registers::vector_bit(n);
         let local = self.register(bit);
         self.sink().local_set(local);
         self.at.dirty = self.at.dirty.union(Registers(1 << bit));
     }
 
-    fn get_thread_pointer(&mut self) {
+    fn get_control(&mut self, control: Control) {
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         block.push(&mut s);
-        Slot::ThreadPointer.load(&mut s);
+        Slot::Control(control).load(&mut s);
+    }
+
+    fn hook(&mut self, hook: Hook) {
+        self.sink().call(hook_function(hook));
+    }
+
+    fn host(&self) -> Host {
+        self.host
+    }
+
+    /// The slow path leaves the piece by a tail call, so no call stays in the function, which would make the
+    /// engine keep values out of registers around it.
+    fn float_mode(&mut self) -> bool {
+        assert!(
+            !self.written,
+            "floating point's slow path tested after the instruction wrote"
+        );
+        let local = match self.float_mode_local {
+            Some(l) => l,
+            None => {
+                let l = self.new_local(ValType::I32);
+                self.float_mode_local = Some(l);
+                l
+            }
+        };
+        if !self.at.float_mode {
+            self.get_control(Control::Fpcr);
+            self.get_control(Control::FloatTracking);
+            self.sink().i32_or().local_set(local);
+            self.at.float_mode = true;
+        }
+        self.sink().local_get(local).if_(BlockType::Empty);
+        self.write_back(false);
+        self.arguments();
+        self.this_address();
+        self.sink().return_call(F_EXACT).end();
+        false
     }
 
     fn stack_aligned(&mut self) -> bool {
         self.at.aligned
     }
 
-    fn set_thread_pointer(&mut self) {
+    fn set_control(&mut self, control: Control) {
+        self.written = true;
+        if matches!(control, Control::Fpcr | Control::FloatTracking) {
+            self.at.float_mode = false;
+        }
         let block = self.fixed(G_THREAD_BLOCK);
-        let value = self.temporary(ValType::I64);
+        let value = self.temporary(Slot::Control(control).ty());
         let mut s = self.sink();
         s.local_set(value);
-        Slot::ThreadPointer.store_from(&mut s, block, value);
+        Slot::Control(control).store_from(&mut s, block, value);
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {
@@ -2216,7 +2298,13 @@ impl Emitter for FullEmitter<'_> {
             Access::Read => PAGE_READ,
             Access::Write => PAGE_WRITE,
         };
-        let plan = self.plan.checks[&self.at.offset];
+        // An instruction whose access the plan does not know (cache maintenance) checks exactly.
+        let plan = self
+            .plan
+            .checks
+            .get(&self.at.offset)
+            .copied()
+            .unwrap_or(CheckPlan::Exact);
         if let CheckPlan::Skip = plan {
             return;
         }
@@ -2320,6 +2408,8 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn call(&mut self, target: Target) {
+        // The callee may change FPCR or FPSR.
+        self.at.float_mode = false;
         let offset = self.at.offset;
         self.write_back(false);
         let looked_up = match target {
@@ -2436,6 +2526,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn syscall(&mut self) {
+        self.at.float_mode = false;
         let next = self.at.offset + 4;
         self.save(Pc::Offset(next));
         self.get(Reg::X(8));

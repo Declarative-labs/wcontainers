@@ -40,7 +40,24 @@ impl Form {
 
     /// Whether this word is this form on the CPU we present: its fixed bits match and its condition holds.
     pub fn presented(&self, word: u32) -> bool {
-        word & self.mask == self.value && Condition { form: self, word }.holds()
+        word & self.mask == self.value
+            && Condition {
+                form: self,
+                word,
+                every_feature: false,
+            }
+            .holds()
+    }
+
+    /// Whether this word is this form on a CPU with every feature.
+    pub fn exists(&self, word: u32) -> bool {
+        word & self.mask == self.value
+            && Condition {
+                form: self,
+                word,
+                every_feature: true,
+            }
+            .holds()
     }
 
     /// Whether this form's words are an instruction of the CPU we present even without the form's feature,
@@ -66,6 +83,22 @@ pub fn presented(word: u32) -> bool {
         let form = &all()[usize::from(i)];
         form.presented(word) || (form.hint_without_feature() && word & form.mask == form.value)
     })
+}
+
+/// Whether a word is an instruction only of a feature the CPU we present does not offer.
+pub fn of_feature_not_offered(word: u32) -> bool {
+    !presented(word)
+        && candidates(word)
+            .iter()
+            .any(|&i| all()[usize::from(i)].exists(word))
+}
+
+/// The form a word is on the CPU we present, if it is one of its instructions.
+pub fn form(word: u32) -> Option<&'static Form> {
+    candidates(word)
+        .iter()
+        .map(|&i| &all()[usize::from(i)])
+        .find(|form| form.presented(word))
 }
 
 /// The bits of a word that pick its bucket of candidate forms: bits 31 to 21.
@@ -130,6 +163,8 @@ fn read() -> Vec<Form> {
 struct Condition<'a> {
     form: &'a Form,
     word: u32,
+    /// Take every `FEAT_` name as offered.
+    every_feature: bool,
 }
 
 impl Condition<'_> {
@@ -187,7 +222,7 @@ impl Condition<'_> {
             return true;
         }
         if name.starts_with("FEAT_") {
-            return OFFERED_FEATURES.contains(&name);
+            return self.every_feature || OFFERED_FEATURES.contains(&name);
         }
         let field = self
             .form

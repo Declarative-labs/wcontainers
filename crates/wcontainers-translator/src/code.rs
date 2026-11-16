@@ -10,7 +10,9 @@ use wasm_encoder::{
     FunctionSection, GlobalSection, GlobalType, ImportSection, InstructionSink, MemoryType, Module,
     TableType, TagKind, TagType, TypeSection, ValType,
 };
-use wcontainers_arm64::{Access, Emitter, Flag, Flags, Reg, Target, Trap, flag_value};
+use wcontainers_arm64::{
+    Access, Control, Emitter, Flag, Flags, Hook, Host, Reg, Target, Trap, flag_value,
+};
 
 /// How much code the translator sees at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,9 +64,22 @@ pub(crate) const F_MEMORY_FAULT: u32 = 2;
 pub(crate) const F_LOAD_CODE: u32 = 3;
 pub(crate) const F_WARN: u32 = 4;
 pub(crate) const F_TRAP: u32 = 5;
-pub(crate) const F_DISPATCH: u32 = 6;
-pub(crate) const F_UNWIND: u32 = 7;
-pub(crate) const F_FIRST_PIECE: u32 = 8;
+pub(crate) const F_FLOAT: u32 = 6;
+pub(crate) const F_CLOCK: u32 = 7;
+pub(crate) const F_CODE_CHANGED: u32 = 8;
+pub(crate) const F_DISPATCH: u32 = 9;
+pub(crate) const F_UNWIND: u32 = 10;
+pub(crate) const F_EXACT: u32 = 11;
+pub(crate) const F_FIRST_PIECE: u32 = 12;
+
+/// The function a meaning's hook calls.
+pub(crate) fn hook_function(hook: Hook) -> u32 {
+    match hook {
+        Hook::Float => F_FLOAT,
+        Hook::Clock => F_CLOCK,
+        Hook::CodeChanged => F_CODE_CHANGED,
+    }
+}
 
 // Global indices: the runner's constants.
 pub(crate) const G_LOAD_ADDRESS: u32 = 0;
@@ -96,8 +111,9 @@ pub fn translate(
     code: Range<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
+    host: Host,
 ) -> Result<Translation, Error> {
-    translate_omitting(blob, code, starts, look_ahead, Omit::default())
+    translate_omitting(blob, code, starts, look_ahead, host, Omit::default())
 }
 
 /// [`translate`] without some checks at full look-ahead, only to measure what they cost. Look-ahead none
@@ -107,12 +123,17 @@ pub fn translate_omitting(
     code: Range<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
+    host: Host,
     omit: Omit,
 ) -> Result<Translation, Error> {
     if code.end > blob.len() as u64 || code.start > code.end || !code.start.is_multiple_of(4) {
         return Err(Error::BadCodeRange);
     }
-    let blob_code = Code { blob, range: code };
+    let blob_code = Code {
+        blob,
+        range: code,
+        host,
+    };
     for &start in starts {
         if !blob_code.inside(start) {
             return Err(Error::BadStart(start));
@@ -138,6 +159,8 @@ pub fn translate_omitting(
     code_section.function(&dispatcher());
     functions.function(7);
     code_section.function(&unwinder());
+    functions.function(6);
+    code_section.function(&exact());
     for function in pieces.values().chain(&others) {
         functions.function(0);
         code_section.function(function);
@@ -157,6 +180,7 @@ pub fn translate_omitting(
 pub(crate) struct Code<'a> {
     pub blob: &'a [u8],
     pub range: Range<u64>,
+    pub host: Host,
 }
 
 impl Code<'_> {
@@ -211,6 +235,7 @@ fn none_pieces(code: &Code<'_>, starts: &[u64]) -> BTreeMap<u64, wasm_encoder::F
         .iter()
         .map(|(&offset, instruction)| {
             let mut emitter = NoneEmitter {
+                host: code.host,
                 offset,
                 word: code.word(offset),
                 pieces: &index,
@@ -394,6 +419,12 @@ pub(crate) fn types() -> TypeSection {
         [ValType::I64; PASSED as usize],
     ); // 6: dispatcher
     types.ty().function([ValType::I32], []); // 7: unwind tag
+    types.ty().function(
+        [ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+        [ValType::I64],
+    ); // 8: float
+    types.ty().function([], [ValType::I64]); // 9: clock
+    types.ty().function([ValType::I64], []); // 10: code_changed
     types
 }
 
@@ -406,6 +437,9 @@ pub(crate) fn imports() -> ImportSection {
         (HOOK_LOAD_CODE, 4),
         (HOOK_WARN, 5),
         (HOOK_TRAP, 5),
+        (HOOK_FLOAT, 8),
+        (HOOK_CLOCK, 9),
+        (HOOK_CODE_CHANGED, 10),
     ] {
         imports.import(HOOKS, name, EntityType::Function(ty));
     }
@@ -544,6 +578,34 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
     f
 }
 
+/// Carry on at a guest address in code translated there at look-ahead none, which has every slow path in
+/// place, keeping the WebAssembly stack. Parameters: those of the dispatcher.
+pub(crate) fn exact() -> wasm_encoder::Function {
+    const TARGET: u32 = PARAMETERS;
+    let mut f = wasm_encoder::Function::new([]);
+    let mut s = f.instructions();
+    set_pc(&mut s, BLOCK, |s| {
+        s.local_get(TARGET);
+    });
+    save_passed(&mut s, BLOCK);
+    s.i32_const(Reason::LeftToAddress as i32)
+        .local_get(TARGET)
+        .call(F_WARN);
+    s.local_get(TARGET)
+        .call(F_LOAD_CODE)
+        .i32_eqz()
+        .if_(BlockType::Empty)
+        .i32_const(UNWIND_LEAVE)
+        .call(F_UNWIND)
+        .unreachable()
+        .end();
+    for i in 0..=PARAMETERS {
+        s.local_get(i);
+    }
+    s.return_call(F_DISPATCH).end();
+    f
+}
+
 /// Throw the unwind exception with the payload given. Pieces call this instead of throwing themselves: in
 /// wasmtime a function that throws saves every callee-saved register on entry, which would tax every call.
 pub(crate) fn unwinder() -> wasm_encoder::Function {
@@ -598,6 +660,7 @@ pub(crate) fn description<'a>(
 /// The emitter for look-ahead none: registers and flags live in globals, except the passed registers,
 /// which are parameters; every instruction ends by passing control to the piece for the next address.
 struct NoneEmitter<'a> {
+    host: Host,
     offset: u64,
     word: u32,
     pieces: &'a BTreeMap<u64, u32>,
@@ -773,12 +836,20 @@ impl Emitter for NoneEmitter<'_> {
         self.store(Slot::Vector(n));
     }
 
-    fn get_thread_pointer(&mut self) {
-        self.load(Slot::ThreadPointer);
+    fn get_control(&mut self, control: Control) {
+        self.load(Slot::Control(control));
     }
 
-    fn set_thread_pointer(&mut self) {
-        self.store(Slot::ThreadPointer);
+    fn set_control(&mut self, control: Control) {
+        self.store(Slot::Control(control));
+    }
+
+    fn hook(&mut self, hook: Hook) {
+        self.sink().call(hook_function(hook));
+    }
+
+    fn host(&self) -> Host {
+        self.host
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access) {

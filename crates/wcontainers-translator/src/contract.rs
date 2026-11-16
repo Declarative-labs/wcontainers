@@ -7,6 +7,18 @@
 //! Registers that are not in a piece's locals live in the thread block in the state memory, so whenever a hook
 //! runs or `run` has returned, the block holds them all ("registers are saved"), and a runner sets registers
 //! by writing the block before `run`.
+//!
+//! **When the permission table may change.** What a piece has found out about page permissions (checks one
+//! check covers, kept runs of allowed pages, proofs over a loop's range, bounded indices) holds only until
+//! the next point where its thread can stop: a stop check whose hook runs, a system call, or leaving `run`.
+//! After any of those the piece checks again. The one exception is a stack frame checked when the stack
+//! pointer moved down: a change to a page of a running function's own frame, at or above the stack pointer,
+//! is noticed at the next function entry, not at once. Memory below the stack pointer is no frame and is
+//! checked at every access. So whoever changes a process's page permissions must first bring every other
+//! running thread of that process to a stop (raise its stop flag and wait until its hook runs or it has
+//! left `run`), as a real kernel interrupts the other processors before it changes a page table. The
+//! thread making the change is already stopped, in its system call or hook. With one host thread this
+//! happens by itself, because only a stopped thread lets the kernel run.
 
 /// Import module name for what the runner provides.
 pub const ENV: &str = "env";
@@ -32,7 +44,8 @@ pub const TABLE_BASE: &str = "table_base";
 /// i32: where in the state memory this thread's block is (a [`wcontainers_abi::RegisterBlock`] followed by
 /// the stop flag), a multiple of 16.
 pub const THREAD_BLOCK: &str = "thread_block";
-/// i32: where in the state memory the page permission table starts, one byte per page.
+/// i32: where in the state memory the page permission table starts, one byte per page. It may change only
+/// while every thread of the process is stopped (see "When the permission table may change" in this module's documentation).
 pub const PERMISSIONS: &str = "permissions";
 /// i64: how many pages the permission table covers. The byte after the last one must be zero, so addresses at
 /// or above `pages * PAGE_SIZE` fault.
@@ -74,6 +87,28 @@ pub const HOOK_WARN: &str = "warn";
 /// Hook `(kind: i32, detail: i64)`: the instruction at `pc` stops the thread; see [`TrapKind`]. Registers
 /// are saved. The thread then leaves.
 pub const HOOK_TRAP: &str = "trap";
+/// Hook `(operation: i32, a: i64, b: i64, c: i64) -> i64`: one floating point operation in software,
+/// [`wcontainers_arm64::exact::run`] with this thread's FPCR, adding to its FPSR. It is a slow path: counted as
+/// "software fused multiply-add" when FPCR is zero and the flags are not kept (the host's engine does not
+/// fuse), else as "exact floating point requested". Registers are not saved.
+pub const HOOK_FLOAT: &str = "float";
+/// Hook `() -> i64`: the monotonic clock in nanoseconds, for the counter.
+pub const HOOK_CLOCK: &str = "clock";
+/// Hook `(address: i64)`: `ic ivau` says the code at the address may have changed. Registers are not saved.
+pub const HOOK_CODE_CHANGED: &str = "code_changed";
+
+/// Bytes a runner gives each thread at its block's place: the abi's block (registers, then the stop flag),
+/// then words of the CPU side's own, which start zero when the thread is made and which the kernel never
+/// sees.
+pub const THREAD_STATE_SIZE: usize = wcontainers_abi::THREAD_BLOCK_SIZE + 32;
+/// i32: not zero once the program wrote FPSR, so its flags are kept exact.
+pub const FLOAT_TRACKING: usize = wcontainers_abi::THREAD_BLOCK_SIZE;
+/// i32: the size of the access a load exclusive remembered, 0 for none.
+pub const EXCLUSIVE_BYTES: usize = FLOAT_TRACKING + 4;
+/// i64: the address it remembered.
+pub const EXCLUSIVE_ADDRESS: usize = FLOAT_TRACKING + 8;
+/// Two i64: the value it loaded.
+pub const EXCLUSIVE_VALUE: usize = FLOAT_TRACKING + 16;
 
 /// Permission table byte: the page may be read.
 pub const PAGE_READ: u8 = 1;
@@ -112,7 +147,8 @@ pub const BOTTOM_RETURN: i64 = -2;
 pub enum TrapKind {
     /// Not an instruction of the CPU we present. Detail: the instruction word.
     Undefined = 0,
-    /// An instruction we present but do not translate yet. Detail: the instruction word.
+    /// An instruction of a feature we do not offer: illegal instruction, counted and warned. Detail: the
+    /// instruction word.
     Unsupported = 1,
     /// `brk`. Detail: its comment field.
     Breakpoint = 2,

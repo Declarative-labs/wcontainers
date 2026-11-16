@@ -8,14 +8,25 @@ use yaxpeax_arm::armv8::a64::{InstDecoder, Opcode, Operand as Op, ShiftStyle, Si
 /// Decode one instruction word. Arm's forms decide whether it is an instruction at all; `yaxpeax-arm`
 /// accepts some words that are not.
 pub fn decode(word: u32) -> Instruction {
-    if !crate::forms::presented(word) {
-        return Instruction::Undefined;
+    match crate::forms::form(word) {
+        Some(form) => {
+            if let Some(instruction) = crate::decode_forms::decode(word, form) {
+                return instruction;
+            }
+        }
+        // A hint carved out for a feature we do not offer is still that hint.
+        None if crate::forms::presented(word) => {}
+        // Raises illegal instruction like an undefined word, but is counted and warned.
+        None if crate::forms::of_feature_not_offered(word) => return Instruction::Unsupported,
+        None => return Instruction::Undefined,
     }
+    // Every form is translated, so a word of a form that neither path gives an instruction for is one
+    // Arm's decode makes undefined (a reserved field value), as layer 1 checks against the CPU.
     let Ok(decoded) = InstDecoder::default().decode(&mut U8Reader::new(&word.to_le_bytes())) else {
-        return Instruction::Unsupported;
+        return Instruction::Undefined;
     };
     let ops = decoded.operands;
-    convert(word, decoded.opcode, &ops).unwrap_or(Instruction::Unsupported)
+    convert(word, decoded.opcode, &ops).unwrap_or(Instruction::Undefined)
 }
 
 fn bits(word: u32, low: u32, width: u32) -> u32 {
@@ -246,98 +257,14 @@ fn convert_vector(word: u32, opcode: Opcode) -> Option<Instruction> {
         bits(word, 16, 5) as u8,
     );
     let whole = bits(word, 30, 1) == 1;
-    let size = bits(word, 22, 2);
     let arrangement = |element: u32| Arrangement {
         element: 1 << element,
         whole,
     };
     let undefined = Some(I::Undefined);
-    // 64 bit elements need the whole register.
-    let sized = (size < 3 || whole).then(|| arrangement(size));
     if word & 0x9ff8_0400 == 0x0f00_0400 {
         let (op, imm) = modified_immediate(word)?;
         return Some(I::VectorImmediate { op, rd, imm, whole });
-    }
-    // Three registers of the same arrangement.
-    if word & 0x9f20_0400 == 0x0e20_0400 {
-        let u = bits(word, 29, 1);
-        let op = match (bits(word, 11, 5), u) {
-            (0b00011, _) => {
-                let op = match (u, size) {
-                    (0, 0) => VectorBinary::And,
-                    (0, 1) => VectorBinary::AndNot,
-                    (0, 2) => VectorBinary::Or,
-                    (0, _) => VectorBinary::OrNot,
-                    (_, 0) => VectorBinary::Xor,
-                    (_, 1) => VectorBinary::Select,
-                    (_, 2) => VectorBinary::InsertIfTrue,
-                    _ => VectorBinary::InsertIfFalse,
-                };
-                return Some(I::VectorBinary {
-                    op,
-                    arrangement: arrangement(0),
-                    rd,
-                    rn,
-                    rm,
-                });
-            }
-            (0b10000, 0) => VectorBinary::Add,
-            (0b10000, _) => VectorBinary::Sub,
-            (0b10011, 0) if size == 3 => return undefined,
-            (0b10011, 0) => VectorBinary::Mul,
-            (0b10001, 0) => VectorBinary::Test,
-            (0b10001, _) => VectorBinary::Equal,
-            (0b00110, 0) => VectorBinary::SignedGreater,
-            (0b00110, _) => VectorBinary::UnsignedGreater,
-            (0b00111, 0) => VectorBinary::SignedGreaterOrEqual,
-            (0b00111, _) => VectorBinary::UnsignedGreaterOrEqual,
-            _ => return None,
-        };
-        let Some(arrangement) = sized else {
-            return undefined;
-        };
-        return Some(I::VectorBinary {
-            op,
-            arrangement,
-            rd,
-            rn,
-            rm,
-        });
-    }
-    // Two register miscellaneous.
-    if word & 0x9f3e_0c00 == 0x0e20_0800 {
-        let op = match (bits(word, 12, 5), bits(word, 29, 1), size) {
-            (0b00101, 0, 0) => VectorUnary::CountBits,
-            (0b00101, 1, 0) => VectorUnary::Not,
-            (0b00101, 0, _) | (0b00101, 1, 2..) => return undefined,
-            _ => return None,
-        };
-        return Some(I::VectorUnary {
-            op,
-            arrangement: arrangement(0),
-            rd,
-            rn,
-        });
-    }
-    // Across lanes: no 64 bit elements, and 32 bit ones only in the whole register.
-    if word & 0x9f3e_0c00 == 0x0e30_0800 {
-        let op = match opcode {
-            O::ADDV => VectorAcross::Add,
-            O::SMAXV => VectorAcross::SignedMax,
-            O::SMINV => VectorAcross::SignedMin,
-            O::UMAXV => VectorAcross::UnsignedMax,
-            O::UMINV => VectorAcross::UnsignedMin,
-            _ => return None,
-        };
-        if size == 3 || (size == 2 && !whole) {
-            return undefined;
-        }
-        return Some(I::VectorAcross {
-            op,
-            arrangement: arrangement(size),
-            rd,
-            rn,
-        });
     }
     // Copies between elements and general registers. imm5's lowest set bit gives the element size; the
     // bits above it, the index.

@@ -1,7 +1,7 @@
 //! What an instruction reads and writes, found by running its meaning against an emitter that only records.
 
 use crate::instruction::{Instruction, Reg};
-use crate::meaning::{Access, Emitter, Flag, Flags, Target, Trap, emit};
+use crate::meaning::{Access, Control, Emitter, Flag, Flags, Hook, Host, Target, Trap, emit};
 use wasm_encoder::{InstructionSink, ValType};
 
 /// A set of registers: x0 to x30 are bits 0 to 30, sp is 31, the flags N, Z, C and V are 32 to 35, and v0 to
@@ -153,9 +153,18 @@ impl Emitter for Recorder {
         self.write(Registers::vector_bit(n));
     }
 
-    fn get_thread_pointer(&mut self) {}
+    fn get_control(&mut self, _control: Control) {}
 
-    fn set_thread_pointer(&mut self) {}
+    fn set_control(&mut self, _control: Control) {}
+
+    fn hook(&mut self, _hook: Hook) {}
+
+    fn host(&self) -> Host {
+        Host {
+            fused_multiply_add: true,
+            arm_nans: true,
+        }
+    }
 
     fn check(&mut self, _address: u32, _bytes: u32, _access: Access) {}
 

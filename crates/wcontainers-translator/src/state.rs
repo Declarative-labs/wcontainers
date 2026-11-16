@@ -3,11 +3,12 @@
 //! writes at the register's fixed offset from it.
 
 use crate::code::{Fixed, MEMORY_STATE};
+use crate::contract;
 use crate::thread::memarg;
 use core::mem::offset_of;
 use wasm_encoder::{InstructionSink, ValType};
 use wcontainers_abi::RegisterBlock as B;
-use wcontainers_arm64::{Emitter, Flag};
+use wcontainers_arm64::{Control, Emitter, Flag};
 
 /// One register's place in the thread block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,7 +19,8 @@ pub(crate) enum Slot {
     /// The low half of `pstate`, which holds the four flag bits; the high half is always zero.
     Flags,
     Vector(u8),
-    ThreadPointer,
+    /// A register kept only in the thread's state.
+    Control(Control),
 }
 
 impl Slot {
@@ -38,7 +40,16 @@ impl Slot {
             Slot::Pc => offset_of!(B, pc),
             Slot::Flags => offset_of!(B, pstate),
             Slot::Vector(n) => offset_of!(B, v) + 16 * usize::from(n),
-            Slot::ThreadPointer => offset_of!(B, tpidr_el0),
+            Slot::Control(c) => match c {
+                Control::ThreadPointer => offset_of!(B, tpidr_el0),
+                Control::Fpcr => offset_of!(B, fpcr),
+                Control::Fpsr => offset_of!(B, fpsr),
+                Control::FloatTracking => contract::FLOAT_TRACKING,
+                Control::ExclusiveBytes => contract::EXCLUSIVE_BYTES,
+                Control::ExclusiveAddress => contract::EXCLUSIVE_ADDRESS,
+                Control::ExclusiveLow => contract::EXCLUSIVE_VALUE,
+                Control::ExclusiveHigh => contract::EXCLUSIVE_VALUE + 8,
+            },
         }) as u64
     }
 
@@ -46,6 +57,7 @@ impl Slot {
         match self {
             Slot::Flags => ValType::I32,
             Slot::Vector(_) => ValType::V128,
+            Slot::Control(c) => c.ty(),
             _ => ValType::I64,
         }
     }

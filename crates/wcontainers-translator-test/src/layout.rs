@@ -7,11 +7,19 @@ pub const BLOB_HWCAP: u64 = 0x183;
 /// The name a flat blob is started under, its `argv[0]`.
 pub const BLOB_NAME: &[u8] = b"blob\0";
 
+/// Bytes of one ELF64 program header.
+pub const PROGRAM_HEADER_BYTES: u64 = 56;
+
 /// What Linux puts at the top of a new program's stack, the way both runners give it to a flat blob:
 /// argc, argv, an empty environment, the auxiliary vector, then the name and the 16 `AT_RANDOM` bytes.
+/// `headers` is where the blob's program headers are in guest memory and how many there are, given as
+/// `AT_PHDR` and `AT_PHNUM`, through which a position independent C program finds where it was placed.
 /// Returns the stack pointer and the bytes to place from it up to `top`.
-pub fn initial_stack(top: u64) -> (u64, Vec<u8>) {
+pub fn initial_stack(top: u64, headers: Option<(u64, u64)>) -> (u64, Vec<u8>) {
     const AT_NULL: u64 = 0;
+    const AT_PHDR: u64 = 3;
+    const AT_PHENT: u64 = 4;
+    const AT_PHNUM: u64 = 5;
     const AT_PAGESZ: u64 = 6;
     const AT_HWCAP: u64 = 16;
     const AT_RANDOM: u64 = 25;
@@ -19,12 +27,14 @@ pub fn initial_stack(top: u64) -> (u64, Vec<u8>) {
     const AT_EXECFN: u64 = 31;
     let random = top - 16;
     let name = (random - BLOB_NAME.len() as u64) & !15;
-    let auxv = [
+    let mut words = vec![1, name, 0, 0];
+    if let Some((at, count)) = headers {
+        words.extend([AT_PHDR, at, AT_PHENT, PROGRAM_HEADER_BYTES, AT_PHNUM, count]);
+    }
+    words.extend([
         AT_PAGESZ, 4096, AT_HWCAP, BLOB_HWCAP, AT_HWCAP2, 0, AT_RANDOM, random, AT_EXECFN, name,
         AT_NULL, 0,
-    ];
-    let mut words = vec![1, name, 0, 0];
-    words.extend_from_slice(&auxv);
+    ]);
     let sp = (name - 8 * words.len() as u64) & !15;
     let mut bytes = vec![0u8; (top - sp) as usize];
     for (i, word) in words.iter().enumerate() {
@@ -52,13 +62,13 @@ pub const CODE: u64 = 0x5000_0000;
 pub const CODE_SPAN: u64 = 128 << 20;
 
 /// A case: the instruction word, the data seed, then x0 to x30, sp, the flags (at their `pstate` bits) and
-/// the thread pointer, then v0 to v31, all little endian.
-pub const REQUEST_BYTES: usize = 4 + 8 + 34 * 8 + 32 * 16;
+/// the thread pointer, then v0 to v31, then FPSR and FPCR (4 bytes each), all little endian.
+pub const REQUEST_BYTES: usize = 4 + 8 + 34 * 8 + 32 * 16 + 8;
 
 /// A result: signal, `si_code`, `si_addr`, then x0 to x30, sp, pc, the flags and the thread pointer, then v0
-/// to v31, then the number of changed data bytes and each one as a 4 byte offset from `DATA` and its new
-/// value.
-pub const RESULT_HEADER_BYTES: usize = 4 + 4 + 8 + 35 * 8 + 32 * 16 + 4;
+/// to v31, then FPSR and FPCR, then the number of changed data bytes and each one as a 4 byte offset from
+/// `DATA` and its new value.
+pub const RESULT_HEADER_BYTES: usize = 4 + 4 + 8 + 35 * 8 + 32 * 16 + 8 + 4;
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {

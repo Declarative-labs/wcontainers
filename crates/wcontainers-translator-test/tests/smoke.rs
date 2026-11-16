@@ -135,3 +135,30 @@ fn stop_flag_raised_while_running() {
         assert_eq!(registers.x[0], 0);
     }
 }
+
+/// An instruction of a feature we do not offer raises illegal instruction, at the instruction, and is
+/// counted as unsupported; a word in no form raises it uncounted, as on any CPU.
+#[test]
+fn instructions_not_offered_are_illegal_and_counted() {
+    use wcontainers_abi::Exit;
+    for (word, counted) in [
+        (0x4e28_4820, 1), // aese v0.16b, v1.16b
+        (0x04a2_0020, 1), // add z0.s, z1.s, z2.s
+        (0x0000_0000, 0), // udf #0
+    ] {
+        // movz x0, #1; then the word
+        let (stopped, registers, machine) = run(&[0xd280_0020, word]);
+        assert_eq!(
+            stopped,
+            Stopped::Exit(Exit::IllegalInstruction),
+            "{word:#010x}"
+        );
+        assert_eq!(registers.pc, LOAD + 4, "{word:#010x}");
+        assert_eq!(registers.x[0], 1, "{word:#010x}");
+        assert_eq!(
+            machine.count(Reason::UnsupportedInstructionReached),
+            counted,
+            "{word:#010x}"
+        );
+    }
+}

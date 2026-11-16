@@ -41,6 +41,46 @@ pub enum Stopped {
     Finished(i32),
 }
 
+/// Where the thread is paused when the pause function runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pause {
+    /// At a stop check, before the thread carries on.
+    Stop,
+    /// After a system call the stand-in answered, before the thread carries on.
+    Syscall,
+}
+
+/// What a pause function may look at and change while the thread is paused.
+pub struct Paused<'a, 'b> {
+    caller: &'a mut Caller<'b, Host>,
+}
+
+impl Paused<'_, '_> {
+    pub fn registers(&mut self) -> RegisterBlock {
+        snapshot(self.caller)
+    }
+
+    pub fn read(&mut self, address: u64, into: &mut [u8]) {
+        let memory = self.caller.data().memory.unwrap();
+        memory
+            .read(&*self.caller, address as usize, into)
+            .expect("read inside guest memory");
+    }
+
+    /// Say what a page aligned range allows, as a kernel would for another thread or a system call.
+    pub fn set_permissions(&mut self, range: Range<u64>, permissions: Permissions) {
+        set_permissions(self.caller.data_mut(), range, permissions);
+    }
+
+    /// Raise the thread's stop flag, so it stops at the next stop check it reaches.
+    pub fn raise_stop_flag(&mut self) {
+        raise_stop_flag(self.caller);
+    }
+}
+
+/// Called at every pause of the thread.
+type PauseFunction = Box<dyn FnMut(Pause, &mut Paused<'_, '_>)>;
+
 /// One blob placed in guest memory and translated.
 struct Blob {
     bytes: Vec<u8>,
@@ -49,6 +89,10 @@ struct Blob {
 }
 
 pub struct Host {
+    /// What the engine does where WebAssembly leaves results open; translations are made for it.
+    facts: wcontainers_arm64::Host,
+    /// When the machine was made, for the clock.
+    started: Instant,
     syscalls: Syscalls,
     stopped: Option<Stopped>,
     /// Registers at the moment the thread stopped.
@@ -72,6 +116,9 @@ pub struct Host {
     table_base: u64,
     /// The stop hook raises the flag again before it says carry on, so the thread stops at every check.
     stop_everywhere: bool,
+    /// What each page allows, as the permission table says.
+    permissions: Vec<Permissions>,
+    pause: Option<PauseFunction>,
 }
 
 pub struct Machine {
@@ -79,8 +126,6 @@ pub struct Machine {
     memory: Memory,
     state: SharedMemory,
     run: TypedFunc<(), ()>,
-    permission_pages: u64,
-    permissions: Vec<Permissions>,
 }
 
 /// One engine for the whole process, so compiled modules can be shared.
@@ -100,6 +145,22 @@ fn thread_module(engine: &Engine, slots: u32) -> Module {
                 .expect("thread module")
         })
         .clone()
+}
+
+/// The probe of this engine, run once per process.
+pub fn probe() -> wcontainers_arm64::Host {
+    static FACTS: OnceLock<wcontainers_arm64::Host> = OnceLock::new();
+    *FACTS.get_or_init(|| {
+        let engine = engine();
+        let module =
+            Module::new(&engine, wcontainers_arm64::host::probe_module()).expect("probe module");
+        let mut store = Store::new(&engine, ());
+        let instance = Instance::new(&mut store, &module, &[]).expect("probe instance");
+        let probe = instance
+            .get_typed_func::<(), i32>(&mut store, wcontainers_arm64::host::PROBE)
+            .expect("probe export");
+        wcontainers_arm64::Host::from_probe(probe.call(&mut store, ()).expect("probe runs"))
+    })
 }
 
 fn new_engine() -> Engine {
@@ -141,6 +202,8 @@ impl Machine {
         let mut store = Store::new(
             &engine,
             Host {
+                facts: probe(),
+                started: Instant::now(),
                 syscalls,
                 stopped: None,
                 snapshot: RegisterBlock::ZERO,
@@ -158,6 +221,8 @@ impl Machine {
                 memory: None,
                 table_base,
                 stop_everywhere: false,
+                permissions: vec![Permissions::empty(); permission_pages as usize],
+                pause: None,
             },
         );
         let pages = memory_bytes.div_ceil(65536);
@@ -205,8 +270,6 @@ impl Machine {
             memory,
             state,
             run,
-            permission_pages,
-            permissions: vec![Permissions::empty(); permission_pages as usize],
         }
     }
 
@@ -224,24 +287,13 @@ impl Machine {
 
     /// Say what a page aligned range allows.
     pub fn set_permissions(&mut self, range: Range<u64>, permissions: Permissions) {
-        let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
-        for page in pages.clone() {
-            self.permissions[page as usize] = permissions;
-        }
-        // Each byte also says what the page after it allows, so rewrite the one before the range too.
-        for page in pages.start.saturating_sub(1)..pages.end.min(self.permission_pages) {
-            let next = self
-                .permissions
-                .get(page as usize + 1)
-                .copied()
-                .unwrap_or(Permissions::empty());
-            let byte = contract::permission_byte(self.permissions[page as usize], next);
-            write_shared(
-                &self.state,
-                (u64::from(PERMISSIONS_AT) + page) as usize,
-                &[byte],
-            );
-        }
+        set_permissions(self.store.data_mut(), range, permissions);
+    }
+
+    /// From now on `pause` runs whenever the thread pauses at a stop check or after a system call, and may
+    /// change page permissions there.
+    pub fn on_pause(&mut self, pause: impl FnMut(Pause, &mut Paused<'_, '_>) + 'static) {
+        self.store.data_mut().pause = Some(Box::new(pause));
     }
 
     /// Place a blob at `load_address`, translate it from `starts` (blob offsets) with a look-ahead and add its
@@ -318,6 +370,21 @@ impl Machine {
         write_shared(&self.state, BLOCK_AT as usize, registers.as_bytes());
     }
 
+    /// Keep FPSR's flags exact from now on, as if the program had written FPSR.
+    pub fn track_float_flags(&mut self) {
+        write_shared(
+            &self.state,
+            BLOCK_AT as usize + contract::FLOAT_TRACKING,
+            &1u32.to_le_bytes(),
+        );
+    }
+
+    /// Translate for other facts about the engine than the probe found, to test the paths other hosts
+    /// take. Only blobs loaded afterwards are affected.
+    pub fn set_host(&mut self, facts: wcontainers_arm64::Host) {
+        self.store.data_mut().facts = facts;
+    }
+
     pub fn registers(&mut self) -> RegisterBlock {
         snapshot(&mut self.store)
     }
@@ -380,6 +447,32 @@ impl Machine {
                 _ => panic!("engine stopped the guest: {error:?}"),
             },
         }
+    }
+}
+
+fn set_permissions(host: &mut Host, range: Range<u64>, permissions: Permissions) {
+    let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
+    for page in pages.clone() {
+        host.permissions[page as usize] = permissions;
+    }
+    let state = host.state.as_ref().unwrap();
+    // Each byte also says what the page after it allows, so rewrite the one before the range too.
+    for page in pages.start.saturating_sub(1)..pages.end.min(host.permissions.len() as u64) {
+        let next = host
+            .permissions
+            .get(page as usize + 1)
+            .copied()
+            .unwrap_or(Permissions::empty());
+        let byte = contract::permission_byte(host.permissions[page as usize], next);
+        write_shared(state, (u64::from(PERMISSIONS_AT) + page) as usize, &[byte]);
+    }
+}
+
+/// Run the pause function, if there is one.
+fn pause(caller: &mut Caller<'_, Host>, at: Pause) {
+    if let Some(mut function) = caller.data_mut().pause.take() {
+        function(at, &mut Paused { caller });
+        caller.data_mut().pause = Some(function);
     }
 }
 
@@ -471,7 +564,11 @@ fn hooks(linker: &mut Linker<Host>) {
                     raise_stop_flag(&caller);
                     return 0;
                 }
-                stand_in(&mut caller, call)
+                let result = stand_in(&mut caller, call);
+                if caller.data().stopped.is_none() {
+                    pause(&mut caller, Pause::Syscall);
+                }
+                result
             },
         )
         .unwrap();
@@ -493,6 +590,7 @@ fn hooks(linker: &mut Linker<Host>) {
             if caller.data().stop_everywhere {
                 raise_stop_flag(&caller);
             }
+            pause(&mut caller, Pause::Stop);
             0
         })
         .unwrap();
@@ -578,6 +676,56 @@ fn hooks(linker: &mut Linker<Host>) {
     linker
         .func_wrap(
             HOOKS,
+            HOOK_FLOAT,
+            |mut caller: Caller<'_, Host>, operation: i32, a: i64, b: i64, c: i64| -> i64 {
+                let state = caller.data().state.clone().unwrap();
+                let word = |at: usize| {
+                    let mut bytes = [0u8; 4];
+                    read_shared(&state, BLOCK_AT as usize + at, &mut bytes);
+                    u32::from_le_bytes(bytes)
+                };
+                let fpsr_at = core::mem::offset_of!(RegisterBlock, fpsr);
+                let fpcr = word(core::mem::offset_of!(RegisterBlock, fpcr));
+                let mut fpsr = word(fpsr_at);
+                let tracking = word(contract::FLOAT_TRACKING);
+                let result = wcontainers_arm64::exact::run(
+                    operation, a as u64, b as u64, c as u64, fpcr, &mut fpsr,
+                );
+                write_shared(&state, BLOCK_AT as usize + fpsr_at, &fpsr.to_le_bytes());
+                let (kind, _) = wcontainers_arm64::exact::Operation::decode(operation);
+                let reason = if kind.fused() && fpcr == 0 && tracking == 0 {
+                    Reason::SoftwareFusedMultiplyAdd
+                } else {
+                    Reason::ExactFloatingPointRequested
+                };
+                // Registers are not saved here, so the detail is the operation, not the address.
+                slow_path(
+                    caller.data_mut(),
+                    reason,
+                    u64::from(operation as u32),
+                    Duration::ZERO,
+                );
+                result as i64
+            },
+        )
+        .unwrap();
+    linker
+        .func_wrap(HOOKS, HOOK_CLOCK, |caller: Caller<'_, Host>| -> i64 {
+            caller.data().started.elapsed().as_nanos() as i64
+        })
+        .unwrap();
+    linker
+        .func_wrap(
+            HOOKS,
+            HOOK_CODE_CHANGED,
+            |mut caller: Caller<'_, Host>, address: i64| {
+                forget_code(&mut caller, address as u64);
+            },
+        )
+        .unwrap();
+    linker
+        .func_wrap(
+            HOOKS,
             HOOK_TRAP,
             |mut caller: Caller<'_, Host>, kind: i32, detail: i64| {
                 let kind = TrapKind::from_i32(kind).expect("known trap");
@@ -601,6 +749,28 @@ fn hooks(linker: &mut Linker<Host>) {
         .unwrap();
 }
 
+/// `ic ivau`: the stand-in forgets the pieces the lookup table holds for the 64 byte line, so the next jump
+/// there translates the code again.
+fn forget_code(caller: &mut Caller<'_, Host>, address: u64) {
+    let line = address & !63;
+    let table_base = caller.data().table_base;
+    let thread = caller.data().thread.unwrap();
+    let Some(Extern::Table(table)) = thread.get_export(&mut *caller, contract::LOOKUP) else {
+        panic!("the thread module exports its lookup table");
+    };
+    for at in (line..line + 64).step_by(4) {
+        let Some(slot) = at.checked_sub(table_base).map(|o| o / 4) else {
+            continue;
+        };
+        if slot < table.size(&*caller) {
+            table
+                .set(&mut *caller, slot, wasmtime::Ref::Func(None))
+                .expect("a slot of the table");
+            caller.data_mut().translated_from.remove(&at);
+        }
+    }
+}
+
 /// Translate blob `index` from `starts` and instantiate it, adding its pieces to the lookup table.
 fn instantiate_code(
     store: &mut impl wasmtime::AsContextMut<Data = Host>,
@@ -612,8 +782,15 @@ fn instantiate_code(
     let mut store = store.as_context_mut();
     let host = store.data();
     let blob = &host.blobs[index];
-    let translation = translate_omitting(&blob.bytes, blob.code.clone(), starts, look_ahead, omit)
-        .expect("translate");
+    let translation = translate_omitting(
+        &blob.bytes,
+        blob.code.clone(),
+        starts,
+        look_ahead,
+        host.facts,
+        omit,
+    )
+    .expect("translate");
     let module = Module::new(&host.engine, &translation.wasm).expect("code module");
     let thread = host.thread.unwrap();
     let memory = host.memory.unwrap();

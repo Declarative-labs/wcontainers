@@ -5,8 +5,9 @@ use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{Library, build, native};
 
-const PROGRAMS: [(&str, Library); 6] = [
+const PROGRAMS: [(&str, Library); 7] = [
     ("hello", Library::C),
+    ("differences", Library::C),
     ("bench", Library::None),
     ("integers", Library::None),
     ("tables", Library::None),
