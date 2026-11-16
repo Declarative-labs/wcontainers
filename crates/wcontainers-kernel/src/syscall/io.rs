@@ -227,9 +227,9 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files and memory files do not take reads or writes that may not wait (`FMODE_NOWAIT`
-    // unset: memory files are not opened by `do_dentry_open`; measured).
-    let waits = {
+    // `/proc`'s files, memory files and terminals do not take reads or writes that may not wait
+    // (`FMODE_NOWAIT` unset: memory files are not opened by `do_dentry_open`; measured).
+    let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_)) || inode.fs.device == kernel.files.memfd_fs.device
@@ -1174,9 +1174,10 @@ fn send(
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe as input cannot seek, and secret memory cannot be read at all, even for nothing
-        // (measured; into a pipe nothing is moved without asking it).
+        // A pipe or a terminal as input cannot seek (`FMODE_LSEEK`), and secret memory cannot be
+        // read at all, even for nothing (measured; into a pipe nothing is moved without asking it).
         if matches!(input_node.borrow().content, Content::Pipe(_))
+            || super::tty::end(&input).is_some()
             || input_node.borrow().is_secret()
         {
             return Err(Errno::EINVAL);

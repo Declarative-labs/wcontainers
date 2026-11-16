@@ -327,14 +327,57 @@ static void remove_tree(int directory_fd, const char *name) {
 // Remakes the devices a sequence can name. The container's first /dev/null stays held from outside
 // the container once removed (measured: its inode is never given back), so it is remade once before
 // the first sequence too, and each sequence starts with one hidden inode in /dev, as ours does.
+// Whether a sequence opens a pseudo-terminal (`opens_terminal` in layer1.rs).
+static int opens_terminal(uint64_t (*sequence)[CALL_WORDS], uint32_t calls) {
+    for (uint32_t index = 0; index < calls; index++) {
+        uint64_t path = sequence[index][2];
+        if ((sequence[index][0] == SYS_openat || sequence[index][0] == SYS_openat2) &&
+            path >= (uint64_t)ARENA && path < (uint64_t)ARENA + ARENA_SIZE - 16) {
+            const char *name = (const char *)path;
+            if (strcmp(name, "/dev/ptmx") == 0 || (strncmp(name, "/dev/pts/", 9) == 0 && name[9])) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// Polls every descriptor, twice: Linux moves what one side of a pseudo-terminal wrote into the other
+// side's line discipline later, from a work queue, and a poll runs that work (`n_tty_poll`); echoes
+// it makes need the second round. Ours moves it at once.
+static void settle_terminals(void) {
+    static struct pollfd fds[64];
+    struct timespec zero = {0, 0};
+    for (int round = 0; round < 2; round++) {
+        for (int start = 3; start < 1024; start += 64) {
+            for (int index = 0; index < 64; index++) {
+                fds[index].fd = start + index;
+                fds[index].events = POLLIN;
+            }
+            if (syscall(SYS_ppoll, fds, 64, &zero, 0, 8) < 0) {
+                // Fewer descriptors allowed than 64: one at a time.
+                for (int index = 0; index < 64; index++) {
+                    syscall(SYS_ppoll, &fds[index], 1, &zero, 0, 8);
+                }
+            }
+        }
+    }
+}
+
 static void remake_devices(void) {
-    static const struct { const char *path; int minor; } devices[] = {
-        {"/dev/null", 3}, {"/dev/zero", 5}, {"/dev/full", 7}, {"/dev/random", 8}, {"/dev/urandom", 9}};
-    for (int index = 0; index < 5; index++) {
+    static const struct { const char *path; int major, minor; } devices[] = {
+        {"/dev/null", 1, 3}, {"/dev/zero", 1, 5}, {"/dev/full", 1, 7}, {"/dev/random", 1, 8},
+        {"/dev/urandom", 1, 9}, {"/dev/tty", 5, 0}};
+    for (int index = 0; index < 6; index++) {
         remove_tree(AT_FDCWD, devices[index].path);
-        mknod(devices[index].path, S_IFCHR | 0666, makedev(1, devices[index].minor));
+        mknod(devices[index].path, S_IFCHR | 0666, makedev(devices[index].major, devices[index].minor));
         chmod(devices[index].path, 0666);
     }
+    // The master's link into devpts, and the node it names.
+    remove_tree(AT_FDCWD, "/dev/ptmx");
+    symlink("pts/ptmx", "/dev/ptmx");
+    chown("/dev/pts/ptmx", 0, 0);
+    chmod("/dev/pts/ptmx", 0666);
 }
 
 int main(void) {
@@ -383,6 +426,7 @@ int main(void) {
             setsid();
             self_pid = getpid();
             uint64_t self = (uint64_t)self_pid;
+            int terminal = opens_terminal(sequence, calls);
             for (uint32_t index = 0; index < calls; index++) {
                 for (int argument = 1; argument < 7; argument++) {
                     if (sequence[index][argument] == SELF) {
@@ -402,6 +446,9 @@ int main(void) {
                 write_all(1, &unshared, 4);
                 report_changes(1);
                 clear_machine(&sequence[index][7], result);
+                if (terminal) {
+                    settle_terminals();
+                }
             }
             static unsigned char page[4096];
             for (int index = 0; index < PLAY_PAGES; index++) {

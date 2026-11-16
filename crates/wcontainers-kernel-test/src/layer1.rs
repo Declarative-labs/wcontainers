@@ -52,6 +52,10 @@ const UNAME: u64 = 0x1800;
 /// Where name_to_handle_at writes the mount number, which differs between the machines; no call reads
 /// it.
 const MOUNT_NUMBER: u64 = 0x1a00;
+/// `termios2` values for the terminal requests, 48 bytes apart: Linux's default for a terminal, raw
+/// input taking a byte at a time, and one made from generated words.
+const TERMIOS: u64 = 0x1b00;
+const TERMIOS_COUNT: u64 = 3;
 /// `struct flock` requests for fcntl's record locks, 32 bytes apart.
 const FLOCKS: u64 = 0x1c00;
 const FLOCK_COUNT: u64 = 8;
@@ -153,7 +157,16 @@ const PATH_POOL: &[&str] = &[
     "/proc/self/limits",
     // devpts's root, which statx and the others answer by its own rules.
     "/dev/pts",
+    // Pseudo-terminals: the master, the first two slaves, and the controlling terminal, which no
+    // sequence has (every open is O_NOCTTY).
+    "/dev/ptmx",
+    "/dev/pts/0",
+    "/dev/pts/1",
+    "/dev/tty",
 ];
+
+/// The paths whose opens make or reach a pseudo-terminal.
+const TERMINAL_PATHS: &[&str] = &["/dev/ptmx", "/dev/pts/0", "/dev/pts/1"];
 
 /// Attribute values, 32 bytes apart from `XATTR_VALUES`.
 const XATTR_VALUE_POOL: &[&[u8]] = &[
@@ -540,6 +553,20 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
             arena[at + offset * 8..at + offset * 8 + 8].copy_from_slice(&word.to_le_bytes());
         }
     }
+    let generated: Vec<u64> = (0..6)
+        .map(|index| values.get(40 + index).copied().unwrap_or(0))
+        .collect();
+    for (index, termios) in [
+        terminal_settings(None),
+        terminal_settings(Some(&[0; 6])),
+        terminal_settings(Some(&generated)),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let at = (TERMIOS + index as u64 * 48) as usize;
+        arena[at..at + termios.len()].copy_from_slice(termios);
+    }
     let mut calls = vec![
         Call {
             number: linux::__NR_mkdirat,
@@ -568,6 +595,35 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
             ],
         });
     }
+    // A quarter start with a pseudo-terminal: the master opened, its slave unlocked and opened, on
+    // the descriptors calls choose most.
+    if (choice >> 3) % 4 == 0 {
+        let flags = u64::from(linux::O_RDWR | linux::O_NOCTTY | linux::O_NONBLOCK);
+        let open = |path: &str| Call {
+            number: linux::__NR_openat,
+            arguments: [
+                linux::AT_FDCWD as u64,
+                ARENA + PATHS + path_offset(path),
+                flags,
+                0,
+                0,
+                0,
+            ],
+        };
+        calls.push(open("/dev/ptmx"));
+        calls.push(Call {
+            number: linux::__NR_ioctl,
+            arguments: [
+                3,
+                u64::from(ioctl::TIOCSPTLCK),
+                ARENA + IOCTL_ARGS + 3 * 64,
+                0,
+                0,
+                0,
+            ],
+        });
+        calls.push(open("/dev/pts/0"));
+    }
     // Half the sequences may install seccomp filters, which needs no_new_privs (Docker's root lacks
     // CAP_SYS_ADMIN).
     if choice % 2 == 1 {
@@ -584,6 +640,10 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         });
     }
     calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
+    let terminal = opens_terminal(&calls);
+    if terminal {
+        keep_terminals_settled(&mut arena, &mut calls);
+    }
     // Each filter first lets through every call the runners make themselves between and after the
     // sequence's calls (to report, to ask what a descriptor is, to zero bytes, to read the play area),
     // whose arguments (process numbers, the runners' own buffers) differ between them, and every call
@@ -599,6 +659,10 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         linux::__NR_process_vm_readv,
         linux::__NR_process_vm_writev,
     ];
+    // With a terminal, the reference's runner also polls every descriptor after each call.
+    if terminal {
+        passed.push(linux::__NR_ppoll);
+    }
     for call in &calls {
         if call.arguments.contains(&SELF) && !passed.contains(&call.number) {
             passed.push(call.number);
@@ -633,6 +697,132 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at..at + 4].copy_from_slice(&action.to_le_bytes());
     }
     Sequence { arena, calls }
+}
+
+/// Whether a call opens a pseudo-terminal's path.
+fn opens_terminal_path(call: &Call) -> bool {
+    matches!(call.number, linux::__NR_openat | linux::__NR_openat2)
+        && TERMINAL_PATHS
+            .iter()
+            .any(|path| call.arguments[1] == ARENA + PATHS + path_offset(path))
+}
+
+/// Whether a sequence opens a pseudo-terminal.
+fn opens_terminal(calls: &[Call]) -> bool {
+    calls.iter().any(opens_terminal_path)
+}
+
+/// How many of a sequence's calls opened a pseudo-terminal in the reference.
+pub fn terminal_opens(sequence: &Sequence, theirs: &SequenceResult) -> u64 {
+    sequence
+        .calls
+        .iter()
+        .zip(&theirs.calls)
+        .filter(|(call, result)| result.value >= 0 && opens_terminal_path(call))
+        .count() as u64
+}
+
+/// Linux moves what one side of a pseudo-terminal writes into the other's line discipline later, in
+/// a work queue, while here it is moved at once. The reference's runner polls every descriptor after
+/// each call, which runs that work (`n_tty_poll`), so both agree between calls; within a call they
+/// agree as long as nothing fills: a sequence with a terminal writes at most 256 bytes a call
+/// (fifteen calls stay below the line discipline's 4095), and every descriptor stays nonblocking,
+/// since a wait for input that never comes would cost the reference's deadline.
+fn keep_terminals_settled(arena: &mut [u8], calls: &mut [Call]) {
+    const MOST: u64 = 256;
+    for index in 0..16u64 {
+        let at = (IOVECS + index * 16 + 8) as usize;
+        let length = u64::from_le_bytes(arena[at..at + 8].try_into().expect("8 bytes"));
+        arena[at..at + 8].copy_from_slice(&length.min(MOST).to_le_bytes());
+    }
+    for index in 0..4u64 {
+        let at = (HOWS + index * 32) as usize;
+        let flags = u64::from_le_bytes(arena[at..at + 8].try_into().expect("8 bytes"));
+        arena[at..at + 8].copy_from_slice(&(flags | u64::from(linux::O_NONBLOCK)).to_le_bytes());
+    }
+    let nonblocking = u64::from(linux::O_NONBLOCK);
+    for call in calls {
+        let arguments = &mut call.arguments;
+        match call.number {
+            linux::__NR_openat => arguments[2] |= nonblocking,
+            linux::__NR_write | linux::__NR_pwrite64 | linux::__NR_sendfile => {
+                let count = if call.number == linux::__NR_sendfile {
+                    3
+                } else {
+                    2
+                };
+                arguments[count] = arguments[count].min(MOST);
+            }
+            linux::__NR_writev | linux::__NR_pwritev | linux::__NR_pwritev2
+                if arguments[2] <= 16 =>
+            {
+                arguments[2] = arguments[2].min(1);
+            }
+            linux::__NR_fcntl if arguments[1] == u64::from(linux::F_SETFL) => {
+                arguments[2] |= nonblocking;
+            }
+            linux::__NR_ioctl if arguments[1] == u64::from(ioctl::FIONBIO) => {
+                arguments[2] = ARENA + IOCTL_ARGS;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A `termios2`: Linux's default for a terminal (`tty_std_termios`) with `None`, raw input taking a
+/// byte at a time with all-zero words, else flags, control characters and speeds from the words,
+/// each flag word kept to the bits Linux defines.
+fn terminal_settings(words: Option<&[u64]>) -> Vec<u8> {
+    const INIT_C_CC: [u8; 19] = [
+        3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0, 0, 0,
+    ];
+    let cflag = linux::B38400 | linux::CS8 | linux::CREAD;
+    let (iflag, oflag, cflag, lflag, cc, speed) = match words {
+        None => (
+            linux::ICRNL | linux::IXON,
+            linux::OPOST | linux::ONLCR,
+            cflag | linux::HUPCL,
+            linux::ISIG
+                | linux::ICANON
+                | linux::ECHO
+                | linux::ECHOE
+                | linux::ECHOK
+                | linux::ECHOCTL
+                | linux::ECHOKE
+                | linux::IEXTEN,
+            INIT_C_CC,
+            38400,
+        ),
+        Some(words) if words.iter().all(|word| *word == 0) => {
+            let mut cc = INIT_C_CC;
+            cc[linux::VMIN as usize] = 1;
+            cc[linux::VTIME as usize] = 0;
+            (0, 0, cflag, 0, cc, 38400)
+        }
+        Some(words) => {
+            let mut cc = [0; 19];
+            for (index, byte) in cc.iter_mut().enumerate() {
+                *byte = (words[3 + index / 8] >> (index % 8 * 8)) as u8;
+            }
+            (
+                words[0] as u32 & 0o37777,
+                (words[0] >> 32) as u32 & 0o377777,
+                words[1] as u32 & 0o10037777777,
+                (words[1] >> 32) as u32 & 0o377777,
+                cc,
+                words[2] as u32 % 5_000_000,
+            )
+        }
+    };
+    let mut bytes = Vec::new();
+    for word in [iflag, oflag, cflag, lflag] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.push(0);
+    bytes.extend_from_slice(&cc);
+    bytes.extend_from_slice(&speed.to_le_bytes());
+    bytes.extend_from_slice(&speed.to_le_bytes());
+    bytes
 }
 
 /// Filter answers: every action, an ERRNO past Linux's largest, data on actions that take none, and
@@ -802,7 +992,9 @@ fn filter_program(words: &[u64], passed: &[u32]) -> Vec<u8> {
     bytes
 }
 
-/// Flags for an open, each bit present one time in eight.
+/// Flags for an open, each bit present one time in eight, and always O_NOCTTY: both callers lead
+/// their sessions, and a controlling terminal would bring job control signals that end the
+/// reference's caller and not ours (the container's first process).
 fn open_flag_bits(word: u64) -> u64 {
     let bits = [
         linux::O_WRONLY,
@@ -821,7 +1013,7 @@ fn open_flag_bits(word: u64) -> u64 {
         linux::O_DIRECT,
         linux::O_NOATIME,
     ];
-    let mut flags = 0;
+    let mut flags = linux::O_NOCTTY;
     for (index, bit) in bits.iter().enumerate() {
         if (word >> (index * 3)) & 7 == 0 {
             flags |= bit;
@@ -1405,6 +1597,23 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 // The range names its source descriptor, which must not be one of 0 to 2: the
                 // reference's runner reports through them.
                 pick(&[ARENA + IOCTL_ARGS + 6 * 64, 0, u64::MAX - 4095], c)
+            } else if request == u64::from(ioctl::TIOCGPTPEER) {
+                // Never without O_NOCTTY (see `open_flag_bits`) and O_NONBLOCK (see `build`).
+                let flags = linux::O_NOCTTY | linux::O_NONBLOCK;
+                u64::from(pick(
+                    &[
+                        flags | linux::O_RDWR,
+                        flags | linux::O_RDONLY | linux::O_CLOEXEC,
+                        flags | linux::O_WRONLY,
+                        flags | linux::O_RDWR | linux::O_PATH,
+                        flags | 0x1000_0000,
+                    ],
+                    c,
+                ))
+            } else if BY_VALUE_REQUESTS.contains(&request) {
+                pick(&[0, 1, 2, 3, 4, 17, 28, 65, u64::MAX], c)
+            } else if SETTINGS_REQUESTS.contains(&request) && c % 4 < 3 {
+                ARENA + TERMIOS + (c >> 2) % TERMIOS_COUNT * 48
             } else {
                 match c % 4 {
                     0 | 1 => ARENA + IOCTL_ARGS + (c >> 2) % IOCTL_ARG_COUNT * 64,
@@ -2941,12 +3150,68 @@ const IOCTL_REQUESTS: &[u64] = &[
     0x4030_5828,
     0x4030_582b,
     0x4030_5839,
-    ioctl::TCGETS as u64,
-    ioctl::TIOCGWINSZ as u64,
     ioctl::RNDGETENTCNT as u64,
     ioctl::RNDZAPENTCNT as u64,
     0x1234,
     0x8008_6680,
+    // Terminal requests (`tty_ioctl`, `tty_mode_ioctl`, `n_tty_ioctl`, `pty_unix98_ioctl`); not
+    // TIOCSCTTY, since no sequence may take a controlling terminal.
+    ioctl::TCGETS as u64,
+    ioctl::TCSETS as u64,
+    ioctl::TCSETSW as u64,
+    ioctl::TCSETSF as u64,
+    ioctl::TCGETS2 as u64,
+    ioctl::TCSETS2 as u64,
+    ioctl::TCGETA as u64,
+    ioctl::TCSETA as u64,
+    ioctl::TIOCGWINSZ as u64,
+    ioctl::TIOCSWINSZ as u64,
+    ioctl::TIOCOUTQ as u64,
+    ioctl::TCFLSH as u64,
+    ioctl::TCXONC as u64,
+    ioctl::TCSBRK as u64,
+    ioctl::TIOCPKT as u64,
+    ioctl::TIOCGPKT as u64,
+    ioctl::TIOCSPTLCK as u64,
+    ioctl::TIOCSPTLCK as u64,
+    ioctl::TIOCGPTLCK as u64,
+    ioctl::TIOCGPTN as u64,
+    ioctl::TIOCGPTPEER as u64,
+    ioctl::TIOCEXCL as u64,
+    ioctl::TIOCNXCL as u64,
+    ioctl::TIOCGEXCL as u64,
+    ioctl::TIOCGPGRP as u64,
+    ioctl::TIOCGSID as u64,
+    ioctl::TIOCNOTTY as u64,
+    ioctl::TIOCGETD as u64,
+    ioctl::TIOCSETD as u64,
+    ioctl::TIOCGDEV as u64,
+    ioctl::TIOCSTI as u64,
+    ioctl::TIOCSIG as u64,
+    ioctl::TIOCGSOFTCAR as u64,
+    ioctl::TIOCSSOFTCAR as u64,
+    ioctl::TIOCVHANGUP as u64,
+];
+
+/// Terminal requests whose argument is a value, not an address.
+const BY_VALUE_REQUESTS: &[u64] = &[
+    ioctl::TCFLSH as u64,
+    ioctl::TCXONC as u64,
+    ioctl::TCSBRK as u64,
+    ioctl::TIOCGPTPEER as u64,
+    ioctl::TIOCSIG as u64,
+];
+
+/// The terminal requests that read or write a `termios`, `termios2` or `termio`.
+const SETTINGS_REQUESTS: &[u64] = &[
+    ioctl::TCGETS as u64,
+    ioctl::TCSETS as u64,
+    ioctl::TCSETSW as u64,
+    ioctl::TCSETSF as u64,
+    ioctl::TCGETS2 as u64,
+    ioctl::TCSETS2 as u64,
+    ioctl::TCGETA as u64,
+    ioctl::TCSETA as u64,
 ];
 
 /// `FS_IOC_GETFSUUID` and `FS_IOC_GETFSSYSFSPATH`, which linux-raw-sys's ioctl list lacks: reads of a

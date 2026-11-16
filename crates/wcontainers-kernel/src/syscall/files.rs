@@ -563,8 +563,12 @@ pub(super) fn open(
             return Err(Errno::ENXIO);
         }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
-        // A named pipe's is refused once it is open (below).
-        if flags & O_DIRECT != 0 && file_type != S_IFIFO && !node.borrow().takes_direct_io() {
+        // A named pipe's and a terminal's are refused once they are open (below).
+        if flags & O_DIRECT != 0
+            && file_type != S_IFIFO
+            && terminal.is_none()
+            && !node.borrow().takes_direct_io()
+        {
             return Err(Errno::EINVAL);
         }
         if flags & O_TRUNC != 0 && file_type == S_IFREG {
@@ -603,6 +607,7 @@ pub(super) fn open(
     file.borrow_mut().created = created;
     if let Some(device) = terminal {
         super::tty::open(kernel, cx, tid, &file, device, flags)?;
+        return named_opened(kernel, cx, tid, file, flags);
     }
     if file_type == S_IFIFO && flags & O_PATH == 0 {
         super::pipe::open_named(kernel, tid, &file)?;
@@ -611,8 +616,8 @@ pub(super) fn open(
     install(kernel, tid, file, flags)
 }
 
-/// A named pipe once open: direct I/O is refused only now (`do_dentry_open` checks it after the
-/// open), closing the end again; otherwise it takes a descriptor.
+/// A named pipe or a terminal once open: direct I/O is refused only now (`do_dentry_open` checks it
+/// after the open), closing the file again; otherwise it takes a descriptor.
 fn named_opened(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
