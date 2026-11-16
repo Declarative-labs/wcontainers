@@ -17,6 +17,7 @@ pub(crate) mod pipe;
 mod process;
 mod rseq;
 mod seccomp;
+pub(crate) mod sem;
 mod signalfd;
 mod signals;
 mod splice;
@@ -319,6 +320,10 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_msgsnd, S(ipc::msgsnd)),
         (__NR_msgrcv, S(ipc::msgrcv)),
         (__NR_msgctl, S(ipc::msgctl)),
+        (__NR_semget, S(sem::semget)),
+        (__NR_semop, S(sem::semop)),
+        (__NR_semtimedop, S(sem::semtimedop)),
+        (__NR_semctl, S(sem::semctl)),
     ];
     let mut index = 0;
     while index < implemented.len() {

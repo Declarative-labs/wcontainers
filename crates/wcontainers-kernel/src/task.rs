@@ -380,6 +380,7 @@ impl Kernel {
     /// Ends one thread of a process that has others.
     pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
         self.unschedule(tid);
+        syscall::sem::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         cx.cpu.thread_drop(thread.cpu);
         self.give_up_opening(thread.opening);
@@ -400,6 +401,7 @@ impl Kernel {
         }
         for tid in self.processes[&pid].threads.clone() {
             self.unschedule(tid);
+            syscall::sem::forget(self, tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);
             let process = self.processes.get_mut(&pid).expect("process exists");
@@ -412,6 +414,7 @@ impl Kernel {
             }
         }
         self.release_vfork(pid);
+        syscall::sem::exit_sem(self, cx, pid);
         let process = self.processes.get_mut(&pid).expect("process exists");
         process.threads.clear();
         process.ended = Some(wait_status);

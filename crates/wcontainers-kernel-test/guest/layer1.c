@@ -52,6 +52,8 @@
 #define NO_SEGMENT 4000
 // Replaced by the last identifier msgget gave (`QUEUE` in layer1.rs).
 #define QUEUE 0x5e1f5e1f00000003ULL
+// Replaced by the last identifier semget gave (`SEMAPHORES` in layer1.rs).
+#define SEMAPHORES 0x5e1f5e1f00000004ULL
 #define PLAY 0x71000000UL
 #define PLAY_PAGES 16
 // The ranges sent with each call (`CLEARS` in layer1.rs).
@@ -460,6 +462,7 @@ int main(void) {
             int terminal = opens_terminal(sequence, calls);
             uint64_t segment = NO_SEGMENT;
             uint64_t queue = NO_SEGMENT;
+            uint64_t semaphores = NO_SEGMENT;
             for (uint32_t index = 0; index < calls; index++) {
                 for (int argument = 1; argument < 7; argument++) {
                     if (sequence[index][argument] == SELF) {
@@ -471,6 +474,9 @@ int main(void) {
                     if (sequence[index][argument] == QUEUE) {
                         sequence[index][argument] = queue;
                     }
+                    if (sequence[index][argument] == SEMAPHORES) {
+                        sequence[index][argument] = semaphores;
+                    }
                 }
                 int64_t out_before = random_output(sequence[index]);
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
@@ -479,6 +485,9 @@ int main(void) {
                 }
                 if (sequence[index][0] == SYS_msgget && result >= 0) {
                     queue = (uint64_t)result;
+                }
+                if (sequence[index][0] == SYS_semget && result >= 0) {
+                    semaphores = (uint64_t)result;
                 }
                 // A child is waited for until it has ended, left to be reaped.
                 if (sequence[index][0] == SYS_clone && result > 0) {
@@ -594,6 +603,20 @@ int main(void) {
                 memcpy(&creator, queue_status + 12, 4);
                 syscall(SYS_setresuid, -1, creator, -1);
                 syscall(SYS_msgctl, id, 0, 0);
+                syscall(SYS_setresuid, -1, 0, -1);
+                prctl(PR_SET_DUMPABLE, 1);
+            }
+        }
+        // And every semaphore set.
+        static unsigned char set_status[88];
+        highest = syscall(SYS_semctl, 0, 0, 3, set_status);
+        for (long slot = 0; slot <= highest; slot++) {
+            long id = syscall(SYS_semctl, slot, 0, 20, set_status);
+            if (id >= 0) {
+                uint32_t creator;
+                memcpy(&creator, set_status + 12, 4);
+                syscall(SYS_setresuid, -1, creator, -1);
+                syscall(SYS_semctl, id, 0, 0, 0);
                 syscall(SYS_setresuid, -1, 0, -1);
                 prctl(PR_SET_DUMPABLE, 1);
             }

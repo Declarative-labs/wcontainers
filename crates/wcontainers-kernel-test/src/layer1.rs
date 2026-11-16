@@ -59,6 +59,11 @@ const TERMIOS_COUNT: u64 = 3;
 /// `struct flock` requests for fcntl's record locks, 32 bytes apart.
 const FLOCKS: u64 = 0x1c00;
 const FLOCK_COUNT: u64 = 8;
+/// `struct sembuf` operations for semop, 6 bytes apart: the first `SEMBUFS_NOWAIT` never wait
+/// (IPC_NOWAIT), the rest may (only semtimedop with a timeout reaches them). No call writes here.
+const SEMBUFS: u64 = 0x1d00;
+const SEMBUF_COUNT: u64 = 16;
+const SEMBUFS_NOWAIT: u64 = 12;
 /// `sched_attr` structures for sched_setattr, 128 bytes apart.
 const SCHED_ATTRS: u64 = 0x2000;
 /// `file_handle` headers for name_to_handle_at, 128 bytes apart: room for 128 bytes, the 12 tmpfs
@@ -112,6 +117,8 @@ pub const SEGMENT: u64 = 0x5e1f_5e1f_0000_0002;
 pub const NO_SEGMENT: u64 = 4000;
 /// As `SEGMENT`, for the last identifier msgget gave (`NO_SEGMENT` before one).
 pub const QUEUE: u64 = 0x5e1f_5e1f_0000_0003;
+/// As `SEGMENT`, for the last identifier semget gave (`NO_SEGMENT` before one).
+pub const SEMAPHORES: u64 = 0x5e1f_5e1f_0000_0004;
 const OUTPUT: u64 = 0x4000;
 
 /// The sequence's work directory, made and entered by its first two calls and removed afterwards.
@@ -407,6 +414,23 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at..at + 4].copy_from_slice(&fd.to_le_bytes());
         arena[at + 4..at + 6].copy_from_slice(&events.to_le_bytes());
     }
+    // Semaphore operations: numbers in and past small sets, changes up to the limits, undo often.
+    for index in 0..SEMBUF_COUNT {
+        let word = values
+            .get(index as usize)
+            .copied()
+            .unwrap_or(0)
+            .rotate_left(37);
+        let num: u16 = [0, 0, 1, 2, 3, 7, 65535, 1][(word % 8) as usize];
+        let op: i16 =
+            [0, 0, 1, -1, 2, -2, 5, -5, 32767, -32768, 1, -1][((word >> 4) % 12) as usize];
+        let undo: i16 = [0, 0, 0x1000, 0x1000, 0x2000, -0x8000][((word >> 8) % 6) as usize];
+        let nowait = if index < SEMBUFS_NOWAIT { 0o4000 } else { 0 };
+        let at = (SEMBUFS + index * 6) as usize;
+        arena[at..at + 2].copy_from_slice(&num.to_le_bytes());
+        arena[at + 2..at + 4].copy_from_slice(&op.to_le_bytes());
+        arena[at + 4..at + 6].copy_from_slice(&(undo | nowait).to_le_bytes());
+    }
     // Record lock requests: each kind, origin, start and length, and sometimes a process number
     // (which open file locks refuse).
     for index in 0..FLOCK_COUNT {
@@ -697,7 +721,8 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
     for call in &calls {
         if (call.arguments.contains(&SELF)
             || call.arguments.contains(&SEGMENT)
-            || call.arguments.contains(&QUEUE))
+            || call.arguments.contains(&QUEUE)
+            || call.arguments.contains(&SEMAPHORES))
             && !passed.contains(&call.number)
         {
             passed.push(call.number);
@@ -1358,6 +1383,13 @@ pub const CALLS: &[u32] = &[
     linux::__NR_msgrcv,
     linux::__NR_msgrcv,
     linux::__NR_msgctl,
+    linux::__NR_semget,
+    linux::__NR_semget,
+    linux::__NR_semop,
+    linux::__NR_semop,
+    linux::__NR_semtimedop,
+    linux::__NR_semctl,
+    linux::__NR_semctl,
 ];
 
 /// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
@@ -1501,6 +1533,36 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         )
     };
     let queue = |word: u64| pick(&[QUEUE, QUEUE, QUEUE, QUEUE, u64::MAX, NO_SEGMENT], word);
+    let semaphores = |word: u64| {
+        pick(
+            &[
+                SEMAPHORES,
+                SEMAPHORES,
+                SEMAPHORES,
+                SEMAPHORES,
+                u64::MAX,
+                NO_SEGMENT,
+            ],
+            word,
+        )
+    };
+    // A run of semop operations within the first `limit` entries, or none or too many, or a bad
+    // address.
+    let sembufs = |word: u64, limit: u64| {
+        let start = (word >> 8) % limit;
+        let count = match word % 8 {
+            0 => 0,
+            1 => 501,
+            2 => (1 << 32) | 1,
+            _ => 1 + (word >> 16) % (limit - start),
+        };
+        let address = match (word >> 4) % 16 {
+            0 => 0,
+            1 => u64::MAX - 4095,
+            _ => ARENA + SEMBUFS + start * 6,
+        };
+        (address, count)
+    };
     let arguments = match number {
         // One open in eight names a random device, so that later reads reach their bytes.
         linux::__NR_openat if b % 8 == 0 => {
@@ -2011,6 +2073,69 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
+        // Semaphores: keys and modes as shmget's, sets of a few semaphores, operations that never
+        // wait unless a timeout ends them, and every semctl command.
+        linux::__NR_semget => [
+            pick(&[0u64, 0x1234, 0x1234, 0x5678, 0xffff_ffff], a),
+            pick(&[0u64, 1, 2, 3, 3, 8, 32000, 32001, u64::MAX], b),
+            pick(&[0u64, 0o1000, 0o1000, 0o3000, 0o4000], c >> 9) | (c % 0o1000),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_semop => {
+            let (address, count) = sembufs(b, SEMBUFS_NOWAIT);
+            [semaphores(a), address, count, 0, 0, 0]
+        }
+        linux::__NR_semtimedop => {
+            let timed = d % 4 != 0;
+            let (address, count) = sembufs(b, if timed { SEMBUF_COUNT } else { SEMBUFS_NOWAIT });
+            let timeout = if timed {
+                ARENA + VALUES + 56 * 8 + (d >> 2) % 4 * 16
+            } else {
+                0
+            };
+            [semaphores(a), address, count, timeout, 0, 0]
+        }
+        linux::__NR_semctl => {
+            let command = pick(
+                &[
+                    0u64,
+                    1,
+                    2,
+                    3,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    16,
+                    17,
+                    18,
+                    19,
+                    20,
+                    12,
+                    99,
+                    u64::MAX,
+                    0x102,
+                ],
+                c,
+            );
+            let argument = if command == 16 {
+                pick(&[0u64, 1, 2, 5, 32767, 32768, u64::MAX, (7 << 32) | 3], d)
+            } else {
+                buffer(d)
+            };
+            [
+                semaphores(a),
+                pick(&[0u64, 0, 1, 2, 7, u64::MAX], b),
+                command,
+                argument,
+                0,
+                0,
+            ]
+        }
         linux::__NR_mprotect => [play(a), play_length(b), prot(c), 0, 0, 0],
         linux::__NR_pkey_mprotect => [
             play(a),
@@ -3244,6 +3369,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
     let mut results = Vec::new();
     let mut segment = NO_SEGMENT;
     let mut queue = NO_SEGMENT;
+    let mut semaphores = NO_SEGMENT;
     for (index, each) in sequence.calls.iter().enumerate() {
         let mut each = *each;
         for argument in &mut each.arguments {
@@ -3255,6 +3381,9 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
             }
             if *argument == QUEUE {
                 *argument = queue;
+            }
+            if *argument == SEMAPHORES {
+                *argument = semaphores;
             }
         }
         let random = theirs.calls.get(index).is_some_and(|call| call.random);
@@ -3280,6 +3409,12 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
             && id >= 0
         {
             queue = id as u64;
+        }
+        if let Ok(id) = outcome
+            && each.number == linux::__NR_semget
+            && id >= 0
+        {
+            semaphores = id as u64;
         }
         // The runner's wait for a child to end, left to be reaped.
         if let Ok(child) = outcome
@@ -3653,6 +3788,10 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
     if call.number == linux::__NR_msgctl && value >= 0 && matches!(b, 2 | 11 | 13) {
         out.extend([(c + 24, 2), (c + 48, 24), (c + 96, 8)]);
     }
+    // A semaphore set's sequence number and times.
+    if call.number == linux::__NR_semctl && value >= 0 && matches!(c, 2 | 18 | 20) {
+        out.extend([(d + 24, 2), (d + 48, 16)]);
+    }
     // The CPU number, written before a fault on the node number.
     if call.number == linux::__NR_getcpu {
         out.push((a, 4));
@@ -3805,6 +3944,9 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         linux::__NR_shmat => call.arguments[1] < 4096,
         linux::__NR_msgget => true,
         linux::__NR_msgctl => matches!(call.arguments[1], 3 | 11 | 12 | 13),
+        // Identifiers, slots, and the process that last changed a semaphore.
+        linux::__NR_semget => true,
+        linux::__NR_semctl => matches!(call.arguments[2], 3 | 11 | 18 | 19 | 20),
         _ => false,
     }
 }

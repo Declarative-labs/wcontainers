@@ -1,6 +1,7 @@
 //! System V IPC as Linux's `ipc/` builds it for a container's own IPC namespace: identifiers,
 //! keys and permissions shared by every kind of object, shared memory segments, which are files on
-//! the internal tmpfs mapped shared (`ipc/shm.c`), and message queues (`ipc/msg.c`).
+//! the internal tmpfs mapped shared (`ipc/shm.c`), and message queues (`ipc/msg.c`). Semaphores
+//! are in sem.rs.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -20,7 +21,7 @@ use crate::{Context, Errno, Kernel};
 
 /// An object's key, owners, mode and identifier (Linux's `kern_ipc_perm`).
 #[derive(Clone)]
-struct Perm {
+pub(super) struct Perm {
     pub key: i32,
     pub uid: u32,
     pub gid: u32,
@@ -32,7 +33,7 @@ struct Perm {
 }
 
 impl Perm {
-    fn shown(&self) -> ipc64_perm {
+    pub(super) fn shown(&self) -> ipc64_perm {
         ipc64_perm {
             key: self.key,
             uid: self.uid,
@@ -46,7 +47,7 @@ impl Perm {
     }
 
     /// Linux's `ipcperms`: whether the caller is granted every access `flag`'s permission bits ask.
-    fn permits(&self, credentials: &Credentials, flag: u32) -> bool {
+    pub(super) fn permits(&self, credentials: &Credentials, flag: u32) -> bool {
         let requested = (flag >> 6) | (flag >> 3) | flag;
         let mut granted = self.mode;
         if credentials.euid == self.cuid || credentials.euid == self.uid {
@@ -58,7 +59,7 @@ impl Perm {
     }
 
     /// Whether the caller may change or remove the object (`ipcctl_obtain_check`).
-    fn may_control(&self, credentials: &Credentials) -> bool {
+    pub(super) fn may_control(&self, credentials: &Credentials) -> bool {
         credentials.euid == self.cuid
             || credentials.euid == self.uid
             || credentials.has(CAP_SYS_ADMIN)
@@ -68,8 +69,8 @@ impl Perm {
 /// One kind of object's identifiers (Linux's `ipc_ids`): slots handed out in a cycle, with a sequence
 /// number that grows each time a slot at or below the last one is handed out.
 #[derive(Clone)]
-struct Ids<T> {
-    slots: BTreeMap<u32, T>,
+pub(super) struct Ids<T> {
+    pub(super) slots: BTreeMap<u32, T>,
     seq: u32,
     last_index: Option<u32>,
     next: u32,
@@ -89,7 +90,7 @@ impl<T> Default for Ids<T> {
 impl<T> Ids<T> {
     /// The slot a new object gets and its sequence number (`ipc_idr_alloc`'s cyclic allocation),
     /// within `limit` objects; ENOSPC when full.
-    fn allocate(&mut self, limit: u64) -> Result<(u32, u32), Errno> {
+    pub(super) fn allocate(&mut self, limit: u64) -> Result<(u32, u32), Errno> {
         let in_use = self.slots.len() as u32;
         if u64::from(in_use) >= limit {
             return Err(Errno::ENOSPC);
@@ -109,7 +110,7 @@ impl<T> Ids<T> {
     }
 
     /// `ipc_get_maxidx`: the highest slot in use, or 0 when none is.
-    fn max_index(&self) -> u64 {
+    pub(super) fn max_index(&self) -> u64 {
         self.slots
             .keys()
             .next_back()
@@ -117,13 +118,13 @@ impl<T> Ids<T> {
     }
 }
 
-trait Object {
+pub(super) trait Object {
     fn perm(&self) -> &Perm;
 }
 
 impl<T: Object> Ids<T> {
     /// The object with identifier `id`, its sequence number checked (`ipc_obtain_object_check`).
-    fn checked(&self, id: i32) -> Result<u32, Errno> {
+    pub(super) fn checked(&self, id: i32) -> Result<u32, Errno> {
         let index = id as u32 & (IPCMNI - 1);
         match self.slots.get(&index) {
             Some(object) if object.perm().seq == id as u32 >> IPCMNI_SHIFT => Ok(index),
@@ -132,7 +133,7 @@ impl<T: Object> Ids<T> {
     }
 
     /// The object in slot `id`'s slot, whatever its sequence (`ipc_obtain_object_idr`).
-    fn by_index(&self, id: i32) -> Result<u32, Errno> {
+    pub(super) fn by_index(&self, id: i32) -> Result<u32, Errno> {
         let index = id as u32 & (IPCMNI - 1);
         if self.slots.contains_key(&index) {
             Ok(index)
@@ -186,6 +187,7 @@ impl Segment {
 pub(crate) struct Ipc {
     shm: Ids<Segment>,
     msg: Ids<Queue>,
+    pub(super) sem: super::sem::Semaphores,
     /// What a receiver waiting in `msgrcv` was handed while parked: a message, or why its wait ended
     /// (Linux's `r_msg`), taken when its call runs again.
     handed: BTreeMap<Tid, Result<Message, Errno>>,
@@ -198,7 +200,7 @@ pub(crate) struct Ipc {
 
 /// Linux's `ipcget`: a new object for `IPC_PRIVATE` or a key with none and `IPC_CREAT`, else the key's
 /// object after `associate`'s checks and the permissions.
-fn get<T: Object>(
+pub(super) fn get<T: Object>(
     ids: &Ids<T>,
     credentials: &Credentials,
     key: i32,
@@ -224,7 +226,12 @@ fn get<T: Object>(
 }
 
 /// A new object's `Perm` in slot `index` with sequence `seq` (`ipc_addid`).
-fn new_perm(credentials: &Credentials, key: i32, flags: u32, (index, seq): (u32, u32)) -> Perm {
+pub(super) fn new_perm(
+    credentials: &Credentials,
+    key: i32,
+    flags: u32,
+    (index, seq): (u32, u32),
+) -> Perm {
     Perm {
         key,
         uid: credentials.euid,

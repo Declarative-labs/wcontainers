@@ -225,6 +225,7 @@ fn make_child(
     }
     kernel.processes.insert(child, process);
     kernel.threads.insert(child, thread);
+    super::sem::copy_undo(kernel, pid, child, flags & CLONE_SYSVSEM != 0);
     if flags & CLONE_PIDFD != 0 {
         super::pidfd::give_child_descriptor(kernel, cx, tid, child)?;
     }
