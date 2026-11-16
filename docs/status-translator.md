@@ -86,6 +86,30 @@ What M4 built:
   (`tests/browser.rs` now runs every program at bounded from its first instruction, every other piece added
   while it runs, and checks some were).
 
+The changes test after a handled fault (the check's hand-over): before M4 the run carried on at none from the
+faulting instruction and that code took over the table entries of every function it reached. Now it carries
+on in pieces of bounded look-ahead put only at their own addresses (asserted on every load), so calls through
+the table, and every direct call between full pieces, still reach full pieces; what runs at bounded is the
+rest of each function that was in progress at the fault, and what was in progress at a lost stack. What
+share of the run's instructions ran at full was not measured (nothing counts instructions by piece). Tally at
+full (debug, load 50 to 90): 64 random programs seed 1, 181 faults handled, 133 pieces made at run time and 39
+instructions run alone after a check failed; the C programs, 1483 faults handled, 434 pieces made at run time,
+31 run alone; 1000 random programs seed 21 (release), 3294 faults handled, 2057 pieces made at run time, 933
+run alone. The same 1000 programs made 18,470 changes against 45,316 in the fifth run: changes are made at
+the full run's stops, and after a fault it no longer stops at every instruction as none did.
+
+Deliberate break: a return to the bottom loop that returns before setting pc, at full: layer 2's mixed runs
+fail on seed 1 within 64 cases (a stack lost at a stop).
+
+Cases run on the final code (release unless said; all 0 mismatches): layer 2, 2000 cases seed 2, 20 on the
+CPU, each case also at bounded of a random N and mixed (641 faulted, 133 left to an address at full, 1815
+stacks lost in mixed runs; 128 s, load 87 to 46); the changes test, 1000 random programs seed 21 and the C
+programs (3 seeds) (39 s, load 113); layer 3, 200 Csmith programs seed 14, 3 at once, 2 also in Chrome,
+each also at a bounded N and mixed: 173 compared, 27 did not end on Linux in time (336 s, load 87 to 30);
+`tests/lookaheads.rs`, 40 random N for each of five C programs, seed 2 (35 s, load 35 to 31). Debug, on the
+code before the stack check moved into the stop check's branch: every test of the three crates (7 minutes,
+load 91 to 36). The unwinding and deep recursion tests: as above.
+
 Measured (release, best of 5 unless said; load in brackets):
 - The stack budget check, on the call benchmarks (fib, sort), every check against the same without it.
   As its own branch at the entry (best of 3, load 47 to 82): fib wasmtime 2.268 s against 2.151 (5% slower),
