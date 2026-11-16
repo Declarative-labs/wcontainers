@@ -669,6 +669,9 @@ fn vectored(
             allowed -= *length;
         }
     }
+    if writing.is_none() && is_sysctl(file) {
+        return read_sysctl(kernel, cx, tid, file, &parts, offset);
+    }
     let mut done = 0;
     for &(base, length) in &parts {
         if length == 0 {
@@ -725,6 +728,49 @@ fn file_bytes(
         },
         Content::HostStream(_) | Content::Symlink(_) => return Err(Errno::EINVAL),
     })
+}
+
+fn is_sysctl(file: &FileRef) -> bool {
+    matches!(file.borrow().node.borrow().content, Content::Proc(entry)
+        if entry.style() == Style::Sysctl)
+}
+
+/// A sysctl's read (`proc_sys_call_handler`): made into a kernel buffer the size of the whole request,
+/// then copied out whole across the segments, or EFAULT with the position left where it was.
+fn read_sysctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let total: u64 = parts.iter().map(|(_, length)| length).sum();
+    if total >= crate::linux_extra::KMALLOC_MAX_SIZE {
+        return Err(Errno::ENOMEM);
+    }
+    let offset = at.unwrap_or(file.borrow().offset);
+    refresh_proc(kernel, cx, tid, file, offset)?;
+    let bytes = file_bytes(cx, file, total, offset)?;
+    let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
+    accessed(kernel, cx, &node, flags);
+    let mut done = 0;
+    for &(base, length) in parts {
+        let piece = &bytes[done..(done + length as usize).min(bytes.len())];
+        if piece.is_empty() {
+            break;
+        }
+        if guest(kernel, cx, tid).write_partial(base, piece) < piece.len() {
+            return Err(Errno::EFAULT);
+        }
+        done += piece.len();
+    }
+    let done = done as u64;
+    file.borrow_mut().read_position = offset + done;
+    if at.is_none() {
+        file.borrow_mut().offset = offset + done;
+    }
+    Ok(done)
 }
 
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
@@ -784,13 +830,10 @@ pub(super) fn read_at(
         return Ok(cleared);
     }
     moves_bytes(file, false)?;
-    let offset = at.unwrap_or(file.borrow().offset);
-    // A sysctl reads into a kernel buffer of the size asked for (`proc_sys_call_handler`).
-    let sysctl = matches!(file.borrow().node.borrow().content, Content::Proc(entry)
-        if entry.style() == Style::Sysctl);
-    if sysctl && count >= crate::linux_extra::KMALLOC_MAX_SIZE {
-        return Err(Errno::ENOMEM);
+    if is_sysctl(file) {
+        return read_sysctl(kernel, cx, tid, file, &[(buffer, count)], at);
     }
+    let offset = at.unwrap_or(file.borrow().offset);
     refresh_proc(kernel, cx, tid, file, offset)?;
     let bytes = file_bytes(cx, file, count, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);

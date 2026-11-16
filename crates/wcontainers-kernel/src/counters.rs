@@ -35,6 +35,9 @@ pub mod reason {
     pub const PRCTL_NOT_BUILT: &str = "prctl option not built";
     /// A flag of a memory call the kernel does not implement. Detail: the flag bits.
     pub const MEMORY_FLAG_NOT_IMPLEMENTED: &str = "memory call flag not implemented";
+    /// `madvise` advice Linux has that the kernel does not build; it answers EINVAL, as a Linux
+    /// without that advice does. Detail: the advice.
+    pub const ADVICE_NOT_BUILT: &str = "madvise advice not built";
     /// `mincore`, `getrusage`, `sysinfo` or `/proc/meminfo` reported every mapped page as in
     /// memory, or `cachestat` or `statfs` counted a mapped file's pages without those its faults
     /// brought in: which pages a program has touched is not known here. Detail: none.

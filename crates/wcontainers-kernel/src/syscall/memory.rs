@@ -11,16 +11,16 @@ use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::linux::general::*;
 use crate::linux_extra::LEGACY_MAP_MASK;
-use crate::memory::{Backing, Lock, Mapping, STACK_GUARD_GAP, page_align, page_down, page_up};
+use crate::memory::{Backing, Lock, Mapping, page_align, page_down, page_up};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel, errno};
 
 /// What a protection argument allows. `mprotect` refuses bits ARM64 does not have; `mmap` ignores them.
 fn permissions(prot: u64, strict: bool) -> Result<Permissions, Errno> {
-    let prot = prot as u32;
-    if strict && prot & !(PROT_READ | PROT_WRITE | PROT_EXEC | PROT_SEM) != 0 {
+    if strict && prot & !u64::from(PROT_READ | PROT_WRITE | PROT_EXEC | PROT_SEM) != 0 {
         return Err(Errno::EINVAL);
     }
+    let prot = prot as u32;
     let mut permissions = Permissions::empty();
     if prot & PROT_READ != 0 {
         permissions |= Permissions::READ;
@@ -58,15 +58,10 @@ pub(super) fn brk(
         return Ok(address);
     }
     // Growing: the new part must not touch the next mapping, nor a stack's guard gap.
-    if let Some(next) = map.next_after(old_end) {
-        let gap = if matches!(next.backing, Backing::Stack) {
-            STACK_GUARD_GAP
-        } else {
-            0
-        };
-        if next.start < new_end.saturating_add(gap) {
-            return Ok(old);
-        }
+    if let Some(next) = map.next_after(old_end)
+        && next.start_gap() < new_end
+    {
+        return Ok(old);
     }
     if new_end > map.end {
         return Ok(old);
@@ -99,6 +94,7 @@ pub(super) fn brk(
         allowed: Permissions::all(),
         shared: false,
         locked: map.future_lock,
+        grows_down: false,
         backing: Backing::Heap,
     };
     if map.insert(cx.cpu, process.memory, heap).is_err() {
@@ -129,6 +125,10 @@ pub(super) fn mmap(
         }
         Some(file)
     };
+    // `ksys_mmap_pgoff`: only a hugetlbfs file takes huge pages, and none can be made here.
+    if flags & MAP_HUGETLB != 0 && file.is_some() {
+        return Err(Errno::EINVAL);
+    }
     if flags & MAP_HUGETLB != 0 {
         kernel.counters.count(
             cx.host,
@@ -169,7 +169,7 @@ pub(super) fn mmap(
         let hint_fits = hint >= LOWEST_ADDRESS
             && hint
                 .checked_add(length)
-                .is_some_and(|end| end <= map.end && !map.any_mapped(hint, end));
+                .is_some_and(|end| end <= map.end && map.free_for_placement(hint, end));
         if hint != 0 && hint_fits {
             hint
         } else {
@@ -200,10 +200,17 @@ pub(super) fn mmap(
     ) {
         return Err(Errno::EAGAIN);
     }
-    // Validated sharing exists only for files.
+    // Validated sharing exists only for files, droppable memory only without one (`do_mmap`).
+    let grows_down = flags & MAP_GROWSDOWN != 0;
+    let droppable = flags & MAP_TYPE == MAP_DROPPABLE && file.is_none();
     let shared = match (flags & MAP_TYPE, file.is_some()) {
         (MAP_PRIVATE, _) => false,
+        (MAP_SHARED, false) if grows_down => return Err(Errno::EINVAL),
         (MAP_SHARED, _) | (MAP_SHARED_VALIDATE, true) => true,
+        (MAP_DROPPABLE, false) if flags & MAP_LOCKED != 0 || grows_down => {
+            return Err(Errno::EINVAL);
+        }
+        (MAP_DROPPABLE, false) => false,
         _ => return Err(Errno::EINVAL),
     };
     let mut allowed = Permissions::all();
@@ -240,6 +247,9 @@ pub(super) fn mmap(
                 && Device::from_number(inode.rdev) == Some(Device::Zero);
             if !zero && !matches!(inode.content, Content::Regular(_)) {
                 return Err(Errno::ENODEV);
+            }
+            if grows_down {
+                return Err(Errno::EINVAL);
             }
             // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
             if let Content::Regular(regular) = &inode.content
@@ -279,6 +289,7 @@ pub(super) fn mmap(
             offset,
             name: path,
         },
+        (None, None) if droppable => Backing::Droppable,
         (None, None) => Backing::Anonymous,
         (Some((node, path)), _) => {
             let size = match &mut node.borrow_mut().content {
@@ -306,6 +317,7 @@ pub(super) fn mmap(
         allowed,
         shared,
         locked,
+        grows_down,
         backing,
     };
     // Within the limits, counting what a fixed mapping replaces.
@@ -448,6 +460,13 @@ fn protect(
     key: i32,
 ) -> Result<u64, Errno> {
     let address = crate::user::untagged(address);
+    // A change may reach down to the start of a mapping that grows down (or up, which ARM64 has none
+    // of), taken off the protection first.
+    let grows = prot & u64::from(PROT_GROWSDOWN | PROT_GROWSUP);
+    let prot = prot & !grows;
+    if grows == u64::from(PROT_GROWSDOWN | PROT_GROWSUP) {
+        return Err(Errno::EINVAL);
+    }
     if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
     }
@@ -464,6 +483,23 @@ fn protect(
     if key != -1 && !key_allocated(&process.map, key) {
         return Err(Errno::EINVAL);
     }
+    let first = process
+        .map
+        .next_after(address)
+        .filter(|mapping| mapping.start < end)
+        .ok_or(Errno::ENOMEM)?;
+    let address = if grows == u64::from(PROT_GROWSDOWN) {
+        if !first.grows_down {
+            return Err(Errno::EINVAL);
+        }
+        first.start
+    } else if first.start > address {
+        return Err(Errno::ENOMEM);
+    } else if grows != 0 {
+        return Err(Errno::EINVAL);
+    } else {
+        address
+    };
     // `do_mprotect_pkey`: the start must be mapped; then mapping by mapping, keeping what it changed
     // before, the change stops at a hole (ENOMEM), at a mapping that may not have it (EACCES), or at
     // private pages that turning writable would take past the data limit (ENOMEM).
@@ -479,7 +515,7 @@ fn protect(
                     mapping.allowed,
                     permissions.contains(Permissions::WRITE)
                         && !mapping.is_data()
-                        && crate::memory::is_data(permissions, mapping.shared, &mapping.backing),
+                        && crate::memory::is_data(permissions, mapping.shared, mapping.grows_down),
                 )
             })
         else {
@@ -534,9 +570,20 @@ pub(super) fn madvise(
             | MADV_UNMERGEABLE
             | MADV_POPULATE_READ
             | MADV_POPULATE_WRITE
-            | MADV_COLLAPSE
+            | MADV_DONTNEED_LOCKED
     );
-    // Poisoning pages (MADV_HWPOISON, MADV_SOFT_OFFLINE) is not in the reference's kernel either.
+    // Making huge pages now (MADV_COLLAPSE) and guard markers that make pages fault (MADV_GUARD_*)
+    // are not built: refused as by a Linux without them. Poisoning pages (MADV_HWPOISON,
+    // MADV_SOFT_OFFLINE) is not in the reference's kernel either.
+    if matches!(
+        advice,
+        MADV_COLLAPSE | MADV_GUARD_INSTALL | MADV_GUARD_REMOVE
+    ) {
+        kernel
+            .counters
+            .count(cx.host, reason::ADVICE_NOT_BUILT, advice.into());
+        return Err(Errno::EINVAL);
+    }
     if !known {
         return Err(Errno::EINVAL);
     }
@@ -625,7 +672,7 @@ pub(super) fn madvise(
     {
         return Err(Errno::EINVAL);
     }
-    if advice == MADV_DONTNEED {
+    if matches!(advice, MADV_DONTNEED | MADV_DONTNEED_LOCKED) {
         // Private pages go back to what they were: zero, or the file's bytes. Shared pages keep their
         // bytes in what they share.
         let mut at = address;

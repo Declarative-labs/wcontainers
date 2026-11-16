@@ -434,7 +434,13 @@ impl Kernel {
             None => {
                 if process
                     .map
-                    .grow_stack(cx.cpu, process.memory, address, &process.limits)
+                    .grow_stack(
+                        cx.cpu,
+                        process.memory,
+                        address,
+                        &process.limits,
+                        process.credentials.has(linux::general::CAP_IPC_LOCK),
+                    )
                     .unwrap_or(false)
                 {
                     self.resume(tid, Resume::FromRegisters);

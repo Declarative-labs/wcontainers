@@ -683,7 +683,7 @@ impl Kernel {
             ST_NOSUID | ST_NOEXEC | ST_RELATIME,
             None,
         );
-        make(
+        let ptmx = make(
             &mut self.files.numbers,
             &pts,
             b"ptmx",
@@ -695,6 +695,9 @@ impl Kernel {
             Content::Special,
         )
         .expect("a new container's file systems have room");
+        // devpts numbers its root 1 and `ptmx` 2 (`devpts_fill_super`), each on its own device.
+        pts.borrow_mut().ino = 1;
+        ptmx.borrow_mut().ino = 2;
 
         let proc_point = directory_at(self, b"/proc", now);
         let view = fs::proc::View {

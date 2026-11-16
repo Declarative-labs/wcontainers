@@ -108,7 +108,13 @@ pub(crate) const LEGACY_MAP_MASK: u32 = {
         | MAP_NONBLOCK
         | MAP_STACK
         | MAP_HUGETLB
+        | MAP_HUGE_2MB
+        | MAP_HUGE_1GB
 };
+
+/// Where Linux's never reused mount numbers start (`MNT_UNIQUE_ID_OFFSET` in `fs/namespace.c`), above
+/// every plain mount number.
+pub(crate) const MNT_UNIQUE_ID_OFFSET: u64 = 1 << 31;
 
 /// File handles (Linux's internal `linux/exportfs.h`): the largest handle, and the types tmpfs and the
 /// generic inode encoding give, and the one for a handle that did not fit.

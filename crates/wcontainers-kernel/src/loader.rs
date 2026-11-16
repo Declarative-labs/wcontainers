@@ -602,6 +602,7 @@ fn place(
             allowed: Permissions::all(),
             shared: false,
             locked: crate::memory::Lock::None,
+            grows_down: true,
             backing: Backing::Stack,
         },
     )
@@ -712,6 +713,7 @@ fn place_elf(
                     allowed: Permissions::all(),
                     shared: false,
                     locked: crate::memory::Lock::None,
+                    grows_down: false,
                     backing: Backing::File {
                         node: program.node.clone(),
                         path: path.to_vec(),
@@ -746,6 +748,7 @@ fn place_elf(
                     allowed: Permissions::all(),
                     shared: false,
                     locked: crate::memory::Lock::None,
+                    grows_down: false,
                     backing: Backing::Anonymous,
                 },
             )?;

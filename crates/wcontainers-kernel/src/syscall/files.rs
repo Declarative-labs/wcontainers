@@ -1312,6 +1312,31 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     }
 }
 
+/// `getname_maybe_null`: with AT_EMPTY_PATH a null or empty path names the descriptor (or the working
+/// directory). A path whose first byte cannot be read is not empty, and fails at its lookup.
+fn names_descriptor(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    flags: u32,
+) -> bool {
+    flags & AT_EMPTY_PATH != 0
+        && (address == 0
+            || guest(kernel, cx, tid)
+                .read(address, 1)
+                .is_ok_and(|byte| byte == [0]))
+}
+
+/// The file an empty path names: the descriptor's (an `O_PATH` one too), or the working directory.
+fn empty_path_node(kernel: &Kernel, tid: Tid, dirfd: u64) -> Result<Node, Errno> {
+    let process = kernel.process_of(tid);
+    if dirfd as i32 == AT_FDCWD {
+        return Ok(process.cwd.clone());
+    }
+    Ok(process.files.file(dirfd as i32)?.borrow().node.clone())
+}
+
 pub(super) fn newfstatat(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -1319,18 +1344,28 @@ pub(super) fn newfstatat(
     [dirfd, path, buffer, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     let flags = flags as u32;
-    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT) != 0 {
-        return Err(Errno::EINVAL);
-    }
-    let node = lookup(
-        kernel,
-        cx,
-        tid,
-        dirfd,
-        path,
-        flags,
-        flags & AT_SYMLINK_NOFOLLOW == 0,
-    )?;
+    let empty = names_descriptor(kernel, cx, tid, path, flags);
+    // `vfs_fstatat`: a descriptor named so is a plain `fstat`, whatever the other flags are.
+    let node = if empty && dirfd as i32 >= 0 {
+        empty_path_node(kernel, tid, dirfd)?
+    } else {
+        if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT) != 0 {
+            return Err(Errno::EINVAL);
+        }
+        if empty {
+            empty_path_node(kernel, tid, dirfd)?
+        } else {
+            lookup(
+                kernel,
+                cx,
+                tid,
+                dirfd,
+                path,
+                flags,
+                flags & AT_SYMLINK_NOFOLLOW == 0,
+            )?
+        }
+    };
     count_unknown_blocks(kernel, cx, &node);
     let value = stat_of(kernel, &node);
     guest(kernel, cx, tid).write_value(buffer, &value)?;
@@ -1363,23 +1398,31 @@ pub(super) fn statx(
     [dirfd, path, flags, mask, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
     let flags = flags as u32;
-    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE) != 0
+    let empty = names_descriptor(kernel, cx, tid, path, flags);
+    // `do_statx_fd` for a descriptor named so: the mask and the sync type are checked, not the other
+    // flags.
+    let by_descriptor = empty && dirfd as i32 >= 0;
+    if mask as u32 & STATX__RESERVED != 0
         || flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE
+        || !by_descriptor
+            && flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE)
+                != 0
     {
         return Err(Errno::EINVAL);
     }
-    if mask as u32 & STATX__RESERVED != 0 {
-        return Err(Errno::EINVAL);
-    }
-    let node = lookup(
-        kernel,
-        cx,
-        tid,
-        dirfd,
-        path,
-        flags,
-        flags & AT_SYMLINK_NOFOLLOW == 0,
-    )?;
+    let node = if empty {
+        empty_path_node(kernel, tid, dirfd)?
+    } else {
+        lookup(
+            kernel,
+            cx,
+            tid,
+            dirfd,
+            path,
+            flags,
+            flags & AT_SYMLINK_NOFOLLOW == 0,
+        )?
+    };
     count_unknown_blocks(kernel, cx, &node);
     let plain = stat_of(kernel, &node);
     let inode = node.borrow();
@@ -1390,19 +1433,26 @@ pub(super) fn statx(
     };
     let (major, minor) = crate::fs::decode_device(inode.fs.device);
     let (rdev_major, rdev_minor) = crate::fs::decode_device(inode.rdev);
-    // tmpfs keeps fine-grained times only on request, so it reports the change and modification times,
-    // and the birth time, only when asked for them; proc reports the basic set.
+    // tmpfs keeps fine-grained times (`fill_mg_cmtime`), so it reports the change and modification
+    // times only when asked for one of them, and its birth time only when asked (`shmem_getattr`);
+    // every other file system here reports the basic set (`generic_fillattr`).
     let requested = mask as u32;
-    // Secret memory files report what proc's do (measured).
-    let basic = inode.fs.kind == crate::fs::Kind::Proc || inode.is_secret();
-    let reported = if basic {
-        STATX_BASIC_STATS | STATX_MNT_ID
+    let basic = inode.fs.kind != crate::fs::Kind::Tmpfs;
+    let mut reported = if basic {
+        STATX_BASIC_STATS
     } else {
-        let mut reported = (STATX_BASIC_STATS & !(STATX_MTIME | STATX_CTIME)) | STATX_MNT_ID;
+        let mut reported = STATX_BASIC_STATS & !(STATX_MTIME | STATX_CTIME);
         if requested & (STATX_MTIME | STATX_CTIME) != 0 {
             reported |= STATX_MTIME | STATX_CTIME;
         }
         reported | (requested & STATX_BTIME)
+    };
+    // `vfs_statx_path`: the unique mount number if asked for, else the plain one.
+    let unique = requested & STATX_MNT_ID_UNIQUE != 0;
+    reported |= if unique {
+        STATX_MNT_ID_UNIQUE
+    } else {
+        STATX_MNT_ID
     };
     let mut out: statx = zerocopy::FromZeros::new_zeroed();
     out.stx_mask = reported;
@@ -1445,7 +1495,11 @@ pub(super) fn statx(
     out.stx_rdev_minor = rdev_minor;
     out.stx_dev_major = major;
     out.stx_dev_minor = minor;
-    out.stx_mnt_id = super::handle::mount_id(&inode);
+    out.stx_mnt_id = if unique {
+        super::handle::unique_mount_id(&inode)
+    } else {
+        super::handle::mount_id(&inode)
+    };
     drop(inode);
     guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)

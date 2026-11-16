@@ -51,6 +51,9 @@ pub(crate) enum Backing {
         offset: u64,
         file_end: u64,
     },
+    /// Private anonymous memory whose pages Linux may drop under memory pressure (`MAP_DROPPABLE`):
+    /// never locked, wiped on fork.
+    Droppable,
     Heap,
     Stack,
 }
@@ -66,6 +69,9 @@ pub(crate) struct Mapping {
     pub shared: bool,
     /// Whether `mlock` holds it in memory (Linux's `VM_LOCKED`).
     pub locked: Lock,
+    /// Whether a fault below it grows it, with a guard gap kept free below (Linux's `VM_GROWSDOWN`):
+    /// the stack, and `MAP_GROWSDOWN` memory.
+    pub grows_down: bool,
     pub backing: Backing,
 }
 
@@ -83,7 +89,17 @@ impl Mapping {
     /// Whether the mapping counts against `RLIMIT_DATA`: private and writable, and not a stack
     /// (Linux's `is_data_mapping`).
     pub fn is_data(&self) -> bool {
-        is_data(self.permissions, self.shared, &self.backing)
+        is_data(self.permissions, self.shared, self.grows_down)
+    }
+
+    /// Where the mapping's reach starts: below a mapping that grows down, its guard gap is kept free
+    /// (Linux's `vm_start_gap`).
+    pub fn start_gap(&self) -> u64 {
+        if self.grows_down {
+            self.start.saturating_sub(STACK_GUARD_GAP)
+        } else {
+            self.start
+        }
     }
 
     /// What the CPU side is told the page at `address` allows.
@@ -97,6 +113,12 @@ impl Mapping {
     /// Whether it maps a secret memory file, which stays locked and which no other task may reach.
     pub fn is_secret(&self) -> bool {
         matches!(&self.backing, Backing::File { node, .. } if node.borrow().is_secret())
+    }
+
+    /// Whether `mlock` and `munlock` leave the mapping as it is (`mlock_fixup`): secret memory stays
+    /// locked, droppable memory is never locked.
+    pub fn keeps_lock(&self) -> bool {
+        self.is_secret() || matches!(self.backing, Backing::Droppable)
     }
 
     /// Whether the mapping shows a file's block of shared pages.
@@ -121,8 +143,8 @@ impl Mapping {
 }
 
 /// Whether a mapping with these properties counts against `RLIMIT_DATA`.
-pub(crate) fn is_data(permissions: Permissions, shared: bool, backing: &Backing) -> bool {
-    permissions.contains(Permissions::WRITE) && !shared && !matches!(backing, Backing::Stack)
+pub(crate) fn is_data(permissions: Permissions, shared: bool, grows_down: bool) -> bool {
+    permissions.contains(Permissions::WRITE) && !shared && !grows_down
 }
 
 /// Every mapped range of one process, and where the next ones go.
@@ -294,6 +316,13 @@ impl AddressMap {
             .is_some_and(|mapping| mapping.start < end)
     }
 
+    /// Whether a new mapping may be placed at the range without being asked to: nothing mapped there,
+    /// nor in the guard gap below a mapping that grows down.
+    pub fn free_for_placement(&self, start: u64, end: u64) -> bool {
+        self.next_after(start)
+            .is_none_or(|mapping| mapping.start_gap() >= end)
+    }
+
     /// Free space for `length` bytes, the highest below the mmap base, as Linux's top-down search.
     pub fn find_free(&self, length: u64) -> Option<u64> {
         let mut ceiling = self.mmap_base;
@@ -303,15 +332,17 @@ impl AddressMap {
             if start < floor {
                 return None;
             }
-            // The highest mapping (or stack gap) that overlaps [start, ceiling).
+            // The highest mapping that, with the guard gap below one that grows down, overlaps
+            // [start, ceiling).
             let blocking = self
                 .mappings
-                .range(..ceiling)
-                .next_back()
+                .range(..ceiling.saturating_add(STACK_GUARD_GAP))
+                .rev()
                 .map(|(_, mapping)| mapping)
+                .find(|mapping| mapping.start_gap() < ceiling)
                 .filter(|mapping| mapping.end > start);
             match blocking {
-                Some(mapping) => ceiling = mapping.start,
+                Some(mapping) => ceiling = mapping.start_gap(),
                 None => return Some(start),
             }
         }
@@ -447,7 +478,7 @@ impl AddressMap {
     /// Locks or unlocks a range, every page of which is mapped.
     pub fn set_lock(&mut self, start: u64, end: u64, lock: Lock) {
         for mut mapping in self.remove(start, end) {
-            if !mapping.is_secret() {
+            if !mapping.keeps_lock() {
                 mapping.locked = lock;
             }
             self.mappings.insert(mapping.start, mapping);
@@ -458,7 +489,7 @@ impl AddressMap {
     /// Locks or unlocks every mapping.
     pub fn set_lock_all(&mut self, lock: Lock) {
         for mapping in self.mappings.values_mut() {
-            if !mapping.is_secret() {
+            if !mapping.keeps_lock() {
                 mapping.locked = lock;
             }
         }
@@ -581,9 +612,11 @@ impl AddressMap {
                 && last.shared == mapping.shared
                 && last.allowed == mapping.allowed
                 && last.locked == mapping.locked
+                && last.grows_down == mapping.grows_down
             {
                 let file_end = match (&last.backing, &mapping.backing) {
                     (Backing::Anonymous, Backing::Anonymous)
+                    | (Backing::Droppable, Backing::Droppable)
                     | (Backing::Heap, Backing::Heap)
                     | (Backing::Stack, Backing::Stack) => Some(None),
                     (
@@ -641,40 +674,45 @@ impl AddressMap {
         self.mappings = merged;
     }
 
-    /// Grows a stack mapping down to cover `address` if it lies in the stack's reach, as Linux does on
-    /// a fault below the stack. Returns whether it grew.
+    /// Grows the mapping above `address` down to cover it if that mapping grows down, as Linux does on
+    /// a fault below it (`expand_downwards`). Returns whether it grew.
     pub fn grow_stack(
         &mut self,
         cpu: &mut dyn Cpu,
         memory: MemoryId,
         address: u64,
         limits: &[Limit; LIMITS],
+        may_lock_any: bool,
     ) -> Result<bool, Errno> {
         let Some(stack) = self
             .mappings
             .range(address..)
             .next()
             .map(|(_, mapping)| mapping.clone())
-            .filter(|mapping| matches!(mapping.backing, Backing::Stack))
+            .filter(|mapping| mapping.grows_down)
         else {
             return Ok(false);
         };
         let new_start = page_down(address);
-        // Linux's `acct_stack_growth`: the stack's size within its limit, the growth within the
-        // address space's.
-        if stack.end - new_start > limits[RLIMIT_STACK as usize].current
-            || !self.may_expand(limits, false, (stack.start - new_start) / PAGE_SIZE, (0, 0))
+        if new_start < LOWEST_ADDRESS {
+            return Ok(false);
+        }
+        // The guard gap is kept free of the mapping below, unless that one grows down too or cannot be
+        // reached at all.
+        if let Some((_, below)) = self.mappings.range(..stack.start).next_back()
+            && !below.grows_down
+            && !below.permissions.is_empty()
+            && new_start - below.end < STACK_GUARD_GAP
         {
             return Ok(false);
         }
-        // Linux keeps the guard gap free below a growing stack.
-        let below = self
-            .mappings
-            .range(..stack.start)
-            .next_back()
-            .map(|(_, mapping)| mapping.end)
-            .unwrap_or(0);
-        if below.saturating_add(STACK_GUARD_GAP) > new_start {
+        // Linux's `acct_stack_growth`: the growth within the address space's limit, the mapping's
+        // size within the stack's, a locked mapping's growth within the locked memory limit.
+        let pages = (stack.start - new_start) / PAGE_SIZE;
+        if !self.may_expand(limits, false, pages, (0, 0))
+            || stack.end - new_start > limits[RLIMIT_STACK as usize].current
+            || !self.may_lock(limits, stack.locked, pages, may_lock_any)
+        {
             return Ok(false);
         }
         let grown = Mapping {

@@ -960,7 +960,7 @@ fn process_file(
                     ),
                     Backing::Heap => (0, 0, 0, String::from("[heap]")),
                     Backing::Stack => (0, 0, 0, String::from("[stack]")),
-                    Backing::Anonymous => (0, 0, 0, String::new()),
+                    Backing::Anonymous | Backing::Droppable => (0, 0, 0, String::new()),
                 };
                 let (major, minor) = super::decode_device(device);
                 let line = format!(

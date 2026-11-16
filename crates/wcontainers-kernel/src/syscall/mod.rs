@@ -345,6 +345,7 @@ pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Ti
         memory: process.memory,
         map: &mut process.map,
         limits: &process.limits,
+        may_lock_any: process.credentials.has(crate::linux::general::CAP_IPC_LOCK),
     }
 }
 

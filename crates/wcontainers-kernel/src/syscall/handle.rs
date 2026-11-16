@@ -10,13 +10,21 @@ use siphasher::sip::SipHasher13;
 use super::{Args, guest};
 use crate::fs::{Inode, Kind};
 use crate::linux::general::*;
-use crate::linux_extra::{FILEID_INO32_GEN, FILEID_INO64_GEN, FILEID_INVALID, MAX_HANDLE_SZ};
+use crate::linux_extra::{
+    FILEID_INO32_GEN, FILEID_INO64_GEN, FILEID_INVALID, MAX_HANDLE_SZ, MNT_UNIQUE_ID_OFFSET,
+};
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
 
-/// The number statx reports for the mount a file is on (both its plain and its unique form).
+/// The number statx reports for the mount a file is on.
 pub(super) fn mount_id(inode: &Inode) -> u64 {
     (inode.fs.device & 0xff) + 1
+}
+
+/// The mount's number that is never used again (Linux's `mnt_id_unique`, counted from
+/// `MNT_UNIQUE_ID_OFFSET` as mounts are made; each mount here is made once).
+pub(super) fn unique_mount_id(inode: &Inode) -> u64 {
+    MNT_UNIQUE_ID_OFFSET + mount_id(inode)
 }
 
 /// The words of a file's handle and their type: tmpfs's own encoding (generation, then the inode
@@ -77,7 +85,7 @@ pub(super) fn name_to_handle_at(
         return Err(Errno::EOPNOTSUPP);
     }
     let (kind, words) = encode(kernel, &inode, flags & AT_HANDLE_FID != 0)?;
-    let mount_id = mount_id(&inode);
+    let (mount_id, unique_mount_id) = (mount_id(&inode), unique_mount_id(&inode));
     drop(inode);
     let mut guest = guest(kernel, cx, tid);
     let room: u32 = guest.read_value(handle)?;
@@ -94,7 +102,7 @@ pub(super) fn name_to_handle_at(
         }
     }
     let written = if flags & AT_HANDLE_MNT_ID_UNIQUE != 0 {
-        guest.write(mount, &mount_id.to_le_bytes())
+        guest.write(mount, &unique_mount_id.to_le_bytes())
     } else {
         guest.write(mount, &(mount_id as u32).to_le_bytes())
     };

@@ -31,6 +31,8 @@ pub(crate) struct Guest<'a> {
     pub memory: MemoryId,
     pub map: &'a mut AddressMap,
     pub limits: &'a [Limit; LIMITS],
+    /// Whether the process may lock memory past its limit (`CAP_IPC_LOCK`), for a locked stack's growth.
+    pub may_lock_any: bool,
 }
 
 impl Guest<'_> {
@@ -42,7 +44,13 @@ impl Guest<'_> {
             && self.map.find(address + done).is_none()
             && self
                 .map
-                .grow_stack(self.cpu, self.memory, address + done, self.limits)
+                .grow_stack(
+                    self.cpu,
+                    self.memory,
+                    address + done,
+                    self.limits,
+                    self.may_lock_any,
+                )
                 .unwrap_or(false)
         {
             return self.map.accessible(address, length, wanted);
@@ -204,6 +212,9 @@ impl Guest<'_> {
         let mut out = Vec::new();
         let mut at = address;
         loop {
+            if at >= ADDRESS_LIMIT {
+                return Err(Errno::EFAULT);
+            }
             let page_end = (at / PAGE_SIZE + 1) * PAGE_SIZE;
             let wanted = (page_end - at).min(limit - out.len() as u64);
             if !access_ok(at, wanted) || self.accessible(at, wanted, Permissions::READ) != wanted {
