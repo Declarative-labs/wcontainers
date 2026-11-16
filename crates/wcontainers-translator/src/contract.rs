@@ -12,8 +12,9 @@
 //! check covers, kept runs of allowed pages, proofs over a loop's range, bounded indices) holds only until
 //! the next point where its thread can stop: a stop check whose hook runs, a system call, or leaving `run`.
 //! After any of those the piece checks again. The one exception is a stack frame checked when the stack
-//! pointer moved down: a change to a page of a running function's own frame is noticed at the next function
-//! entry, not at once. So whoever changes a process's page permissions must first bring every other
+//! pointer moved down: a change to a page of a running function's own frame, at or above the stack pointer,
+//! is noticed at the next function entry, not at once. Memory below the stack pointer is no frame and is
+//! checked at every access. So whoever changes a process's page permissions must first bring every other
 //! running thread of that process to a stop (raise its stop flag and wait until its hook runs or it has
 //! left `run`), as a real kernel interrupts the other processors before it changes a page table. The
 //! thread making the change is already stopped, in its system call or hook. With one host thread this

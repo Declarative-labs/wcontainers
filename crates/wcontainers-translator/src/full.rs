@@ -570,9 +570,13 @@ fn aligned_after(d: &Decoded, aligned: bool) -> bool {
     }
 }
 
-/// Shift a frame to a stack pointer moved by `delta`.
+/// Shift a frame to a stack pointer moved by `delta`. What is left below the stack pointer is no frame, so
+/// it is dropped.
 fn shift(frame: Frame, delta: i64) -> Frame {
-    frame.map(|(lo, hi)| (lo - delta, hi - delta))
+    frame.and_then(|(lo, hi)| {
+        let (lo, hi) = ((lo - delta).max(0), hi - delta);
+        (lo < hi).then_some((lo, hi))
+    })
 }
 
 fn covers(frame: Frame, lo: i64, hi: i64) -> bool {

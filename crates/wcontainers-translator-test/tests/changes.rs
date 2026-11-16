@@ -10,14 +10,14 @@
 #![allow(clippy::useless_conversion)]
 
 use dynasmrt::aarch64::Aarch64Relocation;
-use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
+use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::changes::{Compared, Plan, compare};
 use wcontainers_translator_test::layer2::{assemble, program};
-use wcontainers_translator_test::programs::{Blob, Library, build, ready};
+use wcontainers_translator_test::programs::{Blob, LOAD, Library, build, ready};
 use wcontainers_translator_test::runner::{Pause, Stopped};
 
 type Ops = VecAssembler<Aarch64Relocation>;
@@ -146,21 +146,38 @@ fn data_blob(name: &str, mut ops: Ops) -> Blob {
     }
 }
 
-/// At the first system call `DATA` is made to allow nothing; full must fault exactly as none does.
-fn denied_at_the_first_syscall(blob: &Blob) {
+/// At the first system call, or at the first stop at `stop_at` (an address and x16 there), the page at `page`
+/// is made to allow nothing; full must fault exactly as none does. With `stop_at`, both runs stop at every
+/// stop check.
+fn denied_at_the_first(blob: &Blob, stop_at: Option<(u64, u64)>, page: u64) {
     let run = |look_ahead| {
         let mut machine = ready(blob, look_ahead, Omit::default());
         let mut first = true;
         machine.on_pause(move |at, paused| {
-            if at == Pause::Syscall && std::mem::take(&mut first) {
-                paused.set_permissions(DATA..DATA + PAGE_SIZE, Permissions::empty());
+            let registers = paused.registers();
+            let reached = match stop_at {
+                None => at == Pause::Syscall,
+                Some((pc, x16)) => {
+                    paused.raise_stop_flag();
+                    at == Pause::Stop && registers.pc == pc && registers.x[16] == x16
+                }
+            };
+            if reached && std::mem::take(&mut first) {
+                paused.set_permissions(page..page + PAGE_SIZE, Permissions::empty());
             }
         });
+        if stop_at.is_some() {
+            if look_ahead == LookAhead::None {
+                machine.stop_at_every_check();
+            } else {
+                machine.raise_stop_flag();
+            }
+        }
         machine.run()
     };
     let none = run(LookAhead::None);
     assert!(
-        matches!(none.0, Stopped::Exit(Exit::MemoryFault { address, .. }) if address / PAGE_SIZE == DATA / PAGE_SIZE),
+        matches!(none.0, Stopped::Exit(Exit::MemoryFault { address, .. }) if address / PAGE_SIZE == page / PAGE_SIZE),
         "{}: none {:?}",
         blob.name,
         none.0
@@ -168,6 +185,10 @@ fn denied_at_the_first_syscall(blob: &Blob) {
     let full = run(LookAhead::Full);
     assert_eq!(full.0, none.0, "{}: why it stopped", blob.name);
     assert_eq!(full.1, none.1, "{}: registers", blob.name);
+}
+
+fn denied_at_the_first_syscall(blob: &Blob) {
+    denied_at_the_first(blob, None, DATA);
 }
 
 /// Two loads through one base with a system call between them: the second is checked again.
@@ -196,4 +217,98 @@ fn loop_holding_a_syscall() {
     write_nothing(&mut ops);
     dynasm!(ops ; .arch aarch64 ; subs x16, x16, #1 ; b.ne =>top);
     denied_at_the_first_syscall(&data_blob("loop-holding-syscall", ops));
+}
+
+/// A function that makes a system call like `write_nothing` and returns, at `f`.
+fn writing_nothing(ops: &mut Ops, f: DynamicLabel) {
+    dynasm!(ops ; .arch aarch64 ; =>f);
+    write_nothing(ops);
+    dynasm!(ops ; .arch aarch64 ; ret);
+}
+
+/// Two loads through one base with a call between them whose callee makes a system call.
+#[test]
+fn group_across_a_call() {
+    let mut ops: Ops = VecAssembler::new(0);
+    start(&mut ops);
+    let f = ops.new_dynamic_label();
+    let end = ops.new_dynamic_label();
+    dynasm!(ops ; .arch aarch64 ; ldr x6, [x5] ; bl =>f ; ldr x7, [x5, #8] ; b =>end);
+    writing_nothing(&mut ops, f);
+    dynasm!(ops ; .arch aarch64 ; =>end);
+    denied_at_the_first_syscall(&data_blob("group-across-call", ops));
+}
+
+/// A loop over memory holding a call whose callee makes a system call.
+#[test]
+fn loop_holding_a_call() {
+    let mut ops: Ops = VecAssembler::new(0);
+    start(&mut ops);
+    let f = ops.new_dynamic_label();
+    let top = ops.new_dynamic_label();
+    let end = ops.new_dynamic_label();
+    dynasm!(ops ; .arch aarch64
+        ; movz x16, #3
+        ; =>top
+        ; ldr x6, [x5, x16, lsl #3]
+        ; add x9, x9, x6
+        ; bl =>f
+        ; subs x16, x16, #1
+        ; b.ne =>top
+        ; b =>end
+    );
+    writing_nothing(&mut ops, f);
+    dynasm!(ops ; .arch aarch64 ; =>end);
+    denied_at_the_first_syscall(&data_blob("loop-holding-call", ops));
+}
+
+/// The page below the one sp is moved to.
+const BELOW: u64 = 0x480e_f000;
+
+/// Move sp to the top of `BELOW`, then make and pop a frame there (x29 keeps the old sp).
+fn pop_a_frame_at_below(ops: &mut Ops) {
+    dynasm!(ops ; .arch aarch64
+        ; movz x6, #0x480f, lsl #16
+        ; mov x29, sp
+        ; mov sp, x6
+        ; sub sp, sp, #64
+        ; str x6, [sp]
+        ; add sp, sp, #64
+    );
+}
+
+/// Below sp once a frame is popped is no frame: a change there at a system call is seen at the next access.
+#[test]
+fn below_sp_after_a_pop_across_a_syscall() {
+    let mut ops: Ops = VecAssembler::new(0);
+    start(&mut ops);
+    pop_a_frame_at_below(&mut ops);
+    write_nothing(&mut ops);
+    dynasm!(ops ; .arch aarch64 ; ldur x9, [sp, #-8] ; mov sp, x29);
+    denied_at_the_first(&data_blob("below-sp-across-syscall", ops), None, BELOW);
+}
+
+/// The same with the access in a loop and the change at its first stop.
+#[test]
+fn below_sp_after_a_pop_in_a_loop() {
+    let mut ops: Ops = VecAssembler::new(0);
+    start(&mut ops);
+    pop_a_frame_at_below(&mut ops);
+    let top = ops.new_dynamic_label();
+    dynasm!(ops ; .arch aarch64 ; movz x16, #4);
+    let head = LOAD + ops.offset().0 as u64;
+    dynasm!(ops ; .arch aarch64
+        ; =>top
+        ; ldur x9, [sp, #-8]
+        ; add x10, x10, x9
+        ; subs x16, x16, #1
+        ; b.ne =>top
+        ; mov sp, x29
+    );
+    // At the head, after the first turn.
+    denied_at_the_first(
+        &data_blob("below-sp-in-a-loop", ops),
+        Some((head, 3)),
+        BELOW,
+    );
 }
