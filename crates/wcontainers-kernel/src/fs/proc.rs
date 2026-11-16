@@ -131,6 +131,9 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/abi", Global::Directory),
     ("sys/debug", Global::Directory),
     ("sys/dev", Global::Directory),
+    ("sys/dev/tty", Global::Directory),
+    ("sys/dev/tty/ldisc_autoload", Global::File(0o644)),
+    ("sys/dev/tty/legacy_tiocsti", Global::File(0o644)),
     ("sys/fs", Global::Directory),
     ("sys/fs/nr_open", Global::File(0o644)),
     ("sys/kernel", Global::Directory),
@@ -184,6 +187,7 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
     ("sys/abi", "tagged_addr_disabled"),
     ("sys/debug", "exception-trace"),
     ("sys/dev", "scsi tty"),
+    ("sys/dev/tty", "ldisc_autoload legacy_tiocsti"),
     (
         "sys/fs",
         concat!(
@@ -843,6 +847,8 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                         machine.release, machine.version
                     );
                 }
+                // Line disciplines load as modules on demand; TIOCSTI is still built (measured).
+                "sys/dev/tty/ldisc_autoload" | "sys/dev/tty/legacy_tiocsti" => out.push_str("1\n"),
                 "sys/fs/nr_open" => out.push_str("1048576\n"),
                 "sys/kernel/cap_last_cap" => {
                     let _ = writeln!(out, "{CAP_LAST_CAP}");

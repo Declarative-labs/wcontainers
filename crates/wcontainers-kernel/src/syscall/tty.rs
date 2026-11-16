@@ -291,6 +291,32 @@ pub(super) fn read(
     file: &FileRef,
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
+    read_into(kernel, cx, tid, file, parts, None)
+}
+
+/// A read of up to `count` bytes into a kernel buffer, as sendfile's splicing reads
+/// (`copy_splice_read`).
+pub(super) fn take(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    count: u64,
+) -> Result<Vec<u8>, Errno> {
+    let mut out = Vec::new();
+    read_into(kernel, cx, tid, file, &[(0, count)], Some(&mut out))?;
+    Ok(out)
+}
+
+/// A read into the guest's segments, or into `kernel_buffer` (one segment, its address unused).
+fn read_into(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    mut kernel_buffer: Option<&mut Vec<u8>>,
+) -> Result<u64, Errno> {
     let (pty, side, hung_up) = end(file).expect("a terminal");
     if pty.borrow().sides[side].io_error {
         return Err(Errno::EIO);
@@ -319,7 +345,10 @@ pub(super) fn read(
     // The first status change a packet-mode reader has not seen comes alone.
     if packet && status != 0 {
         pty.borrow_mut().sides[1 - side].pktstatus = 0;
-        guest(kernel, cx, tid).write(parts[0].0, &[status])?;
+        match kernel_buffer {
+            Some(out) => out.push(status),
+            None => guest(kernel, cx, tid).write(parts[0].0, &[status])?,
+        }
         return Ok(1);
     }
     // Non-canonical reads wait for `VMIN` bytes, or with no minimum for `VTIME` tenths of a
@@ -374,7 +403,11 @@ pub(super) fn read(
     let mut guest = guest(kernel, cx, tid);
     let mut room = 0;
     for &(base, length) in parts {
-        let writable = guest.accessible(base, length, Permissions::WRITE);
+        let writable = if kernel_buffer.is_some() {
+            length
+        } else {
+            guest.accessible(base, length, Permissions::WRITE)
+        };
         room += writable;
         if writable < length {
             break;
@@ -402,7 +435,14 @@ pub(super) fn read(
     // Each piece is copied from the kernel's buffer with arm64's copy routine (`copy_to_iter`),
     // segment by segment, until a copy falls short.
     let mut copied = 0u64;
+    if let Some(out) = kernel_buffer.as_deref_mut() {
+        out.extend_from_slice(&bytes);
+        copied = bytes.len() as u64;
+    }
     for piece in bytes.chunks(READ_CHUNK as usize) {
+        if kernel_buffer.is_some() {
+            break;
+        }
         let stored = super::io::copy_to_segments(&mut guest, parts, copied, piece, 0);
         copied += stored;
         if stored < piece.len() as u64 {

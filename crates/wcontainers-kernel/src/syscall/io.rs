@@ -1221,9 +1221,14 @@ fn send(
         } else {
             room
         });
-        let bytes = match refresh_proc(kernel, cx, tid, &input, pos)
-            .and_then(|()| file_bytes(cx, &input, wanted, pos))
-        {
+        // A terminal (only into a pipe: it cannot seek) is read as `copy_splice_read` reads it.
+        let read = if super::tty::end(&input).is_some() {
+            super::tty::take(kernel, cx, tid, &input, wanted)
+        } else {
+            refresh_proc(kernel, cx, tid, &input, pos)
+                .and_then(|()| file_bytes(cx, &input, wanted, pos))
+        };
+        let bytes = match read {
             Ok(bytes) => bytes,
             Err(error) => {
                 failure = Some(error);

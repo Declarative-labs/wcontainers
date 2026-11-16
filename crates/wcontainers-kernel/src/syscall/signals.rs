@@ -92,6 +92,21 @@ pub(super) fn kill(
             .map(|process| process.pid)
             .collect()
     };
+    if pid == -1 {
+        // `kill_something_info`: the last answer that is not a refusal for permission.
+        if targets.is_empty() {
+            return Err(Errno::ESRCH);
+        }
+        let mut result = Ok(0);
+        for target in targets {
+            match signal_process(kernel, cx, tid, target, signal, info) {
+                Err(Errno::EPERM) => {}
+                answer => result = answer.map(|()| 0),
+            }
+        }
+        return result;
+    }
+    // `__kill_pgrp_info`: any success, else the last answer.
     let mut result = Err(Errno::ESRCH);
     let mut any = false;
     for target in targets {
