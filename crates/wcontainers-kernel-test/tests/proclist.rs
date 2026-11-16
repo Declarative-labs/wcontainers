@@ -1,6 +1,7 @@
-//! Listings of `/proc` and `/dev` compared with real ARM64 Linux. `/proc` holds a chosen subset of
-//! Linux's entries (a declared difference), so every entry listed here must be listed there with the
-//! same type, mode, owner, group and link count; the entries only the reference has are printed.
+//! Listings of `/proc` and `/dev` compared with real ARM64 Linux. `/dev` must list the same entries in
+//! the same order. `/proc` holds a chosen subset of Linux's entries (a declared difference, each
+//! lookup of a missing one counted), so every entry listed there must be listed in the reference with
+//! the same type, mode, owner, group and link count; the entries only the reference has are printed.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -23,6 +24,11 @@ fn named(dir: &str, name: &str) -> String {
 /// out: Linux counts every process on the machine in `/proc`'s (`proc_root_getattr`), and `/` is the
 /// root file system, overlayfs in the reference and tmpfs here until the file backend exists.
 fn entries(output: &[u8]) -> BTreeMap<(String, String), String> {
+    listed(output).into_iter().collect()
+}
+
+/// The entries in the order they were listed.
+fn listed(output: &[u8]) -> Vec<((String, String), String)> {
     String::from_utf8_lossy(output)
         .lines()
         .map(|line| {
@@ -38,6 +44,25 @@ fn entries(output: &[u8]) -> BTreeMap<(String, String), String> {
             ((dir, name), rest)
         })
         .collect()
+}
+
+#[test]
+fn device_listings_match_the_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = guest::build("proclist", &[], &out);
+    let (ours, theirs) = run_both(&program, &["/dev", "/dev/pts", "/dev/shm"]);
+    assert_eq!(ours.outcome.exit_code, theirs.exit_code);
+    let show = |entries: Vec<((String, String), String)>| {
+        entries
+            .into_iter()
+            .map(|((dir, name), rest)| format!("{dir} {name} {rest}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        show(listed(&ours.outcome.stdout)),
+        show(listed(&theirs.stdout))
+    );
 }
 
 fn compare(dirs: &[&str]) {
@@ -83,9 +108,6 @@ fn listings_are_a_subset_of_the_reference() {
         "/proc/sys/kernel/random",
         "/proc/sys/fs",
         "/proc/sys/vm",
-        "/dev",
-        "/dev/pts",
-        "/dev/shm",
     ]);
 }
 

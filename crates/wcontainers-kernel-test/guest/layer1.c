@@ -340,5 +340,8 @@ int main(void) {
             mknod(devices[index].path, S_IFCHR | 0666, makedev(1, devices[index].minor));
             chmod(devices[index].path, 0666);
         }
+        // `..` from a process directory reaches /proc, which keeps a change of owner or mode.
+        chown("/proc", 0, 0);
+        chmod("/proc", 0555);
     }
 }

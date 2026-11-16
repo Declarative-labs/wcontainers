@@ -44,6 +44,8 @@ const BYTES: &[&str] = &[
     "sock_filter",
     "seccomp_data",
     "seccomp_notif_sizes",
+    "cachestat_range",
+    "cachestat",
 ];
 
 /// One file the generator writes, relative to the workspace root, and what it holds.

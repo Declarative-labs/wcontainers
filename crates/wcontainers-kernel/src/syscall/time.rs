@@ -2,6 +2,10 @@
 
 use super::{Args, Outcome, guest};
 use crate::linux::general::*;
+use crate::linux_extra::{
+    CLOCKFD, CLOCKFD_MASK, CPUCLOCK_CLOCK_MASK, CPUCLOCK_MAX, CPUCLOCK_PERTHREAD_MASK,
+    CPUCLOCK_SCHED,
+};
 use crate::process::{Parked, Tid};
 use crate::{Context, Errno, Kernel};
 
@@ -27,8 +31,47 @@ pub(super) fn cpu_time(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid) -> u64 {
         .saturating_sub(parked)
 }
 
+/// The thread a CPU clock id below zero names, as Linux's `pid_for_clock`: a process's or a thread's
+/// clock, 0 meaning the caller's own; `gettime` also takes a thread of the process for the process.
+/// None when the id names no clock.
+fn cpu_clock_target(kernel: &Kernel, tid: Tid, id: i32, gettime: bool) -> Option<Tid> {
+    if id & CPUCLOCK_CLOCK_MASK >= CPUCLOCK_MAX {
+        return None;
+    }
+    let thread = id & CPUCLOCK_PERTHREAD_MASK != 0;
+    let pid = !(id >> 3);
+    if pid == 0 {
+        return Some(tid);
+    }
+    let caller = kernel.threads[&tid].process;
+    if thread {
+        return kernel
+            .threads
+            .get(&pid)
+            .filter(|target| target.process == caller)
+            .map(|_| pid);
+    }
+    if gettime && pid == tid {
+        return Some(tid);
+    }
+    kernel.processes.get(&pid).map(|process| process.threads[0])
+}
+
+/// Whether a clock id below zero names a clock device by descriptor (none exist here).
+fn is_clock_device(id: i32) -> bool {
+    id & CLOCKFD_MASK == CLOCKFD
+}
+
 /// The value of a clock in nanoseconds.
 fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<u64, Errno> {
+    let id = clock as i32;
+    if id < 0 {
+        if is_clock_device(id) {
+            return Err(Errno::EINVAL);
+        }
+        let target = cpu_clock_target(kernel, tid, id, true).ok_or(Errno::EINVAL)?;
+        return Ok(cpu_time(kernel, cx, target));
+    }
     Ok(match clock as u32 {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE | CLOCK_REALTIME_ALARM | CLOCK_TAI => {
             cx.host.realtime_nanoseconds()
@@ -67,12 +110,25 @@ pub(super) fn clock_getres(
     tid: Tid,
     [id, out, ..]: Args,
 ) -> Result<u64, Errno> {
-    clock(kernel, cx, tid, id)?;
-    // The coarse clocks tick with the scheduler (1000 times a second in the reference); the others are
-    // as fine as the host's.
-    let resolution = match id as u32 {
-        CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => 1_000_000,
-        _ => 1,
+    // The coarse clocks and the CPU clocks of profiling and user time tick with the scheduler (1000
+    // times a second in the reference, measured); the others are as fine as the host's.
+    let tick = 1_000_000;
+    let signed = id as i32;
+    let resolution = if signed < 0 {
+        if is_clock_device(signed) || cpu_clock_target(kernel, tid, signed, false).is_none() {
+            return Err(Errno::EINVAL);
+        }
+        if signed & CPUCLOCK_CLOCK_MASK == CPUCLOCK_SCHED {
+            1
+        } else {
+            tick
+        }
+    } else {
+        clock(kernel, cx, tid, id)?;
+        match id as u32 {
+            CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE => tick,
+            _ => 1,
+        }
     };
     if out != 0 {
         guest(kernel, cx, tid).write_value(out, &timespec_bytes(resolution))?;
@@ -150,29 +206,49 @@ pub(super) fn clock_nanosleep(
     tid: Tid,
     [id, flags, request, ..]: Args,
 ) -> Outcome {
+    let signed = id as i32;
     let id = id as u32;
     let absolute = flags as u32 & TIMER_ABSTIME != 0;
+    // In the order of Linux's `clock_nanosleep`: the clock, whether it can be slept on, the duration,
+    // then the clock's own checks.
     let realtime = match id {
-        CLOCK_REALTIME | CLOCK_TAI => true,
-        CLOCK_MONOTONIC | CLOCK_BOOTTIME => false,
+        _ if signed < 0 && is_clock_device(signed) => return Err(Errno::EOPNOTSUPP).into(),
+        _ if signed < 0 => false,
+        CLOCK_REALTIME | CLOCK_TAI | CLOCK_REALTIME_ALARM => true,
+        CLOCK_MONOTONIC | CLOCK_BOOTTIME | CLOCK_BOOTTIME_ALARM => false,
         CLOCK_PROCESS_CPUTIME_ID => false,
-        // Clocks that exist but cannot be slept on; the alarm clocks need a real-time clock device,
-        // which the reference has not either.
+        // Clocks that exist but cannot be slept on.
         CLOCK_THREAD_CPUTIME_ID
         | CLOCK_MONOTONIC_RAW
         | CLOCK_REALTIME_COARSE
-        | CLOCK_MONOTONIC_COARSE
-        | CLOCK_REALTIME_ALARM
-        | CLOCK_BOOTTIME_ALARM => return Err(Errno::EOPNOTSUPP).into(),
+        | CLOCK_MONOTONIC_COARSE => return Err(Errno::EOPNOTSUPP).into(),
         _ => return Err(Errno::EINVAL).into(),
     };
     let duration = match read_duration(kernel, cx, tid, request) {
         Ok(duration) => nanoseconds(&duration),
         Err(error) => return Err(error).into(),
     };
+    // Linux's `alarm_timer_nsleep`: only the time flag, and waking the machine needs a power.
+    if matches!(id, CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM) {
+        if flags as u32 & !TIMER_ABSTIME != 0 {
+            return Err(Errno::EINVAL).into();
+        }
+        if !kernel.process_of(tid).credentials.has(CAP_WAKE_ALARM) {
+            return Err(Errno::EPERM).into();
+        }
+    }
+    // Linux's `posix_cpu_nsleep`: the caller's own thread clock cannot be slept on, and the id must
+    // name a clock.
+    if signed < 0 {
+        let own_thread =
+            signed & CPUCLOCK_PERTHREAD_MASK != 0 && (!(signed >> 3) == 0 || !(signed >> 3) == tid);
+        if own_thread || cpu_clock_target(kernel, tid, signed, false).is_none() {
+            return Err(Errno::EINVAL).into();
+        }
+    }
     // The process's CPU clock does not move while its only thread sleeps, so a sleep on it that is not
     // already over never ends.
-    if id == CLOCK_PROCESS_CPUTIME_ID {
+    if id == CLOCK_PROCESS_CPUTIME_ID || signed < 0 {
         let over = if absolute {
             duration <= cpu_time(kernel, cx, tid)
         } else {
@@ -207,9 +283,13 @@ pub(super) fn times(
     let ticks = |nanoseconds: u64| nanoseconds / 10_000_000;
     let used = ticks(cpu_time(kernel, cx, tid));
     if out != 0 {
-        let mut bytes = [0u8; 32];
-        bytes[..8].copy_from_slice(&used.to_le_bytes());
-        guest(kernel, cx, tid).write(out, &bytes)?;
+        let value = crate::linux_extra::tms {
+            tms_utime: used as i64,
+            tms_stime: 0,
+            tms_cutime: 0,
+            tms_cstime: 0,
+        };
+        guest(kernel, cx, tid).write_value(out, &value)?;
     }
     Ok(ticks(cx.host.monotonic_nanoseconds()))
 }

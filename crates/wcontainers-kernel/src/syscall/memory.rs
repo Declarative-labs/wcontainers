@@ -207,7 +207,8 @@ pub(super) fn mmap(
         _ => return Err(Errno::EINVAL),
     };
     let mut allowed = Permissions::all();
-    // What backs the mapping, with Linux's checks on the file.
+    // What backs the mapping, with Linux's checks on the file; `/dev/zero` gives zeroed memory.
+    let mut zero_device = None;
     let file = match file {
         None => None,
         Some(file) => {
@@ -251,6 +252,7 @@ pub(super) fn mmap(
                 allowed.remove(Permissions::WRITE);
             }
             if zero {
+                zero_device = Some((inode.fs.device, inode.ino, file.path.clone()));
                 None
             } else {
                 drop(inode);
@@ -258,11 +260,25 @@ pub(super) fn mmap(
             }
         }
     };
-    let process = kernel.process_of_mut(tid);
-    let map = &mut process.map;
-    let backing = match &file {
-        None => Backing::Anonymous,
-        Some((node, path)) => {
+    let backing = match (&file, zero_device) {
+        // Linux's `shmem_zero_setup`: a removed file on its internal tmpfs, from offset 0 for
+        // anonymous memory and where asked for `/dev/zero`.
+        (None, zero) if shared => Backing::Zero {
+            device: kernel.files.memfd_fs.device,
+            ino: kernel.files.numbers.ino(),
+            offset: if zero.is_some() { offset } else { 0 },
+            name: b"/dev/zero (deleted)".to_vec(),
+        },
+        // A private mapping of `/dev/zero` is anonymous memory that keeps the file
+        // (`mmap_zero_private_success`).
+        (None, Some((device, ino, path))) => Backing::Zero {
+            device,
+            ino,
+            offset,
+            name: path,
+        },
+        (None, None) => Backing::Anonymous,
+        (Some((node, path)), _) => {
             let size = match &mut node.borrow_mut().content {
                 Content::Regular(regular) => {
                     regular.mapped = true;
@@ -279,6 +295,8 @@ pub(super) fn mmap(
             }
         }
     };
+    let process = kernel.process_of_mut(tid);
+    let map = &mut process.map;
     let mut mapping = Mapping {
         start,
         end: start + length,
@@ -335,6 +353,9 @@ fn show_file(
         return Ok(());
     };
     let offset = offset + (start - mapping.start);
+    // A shared mapping beside private copies of the file, or a private copy of a file mapped shared,
+    // lets the file change unseen by the copies.
+    crate::shared::copies_stale(kernel, cx, node, !mapping.shared);
     if mapping.shared {
         crate::shared::attach(kernel, cx, node, memory, start, offset, length)
     } else {
@@ -546,7 +567,9 @@ pub(super) fn madvise(
                     inode.ctime = now;
                 }
                 Backing::File { .. } => return Err(Errno::EACCES),
-                Backing::Anonymous if mapping.shared => {
+                // A private mapping of `/dev/zero` has a file but may not write it.
+                Backing::Zero { .. } if !mapping.shared => return Err(Errno::EACCES),
+                Backing::Zero { .. } => {
                     let from = mapping.start.max(at);
                     let to = mapping.end.min(end);
                     cx.cpu

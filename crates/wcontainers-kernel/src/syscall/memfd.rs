@@ -59,10 +59,7 @@ pub(super) fn memfd_create(
     let process = kernel.process_of(tid);
     let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
     let now = kernel.now(cx);
-    let fs = *kernel
-        .files
-        .memfd_fs
-        .get_or_insert_with(|| kernel.files.numbers.file_system(Kind::Tmpfs, 0));
+    let fs = kernel.files.memfd_fs;
     let ino = kernel.files.numbers.ino();
     let mut regular = Regular::default();
     let mut mode = S_IFREG | 0o777;

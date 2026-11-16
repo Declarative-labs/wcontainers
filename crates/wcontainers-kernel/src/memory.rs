@@ -28,6 +28,16 @@ pub(crate) const STACK_GUARD_GAP: u64 = 256 * PAGE_SIZE;
 #[derive(Clone)]
 pub(crate) enum Backing {
     Anonymous,
+    /// Zeroed memory that names a file: shared anonymous memory and shared mappings of `/dev/zero`,
+    /// which Linux backs with a removed file on its internal tmpfs, or a private mapping of
+    /// `/dev/zero`, which is anonymous memory that keeps the device's file. The file's device, inode
+    /// and the offset in it, and the name `/proc/<pid>/maps` shows.
+    Zero {
+        device: u64,
+        ino: u64,
+        offset: u64,
+        name: Vec<u8>,
+    },
     /// A private copy of a file's pages from `offset`. Pages wholly past the file's end, from
     /// `file_end` on, are kept with no access, and touching one is `SIGBUS` as on Linux.
     File {
@@ -96,7 +106,7 @@ impl Mapping {
 
     fn cut(&self, start: u64, end: u64) -> Mapping {
         let mut cut = self.clone();
-        if let Backing::File { offset, .. } = &mut cut.backing {
+        if let Backing::File { offset, .. } | Backing::Zero { offset, .. } = &mut cut.backing {
             *offset += start - self.start;
         }
         cut.start = start;
@@ -590,6 +600,24 @@ impl AddressMap {
                         && (*file_end == last.end || *next_file_end == mapping.start) =>
                     {
                         Some(Some((*file_end).max(*next_file_end)))
+                    }
+                    (
+                        Backing::Zero {
+                            device,
+                            ino,
+                            offset,
+                            ..
+                        },
+                        Backing::Zero {
+                            device: next_device,
+                            ino: next_ino,
+                            offset: next_offset,
+                            ..
+                        },
+                    ) if (device, ino) == (next_device, next_ino)
+                        && offset + (last.end - last.start) == *next_offset =>
+                    {
+                        Some(None)
                     }
                     _ => None,
                 };

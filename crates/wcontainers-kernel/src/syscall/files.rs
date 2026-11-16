@@ -232,8 +232,10 @@ pub(super) fn openat(
     tid: Tid,
     [dirfd, path, flags, mode, ..]: Args,
 ) -> Result<u64, Errno> {
-    // The flags are checked before the path is read, as Linux's `build_open_flags` runs first.
-    open_flags(kernel, cx, flags as u32)?;
+    // The flags are checked first (`build_open_flags`), then a descriptor is taken, before the path
+    // is read or walked (`do_sys_openat2`'s `FD_ADD`).
+    open_flags(flags as u32)?;
+    free_descriptor(kernel, tid)?;
     let path = guest(kernel, cx, tid).read_path(path)?;
     open(kernel, cx, tid, dirfd, &path, flags as u32, mode as u32)
 }
@@ -278,11 +280,12 @@ pub(super) fn openat2(
     if flags & O_PATH != 0 && flags & !PATH_FLAGS != 0 {
         return Err(Errno::EINVAL);
     }
-    open_flags(kernel, cx, flags)?;
+    open_flags(flags)?;
     if how.resolve & u64::from(RESOLVE_CACHED) != 0 && flags & (O_TRUNC | O_CREAT | O_TMPFILE) != 0
     {
         return Err(Errno::EAGAIN);
     }
+    free_descriptor(kernel, tid)?;
     // Lookups restricted by `resolve` are not built; a kernel without them refuses the whole call.
     if how.resolve & !u64::from(RESOLVE_CACHED) != 0 {
         kernel
@@ -303,8 +306,15 @@ const VALID_RESOLVE_FLAGS: u32 = RESOLVE_NO_XDEV
     | RESOLVE_IN_ROOT
     | RESOLVE_CACHED;
 
+/// Linux's `get_unused_fd_flags` before an open: EMFILE when no descriptor is free below the limit.
+fn free_descriptor(kernel: &Kernel, tid: Tid) -> Result<(), Errno> {
+    let process = kernel.process_of(tid);
+    let limit = process.limits[RLIMIT_NOFILE as usize].current;
+    process.files.lowest_free(0, limit).map(|_| ())
+}
+
 /// The flags an open keeps, after `build_open_flags`'s checks.
-fn open_flags(kernel: &mut Kernel, cx: &mut Context<'_>, flags: u32) -> Result<u32, Errno> {
+fn open_flags(flags: u32) -> Result<u32, Errno> {
     let mut flags = flags & VALID_OPEN_FLAGS;
     if flags & O_PATH != 0 {
         flags &= PATH_FLAGS;
@@ -313,16 +323,11 @@ fn open_flags(kernel: &mut Kernel, cx: &mut Context<'_>, flags: u32) -> Result<u
         return Err(Errno::EINVAL);
     }
     let temporary = O_TMPFILE & !O_DIRECTORY;
-    if flags & temporary != 0 {
-        if flags & (O_TMPFILE | O_CREAT) != O_TMPFILE
-            || !matches!(flags & O_ACCMODE, O_WRONLY | O_RDWR)
-        {
-            return Err(Errno::EINVAL);
-        }
-        kernel
-            .counters
-            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(O_TMPFILE));
-        return Err(Errno::EOPNOTSUPP);
+    if flags & temporary != 0
+        && (flags & (O_TMPFILE | O_CREAT) != O_TMPFILE
+            || !matches!(flags & O_ACCMODE, O_WRONLY | O_RDWR))
+    {
+        return Err(Errno::EINVAL);
     }
     Ok(flags)
 }
@@ -359,7 +364,13 @@ pub(super) fn open(
     flags: u32,
     mode: u32,
 ) -> Result<u64, Errno> {
-    let flags = open_flags(kernel, cx, flags)?;
+    let flags = open_flags(flags)?;
+    if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
+        kernel
+            .counters
+            .count(cx.host, reason::NOT_IMPLEMENTED, u64::from(O_TMPFILE));
+        return Err(Errno::EOPNOTSUPP);
+    }
     // Access mode 3 asks for both permissions and gives neither, as on Linux.
     let accmode = flags & O_ACCMODE;
     let at = start(kernel, tid, dirfd, path)?;
@@ -460,7 +471,8 @@ pub(super) fn open(
         }
     };
     let file_type = node.borrow().file_type();
-    if flags & O_DIRECTORY != 0 && file_type != S_IFDIR {
+    // A trailing slash asks for a directory as `O_DIRECTORY` does (`LOOKUP_DIRECTORY` in `do_open`).
+    if (flags & O_DIRECTORY != 0 || parent.trailing_slash) && file_type != S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
     let mut contents = None;
@@ -549,7 +561,7 @@ pub(super) fn open(
             inode.mtime = now;
             inode.ctime = now;
             drop(inode);
-            crate::shared::resized(kernel, cx, &node)?;
+            crate::shared::changed(kernel, cx, &node)?;
         }
     }
     let follows = flags & O_NOFOLLOW == 0;
@@ -601,6 +613,21 @@ fn proc_contents(
     tid: Tid,
     entry: &proc::Entry,
 ) -> Result<Vec<u8>, Errno> {
+    use proc::ProcessFile;
+    // Fields not tracked show 0, and the mount table leaves out Docker's masks of `/proc` and the
+    // mounts not built.
+    let untracked = match entry {
+        proc::Entry::ProcessFile(_, ProcessFile::Stat) => Some(0),
+        proc::Entry::ProcessFile(_, ProcessFile::Statm) => Some(1),
+        proc::Entry::ProcessFile(_, ProcessFile::Status) => Some(2),
+        proc::Entry::ProcessFile(_, ProcessFile::Mounts) => Some(3),
+        _ => None,
+    };
+    if let Some(detail) = untracked {
+        kernel
+            .counters
+            .count(cx.host, reason::PROC_FIELDS_NOT_TRACKED, detail);
+    }
     let pid = kernel.threads[&tid].process;
     let uptime = cx
         .host
@@ -1467,14 +1494,10 @@ fn change_mode(
     if node.borrow().fs.read_only() {
         return Err(Errno::EROFS);
     }
-    // A process's entries refuse mode changes, as Linux's `proc_setattr` does. Other entries would keep
-    // them, which is not built.
-    if let Content::Proc(entry) = node.borrow().content {
-        if entry.of_process().is_none() {
-            kernel
-                .counters
-                .count(cx.host, reason::PROC_CHANGE_NOT_KEPT, 0);
-        }
+    // A process's entries refuse mode changes, as Linux's `proc_setattr` does. The others take them.
+    if let Content::Proc(entry) = node.borrow().content
+        && entry.of_process().is_some()
+    {
         return Err(Errno::EPERM);
     }
     let mut inode = node.borrow_mut();
@@ -1494,7 +1517,22 @@ fn change_mode(
     }
     inode.mode = (inode.mode & S_IFMT) | mode;
     inode.ctime = now;
+    drop(inode);
+    keep_proc(kernel, node);
     Ok(0)
+}
+
+/// Keeps the attributes of a `/proc` entry Linux keeps them for, for its next lookup.
+fn keep_proc(kernel: &mut Kernel, node: &Node) {
+    let inode = node.borrow();
+    if let Content::Proc(entry) = inode.content
+        && entry.keeps_attributes()
+    {
+        kernel
+            .files
+            .proc_kept
+            .insert(inode.ino, proc::Kept::of(&inode));
+    }
 }
 
 pub(super) fn fchmod(
@@ -1584,20 +1622,15 @@ fn change_owner(
         // A process's directory is immutable: it refuses a change of owner or group (measured on the
         // reference), though not one that names neither. Its other entries take the change and forget
         // it at once: Linux sets their owners from the process again each time they are looked up.
-        // Other entries would keep it, which is not built.
+        // Other entries keep it.
         if matches!(entry, crate::fs::proc::Entry::Process(_))
             && (uid != u32::MAX || gid != u32::MAX)
         {
             return Err(Errno::EPERM);
         }
-        if entry.of_process().is_some() || (uid == u32::MAX && gid == u32::MAX) {
+        if entry.of_process().is_some() {
             return Ok(0);
         }
-        drop(inode);
-        kernel
-            .counters
-            .count(cx.host, reason::PROC_CHANGE_NOT_KEPT, 0);
-        return Err(Errno::EPERM);
     }
     if uid != u32::MAX {
         inode.uid = uid;
@@ -1607,6 +1640,8 @@ fn change_owner(
     }
     inode.drop_privileges(true);
     inode.ctime = now;
+    drop(inode);
+    keep_proc(kernel, node);
     Ok(0)
 }
 
@@ -1749,6 +1784,8 @@ pub(super) fn utimensat(
         inode.mtime = mtime;
     }
     inode.ctime = now;
+    drop(inode);
+    keep_proc(kernel, &node);
     Ok(0)
 }
 
@@ -1790,7 +1827,7 @@ fn truncate_node(
     inode.ctime = now;
     inode.drop_privileges(!may_keep_privileges);
     drop(inode);
-    crate::shared::resized(kernel, cx, node)?;
+    crate::shared::changed(kernel, cx, node)?;
     Ok(0)
 }
 
@@ -1930,7 +1967,7 @@ pub(super) fn fallocate(
     }
     inode.ctime = now;
     drop(inode);
-    crate::shared::resized(kernel, cx, &node)?;
+    crate::shared::changed(kernel, cx, &node)?;
     Ok(0)
 }
 

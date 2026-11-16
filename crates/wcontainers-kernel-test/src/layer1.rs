@@ -722,6 +722,64 @@ fn open_flag_bits(word: u64) -> u64 {
     u64::from(flags)
 }
 
+/// A CPU clock id as Linux's `CPUCLOCK_*` encode it: a process or thread number (0 for the caller's
+/// own), and the clock's low three bits (which time, and whether a thread's).
+const fn cpu_clock(pid: i64, bits: i64) -> u64 {
+    ((!pid << 3) | bits) as u64
+}
+
+/// Clock ids: every fixed one Linux has and some it has not, and CPU clocks of the caller's process
+/// and thread for each time, a clock device on descriptor 0, and a process that does not exist.
+/// Process 1 is left out: it is our caller, but not the reference's.
+const CLOCKS: &[u64] = &[
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    99,
+    cpu_clock(0, 0),
+    cpu_clock(0, 1),
+    cpu_clock(0, 2),
+    cpu_clock(0, 3),
+    cpu_clock(0, 4),
+    cpu_clock(0, 5),
+    cpu_clock(0, 6),
+    cpu_clock(0, 7),
+    cpu_clock(99999, 2),
+    cpu_clock(99999, 6),
+];
+
+/// The process CPU clocks: a relative sleep on one never ends (it does not move while the caller
+/// sleeps), so they are only slept on until a time already past.
+const PROCESS_CPU_CLOCKS: &[u64] = &[2, cpu_clock(0, 0), cpu_clock(0, 1), cpu_clock(0, 2)];
+
+const SLEEP_CLOCKS: &[u64] = &[
+    0,
+    1,
+    2,
+    3,
+    7,
+    8,
+    9,
+    99,
+    cpu_clock(0, 0),
+    cpu_clock(0, 1),
+    cpu_clock(0, 2),
+    cpu_clock(0, 3),
+    cpu_clock(0, 6),
+    cpu_clock(0, 7),
+    cpu_clock(99999, 2),
+];
+
 fn pick<T: Copy>(pool: &[T], word: u64) -> T {
     pool[(word % pool.len() as u64) as usize]
 }
@@ -773,6 +831,9 @@ pub const CALLS: &[u32] = &[
     linux::__NR_madvise,
     linux::__NR_uname,
     linux::__NR_getuid,
+    linux::__NR_geteuid,
+    linux::__NR_getgid,
+    linux::__NR_getegid,
     linux::__NR_getgroups,
     linux::__NR_setresuid,
     linux::__NR_setresgid,
@@ -1370,7 +1431,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        linux::__NR_getuid => [0; 6],
+        linux::__NR_getuid | linux::__NR_geteuid | linux::__NR_getgid | linux::__NR_getegid => {
+            [0; 6]
+        }
         linux::__NR_getgroups => [pick(&[0, 1, 32, u64::MAX], a), buffer(b), 0, 0, 0, 0],
         linux::__NR_setresuid | linux::__NR_setresgid => {
             let id = |word: u64| pick(&[0u64, 1000, u32::MAX as u64], word);
@@ -1385,14 +1448,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        linux::__NR_clock_gettime | linux::__NR_clock_getres => [
-            pick(&[0, 1, 2, 3, 4, 5, 6, 7, 11, 99], a),
-            buffer(b),
-            0,
-            0,
-            0,
-            0,
-        ],
+        linux::__NR_clock_gettime | linux::__NR_clock_getres => {
+            [pick(CLOCKS, a), buffer(b), 0, 0, 0, 0]
+        }
         linux::__NR_getrandom => [
             match a % 8 {
                 0 => 0,
@@ -1535,11 +1593,13 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
-        // A relative sleep on the process's CPU clock never ends (it does not move while sleeping), so
-        // that clock is only slept on until a time already past.
         linux::__NR_clock_nanosleep => [
-            pick(&[0, 1, 2, 3, 7, 99], a),
-            if a % 6 == 2 { 1 } else { pick(&[0, 1], b) },
+            pick(SLEEP_CLOCKS, a),
+            if PROCESS_CPU_CLOCKS.contains(&pick(SLEEP_CLOCKS, a)) {
+                1
+            } else {
+                pick(&[0, 1, 2], b)
+            },
             ARENA + VALUES + 56 * 8 + (c % 4) * 16,
             0,
             0,

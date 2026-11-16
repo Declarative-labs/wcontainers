@@ -62,14 +62,17 @@ pub(crate) struct Files {
     pub root: Node,
     pub proc_fs: FileSystem,
     pub pipe_fs: FileSystem,
-    /// The internal tmpfs memory files live on, made at the first `memfd_create`.
-    pub memfd_fs: Option<FileSystem>,
+    /// The internal tmpfs memory files and shared anonymous memory live on (Linux's `shm_mnt`, mounted
+    /// first at boot, so it has the first anonymous device number).
+    pub memfd_fs: FileSystem,
     /// The internal file system secret memory files live on, made at the first `memfd_secret`.
     pub secretmem_fs: Option<FileSystem>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
     pub generation_key: [u8; 16],
+    /// Changed attributes of the `/proc` entries that keep them.
+    pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -127,10 +130,15 @@ impl Kernel {
                 root,
                 proc_fs,
                 pipe_fs,
-                memfd_fs: None,
+                memfd_fs: FileSystem {
+                    kind: fs::Kind::Tmpfs,
+                    device: fs::encode_device(0, 1),
+                    flags: 0,
+                },
                 secretmem_fs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
+                proc_kept: BTreeMap::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
@@ -218,6 +226,7 @@ impl Kernel {
             Exit::IllegalInstruction => self.kill_by_signal(&mut cx, tid, linux::general::SIGILL),
             Exit::Breakpoint { .. } => self.kill_by_signal(&mut cx, tid, linux::general::SIGTRAP),
         }
+        self.counters.flush(cx.host);
     }
 
     /// Something happened outside.
@@ -301,6 +310,8 @@ impl Kernel {
             caller: pid,
             fs: self.files.proc_fs,
             boot: self.boot,
+            kept: &self.files.proc_kept,
+            counters: &self.counters,
         };
         let walk = fs::Walk {
             root: &process.root,

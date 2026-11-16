@@ -1,6 +1,8 @@
 //! Named counters for every slow, missing or approximated path, each also reported as a warning.
 
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use wcontainers_abi::{CounterReading, Host, Warning};
 
@@ -19,9 +21,6 @@ pub mod reason {
     /// A signal whose default action stops the process; stopping comes with job control. Detail: the
     /// signal.
     pub const PROCESS_STOP_NOT_IMPLEMENTED: &str = "process stop not implemented";
-    /// A change of owner or mode to a `/proc` entry outside the process directories, which Linux keeps
-    /// and this kernel refuses.
-    pub const PROC_CHANGE_NOT_KEPT: &str = "proc attribute change not kept";
     /// File locks through `fcntl`. Detail: the command.
     pub const LOCKS_NOT_IMPLEMENTED: &str = "file locks not implemented";
     /// An `fcntl` command the kernel does not know. Detail: the command.
@@ -45,6 +44,16 @@ pub mod reason {
     /// A seccomp filter asked for a listener, through which another process would answer the calls it
     /// stops; not built. Detail: the flags.
     pub const SECCOMP_LISTENER_NOT_IMPLEMENTED: &str = "seccomp listener not implemented";
+    /// A `/proc` entry Linux has and this kernel does not build was looked up; it answers ENOENT.
+    /// Detail: the directory's index in Linux's list of entries, times 1024, plus the name's.
+    pub const PROC_ENTRY_NOT_BUILT: &str = "proc entry not built";
+    /// A `/proc` file was opened whose fields this kernel does not track all of (those show 0 or are
+    /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`).
+    pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
+    /// A file changed that a private mapping holds a copy of, made when the mapping was, or a file
+    /// is mapped both shared and private: Linux's private pages not yet written would show the file's
+    /// later bytes, and the copy does not. Detail: the inode number.
+    pub const PRIVATE_MAPPING_COPY: &str = "private file mapping is a copy";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
 }
@@ -52,6 +61,8 @@ pub mod reason {
 #[derive(Default)]
 pub(crate) struct Counters {
     counts: BTreeMap<(&'static str, u64), u64>,
+    /// Occurrences seen where the host cannot be reached (a path walk), counted at the next flush.
+    noted: RefCell<Vec<(&'static str, u64)>>,
 }
 
 impl Counters {
@@ -64,6 +75,18 @@ impl Counters {
             count: *count,
             detail,
         });
+    }
+
+    /// Notes an occurrence to count at the next [`Counters::flush`].
+    pub fn note(&self, reason: &'static str, detail: u64) {
+        self.noted.borrow_mut().push((reason, detail));
+    }
+
+    /// Counts and warns of every noted occurrence.
+    pub fn flush(&mut self, host: &mut dyn Host) {
+        for (reason, detail) in core::mem::take(self.noted.get_mut()) {
+            self.count(host, reason, detail);
+        }
     }
 
     pub fn readings(&self) -> impl Iterator<Item = CounterReading> + '_ {

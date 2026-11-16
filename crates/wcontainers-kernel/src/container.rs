@@ -314,6 +314,8 @@ impl Kernel {
             caller: 0,
             fs: self.files.proc_fs,
             boot: self.boot,
+            kept: &self.files.proc_kept,
+            counters: &self.counters,
         };
         let walk = fs::Walk {
             root: &self.files.root,
@@ -458,6 +460,7 @@ impl Kernel {
         self.threads.insert(pid, Thread::new(pid, thread));
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);
+        self.counters.flush(cx.host);
         Ok(())
     }
 
@@ -528,6 +531,21 @@ impl Kernel {
             Kind::Tmpfs,
             ST_NOSUID,
         );
+        // In runc's order, which a listing of `/dev` shows (newest first): the mount points in the
+        // order of Docker's mounts, the devices, the `ptmx` link, then the standard links.
+        for (name, mode) in [(&b"pts"[..], 0o755), (b"mqueue", 0o1777), (b"shm", 0o1777)] {
+            make(
+                &mut self.files.numbers,
+                &dev,
+                name,
+                S_IFDIR | mode,
+                0,
+                0,
+                0,
+                now,
+                Content::Directory(Directory::new()),
+            );
+        }
         for (name, major, minor) in DOCKER_DEVICES {
             make(
                 &mut self.files.numbers,
@@ -542,12 +560,12 @@ impl Kernel {
             );
         }
         let links: [(&[u8], &[u8]); 6] = [
-            (b"core", b"/proc/kcore"),
-            (b"fd", b"/proc/self/fd"),
             (b"ptmx", b"pts/ptmx"),
-            (b"stderr", b"/proc/self/fd/2"),
+            (b"fd", b"/proc/self/fd"),
             (b"stdin", b"/proc/self/fd/0"),
             (b"stdout", b"/proc/self/fd/1"),
+            (b"stderr", b"/proc/self/fd/2"),
+            (b"core", b"/proc/kcore"),
         ];
         for (name, target) in links {
             make(
@@ -560,19 +578,6 @@ impl Kernel {
                 0,
                 now,
                 Content::Symlink(target.to_vec()),
-            );
-        }
-        for (name, mode) in [(&b"mqueue"[..], 0o1777), (b"pts", 0o755), (b"shm", 0o1777)] {
-            make(
-                &mut self.files.numbers,
-                &dev,
-                name,
-                S_IFDIR | mode,
-                0,
-                0,
-                0,
-                now,
-                Content::Directory(Directory::new()),
             );
         }
         let shm_point = dev
@@ -622,6 +627,8 @@ impl Kernel {
             caller: 0,
             fs: self.files.proc_fs,
             boot: self.boot,
+            kept: &self.files.proc_kept,
+            counters: &self.counters,
         };
         let proc_root = fs::proc::root(&view);
         fs::mount(&proc_point, &proc_root);

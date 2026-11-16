@@ -48,3 +48,22 @@ pub fn run_ours(directory: &Path, path: &str, arguments: &[&str]) -> driver::Run
     driver::run(&container, 0)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
 }
+
+/// Builds the guest program `name` into `out`, runs it with `arguments` on our kernel and in the
+/// reference, and checks that both print the same lines and end the same way; returns our run for its
+/// counters.
+pub fn assert_same_output(out: &Path, name: &str, arguments: &[&str]) -> driver::Run {
+    let program = guest::build(name, &[], out);
+    let (ours, theirs) = run_both(&program, arguments);
+    let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
+    let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
+    let differences: Vec<String> = ours_text
+        .lines()
+        .zip(theirs_text.lines())
+        .filter(|(our, their)| our != their)
+        .map(|(our, their)| format!("ours {our:?}\ntheirs {their:?}"))
+        .collect();
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+    assert_eq!(ours.outcome, theirs);
+    ours
+}

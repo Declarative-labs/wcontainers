@@ -283,6 +283,10 @@ pub(super) fn copy_file_range(
     if !input.borrow().readable() || !output.borrow().writable() || appends(&output) {
         return Err(Errno::EBADF);
     }
+    // No file system here has its own `copy_file_range`, so both files must share a superblock.
+    if node_in.borrow().fs.device != node_out.borrow().fs.device {
+        return Err(Errno::EXDEV);
+    }
     if position_in.checked_add(length).is_none() || position_out.checked_add(length).is_none() {
         return Err(Errno::EOVERFLOW);
     }
@@ -729,7 +733,9 @@ pub(super) fn read_at(
     if written == 0 && !bytes.is_empty() {
         return Err(Errno::EFAULT);
     }
-    if at.is_none() {
+    // A device's reads leave the position alone.
+    let device = matches!(file.borrow().node.borrow().content, Content::Special);
+    if at.is_none() && !device {
         file.borrow_mut().offset = offset + written as u64;
     }
     Ok(written as u64)
@@ -852,7 +858,7 @@ fn write_bytes(
         allowed?;
     }
     drop(inode);
-    crate::shared::resized(kernel, cx, &node)?;
+    crate::shared::changed(kernel, cx, &node)?;
     if at.is_none() {
         file.borrow_mut().offset = offset + bytes.len() as u64;
     }
@@ -928,6 +934,8 @@ fn send(
     let written = write_bytes(kernel, cx, tid, &output, &bytes, None, false)?;
     match explicit {
         Some(offset) => *offset = (position as u64 + written) as i64,
+        // A device's reads leave the position alone.
+        None if matches!(input.borrow().node.borrow().content, Content::Special) => {}
         None => input.borrow_mut().offset = offset + written,
     }
     Ok(written)
@@ -981,8 +989,9 @@ pub(super) fn lseek(
     let new = match &inode.content {
         Content::HostStream(_) => return Err(Errno::ESPIPE),
         Content::Special => match Device::from_number(inode.rdev) {
-            // `/dev/null` and `/dev/zero` always seek to 0; the others keep their position.
-            Some(Device::Null | Device::Zero) => 0,
+            // `/dev/null`, `/dev/zero` and `/dev/full` always seek to 0 (`null_lseek`); the random
+            // devices keep their position (`noop_llseek`).
+            Some(Device::Null | Device::Zero | Device::Full) => 0,
             _ => file.offset as i64,
         },
         Content::Regular(regular) => {
@@ -1720,9 +1729,8 @@ pub(super) fn cachestat(
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
-    let range = guest(kernel, cx, tid).read(range, 16)?;
-    let offset = u64::from_le_bytes(range[..8].try_into().expect("8 bytes"));
-    let length = u64::from_le_bytes(range[8..].try_into().expect("8 bytes"));
+    let range: cachestat_range = guest(kernel, cx, tid).read_value(range)?;
+    let (offset, length) = (range.off, range.len);
     // Linux's `can_do_cachestat`: opened for writing, the owner, or allowed to write.
     let node = file.borrow().node.clone();
     let allowed = file.borrow().writable() || {
@@ -1755,8 +1763,13 @@ pub(super) fn cachestat(
         cached = (regular.pages.range(first..=last).count()
             + regular.allocated.range(first..=last).count()) as u64;
     }
-    let mut bytes = [0u8; 40];
-    bytes[..8].copy_from_slice(&cached.to_le_bytes());
-    guest(kernel, cx, tid).write(out, &bytes)?;
+    let stat = cachestat {
+        nr_cache: cached,
+        nr_dirty: 0,
+        nr_writeback: 0,
+        nr_evicted: 0,
+        nr_recently_evicted: 0,
+    };
+    guest(kernel, cx, tid).write_value(out, &stat)?;
     Ok(0)
 }

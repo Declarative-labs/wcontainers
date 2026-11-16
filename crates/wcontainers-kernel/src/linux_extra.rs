@@ -116,3 +116,26 @@ pub(crate) const MAX_HANDLE_SZ: u32 = 128;
 pub(crate) const FILEID_INO32_GEN: i32 = 1;
 pub(crate) const FILEID_INO64_GEN: i32 = 0x81;
 pub(crate) const FILEID_INVALID: i32 = 0xff;
+
+// The encoding of CPU clock ids below zero, from Linux's `linux/posix-timers_types.h`, which is not a
+// uapi header: the C library's `clock_getcpuclockid` and `pthread_getcpuclockid` make these ids.
+
+/// Which time a CPU clock counts: `CPUCLOCK_PROF`, `CPUCLOCK_VIRT`, `CPUCLOCK_SCHED`; 3 is past them.
+pub(crate) const CPUCLOCK_CLOCK_MASK: i32 = 3;
+pub(crate) const CPUCLOCK_SCHED: i32 = 2;
+pub(crate) const CPUCLOCK_MAX: i32 = 3;
+/// Set for a thread's clock, clear for a process's.
+pub(crate) const CPUCLOCK_PERTHREAD_MASK: i32 = 4;
+/// The low bits of a clock id naming a clock device by descriptor (`CLOCKFD`, under `CLOCKFD_MASK`).
+pub(crate) const CLOCKFD: i32 = 3;
+pub(crate) const CLOCKFD_MASK: i32 = CPUCLOCK_PERTHREAD_MASK | CPUCLOCK_CLOCK_MASK;
+
+/// `times`'s structure (`linux/times.h`), which linux-raw-sys does not generate.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, zerocopy::IntoBytes, zerocopy::Immutable)]
+pub(crate) struct tms {
+    pub tms_utime: i64,
+    pub tms_stime: i64,
+    pub tms_cutime: i64,
+    pub tms_cstime: i64,
+}

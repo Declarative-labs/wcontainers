@@ -860,6 +860,9 @@ pub(super) fn sigaltstack(
     tid: Tid,
     [new, old, ..]: Args,
 ) -> Result<u64, Errno> {
+    // `stack_t` has padding, so its fields are read and placed by their offsets.
+    use core::mem::offset_of;
+    type Stack = crate::linux::general::sigaltstack;
     let current = kernel.threads[&tid].alternate_stack;
     // Linux's `on_sig_stack`: whether the caller runs on its alternate stack now, unless the stack is
     // given up on entry to a handler (`SS_AUTODISARM`).
@@ -869,13 +872,26 @@ pub(super) fn sigaltstack(
         && registers.sp > current.0
         && registers.sp - current.0 <= current.1;
     let replacement = if new != 0 {
-        let bytes = guest(kernel, cx, tid).read(new, 24)?;
+        let bytes = guest(kernel, cx, tid).read(new, size_of::<Stack>() as u64)?;
         if on_stack {
             return Err(Errno::EPERM);
         }
-        let base = u64::from_le_bytes(bytes[0..8].try_into().expect("8 bytes"));
-        let flags = i32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes"));
-        let size = u64::from_le_bytes(bytes[16..24].try_into().expect("8 bytes"));
+        let field = |offset: usize, length: usize| &bytes[offset..offset + length];
+        let base = u64::from_le_bytes(
+            field(offset_of!(Stack, ss_sp), 8)
+                .try_into()
+                .expect("8 bytes"),
+        );
+        let flags = i32::from_le_bytes(
+            field(offset_of!(Stack, ss_flags), 4)
+                .try_into()
+                .expect("4 bytes"),
+        );
+        let size = u64::from_le_bytes(
+            field(offset_of!(Stack, ss_size), 8)
+                .try_into()
+                .expect("8 bytes"),
+        );
         let mode = flags & !(SS_AUTODISARM as i32);
         if mode != SS_DISABLE as i32 && mode != SS_ONSTACK as i32 && mode != 0 {
             return Err(Errno::EINVAL);
@@ -899,8 +915,11 @@ pub(super) fn sigaltstack(
         kernel.thread_mut(tid).alternate_stack = replacement;
     }
     if old != 0 {
-        let mut bytes = Vec::with_capacity(24);
-        bytes.extend_from_slice(&current.0.to_le_bytes());
+        let mut bytes = alloc::vec![0u8; size_of::<Stack>()];
+        let mut put = |offset: usize, value: &[u8]| {
+            bytes[offset..offset + value.len()].copy_from_slice(value);
+        };
+        put(offset_of!(Stack, ss_sp), &current.0.to_le_bytes());
         let state = if current.1 == 0 {
             SS_DISABLE as i32
         } else if on_stack {
@@ -909,9 +928,8 @@ pub(super) fn sigaltstack(
             0
         };
         let flags = state | (current.2 & SS_AUTODISARM as i32);
-        bytes.extend_from_slice(&flags.to_le_bytes());
-        bytes.extend_from_slice(&[0; 4]);
-        bytes.extend_from_slice(&current.1.to_le_bytes());
+        put(offset_of!(Stack, ss_flags), &flags.to_le_bytes());
+        put(offset_of!(Stack, ss_size), &current.1.to_le_bytes());
         guest(kernel, cx, tid).write(old, &bytes)?;
     }
     Ok(0)

@@ -105,16 +105,21 @@ pub(super) fn sysinfo(
         .saturating_sub(kernel.boot_monotonic)
         / 1_000_000_000;
     let memory = kernel.machine.memory_bytes;
-    // Linux's `struct sysinfo` on ARM64: longs, then two shorts and padding, then the high memory and
-    // the unit.
-    let mut bytes = vec![0u8; 112];
-    let mut put =
-        |offset: usize, value: u64| bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-    put(0, uptime.max(1));
-    put(32, memory);
-    put(40, memory);
-    bytes[80..82].copy_from_slice(&(kernel.processes.len() as u16).to_le_bytes());
-    bytes[104..108].copy_from_slice(&1u32.to_le_bytes());
+    // `struct sysinfo` has padding, so its fields are placed by their offsets, with the padding zero.
+    use crate::linux::system::sysinfo as Info;
+    use core::mem::offset_of;
+    let mut bytes = vec![0u8; size_of::<Info>()];
+    let mut put = |offset: usize, value: &[u8]| {
+        bytes[offset..offset + value.len()].copy_from_slice(value);
+    };
+    put(offset_of!(Info, uptime), &uptime.max(1).to_le_bytes());
+    put(offset_of!(Info, totalram), &memory.to_le_bytes());
+    put(offset_of!(Info, freeram), &memory.to_le_bytes());
+    put(
+        offset_of!(Info, procs),
+        &(kernel.processes.len() as u16).to_le_bytes(),
+    );
+    put(offset_of!(Info, mem_unit), &1u32.to_le_bytes());
     guest(kernel, cx, tid).write(out, &bytes)?;
     Ok(0)
 }

@@ -16,14 +16,15 @@ pub(crate) enum Device {
     Ptmx,
 }
 
-/// The devices a default Docker container has in `/dev`: name, major, minor and driver.
+/// The devices a default Docker container has in `/dev`: name, major and minor, in the order runc
+/// makes them (its default device list).
 pub(crate) const DOCKER_DEVICES: &[(&[u8], u32, u32)] = &[
     (b"null", 1, 3),
-    (b"zero", 1, 5),
-    (b"full", 1, 7),
     (b"random", 1, 8),
-    (b"urandom", 1, 9),
+    (b"full", 1, 7),
     (b"tty", 5, 0),
+    (b"zero", 1, 5),
+    (b"urandom", 1, 9),
 ];
 
 impl Device {

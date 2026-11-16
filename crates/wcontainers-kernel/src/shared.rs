@@ -107,9 +107,10 @@ fn shared_offset(backing: &Backing, shared: bool, node: &Node) -> Option<u64> {
     }
 }
 
-/// After a file's size changed: the pages of shared mappings wholly past its end fault with `SIGBUS`,
-/// and those before it are reachable again.
-pub(crate) fn resized(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<(), Errno> {
+/// After a file's bytes or size changed: the pages of shared mappings wholly past its end fault with
+/// `SIGBUS`, and those before it are reachable again.
+pub(crate) fn changed(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<(), Errno> {
+    copies_stale(kernel, cx, node, false);
     let size = match &node.borrow().content {
         Content::Regular(regular) if regular.block.is_some() => regular.size(),
         _ => return Ok(()),
@@ -120,6 +121,32 @@ pub(crate) fn resized(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) ->
             .set_file_end(cx.cpu, process.memory, node, page_up(size))?;
     }
     Ok(())
+}
+
+/// Counts a change to a file that a private mapping copied when it was made (or, with `shared`, a
+/// mapping through which it may change unseen): Linux's private pages not yet written would show the
+/// change, and the copies do not.
+pub(crate) fn copies_stale(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node, shared: bool) {
+    let inode = node.borrow();
+    let Content::Regular(regular) = &inode.content else {
+        return;
+    };
+    if !regular.mapped {
+        return;
+    }
+    let copied = kernel.processes.values().any(|process| {
+        process.map.iter().any(|mapping| {
+            mapping.shared == shared
+                && matches!(&mapping.backing, Backing::File { node: mapped, .. } if Rc::ptr_eq(mapped, node))
+        })
+    });
+    let ino = inode.ino;
+    drop(inode);
+    if copied {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::PRIVATE_MAPPING_COPY, ino);
+    }
 }
 
 /// Ends the blocks of files no mapping shares any more, moving their bytes back to the files.

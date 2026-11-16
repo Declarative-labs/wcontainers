@@ -23,6 +23,34 @@ pub(crate) struct View<'a> {
     pub caller: Pid,
     pub fs: FileSystem,
     pub boot: Time,
+    /// Attributes changed on entries that keep them, by inode number.
+    pub kept: &'a BTreeMap<u64, Kept>,
+    pub counters: &'a crate::counters::Counters,
+}
+
+/// The attributes of an entry outside the process directories after a change. Linux keeps them: the
+/// root's and `self`'s inodes live as long as the mount, and the others' `proc_dir_entry` holds them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Kept {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    atime: Time,
+    mtime: Time,
+    ctime: Time,
+}
+
+impl Kept {
+    pub fn of(inode: &super::Inode) -> Self {
+        Self {
+            mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
+            atime: inode.atime,
+            mtime: inode.mtime,
+            ctime: inode.ctime,
+        }
+    }
 }
 
 /// One file or directory of the tree.
@@ -124,6 +152,116 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("version", Global::File(0o444)),
 ];
 
+/// The entries Linux 7.0 has in the directories built here (as the reference lists them), each
+/// directory's names separated by spaces; `<pid>` stands for a process directory. Looking up one that is
+/// not built is counted and warned before it answers ENOENT.
+const LINUX_ENTRIES: &[(&str, &str)] = &[
+    (
+        "",
+        concat!(
+            "buddyinfo bus cgroups cmdline config.gz consoles cpuinfo crypto device-tree ",
+            "devices diskstats docker driver execdomains filesystems fs interrupts iomem ",
+            "ioports irq kallsyms kcore key-users keys kmsg kpagecgroup kpagecount kpageflags ",
+            "loadavg locks meminfo misc modules mounts net pagetypeinfo partitions pressure ",
+            "scsi self slabinfo softirqs stat swaps sys sysrq-trigger sysvipc thread-self ",
+            "timer_list tty uptime version vmallocinfo vmstat zoneinfo",
+        ),
+    ),
+    (
+        "<pid>",
+        concat!(
+            "attr autogroup auxv cgroup clear_refs cmdline comm coredump_filter cpuset cwd ",
+            "environ exe fd fdinfo gid_map io ksm_merging_pages ksm_stat limits loginuid ",
+            "map_files maps mem mountinfo mounts mountstats net ns oom_adj oom_score ",
+            "oom_score_adj pagemap personality projid_map root sched schedstat sessionid ",
+            "setgroups smaps smaps_rollup stack stat statm status syscall task timens_offsets ",
+            "timers timerslack_ns uid_map wchan",
+        ),
+    ),
+    ("sys", "abi debug dev fs kernel net sunrpc user vm"),
+    ("sys/abi", "tagged_addr_disabled"),
+    ("sys/debug", "exception-trace"),
+    ("sys/dev", "scsi tty"),
+    (
+        "sys/fs",
+        concat!(
+            "aio-max-nr aio-nr binfmt_misc dentry-negative dentry-state dir-notify-enable ",
+            "epoll fanotify file-max file-nr fuse inode-nr inode-state inotify ",
+            "lease-break-time leases-enable mount-max mqueue nfs nr_open overflowgid ",
+            "overflowuid pipe-max-size pipe-user-pages-hard pipe-user-pages-soft ",
+            "protected_fifos protected_hardlinks protected_regular protected_symlinks quota ",
+            "suid_dumpable xfs",
+        ),
+    ),
+    (
+        "sys/kernel",
+        concat!(
+            "acct arch auto_msgmni bpf_stats_enabled cad_pid cap_last_cap ",
+            "core_file_note_size_limit core_modes core_pattern core_pipe_limit core_sort_vma ",
+            "core_uses_pid ctrl-alt-del dmesg_restrict domainname ftrace_dump_on_oops ",
+            "ftrace_enabled hostname io_uring_disabled io_uring_group kernel_sys_info keys ",
+            "kptr_restrict max_lock_depth max_rcu_stall_to_panic modprobe modules_disabled ",
+            "msg_next_id msgmax msgmnb msgmni ngroups_max ns_last_pid oops_all_cpu_backtrace ",
+            "oops_limit osrelease ostype overflowgid overflowuid panic panic_on_oops ",
+            "panic_on_rcu_stall panic_on_warn panic_print panic_sys_info ",
+            "perf_cpu_time_max_percent perf_event_max_contexts_per_stack ",
+            "perf_event_max_sample_rate perf_event_max_stack perf_event_mlock_kb ",
+            "perf_event_paranoid pid_max poweroff_cmd print-fatal-signals printk printk_delay ",
+            "printk_devkmsg printk_ratelimit printk_ratelimit_burst pty random ",
+            "randomize_va_space sched_autogroup_enabled sched_cfs_bandwidth_slice_us ",
+            "sched_deadline_period_max_us sched_deadline_period_min_us sched_rr_timeslice_ms ",
+            "sched_rt_period_us sched_rt_runtime_us seccomp sem sem_next_id sg-big-buff ",
+            "shm_next_id shm_rmid_forced shmall shmmax shmmni sysctl_writes_strict sysrq ",
+            "tainted task_delayacct threads-max timer_migration traceoff_on_warning ",
+            "tracepoint_printk unprivileged_bpf_disabled unprivileged_userns_clone ",
+            "usermodehelper version warn_limit",
+        ),
+    ),
+    (
+        "sys/kernel/random",
+        concat!(
+            "boot_id entropy_avail poolsize urandom_min_reseed_secs uuid ",
+            "write_wakeup_threshold",
+        ),
+    ),
+    (
+        "sys/net",
+        "bridge core ipv4 ipv6 mpls netfilter sctp unix vsock",
+    ),
+    (
+        "sys/sunrpc",
+        concat!(
+            "max_resvport min_resvport tcp_fin_timeout tcp_max_slot_table_entries ",
+            "tcp_slot_table_entries udp_slot_table_entries",
+        ),
+    ),
+    (
+        "sys/user",
+        concat!(
+            "max_cgroup_namespaces max_fanotify_groups max_fanotify_marks ",
+            "max_inotify_instances max_inotify_watches max_ipc_namespaces max_mnt_namespaces ",
+            "max_net_namespaces max_pid_namespaces max_time_namespaces max_user_namespaces ",
+            "max_uts_namespaces",
+        ),
+    ),
+    (
+        "sys/vm",
+        concat!(
+            "admin_reserve_kbytes compact_memory compact_unevictable_allowed ",
+            "compaction_proactiveness defrag_mode dirty_background_bytes ",
+            "dirty_background_ratio dirty_bytes dirty_expire_centisecs dirty_ratio ",
+            "dirty_writeback_centisecs dirtytime_expire_seconds drop_caches extfrag_threshold ",
+            "hugetlb_shm_group laptop_mode legacy_va_layout lowmem_reserve_ratio ",
+            "max_map_count memfd_noexec min_free_kbytes mmap_min_addr mmap_rnd_bits ",
+            "movable_gigantic_pages nr_hugepages nr_overcommit_hugepages oom_dump_tasks ",
+            "oom_kill_allocating_task overcommit_kbytes overcommit_memory overcommit_ratio ",
+            "page-cluster page_lock_unfairness panic_on_oom percpu_pagelist_high_fraction ",
+            "stat_interval stat_refresh swappiness user_reserve_kbytes vfs_cache_pressure ",
+            "vfs_cache_pressure_denom watermark_boost_factor watermark_scale_factor",
+        ),
+    ),
+];
+
 /// The link count of `/proc` itself, as Linux's `proc_root_getattr` gives it: two, one for each
 /// directory below it, and one for each process on the machine.
 pub(crate) fn root_links(processes: usize) -> u32 {
@@ -162,6 +300,11 @@ impl Entry {
             | Entry::Fd(pid, _) => Some(pid),
             Entry::Root | Entry::SelfLink | Entry::Global(_) => None,
         }
+    }
+
+    /// Whether a change to the entry's owner, mode or times lasts (see [`Kept`]).
+    pub fn keeps_attributes(&self) -> bool {
+        matches!(self, Entry::Root | Entry::SelfLink | Entry::Global(_))
     }
 
     /// The size `stat` reports: none, except for descriptor links.
@@ -268,6 +411,15 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
             name: name.to_vec(),
         },
     );
+    if let Some(kept) = view.kept.get(&entry.ino()) {
+        let mut inode = node.borrow_mut();
+        inode.mode = kept.mode;
+        inode.uid = kept.uid;
+        inode.gid = kept.gid;
+        inode.atime = kept.atime;
+        inode.mtime = kept.mtime;
+        inode.ctime = kept.ctime;
+    }
     if is_directory {
         node.borrow_mut().place.held_parent = parent.cloned();
     }
@@ -334,8 +486,37 @@ pub(crate) fn lookup(
             .map(Entry::Process),
         _ => None,
     });
-    let child = found.ok_or(Errno::ENOENT)?;
+    let Some(child) = found else {
+        not_built(view, entry, name);
+        return Err(Errno::ENOENT);
+    };
     Ok(node(view, Some(directory), name, child))
+}
+
+/// Counts a lookup that found nothing when Linux has the name there.
+fn not_built(view: &View<'_>, entry: &Entry, name: &[u8]) {
+    let directory = match entry {
+        Entry::Root => "",
+        Entry::Process(_) => "<pid>",
+        Entry::Global(index) => GLOBAL[*index].0,
+        _ => return,
+    };
+    let Some(index) = LINUX_ENTRIES
+        .iter()
+        .position(|(path, _)| *path == directory)
+    else {
+        return;
+    };
+    if let Some(position) = LINUX_ENTRIES[index]
+        .1
+        .split(' ')
+        .position(|known| known.as_bytes() == name)
+    {
+        view.counters.note(
+            crate::reason::PROC_ENTRY_NOT_BUILT,
+            (index * 1024 + position) as u64,
+        );
+    }
 }
 
 /// The entries of a directory of the tree, in the order `getdents` lists them.
@@ -623,7 +804,7 @@ fn process_file(
                         '-'
                     }
                 };
-                let (offset, ino, path) = match &mapping.backing {
+                let (offset, device, ino, path) = match &mapping.backing {
                     Backing::File {
                         node, path, offset, ..
                     } => {
@@ -635,16 +816,29 @@ fn process_file(
                         };
                         (
                             *offset,
+                            inode.fs.device,
                             inode.ino,
                             alloc::format!("{}{deleted}", String::from_utf8_lossy(path)),
                         )
                     }
-                    Backing::Heap => (0, 0, String::from("[heap]")),
-                    Backing::Stack => (0, 0, String::from("[stack]")),
-                    Backing::Anonymous => (0, 0, String::new()),
+                    Backing::Zero {
+                        device,
+                        ino,
+                        offset,
+                        name,
+                    } => (
+                        *offset,
+                        *device,
+                        *ino,
+                        String::from_utf8_lossy(name).into_owned(),
+                    ),
+                    Backing::Heap => (0, 0, 0, String::from("[heap]")),
+                    Backing::Stack => (0, 0, 0, String::from("[stack]")),
+                    Backing::Anonymous => (0, 0, 0, String::new()),
                 };
+                let (major, minor) = super::decode_device(device);
                 let line = format!(
-                    "{:08x}-{:08x} {}{}{}{} {:08x} 00:00 {}",
+                    "{:08x}-{:08x} {}{}{}{} {:08x} {major:02x}:{minor:02x} {}",
                     mapping.start,
                     mapping.end,
                     flag(Permissions::READ, 'r'),
@@ -704,7 +898,7 @@ fn process_file(
             let _ = write!(
                 out,
                 "Name:\t{}\nUmask:\t{:04o}\nState:\tR (running)\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\
-                 TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t64\nGroups:\t",
+                 TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
                 String::from_utf8_lossy(&process.name),
                 process.umask,
                 process.pid,
@@ -717,11 +911,14 @@ fn process_file(
                 credentials.gid,
                 credentials.egid,
                 credentials.sgid,
-                credentials.fsgid
+                credentials.fsgid,
+                process.files.capacity()
             );
-            for group in &credentials.groups {
-                let _ = write!(out, "{group} ");
+            // Separated by spaces, then always one more (Linux's `task_state`).
+            for (index, group) in credentials.groups.iter().enumerate() {
+                let _ = write!(out, "{}{group}", if index > 0 { " " } else { "" });
             }
+            out.push(' ');
             let (ignored, caught) = ignored_and_caught(process);
             let _ = write!(
                 out,
