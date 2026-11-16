@@ -5,7 +5,27 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done after seven runs. Built in K2's seventh run:
+processes) is partly done after eight runs. Built in K2's eighth run:
+- TIOCSETD as `tty_set_ldisc`: a number outside 0 to 30 EINVAL, `n_tty` kept as it is, `N_MOUSE`
+  (2) EPERM without CAP_SYS_ADMIN (`serport_ldisc_open`'s check; the reference has serport
+  registered), every other discipline counted "line discipline not built" and EINVAL, as a Linux
+  that has not registered it answers. The reference also has 3 (PPP), 14 (sync PPP) and 27 (N_NULL)
+  registered and accepts them; here they are refused and counted. Layer 1 takes TIOCSETD's
+  discipline from a table no call writes (0, 1, 2, 4, -1, 31, 256), never from memory other calls
+  write. tests/terminal.rs. Seed 711 then passed 20000 (345 s alone, load 31 to 44).
+- Pipe releases one by one: a closed descriptor's file goes to its table's list of files given up,
+  and `files_released` runs `pipe_release` for each one that was its last holder, last given up first
+  (measured: Linux's `fput` runs the releases as task works on the way back to the program, newest
+  first, so close_range over two readers and then the writer sends three signals and over the writer
+  and then two readers one). dup2 over a pipe's end now counts as its release. tests/sigio.rs.
+- sendfile and splice into a full terminal whose file blocks wait for room as `tty_write` does: the
+  call parks on the terminal with what it wrote in the call slot and goes on when run again; a
+  signal ends it with what was written (ERESTARTSYS if nothing). tests/terminal.rs
+  `waiting_for_room`.
+- A process's state in `/proc/<pid>/stat` and `status` is its first thread's: Z ended and not reaped,
+  T stopped, D a `vfork` parent's wait, S parked, R otherwise (it was always R).
+
+Built in K2's seventh run:
 - System V semaphores (src/syscall/sem.rs) as `ipc/sem.c`: semget (with `newary`'s and
   `sem_more_checks`' limits), semop and semtimedop (the timeout read first, E2BIG, the operations,
   then `find_alloc_undo` before the set is looked up, so a failed call still leaves an undo entry,
@@ -53,8 +73,7 @@ processes) is partly done after seven runs. Built in K2's seventh run:
 - Seed 711 (20000, message queues in) failed at its 18th call, a difference older than this run:
   TIOCSETD on `/dev/ptmx` with a generated discipline answers EINVAL here and 0 in the reference.
   Probed on the reference: disciplines 0, 3, 14 and 27 are accepted (registered in linuxkit's
-  kernel), 2 is EPERM, the rest of -1 to 31 EINVAL (scratch `ldisc/l.c`). src/syscall/tty.rs's comment
-  that the reference has no other discipline is wrong. Open for the next run.
+  kernel), 2 is EPERM, the rest of -1 to 31 EINVAL (scratch `ldisc/l.c`). Fixed in the eighth run.
 
 Built in K2's sixth run:
 - The three open layer 1 findings: MADV_DODUMP and MADV_KEEPONFORK refused on droppable memory and
@@ -791,8 +810,8 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   Linux's `__tty_hangup` takes each file's `FASYNC` away before the line discipline's wakeup, so none
   is expected there; not measured.
   A fallback to SIGIO when a chosen real-time signal cannot be queued is not made.
-- Several ends of a pipe closed at once (one close_range, an exit) send one release I/O signal; Linux
-  sends one per end.
+- The disciplines the reference has registered besides `n_tty` (3, 14, 27; 2 for a caller with
+  CAP_SYS_ADMIN) are not built: refused with EINVAL and counted, where the reference accepts them.
 - The reference has four CPUs, so a forked child runs at once beside its parent; here it waits for
   the CPU under the fair scheduler. Tests wait for what a person would see (a job's program
   running) rather than for time.
@@ -800,9 +819,10 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
-- sendfile into a full terminal that blocks returns what fit (nothing); Linux waits for room
-  (`tty_write`'s wait). A nonblocking one answers as Linux. (Into a pipe it is now
-  `splice_file_to_pipe`, which waits; tests/splice.rs.)
+- sendfile waiting for a terminal's room reads the rest of its round from the input again when it
+  runs again; Linux keeps the round in its private pipe, so a change to the input file during the
+  wait shows here and not there. splice from a pipe into a terminal holds the pipe's lock in Linux
+  while it waits, so other readers of that pipe wait too; here they do not.
 - Where the kernel's source of a copy lies within 16 bytes decides what a buffer that faults part
   way receives; it is measured for the calls tests/partialcopy.rs makes and assumed aligned to 8
   elsewhere (Linux's stack layout of each call is its compiler's). Calls Linux copies field by field
@@ -1450,6 +1470,7 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   (ENOMEM).
 - "fcntl command not built": the fcntl list under Partial.
 - "prctl option not built": the prctl list under Partial.
+- "line discipline not built": TIOCSETD with a discipline other than `n_tty` (detail: its number).
 - "ioctl request not built": the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
   caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference).
 - "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
@@ -1464,6 +1485,7 @@ written", "vmsplice pages copied". "wake to run" is a measurement (count and tot
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K2, eighth run: none.
 - K2, seventh run: none.
 - K2, sixth run: none.
 - K2, fifth run: none.
@@ -1506,15 +1528,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. Small gaps of K2: when several ends of a pipe close at once (close_range, a process's end), one
-   release I/O signal is sent; Linux sends one per end released whose release leaves readers without
-   writers or the other way round (`pipe_release`, in descriptor order), which needs the releases
-   themselves, not counts. sendfile into a full blocking terminal answers what fit; Linux waits for room
-   (`tty_write`).
-   TIOCSETD (seed 711, above): the disciplines linuxkit registers (3, 14, 27) are not built, so they
-   must go through `Counters::refuse` as not built, and layer 1 must keep to the ones both sides
-   answer alike; find why 2 is EPERM (`tty_ldisc_get`, the discipline's own open) and match it.
-2. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
-   the milestone. Seeds up to 711 are used.
+1. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
+   the milestone: seeds 721, 722 and 723 were started in the eighth run (see Layer 1 for results).
+   Seeds up to 723 are used.
+2. Test binaries build guest programs into one shared directory, which a reference container may
+   read while another binary rewrites it (Known issues); each binary could build into its own.
 3. The missing calls of later milestones; the known gaps above before K6's bar.
 4. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
