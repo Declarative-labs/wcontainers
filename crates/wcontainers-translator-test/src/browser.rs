@@ -47,8 +47,8 @@ pub struct Report {
     /// How long the guest ran in the page each time it was run, translating and compiling the first module
     /// not included.
     pub runs: Vec<f64>,
-    /// The slow paths taken, as `(reason, count)`.
-    pub counters: Vec<(String, u64)>,
+    /// The slow paths taken, as `(reason, count, nanoseconds spent)`.
+    pub counters: Vec<(String, u64, u64)>,
     pub user_agent: String,
 }
 
@@ -56,8 +56,16 @@ impl Report {
     pub fn count(&self, reason: &str) -> u64 {
         self.counters
             .iter()
-            .find(|(name, _)| name == reason)
+            .find(|(name, ..)| name == reason)
             .map_or(0, |c| c.1)
+    }
+
+    /// The time spent on a slow path, in nanoseconds.
+    pub fn time(&self, reason: &str) -> u64 {
+        self.counters
+            .iter()
+            .find(|(name, ..)| name == reason)
+            .map_or(0, |c| c.2)
     }
 }
 
@@ -137,6 +145,7 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
             (
                 c["reason"].as_str().unwrap().to_string(),
                 c["count"].as_u64().unwrap(),
+                c["nanoseconds"].as_u64().unwrap(),
             )
         })
         .collect();

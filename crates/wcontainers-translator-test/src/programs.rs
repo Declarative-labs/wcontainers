@@ -74,7 +74,8 @@ pub enum Library {
     C,
 }
 
-/// Build `programs/<name>.c` (or `<name>.S`, assembly) at an optimisation level, such as "-O2", into a flat blob.
+/// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
+/// assembly) at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
     build_with(name, optimisation, library, &[])
 }
@@ -92,17 +93,25 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
     let elf = out.join(format!("{own}.elf"));
-    let source = source_directory().join(format!("{name}.c"));
-    let source = if source.exists() {
-        source
-    } else {
-        source_directory().join(format!("{name}.S"))
-    };
+    let source = ["c", "cpp", "rs", "S"]
+        .iter()
+        .map(|extension| source_directory().join(format!("{name}.{extension}")))
+        .find(|source| source.exists())
+        .expect("a program of that name");
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
+    if source.extension().unwrap() == "rs" {
+        rust(&source, &elf, &script, optimisation);
+        return flatten(&elf, &own, stem);
+    }
     let script = format!("-Wl,-T,{}", text(&script));
+    let driver = if source.extension().unwrap() == "cpp" {
+        "c++"
+    } else {
+        "cc"
+    };
     let mut arguments = vec![
-        "cc",
+        driver,
         "-target",
         "aarch64-linux-musl",
         optimisation,
@@ -128,6 +137,35 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     arguments.extend(["-o", &elf_text, &source_text]);
     zig(&arguments);
     flatten(&elf, &own, stem)
+}
+
+/// Build a Rust program with its standard library, statically, linked with `script`.
+fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
+    let level = optimisation.trim_start_matches("-O");
+    let status = Command::new("rustc")
+        .args([
+            "--edition",
+            "2024",
+            "--target",
+            "aarch64-unknown-linux-musl",
+        ])
+        .args(["-C", &format!("opt-level={level}")])
+        .args(["-C", "panic=unwind", "-C", "relocation-model=static"])
+        .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
+        .args([
+            "-C",
+            "link-self-contained=yes",
+            "-C",
+            "link-arg=--build-id=none",
+        ])
+        .arg("-C")
+        .arg(format!("link-arg=-T{}", script.display()))
+        .arg("-o")
+        .arg(elf)
+        .arg(source)
+        .status()
+        .expect("run rustc (from the Nix shell)");
+    assert!(status.success(), "rustc {} failed", source.display());
 }
 
 /// The flat blob of a linked program, `own` being the unique name its build works under. The ELF file is

@@ -3,6 +3,7 @@
 use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::browser;
+use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
     Library, build, build_with, native, reachable_memory, translated,
     translated_stopping_everywhere,
@@ -69,6 +70,55 @@ fn deep_recursion_matches_linux() {
             let what = format!("{} at {look_ahead:?} in Chrome", blob.name);
             assert_eq!(ours.ran, theirs, "{what}");
             assert!(ours.count("engine stack nearly full") > 0, "{what}");
+        }
+    }
+}
+
+/// setjmp and longjmp in C, C++ exceptions and Rust panics: returns that do not go where their caller
+/// expects, at every look-ahead and with pieces mixed and events injected, as on Linux; and in Chrome.
+#[test]
+fn unwinding_matches_linux() {
+    for name in ["jumps", "exceptions", "panics"] {
+        for optimisation in ["-O0", "-O2"] {
+            let blob = build(name, optimisation, Library::C);
+            let theirs = native(&blob);
+            assert_eq!(
+                theirs.status,
+                if name == "jumps" { 50 } else { 0 },
+                "{}",
+                blob.name
+            );
+            let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
+            assert_eq!(none, theirs, "{} at none", blob.name);
+            for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
+                let what = format!("{} at {look_ahead:?}", blob.name);
+                let (ours, mut machine, registers) = translated(&blob, look_ahead);
+                assert_eq!(ours, theirs, "{what}");
+                assert_eq!(registers, none_registers, "registers of {what}");
+                assert!(
+                    reachable_memory(&mut machine, &blob)
+                        == reachable_memory(&mut none_machine, &blob),
+                    "memory of {what}"
+                );
+                eprintln!(
+                    "{what}: left to an address {} times, continued after stack loss {} times",
+                    machine.count(Reason::LeftToAddress),
+                    machine.count(Reason::ContinuedAfterStackLoss)
+                );
+            }
+            for seed in 0..2 {
+                let (ours, mut machine, registers, events) = mixed(&blob, seed);
+                let what = format!("{} mixed from {seed} ({events:?})", blob.name);
+                assert_eq!(ours, theirs, "{what}");
+                assert_eq!(registers, none_registers, "registers of {what}");
+                assert!(
+                    reachable_memory(&mut machine, &blob)
+                        == reachable_memory(&mut none_machine, &blob),
+                    "memory of {what}"
+                );
+            }
+            let ours = browser::translated_with(&blob, LookAhead::Full, Default::default());
+            assert_eq!(ours.ran, theirs, "{} at full in Chrome", blob.name);
         }
     }
 }

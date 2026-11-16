@@ -743,6 +743,15 @@ fn hooks(linker: &mut Linker<Host>) {
                     };
                     caller.data_mut().exact_pieces.insert(address, piece);
                 } else {
+                    // Code made at run time never takes the place of a piece the table holds.
+                    let slot = (address - caller.data().table_base) / 4;
+                    assert!(
+                        matches!(
+                            table.get(&mut caller, slot),
+                            Some(wasmtime::Ref::Func(None))
+                        ),
+                        "code asked for at {address:#x}, which has a piece"
+                    );
                     let look_ahead = (caller.data_mut().run_time)();
                     instantiate_code(&mut caller, index, &[offset], look_ahead, None);
                 }

@@ -56,3 +56,39 @@ fn bounded_matches_none() {
         }
     }
 }
+
+/// Not a check: how long translating and loading one small piece takes while a program runs, in wasmtime and
+/// in Chrome. The program is translated from its first instruction at bounded look-ahead, so every other
+/// piece is made at run time.
+#[test]
+#[ignore]
+fn measure_translating_at_run_time() {
+    use wcontainers_translator_test::browser;
+    for (name, optimisation, library, defines) in [
+        ("bench", "-O2", Library::None, &["SCALE=0"][..]),
+        ("hello", "-O2", Library::C, &[][..]),
+    ] {
+        let blob = build_with(name, optimisation, library, defines);
+        for bound in [16, wcontainers_translator::BOUND] {
+            let look_ahead = LookAhead::Bounded(bound);
+            let mut machine = ready(&blob, look_ahead, Default::default());
+            machine.translate_at_run_time(move || look_ahead);
+            let (stopped, registers) = machine.run();
+            ran(&blob, &machine, stopped, &registers);
+            let reading = machine
+                .counters()
+                .into_iter()
+                .find(|c| c.reason == Reason::TranslatedAtRunTime.name())
+                .expect("translated at run time");
+            let report = browser::translated_with(&blob, look_ahead, Default::default());
+            let chrome = report.count("translated at run time");
+            println!(
+                "{name} {optimisation} at bounded {bound}: wasmtime {} pieces, {:.0} us each; Chrome {chrome} pieces, \
+                 {:.0} us each",
+                reading.count,
+                reading.nanoseconds as f64 / reading.count as f64 / 1e3,
+                report.time("translated at run time") as f64 / chrome as f64 / 1e3,
+            );
+        }
+    }
+}

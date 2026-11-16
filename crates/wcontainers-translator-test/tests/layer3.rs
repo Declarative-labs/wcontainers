@@ -1,6 +1,7 @@
 //! Layer 3 against real ARM64 Linux: Csmith's random programs and the hand-picked ones, built with clang
 //! and gcc at every optimisation level, of fixed position and position independent code, at look-ahead none
-//! and full.
+//! and full, at bounded look-ahead of an N picked from the blob, and with pieces of all three mixed and events
+//! injected (see `mixed`).
 //!
 //! `WC_LAYER3_CASES` Csmith programs (default 4), seeded from `WC_LAYER3_SEED` (default 1): case `i` is
 //! Csmith seed `seed * 1_000_003 + i`, with the compiler, level and position picked from the same number,
@@ -16,7 +17,10 @@ use wcontainers_translator_test::browser;
 use wcontainers_translator_test::layer3::{
     Compiler, LEVELS, Position, build, csmith, native_in_time, ordinary,
 };
-use wcontainers_translator_test::programs::{Blob, Ran, native, reachable_memory, translated};
+use wcontainers_translator_test::mixed::mixed;
+use wcontainers_translator_test::programs::{
+    Blob, Ran, native, ran as outcome, reachable_memory, ready, translated,
+};
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -63,6 +67,32 @@ fn compare(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Option<Ran>, Strin
     }
     if finals[0] != finals[1] {
         return Err(format!("{}: full differs from none at the end", blob.name));
+    }
+    // Bounded of an N and pieces mixed with events injected, both from the blob's own hash.
+    let seed = {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        blob.bytes.hash(&mut hasher);
+        hasher.finish()
+    };
+    let bound = 2 + (seed % 63) as u32;
+    let look_ahead = LookAhead::Bounded(bound);
+    let mut machine = ready(blob, look_ahead, Default::default());
+    machine.translate_at_run_time(move || look_ahead);
+    let (stopped, registers) = machine.run();
+    let ours = outcome(blob, &machine, stopped, &registers);
+    if ours != theirs || (registers, reachable_memory(&mut machine, blob)) != finals[0] {
+        return Err(format!(
+            "{} at bounded {bound} differs from none",
+            blob.name
+        ));
+    }
+    let (ours, mut machine, registers, events) = mixed(blob, seed);
+    if ours != theirs || (registers, reachable_memory(&mut machine, blob)) != finals[0] {
+        return Err(format!(
+            "{} mixed from {seed} ({events:?}) differs from none",
+            blob.name
+        ));
     }
     Ok(Some(theirs))
 }

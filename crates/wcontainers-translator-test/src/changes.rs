@@ -20,6 +20,7 @@ use std::hash::{DefaultHasher, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions, RegisterBlock};
+use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit};
 
 /// How a run with changes is made.
@@ -69,6 +70,9 @@ pub struct Compared {
     /// Faults handled and carried on from.
     pub handled: usize,
     pub stopped: Stopped,
+    /// At full: pieces translated at run time, and instructions run alone at none after a check failed.
+    pub translated: u64,
+    pub left: u64,
 }
 
 /// Pages a change may touch: the blob's pages and the page after it, the stack and the page below it.
@@ -326,5 +330,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
         changes,
         handled: full_ended.stops.len() - 1,
         stopped: full_ended.stops.last().unwrap().0,
+        translated: full.count(Reason::TranslatedAtRunTime),
+        left: full.count(Reason::LeftToAddress),
     }
 }

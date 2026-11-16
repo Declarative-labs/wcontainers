@@ -42,6 +42,8 @@ struct Tally {
     changes: u64,
     handled: u64,
     faulted: u64,
+    translated: u64,
+    left: u64,
 }
 
 impl Tally {
@@ -49,6 +51,8 @@ impl Tally {
         self.ran += 1;
         self.changes += compared.changes as u64;
         self.handled += compared.handled as u64;
+        self.translated += compared.translated;
+        self.left += compared.left;
         if matches!(compared.stopped, Stopped::Exit(Exit::MemoryFault { .. })) {
             self.faulted += 1;
         }
@@ -56,8 +60,9 @@ impl Tally {
 
     fn report(&self, what: &str) {
         eprintln!(
-            "changes: {} {what}; {} changes made, {} faults handled, {} ended by a fault",
-            self.ran, self.changes, self.handled, self.faulted
+            "changes: {} {what}; {} changes made, {} faults handled, {} ended by a fault; at full {} pieces \
+             translated at run time, {} instructions run alone after a check failed",
+            self.ran, self.changes, self.handled, self.faulted, self.translated, self.left
         );
     }
 }
