@@ -170,6 +170,83 @@ impl Kernel {
         self.send(cx, Target::Process(pid), signal, info);
     }
 
+    /// Linux's `send_sigio`: the I/O signal of an open file with `FASYNC` set, to its owner's tasks
+    /// that its namer may signal (`sigio_perm`), for `reason` (`POLL_IN`, `POLL_OUT`, ...). With no
+    /// signal chosen it is SIGIO from the kernel; otherwise it carries the band and the descriptor.
+    pub(crate) fn send_io_signal(
+        &mut self,
+        cx: &mut Context<'_>,
+        file: &crate::file::FileRef,
+        reason: u32,
+    ) {
+        use crate::file::OwnerKind;
+        let (owner, fd) = {
+            let file = file.borrow();
+            match (file.owner, file.async_fd) {
+                (Some(owner), Some(fd)) if file.flags & FASYNC != 0 && owner.pid != 0 => {
+                    (owner, fd)
+                }
+                _ => return,
+            }
+        };
+        let live = |process: &crate::process::Process| process.ended.is_none();
+        let targets: alloc::vec::Vec<(Target, Pid)> = match owner.kind {
+            OwnerKind::Thread => self
+                .threads
+                .get(&owner.pid)
+                .map(|thread| (Target::Thread(owner.pid), thread.process))
+                .into_iter()
+                .collect(),
+            OwnerKind::Process => self
+                .processes
+                .get(&owner.pid)
+                .filter(|process| live(process))
+                .map(|process| (Target::Process(process.pid), process.pid))
+                .into_iter()
+                .collect(),
+            OwnerKind::Group => self
+                .processes
+                .values()
+                .filter(|process| process.group == owner.pid && live(process))
+                .map(|process| (Target::Process(process.pid), process.pid))
+                .collect(),
+        };
+        for (target, pid) in targets {
+            let credentials = &self.processes[&pid].credentials;
+            let allowed = owner.euid == 0
+                || [owner.euid, owner.uid]
+                    .iter()
+                    .any(|user| *user == credentials.suid || *user == credentials.uid);
+            if !allowed {
+                continue;
+            }
+            let (signal, info) = if owner.signal == 0 {
+                (SIGIO, kernel_info(SIGIO))
+            } else {
+                let signal = owner.signal as u32;
+                // The poll codes belong to SIGPOLL; a signal with codes of its own gets SI_SIGIO.
+                let own_codes = matches!(
+                    signal,
+                    SIGILL | SIGFPE | SIGSEGV | SIGBUS | SIGTRAP | SIGCHLD | SIGSYS
+                );
+                let code = if own_codes { SI_SIGIO } else { reason as i32 };
+                let band = match reason {
+                    POLL_IN => POLLIN | POLLRDNORM,
+                    POLL_OUT => POLLOUT | POLLWRNORM | POLLWRBAND,
+                    POLL_MSG => POLLIN | POLLRDNORM | POLLMSG,
+                    POLL_ERR => POLLERR,
+                    POLL_PRI => POLLPRI | POLLRDBAND,
+                    _ => POLLHUP | POLLERR,
+                };
+                let mut info = info(signal, code);
+                put(&mut info, 16, &u64::from(band).to_le_bytes());
+                put(&mut info, 24, &fd.to_le_bytes());
+                (signal, info)
+            };
+            self.send(cx, target, signal, info);
+        }
+    }
+
     /// Sends a signal to every live process of a group; false if it has none.
     pub(crate) fn send_to_group(
         &mut self,

@@ -84,7 +84,7 @@ fn every_file(
             .and_then(|on| {
                 let changes = (file.borrow().flags & FASYNC != 0) != (on != 0);
                 if changes {
-                    set_async(file, on != 0).ok_or(Errno::ENOTTY)?;
+                    set_async(kernel, tid, file, on != 0, fd).ok_or(Errno::ENOTTY)?;
                 }
                 Ok(0)
             }),
@@ -219,10 +219,16 @@ fn uuid(kernel: &Kernel, device: u64) -> [u8; 16] {
     siphasher::sip128::Hasher128::finish128(&hasher).as_bytes()
 }
 
-/// Sets or clears `FASYNC` through the file's `fasync`, if it has one: pipes and the random
-/// devices. No owner can be named yet (`F_SETOWN`, K2), so no signal is ever sent for it, as on
-/// Linux for a file with no owner.
-pub(super) fn set_async(file: &FileRef, on: bool) -> Option<()> {
+/// Sets or clears `FASYNC` through the file's `fasync`, if it has one (pipes, terminals and the
+/// random devices), which notes the descriptor the I/O signals carry; a terminal with no owner yet
+/// takes its foreground group, or else the caller's process (`__tty_fasync`).
+pub(super) fn set_async(
+    kernel: &mut Kernel,
+    tid: Tid,
+    file: &FileRef,
+    on: bool,
+    fd: i32,
+) -> Option<()> {
     let has_fasync = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -235,15 +241,28 @@ pub(super) fn set_async(file: &FileRef, on: bool) -> Option<()> {
             _ => false,
         }
     };
-    if !has_fasync && !super::tty::can_async(file) {
+    let terminal = super::tty::can_async(file);
+    if !has_fasync && !terminal {
         return None;
     }
-    let mut file = file.borrow_mut();
-    if on {
-        file.flags |= FASYNC;
-    } else {
-        file.flags &= !FASYNC;
+    if on && terminal && file.borrow().owner.is_none_or(|owner| owner.pid == 0) {
+        let (pid, kind) = match super::tty::foreground_group(file) {
+            Some(group) => (group, crate::file::OwnerKind::Group),
+            None => (kernel.process_of(tid).pid, crate::file::OwnerKind::Process),
+        };
+        super::io::set_owner_of(kernel, tid, file, pid, kind);
     }
+    {
+        let mut file = file.borrow_mut();
+        if on {
+            file.flags |= FASYNC;
+            file.async_fd = Some(fd);
+        } else {
+            file.flags &= !FASYNC;
+            file.async_fd = None;
+        }
+    }
+    super::pipe::note_ends(file);
     Some(())
 }
 

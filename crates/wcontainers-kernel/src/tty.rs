@@ -518,6 +518,9 @@ pub(crate) struct Pty {
     pub closed: [bool; 2],
     /// Signals for process groups that keys and size changes raised, for the caller to send.
     pub signals: Vec<(Pid, u32)>,
+    /// Sides whose input became readable, for the caller to send their I/O signals
+    /// (`kill_fasync` with `POLL_IN`).
+    pub input_signals: Vec<usize>,
 }
 
 impl Pty {
@@ -545,6 +548,7 @@ impl Pty {
             files: [Vec::new(), Vec::new()],
             closed: [false, true],
             signals: Vec::new(),
+            input_signals: Vec::new(),
         }
     }
 
@@ -653,6 +657,9 @@ impl Pty {
             return;
         }
         tty.ld.commit_head = tty.ld.read_head;
+        if tty.ld.read_head != tty.ld.read_tail {
+            self.input_signals.push(side);
+        }
     }
 
     /// One byte of `n_tty_receive_buf_standard`.
@@ -858,6 +865,7 @@ impl Pty {
         ld.set_flag(head, true);
         ld.put(c);
         ld.canon_head = ld.read_head;
+        self.input_signals.push(side);
     }
 
     /// `echo_char`: control characters tagged to show as `^X`.

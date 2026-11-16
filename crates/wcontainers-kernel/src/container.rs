@@ -593,7 +593,7 @@ impl Kernel {
         if old_memory.0 != 0 && !shown_elsewhere {
             cx.cpu.memory_drop(old_memory);
         }
-        self.files_released();
+        self.files_released(cx);
         crate::shared::release(self, cx);
     }
 

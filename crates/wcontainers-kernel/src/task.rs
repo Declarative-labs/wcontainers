@@ -408,7 +408,7 @@ impl Kernel {
         }
         syscall::tty::disassociate(self, cx, pid, true);
         crate::shared::release(self, cx);
-        self.files_released();
+        self.files_released(cx);
         if self.init == Some(pid) {
             // The container ends with its first process; Docker kills the rest.
             self.finished = Some(wait_status);
@@ -612,7 +612,8 @@ impl Kernel {
 
     /// Descriptors were closed: locks may have been let go and pipes and terminals may have lost an
     /// end, so every wait on a file looks again.
-    pub(crate) fn files_released(&mut self) {
+    pub(crate) fn files_released(&mut self, cx: &mut Context<'_>) {
+        crate::syscall::pipe::released(self, cx);
         let woken: alloc::vec::Vec<Tid> = self
             .threads
             .iter()

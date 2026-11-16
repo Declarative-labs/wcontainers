@@ -186,6 +186,63 @@ pub(super) fn open_named_again(kernel: &mut Kernel, tid: Tid) -> Result<FileRef,
     Err(Errno::PARKED)
 }
 
+/// Counts a pipe's ends anew once `FASYNC` changes on one, so a later close is told from earlier ones.
+pub(super) fn note_ends(file: &FileRef) {
+    let node = file.borrow().node.clone();
+    if let Content::Pipe(pipe) = &mut node.borrow_mut().content {
+        pipe.note_counts();
+    }
+}
+
+/// `kill_fasync` on a pipe's readers (`POLL_IN`) or writers (`POLL_OUT`).
+fn signal_ends(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node, readers: bool) {
+    let ends = match &node.borrow().content {
+        Content::Pipe(pipe) => pipe.async_ends(readers),
+        _ => return,
+    };
+    let reason = if readers { POLL_IN } else { POLL_OUT };
+    for end in ends {
+        kernel.send_io_signal(cx, &end, reason);
+    }
+}
+
+/// After descriptors closed: `pipe_release`'s I/O signals to both kinds of end of a pipe left with
+/// readers and no writers or the other way round. Only pipes with an end with `FASYNC` set are
+/// looked at, the only ones the signals reach.
+pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>) {
+    let mut nodes: Vec<Node> = Vec::new();
+    for process in kernel.processes.values() {
+        for (_, descriptor) in process.files.iter() {
+            let file = descriptor.file.borrow();
+            if file.flags & FASYNC != 0
+                && matches!(file.node.borrow().content, Content::Pipe(_))
+                && !nodes
+                    .iter()
+                    .any(|node| alloc::rc::Rc::ptr_eq(node, &file.node))
+            {
+                nodes.push(file.node.clone());
+            }
+        }
+    }
+    for node in nodes {
+        let lost_an_end = {
+            let mut inode = node.borrow_mut();
+            let Content::Pipe(pipe) = &mut inode.content else {
+                continue;
+            };
+            let (readers, writers) = (pipe.readers(), pipe.writers());
+            let lost = (readers < pipe.counted.0 || writers < pipe.counted.1)
+                && (readers == 0) != (writers == 0);
+            pipe.note_counts();
+            lost
+        };
+        if lost_an_end {
+            signal_ends(kernel, cx, &node, true);
+            signal_ends(kernel, cx, &node, false);
+        }
+    }
+}
+
 fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
@@ -218,12 +275,17 @@ pub(super) fn read(
         if writers == 0 {
             return Ok(0);
         }
+        // Writers hear of the room before a wait, once, and of a nonblocking read's end.
+        if !kernel.threads[&tid].call.started {
+            signal_ends(kernel, cx, &node, false);
+        }
         if nonblocking {
             return Err(Errno::EAGAIN);
         }
         if kernel.signal_pending(tid) {
             return Err(Errno::ERESTARTSYS);
         }
+        kernel.thread_mut(tid).call.started = true;
         kernel.park(tid, channel(&node));
         return Err(Errno::PARKED);
     }
@@ -239,6 +301,7 @@ pub(super) fn read(
         }
     }
     if room == 0 {
+        signal_ends(kernel, cx, &node, false);
         return Err(Errno::EFAULT);
     }
     let bytes = with_pipe(file, |pipe| pipe.take(room as usize));
@@ -252,6 +315,7 @@ pub(super) fn read(
         done += chunk.len();
     }
     kernel.wake(channel(&node));
+    signal_ends(kernel, cx, &node, false);
     Ok(done as u64)
 }
 
@@ -356,6 +420,11 @@ pub(super) fn write(
         if kernel.signal_pending(tid) {
             break Err(Errno::ERESTARTSYS);
         }
+        // Readers hear of what came before each wait (not again after a wake that found no room).
+        let call = kernel.threads[&tid].call;
+        if !call.started || call.progress != done {
+            signal_ends(kernel, cx, &node, true);
+        }
         let thread = kernel.thread_mut(tid);
         thread.call.started = true;
         thread.call.progress = done;
@@ -366,6 +435,7 @@ pub(super) fn write(
     if done > 0 {
         kernel.wake(channel(&node));
     }
+    signal_ends(kernel, cx, &node, true);
     match result {
         Err(_) if done > 0 => Ok(done),
         Err(error) => Err(error),

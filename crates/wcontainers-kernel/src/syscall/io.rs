@@ -1598,12 +1598,12 @@ pub(super) fn getdents64(
 
 pub(super) fn close(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     kernel.process_of_mut(tid).files.remove(fd as i32)?;
-    kernel.files_released();
+    kernel.files_released(cx);
     Ok(0)
 }
 
@@ -1613,7 +1613,7 @@ fn nofile_limit(kernel: &Kernel, tid: Tid) -> u64 {
 
 pub(super) fn close_range(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [first, last, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1629,12 +1629,16 @@ pub(super) fn close_range(
         .map(|(fd, _)| fd)
         .filter(|fd| (first..=last).contains(&(*fd as u32)))
         .collect();
+    let closes = flags & CLOSE_RANGE_CLOEXEC == 0 && !fds.is_empty();
     for fd in fds {
         if flags & CLOSE_RANGE_CLOEXEC != 0 {
             files.get_mut(fd)?.close_on_exec = true;
         } else {
             files.remove(fd)?;
         }
+    }
+    if closes {
+        kernel.files_released(cx);
     }
     Ok(0)
 }
@@ -1653,7 +1657,7 @@ pub(super) fn dup(
 
 pub(super) fn dup3(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [old, new, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1670,13 +1674,16 @@ pub(super) fn dup3(
     }
     let files = &mut kernel.process_of_mut(tid).files;
     let file = files.file(old)?;
-    files.set(
+    let replaced = files.set(
         new,
         Descriptor {
             file,
             close_on_exec: flags & O_CLOEXEC != 0,
         },
     );
+    if replaced.is_some() {
+        kernel.files_released(cx);
+    }
     Ok(new as u64)
 }
 
@@ -1907,7 +1914,13 @@ fn fcntl_other(
             // A change of `FASYNC` goes to the file's `fasync`, if it has one, which sets the flag.
             if (wanted ^ file.flags) & FASYNC != 0 {
                 drop(file);
-                let _ = super::ioctl::set_async(&descriptor.file, wanted & FASYNC != 0);
+                let _ = super::ioctl::set_async(
+                    kernel,
+                    tid,
+                    &descriptor.file,
+                    wanted & FASYNC != 0,
+                    fd,
+                );
                 file = descriptor.file.borrow_mut();
             }
             // `O_APPEND` cannot be taken off an append-only file; nothing here is append-only.
@@ -1940,7 +1953,7 @@ fn fcntl_other(
             } else {
                 OwnerKind::Process
             };
-            set_owner(kernel, &descriptor.file, who.abs(), kind)
+            set_owner(kernel, tid, &descriptor.file, who.abs(), kind)
         }
         F_GETOWN_EX if !path_only => {
             let owner = descriptor.file.borrow().owner.unwrap_or_default();
@@ -1969,7 +1982,7 @@ fn fcntl_other(
                 F_OWNER_PGRP => OwnerKind::Group,
                 _ => return Err(Errno::EINVAL),
             };
-            set_owner(kernel, &descriptor.file, word(4), kind)
+            set_owner(kernel, tid, &descriptor.file, word(4), kind)
         }
         F_GETSIG if !path_only => Ok(descriptor
             .file
@@ -2066,15 +2079,31 @@ fn owner_lives(kernel: &Kernel, owner: &Owner) -> bool {
 
 /// `f_setown` and `f_setown_ex`: a number in use, or 0 for none, becomes the file's owner; the signal
 /// stays.
-fn set_owner(kernel: &Kernel, file: &FileRef, pid: i32, kind: OwnerKind) -> Result<u64, Errno> {
+fn set_owner(
+    kernel: &Kernel,
+    tid: Tid,
+    file: &FileRef,
+    pid: i32,
+    kind: OwnerKind,
+) -> Result<u64, Errno> {
     if pid != 0 && !pid_in_use(kernel, pid) {
         return Err(Errno::ESRCH);
     }
+    set_owner_of(kernel, tid, file, pid, kind);
+    Ok(0)
+}
+
+/// Linux's `f_modown`: the owner, with the caller's users when it names one.
+pub(super) fn set_owner_of(kernel: &Kernel, tid: Tid, file: &FileRef, pid: i32, kind: OwnerKind) {
+    let credentials = &kernel.process_of(tid).credentials;
     let mut file = file.borrow_mut();
     let owner = file.owner.get_or_insert_default();
     owner.pid = pid;
     owner.kind = kind;
-    Ok(0)
+    if pid != 0 {
+        owner.uid = credentials.uid;
+        owner.euid = credentials.euid;
+    }
 }
 
 /// `fsync` and `fdatasync`: everything is in memory, so there is nothing to wait for. Files with no

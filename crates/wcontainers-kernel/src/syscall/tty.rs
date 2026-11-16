@@ -246,6 +246,17 @@ fn after(kernel: &mut Kernel, cx: &mut Context<'_>, pty: &PtyRef) {
     for (group, signal) in signals {
         kernel.send_to_group(cx, group, signal, crate::signal::kernel_info(signal));
     }
+    // Input became readable: the I/O signal of each file of the side with `FASYNC` set.
+    let sides = core::mem::take(&mut pty.borrow_mut().input_signals);
+    for side in sides {
+        let files: Vec<FileRef> = pty.borrow().files[side]
+            .iter()
+            .filter_map(|file| file.upgrade())
+            .collect();
+        for file in files {
+            kernel.send_io_signal(cx, &file, POLL_IN);
+        }
+    }
     kernel.wake(channel(pty));
 }
 
@@ -497,6 +508,12 @@ pub(super) fn poll(file: &FileRef) -> u16 {
         mask |= POLLOUT | POLLWRNORM;
     }
     mask as u16
+}
+
+/// The foreground group of a terminal file's side.
+pub(super) fn foreground_group(file: &FileRef) -> Option<crate::process::Pid> {
+    let (pty, side, _) = end(file)?;
+    pty.borrow().sides[side].pgrp
 }
 
 /// `tty_fasync`: whether `FIOASYNC` and `F_SETFL`'s `O_ASYNC` may be set.

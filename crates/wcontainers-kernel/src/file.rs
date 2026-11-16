@@ -29,6 +29,9 @@ pub(crate) struct OpenFile {
     pub created: bool,
     /// For a terminal, the side it opened.
     pub terminal: Option<TerminalEnd>,
+    /// While `FASYNC` is set through a file that sends I/O signals, the descriptor it was set
+    /// through, which the signals carry (Linux's `fa_fd`).
+    pub async_fd: Option<i32>,
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
@@ -38,12 +41,15 @@ pub(crate) struct TerminalEnd {
     pub hung_up: bool,
 }
 
-/// Linux's `fown_struct`: a process number of a kind (none is 0) and the signal (0 is `SIGIO`).
+/// Linux's `fown_struct`: a process number of a kind (none is 0), the signal (0 is `SIGIO`), and the
+/// user and effective user of whoever named the owner, which decide whom the signal may reach.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Owner {
     pub pid: i32,
     pub kind: OwnerKind,
     pub signal: i32,
+    pub uid: u32,
+    pub euid: u32,
 }
 
 /// What an owner's number names (Linux's `PIDTYPE_PID`, `PIDTYPE_TGID`, `PIDTYPE_PGID`).
@@ -70,6 +76,7 @@ impl OpenFile {
             owner: None,
             created: false,
             terminal: None,
+            async_fd: None,
         }))
     }
 
