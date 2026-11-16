@@ -1221,11 +1221,21 @@ fn lock_range(
             mapping.permissions.is_empty()
                 || matches!(mapping.backing, Backing::File { file_end, .. } if file_end < end.min(mapping.end))
         });
+    // Droppable memory that allows nothing is ENOMEM to either kind of lock (measured).
+    let droppable_closed = process.map.iter().any(|mapping| {
+        mapping.start < end
+            && mapping.end > start
+            && matches!(mapping.backing, Backing::Droppable)
+            && mapping.permissions.is_empty()
+    });
     if lock == Lock::Now {
         populate(kernel, cx, tid, start, end, false);
         if unreadable {
             return Err(Errno::ENOMEM);
         }
+    }
+    if lock != Lock::None && droppable_closed {
+        return Err(Errno::ENOMEM);
     }
     Ok(0)
 }

@@ -374,7 +374,7 @@ pub(super) fn open(
     let flags = open_flags(flags)?;
     if kernel.threads[&tid].opening.is_some() {
         let file = super::pipe::open_named_again(kernel, tid)?;
-        return install(kernel, tid, file, flags);
+        return named_opened(kernel, cx, tid, file, flags);
     }
     if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
         return Err(kernel.counters.refuse_flag(
@@ -563,7 +563,8 @@ pub(super) fn open(
             return Err(Errno::ENXIO);
         }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
-        if flags & O_DIRECT != 0 && !node.borrow().takes_direct_io() {
+        // A named pipe's is refused once it is open (below).
+        if flags & O_DIRECT != 0 && file_type != S_IFIFO && !node.borrow().takes_direct_io() {
             return Err(Errno::EINVAL);
         }
         if flags & O_TRUNC != 0 && file_type == S_IFREG {
@@ -605,6 +606,24 @@ pub(super) fn open(
     }
     if file_type == S_IFIFO && flags & O_PATH == 0 {
         super::pipe::open_named(kernel, tid, &file)?;
+        return named_opened(kernel, cx, tid, file, flags);
+    }
+    install(kernel, tid, file, flags)
+}
+
+/// A named pipe once open: direct I/O is refused only now (`do_dentry_open` checks it after the
+/// open), closing the end again; otherwise it takes a descriptor.
+fn named_opened(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: crate::file::FileRef,
+    flags: u32,
+) -> Result<u64, Errno> {
+    if flags & O_DIRECT != 0 {
+        drop(file);
+        kernel.files_released(cx);
+        return Err(Errno::EINVAL);
     }
     install(kernel, tid, file, flags)
 }

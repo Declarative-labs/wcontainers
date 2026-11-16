@@ -180,6 +180,9 @@ int main(void) {
     stat(FIFO, &status);
     printf("mode: %o\n", status.st_mode);
     result("open for its path", open(FIFO, O_PATH));
+    result("direct, writer with no reader", open(FIFO, O_WRONLY | O_NONBLOCK | O_DIRECT));
+    result("direct, nonblocking reader", open(FIFO, O_RDONLY | O_NONBLOCK | O_DIRECT));
+    result("direct, read and write", open(FIFO, O_RDWR | O_DIRECT));
     nonblocking();
     dropped_when_closed();
     waits();
