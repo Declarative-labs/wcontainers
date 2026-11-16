@@ -1,5 +1,6 @@
-// Lists the directories its arguments name and prints, for each entry, its directory, name, listed type and what
-// lstat says of it (type and mode, owner, group, link count), one entry per line.
+// Lists the directories its arguments name and prints, for each entry, its directory, name, the
+// position after it (d_off), listed type and what lstat says of it (type and mode, owner, group, link
+// count), one entry per line.
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -30,10 +31,10 @@ static void list(const char *dir) {
             struct entry *entry = (struct entry *)(buffer + at);
             struct stat st;
             if (fstatat(fd, entry->name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-                printf("%s %s %d %o %d %d %ld\n", dir, entry->name, entry->type, st.st_mode, st.st_uid,
-                       st.st_gid, (long)st.st_nlink);
+                printf("%s %s %ld %d %o %d %d %ld\n", dir, entry->name, (long)entry->off, entry->type,
+                       st.st_mode, st.st_uid, st.st_gid, (long)st.st_nlink);
             } else {
-                printf("%s %s %d lstat failed\n", dir, entry->name, entry->type);
+                printf("%s %s %ld %d lstat failed\n", dir, entry->name, (long)entry->off, entry->type);
             }
             at += entry->reclen;
         }

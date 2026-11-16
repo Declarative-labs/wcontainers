@@ -152,30 +152,32 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("version", Global::File(0o444)),
 ];
 
-/// The entries Linux 7.0 has in the directories built here (as the reference lists them), each
-/// directory's names separated by spaces; `<pid>` stands for a process directory. Looking up one that is
-/// not built is counted and warned before it answers ENOENT.
+/// The entries Linux 7.0 has in the directories built here, in the order the reference's `getdents`
+/// lists them, each directory's names separated by spaces; `<pid>` stands for a process directory.
+/// An entry's position in its directory is 2 plus its index here, except in `/proc` itself, where
+/// `self` and `thread-self` come at `FIRST_PROCESS_ENTRY`. Looking up one that is not built is
+/// counted and warned before it answers ENOENT.
 const LINUX_ENTRIES: &[(&str, &str)] = &[
     (
         "",
         concat!(
-            "buddyinfo bus cgroups cmdline config.gz consoles cpuinfo crypto device-tree ",
-            "devices diskstats docker driver execdomains filesystems fs interrupts iomem ",
-            "ioports irq kallsyms kcore key-users keys kmsg kpagecgroup kpagecount kpageflags ",
-            "loadavg locks meminfo misc modules mounts net pagetypeinfo partitions pressure ",
-            "scsi self slabinfo softirqs stat swaps sys sysrq-trigger sysvipc thread-self ",
-            "timer_list tty uptime version vmallocinfo vmstat zoneinfo",
+            "fs bus irq net sys tty keys kmsg misc scsi stat iomem kcore locks swaps .reset ",
+            "crypto docker driver mounts uptime vmstat cgroups cmdline cpuinfo devices ",
+            "ioports loadavg meminfo modules sysvipc version consoles kallsyms pressure ",
+            "slabinfo softirqs zoneinfo buddyinfo config.gz diskstats key-users interrupts ",
+            "kpagecount kpageflags partitions timer_list device-tree execdomains filesystems ",
+            "kpagecgroup vmallocinfo pagetypeinfo sysrq-trigger self thread-self",
         ),
     ),
     (
         "<pid>",
         concat!(
-            "attr autogroup auxv cgroup clear_refs cmdline comm coredump_filter cpuset cwd ",
-            "environ exe fd fdinfo gid_map io ksm_merging_pages ksm_stat limits loginuid ",
-            "map_files maps mem mountinfo mounts mountstats net ns oom_adj oom_score ",
-            "oom_score_adj pagemap personality projid_map root sched schedstat sessionid ",
-            "setgroups smaps smaps_rollup stack stat statm status syscall task timens_offsets ",
-            "timers timerslack_ns uid_map wchan",
+            "task fd map_files fdinfo ns net environ auxv status personality limits sched ",
+            "autogroup timens_offsets comm syscall cmdline stat statm maps mem cwd root exe ",
+            "mounts mountinfo mountstats clear_refs smaps smaps_rollup pagemap attr wchan ",
+            "stack schedstat cpuset cgroup oom_score oom_adj oom_score_adj loginuid ",
+            "sessionid coredump_filter io uid_map gid_map projid_map setgroups timers ",
+            "timerslack_ns ksm_merging_pages ksm_stat",
         ),
     ),
     ("sys", "abi debug dev fs kernel net sunrpc user vm"),
@@ -544,8 +546,8 @@ pub(crate) fn lookup(
 ) -> Result<Node, Errno> {
     let found = list(view, entry)
         .into_iter()
-        .find(|(child, _)| child.as_slice() == name)
-        .map(|(_, child)| child);
+        .find(|(child, _, _)| child.as_slice() == name)
+        .map(|(_, child, _)| child);
     // Process directories that are not listed (threads) can still be looked up.
     let found = found.or_else(|| match entry {
         Entry::Root => parse_number(name)
@@ -587,44 +589,97 @@ fn not_built(view: &View<'_>, entry: &Entry, name: &[u8]) {
     }
 }
 
-/// The entries of a directory of the tree, in the order `getdents` lists them.
-pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry)> {
+/// Where Linux's `getdents` puts a name in a directory of the tree: 2 plus its index in Linux's list,
+/// and `FIRST_PROCESS_ENTRY` (256) on for what `/proc` lists after its own entries.
+fn linux_position(directory: &str, name: &str) -> u64 {
+    const FIRST_PROCESS_ENTRY: u64 = 256;
+    let names = LINUX_ENTRIES
+        .iter()
+        .find(|(path, _)| *path == directory)
+        .map_or("", |(_, names)| *names);
+    let index = names
+        .split(' ')
+        .position(|known| known == name)
+        .expect("every entry built is one of Linux's") as u64;
+    match name {
+        "self" if directory.is_empty() => FIRST_PROCESS_ENTRY,
+        "thread-self" if directory.is_empty() => FIRST_PROCESS_ENTRY + 1,
+        _ => index + 2,
+    }
+}
+
+/// Where `/proc` puts a process's directory (`TGID_OFFSET` past the first process entry).
+pub(crate) const fn process_position(pid: Pid) -> u64 {
+    pid as u64 + 256 + 2
+}
+
+/// Where `/proc`'s listing ends: past every process number Linux can give (`PID_MAX_LIMIT`).
+pub(crate) const PROCESSES_END: u64 = (4 << 20) + 256 + 2;
+
+/// The entries of a directory of the tree, each with its position, in the order `getdents` lists
+/// them.
+pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)> {
     let mut out = Vec::new();
     match entry {
         Entry::Root => {
             for (index, name) in global_children("") {
-                out.push((name.as_bytes().to_vec(), Entry::Global(index)));
+                out.push((
+                    name.as_bytes().to_vec(),
+                    Entry::Global(index),
+                    linux_position("", name),
+                ));
             }
-            out.push((b"self".to_vec(), Entry::SelfLink));
+            out.push((
+                b"self".to_vec(),
+                Entry::SelfLink,
+                linux_position("", "self"),
+            ));
             for pid in view.processes.keys() {
-                out.push((format!("{pid}").into_bytes(), Entry::Process(*pid)));
+                out.push((
+                    format!("{pid}").into_bytes(),
+                    Entry::Process(*pid),
+                    process_position(*pid),
+                ));
             }
         }
         Entry::Process(pid) => {
+            let mut add = |name: &[u8], child: Entry| {
+                let position =
+                    linux_position("<pid>", core::str::from_utf8(name).unwrap_or_default());
+                out.push((name.to_vec(), child, position));
+            };
             for (name, file) in PROCESS_FILES {
-                out.push((name.to_vec(), Entry::ProcessFile(*pid, *file)));
+                add(name, Entry::ProcessFile(*pid, *file));
             }
             for (name, link) in PROCESS_LINKS {
-                out.push((name.to_vec(), Entry::ProcessLink(*pid, *link)));
+                add(name, Entry::ProcessLink(*pid, *link));
             }
-            out.push((b"fd".to_vec(), Entry::Fds(*pid)));
-            out.sort_by(|a, b| a.0.cmp(&b.0));
+            add(b"fd", Entry::Fds(*pid));
         }
         Entry::Fds(pid) => {
             if let Some(process) = view.processes.get(pid) {
                 for (fd, _) in process.files.iter() {
-                    out.push((format!("{fd}").into_bytes(), Entry::Fd(*pid, fd)));
+                    out.push((
+                        format!("{fd}").into_bytes(),
+                        Entry::Fd(*pid, fd),
+                        fd as u64 + 2,
+                    ));
                 }
             }
         }
         Entry::Global(index) => {
             let (path, _) = GLOBAL[*index];
             for (child, name) in global_children(path) {
-                out.push((name.as_bytes().to_vec(), Entry::Global(child)));
+                out.push((
+                    name.as_bytes().to_vec(),
+                    Entry::Global(child),
+                    linux_position(path, name),
+                ));
             }
         }
         _ => {}
     }
+    out.sort_by_key(|(_, _, position)| *position);
     out
 }
 

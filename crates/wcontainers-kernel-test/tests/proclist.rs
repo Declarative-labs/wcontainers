@@ -1,9 +1,10 @@
 //! Listings of `/proc` and `/dev` compared with real ARM64 Linux. `/dev` must list the same entries in
 //! the same order. `/proc` holds a chosen subset of Linux's entries (a declared difference, each
-//! lookup of a missing one counted), so every entry listed there must be listed in the reference with
-//! the same type, mode, owner, group and link count; the entries only the reference has are printed.
+//! lookup of a missing one counted), so the entries listed there must be those of the reference's
+//! listing that we build, in its order, each with the same position after it (d_off), type, mode,
+//! owner, group and link count; the entries only the reference has are printed.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use wcontainers_kernel_test::{guest, run_both};
@@ -20,14 +21,10 @@ fn named(dir: &str, name: &str) -> String {
     }
 }
 
-/// Each line's directory and name, and the rest of it. The link counts of `/proc` and `/` are left
-/// out: Linux counts every process on the machine in `/proc`'s (`proc_root_getattr`), and `/` is the
-/// root file system, overlayfs in the reference and tmpfs here until the file backend exists.
-fn entries(output: &[u8]) -> BTreeMap<(String, String), String> {
-    listed(output).into_iter().collect()
-}
-
-/// The entries in the order they were listed.
+/// The entries in the order they were listed: each line's directory and name, and the rest of it.
+/// The link counts of `/proc` and `/` are left out: Linux counts every process on the machine in
+/// `/proc`'s (`proc_root_getattr`), and `/` is the root file system, overlayfs in the reference and
+/// tmpfs here until the file backend exists.
 fn listed(output: &[u8]) -> Vec<((String, String), String)> {
     String::from_utf8_lossy(output)
         .lines()
@@ -70,23 +67,36 @@ fn compare(dirs: &[&str]) {
     let program = guest::build("proclist", &[], &out);
     let (ours, theirs) = run_both(&program, dirs);
     assert_eq!(ours.outcome.exit_code, theirs.exit_code);
-    let our_entries = entries(&ours.outcome.stdout);
-    let their_entries = entries(&theirs.stdout);
+    let our_entries = listed(&ours.outcome.stdout);
+    let their_entries = listed(&theirs.stdout);
     assert!(!our_entries.is_empty());
-    let differences: Vec<String> = our_entries
+    let ours_named: BTreeSet<_> = our_entries.iter().map(|(key, _)| key.clone()).collect();
+    let (theirs_built, theirs_only): (Vec<_>, Vec<_>) = their_entries
+        .into_iter()
+        .partition(|(key, _)| ours_named.contains(key));
+    let show = |entries: &[((String, String), String)]| -> Vec<String> {
+        entries
+            .iter()
+            .map(|((dir, name), rest)| format!("{dir} {name} {rest}"))
+            .collect()
+    };
+    let (ours_shown, theirs_shown) = (show(&our_entries), show(&theirs_built));
+    let mut differences: Vec<String> = ours_shown
         .iter()
-        .filter(|(key, rest)| their_entries.get(*key) != Some(*rest))
-        .map(|((dir, name), rest)| {
-            format!(
-                "{dir} {name}: ours {rest:?} theirs {:?}",
-                their_entries.get(&(dir.clone(), name.clone()))
-            )
-        })
+        .zip(&theirs_shown)
+        .filter(|(our, their)| our != their)
+        .map(|(our, their)| format!("ours {our:?}\ntheirs {their:?}"))
         .collect();
-    let only_theirs: Vec<String> = their_entries
-        .keys()
-        .filter(|key| !our_entries.contains_key(*key))
-        .map(|(dir, name)| format!("{dir}/{name}"))
+    if ours_shown.len() != theirs_shown.len() {
+        differences.push(format!(
+            "ours lists {} entries the reference has, of {}",
+            theirs_shown.len(),
+            ours_shown.len()
+        ));
+    }
+    let only_theirs: Vec<String> = theirs_only
+        .iter()
+        .map(|((dir, name), _)| format!("{dir}/{name}"))
         .collect();
     println!(
         "only in the reference ({}): {}",

@@ -1422,6 +1422,23 @@ pub(super) fn getdents64(
             .and_then(|parent| parent.upgrade())
             .map_or(inode.ino, |parent| parent.borrow().ino);
         match &inode.content {
+            // devpts lists by count (`dcache_readdir`): `.` at 0, `..` at 1, then each entry at the
+            // next number, newest first.
+            Content::Directory(directory) if inode.fs.kind == crate::fs::Kind::Devpts => {
+                if position == 0 {
+                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 1));
+                }
+                if position <= 1 {
+                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 2));
+                }
+                for (index, (_, name, child)) in directory.listed_from(2).enumerate() {
+                    let own = index as u64 + 2;
+                    if own >= position {
+                        let child = child.borrow();
+                        entries.push((name.to_vec(), child.ino, child.dirent_type(), own + 1));
+                    }
+                }
+            }
             Content::Directory(directory) => {
                 // `.` at 0, `..` at 1, then the entries in tmpfs's order, each giving the next one's
                 // position.
@@ -1451,51 +1468,53 @@ pub(super) fn getdents64(
             Content::Proc(entry) => {
                 let entry = *entry;
                 drop(inode);
-                // Each entry's own position, and the position after the last: in order from 2, except
-                // that a descriptor's is its number plus 2 and the end is the table's size plus 2, as
-                // Linux's `proc_readfd_common` leaves them.
+                // Each entry has Linux's position. What follows an entry (its `d_off`) is the position
+                // after its own, except where Linux moves to the next entry's before listing it:
+                // descriptors (`proc_readfd_common`, which ends at the table's size plus 2) and
+                // processes in `/proc` (`proc_pid_readdir`, which ends past the largest number).
+                use crate::fs::proc::Entry;
                 let pid = kernel.threads[&tid].process;
                 let (listed, end) = kernel.with_walk(pid, |walk, _| {
                     let mut out = Vec::new();
-                    for (index, (name, child)) in crate::fs::proc::list(walk.proc, &entry)
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let position = match child {
-                            crate::fs::proc::Entry::Fd(_, fd) => fd as u64 + 2,
-                            _ => index as u64 + 2,
-                        };
+                    for (name, child, position) in crate::fs::proc::list(walk.proc, &entry) {
+                        let jumps = matches!(child, Entry::Fd(..) | Entry::Process(_));
                         let child_node = crate::fs::proc::node(walk.proc, None, &name, child);
                         let child_inode = child_node.borrow();
-                        out.push((name, child_inode.ino, child_inode.dirent_type(), position));
+                        let kind = child_inode.dirent_type();
+                        out.push((name, child_inode.ino, kind, position, jumps));
                     }
                     let end = match entry {
-                        crate::fs::proc::Entry::Fds(pid) => walk
+                        Entry::Fds(pid) => walk
                             .proc
                             .processes
                             .get(&pid)
                             .map_or(2, |process| u64::from(process.files.capacity()) + 2),
-                        _ => out.len() as u64 + 2,
+                        _ => crate::fs::proc::PROCESSES_END,
                     };
                     Ok((out, end))
                 })?;
                 let ino = node.borrow().ino;
-                let first = listed.first().map_or(end, |(_, _, _, position)| *position);
+                let fds = matches!(entry, Entry::Fds(_));
                 if position == 0 {
                     entries.push((b".".to_vec(), ino, DT_DIR as u8, 1));
                 }
                 if position <= 1 {
-                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, first));
+                    let after = if fds {
+                        listed.first().map_or(end, |listed| listed.3)
+                    } else {
+                        2
+                    };
+                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, after));
                 }
                 let nexts: Vec<u64> = listed
                     .iter()
                     .skip(1)
-                    .map(|(_, _, _, position)| *position)
+                    .map(|listed| listed.3)
                     .chain([end])
                     .collect();
-                for ((name, ino, kind, own), next) in listed.into_iter().zip(nexts) {
+                for ((name, ino, kind, own, jumps), next) in listed.into_iter().zip(nexts) {
                     if own >= position {
-                        entries.push((name, ino, kind, next));
+                        entries.push((name, ino, kind, if jumps { next } else { own + 1 }));
                     }
                 }
             }
