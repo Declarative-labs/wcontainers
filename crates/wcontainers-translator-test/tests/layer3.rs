@@ -22,6 +22,14 @@ fn compare(blob: &Blob) -> Result<bool, String> {
     let Some(theirs) = native_in_time(blob) else {
         return Ok(false);
     };
+    // Every program here ends normally, so ending by a signal (a moved blob that did not relocate itself,
+    // say) would make agreement meaningless.
+    if theirs.status >= 128 {
+        return Err(format!(
+            "{}: Linux ended with status {}",
+            blob.name, theirs.status
+        ));
+    }
     let mut finals = Vec::new();
     for look_ahead in [LookAhead::None, LookAhead::Full] {
         let (ours, mut machine, registers) = translated(blob, look_ahead);

@@ -143,6 +143,8 @@ fn data_blob(name: &str, mut ops: Ops) -> Blob {
         name: name.into(),
         code_bytes: PAGE_SIZE,
         bytes,
+        load: LOAD,
+        program_headers: None,
     }
 }
 

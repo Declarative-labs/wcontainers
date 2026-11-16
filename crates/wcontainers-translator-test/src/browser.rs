@@ -1,7 +1,7 @@
 //! The browser runner: a flat blob run in Chrome by `browser/runner.js`, with the translator built for wasm32
 //! from `browser/` so that code is translated at run time there too.
 
-use crate::programs::{Blob, LOAD, Ran, placement};
+use crate::programs::{Blob, Ran, placement};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
@@ -87,7 +87,7 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
         .collect();
     let setup = serde_json::json!({
         "codeBytes": blob.code_bytes,
-        "load": LOAD,
+        "load": blob.load,
         "memoryBytes": place.memory_bytes,
         "regions": regions,
         "sp": place.sp,

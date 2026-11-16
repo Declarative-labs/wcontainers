@@ -347,7 +347,8 @@ extern "C" fn timed_out(_: libc::c_int, _: *mut libc::siginfo_t, _: *mut libc::c
     unsafe { libc::_exit(128 + libc::SIGALRM) };
 }
 
-fn blob(path: &str, load: u64, stack_top: u64) {
+/// Run a flat blob at `load`; `headers` is where its program headers are and how many.
+fn blob(path: &str, load: u64, stack_top: u64, headers: Option<(u64, u64)>) {
     let bytes = std::fs::read(path).expect("read the blob");
     let length = (bytes.len() as u64).next_multiple_of(PAGE);
     // One mapping for code and data, as a flat blob needs.
@@ -364,7 +365,7 @@ fn blob(path: &str, load: u64, stack_top: u64) {
     }
     const STACK: u64 = 1 << 20;
     map(stack_top - STACK, STACK, libc::PROT_READ | libc::PROT_WRITE);
-    let (sp, stack) = initial_stack(stack_top);
+    let (sp, stack) = initial_stack(stack_top, headers);
     unsafe { core::ptr::copy_nonoverlapping(stack.as_ptr(), sp as *mut u8, stack.len()) };
     handle(libc::SIGUSR1, enter);
     unsafe {
@@ -382,11 +383,11 @@ fn blob(path: &str, load: u64, stack_top: u64) {
     unreachable!("the blob returned without exiting");
 }
 
-fn time(runs: u32, path: &str, load: u64, stack_top: u64) {
+fn time(runs: u32, path: &str, load: u64, stack_top: u64, headers: Option<(u64, u64)>) {
     for _ in 0..runs {
         let start = std::time::Instant::now();
         match unsafe { libc::fork() } {
-            0 => blob(path, load, stack_top),
+            0 => blob(path, load, stack_top, headers),
             -1 => panic!("fork failed"),
             child => {
                 let mut status = 0;
@@ -394,6 +395,14 @@ fn time(runs: u32, path: &str, load: u64, stack_top: u64) {
                 eprintln!("{:.6}", start.elapsed().as_secs_f64());
             }
         }
+    }
+}
+
+/// The optional address and count of a blob's program headers.
+fn headers(arguments: &[String]) -> Option<(u64, u64)> {
+    match arguments {
+        [at, count] => Some((number(at), count.parse().expect("a count"))),
+        _ => None,
     }
 }
 
@@ -405,15 +414,21 @@ fn main() {
     let arguments: Vec<String> = std::env::args().collect();
     match arguments.get(1).map(String::as_str) {
         Some("cases") => cases(),
-        Some("blob") => blob(&arguments[2], number(&arguments[3]), number(&arguments[4])),
+        Some("blob") => blob(
+            &arguments[2],
+            number(&arguments[3]),
+            number(&arguments[4]),
+            headers(&arguments[5..]),
+        ),
         Some("time") => time(
             arguments[2].parse().expect("a number of runs"),
             &arguments[3],
             number(&arguments[4]),
             number(&arguments[5]),
+            headers(&arguments[6..]),
         ),
         _ => panic!(
-            "usage: wcontainers-reference cases | blob <file> <load> <stack top> | time <runs> <file> <load> <stack top>"
+            "usage: wcontainers-reference cases | blob <file> <load> <stack top> [<headers> <count>] | time <runs> <file> <load> <stack top> [<headers> <count>]"
         ),
     }
 }

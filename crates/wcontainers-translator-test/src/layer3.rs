@@ -16,8 +16,9 @@ pub enum Compiler {
     Gcc,
 }
 
-/// How the code is generated: for the fixed address it is linked at, or position independent (`-fPIE`,
-/// reaching data through the global offset table), linked at the same address.
+/// How the code is generated: for the fixed address it is linked and loaded at, or position independent
+/// (`-fPIE`, a static position independent program that relocates itself at start), loaded away from where
+/// it is linked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Position {
     Fixed,
@@ -126,9 +127,9 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
     let elf = out.join(format!("{own}.elf"));
     let script = source_directory().join("flat.ld");
     let include = csmith_include();
-    let code = match position {
-        Position::Fixed => "-fno-pic",
-        Position::Independent => "-fPIE",
+    let code: &[&str] = match position {
+        Position::Fixed => &["-static", "-fno-pic", "-no-pie"],
+        Position::Independent => &["-static-pie", "-fPIE", "-Wl,-z,norelro"],
     };
     match compiler {
         Compiler::Clang => {
@@ -138,14 +139,9 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
                 elf.display().to_string(),
                 source.display().to_string(),
             );
-            zig(&[
-                "cc",
-                "-target",
-                "aarch64-linux-musl",
-                optimisation,
-                "-static",
-                code,
-                "-no-pie",
+            let mut arguments = vec!["cc", "-target", "aarch64-linux-musl", optimisation];
+            arguments.extend(code);
+            arguments.extend([
                 "-fno-sanitize=all",
                 "-w",
                 &include,
@@ -155,6 +151,7 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
                 &elf,
                 &source,
             ]);
+            zig(&arguments);
         }
         Compiler::Gcc => {
             gcc_image();
@@ -170,15 +167,8 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
                 .arg(format!("{}:/l:ro", script.parent().unwrap().display()))
                 .arg("-v")
                 .arg(format!("{}:/o", out.display()))
-                .args([
-                    GCC_IMAGE,
-                    "gcc",
-                    optimisation,
-                    "-static",
-                    code,
-                    "-no-pie",
-                    "-w",
-                ])
+                .args([GCC_IMAGE, "gcc", optimisation, "-w"])
+                .args(code)
                 .args(["-I/i", "-T/l/flat.ld", "-Wl,--build-id=none", "-o"])
                 .arg(format!("/o/{own}.elf"))
                 .arg(format!(
@@ -190,7 +180,11 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
             assert!(status.success(), "gcc failed for {name}");
         }
     }
-    flatten(&elf, &own, name)
+    let mut blob = flatten(&elf, &own, name);
+    if position == Position::Independent {
+        blob.load = crate::programs::MOVED;
+    }
+    blob
 }
 
 /// The native run, or `None` when the program does not end in time (Csmith's programs may not).

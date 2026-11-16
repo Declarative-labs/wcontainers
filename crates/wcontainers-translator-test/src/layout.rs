@@ -7,11 +7,19 @@ pub const BLOB_HWCAP: u64 = 0x183;
 /// The name a flat blob is started under, its `argv[0]`.
 pub const BLOB_NAME: &[u8] = b"blob\0";
 
+/// Bytes of one ELF64 program header.
+pub const PROGRAM_HEADER_BYTES: u64 = 56;
+
 /// What Linux puts at the top of a new program's stack, the way both runners give it to a flat blob:
 /// argc, argv, an empty environment, the auxiliary vector, then the name and the 16 `AT_RANDOM` bytes.
+/// `headers` is where the blob's program headers are in guest memory and how many there are, given as
+/// `AT_PHDR` and `AT_PHNUM`, through which a position independent C program finds where it was placed.
 /// Returns the stack pointer and the bytes to place from it up to `top`.
-pub fn initial_stack(top: u64) -> (u64, Vec<u8>) {
+pub fn initial_stack(top: u64, headers: Option<(u64, u64)>) -> (u64, Vec<u8>) {
     const AT_NULL: u64 = 0;
+    const AT_PHDR: u64 = 3;
+    const AT_PHENT: u64 = 4;
+    const AT_PHNUM: u64 = 5;
     const AT_PAGESZ: u64 = 6;
     const AT_HWCAP: u64 = 16;
     const AT_RANDOM: u64 = 25;
@@ -19,12 +27,14 @@ pub fn initial_stack(top: u64) -> (u64, Vec<u8>) {
     const AT_EXECFN: u64 = 31;
     let random = top - 16;
     let name = (random - BLOB_NAME.len() as u64) & !15;
-    let auxv = [
+    let mut words = vec![1, name, 0, 0];
+    if let Some((at, count)) = headers {
+        words.extend([AT_PHDR, at, AT_PHENT, PROGRAM_HEADER_BYTES, AT_PHNUM, count]);
+    }
+    words.extend([
         AT_PAGESZ, 4096, AT_HWCAP, BLOB_HWCAP, AT_HWCAP2, 0, AT_RANDOM, random, AT_EXECFN, name,
         AT_NULL, 0,
-    ];
-    let mut words = vec![1, name, 0, 0];
-    words.extend_from_slice(&auxv);
+    ]);
     let sp = (name - 8 * words.len() as u64) & !15;
     let mut bytes = vec![0u8; (top - sp) as usize];
     for (i, word) in words.iter().enumerate() {

@@ -1876,5 +1876,7 @@ pub fn assemble(program: &Program) -> Blob {
         name: "layer2".into(),
         bytes,
         code_bytes,
+        load: crate::programs::LOAD,
+        program_headers: None,
     }
 }

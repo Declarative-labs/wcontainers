@@ -11,8 +11,10 @@ use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
 use wcontainers_translator::{LookAhead, Omit};
 
-/// Where every blob is linked and loaded.
+/// Where every blob is linked, and loaded unless it is moved.
 pub const LOAD: u64 = 0x40_0000;
+/// Where a position independent blob is loaded, away from where it is linked.
+pub const MOVED: u64 = 0x2345_6000;
 /// The top of the 1 MiB stack, above the reach of the reference's own randomised heap.
 pub const STACK_TOP: u64 = 0x4810_0000;
 const STACK_BYTES: u64 = 1 << 20;
@@ -23,6 +25,18 @@ pub struct Blob {
     pub name: String,
     pub bytes: Vec<u8>,
     pub code_bytes: u64,
+    /// Where it is placed in guest memory.
+    pub load: u64,
+    /// Where in it its program's ELF program headers are, and how many: the runners tell the program.
+    pub program_headers: Option<(u64, u64)>,
+}
+
+impl Blob {
+    /// Where the program headers are in guest memory, and how many.
+    pub fn headers_in_memory(&self) -> Option<(u64, u64)> {
+        self.program_headers
+            .map(|(offset, count)| (self.load + offset, count))
+    }
 }
 
 pub(crate) fn out_directory() -> PathBuf {
@@ -129,9 +143,20 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         &text(elf),
         &text(&code),
     ]);
+    // The program headers go after the image, as the image does not hold them.
+    let file = std::fs::read(elf).unwrap();
+    let parsed =
+        object::read::elf::ElfFile64::<object::Endianness>::parse(&*file).expect("an ELF file");
+    let headers = parsed.elf_program_headers();
+    let mut bytes = std::fs::read(&built).unwrap();
+    bytes.resize(bytes.len().next_multiple_of(8), 0);
+    let at = bytes.len() as u64;
+    bytes.extend_from_slice(object::pod::bytes_of_slice(headers));
     let blob = Blob {
-        bytes: std::fs::read(&built).unwrap(),
+        bytes,
         code_bytes: std::fs::metadata(&code).unwrap().len(),
+        load: LOAD,
+        program_headers: Some((at, headers.len() as u64)),
         name,
     };
     std::fs::remove_file(&built).unwrap();
@@ -160,12 +185,12 @@ pub struct Placement {
 }
 
 pub fn placement(blob: &Blob) -> Placement {
-    let end = LOAD + (blob.bytes.len() as u64).next_multiple_of(4096);
-    let (sp, stack) = initial_stack(STACK_TOP);
+    let end = blob.load + (blob.bytes.len() as u64).next_multiple_of(4096);
+    let (sp, stack) = initial_stack(STACK_TOP, blob.headers_in_memory());
     Placement {
         memory_bytes: STACK_TOP,
         regions: vec![
-            (LOAD..end, Permissions::all()),
+            (blob.load..end, Permissions::all()),
             (
                 STACK_TOP - STACK_BYTES..STACK_TOP,
                 Permissions::READ | Permissions::WRITE,
@@ -232,7 +257,7 @@ pub fn ready_on(
 ) -> Machine {
     let slots = blob.code_bytes.div_ceil(4) as u32;
     let place = placement(blob);
-    let mut machine = Machine::new(place.memory_bytes, LOAD, slots, Syscalls::StandIn);
+    let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
     for (range, permissions) in place.regions {
         machine.set_permissions(range, permissions);
@@ -240,14 +265,14 @@ pub fn ready_on(
     machine.load_omitting(
         &blob.bytes,
         0..blob.code_bytes,
-        LOAD,
+        blob.load,
         &[0],
         look_ahead,
         omit,
     );
     machine.write(place.sp, &place.stack);
     let mut registers = RegisterBlock::ZERO;
-    registers.pc = LOAD;
+    registers.pc = blob.load;
     registers.sp = place.sp;
     machine.set_registers(&registers);
     machine
@@ -264,7 +289,7 @@ pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &Registe
         Stopped::Exit(Exit::IllegalInstruction) => 128 + 4,
         Stopped::Exit(Exit::Breakpoint { .. }) => 128 + 5,
         other => {
-            let at = (registers.pc - LOAD) as usize;
+            let at = registers.pc.wrapping_sub(blob.load) as usize;
             let word = blob
                 .bytes
                 .get(at..at + 4)
@@ -304,7 +329,9 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
     let script = format!(
-        "/r/wcontainers-reference time {runs} /p/{file} {LOAD:#x} {STACK_TOP:#x} > /dev/null"
+        "/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {} > /dev/null",
+        blob.load,
+        headers_arguments(blob).join(" ")
     );
     let output = Command::new("docker")
         .args(["run", "--rm", "--network", "none", "--name"])
@@ -325,6 +352,13 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     times.into_iter().fold(f64::INFINITY, f64::min)
 }
 
+/// The reference's arguments for where a blob's program headers are and how many.
+fn headers_arguments(blob: &Blob) -> Vec<String> {
+    blob.headers_in_memory()
+        .map(|(at, count)| vec![format!("{at:#x}"), count.to_string()])
+        .unwrap_or_default()
+}
+
 /// Run a blob natively on ARM64 Linux in Docker.
 pub fn native(blob: &Blob) -> Ran {
     let reference = build_reference();
@@ -342,8 +376,9 @@ pub fn native(blob: &Blob) -> Ran {
         .arg(format!("{}:/p:ro", directory.display()))
         .args(["alpine:latest", "/r/wcontainers-reference", "blob"])
         .arg(format!("/p/{file}"))
-        .arg(format!("{LOAD:#x}"))
+        .arg(format!("{:#x}", blob.load))
         .arg(format!("{STACK_TOP:#x}"))
+        .args(headers_arguments(blob))
         .output()
         .expect("run docker");
     std::fs::remove_file(directory.join(&file)).unwrap();
