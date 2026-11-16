@@ -449,7 +449,7 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
 - sendfile into the standard stream pipes moves at most an empty pipe's worth (the host drains them);
   a reference pipe Docker has not drained holds less room.
 
-## Tests (last run 2026-11-15, tenth run: 57 passed, 8 ignored known failures)
+## Tests (last run 2026-11-15, tenth run: 56 passed, 8 ignored known failures)
 
 All pass except the ignored known failures listed above. Added in the tenth run:
 - transfer: guest/transfer.c: reads of 64 MiB, 70000, 100000 and 2 MiB (vectored) from the random
@@ -522,6 +522,15 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+Tenth run (fourth close-out): layer 1 now reaches the random devices (bytes zeroed by both runners),
+fcntl's owners, signals, hints, queries and pipe sizes, and prctl's parent death signal, timer slack,
+subreaper, huge page, deny-write-execute, secure bits, SET_MM and I/O flusher options. Seeds 130 and
+131 passed 1500 each. With every fix in (head e16c7ee), the fresh seeds 132, 133 and 134 passed 20000
+each (318 s each, three side by side, load 4.6 at the start, 10.2 at the end). They reached a random
+device's bytes in only 1, 1 and 0 calls: a sequence must open one of the two random paths readable
+and then read from the descriptor it got, which the uniform choice of calls and paths makes rare
+(about one in 20000 sequences; about 50 expected in the million-sequence run). tests/transfer.rs
+covers those reads directly.
 Ninth run (third close-out): layer 1 now opens five `/proc` files, makes every file ioctl request and
 compares statfs's blocks and inodes in use (see "For the independent check"). Seed 100 at 1500 found
 truncate of a sysctl checking the mount before the permission (Linux checks the permission first),
@@ -575,6 +584,8 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Tenth run, layer 1 20000 sequences, three side by side: 318 s each (load 4.6 to 10.2); 1500
+  sequences alone: 24 to 25 s (load about 5). The whole test suite of both crates: 77 s wall (load 9).
 - Ninth run, layer 1 20000 sequences, four side by side: 294 to 312 s each (load 8 to 15); three
   side by side: 298 to 305 s (load 10 to 45). 4000 sequences, three side by side: 60 s each (load 27
   to 44). The whole test suite of both crates passed under load 100 to 157 (not timed).
