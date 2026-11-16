@@ -1228,6 +1228,9 @@ pub(super) fn readlinkat(
         .read_path_maybe_empty(path)?
         .is_empty();
     let node = lookup(kernel, cx, tid, dirfd, path, AT_EMPTY_PATH, false)?;
+    if matches!(node.borrow().content, Content::Symlink(_)) {
+        super::io::accessed(kernel, cx, &node, 0);
+    }
     let target = {
         let inode = node.borrow();
         match &inode.content {

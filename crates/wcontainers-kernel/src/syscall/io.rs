@@ -318,6 +318,7 @@ pub(super) fn copy_file_range(
     }
     let count = count.min(MAX_RW_COUNT);
     let bytes = file_bytes(cx, &input, count, position_in)?;
+    accessed(kernel, cx, &node_in, input.borrow().flags);
     let written = write_bytes(kernel, cx, tid, &output, &bytes, Some(position_out), false)?;
     let mut put_back = |address: u64, file: &FileRef, position: u64| -> Result<(), Errno> {
         if address == 0 {
@@ -751,6 +752,8 @@ pub(super) fn read_at(
     let offset = at.unwrap_or(file.borrow().offset);
     refresh_proc(kernel, cx, tid, file, offset)?;
     let bytes = file_bytes(cx, file, count, offset)?;
+    let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
+    accessed(kernel, cx, &node, flags);
     let written = guest(kernel, cx, tid).write_partial(buffer, &bytes);
     if written == 0 && !bytes.is_empty() {
         return Err(Errno::EFAULT);
@@ -993,6 +996,8 @@ fn send(
     let offset = position as u64;
     refresh_proc(kernel, cx, tid, &input, offset)?;
     let mut bytes = file_bytes(cx, &input, count, offset)?;
+    let (node, flags) = (input.borrow().node.clone(), input.borrow().flags);
+    accessed(kernel, cx, &node, flags);
     if matches!(output.borrow().node.borrow().content, Content::Regular(_)) {
         let at = output.borrow().offset;
         let allowed = write_limit(kernel, cx, tid, at, bytes.len() as u64)?;
@@ -1156,6 +1161,37 @@ pub(super) fn lseek(
     Ok(new as u64)
 }
 
+/// Linux's `touch_atime` for a read of `node` through a file opened with `flags` (0 for a read by
+/// path), for tmpfs's files, directories and links, the only ones here that keep access times: none with `O_NOATIME`, the
+/// no-access-time inode flag or a read-only mount; on a `relatime` mount only when the access time
+/// is not after the last change or is a day old; else whenever it is not already now.
+pub(super) fn accessed(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, flags: u32) {
+    let now = kernel.now(cx);
+    let mut inode = node.borrow_mut();
+    // Devices' own reads leave the time alone.
+    let kept = matches!(
+        inode.content,
+        Content::Regular(_) | Content::Directory(_) | Content::Symlink(_)
+    );
+    if inode.fs.kind != crate::fs::Kind::Tmpfs
+        || !kept
+        || flags & O_NOATIME != 0
+        || inode.fsflags & FS_NOATIME_FL != 0
+        || inode.fs.read_only()
+    {
+        return;
+    }
+    const DAY: i64 = 24 * 60 * 60;
+    if inode.fs.flags & crate::linux_extra::ST_RELATIME != 0
+        && inode.mtime < inode.atime
+        && inode.ctime < inode.atime
+        && now.seconds - inode.atime.seconds < DAY
+    {
+        return;
+    }
+    inode.atime = now;
+}
+
 /// Makes a `/proc` file's bytes again where Linux would before a read at `offset`: at each read for
 /// a file read from memory or a sysctl, and for a `seq_file` at a read from the start or from
 /// anywhere but where the last read stopped.
@@ -1206,10 +1242,14 @@ pub(super) fn getdents64(
     // Every entry from the position on: name, inode number, type, and the position after it.
     let mut entries: Vec<(Vec<u8>, u64, u8, u64)> = Vec::new();
     {
-        let inode = node.borrow();
-        if !inode.is_directory() {
+        if !node.borrow().is_directory() {
             return Err(Errno::ENOTDIR);
         }
+        // `iterate_dir` counts a listing of a directory not removed as reading it.
+        if node.borrow().nlink > 0 {
+            accessed(kernel, cx, &node, file.borrow().flags);
+        }
+        let inode = node.borrow();
         let parent_ino = inode
             .place
             .parent

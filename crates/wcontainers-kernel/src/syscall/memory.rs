@@ -256,6 +256,8 @@ pub(super) fn mmap(
                 None
             } else {
                 drop(inode);
+                // `shmem_mmap` counts mapping as reading the file.
+                super::io::accessed(kernel, cx, &node, file.flags);
                 Some((node, file.path.clone()))
             }
         }
