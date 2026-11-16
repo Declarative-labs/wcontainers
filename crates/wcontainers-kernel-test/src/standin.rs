@@ -62,6 +62,9 @@ struct Memory {
     shared: BTreeMap<u64, (u64, *mut u8)>,
     /// Pages that may hold something other than zeros, one bit each, so a copy copies only those.
     touched: Vec<u64>,
+    /// Whether its translated blocks count instructions. Unicorn adds its counting hook without
+    /// translating again, so blocks made without it would never stop at a turn's end.
+    counting: bool,
 }
 
 /// A block of shared pages, in host memory that lives until the block is dropped.
@@ -164,6 +167,7 @@ impl Memory {
             mapped: BTreeMap::new(),
             shared: BTreeMap::new(),
             touched: vec![0; (ADDRESS_SPACE_END / PAGE_SIZE / 64) as usize],
+            counting: false,
         })
     }
 
@@ -452,6 +456,14 @@ impl StandIn {
         *memory.unicorn.get_data_mut() = Stopped::default();
         // Zero means no limit.
         let count = slice_nanoseconds.map_or(0, |nanoseconds| nanoseconds.max(1) as usize);
+        if count > 0 && !memory.counting {
+            memory
+                .unicorn
+                .ctl_flush_tb()
+                .expect("flushing unicorn's translated blocks");
+        }
+        // Unicorn drops its blocks itself when counting stops.
+        memory.counting = count > 0;
         let result = memory
             .unicorn
             .emu_start(state.registers.pc, u64::MAX, 0, count);

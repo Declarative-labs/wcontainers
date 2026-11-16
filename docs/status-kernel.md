@@ -64,8 +64,13 @@ Built in K3's first run:
   needs both futexes' flags equal; futex2 timeouts are checked as `timespec64_valid`; wake-op refuses
   an unknown operation before touching the word.
 - rseq: a thread taken off the CPU after its turn ended in its own code (a stop with a switch due)
-  leaves its critical section for the abort handler (`Kernel::rseq_preempted`). Its comparison test
-  is a known failure (Known issues).
+  leaves its critical section for the abort handler (`Kernel::rseq_preempted`);
+  tests/rseqabort.rs `preempted_sections_match_reference` against the reference on one CPU.
+- The stand-in never ended a turn in code it had translated while no turn had a length: unicorn adds
+  its instruction counting hook without translating again (it drops its blocks only when counting
+  stops), so a loop first run without a slice ran on past every later slice, and two threads that
+  only compute never took turns. The stand-in now drops its translated blocks when counting starts
+  (`Memory::counting`). Found by guest/rseqpreempt.c.
 - Seeded schedules: the test driver ends each turn at a point in its slice drawn from the seed
   (driver.rs), so a run repeats for a seed and threads interleave differently under different
   seeds. `assert_same_output_seeded` runs ours under `SCHEDULE_SEEDS` seeds (3 if unset) from
@@ -1025,8 +1030,7 @@ under `SCHEDULE_SEEDS` seeds, 3 by default; 4 to 6 were run by hand):
   check, notifications, values, overruns, signals dropped after delete, a thread's timer, CPU clock
   timers, timer descriptors with reads, poll, ticks and absolute times).
 - rwmodes (RWF_NOWAIT on every kind of file, fallocate modes 0 to 255), procsignals `continued`,
-  terminal `splice_holds_the_pipe`, rseqabort `preempted_sections_match_reference` (ignored, Known
-  issues).
+  terminal `splice_holds_the_pipe`, rseqabort `preempted_sections_match_reference` (on one CPU).
 
 Added in K2's tenth run (each guest's
 reference output was read and checked against Linux's source):
@@ -1511,6 +1515,15 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 - K3, first run: layer 1 seed 93103 (the K2 check's) passed 25000 sequences with the RWF_NOWAIT fix,
   378.88 s beside other work (load 36.75 at the start, 29.12 at the end).
+- K3, first run: the whole suite (`cargo test --no-fail-fast -p wcontainers-kernel -p
+  wcontainers-kernel-test`, default case counts) passed with the stand-in fix: 111 tests passed, 0
+  failed, 6 ignored (the known failures), about two minutes, load 34.30 at the start and 17.43 at
+  the end. The run before it, without the fix, also passed (110 and 7 ignored).
+- K3, first run: the reference showed SIGCHLD already pending right after kill(SIGCONT) in one run
+  of guest/continued.c (the child ran on another CPU first), and not in earlier ones, so that line is
+  no longer compared; the test now checks the wait and the one CLD_CONTINUED signal only, and does
+  not tell the old behaviour (the signal sent inside kill) from the new. guest/procsig.c of the K2
+  check showed the difference by hand (above).
 - K3, first run, with the new futex and timer calls in layer 1: seed 3001 passed 2000 after three
   fixes (31 s, load about 40); seed 3002 passed 6000 (93.17 s, load 18.56 at the start, 33.00 at
   the end).
@@ -1804,13 +1817,6 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
-- K3, first run: tests/rseqabort.rs `preempted_sections_match_reference` is ignored as a known
-  failure. guest/rseqpreempt.c spins in a critical section while a second thread spins until told
-  to stop; on one CPU in the reference the spinner is taken off the CPU and aborts (1 of 1 runs). On
-  our side (instrumented by hand) no turn ever ended by a stop: the second thread ran a few system
-  calls and ended at once, and the first then spun alone. Why the second thread ends is not found;
-  two threads that only compute have not been seen to take turns here, and that comes first next
-  run (it may be the test's or the kernel's).
 - K3, first run: the busybox shell test `processes` failed once in a run beside layer 1 at load
   about 50 (standard error differed); four reruns passed. Not looked into further.
 
@@ -1842,16 +1848,14 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K3, in order:
-1. Two threads that only compute must take turns: find why rseqpreempt's second thread ends at once
-   and the first is never stopped (Known issues), then un-ignore that test.
-2. `/proc/<pid>/task/<tid>/` (stat, status, comm, and the rest of a process directory per thread)
+1. `/proc/<pid>/task/<tid>/` (stat, status, comm, and the rest of a process directory per thread)
    and per-thread `comm` (PR_SET_NAME, pthread_setname_np).
-3. The scheduling calls and CFS weights with threads compared on one CPU (tests/turns.rs pinned),
-   sched_yield between threads.
-4. Layer 2: the C library's own thread tests (musl's libc-test functional pthread and timer tests)
+2. The scheduling calls and CFS weights with threads compared on one CPU (tests/turns.rs pinned),
+   sched_yield between threads, now that compute-only threads take turns.
+3. Layer 2: the C library's own thread tests (musl's libc-test functional pthread and timer tests)
    under several seeds.
-5. Per-thread credentials and the clone combinations counted as not built.
-6. Three fresh layer 1 seeds of 20000 at the end of the milestone (used so far: up to 737, the
+4. Per-thread credentials and the clone combinations counted as not built.
+5. Three fresh layer 1 seeds of 20000 at the end of the milestone (used so far: up to 737, the
    checks' seeds, 3001 and 3002).
 
 Earlier:
