@@ -52,6 +52,20 @@ Built in K3's first run:
   timerfd_gettime, reads, poll, TFD_IOC_SET_TICKS. A CPU timer ends the running thread's turn when it
   is due (`timer::cpu_slice`). CLOCK_THREAD_CPUTIME_ID and per-thread CPU clocks read the thread's own
   time (they read the process's before). tests/timers.rs.
+- Layer 1 generates futex (WAIT, WAKE, REQUEUE, CMP_REQUEUE, WAKE_OP, WAIT_BITSET, WAKE_BITSET, the
+  removed FUTEX_FD and an unknown command, with and without the private and wall clock flags, on words
+  of `VALUES`, misaligned and bad ones; every wait has one of the sleeps as its timeout),
+  futex_waitv, futex_wake, futex_wait and futex_requeue (vectors at `FUTEX_VECTORS`), getitimer,
+  setitimer, timer_create (every clock, the `SIGEVENTS` requests), timer_settime, timer_gettime,
+  timer_getoverrun, timer_delete, timerfd_create (always nonblocking), timerfd_settime and
+  timerfd_gettime, with values from `ITIMERS` whose times never come within a sequence; what is left
+  of a timer is masked. The priority inheriting futex operations stay in layer 2: they write the
+  caller's thread number, which differs between the runners. Found and fixed by it: futex_requeue
+  needs both futexes' flags equal; futex2 timeouts are checked as `timespec64_valid`; wake-op refuses
+  an unknown operation before touching the word.
+- rseq: a thread taken off the CPU after its turn ended in its own code (a stop with a switch due)
+  leaves its critical section for the abort handler (`Kernel::rseq_preempted`). Its comparison test
+  is a known failure (Known issues).
 - Seeded schedules: the test driver ends each turn at a point in its slice drawn from the seed
   (driver.rs), so a run repeats for a seed and threads interleave differently under different
   seeds. `assert_same_output_seeded` runs ours under `SCHEDULE_SEEDS` seeds (3 if unset) from
@@ -921,8 +935,6 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   reference the splicer has taken the pipe's lock again before the reader wakes (K2 check, 7 of 7
   runs), and the first line waits for the second. A reader that comes to the pipe after the splicer
   waits does wait (tests/terminal.rs `splice_holds_the_pipe`).
-- rseq critical sections are aborted when a handler runs, not yet when another thread takes the CPU
-  (`rseq_preempt`).
 
 - `/proc/<pid>/task` is not built (threads, K3); listing it is ENOENT here (an ignored test shows it).
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
@@ -996,9 +1008,27 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K2's tenth run; counts under Measurements)
+## Tests (last run 2026-11-16, K3's first run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's tenth run (each guest's
+All pass except the ignored known failures listed above. Added in K3's first run (seeded ones run
+under `SCHEDULE_SEEDS` seeds, 3 by default; 4 to 6 were run by hand):
+- threads: guest/threads.c (pthread creation and joining, mutex counting, condition variables in
+  turn, barriers, read-write locks, semaphores, thread ids, robust locks after a thread's and a
+  child process's end, a priority inheriting mutex, process and thread directed signals with
+  per-thread masks and alternate stacks, the first thread leaving), the same saved 6 times per seed,
+  guest/futexes.c (every futex operation's checks, waits ended by wakes, time-outs on both clocks
+  and a signal, wakes by bits, requeue, wake-op, PI locks alone and handed between threads,
+  futex2, the thread id address) and guest/threadlife.c (clone flag combinations, the group's
+  status, exit_group from a thread, execve from a thread, stop and continue with a busy thread,
+  SIGTERM).
+- timers: guest/timers.c (interval timers on the real and CPU clocks, alarm, every POSIX timer
+  check, notifications, values, overruns, signals dropped after delete, a thread's timer, CPU clock
+  timers, timer descriptors with reads, poll, ticks and absolute times).
+- rwmodes (RWF_NOWAIT on every kind of file, fallocate modes 0 to 255), procsignals `continued`,
+  terminal `splice_holds_the_pipe`, rseqabort `preempted_sections_match_reference` (ignored, Known
+  issues).
+
+Added in K2's tenth run (each guest's
 reference output was read and checked against Linux's source):
 - zombie: guest/zombie.c: a child that has ended and is not yet reaped: stat's fields we know
   (state, parent, group, session, terminal, priority, nice, threads, sizes, rsslim, masks, policy,
@@ -1481,6 +1511,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 - K3, first run: layer 1 seed 93103 (the K2 check's) passed 25000 sequences with the RWF_NOWAIT fix,
   378.88 s beside other work (load 36.75 at the start, 29.12 at the end).
+- K3, first run, with the new futex and timer calls in layer 1: seed 3001 passed 2000 after three
+  fixes (31 s, load about 40); seed 3002 passed 6000 (93.17 s, load 18.56 at the start, 33.00 at
+  the end).
 
 All on this shared Mac; noisy, not benchmarks.
 - K2 tenth run: the whole test suite of both crates 102 passed, 0 failed, 6 ignored, 3 min 2 s wall
@@ -1771,6 +1804,16 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K3, first run: tests/rseqabort.rs `preempted_sections_match_reference` is ignored as a known
+  failure. guest/rseqpreempt.c spins in a critical section while a second thread spins until told
+  to stop; on one CPU in the reference the spinner is taken off the CPU and aborts (1 of 1 runs). On
+  our side (instrumented by hand) no turn ever ended by a stop: the second thread ran a few system
+  calls and ended at once, and the first then spun alone. Why the second thread ends is not found;
+  two threads that only compute have not been seen to take turns here, and that comes first next
+  run (it may be the test's or the kernel's).
+- K3, first run: the busybox shell test `processes` failed once in a run beside layer 1 at load
+  about 50 (standard error differed); four reruns passed. Not looked into further.
+
 - The stand-in counts instructions by whole blocks, so a turn whose slice runs out in a block that
   ends in `svc` comes back as a system call, not a stop (K2 check). The kernel's tick at every return
   (tenth run) gives way either way, so nothing depends on it.
@@ -1799,15 +1842,17 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K3, in order:
-1. `/proc/<pid>/task/<tid>/` (stat, status, comm, and the rest of a process directory per thread)
+1. Two threads that only compute must take turns: find why rseqpreempt's second thread ends at once
+   and the first is never stopped (Known issues), then un-ignore that test.
+2. `/proc/<pid>/task/<tid>/` (stat, status, comm, and the rest of a process directory per thread)
    and per-thread `comm` (PR_SET_NAME, pthread_setname_np).
-2. rseq aborts on preemption; the scheduling calls and CFS weights with threads compared on one
-   CPU (tests/turns.rs pinned), sched_yield between threads.
-3. Layer 1: generate futex (nonblocking forms), the futex2 calls, the timer calls and timerfd.
+3. The scheduling calls and CFS weights with threads compared on one CPU (tests/turns.rs pinned),
+   sched_yield between threads.
 4. Layer 2: the C library's own thread tests (musl's libc-test functional pthread and timer tests)
    under several seeds.
 5. Per-thread credentials and the clone combinations counted as not built.
-6. Three fresh layer 1 seeds of 20000 at the end of the milestone.
+6. Three fresh layer 1 seeds of 20000 at the end of the milestone (used so far: up to 737, the
+   checks' seeds, 3001 and 3002).
 
 Earlier:
 
