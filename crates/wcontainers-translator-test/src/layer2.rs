@@ -1961,8 +1961,11 @@ pub fn assemble(program: &Program) -> Blob {
         tables: Vec::new(),
     };
     let area = OUTPUT.next_multiple_of(16);
-    // The area sits on the stack; the registers start from the program's values.
-    dynasm!(ops ; .arch aarch64 ; sub sp, sp, #area ; mov x29, sp);
+    let area_label = ops.new_dynamic_label();
+    // The area is in the blob, so it is no function's frame and its pages may change under any access; main
+    // still makes a frame of that size for its accesses through sp. The registers start from the program's
+    // values.
+    dynasm!(ops ; .arch aarch64 ; sub sp, sp, #area ; adr x29, =>area_label);
     for (&r, &value) in REGISTERS.iter().zip(&program.registers) {
         for hw in 0..4u32 {
             let part = (value >> (16 * hw)) as u32 & 0xffff;
@@ -2036,7 +2039,11 @@ pub fn assemble(program: &Program) -> Blob {
             dynasm!(ops ; .arch aarch64 ; .u8 e as _);
         }
     }
-    // A page and more of zeros up to a page boundary, so accesses near the edge reach no code or table.
+    let align = (16 - ops.offset().0 % 16) % 16;
+    ops.extend(std::iter::repeat_n(0u8, align));
+    dynasm!(ops ; .arch aarch64 ; =>area_label);
+    ops.extend(std::iter::repeat_n(0u8, area as usize));
+    // A page and more of zeros up to a page boundary, so accesses near the edge reach no code, table or area.
     let padding = 4096 + (4096 - ops.offset().0 % 4096) % 4096;
     ops.extend(std::iter::repeat_n(0u8, padding));
     let edge = layout.edge;
