@@ -15,7 +15,7 @@ getrandom and sendfile now move the whole count; sendfile of nothing succeeds be
 checked; `#!` lines are split as `load_script` splits them; `/proc` lists in Linux's order at Linux's
 positions; fcntl and prctl gained what one process uses (owners, signals, hints, queries, the parent's
 death signal, timer slack, the subreaper, huge page disabling, the saved auxiliary vector, the forms
-that need powers), record locks answer as Linux without file locking; a fault with its signal
+that need powers), record locks answered as Linux without file locking (built in the eleventh run); a fault with its signal
 ignored is no longer counted as a handler not run. Layer 1 now reaches the random devices. The
 eleventh run (the fifth close-out run) fixed the fourth check's five blocking problems: sleeps and
 waits now end as late as the thread's timer slack (seed 3141592 hung on a sleep with the largest
@@ -171,7 +171,10 @@ What layer 1 does not generate, and why:
   F_OFD_SETLKW: in one process they wait only on another open file's lock, for ever, which costs the
   reference's 60 s deadline; tests/recordlocks.rs runs them where they do not wait.
 - prctl's PR_GET_AUXV is not generated (the vector holds addresses and lacks the vDSO's entries here);
-  tests/options.rs compares it.
+  tests/options.rs compares it. PR_SET_TIMERSLACK only with slacks up to 1 ms: where in a long slack
+  the reference's sleep ends depends on other timers' interrupts (its load), and a slack past the
+  reference's 60 s deadline ends the sequence there or not by load (see Known gaps). The check's seed
+  3141592 had generated the largest slack.
 
 ## What exists
 
@@ -494,6 +497,8 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   shows it). Files and `/dev/zero` match.
 - sendfile into the standard stream pipes moves at most an empty pipe's worth (the host drains them);
   a reference pipe Docker has not drained holds less room.
+- busybox `su` fails here (`can't set groups: Function not implemented`): musl's `initgroups` asks
+  nscd through a socket, and sockets are K5; `adjtimex` fails (missing, above).
 - An alignment fault's BUS_ADRALN and address, and a memory fault's code and address, are not kept:
   only a handler can read them, and they belong in the pending signal's information, which comes with
   K2's signal queue and frames.
@@ -506,10 +511,12 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   stack is never executable here). A program that can be placed anywhere and names no loader goes at
   2/3 of the address space here; Linux places it where mmap would. Running a program does not move its
   access time.
-- Timer slack: a sleep ends at the end of its slack here; Linux's timer may end anywhere in the slack
-  when another interrupt comes after the soft end (measured: a 50 s slack slept 49.964 s).
+- Timer slack: a sleep ends at the end of its slack here; Linux's timer ends at the first timer
+  interrupt on its CPU after the requested time, which on an idle machine is the slack's end
+  (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
+  one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-15, eleventh run: 61 passed, 8 ignored known failures)
+## Tests (last run 2026-11-15, eleventh run: 60 passed, 8 ignored known failures)
 
 All pass except the ignored known failures listed above. Added in the eleventh run:
 - loaderrors: guest/loaderrors.c makes ELF programs and loaders: missing, a script, 5 bytes,
@@ -524,7 +531,7 @@ All pass except the ignored known failures listed above. Added in the eleventh r
   that need not wait; release by closing another descriptor, not an O_PATH one, and an open file's at
   its last copy; SEEK_CUR and SEEK_END; every range, kind, pid, access and pointer error; locks on
   `/dev/null`, the output pipe, a `/proc` file, a directory and a memory file. Same output.
-- options: ambient powers; four sleeps with a 2 s timer slack last at least 1 s on both sides.
+- options: ambient powers; four sleeps with a 2 s timer slack end within it (no longer than 3 s).
 - busybox: `setpriv --dump`, and with an ambient power raised.
 Added in the tenth run:
 - transfer: guest/transfer.c: reads of 64 MiB, 70000, 100000 and 2 MiB (vectored) from the random
@@ -603,7 +610,15 @@ locks and ambient powers are generated, mmap is chosen four times as often, and 
 compared after each sequence's last call. Seeds 140 (1500), 141 to 143 (3000 each, 44 s side by side,
 load 17) and 160 to 162 (5000 each, 81 s side by side, load 14 to 15) passed on the way; 160 to 162
 first found our runner reading the play area after a sequence's filter had killed it (a test runner
-fix). RESULTS_13
+fix). Seed 174 (3000) then found, through the play area, mprotect over a mapped page and a hole
+leaving the page as it was; Linux's `do_mprotect_pkey` changes each mapping up to the hole before
+ENOMEM (fixed: mapping by mapping, also for EACCES and the data limit). The options test once failed
+under load 22: the reference's 2 s slack sleeps ended early (other timers' interrupts), so it now shows
+only that they end within the slack, and layer 1 generates slacks up to 1 ms. openat is now chosen
+four times as often (most calls need an open file) and one open in eight names a random device:
+seeds 174 to 177 (5000 each, 77 s side by side, load 22 to 23) passed with 1, 1, 1 and 0 calls
+putting a random device's bytes somewhere (thin still; tests/transfer.rs covers those reads).
+RESULTS_13
 Tenth run (fourth close-out): layer 1 now reaches the random devices (bytes zeroed by both runners),
 fcntl's owners, signals, hints, queries and pipe sizes, and prctl's parent death signal, timer slack,
 subreaper, huge page, deny-write-execute, secure bits, SET_MM and I/O flusher options. Seeds 130 and
