@@ -5,7 +5,8 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done after eight runs. Built in K2's eighth run:
+processes) is done after eight runs: with every fix in, fresh layer 1 seeds 726, 727 and 728 passed
+20000 sequences each and the whole suite passed. Built in K2's eighth run:
 - TIOCSETD as `tty_set_ldisc`: a number outside 0 to 30 EINVAL, `n_tty` kept as it is, `N_MOUSE`
   (2) EPERM without CAP_SYS_ADMIN (`serport_ldisc_open`'s check; the reference has serport
   registered), every other discipline counted "line discipline not built" and EINVAL, as a Linux
@@ -1088,6 +1089,9 @@ flag but RWF_HIPRI before copying: EOPNOTSUPP; ours copied into a bad buffer: EF
 722 and 724 passed 20000 (330 s and 329 s, three side by side, load 20 to 36); 725 found signalfd4
 given an O_PATH descriptor (Linux's `fdget` passes over it: EBADF; ours EINVAL), and the process
 descriptor calls and mq_notify had the same fault; fixed (head b01b1de).
+With every fix in (head b01b1de), the milestone's three fresh seeds 726, 727 and 728 passed 20000
+sequences each (335 s each, four side by side with 725, which also passed, beside the whole suite;
+load 23 at the start, 52 at the end).
 
 K2's sixth run: with the fixes for 516, 517 and 518 in (head 603f689), those seeds passed 20000 each
 (335 to 344 s, three side by side, load 82 at the start, 40 to 48 at the end). Then process
@@ -1285,9 +1289,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
-- K2 eighth run: the whole test suite of both crates, beside three 20000-sequence layer 1 runs (load
-  39 at the start, 42 at the end): 71 passed and sigio failed in the reference (its echo came in two
-  parts; the test now reads it until whole), and cargo stopped there. Layer 1 at 20000: 329 to 393 s
+- K2 eighth run: the whole test suite of both crates 93 passed, 0 failed, 6 ignored, 2 min 25 s wall
+  beside four 20000-sequence layer 1 runs (load 22 at the start, 28 at the end), head b01b1de. An
+  earlier run beside three layer 1 runs (load 39 to 42) had sigio fail in the reference (its echo
+  came in two parts; the test now reads it until whole). Layer 1 at 20000: 329 to 393 s
   each, three side by side (load 20 to 44).
 - K2 seventh run: the whole test suite of both crates 92 passed, 0 failed, 6 ignored: one run of
   2 min 44 s wall with two test threads beside one 20000-sequence layer 1 run (load 56 at the start,
@@ -1552,10 +1557,9 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
-   the milestone: seeds 721, 722 and 723 were started in the eighth run (see Layer 1 for results).
-   Seeds up to 723 are used.
+1. K2 is done. The next milestone is K3 (see the plan); the known gaps above come before K6's bar.
 2. Test binaries build guest programs into one shared directory, which a reference container may
-   read while another binary rewrites it (Known issues); each binary could build into its own.
-3. The missing calls of later milestones; the known gaps above before K6's bar.
-4. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
+   read while another cargo invocation rewrites it (Known issues); each binary could build into its
+   own.
+3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator). Seeds up
+   to 728 are used.
