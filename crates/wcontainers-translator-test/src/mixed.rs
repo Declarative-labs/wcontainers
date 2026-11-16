@@ -1,6 +1,6 @@
 //! Across the layers: pieces of different look-aheads mixed at random in one run, and rare events injected
-//! at random stop checks: the WebAssembly stack lost (a fresh thread instance carries on from the
-//! registers), an address made to have no piece yet, and the stop flag raised. The result must be none's.
+//! at random stop checks spread over the whole run: the WebAssembly stack lost (a fresh thread instance
+//! carries on from the registers), and an address made to have no piece yet. The result must be none's.
 
 use crate::programs::{Blob, Ran, ran, ready_with};
 use crate::runner::{Machine, Pause};
@@ -14,13 +14,19 @@ use wcontainers_translator::{BOUND, LookAhead};
 /// What was injected into one run.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Events {
+    /// Stop checks the thread stopped at.
     pub stops: u64,
     pub stacks_lost: u64,
     pub forgotten: u64,
 }
 
-/// Pauses at which the stop flag is raised again at random; after them only system calls raise it.
-const PAUSES: u64 = 4000;
+/// The first event comes within this many stops; each later gap may be a quarter longer than the one
+/// before, so a run of any length has events throughout, about 4.5 for each doubling of its stops.
+const FIRST_GAP: u64 = 8;
+
+/// Runs whose seed is a multiple of this stop nowhere and have nothing injected: pieces of every look-ahead
+/// meet on their fast paths.
+const QUIET: u64 = 4;
 
 fn rng(seed: u64, what: &[u8; 8]) -> TestRng {
     let mut key = [0u8; 32];
@@ -31,7 +37,8 @@ fn rng(seed: u64, what: &[u8; 8]) -> TestRng {
 
 /// Run a blob with its code at none, at bounded look-ahead of a random N from its first byte and random
 /// other starts, and at full, each address's piece picked at random among them; code reached at run time
-/// at a random bounded look-ahead each time; and events injected at random stops, all from `seed`.
+/// at a random bounded look-ahead each time; and, unless the seed is a multiple of [`QUIET`], a stop at
+/// every stop check with events injected at random ones among them, all from `seed`.
 pub fn mixed(blob: &Blob, seed: u64) -> (Ran, Machine, RegisterBlock, Events) {
     let mut pick = rng(seed, b"mixing  ");
     let bound = pick.random_range(2..=64);
@@ -60,34 +67,34 @@ pub fn mixed(blob: &Blob, seed: u64) -> (Ran, Machine, RegisterBlock, Events) {
         _ => LookAhead::Bounded(BOUND),
     });
     let events = Rc::new(Cell::new(Events::default()));
-    {
+    if !seed.is_multiple_of(QUIET) {
         let events = events.clone();
         let mut inject = rng(seed, b"inject  ");
+        let mut gap = FIRST_GAP;
+        let mut next = inject.random_range(1..=gap);
         machine.on_pause(move |at, paused| {
-            let mut now = events.get();
-            if at == Pause::Stop {
-                now.stops += 1;
-                match inject.random_range(0..8) {
-                    0 => {
-                        paused.lose_stack();
-                        now.stacks_lost += 1;
-                    }
-                    1 if !paused.placed().is_empty() => {
-                        let placed = paused.placed();
-                        let address = placed[inject.random_range(0..placed.len())];
-                        paused.forget(address);
-                        now.forgotten += 1;
-                    }
-                    _ => {}
-                }
+            if at != Pause::Stop {
+                return;
             }
-            if now.stops < PAUSES && inject.random_bool(0.5) {
-                paused.raise_stop_flag();
+            let mut now = events.get();
+            now.stops += 1;
+            if now.stops == next {
+                let placed = paused.placed();
+                if inject.random_bool(0.5) || placed.is_empty() {
+                    paused.lose_stack();
+                    now.stacks_lost += 1;
+                } else {
+                    let address = placed[inject.random_range(0..placed.len())];
+                    paused.forget(address);
+                    now.forgotten += 1;
+                }
+                gap += gap / 4;
+                next += inject.random_range(1..=gap);
             }
             events.set(now);
         });
+        machine.stop_at_every_check();
     }
-    machine.raise_stop_flag();
     let (stopped, registers) = machine.run();
     let result = ran(blob, &machine, stopped, &registers);
     (result, machine, registers, events.get())

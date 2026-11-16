@@ -5,9 +5,10 @@ use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Library, build, build_with, native, reachable_memory, translated,
+    Blob, Library, Ran, build, build_with, native, reachable_memory, translated,
     translated_stopping_everywhere,
 };
+use wcontainers_translator_test::runner::Machine;
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
@@ -49,22 +50,14 @@ fn deep_recursion_matches_linux() {
         let mut blob = build_with(name, optimisation, library, defines);
         blob.stack_bytes = 8 << 20;
         let theirs = native(&blob);
-        let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
-        assert_eq!(none, theirs, "{} at none", blob.name);
-        for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
-            let what = format!("{} at {look_ahead:?}", blob.name);
-            let (ours, mut machine, registers) = translated(&blob, look_ahead);
-            assert_eq!(ours, theirs, "{what}");
-            assert_eq!(registers, none_registers, "registers of {what}");
-            assert!(
-                reachable_memory(&mut machine, &blob) == reachable_memory(&mut none_machine, &blob),
-                "memory of {what}"
-            );
+        every_look_ahead_matches(&blob, &theirs, |what, machine| {
             let left = machine.count(Reason::StackNearlyFull);
             let continued = machine.count(Reason::ContinuedAfterStackLoss);
             eprintln!("{what}: left a nearly full stack {left} times, continued {continued} times");
-            assert!(left > 0 && continued > 0, "{what}");
-        }
+            if !what.contains("None") {
+                assert!(left > 0 && continued > 0, "{what}");
+            }
+        });
         for look_ahead in [LookAhead::None, LookAhead::Full] {
             let ours = browser::translated_with(&blob, look_ahead, Default::default());
             let what = format!("{} at {look_ahead:?} in Chrome", blob.name);
@@ -72,6 +65,20 @@ fn deep_recursion_matches_linux() {
             assert!(ours.count("engine stack nearly full") > 0, "{what}");
         }
     }
+}
+
+/// A function whose own frame at full is past the engine stack budget runs when the bottom loop calls it,
+/// and leaves the stack when it calls itself, at every look-ahead as on Linux.
+#[test]
+fn a_frame_past_the_budget_matches_linux() {
+    let blob = build("big_frame", "-O0", Library::None);
+    let theirs = native(&blob);
+    assert_eq!(theirs.status, 42);
+    every_look_ahead_matches(&blob, &theirs, |what, machine| {
+        if what.ends_with("Full") {
+            assert!(machine.count(Reason::StackNearlyFull) > 0, "{what}");
+        }
+    });
 }
 
 /// setjmp and longjmp in C, C++ exceptions and Rust panics: returns that do not go where their caller
@@ -88,38 +95,63 @@ fn unwinding_matches_linux() {
                 "{}",
                 blob.name
             );
-            let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
-            assert_eq!(none, theirs, "{} at none", blob.name);
-            for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
-                let what = format!("{} at {look_ahead:?}", blob.name);
-                let (ours, mut machine, registers) = translated(&blob, look_ahead);
-                assert_eq!(ours, theirs, "{what}");
-                assert_eq!(registers, none_registers, "registers of {what}");
-                assert!(
-                    reachable_memory(&mut machine, &blob)
-                        == reachable_memory(&mut none_machine, &blob),
-                    "memory of {what}"
-                );
-                eprintln!(
-                    "{what}: left to an address {} times, continued after stack loss {} times",
-                    machine.count(Reason::LeftToAddress),
-                    machine.count(Reason::ContinuedAfterStackLoss)
-                );
-            }
-            for seed in 0..2 {
-                let (ours, mut machine, registers, events) = mixed(&blob, seed);
-                let what = format!("{} mixed from {seed} ({events:?})", blob.name);
-                assert_eq!(ours, theirs, "{what}");
-                assert_eq!(registers, none_registers, "registers of {what}");
-                assert!(
-                    reachable_memory(&mut machine, &blob)
-                        == reachable_memory(&mut none_machine, &blob),
-                    "memory of {what}"
-                );
-            }
+            every_look_ahead_matches(&blob, &theirs, print_counters);
             let ours = browser::translated_with(&blob, LookAhead::Full, Default::default());
             assert_eq!(ours.ran, theirs, "{} at full in Chrome", blob.name);
         }
+    }
+}
+
+/// Programs that move to stacks they made themselves: a fiber switched with setjmp and longjmp, and two
+/// coroutines switched by a hand-written context switch, as on Linux at every look-ahead and in Chrome.
+#[test]
+fn stacks_switched_by_the_program_match_linux() {
+    for name in ["fibers", "coroutines"] {
+        for optimisation in ["-O0", "-O2"] {
+            let blob = build(name, optimisation, Library::C);
+            let theirs = native(&blob);
+            assert_eq!(theirs.status, 0, "{}", blob.name);
+            every_look_ahead_matches(&blob, &theirs, print_counters);
+            let ours = browser::translated_with(&blob, LookAhead::Full, Default::default());
+            assert_eq!(ours.ran, theirs, "{} at full in Chrome", blob.name);
+        }
+    }
+}
+
+fn print_counters(what: &str, machine: &Machine) {
+    eprintln!("{what}: {:?}", machine.counters());
+}
+
+/// A blob at none matches Linux, and at full, at bounded with every piece but the first made at run time,
+/// and mixed (seeds 0 to 2, the first with no stops), it matches Linux and none's registers and memory. `check` is called on each run
+/// with what it was.
+fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Machine)) {
+    let (none, mut none_machine, none_registers) = translated(blob, LookAhead::None);
+    assert_eq!(&none, theirs, "{} at none", blob.name);
+    check(&format!("{} at None", blob.name), &none_machine);
+    let mut runs = Vec::new();
+    for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
+        let (ours, machine, registers) = translated(blob, look_ahead);
+        runs.push((
+            format!("{} at {look_ahead:?}", blob.name),
+            ours,
+            machine,
+            registers,
+        ));
+    }
+    for seed in 0..3 {
+        let (ours, machine, registers, events) = mixed(blob, seed);
+        let what = format!("{} mixed from {seed} ({events:?})", blob.name);
+        runs.push((what, ours, machine, registers));
+    }
+    for (what, ours, mut machine, registers) in runs {
+        assert_eq!(&ours, theirs, "{what}");
+        assert_eq!(registers, none_registers, "registers of {what}");
+        assert!(
+            reachable_memory(&mut machine, blob) == reachable_memory(&mut none_machine, blob),
+            "memory of {what}"
+        );
+        check(&what, &machine);
     }
 }
 
@@ -336,13 +368,44 @@ fn measure() {
 #[test]
 #[ignore]
 fn floats_speed() {
-    use wcontainers_translator_test::browser;
-    use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
     const WORKLOADS: [&str; 4] = ["n-body", "matrix", "vector matrix", "byte differences"];
-    let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let chosen: Vec<usize> = std::env::var("WC_BENCH_WORKLOADS").map_or((1..=4).collect(), |v| {
         v.split(',').map(|n| n.parse().unwrap()).collect()
     });
+    for k in chosen {
+        let workload = format!("WORKLOAD={k}");
+        let blob = build_with("floats", "-O2", Library::C, &["SCALE=1", &workload]);
+        time_against_native(&format!("floats {}", WORKLOADS[k - 1]), &blob);
+    }
+}
+
+/// Timing of programs that switch stacks themselves, 2,000,000 round trips at -O2: native, and at full in
+/// wasmtime and Chrome, with the time of one switch over native's. Knobs as for [`floats_speed`]. Only
+/// measures; one command:
+/// `nix develop -c cargo test --release -p wcontainers-translator-test --test programs switching_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn switching_speed() {
+    const ROUND_TRIPS: f64 = 2_000_000.0;
+    for name in ["fibers", "coroutines"] {
+        let blob = build_with(name, "-O2", Library::C, &["SWITCHES=2000000"]);
+        let (native, wasmtime, chrome) = time_against_native(name, &blob);
+        // Two switches a round trip, two coroutines in `coroutines`.
+        let switches = if name == "fibers" { 2.0 } else { 4.0 } * ROUND_TRIPS;
+        let each = |seconds: f64| (seconds - native) / switches * 1e9;
+        eprintln!(
+            "{name}: one switch costs {:.0} ns more than native in wasmtime, {} in Chrome",
+            each(wasmtime),
+            chrome.map_or("not run".to_string(), |c| format!("{:.0} ns", each(c)))
+        );
+    }
+}
+
+/// Times a blob natively and at full in wasmtime and (unless `WC_BENCH_CHROME=0`) Chrome, best of
+/// `WC_BENCH_RUNS` (default 3), checking each run's result; prints and returns the seconds.
+fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
+    use wcontainers_translator_test::programs::{native_seconds, translated_omitting};
+    let runs = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let chrome = std::env::var("WC_BENCH_CHROME").map_or(true, |v| v != "0");
     let load = || {
         let output = std::process::Command::new("sysctl")
@@ -351,45 +414,41 @@ fn floats_speed() {
             .expect("sysctl");
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     };
-    for k in chosen {
-        let name = WORKLOADS[k - 1];
-        let workload = format!("WORKLOAD={k}");
-        let blob = build_with("floats", "-O2", Library::C, &["SCALE=1", &workload]);
-        let theirs = native(&blob);
-        let native = native_seconds(&blob, runs);
-        let mut best = f64::MAX;
-        for _ in 0..runs {
-            let (ours, _, _, time) = translated_omitting(
-                &blob,
-                LookAhead::Full,
-                wcontainers_translator::Omit::default(),
-            );
-            assert_eq!(ours, theirs);
-            best = best.min(time.as_secs_f64());
-        }
-        eprintln!(
-            "floats {name}: native {native:.3} s, wasmtime {best:.3} s, {:.2} times native (load {})",
-            best / native,
-            load()
+    let theirs = native(blob);
+    let native = native_seconds(blob, runs);
+    let mut best = f64::MAX;
+    for _ in 0..runs {
+        let (ours, _, _, time) = translated_omitting(
+            blob,
+            LookAhead::Full,
+            wcontainers_translator::Omit::default(),
         );
-        if !chrome {
-            continue;
-        }
-        let mut best = f64::MAX;
-        for _ in 0..runs {
-            let report = browser::repeated(
-                &blob,
-                LookAhead::Full,
-                wcontainers_translator::Omit::default(),
-                1,
-            );
-            assert_eq!(report.ran, theirs, "{name} in Chrome");
-            best = best.min(report.runs[0]);
-        }
-        eprintln!(
-            "floats {name}: Chrome {best:.3} s, {:.2} times native (load {})",
-            best / native,
-            load()
-        );
+        assert_eq!(ours, theirs);
+        best = best.min(time.as_secs_f64());
     }
+    eprintln!(
+        "{name}: native {native:.3} s, wasmtime {best:.3} s, {:.2} times native (load {})",
+        best / native,
+        load()
+    );
+    if !chrome {
+        return (native, best, None);
+    }
+    let mut in_chrome = f64::MAX;
+    for _ in 0..runs {
+        let report = browser::repeated(
+            blob,
+            LookAhead::Full,
+            wcontainers_translator::Omit::default(),
+            1,
+        );
+        assert_eq!(report.ran, theirs, "{name} in Chrome");
+        in_chrome = in_chrome.min(report.runs[0]);
+    }
+    eprintln!(
+        "{name}: Chrome {in_chrome:.3} s, {:.2} times native (load {})",
+        in_chrome / native,
+        load()
+    );
+    (native, best, Some(in_chrome))
 }

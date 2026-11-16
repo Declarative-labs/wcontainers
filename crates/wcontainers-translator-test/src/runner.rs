@@ -152,6 +152,8 @@ pub struct Host {
     /// What each page allows, as the permission table says.
     permissions: Vec<Permissions>,
     pause: Option<PauseFunction>,
+    /// No limit on instances and tables: each piece made at run time and each fresh thread instance is one.
+    limits: wasmtime::StoreLimits,
 }
 
 pub struct Machine {
@@ -262,8 +264,14 @@ impl Machine {
                 stop_everywhere: false,
                 permissions: vec![Permissions::empty(); permission_pages as usize],
                 pause: None,
+                limits: wasmtime::StoreLimitsBuilder::new()
+                    .instances(usize::MAX)
+                    .tables(usize::MAX)
+                    .memories(usize::MAX)
+                    .build(),
             },
         );
+        store.limiter(|host| &mut host.limits);
         let pages = memory_bytes.div_ceil(65536);
         let memory =
             Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).expect("memory");

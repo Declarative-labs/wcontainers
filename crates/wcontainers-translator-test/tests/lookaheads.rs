@@ -97,3 +97,51 @@ fn measure_translating_at_run_time() {
         }
     }
 }
+
+/// Not a check: the default N against others. The benchmark set (`bench.c`, SCALE=1, -O2) translated from
+/// its first instruction at bounded look-ahead of each N, every other piece made at run time, against the same
+/// at full: the whole run's time in wasmtime and the part spent making pieces, best of `WC_BENCH_RUNS`
+/// (default 3). One command:
+/// `nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads measure_bound -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn measure_bound() {
+    use std::time::Instant;
+    let runs = setting("WC_BENCH_RUNS", 3);
+    let blob = build_with("bench", "-O2", Library::None, &["SCALE=1"]);
+    let (full, _, _) = translated(&blob, LookAhead::Full);
+    for look_ahead in [16, 64, 256, 1024]
+        .map(LookAhead::Bounded)
+        .into_iter()
+        .chain([LookAhead::Full])
+    {
+        let mut best = (f64::MAX, 0.0, 0);
+        for _ in 0..runs {
+            let mut machine = ready(&blob, look_ahead, Default::default());
+            machine.translate_at_run_time(move || look_ahead);
+            let start = Instant::now();
+            let (stopped, registers) = machine.run();
+            let seconds = start.elapsed().as_secs_f64();
+            assert_eq!(ran(&blob, &machine, stopped, &registers), full);
+            let making = machine
+                .counters()
+                .into_iter()
+                .find(|c| c.reason == Reason::TranslatedAtRunTime.name())
+                .map_or((0.0, 0), |c| (c.nanoseconds as f64 / 1e9, c.count));
+            if seconds < best.0 {
+                best = (seconds, making.0, making.1);
+            }
+        }
+        let load = std::process::Command::new("sysctl")
+            .args(["-n", "vm.loadavg"])
+            .output()
+            .expect("sysctl");
+        println!(
+            "bench at {look_ahead:?}: {:.3} s, of which {:.3} s making {} pieces at run time (load {})",
+            best.0,
+            best.1,
+            best.2,
+            String::from_utf8_lossy(&load.stdout).trim()
+        );
+    }
+}

@@ -39,6 +39,7 @@ fn full_matches_none_and_the_cpu() {
     let faulted = std::cell::Cell::new(0u64);
     let left = std::cell::Cell::new(0u64);
     let lost = std::cell::Cell::new(0u64);
+    let forgotten = std::cell::Cell::new(0u64);
     let result = runner.run(
         &(program(), 1..=64u32, any::<u64>()),
         |(program, bound, mix)| {
@@ -111,6 +112,7 @@ fn full_matches_none_and_the_cpu() {
                 "memory {what}"
             );
             lost.set(lost.get() + events.stacks_lost);
+            forgotten.set(forgotten.get() + events.forgotten);
             if full_machine.count(Reason::LeftToAddress) > 0 {
                 left.set(left.get() + 1);
             }
@@ -122,11 +124,12 @@ fn full_matches_none_and_the_cpu() {
         },
     );
     eprintln!(
-        "layer 2: {} cases run, seed {seed}; {} faulted, {} left to an address at full, {} stacks lost",
+        "layer 2: {} cases run, seed {seed}; {} faulted, {} left to an address at full, {} stacks lost and {} pieces forgotten in mixed runs",
         ran.get(),
         faulted.get(),
         left.get(),
-        lost.get()
+        lost.get(),
+        forgotten.get()
     );
     if let Err(error) = result {
         panic!("{error}");
