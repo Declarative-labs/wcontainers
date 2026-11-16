@@ -184,7 +184,7 @@ pub(super) fn pidfd_send_signal(
             Scope::Process,
         ),
         _ => {
-            let file = super::io::file(kernel, tid, fd)?;
+            let file = super::io::open_file(kernel, tid, fd)?;
             let file = file.borrow();
             let target = named(kernel, &file)?;
             let scope = if file.flags & PIDFD_THREAD != 0 {
@@ -256,7 +256,7 @@ pub(super) fn process_mrelease(
     if flags != 0 {
         return Err(Errno::EINVAL);
     }
-    let file = super::io::file(kernel, tid, fd)?;
+    let file = super::io::open_file(kernel, tid, fd)?;
     let target = named(kernel, &file.borrow())?;
     if !target.exists || kernel.processes[&target.pid].ended.is_some() {
         return Err(Errno::ESRCH);

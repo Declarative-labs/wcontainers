@@ -618,7 +618,7 @@ pub(super) fn mq_notify(
             // The cookie is read, then the descriptor must be a netlink socket; no socket exists here
             // (`netlink_getsockbyfd`).
             guest(kernel, cx, tid).read(value, NOTIFY_COOKIE_LEN)?;
-            super::io::file(kernel, tid, signal.into())?;
+            super::io::open_file(kernel, tid, signal.into())?;
             return Err(Errno::ENOTSOCK);
         }
         Some((kind, signal, value))

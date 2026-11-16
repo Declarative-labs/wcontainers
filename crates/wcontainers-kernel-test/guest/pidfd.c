@@ -176,6 +176,15 @@ static void signals(void) {
     int self = open_pid(getpid(), 0);
     show("signal self", send(self, SIGUSR1, NULL, 0));
     printf("  got %d code %d from me %d\n", got_signal, got_code, got_from_me);
+    // A reopen for its path alone is no descriptor these calls find (`fdget`).
+    char path[64];
+    snprintf(path, sizeof path, "/proc/self/fd/%d", self);
+    int path_only = open(path, O_PATH);
+    show("path reopen", path_only < 0 ? -1 : 0);
+    show("signal through a path descriptor", send(path_only, 0, NULL, 0));
+    siginfo_t waited;
+    show("wait through a path descriptor", waitid(P_PIDFD, path_only, &waited, WEXITED | WNOHANG));
+    close(path_only);
     siginfo_t info;
     memset(&info, 0, sizeof info);
     info.si_signo = SIGUSR1;

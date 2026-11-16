@@ -41,7 +41,7 @@ pub(super) fn signalfd4(
     let mask = mask & !(bit(SIGKILL) | bit(SIGSTOP));
     if fd as i32 != -1 {
         // An existing descriptor takes the new mask; its flags stay.
-        let file = super::io::file(kernel, tid, fd)?;
+        let file = super::io::open_file(kernel, tid, fd)?;
         let mut file = file.borrow_mut();
         if mask_of(&file).is_none() {
             return Err(Errno::EINVAL);

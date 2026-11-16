@@ -117,6 +117,9 @@ static void file(void) {
     int null = open("/dev/null", O_RDONLY);
     show("update not a signal descriptor", sfd(null, &mask, 8, 0));
     show("update bad descriptor", sfd(99, &mask, 8, 0));
+    int path_only = open("/tmp", O_PATH);
+    show("update a path descriptor", sfd(path_only, &mask, 8, 0));
+    close(path_only);
     show("update -2", sfd(-2, &mask, 8, 0));
     close(null);
     show("read short", read(fd, link, 100));

@@ -4,7 +4,8 @@
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 
 use super::io::{
-    MAX_RW_COUNT, file, file_bytes, positioned, refresh_proc, verify_area, write_bytes, write_limit,
+    MAX_RW_COUNT, file_bytes, open_file, positioned, refresh_proc, verify_area, write_bytes,
+    write_limit,
 };
 use super::pipe::{channel, signal_ends, with_pipe};
 use super::{Args, guest};
@@ -17,15 +18,6 @@ use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
 
 const SPLICE_F_ALL: u32 = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
-
-/// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
-fn open_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
-    let found = file(kernel, tid, fd)?;
-    if found.borrow().is_path() {
-        return Err(Errno::EBADF);
-    }
-    Ok(found)
-}
 
 /// Whether the file is a pipe or a named pipe's end (`get_pipe_info`).
 fn is_pipe(file: &FileRef) -> bool {

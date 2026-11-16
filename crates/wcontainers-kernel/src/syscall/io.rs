@@ -33,6 +33,15 @@ pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno>
     kernel.process_of(tid).files.file(fd as i32)
 }
 
+/// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
+pub(super) fn open_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
+    let found = file(kernel, tid, fd)?;
+    if found.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    Ok(found)
+}
+
 pub(super) fn read(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,

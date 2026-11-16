@@ -487,7 +487,7 @@ fn find_for_waitid(
         P_PGID if id >= 0 => Which::Group(id),
         // A process descriptor's process while it exists; one reaped is no one's child.
         P_PIDFD if id >= 0 => {
-            let file = super::io::file(kernel, tid, id as u64)?;
+            let file = super::io::open_file(kernel, tid, id as u64)?;
             let file = file.borrow();
             let named = super::pidfd::named(kernel, &file)?;
             nonblocking = file.flags & O_NONBLOCK != 0;
