@@ -302,6 +302,7 @@ impl Kernel {
         }
         pending.set |= bit(signal);
         pending.queue.push_back(Queued { signal, info });
+        self.wake_readiness_of(pid);
         self.complete(cx, pid, target, signal);
     }
 

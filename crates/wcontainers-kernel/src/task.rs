@@ -268,6 +268,19 @@ impl Kernel {
         }
     }
 
+    /// Wakes the threads of `pid`'s process waiting on files' readiness, which signal descriptors
+    /// depend on (Linux's `signalfd_notify`).
+    pub(crate) fn wake_readiness_of(&mut self, pid: Pid) {
+        let Some(process) = self.processes.get(&pid) else {
+            return;
+        };
+        for tid in process.threads.clone() {
+            if self.threads[&tid].call.wait == Some(Channel::Readiness) {
+                self.wake_thread(tid);
+            }
+        }
+    }
+
     /// Wakes the threads of `pid`'s process parked on its children.
     pub(crate) fn wake_waiters_of(&mut self, pid: Pid) {
         let Some(process) = self.processes.get(&pid) else {

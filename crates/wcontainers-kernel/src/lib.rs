@@ -75,6 +75,8 @@ pub(crate) struct Files {
     pub secretmem_fs: Option<FileSystem>,
     /// The file system process descriptors are on, once one is made.
     pub pidfs: Option<FileSystem>,
+    /// The anonymous inode, once a file needs it.
+    pub anon: Option<crate::fs::Node>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
@@ -184,6 +186,7 @@ impl Kernel {
                 },
                 secretmem_fs: None,
                 pidfs: None,
+                anon: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
                 proc_kept: BTreeMap::new(),

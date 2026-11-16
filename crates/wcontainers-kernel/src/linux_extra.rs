@@ -87,6 +87,10 @@ pub(crate) const PIDFD_SIGNAL_THREAD: u32 = 1;
 pub(crate) const PIDFD_SIGNAL_THREAD_GROUP: u32 = 2;
 pub(crate) const PIDFD_SIGNAL_PROCESS_GROUP: u32 = 4;
 
+/// `signalfd4`'s flags (`linux/signalfd.h`, which linux-raw-sys does not generate).
+pub(crate) const SFD_CLOEXEC: u32 = crate::linux::general::O_CLOEXEC;
+pub(crate) const SFD_NONBLOCK: u32 = crate::linux::general::O_NONBLOCK;
+
 /// `rseq`'s flags (`linux/rseq.h`, which linux-raw-sys does not generate): unregister, and turn time
 /// slice extensions on from the start.
 pub(crate) const RSEQ_FLAG_UNREGISTER: u32 = 1;

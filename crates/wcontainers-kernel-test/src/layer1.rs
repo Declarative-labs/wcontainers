@@ -1345,6 +1345,8 @@ pub const CALLS: &[u32] = &[
     linux::__NR_pidfd_open,
     linux::__NR_pidfd_send_signal,
     linux::__NR_process_mrelease,
+    linux::__NR_signalfd4,
+    linux::__NR_signalfd4,
 ];
 
 /// Turns a generated call into real arguments.
@@ -1575,6 +1577,16 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         linux::__NR_process_mrelease => [fd(a), pick(&[0, 0, 1], b), 0, 0, 0, 0],
+        // Signal descriptors, always nonblocking so that a read never waits, made or changed.
+        linux::__NR_signalfd4 => [
+            pick(&[u64::MAX, u64::MAX, 3, 4, 100], a),
+            buffer(b),
+            pick(&[8, 8, 8, 4, 16], c),
+            u64::from(linux::O_NONBLOCK)
+                | pick(&[0, 0, u64::from(linux::O_CLOEXEC), 1, 0x8000_0000], d),
+            0,
+            0,
+        ],
         linux::__NR_name_to_handle_at => [
             dirfd(a),
             path(b),

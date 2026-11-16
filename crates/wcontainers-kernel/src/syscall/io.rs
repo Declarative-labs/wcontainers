@@ -430,7 +430,7 @@ pub(super) fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let sequence = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
     // Terminals are opened unseekable (`nonseekable_open`).
-    if matches!(inode.content, Content::Pipe(_))
+    if matches!(inode.content, Content::Pipe(_) | Content::Anon)
         || inode.is_secret()
         || (writing && sequence)
         || file.terminal.is_some()
@@ -447,7 +447,10 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let no_write = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
-    if inode.is_secret() || (writing && no_write) {
+    // A signal descriptor only reads; a process descriptor does neither.
+    let anon_write = writing && matches!(inode.content, Content::Anon);
+    let pidfd = matches!(inode.content, Content::Pidfd(_));
+    if inode.is_secret() || (writing && no_write) || anon_write || pidfd {
         return Err(Errno::EINVAL);
     }
     Ok(())
@@ -666,6 +669,9 @@ fn vectored(
             None => super::pipe::read(kernel, cx, tid, file, parts),
         };
     }
+    if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
+        return super::signalfd::read(kernel, cx, tid, file, parts);
+    }
     verify_area(offset.unwrap_or(file.borrow().offset), total)?;
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
@@ -751,7 +757,9 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(_) => return Err(Errno::EINVAL),
+        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(_) | Content::Anon => {
+            return Err(Errno::EINVAL);
+        }
     })
 }
 
@@ -867,6 +875,9 @@ pub(super) fn read_at(
     }
     if super::pipe::is_pipe(file) {
         return super::pipe::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::signalfd::mask_of(&file.borrow()).is_some() {
+        return super::signalfd::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
@@ -1061,7 +1072,11 @@ pub(super) fn write_bytes(
                 _ => Err(Errno::ENXIO),
             };
         }
-        Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) | Content::Pidfd(_) => {
+        Content::Directory(_)
+        | Content::Proc(_)
+        | Content::Symlink(_)
+        | Content::Pidfd(_)
+        | Content::Anon => {
             return Err(Errno::EINVAL);
         }
     };
@@ -1360,6 +1375,8 @@ pub(super) fn lseek(
     let mut sequence = None;
     let new = match &inode.content {
         Content::Pipe(_) | Content::Pidfd(_) => return Err(Errno::ESPIPE),
+        // Signal descriptors keep their position at 0 (`noop_llseek`).
+        Content::Anon => file.offset as i64,
         Content::Special => match Device::from_number(inode.rdev) {
             // `/dev/null`, `/dev/zero` and `/dev/full` always seek to 0 (`null_lseek`); the random
             // devices keep their position (`noop_llseek`).
@@ -2306,7 +2323,7 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 
 /// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
 /// or what the file's own says. The host's pipes always have room.
-fn poll_mask(kernel: &Kernel, file: &FileRef) -> u16 {
+fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
     if super::tty::end(file).is_some() {
         return super::tty::poll(file);
@@ -2328,6 +2345,10 @@ fn poll_mask(kernel: &Kernel, file: &FileRef) -> u16 {
             drop(node);
             super::pidfd::poll(kernel, &file)
         }
+        Content::Anon => match super::signalfd::mask_of(&file) {
+            Some(mask) => super::signalfd::poll(kernel, tid, mask),
+            None => 0,
+        },
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
 }
@@ -2564,7 +2585,7 @@ fn select_typed(
             }
             // `select_poll_one`: an `O_PATH` descriptor is not found, so it is invalid, which every
             // set reports.
-            let mask = poll_mask(kernel, &files.file(fd as i32)?);
+            let mask = poll_mask(kernel, tid, &files.file(fd as i32)?);
             if u32::from(mask) & kinds[index] != 0 {
                 result[(fd / 8) as usize] |= 1 << (fd % 8);
                 ready += 1;
@@ -2608,7 +2629,7 @@ fn ppoll_typed(
         } else {
             match kernel.process_of(tid).files.file(fd) {
                 Ok(file) => {
-                    poll_mask(kernel, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
+                    poll_mask(kernel, tid, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
                 }
                 Err(_) => POLLNVAL as u16,
             }

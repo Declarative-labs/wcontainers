@@ -35,6 +35,15 @@ pub(crate) struct OpenFile {
     /// Whether `O_DIRECT` may be set on it (`FMODE_CAN_ODIRECT`): an open tmpfs file, but not the file
     /// `memfd_create` makes, which is not opened through tmpfs's `open`.
     pub direct_io: bool,
+    /// What a file on the shared anonymous inode is (Linux's `private_data` of such files).
+    pub anon: Option<Anon>,
+}
+
+/// The state of a file on the shared anonymous inode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Anon {
+    /// A signal descriptor and the signals it reads.
+    Signals(u64),
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
@@ -82,6 +91,7 @@ impl OpenFile {
             terminal: None,
             async_fd: None,
             direct_io,
+            anon: None,
         }))
     }
 

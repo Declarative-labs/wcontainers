@@ -193,6 +193,8 @@ pub(crate) enum Kind {
     Secretmem,
     /// Process descriptors.
     Pidfs,
+    /// The one anonymous inode many kinds of descriptor share (`anon_inodefs`).
+    Anon,
 }
 
 impl Kind {
@@ -210,7 +212,7 @@ impl Kind {
     pub fn max_bytes(self) -> u64 {
         match self {
             Kind::Tmpfs => i64::MAX as u64,
-            Kind::Devpts | Kind::Proc | Kind::Pipe | Kind::Secretmem | Kind::Pidfs => {
+            Kind::Devpts | Kind::Proc | Kind::Pipe | Kind::Secretmem | Kind::Pidfs | Kind::Anon => {
                 i32::MAX as u64
             }
         }
@@ -225,6 +227,7 @@ impl Kind {
             Kind::Pipe => PIPEFS_MAGIC.into(),
             Kind::Secretmem => SECRETMEM_MAGIC.into(),
             Kind::Pidfs => PID_FS_MAGIC.into(),
+            Kind::Anon => ANON_INODE_FS_MAGIC.into(),
         }
     }
 }
@@ -298,6 +301,8 @@ pub(crate) enum Content {
     Proc(proc::Entry),
     /// A process descriptor's file, naming a process by number while the process holds it.
     Pidfd(crate::process::Pid),
+    /// The anonymous inode; what each file on it is lies in the file (`OpenFile::anon`).
+    Anon,
 }
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
@@ -757,7 +762,7 @@ impl Inode {
             Content::Directory(directory) => DIRENT_SIZE * (directory.len() as u64 + 2),
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
-            Content::Special | Content::Pipe(_) | Content::Pidfd(_) => 0,
+            Content::Special | Content::Pipe(_) | Content::Pidfd(_) | Content::Anon => 0,
         }
     }
 

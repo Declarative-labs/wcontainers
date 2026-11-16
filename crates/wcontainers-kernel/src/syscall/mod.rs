@@ -17,6 +17,7 @@ pub(crate) mod pipe;
 mod process;
 mod rseq;
 mod seccomp;
+mod signalfd;
 mod signals;
 mod splice;
 mod system;
@@ -147,6 +148,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_pidfd_open, S(pidfd::pidfd_open)),
         (__NR_pidfd_send_signal, S(pidfd::pidfd_send_signal)),
         (__NR_process_mrelease, S(pidfd::process_mrelease)),
+        (__NR_signalfd4, S(signalfd::signalfd4)),
         (__NR_openat, S(files::openat)),
         (__NR_openat2, S(files::openat2)),
         (__NR_flock, F(files::flock)),
@@ -407,4 +409,32 @@ pub(crate) fn name(number: u64) -> Option<&'static str> {
         .get(usize::try_from(number).ok()?)
         .map(|entry| entry.name)
         .filter(|name| !name.is_empty())
+}
+
+/// The one anonymous inode signal descriptors and their like share: owned by root, readable and
+/// writable by it, with no file type (measured).
+fn anon_node(kernel: &mut Kernel, cx: &mut Context<'_>) -> crate::fs::Node {
+    if let Some(node) = &kernel.files.anon {
+        return node.clone();
+    }
+    let now = kernel.now(cx);
+    let fs = kernel.files.numbers.file_system(crate::fs::Kind::Anon, 0);
+    let ino = kernel.files.numbers.ino();
+    let node = crate::fs::new_inode(
+        fs,
+        ino,
+        crate::fs::New {
+            mode: 0o600,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            now,
+            content: crate::fs::Content::Anon,
+            parent: None,
+            name: b"[anon]".to_vec(),
+        },
+    )
+    .expect("an inode with no space to count against");
+    kernel.files.anon = Some(node.clone());
+    node
 }
