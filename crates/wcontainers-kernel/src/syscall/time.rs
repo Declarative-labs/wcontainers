@@ -250,6 +250,7 @@ pub(super) fn restart_syscall(
             outcome
         }
         Some(Restart::Forever) => sleep_forever(kernel, tid, true),
+        Some(restart @ Restart::Futex { .. }) => super::futex::restart(kernel, cx, tid, restart),
         // `do_no_restart_syscall`.
         None => Err(Errno::EINTR).into(),
     }

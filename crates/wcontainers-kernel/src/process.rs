@@ -93,6 +93,9 @@ pub(crate) struct Process {
     pub exit_signal: u32,
     /// Once every thread has ended: the wait status a parent's wait will reap (a zombie).
     pub ended: Option<i32>,
+    /// The wait status the first thread ended with while others went on (`exit_code` of the
+    /// group's leader), which a parent's wait reports unless the whole group was made to end.
+    pub leader_status: Option<i32>,
     /// What a zombie's first thread keeps until it is reaped.
     pub ended_leader: Leader,
     /// The inode its process descriptors share, once one is made.
@@ -350,6 +353,8 @@ pub(crate) enum Channel {
     Locks,
     /// A `vfork` child letting go of the memory.
     Vfork(Pid),
+    /// A futex wake, requeue or lock handed over (the futexes know which).
+    Futex,
 }
 
 /// What `restart_syscall` runs again.
@@ -359,6 +364,15 @@ pub(crate) enum Restart {
     Sleep { until: u64, left: u64 },
     /// A sleep on a clock that never ends by time (a CPU clock that does not move).
     Forever,
+    /// A futex wait with a timeout: the futex, the value it must hold, the bits it waits for, and
+    /// when it ends on the monotonic clock.
+    Futex {
+        address: u64,
+        value: u32,
+        bitset: u32,
+        shared: bool,
+        until: u64,
+    },
 }
 
 impl Thread {

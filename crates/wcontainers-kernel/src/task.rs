@@ -9,7 +9,7 @@ use wcontainers_abi::{Next, RegisterBlock, Resume, Syscall};
 
 use crate::counters::reason;
 use crate::linux::general::*;
-use crate::process::{Channel, Pid, Report, Tid};
+use crate::process::{Call, Channel, Pid, Report, Tid};
 use crate::schedule;
 use crate::{Context, Kernel, syscall};
 
@@ -410,6 +410,7 @@ impl Kernel {
 
     /// Ends one thread of a process that has others.
     pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
+        syscall::futex::thread_end(self, cx, tid, true);
         self.unschedule(tid);
         syscall::sem::forget(self, tid);
         syscall::mqueue::forget(self, tid);
@@ -424,6 +425,30 @@ impl Kernel {
         process.ended_time += thread.runtime;
     }
 
+    /// `de_thread`: ends every other thread of the caller's process, and the caller takes the
+    /// process's number if it did not have it. Returns the caller's number now.
+    pub(crate) fn only_thread(&mut self, cx: &mut Context<'_>, pid: Pid, tid: Tid) -> Tid {
+        for other in self.processes[&pid].threads.clone() {
+            if other != tid {
+                self.end_thread(cx, other);
+            }
+        }
+        if tid == pid {
+            return tid;
+        }
+        let mut thread = self.threads.remove(&tid).expect("thread exists");
+        thread.call = Call::default();
+        self.threads.insert(pid, thread);
+        self.processes
+            .get_mut(&pid)
+            .expect("process exists")
+            .threads = alloc::vec![pid];
+        if self.current == Some(tid) {
+            self.current = Some(pid);
+        }
+        pid
+    }
+
     /// Ends a whole process with a wait status, as `exit_group` and fatal signals do: its threads
     /// and memory go, its children go to a reaper, and its parent is told. It stays as a zombie
     /// until its parent reaps it, unless the parent does not want it.
@@ -431,7 +456,14 @@ impl Kernel {
         if self.processes[&pid].ended.is_some() {
             return;
         }
-        for tid in self.processes[&pid].threads.clone() {
+        let threads = self.processes[&pid].threads.clone();
+        let memory = self.processes[&pid].memory;
+        let shared = self.memory_in_use_elsewhere(pid, memory);
+        for (index, &tid) in threads.iter().enumerate() {
+            // Each thread's end sees the memory still used by those yet to end.
+            syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
+        }
+        for tid in threads {
             self.unschedule(tid);
             syscall::sem::forget(self, tid);
             syscall::mqueue::forget(self, tid);

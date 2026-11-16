@@ -78,3 +78,51 @@ pub fn assert_same_output(out: &Path, name: &str, arguments: &[&str]) -> driver:
     assert_eq!(ours.outcome, theirs);
     ours
 }
+
+/// The seeds of the schedules a threaded program runs under: `SCHEDULE_SEEDS` of them (3 if unset)
+/// from `SCHEDULE_SEED` on (1 if unset). Each seed decides where every turn on the CPU ends.
+pub fn schedule_seeds() -> std::ops::Range<u64> {
+    let number = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let first = number("SCHEDULE_SEED", 1);
+    first..first + number("SCHEDULE_SEEDS", 3)
+}
+
+/// As [`assert_same_output`], with ours run under every seed of [`schedule_seeds`], and with
+/// `saves` saves at moments drawn from each seed; returns our runs.
+pub fn assert_same_output_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+) -> Vec<driver::Run> {
+    let program = guest::build(name, &[], out);
+    let theirs = reference::run(&program, arguments);
+    let path = format!(
+        "/wc/{}",
+        program.file_name().expect("a name").to_string_lossy()
+    );
+    let mut all = vec![path.as_str()];
+    all.extend_from_slice(arguments);
+    let directory = program.parent().expect("program has a directory");
+    let mut runs = Vec::new();
+    for seed in schedule_seeds() {
+        let ours = run_ours_saving(directory, &path, &all, seed, saves);
+        let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
+        let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
+        let differences: Vec<String> = ours_text
+            .lines()
+            .zip(theirs_text.lines())
+            .filter(|(our, their)| our != their)
+            .map(|(our, their)| format!("seed {seed}: ours {our:?}\ntheirs {their:?}"))
+            .collect();
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
+        assert_eq!(ours.outcome, theirs, "seed {seed}");
+        runs.push(ours);
+    }
+    runs
+}

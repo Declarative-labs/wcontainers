@@ -51,6 +51,9 @@ const BYTES: &[&str] = &[
     "fsuuid2",
     "termios",
     "termios2",
+    "futex_waitv",
+    "__kernel_old_itimerval",
+    "itimerval",
 ];
 
 /// One file the generator writes, relative to the workspace root, and what it holds.

@@ -5,6 +5,7 @@
 
 mod clone;
 mod files;
+pub(crate) mod futex;
 mod handle;
 mod io;
 mod ioctl;
@@ -258,6 +259,11 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_rt_sigreturn, F(signals::rt_sigreturn)),
         (__NR_restart_syscall, F(time::restart_syscall)),
         (__NR_clone, F(clone::clone)),
+        (__NR_futex, F(futex::futex)),
+        (__NR_futex_waitv, F(futex::futex_waitv)),
+        (__NR_futex_wake, S(futex::futex_wake)),
+        (__NR_futex_wait, F(futex::futex_wait)),
+        (__NR_futex_requeue, S(futex::futex_requeue)),
         (__NR_wait4, F(clone::wait4)),
         (__NR_waitid, F(clone::waitid)),
         (__NR_prlimit64, S(process::prlimit64)),

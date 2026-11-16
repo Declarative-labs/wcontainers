@@ -279,6 +279,10 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
                 resume,
                 slice_nanoseconds,
             } => {
+                // The seed chooses where in its slice each turn ends, so a run repeats for a seed
+                // and threads interleave differently under different seeds.
+                let slice_nanoseconds =
+                    slice_nanoseconds.map(|slice| host.schedule.random_range(1..=slice.max(1)));
                 let exit = match cpu.run(thread, resume, slice_nanoseconds) {
                     Ok(exit) => exit,
                     // A copy cannot hand a failure back; it says what it was and ends.

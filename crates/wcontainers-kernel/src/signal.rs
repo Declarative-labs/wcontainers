@@ -617,8 +617,14 @@ impl Kernel {
     /// Stops a process for job control (`do_signal_stop`): its threads stop where they are and its
     /// parent is told.
     fn stop_process(&mut self, cx: &mut Context<'_>, pid: Pid, signal: u32) {
+        // Threads in line or on the CPU wait aside; parked ones stay parked, and any that finish
+        // their call meanwhile wait aside too.
         for tid in self.processes[&pid].threads.clone() {
-            self.unschedule(tid);
+            self.take_out_of_line(tid);
+            if self.current == Some(tid) {
+                self.current = None;
+            }
+            self.signalled.retain(|other| *other != tid);
         }
         let process = self.processes.get_mut(&pid).expect("process");
         process.stopped = true;

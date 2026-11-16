@@ -13,8 +13,9 @@ use crate::{Context, Errno, Kernel, errno};
 /// Linux's `CSIGNAL`: the low byte of clone's flags is the signal sent to the parent at the end.
 const CSIGNAL: u64 = 0xff;
 
-/// Flags whose sharing comes with threads, not built yet: each is refused, counted.
-const SHARING_NOT_BUILT: u32 = CLONE_THREAD | CLONE_FILES | CLONE_FS | CLONE_SIGHAND;
+/// What a thread shares here with the rest of its process: the process holds its descriptor
+/// table, its file system context and its semaphore undo list, so a thread must share them all.
+const THREAD_SHARES: u32 = CLONE_FILES | CLONE_FS | CLONE_SYSVSEM;
 
 /// `clone(flags, stack, parent_tid, tls, child_tid)`, arm64's argument order.
 pub(super) fn clone(
@@ -96,14 +97,21 @@ fn make_child(
         || (flags & CLONE_SIGHAND != 0 && flags & CLONE_VM == 0)
         || (flags & CLONE_PARENT != 0 && kernel.init == Some(pid))
         || (flags & CLONE_PIDFD != 0 && flags & CLONE_DETACHED != 0)
+        || (flags & CLONE_THREAD != 0 && flags & (CLONE_NEWUSER | CLONE_NEWPID) != 0)
     {
         return Err(Errno::EINVAL);
     }
-    // Sharing a process's tables between processes, threads, and memory shared by two running
-    // processes are not built.
-    let shares_memory = flags & CLONE_VM != 0 && flags & CLONE_VFORK == 0;
-    if flags & SHARING_NOT_BUILT != 0 || shares_memory {
-        let unbuilt = flags & (SHARING_NOT_BUILT | CLONE_VM);
+    // A thread that keeps its own tables or waits like vfork, or a process that shares the
+    // caller's tables or its memory while both run, is not built.
+    let thread = flags & CLONE_THREAD != 0;
+    let unbuilt = if thread {
+        (THREAD_SHARES & !flags) | (flags & (CLONE_VFORK | CLONE_PIDFD))
+    } else {
+        let shares_memory = flags & CLONE_VM != 0 && flags & CLONE_VFORK == 0;
+        (flags & (CLONE_FILES | CLONE_FS | CLONE_SIGHAND))
+            | if shares_memory { CLONE_VM } else { 0 }
+    };
+    if unbuilt != 0 {
         return Err(kernel.counters.refuse_flag(
             cx.host,
             __NR_clone,
@@ -130,6 +138,9 @@ fn make_child(
     if flags & CLONE_PIDFD != 0 {
         let fd = super::pidfd::next_descriptor(kernel, pid)?;
         guest(kernel, cx, tid).put(pidfd_out, &fd.to_le_bytes())?;
+    }
+    if thread {
+        return make_thread(kernel, cx, tid, flags, stack, tls, child_tid);
     }
     let child = kernel.allocate_id();
     let parent = &kernel.processes[&pid];
@@ -181,6 +192,7 @@ fn make_child(
     process.files = parent.files.duplicate(child as u64);
     process.pending = Default::default();
     process.ended = None;
+    process.leader_status = None;
     process.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     process.stopped = false;
     process.report = None;
@@ -248,6 +260,75 @@ fn make_child(
         super::pidfd::give_child_descriptor(kernel, cx, tid, child)?;
     }
     // `schedule_tail`: the child writes its own number where it was asked to.
+    if flags & CLONE_CHILD_SETTID != 0 {
+        let _ = guest(kernel, cx, child).put(child_tid, &child.to_le_bytes());
+    }
+    kernel.start_new(child);
+    Ok(child)
+}
+
+/// `copy_process` for a thread of the caller's process: it shares everything the process holds and
+/// starts on the same memory from the caller's registers, with its own stack and thread pointer if
+/// given.
+fn make_thread(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    flags: u32,
+    stack: u64,
+    tls: u64,
+    child_tid: u64,
+) -> Result<Pid, Errno> {
+    let pid = kernel.threads[&tid].process;
+    let memory = kernel.processes[&pid].memory;
+    let thread_cpu = cx
+        .cpu
+        .thread_new(memory)
+        .map_err(|error| cx.cpu_error(error))?;
+    let child = kernel.allocate_id();
+    let mut registers = RegisterBlock::ZERO;
+    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    registers.x[0] = 0;
+    if stack != 0 {
+        registers.sp = stack;
+    }
+    if flags & CLONE_SETTLS != 0 {
+        registers.tpidr_el0 = tls;
+    }
+    cx.cpu.set_registers(thread_cpu, &registers);
+    let mut thread = kernel.threads[&tid].clone();
+    thread.cpu = thread_cpu;
+    thread.resume = Resume::FromRegisters;
+    thread.pending = Default::default();
+    thread.saved_mask = None;
+    thread.call = Default::default();
+    thread.restart = None;
+    thread.runtime = 0;
+    thread.forced = 0;
+    thread.parent_death_signal = 0;
+    thread.robust_list = (0, 0);
+    thread.clear_child_tid = if flags & CLONE_CHILD_CLEARTID != 0 {
+        child_tid
+    } else {
+        0
+    };
+    // A thread on the same memory has no alternate stack and no registered area of its own yet.
+    thread.alternate_stack = (0, 0, 0);
+    thread.rseq = None;
+    thread.opening = None;
+    if thread.schedule.reset_on_fork {
+        thread.schedule.policy = SCHED_NORMAL;
+        thread.schedule.priority = 0;
+        thread.schedule.nice = thread.schedule.nice.max(0);
+        thread.schedule.reset_on_fork = false;
+    }
+    kernel.threads.insert(child, thread);
+    kernel
+        .processes
+        .get_mut(&pid)
+        .expect("process exists")
+        .threads
+        .push(child);
     if flags & CLONE_CHILD_SETTID != 0 {
         let _ = guest(kernel, cx, child).put(child_tid, &child.to_le_bytes());
     }

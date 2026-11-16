@@ -156,6 +156,8 @@ pub struct Kernel {
     signal_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
     /// The container's System V IPC objects.
     ipc: syscall::ipc::Ipc,
+    /// Every futex with waiters.
+    futexes: syscall::futex::Futexes,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -206,6 +208,7 @@ impl Kernel {
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),
+            futexes: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,

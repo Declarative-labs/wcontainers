@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use wcontainers_abi::Resume;
 use zerocopy::FromZeros;
 
 use super::{Args, Outcome, guest};
@@ -21,11 +22,21 @@ pub(super) fn exit(
     tid: Tid,
     arguments: Args,
 ) -> Outcome {
-    let status = arguments[0] as i32;
+    let status = exit_status(arguments[0] as i32);
     let pid = kernel.threads[&tid].process;
-    if kernel.processes[&pid].threads.len() == 1 {
-        kernel.end_process(cx, pid, exit_status(status));
+    let process = &kernel.processes[&pid];
+    if process.threads.len() == 1 {
+        // Without a group exit, a parent's wait reports the first thread's own status.
+        let status = process.leader_status.unwrap_or(status);
+        kernel.end_process(cx, pid, status);
     } else {
+        if tid == pid {
+            kernel
+                .processes
+                .get_mut(&pid)
+                .expect("process exists")
+                .leader_status = Some(status);
+        }
         kernel.end_thread(cx, tid);
     }
     Outcome::Gone
@@ -103,7 +114,7 @@ pub(super) fn execve(
     [path, argv, envp, ..]: Args,
 ) -> Outcome {
     match exec(kernel, cx, tid, AT_FDCWD as u64, path, argv, envp, 0) {
-        Ok(Exec::Started) => Outcome::Restart,
+        Ok(Exec::Started(now)) => started(kernel, cx, tid, now),
         Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
@@ -117,16 +128,25 @@ pub(super) fn execveat(
     [dirfd, path, argv, envp, flags, _]: Args,
 ) -> Outcome {
     match exec(kernel, cx, tid, dirfd, path, argv, envp, flags as u32) {
-        Ok(Exec::Started) => Outcome::Restart,
+        Ok(Exec::Started(now)) => started(kernel, cx, tid, now),
         Ok(Exec::Died) => Outcome::Gone,
         Ok(Exec::Checked) => Outcome::Return(0),
         Err(error) => Err(error).into(),
     }
 }
 
+/// A new program in place: the thread starts it, under the process's number if it took it.
+fn started(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, now: Tid) -> Outcome {
+    if now == tid {
+        return Outcome::Restart;
+    }
+    kernel.return_to_user(cx, now, Resume::FromRegisters);
+    Outcome::Gone
+}
+
 enum Exec {
-    /// The new program is in place.
-    Started,
+    /// The new program is in place, run by this thread.
+    Started(Tid),
     /// `AT_EXECVE_CHECK`: the file could be run; nothing changed.
     Checked,
     /// It failed after the point of no return, and the process died.
@@ -220,11 +240,6 @@ fn exec(
     if flags & AT_EXECVE_CHECK != 0 {
         return Ok(Exec::Checked);
     }
-    if kernel.processes[&pid].threads.len() > 1 {
-        return Err(kernel
-            .counters
-            .refuse_flag(cx.host, __NR_execve, 0, Errno::ENOSYS));
-    }
     let mut program = program;
     program.reopenable = reachable;
     let loaded = crate::loader::load(
@@ -255,8 +270,10 @@ fn exec(
             .unwrap_or_default()
             .to_vec();
     }
+    // `de_thread`: the other threads end, and the caller takes the process's number.
+    let tid = kernel.only_thread(cx, pid, tid);
     kernel.install_image(cx, pid, tid, image);
-    Ok(Exec::Started)
+    Ok(Exec::Started(tid))
 }
 
 pub(super) fn getpid(

@@ -492,7 +492,15 @@ pub struct procmap_query {
     pub build_id_addr: __u64,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct futex_waitv {
     pub val: __u64,
     pub uaddr: __u64,
@@ -622,7 +630,15 @@ pub struct __kernel_old_timespec {
     pub tv_nsec: super::ctypes::c_long,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct __kernel_old_itimerval {
     pub it_interval: __kernel_old_timeval,
     pub it_value: __kernel_old_timeval,
@@ -989,7 +1005,15 @@ pub struct itimerspec {
     pub it_value: timespec,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct itimerval {
     pub it_interval: timeval,
     pub it_value: timeval,
