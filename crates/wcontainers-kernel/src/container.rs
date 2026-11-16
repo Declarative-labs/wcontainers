@@ -385,7 +385,6 @@ impl Kernel {
             limits: docker_limits(),
             executable: (root.clone(), Vec::new()),
             starting_stack: Default::default(),
-            dumpable: true,
             child_subreaper: false,
             thp_disable: 0,
             pending: Default::default(),
@@ -566,7 +565,7 @@ impl Kernel {
         let old = &thread.credentials;
         let new = &image.after.credentials;
         let lose_parent_death_signal = image.after.secure || new.loses_dumpable(old);
-        process.dumpable = image.readable
+        process.map.borrow_mut().dumpable = image.readable
             && old.euid == old.uid
             && old.egid == old.gid
             && !new.loses_dumpable(old);

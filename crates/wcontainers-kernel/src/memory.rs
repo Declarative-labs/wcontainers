@@ -238,6 +238,9 @@ pub(crate) struct AddressMap {
     pub membarrier: u32,
     /// Protection keys allocated, one bit each; key 0 from the start.
     pub protection_keys: u32,
+    /// `PR_SET_DUMPABLE`, kept with the memory as Linux keeps it in `mm->flags`; cleared when a
+    /// user's ids change.
+    pub dumpable: bool,
 }
 
 impl AddressMap {
@@ -254,6 +257,7 @@ impl AddressMap {
             future_lock: Lock::None,
             membarrier: 0,
             protection_keys: 1,
+            dumpable: true,
         }
     }
 

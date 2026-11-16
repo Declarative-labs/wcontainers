@@ -741,7 +741,7 @@ impl Kernel {
         if !same && !traces {
             return false;
         }
-        if target_process.ended.is_none() && !target_process.dumpable && !traces {
+        if target_process.ended.is_none() && !target_process.map.borrow().dumpable && !traces {
             return false;
         }
         t.permitted & !c.effective == 0 || traces

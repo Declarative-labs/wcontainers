@@ -496,7 +496,7 @@ pub(crate) fn dump_owner(
     mode: u32,
 ) -> (u32, u32) {
     processes.get(&pid).map_or((0, 0), |process| {
-        if mode != S_IFDIR | 0o555 && !process.dumpable {
+        if mode != S_IFDIR | 0o555 && !process.map.borrow().dumpable {
             (0, 0)
         } else {
             let credentials = task_credentials(processes, threads, tid);

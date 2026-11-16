@@ -737,7 +737,7 @@ fn changing(
     let uid = credentials.uid;
     let process = kernel.process_of_mut(tid);
     if loses {
-        process.dumpable = false;
+        process.map.borrow_mut().dumpable = false;
     }
     let pid = process.pid;
     // A new real user over RLIMIT_NPROC is not refused here but at the next `execve`
@@ -1171,12 +1171,12 @@ pub(super) fn prctl(
             guest(kernel, cx, tid).write(second, &name)?;
             Ok(0)
         }
-        PR_GET_DUMPABLE => Ok(kernel.process_of(tid).dumpable.into()),
+        PR_GET_DUMPABLE => Ok(kernel.process_of(tid).map.borrow().dumpable.into()),
         PR_SET_DUMPABLE => {
             if second > 1 {
                 return Err(Errno::EINVAL);
             }
-            kernel.process_of_mut(tid).dumpable = second == 1;
+            kernel.process_of(tid).map.borrow_mut().dumpable = second == 1;
             Ok(0)
         }
         PR_GET_KEEPCAPS => Ok(kernel.credentials(tid).keep_capabilities.into()),

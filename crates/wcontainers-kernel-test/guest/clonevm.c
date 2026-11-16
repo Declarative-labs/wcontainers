@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -85,11 +86,13 @@ static int shares_memory(void) {
 
 static void handler(int signal) { handled += signal; }
 
-// A process sharing the caller's handlers: it sets one the caller then sees, and is sent one.
+// A process sharing the caller's handlers: it sets one the caller then sees, and is sent one. It
+// also clears the memory's dumpable flag, which the caller shares.
 static int shares_handlers(void) {
     struct sigaction action = {0};
     action.sa_handler = handler;
     sigaction(SIGUSR2, &action, NULL);
+    prctl(PR_SET_DUMPABLE, 0);
     word = 2;
     wake_word(&word);
     while (handled == 0) raw(SYS_sched_yield, 0, 0, 0);
@@ -192,6 +195,8 @@ int main(int argc, char **argv) {
     struct sigaction now;
     sigaction(SIGUSR2, NULL, &now);
     printf("caller sees the child's handler %d\n", now.sa_handler == handler);
+    printf("caller's dumpable after the child cleared it %d\n", prctl(PR_GET_DUMPABLE));
+    prctl(PR_SET_DUMPABLE, 1);
     kill(child, SIGUSR2);
     waitpid(child, &status, 0);
     printf("child handled %d status %x\n", handled, status);
@@ -230,6 +235,10 @@ int main(int argc, char **argv) {
     wake_word(&turn);
     wait_word(&child_tid, child_tid);
     while (child_tid != 0) wait_word(&child_tid, child_tid);
+    // Its number is cleared before Linux lets go of it; it is gone when its directory is.
+    char task[64];
+    snprintf(task, sizeof task, "/proc/self/task/%ld", thread);
+    while (access(task, F_OK) == 0) raw(SYS_sched_yield, 0, 0, 0);
     struct pollfd p = {pidfd, POLLIN, 0};
     printf("  after its end: poll %d ready %x opened %x\n", poll(&p, 1, -1), ready(pidfd),
            ready(opened));

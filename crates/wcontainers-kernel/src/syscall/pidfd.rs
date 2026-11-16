@@ -382,7 +382,7 @@ fn pidfd_info(
         let process = process_named(kernel, pid);
         // A process that has ended has no memory, so nothing about its core dump is known.
         if asked & PIDFD_INFO_COREDUMP != 0 && process.ended.is_none() {
-            let dump = if process.dumpable {
+            let dump = if process.map.borrow().dumpable {
                 PIDFD_COREDUMP_USER
             } else {
                 PIDFD_COREDUMP_SKIP

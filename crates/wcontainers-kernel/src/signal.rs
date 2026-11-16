@@ -1121,7 +1121,7 @@ impl Kernel {
         let process = &self.processes[&pid];
         if default_action(signal) == Default::Core
             && process.limits[RLIMIT_CORE as usize].current > 0
-            && process.dumpable
+            && process.map.borrow().dumpable
         {
             self.counters
                 .count(cx.host, reason::CORE_DUMP_NOT_WRITTEN, signal.into());
