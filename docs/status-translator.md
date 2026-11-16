@@ -106,6 +106,27 @@ elfconv (the benchmark to beat), set up and compared on the benchmark set:
   interpreter (fib, sort, interpret). It also gave a wrong result where we do not (hash). Not compared in
   Chrome (its browser output needs Emscripten's page).
 
+Measured with the engines, each binary in each setting (`measure_binaries`, release, one run each; load 25
+to 52). Bytes of WebAssembly, then wasmtime's compile time and bytes of machine code (the memory it uses for
+compiled code), then Chrome making the modules compiled at first call / at once by its baseline compiler.
+Instances took at most 18 ms in wasmtime and 177 ms in Chrome everywhere.
+- busybox: speed 33,934,500, 1.07 s, 50.8 MB, 0.01 / 0.06 s; size 19,077,708, 0.65 s, 29.6 MB, 0.00 / 0.04 s.
+- musl: speed 15,157,213, 0.46 s, 22.6 MB, 0.00 / 0.03 s; size 8,646,183, 0.28 s, 13.4 MB, 0.00 / 0.02 s.
+- rg: speed 143,614,742, 5.20 s, 187.7 MB, 0.03 / 0.21 s; size 53,558,478, 3.67 s, 73.8 MB, 0.01 / 0.10 s.
+- git: speed 112,987,851, 3.59 s, 167.4 MB, 0.02 / 0.17 s; size 62,767,687, 2.03 s, 95.3 MB, 0.02 / 0.10 s.
+- python: speed 143,036,317, 4.48 s, 209.5 MB, 0.03 / 0.22 s; size 80,524,723, 2.66 s, 121.6 MB, 0.02 / 0.13 s.
+- java: speed 563,342,889, 19.7 s, 863.9 MB, 0.11 / 1.04 s; size 337,272,362, 13.1 s, 531.9 MB, 0.07 / 0.62 s.
+- go: speed 359,573,773, 13.3 s, 543.8 MB, 0.07 / 0.55 s; size 222,990,220, 9.8 s, 341.2 MB, 0.05 / 0.30 s.
+- node: speed 2,608,644,243 in 3 modules (65.2 a byte of code), translated in 61 to 66 s; Chrome now makes its
+  modules (0.53 to 0.76 s at first call, instances 26 to 33 ms): the compact lookup's table fits. Compiled at
+  once, Chrome's page crashed ("Target crashed"; two runs), so 2.6 GB is past what one page can compile
+  eagerly here; wasmtime was not reached in these runs (the first run's figure: 89.6 s to 4.04 GB). Size:
+  1,253,423,350 in 2 modules (31.3 a byte), translated in 48 s; Chrome 0.28 s at first call and 2.57 s at once
+  (instances 24 and 177 ms); wasmtime 49.2 s to 1.88 GB of machine code.
+- A crashed page is now reported as a refusal, so the measurement goes on to wasmtime.
+- Chrome's memory for compiled code is not measured (nothing reads V8's code space yet); wasmtime's is the
+  machine code bytes above.
+
 M5, what comes next (most important first):
 1. Size, free reductions not yet done: slow paths are 28% of the output (each writes back its registers, the
    flags word, the passed registers and pc, inline): a shared function per module for the part that is the

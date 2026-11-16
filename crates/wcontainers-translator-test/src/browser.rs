@@ -210,6 +210,10 @@ fn launch_or_refused(
         .expect("run node (from the Nix shell)");
     let errors = String::from_utf8_lossy(&output.stderr);
     eprint!("{errors}");
+    // A page that crashes (the engine giving up on a module) is a refusal too.
+    if errors.contains("Target crashed") {
+        return Err("the page crashed".into());
+    }
     assert!(output.status.success(), "the browser runner failed");
     let result: Value = serde_json::from_slice(&output.stdout).expect("the runner's JSON");
     match result.get("error") {
