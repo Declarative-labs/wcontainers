@@ -4,11 +4,85 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M4 (bounded look-ahead and the rare paths) is built, tested against Linux and pushed, first run; it waits
-for its independent check. What it added, how it was proven and what was measured is under "M4, first run".
-M0 to M3 and S1 are built and passed their independent checks; their work is recorded below, newest first.
-The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million programs, layer 3 at
-100,000) are run once by the orchestrator at the end of the translator track; commands under "How to run".
+M4 (bounded look-ahead and the rare paths): built in the first run; the second run fixed every finding of the
+check of the first (under "M4, second run") and waits for the next check. M0 to M3 and S1 are built and
+passed their independent checks; their work is recorded below, newest first. The long runs to the plan's pass
+bars (layer 1 at 10,000 a form, layer 2 at one million programs, layer 3 at 100,000) are run once by the
+orchestrator at the end of the translator track; commands under "How to run".
+
+## M4, second run
+
+Fixes from the check of the first M4 run:
+- How much of the changes test's run is at full after a handled fault, measured. A copy of the tree in
+  scratch (`m4r2-share/tree`, not in the repository) adds to every block of a full or bounded piece, and to
+  every piece of look-ahead none, a count of its instructions in the state memory, kept by look-ahead, and
+  the changes test prints the full machine's counts (its tallies are the same as without the counts, so the
+  run is the same). Seed 21, 1000 random programs and the C programs (3 seeds; release, load 36 to 41):
+  random programs, all runs: 67.5% of instructions at full (344,132 of 509,493), 32.3% at bounded, 933 at
+  none (the instructions run alone); the runs with at least one handled fault: 60.1% at full (248,314 of
+  413,182). C programs (36 runs, every one with a handled fault): 57.4% at full (16,484,157 of 28,733,683),
+  42.6% at bounded, 31 at none. What runs at bounded is the rest of the functions in progress at each fault
+  (the C programs fault inside long loops of main, so main's rest runs at bounded); every call through the
+  table and every direct call between full pieces still reaches a full piece. Before M4 that rest ran at
+  none and took over the table entries of every function it reached.
+- Events in mixed runs now happen at random points over the whole run: a mixed run stops at every stop
+  check (the stop hook raises the flag again each time), and events are injected at random stops among
+  them, the first within 8 stops and each later gap drawn up to a quarter longer than the one before, so a
+  run has about 4.5 events for each doubling of its stops, spread through it. Each event is a lost stack or
+  a forgotten piece, half and half. A run whose mixing seed is a multiple of 4 stops nowhere and has nothing
+  injected, so pieces of every look-ahead also meet on their fast paths. The deep recursion test now runs
+  mixed too (seeds 0 to 2, as every program test).
+- Programs that switch stacks themselves, tried (`programs/fibers.c`: a fiber on its own stack switched with
+  setjmp and longjmp, from the check; `programs/coroutines.c`: two coroutines switched by a hand-written
+  context switch as coroutine libraries do, yielding from inside a recursion). Both at -O0 and -O2 match Linux
+  at none, full, bounded and mixed, and at full in Chrome (`stacks_switched_by_the_program_match_linux`).
+  What a switch costs (`switching_speed`, 2,000,000 round trips, -O2, best of 3, load 39 to 62): fibers
+  native 0.031 s, wasmtime 0.291 s (9.3 times), Chrome 0.851 s (27 times), about 65 ns more per switch than
+  native in wasmtime and 205 ns in Chrome; coroutines native 0.067 s, wasmtime 2.59 s (38 times), Chrome
+  10.96 s (163 times), about 316 ns and 1362 ns more per switch. The plan expected each switch to take "go to
+  address". It does for the hand-written switch (12,004 "left to an address" for 6002 switches at 3000
+  round trips, each switch a return that does not go where its caller expects, plus one or two "continued
+  after stack loss"). With setjmp and longjmp it does not: musl's longjmp ends in `br x30`, so each switch is
+  a "jump through a register not recognised" (6002 at 3000 round trips), which carries on through the table
+  without leaving the WebAssembly stack, and the stack fills and is left to the bottom loop now and then (19
+  "engine stack nearly full").
+- A function whose own frame estimate at full is past the stack budget no longer leaves at its entry for
+  ever: the entry compares the callers' depth (the parameter), not the callers' depth plus its own frame, with
+  the budget, so a piece called from the bottom loop (depth 0) always runs, and what it calls with its own
+  frame on top leaves as before. Test `a_frame_past_the_budget_matches_linux` (`programs/big_frame.S`: 150
+  loops through x0 to x27, so thousands of locals, calling itself three deep; none, full, bounded and mixed
+  against Linux, and at full "engine stack nearly full" counted): before the fix it ran for ever at full
+  (stopped after 120 s), after it passes. Bounded and none were not affected (none checks the parameter).
+- The wasmtime runner sets no limit on instances, tables and memories in its store (wasmtime's default is
+  10,000 instances), so runs with many lost stacks, forgotten pieces or pieces made at run time go on.
+- The first run's final suite had 3 ignored tests, not 2 (`measure_translating_at_run_time` was new).
+- "address above the host's cap" (`Reason::AddressAboveHostCap`) is never raised by the translator, the
+  runners or the hooks: it counts the kernel refusing a request for address space above what the host gives
+  (plan section 6: mmap, brk and the like), and the stand-in kernel has no such request. A guest access to an
+  address past guest memory is not a request: it reads the always-zero byte after the permission table and
+  is a memory fault with exact registers, as an access to an unmapped page is on Linux. With 32 bit memory
+  hosts (not built, see "Known gaps") the translator would raise it too.
+- The stack budget check: the kept check (in the stop check's branch) measured no difference from no check
+  at all in wasmtime and 4% in Chrome, both inside this machine's 10 to 15% noise, so no other way of
+  knowing (a counter in memory or a global, which also needs a decrement at every return) can be shown
+  cheaper here; not built.
+- The default N against others, measured (`measure_bound`): the benchmark set (`bench.c`, SCALE=1, -O2)
+  translated at bounded look-ahead from its first instruction, every other piece made at run time, best of 3
+  in wasmtime (release, load 87 to 110, so the differences under about 15% are not settled): N 16, 20.3 s
+  (0.47 s of it making 133 pieces); N 64, 10.5 s (35 pieces, 0.19 s); N 256, 8.2 s (17 pieces, 0.13 s);
+  N 1024, 8.5 s (12 pieces, 0.08 s); full, 8.7 s. So N 256 runs as fast as full here and well ahead of 64;
+  kept. Only one program; what larger programs reached at run time do at each N is not measured.
+Cases run on the final code (all 0 mismatches): the program tests touched (deep recursion, the big frame,
+unwinding, switched stacks; each also mixed with seeds 0 to 2; debug, 191 s, load about 50). Events in those
+mixed runs are now spread over the run, for example exceptions -O2 stopped 4,146,830 times with 26 stacks
+lost and 30 pieces forgotten, deep -O2 151,321 stops, 18 lost and 24 forgotten, jumps -O0 5916 stops, 13
+and 14 (the check saw 2 to 8 stops in a run of its programs). Layer 2, 1000 cases seed 31, 10 on the CPU (release,
+68 s, load 103 to 57): 357 faulted, 81 left to an address at full, 3110 stacks lost and 3105 pieces forgotten
+in mixed runs. Layer 3, 40 Csmith programs seed 15, 2 at once, 1 also in Chrome, and the hand-picked
+programs: 34 compared, 6 did not end in time on Linux (208 s, load 103 to 76; how much of that the stops at
+every check add was not measured). `tests/lookaheads.rs`, `tests/changes.rs` and `tests/smoke.rs` at their
+defaults (release). Last, every test of the three crates on the final code (debug, Chrome and layer 3's
+defaults included): 66 passed, 5 ignored (the measurements), 12.2 minutes, load 77 to 85.
 
 ## M4, first run
 
@@ -107,7 +181,7 @@ stacks lost in mixed runs; 128 s, load 87 to 46); the changes test, 1000 random 
 programs (3 seeds) (39 s, load 113); layer 3, 200 Csmith programs seed 14, 3 at once, 2 also in Chrome,
 each also at a bounded N and mixed: 173 compared, 27 did not end on Linux in time (336 s, load 87 to 30);
 `tests/lookaheads.rs`, 40 random N for each of five C programs, seed 2 (35 s, load 35 to 31). Last, every test of
-the three crates on the final code (debug, Chrome and layer 3's defaults included): 64 passed, 2 ignored (10
+the three crates on the final code (debug, Chrome and layer 3's defaults included): 64 passed, 3 ignored (10
 minutes, load 27 to 34). The unwinding and deep recursion tests: as above.
 
 Measured (release, best of 5 unless said; load in brackets):
@@ -1287,6 +1361,10 @@ contract's bits, in both runners).
 - Time to translate and load one piece at run time, wasmtime and Chrome:
   `nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads measure_translating -- --ignored --nocapture`.
 - The cost of the stack budget check: the benchmarks with `WC_BENCH_VARIANTS=1,5` (every check, no depth check).
+- What a switch of stacks costs (fibers and coroutines against native, wasmtime and Chrome):
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test programs switching_speed -- --ignored --nocapture`.
+- The default N against others (the benchmark set made at run time at N 16, 64, 256, 1024, and full):
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads measure_bound -- --ignored --nocapture`.
 - Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (defaults 64 random programs, seed 1, 3 seeds for each C program; since the eleventh run about 33 ms
   a random program at load 16 to 21, as every program now calls a function that makes a system call).
@@ -1510,7 +1588,7 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M4's independent check.
+1. M4's independent check (of the second run).
 2. M5 (real code at scale).
 3. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
    (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
@@ -1532,7 +1610,6 @@ contract's bits, in both runners).
   none (the table's last slot), then the function carries on in pieces of bounded look-ahead made from the
   next instruction. Exact either way.
 - Only 64 bit guest memory. 32 bit memory hosts need the high-bit check (section 6).
-- Programs that switch stacks themselves were not tried (plan section 13).
 - A test whose guest never ends hangs rather than fails (nothing bounds how long a translated run may
   take); the hang this run fixed showed as layer 2 and `tests/checks.rs` running for ever.
 - The full piece of a function keeps every local it may need; very large functions could pass V8's 50,000
@@ -1550,6 +1627,13 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
+- M4, second run: "the stop flag is raised at a random check" (section 9) is done as a stop at every stop
+  check of a mixed run, with the stack lost or a piece forgotten at random stops among them; the only way to
+  reach a random check of a long computation without a system call is for the thread to stop at each one.
+  One mixed run in four (by seed) stops nowhere instead.
+- M4, second run: the stack budget is compared with the depth of a piece's callers, not with that plus the
+  piece's own frame, so the frame of the piece in progress may sit above the budget (otherwise a piece whose
+  own frame is past the budget could never run).
 - M4: every piece takes one more parameter than the plan's (passed registers and the expected return
   address): the estimate of the engine stack its callers use, for leaving deep recursion to the bottom loop.
   The plan names no mechanism; this one needs no memory access and nothing at returns.
