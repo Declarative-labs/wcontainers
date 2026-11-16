@@ -5,7 +5,38 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done; this is its first run. Built in it:
+processes) is partly done after two runs. Built in K2's second run:
+- Pseudo-terminals (src/tty.rs for the pair and `n_tty`, src/syscall/tty.rs for files, waits and job
+  control): `/dev/ptmx` makes a pair with the lowest free number and its slave node in devpts
+  (`devpts_pty_new`: inode number+3, mode 0620, the opener's fsuid, group 5), locked until
+  TIOCSPTLCK; slaves open through devpts, `/dev/tty` and TIOCGPTPEER. The line discipline follows
+  `n_tty.c` function by function: the read ring and its line flags, canonical editing (erase, word
+  erase, kill with every ECHO* setting, literal next, reprint, end of file, the two line ends),
+  echo through the echo buffer with its operations and columns, signal keys with the input and
+  output flush (NOFLSH), flow control (IXON, IXANY, TCOOFF/TCOON, TCIOFF/TCION), input flags
+  (ICRNL, INLCR, IGNCR, ISTRIP, IUCLC, PARMRK doubling, IUTF8), output processing (OPOST, ONLCR,
+  OCRNL, ONOCR, ONLRET, OLCUC, XTABS), non-canonical VMIN/VTIME reads, packet mode with every
+  status byte, TIOCINQ, the 64-byte read pieces and 2048-byte write pieces. Every request of
+  `tty_ioctl`, `pty_unix98_ioctl`, `n_tty_ioctl` and `tty_mode_ioctl` (TCGETS/TCSETS*, the 2 and
+  termio forms with speeds loaded as `tty_baudrate.c` does, TIOCGWINSZ/TIOCSWINSZ with SIGWINCH, TIOCSTI,
+  TIOCEXCL, TIOCGETD/TIOCSETD, TIOCGDEV, TIOCSIG, TIOCSCTTY, TIOCNOTTY, TIOCGPGRP, TIOCSPGRP,
+  TIOCGSID and the rest). Controlling terminals and job control as `tty_jobctrl.c`: the session
+  leader's open takes one, background reads stop with SIGTTIN and writes (TOSTOP) and setting
+  changes with SIGTTOU, EIO when ignored, blocked or orphaned; a hung-up file reads 0 and answers EIO
+  (TIOCSPGRP ENOTTY); the master's last close removes the slave's node and hangs up the slave
+  (the session leader gets SIGHUP and SIGCONT and keeps the foreground group in `tty_old_pgrp`); a
+  session leader's end sends SIGHUP to the foreground group (`disassociate_ctty`). `/proc/<pid>/stat`
+  shows tty_nr and tpgid.
+- A shell's job control through a terminal, compared with the reference (tests/terminal.rs
+  `interactive_shell`): `sh -i` on a pseudo-terminal, jobs stopped with the suspend key, `jobs`,
+  `fg`, interrupt keys, background reads and TOSTOP writes stopped, traps.
+- A fault found by the terminal tests and fixed: a thread of a process continued after a stop never
+  ran again (settle only resumed threads waiting in line).
+- The test clock moves by a nanosecond for each instruction a turn ran plus the seeded 0.5 to 1.5
+  us (the stand-in counts the instructions of the blocks it enters). Before this, a turn of any
+  length cost about 1 us, so a forked child waited behind two processes that kept waking each other.
+
+Built in K2's first run:
 - One counted and warned path for everything Linux has that is not built: `Counters::refuse` and
   `refuse_flag` (src/counters.rs), with the reasons in `reason::NOT_BUILT`. The list "Not built, by
   counter" below is made from those names.
@@ -46,10 +77,11 @@ processes) is partly done; this is its first run. Built in it:
 - Layer 1 generates pipe2 (always nonblocking), wait4, waitid, rt_sigqueueinfo, rt_tgsigqueueinfo
   and rt_sigtimedwait (always with a timeout).
 
-Not done yet in K2, in order: pseudo-terminals with line handling and job control (section 9), and the
-shell's job control through one; the three fresh 20000-sequence layer 1 seeds; private file mappings
-that see later file changes (still copies); FIFOs (named pipes are still refused, counted); fork and
-clone in layer 1 (each runner would have to compare a child's calls too).
+Not done yet in K2, in order: the three fresh 20000-sequence layer 1 seeds (see Layer 1 for this
+run's); terminal calls in layer 1 (`/dev/ptmx` is not in the path pool; tests/terminal.rs covers
+them); private file mappings that see later file changes (still copies); FIFOs (named pipes are
+still refused, counted); fork and clone in layer 1 (each runner would have to compare a child's
+calls too); a test of a restartable sequence aborted by a handler (`rseq_fixup` is untested).
 Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
 turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
 instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
@@ -552,10 +584,14 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   or `/sys` (counted "proc fields not tracked", detail 3).
 - RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; private file
   mappings that see later file changes; O_TMPFILE.
-- K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
-- No vDSO or vvar mapping yet (K2): Linux's vvar is VM_PFNMAP, so an madvise range that reaches it is
-  EINVAL there and ENOMEM or success here (measured in the reference).
+- An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
+  whether ours answers the same since the vDSO was built is not checked.
+- SIGIO for `O_ASYNC` files (pipes, terminals) is never sent: FASYNC is kept and the owner set,
+  but no input sends the signal yet.
+- The reference has four CPUs, so a forked child runs at once beside its parent; here it waits for
+  the CPU under the fair scheduler. Tests wait for what a person would see (a job's program
+  running) rather than for time.
 - A `seq_file` with many records (maps, mounts) is made whole at the read from the start; Linux makes
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
@@ -593,9 +629,28 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, end of K2's first run: 69 passed, 8 ignored known failures)
+## Tests (last run 2026-11-16, end of K2's second run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's first run:
+All pass except the ignored known failures listed above. Added in K2's second run:
+- terminal: guest/tty.c (one part per test): making pairs (the locked slave, stat of the slave and
+  the master, `/proc` links, TIOCGDEV, numbering, devpts's listing, TIOCGPTPEER, default settings,
+  window size, and the answers of TIOCSTI, TIOCEXCL, TIOCSETD, TIOCSIG, TIOCSCTTY, TIOCNOTTY,
+  TIOCVHANGUP, lseek and bad arguments); line editing (every editing key with each ECHO* setting,
+  control characters, tabs, high bytes, small reads, input flags, every output flag, echo columns
+  after output); non-canonical reads (raw settings, the switch back to canonical, VMIN and VTIME,
+  flushes, queue sizes); flow control and size (stop and start keys, TCOOFF/TCOON/TCIOFF/TCION, IXANY,
+  TIOCSWINSZ, packet mode's status bytes); closing (the master reading EIO after the slave closed and
+  again after it reopened, the slave hung up after the master closed, its node gone). guest/jobs.c:
+  sessions and controlling terminals, background reads and writes (SIGTTIN, SIGTTOU with TOSTOP and
+  for settings, ignored, blocked, orphaned), signal keys to the foreground group and its flush,
+  SIGWINCH, TIOCSIG, a hangup, a session leader's end, TIOCNOTTY. guest/shpty.c: `sh -i` with job
+  control on a terminal (commands come through a pipe so the shell does no line editing of its own;
+  busybox's line editing asks the terminal for the cursor and drops input read together with the
+  answer). Each guest was run three or four times in the reference with the same output; the
+  reference's buffer work is asynchronous, so the guests read the slave before the master (a read
+  that finds nothing waits for the work) and wait for echoes or polls where a race was seen.
+
+Added in K2's first run:
 - processes: guest/processes.c: memory after fork (shared anonymous memory, a shared file mapping,
   private memory, MADV_DONTFORK and MADV_WIPEONFORK, vfork sharing), fork and exit statuses (exit,
   SIGTERM, SIGSEGV, abort), wait with no children and a stranger, WNOHANG, waitid with WNOWAIT, vfork,
@@ -920,6 +975,18 @@ All on this shared Mac; noisy, not benchmarks.
 - Layer 2's clock is not the wall clock: time passes only by a seeded step per turn and by skipped
   waits, so CPU times and the scheduler's choices repeat for a seed. Layer 1 keeps the wall clock (its
   reference runs beside it).
+- What one terminal side writes is taken into the other side's line discipline at once, as if
+  Linux's buffer work (`flush_to_ldisc`, run later from a work queue) ran straight away; what does not
+  fit waits in the other side's buffer, counted in bytes against `tty_buffer_set_limit`'s 8192
+  (Linux counts allocated pieces of 256 bytes and more, so how much a write is taken while nobody
+  reads differs by up to a few hundred bytes; in Linux it also depends on when the work runs).
+  `n_tty_lookahead_flow_ctrl` (stop and start keys seen while the line discipline is full) is not
+  built.
+- A non-canonical read waiting for VMIN bytes takes them only once enough have come (Linux copies
+  each as it comes and waits holding them): another reader or TIOCINQ sees them in the meantime.
+- Layer 2's clock moves a nanosecond for each instruction a turn ran (whole blocks entered are
+  counted) plus the seeded 0.5 to 1.5 us, so CPU times and the fair scheduler see work in
+  proportion to its length.
 - AT_MINSIGSTKSZ is the reference's measured 4720 (typed in linux_extra.rs): arm64 computes it from
   the CPU's records at boot.
 - The vDSO is laid out by hand with `object`'s ELF structures (src/vdso.rs): one function, its
@@ -973,9 +1040,10 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   (ENOSYS), waitid's P_PIDFD (EBADF), pipe2's O_NOTIFICATION_PIPE (EINVAL).
 - "fcntl command not built": the fcntl list under Partial.
 - "prctl option not built": the prctl list under Partial.
-- "ioctl request not built": the watch queue requests on pipes.
+- "ioctl request not built": the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
+  caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference).
 - "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
-- "device not built": opening `/dev/ptmx` (ENODEV) and named pipes (ENXIO; detail the inode).
+- "device not built": named pipes (ENXIO; detail the inode).
 - "proc entry not built": the `/proc` entries not built (detail: directory and name index).
 - "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
@@ -984,6 +1052,10 @@ fields not tracked", "private file mapping is a copy", "fault syndrome approxima
 written". "wake to run" is a measurement (count and total nanoseconds), not a slow path.
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K2, second run: none. (`Event::TerminalInput` and `TerminalResized`, for a container's own
+  terminal, are still counted "event with no waiter": the container's first process has pipes, as
+  `docker run` without `-t` gives it.)
 
 - K0: `Host::output(stream, bytes)` with `Stream`; `CounterReading::detail`.
 - K1: none by this side. The seventh run merged origin/phase-1, which added `Exit::AlignmentFault {
@@ -1010,12 +1082,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2, what is left, in order: pseudo-terminals (`/dev/ptmx`, devpts slaves, Linux's `n_tty` line
-   handling: echo, canonical editing, signals from keys, window size; the controlling terminal,
-   TIOCSPGRP and the background job checks with SIGTTIN and SIGTTOU), then the shell's job control
-   through a terminal against the reference (a guest program that opens `/dev/ptmx` and drives
-   `sh -i` on the slave); three fresh layer 1 seeds of 20000 (seeds 300 and up were used in this
-   run); FIFOs; private file mappings that see later file
-   changes; a test of rseq critical sections aborted by a handler (built in `rseq_fixup`, untested).
+1. K2, what is left, in order: three fresh layer 1 seeds of 20000 (seeds 300 to 399 were used in
+   the first run; see Layer 1 for this run's); terminal calls in layer 1 (`/dev/ptmx` and a slave in
+   the path pool, with the reference's buffer work waited for as the guests do); FIFOs (named pipes:
+   `fifo_open`'s waits and counters); private file mappings that see later file changes; a test of
+   rseq critical sections aborted by a handler (built in `rseq_fixup`, untested); SIGIO for O_ASYNC.
 2. The missing calls above by their milestone; the known gaps above before K6's bar.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
