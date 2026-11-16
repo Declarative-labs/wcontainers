@@ -5,11 +5,14 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M3 (every instruction) is in progress, first run: every one of the 1215 forms of the CPU we present
-translates and matches the CPU in layer 1 (16 cases a form, and 64 in the debug run of every test), the
-decoding test shows no offered form left untranslated, and a C program of section 8's differences matches
-Linux at every level, at none and full, also on a host made to need the software fused multiply-add and the
-not-a-number fix-up. Not done yet: layer 3 (Csmith, gcc, position independent blobs), the long layer 1 run,
-measuring vector registers in locals. See "M3, first run" below.
+translates and matches the CPU in layer 1 (1215 x 100 cases, seed 2: no mismatch), the decoding test shows no
+offered form left untranslated, `programs/differences.c` (section 8, printed as bits) matches Linux at every
+level, at none and full, in wasmtime and Chrome, and also on a host made to need the software fused
+multiply-add and the not-a-number fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc,
+six levels, fixed and position independent code; 256 Csmith programs compared, one failure recorded as a
+suspected reference flake). Not done: floating point's slow path makes floating point code at full about twice
+as slow as without it (measured; the fix is known, see "Next"); a position independent blob loaded away from
+its link address; the long runs to the pass bars. See "M3, first run" below.
 
 M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
 pushed. M2 (full look-ahead) is built and tested: every part of the plan's list is in, hello and the
@@ -86,6 +89,8 @@ Tests:
   with flags kept, half of those with FPCR's bits random. In the fast mode the cumulative flags of FPSR are
   not compared (they are not kept there by design), QC is. New value strategies: single, double and half
   precision edge values and not-a-numbers with payloads.
+- `tests/browser.rs` runs `differences` too: matches Linux in Chrome at none and full (the page's float hook
+  calls the browser translator's `float`).
 - `tests/layer1.rs` `designed_answers_and_faults`: the values we answer by design, FPCR keeping only its
   bits, and alignment faults of unaligned atomics, load-acquire and exclusives.
 - `tests/decoding.rs` `every_offered_form_is_translated`.
@@ -1029,6 +1034,7 @@ contract's bits, in both runners).
 
 ## Cases actually run
 
+- M3, layer 1, release: 1215 forms x 100 cases, seed 2: 0 mismatches (121,500 cases, 177 s, load 18 to 21).
 - M3, layer 3, release: 4 Csmith programs seed 1 and the 48 hand-picked builds (hello and differences x
   clang, gcc x six levels x two positions): all match (59 s, load 5 to 6). 300 Csmith programs, seed 2
   (18.8 minutes, load 5 to 30): 256 compared and matching, 43 did not end on Linux in 20 seconds, 1
