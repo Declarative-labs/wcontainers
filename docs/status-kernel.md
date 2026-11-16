@@ -30,7 +30,20 @@ must wrap to 0 as `PAGE_ALIGN` does (msync and mlock answered errors where Linux
 shrink by such a length unmapped the whole address space), that arm64 Linux strips a top byte tag
 from the memory calls' addresses, and that `/dev/random` and the mounts files have their own poll
 masks; all fixed, with layer 1 now generating those lengths and tagged addresses. See Layer 1 for the
-fresh seeds. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
+fresh seeds. The thirteenth run (the seventh close-out run) fixed the fifth check's problems: layer 1
+let machine bytes (times, inode numbers, statfs's free inodes) feed later calls and let a sequence's
+filter act on the runners' own calls (both runners now zero a call's machine bytes after reporting it,
+and every filter lets the runners' own calls through); mmap now follows `do_mmap` for MAP_GROWSDOWN
+(refused for files and shared memory, a grows-down mapping that grows on a fault or copy below it,
+mprotect's PROT_GROWSDOWN), MAP_DROPPABLE, huge page size bits under MAP_SHARED_VALIDATE and
+MAP_HUGETLB on a plain file (EINVAL); madvise takes MADV_DONTNEED_LOCKED and counts the advice it does
+not build (MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE: EINVAL, as a Linux without them);
+statx reports the unique mount number when asked and each file system's own rules (devpts's as the
+generic ones); newfstatat and statx take a null path with AT_EMPTY_PATH (and with a descriptor ignore
+the other flags, as `vfs_fstatat` and `do_statx_fd` do, measured). Layer 1 then found a sysctl's
+vectored read sized segment by segment (Linux makes one buffer of the whole request: ENOMEM at 4 MiB,
+and EFAULT unless every byte made is copied out; fixed). Layer 1 now generates every mmap flag,
+more advice, statx masks, null stat paths and `/dev/pts`. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
 end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
@@ -43,7 +56,7 @@ Layer 1 long run (one command, for the orchestrator):
 shrunk and printed call by call with the seed; shrinking stops after 30 minutes (a step whose sequence
 waits costs the reference's deadline). A sequence that runs past 60 s in the reference is killed there
 (SIGKILL), which our side reports for a wait that never ends or a sleep that would end after 60 s. Seeds 100 and up are fresh
-(the independent check used 4242, 5353, 6464 and 777001 to 777003).
+(the independent checks used 4242, 5353, 6464, 777001 to 777003 and 6060601 to 6060606).
 
 ## For the independent check
 
@@ -112,8 +125,25 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   machine's processes and the chosen subset of entries. These listings are compared in layer 2 by
   tests/proclist.rs (above) instead: `/dev` in full and in order, `/proc` as a subset. Listings of the
   sequence's own directories are compared in full.
-- A call's random or machine bytes are kept out of later calls by writing them only to areas no later
-  call reads (getrandom, uname, name_to_handle_at).
+- A call's machine bytes never reach a later call: after each call is reported, both runners zero
+  what it wrote that two machines cannot share (`machine_bytes` in layer1.rs, `clear_machine` in the
+  runner, by process_vm_writev): the masked ranges above plus a stat's link count and a whole
+  listing, link target, working directory and CPU set. After a failed call only arena ranges are
+  zeroed, so no play page the call did not touch is brought in; a call that fails part way through a
+  play page (EFAULT at a page edge) leaves its machine bytes there masked but not zeroed. getrandom,
+  uname and name_to_handle_at also write only where no call reads. Before this, a clock_gettime result
+  read as a later call's segment list made the check's seed 6060602 fail.
+- A sequence's seccomp filters let through, first, every call the runners make themselves (write,
+  exit_group, name_to_handle_at, readlinkat, fstat, newfstatat, lseek, pwrite64, process_vm_readv and
+  process_vm_writev): their arguments (process numbers, the runners' own buffers) differ between the
+  runners, so a filter could treat them differently (the check's seed 6060601). The sequence's own
+  calls of those numbers are therefore never filtered; filters are still tested on every other call.
+- statfs's free inode count in the play area (where it cannot be turned into the count in use) is
+  masked, and zeroed after the call; a failed stat or statfs call's machine fields are masked too
+  (a copy that met a fault leaves part of them).
+- The link count of devpts's root (inode 1 with 1024 byte blocks, as `/proc`'s root, by which the
+  mask finds it); tests/proclist.rs and tests/mapflags.rs compare it. statx's unique mount number
+  (Linux counts every mount the machine made).
 - The play area (the 16 pages at 0x71000000 that sequences map, protect, move and advise, and that 1 in
   8 buffers point into) is compared once, after the last call: which pages process_vm_readv can read,
   and their bytes, with the same masks as the arena. Not after every call: reading a page brings it in
@@ -150,7 +180,10 @@ What layer 1 does not generate, and why:
   play area), core size limits above zero (core dumps are not written, counted).
 - setpriority and getpriority by user, ioprio by user (they reach the reference's runner).
 - openat2's restricted lookups (not built) and RESOLVE_CACHED (depends on Linux's caches); huge page
-  memory files; seccomp listeners and the rseq time slice flag (not built); filter loads of the
+  memory files and anonymous huge pages (MAP_HUGETLB without a file: hugetlbfs is not built; with a
+  file it is generated, EINVAL); MAP_POPULATE and MAP_LOCKED on file mappings (which pages a file
+  mapping's faults bring in is not known here, and statfs shows them); madvise's MADV_COLLAPSE,
+  MADV_GUARD_INSTALL and MADV_GUARD_REMOVE (not built, counted; tests/mapflags.rs checks the counter); seccomp listeners and the rseq time slice flag (not built); filter loads of the
   instruction pointer (the runners' differ); alternate signal stacks that could hold either caller's
   stack pointer; rseq areas where other calls write.
 - brk (its values are addresses that differ by layout; tests/memory.rs and tests/limits.rs test it).
@@ -271,8 +304,10 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   tmpfs (device 0:1, an inode each, never merged with another), a private `/dev/zero` mapping as the
   device's file. A change to a file a private mapping copied is counted "private file mapping is a
   copy".
-  Pages wholly past a file's end are inaccessible (SIGBUS). The stack grows on a fault below it up to
-  its limit, keeping Linux's 1 MiB guard gap. Pages that may only run cannot be read (measured: the
+  Pages wholly past a file's end are inaccessible (SIGBUS). The stack and MAP_GROWSDOWN memory grow
+  on a fault (or a copy) below them as `expand_downwards` allows: 1 MiB clear of an accessible mapping
+  below that does not grow down, within the stack, address space and locked memory limits; new
+  mappings are placed clear of that gap (`vm_start_gap`). Pages that may only run cannot be read (measured: the
   reference's CPU has execute-only pages).
 - Shared file mappings (src/shared.rs): a shared tmpfs file's first pages live in one block of shared
   pages that every such mapping shows and the file's reads, writes, truncation and holes reach; with
@@ -371,7 +406,9 @@ Partial (inside the list above), each with its reason:
   FIFREEZE, FITHAW, FIBMAP and the random devices' pool requests need powers Docker's root lacks; with
   them they answer as tmpfs does (nothing to freeze or thaw, no block map) and what is given to the
   pool cannot change the host's generator.
-- mmap: MAP_HUGETLB counted, ENOMEM (no huge pages). MAP_SHARED anonymous is private memory here,
+- mmap: MAP_HUGETLB on anonymous memory counted, ENOMEM (no huge pages; on a plain file EINVAL, as
+  Linux). MAP_DROPPABLE memory is never dropped (nothing presses on memory here) and must be wiped at
+  fork (K2). MAP_SHARED anonymous is private memory here,
   exact while there is no fork (K2). A private file mapping is a copy made at mmap, so pages not yet
   written do not see later changes to the file: counted "private file mapping is a copy" when such a
   file is written, truncated or allocated, or is mapped both shared and private (the CPU side does not
@@ -423,6 +460,11 @@ Partial (inside the list above), each with its reason:
 - sched_setscheduler, sched_setparam, sched_setattr: kept per thread with Linux's checks; nothing is
   scheduled by them yet (K3). Custom slices kept; no utilisation clamps (EOPNOTSUPP, as the reference).
 - mlock family: lock state and limits are kept; pages are not brought in (nothing to bring).
+- madvise: MADV_COLLAPSE (making huge pages now: needs huge pages and knowing which pages a mapping
+  holds), MADV_GUARD_INSTALL and MADV_GUARD_REMOVE (guard markers: pages that fault whatever their
+  protection, kept through mprotect and MADV_DONTNEED, moved by mremap, gone with munmap; glibc falls
+  back to mprotect when they are refused) are counted "madvise advice not built" and EINVAL, as a Linux
+  without them answers. Before K6's bar.
 - memfd_create: MFD_HUGETLB counted, ENOSYS (no hugetlbfs); the reference makes such files.
 - mincore: every mapped page reported in memory, counted "page residency not tracked".
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
@@ -497,6 +539,8 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   mappings that see later file changes; O_TMPFILE.
 - K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
+- No vDSO or vvar mapping yet (K2): Linux's vvar is VM_PFNMAP, so an madvise range that reaches it is
+  EINVAL there and ENOMEM or success here (measured in the reference).
 - A `seq_file` with many records (maps, mounts) is made whole at the read from the start; Linux makes
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
@@ -525,9 +569,20 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-15, twelfth run: 61 passed, 8 ignored known failures)
+## Tests (last run 2026-11-15, thirteenth run: 63 passed, 8 ignored known failures)
 
-All pass except the ignored known failures listed above. Added in the twelfth run:
+All pass except the ignored known failures listed above. Added in the thirteenth run:
+- mapflags: guest/mapflags.c: every kind of mmap with validated sharing and huge page sizes, MAP_SYNC,
+  MAP_FIXED_NOREPLACE, an unknown bit, MAP_GROWSDOWN and MAP_HUGETLB on a file, `/dev/zero` and
+  anonymous memory, droppable memory (locked, grows-down, populated, mlocked, dropped); a grows-down
+  mapping grown by a read below it and not past its reach, mprotect with PROT_GROWSDOWN, PROT_GROWSUP,
+  both and a high bit, a hint inside the guard gap refused, maps; MADV_DONTNEED_LOCKED on locked
+  memory and a hole, advice 12, 13 and unknown ones; statx of eight files on five file systems with
+  eight masks (mask, attributes, link count, which mount number); newfstatat and statx with null,
+  empty and bad paths, junk flags, bad and O_PATH descriptors; a sysctl read split at a fault, too
+  large in all, and across two segments. Same output. A second case checks that MADV_COLLAPSE and the
+  guard advice are counted.
+Added in the twelfth run:
 - pollmask: guest/pollmask.c polls (twice, every event bit) and selects each kind of file one process
   opens: the five devices, a tmpfs file (read, write, O_PATH) and directory, `/dev`, `/dev/pts`, the
   built `/proc` files and directories, a sysctl, a memory file, secret memory. Same output.
@@ -713,6 +768,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Thirteenth run: the whole test suite of both crates 88 s wall (load 13 to 18); layer 1 20000
+  sequences, two or three side by side: 303 to 322 s each (load 9 to 17); 1500 sequences alone 23 s
+  (load 15).
 - Twelfth run, layer 1 20000 sequences: three side by side 297 s each (load 20 to 14); five side by
   side 320 s each (load 22 to 16); 3000 sequences alone 48 s (load 16 to 22). The whole test suite of
   both crates: 88 s wall (load 10 to 20).
@@ -801,7 +859,10 @@ All on this shared Mac; noisy, not benchmarks.
   in linux_extra.rs: they are in Linux's internal `linux/falloc.h`, not a uapi header. The file system
   identity requests are built there with `_IOR`'s rule from linux-raw-sys's structures. Layer 1 types
   the same numbers (the test crate cannot see the kernel's internal constants).
-- devpts reports 1024 byte blocks (`devpts_fill_super`; measured through FIGETBSZ).
+- devpts reports 1024 byte blocks (`devpts_fill_super`; measured through FIGETBSZ), and numbers its
+  root 1 and `ptmx` 2 as Linux's does (measured); other inode numbers come from one counter.
+- The unique mount number (`mnt_id_unique`) is `MNT_UNIQUE_ID_OFFSET` (2^31) plus the plain mount
+  number: Linux counts every mount the machine has made since boot, which the made-up machine has not.
 - `struct tms` (`linux/times.h`) is typed in linux_extra.rs (linux-raw-sys does not generate it);
   `sysinfo` and `stack_t` have padding, so their fields are placed by `offset_of!` on linux-raw-sys's
   structures instead of zerocopy.
@@ -813,8 +874,8 @@ All on this shared Mac; noisy, not benchmarks.
   address }` (the translator's side) and moved a layout assertion in registers.rs to a constant
   assertion; the kernel handles the new exit (SIGBUS) and the stand-in reports it for misaligned
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
-  packages, only additions). The eighth to twelfth runs changed nothing in the shared crate
-  (origin/phase-1 had nothing new to merge in the ninth to twelfth).
+  packages, only additions). The eighth to thirteenth runs changed nothing in the shared crate
+  (origin/phase-1 had nothing new to merge in the ninth to thirteenth).
 
 ## Questions for the orchestrator (boundary)
 
@@ -834,6 +895,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 1. K2: processes, fork, wait, pipes, signal delivery with Linux's frames and a vDSO (then
    AT_SYSINFO_EHDR and AT_MINSIGSTKSZ), terminals, job control, shared memory between processes; abort
-   rseq critical sections and run seccomp TRAP handlers on delivery.
+   rseq critical sections and run seccomp TRAP handlers on delivery; a fault's signal information
+   (BUS_ADRALN and the address for `Exit::AlignmentFault`, the code and address of memory faults);
+   droppable memory wiped at fork.
 2. The missing calls above by their milestone; the known gaps above before K6's bar.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).

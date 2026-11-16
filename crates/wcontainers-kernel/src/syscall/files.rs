@@ -109,10 +109,17 @@ fn may_change(kernel: &Kernel, tid: Tid, directory: &Node) -> Result<(), Errno> 
     Ok(())
 }
 
-/// The process information tree has no operations that change names: callers that get this far are
-/// refused with EPERM, as Linux does for a directory with no such operation.
+/// Whether a directory has no operations that change names: the process information tree, and
+/// devpts (its root has only `simple_dir_inode_operations`' lookup).
+fn fixed_names(directory: &Node) -> bool {
+    let inode = directory.borrow();
+    matches!(inode.content, Content::Proc(_)) || inode.fs.kind == crate::fs::Kind::Devpts
+}
+
+/// Callers that get this far in a directory with fixed names are refused with EPERM, as Linux does for
+/// a directory with no such operation.
 fn changes_names(directory: &Node) -> Result<(), Errno> {
-    if matches!(directory.borrow().content, Content::Proc(_)) {
+    if fixed_names(directory) {
         return Err(Errno::EPERM);
     }
     Ok(())
@@ -456,7 +463,10 @@ pub(super) fn open(
             }
             not_removed(&parent.directory)?;
             may_change(kernel, tid, &parent.directory)?;
-            changes_names(&parent.directory)?;
+            // `lookup_open`: a directory with no `create` refuses an open that would make a file.
+            if fixed_names(&parent.directory) {
+                return Err(Errno::EACCES);
+            }
             let umask = kernel.process_of(tid).umask;
             let node = create(
                 kernel,
@@ -725,6 +735,10 @@ pub(super) fn mknodat(
         return Err(Errno::ENOENT);
     }
     may_change(kernel, tid, &parent.directory)?;
+    // A plain file is made as `vfs_create` makes it: EACCES where the directory has no `create`.
+    if file_type == S_IFREG && fixed_names(&parent.directory) {
+        return Err(Errno::EACCES);
+    }
     changes_names(&parent.directory)?;
     // Devices need `CAP_MKNOD`, except a whiteout (a character device 0:0).
     let whiteout = file_type == S_IFCHR && device == 0;

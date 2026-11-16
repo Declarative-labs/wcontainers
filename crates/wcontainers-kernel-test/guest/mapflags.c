@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #ifndef MAP_DROPPABLE
@@ -224,5 +225,30 @@ int main(int argc, char **argv) {
     show("sysctl across two", readv(ostype, fine, 2));
     printf("sysctl bytes %.2s|%.5s\n", edge, edge + 100);
     show("sysctl position after", lseek(ostype, 0, SEEK_CUR));
+
+    // devpts's root has no operations that make, remove or rename names.
+    chdir("/dev/pts");
+    show("devpts mkdir", mkdir("d", 0755));
+    show("devpts create", open("f", O_CREAT | O_RDWR, 0644));
+    show("devpts create existing", open("ptmx", O_CREAT | O_EXCL | O_RDWR, 0644));
+    show("devpts mknod file", mknod("n", S_IFREG | 0644, 0));
+    show("devpts mknod fifo", mknod("p", S_IFIFO | 0644, 0));
+    show("devpts symlink", symlink("x", "s"));
+    show("devpts link", link("ptmx", "l"));
+    show("devpts link across", link("/dev/null", "l"));
+    show("devpts rename", rename("ptmx", "q"));
+    show("devpts rename missing", rename("nope", "q"));
+    show("devpts rename across", rename("/dev/shm/m", "q"));
+    show("devpts unlink", unlink("ptmx"));
+    show("devpts unlink missing", unlink("nope"));
+    show("devpts rmdir", rmdir("."));
+    show("devpts user attribute", setxattr(".", "user.a", "b", 1, 0));
+    show("devpts trusted attribute", setxattr(".", "trusted.a", "b", 1, 0));
+    show("devpts chmod", chmod(".", 0700));
+    show("devpts chmod back", chmod(".", 0755));
+    setreuid(1000, 1000);
+    show("devpts mkdir unprivileged", mkdir("d", 0755));
+    show("devpts create unprivileged", open("f", O_CREAT | O_RDWR, 0644));
+    show("devpts symlink unprivileged", symlink("x", "s"));
     return 0;
 }
