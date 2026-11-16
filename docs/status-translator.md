@@ -4,10 +4,45 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M0 to M5 and S1 are built; their work is recorded below, newest first. P1 (close-out of M5, the long-run
-driver) is done: see "P1" just below. What is left of the translator track is the long runs to the plan's pass
-bars, started by the orchestrator with one command (under "P1, the long-run driver"). Refinements of M5 that
-remain are listed under "M5, fourth run, what comes next".
+M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2 (the long runs to the plan's
+pass bars) is under way: see "P2" just below for whether the driver is running, how to watch it and how to
+restart it. Refinements of M5 that remain are listed under "M5, fourth run, what comes next".
+
+## P2: the long runs to the pass bars
+
+The P1 check's findings, each fixed or answered:
+- A chunk stopped at the time limit or failing was never run again on that commit. Now only a chunk that
+  passed on an accepted commit is skipped; one that failed or was stopped runs again on the next start (its
+  old line stays in the ledger, so a retry is visible). Checked on a made-up ledger (pass, fail, stopped,
+  pass on another commit: only the first held) and by a real run with `WC_LONG_LIMIT=1` (4 chunks stopped,
+  no container left).
+- Layer 3's bar is now counted in programs compared with Linux, not programs made: the driver runs chunks
+  until the programs compared reach the bar (at most twice the chunks the bar would take if every program
+  were compared, so a broken reference cannot run for ever). The ledger's `cases` for layer 3 is the programs
+  compared; `sample` gives those also in Chrome, those made and those that did not end on Linux in time.
+- Layer 3's chunks are 500 programs, not 1,000, so a chunk stays well inside the 90 minute limit at high
+  load (the check measured 5.1 s a program at load 55 to 113: about 43 minutes for 500, extrapolated).
+- One unreadable unwind entry (a bad CIE pointer) ended all reading of `.eh_frame`. Now the entries are walked
+  by their lengths (gimli's reader) and each function's entry parsed alone (`fde_from_offset`), so a bad one
+  is skipped, counted and warned; reading stops only where a length cannot be read. New test
+  `a_bad_unwind_entry_loses_only_itself` (musl with one CIE pointer broken: failed before with 11 of 22
+  starts, passes now). On seven good binaries (busybox, musl, rg, git, python, go, java) the starts found are
+  the same as before, means by means.
+- Finding 6 of the M5 check (the two lookup designs' memory as process memory): not measured, on purpose. The
+  old design cannot hold Node or Bun in Chrome (over Chrome's 10,000,000 table entries), so no memory figure
+  could change the choice; the old design is gone from the tree, and bringing it back from 0d312ab to run Node
+  would take the cores the long runs hold for a figure with no use.
+- `origin/phase-1` moved to df81eff ten seconds after P1's merge; among the shared and translator files it
+  differs from this branch by one line of `Cargo.lock`. Not merged again (nothing needs it); for the
+  orchestrator.
+- "How to run" for layer 3 brought up to date.
+
+The driver also changed in one more way: while it ran, each chunk's `cargo test` built whatever was in the
+checkout, and the tests build the reference runner and the browser translator from the working tree, so work
+on a fix in the checkout would have run in the next chunk under the old commit. Now the driver refuses a tree
+with uncommitted changes, exports the commit (`git archive`) to `WC_LONG_DIR/trees/<commit>`, and builds and
+runs there (target directory `WC_LONG_DIR/target`, shared by every copy). To run a fix, stop the driver,
+commit, and start it again with `WC_LONG_ACCEPT`.
 
 ## P1: close-out of M5 and the long-run driver
 
@@ -1972,8 +2007,9 @@ contract's bits, in both runners).
   for days): `WC_LONG_DIR=<scratch directory> nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &`.
   Knobs (`WC_LONG_PERCENT`, `WC_LONG_LAYERS`, `WC_LONG_SEED`, `WC_LONG_ACCEPT`, `WC_LONG_JOBS`,
   `WC_LONG_LIMIT`) and the ledger's fields are described at the top of the script and under "P1, the long-run
-  driver". To carry on after a stop, run the same command again; to keep chunks run on an older commit, set
-  `WC_LONG_ACCEPT=<that commit>`.
+  driver" and "P2". To carry on after a stop, run the same command again; to keep chunks that passed on an
+  older commit, set `WC_LONG_ACCEPT=<that commit>`. It refuses uncommitted changes and runs its own copy of
+  the commit. The run under way and its exact command are under "P2".
 - The benchmark set against elfconv: `nix develop -c crates/wcontainers-translator-test/elfconv.sh` (needs
   Docker and the image `ghcr.io/yomaytk/elfconv:arm64`; converted programs kept in `target/elfconv`;
   `WC_BENCH_RUNS` best of, default 3).
@@ -1983,12 +2019,14 @@ contract's bits, in both runners).
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
 - Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 WC_LAYER3_JOBS=6 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
-  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and full, one at
-  a time; the hand-picked programs are 48 builds each run). Needs Docker, Chrome, and network once to make
+  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and at full in
+  both settings, one at a time; the hand-picked programs are 48 builds each run). Programs that do not end on
+  Linux in time (11 to 13 percent) are made but not compared. Needs Docker, Chrome, and network once to make
   the gcc image. Keep `WC_LAYER3_JOBS` at 6 or below: wider runs beside the other half's tests pushed the
-  load past 300. At the third run's rate (2000 programs in 14 minutes, 12 at once) 100,000 took about 12
-  hours at 12 at once; at 6, expect about twice that (not measured). Replay one program: the same seed with `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure
-  prints its case and its Csmith number, `seed * 1000003 + case`).
+  load past 300. For the bar use the driver; P1's 1 percent run took 1,437 s for 1,000 programs at 6 at once
+  (load 24 to 31), the P1 check 762 s for 150 (load 55 to 113). Replay one program: the same seed with
+  `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure prints its case and its Csmith number,
+  `seed * 1000003 + case`).
 - Floating point and vector timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`
   (`WC_BENCH_RUNS`, `WC_BENCH_WORKLOADS` 1 to 4, `WC_BENCH_CHROME=0` as for the benchmarks).
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
@@ -2310,6 +2348,11 @@ contract's bits, in both runners).
   features than the one we present).
 
 ## Departures from the plan
+
+- P2: layer 3's bar of 100,000 Csmith programs is read as 100,000 compared with Linux; programs that do not
+  end on Linux in time are made and counted apart, not compared, so more than 100,000 are made.
+- P2: the long-run driver runs an exported copy of one commit in the run's directory rather than the
+  checkout, so a fix being worked on cannot leak into chunks recorded under an older commit.
 
 - P1: the long-run driver is a shell script (`long-runs.sh`), not Rust: it only runs test commands one after
   another and keeps a ledger.
