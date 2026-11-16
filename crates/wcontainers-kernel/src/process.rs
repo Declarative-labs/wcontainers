@@ -118,6 +118,8 @@ pub(crate) struct Process {
     pub vdso: u64,
     /// Whether it has started a program since it was made (`setpgid` from its parent is refused).
     pub execed: bool,
+    /// How many programs it has run (Linux's `self_exec_id`, which a fork copies).
+    pub self_exec_id: u64,
     /// The session's controlling terminal, if the process has one: a pair whose slave it is.
     pub terminal: Option<Rc<core::cell::RefCell<crate::tty::Pty>>>,
     /// For a session leader whose terminal was hung up, the foreground group it had

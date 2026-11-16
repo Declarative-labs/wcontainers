@@ -188,6 +188,14 @@ pub(crate) struct Ipc {
     shm: Ids<Segment>,
     msg: Ids<Queue>,
     pub(super) sem: super::sem::Semaphores,
+    /// The root of the namespace's mqueue file system (Linux's `mq_mnt`).
+    pub(crate) mqueue_root: Option<Node>,
+    pub(super) mq_usage: alloc::rc::Rc<super::mqueue::Usage>,
+    /// The queue each waiting sender or receiver waits in.
+    pub(super) mq_waiting: BTreeMap<Tid, alloc::rc::Weak<core::cell::RefCell<crate::fs::Inode>>>,
+    /// What a waiting receiver (a message) or sender (nothing) was handed, taken when its call runs
+    /// again.
+    pub(super) mq_ready: BTreeMap<Tid, Option<(u32, Vec<u8>)>>,
     /// What a receiver waiting in `msgrcv` was handed while parked: a message, or why its wait ended
     /// (Linux's `r_msg`), taken when its call runs again.
     handed: BTreeMap<Tid, Result<Message, Errno>>,

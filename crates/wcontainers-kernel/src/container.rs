@@ -402,6 +402,7 @@ impl Kernel {
             started: cx.host.monotonic_nanoseconds(),
             vdso: 0,
             execed: false,
+            self_exec_id: 0,
             terminal: None,
             terminal_old_group: None,
             actions: [kernel_sigaction {
@@ -536,6 +537,7 @@ impl Kernel {
         process.starting_stack = image.starting_stack;
         process.vdso = image.vdso;
         process.execed = true;
+        process.self_exec_id += 1;
         process.set_name(&image.name);
         // Dumpable unless a file could not be read or the ids differ, before or after (Linux's
         // `begin_new_exec` and `commit_creds`).
@@ -696,6 +698,22 @@ impl Kernel {
             ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
             Some(shm_space),
         );
+        let mqueue_point = dev
+            .borrow()
+            .directory()
+            .expect("dev")
+            .get(b"mqueue")
+            .expect("mqueue");
+        let mqueue = mount_tmpfs(
+            &mut self.files.numbers,
+            &mqueue_point,
+            0o1777,
+            now,
+            Kind::Mqueue,
+            ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+            None,
+        );
+        self.ipc.mqueue_root = Some(mqueue);
         let pts_point = dev
             .borrow()
             .directory()

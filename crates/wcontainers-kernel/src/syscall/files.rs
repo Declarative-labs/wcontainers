@@ -96,7 +96,7 @@ fn credentials(kernel: &Kernel, tid: Tid) -> &Credentials {
 }
 
 /// May the caller make or remove names in this directory.
-fn may_change(kernel: &Kernel, tid: Tid, directory: &Node) -> Result<(), Errno> {
+pub(super) fn may_change(kernel: &Kernel, tid: Tid, directory: &Node) -> Result<(), Errno> {
     let inode = directory.borrow();
     if !inode.is_directory() {
         return Err(Errno::ENOTDIR);
@@ -116,10 +116,15 @@ fn fixed_names(directory: &Node) -> bool {
     matches!(inode.content, Content::Proc(_)) || inode.fs.kind == crate::fs::Kind::Devpts
 }
 
-/// Callers that get this far in a directory with fixed names are refused with EPERM, as Linux does for
-/// a directory with no such operation.
+/// The mqueue file system's root, whose only name operations make and remove queues.
+fn only_queues(directory: &Node) -> bool {
+    directory.borrow().fs.kind == crate::fs::Kind::Mqueue
+}
+
+/// Callers that get this far in a directory with fixed names, or one that only makes and removes
+/// queues, are refused with EPERM, as Linux does for a directory with no such operation.
 fn changes_names(directory: &Node) -> Result<(), Errno> {
-    if fixed_names(directory) {
+    if fixed_names(directory) || only_queues(directory) {
         return Err(Errno::EPERM);
     }
     Ok(())
@@ -196,7 +201,7 @@ fn check_absent(kernel: &Kernel, tid: Tid, parent: &crate::fs::Parent) -> Result
     clippy::too_many_arguments,
     reason = "each is one attribute of the new inode"
 )]
-fn create(
+pub(super) fn create(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -206,6 +211,14 @@ fn create(
     rdev: u64,
     content: Content,
 ) -> Result<Node, Errno> {
+    // A plain file made in the mqueue file system is a queue with the default limits
+    // (`mqueue_create`).
+    let content = match content {
+        Content::Regular(_) if only_queues(directory) => Content::Mqueue(alloc::boxed::Box::new(
+            super::mqueue::new_queue(kernel, tid, None)?,
+        )),
+        other => other,
+    };
     let now = kernel.now(cx);
     let (uid, gid, inherit) = new_owner(directory, credentials(kernel, tid));
     let mut mode = mode;
@@ -578,9 +591,13 @@ pub(super) fn open(
         if flags & O_TRUNC != 0 && file_type == S_IFREG {
             let now = kernel.now(cx);
             let mut inode = node.borrow_mut();
-            if let Content::Regular(regular) = &mut inode.content {
-                regular.may_resize(0)?;
-                regular.truncate(cx.cpu, 0);
+            match &mut inode.content {
+                Content::Regular(regular) => {
+                    regular.may_resize(0)?;
+                    regular.truncate(cx.cpu, 0);
+                }
+                Content::Mqueue(queue) => queue.size = 0,
+                _ => {}
             }
             inode.mtime = now;
             inode.ctime = now;
@@ -734,6 +751,7 @@ fn mount_table() -> alloc::string::String {
         "tmpfs / tmpfs rw,relatime 0 0\n\
          proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n\
          tmpfs /dev tmpfs rw,nosuid,size=65536k,mode=755 0 0\n\
+         mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime 0 0\n\
          shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k 0 0\n",
     )
 }
@@ -793,7 +811,9 @@ pub(super) fn mknodat(
     if file_type == S_IFREG && fixed_names(&parent.directory) {
         return Err(Errno::EACCES);
     }
-    changes_names(&parent.directory)?;
+    if !(file_type == S_IFREG && only_queues(&parent.directory)) {
+        changes_names(&parent.directory)?;
+    }
     // Devices need `CAP_MKNOD`, except a whiteout (a character device 0:0).
     let whiteout = file_type == S_IFCHR && device == 0;
     if matches!(file_type, S_IFCHR | S_IFBLK)
@@ -971,11 +991,15 @@ pub(super) fn unlinkat(
             Errno::ENOTDIR
         });
     }
+    if !removing_directory {
+        remove_from(kernel, cx, tid, &parent.directory, &parent.name, &node)?;
+        return Ok(0);
+    }
     may_change(kernel, tid, &parent.directory)?;
     if !sticky_allows(&parent.directory, &node, credentials(kernel, tid)) {
         return Err(Errno::EPERM);
     }
-    if removing_directory {
+    {
         if !is_directory {
             return Err(Errno::ENOTDIR);
         }
@@ -990,10 +1014,7 @@ pub(super) fn unlinkat(
         {
             return Err(Errno::ENOTEMPTY);
         }
-    } else if is_directory {
-        return Err(Errno::EISDIR);
     }
-    changes_names(&parent.directory)?;
     let now = kernel.now(cx);
     parent
         .directory
@@ -1002,16 +1023,43 @@ pub(super) fn unlinkat(
         .expect("directory")
         .remove(&parent.name);
     touch_directory(&parent.directory, now);
-    let mut inode = node.borrow_mut();
-    if is_directory {
-        inode.nlink = 0;
-        parent.directory.borrow_mut().nlink -= 1;
-    } else {
-        give_back_link(&inode);
-        inode.nlink -= 1;
-    }
-    inode.ctime = now;
+    node.borrow_mut().nlink = 0;
+    parent.directory.borrow_mut().nlink -= 1;
+    node.borrow_mut().ctime = now;
     Ok(0)
+}
+
+/// Removes a name of a file that is not a directory, after `may_delete`'s checks (`vfs_unlink`).
+pub(super) fn remove_from(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    directory: &Node,
+    name: &[u8],
+    node: &Node,
+) -> Result<(), Errno> {
+    may_change(kernel, tid, directory)?;
+    if !sticky_allows(directory, node, credentials(kernel, tid)) {
+        return Err(Errno::EPERM);
+    }
+    if node.borrow().is_directory() {
+        return Err(Errno::EISDIR);
+    }
+    if fixed_names(directory) {
+        return Err(Errno::EPERM);
+    }
+    let now = kernel.now(cx);
+    directory
+        .borrow_mut()
+        .directory_mut()
+        .expect("directory")
+        .remove(name);
+    touch_directory(directory, now);
+    let mut inode = node.borrow_mut();
+    give_back_link(&inode);
+    inode.nlink -= 1;
+    inode.ctime = now;
+    Ok(())
 }
 
 /// A name of a file with others gone gives back the inode space the link took (`shmem_unlink`).
@@ -2012,6 +2060,22 @@ fn truncate_node(
         }
         return Ok(0);
     }
+    // A queue's size is only what it shows (`simple_setattr`), up to its file system's largest.
+    if matches!(node.borrow().content, Content::Mqueue(_)) {
+        let size = node.borrow().size();
+        super::io::new_size_ok(kernel, cx, tid, size, length)?;
+        if length > i32::MAX as u64 {
+            return Err(Errno::EFBIG);
+        }
+        let mut inode = node.borrow_mut();
+        if let Content::Mqueue(queue) = &mut inode.content {
+            queue.size = length;
+        }
+        inode.mtime = now;
+        inode.ctime = now;
+        inode.drop_privileges(!may_keep_privileges);
+        return Ok(0);
+    }
     {
         let inode = node.borrow();
         if !matches!(inode.content, Content::Regular(_)) {
@@ -2142,7 +2206,10 @@ pub(super) fn fallocate(
         .checked_add(length)
         .filter(|end| *end <= largest)
         .ok_or(Errno::EFBIG)?;
-    if node.borrow().is_secret() || node.borrow().is_anonymous() {
+    if node.borrow().is_secret()
+        || node.borrow().is_anonymous()
+        || matches!(node.borrow().content, Content::Mqueue(_))
+    {
         return Err(Errno::EOPNOTSUPP);
     }
     // Only keeping the size and punching holes exist in tmpfs.

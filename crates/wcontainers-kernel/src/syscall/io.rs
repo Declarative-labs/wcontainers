@@ -452,7 +452,7 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let no_write = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
     // A signal descriptor only reads; a process descriptor does neither.
-    let anon_write = writing && matches!(inode.content, Content::Anon);
+    let anon_write = writing && matches!(inode.content, Content::Anon | Content::Mqueue(_));
     let pidfd = matches!(inode.content, Content::Pidfd(_));
     if inode.is_secret() || (writing && no_write) || anon_write || pidfd {
         return Err(Errno::EINVAL);
@@ -763,6 +763,19 @@ pub(super) fn file_bytes(
         },
         Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(_) | Content::Anon => {
             return Err(Errno::EINVAL);
+        }
+        // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
+        // as accessed.
+        Content::Mqueue(queue) => {
+            let bytes = window(&queue.text());
+            drop(inode);
+            if !bytes.is_empty() {
+                let now = crate::fs::Time::from_nanoseconds(cx.host.realtime_nanoseconds());
+                let mut inode = node.borrow_mut();
+                inode.atime = now;
+                inode.ctime = now;
+            }
+            bytes
         }
     })
 }
@@ -1080,7 +1093,8 @@ pub(super) fn write_bytes(
         | Content::Proc(_)
         | Content::Symlink(_)
         | Content::Pidfd(_)
-        | Content::Anon => {
+        | Content::Anon
+        | Content::Mqueue(_) => {
             return Err(Errno::EINVAL);
         }
     };
@@ -1383,6 +1397,19 @@ pub(super) fn lseek(
         Content::Pipe(_) | Content::Pidfd(_) => return Err(Errno::ESPIPE),
         // Signal descriptors keep their position at 0 (`noop_llseek`).
         Content::Anon => file.offset as i64,
+        // A queue seeks as `default_llseek` does over the size it shows.
+        Content::Mqueue(queue) => {
+            let size = queue.size as i64;
+            match whence {
+                SEEK_SET => offset,
+                SEEK_CUR => current()?,
+                SEEK_END => size.checked_add(offset).ok_or(Errno::EINVAL)?,
+                SEEK_DATA if offset < size => offset,
+                SEEK_HOLE if offset < size => size,
+                SEEK_DATA | SEEK_HOLE => return Err(Errno::ENXIO),
+                _ => return Err(Errno::EINVAL),
+            }
+        }
         Content::Special => match Device::from_number(inode.rdev) {
             // `/dev/null`, `/dev/zero` and `/dev/full` always seek to 0 (`null_lseek`); the random
             // devices keep their position (`noop_llseek`).
@@ -2308,7 +2335,8 @@ pub(super) fn fsync(
         | Content::Special
         | Content::Proc(_)
         | Content::Pidfd(_)
-        | Content::Anon => Err(Errno::EINVAL),
+        | Content::Anon
+        | Content::Mqueue(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }
@@ -2355,6 +2383,7 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             drop(node);
             super::pidfd::poll(kernel, &file)
         }
+        Content::Mqueue(queue) => queue.poll(),
         Content::Anon => match super::signalfd::mask_of(&file) {
             Some(mask) => super::signalfd::poll(kernel, tid, mask),
             None => 0,

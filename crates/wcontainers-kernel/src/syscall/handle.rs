@@ -39,10 +39,12 @@ fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, Vec<
             alloc::vec![generation(kernel, inode.ino), ino[0], ino[1]],
         )),
         Kind::Pidfs => Ok((FILEID_KERNFS, ino.to_vec())),
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon if identifier => {
+        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Mqueue
+            if identifier =>
+        {
             Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 0]))
         }
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon => {
+        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Mqueue => {
             Err(Errno::EOPNOTSUPP)
         }
     }

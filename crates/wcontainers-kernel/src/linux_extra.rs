@@ -541,3 +541,38 @@ pub(crate) struct seminfo {
     pub semvmx: i32,
     pub semaem: i32,
 }
+
+/// POSIX message queues (`linux/mqueue.h`, `ipc_namespace.h`, `mqueue.c`): the most priorities, the
+/// limits and defaults of a new IPC namespace, the hard limits for `CAP_SYS_RESOURCE`, the sizes of
+/// the kernel's message (`struct msg_msg`) and priority node (`struct posix_msg_tree_node`) on
+/// arm64 that a queue's charge counts, the size a queue file shows, the cookie a thread
+/// notification reads, the file system's magic and `struct sigevent`'s size.
+pub(crate) const MQ_PRIO_MAX: u64 = 32768;
+pub(crate) const MQ_QUEUES_MAX: u64 = 256;
+pub(crate) const MQ_MSG_MAX: i64 = 10;
+pub(crate) const MQ_MSG_DEFAULT: i64 = 10;
+pub(crate) const MQ_MSGSIZE_MAX: i64 = 8192;
+pub(crate) const MQ_MSGSIZE_DEFAULT: i64 = 8192;
+pub(crate) const HARD_MSGMAX: i64 = 65536;
+pub(crate) const HARD_MSGSIZEMAX: i64 = 16 << 20;
+pub(crate) const MSG_MSG_SIZE: u64 = 48;
+pub(crate) const TREE_NODE_SIZE: u64 = 48;
+pub(crate) const FILENT_SIZE: u64 = 80;
+pub(crate) const NOTIFY_COOKIE_LEN: u64 = 32;
+pub(crate) const MQUEUE_MAGIC: u32 = 0x1980_0202;
+pub(crate) const SIGEVENT_SIZE: u64 = 64;
+/// The highest signal number (`_NSIG`).
+pub(crate) const SIGNALS: u32 = 64;
+
+/// A queue's attributes (`struct mq_attr`).
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct mq_attr {
+    pub mq_flags: i64,
+    pub mq_maxmsg: i64,
+    pub mq_msgsize: i64,
+    pub mq_curmsgs: i64,
+    pub reserved: [i64; 4],
+}

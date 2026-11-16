@@ -12,6 +12,7 @@ pub(crate) mod ipc;
 mod list;
 mod memfd;
 mod memory;
+pub(crate) mod mqueue;
 pub(crate) mod pidfd;
 pub(crate) mod pipe;
 mod process;
@@ -324,6 +325,12 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_semop, S(sem::semop)),
         (__NR_semtimedop, S(sem::semtimedop)),
         (__NR_semctl, S(sem::semctl)),
+        (__NR_mq_open, S(mqueue::mq_open)),
+        (__NR_mq_unlink, S(mqueue::mq_unlink)),
+        (__NR_mq_timedsend, S(mqueue::mq_timedsend)),
+        (__NR_mq_timedreceive, S(mqueue::mq_timedreceive)),
+        (__NR_mq_notify, S(mqueue::mq_notify)),
+        (__NR_mq_getsetattr, S(mqueue::mq_getsetattr)),
     ];
     let mut index = 0;
     while index < implemented.len() {

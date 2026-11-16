@@ -178,7 +178,7 @@ impl FileSystem {
         self.flags & crate::linux_extra::ST_NOEXEC != 0
             || matches!(
                 self.kind,
-                Kind::Secretmem | Kind::Pipe | Kind::Pidfs | Kind::Anon
+                Kind::Secretmem | Kind::Pipe | Kind::Pidfs | Kind::Anon | Kind::Mqueue
             )
     }
 }
@@ -197,6 +197,8 @@ pub(crate) enum Kind {
     Pidfs,
     /// The one anonymous inode many kinds of descriptor share (`anon_inodefs`).
     Anon,
+    /// POSIX message queues, at `/dev/mqueue`.
+    Mqueue,
 }
 
 impl Kind {
@@ -214,9 +216,12 @@ impl Kind {
     pub fn max_bytes(self) -> u64 {
         match self {
             Kind::Tmpfs | Kind::Pidfs => i64::MAX as u64,
-            Kind::Devpts | Kind::Proc | Kind::Pipe | Kind::Secretmem | Kind::Anon => {
-                i32::MAX as u64
-            }
+            Kind::Devpts
+            | Kind::Proc
+            | Kind::Pipe
+            | Kind::Secretmem
+            | Kind::Anon
+            | Kind::Mqueue => i32::MAX as u64,
         }
     }
 
@@ -230,6 +235,7 @@ impl Kind {
             Kind::Secretmem => SECRETMEM_MAGIC.into(),
             Kind::Pidfs => PID_FS_MAGIC.into(),
             Kind::Anon => ANON_INODE_FS_MAGIC.into(),
+            Kind::Mqueue => crate::linux_extra::MQUEUE_MAGIC.into(),
         }
     }
 }
@@ -305,6 +311,8 @@ pub(crate) enum Content {
     Pidfd(crate::process::Pid),
     /// The anonymous inode; what each file on it is lies in the file (`OpenFile::anon`).
     Anon,
+    /// A POSIX message queue.
+    Mqueue(alloc::boxed::Box<crate::syscall::mqueue::MessageQueue>),
 }
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
@@ -764,6 +772,7 @@ impl Inode {
             Content::Directory(directory) => DIRENT_SIZE * (directory.len() as u64 + 2),
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
+            Content::Mqueue(queue) => queue.size,
             Content::Special | Content::Pipe(_) | Content::Pidfd(_) | Content::Anon => 0,
         }
     }

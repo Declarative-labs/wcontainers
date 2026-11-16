@@ -227,7 +227,13 @@ impl FdTable {
     fn closed(&self, descriptor: &Descriptor) {
         let file = descriptor.file.borrow();
         if !file.is_path() {
-            crate::locks::release_table(&mut file.node.borrow_mut().record_locks, self.lock_owner);
+            let mut node = file.node.borrow_mut();
+            crate::locks::release_table(&mut node.record_locks, self.lock_owner);
+            // A queue's request to be told goes with a close by its process, whose number the
+            // table's lock owner is (`mqueue_flush_file`).
+            if let crate::fs::Content::Mqueue(queue) = &mut node.content {
+                queue.flush(self.lock_owner as crate::process::Pid);
+            }
         }
     }
 
