@@ -93,6 +93,9 @@ pub(crate) struct Process {
     pub exit_signal: u32,
     /// Once every thread has ended: the wait status a parent's wait will reap (a zombie).
     pub ended: Option<i32>,
+    /// A zombie's scheduling values, which its leader keeps until reaped (its I/O priority is gone
+    /// with its I/O context).
+    pub ended_schedule: Schedule,
     /// A `vfork` child: the parent's thread that waits until the child lets go of the memory it
     /// borrows by starting a program or ending.
     pub vfork_parent: Option<Tid>,

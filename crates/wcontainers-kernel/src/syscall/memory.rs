@@ -722,8 +722,8 @@ pub(super) fn madvise(
         }
         return Ok(0);
     }
-    // Freeing lazily and wiping on fork are for private anonymous memory only.
-    if matches!(advice, MADV_FREE | MADV_WIPEONFORK)
+    // Freeing lazily is for private anonymous memory only.
+    if advice == MADV_FREE
         && process
             .map
             .iter()
@@ -792,7 +792,10 @@ pub(super) fn madvise(
             at = mapping.end;
         }
     }
-    // What a fork gives the child, set on what is mapped (`madvise_vma_behavior`).
+    // What a fork gives the child and whether a core dump holds it, mapping by mapping as
+    // `madvise_vma_behavior`: a mapping that refuses the advice ends the walk with the ones before it
+    // changed. Wiping is for private anonymous memory; droppable memory is always wiped and never
+    // dumped; the kernel's own pages (`VM_SPECIAL`) are never dumped.
     let change: Option<fn(&mut crate::memory::OnFork)> = match advice {
         MADV_DONTFORK => Some(|on_fork| on_fork.skip = true),
         MADV_DOFORK => Some(|on_fork| on_fork.skip = false),
@@ -800,14 +803,27 @@ pub(super) fn madvise(
         MADV_KEEPONFORK => Some(|on_fork| on_fork.wipe = false),
         _ => None,
     };
-    if let Some(change) = change {
-        let mapped: Vec<(u64, u64)> = process
-            .map
-            .iter()
-            .filter(|mapping| mapping.start < end && mapping.end > address)
-            .map(|mapping| (mapping.start.max(address), mapping.end.min(end)))
-            .collect();
-        for (from, to) in mapped {
+    let mapped: Vec<(u64, u64, bool)> = process
+        .map
+        .iter()
+        .filter(|mapping| mapping.start < end && mapping.end > address)
+        .map(|mapping| {
+            let refused = match advice {
+                MADV_WIPEONFORK => {
+                    mapping.shared || matches!(mapping.backing, Backing::File { .. })
+                }
+                MADV_KEEPONFORK => matches!(mapping.backing, Backing::Droppable),
+                MADV_DODUMP => matches!(mapping.backing, Backing::Droppable | Backing::Special(_)),
+                _ => false,
+            };
+            (mapping.start.max(address), mapping.end.min(end), refused)
+        })
+        .collect();
+    for (from, to, refused) in mapped {
+        if refused {
+            return Err(Errno::EINVAL);
+        }
+        if let Some(change) = change {
             process.map.set_on_fork(from, to, change);
         }
     }

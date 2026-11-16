@@ -1,6 +1,7 @@
 //! Calls about the machine: its name, its memory, randomness and the one CPU.
 
 use alloc::vec;
+use alloc::vec::Vec;
 
 use super::{Args, guest};
 use crate::counters::reason;
@@ -628,17 +629,93 @@ pub(super) fn sched_get_priority_min(
     }
 }
 
-/// Which processes a `getpriority` or `setpriority` names; there is one process, so only it can match.
-fn prioritized(kernel: &Kernel, tid: Tid, which: u64, who: u64) -> Result<bool, Errno> {
+/// A task a priority call names: a thread, or an ended process's leader, which keeps its scheduling
+/// values until it is reaped.
+#[derive(Clone, Copy)]
+enum Task {
+    Thread(Tid),
+    Ended(crate::process::Pid),
+}
+
+/// The tasks `getpriority`'s `which` and `who` name: one thread (0 the caller), every thread of a
+/// process group (0 the caller's) or every thread whose real user is `who` (0 the caller's).
+fn named_tasks(kernel: &Kernel, tid: Tid, which: u32, who: u64) -> Result<Vec<Task>, Errno> {
     let who = who as u32;
-    let process = kernel.process_of(tid);
-    Ok(match which as u32 {
-        PRIO_PROCESS => who == 0 || who as i32 == process.pid,
-        PRIO_PGRP => who == 0 || who as i32 == process.group,
-        // Matched by real user; 0 is the caller's own.
-        PRIO_USER => who == 0 || process.credentials.uid == who,
+    let caller = kernel.process_of(tid);
+    let matches: &dyn Fn(&crate::process::Process) -> bool = match which {
+        PRIO_PROCESS => {
+            if who == 0 {
+                return Ok(vec![Task::Thread(tid)]);
+            }
+            let who = who as i32;
+            if kernel.threads.contains_key(&who) {
+                return Ok(vec![Task::Thread(who)]);
+            }
+            return Ok(match kernel.processes.get(&who) {
+                Some(process) if process.ended.is_some() => vec![Task::Ended(who)],
+                _ => Vec::new(),
+            });
+        }
+        PRIO_PGRP => {
+            let group = if who == 0 { caller.group } else { who as i32 };
+            &move |process| process.group == group
+        }
+        PRIO_USER => {
+            let uid = if who == 0 {
+                caller.credentials.uid
+            } else {
+                who
+            };
+            &move |process| process.credentials.uid == uid
+        }
         _ => return Err(Errno::EINVAL),
-    })
+    };
+    // A group's members newest first, as its list holds them; a user's oldest first, as the task
+    // list does.
+    let mut processes: Vec<_> = kernel
+        .processes
+        .iter()
+        .filter(|(_, process)| matches(process))
+        .collect();
+    if which == PRIO_PGRP {
+        processes.reverse();
+    }
+    let mut tasks = Vec::new();
+    for (pid, process) in processes {
+        if process.ended.is_some() {
+            tasks.push(Task::Ended(*pid));
+        } else {
+            tasks.extend(process.threads.iter().map(|tid| Task::Thread(*tid)));
+        }
+    }
+    Ok(tasks)
+}
+
+fn task_schedule(kernel: &Kernel, task: Task) -> crate::process::Schedule {
+    match task {
+        Task::Thread(tid) => kernel.threads[&tid].schedule,
+        Task::Ended(pid) => kernel.processes[&pid].ended_schedule,
+    }
+}
+
+fn task_credentials(kernel: &Kernel, task: Task) -> &crate::credentials::Credentials {
+    match task {
+        Task::Thread(tid) => &kernel.process_of(tid).credentials,
+        Task::Ended(pid) => &kernel.processes[&pid].credentials,
+    }
+}
+
+fn task_schedule_mut(kernel: &mut Kernel, task: Task) -> &mut crate::process::Schedule {
+    match task {
+        Task::Thread(tid) => &mut kernel.thread_mut(tid).schedule,
+        Task::Ended(pid) => {
+            &mut kernel
+                .processes
+                .get_mut(&pid)
+                .expect("process exists")
+                .ended_schedule
+        }
+    }
 }
 
 pub(super) fn getpriority(
@@ -647,11 +724,12 @@ pub(super) fn getpriority(
     tid: Tid,
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
-    if !prioritized(kernel, tid, which, who)? {
-        return Err(Errno::ESRCH);
-    }
-    // Linux returns 20 minus the nice value, so that the result is never negative.
-    Ok((20 - kernel.threads[&tid].schedule.nice) as u64)
+    // The highest of 20 less each task's nice value, so that the result is never negative.
+    named_tasks(kernel, tid, which as u32, who)?
+        .into_iter()
+        .map(|task| (20 - task_schedule(kernel, task).nice) as u64)
+        .max()
+        .ok_or(Errno::ESRCH)
 }
 
 pub(super) fn setpriority(
@@ -660,31 +738,43 @@ pub(super) fn setpriority(
     tid: Tid,
     [which, who, nice, ..]: Args,
 ) -> Result<u64, Errno> {
-    // In the order of Linux's `setpriority` and `set_one_prio`.
-    if !prioritized(kernel, tid, which, who)? {
-        return Err(Errno::ESRCH);
-    }
+    // Linux's `setpriority` and `set_one_prio`: each task that refuses leaves its error, the last one
+    // stays; ESRCH only when nothing is named.
+    let tasks = named_tasks(kernel, tid, which as u32, who)?;
     let nice = (nice as i32).clamp(-20, 19);
-    let current = kernel.threads[&tid].schedule.nice;
-    let process = kernel.process_of(tid);
-    let powerful = process.credentials.has(crate::linux::general::CAP_SYS_NICE);
-    if nice < current
-        && (20 - nice) as u64 > process.limits[RLIMIT_NICE as usize].current
-        && !powerful
-    {
-        return Err(Errno::EACCES);
+    let caller = kernel.process_of(tid).credentials.clone();
+    let powerful = caller.has(CAP_SYS_NICE);
+    let mut result = Err(Errno::ESRCH);
+    for task in tasks {
+        let target = task_credentials(kernel, task);
+        if target.uid != caller.euid && target.euid != caller.euid && !powerful {
+            result = Err(Errno::EPERM);
+            continue;
+        }
+        // `can_nice` checks the target's limit.
+        let limit = match task {
+            Task::Thread(tid) => kernel.process_of(tid).limits[RLIMIT_NICE as usize].current,
+            Task::Ended(pid) => kernel.processes[&pid].limits[RLIMIT_NICE as usize].current,
+        };
+        if nice < task_schedule(kernel, task).nice && (20 - nice) as u64 > limit && !powerful {
+            result = Err(Errno::EACCES);
+            continue;
+        }
+        if result == Err(Errno::ESRCH) {
+            result = Ok(0);
+        }
+        task_schedule_mut(kernel, task).nice = nice;
     }
-    kernel.thread_mut(tid).schedule.nice = nice;
-    Ok(0)
+    result
 }
 
-/// Which processes an `ioprio_*` call names: its `which` is `getpriority`'s plus one.
-fn io_prioritized(kernel: &Kernel, tid: Tid, which: u64, who: u64) -> Result<bool, Errno> {
+/// The `ioprio_*` calls' `which`: `getpriority`'s plus one.
+fn io_which(which: u64) -> Result<u32, Errno> {
     use crate::linux_extra::{IOPRIO_WHO_PROCESS, IOPRIO_WHO_USER};
     if !(IOPRIO_WHO_PROCESS..=IOPRIO_WHO_USER).contains(&which) {
         return Err(Errno::EINVAL);
     }
-    prioritized(kernel, tid, which - 1, who)
+    Ok(which as u32 - 1)
 }
 
 pub(super) fn ioprio_get(
@@ -694,25 +784,33 @@ pub(super) fn ioprio_get(
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
     use crate::linux_extra::*;
-    if !io_prioritized(kernel, tid, which, who)? {
-        return Err(Errno::ESRCH);
+    let which = io_which(which)?;
+    let tasks = named_tasks(kernel, tid, which, who)?;
+    // One process gives the value as set (`get_task_raw_ioprio`); a group or a user gives the best
+    // (lowest) of each task's effective one, where no class means the one its scheduling policy and
+    // nice value imply (`__get_task_ioprio`).
+    if which == PRIO_PROCESS {
+        return match tasks.first() {
+            Some(task) => Ok(task_schedule(kernel, *task).io_priority.into()),
+            None => Err(Errno::ESRCH),
+        };
     }
-    let schedule = kernel.threads[&tid].schedule;
-    // One process gives the value as set; a group or a user gives each process's effective one, where
-    // no class means the one its scheduling policy and nice value imply (Linux's `__get_task_ioprio`).
-    if which == IOPRIO_WHO_PROCESS
-        || schedule.io_priority >> IOPRIO_CLASS_SHIFT != IOPRIO_CLASS_NONE
-    {
-        return Ok(schedule.io_priority.into());
-    }
-    let class = match schedule.policy {
-        SCHED_IDLE => IOPRIO_CLASS_IDLE,
-        SCHED_FIFO | SCHED_RR => IOPRIO_CLASS_RT,
-        _ => IOPRIO_CLASS_BE,
+    let effective = |schedule: crate::process::Schedule| {
+        if schedule.io_priority >> IOPRIO_CLASS_SHIFT != IOPRIO_CLASS_NONE {
+            return schedule.io_priority;
+        }
+        let class = match schedule.policy {
+            SCHED_IDLE => IOPRIO_CLASS_IDLE,
+            SCHED_FIFO | SCHED_RR => IOPRIO_CLASS_RT,
+            _ => IOPRIO_CLASS_BE,
+        };
+        class << IOPRIO_CLASS_SHIFT | ((schedule.nice + 20) / 5) as u32
     };
-    Ok(u64::from(
-        class << IOPRIO_CLASS_SHIFT | ((schedule.nice + 20) / 5) as u32,
-    ))
+    tasks
+        .into_iter()
+        .map(|task| u64::from(effective(task_schedule(kernel, task))))
+        .min()
+        .ok_or(Errno::ESRCH)
 }
 
 pub(super) fn ioprio_set(
@@ -726,10 +824,10 @@ pub(super) fn ioprio_set(
     let priority = priority as u32;
     let class = (priority >> IOPRIO_CLASS_SHIFT) & 7;
     let level = priority & 7;
+    let caller = kernel.process_of(tid).credentials.clone();
     match class {
         IOPRIO_CLASS_RT => {
-            let credentials = &kernel.process_of(tid).credentials;
-            if !credentials.has(CAP_SYS_ADMIN) && !credentials.has(CAP_SYS_NICE) {
+            if !caller.has(CAP_SYS_ADMIN) && !caller.has(CAP_SYS_NICE) {
                 return Err(Errno::EPERM);
             }
         }
@@ -737,10 +835,20 @@ pub(super) fn ioprio_set(
         IOPRIO_CLASS_NONE if level == 0 => {}
         _ => return Err(Errno::EINVAL),
     }
-    if !io_prioritized(kernel, tid, which, who)? {
+    let tasks = named_tasks(kernel, tid, io_which(which)?, who)?;
+    if tasks.is_empty() {
         return Err(Errno::ESRCH);
     }
-    // Linux keeps the value in 16 bits.
-    kernel.thread_mut(tid).schedule.io_priority = u32::from(priority as u16);
+    // `set_task_ioprio`, task by task until one refuses; an ended task has no I/O context to keep it.
+    for task in tasks {
+        let target = task_credentials(kernel, task);
+        if target.uid != caller.euid && target.uid != caller.uid && !caller.has(CAP_SYS_NICE) {
+            return Err(Errno::EPERM);
+        }
+        if let Task::Thread(tid) = task {
+            // Linux keeps the value in 16 bits.
+            kernel.thread_mut(tid).schedule.io_priority = u32::from(priority as u16);
+        }
+    }
     Ok(0)
 }

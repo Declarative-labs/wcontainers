@@ -203,6 +203,15 @@ impl Kind {
         }
     }
 
+    /// The largest file the file system has (`s_maxbytes`): tmpfs's `MAX_LFS_FILESIZE`, and for the
+    /// rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
+    pub fn max_bytes(self) -> u64 {
+        match self {
+            Kind::Tmpfs => i64::MAX as u64,
+            Kind::Devpts | Kind::Proc | Kind::Pipe | Kind::Secretmem => i32::MAX as u64,
+        }
+    }
+
     /// The magic number `statfs` reports.
     pub fn magic(self) -> u64 {
         match self {

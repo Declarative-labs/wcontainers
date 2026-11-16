@@ -389,10 +389,14 @@ impl Kernel {
             self.unschedule(tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);
-            self.processes
-                .get_mut(&pid)
-                .expect("process exists")
-                .ended_time += thread.runtime;
+            let process = self.processes.get_mut(&pid).expect("process exists");
+            process.ended_time += thread.runtime;
+            if tid == pid {
+                process.ended_schedule = crate::process::Schedule {
+                    io_priority: 0,
+                    ..thread.schedule
+                };
+            }
         }
         self.release_vfork(pid);
         let process = self.processes.get_mut(&pid).expect("process exists");

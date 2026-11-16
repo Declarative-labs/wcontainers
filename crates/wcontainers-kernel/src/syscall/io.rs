@@ -1159,25 +1159,25 @@ fn send(
     if output.borrow().is_path() || !output.borrow().writable() {
         return Err(Errno::EBADF);
     }
+    // `rw_verify_area` of the output at its own position.
+    if (output.borrow().offset as i64)
+        .checked_add(count as i64)
+        .is_none()
+    {
+        return Err(Errno::EINVAL);
+    }
     // A pipe takes the input spliced into it once, as much as it has room for
     // (`splice_file_to_pipe`). Anything else goes through a private pipe, round after round,
     // until the count is moved or a round falls short (`splice_direct_to_actor`).
     let (input_node, output_node) = (input.borrow().node.clone(), output.borrow().node.clone());
     let to_pipe = matches!(output_node.borrow().content, Content::Pipe(_));
-    // The largest file either side's file system has: `MAX_NON_LFS` for those that leave
-    // `s_maxbytes` as `alloc_super` sets it (pipefs, devpts, secret memory's).
-    let small = |node: &crate::fs::Node| {
-        use crate::fs::Kind;
-        matches!(
-            node.borrow().fs.kind,
-            Kind::Pipe | Kind::Devpts | Kind::Secretmem
-        )
-    };
-    let max = if small(&input_node) || small(&output_node) {
-        i32::MAX as u64
-    } else {
-        i64::MAX as u64
-    };
+    // The largest file either side's file system has.
+    let max = input_node
+        .borrow()
+        .fs
+        .kind
+        .max_bytes()
+        .min(output_node.borrow().fs.kind.max_bytes());
     let position_now = position as u64;
     let mut count = count;
     if position_now + count > max {
@@ -1187,12 +1187,6 @@ fn send(
         count = max - position_now;
     }
     if !to_pipe {
-        if (output.borrow().offset as i64)
-            .checked_add(count as i64)
-            .is_none()
-        {
-            return Err(Errno::EINVAL);
-        }
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
