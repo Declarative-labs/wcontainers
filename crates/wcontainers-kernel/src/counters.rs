@@ -12,15 +12,7 @@ pub mod reason {
     pub const NOT_IMPLEMENTED: &str = "system call not implemented";
     /// A system call number Linux does not have on ARM64. Detail: the call number.
     pub const UNKNOWN_SYSCALL: &str = "system call number unknown";
-    /// A program started without an auxiliary vector entry Linux passes. Detail: the `AT_*` key.
-    pub const AUXILIARY_MISSING: &str = "auxiliary vector entry missing";
-    /// A signal the program set a handler for arrived or was to be let through; handlers do not run
-    /// yet, so the call was refused, or for a fault the process died. Detail: the signal.
-    pub const SIGNAL_HANDLER_NOT_RUN: &str = "signal handler not run";
     pub const CORE_DUMP_NOT_WRITTEN: &str = "core dump not written";
-    /// A signal whose default action stops the process; stopping comes with job control. Detail: the
-    /// signal.
-    pub const PROCESS_STOP_NOT_IMPLEMENTED: &str = "process stop not implemented";
     /// An `fcntl` command the kernel does not build, known to Linux or not; it answers EINVAL, as
     /// Linux does for one it does not know or has not configured. Detail: the command.
     pub const FCNTL_NOT_BUILT: &str = "fcntl command not built";
@@ -58,6 +50,12 @@ pub mod reason {
     /// is mapped both shared and private: Linux's private pages not yet written would show the file's
     /// later bytes, and the copy does not. Detail: the inode number.
     pub const PRIVATE_MAPPING_COPY: &str = "private file mapping is a copy";
+    /// A fault's syndrome in a handler's frame: which translation level faulted and the decoded
+    /// instruction are Linux's page tables' and CPU's own, so a level 3 fault with no instruction
+    /// detail is given. Detail: none.
+    pub const FAULT_SYNDROME_APPROXIMATED: &str = "fault syndrome approximated";
+    /// The time between a thread being woken and it running, measured, not a slow path. Detail: none.
+    pub const WAKE_TO_RUN: &str = "wake to run";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
 
@@ -75,14 +73,14 @@ pub mod reason {
         PROC_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
-        SIGNAL_HANDLER_NOT_RUN,
-        PROCESS_STOP_NOT_IMPLEMENTED,
     ];
 }
 
 #[derive(Default)]
 pub(crate) struct Counters {
     counts: BTreeMap<(&'static str, u64), u64>,
+    /// Measured times: how many and their sum in nanoseconds.
+    times: BTreeMap<(&'static str, u64), (u64, u64)>,
     /// Occurrences seen where the host cannot be reached (a path walk), counted at the next flush.
     noted: RefCell<Vec<(&'static str, u64)>>,
 }
@@ -126,6 +124,13 @@ impl Counters {
         self.refuse(host, reason::FLAG_NOT_BUILT, detail, answer)
     }
 
+    /// Adds a measured time under a reason, without a warning: a measurement, not a slow path.
+    pub fn measure(&mut self, reason: &'static str, detail: u64, nanoseconds: u64) {
+        let entry = self.times.entry((reason, detail)).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += nanoseconds;
+    }
+
     /// Notes an occurrence to count at the next [`Counters::flush`].
     pub fn note(&self, reason: &'static str, detail: u64) {
         self.noted.borrow_mut().push((reason, detail));
@@ -139,13 +144,24 @@ impl Counters {
     }
 
     pub fn readings(&self) -> impl Iterator<Item = CounterReading> + '_ {
-        self.counts
+        let counted = self
+            .counts
             .iter()
             .map(|(&(reason, detail), &count)| CounterReading {
                 reason,
                 detail,
                 count,
                 nanoseconds: 0,
-            })
+            });
+        let measured =
+            self.times.iter().map(
+                |(&(reason, detail), &(count, nanoseconds))| CounterReading {
+                    reason,
+                    detail,
+                    count,
+                    nanoseconds,
+                },
+            );
+        counted.chain(measured)
     }
 }

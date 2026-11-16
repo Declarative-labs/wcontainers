@@ -14,7 +14,7 @@ use core::cell::RefCell;
 
 use alloc::vec;
 use core::cell::Cell;
-use wcontainers_abi::{Cpu, SharedId, Stream};
+use wcontainers_abi::{Cpu, SharedId};
 
 use crate::Errno;
 use crate::credentials::Credentials;
@@ -275,8 +275,9 @@ pub(crate) enum Content {
     Symlink(Vec<u8>),
     /// A device, a named pipe or a socket node; what opening it does depends on its type and number.
     Special,
-    /// One of the container's standard output pipes, read by the host.
-    HostStream(Stream),
+    /// A pipe: made by `pipe2`, a named pipe's while open, or one of the container's standard
+    /// output pipes, which the host reads.
+    Pipe(crate::pipe::Pipe),
     /// A file or directory of the process information tree, made when it is looked up.
     Proc(proc::Entry),
 }
@@ -719,7 +720,7 @@ impl Inode {
             Content::Directory(directory) => DIRENT_SIZE * (directory.len() as u64 + 2),
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
-            Content::Special | Content::HostStream(_) => 0,
+            Content::Special | Content::Pipe(_) => 0,
         }
     }
 

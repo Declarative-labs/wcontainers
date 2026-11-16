@@ -49,10 +49,33 @@ impl Errno {
     pub const ETXTBSY: Self = Self(errno::ETXTBSY);
     pub const EXDEV: Self = Self(errno::EXDEV);
     pub const ENODATA: Self = Self(errno::ENODATA);
+    /// A call a signal interrupted: restarted unless a handler without `SA_RESTART` runs.
+    pub const ERESTARTSYS: Self = Self(crate::linux_extra::ERESTARTSYS);
+    /// Restarted whatever the handler.
+    pub const ERESTARTNOINTR: Self = Self(crate::linux_extra::ERESTARTNOINTR);
+    /// Restarted only when no handler runs.
+    pub const ERESTARTNOHAND: Self = Self(crate::linux_extra::ERESTARTNOHAND);
+    /// Continued by `restart_syscall` when no handler runs.
+    pub const ERESTART_RESTARTBLOCK: Self = Self(crate::linux_extra::ERESTART_RESTARTBLOCK);
+
+    /// Not an error: the call parked its thread and runs again when woken.
+    pub const PARKED: Self = Self(u32::MAX);
 
     /// The value a system call returns in x0 for this error.
     pub fn to_return(self) -> u64 {
         (-i64::from(self.0)) as u64
+    }
+
+    /// The restart answer a call's return value carries, if it is one.
+    pub fn restart_of(value: u64) -> Option<Self> {
+        use crate::linux_extra::*;
+        let code = (value as i64).checked_neg()?;
+        match u32::try_from(code).ok()? {
+            ERESTARTSYS | ERESTARTNOINTR | ERESTARTNOHAND | ERESTART_RESTARTBLOCK => {
+                Some(Self(code as u32))
+            }
+            _ => None,
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{PAGE_SIZE, Permissions, Stream};
+use wcontainers_abi::{PAGE_SIZE, Permissions};
 
 use super::{Args, guest};
 use crate::counters::reason;
@@ -47,7 +47,7 @@ pub(super) fn read(
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+    if !super::pipe::is_pipe(&file) {
         verify_area(file.borrow().offset, count)?;
     }
     read_at(
@@ -75,7 +75,7 @@ pub(super) fn write(
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+    if !super::pipe::is_pipe(&file) {
         verify_area(file.borrow().offset, count)?;
     }
     let append = appends(&file);
@@ -204,7 +204,7 @@ fn vectored2(
         return Ok(0);
     }
     // The range is checked before the flags, as in `vfs_readv` and `vfs_writev`.
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
+    if !super::pipe::is_pipe(&file) {
         let total = parts.iter().map(|(_, length)| length).sum();
         let position = if current {
             file.borrow().offset
@@ -429,8 +429,7 @@ fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let sequence = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
-    if matches!(inode.content, Content::HostStream(_)) || inode.is_secret() || (writing && sequence)
-    {
+    if matches!(inode.content, Content::Pipe(_)) || inode.is_secret() || (writing && sequence) {
         return Err(Errno::ESPIPE);
     }
     Ok(())
@@ -465,7 +464,7 @@ pub(super) fn write_limit(
     let limit = kernel.process_of(tid).limits[RLIMIT_FSIZE as usize].current;
     if offset >= limit {
         // A signal that cannot be acted on is counted where it is sent; the write fails either way.
-        let _ = kernel.send_to_self(cx, tid, SIGXFSZ);
+        kernel.send_file_size_signal(cx, tid);
         return Err(Errno::EFBIG);
     }
     let largest = i64::MAX as u64;
@@ -487,7 +486,7 @@ pub(super) fn new_size_ok(
     if new_size > size {
         let limit = kernel.process_of(tid).limits[RLIMIT_FSIZE as usize].current;
         if new_size > limit {
-            let _ = kernel.send_to_self(cx, tid, SIGXFSZ);
+            kernel.send_file_size_signal(cx, tid);
             return Err(Errno::EFBIG);
         }
         if new_size > i64::MAX as u64 {
@@ -649,9 +648,14 @@ fn vectored(
     if total == 0 {
         return Ok(0);
     }
-    if !matches!(file.borrow().node.borrow().content, Content::HostStream(_)) {
-        verify_area(offset.unwrap_or(file.borrow().offset), total)?;
+    // A pipe takes or gives the whole vector in one go (`pipe_read`, `pipe_write`).
+    if super::pipe::is_pipe(file) {
+        return match writing {
+            Some(_) => super::pipe::write(kernel, cx, tid, file, parts),
+            None => super::pipe::read(kernel, cx, tid, file, parts),
+        };
     }
+    verify_area(offset.unwrap_or(file.borrow().offset), total)?;
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
     if let Some(append) = writing
@@ -726,7 +730,7 @@ fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::HostStream(_) | Content::Symlink(_) => return Err(Errno::EINVAL),
+        Content::Pipe(_) | Content::Symlink(_) => return Err(Errno::EINVAL),
     })
 }
 
@@ -783,6 +787,9 @@ pub(super) fn read_at(
     count: u64,
     at: Option<u64>,
 ) -> Result<u64, Errno> {
+    if super::pipe::is_pipe(file) {
+        return super::pipe::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
     // more is cleared (`read_iter_zero`).
@@ -865,12 +872,8 @@ pub(super) fn write_at(
     append: bool,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
-    let stream = match &node.borrow().content {
-        Content::HostStream(stream) => Some(*stream),
-        _ => None,
-    };
-    if let Some(stream) = stream {
-        return write_host_stream(kernel, cx, tid, stream, buffer, count);
+    if super::pipe::is_pipe(file) {
+        return super::pipe::write(kernel, cx, tid, file, &[(buffer, count)]);
     }
     moves_bytes(file, true)?;
     let entry = match &node.borrow().content {
@@ -971,9 +974,9 @@ fn write_bytes(
     let rdev = inode.rdev;
     let regular = match &mut inode.content {
         Content::Regular(regular) => regular,
-        Content::HostStream(stream) => {
-            cx.host.output(*stream, bytes);
-            return Ok(bytes.len() as u64);
+        Content::Pipe(_) => {
+            drop(inode);
+            return Ok(super::pipe::put(cx, kernel, file, bytes));
         }
         Content::Special => {
             return match Device::from_number(rdev) {
@@ -1086,7 +1089,7 @@ fn send(
     // holds (`splice_file_to_pipe`). Anything else goes through a private pipe, round after round,
     // until the count is moved or a round falls short (`splice_direct_to_actor`).
     let (input_node, output_node) = (input.borrow().node.clone(), output.borrow().node.clone());
-    let to_pipe = matches!(output_node.borrow().content, Content::HostStream(_));
+    let to_pipe = matches!(output_node.borrow().content, Content::Pipe(_));
     if !to_pipe {
         if (output.borrow().offset as i64)
             .checked_add(count as i64)
@@ -1099,7 +1102,7 @@ fn send(
         }
         // A pipe as input cannot seek, and secret memory cannot be read at all, even for nothing
         // (measured; into a pipe nothing is moved without asking it).
-        if matches!(input_node.borrow().content, Content::HostStream(_))
+        if matches!(input_node.borrow().content, Content::Pipe(_))
             || input_node.borrow().is_secret()
         {
             return Err(Errno::EINVAL);
@@ -1221,30 +1224,6 @@ fn send(
     Ok(moved)
 }
 
-/// The host takes a stream's bytes at once, so this is a write to an empty pipe, as the reference's
-/// standard streams are: whole pages from the buffer, and the first page that cannot be read in full
-/// ends the write and is dropped (`EFAULT` if nothing was written), as Linux's `pipe_write` does.
-fn write_host_stream(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    tid: Tid,
-    stream: Stream,
-    buffer: u64,
-    count: u64,
-) -> Result<u64, Errno> {
-    let mut done = 0;
-    while done < count {
-        let at = buffer + done;
-        let length = (count - done).min(PAGE_SIZE);
-        match guest(kernel, cx, tid).read(at, length) {
-            Ok(bytes) => cx.host.output(stream, &bytes),
-            Err(error) => return if done == 0 { Err(error) } else { Ok(done) },
-        }
-        done += length;
-    }
-    Ok(done)
-}
-
 pub(super) fn lseek(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -1273,7 +1252,7 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::HostStream(_) => return Err(Errno::ESPIPE),
+        Content::Pipe(_) => return Err(Errno::ESPIPE),
         Content::Special => match Device::from_number(inode.rdev) {
             // `/dev/null`, `/dev/zero` and `/dev/full` always seek to 0 (`null_lseek`); the random
             // devices keep their position (`noop_llseek`).
@@ -1607,6 +1586,7 @@ pub(super) fn close(
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     kernel.process_of_mut(tid).files.remove(fd as i32)?;
+    kernel.files_released();
     Ok(0)
 }
 
@@ -1695,9 +1675,11 @@ pub(super) fn fcntl(
     match fcntl_typed(kernel, cx, tid, arguments) {
         Ok(Some(value)) => super::Outcome::Return(value),
         Ok(None) => {
-            // A lock another holder of this process has: it cannot let go while the only thread
-            // waits, so the wait lasts until a signal ends it (K2), as on Linux.
-            kernel.park(cx, tid, crate::process::Parked::Forever);
+            // A lock another holder has: the wait lasts until it is let go or a signal comes.
+            if kernel.signal_pending(tid) {
+                return Err(Errno::ERESTARTSYS).into();
+            }
+            kernel.park(tid, crate::process::Channel::Locks);
             super::Outcome::Parked
         }
         Err(error) => Err(error).into(),
@@ -1986,15 +1968,31 @@ fn fcntl_other(
             file.owner.get_or_insert_default().signal = signal;
             Ok(0)
         }
-        // Only pipes have a size (`pipe_fcntl`); the standard streams' pipes are not built.
-        F_GETPIPE_SZ | F_SETPIPE_SZ
-            if !path_only
-                && !matches!(
-                    descriptor.file.borrow().node.borrow().content,
-                    Content::HostStream(_)
-                ) =>
-        {
-            Err(Errno::EBADF)
+        // Only pipes have a size (`pipe_fcntl`).
+        F_GETPIPE_SZ | F_SETPIPE_SZ if !path_only => {
+            let node = descriptor.file.borrow().node.clone();
+            let may_exceed = kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE);
+            let mut inode = node.borrow_mut();
+            let Content::Pipe(pipe) = &mut inode.content else {
+                return Err(Errno::EBADF);
+            };
+            if command == F_GETPIPE_SZ {
+                return Ok(pipe.capacity as u64 * PAGE_SIZE);
+            }
+            // `pipe_set_size`: rounded up to pages, within the largest size, not below what it
+            // holds.
+            let size = crate::pipe::round_size(u64::from(argument as u32)).ok_or(Errno::EINVAL)?;
+            if size > crate::pipe::MAX_SIZE && !may_exceed {
+                return Err(Errno::EPERM);
+            }
+            let slots = (size / PAGE_SIZE) as usize;
+            if slots < pipe.occupancy() {
+                return Err(Errno::EBUSY);
+            }
+            pipe.capacity = slots;
+            drop(inode);
+            kernel.wake(super::pipe::channel(&node));
+            Ok(size)
         }
         F_GET_RW_HINT if !path_only => {
             let hint = descriptor.file.borrow().node.borrow().write_hint;
@@ -2079,7 +2077,7 @@ pub(super) fn fsync(
     let file = file.borrow();
     let inode = file.node.borrow();
     match inode.content {
-        Content::HostStream(_) | Content::Special | Content::Proc(_) => Err(Errno::EINVAL),
+        Content::Pipe(_) | Content::Special | Content::Proc(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }
@@ -2104,15 +2102,15 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 
 /// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
 /// or what the file's own says. The host's pipes always have room.
-fn poll_mask(file: &FileRef) -> u16 {
+fn poll_mask(_kernel: &Kernel, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
     let file = file.borrow();
     if file.is_path() {
         return POLLNVAL as u16;
     }
     let node = file.node.borrow();
-    match node.content {
-        Content::HostStream(_) => (POLLOUT | POLLWRNORM) as u16,
+    match &node.content {
+        Content::Pipe(pipe) => crate::pipe::poll(pipe, &file),
         // `random_poll`: the generator is ready from the start here. `/dev/urandom` has no poll.
         Content::Special if Device::from_number(node.rdev) == Some(Device::Random) => {
             (POLLIN | POLLRDNORM) as u16
@@ -2123,13 +2121,13 @@ fn poll_mask(file: &FileRef) -> u16 {
     }
 }
 
-/// A wait's timeout as `poll_select_set_timeout` checks it: its length and when it ends.
+/// A wait's timeout as `poll_select_set_timeout` checks it: its length.
 fn read_timeout(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     timeout: u64,
-) -> Result<Option<(u64, u64)>, Errno> {
+) -> Result<Option<u64>, Errno> {
     if timeout == 0 {
         return Ok(None);
     }
@@ -2137,68 +2135,106 @@ fn read_timeout(
     if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
         return Err(Errno::EINVAL);
     }
-    let duration = (value.tv_sec as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(value.tv_nsec as u64);
-    Ok(Some((
-        duration,
-        cx.host.monotonic_nanoseconds().saturating_add(duration),
-    )))
+    Ok(Some(
+        (value.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(value.tv_nsec as u64),
+    ))
+}
+
+/// The first run of `ppoll` or `pselect6`: when the wait ends (kept in the call's slot as the time
+/// asked for, and with `select_estimate_accuracy`'s slack as when the thread is woken), then the
+/// temporary signal mask (`set_user_sigmask`).
+fn start_wait(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    duration: Option<u64>,
+    mask: u64,
+    mask_size: u64,
+) -> Result<(), Errno> {
+    let now = cx.host.monotonic_nanoseconds();
+    let new_mask = if mask != 0 {
+        if mask_size != 8 {
+            return Err(Errno::EINVAL);
+        }
+        Some(guest(kernel, cx, tid).read_value::<u64>(mask)?)
+    } else {
+        None
+    };
+    let thread = kernel.thread_mut(tid);
+    if let Some(duration) = duration {
+        let until = now.saturating_add(duration);
+        let slack = if thread.timer_slack == 0 {
+            0
+        } else {
+            // 0.1% of the time left (0.5% for a nice thread), at most 100 ms, at least the slack.
+            const MAX_SLACK: u64 = 100_000_000;
+            let divisor = if thread.schedule.nice > 0 { 200 } else { 1000 };
+            (duration / divisor).min(MAX_SLACK).max(thread.timer_slack)
+        };
+        thread.call.progress = until;
+        thread.call.deadline = Some(until.saturating_add(slack));
+    }
+    if let Some(new_mask) = new_mask {
+        thread.saved_mask = Some(thread.signal_mask);
+        thread.signal_mask = new_mask & !crate::signal::UNBLOCKABLE;
+    }
+    thread.call.started = true;
+    Ok(())
+}
+
+/// After a run of `ppoll` or `pselect6` found nothing ready: it ends with none when its time is up,
+/// is interrupted by a signal, or parks until a file's readiness changes.
+fn nothing_ready(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+) -> Option<Result<u64, Errno>> {
+    let call = kernel.threads[&tid].call;
+    if call
+        .deadline
+        .is_some_and(|_| call.progress <= cx.host.monotonic_nanoseconds())
+    {
+        return Some(Ok(0));
+    }
+    if kernel.signal_pending(tid) {
+        return Some(Err(Errno::ERESTARTNOHAND));
+    }
+    kernel.park(tid, crate::process::Channel::Readiness);
+    None
 }
 
 /// As Linux's `poll_select_finish`: the time left goes back into a non-zero timeout, whatever the
-/// result, and a failure to write it is ignored. A wait that parks will time out with none left.
+/// result (so a restarted call waits only what is left), a failure to write it is ignored, and the
+/// signal mask goes back unless a handler is to run first.
 fn finish_wait(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     timeout: u64,
-    until: Option<(u64, u64)>,
-    result: Result<Option<u64>, Errno>,
+    result: Option<Result<u64, Errno>>,
 ) -> super::Outcome {
-    if let Some((duration, until)) = until
-        && duration != 0
-    {
-        let left = match result {
-            Ok(Some(_)) | Err(_) => until.saturating_sub(cx.host.monotonic_nanoseconds()),
-            Ok(None) => 0,
-        };
+    let Some(result) = result else {
+        return super::Outcome::Parked;
+    };
+    let call = kernel.threads[&tid].call;
+    if timeout != 0 && call.deadline.is_some() {
+        let left = call
+            .progress
+            .saturating_sub(cx.host.monotonic_nanoseconds());
         let value = __kernel_timespec {
             tv_sec: (left / 1_000_000_000) as i64,
             tv_nsec: (left % 1_000_000_000) as i64,
         };
         let _ = guest(kernel, cx, tid).write_value(timeout, &value);
     }
-    match result {
-        Ok(Some(ready)) => super::Outcome::Return(ready),
-        Ok(None) => super::Outcome::Parked,
-        Err(error) => Err(error).into(),
+    if result != Err(Errno::ERESTARTNOHAND)
+        && let Some(saved) = kernel.thread_mut(tid).saved_mask.take()
+    {
+        kernel.thread_mut(tid).signal_mask = saved;
     }
-}
-
-/// Parks a waiting thread until its timeout, or for ever (until a signal, K2). The timer may end as
-/// late as `select_estimate_accuracy`'s slack after the timeout, and with nothing else to wake the
-/// machine it does.
-fn park_until(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, until: Option<u64>) {
-    let parked = match until {
-        Some(until) => {
-            let thread = &kernel.threads[&tid];
-            let slack = if thread.timer_slack == 0 {
-                0
-            } else {
-                // 0.1% of the time left (0.5% for a nice thread), at most 100 ms, at least the slack.
-                const MAX_SLACK: u64 = 100_000_000;
-                let divisor = if thread.schedule.nice > 0 { 200 } else { 1000 };
-                let left = until.saturating_sub(cx.host.monotonic_nanoseconds());
-                (left / divisor).min(MAX_SLACK).max(thread.timer_slack)
-            };
-            crate::process::Parked::Until {
-                nanoseconds: until.saturating_add(slack),
-            }
-        }
-        None => crate::process::Parked::Forever,
-    };
-    kernel.park(cx, tid, parked);
+    result.into()
 }
 
 pub(super) fn ppoll(
@@ -2207,22 +2243,22 @@ pub(super) fn ppoll(
     tid: Tid,
     [fds, count, timeout, mask, mask_size, _]: Args,
 ) -> super::Outcome {
-    // The timeout first; a bad one ends the call before anything else.
-    let until = match read_timeout(kernel, cx, tid, timeout) {
-        Ok(until) => until,
-        Err(error) => return Err(error).into(),
+    if !kernel.threads[&tid].call.started {
+        // The timeout first; a bad one ends the call before anything else. A zero timeout never
+        // waits.
+        let duration = match read_timeout(kernel, cx, tid, timeout) {
+            Ok(duration) => duration,
+            Err(error) => return Err(error).into(),
+        };
+        if let Err(error) = start_wait(kernel, cx, tid, duration, mask, mask_size) {
+            return Err(error).into();
+        }
+    }
+    let result = match ppoll_typed(kernel, cx, tid, fds, count) {
+        Ok(0) => nothing_ready(kernel, cx, tid),
+        result => Some(result),
     };
-    let result = ppoll_typed(
-        kernel,
-        cx,
-        tid,
-        fds,
-        count,
-        until.map(|(_, until)| until),
-        mask,
-        mask_size,
-    );
-    finish_wait(kernel, cx, tid, timeout, until, result)
+    finish_wait(kernel, cx, tid, timeout, result)
 }
 
 pub(super) fn pselect6(
@@ -2231,54 +2267,54 @@ pub(super) fn pselect6(
     tid: Tid,
     [count, read, write, except, timeout, mask_pack]: Args,
 ) -> super::Outcome {
-    // The signal mask's address and size first, then the timeout.
-    let (mask, mask_size) = if mask_pack != 0 {
-        match guest(kernel, cx, tid).read(mask_pack, 16) {
-            Ok(bytes) => (
-                u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
-                u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes")),
-            ),
+    if !kernel.threads[&tid].call.started {
+        // The signal mask's address and size first, then the timeout.
+        let (mask, mask_size) = if mask_pack != 0 {
+            match guest(kernel, cx, tid).read(mask_pack, 16) {
+                Ok(bytes) => (
+                    u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")),
+                    u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes")),
+                ),
+                Err(error) => return Err(error).into(),
+            }
+        } else {
+            (0, 0)
+        };
+        let duration = match read_timeout(kernel, cx, tid, timeout) {
+            Ok(duration) => duration,
             Err(error) => return Err(error).into(),
+        };
+        if let Err(error) = start_wait(kernel, cx, tid, duration, mask, mask_size) {
+            return Err(error).into();
         }
-    } else {
-        (0, 0)
+    }
+    let result = match select_typed(kernel, cx, tid, count, [read, write, except]) {
+        Ok(None) => nothing_ready(kernel, cx, tid).map(|result| {
+            // A timeout writes back the sets, empty.
+            if result == Ok(0) {
+                select_typed(kernel, cx, tid, count, [read, write, except])
+                    .map(|ready| ready.unwrap_or(0))
+                    .and(Ok(0))
+            } else {
+                result
+            }
+        }),
+        Ok(Some(ready)) => Some(Ok(ready)),
+        Err(error) => Some(Err(error)),
     };
-    let until = match read_timeout(kernel, cx, tid, timeout) {
-        Ok(until) => until,
-        Err(error) => return Err(error).into(),
-    };
-    let result = select_typed(
-        kernel,
-        cx,
-        tid,
-        count,
-        [read, write, except],
-        until.map(|(_, until)| until),
-        mask,
-        mask_size,
-    );
-    finish_wait(kernel, cx, tid, timeout, until, result)
+    finish_wait(kernel, cx, tid, timeout, result)
 }
 
-/// `pselect6` after its timeout is read, as Linux's `core_sys_select`: Some(count) when it returns now,
-/// None when it waits.
-#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+/// One look at `pselect6`'s sets, as Linux's `core_sys_select`: Some(count) and the sets written
+/// back when something is ready, None when nothing is (the sets are then written back empty only
+/// when the call returns).
 fn select_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     count: u64,
     sets: [u64; 3],
-    until: Option<u64>,
-    mask: u64,
-    mask_size: u64,
 ) -> Result<Option<u64>, Errno> {
-    if mask != 0 {
-        if mask_size != 8 {
-            return Err(Errno::EINVAL);
-        }
-        guest(kernel, cx, tid).read(mask, 8)?;
-    }
     let count = count as i32;
     if count < 0 {
         return Err(Errno::EINVAL);
@@ -2317,7 +2353,7 @@ fn select_typed(
             }
             // `select_poll_one`: an `O_PATH` descriptor is not found, so it is invalid, which every
             // set reports.
-            let mask = poll_mask(&files.file(fd as i32)?);
+            let mask = poll_mask(kernel, &files.file(fd as i32)?);
             if u32::from(mask) & kinds[index] != 0 {
                 result[(fd / 8) as usize] |= 1 << (fd % 8);
                 ready += 1;
@@ -2325,40 +2361,29 @@ fn select_typed(
         }
         results[index] = result;
     }
-    let returns = ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds());
-    // The sets are written back when the call returns; a timeout returns them empty.
-    if returns || until.is_some() {
-        for (address, result) in sets.iter().zip(&results) {
-            if *address != 0 {
-                guest(kernel, cx, tid).write(*address, result)?;
-            }
+    if ready == 0 {
+        let call = kernel.threads[&tid].call;
+        let over = call.deadline.is_some() && call.progress <= cx.host.monotonic_nanoseconds();
+        if !over {
+            return Ok(None);
         }
     }
-    if returns {
-        return Ok(Some(ready));
+    for (address, result) in sets.iter().zip(&results) {
+        if *address != 0 {
+            guest(kernel, cx, tid).write(*address, result)?;
+        }
     }
-    park_until(kernel, cx, tid, until);
-    Ok(None)
+    Ok(Some(ready))
 }
 
-/// `ppoll` after its timeout is read: Some(count) when it returns now, None when it waits.
-#[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
+/// One look at `ppoll`'s descriptors: how many are ready, each one's events written back.
 fn ppoll_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     fds: u64,
     count: u64,
-    until: Option<u64>,
-    mask: u64,
-    mask_size: u64,
-) -> Result<Option<u64>, Errno> {
-    if mask != 0 {
-        if mask_size != 8 {
-            return Err(Errno::EINVAL);
-        }
-        guest(kernel, cx, tid).read(mask, 8)?;
-    }
+) -> Result<u64, Errno> {
     if count > nofile_limit(kernel, tid) {
         return Err(Errno::EINVAL);
     }
@@ -2371,7 +2396,9 @@ fn ppoll_typed(
             0
         } else {
             match kernel.process_of(tid).files.file(fd) {
-                Ok(file) => poll_mask(&file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16),
+                Ok(file) => {
+                    poll_mask(kernel, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
+                }
                 Err(_) => POLLNVAL as u16,
             }
         };
@@ -2381,11 +2408,7 @@ fn ppoll_typed(
         }
     }
     guest(kernel, cx, tid).write(fds, &entries)?;
-    if ready > 0 || until.is_some_and(|until| until <= cx.host.monotonic_nanoseconds()) {
-        return Ok(Some(ready));
-    }
-    park_until(kernel, cx, tid, until);
-    Ok(None)
+    Ok(ready)
 }
 
 /// `cachestat`: how many of a file's pages are in memory. Only tmpfs files hold pages here (as in

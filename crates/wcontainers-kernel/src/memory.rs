@@ -56,6 +56,9 @@ pub(crate) enum Backing {
     Droppable,
     Heap,
     Stack,
+    /// Pages the kernel itself provides, named in `/proc/<pid>/maps` (`[vvar]`, `[vdso]`); never
+    /// merged with others.
+    Special(&'static str),
 }
 
 #[derive(Clone)]
@@ -72,7 +75,18 @@ pub(crate) struct Mapping {
     /// Whether a fault below it grows it, with a guard gap kept free below (Linux's `VM_GROWSDOWN`):
     /// the stack, and `MAP_GROWSDOWN` memory.
     pub grows_down: bool,
+    /// What a fork gives the child of it (`MADV_DONTFORK`, `MADV_WIPEONFORK`).
+    pub on_fork: OnFork,
     pub backing: Backing,
+}
+
+/// What a fork does with a mapping: by default the child gets a copy (or, shared, the same pages).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OnFork {
+    /// The child does not get it (`VM_DONTCOPY`).
+    pub skip: bool,
+    /// The child gets it zeroed (`VM_WIPEONFORK`).
+    pub wipe: bool,
 }
 
 /// Whether a mapping is locked in memory, and if so whether its pages are brought in at once or as
@@ -148,6 +162,7 @@ pub(crate) fn is_data(permissions: Permissions, shared: bool, grows_down: bool) 
 }
 
 /// Every mapped range of one process, and where the next ones go.
+#[derive(Clone)]
 pub(crate) struct AddressMap {
     /// By start address; never overlapping.
     mappings: BTreeMap<u64, Mapping>,
@@ -486,6 +501,15 @@ impl AddressMap {
         self.merge_around();
     }
 
+    /// Sets what a fork does with a range, every page of which is mapped.
+    pub fn set_on_fork(&mut self, start: u64, end: u64, change: impl Fn(&mut OnFork)) {
+        for mut mapping in self.remove(start, end) {
+            change(&mut mapping.on_fork);
+            self.mappings.insert(mapping.start, mapping);
+        }
+        self.merge_around();
+    }
+
     /// Locks or unlocks every mapping.
     pub fn set_lock_all(&mut self, lock: Lock) {
         for mapping in self.mappings.values_mut() {
@@ -613,6 +637,7 @@ impl AddressMap {
                 && last.allowed == mapping.allowed
                 && last.locked == mapping.locked
                 && last.grows_down == mapping.grows_down
+                && last.on_fork == mapping.on_fork
             {
                 let file_end = match (&last.backing, &mapping.backing) {
                     (Backing::Anonymous, Backing::Anonymous)

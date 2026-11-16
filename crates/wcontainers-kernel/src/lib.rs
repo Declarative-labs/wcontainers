@@ -21,18 +21,22 @@ mod linux_extra;
 mod loader;
 mod locks;
 mod memory;
+mod pipe;
 mod process;
+mod schedule;
 mod seccomp;
 mod shared;
 mod signal;
 mod syscall;
+mod task;
 mod user;
+mod vdso;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Access, CounterReading, Cpu, Event, Exit, Host, Next, Resume};
+use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Host, Next};
 
 pub use container::{Attributes, FileRecord, NewFile, Start};
 pub use counters::reason;
@@ -40,8 +44,7 @@ pub use errno::Errno;
 
 use counters::Counters;
 use fs::{FileSystem, Node, Numbers, Time};
-use memory::Backing;
-use process::{Parked, Pid, Process, Thread, Tid};
+use process::{Pid, Process, Thread, Tid};
 
 /// What a call into the kernel may use besides the kernel's own state.
 pub(crate) struct Context<'a> {
@@ -83,10 +86,25 @@ pub(crate) struct Files {
 pub struct Kernel {
     processes: BTreeMap<Pid, Process>,
     threads: BTreeMap<Tid, Thread>,
-    /// Threads that can run, the next one first.
-    runnable: VecDeque<Tid>,
+    /// Threads that can run and are not the current one.
+    run_queue: schedule::RunQueue,
+    /// The thread that has the CPU: it runs again after its call unless another should take over.
+    current: Option<Tid>,
+    /// Whether the current thread should give way at the next choice (Linux's `need_resched`).
+    resched: bool,
     /// The thread the driver is running, between [`Kernel::next`] and [`Kernel::exit`].
     running: Option<Tid>,
+    /// Parked threads whose wait ended, whose calls are run again before anything else happens.
+    woken: VecDeque<Tid>,
+    /// Threads not running that were sent a signal, which they act on before they run.
+    signalled: VecDeque<Tid>,
+    /// The monotonic clock when the kernel was last entered.
+    entry_now: u64,
+    /// The monotonic clock when the kernel last handed control back, which is when the thread it
+    /// picks next starts running.
+    last_now: u64,
+    /// The current thread's CPU time when it was picked, for how much of its slice is used.
+    picked_runtime: u64,
     /// The last process or thread number handed out. Both share one space, as in Linux.
     last_id: i32,
     /// The container's first process; when it ends the container ends.
@@ -131,8 +149,15 @@ impl Kernel {
         Self {
             processes: BTreeMap::new(),
             threads: BTreeMap::new(),
-            runnable: VecDeque::new(),
+            run_queue: schedule::RunQueue::default(),
+            current: None,
+            resched: false,
             running: None,
+            woken: VecDeque::new(),
+            signalled: VecDeque::new(),
+            entry_now: 0,
+            last_now: 0,
+            picked_runtime: 0,
             last_id: 0,
             init: None,
             finished: None,
@@ -181,27 +206,7 @@ impl Kernel {
         if let Some(status) = self.finished {
             return Next::Finished { status };
         }
-        match self.runnable.pop_front() {
-            Some(tid) => {
-                self.running = Some(tid);
-                let thread = &self.threads[&tid];
-                Next::Run {
-                    thread: thread.cpu,
-                    resume: thread.resume,
-                    slice_nanoseconds: None,
-                }
-            }
-            None => Next::Idle {
-                until_nanoseconds: self
-                    .threads
-                    .values()
-                    .filter_map(|thread| match thread.parked {
-                        Some(Parked::Until { nanoseconds }) => Some(nanoseconds),
-                        _ => None,
-                    })
-                    .min(),
-            },
-        }
+        self.pick()
     }
 
     /// The thread from the last [`Next::Run`] has come back.
@@ -211,58 +216,18 @@ impl Kernel {
             .take()
             .expect("an exit was handed back with no thread running");
         let mut cx = Context { cpu, host };
-        match exit {
-            Exit::Syscall(call) => match syscall::dispatch(self, &mut cx, tid, call) {
-                syscall::Outcome::Return(value) => {
-                    if self.deliver_signals(&mut cx, tid) {
-                        self.resume(tid, Resume::Return(value))
-                    }
-                }
-                syscall::Outcome::Restart => {
-                    if self.deliver_signals(&mut cx, tid) {
-                        self.resume(tid, Resume::FromRegisters)
-                    }
-                }
-                syscall::Outcome::Parked => {}
-                syscall::Outcome::Gone => {}
-            },
-            Exit::Stop => self.resume(tid, Resume::Continue),
-            Exit::MemoryFault { address, access } => {
-                self.memory_fault(&mut cx, tid, address, access)
-            }
-            Exit::MemoryFaultWithoutRegisters => {
-                self.kill_by_signal(&mut cx, tid, linux::general::SIGSEGV)
-            }
-            // Linux's `do_sp_pc_abort`: SIGBUS, BUS_ADRALN at `address`. Code and address reach only a
-            // handler, and handlers do not run yet.
-            Exit::AlignmentFault { .. } => {
-                self.kill_by_signal(&mut cx, tid, linux::general::SIGBUS)
-            }
-            Exit::IllegalInstruction => self.kill_by_signal(&mut cx, tid, linux::general::SIGILL),
-            Exit::Breakpoint { .. } => self.kill_by_signal(&mut cx, tid, linux::general::SIGTRAP),
-        }
-        self.counters.flush(cx.host);
+        self.account(&mut cx, tid);
+        self.came_back(&mut cx, tid, exit);
+        self.settle(&mut cx);
     }
 
     /// Something happened outside.
-    pub fn event(&mut self, _cpu: &mut dyn Cpu, host: &mut dyn Host, event: Event<'_>) {
+    pub fn event(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, event: Event<'_>) {
+        let mut cx = Context { cpu, host };
         let detail = match event {
             Event::Timer => {
-                let now = host.monotonic_nanoseconds();
-                let due: Vec<Tid> = self
-                    .threads
-                    .iter()
-                    .filter(|(_, thread)| {
-                        matches!(thread.parked, Some(Parked::Until { nanoseconds }) if nanoseconds <= now)
-                    })
-                    .map(|(tid, _)| *tid)
-                    .collect();
-                for tid in due {
-                    let thread = self.threads.get_mut(&tid).expect("thread");
-                    thread.parked = None;
-                    thread.slept += now.saturating_sub(thread.parked_at);
-                    self.resume(tid, Resume::Return(0));
-                }
+                self.wake_due(&mut cx);
+                self.settle(&mut cx);
                 return;
             }
             Event::BackendReply { request, .. } => request.0,
@@ -273,25 +238,14 @@ impl Kernel {
             Event::LookedUp { request, .. } => request,
             Event::TerminalInput { .. } | Event::TerminalResized { .. } => 0,
         };
-        self.counters.count(host, reason::EVENT_UNEXPECTED, detail);
+        self.counters
+            .count(cx.host, reason::EVENT_UNEXPECTED, detail);
+        self.settle(&mut cx);
     }
 
     /// Every counter that has been bumped.
     pub fn counters(&self) -> impl Iterator<Item = CounterReading> + '_ {
         self.counters.readings()
-    }
-
-    /// Parks a thread in its call; the time it spends parked is not CPU time.
-    pub(crate) fn park(&mut self, cx: &mut Context<'_>, tid: Tid, parked: Parked) {
-        let now = cx.host.monotonic_nanoseconds();
-        let thread = self.thread_mut(tid);
-        thread.parked = Some(parked);
-        thread.parked_at = now;
-    }
-
-    fn resume(&mut self, tid: Tid, resume: Resume) {
-        self.thread_mut(tid).resume = resume;
-        self.runnable.push_front(tid);
     }
 
     /// Gives a process's credentials a new serial after a change Linux commits (`commit_creds`).
@@ -305,9 +259,23 @@ impl Kernel {
             .serial = serial;
     }
 
+    /// The next free process and thread number, wrapping at `pid_max` past the low numbers
+    /// (`alloc_pid`'s `RESERVED_PIDS`).
     fn allocate_id(&mut self) -> i32 {
-        self.last_id += 1;
-        self.last_id
+        loop {
+            self.last_id += 1;
+            if self.last_id >= PID_MAX {
+                self.last_id = RESERVED_PIDS;
+            }
+            let taken = self.processes.contains_key(&self.last_id)
+                || self.threads.contains_key(&self.last_id)
+                || self.processes.values().any(|process| {
+                    process.group == self.last_id || process.session == self.last_id
+                });
+            if !taken {
+                return self.last_id;
+            }
+        }
     }
 
     pub(crate) fn thread_mut(&mut self, tid: Tid) -> &mut Thread {
@@ -357,9 +325,11 @@ impl Kernel {
             .iter()
             .map(|space| space.used_blocks() * wcontainers_abi::PAGE_SIZE)
             .sum();
+        // A `vfork` child shows its parent's memory, counted once.
         let mapped: u64 = self
             .processes
             .values()
+            .filter(|process| process.vfork_parent.is_none())
             .flat_map(|process| process.map.iter())
             .map(|mapping| mapping.end - mapping.start)
             .sum();
@@ -369,118 +339,12 @@ impl Kernel {
     pub(crate) fn now(&self, cx: &mut Context<'_>) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }
-
-    /// Ends a process killed by a signal. A signal whose default action dumps core would have Linux
-    /// write a core file and mark the wait status, when the core size limit allows one and the process
-    /// is dumpable; neither is done here (counted).
-    pub(crate) fn die_of(&mut self, cx: &mut Context<'_>, pid: Pid, signal: u32) {
-        use linux::general::*;
-        let dumps = matches!(
-            signal,
-            SIGQUIT
-                | SIGILL
-                | SIGTRAP
-                | SIGABRT
-                | SIGBUS
-                | SIGFPE
-                | SIGSEGV
-                | SIGXCPU
-                | SIGXFSZ
-                | SIGSYS
-        );
-        let process = &self.processes[&pid];
-        if dumps && process.limits[RLIMIT_CORE as usize].current > 0 && process.dumpable {
-            self.counters
-                .count(cx.host, reason::CORE_DUMP_NOT_WRITTEN, signal.into());
-        }
-        self.end_process(cx, pid, signal as i32);
-    }
-
-    /// Ends a whole process with a wait status, as `exit_group` and fatal signals do.
-    pub(crate) fn end_process(&mut self, cx: &mut Context<'_>, pid: Pid, wait_status: i32) {
-        let mut process = self.processes.remove(&pid).expect("process exists");
-        process.files.close_all();
-        for tid in &process.threads {
-            let thread = self.threads.remove(tid).expect("thread exists");
-            cx.cpu.thread_drop(thread.cpu);
-            self.runnable.retain(|other| other != tid);
-        }
-        cx.cpu.memory_drop(process.memory);
-        shared::release(self, cx);
-        if self.init == Some(pid) {
-            self.finished = Some(wait_status);
-        }
-    }
-
-    /// Ends one thread of a process that has others.
-    pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
-        let thread = self.threads.remove(&tid).expect("thread exists");
-        cx.cpu.thread_drop(thread.cpu);
-        self.runnable.retain(|other| *other != tid);
-        let process = self
-            .processes
-            .get_mut(&thread.process)
-            .expect("process exists");
-        process.threads.retain(|other| *other != tid);
-    }
-
-    /// A fault: grow the stack if that is what it is, or kill the process as Linux's default action does
-    /// for the signal the fault raises.
-    fn memory_fault(&mut self, cx: &mut Context<'_>, tid: Tid, address: u64, access: Access) {
-        let pid = self.threads[&tid].process;
-        let process = self.processes.get_mut(&pid).expect("process exists");
-        let mapping = process.map.find(address).cloned();
-        let signal = match mapping {
-            None => {
-                if process
-                    .map
-                    .grow_stack(
-                        cx.cpu,
-                        process.memory,
-                        address,
-                        &process.limits,
-                        process.credentials.has(linux::general::CAP_IPC_LOCK),
-                    )
-                    .unwrap_or(false)
-                {
-                    self.resume(tid, Resume::FromRegisters);
-                    return;
-                }
-                linux::general::SIGSEGV
-            }
-            Some(mapping) => match mapping.backing {
-                // Allowed by the mapping but past the end of its file.
-                Backing::File { file_end, .. }
-                    if address >= file_end
-                        && memory::cpu_permissions(mapping.permissions).contains(
-                            match access {
-                                Access::Read => wcontainers_abi::Permissions::READ,
-                                Access::Write => wcontainers_abi::Permissions::WRITE,
-                                Access::Execute => wcontainers_abi::Permissions::EXECUTE,
-                            },
-                        ) =>
-                {
-                    linux::general::SIGBUS
-                }
-                _ => linux::general::SIGSEGV,
-            },
-        };
-        self.kill_by_signal(cx, tid, signal);
-    }
-
-    /// A forced signal (a fault's, seccomp's): the process dies of it, as Linux's default action does,
-    /// which an ignored signal is reset to (`force_sig_info_to_task`). A handler the program set
-    /// cannot run yet, which is counted.
-    pub(crate) fn kill_by_signal(&mut self, cx: &mut Context<'_>, tid: Tid, signal: u32) {
-        let pid = self.threads[&tid].process;
-        let handler = self.processes[&pid].actions[signal as usize - 1].sa_handler_kernel;
-        if handler != linux_extra::SIG_DFL && handler != linux_extra::SIG_IGN {
-            self.counters
-                .count(cx.host, reason::SIGNAL_HANDLER_NOT_RUN, signal.into());
-        }
-        self.die_of(cx, pid, signal);
-    }
 }
+
+/// The largest process number plus one (`pid_max`'s default of `PID_MAX_DEFAULT`, which
+/// `/proc/sys/kernel/pid_max` reports), and the numbers skipped when they wrap.
+const PID_MAX: i32 = 4_194_304;
+const RESERVED_PIDS: i32 = 300;
 
 /// One ARM64 Linux system call and whether the kernel has built it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

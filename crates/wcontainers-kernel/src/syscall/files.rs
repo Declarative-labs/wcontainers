@@ -541,7 +541,7 @@ pub(super) fn open(
                     None => return Err(Errno::ENXIO),
                 }
             }
-            S_IFIFO if !matches!(node.borrow().content, Content::HostStream(_)) => {
+            S_IFIFO if !matches!(node.borrow().content, Content::Pipe(_)) => {
                 let ino = node.borrow().ino;
                 return Err(kernel.counters.refuse(
                     cx.host,
@@ -2300,9 +2300,12 @@ pub(super) fn flock(
     match flock_typed(kernel, cx, tid, arguments) {
         Ok(Some(value)) => super::Outcome::Return(value),
         Ok(None) => {
-            // The holder is an open file of this process, which cannot let go while its only thread
-            // waits, so the wait lasts until a signal ends it (K2), as on Linux.
-            kernel.park(cx, tid, crate::process::Parked::Forever);
+            // Another open file holds a conflicting lock: the wait lasts until it is let go or a
+            // signal comes.
+            if kernel.signal_pending(tid) {
+                return Err(Errno::ERESTARTSYS).into();
+            }
+            kernel.park(tid, crate::process::Channel::Locks);
             super::Outcome::Parked
         }
         Err(error) => Err(error).into(),

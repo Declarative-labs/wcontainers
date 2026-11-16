@@ -95,6 +95,7 @@ pub(super) fn brk(
         shared: false,
         locked: map.future_lock,
         grows_down: false,
+        on_fork: crate::memory::OnFork::default(),
         backing: Backing::Heap,
     };
     if map.insert(cx.cpu, process.memory, heap).is_err() {
@@ -318,6 +319,7 @@ pub(super) fn mmap(
         shared,
         locked,
         grows_down,
+        on_fork: crate::memory::OnFork::default(),
         backing,
     };
     // Within the limits, counting what a fixed mapping replaces.
@@ -710,6 +712,25 @@ pub(super) fn madvise(
                 }
                 Some(mapping) => at = mapping.end,
             }
+        }
+    }
+    // What a fork gives the child, set on what is mapped (`madvise_vma_behavior`).
+    let change: Option<fn(&mut crate::memory::OnFork)> = match advice {
+        MADV_DONTFORK => Some(|on_fork| on_fork.skip = true),
+        MADV_DOFORK => Some(|on_fork| on_fork.skip = false),
+        MADV_WIPEONFORK => Some(|on_fork| on_fork.wipe = true),
+        MADV_KEEPONFORK => Some(|on_fork| on_fork.wipe = false),
+        _ => None,
+    };
+    if let Some(change) = change {
+        let mapped: Vec<(u64, u64)> = process
+            .map
+            .iter()
+            .filter(|mapping| mapping.start < end && mapping.end > address)
+            .map(|mapping| (mapping.start.max(address), mapping.end.min(end)))
+            .collect();
+        for (from, to) in mapped {
+            process.map.set_on_fork(from, to, change);
         }
     }
     if !process.map.fully_mapped(address, end) {

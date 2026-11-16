@@ -227,7 +227,7 @@ pub(super) fn set_async(file: &FileRef, on: bool) -> Option<()> {
         let file = file.borrow();
         let inode = file.node.borrow();
         match inode.content {
-            Content::HostStream(_) => true,
+            Content::Pipe(_) => true,
             Content::Special => matches!(
                 Device::from_number(inode.rdev),
                 Some(Device::Random | Device::Urandom)
@@ -358,23 +358,32 @@ fn own(
     request: u32,
     argument: u64,
 ) -> Result<u64, Errno> {
-    let (content_is_pipe, device) = {
+    let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();
         (
-            matches!(inode.content, Content::HostStream(_)),
+            match &inode.content {
+                Content::Pipe(pipe) => Some(pipe.unread()),
+                _ => None,
+            },
             match inode.content {
                 Content::Special => Device::from_number(inode.rdev),
                 _ => None,
             },
         )
     };
-    if content_is_pipe {
-        // `pipe_ioctl`: the host takes a stream's bytes as they are written, so none wait unread.
+    if let Some(unread) = unread {
+        // `pipe_ioctl`: the bytes waiting; the host takes a stream's bytes as they are written.
         return match request {
             FIONREAD => guest(kernel, cx, tid)
-                .write(argument, &0i32.to_le_bytes())
+                .write(argument, &(unread as i32).to_le_bytes())
                 .map(|()| 0),
+            IOC_WATCH_QUEUE_SET_SIZE | IOC_WATCH_QUEUE_SET_FILTER => Err(kernel.counters.refuse(
+                cx.host,
+                crate::counters::reason::IOCTL_NOT_BUILT,
+                request.into(),
+                Errno::ENOTTY,
+            )),
             _ => Err(Errno::ENOTTY),
         };
     }

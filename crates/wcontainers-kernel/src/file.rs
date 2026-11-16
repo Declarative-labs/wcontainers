@@ -176,6 +176,14 @@ impl FdTable {
     }
 
     /// Closes every descriptor, as a process's end does.
+    /// A copy for a child process: the same open files, its own record locks (`dup_fd`).
+    pub fn duplicate(&self, lock_owner: u64) -> Self {
+        Self {
+            lock_owner,
+            ..self.clone()
+        }
+    }
+
     pub fn close_all(&mut self) {
         for (_, old) in core::mem::take(&mut self.slots) {
             self.closed(&old);

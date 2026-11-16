@@ -1,5 +1,6 @@
 //! Processes and threads.
 
+use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
@@ -56,6 +57,7 @@ pub(crate) struct StartingStack {
     pub auxiliary: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Process {
     pub pid: Pid,
     pub parent: Pid,
@@ -85,6 +87,78 @@ pub(crate) struct Process {
     pub child_subreaper: bool,
     /// `PR_SET_THP_DISABLE`'s value as `PR_GET_THP_DISABLE` reports it; kept across `execve`.
     pub thp_disable: u64,
+    /// Signals sent to the whole process and not yet taken by one of its threads.
+    pub pending: Pending,
+    /// The signal the parent is sent when this process ends (clone's low byte); 0 for none.
+    pub exit_signal: u32,
+    /// Once every thread has ended: the wait status a parent's wait will reap (a zombie).
+    pub ended: Option<i32>,
+    /// A `vfork` child: the parent's thread that waits until the child lets go of the memory it
+    /// borrows by starting a program or ending.
+    pub vfork_parent: Option<Tid>,
+    /// Job control: whether the process is stopped, and what a parent's wait has yet to see.
+    pub stopped: bool,
+    pub report: Option<Report>,
+    /// CPU time of threads that have ended, and of reaped children with their own reaped children
+    /// (`cutime`), in nanoseconds.
+    pub ended_time: u64,
+    pub children_time: u64,
+    /// The largest memory of reaped children, for `getrusage(RUSAGE_CHILDREN)`.
+    pub children_maxrss: u64,
+    /// The memory mapped when the process ended, as its largest.
+    pub peak_mapped: u64,
+    /// Where the process's time starts on the monotonic clock.
+    pub started: u64,
+    /// Where the vDSO is mapped; its signal return code is there.
+    pub vdso: u64,
+    /// Whether it has started a program since it was made (`setpgid` from its parent is refused).
+    pub execed: bool,
+    /// The session's controlling terminal, if the process has one.
+    pub terminal: Option<crate::fs::Node>,
+}
+
+/// A change in a child's state that `wait` with `WUNTRACED` or `WCONTINUED` reports once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Report {
+    Stopped(u32),
+    Continued,
+}
+
+/// A signal waiting to be acted on, with the `siginfo` a handler or `sigtimedwait` is given.
+#[derive(Clone)]
+pub(crate) struct Queued {
+    pub signal: u32,
+    pub info: [u8; 128],
+}
+
+/// Signals sent and not yet taken: one set, and their information in the order sent. A standard
+/// signal is queued once however often it is sent; real-time ones each time.
+#[derive(Clone, Default)]
+pub(crate) struct Pending {
+    pub set: u64,
+    pub queue: VecDeque<Queued>,
+}
+
+impl Pending {
+    /// Takes the first queued instance of `signal`, clearing its bit when no other is left.
+    pub fn take(&mut self, signal: u32) -> Option<Queued> {
+        let index = self
+            .queue
+            .iter()
+            .position(|queued| queued.signal == signal)?;
+        let queued = self.queue.remove(index);
+        if !self.queue.iter().any(|other| other.signal == signal) {
+            self.set &= !crate::signal::bit(signal);
+        }
+        queued
+    }
+
+    /// Drops every instance of the signals in `set`.
+    pub fn drop_set(&mut self, set: u64) {
+        self.set &= !set;
+        self.queue
+            .retain(|queued| set & crate::signal::bit(queued.signal) == 0);
+    }
 }
 
 /// Linux's `TASK_COMM_LEN` less the terminating zero.
@@ -106,6 +180,7 @@ impl Process {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Thread {
     pub process: Pid,
     pub cpu: ThreadId,
@@ -117,15 +192,26 @@ pub(crate) struct Thread {
     pub robust_list: (u64, u64),
     /// Blocked signals.
     pub signal_mask: u64,
-    /// Signals sent and not yet acted on.
-    pub pending: u64,
+    /// A mask to put back once the call that set a temporary one (sigsuspend, ppoll) has had its
+    /// signal handled.
+    pub saved_mask: Option<u64>,
+    /// Signals sent to this thread and not yet acted on.
+    pub pending: Pending,
     /// `sigaltstack`: base, size and the flags it was given; no stack is a size of zero.
     pub alternate_stack: (u64, u64, i32),
-    /// The call the thread is parked in, if it is waiting.
-    pub parked: Option<Parked>,
-    /// When the thread last parked, on the monotonic clock, and how long it has been parked before.
-    pub parked_at: u64,
-    pub slept: u64,
+    /// The call the thread is in, while it has not finished: what it waits for and how far it got.
+    pub call: Call,
+    /// What `restart_syscall` continues, for a call interrupted by a handler.
+    pub restart: Option<Restart>,
+    /// The CPU time the thread has used, and its scheduler time weighted by its priority.
+    pub runtime: u64,
+    pub vruntime: u64,
+    /// When the thread was woken and has not yet run, on the monotonic clock.
+    pub woken_at: Option<u64>,
+    /// The address and syndrome of the thread's last fault, which every later frame shows.
+    pub fault: (u64, u64),
+    /// Signals a fault forced on the thread, which even the first process acts on.
+    pub forced: u64,
     /// How the thread is scheduled: its policy, real-time priority, nice value and whether children
     /// go back to the default.
     pub schedule: Schedule,
@@ -156,12 +242,46 @@ pub(crate) struct Schedule {
     pub io_priority: u32,
 }
 
-/// What a parked thread waits for.
+/// The one slot for the call a thread is in. Its registers hold the call and its arguments, so a
+/// parked call is run again from them when what it waits for happens; the slot keeps what the call
+/// must not forget between runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Call {
+    /// What the thread is parked on; none while it runs or can run.
+    pub wait: Option<Channel>,
+    /// When the call ends anyway, on the monotonic clock, set by its first run.
+    pub deadline: Option<u64>,
+    /// Whether the call has run before (so its deadline and progress are its own).
+    pub started: bool,
+    /// How much of the call is done, such as bytes of a large write.
+    pub progress: u64,
+}
+
+/// What a parked call waits for, besides its deadline and a signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Parked {
-    /// A sleep until this time on the monotonic clock; the call is finished when it comes.
-    Until { nanoseconds: u64 },
-    /// A wait for something that nothing here can bring yet; only a signal could end it (K2).
+pub(crate) enum Channel {
+    /// Only its deadline or a signal ends the wait.
+    Nothing,
+    /// A change to one object, such as a pipe, a terminal or a lock's file (its address).
+    Object(usize),
+    /// A change to whether any file is ready, for the calls that wait on many.
+    Readiness,
+    /// A change in the state of a child of the thread's process.
+    Children,
+    /// Any signal sent to the thread or its process (`sigtimedwait` waits for ones it blocks).
+    Signals,
+    /// A record lock or `flock` lock let go anywhere.
+    Locks,
+    /// A `vfork` child letting go of the memory.
+    Vfork(Pid),
+}
+
+/// What `restart_syscall` runs again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Restart {
+    /// A sleep until this time on the monotonic clock, writing what is left to this address.
+    Sleep { until: u64, left: u64 },
+    /// A sleep on a clock that never ends by time (a CPU clock that does not move).
     Forever,
 }
 
@@ -174,11 +294,16 @@ impl Thread {
             clear_child_tid: 0,
             robust_list: (0, 0),
             signal_mask: 0,
-            pending: 0,
+            saved_mask: None,
+            pending: Pending::default(),
             alternate_stack: (0, 0, 0),
-            parked: None,
-            parked_at: 0,
-            slept: 0,
+            call: Call::default(),
+            restart: None,
+            runtime: 0,
+            vruntime: 0,
+            woken_at: None,
+            fault: (0, 0),
+            forced: 0,
             schedule: Schedule::default(),
             rseq: None,
             filters: Vec::new(),

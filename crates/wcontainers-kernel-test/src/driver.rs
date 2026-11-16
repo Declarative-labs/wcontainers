@@ -49,37 +49,6 @@ pub struct Run {
     pub files: Vec<FileRecord>,
 }
 
-impl Run {
-    /// The warnings besides those every program start gives today, after checking that those came
-    /// exactly once: the auxiliary vector entries the kernel does not pass yet.
-    pub fn warnings_besides_start(&self) -> Vec<&Warned> {
-        let start = [
-            linux_raw_sys::auxvec::AT_SYSINFO_EHDR,
-            linux_raw_sys::auxvec::AT_MINSIGSTKSZ,
-        ];
-        for key in start {
-            let found: Vec<_> = self
-                .warnings
-                .iter()
-                .filter(|warned| {
-                    warned.reason == wcontainers_kernel::reason::AUXILIARY_MISSING
-                        && warned.detail == u64::from(key)
-                })
-                .collect();
-            assert_eq!(
-                found.len(),
-                1,
-                "auxiliary vector key {key}: {:?}",
-                self.warnings
-            );
-        }
-        self.warnings
-            .iter()
-            .filter(|warned| warned.reason != wcontainers_kernel::reason::AUXILIARY_MISSING)
-            .collect()
-    }
-}
-
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
 /// until a time, the host's clocks jump to it instead of waiting.
 pub struct TestHost {
@@ -246,9 +215,14 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
                 kernel.exit(&mut cpu, &mut host, exit);
             }
             Next::Idle { until_nanoseconds } => {
-                let until = until_nanoseconds.expect(
-                    "the kernel is idle with nothing to wake it, and this host has no events",
-                );
+                let Some(until) = until_nanoseconds else {
+                    panic!(
+                        "the kernel is idle with nothing to wake it, and this host has no events; \
+                         output so far:\n{}{}",
+                        String::from_utf8_lossy(&host.stdout),
+                        String::from_utf8_lossy(&host.stderr)
+                    );
+                };
                 let now = host.monotonic_nanoseconds();
                 host.skipped += until.saturating_sub(now);
                 kernel.event(&mut cpu, &mut host, Event::Timer);

@@ -709,7 +709,7 @@ pub(crate) fn link_target(
             let file = file.borrow();
             let inode = file.node.borrow();
             Ok(match &inode.content {
-                Content::HostStream(_) => format!("pipe:[{}]", inode.ino).into_bytes(),
+                Content::Pipe(_) => format!("pipe:[{}]", inode.ino).into_bytes(),
                 Content::Directory(_) | Content::Proc(_) if inode.is_directory() => {
                     drop(inode);
                     walk.path_of(&file.node)
@@ -960,6 +960,7 @@ fn process_file(
                     ),
                     Backing::Heap => (0, 0, 0, String::from("[heap]")),
                     Backing::Stack => (0, 0, 0, String::from("[stack]")),
+                    Backing::Special(name) => (0, 0, 0, String::from(*name)),
                     Backing::Anonymous | Backing::Droppable => (0, 0, 0, String::new()),
                 };
                 let (major, minor) = super::decode_device(device);

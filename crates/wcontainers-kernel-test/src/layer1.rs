@@ -2493,10 +2493,10 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         .start(&mut cpu, &mut host, &start)
         .expect("starting the runner");
     let memory = wcontainers_abi::MemoryId(1);
-    match kernel.next() {
-        Next::Run { .. } => {}
+    let thread = match kernel.next() {
+        Next::Run { thread, .. } => thread,
         other => panic!("the runner did not start: {other:?}"),
-    }
+    };
     // Makes one call, as if the running thread had reached it, and waits for its value; the process's
     // wait status if it ended.
     // The reference's runner kills a sequence that has not ended by its deadline; a sleep that would
@@ -2508,6 +2508,12 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                 host: &mut TestHost,
                 call: Call|
      -> Result<i64, i32> {
+        // The thread's registers hold the call, as a CPU side leaves them.
+        let mut registers = wcontainers_abi::RegisterBlock::ZERO;
+        cpu.registers(thread, &mut registers);
+        registers.x[8] = call.number.into();
+        registers.x[..6].copy_from_slice(&call.arguments);
+        cpu.set_registers(thread, &registers);
         kernel.exit(
             cpu,
             host,

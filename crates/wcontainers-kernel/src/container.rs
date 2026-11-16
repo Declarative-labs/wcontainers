@@ -387,6 +387,20 @@ impl Kernel {
             personality: 0,
             child_subreaper: false,
             thp_disable: 0,
+            pending: Default::default(),
+            exit_signal: SIGCHLD,
+            ended: None,
+            vfork_parent: None,
+            stopped: false,
+            report: None,
+            ended_time: 0,
+            children_time: 0,
+            children_maxrss: 0,
+            peak_mapped: 0,
+            started: cx.host.monotonic_nanoseconds(),
+            vdso: 0,
+            execed: false,
+            terminal: None,
             actions: [kernel_sigaction {
                 sa_handler_kernel: crate::linux_extra::SIG_DFL,
                 sa_flags: 0,
@@ -431,7 +445,7 @@ impl Kernel {
                         gid: 0,
                         rdev: 0,
                         now,
-                        content: Content::HostStream(stream),
+                        content: Content::Pipe(crate::pipe::Pipe::new(Some(stream))),
                         parent: None,
                         name: Vec::new(),
                     },
@@ -504,7 +518,9 @@ impl Kernel {
         self.threads.insert(pid, Thread::new(pid, thread));
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);
-        self.counters.flush(cx.host);
+        self.entry_now = cx.host.monotonic_nanoseconds();
+        self.make_runnable(pid, Resume::FromRegisters);
+        self.settle(cx);
         Ok(())
     }
 
@@ -515,6 +531,8 @@ impl Kernel {
         process.map = image.map;
         process.executable = image.executable;
         process.starting_stack = image.starting_stack;
+        process.vdso = image.vdso;
+        process.execed = true;
         process.set_name(&image.name);
         // Dumpable unless a file could not be read or the ids differ, before or after (Linux's
         // `begin_new_exec` and `commit_creds`).
@@ -559,15 +577,22 @@ impl Kernel {
                 .cpu
                 .thread_new(image.memory)
                 .expect("a thread on the new memory");
-            cx.cpu.memory_drop(old_memory);
         }
         thread.clear_child_tid = 0;
         thread.robust_list = (0, 0);
         thread.alternate_stack = (0, 0, 0);
         cx.cpu.set_registers(thread.cpu, &image.registers);
         thread.resume = Resume::FromRegisters;
-        self.runnable.retain(|other| *other != tid);
-        self.runnable.push_front(tid);
+        // A `vfork` child gives its parent's memory back; any other old memory goes.
+        self.release_vfork(pid);
+        let shown_elsewhere = self
+            .processes
+            .values()
+            .any(|other| other.pid != pid && other.ended.is_none() && other.memory == old_memory);
+        if old_memory.0 != 0 && !shown_elsewhere {
+            cx.cpu.memory_drop(old_memory);
+        }
+        self.files_released();
         crate::shared::release(self, cx);
     }
 

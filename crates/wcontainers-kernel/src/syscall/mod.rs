@@ -3,6 +3,7 @@
 //! Each implemented call is one typed Rust function. A call Linux has that is not built yet returns
 //! `ENOSYS`, is counted and warns. So does a number Linux does not have.
 
+mod clone;
 mod files;
 mod handle;
 mod io;
@@ -10,9 +11,11 @@ mod ioctl;
 mod list;
 mod memfd;
 mod memory;
+mod pipe;
 mod process;
 mod rseq;
 mod seccomp;
+mod signals;
 mod system;
 mod time;
 mod xattr;
@@ -43,10 +46,11 @@ pub(crate) enum Outcome {
 
 impl From<Result<u64, Errno>> for Outcome {
     fn from(result: Result<u64, Errno>) -> Self {
-        Outcome::Return(match result {
-            Ok(value) => value,
-            Err(errno) => errno.to_return(),
-        })
+        match result {
+            Ok(value) => Outcome::Return(value),
+            Err(Errno::PARKED) => Outcome::Parked,
+            Err(errno) => Outcome::Return(errno.to_return()),
+        }
     }
 }
 
@@ -115,6 +119,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_sendfile, S(io::sendfile)),
         (__NR_getdents64, S(io::getdents64)),
         (__NR_close, S(io::close)),
+        (__NR_pipe2, S(pipe::pipe2)),
         (__NR_close_range, S(io::close_range)),
         (__NR_preadv2, S(io::preadv2)),
         (__NR_pwritev2, S(io::pwritev2)),
@@ -232,9 +237,18 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_rt_sigprocmask, S(process::rt_sigprocmask)),
         (__NR_rt_sigpending, S(process::rt_sigpending)),
         (__NR_sigaltstack, S(process::sigaltstack)),
-        (__NR_kill, S(process::kill)),
-        (__NR_tkill, S(process::tkill)),
-        (__NR_tgkill, S(process::tgkill)),
+        (__NR_kill, S(signals::kill)),
+        (__NR_tkill, S(signals::tkill)),
+        (__NR_tgkill, S(signals::tgkill)),
+        (__NR_rt_sigqueueinfo, S(signals::rt_sigqueueinfo)),
+        (__NR_rt_tgsigqueueinfo, S(signals::rt_tgsigqueueinfo)),
+        (__NR_rt_sigsuspend, F(signals::rt_sigsuspend)),
+        (__NR_rt_sigtimedwait, F(signals::rt_sigtimedwait)),
+        (__NR_rt_sigreturn, F(signals::rt_sigreturn)),
+        (__NR_restart_syscall, F(time::restart_syscall)),
+        (__NR_clone, F(clone::clone)),
+        (__NR_wait4, F(clone::wait4)),
+        (__NR_waitid, F(clone::waitid)),
         (__NR_prlimit64, S(process::prlimit64)),
         (__NR_getrlimit, S(process::getrlimit)),
         (__NR_setrlimit, S(process::setrlimit)),
@@ -296,17 +310,29 @@ static TABLE: [Entry; LENGTH] = {
     table
 };
 
+/// Runs a system call. `again` is a call a parked thread runs again after a wake: the filters
+/// already let it through.
 pub(crate) fn dispatch(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     call: Syscall,
+    again: bool,
 ) -> Outcome {
     // ARM64 Linux takes the call number from the low 32 bits of x8 only.
     let number = call.number as u32;
     let handler = TABLE
         .get(number as usize)
         .map_or(Handler::Unknown, |entry| entry.handler);
+    if again {
+        return match handler {
+            Handler::Simple(handler) => handler(kernel, cx, tid, call.arguments).into(),
+            Handler::Full(handler) => handler(kernel, cx, tid, call.arguments),
+            Handler::NotImplemented | Handler::Unknown => {
+                unreachable!("only a built call parks")
+            }
+        };
+    }
     let known = !matches!(handler, Handler::Unknown);
     // Docker's profile and the thread's own filters answer first; what they answer is exact, but a
     // number Linux does not have (which the profile always stops) is still counted.

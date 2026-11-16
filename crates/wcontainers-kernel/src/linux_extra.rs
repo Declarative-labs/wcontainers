@@ -223,3 +223,53 @@ pub(crate) const AT_VECTOR_SIZE: usize = 2 * (2 + 24 + 1);
 /// The pages a new pipe holds (`PIPE_DEF_BUFFERS`, Linux's internal `linux/pipe_fs_i.h`), which bounds
 /// one splice through a pipe.
 pub(crate) const PIPE_DEF_BUFFERS: u64 = 16;
+
+/// arm64's signal frame (`asm/sigcontext.h`, `asm/ucontext.h` and `arch/arm64/kernel/signal.c`),
+/// which linux-raw-sys does not generate: `struct rt_sigframe` is a `siginfo` then a `ucontext`, whose
+/// `sigcontext` ends in 4096 bytes of records.
+pub(crate) mod frame {
+    /// Offsets in `struct rt_sigframe`.
+    pub const UC_FLAGS: u64 = 128;
+    pub const UC_LINK: u64 = 136;
+    pub const UC_STACK: u64 = 144;
+    pub const UC_SIGMASK: u64 = 168;
+    pub const FAULT_ADDRESS: u64 = 304;
+    pub const REGS: u64 = 312;
+    pub const SP: u64 = 560;
+    pub const PC: u64 = 568;
+    pub const PSTATE: u64 = 576;
+    pub const RESERVED: u64 = 592;
+    pub const RESERVED_SIZE: u64 = 4096;
+    /// `sizeof(struct rt_sigframe)`.
+    pub const SIZE: u64 = 4688;
+    /// `struct frame_record`: the caller's frame pointer and link register.
+    pub const RECORD_SIZE: u64 = 16;
+    /// The records in `__reserved`: each starts with a magic number and its size.
+    pub const FPSIMD_MAGIC: u32 = 0x4650_8001;
+    pub const FPSIMD_SIZE: u32 = 528;
+    pub const ESR_MAGIC: u32 = 0x4553_5201;
+    pub const ESR_SIZE: u32 = 16;
+    /// The exception classes and the instruction length bit of an ESR (`asm/esr.h`).
+    pub const ESR_EC_SHIFT: u32 = 26;
+    pub const ESR_IL: u64 = 1 << 25;
+    pub const ESR_EC_IABT_LOW: u64 = 0x20;
+    pub const ESR_EC_PC_ALIGN: u64 = 0x22;
+    pub const ESR_EC_DABT_LOW: u64 = 0x24;
+    pub const ESR_EC_SP_ALIGN: u64 = 0x26;
+    /// A data abort's write bit, and the fault status codes of a level 3 translation and permission
+    /// fault.
+    pub const ESR_WNR: u64 = 1 << 6;
+    pub const ESR_FSC_TRANSLATION_3: u64 = 0x07;
+    pub const ESR_FSC_PERMISSION_3: u64 = 0x0f;
+}
+
+/// The internal answers of a call a signal interrupted, never seen by the guest
+/// (`linux/errno.h`): restarted, or turned into EINTR when a handler runs.
+pub(crate) const ERESTARTSYS: u32 = 512;
+pub(crate) const ERESTARTNOINTR: u32 = 513;
+pub(crate) const ERESTARTNOHAND: u32 = 514;
+pub(crate) const ERESTART_RESTARTBLOCK: u32 = 516;
+
+/// `AT_MINSIGSTKSZ` on the reference's CPU: arm64's `signal_minsigstksz`, the frame's size with the
+/// records that CPU has, which the made-up machine reports too (measured: 4720).
+pub(crate) const SIGNAL_MINSIGSTKSZ: u64 = 4720;

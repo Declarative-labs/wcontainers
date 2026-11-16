@@ -6,29 +6,19 @@ use crate::linux_extra::{
     CLOCKFD, CLOCKFD_MASK, CPUCLOCK_CLOCK_MASK, CPUCLOCK_MAX, CPUCLOCK_PERTHREAD_MASK,
     CPUCLOCK_SCHED,
 };
-use crate::process::{Parked, Tid};
+use crate::process::{Channel, Restart, Tid};
 use crate::{Context, Errno, Kernel};
 
-/// The CPU time the caller's process has used: the time since the container started, which is when
-/// its one process started, less the time its threads have spent parked.
-pub(super) fn cpu_time(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid) -> u64 {
-    let now = cx.host.monotonic_nanoseconds();
-    let parked: u64 = kernel
-        .process_of(tid)
-        .threads
-        .iter()
-        .map(|thread| {
-            let thread = &kernel.threads[thread];
-            thread.slept
-                + if thread.parked.is_some() {
-                    now.saturating_sub(thread.parked_at)
-                } else {
-                    0
-                }
-        })
-        .sum();
-    now.saturating_sub(kernel.boot_monotonic)
-        .saturating_sub(parked)
+/// The CPU time the caller's process has used: the time its threads have run, as charged when each
+/// came back, and that of its threads that have ended.
+pub(super) fn cpu_time(kernel: &Kernel, _: &mut Context<'_>, tid: Tid) -> u64 {
+    let process = kernel.process_of(tid);
+    process.ended_time
+        + process
+            .threads
+            .iter()
+            .map(|thread| kernel.threads[thread].runtime)
+            .sum::<u64>()
 }
 
 /// The thread a CPU clock id below zero names, as Linux's `pid_for_clock`: a process's or a thread's
@@ -176,27 +166,101 @@ fn nanoseconds(value: &__kernel_timespec) -> u64 {
         .saturating_add(value.tv_nsec as u64)
 }
 
-/// Parks the thread until a time on the monotonic clock, as Linux's `hrtimer_nanosleep`: the timer
-/// may end as late as the thread's slack after it, and with nothing else to wake the machine it does.
-fn sleep_until(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, until: u64) -> Outcome {
-    let nanoseconds = until.saturating_add(kernel.threads[&tid].timer_slack);
-    kernel.park(cx, tid, Parked::Until { nanoseconds });
+/// A sleep until a time on the monotonic clock, as Linux's `hrtimer_nanosleep`: the timer may end as
+/// late as the thread's slack after it, and with nothing else to wake the machine it does. A signal
+/// interrupts it: a relative sleep writes what is left to `left` (when given) and continues from
+/// `restart_syscall` if no handler runs; an absolute one simply runs again.
+fn sleep_until(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    until: u64,
+    left: Option<u64>,
+) -> Outcome {
+    let thread = kernel.thread_mut(tid);
+    if !thread.call.started {
+        thread.call.started = true;
+        thread.call.progress = until;
+        thread.call.deadline = Some(until.saturating_add(thread.timer_slack));
+    }
+    let call = thread.call;
+    let now = cx.host.monotonic_nanoseconds();
+    if call.deadline.is_some_and(|deadline| deadline <= now) {
+        return Outcome::Return(0);
+    }
+    if kernel.signal_pending(tid) {
+        let Some(left) = left else {
+            return Err(Errno::ERESTARTNOHAND).into();
+        };
+        if left != 0 {
+            let remaining = timespec_bytes(call.progress.saturating_sub(now));
+            if let Err(error) = guest(kernel, cx, tid).write_value(left, &remaining) {
+                return Err(error).into();
+            }
+        }
+        kernel.thread_mut(tid).restart = Some(Restart::Sleep {
+            until: call.progress,
+            left,
+        });
+        return Err(Errno::ERESTART_RESTARTBLOCK).into();
+    }
+    kernel.park(tid, Channel::Nothing);
     Outcome::Parked
+}
+
+/// A sleep on a clock that never reaches its time (a CPU clock that does not move while the caller
+/// sleeps): only a signal ends it.
+fn sleep_forever(kernel: &mut Kernel, tid: Tid, relative: bool) -> Outcome {
+    kernel.thread_mut(tid).call.started = true;
+    if kernel.signal_pending(tid) {
+        if !relative {
+            return Err(Errno::ERESTARTNOHAND).into();
+        }
+        kernel.thread_mut(tid).restart = Some(Restart::Forever);
+        return Err(Errno::ERESTART_RESTARTBLOCK).into();
+    }
+    kernel.park(tid, Channel::Nothing);
+    Outcome::Parked
+}
+
+/// `restart_syscall`: continues the sleep a handler-less signal interrupted.
+pub(super) fn restart_syscall(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    _: Args,
+) -> Outcome {
+    match kernel.threads[&tid].restart {
+        Some(Restart::Sleep { until, left }) => {
+            let outcome = sleep_until(kernel, cx, tid, until, Some(left));
+            if matches!(outcome, Outcome::Return(_)) {
+                kernel.thread_mut(tid).restart = None;
+            }
+            outcome
+        }
+        Some(Restart::Forever) => sleep_forever(kernel, tid, true),
+        // `do_no_restart_syscall`.
+        None => Err(Errno::EINTR).into(),
+    }
 }
 
 pub(super) fn nanosleep(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [request, ..]: Args,
+    [request, left, ..]: Args,
 ) -> Outcome {
+    if kernel.threads[&tid].call.started {
+        let until = kernel.threads[&tid].call.progress;
+        return sleep_until(kernel, cx, tid, until, Some(left));
+    }
     match read_duration(kernel, cx, tid, request) {
         Ok(duration) => {
             let until = cx
                 .host
                 .monotonic_nanoseconds()
                 .saturating_add(nanoseconds(&duration));
-            sleep_until(kernel, cx, tid, until)
+            sleep_until(kernel, cx, tid, until, Some(left))
         }
         Err(error) => Err(error).into(),
     }
@@ -206,11 +270,18 @@ pub(super) fn clock_nanosleep(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    [id, flags, request, ..]: Args,
+    [id, flags, request, left, ..]: Args,
 ) -> Outcome {
+    let absolute = flags as u32 & TIMER_ABSTIME != 0;
+    let call = kernel.threads[&tid].call;
+    if call.started {
+        if call.deadline.is_none() {
+            return sleep_forever(kernel, tid, !absolute);
+        }
+        return sleep_until(kernel, cx, tid, call.progress, (!absolute).then_some(left));
+    }
     let signed = id as i32;
     let id = id as u32;
-    let absolute = flags as u32 & TIMER_ABSTIME != 0;
     // In the order of Linux's `clock_nanosleep`: the clock, whether it can be slept on, the duration,
     // then the clock's own checks.
     let realtime = match id {
@@ -259,8 +330,7 @@ pub(super) fn clock_nanosleep(
         if over {
             return Outcome::Return(0);
         }
-        kernel.park(cx, tid, Parked::Forever);
-        return Outcome::Parked;
+        return sleep_forever(kernel, tid, !absolute);
     }
     let now = cx.host.monotonic_nanoseconds();
     let until = if absolute {
@@ -273,7 +343,7 @@ pub(super) fn clock_nanosleep(
     } else {
         now.saturating_add(duration)
     };
-    sleep_until(kernel, cx, tid, until)
+    sleep_until(kernel, cx, tid, until, (!absolute).then_some(left))
 }
 
 pub(super) fn times(

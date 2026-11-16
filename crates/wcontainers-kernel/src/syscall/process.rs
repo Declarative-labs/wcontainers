@@ -271,7 +271,7 @@ pub(super) fn gettid(_: &mut Kernel, _: &mut Context<'_>, tid: Tid, _: Args) -> 
     Ok(tid as u64)
 }
 
-/// The process a `pid` argument names: 0 or the caller's own number. Other processes come with fork.
+/// The process a `pid` argument names: 0 or the caller's own number.
 fn own_pid(kernel: &Kernel, tid: Tid, pid: u64) -> Result<(), Errno> {
     let pid = pid as i32;
     if pid < 0 {
@@ -318,34 +318,50 @@ pub(super) fn getsid(
     Ok(kernel.processes[&pid].session as u64)
 }
 
+/// Linux's `setpgid`: the caller or a child of it that has not started a program, in the
+/// caller's session, into a group of that session.
 pub(super) fn setpgid(
     kernel: &mut Kernel,
     _: &mut Context<'_>,
     tid: Tid,
     [pid, group, ..]: Args,
 ) -> Result<u64, Errno> {
-    // In Linux's order. There is one process, so any other is missing.
-    let process = kernel.process_of_mut(tid);
-    let pid = if pid as i32 == 0 {
-        process.pid
-    } else {
-        pid as i32
-    };
+    let caller = kernel.threads[&tid].process;
+    let pid = if pid as i32 == 0 { caller } else { pid as i32 };
     let group = if group as i32 == 0 { pid } else { group as i32 };
     if group < 0 {
         return Err(Errno::EINVAL);
     }
-    if pid != process.pid {
+    let session = kernel.processes[&caller].session;
+    let Some(process) = kernel
+        .processes
+        .get(&pid)
+        .filter(|process| process.ended.is_none())
+    else {
+        return Err(Errno::ESRCH);
+    };
+    if process.parent == caller && pid != caller {
+        if process.session != session {
+            return Err(Errno::EPERM);
+        }
+        if process.execed {
+            return Err(Errno::EACCES);
+        }
+    } else if pid != caller {
         return Err(Errno::ESRCH);
     }
     if process.session == process.pid {
         return Err(Errno::EPERM);
     }
-    // Joining a group needs a group of that number in the same session: only the process's own.
-    if group != pid && group != process.group {
+    if group != pid
+        && !kernel
+            .processes
+            .values()
+            .any(|other| other.group == group && other.session == session && other.ended.is_none())
+    {
         return Err(Errno::EPERM);
     }
-    process.group = group;
+    kernel.processes.get_mut(&pid).expect("process").group = group;
     Ok(0)
 }
 
@@ -355,13 +371,20 @@ pub(super) fn setsid(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    let process = kernel.process_of_mut(tid);
-    if process.group == process.pid {
+    // A process group of its number must not exist (`setsid`'s `pid_task(sid, PIDTYPE_PGID)`).
+    let pid = kernel.threads[&tid].process;
+    if kernel
+        .processes
+        .values()
+        .any(|process| process.group == pid && process.ended.is_none())
+    {
         return Err(Errno::EPERM);
     }
-    process.session = process.pid;
-    process.group = process.pid;
-    Ok(process.pid as u64)
+    let process = kernel.process_of_mut(tid);
+    process.session = pid;
+    process.group = pid;
+    process.terminal = None;
+    Ok(pid as u64)
 }
 
 pub(super) fn getuid(
@@ -883,7 +906,6 @@ pub(super) fn rt_sigprocmask(
     };
     // The new mask is set before the old one is written back, as on Linux.
     if let Some(new) = new {
-        kernel.check_unblocking(cx, tid, new & !UNBLOCKABLE)?;
         kernel.thread_mut(tid).signal_mask = new & !UNBLOCKABLE;
     }
     if old != 0 {
@@ -902,13 +924,12 @@ pub(super) fn rt_sigpending(
         return Err(Errno::EINVAL);
     }
     let thread = &kernel.threads[&tid];
-    let pending = thread.pending & thread.signal_mask;
+    let pending = (thread.pending.set | kernel.process_of(tid).pending.set) & thread.signal_mask;
     guest(kernel, cx, tid).write(set, &pending.to_le_bytes()[..size as usize])?;
     Ok(0)
 }
 
-/// The smallest alternate signal stack ARM64 Linux accepts (`MINSIGSTKSZ`).
-const MIN_SIGNAL_STACK: u64 = 5120;
+use crate::signal::MIN_SIGNAL_STACK;
 
 pub(super) fn sigaltstack(
     kernel: &mut Kernel,
@@ -989,67 +1010,6 @@ pub(super) fn sigaltstack(
         guest(kernel, cx, tid).write(old, &bytes)?;
     }
     Ok(0)
-}
-
-/// A signal sent to the caller's own process, once it is found: an unknown signal is refused only
-/// then, as Linux's `check_kill_permission` does.
-fn send_to_self(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    tid: Tid,
-    signal: u64,
-) -> Result<u64, Errno> {
-    let signal = signal as u32;
-    if signal as usize > SIGNALS {
-        return Err(Errno::EINVAL);
-    }
-    kernel.send_to_self(cx, tid, signal).map(|()| 0)
-}
-
-/// There is one process, so any other target is missing.
-pub(super) fn kill(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    tid: Tid,
-    [pid, signal, ..]: Args,
-) -> Result<u64, Errno> {
-    let pid = pid as i32;
-    let process = kernel.process_of(tid);
-    // -1 is every process but the first and the caller: none here.
-    if pid == process.pid || pid == 0 || (pid < -1 && pid.unsigned_abs() as i32 == process.group) {
-        return send_to_self(kernel, cx, tid, signal);
-    }
-    Err(Errno::ESRCH)
-}
-
-pub(super) fn tgkill(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    tid: Tid,
-    [group, target, signal, ..]: Args,
-) -> Result<u64, Errno> {
-    if (group as i32) <= 0 || (target as i32) <= 0 {
-        return Err(Errno::EINVAL);
-    }
-    if target as i32 == tid && group as i32 == kernel.threads[&tid].process {
-        return send_to_self(kernel, cx, tid, signal);
-    }
-    Err(Errno::ESRCH)
-}
-
-pub(super) fn tkill(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    tid: Tid,
-    [target, signal, ..]: Args,
-) -> Result<u64, Errno> {
-    if (target as i32) <= 0 {
-        return Err(Errno::EINVAL);
-    }
-    if target as i32 == tid {
-        return send_to_self(kernel, cx, tid, signal);
-    }
-    Err(Errno::ESRCH)
 }
 
 pub(super) fn prlimit64(

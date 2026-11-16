@@ -58,6 +58,8 @@ struct Memory {
     mapped: BTreeMap<u64, (u64, Permissions)>,
     /// Ranges that show a block: start to (end, the block's host memory for the start).
     shared: BTreeMap<u64, (u64, *mut u8)>,
+    /// Pages that may hold something other than zeros, one bit each, so a copy copies only those.
+    touched: Vec<u64>,
 }
 
 /// A block of shared pages, in host memory that lives until the block is dropped.
@@ -152,7 +154,33 @@ impl Memory {
             pages: vec![Permissions::empty(); (ADDRESS_SPACE_END / PAGE_SIZE) as usize],
             mapped: BTreeMap::new(),
             shared: BTreeMap::new(),
+            touched: vec![0; (ADDRESS_SPACE_END / PAGE_SIZE / 64) as usize],
         })
+    }
+
+    /// Notes that the pages over `[start, end)` may hold bytes.
+    fn touch(&mut self, start: u64, end: u64) {
+        for page in start / PAGE_SIZE..end.div_ceil(PAGE_SIZE) {
+            self.touched[(page / 64) as usize] |= 1 << (page % 64);
+        }
+    }
+
+    /// A copy with the same bytes, permissions and shared ranges, on a new unicorn instance.
+    fn duplicate(&self) -> Result<Self, CpuError> {
+        let mut copy = Self::new()?;
+        for (word, bits) in self.touched.iter().enumerate() {
+            if *bits == 0 {
+                continue;
+            }
+            let start = word as u64 * 64 * PAGE_SIZE;
+            let range = start as usize..(start + 64 * PAGE_SIZE) as usize;
+            copy.bytes[range.clone()].copy_from_slice(&self.bytes[range]);
+        }
+        copy.touched.clone_from(&self.touched);
+        copy.pages.clone_from(&self.pages);
+        copy.shared.clone_from(&self.shared);
+        copy.remap(0, ADDRESS_SPACE_END);
+        Ok(copy)
     }
 
     /// Where the byte at `address` lives in host memory, and how many bytes from it are contiguous
@@ -417,8 +445,12 @@ impl Cpu for StandIn {
         Ok(id)
     }
 
-    fn memory_duplicate(&mut self, _source: MemoryId) -> Result<MemoryId, CpuError> {
-        Err(CpuError::NotSupported)
+    fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+        let memory = self.memories[&source].duplicate()?;
+        self.last_memory += 1;
+        let id = MemoryId(self.last_memory);
+        self.memories.insert(id, memory);
+        Ok(id)
     }
 
     fn memory_drop(&mut self, memory: MemoryId) {
@@ -436,7 +468,9 @@ impl Cpu for StandIn {
         let memory = self.memories.get_mut(&memory).expect("memory exists");
         memory.pieces(address, from.len() as u64, |piece, at| {
             piece.copy_from_slice(&from[at..at + piece.len()]);
-        })
+        })?;
+        memory.touch(address, address + from.len() as u64);
+        Ok(())
     }
 
     fn zero(&mut self, memory: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
@@ -461,6 +495,9 @@ impl Cpu for StandIn {
         let range = memory.range(address, length)?;
         let pages = range.start / PAGE_SIZE as usize..range.end / PAGE_SIZE as usize;
         memory.pages[pages].fill(permissions);
+        if !permissions.is_empty() {
+            memory.touch(address, address + length);
+        }
         memory.remap(address, address + length);
         Ok(())
     }
@@ -518,6 +555,7 @@ impl Cpu for StandIn {
             // SAFETY: the block holds `end - start` bytes from `base`.
             let bytes = unsafe { std::slice::from_raw_parts(base, (end - start) as usize) };
             memory.bytes[start as usize..end as usize].copy_from_slice(bytes);
+            memory.touch(start, end);
         }
         memory.remap(address, address + length);
         Ok(())
