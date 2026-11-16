@@ -243,9 +243,13 @@ pub fn placement(blob: &Blob) -> Placement {
     }
 }
 
-/// Run a blob through the translator in wasmtime, starting at its first byte.
+/// Run a blob through the translator in wasmtime, starting at its first byte, translated for speed.
 pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, RegisterBlock) {
-    let how = (look_ahead, Optimise::Speed);
+    translated_for(blob, (look_ahead, Optimise::Speed))
+}
+
+/// [`translated`] for speed or for size.
+pub fn translated_for(blob: &Blob, how: (LookAhead, Optimise)) -> (Ran, Machine, RegisterBlock) {
     let (ran, machine, registers, _) = translated_omitting(blob, how, Omit::default());
     (ran, machine, registers)
 }
@@ -260,12 +264,11 @@ pub fn translated_omitting(
     run_blob(blob, how, omit, false)
 }
 
-/// [`translated`] with the thread stopping at every stop check it reaches and carrying on each time.
+/// [`translated_for`] with the thread stopping at every stop check it reaches and carrying on each time.
 pub fn translated_stopping_everywhere(
     blob: &Blob,
-    look_ahead: LookAhead,
+    how: (LookAhead, Optimise),
 ) -> (Ran, Machine, RegisterBlock) {
-    let how = (look_ahead, Optimise::Speed);
     let (ran, machine, registers, _) = run_blob(blob, how, Omit::default(), true);
     (ran, machine, registers)
 }

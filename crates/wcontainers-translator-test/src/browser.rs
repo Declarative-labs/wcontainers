@@ -71,12 +71,13 @@ impl Report {
 
 /// Run a blob in Chrome at look-ahead none, starting at its first byte.
 pub fn translated(blob: &Blob) -> Report {
-    translated_with(blob, LookAhead::None, Omit::default())
+    translated_with(blob, (LookAhead::None, Optimise::Speed), Omit::default())
 }
 
-/// Run a blob in Chrome at a look-ahead, leaving out some checks only to measure them.
-pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report {
-    repeated(blob, (look_ahead, Optimise::Speed), omit, 1)
+/// Run a blob in Chrome at a look-ahead, translated for speed or size, leaving out some checks only to
+/// measure them.
+pub fn translated_with(blob: &Blob, how: (LookAhead, Optimise), omit: Omit) -> Report {
+    repeated(blob, how, omit, 1)
 }
 
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
