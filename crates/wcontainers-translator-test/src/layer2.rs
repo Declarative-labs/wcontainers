@@ -134,11 +134,14 @@ pub enum Op {
         rt: u8,
         slot: u8,
     },
-    /// Point a register at `start`, then access memory through it.
+    /// Point a register at `start`, then access memory through it, with a system call like `Syscall`'s
+    /// before the access numbered `syscall` (from 1; one past the last puts it after them), and then the
+    /// base is not one the call sets.
     Group {
         base: u8,
         start: GroupBase,
         accesses: Vec<GroupAccess>,
+        syscall: Option<usize>,
     },
     /// A system call that writes nothing to standard output: x0 = 1, x1 = the area, x2 = 0, x8 = 64 (write),
     /// leaving x0 = 0.
@@ -222,6 +225,9 @@ pub struct Walk {
     pub moves: WalkMove,
     /// Bytes the address moves by each turn, before any shift by the access size.
     pub step: i8,
+    /// A system call like `Op::Syscall`'s after the access each turn (then the index and the step are not
+    /// in registers the call sets).
+    pub syscall: bool,
 }
 
 /// A loop whose access goes through a table: `base` plus `index` (read as `extend`: 0 uxtw, 1 sxtw, 2 lsl,
@@ -309,6 +315,15 @@ fn group_access() -> impl Strategy<Value = GroupAccess> {
         })
 }
 
+/// `r`, or the next of `REGISTERS` after it that is not in `not`.
+fn other(r: u8, not: &[u8]) -> u8 {
+    let mut r = r;
+    while not.contains(&r) {
+        r = REGISTERS[(REGISTERS.iter().position(|&x| x == r).unwrap() + 1) % REGISTERS.len()];
+    }
+    r
+}
+
 fn group() -> impl Strategy<Value = Op> {
     (
         register(),
@@ -319,17 +334,18 @@ fn group() -> impl Strategy<Value = Op> {
             (96u16..2048).prop_map(GroupBase::Edge),
         ],
         prop::collection::vec(group_access(), 1..5),
+        prop::option::weighted(0.5, 0usize..4),
     )
-        .prop_map(|(base, start, accesses)| {
+        .prop_map(|(base, start, accesses, syscall)| {
+            // Inside the group or just after it, where a loop goes back to its first access.
+            let syscall = syscall.map(|at| 1 + at % accesses.len());
+            let base = if syscall.is_some() {
+                other(base, &SYSCALL_SETS)
+            } else {
+                base
+            };
             // Arm leaves a transfer register that is also a base written back, or a pair loaded into one
             // register, unpredictable (the CPU may raise illegal instruction).
-            let other = |r: u8, not: &[u8]| {
-                let mut r = r;
-                while not.contains(&r) {
-                    r = REGISTERS[(REGISTERS.iter().position(|&x| x == r).unwrap() + 1) % 26];
-                }
-                r
-            };
             let accesses = accesses
                 .into_iter()
                 .map(|mut a| {
@@ -350,6 +366,7 @@ fn group() -> impl Strategy<Value = Op> {
                 base,
                 start,
                 accesses,
+                syscall,
             }
         })
 }
@@ -409,6 +426,7 @@ fn walk() -> impl Strategy<Value = Walk> {
         ),
         moves,
         -32i8..33,
+        prop::bool::weighted(0.25),
     )
         .prop_map(
             |(
@@ -417,10 +435,23 @@ fn walk() -> impl Strategy<Value = Walk> {
                 (load, bytes, rt),
                 moves,
                 step,
+                syscall,
             )| {
                 let mut moves = moves;
-                if let WalkMove::Index { shift, .. } = &mut moves {
+                if let WalkMove::Index {
+                    shift,
+                    reg,
+                    step_in,
+                    ..
+                } = &mut moves
+                {
                     *shift &= bytes == 8;
+                    if syscall {
+                        *reg = other(*reg, &SYSCALL_SETS);
+                        *step_in = step_in
+                            .map(|r| other(r, &SYSCALL_SETS))
+                            .filter(|&r| r != *reg);
+                    }
                 }
                 let scale = match moves {
                     WalkMove::Index { shift: true, .. } => 8,
@@ -467,6 +498,7 @@ fn walk() -> impl Strategy<Value = Walk> {
                     rt,
                     moves,
                     step,
+                    syscall,
                 }
             },
         )
@@ -575,7 +607,7 @@ fn lookup() -> impl Strategy<Value = Lookup> {
 }
 
 fn op() -> impl Strategy<Value = Op> {
-    prop_oneof![20 => plain_op(), 1 => Just(Op::Syscall)]
+    prop_oneof![10 => plain_op(), 1 => Just(Op::Syscall)]
 }
 
 fn plain_op() -> impl Strategy<Value = Op> {
@@ -984,6 +1016,7 @@ fn emit_op(ops: &mut Ops, edge: DynamicLabel, op: &Op) {
             base,
             start,
             ref accesses,
+            syscall,
         } => {
             match start {
                 GroupBase::Area(at) => {
@@ -995,14 +1028,25 @@ fn emit_op(ops: &mut Ops, edge: DynamicLabel, op: &Op) {
                     dynasm!(ops ; .arch aarch64 ; adr X(base), =>edge ; sub XSP(base), XSP(base), #by);
                 }
             }
-            for access in accesses {
+            for (i, access) in accesses.iter().enumerate() {
+                if syscall == Some(i) {
+                    emit_syscall(ops);
+                }
                 emit_group_access(ops, base, access);
             }
+            if syscall == Some(accesses.len()) {
+                emit_syscall(ops);
+            }
         }
-        Op::Syscall => {
-            dynasm!(ops ; .arch aarch64 ; movz x0, #1 ; mov x1, x29 ; movz x2, #0 ; movz x8, #64 ; svc #0);
-        }
+        Op::Syscall => emit_syscall(ops),
     }
+}
+
+/// The registers `Op::Syscall` sets.
+const SYSCALL_SETS: [u8; 4] = [0, 1, 2, 8];
+
+fn emit_syscall(ops: &mut Ops) {
+    dynasm!(ops ; .arch aarch64 ; movz x0, #1 ; mov x1, x29 ; movz x2, #0 ; movz x8, #64 ; svc #0);
 }
 
 fn emit_group_access(ops: &mut Ops, b: u8, a: &GroupAccess) {
@@ -1363,6 +1407,9 @@ fn emit_walk(ops: &mut Ops, edge: DynamicLabel, w: &Walk) {
                 index_step(ops);
             }
         }
+    }
+    if w.syscall {
+        emit_syscall(ops);
     }
     // The counter: changed, compared and branched on in the form chosen.
     let wide = w.wide;

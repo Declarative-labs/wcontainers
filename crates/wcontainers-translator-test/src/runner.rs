@@ -71,6 +71,11 @@ impl Paused<'_, '_> {
     pub fn set_permissions(&mut self, range: Range<u64>, permissions: Permissions) {
         set_permissions(self.caller.data_mut(), range, permissions);
     }
+
+    /// Raise the thread's stop flag, so it stops at the next stop check it reaches.
+    pub fn raise_stop_flag(&mut self) {
+        raise_stop_flag(self.caller);
+    }
 }
 
 /// Called at every pause of the thread.

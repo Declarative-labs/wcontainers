@@ -27,10 +27,12 @@ use wcontainers_translator::{LookAhead, Omit};
 pub struct Plan {
     /// Seeds every choice of where and what to change.
     pub seed: u64,
-    /// One pause in this many makes a change.
+    /// One stop in this many makes a change; every system call does (they are far fewer).
     pub every: u32,
-    /// The run at full stops at every stop check; otherwise it pauses only after system calls.
-    pub stop_everywhere: bool,
+    /// The chance that the run at full raises its stop flag again at each pause, so it stops at the next
+    /// stop check (the flag starts raised when this is above 0): 1 stops at every check, 0 pauses only
+    /// after system calls, and between the two some system calls are followed by a stop and some are not.
+    pub stops: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -120,16 +122,26 @@ fn choose(
         Permissions::all(),
     ];
     let frames = frames(registers);
+    let within = |page: &u64| universe.iter().any(|pages| pages.contains(page));
+    // Registers that point where a change may touch, as a base does.
+    let pointers: Vec<u64> = registers
+        .x
+        .iter()
+        .map(|value| value / PAGE_SIZE)
+        .filter(|page| within(page) && !frames.contains(page))
+        .collect();
     let mut pages = Vec::new();
     for _ in 0..rng.random_range(1..=3) {
-        let page = if rng.random_bool(0.6) {
-            let value = registers.x[rng.random_range(0..31)];
-            (value / PAGE_SIZE).wrapping_add_signed(rng.random_range(-1..=2))
+        let page = if !pointers.is_empty() && rng.random_bool(0.6) {
+            // Its own page half the time, otherwise the one before or one of the two after.
+            const NEAR: [i64; 6] = [0, 0, 0, -1, 1, 2];
+            let page = pointers[rng.random_range(0..pointers.len())];
+            page.wrapping_add_signed(NEAR[rng.random_range(0..NEAR.len())])
         } else {
             let pages = &universe[rng.random_range(0..universe.len())];
             rng.random_range(pages.clone())
         };
-        if universe.iter().any(|pages| pages.contains(&page)) && !frames.contains(&page) {
+        if within(&page) && !frames.contains(&page) {
             pages.push((page, ALLOWS[rng.random_range(0..ALLOWS.len())]));
         }
     }
@@ -207,7 +219,10 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
             if at == Pause::Syscall {
                 syscalls += 1;
             }
-            if rng.random_range(0..plan.every) != 0 {
+            if rng.random_bool(plan.stops) {
+                paused.raise_stop_flag();
+            }
+            if at == Pause::Stop && rng.random_range(0..plan.every) != 0 {
                 return;
             }
             let registers = paused.registers();
@@ -227,8 +242,8 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
             made.borrow_mut().push(Change { point, pages });
         });
     }
-    if plan.stop_everywhere {
-        full.stop_at_every_check();
+    if plan.stops > 0.0 {
+        full.raise_stop_flag();
     }
     let (full_ended, mut full) = end(blob, full, &universe, &full_came_back);
 

@@ -6,13 +6,21 @@
 //! Knobs: `WC_CHANGES_CASES` (random programs, default 64), `WC_CHANGES_SEED` (default 1),
 //! `WC_CHANGES_PROGRAM_SEEDS` (runs of each C program, default 3).
 
+// dynasm's expansion converts register numbers to their own type.
+#![allow(clippy::useless_conversion)]
+
+use dynasmrt::aarch64::Aarch64Relocation;
+use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-use wcontainers_abi::Exit;
+use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
+use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::changes::{Compared, Plan, compare};
 use wcontainers_translator_test::layer2::{assemble, program};
-use wcontainers_translator_test::programs::{Library, build};
-use wcontainers_translator_test::runner::Stopped;
+use wcontainers_translator_test::programs::{Blob, Library, build, ready};
+use wcontainers_translator_test::runner::{Pause, Stopped};
+
+type Ops = VecAssembler<Aarch64Relocation>;
 
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -22,13 +30,9 @@ fn plan() -> impl Strategy<Value = Plan> {
     (
         any::<u64>(),
         prop::sample::select(vec![1u32, 4, 32, 256]),
-        prop::bool::weighted(0.75),
+        prop::sample::select(vec![1.0, 1.0, 1.0, 0.5, 0.1, 0.0]),
     )
-        .prop_map(|(seed, every, stop_everywhere)| Plan {
-            seed,
-            every,
-            stop_everywhere,
-        })
+        .prop_map(|(seed, every, stops)| Plan { seed, every, stops })
 }
 
 /// Counts of what the runs did, printed so a run says how strong it was.
@@ -104,7 +108,7 @@ fn programs_with_changes_match_none() {
                 let plan = Plan {
                     seed,
                     every,
-                    stop_everywhere: true,
+                    stops: 1.0,
                 };
                 eprintln!("{name} {optimisation}: {plan:?}");
                 tally.add(compare(&blob, plan));
@@ -112,4 +116,84 @@ fn programs_with_changes_match_none() {
         }
     }
     tally.report("program runs");
+}
+
+/// The page of data after the code page of the programs below.
+const DATA: u64 = 0x40_1000;
+
+/// Start with the registers the reference does not clear at zero and x5 at `DATA`.
+fn start(ops: &mut Ops) {
+    for r in 0..22u8 {
+        dynasm!(ops ; .arch aarch64 ; movz X(r), #0);
+    }
+    dynasm!(ops ; .arch aarch64 ; movz x5, #0x40, lsl #16 ; movk x5, #0x1000);
+}
+
+/// A system call that writes nothing.
+fn write_nothing(ops: &mut Ops) {
+    dynasm!(ops ; .arch aarch64 ; movz x0, #1 ; mov x1, x5 ; movz x2, #0 ; movz x8, #64 ; svc #0);
+}
+
+/// Exit with 0 after the program's code, and a page of data after the code page.
+fn data_blob(name: &str, mut ops: Ops) -> Blob {
+    dynasm!(ops ; .arch aarch64 ; movz x0, #0 ; movz x8, #94 ; svc #0);
+    let mut bytes = ops.finalize().expect("labels");
+    bytes.resize(2 * PAGE_SIZE as usize, 0);
+    Blob {
+        name: name.into(),
+        code_bytes: PAGE_SIZE,
+        bytes,
+    }
+}
+
+/// At the first system call `DATA` is made to allow nothing; full must fault exactly as none does.
+fn denied_at_the_first_syscall(blob: &Blob) {
+    let run = |look_ahead| {
+        let mut machine = ready(blob, look_ahead, Omit::default());
+        let mut first = true;
+        machine.on_pause(move |at, paused| {
+            if at == Pause::Syscall && std::mem::take(&mut first) {
+                paused.set_permissions(DATA..DATA + PAGE_SIZE, Permissions::empty());
+            }
+        });
+        machine.run()
+    };
+    let none = run(LookAhead::None);
+    assert!(
+        matches!(none.0, Stopped::Exit(Exit::MemoryFault { address, .. }) if address / PAGE_SIZE == DATA / PAGE_SIZE),
+        "{}: none {:?}",
+        blob.name,
+        none.0
+    );
+    let full = run(LookAhead::Full);
+    assert_eq!(full.0, none.0, "{}: why it stopped", blob.name);
+    assert_eq!(full.1, none.1, "{}: registers", blob.name);
+}
+
+/// Two loads through one base with a system call between them: the second is checked again.
+#[test]
+fn group_across_a_syscall() {
+    let mut ops: Ops = VecAssembler::new(0);
+    start(&mut ops);
+    dynasm!(ops ; .arch aarch64 ; ldr x6, [x5]);
+    write_nothing(&mut ops);
+    dynasm!(ops ; .arch aarch64 ; ldr x7, [x5, #8]);
+    denied_at_the_first_syscall(&data_blob("group-across-syscall", ops));
+}
+
+/// A loop that loads through a base and then makes a system call: the next turn's load is checked again.
+#[test]
+fn loop_holding_a_syscall() {
+    let mut ops: Ops = VecAssembler::new(0);
+    start(&mut ops);
+    let top = ops.new_dynamic_label();
+    dynasm!(ops ; .arch aarch64
+        ; movz x16, #3
+        ; =>top
+        ; ldr x6, [x5, x16, lsl #3]
+        ; add x9, x9, x6
+    );
+    write_nothing(&mut ops);
+    dynasm!(ops ; .arch aarch64 ; subs x16, x16, #1 ; b.ne =>top);
+    denied_at_the_first_syscall(&data_blob("loop-holding-syscall", ops));
 }
