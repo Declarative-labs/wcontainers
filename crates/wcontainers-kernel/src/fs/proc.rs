@@ -709,7 +709,9 @@ pub(crate) fn link_target(
             let file = file.borrow();
             let inode = file.node.borrow();
             Ok(match &inode.content {
-                Content::Pipe(_) => format!("pipe:[{}]", inode.ino).into_bytes(),
+                Content::Pipe(_) if inode.fs.kind == super::Kind::Pipe => {
+                    format!("pipe:[{}]", inode.ino).into_bytes()
+                }
                 Content::Directory(_) | Content::Proc(_) if inode.is_directory() => {
                     drop(inode);
                     walk.path_of(&file.node)

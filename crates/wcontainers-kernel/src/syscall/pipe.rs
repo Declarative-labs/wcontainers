@@ -89,8 +89,101 @@ pub(super) fn pipe2(
 /// Notes a new open file of a pipe's end.
 pub(crate) fn attach(node: &Node, file: &FileRef) {
     if let Content::Pipe(pipe) = &mut node.borrow_mut().content {
-        pipe.opened(file);
+        pipe.opened(file, 0);
     }
+}
+
+/// Gives a named pipe a fresh buffer when no end of it is open, as Linux frees its buffer at the last
+/// close and makes one at the next open (`fifo_open`).
+pub(super) fn named(node: &Node) {
+    let mut inode = node.borrow_mut();
+    if !matches!(&inode.content, Content::Pipe(pipe) if pipe.is_open()) {
+        inode.content = Content::Pipe(Pipe::named());
+    }
+}
+
+/// `fifo_open` for a new open file of a named pipe: it counts as an end at once; a reader waits for
+/// a writer to open, and a writer for a reader, unless nonblocking (a nonblocking writer with no
+/// reader is ENXIO); reading and writing never waits.
+pub(super) fn open_named(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), Errno> {
+    let node = file.borrow().node.clone();
+    let (readable, writable, nonblocking) = {
+        let file = file.borrow();
+        (
+            file.readable(),
+            file.writable(),
+            file.flags & O_NONBLOCK != 0,
+        )
+    };
+    let waits_for = {
+        let mut inode = node.borrow_mut();
+        let Content::Pipe(pipe) = &mut inode.content else {
+            unreachable!("a named pipe has its buffer");
+        };
+        match (readable, writable) {
+            (true, false) => {
+                pipe.opened_readers = pipe.opened_readers.wrapping_add(1);
+                // A nonblocking reader with no writer sees no hangup until a writer has opened.
+                let seen = if pipe.writers() == 0 && nonblocking {
+                    pipe.opened_writers
+                } else {
+                    0
+                };
+                pipe.opened(file, seen);
+                (pipe.writers() == 0 && !nonblocking).then_some(pipe.opened_writers)
+            }
+            (false, true) => {
+                if nonblocking && pipe.readers() == 0 {
+                    return Err(Errno::ENXIO);
+                }
+                pipe.opened_writers = pipe.opened_writers.wrapping_add(1);
+                pipe.opened(file, 0);
+                (pipe.readers() == 0).then_some(pipe.opened_readers)
+            }
+            (true, true) => {
+                pipe.opened_readers = pipe.opened_readers.wrapping_add(1);
+                pipe.opened_writers = pipe.opened_writers.wrapping_add(1);
+                pipe.opened(file, 0);
+                None
+            }
+            (false, false) => return Err(Errno::EINVAL),
+        }
+    };
+    kernel.wake(channel(&node));
+    let Some(count) = waits_for else {
+        return Ok(());
+    };
+    let thread = kernel.thread_mut(tid);
+    thread.opening = Some(file.clone());
+    thread.call.started = true;
+    thread.call.progress = count.into();
+    kernel.park(tid, channel(&node));
+    Err(Errno::PARKED)
+}
+
+/// A named pipe's open run again after its wait: done once the other end has opened, ended by a
+/// signal (giving up its end), or waiting on.
+pub(super) fn open_named_again(kernel: &mut Kernel, tid: Tid) -> Result<FileRef, Errno> {
+    let thread = kernel.thread_mut(tid);
+    let file = thread.opening.take().expect("an open waiting");
+    let count = thread.call.progress as u32;
+    let node = file.borrow().node.clone();
+    let readable = file.borrow().readable();
+    let now = match &node.borrow().content {
+        Content::Pipe(pipe) if readable => pipe.opened_writers,
+        Content::Pipe(pipe) => pipe.opened_readers,
+        _ => unreachable!("a named pipe has its buffer"),
+    };
+    if now != count {
+        return Ok(file);
+    }
+    kernel.thread_mut(tid).opening = Some(file);
+    // A signal ends the wait; the end is given up as the call finishes.
+    if kernel.signal_pending(tid) {
+        return Err(Errno::ERESTARTSYS);
+    }
+    kernel.park(tid, channel(&node));
+    Err(Errno::PARKED)
 }
 
 fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {

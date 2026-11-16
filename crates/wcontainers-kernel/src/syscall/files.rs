@@ -372,6 +372,10 @@ pub(super) fn open(
     mode: u32,
 ) -> Result<u64, Errno> {
     let flags = open_flags(flags)?;
+    if kernel.threads[&tid].opening.is_some() {
+        let file = super::pipe::open_named_again(kernel, tid)?;
+        return install(kernel, tid, file, flags);
+    }
     if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
         return Err(kernel.counters.refuse_flag(
             cx.host,
@@ -526,25 +530,31 @@ pub(super) fn open(
             }
         }
         match file_type {
-            S_IFCHR | S_IFBLK => {
+            // Docker's device rules (`devcgroup_inode_permission`) allow no block device and only
+            // its standard character devices; of those, a driver not built answers as Linux without
+            // it (ENODEV, from the console's and the misc devices' lookups).
+            S_IFBLK => return Err(Errno::EPERM),
+            S_IFCHR => {
                 let rdev = node.borrow().rdev;
                 match Device::from_number(rdev) {
                     Some(device @ (Device::Tty | Device::Ptmx | Device::Pts)) => {
                         terminal = Some(device);
                     }
                     Some(_) => {}
-                    None => return Err(Errno::ENXIO),
+                    None if crate::fs::dev::ALLOWED_NOT_BUILT
+                        .contains(&crate::fs::decode_device(rdev)) =>
+                    {
+                        return Err(kernel.counters.refuse(
+                            cx.host,
+                            reason::DEVICE_NOT_BUILT,
+                            rdev,
+                            Errno::ENODEV,
+                        ));
+                    }
+                    None => return Err(Errno::EPERM),
                 }
             }
-            S_IFIFO if !matches!(node.borrow().content, Content::Pipe(_)) => {
-                let ino = node.borrow().ino;
-                return Err(kernel.counters.refuse(
-                    cx.host,
-                    reason::DEVICE_NOT_BUILT,
-                    ino,
-                    Errno::ENXIO,
-                ));
-            }
+            S_IFIFO => super::pipe::named(&node),
             S_IFSOCK => return Err(Errno::ENXIO),
             _ => {}
         }
@@ -593,6 +603,19 @@ pub(super) fn open(
     if let Some(device) = terminal {
         super::tty::open(kernel, cx, tid, &file, device, flags)?;
     }
+    if file_type == S_IFIFO && flags & O_PATH == 0 {
+        super::pipe::open_named(kernel, tid, &file)?;
+    }
+    install(kernel, tid, file, flags)
+}
+
+/// Puts an opened file in the lowest free descriptor.
+fn install(
+    kernel: &mut Kernel,
+    tid: Tid,
+    file: crate::file::FileRef,
+    flags: u32,
+) -> Result<u64, Errno> {
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .process_of_mut(tid)

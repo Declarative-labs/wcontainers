@@ -1,5 +1,6 @@
-//! Pipes, as Linux's `fs/pipe.c` keeps them: a ring of page-sized slots, small writes merged into
-//! the last slot, reads that take what is there, and waits that park until the other end moves.
+//! Pipes and named pipes, as Linux's `fs/pipe.c` keeps them: a ring of page-sized slots, small writes
+//! merged into the last slot, reads that take what is there, and waits that park until the other end
+//! moves.
 //! The container's standard output pipes are pipes whose reader is the host, which takes every byte
 //! as it is written.
 
@@ -32,40 +33,68 @@ pub(crate) struct Pipe {
     slots: VecDeque<Slot>,
     /// How many slots it may hold (`max_usage`).
     pub capacity: usize,
-    /// The open files of its ends, for counting readers and writers.
-    ends: Vec<Weak<RefCell<OpenFile>>>,
+    /// The open files of its ends, for counting readers and writers, each with the count of writers
+    /// it has seen opened (`f_pipe`), which a named pipe's `POLLHUP` needs.
+    ends: Vec<(Weak<RefCell<OpenFile>>, u32)>,
     /// The host reads this pipe, at once: one of the container's standard streams.
     pub host: Option<Stream>,
-    /// Whether a writer has ever opened it (`w_counter`), which a named pipe's POLLHUP needs.
-    pub had_writer: bool,
+    /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
+    pub opened_readers: u32,
+    pub opened_writers: u32,
 }
 
 impl Pipe {
+    /// An unnamed pipe, made with one reader and one writer.
     pub fn new(host: Option<Stream>) -> Self {
+        Self {
+            host,
+            opened_readers: 1,
+            opened_writers: 1,
+            ..Self::named()
+        }
+    }
+
+    /// A named pipe's buffer, made when it is opened with no end open.
+    pub fn named() -> Self {
         Self {
             slots: VecDeque::new(),
             capacity: DEFAULT_SLOTS,
             ends: Vec::new(),
-            host,
-            had_writer: false,
+            host: None,
+            opened_readers: 0,
+            opened_writers: 0,
         }
     }
 
-    /// Notes an open file of one of its ends.
-    pub fn opened(&mut self, file: &FileRef) {
-        if file.borrow().writable() {
-            self.had_writer = true;
-        }
-        self.ends.retain(|end| end.strong_count() > 0);
-        self.ends.push(alloc::rc::Rc::downgrade(file));
+    /// Notes an open file of one of its ends, which has seen `seen_writers` writers opened.
+    pub fn opened(&mut self, file: &FileRef, seen_writers: u32) {
+        self.ends.retain(|(end, _)| end.strong_count() > 0);
+        self.ends
+            .push((alloc::rc::Rc::downgrade(file), seen_writers));
+    }
+
+    /// Whether any end is open.
+    pub fn is_open(&self) -> bool {
+        self.ends.iter().any(|(end, _)| end.strong_count() > 0)
     }
 
     fn count(&self, wanted: fn(&OpenFile) -> bool) -> usize {
         self.ends
             .iter()
-            .filter_map(Weak::upgrade)
+            .filter_map(|(end, _)| end.upgrade())
             .filter(|end| wanted(&end.borrow()))
             .count()
+    }
+
+    /// The writers an open file of it has seen opened.
+    fn seen_writers(&self, file: &OpenFile) -> u32 {
+        self.ends
+            .iter()
+            .find(|(end, _)| {
+                end.upgrade()
+                    .is_some_and(|end| core::ptr::eq(end.as_ptr(), file))
+            })
+            .map_or(0, |(_, seen)| *seen)
     }
 
     pub fn readers(&self) -> usize {
@@ -184,7 +213,7 @@ pub(crate) fn poll(pipe: &Pipe, file: &OpenFile) -> u16 {
         if !pipe.is_empty() {
             mask |= POLLIN | POLLRDNORM;
         }
-        if pipe.writers() == 0 && pipe.had_writer {
+        if pipe.writers() == 0 && pipe.seen_writers(file) != pipe.opened_writers {
             mask |= POLLHUP;
         }
     }

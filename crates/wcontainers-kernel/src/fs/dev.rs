@@ -29,6 +29,11 @@ pub(crate) const DOCKER_DEVICES: &[(&[u8], u32, u32)] = &[
     (b"urandom", 1, 9),
 ];
 
+/// The character devices Docker's device rules let a container open besides those built here: the
+/// console and the network tunnel (`/dev/net/tun`). Every other device, and every block device, is
+/// EPERM.
+pub(crate) const ALLOWED_NOT_BUILT: &[(u32, u32)] = &[(5, 1), (10, 200)];
+
 impl Device {
     pub fn from_number(rdev: u64) -> Option<Self> {
         Some(match decode_device(rdev) {

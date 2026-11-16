@@ -226,6 +226,9 @@ pub(crate) struct Thread {
     pub parent_death_signal: i32,
     /// `PR_SET_TIMERSLACK`: how late a timer may end, in nanoseconds.
     pub timer_slack: u64,
+    /// An open of a named pipe waiting for the other end: the file it makes, already counted as an
+    /// end (Linux's `wait_for_partner`).
+    pub opening: Option<crate::file::FileRef>,
 }
 
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
@@ -312,6 +315,7 @@ impl Thread {
             filters: Vec::new(),
             parent_death_signal: 0,
             timer_slack: TIMER_SLACK,
+            opening: None,
         }
     }
 }

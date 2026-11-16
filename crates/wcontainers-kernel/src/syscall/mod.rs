@@ -11,7 +11,7 @@ mod ioctl;
 mod list;
 mod memfd;
 mod memory;
-mod pipe;
+pub(crate) mod pipe;
 mod process;
 mod rseq;
 mod seccomp;

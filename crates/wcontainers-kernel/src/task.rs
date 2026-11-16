@@ -146,17 +146,34 @@ impl Kernel {
         }
         match outcome {
             syscall::Outcome::Return(value) => {
-                self.thread_mut(tid).call = Call::default();
+                self.finish_call(tid);
                 self.return_to_user(cx, tid, Resume::Return(value));
             }
             syscall::Outcome::Restart => {
-                self.thread_mut(tid).call = Call::default();
+                self.finish_call(tid);
                 self.return_to_user(cx, tid, Resume::FromRegisters);
             }
             syscall::Outcome::Parked => {
                 debug_assert!(self.threads[&tid].call.wait.is_some());
             }
             syscall::Outcome::Gone => {}
+        }
+    }
+
+    /// Clears a finished call's slot; a named pipe's open still waiting gives up its end.
+    fn finish_call(&mut self, tid: Tid) {
+        let thread = self.thread_mut(tid);
+        thread.call = Call::default();
+        let opening = thread.opening.take();
+        self.give_up_opening(opening);
+    }
+
+    /// Closes the end a named pipe's waiting open held, which the other end may wait on.
+    fn give_up_opening(&mut self, opening: Option<crate::file::FileRef>) {
+        if let Some(file) = opening {
+            let node = file.borrow().node.clone();
+            drop(file);
+            self.wake(crate::syscall::pipe::channel(&node));
         }
     }
 
@@ -349,6 +366,7 @@ impl Kernel {
         self.unschedule(tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         cx.cpu.thread_drop(thread.cpu);
+        self.give_up_opening(thread.opening);
         let process = self
             .processes
             .get_mut(&thread.process)
