@@ -166,3 +166,67 @@ fn words_in_no_form_are_illegal_as_on_the_cpu() {
     eprintln!("layer 1: {count} words in no form, seed {seed}");
     result.unwrap();
 }
+
+/// What we answer by design rather than as the reference CPU does, and the faults of the CPU we present
+/// where the reference CPU has more features: checked against their expected outcome.
+#[test]
+fn designed_answers_and_faults() {
+    use wcontainers_arm64::{CACHE_TYPE, MAIN_ID, ZERO_BLOCK_ID};
+    let run = |word: u32, x1: u64, x2: u64| {
+        let mut registers = [0u64; 34];
+        registers[1] = x1;
+        registers[2] = x2;
+        registers[31] = DATA + 0x1000;
+        translated(&Case {
+            word,
+            registers,
+            vectors: [0; 32],
+            float: [0; 2],
+            tracking: false,
+            seed: 1,
+        })
+    };
+    // mrs x0 of CNTFRQ_EL0, CTR_EL0, DCZID_EL0, MIDR_EL1, MPIDR_EL1, ID_AA64ISAR0_EL1, ID_AA64PFR0_EL1.
+    for (word, value) in [
+        (0xd53b_e000, 1_000_000_000),
+        (0xd53b_0020, CACHE_TYPE),
+        (0xd53b_00e0, ZERO_BLOCK_ID),
+        (0xd538_0000, MAIN_ID),
+        (0xd538_00a0, 0x8000_0000),
+        (0xd538_0600, 0x0021_0000),
+        (0xd538_0400, 0x11),
+    ] {
+        let outcome = run(word, 0, 0);
+        assert_eq!(outcome.stop, Stop::Landed(CODE + 4), "{word:#010x}");
+        assert_eq!(outcome.registers[0], value, "{word:#010x}");
+    }
+    // mrs x0, cntvct_el0 counts up.
+    assert_eq!(run(0xd53b_e040, 0, 0).stop, Stop::Landed(CODE + 4));
+    // msr fpcr, x1 keeps only the bits we present.
+    assert_eq!(
+        run(0xd51b_4401, u64::MAX, 0).float[1],
+        wcontainers_arm64::FPCR_BITS
+    );
+    // Unaligned atomics, load-acquire and exclusives fault, as a CPU without FEAT_LSE2 does:
+    // ldadd x2, x0, [x1]; cas x0, x2, [x1]; ldar x0, [x1]; stlr x0, [x1]; ldxr x0, [x1]; ldaxp x0, x3, [x1].
+    let unaligned = DATA + 0x101;
+    for word in [
+        0xf822_0020u32,
+        0xc8a0_7c22,
+        0xc8df_fc20,
+        0xc89f_fc20,
+        0xc85f_7c20,
+        0xc87f_8c20,
+    ] {
+        assert_eq!(
+            run(word, unaligned, 1).stop,
+            Stop::Alignment(unaligned),
+            "{word:#010x}"
+        );
+    }
+    // Aligned, they work: ldadd x2, x0, [x1] leaves the old value.
+    assert_eq!(
+        run(0xf822_0020, DATA + 0x100, 1).stop,
+        Stop::Landed(CODE + 4)
+    );
+}

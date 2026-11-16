@@ -18,11 +18,13 @@ pub fn decode(word: u32) -> Instruction {
         None if crate::forms::presented(word) => {}
         None => return Instruction::Undefined,
     }
+    // Every form is translated, so a word of a form that neither path gives an instruction for is one
+    // Arm's decode makes undefined (a reserved field value), as layer 1 checks against the CPU.
     let Ok(decoded) = InstDecoder::default().decode(&mut U8Reader::new(&word.to_le_bytes())) else {
-        return Instruction::Unsupported;
+        return Instruction::Undefined;
     };
     let ops = decoded.operands;
-    convert(word, decoded.opcode, &ops).unwrap_or(Instruction::Unsupported)
+    convert(word, decoded.opcode, &ops).unwrap_or(Instruction::Undefined)
 }
 
 fn bits(word: u32, low: u32, width: u32) -> u32 {

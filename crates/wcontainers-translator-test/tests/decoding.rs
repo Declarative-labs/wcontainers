@@ -149,3 +149,34 @@ fn translated_words_are_of_forms_layer_1_covers() {
     eprintln!("decoding: {count} random words, seed {seed}");
     result.unwrap();
 }
+
+/// No form of the CPU we present is left untranslated: words of every one decode to an instruction or,
+/// where Arm's decode makes that word undefined, to undefined; never to "not translated".
+/// `WC_DECODE_CASES` words per form, seeded from `WC_DECODE_SEED`.
+#[test]
+fn every_offered_form_is_translated() {
+    use wcontainers_translator_test::layer1::covered;
+    let count = setting("WC_DECODE_CASES", 64) as u32;
+    let seed = setting("WC_DECODE_SEED", 1);
+    let mut untranslated = Vec::new();
+    let mut offered = 0;
+    for form in forms::all().iter().filter(|f| covered(f)) {
+        offered += 1;
+        let mut key = [0u8; 32];
+        key[..8].copy_from_slice(&seed.to_le_bytes());
+        key[8..16].copy_from_slice(b"all form");
+        for (i, byte) in form.name.bytes().enumerate() {
+            key[16 + i % 16] ^= byte;
+        }
+        let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &key);
+        for _ in 0..count {
+            let word = form.word(rng.random());
+            if form.presented(word) && decode(word) == Instruction::Unsupported {
+                untranslated.push(format!("{} {word:#010x}", form.name));
+                break;
+            }
+        }
+    }
+    eprintln!("decoding: {offered} offered forms, {count} words each, seed {seed}");
+    assert!(untranslated.is_empty(), "not translated: {untranslated:?}");
+}
