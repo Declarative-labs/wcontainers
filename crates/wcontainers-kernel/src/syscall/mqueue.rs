@@ -335,6 +335,7 @@ pub(super) fn mq_open(
         path,
         kernel.process_of(tid).credentials.serial,
     );
+    file.borrow_mut().internal_mount = true;
     let fd = kernel.process_of_mut(tid).files.add(file, true, 0, limit)?;
     Ok(fd as u64)
 }

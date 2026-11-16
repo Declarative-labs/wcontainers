@@ -2427,14 +2427,12 @@ pub(super) fn fstatfs(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel
-        .process_of(tid)
-        .files
-        .file(fd as i32)?
-        .borrow()
-        .node
-        .clone();
-    let out = statfs_of(kernel, cx, &node);
+    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let node = file.borrow().node.clone();
+    let mut out = statfs_of(kernel, cx, &node);
+    if file.borrow().internal_mount {
+        out.f_flags = i64::from(crate::linux_extra::ST_VALID);
+    }
     guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)
 }

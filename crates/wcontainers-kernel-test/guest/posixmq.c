@@ -125,6 +125,13 @@ static void opens(void) {
     statfs("/dev/mqueue", &f);
     printf("statfs: type %lx bsize %ld blocks %ld files %ld namelen %ld flags %lx\n", (long)f.f_type, (long)f.f_bsize,
            (long)f.f_blocks, (long)f.f_files, (long)f.f_namelen, (long)f.f_flags);
+    // A queue mq_open gives lies on the kernel's own mount, one open by path on Docker's.
+    fstatfs(q, &f);
+    printf("fstatfs of the queue: flags %lx\n", (long)f.f_flags);
+    int by_path = open("/dev/mqueue/q1", O_RDONLY);
+    fstatfs(by_path, &f);
+    printf("fstatfs by path: flags %lx\n", (long)f.f_flags);
+    close(by_path);
     show("open again", mq_open_("q1", O_RDONLY, 0, NULL) >= 0);
     show("exclusive", mq_open_("q1", O_CREAT | O_EXCL | O_RDWR, 0600, NULL));
     show("access mode 3", mq_open_("q1", 3, 0, NULL));

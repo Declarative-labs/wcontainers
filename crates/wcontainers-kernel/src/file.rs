@@ -37,6 +37,9 @@ pub(crate) struct OpenFile {
     pub direct_io: bool,
     /// What a file on the shared anonymous inode is (Linux's `private_data` of such files).
     pub anon: Option<Anon>,
+    /// Whether it was opened through the kernel's own mount of its file system (mq_open's
+    /// `mq_mnt`), which has no mount flags, rather than through a mount in the file tree.
+    pub internal_mount: bool,
 }
 
 /// The state of a file on the shared anonymous inode.
@@ -92,6 +95,7 @@ impl OpenFile {
             async_fd: None,
             direct_io,
             anon: None,
+            internal_mount: false,
         }))
     }
 
