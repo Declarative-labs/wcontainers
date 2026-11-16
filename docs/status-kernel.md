@@ -908,7 +908,18 @@ sequences, which `kill(-1)` then reached (the runner now reaps them); seed 428 (
 for stops alone answered 0 with only an ended child (Linux: ECHILD), and that the runner's wait for a
 child with no exit signal needs __WALL; seed 431 (5000) found sendfile into a terminal. All fixed;
 428, 429, 430, 431 and 432 passed 5000 each (82 to 86 s, load 50 to 90), with 100 to 300 children
-made per 5000 sequences.
+made per 5000 sequences. Then fresh seeds at 20000 (clone weighted three times): 440 found chroot
+into `/proc/sys` reaching `/proc/sys/dev/tty` (now built: `ldisc_autoload` and `legacy_tiocsti`,
+both 1, measured), 441 found sendfile from a terminal into a pipe (it reads the terminal as
+`copy_splice_read` does: EAGAIN when nonblocking and empty) and then a wait for process 3, a child's
+number here and no one's there (sequences with children now wait for 4000000 instead), 442 found
+`kill(-1)` refused for permission everywhere answering EPERM (Linux: 0, `kill_something_info`) and
+then a filter answering clone with ERRNO 0, which the reference's runner took for being the child
+(it now asks getpid). All fixed. Seed 440 passed 20000 before the last runner fix; with every fix in
+(head 99e83eb) seeds 441, 442 and the fresh 443 passed 20000 each (331 s each, three side by side,
+load 25 at the start, 63 at the end; about 10000 terminal opens and 1100 children each), and then the
+fresh 444 and 445 passed 20000 each (393 s and 333 s, side by side, load 104 at the start, 34 at the
+end). So the fresh 443, 444 and 445 passed with every fix in on head 99e83eb. Seeds up to 445 are used.
 
 K2's third run: with named pipes generated, seed 409 found that a named pipe opened with O_DIRECT
 answers its open's own error first (ENXIO) and EINVAL only after the open (`do_dentry_open`); seed
@@ -1040,7 +1051,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
-- K2 fourth run: layer 1, 5000 sequences, three side by side: 82 to 86 s each (load 50 to 90);
+- K2 fourth run: the whole test suite of both crates 84 passed, 0 failed, 6 ignored, 180 s wall with
+  two test threads beside three layer 1 runs (load 39 at the start, 31 at the end). Layer 1, 20000
+  sequences, three side by side: 325 to 331 s each (load 20 to 63).
+  Layer 1, 5000 sequences, three side by side: 82 to 86 s each (load 50 to 90);
   20000 sequences alone: 337 s (load 60 to 90); 2000 sequences alone: 34 to 67 s (load 50 to 90).
   tests/partialcopy.rs 2.3 to 3 s (load 60 to 90).
 - K2 third run: the whole test suite of both crates 82 passed, 0 failed, 7 ignored, 129 s wall with
@@ -1271,6 +1285,7 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
    with a guest test against the reference and layer 1 generation.
 2. Small gaps of K2: a release I/O signal per pipe end when several close at once (only one is sent);
    sendfile into a full blocking pipe or terminal waits on Linux.
-3. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1).
+3. After any kernel change for the items above, three fresh layer 1 seeds of 20000 again (443 to 445
+   passed on head 99e83eb; one command each, see Layer 1).
 4. The missing calls of later milestones; the known gaps above before K6's bar.
 5. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
