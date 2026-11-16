@@ -82,14 +82,21 @@ pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
 /// The report holds the output of the last run.
 pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32) -> Report {
-    run_in_chrome(blob, how, omit, repeat, None)
+    run_in_chrome(blob, how, omit, repeat, None, 0)
+}
+
+/// [`repeated`] at full look-ahead, the translation split into modules of at most `module_bytes` of code,
+/// only to measure calls between modules.
+pub fn repeated_split(blob: &Blob, optimise: Optimise, repeat: u32, module_bytes: u32) -> Report {
+    let how = (LookAhead::Full, optimise);
+    run_in_chrome(blob, how, Omit::default(), repeat, None, module_bytes)
 }
 
 /// [`translated_with`] with V8 given these flags, only for measuring what the engine does (such as compiling
 /// every function when its module is made, not at its first call).
 pub fn translated_with_engine_flags(blob: &Blob, look_ahead: LookAhead, flags: &str) -> Report {
     let how = (look_ahead, Optimise::Speed);
-    run_in_chrome(blob, how, Omit::default(), 1, Some(flags))
+    run_in_chrome(blob, how, Omit::default(), 1, Some(flags), 0)
 }
 
 fn run_in_chrome(
@@ -98,6 +105,7 @@ fn run_in_chrome(
     omit: Omit,
     repeat: u32,
     flags: Option<&str>,
+    module_bytes: u32,
 ) -> Report {
     let place = placement(blob);
     let directory = target().join("cases").join(&blob.name);
@@ -127,6 +135,7 @@ fn run_in_chrome(
         },
         "repeat": repeat,
         "optimise": optimise as u8,
+        "splitBytes": module_bytes,
         "omit": u8::from(omit.stop)
             | (u8::from(omit.permissions) << 1)
             | (u8::from(omit.returns) << 2)
@@ -222,10 +231,18 @@ fn launch_or_refused(
     }
 }
 
+/// What loading code modules in Chrome took.
+pub struct Loaded {
+    /// Milliseconds making the modules took, and making their instances.
+    pub compiling: f64,
+    pub instantiating: f64,
+    /// Bytes the resident memory of Chrome's processes grew by from before the worker started to after.
+    pub memory: i64,
+}
+
 /// Load code modules translated ahead of time from an image placed at `load`, its code at `code`, in Chrome,
-/// V8 given these flags, without running anything: the milliseconds making the modules took, and making
-/// their instances; or what the page threw, such as an engine refusing a limit. The lookup table covers the
-/// code alone.
+/// V8 given these flags, without running anything; or what the page threw, such as an engine refusing a
+/// limit. The lookup table covers the code alone.
 pub fn load_modules(
     name: &str,
     image: &[u8],
@@ -233,7 +250,7 @@ pub fn load_modules(
     code: std::ops::Range<u64>,
     modules: &[&[u8]],
     flags: &str,
-) -> Result<(f64, f64), String> {
+) -> Result<Loaded, String> {
     let directory = target().join("cases").join(format!("load-{name}"));
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
@@ -258,10 +275,12 @@ pub fn load_modules(
     let result = launch_or_refused(&directory, &setup, Some(flags));
     std::fs::remove_dir_all(&directory).unwrap();
     let result = result?;
-    Ok((
-        result["compiling"].as_f64().expect("a time"),
-        result["instantiating"].as_f64().expect("a time"),
-    ))
+    Ok(Loaded {
+        compiling: result["compiling"].as_f64().expect("a time"),
+        instantiating: result["instantiating"].as_f64().expect("a time"),
+        memory: result["memoryAfter"].as_i64().expect("bytes")
+            - result["memoryBefore"].as_i64().expect("bytes"),
+    })
 }
 
 /// One instruction case: its code word, the thread state to start from (the contract's

@@ -4,6 +4,7 @@
 use std::io::Write;
 use std::time::Instant;
 use wcontainers_translator::LookAhead;
+use wcontainers_translator::contract::Reason;
 use wcontainers_translator_test::binaries::{Binary, SOURCES};
 use wcontainers_translator_test::runner::{Machine, Syscalls, probe};
 
@@ -111,6 +112,26 @@ fn measure_binaries() {
                 bytes as f64 / code.len() as f64,
                 compressed as f64 / gzipped(code) as f64,
             );
+            // Places in the code that may take each slow path.
+            let sites: Vec<String> = Reason::ALL
+                .iter()
+                .map(|&r| {
+                    (
+                        r,
+                        translation
+                            .modules
+                            .iter()
+                            .map(|m| m.sites[r as usize])
+                            .sum::<u64>(),
+                    )
+                })
+                .filter(|&(_, n)| n > 0)
+                .map(|(r, n)| format!("{} {n}", r.name()))
+                .collect();
+            println!(
+                "{name}: places that may take a slow path: {}",
+                sites.join(", ")
+            );
             for (i, module) in translation.modules.iter().enumerate() {
                 validate(&module.wasm);
                 if let Ok(directory) = std::env::var("WC_BINARIES_DUMP") {
@@ -127,6 +148,8 @@ fn measure_binaries() {
                 ("compiled at first call", ""),
                 ("compiled at once", "--no-wasm-lazy-compilation"),
             ] {
+                // What Chrome's processes hold after making the modules and their instances, beyond what
+                // they held before; compiled at once less compiled at first call is the compiled code.
                 match wcontainers_translator_test::browser::load_modules(
                     &name,
                     &binary.image,
@@ -135,11 +158,12 @@ fn measure_binaries() {
                     &wasm,
                     flags,
                 ) {
-                    Ok((compiling, instantiating)) => println!(
-                        "{}: Chrome, {what}, made its modules in {:.2} s and their instances in {:.3} s",
+                    Ok(loaded) => println!(
+                        "{}: Chrome, {what}, made its modules in {:.2} s and their instances in {:.3} s; its processes grew by {:.1} MB",
                         name,
-                        compiling / 1e3,
-                        instantiating / 1e3
+                        loaded.compiling / 1e3,
+                        loaded.instantiating / 1e3,
+                        loaded.memory as f64 / 1e6
                     ),
                     Err(error) => println!("{}: Chrome, {what}, refused: {error}", binary.name),
                 }

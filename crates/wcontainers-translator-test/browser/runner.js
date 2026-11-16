@@ -47,6 +47,7 @@ function run({
   moduleBytes,
   codeStart,
   optimise,
+  splitBytes,
 }) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
@@ -339,6 +340,7 @@ function run({
       probe,
       omit,
       optimise ?? 0,
+      splitBytes ?? 0,
     );
     if (length < 0) throw new Error(`no translation from ${start}`);
     const modules = [result(length)];

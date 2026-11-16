@@ -10,6 +10,64 @@ below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a 
 programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
 under "How to run".
 
+## M5, third run
+
+Size, free (section 11, step 1), each measured by itself (translation only, release, bytes of WebAssembly at
+full look-ahead; before / after; load 120 to 260 for the first two, which does not change sizes):
+- A write back on the way to the runner (before a hook and an unwind, or a system call) now stores the passed
+  registers and pc through a function each module holds once (`F_SAVE`, pc given as a blob offset). busybox
+  33,934,500 / 30,794,415 (-9.3%), musl 15,157,213 / 14,038,301 (-7.4%), rg 143,614,742 / 134,177,916
+  (-6.6%), git 112,987,851 / 101,607,621 (-10.1%), python 143,036,317 / 131,149,290 (-8.3%).
+- On the same paths, the flags word is worked out by a module function for each shape of kept flags (and one
+  for flags in locals), from the kept locals (`flags_word_functions`). From the line above: busybox 28,679,642
+  (-6.9%), musl 13,154,114 (-6.3%), rg 125,371,053 (-6.6%), git 95,563,100 (-5.9%), python 121,691,140
+  (-7.2%). The same work before a call, a jump to another piece or a return stays in place: it is on the hot
+  path (every call in fib writes the word back).
+- Both together, speed setting, all seven: busybox 28,694,762 (-15.4%), musl 13,170,890 (-13.1%), rg
+  125,441,692 (-12.7%), git 95,604,328 (-15.4%), python 121,766,190 (-14.9%), java 474,329,503 (-15.8%), go
+  299,837,599 (-16.6%); the benchmark set 312,018 / 272,853 (-12.6%). Slow paths went from 33.4% to 24.3% of
+  musl's instructions.
+- Run speed (benchmark set, best of 3, load 17 to 22, every check): wasmtime fib 2.379, sort 1.163, interpret
+  0.567, matrix 0.253, sieve 0.640, hash 0.577, walk 2.132, search 0.231; Chrome fib 2.321, sort 1.236,
+  interpret 0.597, matrix 0.201, sieve 0.530, walk 2.019, search 0.238. Within the earlier rounds' spread
+  in wasmtime; Chrome's fib and matrix are 6 to 15% above earlier best figures (2.007 to 2.179 and 0.168),
+  inside its noise on this machine but not re-run. Kept in both settings.
+- Tried and dropped: a register's `local.set` followed by its `local.get` made a `local.tee`: 0.3% (busybox
+  24,543,043 / 24,463,163), not worth the state it needs.
+
+Size mode, trade 3: the exact permission test (run only when the fast one fails) is a call to a module
+function (`F_PERMISSION`) instead of in place. Size, from the size setting with the free changes: busybox
+15,986,588 / 13,626,082 (-14.8%), musl 7,445,171 / 6,678,359 (-10.3%), rg 46,019,767 / 40,599,353 (-11.8%),
+git 52,999,449 / 44,966,585 (-15.2%), python 68,029,417 / 57,266,627 (-15.8%), java 284,163,910 / 238,563,513
+(-16.0%), go 184,241,116 / 149,926,790 (-18.6%) (load 12 to 22). That makes busybox 19.3 bytes of WebAssembly a
+byte of code, java 18.1, go 25.6. Its cost was measured in the speed setting, alternating (best of 3, load 17
+to 25, in place / called): wasmtime fib 2.379 / 2.876, sort 1.163 / 1.292, interpret 0.567 / 0.647, matrix
+0.253 / 0.352 (1.39 times); Chrome interpret 0.597 / 0.807 (1.35 times), sort 1.236 / 1.432, matrix 0.201 /
+0.184, fib 2.321 / 2.209. The call returns into the piece, so the engine must keep every value live across it
+(spills in hot loops), which an `unreachable` after the fault hook never needed. So it is a trade, made only
+for size; the free changes above all end in the unwind or sit where a call already returned.
+
+Static counters: each code module now carries how many places in its code may take each slow path
+(`CodeModule::sites`, by reason; floating point paths, decided by a hook at run time, are not counted), and
+`measure_binaries` prints them. Speed / size settings (load 22 to 11):
+- busybox: left to an address 37,300 / 21,944; jump through a register not recognised 528 / 459; stopped by the
+  flag 15,318 / 7,662; memory fault 63,243 / 35,346; loop not proven 346 / 0; engine stack nearly full 5,932 /
+  3,342.
+- musl: 11,567 / 7,465; 57 / 45; 7,310 / 3,396; 21,020 / 10,911; 414 / 0; 2,668 / 1,384 (same order).
+- rg: 109,780 / 43,750; 510 / 472; 30,807 / 12,322; 204,956 / 75,843; 2,403 / 0; 10,912 / 5,044.
+- git: 145,137 / 82,347; 341 / 317; 37,113 / 19,126; 235,899 / 125,274; 896 / 0; 15,163 / 8,931.
+- python: 113,812 / 68,483; 2,766 / 2,529; 31,049 / 15,406; 292,111 / 167,952; 1,822 / 0; 13,245 / 7,849.
+- java: 466,074 / 311,644; 3,579 / 3,212; 114,920 / 57,069; 1,143,350 / 687,197; 4,786 / 0; 51,636 / 32,337;
+  unsupported instruction reached 8 / 6.
+- go: 232,053 / 148,498; 391 / 286; 71,564 / 43,105; 883,594 / 552,437; 3,315 / 0; 28,393 / 18,144; unsupported
+  instruction reached 40 / 39.
+- (The size setting has fewer places because a function has no loop pieces, which repeat their loop's code.)
+
+What a call between two modules costs in Chrome: the Chrome runner can now split a translation (`splitBytes`
+in its setup, `browser::repeated_split`). `measure_calls_between_modules` (best of 3, the program run twice in
+its instances, load 17 to 20): speed 0.135 s in one module, 0.400 s a module a piece, 2.65 ns more a call;
+size 0.152 / 0.427 s, 2.75 ns. wasmtime in the same run: speed 2.41 ns, size 2.35 ns.
+
 ## M5, second run
 
 Lookup design (plan section 5), both built and measured, compact chosen:

@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
 use wcontainers_translator::contract;
-use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
+use wcontainers_translator::{LookAhead, Omit, Optimise, translate_in_modules, translate_omitting};
 
 thread_local! {
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -37,8 +37,10 @@ fn answer(bytes: Vec<u8>) -> i32 {
 
 /// Translate the blob in the input buffer from one start, at look-ahead none (0), full (1) or bounded (2, N
 /// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
-/// stop, 2: permissions, 4: returns, 8: depth; only to measure them). Returns the length of the first code
-/// module, or -1 if the start, the code range or the bound is not valid; [`more_modules`] gives the rest.
+/// stop, 2: permissions, 4: returns, 8: depth; only to measure them), for speed (0) or size (1), split into
+/// modules of at most `module_bytes` of code when not 0 (only to measure calls between modules). Returns the
+/// length of the first code module, or -1 if the start, the code range or the bound is not valid;
+/// [`more_modules`] gives the rest.
 #[unsafe(no_mangle)]
 pub extern "C" fn translate(
     code_start: u64,
@@ -49,6 +51,7 @@ pub extern "C" fn translate(
     probe: i32,
     omit: u32,
     optimise: u32,
+    module_bytes: u32,
 ) -> i32 {
     let look_ahead = match look_ahead {
         0 => LookAhead::None,
@@ -61,20 +64,19 @@ pub extern "C" fn translate(
         returns: omit & 4 != 0,
         depth: omit & 8 != 0,
     };
-    let result = INPUT.with_borrow(|blob| {
-        translate_omitting(
-            blob,
-            code_start..code_end,
-            &[start],
-            look_ahead,
-            if optimise == 1 {
-                Optimise::Size
-            } else {
-                Optimise::Speed
-            },
-            wcontainers_arm64::Host::from_probe(probe),
-            omit,
-        )
+    let optimise = if optimise == 1 {
+        Optimise::Size
+    } else {
+        Optimise::Speed
+    };
+    let host = wcontainers_arm64::Host::from_probe(probe);
+    let code = code_start..code_end;
+    let result = INPUT.with_borrow(|blob| match module_bytes {
+        0 => translate_omitting(blob, code, &[start], look_ahead, optimise, host, omit),
+        _ => {
+            let module_bytes = module_bytes as usize;
+            translate_in_modules(blob, code, &[start], look_ahead, optimise, host, module_bytes)
+        }
     });
     match result {
         Ok(translation) => {

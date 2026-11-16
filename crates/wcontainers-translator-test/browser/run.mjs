@@ -4,6 +4,7 @@
 // how many times to run the program in the same instances), blob.bin, stack.bin and translator.wasm. Chrome is the one installed on the machine; playwright-core comes
 // from the Nix shell (WC_PLAYWRIGHT_CORE).
 
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -54,8 +55,30 @@ const browser = await chromium.launch({
   headless: true,
   args: jsFlags ? [`--js-flags=${jsFlags}`] : [],
 });
+// The resident memory of every process under this one (Chrome's), in bytes.
+function chromeMemory() {
+  const rows = execFileSync("ps", ["-A", "-o", "pid=,ppid=,rss="], { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number));
+  const under = new Set([process.pid]);
+  let bytes = 0;
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [pid, ppid, rss] of rows) {
+      if (under.has(ppid) && !under.has(pid)) {
+        under.add(pid);
+        bytes += rss * 1024;
+        grew = true;
+      }
+    }
+  }
+  return bytes;
+}
+
 try {
   const page = await browser.newPage();
+  await page.exposeFunction("chromeMemory", chromeMemory);
   page.on("console", (message) => process.stderr.write(`chrome: ${message.text()}\n`));
   await page.goto(`${origin}/index.html`);
   const result = await page.evaluate(async (setup) => {
@@ -70,6 +93,8 @@ try {
       moduleBytes: [],
     };
     for (let i = 0; i < (setup.modules ?? 0); i++) message.moduleBytes.push(await bytes(`/module-${i}.wasm`));
+    // Code modules loaded only: Chrome's memory before the worker starts and once they are made.
+    const memoryBefore = setup.modules ? await chromeMemory() : 0;
     const worker = new Worker("/runner.js", { type: "module" });
     // V8 runs a function first from its baseline compiler and uses optimised code only from the function's
     // next entry, so a loop in a function entered once would stay in baseline code. The page raises the
@@ -86,6 +111,10 @@ try {
       worker.onerror = (event) => reject(new Error(event.message));
       worker.postMessage(message, message.moduleBytes.map((b) => b.buffer));
     });
+    if (setup.modules) {
+      answer.memoryBefore = memoryBefore;
+      answer.memoryAfter = await chromeMemory();
+    }
     worker.terminate();
     return answer;
   }, setup);

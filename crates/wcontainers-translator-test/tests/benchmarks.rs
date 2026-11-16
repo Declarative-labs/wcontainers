@@ -189,10 +189,11 @@ fn measure_benchmarks() {
     }
 }
 
-/// Not a check: what a direct call costs when it crosses from one code module to another, in wasmtime
-/// (`programs/calls.c`, -O2, `WC_CALLS` calls of a small function, default 100 million): the program in
-/// one module, and with every piece in a module of its own, so that each call goes through the lookup.
-/// Best of `WC_BENCH_RUNS`, for both settings.
+/// Not a check: what a direct call costs when it crosses from one code module to another, in wasmtime and
+/// Chrome (`programs/calls.c`, -O2, `WC_CALLS` calls of a small function, default 100 million): the program
+/// in one module, and with every piece in a module of its own, so that each call goes through the lookup.
+/// Best of `WC_BENCH_RUNS`, for both settings; Chrome runs the program twice in the same instances, and
+/// `WC_BENCH_CHROME=0` leaves it out.
 #[test]
 #[ignore]
 fn measure_calls_between_modules() {
@@ -225,6 +226,23 @@ fn measure_calls_between_modules() {
         }
         eprintln!(
             "calls for {optimise:?}: wasmtime, one module {one:.3} s, a module a piece {split:.3} s: {:.2} ns more a call (load {})",
+            (split - one) / calls as f64 * 1e9,
+            load()
+        );
+        if std::env::var("WC_BENCH_CHROME").is_ok_and(|v| v == "0") {
+            continue;
+        }
+        let (mut one, mut split) = (f64::INFINITY, f64::INFINITY);
+        for _ in 0..runs {
+            let report = browser::repeated(&blob, (LookAhead::Full, optimise), Omit::default(), 2);
+            assert_eq!(report.ran, expected);
+            one = report.runs.iter().fold(one, |a, &b| a.min(b));
+            let report = browser::repeated_split(&blob, optimise, 2, 1);
+            assert_eq!(report.ran, expected);
+            split = report.runs.iter().fold(split, |a, &b| a.min(b));
+        }
+        eprintln!(
+            "calls for {optimise:?}: Chrome, one module {one:.3} s, a module a piece {split:.3} s: {:.2} ns more a call (load {})",
             (split - one) / calls as f64 * 1e9,
             load()
         );
