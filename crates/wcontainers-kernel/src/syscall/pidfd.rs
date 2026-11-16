@@ -28,7 +28,7 @@ pub(super) struct Named {
 
 /// What a descriptor names; EBADF for a file that is not one (`pidfd_pid`).
 pub(super) fn named(kernel: &Kernel, file: &OpenFile) -> Result<Named, Errno> {
-    let Content::Pidfd(pid) = file.node.borrow().content else {
+    let Content::Pidfd(pid, _) = file.node.borrow().content else {
         return Err(Errno::EBADF);
     };
     let exists = kernel
@@ -83,7 +83,7 @@ pub(super) fn make(
                     gid: 0,
                     rdev: 0,
                     now,
-                    content: Content::Pidfd(pid),
+                    content: Content::Pidfd(pid, None),
                     parent: None,
                     name: LINK.to_vec(),
                 },
@@ -283,4 +283,149 @@ pub(super) fn give_child_descriptor(
     let process = kernel.process_of_mut(tid);
     let limit = process.limits[RLIMIT_NOFILE as usize].current;
     process.files.add(file, true, 0, limit)
+}
+
+/// The cgroup every process of the container is in, as `cgroup_id` reports it: the made-up machine
+/// has one hierarchy whose root the container is.
+const CGROUP_ID: u64 = 1;
+
+/// `pidfd_ioctl`: the inode's generation, the process's information, and its namespaces, which have
+/// no files here.
+pub(super) fn ioctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux::ioctl::FS_IOC_GETVERSION;
+    use crate::linux_extra::{PIDFD_GET_INFO, PIDFD_GET_NAMESPACES, PIDFD_INFO_SIZE_VER0};
+    let info = request & !(0x3fff << 16) == PIDFD_GET_INFO & !(0x3fff << 16)
+        && (request >> 16) & 0x3fff >= PIDFD_INFO_SIZE_VER0 as u32;
+    // `pidfs_ioctl_valid`, then the requests in `pidfd_ioctl`'s order.
+    if request == FS_IOC_GETVERSION {
+        if argument == 0 {
+            return Err(Errno::EINVAL);
+        }
+        // pidfs's generation is 0 on a 64 bit machine.
+        return super::guest(kernel, cx, tid)
+            .put(argument, &0u32.to_le_bytes())
+            .map(|()| 0);
+    }
+    if info {
+        return pidfd_info(kernel, cx, tid, file, request, argument);
+    }
+    if !PIDFD_GET_NAMESPACES.contains(&request) {
+        return Err(Errno::ENOTTY);
+    }
+    let named = named(kernel, &file.borrow())?;
+    if !named.exists || kernel.processes[&named.pid].ended.is_some() {
+        return Err(Errno::ESRCH);
+    }
+    if argument != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let caller = kernel.threads[&tid].process;
+    if !kernel.ptrace_may_read(caller, named.pid) {
+        return Err(Errno::EACCES);
+    }
+    // Namespace files (nsfs) are not built: EOPNOTSUPP, as Linux answers for a namespace it lacks.
+    Err(kernel.counters.refuse(
+        cx.host,
+        crate::counters::reason::IOCTL_NOT_BUILT,
+        request.into(),
+        Errno::EOPNOTSUPP,
+    ))
+}
+
+/// `pidfd_info`: in `struct pidfd_info` (the mask at 0, the cgroup at 8, the numbers from 16, the
+/// credentials from 28, the wait status at 60, the core dump bits at 64, the supported mask at 72),
+/// the process's numbers, credentials and cgroup, its wait status once reaped and
+/// whether it may dump core, in as much of `struct pidfd_info` as the request's size holds.
+fn pidfd_info(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux_extra::*;
+    let size = ((request >> 16) & 0x3fff) as usize;
+    if argument == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let asked: u64 = super::guest(kernel, cx, tid).read_value(argument)?;
+    let (pid, exit) = match file.borrow().node.borrow().content {
+        Content::Pidfd(pid, exit) => (pid, exit),
+        _ => return Err(Errno::EBADF),
+    };
+    let mut info = [0u8; PIDFD_INFO_SIZE_VER2];
+    let mut mask = 0u64;
+    let mut put = |at: usize, value: u32| info[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    if asked & PIDFD_INFO_EXIT != 0
+        && let Some(status) = exit
+    {
+        mask |= PIDFD_INFO_EXIT | PIDFD_INFO_CGROUPID;
+        put(60, status as u32);
+    }
+    let cgroup = mask & PIDFD_INFO_CGROUPID != 0;
+    let named = named(kernel, &file.borrow())?;
+    if named.exists {
+        let process = &kernel.processes[&pid];
+        // A process that has ended has no memory, so nothing about its core dump is known.
+        if asked & PIDFD_INFO_COREDUMP != 0 && process.ended.is_none() {
+            let dump = if process.dumpable {
+                PIDFD_COREDUMP_USER
+            } else {
+                PIDFD_COREDUMP_SKIP
+            };
+            put(64, dump);
+            mask |= PIDFD_INFO_COREDUMP;
+        }
+        let c = &process.credentials;
+        for (at, id) in [
+            (28, c.uid),
+            (32, c.gid),
+            (36, c.euid),
+            (40, c.egid),
+            (44, c.suid),
+            (48, c.sgid),
+            (52, c.fsuid),
+            (56, c.fsgid),
+        ] {
+            put(at, id);
+        }
+        mask |= PIDFD_INFO_CREDS | PIDFD_INFO_CGROUPID | PIDFD_INFO_PID;
+        // The parent, the process and its first thread.
+        put(24, process.parent as u32);
+        put(20, pid as u32);
+        put(16, pid as u32);
+    } else if asked & PIDFD_INFO_EXIT == 0 {
+        return Err(Errno::ESRCH);
+    }
+    if cgroup || named.exists {
+        info[8..16].copy_from_slice(&CGROUP_ID.to_le_bytes());
+    }
+    if asked & PIDFD_INFO_SUPPORTED_MASK != 0 {
+        mask |= PIDFD_INFO_SUPPORTED_MASK;
+        let supported = PIDFD_INFO_PID
+            | PIDFD_INFO_CREDS
+            | PIDFD_INFO_CGROUPID
+            | PIDFD_INFO_EXIT
+            | PIDFD_INFO_COREDUMP
+            | PIDFD_INFO_SUPPORTED_MASK
+            | PIDFD_INFO_COREDUMP_SIGNAL;
+        info[72..80].copy_from_slice(&supported.to_le_bytes());
+    }
+    info[0..8].copy_from_slice(&mask.to_le_bytes());
+    // `copy_struct_to_user`: a larger structure's tail is cleared first, then the common part.
+    let common = size.min(PIDFD_INFO_SIZE_VER2);
+    let mut guest = super::guest(kernel, cx, tid);
+    if size > common {
+        guest.write(argument + common as u64, &alloc::vec![0; size - common])?;
+    }
+    guest.write(argument, &info[..common])?;
+    Ok(0)
 }

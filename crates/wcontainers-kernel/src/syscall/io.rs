@@ -464,7 +464,7 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
         if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
     // A signal descriptor only reads; a process descriptor does neither.
     let anon_write = writing && matches!(inode.content, Content::Anon | Content::Mqueue(_));
-    let pidfd = matches!(inode.content, Content::Pidfd(_));
+    let pidfd = matches!(inode.content, Content::Pidfd(..));
     if inode.is_secret() || (writing && no_write) || anon_write || pidfd {
         return Err(Errno::EINVAL);
     }
@@ -772,7 +772,7 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(_) | Content::Anon => {
+        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(..) | Content::Anon => {
             return Err(Errno::EINVAL);
         }
         // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
@@ -1103,7 +1103,7 @@ pub(super) fn write_bytes(
         Content::Directory(_)
         | Content::Proc(_)
         | Content::Symlink(_)
-        | Content::Pidfd(_)
+        | Content::Pidfd(..)
         | Content::Anon
         | Content::Mqueue(_) => {
             return Err(Errno::EINVAL);
@@ -1423,7 +1423,7 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::Pipe(_) | Content::Pidfd(_) => return Err(Errno::ESPIPE),
+        Content::Pipe(_) | Content::Pidfd(..) => return Err(Errno::ESPIPE),
         // Signal descriptors keep their position at 0 (`noop_llseek`).
         Content::Anon => file.offset as i64,
         // A queue seeks as `default_llseek` does over the size it shows.
@@ -2421,7 +2421,7 @@ pub(super) fn fsync(
         Content::Pipe(_)
         | Content::Special
         | Content::Proc(_)
-        | Content::Pidfd(_)
+        | Content::Pidfd(..)
         | Content::Anon
         | Content::Mqueue(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
@@ -2466,7 +2466,7 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
         }
         // `mounts_poll`: the mount table cannot change within the container.
         Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts)) => (POLLIN | POLLRDNORM) as u16,
-        Content::Pidfd(_) => {
+        Content::Pidfd(..) => {
             drop(node);
             super::pidfd::poll(kernel, &file)
         }

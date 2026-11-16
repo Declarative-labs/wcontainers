@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -435,6 +436,131 @@ static void generic(const char *what, int fd) {
     show("  list", flistxattr(fd, buffer, sizeof buffer));
 }
 
+// pidfs's requests: PIDFD_GET_INFO in each size, FS_IOC_GETVERSION, and the namespace requests'
+// refusals (a namespace's own file is not compared: nsfs is not built).
+#define IOC(dir, nr, size) (((unsigned)(dir) << 30) | ((unsigned)(size) << 16) | (0xffu << 8) | (nr))
+#define GET_INFO(size) IOC(3, 11, size)
+
+static void info(const char *what, int fd, unsigned long long asked, unsigned size) {
+    unsigned char buffer[128];
+    memset(buffer, 0x5a, sizeof buffer);
+    memcpy(buffer, &asked, 8);
+    long result = ioctl(fd, GET_INFO(size), buffer);
+    if (result < 0) {
+        printf("%s info %u: errno %d\n", what, size, errno);
+        return;
+    }
+    unsigned long long mask, cgroup, supported;
+    unsigned v[16];
+    memcpy(&mask, buffer, 8);
+    memcpy(&cgroup, buffer + 8, 8);
+    memcpy(v, buffer + 16, 56);
+    memcpy(&supported, buffer + 72, 8);
+    printf("%s info %u: mask %llx cgroup %d pid %d tgid %d ppid %d", what, size, mask, cgroup != 0,
+           v[0] == 0 ? 0 : (pid_t)v[0] == getpid() ? 1 : 2, v[1] == v[0], v[2] == 0 ? 0 : (pid_t)v[2] == getpid() ? 1 : (pid_t)v[2] == getppid() ? 2 : 3);
+    printf(" ids %u %u %u %u %u %u %u %u exit %x dump %x signal %u", v[3], v[4], v[5], v[6], v[7],
+           v[8], v[9], v[10], v[11], v[12], v[13]);
+    printf(" supported %llx tail", size >= 80 ? supported : 0);
+    for (unsigned n = size < 80 ? size : 80; n < (size < 96 ? size : 96); n++) printf(" %x", buffer[n]);
+    printf(" after %x\n", buffer[size < 127 ? size : 127]);
+}
+
+static void namespaces(const char *what, int fd, unsigned long argument) {
+    printf("%s namespaces:", what);
+    for (unsigned nr = 1; nr <= 10; nr++) {
+        long result = ioctl(fd, IOC(0, nr, 0), argument);
+        printf(" %d", result < 0 ? -errno : 0);
+        if (result >= 0) close(result);
+    }
+    printf("\n");
+}
+
+static void requests(void) {
+    int self = open_pid(getpid(), 0);
+    unsigned long long all = 0x7f;
+    info("self", self, 0, 64);
+    info("self", self, all, 64);
+    info("self", self, all, 72);
+    info("self", self, all, 80);
+    info("self", self, all, 96);
+    info("self", self, 0x10, 80);
+    info("self", self, 0x20, 80);
+    info("self", self, 1ull << 40, 80);
+    printf("too small: %d errno %d\n", ioctl(self, GET_INFO(63), 0) < 0 ? -1 : 0, errno);
+    printf("read only: %d errno %d\n", ioctl(self, IOC(2, 11, 80), 0) < 0 ? -1 : 0, errno);
+    printf("number 12: %d errno %d\n", ioctl(self, IOC(3, 12, 80), 0) < 0 ? -1 : 0, errno);
+    printf("null: %d errno %d\n", ioctl(self, GET_INFO(80), 0) < 0 ? -1 : 0, errno);
+    printf("bad pointer: %d errno %d\n", ioctl(self, GET_INFO(80), 8) < 0 ? -1 : 0, errno);
+    unsigned version = 7;
+    printf("version: %d %u\n", ioctl(self, 0x80087601, &version), version);
+    printf("version null: %d errno %d\n", ioctl(self, 0x80087601, 0) < 0 ? -1 : 0, errno);
+    namespaces("self argument", self, 1);
+    // The caller's own namespaces open on Linux and are refused here; neither is printed.
+    for (unsigned nr = 1; nr <= 10; nr++) {
+        long result = ioctl(self, IOC(0, nr, 0), 0);
+        if (result >= 0) close(result);
+    }
+    int write_end;
+    pid_t pid = waiting_child(&write_end);
+    int child = open_pid(pid, 0);
+    info("running", child, all, 80);
+    close(write_end);
+    siginfo_t si;
+    waitid(P_PID, pid, &si, WEXITED | WNOWAIT);
+    info("ended", child, all, 80);
+    namespaces("ended", child, 0);
+    waitpid(pid, NULL, 0);
+    info("reaped", child, all, 80);
+    info("reaped", child, 0, 80);
+    namespaces("reaped", child, 0);
+    close(child);
+    pid = fork();
+    if (pid == 0) {
+        pause();
+        _exit(0);
+    }
+    child = open_pid(pid, 0);
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    info("killed", child, all, 80);
+    close(child);
+    int ends[2];
+    pipe(ends);
+    pid = fork();
+    if (pid == 0) {
+        setresgid(3, 4, 5);
+        setresuid(1000, 1001, 1002);
+        write(ends[1], "x", 1);
+        pause();
+        _exit(0);
+    }
+    char byte;
+    read(ends[0], &byte, 1);
+    child = open_pid(pid, 0);
+    info("other user", child, all, 80);
+    namespaces("other user", child, 0);
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    close(child);
+    pid = fork();
+    if (pid == 0) {
+        prctl(PR_SET_DUMPABLE, 0);
+        write(ends[1], "x", 1);
+        pause();
+        _exit(0);
+    }
+    read(ends[0], &byte, 1);
+    child = open_pid(pid, 0);
+    info("not dumpable", child, all, 80);
+    namespaces("not dumpable", child, 0);
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    close(child);
+    close(ends[0]);
+    close(ends[1]);
+    close(self);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     opens();
@@ -444,6 +570,7 @@ int main(void) {
     clones();
     releases();
     inherited();
+    requests();
     int fd = open_pid(getpid(), 0);
     generic("process descriptor", fd);
     close(fd);

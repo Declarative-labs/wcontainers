@@ -379,6 +379,9 @@ fn own(
     if super::tty::end(file).is_some() {
         return super::tty::ioctl(kernel, cx, tid, file, request, argument);
     }
+    if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
+        return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
+    }
     let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();

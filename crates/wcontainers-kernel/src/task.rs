@@ -563,6 +563,32 @@ impl Kernel {
         })
     }
 
+    /// Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS: the caller's own process, or one
+    /// whose ids all match the caller's file system ids, that may be dumped and whose permitted
+    /// powers the caller's effective ones cover (`cap_ptrace_access_check`), unless the caller has
+    /// CAP_SYS_PTRACE.
+    pub(crate) fn ptrace_may_read(&self, caller: Pid, target: Pid) -> bool {
+        if caller == target {
+            return true;
+        }
+        let (Some(caller), Some(target)) =
+            (self.processes.get(&caller), self.processes.get(&target))
+        else {
+            return false;
+        };
+        let (c, t) = (&caller.credentials, &target.credentials);
+        let traces = c.has(CAP_SYS_PTRACE);
+        let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == c.fsuid)
+            && [t.gid, t.egid, t.sgid].iter().all(|id| *id == c.fsgid);
+        if !same && !traces {
+            return false;
+        }
+        if target.ended.is_none() && !target.dumpable && !traces {
+            return false;
+        }
+        t.permitted & !c.effective == 0 || traces
+    }
+
     fn group_has_stopped(&self, group: Pid) -> bool {
         self.processes
             .values()
@@ -620,6 +646,9 @@ impl Kernel {
             return;
         };
         if let Some(node) = &process.pidfd {
+            if let crate::fs::Content::Pidfd(_, exit) = &mut node.borrow_mut().content {
+                *exit = process.ended;
+            }
             self.wake(syscall::pidfd::channel(node));
         }
         if let Some(parent) = self.processes.get_mut(&process.parent) {

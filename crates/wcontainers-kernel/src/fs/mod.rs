@@ -307,8 +307,9 @@ pub(crate) enum Content {
     Pipe(crate::pipe::Pipe),
     /// A file or directory of the process information tree, made when it is looked up.
     Proc(proc::Entry),
-    /// A process descriptor's file, naming a process by number while the process holds it.
-    Pidfd(crate::process::Pid),
+    /// A process descriptor's file, naming a process by number while the process holds it, and
+    /// its wait status once it is reaped (`pidfs_exit`).
+    Pidfd(crate::process::Pid, Option<i32>),
     /// The anonymous inode; what each file on it is lies in the file (`OpenFile::anon`).
     Anon,
     /// A POSIX message queue.
@@ -773,7 +774,7 @@ impl Inode {
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
             Content::Mqueue(queue) => queue.size,
-            Content::Special | Content::Pipe(_) | Content::Pidfd(_) | Content::Anon => 0,
+            Content::Special | Content::Pipe(_) | Content::Pidfd(..) | Content::Anon => 0,
         }
     }
 
