@@ -69,7 +69,8 @@ pub(crate) const F_CLOCK: u32 = 7;
 pub(crate) const F_CODE_CHANGED: u32 = 8;
 pub(crate) const F_DISPATCH: u32 = 9;
 pub(crate) const F_UNWIND: u32 = 10;
-pub(crate) const F_FIRST_PIECE: u32 = 11;
+pub(crate) const F_EXACT: u32 = 11;
+pub(crate) const F_FIRST_PIECE: u32 = 12;
 
 /// The function a meaning's hook calls.
 pub(crate) fn hook_function(hook: Hook) -> u32 {
@@ -158,6 +159,8 @@ pub fn translate_omitting(
     code_section.function(&dispatcher());
     functions.function(7);
     code_section.function(&unwinder());
+    functions.function(6);
+    code_section.function(&exact());
     for function in pieces.values().chain(&others) {
         functions.function(0);
         code_section.function(function);
@@ -572,6 +575,34 @@ pub(crate) fn dispatcher() -> wasm_encoder::Function {
         .ref_as_non_null()
         .return_call_ref(0)
         .end();
+    f
+}
+
+/// Carry on at a guest address in code translated there at look-ahead none, which has every slow path in
+/// place, keeping the WebAssembly stack. Parameters: those of the dispatcher.
+pub(crate) fn exact() -> wasm_encoder::Function {
+    const TARGET: u32 = PARAMETERS;
+    let mut f = wasm_encoder::Function::new([]);
+    let mut s = f.instructions();
+    set_pc(&mut s, BLOCK, |s| {
+        s.local_get(TARGET);
+    });
+    save_passed(&mut s, BLOCK);
+    s.i32_const(Reason::LeftToAddress as i32)
+        .local_get(TARGET)
+        .call(F_WARN);
+    s.local_get(TARGET)
+        .call(F_LOAD_CODE)
+        .i32_eqz()
+        .if_(BlockType::Empty)
+        .i32_const(UNWIND_LEAVE)
+        .call(F_UNWIND)
+        .unreachable()
+        .end();
+    for i in 0..=PARAMETERS {
+        s.local_get(i);
+    }
+    s.return_call(F_DISPATCH).end();
     f
 }
 

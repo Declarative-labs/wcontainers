@@ -1293,6 +1293,8 @@ struct FullEmitter<'a> {
     /// The piece checks the stop flag at its entry: when it calls or leaves to other pieces, and always for
     /// a loop piece, which a stop check at a jump back enters.
     entry_check: bool,
+    /// The instruction being emitted has written a register, the flags or a control register.
+    written: bool,
 }
 
 impl<'a> FullEmitter<'a> {
@@ -1339,6 +1341,7 @@ impl<'a> FullEmitter<'a> {
             kept_pages: Vec::new(),
             unchecked: Vec::new(),
             entry_check: (plan.calls_out || loop_piece) && !omit.stop,
+            written: false,
         };
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
@@ -1629,6 +1632,7 @@ impl<'a> FullEmitter<'a> {
         };
         for offset in (block.start..block.end).step_by(4) {
             self.at.offset = offset;
+            self.written = false;
             let mark = self.taken.len();
             if let Some(&(from, len)) = self.plan.frame_checks.get(&offset)
                 && !self.omit.permissions
@@ -2124,6 +2128,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set(&mut self, r: Reg) {
+        self.written = true;
         match Registers::bit(r) {
             Some(bit) => {
                 let local = self.register(bit);
@@ -2142,6 +2147,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_flags(&mut self, flags: Flags) {
+        self.written = true;
         let lazy = self.decoded().effects.flags.is_some();
         match Shape::of(flags).filter(|_| lazy) {
             Some(shape) => {
@@ -2217,6 +2223,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_vector(&mut self, n: u8) {
+        self.written = true;
         let bit = Registers::vector_bit(n);
         let local = self.register(bit);
         self.sink().local_set(local);
@@ -2238,7 +2245,13 @@ impl Emitter for FullEmitter<'_> {
         self.host
     }
 
-    fn float_mode(&mut self) {
+    /// The slow path leaves the piece by a tail call, so no call stays in the function, which would make the
+    /// engine keep values out of registers around it.
+    fn float_mode(&mut self) -> bool {
+        assert!(
+            !self.written,
+            "floating point's slow path tested after the instruction wrote"
+        );
         let local = match self.float_mode_local {
             Some(l) => l,
             None => {
@@ -2253,7 +2266,12 @@ impl Emitter for FullEmitter<'_> {
             self.sink().i32_or().local_set(local);
             self.at.float_mode = true;
         }
-        self.sink().local_get(local);
+        self.sink().local_get(local).if_(BlockType::Empty);
+        self.write_back(false);
+        self.arguments();
+        self.this_address();
+        self.sink().return_call(F_EXACT).end();
+        false
     }
 
     fn stack_aligned(&mut self) -> bool {
@@ -2261,6 +2279,7 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn set_control(&mut self, control: Control) {
+        self.written = true;
         if matches!(control, Control::Fpcr | Control::FloatTracking) {
             self.at.float_mode = false;
         }

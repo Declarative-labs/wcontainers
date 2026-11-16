@@ -2,7 +2,7 @@
 
 use crate::exact::Operation;
 use crate::float::{
-    Op, Source, binary_fast, by_hook, convert, exact_mode, from_integer, lanes, low, op, round,
+    Op, Source, binary_fast, by_hook, convert, from_integer, lanes, low, op, paths, round,
     step_fast, to_integer_fast,
 };
 use crate::instruction::*;
@@ -44,8 +44,6 @@ enum Holds {
 /// Push the mask of lanes where `a` compared with `b` holds.
 fn compare<E: Emitter + ?Sized>(e: &mut E, holds: Holds, size: u8, count: u8, a: u32, b: u32) {
     let signaling = !matches!(holds, Holds::Equal);
-    exact_mode(e);
-    e.sink().if_(BlockType::Result(ValType::V128));
     let finish = move |e: &mut E| {
         let mut s = e.sink();
         let (shift, mask, want, equal) = match holds {
@@ -67,27 +65,29 @@ fn compare<E: Emitter + ?Sized>(e: &mut E, holds: Holds, size: u8, count: u8, a:
         };
         s.i64_extend_i32_u().i64_const(-1).i64_mul();
     };
-    by_hook(
-        e,
-        Operation::Compare { signaling },
-        size,
-        size,
-        count,
-        &[Source::of(a, size), Source::of(b, size)],
-        &finish,
-    );
-    e.sink().else_();
-    let mut s = e.sink();
-    let (x, y, o) = match holds {
-        Holds::Equal => (a, b, Op::Eq),
-        Holds::GreaterOrEqual => (a, b, Op::Ge),
-        Holds::Greater => (a, b, Op::Gt),
-        Holds::LessOrEqual => (a, b, Op::Le),
-        Holds::Less => (a, b, Op::Lt),
+    let slow = |e: &mut E| {
+        by_hook(
+            e,
+            Operation::Compare { signaling },
+            size,
+            size,
+            count,
+            &[Source::of(a, size), Source::of(b, size)],
+            &finish,
+        )
     };
-    s.local_get(x).local_get(y);
-    op(&mut s, o, size);
-    s.end();
+    let o = match holds {
+        Holds::Equal => Op::Eq,
+        Holds::GreaterOrEqual => Op::Ge,
+        Holds::Greater => Op::Gt,
+        Holds::LessOrEqual => Op::Le,
+        Holds::Less => Op::Lt,
+    };
+    paths(e, ValType::V128, slow, |e| {
+        let mut s = e.sink();
+        s.local_get(a).local_get(b);
+        op(&mut s, o, size);
+    });
 }
 
 /// The software path's name of a binary operation.
@@ -262,24 +262,24 @@ pub(crate) fn emit<E: Emitter + ?Sized>(
                 rounding,
                 fraction_bits: shift,
             };
-            exact_mode(e);
-            e.sink().if_(BlockType::Result(ValType::V128));
-            by_hook(
-                e,
-                operation,
-                size,
-                size,
-                count,
-                &[Source::of(n, size)],
-                &|_| {},
-            );
-            e.sink().else_();
-            e.sink().v128_const(0);
-            for lane in 0..count {
-                to_integer_fast(e, n, lane, size, bits, signed, rounding, shift);
-                replace(&mut e.sink(), size, lane);
-            }
-            e.sink().end();
+            let slow = |e: &mut E| {
+                by_hook(
+                    e,
+                    operation,
+                    size,
+                    size,
+                    count,
+                    &[Source::of(n, size)],
+                    &|_| {},
+                )
+            };
+            paths(e, ValType::V128, slow, |e| {
+                e.sink().v128_const(0);
+                for lane in 0..count {
+                    to_integer_fast(e, n, lane, size, bits, signed, rounding, shift);
+                    replace(&mut e.sink(), size, lane);
+                }
+            });
         }
         S::IntegerToFloat { signed } => from_integer(e, n, size, 8 * size, signed, shift, count),
         S::FloatNarrow { odd } => {
@@ -312,28 +312,28 @@ pub(crate) fn emit<E: Emitter + ?Sized>(
                 S::FloatReciprocalSqrtEstimate => Operation::ReciprocalSqrtEstimate,
                 _ => Operation::ReciprocalExponent,
             };
-            exact_mode(e);
-            e.sink().if_(BlockType::Result(ValType::V128));
-            by_hook(
-                e,
-                operation,
-                size,
-                size,
-                count,
-                &[Source::of(n, size)],
-                &|_| {},
-            );
-            e.sink().else_();
-            let input = Input {
-                local: n,
-                element: size,
-                first: 0,
-                signed: false,
+            let slow = |e: &mut E| {
+                by_hook(
+                    e,
+                    operation,
+                    size,
+                    size,
+                    count,
+                    &[Source::of(n, size)],
+                    &|_| {},
+                )
             };
-            map(e, size, count, 0, None, &[input], &|e, v, _| {
-                estimate(e, op_, size, v[0]);
+            paths(e, ValType::V128, slow, |e| {
+                let input = Input {
+                    local: n,
+                    element: size,
+                    first: 0,
+                    signed: false,
+                };
+                map(e, size, count, 0, None, &[input], &|e, v, _| {
+                    estimate(e, op_, size, v[0]);
+                });
             });
-            e.sink().end();
         }
         _ => unreachable!("not AdvSIMD floating point: {op_:?}"),
     }

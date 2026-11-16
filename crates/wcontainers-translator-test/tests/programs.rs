@@ -90,6 +90,10 @@ fn differences_match_linux_on_other_hosts() {
                 machine.count(Reason::ExactFloatingPointRequested) > 0,
                 "{what}"
             );
+            // At full the slow path is reached by leaving the piece.
+            if look_ahead == LookAhead::Full {
+                assert!(machine.count(Reason::LeftToAddress) > 0, "{what}");
+            }
         }
     }
 }

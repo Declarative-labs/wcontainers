@@ -173,12 +173,15 @@ pub trait Emitter {
     fn hook(&mut self, hook: Hook);
     /// What the host's engine does where WebAssembly leaves it open.
     fn host(&self) -> Host;
-    /// Push whether floating point takes the slow path (FPCR not zero, or FPSR's flags kept), as an i32 not
-    /// zero when it does. An emitter may keep it in a local until something can change it.
-    fn float_mode(&mut self) {
+    /// Floating point takes the slow path when FPCR is not zero or FPSR's flags are kept. Push whether it
+    /// does, as an i32 not zero when it does, and return true: the meaning then writes both paths. Or, as
+    /// nothing of the instruction is written yet, carry on from this instruction in other code when it does,
+    /// and return false: the meaning then writes only the fast path.
+    fn float_mode(&mut self) -> bool {
         self.get_control(Control::Fpcr);
         self.get_control(Control::FloatTracking);
         self.sink().i32_or();
+        true
     }
     /// Whether the stack pointer is known here to be a multiple of 16, so its alignment needs no check.
     fn stack_aligned(&mut self) -> bool {

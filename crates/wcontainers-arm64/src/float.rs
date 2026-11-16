@@ -13,9 +13,23 @@ use crate::meaning::{Emitter, Flags, Hook};
 use crate::simd::{extract, replace};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 
-/// Push whether the slow path must be taken, as an i32.
-pub(crate) fn exact_mode<E: Emitter + ?Sized>(e: &mut E) {
-    e.float_mode();
+/// Push a value of `ty` from `slow` when the slow path must be taken, else from `fast`. Where the emitter
+/// carries on elsewhere in that case, only `fast` is written here.
+pub(crate) fn paths<E: Emitter + ?Sized>(
+    e: &mut E,
+    ty: ValType,
+    slow: impl FnOnce(&mut E),
+    fast: impl FnOnce(&mut E),
+) {
+    if e.float_mode() {
+        e.sink().if_(BlockType::Result(ty));
+        slow(e);
+        e.sink().else_();
+        fast(e);
+        e.sink().end();
+    } else {
+        fast(e);
+    }
 }
 
 /// A v128 whose `element` byte elements all hold `bits`.
@@ -222,17 +236,19 @@ pub(crate) fn lanes<E: Emitter + ?Sized>(
         by_hook(e, operation, size, size, lanes, &sources, &|_| {});
         return;
     }
-    exact_mode(e);
-    e.sink().if_(BlockType::Result(ValType::V128));
-    by_hook(e, operation, size, size, lanes, &sources, &|_| {});
-    e.sink().else_();
-    fast(e);
-    if nans && !host.arm_nans {
-        let result = e.local(ValType::V128);
-        e.sink().local_set(result);
-        arm_nans(e, size, result, operands);
-    }
-    e.sink().end();
+    paths(
+        e,
+        ValType::V128,
+        |e| by_hook(e, operation, size, size, lanes, &sources, &|_| {}),
+        |e| {
+            fast(e);
+            if nans && !host.arm_nans {
+                let result = e.local(ValType::V128);
+                e.sink().local_set(result);
+                arm_nans(e, size, result, operands);
+            }
+        },
+    );
 }
 
 /// Push a v128 of `size` elements all `value`.
@@ -605,15 +621,17 @@ pub(crate) fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
                 rounding,
                 fraction_bits,
             };
-            exact_mode(e);
-            e.sink().if_(BlockType::Result(ValType::I64));
-            e.sink().i32_const(operation.encode(size)).local_get(x);
-            extract(&mut e.sink(), size, 0, false);
-            e.sink().i64_const(0).i64_const(0);
-            e.hook(Hook::Float);
-            e.sink().else_();
-            to_integer_fast(e, x, 0, size, bits, signed, rounding, fraction_bits);
-            e.sink().end();
+            paths(
+                e,
+                ValType::I64,
+                |e| {
+                    e.sink().i32_const(operation.encode(size)).local_get(x);
+                    extract(&mut e.sink(), size, 0, false);
+                    e.sink().i64_const(0).i64_const(0);
+                    e.hook(Hook::Float);
+                },
+                |e| to_integer_fast(e, x, 0, size, bits, signed, rounding, fraction_bits),
+            );
             e.set(rd);
         }
         I::IntegerToFloat {
@@ -659,17 +677,20 @@ pub(crate) fn low<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
 
 /// Push the packed NZCV (an i64) of comparing lane 0 of two v128 locals.
 fn compare<E: Emitter + ?Sized>(e: &mut E, signaling: bool, size: u8, a: u32, b: u32) {
-    exact_mode(e);
-    e.sink().if_(BlockType::Result(ValType::I64));
-    e.sink()
-        .i32_const(Operation::Compare { signaling }.encode(size))
-        .local_get(a);
-    extract(&mut e.sink(), size, 0, false);
-    e.sink().local_get(b);
-    extract(&mut e.sink(), size, 0, false);
-    e.sink().i64_const(0);
-    e.hook(Hook::Float);
-    e.sink().else_();
+    let slow = |e: &mut E| {
+        e.sink()
+            .i32_const(Operation::Compare { signaling }.encode(size))
+            .local_get(a);
+        extract(&mut e.sink(), size, 0, false);
+        e.sink().local_get(b);
+        extract(&mut e.sink(), size, 0, false);
+        e.sink().i64_const(0);
+        e.hook(Hook::Float);
+    };
+    paths(e, ValType::I64, slow, |e| compare_fast(e, size, a, b));
+}
+
+fn compare_fast<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32) {
     let mut s = e.sink();
     // N: less; Z: equal; C: greater, equal or unordered; V: unordered.
     let scalar = |s: &mut InstructionSink<'_>, x: u32| {
@@ -703,7 +724,7 @@ fn compare<E: Emitter + ?Sized>(e: &mut E, signaling: bool, size: u8, a: u32, b:
     cmp(&mut s, Op::Lt);
     cmp(&mut s, Op::Ge);
     s.i32_or().i32_eqz().i32_const(28).i32_shl().i32_or();
-    s.i64_extend_i32_u().end();
+    s.i64_extend_i32_u();
 }
 
 /// The fast conversion of lane 0 of a v128 local to an integer, pushed as an i64 (the low `bits`
@@ -762,18 +783,31 @@ pub(crate) fn from_integer<E: Emitter + ?Sized>(
         bits,
         fraction_bits,
     };
-    exact_mode(e);
-    e.sink().if_(BlockType::Result(ValType::V128));
-    by_hook(
-        e,
-        operation,
-        size,
-        size,
-        lanes_count,
-        &[Source::of(x, bits / 8)],
-        &|_| {},
-    );
-    e.sink().else_();
+    let slow = |e: &mut E| {
+        by_hook(
+            e,
+            operation,
+            size,
+            size,
+            lanes_count,
+            &[Source::of(x, bits / 8)],
+            &|_| {},
+        )
+    };
+    paths(e, ValType::V128, slow, |e| {
+        from_integer_fast(e, x, size, bits, signed, fraction_bits, lanes_count)
+    });
+}
+
+fn from_integer_fast<E: Emitter + ?Sized>(
+    e: &mut E,
+    x: u32,
+    size: u8,
+    bits: u8,
+    signed: bool,
+    fraction_bits: u8,
+    lanes_count: u8,
+) {
     e.sink().v128_const(0);
     for lane in 0..lanes_count {
         let mut s = e.sink();
@@ -807,7 +841,6 @@ pub(crate) fn from_integer<E: Emitter + ?Sized>(
             s.f32x4_replace_lane(lane);
         }
     }
-    e.sink().end();
 }
 
 /// Push the conversion of the first `lanes` lanes of `from` bytes in local `x` (starting at lane `first`
@@ -824,32 +857,23 @@ pub(crate) fn convert<E: Emitter + ?Sized>(
 ) {
     let first = if upper { lanes_count } else { 0 };
     let operation = Operation::Convert { to, odd };
-    exact_mode(e);
-    e.sink().if_(BlockType::Result(ValType::V128));
-    by_hook(
-        e,
-        operation,
-        from,
-        to,
-        lanes_count,
-        &[Source {
-            local: x,
-            element: from,
-            first,
-        }],
-        &|_| {},
-    );
-    e.sink().else_();
-    let bits = e.local(ValType::I64);
-    e.sink().v128_const(0);
-    for lane in 0..lanes_count {
-        e.sink().local_get(x);
-        extract(&mut e.sink(), from, first + lane, false);
-        e.sink().local_set(bits);
-        convert_bits(e, bits, from, to, odd);
-        replace(&mut e.sink(), to, lane);
-    }
-    e.sink().end();
+    let source = Source {
+        local: x,
+        element: from,
+        first,
+    };
+    let slow = |e: &mut E| by_hook(e, operation, from, to, lanes_count, &[source], &|_| {});
+    paths(e, ValType::V128, slow, |e| {
+        let bits = e.local(ValType::I64);
+        e.sink().v128_const(0);
+        for lane in 0..lanes_count {
+            e.sink().local_get(x);
+            extract(&mut e.sink(), from, first + lane, false);
+            e.sink().local_set(bits);
+            convert_bits(e, bits, from, to, odd);
+            replace(&mut e.sink(), to, lane);
+        }
+    });
 }
 
 /// Push the bits (an i64) of the float whose bits are in `bits`, converted from `from` to `to` bytes,
