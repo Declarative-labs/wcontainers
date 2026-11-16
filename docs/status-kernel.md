@@ -47,6 +47,8 @@ processes) is partly done after seven runs. Built in K2's seventh run:
   path pool has `/dev/mqueue` and `/dev/mqueue/a`. A read of a queue's file is zeroed by both
   runners as a random device's is (its text holds the requester's process number); the reference's
   runner unlinks every queue after each sequence and gives the root back its owner and mode.
+- The sched_* calls and the affinity calls find a process that has ended and is not yet reaped, as
+  Linux does (its scheduling values kept as `getpriority` keeps them); tests/priorities.rs.
 - Seed 701 passed 20000 sequences with semaphores in; seed 710 passed 2000 with message queues in.
 
 Built in K2's sixth run:
@@ -1503,8 +1505,7 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
    release I/O signal is sent; Linux sends one per end released whose release leaves readers without
    writers or the other way round (`pipe_release`, in descriptor order), which needs the releases
    themselves, not counts. sendfile into a full blocking terminal answers what fit; Linux waits for room
-   (`tty_write`). The sched_* calls (`scheduled` and the affinity calls in src/syscall/system.rs) do not
-   find an ended process not yet reaped (Linux does; `named_tasks`' `Task::Ended` shows how).
+   (`tty_write`).
 2. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
    the milestone. Seeds up to 711 are used (711, 20000 sequences with message queues, was started at
    the end of the seventh run; see Measurements for its result if recorded).

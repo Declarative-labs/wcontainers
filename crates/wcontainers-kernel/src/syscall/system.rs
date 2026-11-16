@@ -172,9 +172,8 @@ pub(super) fn sched_getaffinity(
     if size < 8 || size % 8 != 0 {
         return Err(Errno::EINVAL);
     }
-    if pid != 0 && !kernel.threads.contains_key(&(pid as i32)) {
-        return Err(Errno::ESRCH);
-    }
+    // `find_process_by_pid`: a negative number names no one.
+    scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
     guest(kernel, cx, tid).write(mask, &1u64.to_le_bytes())?;
     Ok(8)
 }
@@ -185,9 +184,8 @@ pub(super) fn sched_setaffinity(
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    if pid != 0 && !kernel.threads.contains_key(&(pid as i32)) {
-        return Err(Errno::ESRCH);
-    }
+    // `find_process_by_pid`: a negative number names no one.
+    scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
     let bytes = guest(kernel, cx, tid).read(mask, size.min(8))?;
     if bytes.first().is_none_or(|first| first & 1 == 0) {
         return Err(Errno::EINVAL);
@@ -210,19 +208,22 @@ pub(super) fn getcpu(
     Ok(0)
 }
 
-/// The thread a scheduling call names: 0 or the caller's own number. Others come with fork.
-fn scheduled(kernel: &Kernel, tid: Tid, pid: u64) -> Result<Tid, Errno> {
+/// The task a scheduling call names: 0 for the caller, a thread, or a process that has ended and is
+/// not yet reaped, which Linux still finds.
+fn scheduled(kernel: &Kernel, tid: Tid, pid: u64) -> Result<Task, Errno> {
     let pid = pid as i32;
     if pid < 0 {
         return Err(Errno::EINVAL);
     }
     if pid == 0 || pid == tid {
-        return Ok(tid);
+        return Ok(Task::Thread(tid));
     }
     if kernel.threads.contains_key(&pid) {
-        Ok(pid)
-    } else {
-        Err(Errno::ESRCH)
+        return Ok(Task::Thread(pid));
+    }
+    match kernel.processes.get(&pid) {
+        Some(process) if process.ended.is_some() => Ok(Task::Ended(pid)),
+        _ => Err(Errno::ESRCH),
     }
 }
 
@@ -233,7 +234,7 @@ pub(super) fn sched_getscheduler(
     [pid, ..]: Args,
 ) -> Result<u64, Errno> {
     let target = scheduled(kernel, tid, pid)?;
-    let schedule = kernel.threads[&target].schedule;
+    let schedule = task_schedule(kernel, target);
     let reset = if schedule.reset_on_fork {
         SCHED_RESET_ON_FORK
     } else {
@@ -252,7 +253,7 @@ pub(super) fn sched_getparam(
         return Err(Errno::EINVAL);
     }
     let target = scheduled(kernel, tid, pid)?;
-    let priority = kernel.threads[&target].schedule.priority as i32;
+    let priority = task_schedule(kernel, target).priority as i32;
     guest(kernel, cx, tid).write(out, &priority.to_le_bytes())?;
     Ok(0)
 }
@@ -293,7 +294,7 @@ fn set_schedule(
     }
     let priority: i32 = guest(kernel, cx, tid).read_value(param)?;
     let target = scheduled(kernel, tid, pid)?;
-    let current = kernel.threads[&target].schedule;
+    let current = task_schedule(kernel, target);
     let (policy, flags) = match policy {
         Some(policy) if policy & SCHED_RESET_ON_FORK != 0 => (
             Some(policy & !SCHED_RESET_ON_FORK),
@@ -369,10 +370,10 @@ fn deadline_valid(request: &Request) -> bool {
 fn change_schedule(
     kernel: &mut Kernel,
     tid: Tid,
-    target: Tid,
+    target: Task,
     request: &Request,
 ) -> Result<u64, Errno> {
-    let current = kernel.threads[&target].schedule;
+    let current = task_schedule(kernel, target);
     let (policy, reset_on_fork) = match request.policy {
         None => (current.policy, current.reset_on_fork),
         Some(policy) => {
@@ -400,7 +401,10 @@ fn change_schedule(
     {
         return Err(Errno::EINVAL);
     }
-    let limits = &kernel.process_of(target).limits;
+    let limits = match target {
+        Task::Thread(thread) => &kernel.process_of(thread).limits,
+        Task::Ended(pid) => &kernel.processes[&pid].limits,
+    };
     let real_time_limit = limits[RLIMIT_RTPRIO as usize].current;
     let nice_limit = limits[RLIMIT_NICE as usize].current;
     // Linux's `is_nice_reduction`: the nice limit allows this value.
@@ -438,8 +442,11 @@ fn change_schedule(
     if policy == SCHED_DEADLINE {
         schedule.deadline = (request.runtime, request.deadline, request.period);
     }
-    let thread = kernel.thread_mut(target);
-    thread.schedule = schedule;
+    *task_schedule_mut(kernel, target) = schedule;
+    let Task::Thread(thread) = target else {
+        return Ok(0);
+    };
+    let thread = kernel.thread_mut(thread);
     // `__setscheduler_params`: real-time threads have no timer slack; leaving that brings it back.
     if is_real_time(policy) || policy == SCHED_DEADLINE {
         thread.timer_slack = 0;
@@ -534,8 +541,8 @@ pub(super) fn sched_setattr(
         period: attributes.sched_period,
     };
     if attributes.sched_flags & u64::from(SCHED_FLAG_KEEP_PARAMS) != 0 {
-        let kept = current_attributes(&kernel.threads[&target].schedule);
-        let schedule = kernel.threads[&target].schedule;
+        let kept = current_attributes(&task_schedule(kernel, target));
+        let schedule = task_schedule(kernel, target);
         if schedule.policy == SCHED_DEADLINE {
             (request.runtime, request.deadline, request.period) = schedule.deadline;
         } else if is_real_time(schedule.policy) {
@@ -564,7 +571,7 @@ pub(super) fn sched_getattr(
         return Err(Errno::EINVAL);
     }
     let target = scheduled(kernel, tid, pid)?;
-    let mut attributes = current_attributes(&kernel.threads[&target].schedule);
+    let mut attributes = current_attributes(&task_schedule(kernel, target));
     let length = (size as usize).min(size_of::<sched_attr>());
     attributes.size = length as u32;
     if !crate::user::access_ok(address, size.into()) {
@@ -586,7 +593,7 @@ pub(super) fn sched_rr_get_interval(
     [pid, out, ..]: Args,
 ) -> Result<u64, Errno> {
     let target = scheduled(kernel, tid, pid)?;
-    let schedule = kernel.threads[&target].schedule;
+    let schedule = task_schedule(kernel, target);
     // Linux's `get_rr_interval` of each class, in whole ticks.
     let interval = match schedule.policy {
         SCHED_RR => ROUND_ROBIN_SLICE,

@@ -63,6 +63,20 @@ int main(void) {
     siginfo_t info;
     waitid(P_PID, b, &info, WEXITED | WNOWAIT);
 
+    // The scheduling calls find an ended child not yet reaped.
+    int param[1] = {0};
+    unsigned long mask = 1;
+    long interval[2];
+    show("ended getscheduler", syscall(SYS_sched_getscheduler, b));
+    show("ended getparam", syscall(SYS_sched_getparam, b, param));
+    show("ended setscheduler batch", syscall(SYS_sched_setscheduler, b, 3, param));
+    show("ended getscheduler after", syscall(SYS_sched_getscheduler, b));
+    show("ended setparam", syscall(SYS_sched_setparam, b, param));
+    show("ended getaffinity", syscall(SYS_sched_getaffinity, b, 8, &mask));
+    show("ended setaffinity", syscall(SYS_sched_setaffinity, b, 8, &mask));
+    show("ended rr interval", syscall(SYS_sched_rr_get_interval, b, interval) < 0 ? -1 : 0);
+    show("missing getscheduler", syscall(SYS_sched_getscheduler, 99999));
+
     show("set a 5", set(PRIO_PROCESS, a, 5));
     show("get a", get(PRIO_PROCESS, a));
     show("get ended b", get(PRIO_PROCESS, b));
