@@ -93,9 +93,6 @@ pub(crate) struct Process {
     pub exit_signal: u32,
     /// Once every thread has ended: the wait status a parent's wait will reap (a zombie).
     pub ended: Option<i32>,
-    /// The wait status the first thread ended with while others went on (`exit_code` of the
-    /// group's leader), which a parent's wait reports unless the whole group was made to end.
-    pub leader_status: Option<i32>,
     /// What a zombie's first thread keeps until it is reaped.
     pub ended_leader: Leader,
     /// The inode its process descriptors share, once one is made.

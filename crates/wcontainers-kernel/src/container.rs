@@ -395,7 +395,6 @@ impl Kernel {
             pending: Default::default(),
             exit_signal: SIGCHLD,
             ended: None,
-            leader_status: None,
             ended_leader: Default::default(),
             nproc_exceeded: false,
             pidfd: None,

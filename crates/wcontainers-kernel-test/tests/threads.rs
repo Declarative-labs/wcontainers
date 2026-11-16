@@ -22,3 +22,17 @@ fn threads_survive_saving() {
         assert!(run.saved > 0);
     }
 }
+
+#[test]
+fn futexes_match_reference() {
+    for run in assert_same_output_seeded(&out(), "futexes", &[], 0) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}
+
+#[test]
+fn thread_groups_match_reference() {
+    for run in assert_same_output_seeded(&out(), "threadlife", &[], 0) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}

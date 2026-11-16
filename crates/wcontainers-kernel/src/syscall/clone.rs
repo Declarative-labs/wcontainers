@@ -192,7 +192,6 @@ fn make_child(
     process.files = parent.files.duplicate(child as u64);
     process.pending = Default::default();
     process.ended = None;
-    process.leader_status = None;
     process.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     process.stopped = false;
     process.report = None;

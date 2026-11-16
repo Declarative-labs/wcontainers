@@ -24,19 +24,10 @@ pub(super) fn exit(
 ) -> Outcome {
     let status = exit_status(arguments[0] as i32);
     let pid = kernel.threads[&tid].process;
-    let process = &kernel.processes[&pid];
-    if process.threads.len() == 1 {
-        // Without a group exit, a parent's wait reports the first thread's own status.
-        let status = process.leader_status.unwrap_or(status);
+    // The last thread's status is the group's (`synchronize_group_exit`).
+    if kernel.processes[&pid].threads.len() == 1 {
         kernel.end_process(cx, pid, status);
     } else {
-        if tid == pid {
-            kernel
-                .processes
-                .get_mut(&pid)
-                .expect("process exists")
-                .leader_status = Some(status);
-        }
         kernel.end_thread(cx, tid);
     }
     Outcome::Gone
