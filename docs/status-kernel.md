@@ -24,8 +24,13 @@ slack, which the reference never ends); the loader follows Linux's error rules f
 start with no arguments gets an empty one; argument room is `bprm_stack_limits`'s; record locks are
 built (process and open file owners, joined and split ranges, let go at close); layer 1 compares the
 play area after each sequence's last call. Of the minor ones, prctl's ambient powers are built; the
-rest are recorded below with their reasons. See Layer 1 for the fresh seeds. The
-one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
+rest are recorded below with their reasons. The twelfth run (the sixth close-out run) found, by
+reading Linux's memory calls against ours and then through layer 1, that lengths in the last page
+must wrap to 0 as `PAGE_ALIGN` does (msync and mlock answered errors where Linux succeeds; an mremap
+shrink by such a length unmapped the whole address space), that arm64 Linux strips a top byte tag
+from the memory calls' addresses, and that `/dev/random` and the mounts files have their own poll
+masks; all fixed, with layer 1 now generating those lengths and tagged addresses. See Layer 1 for the
+fresh seeds. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
 end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
@@ -135,8 +140,9 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
 What layer 1 does not generate, and why:
 - Named pipes (opening one waits; pipes are K2); descriptors 0 to 2 (the reference's runner reports
   through them); process 1 and the caller's own group negated (our caller is process 1, so -1 means
-  every process); memory lengths above 256 MiB (our programs' own mappings lie higher in a 4 GiB
-  space); ppoll and pselect6 without a timeout; flock waits (they wait for ever).
+  every process); memory lengths above 256 MiB that reach memory (our programs' own mappings lie higher in a 4 GiB
+  space; lengths that wrap to 0 in the last page or overflow the address are generated, and one play
+  address in four carries a top byte tag); ppoll and pselect6 without a timeout; flock waits (they wait for ever).
 - Signals whose default action ends or stops a process, and rt_sigaction on the signals kill sends
   (our caller is the container's first process, which Linux protects; theirs is not; handlers are K2).
 - RLIMIT_CPU and RLIMIT_FSIZE limits that can be reached, process limits that can be reached (Linux
@@ -395,7 +401,8 @@ Partial (inside the list above), each with its reason:
   size form), SET/GET_IO_FLUSHER (EPERM without CAP_SYS_RESOURCE). Not built, each counted "prctl
   option not built" and EINVAL (Linux's answer for an option it does not know): SET_MDWE (needs
   mmap and mprotect to refuse writable and executable memory), SET/GET_TAGGED_ADDR_CTRL (needs every
-  call to strip pointer tags; EINVAL is Linux's answer without the tagged address ABI),
+  every call that copies user memory to strip pointer tags; EINVAL is Linux's answer without the tagged
+  address ABI; the memory calls and process_vm's other side strip tags already, as arm64 Linux always does),
   SET_SECUREBITS (needs the no-root, no-setuid-fixup, no-ambient-raise and exec bits applied in
   execve's and the id setters' power rules), GET/SET_SPECULATION_CTRL (the made-up machine's answers), SET_MM's map
   form and its other forms with CAP_SYS_RESOURCE, SET_VMA, the timer, MCE, FP mode, SVE, SME, pointer
@@ -407,8 +414,10 @@ Partial (inside the list above), each with its reason:
 - statfs, sysinfo, `/proc/meminfo`: pages a mapping's faults bring in are not known (counted); free
   memory is the made-up machine's size less every mapped and tmpfs page (counted "page residency not
   tracked"); `/proc/meminfo` has only some of Linux's lines (counted "proc fields not tracked", 4).
-- ppoll, pselect6: every file is always ready (Linux's default poll mask; the host's pipes always have
-  room); a wait with nothing ready sleeps until its timeout, or for ever (until K2's signals). The
+- ppoll, pselect6: every file is always ready: Linux's default poll mask, readable only for
+  `/dev/random` (`random_poll`, the generator ready from the start) and the mounts files
+  (`mounts_poll`), invalid for O_PATH (in every select set, as `select_poll_one`); the host's pipes
+  always have room; a wait with nothing ready sleeps until its timeout, or for ever (until K2's signals). The
   signal mask they take is read, not applied (K2).
 - flock: a wait for a conflicting lock never ends (one process).
 - sched_setscheduler, sched_setparam, sched_setattr: kept per thread with Linux's checks; nothing is
@@ -516,9 +525,18 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-15, eleventh run: 60 passed, 8 ignored known failures)
+## Tests (last run 2026-11-15, twelfth run: 61 passed, 8 ignored known failures)
 
-All pass except the ignored known failures listed above. Added in the eleventh run:
+All pass except the ignored known failures listed above. Added in the twelfth run:
+- pollmask: guest/pollmask.c polls (twice, every event bit) and selects each kind of file one process
+  opens: the five devices, a tmpfs file (read, write, O_PATH) and directory, `/dev`, `/dev/pts`, the
+  built `/proc` files and directories, a sysctl, a memory file, secret memory. Same output.
+- memory: two more cases. "wrap": msync, mlock (aligned and not), mlock2, munlock, mprotect, madvise,
+  mincore, munmap, mmap and mremap (old and new length) with lengths -1, -4095, -4096, -8192 and 2^62,
+  then the mapping is still there. "tagged": the memory calls and process_vm_readv (as the other side
+  and as the local one) with addresses tagged 0x5a, 0xff and a bit-55 address, then a tagged munmap.
+  Same output.
+Added in the eleventh run:
 - loaderrors: guest/loaderrors.c makes ELF programs and loaders: missing, a script, 5 bytes,
   unreadable, mode 0644, only a header, zeros, x86-64, no or short program headers, another kind with a
   bad note; loader names of sizes 0, 1, 4097, past the file, at offsets no file position holds, without
@@ -618,7 +636,21 @@ only that they end within the slack, and layer 1 generates slacks up to 1 ms. op
 four times as often (most calls need an open file) and one open in eight names a random device:
 seeds 174 to 177 (5000 each, 77 s side by side, load 22 to 23) passed with 1, 1, 1 and 0 calls
 putting a random device's bytes somewhere (thin still; tests/transfer.rs covers those reads).
-RESULTS_13
+Fresh seeds 170 to 172 were started at the end of the eleventh run and stopped with it, unfinished.
+Twelfth run (sixth close-out): on head c156ebd the fresh seeds 180, 181 and 182 passed 20000 each
+(297 s each, three side by side, load 20 at the start, 14 at the end; 10, 8 and 6 calls putting a
+random device's bytes somewhere). Reading Linux's msync, mlock, madvise, munmap and mremap against
+ours then showed lengths in the last page wrapping to 0 under `PAGE_ALIGN`, which layer 1 never
+generated: the play lengths now include -1, -4094 and -8192 (fixed: msync and mlock succeed as
+Linux's; an mremap shrink by such a length is refused by munmap's rule instead of unmapping
+everything; layer 2 case memory "wrap"). arm64 Linux strips a top byte tag from those calls'
+addresses, so one play address in four is now tagged (fixed; memory "tagged"). Seed 190 (3000)
+passed with the lengths, 191 (3000, 49 s, load 16 to 14) with the tags. On head e87afdc seeds 184 and
+185 (20000) found ppoll of `/dev/random` reporting it writable (Linux's `random_poll`: readable only);
+a poll test of every kind of file then also found the mounts files (`mounts_poll`) and O_PATH in
+select's exception set (fixed; pollmask). With every fix in (head 01761aa), seeds 184 and 185 and the
+fresh seeds 186, 187 and 188 passed 20000 each: 320 s each, five side by side, load 22 at the start,
+16 at the end; 3, 7, 4, 5 and 5 calls putting a random device's bytes somewhere.
 Tenth run (fourth close-out): layer 1 now reaches the random devices (bytes zeroed by both runners),
 fcntl's owners, signals, hints, queries and pipe sizes, and prctl's parent death signal, timer slack,
 subreaper, huge page, deny-write-execute, secure bits, SET_MM and I/O flusher options. Seeds 130 and
@@ -681,6 +713,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Twelfth run, layer 1 20000 sequences: three side by side 297 s each (load 20 to 14); five side by
+  side 320 s each (load 22 to 16); 3000 sequences alone 48 s (load 16 to 22). The whole test suite of
+  both crates: 88 s wall (load 10 to 20).
 - Tenth run, layer 1 20000 sequences, three side by side: 318 s each (load 4.6 to 10.2); 1500
   sequences alone: 24 to 25 s (load about 5). The whole test suite of both crates: 77 s wall (load 9).
 - Ninth run, layer 1 20000 sequences, four side by side: 294 to 312 s each (load 8 to 15); three
@@ -778,8 +813,8 @@ All on this shared Mac; noisy, not benchmarks.
   address }` (the translator's side) and moved a layout assertion in registers.rs to a constant
   assertion; the kernel handles the new exit (SIGBUS) and the stand-in reports it for misaligned
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
-  packages, only additions). The eighth to eleventh runs changed nothing in the shared crate
-  (origin/phase-1 had nothing new to merge in the ninth to eleventh).
+  packages, only additions). The eighth to twelfth runs changed nothing in the shared crate
+  (origin/phase-1 had nothing new to merge in the ninth to twelfth).
 
 ## Questions for the orchestrator (boundary)
 
