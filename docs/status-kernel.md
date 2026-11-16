@@ -46,7 +46,9 @@ and EFAULT unless every byte made is copied out; fixed), and, once `/dev/pts` wa
 devpts's root taking new names like tmpfs (Linux's has only a lookup: EPERM, and EACCES for a file
 made by open or mknod; fixed), and FS_IOC_FSSETXATTR answering ENOTTY for extended flags Linux does
 not know on files that keep none (Linux refuses them first, EOPNOTSUPP; and it drops the report-only
-flags PREALLOC, ATOMICWRITES and HASATTR on tmpfs, measured; fixed). Layer 1 now generates every mmap flag,
+flags PREALLOC, ATOMICWRITES and HASATTR on tmpfs, measured; fixed), and sendfile from secret memory
+of nothing succeeding (Linux refuses secret memory as input even then, unless the output is a pipe,
+and as output at the first byte; measured; fixed). Layer 1 now generates every mmap flag,
 more advice, statx masks, null stat paths and `/dev/pts`. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
 end of the kernel track. Next is K2.
 
@@ -449,7 +451,8 @@ Partial (inside the list above), each with its reason:
   form and its other forms with CAP_SYS_RESOURCE, SET_VMA, the timer, MCE, FP mode, SVE, SME, pointer
   authentication, syscall user dispatch, memory merging, shadow stack and the other arch options. All
   before K6's bar.
-- sendfile: moves the whole count in rounds of a pipe's 16 pages, as `splice_direct_to_actor` does,
+- sendfile: secret memory is refused as input (EINVAL, even for nothing unless the output is a pipe)
+  and as output (at the first byte). Moves the whole count in rounds of a pipe's 16 pages, as `splice_direct_to_actor` does,
   or one round into the standard stream pipes (`splice_file_to_pipe`); nothing to move succeeds before
   the input is checked; a round that falls short ends it, the position following Linux's.
 - statfs, sysinfo, `/proc/meminfo`: pages a mapping's faults bring in are not known (counted); free
@@ -586,7 +589,9 @@ All pass except the ignored known failures listed above. Added in the thirteenth
   empty and bad paths, junk flags, bad and O_PATH descriptors; a sysctl read split at a fault, too
   large in all, and across two segments; making, linking, renaming and removing names in devpts's
   root, as root and not, and its attributes; FS_IOC_FSSETXATTR of every bit on a tmpfs file and of
-  known and unknown flags on `/dev/null`, secret memory and a `/proc` file. Same output. A second case checks that MADV_COLLAPSE and
+  known and unknown flags on `/dev/null`, secret memory and a `/proc` file; sendfile between secret
+  memory, a tmpfs file, `/dev/zero` and the output pipe, of nothing and of a byte, with and without an
+  offset. Same output. A second case checks that MADV_COLLAPSE and
   the guard advice are counted.
 Added in the twelfth run:
 - pollmask: guest/pollmask.c polls (twice, every event bit) and selects each kind of file one process

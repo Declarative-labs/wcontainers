@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -247,6 +248,20 @@ int main(int argc, char **argv) {
         ioctl(file, 0x801c581f, now);
         printf("  now %#x\n", now[0]);
         ioctl(file, 0x401c5820, none);
+    }
+
+    // sendfile with secret memory on either side, of nothing and of a byte.
+    int secret = (int)syscall(447, 0), pairs[][2] = {{0, 0}, {1, 0}, {0, 1}, {2, 0}, {0, 2}, {3, 0}};
+    int ends[4] = {secret, file, null, 1};
+    for (unsigned pair = 0; pair < sizeof pairs / sizeof pairs[0]; pair++) {
+        for (unsigned long count = 0; count < 2; count++) {
+            char what[64];
+            snprintf(what, sizeof what, "sendfile %d from %d count %lu", pairs[pair][0], pairs[pair][1], count);
+            show(what, sendfile(ends[pairs[pair][0]], ends[pairs[pair][1]], NULL, count));
+            off_t at = 0;
+            snprintf(what, sizeof what, "sendfile %d from %d count %lu at 0", pairs[pair][0], pairs[pair][1], count);
+            show(what, sendfile(ends[pairs[pair][0]], ends[pairs[pair][1]], &at, count));
+        }
     }
 
     // devpts's root has no operations that make, remove or rename names.

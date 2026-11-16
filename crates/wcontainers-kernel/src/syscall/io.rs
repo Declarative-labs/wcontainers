@@ -1097,8 +1097,11 @@ fn send(
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe as input cannot seek.
-        if matches!(input_node.borrow().content, Content::HostStream(_)) {
+        // A pipe as input cannot seek, and secret memory cannot be read at all, even for nothing
+        // (measured; into a pipe nothing is moved without asking it).
+        if matches!(input_node.borrow().content, Content::HostStream(_))
+            || input_node.borrow().is_secret()
+        {
             return Err(Errno::EINVAL);
         }
     }
@@ -1116,11 +1119,13 @@ fn send(
     let mut remaining = count;
     while remaining > 0 {
         // What cannot be spliced from (no `splice_read`: directories, secret memory, `/dev/null`,
-        // the process files of `/proc`) fails at the first round that asks for bytes.
+        // the process files of `/proc`), or into (secret memory has no `splice_write`), fails at the
+        // first round that asks for bytes.
         let unspliceable = {
             let inode = input_node.borrow();
             inode.is_directory()
                 || inode.is_secret()
+                || output_node.borrow().is_secret()
                 || matches!(
                     inode.content,
                     Content::Proc(crate::fs::proc::Entry::ProcessFile(..))
