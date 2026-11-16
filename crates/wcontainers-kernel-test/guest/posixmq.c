@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -165,6 +166,10 @@ static void opens(void) {
     show("read", read(q, buffer, 10));
     show("read rest", read(q, buffer, 100));
     show("read at end", read(q, buffer, 100));
+    // No iterating read: only RWF_HIPRI is taken, and other flags are refused before any copy.
+    struct iovec parts[2] = {{buffer, 4}, {(void *)8, 4}};
+    show("preadv2 hipri", syscall(SYS_preadv2, q, parts, 1, 0, 0, RWF_HIPRI));
+    show("preadv2 nowait", syscall(SYS_preadv2, q, parts, 2, 1, 0, RWF_NOWAIT));
     show("seek end", lseek(q, 0, SEEK_END));
     show("seek data", lseek(q, 5, SEEK_DATA));
     show("seek hole", lseek(q, 5, SEEK_HOLE));

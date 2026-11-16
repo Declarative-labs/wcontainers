@@ -213,8 +213,9 @@ fn vectored2(
         };
         verify_area(position, total)?;
     }
-    // A file without Linux's iterating read or write (directories, and writes to `/dev/full`) is
-    // moved a segment at a time by `do_loop_readv_writev`, which takes no flag but RWF_HIPRI.
+    // A file without Linux's iterating read or write (directories, message queues, and writes to
+    // `/dev/full`) is moved a segment at a time by `do_loop_readv_writev`, which takes no flag but
+    // RWF_HIPRI.
     let looped = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -223,6 +224,7 @@ fn vectored2(
                 && matches!(inode.content, Content::Special)
                 && matches!(Device::from_number(inode.rdev), Some(Device::Full))
             || matches!(inode.content, Content::Proc(entry) if entry.loops(writing))
+            || matches!(inode.content, Content::Mqueue(_))
     };
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
