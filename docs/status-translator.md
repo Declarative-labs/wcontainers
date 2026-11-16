@@ -134,6 +134,12 @@ in its setup, `browser::repeated_split`). `measure_calls_between_modules` (best 
 its instances, load 17 to 20): speed 0.135 s in one module, 0.400 s a module a piece, 2.65 ns more a call;
 size 0.152 / 0.427 s, 2.75 ns. wasmtime in the same run: speed 2.41 ns, size 2.35 ns.
 
+Cases run on this run's code (all passing): after each change, the changes, checks, layer 2 (300 cases),
+look-ahead, programs, smoke, Chrome and validity tests at their defaults (release). Last, every test of the
+three crates on the final code (debug, `RAYON_NUM_THREADS=4`, Chrome and layer 3's defaults included): 69
+passed, 7 ignored (the measurements), 16 minutes, load 26 to 38. No long random run was made this run. Bun's
+translation alone again: 76.73 s (load about 30).
+
 M5, third run, what comes next (most important first; the milestone's parts are all built and recorded):
 1. Bun still translates slowly (72.74 s for speed, 52 s for size, against Node's 18.79 s for less code): not
    profiled after the parallel work. Likely the rounds of cuts (a function of more than 2048 blocks makes
