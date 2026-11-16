@@ -5,7 +5,7 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M3 (every instruction) is in progress, first run: every one of the 1215 forms of the CPU we present
-translates and matches the CPU in layer 1 (1215 x 100 cases, seed 2: no mismatch), the decoding test shows no
+translates and matches the CPU in layer 1 (1215 x 1000 cases, seed 5: no mismatch), the decoding test shows no
 offered form left untranslated, `programs/differences.c` (section 8, printed as bits) matches Linux at every
 level, at none and full, in wasmtime and Chrome, and also on a host made to need the software fused
 multiply-add and the not-a-number fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc,
@@ -1040,6 +1040,8 @@ contract's bits, in both runners).
   `FPRoundBase` does), not after; `ieee-apsqrt` rounds a denormal input wrongly under a directed rounding
   (now the root of x * 2^64, scaled back); the software FRSQRTS halved an operand whose half is denormal.
   Fixed; those 12 forms at 1000 seed 3 and the whole layer at 100, seed 4: 0 mismatches (153 s, load 19 to 23).
+  Then 1215 x 1000, seed 5: 0 mismatches (1,215,000 cases, 26 minutes, load 17 to 24). Every test of the
+  three crates passes after it (debug, Chrome and layer 3's defaults included).
 - M3, layer 3, release: 4 Csmith programs seed 1 and the 48 hand-picked builds (hello and differences x
   clang, gcc x six levels x two positions): all match (59 s, load 5 to 6). 300 Csmith programs, seed 2
   (18.8 minutes, load 5 to 30): 256 compared and matching, 43 did not end on Linux in 20 seconds, 1
