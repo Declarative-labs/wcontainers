@@ -1096,6 +1096,7 @@ impl Instruction {
                 lane,
                 replicate,
                 rn,
+                post,
                 ..
             } => {
                 let bytes = if lane.is_some() || replicate {
@@ -1103,14 +1104,18 @@ impl Instruction {
                 } else {
                     u32::from(registers) * if whole { 16 } else { 8 }
                 };
-                (
-                    Address::Offset {
+                // Post-indexed by the size is a step of the base; by a register it is not known here.
+                let address = match post {
+                    Some(Reg::Zero) => Address::PostIndex {
+                        base: rn,
+                        offset: bytes.into(),
+                    },
+                    _ => Address::Offset {
                         base: rn,
                         offset: 0,
                     },
-                    bytes,
-                    !load,
-                )
+                };
+                (address, bytes, !load)
             }
             _ => return None,
         };

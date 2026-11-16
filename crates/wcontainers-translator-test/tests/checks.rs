@@ -380,3 +380,39 @@ fn loop_not_proven_is_counted() {
         assert_eq!(full.count(Reason::LoopNotProven), entries, "{turns} turns");
     }
 }
+
+/// Loops of structure loads and stores post-indexed by their size are proven too: counted when one runs onto
+/// the page after the blob.
+#[test]
+fn structure_loops_are_proven() {
+    // ld1 {v0.16b-v3.16b}, [x1], #64; st4 {v0.16b-v3.16b}, [x1], #64; ld4r {v0.16b-v3.16b}, [x1], #4.
+    for (name, word, bytes) in [
+        ("ld1x4", 0x4cdf_2020u32, 64u32),
+        ("st4", 0x4c9f_0020, 64),
+        ("ld4r", 0x4dff_e020, 4),
+    ] {
+        for (span, entries) in [(8192u32, 0u64), (20480, 1)] {
+            let turns = span / bytes;
+            let mut ops: Ops = VecAssembler::new(0);
+            zero(&mut ops);
+            // From the second page, after the code.
+            dynasm!(ops ; .arch aarch64
+                ; movz x1, #0x40, lsl #16
+                ; movk x1, #0x1000
+                ; movz x3, turns
+                ; ->turn:
+                ; .u32 word
+                ; subs x3, x3, #1
+                ; b.ne ->turn
+            );
+            dump(&mut ops);
+            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            let full = compare(&blob(&format!("structure-proven-{name}-{span}"), ops));
+            assert_eq!(
+                full.count(Reason::LoopNotProven),
+                entries,
+                "{name} over {span} bytes"
+            );
+        }
+    }
+}
