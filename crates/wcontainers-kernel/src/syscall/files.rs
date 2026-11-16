@@ -286,7 +286,8 @@ pub(super) fn openat2(
         return Err(Errno::EAGAIN);
     }
     free_descriptor(kernel, tid)?;
-    // Lookups restricted by `resolve` are not built; a kernel without them refuses the whole call.
+    // Lookups restricted by `resolve` are not built. Linux has had them as long as it has had openat2,
+    // so these requests are answered as a kernel before openat2 answers the whole call: ENOSYS.
     if how.resolve & !u64::from(RESOLVE_CACHED) != 0 {
         kernel
             .counters

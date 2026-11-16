@@ -1179,6 +1179,46 @@ pub(super) fn prctl(
             }
             Ok((kernel.process_of(tid).credentials.bounding >> second) & 1)
         }
+        // `cap_task_prctl`: clearing commits new credentials whatever was there; raising needs the
+        // power permitted and inheritable (no secure bit can forbid it here).
+        PR_CAP_AMBIENT if second == u64::from(PR_CAP_AMBIENT_CLEAR_ALL) => {
+            if !rest_zero {
+                return Err(Errno::EINVAL);
+            }
+            changing(kernel, tid, true, |credentials| {
+                credentials.ambient = 0;
+                Ok(0)
+            })
+        }
+        PR_CAP_AMBIENT => {
+            if third > u64::from(CAP_LAST_CAP) || fourth != 0 || fifth != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let bit = 1u64 << third;
+            match second as u32 {
+                PR_CAP_AMBIENT_IS_SET => Ok(u64::from(
+                    kernel.process_of(tid).credentials.ambient & bit != 0,
+                )),
+                PR_CAP_AMBIENT_RAISE | PR_CAP_AMBIENT_LOWER => {
+                    let raise = second as u32 == PR_CAP_AMBIENT_RAISE;
+                    let credentials = &kernel.process_of(tid).credentials;
+                    if raise
+                        && (credentials.permitted & bit == 0 || credentials.inheritable & bit == 0)
+                    {
+                        return Err(Errno::EPERM);
+                    }
+                    changing(kernel, tid, true, |credentials| {
+                        if raise {
+                            credentials.ambient |= bit;
+                        } else {
+                            credentials.ambient &= !bit;
+                        }
+                        Ok(0)
+                    })
+                }
+                _ => Err(Errno::EINVAL),
+            }
+        }
         PR_CAPBSET_DROP => {
             let credentials = &mut kernel.process_of_mut(tid).credentials;
             if !credentials.has(CAP_SETPCAP) {

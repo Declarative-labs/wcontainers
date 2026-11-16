@@ -1615,7 +1615,7 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             let option = pick(
                 &[
                     15u64, 16, 3, 4, 7, 8, 24, 38, 39, 9999, 21, 22, 22, 1, 2, 29, 30, 36, 37, 41,
-                    42, 66, 27, 35, 57, 58,
+                    42, 66, 27, 35, 57, 58, 47, 47,
                 ],
                 a,
             );
@@ -1630,6 +1630,15 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 22 => [option, pick(&[0, 1, 2, 2, 3], b), fprog(c), 0, 0, 0],
                 // PR_SET_NO_NEW_PRIVS: only 1 is taken.
                 38 if b % 2 == 0 => [option, pick(&[1, 0, 2], b >> 1), 0, 0, 0, 0],
+                // PR_CAP_AMBIENT: each operation and an unknown one, on powers and numbers past them.
+                47 => [
+                    option,
+                    pick(&[1, 2, 3, 4, 0, 5], b),
+                    number(c),
+                    pick(&[0, 0, 0, 1], d),
+                    0,
+                    0,
+                ],
                 _ => [option, buffer(b), 0, 0, 0, 0],
             }
         }

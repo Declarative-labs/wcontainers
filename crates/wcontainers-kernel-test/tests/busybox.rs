@@ -136,6 +136,14 @@ fn system() {
             "read x < /etc/hostname; echo \"$x\"; test -d /proc && echo yes",
         ],
         &["nice", "-n", "5", "nice"],
+        &["setpriv", "--dump"],
+        &[
+            "setpriv",
+            "--inh-caps=+chown",
+            "--ambient-caps=+chown",
+            "setpriv",
+            "--dump",
+        ],
         &["renice", "-n", "3", "-p", "1"],
         &[
             "setpriv",

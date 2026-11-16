@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <stdio.h>
 #include <string.h>
+#include <linux/capability.h>
 #include <sys/prctl.h>
 #include <sys/select.h>
 #include <sys/syscall.h>
@@ -140,6 +141,38 @@ int main(void) {
     R(prctl(PR_GET_TIMERSLACK));
     R(prctl(PR_SET_TIMERSLACK, 0));
     R(prctl(PR_GET_TIMERSLACK));
+    // Ambient powers: asked, raised only when permitted and inheritable, lowered, cleared.
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_CHOWN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, 40, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, 41, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_CHOWN, 1, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_CHOWN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_SYS_ADMIN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, 9, CAP_CHOWN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 1, 0, 0));
+    {
+        struct __user_cap_header_struct header = {_LINUX_CAPABILITY_VERSION_3, 0};
+        struct __user_cap_data_struct data[2];
+        syscall(SYS_capget, &header, data);
+        data[0].inheritable |= 1 << CAP_CHOWN | 1 << CAP_KILL;
+        R(syscall(SYS_capset, &header, data));
+    }
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_CHOWN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_KILL, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_CHOWN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_LOWER, CAP_CHOWN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_CHOWN, 0, 0));
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_KILL, 0, 0));
+    {
+        // Dropping an inheritable power drops it from the ambient set.
+        struct __user_cap_header_struct header = {_LINUX_CAPABILITY_VERSION_3, 0};
+        struct __user_cap_data_struct data[2];
+        syscall(SYS_capget, &header, data);
+        data[0].inheritable &= ~(1 << CAP_KILL);
+        R(syscall(SYS_capset, &header, data));
+    }
+    R(prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_KILL, 0, 0));
     // A sleep's timer may end as late as the slack after it; with nothing else to wake the machine
     // it does. Only that the sleep lasted at least half the slack is shown.
     R(prctl(PR_SET_TIMERSLACK, 2000000000));
