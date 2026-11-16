@@ -132,6 +132,13 @@ wasmtime 50 compiles with Cranelift on all cores at once; "machine code" is the 
 - Chrome allows 10,000,000 table entries. With one slot per 4 bytes of code, Node's 10,003,026 instruction
   slots cannot be one table, so the compact lookup design is needed.
 
+Cases run on this run's code (all 0 mismatches): layer 2, 2000 cases seed 501, 10 on the CPU, each also at a
+bounded N and mixed (671 faulted, 161 left to an address at full, 6572 stacks lost and 6472 pieces forgotten;
+release, 104 s, load 24 to 40); `tests/changes.rs`, `tests/lookaheads.rs`, `tests/checks.rs`, layer 1 and
+`valid.rs` at their defaults (release); the written code, null call, cut and split tests (release). Last,
+every test of the three crates on the final code (debug, Chrome and layer 3's defaults included): 69 passed,
+6 ignored (the measurements), 21.5 minutes, load 39 to 99 (the large binaries were measured beside it).
+
 M5, what comes next (most important first):
 1. The compact lookup design (section 5: one slot per piece, and an array in memory from code offset to
    slot), built beside the present one and measured on the benchmark set (calls through registers: interpret,
