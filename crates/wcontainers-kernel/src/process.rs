@@ -274,7 +274,7 @@ pub(crate) struct Call {
 }
 
 /// What a parked call waits for, besides its deadline and a signal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Channel {
     /// Only its deadline or a signal ends the wait.
     Nothing,

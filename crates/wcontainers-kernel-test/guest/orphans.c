@@ -19,9 +19,10 @@ static volatile int chld, usr1;
 static void on_chld(int signal) { (void)signal; chld++; }
 static void on_usr1(int signal) { (void)signal; usr1++; }
 
+// Reaps every child, waiting for those still running.
 static void reap_all(void) {
     int status;
-    while (waitpid(-1, &status, WNOHANG | __WALL) > 0) {
+    while (waitpid(-1, &status, __WALL) > 0) {
     }
 }
 

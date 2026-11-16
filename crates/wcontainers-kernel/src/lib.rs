@@ -101,6 +101,8 @@ pub struct Kernel {
     resched: bool,
     /// The thread the driver is running, between [`Kernel::next`] and [`Kernel::exit`].
     running: Option<Tid>,
+    /// Parked threads by channel and deadline.
+    parked: schedule::Parked,
     /// Parked threads whose wait ended, whose calls are run again before anything else happens.
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
@@ -162,6 +164,7 @@ impl Kernel {
             current: None,
             resched: false,
             running: None,
+            parked: schedule::Parked::default(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             entry_now: 0,

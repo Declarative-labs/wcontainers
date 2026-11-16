@@ -80,11 +80,7 @@ impl Kernel {
 
     /// The earliest time a parked call ends anyway.
     fn next_deadline(&self) -> Option<u64> {
-        self.threads
-            .values()
-            .filter(|thread| thread.call.wait.is_some())
-            .filter_map(|thread| thread.call.deadline)
-            .min()
+        self.parked.earliest()
     }
 
     /// Charges the thread that ran for the time since it was handed out.
@@ -252,7 +248,12 @@ impl Kernel {
 
     /// Parks a thread in its call until `channel` changes, its deadline comes or a signal arrives.
     pub(crate) fn park(&mut self, tid: Tid, channel: Channel) {
-        self.thread_mut(tid).call.wait = Some(channel);
+        let call = &mut self.thread_mut(tid).call;
+        let (before, deadline) = (call.wait.replace(channel), call.deadline);
+        if let Some(before) = before {
+            self.parked.remove(tid, before, deadline);
+        }
+        self.parked.insert(tid, channel, deadline);
         if self.current == Some(tid) {
             self.current = None;
         }
@@ -261,17 +262,8 @@ impl Kernel {
     /// Wakes every thread parked on `channel`, and for a change to an object also those waiting on
     /// any file's readiness.
     pub(crate) fn wake(&mut self, channel: Channel) {
-        let woken: alloc::vec::Vec<Tid> = self
-            .threads
-            .iter()
-            .filter(|(_, thread)| match thread.call.wait {
-                Some(Channel::Readiness) => matches!(channel, Channel::Object(_)),
-                Some(wait) => wait == channel,
-                None => false,
-            })
-            .map(|(tid, _)| *tid)
-            .collect();
-        for tid in woken {
+        let readiness = matches!(channel, Channel::Object(_)).then_some(Channel::Readiness);
+        for tid in self.parked.on_either(channel, readiness) {
             self.wake_thread(tid);
         }
     }
@@ -305,24 +297,17 @@ impl Kernel {
     pub(crate) fn wake_thread(&mut self, tid: Tid) {
         let entry_now = self.entry_now;
         let thread = self.thread_mut(tid);
-        if thread.call.wait.take().is_some() {
+        if let Some(channel) = thread.call.wait.take() {
             thread.woken_at = Some(entry_now);
+            let deadline = thread.call.deadline;
+            self.parked.remove(tid, channel, deadline);
             self.woken.push_back(tid);
         }
     }
 
     /// Wakes the threads whose deadline has come by the time the kernel was entered.
     pub(crate) fn wake_due(&mut self) {
-        let now = self.entry_now;
-        let due: alloc::vec::Vec<Tid> = self
-            .threads
-            .iter()
-            .filter(|(_, thread)| {
-                thread.call.wait.is_some() && thread.call.deadline.is_some_and(|at| at <= now)
-            })
-            .map(|(tid, _)| *tid)
-            .collect();
-        for tid in due {
+        for tid in self.parked.due(self.entry_now) {
             self.wake_thread(tid);
         }
     }
@@ -377,6 +362,10 @@ impl Kernel {
     /// Takes a thread off the CPU and out of line, as when its process stops or it ends.
     pub(crate) fn unschedule(&mut self, tid: Tid) {
         self.take_out_of_line(tid);
+        let call = self.threads[&tid].call;
+        if let Some(channel) = call.wait {
+            self.parked.remove(tid, channel, call.deadline);
+        }
         if self.current == Some(tid) {
             self.current = None;
         }
@@ -697,17 +686,12 @@ impl Kernel {
             .flat_map(|process| process.files.take_released())
             .collect();
         crate::syscall::pipe::released(self, cx, files);
-        let woken: alloc::vec::Vec<Tid> = self
-            .threads
-            .iter()
-            .filter(|(_, thread)| {
-                matches!(
-                    thread.call.wait,
-                    Some(Channel::Object(_) | Channel::Readiness | Channel::Locks)
-                )
-            })
-            .map(|(tid, _)| *tid)
-            .collect();
+        let woken = self.parked.on(|channel| {
+            matches!(
+                channel,
+                Channel::Object(_) | Channel::Readiness | Channel::Locks
+            )
+        });
         for tid in woken {
             self.wake_thread(tid);
         }

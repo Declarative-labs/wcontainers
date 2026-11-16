@@ -5,10 +5,11 @@
 //! the least runs next. A thread that wakes is placed no further back than half a scheduling period
 //! behind the least, so it runs almost at once.
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
 
 use crate::linux::general::{SCHED_BATCH, SCHED_IDLE};
-use crate::process::{Schedule, Tid};
+use crate::process::{Channel, Schedule, Tid};
 
 /// `sched_prio_to_weight`: the weight of nice -20 to 19.
 const WEIGHTS: [u64; 40] = [
@@ -43,6 +44,8 @@ pub(crate) fn weight(schedule: &Schedule) -> u64 {
 #[derive(Clone, Default)]
 pub(crate) struct RunQueue {
     queue: BTreeSet<(u64, u64, Tid)>,
+    /// Where each queued thread is in `queue`.
+    positions: BTreeMap<Tid, (u64, u64)>,
     /// A number that keeps equal runtimes in the order they came.
     sequence: u64,
     /// `min_vruntime`: never goes backwards.
@@ -53,28 +56,34 @@ pub(crate) struct RunQueue {
 
 impl RunQueue {
     pub fn insert(&mut self, tid: Tid, vruntime: u64, weight: u64) {
+        debug_assert!(
+            !self.positions.contains_key(&tid),
+            "thread {tid} queued twice"
+        );
         self.sequence += 1;
         self.queue.insert((vruntime, self.sequence, tid));
+        self.positions.insert(tid, (vruntime, self.sequence));
         self.load += weight;
     }
 
     /// Takes a thread out, wherever it is; returns whether it was there.
     pub fn remove(&mut self, tid: Tid, weight: u64) -> bool {
-        let Some(entry) = self.queue.iter().find(|entry| entry.2 == tid).copied() else {
+        let Some((vruntime, sequence)) = self.positions.remove(&tid) else {
             return false;
         };
-        self.queue.remove(&entry);
+        self.queue.remove(&(vruntime, sequence, tid));
         self.load -= weight;
         true
     }
 
     pub fn contains(&self, tid: Tid) -> bool {
-        self.queue.iter().any(|entry| entry.2 == tid)
+        self.positions.contains_key(&tid)
     }
 
     /// The thread with the least virtual runtime, taken out of the queue.
     pub fn pop(&mut self, weight_of: impl Fn(Tid) -> u64) -> Option<Tid> {
         let entry = self.queue.pop_first()?;
+        self.positions.remove(&entry.2);
         self.load -= weight_of(entry.2);
         Some(entry.2)
     }
@@ -109,6 +118,75 @@ impl RunQueue {
     /// it does not take the CPU from those already waiting.
     pub fn place_new(&self, weight: u64, running: usize) -> u64 {
         self.min_vruntime + scale(slice(weight, self.load + weight, running + 1), weight)
+    }
+}
+
+/// Parked threads by what they wait on and by deadline, so a wake finds its waiters without
+/// looking at every thread.
+#[derive(Clone, Default)]
+pub(crate) struct Parked {
+    by_channel: BTreeMap<Channel, BTreeSet<Tid>>,
+    deadlines: BTreeSet<(u64, Tid)>,
+}
+
+impl Parked {
+    pub fn insert(&mut self, tid: Tid, channel: Channel, deadline: Option<u64>) {
+        self.by_channel.entry(channel).or_default().insert(tid);
+        if let Some(at) = deadline {
+            self.deadlines.insert((at, tid));
+        }
+    }
+
+    pub fn remove(&mut self, tid: Tid, channel: Channel, deadline: Option<u64>) {
+        if let Some(waiters) = self.by_channel.get_mut(&channel) {
+            waiters.remove(&tid);
+            if waiters.is_empty() {
+                self.by_channel.remove(&channel);
+            }
+        }
+        if let Some(at) = deadline {
+            self.deadlines.remove(&(at, tid));
+        }
+    }
+
+    /// The threads parked on any channel `wanted` accepts, in thread order.
+    pub fn on(&self, wanted: impl Fn(&Channel) -> bool) -> Vec<Tid> {
+        let mut found: Vec<Tid> = self
+            .by_channel
+            .iter()
+            .filter(|(channel, _)| wanted(channel))
+            .flat_map(|(_, waiters)| waiters.iter().copied())
+            .collect();
+        found.sort_unstable();
+        found
+    }
+
+    /// The threads parked on exactly `channel` and on `also`, in thread order.
+    pub fn on_either(&self, channel: Channel, also: Option<Channel>) -> Vec<Tid> {
+        let mut found: Vec<Tid> = [Some(channel), also]
+            .into_iter()
+            .flatten()
+            .filter_map(|channel| self.by_channel.get(&channel))
+            .flat_map(|waiters| waiters.iter().copied())
+            .collect();
+        found.sort_unstable();
+        found
+    }
+
+    pub fn earliest(&self) -> Option<u64> {
+        self.deadlines.first().map(|(at, _)| *at)
+    }
+
+    /// The threads whose deadline is at or before `now`, in thread order.
+    pub fn due(&self, now: u64) -> Vec<Tid> {
+        let mut found: Vec<Tid> = self
+            .deadlines
+            .iter()
+            .take_while(|(at, _)| *at <= now)
+            .map(|(_, tid)| *tid)
+            .collect();
+        found.sort_unstable();
+        found
     }
 }
 
