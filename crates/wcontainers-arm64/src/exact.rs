@@ -323,17 +323,21 @@ impl Context {
             return self.default_nan();
         }
         let inexact = status.contains(Status::INEXACT);
-        if self.flushes::<F>() && value.is_finite() && (inexact || !value.is_zero()) {
-            let toward_zero = op(Round::TowardZero, false).value;
-            if toward_zero.abs() < F::smallest_normalized() {
-                self.flags |= UFC;
-                return zero(value.is_negative());
-            }
+        // Tiny: the exact result is below the smallest normal number, which is when rounding towards zero
+        // gives less than it.
+        let tiny = value.is_finite()
+            && (inexact || !value.is_zero())
+            && op(Round::TowardZero, false).value.abs() < F::smallest_normalized();
+        if self.flushes::<F>() && tiny {
+            self.flags |= UFC;
+            return zero(value.is_negative());
         }
-        self.status(status, value)
+        self.status(status, value, tiny)
     }
 
-    fn status<F: Bits>(&mut self, status: Status, value: F) -> F {
+    /// Raise a rounded result's exceptions. Arm raises underflow when the exact result is tiny (below the
+    /// smallest normal number, before rounding) and inexact.
+    fn status<F: Bits>(&mut self, status: Status, value: F, tiny: bool) -> F {
         if status.contains(Status::INVALID_OP) {
             self.flags |= IOC;
         }
@@ -345,7 +349,7 @@ impl Context {
         }
         if status.contains(Status::INEXACT) {
             self.flags |= IXC;
-            if value.is_finite() && value.abs() < F::smallest_normalized() {
+            if tiny {
                 self.flags |= UFC;
             }
         }
@@ -492,7 +496,7 @@ impl Context {
                                 x.mul_add_r(y, two, round)
                             }
                         })
-                    } else if x.abs() >= F::smallest_normalized() {
+                    } else if x.abs() >= F::smallest_normalized().scalbn(1) {
                         // (3 + x * y) / 2 as x / 2 * y + 3 / 2, exact before its one rounding.
                         let half = x.scalbn(-1);
                         self.finish(|round, halved| {
@@ -503,7 +507,7 @@ impl Context {
                             }
                         })
                     } else {
-                        // A tiny x: the sum cannot overflow, and halving it is exact.
+                        // A small x: the sum cannot overflow, and halving it is exact.
                         self.finish(|round, _| x.mul_add_r(y, three, round).map(|v| v.scalbn(-1)))
                     }
                 }
@@ -684,7 +688,7 @@ impl Context {
             // Below the top exponent the format is the usual one: only values that reach it move.
             if raw >= 30 * exponent_one {
                 return self
-                    .status(status, T::from_bits(sign | (raw + exponent_one)))
+                    .status(status, T::from_bits(sign | (raw + exponent_one)), false)
                     .to_bits() as u64;
             }
         }
@@ -713,18 +717,16 @@ impl Context {
         } else {
             value
         };
-        let value = if self.flushes::<T>() && value.is_finite() && !x.is_zero() {
+        let tiny = value.is_finite() && !x.is_zero() && {
             let mut l = false;
             let toward_zero: T = x.convert_r(Round::TowardZero, &mut l).value;
-            if toward_zero.abs() < T::smallest_normalized() {
-                self.flags |= UFC;
-                return zero::<T>(value.is_negative()).to_bits() as u64;
-            }
-            value
-        } else {
-            value
+            toward_zero.abs() < T::smallest_normalized()
         };
-        self.status(status, value).to_bits() as u64
+        if self.flushes::<T>() && tiny {
+            self.flags |= UFC;
+            return zero::<T>(value.is_negative()).to_bits() as u64;
+        }
+        self.status(status, value, tiny).to_bits() as u64
     }
 
     fn reciprocal_estimate<F: Bits>(&mut self, x: F) -> F {
@@ -795,6 +797,11 @@ impl Context {
 }
 
 fn sqrt<F: Bits>(x: F, round: Round) -> StatusAnd<F> {
+    // `ieee-apsqrt` rounds some denormal inputs wrongly away from nearest: take the root of x * 2^64, a
+    // normal number, and scale it back, both exact.
+    if x.is_denormal() {
+        return sqrt(x.scalbn(64), round).map(|v| v.scalbn(-32));
+    }
     let raw = x.to_bits();
     if F::BITS == 32 {
         ieee_apsqrt::sqrt_accurate(raw as u32, round)
