@@ -2054,15 +2054,23 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
     Ok(0)
 }
 
-/// What `poll` reports for an open file. Everything that exists so far is always ready, as Linux's
-/// `DEFAULT_POLLMASK` says for files without a poll operation; the host's pipes always have room.
+/// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
+/// or what the file's own says. The host's pipes always have room.
 fn poll_mask(file: &FileRef) -> u16 {
+    use crate::fs::proc::{Entry, ProcessFile};
     let file = file.borrow();
     if file.is_path() {
         return POLLNVAL as u16;
     }
-    match file.node.borrow().content {
+    let node = file.node.borrow();
+    match node.content {
         Content::HostStream(_) => (POLLOUT | POLLWRNORM) as u16,
+        // `random_poll`: the generator is ready from the start here. `/dev/urandom` has no poll.
+        Content::Special if Device::from_number(node.rdev) == Some(Device::Random) => {
+            (POLLIN | POLLRDNORM) as u16
+        }
+        // `mounts_poll`: the mount table cannot change within the container.
+        Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts)) => (POLLIN | POLLRDNORM) as u16,
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
 }
@@ -2247,9 +2255,9 @@ fn select_typed(
     }
     // Linux's `POLLIN_SET`, `POLLOUT_SET` and `POLLEX_SET`.
     let kinds = [
-        POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR,
-        POLLWRBAND | POLLWRNORM | POLLOUT | POLLERR,
-        POLLPRI,
+        POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR | POLLNVAL,
+        POLLWRBAND | POLLWRNORM | POLLOUT | POLLERR | POLLNVAL,
+        POLLPRI | POLLNVAL,
     ];
     let mut results = [const { Vec::new() }; 3];
     let mut ready = 0;
@@ -2259,14 +2267,9 @@ fn select_typed(
             if !asked(set, fd) {
                 continue;
             }
-            let file = files.file(fd as i32)?;
-            // An `O_PATH` descriptor has no poll operation, so it is ready as Linux's default
-            // (measured: select sees it, where poll calls it invalid).
-            let mask = if file.borrow().is_path() {
-                (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16
-            } else {
-                poll_mask(&file)
-            };
+            // `select_poll_one`: an `O_PATH` descriptor is not found, so it is invalid, which every
+            // set reports.
+            let mask = poll_mask(&files.file(fd as i32)?);
             if u32::from(mask) & kinds[index] != 0 {
                 result[(fd / 8) as usize] |= 1 << (fd % 8);
                 ready += 1;

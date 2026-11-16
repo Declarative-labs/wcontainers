@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 static volatile char sink;
@@ -126,6 +127,35 @@ int main(int argc, char **argv) {
         p[0] = 1;
         p[page] = 2;
         printf("still mapped %d %d\n", p[0], p[page]);
+    } else if (!strcmp(kind, "tagged")) {
+        // Memory calls given an address with a top byte tag, which arm64 Linux strips for them.
+        char *p = mmap(0, 3 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        unsigned char vector[1];
+        unsigned long tags[] = {0x5aUL << 56, 0xffUL << 56, 0x80UL << 48};
+        for (int i = 0; i < 3; i++) {
+            char *t = (char *)((unsigned long)p | tags[i]);
+            printf("tag %d:", i);
+            printf(" msync %ld", syscall(SYS_msync, t, page, MS_ASYNC) ? -errno : 0L);
+            printf(" mlock %ld", syscall(SYS_mlock, t, page) ? -errno : 0L);
+            printf(" munlock %ld", syscall(SYS_munlock, t, page) ? -errno : 0L);
+            printf(" madvise %ld", syscall(SYS_madvise, t, page, MADV_WILLNEED) ? -errno : 0L);
+            printf(" mincore %ld", syscall(SYS_mincore, t, page, vector) ? -errno : 0L);
+            printf(" mprotect %ld", syscall(SYS_mprotect, t, page, PROT_READ | PROT_WRITE) ? -errno : 0L);
+            printf(" pkey_mprotect %ld",
+                   syscall(SYS_pkey_mprotect, t, page, PROT_READ | PROT_WRITE, -1) ? -errno : 0L);
+            long moved = syscall(SYS_mremap, t, page, page, 0, 0);
+            printf(" mremap %ld", moved == -1 ? -errno : (long)(moved == (long)p));
+            char copy[8];
+            struct iovec local = {copy, sizeof copy}, remote = {t, sizeof copy};
+            long read = syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0);
+            printf(" process_vm_readv %ld", read == -1 ? -errno : read);
+            read = syscall(SYS_process_vm_readv, getpid(), &remote, 1, &local, 1, 0);
+            printf(" process_vm_readv_local %ld", read == -1 ? -errno : read);
+            printf("\n");
+        }
+        char *last = (char *)((unsigned long)(p + 2 * page) | tags[0]);
+        printf("munmap %ld", syscall(SYS_munmap, last, page) ? -errno : 0L);
+        printf(" then mincore %ld\n", syscall(SYS_mincore, p + 2 * page, page, vector) ? -errno : 0L);
     }
     printf("end\n");
     return 0;

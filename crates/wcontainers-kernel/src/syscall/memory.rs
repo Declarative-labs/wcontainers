@@ -389,6 +389,7 @@ pub(super) fn munmap(
     tid: Tid,
     [address, length, ..]: Args,
 ) -> Result<u64, Errno> {
+    let address = crate::user::untagged(address);
     let process = kernel.process_of_mut(tid);
     unmap(&mut process.map, cx, process.memory, address, length)?;
     crate::shared::release(kernel, cx);
@@ -446,6 +447,7 @@ fn protect(
     prot: u64,
     key: i32,
 ) -> Result<u64, Errno> {
+    let address = crate::user::untagged(address);
     if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
     }
@@ -547,10 +549,13 @@ pub(super) fn madvise(
         return Err(Errno::EINVAL);
     }
     let length = aligned;
-    let end = address.checked_add(length).ok_or(Errno::EINVAL)?;
+    address.checked_add(length).ok_or(Errno::EINVAL)?;
     if length == 0 {
         return Ok(0);
     }
+    // `madvise_do_behavior` strips the tag only after the checks.
+    let address = crate::user::untagged(address);
+    let end = address + length;
     let now = kernel.now(cx);
     let process = kernel.process_of_mut(tid);
     // Removing pages punches a hole in what a shared mapping is backed by: its file, or its shared
@@ -673,11 +678,14 @@ pub(super) fn mremap(
     tid: Tid,
     [old, old_length, new_length, flags, new_address, ..]: Args,
 ) -> Result<u64, Errno> {
+    let old = crate::user::untagged(old);
     // In the order of Linux's `do_mremap` and `check_mremap_params`.
     let flags = flags as u32;
     let old_length = page_align(old_length);
     let new_length = page_align(new_length);
-    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 || old % PAGE_SIZE != 0 {
+    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
+        || !old.is_multiple_of(PAGE_SIZE)
+    {
         return Err(Errno::EINVAL);
     }
     if new_length == 0 || new_length > TASK_SIZE {
@@ -1005,8 +1013,9 @@ pub(super) fn msync(
     tid: Tid,
     [address, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
+    let address = crate::user::untagged(address);
     let flags = flags as u32;
-    if address % PAGE_SIZE != 0
+    if !address.is_multiple_of(PAGE_SIZE)
         || flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0
         || flags & (MS_ASYNC | MS_SYNC) == MS_ASYNC | MS_SYNC
     {
@@ -1044,6 +1053,7 @@ fn lock_range(
     length: u64,
     lock: Lock,
 ) -> Result<u64, Errno> {
+    let address = crate::user::untagged(address);
     if lock != Lock::None && !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }
@@ -1116,6 +1126,7 @@ pub(super) fn munlock(
     tid: Tid,
     [address, length, ..]: Args,
 ) -> Result<u64, Errno> {
+    let address = crate::user::untagged(address);
     lock_range(kernel, tid, address, length, Lock::None)
 }
 
@@ -1174,6 +1185,7 @@ pub(super) fn mincore(
     tid: Tid,
     [address, length, vector, ..]: Args,
 ) -> Result<u64, Errno> {
+    let address = crate::user::untagged(address);
     // In the order of Linux's `mincore`: the range, the vector, then mapping by mapping.
     if !address.is_multiple_of(PAGE_SIZE) {
         return Err(Errno::EINVAL);
@@ -1301,7 +1313,8 @@ fn process_vm(
         if (length as i64) < 0 {
             return Err(Errno::EINVAL);
         }
-        targets.push((base, length));
+        // The other side's pages are found as `get_user_pages` finds them, with the tag stripped.
+        targets.push((crate::user::untagged(base), length));
     }
     if targets.iter().all(|(_, length)| *length == 0) {
         return Ok(0);

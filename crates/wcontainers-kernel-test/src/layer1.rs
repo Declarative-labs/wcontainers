@@ -1124,8 +1124,11 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             value(word)
         }
     };
-    let play =
-        |word: u64| PLAY + ((word % (PLAY_PAGES + 2)) * 4096) + if word >> 60 == 0 { 1 } else { 0 };
+    // Some carry a top byte tag, which arm64 Linux's memory calls strip and the others do not.
+    let play = |word: u64| {
+        let tag = pick(&[0u64, 0, 0, 0, 0, 0, 0x5a << 56, 0xff << 56], word >> 56);
+        (PLAY + ((word % (PLAY_PAGES + 2)) * 4096) + if word >> 60 == 0 { 1 } else { 0 }) | tag
+    };
     // Lengths that reach memory stay below the program's own mappings, which lie higher here (in a
     // 4 GiB address space) than in the reference. The last three reach none: rounded up to a page
     // they wrap to 0 or overflow the address.
