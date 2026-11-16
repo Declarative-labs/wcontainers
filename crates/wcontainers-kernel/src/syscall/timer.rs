@@ -613,7 +613,7 @@ pub(super) fn timer_create(
         clock = cpu_clock(kernel, tid, clock_id).ok_or(Errno::EINVAL)?;
     }
     if matches!(clock_id as u32, CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
-        && !kernel.process_of(tid).credentials.has(CAP_WAKE_ALARM)
+        && !kernel.credentials(tid).has(CAP_WAKE_ALARM)
     {
         return Err(Errno::EPERM);
     }
@@ -862,11 +862,11 @@ pub(super) fn timerfd_create(
         return Err(Errno::EINVAL);
     }
     let alarm = matches!(clock_id as u32, CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM);
-    if alarm && !kernel.process_of(tid).credentials.has(CAP_WAKE_ALARM) {
+    if alarm && !kernel.credentials(tid).has(CAP_WAKE_ALARM) {
         return Err(Errno::EPERM);
     }
     let node = super::anon_node(kernel, cx);
-    let opener = kernel.process_of(tid).credentials.serial;
+    let opener = kernel.credentials(tid).serial;
     let file = OpenFile::new(node, O_RDWR | (flags & O_NONBLOCK), LINK.to_vec(), opener);
     let id = kernel.timers.add(Timer {
         owner: Owner::Descriptor {
@@ -937,7 +937,7 @@ pub(super) fn timerfd_settime(
         kernel.timers.all[&id].clock_id as u32,
         CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM
     );
-    if alarm && !kernel.process_of(tid).credentials.has(CAP_WAKE_ALARM) {
+    if alarm && !kernel.credentials(tid).has(CAP_WAKE_ALARM) {
         return Err(Errno::EPERM);
     }
     // The wall clock is never set inside the container, so a cancel on set never happens.

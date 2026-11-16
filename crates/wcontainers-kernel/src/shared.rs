@@ -119,7 +119,7 @@ fn grow(
     match old {
         Some(old) => {
             for process in kernel.processes.values() {
-                for mapping in process.map.iter() {
+                for mapping in process.map.borrow().iter() {
                     if let Some(offset) = mapped_offset(&mapping.backing, node) {
                         map_shown(cx, new, process.memory, mapping, offset)?;
                     }
@@ -136,7 +136,7 @@ fn grow(
 /// `mapping_writably_mapped`).
 pub(crate) fn writably_mapped(kernel: &Kernel, node: &Node) -> bool {
     kernel.processes.values().any(|process| {
-        process.map.iter().any(|mapping| {
+        process.map.borrow().iter().any(|mapping| {
             mapping.allowed.contains(Permissions::WRITE)
                 && mapping.shared
                 && mapped_offset(&mapping.backing, node).is_some()
@@ -166,8 +166,9 @@ pub(crate) fn changed(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) ->
     for process in kernel.processes.values_mut() {
         process
             .map
+            .borrow_mut()
             .set_file_end(cx.cpu, process.memory, node, page_up(size))?;
-        for mapping in process.map.iter() {
+        for mapping in process.map.borrow().iter() {
             if mapping.permissions.contains(Permissions::EXECUTE)
                 && mapped_offset(&mapping.backing, node).is_some()
             {
@@ -190,6 +191,7 @@ pub(crate) fn release(kernel: &mut Kernel, cx: &mut Context<'_>) {
         let mapped = processes.values().any(|process| {
             process
                 .map
+                .borrow_mut()
                 .iter()
                 .any(|mapping| mapped_offset(&mapping.backing, node).is_some())
         });

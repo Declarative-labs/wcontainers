@@ -105,7 +105,7 @@ fn open_master(
         .and_then(|parent| parent.upgrade())
         .expect("ptmx lives in devpts");
     let now = kernel.now(cx);
-    let fsuid = kernel.process_of(tid).credentials.fsuid;
+    let fsuid = kernel.credentials(tid).fsuid;
     let name = alloc::format!("{index}").into_bytes();
     let fs = devpts.borrow().fs.clone();
     let slave_node = fs::new_inode(
@@ -149,7 +149,7 @@ fn open_slave(
 ) -> Result<(), Errno> {
     {
         let mut pair = pty.borrow_mut();
-        let admin = kernel.process_of(tid).credentials.has(CAP_SYS_ADMIN);
+        let admin = kernel.credentials(tid).has(CAP_SYS_ADMIN);
         if pair.sides[SLAVE].exclusive && !admin {
             return Err(Errno::EBUSY);
         }
@@ -225,7 +225,8 @@ fn check_change(
         return Ok(());
     }
     let blocked = kernel.threads[&tid].signal_mask & crate::signal::bit(signal) != 0;
-    let ignored = kernel.process_of(tid).actions[signal as usize - 1].sa_handler_kernel == SIG_IGN;
+    let ignored =
+        kernel.process_of(tid).actions.borrow()[signal as usize - 1].sa_handler_kernel == SIG_IGN;
     if blocked || ignored {
         return if signal == SIGTTIN {
             Err(Errno::EIO)
@@ -681,7 +682,7 @@ fn requests(
 ) -> Result<u64, Errno> {
     // A master's settings, size and job control are its slave's (`tty_pair_get_tty`).
     let real = SLAVE;
-    let admin = kernel.process_of(tid).credentials.has(CAP_SYS_ADMIN);
+    let admin = kernel.credentials(tid).has(CAP_SYS_ADMIN);
     if matches!(request, TIOCSETD | TIOCSBRK | TIOCCBRK | TCSBRK | TCSBRKP) {
         check_change(kernel, cx, tid, pty, side, SIGTTOU)?;
     }
@@ -986,7 +987,7 @@ fn settings(
         // `checkpoint_restore_ns_capable`: CAP_SYS_ADMIN or CAP_CHECKPOINT_RESTORE, neither of
         // which Docker gives.
         TIOCSLCKTRMIOS => {
-            let credentials = &kernel.process_of(tid).credentials;
+            let credentials = kernel.credentials(tid);
             if credentials.has(CAP_SYS_ADMIN) || credentials.has(CAP_CHECKPOINT_RESTORE) {
                 return Err(kernel.counters.refuse(
                     cx.host,
@@ -1109,7 +1110,7 @@ fn open_peer(
     let node = pty.borrow().slave_node.clone();
     let index = pty.borrow().index;
     let path = alloc::format!("/dev/pts/{index}").into_bytes();
-    let serial = kernel.process_of(tid).credentials.serial;
+    let serial = kernel.credentials(tid).serial;
     let file = OpenFile::new(
         node,
         (flags | O_LARGEFILE) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),

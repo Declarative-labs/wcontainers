@@ -168,7 +168,7 @@ pub(crate) fn new_queue(
     limits: Option<Limits>,
 ) -> Result<MessageQueue, Errno> {
     let process = kernel.process_of(tid);
-    let credentials = &process.credentials;
+    let credentials = kernel.credentials(tid);
     let usage = &kernel.ipc.mq_usage;
     let resource = credentials.has(CAP_SYS_RESOURCE);
     if usage.queues.get() >= MQ_QUEUES_MAX && !resource {
@@ -314,12 +314,7 @@ pub(super) fn mq_open(
                 _ => return Err(Errno::EINVAL),
             };
             let pid = kernel.threads[&tid].process;
-            crate::fs::permission(
-                &node.borrow(),
-                &kernel.process_of(tid).credentials,
-                mask,
-                pid,
-            )?;
+            crate::fs::permission(&node.borrow(), kernel.credentials(tid), mask, pid)?;
             node
         }
     };
@@ -333,7 +328,7 @@ pub(super) fn mq_open(
         node,
         flags & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         path,
-        kernel.process_of(tid).credentials.serial,
+        kernel.credentials(tid).serial,
     );
     file.borrow_mut().internal_mount = true;
     let fd = kernel.files_mut(tid).add(file, true, 0, limit)?;
@@ -415,7 +410,7 @@ pub(super) fn mq_timedsend(
         }
         None => {
             let sender_pid = kernel.threads[&tid].process;
-            let sender_uid = kernel.process_of(tid).credentials.uid;
+            let sender_uid = kernel.credentials(tid).uid;
             let notify = with_queue(&node, |queue| {
                 queue.insert((priority, text));
                 // `__do_notify`: the first message of an empty queue tells the process that asked,

@@ -467,8 +467,19 @@ impl Entry {
     }
 
     fn owner(&self, view: &View<'_>) -> (u32, u32) {
+        let tid = match *self {
+            Entry::Process(task)
+            | Entry::ProcessFile(task, _)
+            | Entry::ProcessLink(task, _)
+            | Entry::Fds(task)
+            | Entry::Fd(task, _) => task.tid,
+            Entry::Tasks(pid) => pid,
+            Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_) => {
+                return (0, 0);
+            }
+        };
         match self.of_process() {
-            Some(pid) => dump_owner(view.processes, pid, self.mode()),
+            Some(pid) => dump_owner(view.processes, view.threads, pid, tid, self.mode()),
             None => (0, 0),
         }
     }
@@ -477,14 +488,34 @@ impl Entry {
 /// Linux's `task_dump_owner`: the owner of a process's entry with `mode`, the process's effective ids,
 /// except that what is not a world readable directory belongs to root while the process may not be
 /// dumped.
-pub(crate) fn dump_owner(processes: &BTreeMap<Pid, Process>, pid: Pid, mode: u32) -> (u32, u32) {
+pub(crate) fn dump_owner(
+    processes: &BTreeMap<Pid, Process>,
+    threads: &BTreeMap<Tid, Thread>,
+    pid: Pid,
+    tid: Tid,
+    mode: u32,
+) -> (u32, u32) {
     processes.get(&pid).map_or((0, 0), |process| {
         if mode != S_IFDIR | 0o555 && !process.dumpable {
             (0, 0)
         } else {
-            (process.credentials.euid, process.credentials.egid)
+            let credentials = task_credentials(processes, threads, tid);
+            (credentials.euid, credentials.egid)
         }
     })
+}
+
+/// The credentials of the task a number names (`__task_cred`): a live thread's, or what a
+/// process's first thread kept at its end.
+pub(crate) fn task_credentials<'a>(
+    processes: &'a BTreeMap<Pid, Process>,
+    threads: &'a BTreeMap<Tid, Thread>,
+    tid: Tid,
+) -> &'a crate::credentials::Credentials {
+    match threads.get(&tid) {
+        Some(thread) => &thread.credentials,
+        None => &processes[&tid].ended_leader.credentials,
+    }
 }
 
 /// A thread's state (`get_task_state`): ended and not reaped (a process's first thread stays so
@@ -1089,7 +1120,7 @@ fn process_file(
             return Ok(bytes);
         }
         ProcessFile::Maps => {
-            for mapping in process.map.iter() {
+            for mapping in process.map.borrow().iter() {
                 let flag = |permission: Permissions, letter: char| {
                     if mapping.permissions.contains(permission) {
                         letter
@@ -1202,7 +1233,7 @@ fn process_file(
             let _ = writeln!(out, "{} 0 0 0 0 0 0", vsize / 4096);
         }
         ProcessFile::Status => {
-            let credentials = &process.credentials;
+            let credentials = task_credentials(source.view.processes, source.view.threads, tid);
             let (vsize, _) = sizes(process);
             let state = state(source.view, process, tid);
             let ended = process.ended.is_some() || !source.view.threads.contains_key(&tid);
@@ -1340,7 +1371,7 @@ fn thread_count(process: &Process) -> usize {
 /// (Linux's `collect_sigign_sigcatch`).
 fn ignored_and_caught(process: &Process) -> (u64, u64) {
     let (mut ignored, mut caught) = (0, 0);
-    for (index, action) in process.actions.iter().enumerate() {
+    for (index, action) in process.actions.borrow().iter().enumerate() {
         match action.sa_handler_kernel {
             crate::linux_extra::SIG_IGN => ignored |= 1 << index,
             crate::linux_extra::SIG_DFL => {}
@@ -1354,7 +1385,7 @@ fn ignored_and_caught(process: &Process) -> (u64, u64) {
 fn sizes(process: &Process) -> (u64, u64) {
     let mut total = 0;
     let mut writable = 0;
-    for mapping in process.map.iter() {
+    for mapping in process.map.borrow().iter() {
         total += mapping.end - mapping.start;
         if mapping.permissions.contains(Permissions::WRITE) {
             writable += mapping.end - mapping.start;

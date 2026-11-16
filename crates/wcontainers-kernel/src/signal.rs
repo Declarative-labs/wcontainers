@@ -119,7 +119,7 @@ enum Target {
 
 impl Kernel {
     fn handler(&self, pid: Pid, signal: u32) -> u64 {
-        self.processes[&pid].actions[signal as usize - 1].sa_handler_kernel
+        self.processes[&pid].actions.borrow()[signal as usize - 1].sa_handler_kernel
     }
 
     /// Whether `pid` drops a signal at once (`sig_task_ignored`): ignored, or one the container's
@@ -167,7 +167,7 @@ impl Kernel {
             SIGXFSZ,
             SI_USER as i32,
             process.pid,
-            process.credentials.uid,
+            self.credentials(tid).uid,
         );
         self.send_to_thread(cx, tid, SIGXFSZ, info);
     }
@@ -236,7 +236,7 @@ impl Kernel {
                 .collect(),
         };
         for (target, pid) in targets {
-            let credentials = &self.processes[&pid].credentials;
+            let credentials = self.task_credentials(pid);
             let allowed = owner.euid == 0
                 || [owner.euid, owner.uid]
                     .iter()
@@ -363,13 +363,10 @@ impl Kernel {
         signal: u32,
         info: &[u8; 128],
     ) -> Result<Option<crate::process::Charge>, crate::Errno> {
+        let uid = self.task_credentials(pid).uid;
         let process = &self.processes[&pid];
         let limit = process.limits[RLIMIT_SIGPENDING as usize].current;
-        let count = self
-            .signal_users
-            .entry(process.credentials.uid)
-            .or_default()
-            .clone();
+        let count = self.signal_users.entry(uid).or_default().clone();
         let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
         let special = code == SI_KERNEL as i32;
         let overrides = signal < SIGRTMIN && (special || code >= 0);
@@ -492,7 +489,7 @@ impl Kernel {
             };
             let signal = queued.signal;
             let pid = self.threads[&tid].process;
-            let action = self.processes[&pid].actions[signal as usize - 1];
+            let action = self.processes[&pid].actions.borrow()[signal as usize - 1];
             let handler = action.sa_handler_kernel;
             if handler == SIG_IGN {
                 continue;
@@ -542,7 +539,7 @@ impl Kernel {
                 // A frame that cannot be written is SIGSEGV (`force_sigsegv`).
                 let pid = self.threads[&tid].process;
                 if signal == SIGSEGV {
-                    self.processes.get_mut(&pid).expect("process").actions[SIGSEGV as usize - 1]
+                    self.processes[&pid].actions.borrow_mut()[SIGSEGV as usize - 1]
                         .sa_handler_kernel = SIG_DFL;
                 }
                 self.die_of(cx, pid, SIGSEGV);
@@ -819,9 +816,8 @@ impl Kernel {
         thread.signal_mask |= blocked & !UNBLOCKABLE;
         if flags & u64::from(SA_RESETHAND) != 0 {
             let pid = thread.process;
-            let action =
-                &mut self.processes.get_mut(&pid).expect("process").actions[signal as usize - 1];
-            action.sa_handler_kernel = SIG_DFL;
+            self.processes[&pid].actions.borrow_mut()[signal as usize - 1].sa_handler_kernel =
+                SIG_DFL;
         }
         Ok(())
     }
@@ -963,10 +959,11 @@ impl Kernel {
             thread.signal_mask &= !bit(signal);
         }
         thread.forced |= bit(signal);
-        let action =
-            &mut self.processes.get_mut(&pid).expect("process").actions[signal as usize - 1];
-        if blocked || action.sa_handler_kernel == SIG_IGN {
-            action.sa_handler_kernel = SIG_DFL;
+        {
+            let action = &mut self.processes[&pid].actions.borrow_mut()[signal as usize - 1];
+            if blocked || action.sa_handler_kernel == SIG_IGN {
+                action.sa_handler_kernel = SIG_DFL;
+            }
         }
         if self.threads[&tid].pending.set & bit(signal) == 0 {
             // A fault's information is the kernel's own and always fits.
@@ -1021,7 +1018,7 @@ impl Kernel {
 
     /// SIGSEGV at an address, as `arm64_notify_segfault` sends it for a bad frame.
     fn segfault_at(&mut self, tid: Tid, address: u64) {
-        let mapped = self.process_of(tid).map.find(address).is_some();
+        let mapped = self.process_of(tid).map.borrow().find(address).is_some();
         let code = if mapped { SEGV_ACCERR } else { SEGV_MAPERR };
         self.force_signal(tid, fault_info(SIGSEGV, code as i32, address), (0, 0));
     }
@@ -1037,8 +1034,9 @@ impl Kernel {
         access: Access,
     ) {
         let pid = self.threads[&tid].process;
+        let may_lock_any = self.credentials(tid).has(CAP_IPC_LOCK);
         let process = self.processes.get_mut(&pid).expect("process exists");
-        let mapping = process.map.find(address).cloned();
+        let mapping = process.map.borrow().find(address).cloned();
         // A first write to a private file page: it becomes the process's own copy.
         if access == Access::Write
             && mapping
@@ -1046,6 +1044,7 @@ impl Kernel {
                 .is_some_and(|mapping| mapping.copies_on_write(address))
             && process
                 .map
+                .borrow_mut()
                 .copy_on_write(cx.cpu, process.memory, address, address + 1)
                 .is_ok()
         {
@@ -1065,12 +1064,13 @@ impl Kernel {
             None => {
                 if process
                     .map
+                    .borrow_mut()
                     .grow_stack(
                         cx.cpu,
                         process.memory,
                         address,
                         &process.limits,
-                        process.credentials.has(CAP_IPC_LOCK),
+                        may_lock_any,
                     )
                     .unwrap_or(false)
                 {

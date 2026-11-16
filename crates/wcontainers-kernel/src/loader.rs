@@ -188,7 +188,7 @@ pub(crate) fn program_of(
     node: Node,
     path: Vec<u8>,
 ) -> Result<Program, Errno> {
-    let credentials = &kernel.process_of(tid).credentials;
+    let credentials = kernel.credentials(tid);
     let inode = node.borrow();
     if inode.mode & S_IFMT != S_IFREG || inode.fs.no_execute() {
         return Err(Errno::EACCES);
@@ -523,8 +523,7 @@ fn place(
     let after = {
         let inode = program.node.borrow();
         kernel
-            .process_of(tid)
-            .credentials
+            .credentials(tid)
             .for_program(&crate::credentials::ProgramFile {
                 mode: inode.mode,
                 uid: inode.uid,

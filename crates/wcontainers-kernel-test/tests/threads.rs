@@ -59,3 +59,32 @@ fn clone_tables_match_reference() {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
     }
 }
+
+/// clone's remaining combinations: processes on the caller's memory while both run, processes
+/// sharing its signal handlers, and threads with process descriptors.
+#[test]
+fn clone_sharing_matches_reference() {
+    // A thread waits for its first thread's end by reading its `/proc` state.
+    for run in assert_same_output_seeded(&out(), "clonevm", &[], 0) {
+        let others: Vec<_> = run
+            .warnings
+            .iter()
+            .filter(|warned| warned.reason != "proc fields not tracked")
+            .collect();
+        assert!(others.is_empty(), "{others:?}");
+    }
+}
+
+/// Credentials and personality held per thread, and a queue's notification request taken away by
+/// any thread's close.
+#[test]
+fn thread_credentials_match_reference() {
+    for run in assert_same_output_seeded(&out(), "threadcreds", &[], 0) {
+        let others: Vec<_> = run
+            .warnings
+            .iter()
+            .filter(|warned| warned.reason != "proc fields not tracked")
+            .collect();
+        assert!(others.is_empty(), "{others:?}");
+    }
+}

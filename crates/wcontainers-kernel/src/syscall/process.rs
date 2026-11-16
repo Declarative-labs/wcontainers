@@ -168,7 +168,7 @@ fn exec(
     };
     let pid = kernel.threads[&tid].process;
     // A change of user that went over RLIMIT_NPROC fails here, if it still is over.
-    let uid = kernel.processes[&pid].credentials.uid;
+    let uid = kernel.task_credentials(pid).uid;
     if kernel.processes[&pid].nproc_exceeded && kernel.over_process_limit(pid, uid, 0) {
         return Err(Errno::EAGAIN);
     }
@@ -412,7 +412,7 @@ pub(super) fn getuid(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    Ok(kernel.process_of(tid).credentials.uid.into())
+    Ok(kernel.credentials(tid).uid.into())
 }
 
 pub(super) fn geteuid(
@@ -421,7 +421,7 @@ pub(super) fn geteuid(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    Ok(kernel.process_of(tid).credentials.euid.into())
+    Ok(kernel.credentials(tid).euid.into())
 }
 
 pub(super) fn getgid(
@@ -430,7 +430,7 @@ pub(super) fn getgid(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    Ok(kernel.process_of(tid).credentials.gid.into())
+    Ok(kernel.credentials(tid).gid.into())
 }
 
 pub(super) fn getegid(
@@ -439,7 +439,7 @@ pub(super) fn getegid(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    Ok(kernel.process_of(tid).credentials.egid.into())
+    Ok(kernel.credentials(tid).egid.into())
 }
 
 pub(super) fn getresuid(
@@ -448,7 +448,7 @@ pub(super) fn getresuid(
     tid: Tid,
     [ruid, euid, suid, ..]: Args,
 ) -> Result<u64, Errno> {
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let mut guest = guest(kernel, cx, tid);
     guest.put(ruid, &credentials.uid.to_le_bytes())?;
     guest.put(euid, &credentials.euid.to_le_bytes())?;
@@ -462,7 +462,7 @@ pub(super) fn getresgid(
     tid: Tid,
     [rgid, egid, sgid, ..]: Args,
 ) -> Result<u64, Errno> {
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let mut guest = guest(kernel, cx, tid);
     guest.put(rgid, &credentials.gid.to_le_bytes())?;
     guest.put(egid, &credentials.egid.to_le_bytes())?;
@@ -729,21 +729,21 @@ fn changing(
     always: bool,
     change: impl FnOnce(&mut crate::credentials::Credentials) -> Result<u64, Errno>,
 ) -> Result<u64, Errno> {
+    let credentials = &mut kernel.thread_mut(tid).credentials;
+    let old = credentials.clone();
+    let result = change(credentials);
+    let loses = credentials.loses_dumpable(&old);
+    let commit = result.is_ok() && (always || *credentials != old);
+    let uid = credentials.uid;
     let process = kernel.process_of_mut(tid);
-    let old = process.credentials.clone();
-    let result = change(&mut process.credentials);
-    let loses = process.credentials.loses_dumpable(&old);
     if loses {
         process.dumpable = false;
     }
-    let commit = result.is_ok() && (always || process.credentials != old);
     let pid = process.pid;
     // A new real user over RLIMIT_NPROC is not refused here but at the next `execve`
     // (`flag_nproc_exceeded`, counting the user's other tasks).
-    let uid = process.credentials.uid;
-    let own = process.threads.len() as i64;
     if commit && uid != old.uid {
-        let over = kernel.over_process_limit(pid, uid, -own);
+        let over = kernel.over_process_limit(pid, uid, -1);
         kernel
             .processes
             .get_mut(&pid)
@@ -754,7 +754,7 @@ fn changing(
         kernel.thread_mut(tid).parent_death_signal = 0;
     }
     if commit {
-        kernel.commit_credentials(pid);
+        kernel.commit_credentials(tid);
     }
     result
 }
@@ -772,7 +772,7 @@ pub(super) fn getgroups(
     if size < 0 {
         return Err(Errno::EINVAL);
     }
-    let groups = kernel.process_of(tid).credentials.groups.clone();
+    let groups = kernel.credentials(tid).groups.clone();
     if size == 0 {
         return Ok(groups.len() as u64);
     }
@@ -793,7 +793,7 @@ pub(super) fn setgroups(
     tid: Tid,
     [size, list, ..]: Args,
 ) -> Result<u64, Errno> {
-    if !kernel.process_of(tid).credentials.has(CAP_SETGID) {
+    if !kernel.credentials(tid).has(CAP_SETGID) {
         return Err(Errno::EPERM);
     }
     if size as u32 as u64 > MAX_GROUPS {
@@ -889,7 +889,7 @@ pub(super) fn rt_sigaction(
         return Err(Errno::EINVAL);
     }
     let index = signal as usize - 1;
-    let previous = kernel.process_of(tid).actions[index];
+    let previous = kernel.process_of(tid).actions.borrow()[index];
     if let Some(mut new) = new {
         new.sa_mask.sig[0] &= !UNBLOCKABLE;
         // Linux keeps only the flags it knows (`UAPI_SA_FLAGS`), so programs can tell which it has.
@@ -904,7 +904,7 @@ pub(super) fn rt_sigaction(
                 | SA_EXPOSE_TAGBITS
                 | SA_RESTORER,
         );
-        kernel.process_of_mut(tid).actions[index] = new;
+        kernel.process_of(tid).actions.borrow_mut()[index] = new;
         if crate::signal::action_ignores(new.sa_handler_kernel, signal as u32) {
             let pid = kernel.threads[&tid].process;
             kernel.flush_pending(pid, signal as u32);
@@ -1070,8 +1070,8 @@ pub(super) fn prlimit64(
     // CAP_SYS_RESOURCE.
     if target != caller {
         let (mine, theirs) = (
-            &kernel.processes[&caller].credentials,
-            &kernel.processes[&target].credentials,
+            kernel.task_credentials(caller),
+            kernel.task_credentials(target),
         );
         let same = [theirs.uid, theirs.euid, theirs.suid] == [mine.uid; 3]
             && [theirs.gid, theirs.egid, theirs.sgid] == [mine.gid; 3];
@@ -1093,7 +1093,7 @@ pub(super) fn prlimit64(
         }
         // Raising a hard limit needs `CAP_SYS_RESOURCE`, which a default container does not have.
         if wanted.rlim_max > current.maximum
-            && !kernel.processes[&caller].credentials.has(CAP_SYS_RESOURCE)
+            && !kernel.task_credentials(caller).has(CAP_SYS_RESOURCE)
         {
             return Err(Errno::EPERM);
         }
@@ -1179,7 +1179,7 @@ pub(super) fn prctl(
             kernel.process_of_mut(tid).dumpable = second == 1;
             Ok(0)
         }
-        PR_GET_KEEPCAPS => Ok(kernel.process_of(tid).credentials.keep_capabilities.into()),
+        PR_GET_KEEPCAPS => Ok(kernel.credentials(tid).keep_capabilities.into()),
         PR_SET_KEEPCAPS => {
             if second > 1 {
                 return Err(Errno::EINVAL);
@@ -1193,7 +1193,7 @@ pub(super) fn prctl(
             if second > u64::from(CAP_LAST_CAP) {
                 return Err(Errno::EINVAL);
             }
-            Ok((kernel.process_of(tid).credentials.bounding >> second) & 1)
+            Ok((kernel.credentials(tid).bounding >> second) & 1)
         }
         // `cap_task_prctl`: clearing commits new credentials whatever was there; raising needs the
         // power permitted and inheritable (no secure bit can forbid it here).
@@ -1212,12 +1212,10 @@ pub(super) fn prctl(
             }
             let bit = 1u64 << third;
             match second as u32 {
-                PR_CAP_AMBIENT_IS_SET => Ok(u64::from(
-                    kernel.process_of(tid).credentials.ambient & bit != 0,
-                )),
+                PR_CAP_AMBIENT_IS_SET => Ok(u64::from(kernel.credentials(tid).ambient & bit != 0)),
                 PR_CAP_AMBIENT_RAISE | PR_CAP_AMBIENT_LOWER => {
                     let raise = second as u32 == PR_CAP_AMBIENT_RAISE;
-                    let credentials = &kernel.process_of(tid).credentials;
+                    let credentials = kernel.credentials(tid);
                     if raise
                         && (credentials.permitted & bit == 0 || credentials.inheritable & bit == 0)
                     {
@@ -1236,7 +1234,7 @@ pub(super) fn prctl(
             }
         }
         PR_CAPBSET_DROP => {
-            let credentials = &mut kernel.process_of_mut(tid).credentials;
+            let credentials = &mut kernel.thread_mut(tid).credentials;
             if !credentials.has(CAP_SETPCAP) {
                 return Err(Errno::EPERM);
             }
@@ -1244,21 +1242,20 @@ pub(super) fn prctl(
                 return Err(Errno::EINVAL);
             }
             credentials.bounding &= !(1 << second);
-            let pid = kernel.threads[&tid].process;
-            kernel.commit_credentials(pid);
+            kernel.commit_credentials(tid);
             Ok(0)
         }
         PR_GET_NO_NEW_PRIVS => {
             if second != 0 || !rest_zero {
                 return Err(Errno::EINVAL);
             }
-            Ok(kernel.process_of(tid).credentials.no_new_privileges.into())
+            Ok(kernel.credentials(tid).no_new_privileges.into())
         }
         PR_SET_NO_NEW_PRIVS => {
             if second != 1 || !rest_zero {
                 return Err(Errno::EINVAL);
             }
-            kernel.process_of_mut(tid).credentials.no_new_privileges = true;
+            kernel.thread_mut(tid).credentials.no_new_privileges = true;
             Ok(0)
         }
         // Docker's profile puts every process in filter mode.
@@ -1338,7 +1335,7 @@ pub(super) fn prctl(
             }
             Ok(saved.len() as u64)
         }
-        PR_GET_SECUREBITS => Ok(if kernel.process_of(tid).credentials.keep_capabilities {
+        PR_GET_SECUREBITS => Ok(if kernel.credentials(tid).keep_capabilities {
             crate::linux_extra::SECBIT_KEEP_CAPS
         } else {
             0
@@ -1357,16 +1354,14 @@ pub(super) fn prctl(
                 guest(kernel, cx, tid).put(third, &size.to_le_bytes())?;
                 return Ok(0);
             }
-            if form != PR_SET_MM_MAP && !kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE) {
+            if form != PR_SET_MM_MAP && !kernel.credentials(tid).has(CAP_SYS_RESOURCE) {
                 return Err(Errno::EPERM);
             }
             Err(kernel
                 .counters
                 .refuse(cx.host, reason::PRCTL_NOT_BUILT, option, Errno::EINVAL))
         }
-        PR_SET_IO_FLUSHER | PR_GET_IO_FLUSHER
-            if !kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE) =>
-        {
+        PR_SET_IO_FLUSHER | PR_GET_IO_FLUSHER if !kernel.credentials(tid).has(CAP_SYS_RESOURCE) => {
             Err(Errno::EPERM)
         }
         _ if !(1..=crate::linux_extra::PR_RSEQ_SLICE_EXTENSION).contains(&(option as u32))
@@ -1441,7 +1436,7 @@ pub(super) fn capget(
         return Err(Errno::EINVAL);
     }
     own_pid(kernel, tid, head.pid as u64)?;
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let half = |set: u64, upper: bool| {
         if upper {
             (set >> 32) as u32
@@ -1514,10 +1509,10 @@ pub(super) fn personality(
     if persona != 0xffff_ffff && persona & 0xff == 8 {
         return Err(Errno::EINVAL);
     }
-    let process = kernel.process_of_mut(tid);
-    let old = process.personality;
+    let thread = kernel.thread_mut(tid);
+    let old = thread.personality;
     if persona != 0xffff_ffff {
-        process.personality = persona;
+        thread.personality = persona;
     }
     Ok(old.into())
 }
@@ -1544,6 +1539,7 @@ pub(super) fn getrusage(
         let mapped: u64 = kernel
             .process_of(tid)
             .map
+            .borrow_mut()
             .iter()
             .map(|mapping| mapping.end - mapping.start)
             .sum();

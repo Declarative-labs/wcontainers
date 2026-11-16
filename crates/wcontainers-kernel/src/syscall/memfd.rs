@@ -54,8 +54,7 @@ pub(super) fn memfd_create(
             Errno::ENOSYS,
         ));
     }
-    let process = kernel.process_of(tid);
-    let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
+    let (uid, gid) = (kernel.credentials(tid).fsuid, kernel.credentials(tid).fsgid);
     let now = kernel.now(cx);
     let fs = kernel.files.memfd_fs.clone();
     let ino = kernel.files.numbers.ino();
@@ -87,7 +86,7 @@ pub(super) fn memfd_create(
     node.borrow_mut().nlink = 0;
     let mut path: Vec<u8> = b"/".to_vec();
     path.extend_from_slice(&full_name);
-    let opener = kernel.process_of(tid).credentials.serial;
+    let opener = kernel.credentials(tid).serial;
     let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, path, opener);
     file.borrow_mut().direct_io = false;
     let added = kernel
@@ -110,7 +109,7 @@ pub(super) fn memfd_secret(
     let process = kernel.process_of(tid);
     let limit = process.limits[RLIMIT_NOFILE as usize].current;
     kernel.files(tid).lowest_free(0, limit)?;
-    let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
+    let (uid, gid) = (kernel.credentials(tid).fsuid, kernel.credentials(tid).fsgid);
     let now = kernel.now(cx);
     let fs = kernel
         .files
@@ -132,7 +131,7 @@ pub(super) fn memfd_secret(
             name: b"secretmem".to_vec(),
         },
     )?;
-    let opener = kernel.process_of(tid).credentials.serial;
+    let opener = kernel.credentials(tid).serial;
     let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, b"/secretmem".to_vec(), opener);
     let added = kernel
         .files_mut(tid)

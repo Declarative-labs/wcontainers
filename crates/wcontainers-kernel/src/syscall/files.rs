@@ -84,7 +84,7 @@ fn path_in(kernel: &Kernel, tid: Tid, directory: &Node, name: &[u8]) -> Vec<u8> 
 }
 
 fn credentials(kernel: &Kernel, tid: Tid) -> &Credentials {
-    &kernel.process_of(tid).credentials
+    kernel.credentials(tid)
 }
 
 /// May the caller make or remove names in this directory.
@@ -706,9 +706,11 @@ pub(super) fn proc_contents(
     let cpu = &mut *cx.cpu;
     let mut read_memory = |process: &crate::process::Process, start: u64, length: u64| {
         let mut bytes = alloc::vec![0; length as usize];
-        let readable = process
-            .map
-            .accessible(start, length, wcontainers_abi::Permissions::READ);
+        let readable =
+            process
+                .map
+                .borrow()
+                .accessible(start, length, wcontainers_abi::Permissions::READ);
         bytes.truncate(readable as usize);
         if cpu.read(process.memory, start, &mut bytes).is_err() {
             bytes.clear();
@@ -1378,9 +1380,13 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     let inode = node.borrow();
     // A process's directory reports its owner as it is now (`pid_getattr`); other inodes as made.
     let (uid, gid) = match inode.content {
-        Content::Proc(proc::Entry::Process(task)) => {
-            proc::dump_owner(&kernel.processes, task.pid, inode.mode)
-        }
+        Content::Proc(proc::Entry::Process(task)) => proc::dump_owner(
+            &kernel.processes,
+            &kernel.threads,
+            task.pid,
+            task.tid,
+            inode.mode,
+        ),
         _ => (inode.uid, inode.gid),
     };
     stat {
@@ -1650,10 +1656,7 @@ fn access(
     }
     // The whole walk runs with these credentials, as Linux's `access_override_creds` replaces the
     // caller's for the call.
-    let own = core::mem::replace(
-        &mut kernel.process_of_mut(tid).credentials,
-        checking.clone(),
-    );
+    let own = core::mem::replace(&mut kernel.thread_mut(tid).credentials, checking.clone());
     let found = lookup(
         kernel,
         cx,
@@ -1663,7 +1666,7 @@ fn access(
         flags,
         flags & AT_SYMLINK_NOFOLLOW == 0,
     );
-    kernel.process_of_mut(tid).credentials = own;
+    kernel.thread_mut(tid).credentials = own;
     let node = found?;
     if mode == F_OK {
         return Ok(0);

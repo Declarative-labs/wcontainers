@@ -34,7 +34,7 @@ fn sigpipe(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
         SIGPIPE,
         SI_USER as i32,
         process.pid,
-        process.credentials.uid,
+        kernel.credentials(tid).uid,
     );
     kernel.send_to_thread(cx, tid, SIGPIPE, info);
 }

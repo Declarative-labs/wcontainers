@@ -84,8 +84,7 @@ fn new_system_name(
     length: u64,
 ) -> Result<alloc::vec::Vec<u8>, Errno> {
     if !kernel
-        .process_of(tid)
-        .credentials
+        .credentials(tid)
         .has(crate::linux::general::CAP_SYS_ADMIN)
     {
         return Err(Errno::EPERM);
@@ -414,7 +413,7 @@ fn change_schedule(
         // Leaving the idle policy is raising the priority to the current nice value's.
         || (current.policy == SCHED_IDLE && policy != SCHED_IDLE && !allowed_nice(current.nice))
         || (current.reset_on_fork && !reset_on_fork);
-    if needs_power && !kernel.process_of(tid).credentials.has(CAP_SYS_NICE) {
+    if needs_power && !kernel.credentials(tid).has(CAP_SYS_NICE) {
         return Err(Errno::EPERM);
     }
     if request.flags & crate::linux_extra::SCHED_FLAG_SUGOV != 0 {
@@ -646,6 +645,7 @@ enum Task {
 fn named_tasks(kernel: &Kernel, tid: Tid, which: u32, who: u64) -> Result<Vec<Task>, Errno> {
     let who = who as u32;
     let caller = kernel.process_of(tid);
+    let mut user = None;
     let matches: &dyn Fn(&crate::process::Process) -> bool = match which {
         PRIO_PROCESS => {
             if who == 0 {
@@ -664,13 +664,14 @@ fn named_tasks(kernel: &Kernel, tid: Tid, which: u32, who: u64) -> Result<Vec<Ta
             let group = if who == 0 { caller.group } else { who as i32 };
             &move |process| process.group == group
         }
+        // Each thread's own real user.
         PRIO_USER => {
-            let uid = if who == 0 {
-                caller.credentials.uid
+            user = Some(if who == 0 {
+                kernel.credentials(tid).uid
             } else {
                 who
-            };
-            &move |process| process.credentials.uid == uid
+            });
+            &|_| true
         }
         _ => return Err(Errno::EINVAL),
     };
@@ -692,6 +693,9 @@ fn named_tasks(kernel: &Kernel, tid: Tid, which: u32, who: u64) -> Result<Vec<Ta
             tasks.extend(process.threads.iter().map(|tid| Task::Thread(*tid)));
         }
     }
+    if let Some(uid) = user {
+        tasks.retain(|task| task_credentials(kernel, *task).uid == uid);
+    }
     Ok(tasks)
 }
 
@@ -704,8 +708,8 @@ fn task_schedule(kernel: &Kernel, task: Task) -> crate::process::Schedule {
 
 fn task_credentials(kernel: &Kernel, task: Task) -> &crate::credentials::Credentials {
     match task {
-        Task::Thread(tid) => &kernel.process_of(tid).credentials,
-        Task::Ended(pid) => &kernel.processes[&pid].credentials,
+        Task::Thread(tid) => kernel.credentials(tid),
+        Task::Ended(pid) => kernel.task_credentials(pid),
     }
 }
 
@@ -747,7 +751,7 @@ pub(super) fn setpriority(
     // stays; ESRCH only when nothing is named.
     let tasks = named_tasks(kernel, tid, which as u32, who)?;
     let nice = (nice as i32).clamp(-20, 19);
-    let caller = kernel.process_of(tid).credentials.clone();
+    let caller = kernel.credentials(tid).clone();
     let powerful = caller.has(CAP_SYS_NICE);
     let mut result = Err(Errno::ESRCH);
     for task in tasks {
@@ -829,7 +833,7 @@ pub(super) fn ioprio_set(
     let priority = priority as u32;
     let class = (priority >> IOPRIO_CLASS_SHIFT) & 7;
     let level = priority & 7;
-    let caller = kernel.process_of(tid).credentials.clone();
+    let caller = kernel.credentials(tid).clone();
     match class {
         IOPRIO_CLASS_RT => {
             if !caller.has(CAP_SYS_ADMIN) && !caller.has(CAP_SYS_NICE) {

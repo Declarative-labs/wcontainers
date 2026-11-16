@@ -430,8 +430,11 @@ impl Kernel {
         syscall::mqueue::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         cx.cpu.thread_drop(thread.cpu);
+        if let Some(node) = &thread.pidfd {
+            self.wake(syscall::pidfd::channel(node));
+        }
         let leader = (tid == thread.process).then(|| Leader::of(&thread));
-        self.put_files(thread.files);
+        self.put_files(thread.files, thread.process);
         self.give_up_opening(thread.opening);
         let process = self
             .processes
@@ -460,6 +463,10 @@ impl Kernel {
         }
         let mut thread = self.threads.remove(&tid).expect("thread exists");
         thread.call = Call::default();
+        // Its own number goes with the first thread, and the descriptors naming it with it.
+        if let Some(node) = thread.pidfd.take() {
+            self.wake(syscall::pidfd::channel(&node));
+        }
         self.threads.insert(pid, thread);
         syscall::sem::renumber(self, tid, pid);
         self.processes
@@ -496,6 +503,9 @@ impl Kernel {
             syscall::mqueue::forget(self, tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);
+            if let Some(node) = &thread.pidfd {
+                self.wake(syscall::pidfd::channel(node));
+            }
             let process = self.processes.get_mut(&pid).expect("process exists");
             process.ended_time += thread.runtime;
             if tid == pid {
@@ -513,13 +523,20 @@ impl Kernel {
         process.pending = Default::default();
         let memory = process.memory;
         let empty = crate::memory::AddressMap::new(cx.cpu.address_space().end);
-        let map = core::mem::replace(&mut process.map, empty);
-        process.peak_mapped = map.iter().map(|mapping| mapping.end - mapping.start).sum();
+        let map = core::mem::replace(
+            &mut process.map,
+            alloc::rc::Rc::new(core::cell::RefCell::new(empty)),
+        );
+        process.peak_mapped = map
+            .borrow()
+            .iter()
+            .map(|mapping| mapping.end - mapping.start)
+            .sum();
         if !self.memory_in_use_elsewhere(pid, memory) {
             cx.cpu.memory_drop(memory);
         }
         for files in tables {
-            self.put_files(files);
+            self.put_files(files, pid);
         }
         if let Some(node) = pidfd {
             self.wake(syscall::pidfd::channel(&node));
@@ -548,59 +565,44 @@ impl Kernel {
         if uid == 0 || limit == RLIM_INFINITY as u64 {
             return false;
         }
-        let tasks: i64 = self
+        let live = self
+            .threads
+            .values()
+            .filter(|thread| thread.credentials.uid == uid)
+            .count();
+        // A process's first thread counts until it is reaped.
+        let ended = self
             .processes
             .values()
-            .filter(|process| process.credentials.uid == uid)
-            .map(|process| (process.threads.len() as i64).max(1))
-            .sum();
+            .filter(|process| {
+                !self.threads.contains_key(&process.pid)
+                    && process.ended_leader.credentials.uid == uid
+            })
+            .count();
+        let tasks = (live + ended) as i64;
         i128::from(tasks + more) > i128::from(limit.min(i64::MAX as u64))
     }
 
-    /// Whether another live process shows the same memory (a `vfork` parent or child).
-    fn memory_in_use_elsewhere(&self, pid: Pid, memory: wcontainers_abi::MemoryId) -> bool {
+    /// Whether another live process shows the same memory (made with CLONE_VM).
+    pub(crate) fn memory_in_use_elsewhere(
+        &self,
+        pid: Pid,
+        memory: wcontainers_abi::MemoryId,
+    ) -> bool {
         self.processes
             .values()
             .any(|other| other.pid != pid && other.ended.is_none() && other.memory == memory)
     }
 
-    /// A `vfork` child thread starts a program or ends (`mm_release`): a child process gives its
-    /// parent's memory back, the parent seeing the mappings as the child left them, and the parent
-    /// thread's wait ends.
+    /// A `vfork` child thread starts a program or ends (`mm_release`): the parent thread's wait
+    /// ends.
     pub(crate) fn release_vfork(&mut self, child: Tid) {
         let Some(thread) = self.threads.get_mut(&child) else {
             return;
         };
-        let Some(parent_thread) = thread.vfork_parent.take() else {
-            return;
-        };
-        let pid = thread.process;
-        let Some(parent) = self
-            .threads
-            .get(&parent_thread)
-            .map(|thread| thread.process)
-        else {
-            return;
-        };
-        let map = self.processes[&pid].map.clone();
-        let memory = self.processes[&pid].memory;
-        if parent != pid
-            && let Some(parent) = self.processes.get_mut(&parent)
-            && parent.memory == memory
-        {
-            parent.map = map;
+        if thread.vfork_parent.take().is_some() {
+            self.wake(Channel::Vfork(child));
         }
-        self.wake(Channel::Vfork(child));
-    }
-
-    /// Whether a process is a `vfork` child still using its parent's memory.
-    pub(crate) fn borrows_memory(&self, pid: Pid) -> bool {
-        self.processes[&pid].threads.iter().any(|tid| {
-            self.threads[tid]
-                .vfork_parent
-                .and_then(|parent| self.threads.get(&parent))
-                .is_some_and(|parent| parent.process != pid)
-        })
     }
 
     /// Hands a dying process's children to the nearest subreaper above it or the first process
@@ -687,23 +689,21 @@ impl Kernel {
     /// whose ids all match the caller's file system ids, that may be dumped and whose permitted
     /// powers the caller's effective ones cover (`cap_ptrace_access_check`), unless the caller has
     /// CAP_SYS_PTRACE.
-    pub(crate) fn ptrace_may_read(&self, caller: Pid, target: Pid) -> bool {
-        if caller == target {
+    pub(crate) fn ptrace_may_read(&self, caller: Tid, target: Pid) -> bool {
+        if self.threads[&caller].process == target {
             return true;
         }
-        let (Some(caller), Some(target)) =
-            (self.processes.get(&caller), self.processes.get(&target))
-        else {
+        let Some(target_process) = self.processes.get(&target) else {
             return false;
         };
-        let (c, t) = (&caller.credentials, &target.credentials);
+        let (c, t) = (self.credentials(caller), self.task_credentials(target));
         let traces = c.has(CAP_SYS_PTRACE);
         let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == c.fsuid)
             && [t.gid, t.egid, t.sgid].iter().all(|id| *id == c.fsgid);
         if !same && !traces {
             return false;
         }
-        if target.ended.is_none() && !target.dumpable && !traces {
+        if target_process.ended.is_none() && !target_process.dumpable && !traces {
             return false;
         }
         t.permitted & !c.effective == 0 || traces
@@ -726,7 +726,7 @@ impl Kernel {
             self.processes.remove(&pid);
             return;
         };
-        let action = parent_process.actions[SIGCHLD as usize - 1];
+        let action = parent_process.actions.borrow()[SIGCHLD as usize - 1];
         let unwanted = exit_signal == SIGCHLD
             && (action.sa_handler_kernel == crate::linux_extra::SIG_IGN
                 || action.sa_flags & u64::from(SA_NOCLDWAIT) != 0);
@@ -757,7 +757,8 @@ impl Kernel {
             (CLD_KILLED, status & 0x7f)
         };
         let time = process.ended_time / 10_000_000;
-        crate::signal::child_info(pid, process.credentials.uid, code as i32, value, time)
+        let uid = self.task_credentials(pid).uid;
+        crate::signal::child_info(pid, uid, code as i32, value, time)
     }
 
     /// Takes a zombie away for good, adding its times to its parent's children's.
@@ -790,15 +791,14 @@ impl Kernel {
         let Some(parent_process) = self.processes.get(&parent) else {
             return;
         };
-        let action = parent_process.actions[SIGCHLD as usize - 1];
+        let action = parent_process.actions.borrow()[SIGCHLD as usize - 1];
         if action.sa_flags & u64::from(SA_NOCLDSTOP) == 0 {
             let (code, value) = match report {
                 Report::Stopped(signal) => (CLD_STOPPED, signal as i32),
                 Report::Continued => (CLD_CONTINUED, SIGCONT as i32),
             };
-            let process = &self.processes[&pid];
-            let info =
-                crate::signal::child_info(pid, process.credentials.uid, code as i32, value, 0);
+            let uid = self.task_credentials(pid).uid;
+            let info = crate::signal::child_info(pid, uid, code as i32, value, 0);
             self.send_to_process(cx, parent, SIGCHLD, info);
         }
         self.wake_waiters_of(parent);

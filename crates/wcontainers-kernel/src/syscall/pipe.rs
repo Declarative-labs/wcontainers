@@ -40,8 +40,7 @@ pub(super) fn pipe2(
             .refuse_flag(cx.host, __NR_pipe2, O_EXCL.into(), Errno::EINVAL));
     }
     let now = kernel.now(cx);
-    let process = kernel.process_of(tid);
-    let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
+    let (uid, gid) = (kernel.credentials(tid).fsuid, kernel.credentials(tid).fsgid);
     let ino = kernel.files.numbers.ino();
     let node = fs::new_inode(
         kernel.files.pipe_fs.clone(),
@@ -58,7 +57,7 @@ pub(super) fn pipe2(
         },
     )?;
     // Only the writing end takes packet mode (`create_pipe_files`).
-    let opener = kernel.process_of(tid).credentials.serial;
+    let opener = kernel.credentials(tid).serial;
     let reader = OpenFile::new(
         node.clone(),
         O_RDONLY | (flags & O_NONBLOCK),
@@ -75,12 +74,13 @@ pub(super) fn pipe2(
     attach(&node, &writer);
     let close_on_exec = flags & O_CLOEXEC != 0;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    let pid = kernel.threads[&tid].process;
     let mut files = kernel.files_mut(tid);
     let read_fd = files.add(reader, close_on_exec, 0, limit)?;
     let write_fd = match files.add(writer, close_on_exec, 0, limit) {
         Ok(fd) => fd,
         Err(error) => {
-            let _ = files.remove(read_fd);
+            let _ = files.remove(read_fd, pid);
             drop(files);
             kernel.files_released(cx);
             return Err(error);
@@ -92,8 +92,8 @@ pub(super) fn pipe2(
     bytes[4..].copy_from_slice(&write_fd.to_le_bytes());
     if let Err(error) = guest(kernel, cx, tid).write(fds, &bytes) {
         let mut files = kernel.files_mut(tid);
-        let _ = files.remove(read_fd);
-        let _ = files.remove(write_fd);
+        let _ = files.remove(read_fd, pid);
+        let _ = files.remove(write_fd, pid);
         drop(files);
         kernel.files_released(cx);
         return Err(error);
@@ -395,7 +395,7 @@ pub(super) fn write(
                 SIGPIPE,
                 SI_USER as i32,
                 process.pid,
-                process.credentials.uid,
+                kernel.credentials(tid).uid,
             );
             kernel.send_to_thread(cx, tid, SIGPIPE, info);
             break Err(Errno::EPIPE);

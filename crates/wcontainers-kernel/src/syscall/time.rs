@@ -323,7 +323,7 @@ pub(super) fn clock_nanosleep(
         if flags as u32 & !TIMER_ABSTIME != 0 {
             return Err(Errno::EINVAL).into();
         }
-        if !kernel.process_of(tid).credentials.has(CAP_WAKE_ALARM) {
+        if !kernel.credentials(tid).has(CAP_WAKE_ALARM) {
             return Err(Errno::EPERM).into();
         }
     }

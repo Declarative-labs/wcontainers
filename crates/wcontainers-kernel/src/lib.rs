@@ -356,15 +356,22 @@ impl Kernel {
         self.counters.readings()
     }
 
-    /// Gives a process's credentials a new serial after a change Linux commits (`commit_creds`).
-    pub(crate) fn commit_credentials(&mut self, pid: Pid) {
+    /// Gives a thread's credentials a new serial after a change Linux commits (`commit_creds`).
+    pub(crate) fn commit_credentials(&mut self, tid: Tid) {
         self.last_credentials += 1;
         let serial = self.last_credentials;
-        self.processes
-            .get_mut(&pid)
-            .expect("process exists")
-            .credentials
-            .serial = serial;
+        self.thread_mut(tid).credentials.serial = serial;
+    }
+
+    /// Thread `tid`'s credentials (`current_cred` for the calling thread).
+    pub(crate) fn credentials(&self, tid: Tid) -> &credentials::Credentials {
+        &self.threads[&tid].credentials
+    }
+
+    /// The credentials of the task a number names (`__task_cred`): a live thread's, or what a
+    /// process's first thread kept at its end.
+    pub(crate) fn task_credentials(&self, pid: Pid) -> &credentials::Credentials {
+        fs::proc::task_credentials(&self.processes, &self.threads, pid)
     }
 
     /// The next free process and thread number, wrapping at `pid_max` past the low numbers
@@ -417,12 +424,12 @@ impl Kernel {
         self.threads[&tid].fs.borrow_mut()
     }
 
-    /// Lets go of a thread's hold on a descriptor table; the last holder's going closes it
-    /// (`put_files_struct`).
-    pub(crate) fn put_files(&mut self, files: process::Files) {
+    /// Lets go of a thread's hold on a descriptor table; the last holder's going closes it, in its
+    /// process `closer` (`put_files_struct`).
+    pub(crate) fn put_files(&mut self, files: process::Files, closer: process::Pid) {
         if let Some(table) = Rc::into_inner(files) {
             let mut table = table.into_inner();
-            table.close_all();
+            table.close_all(closer);
             self.released.extend(table.take_released());
         }
     }
@@ -445,7 +452,6 @@ impl Kernel {
     ) -> Result<R, Errno> {
         let thread = &self.threads[&tid];
         let pid = thread.process;
-        let process = &self.processes[&pid];
         let context = thread.fs.borrow();
         let view = fs::proc::View {
             processes: &self.processes,
@@ -459,7 +465,7 @@ impl Kernel {
         };
         let walk = fs::Walk {
             root: &context.root,
-            credentials: &process.credentials,
+            credentials: &thread.credentials,
             proc: &view,
         };
         f(&walk, &context)
@@ -475,13 +481,22 @@ impl Kernel {
             .iter()
             .map(|space| space.used_blocks() * wcontainers_abi::PAGE_SIZE)
             .sum();
-        // A `vfork` child shows its parent's memory, counted once.
-        let mapped: u64 = self
+        // A map shared by processes made with CLONE_VM counts once.
+        let mut maps: alloc::vec::Vec<&process::Map> = self
             .processes
             .values()
-            .filter(|process| !self.borrows_memory(process.pid))
-            .flat_map(|process| process.map.iter())
-            .map(|mapping| mapping.end - mapping.start)
+            .map(|process| &process.map)
+            .collect();
+        maps.sort_by_key(|map| Rc::as_ptr(map));
+        maps.dedup_by(|a, b| Rc::ptr_eq(a, b));
+        let mapped: u64 = maps
+            .iter()
+            .flat_map(|map| {
+                map.borrow()
+                    .iter()
+                    .map(|mapping| mapping.end - mapping.start)
+                    .collect::<alloc::vec::Vec<_>>()
+            })
             .sum();
         ((tmpfs + mapped).min(self.machine.memory_bytes), tmpfs)
     }

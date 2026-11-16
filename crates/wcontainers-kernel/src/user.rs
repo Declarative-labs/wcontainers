@@ -29,7 +29,7 @@ pub(crate) fn access_ok(address: u64, length: u64) -> bool {
 pub(crate) struct Guest<'a> {
     pub cpu: &'a mut dyn Cpu,
     pub memory: MemoryId,
-    pub map: &'a mut AddressMap,
+    pub map: &'a core::cell::RefCell<AddressMap>,
     pub limits: &'a [Limit; LIMITS],
     /// Whether the process may lock memory past its limit (`CAP_IPC_LOCK`), for a locked stack's growth.
     pub may_lock_any: bool,
@@ -39,11 +39,12 @@ impl Guest<'_> {
     /// How many bytes from `address` on can be accessed as `wanted`, growing the stack as a fault there
     /// would.
     pub fn accessible(&mut self, address: u64, length: u64, wanted: Permissions) -> u64 {
-        let done = self.map.accessible(address, length, wanted);
+        let done = self.map.borrow().accessible(address, length, wanted);
         if done < length
-            && self.map.find(address + done).is_none()
+            && self.map.borrow().find(address + done).is_none()
             && self
                 .map
+                .borrow_mut()
                 .grow_stack(
                     self.cpu,
                     self.memory,
@@ -53,7 +54,7 @@ impl Guest<'_> {
                 )
                 .unwrap_or(false)
         {
-            return self.map.accessible(address, length, wanted);
+            return self.map.borrow().accessible(address, length, wanted);
         }
         done
     }
@@ -170,6 +171,7 @@ impl Guest<'_> {
     /// write fault would.
     fn copy_on_write(&mut self, address: u64, length: u64) -> Result<(), Errno> {
         self.map
+            .borrow_mut()
             .copy_on_write(self.cpu, self.memory, address, address + length)
     }
 

@@ -121,7 +121,8 @@ fn key_of(kernel: &Kernel, tid: Tid, address: u64, shared: bool) -> Result<Key, 
     if !shared {
         return Ok(Key::Private(process.memory.0, address));
     }
-    let mapping = process.map.find(address).ok_or(Errno::EFAULT)?;
+    let map = process.map.borrow();
+    let mapping = map.find(address).ok_or(Errno::EFAULT)?;
     match &mapping.backing {
         Backing::File { node, offset, .. } if mapping.shared => Ok(Key::Shared(
             alloc::rc::Rc::as_ptr(node) as *const () as usize,

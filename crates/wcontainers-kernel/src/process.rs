@@ -65,19 +65,17 @@ pub(crate) struct Process {
     pub group: Pid,
     pub session: Pid,
     pub memory: MemoryId,
-    pub map: AddressMap,
+    /// The address map, shared by the processes made with CLONE_VM (Linux's `mm_struct`).
+    pub map: Map,
     pub threads: Vec<Tid>,
-    pub credentials: Credentials,
     pub limits: [Limit; LIMITS],
     /// The program file and the path it was started by.
     pub executable: (Node, Vec<u8>),
     pub starting_stack: StartingStack,
-    /// `personality`'s value; kept across `execve`.
-    pub personality: u32,
     /// `PR_SET_DUMPABLE`; cleared when the process's ids change.
     pub dumpable: bool,
-    /// Signal handlers as `rt_sigaction` set them, by signal number less one.
-    pub actions: [kernel_sigaction; SIGNALS],
+    /// Signal handlers as `rt_sigaction` set them, shared by the processes made with CLONE_SIGHAND.
+    pub actions: Handlers,
     /// The number the next POSIX timer it makes gets.
     pub next_timer: i32,
     /// `PR_SET_CHILD_SUBREAPER`: orphaned descendants come to this process.
@@ -236,6 +234,13 @@ impl Thread {
     }
 }
 
+/// An address map, shared by the processes made with CLONE_VM.
+pub(crate) type Map = Rc<RefCell<AddressMap>>;
+
+/// Signal handlers by signal number less one, shared by the threads and processes made with
+/// CLONE_SIGHAND (Linux's `sighand_struct`).
+pub(crate) type Handlers = Rc<RefCell<[kernel_sigaction; SIGNALS]>>;
+
 /// A descriptor table, shared by the threads and processes made with CLONE_FILES (Linux's
 /// `files_struct`).
 pub(crate) type Files = Rc<RefCell<FdTable>>;
@@ -257,6 +262,10 @@ pub(crate) struct Thread {
     pub cpu: ThreadId,
     pub files: Files,
     pub fs: Fs,
+    /// The thread's credentials (Linux's `cred`, which each thread holds).
+    pub credentials: Credentials,
+    /// `personality`'s value; kept across `execve`.
+    pub personality: u32,
     /// The name `comm` shows, at most 15 bytes.
     pub name: Vec<u8>,
     /// How the thread continues the next time it runs.
@@ -304,17 +313,21 @@ pub(crate) struct Thread {
     /// An open of a named pipe waiting for the other end: the file it makes, already counted as an
     /// end (Linux's `wait_for_partner`).
     pub opening: Option<crate::file::FileRef>,
+    /// The inode a thread other than its process's first gives its process descriptors.
+    pub pidfd: Option<Node>,
 }
 
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
 pub(crate) const TIMER_SLACK: u64 = 50_000;
 
-/// What a process's first thread keeps for `/proc` and the scheduling calls once it has ended, until
-/// the process is reaped: its name, its scheduling values (its I/O priority is gone with its I/O
-/// context), its blocked signals and how many seccomp filters it installed.
+/// What a process's first thread keeps for `/proc`, the scheduling calls and permission checks once
+/// it has ended, until the process is reaped: its name, credentials, scheduling values (its I/O
+/// priority is gone with its I/O context), its blocked signals and how many seccomp filters it
+/// installed.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Leader {
     pub name: Vec<u8>,
+    pub credentials: Credentials,
     pub schedule: Schedule,
     pub signal_mask: u64,
     pub filters: usize,
@@ -324,6 +337,7 @@ impl Leader {
     pub fn of(thread: &Thread) -> Self {
         Self {
             name: thread.name.clone(),
+            credentials: thread.credentials.clone(),
             schedule: Schedule {
                 io_priority: 0,
                 ..thread.schedule
@@ -409,12 +423,20 @@ pub(crate) enum Restart {
 }
 
 impl Thread {
-    pub fn new(process: Pid, cpu: ThreadId, files: Files, fs: Fs) -> Self {
+    pub fn new(
+        process: Pid,
+        cpu: ThreadId,
+        files: Files,
+        fs: Fs,
+        credentials: Credentials,
+    ) -> Self {
         Self {
             process,
             cpu,
             files,
             fs,
+            credentials,
+            personality: 0,
             name: Vec::new(),
             resume: Resume::FromRegisters,
             vfork_parent: None,
@@ -437,6 +459,7 @@ impl Thread {
             parent_death_signal: 0,
             timer_slack: TIMER_SLACK,
             opening: None,
+            pidfd: None,
         }
     }
 }

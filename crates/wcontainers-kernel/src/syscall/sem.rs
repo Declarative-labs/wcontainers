@@ -106,7 +106,7 @@ pub(super) fn semget(
         return Err(Errno::EINVAL);
     }
     let count = count as usize;
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let sems = &mut kernel.ipc.sem;
     let existing = get(&sems.ids, &credentials, key, flags, |array| {
         if count > array.sems.len() {
@@ -225,7 +225,7 @@ fn operate(
         }
     }
     let pid = kernel.threads[&tid].process;
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let now = kernel.now(cx).seconds;
     let sems = &mut kernel.ipc.sem;
     let undo = if undos {
@@ -787,7 +787,7 @@ pub(super) fn semctl(
     if id < 0 {
         return Err(Errno::EINVAL);
     }
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let caller = kernel.threads[&tid].process;
     let now = kernel.now(cx).seconds;
     let sems = &mut kernel.ipc.sem;

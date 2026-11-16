@@ -58,7 +58,7 @@ fn every_file(
             (inode.fs.kind == Kind::Tmpfs).then(|| uuid(kernel, inode.fs.device)),
         )
     };
-    let has = |kernel: &Kernel, power: u32| kernel.process_of(tid).credentials.has(power);
+    let has = |kernel: &Kernel, power: u32| kernel.credentials(tid).has(power);
     Some(match request {
         FIOCLEX | FIONCLEX => kernel.files_mut(tid).get_mut(fd).map(|descriptor| {
             descriptor.close_on_exec = request == FIOCLEX;
@@ -434,7 +434,7 @@ fn random(
     request: u32,
     argument: u64,
 ) -> Result<u64, Errno> {
-    let capable = kernel.process_of(tid).credentials.has(CAP_SYS_ADMIN);
+    let capable = kernel.credentials(tid).has(CAP_SYS_ADMIN);
     let mut guest = guest(kernel, cx, tid);
     match request {
         RNDGETENTCNT => guest.put(argument, &256i32.to_le_bytes()).map(|()| 0),
@@ -551,7 +551,7 @@ fn set_attributes(
         return None;
     }
     let now = kernel.now(cx);
-    let credentials: &Credentials = &kernel.process_of(tid).credentials;
+    let credentials: &Credentials = kernel.credentials(tid);
     let mut inode = node.borrow_mut();
     if !credentials.owns_or_capable(inode.uid) {
         return Some(Err(Errno::EPERM));

@@ -259,7 +259,7 @@ pub(super) fn shmget(
     [key, size, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     let (key, flags) = (key as i32, flags as u32);
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let existing = get(&kernel.ipc.shm, &credentials, key, flags, |segment| {
         if segment.size < size {
             Err(Errno::EINVAL)
@@ -392,10 +392,7 @@ pub(super) fn shmat(
     }
     let index = kernel.ipc.shm.checked(id)?;
     let segment = &kernel.ipc.shm.slots[&index];
-    if !segment
-        .perm
-        .permits(&kernel.process_of(tid).credentials, access)
-    {
+    if !segment.perm.permits(kernel.credentials(tid), access) {
         return Err(Errno::EACCES);
     }
     let size = segment.size;
@@ -404,7 +401,7 @@ pub(super) fn shmat(
     let file = crate::file::OpenFile::new(segment.file.clone(), open_flags, path, 0);
     if address != 0 && flags & SHM_REMAP == 0 {
         let end = address.checked_add(size).ok_or(Errno::EINVAL)?;
-        if kernel.process_of(tid).map.any_mapped(address, end) {
+        if kernel.process_of(tid).map.borrow().any_mapped(address, end) {
             return Err(Errno::EINVAL);
         }
     }
@@ -441,7 +438,12 @@ pub(super) fn shmdt(
     };
     let mut pieces = Vec::new();
     let mut found: Option<(Node, u64)> = None;
-    for mapping in process.map.iter().filter(|mapping| mapping.end > address) {
+    for mapping in process
+        .map
+        .borrow()
+        .iter()
+        .filter(|mapping| mapping.end > address)
+    {
         let crate::memory::Backing::File { node, .. } = &mapping.backing else {
             continue;
         };
@@ -469,7 +471,13 @@ pub(super) fn shmdt(
         return Err(Errno::EINVAL);
     }
     for (start, end) in pieces {
-        super::memory::unmap(&mut process.map, cx, process.memory, start, end - start)?;
+        super::memory::unmap(
+            &mut process.map.borrow_mut(),
+            cx,
+            process.memory,
+            start,
+            end - start,
+        )?;
     }
     crate::shared::release(kernel, cx);
     Ok(0)
@@ -485,7 +493,7 @@ pub(super) fn shmctl(
     if command < 0 || id < 0 {
         return Err(Errno::EINVAL);
     }
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let shm = &kernel.ipc.shm;
     match command {
         IPC_INFO => {
@@ -702,7 +710,7 @@ fn attachments(kernel: &Kernel) -> BTreeMap<u32, u64> {
             continue;
         }
         memories.push(process.memory);
-        for mapping in process.map.iter() {
+        for mapping in process.map.borrow().iter() {
             if let crate::memory::Backing::File { node, .. } = &mapping.backing
                 && node.borrow().is_segment()
                 && let Some((index, _)) = kernel
@@ -852,7 +860,7 @@ pub(super) fn msgget(
     [key, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     let (key, flags) = (key as i32, flags as u32);
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     if let Some(id) = get(&kernel.ipc.msg, &credentials, key, flags, |_| Ok(()))? {
         return Ok(id as u64);
     }
@@ -900,7 +908,7 @@ pub(super) fn msgsnd(
         .msg
         .checked(id)
         .map_err(|error| if waited { Errno::EIDRM } else { error })?;
-    let credentials = &kernel.process_of(tid).credentials;
+    let credentials = kernel.credentials(tid);
     let queue = &kernel.ipc.msg.slots[&index];
     if !queue.perm.permits(credentials, 0o222) {
         return Err(Errno::EACCES);
@@ -993,7 +1001,7 @@ pub(super) fn msgrcv(
         .msg
         .checked(id)
         .map_err(|error| if waited { Errno::EIDRM } else { error })?;
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let now = kernel.now(cx).seconds;
     let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
     queue.receivers.retain(|receiver| receiver.tid != tid);
@@ -1074,7 +1082,7 @@ pub(super) fn msgctl(
     if id < 0 || command < 0 {
         return Err(Errno::EINVAL);
     }
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let msg = &kernel.ipc.msg;
     match command {
         IPC_INFO | MSG_INFO => {

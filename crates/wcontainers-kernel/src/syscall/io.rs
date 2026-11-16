@@ -1107,10 +1107,7 @@ pub(super) fn write_bytes(
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
     let now = kernel.now(cx);
-    let may_keep_privileges = kernel
-        .process_of(tid)
-        .credentials
-        .has(crate::credentials::CAP_FSETID);
+    let may_keep_privileges = kernel.credentials(tid).has(crate::credentials::CAP_FSETID);
     let mut inode = node.borrow_mut();
     let rdev = inode.rdev;
     let regular = match &mut inode.content {
@@ -1880,7 +1877,8 @@ pub(super) fn close(
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    kernel.files_mut(tid).remove(fd as i32)?;
+    let pid = kernel.threads[&tid].process;
+    kernel.files_mut(tid).remove(fd as i32, pid)?;
     kernel.files_released(cx);
     Ok(0)
 }
@@ -1904,6 +1902,7 @@ pub(super) fn close_range(
     if flags & CLOSE_RANGE_UNSHARE != 0 {
         kernel.unshare_files(tid);
     }
+    let pid = kernel.threads[&tid].process;
     let mut files = kernel.files_mut(tid);
     let fds: Vec<i32> = files
         .iter()
@@ -1915,7 +1914,7 @@ pub(super) fn close_range(
         if flags & CLOSE_RANGE_CLOEXEC != 0 {
             files.get_mut(fd)?.close_on_exec = true;
         } else {
-            files.remove(fd)?;
+            files.remove(fd, pid)?;
         }
     }
     drop(files);
@@ -1954,6 +1953,7 @@ pub(super) fn dup3(
     if new < 0 || new as u64 >= limit {
         return Err(Errno::EBADF);
     }
+    let pid = kernel.threads[&tid].process;
     let mut files = kernel.files_mut(tid);
     let file = files.file(old)?;
     let replaced = files.set(
@@ -1962,6 +1962,7 @@ pub(super) fn dup3(
             file,
             close_on_exec: flags & O_CLOEXEC != 0,
         },
+        pid,
     );
     drop(files);
     if replaced {
@@ -2235,7 +2236,7 @@ fn fcntl_other(
             // mode).
             {
                 let inode = file.node.borrow();
-                let credentials = &kernel.processes[&kernel.threads[&tid].process].credentials;
+                let credentials = kernel.credentials(tid);
                 if wanted & O_NOATIME != 0
                     && file.flags & O_NOATIME == 0
                     && !credentials.owns_or_capable(inode.uid)
@@ -2336,7 +2337,7 @@ fn fcntl_other(
         // Only pipes have a size (`pipe_fcntl`).
         F_GETPIPE_SZ | F_SETPIPE_SZ if !path_only => {
             let node = descriptor.file.borrow().node.clone();
-            let may_exceed = kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE);
+            let may_exceed = kernel.credentials(tid).has(CAP_SYS_RESOURCE);
             let mut inode = node.borrow_mut();
             let Content::Pipe(pipe) = &mut inode.content else {
                 return Err(Errno::EBADF);
@@ -2366,7 +2367,7 @@ fn fcntl_other(
         }
         F_SET_RW_HINT if !path_only => {
             let node = descriptor.file.borrow().node.clone();
-            let credentials = &kernel.process_of(tid).credentials;
+            let credentials = kernel.credentials(tid);
             if !credentials.owns_or_capable(node.borrow().uid) {
                 return Err(Errno::EPERM);
             }
@@ -2437,7 +2438,7 @@ fn set_owner(
 
 /// Linux's `f_modown`: the owner, with the caller's users when it names one.
 pub(super) fn set_owner_of(kernel: &Kernel, tid: Tid, file: &FileRef, pid: i32, kind: OwnerKind) {
-    let credentials = &kernel.process_of(tid).credentials;
+    let credentials = kernel.credentials(tid);
     let mut file = file.borrow_mut();
     let owner = file.owner.get_or_insert_default();
     owner.pid = pid;
@@ -2843,7 +2844,7 @@ pub(super) fn cachestat(
     // Linux's `can_do_cachestat`: opened for writing, the owner, or allowed to write.
     let node = file.borrow().node.clone();
     let allowed = file.borrow().writable() || {
-        let credentials = &kernel.process_of(tid).credentials;
+        let credentials = kernel.credentials(tid);
         let inode = node.borrow();
         credentials.owns_or_capable(inode.uid)
             || !inode.fs.read_only() && inode.permits(credentials, W_OK, true)

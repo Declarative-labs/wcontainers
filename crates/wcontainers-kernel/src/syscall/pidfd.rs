@@ -17,9 +17,9 @@ use crate::{Context, Errno, Kernel};
 /// What `/proc/<pid>/fd` shows for a descriptor (pidfs keeps the anonymous inode's name).
 const LINK: &[u8] = b"anon_inode:[pidfd]";
 
-/// The process a descriptor was made for, by number, and whether it still exists (running, or ended
-/// and not yet reaped). A reaped process's number may name another one later, which `exists` tells
-/// apart.
+/// The process or thread a descriptor was made for, by number, and whether it still exists (running,
+/// or ended and not yet reaped). A reaped process's number may name another one later, which
+/// `exists` tells apart.
 #[derive(Clone, Copy)]
 pub(super) struct Named {
     pub pid: Pid,
@@ -31,12 +31,25 @@ pub(super) fn named(kernel: &Kernel, file: &OpenFile) -> Result<Named, Errno> {
     let Content::Pidfd(pid, _) = file.node.borrow().content else {
         return Err(Errno::EBADF);
     };
-    let exists = kernel
-        .processes
-        .get(&pid)
-        .and_then(|process| process.pidfd.as_ref())
-        .is_some_and(|node| Rc::ptr_eq(node, &file.node));
+    let exists = inode_of(kernel, pid).is_some_and(|node| Rc::ptr_eq(node, &file.node));
     Ok(Named { pid, exists })
+}
+
+/// The inode a number's descriptors share, as pidfs keeps one per `struct pid`: a process's, which
+/// its first thread shares, or another thread's.
+fn inode_of(kernel: &Kernel, pid: Pid) -> Option<&Node> {
+    match kernel.processes.get(&pid) {
+        Some(process) => process.pidfd.as_ref(),
+        None => kernel.threads.get(&pid)?.pidfd.as_ref(),
+    }
+}
+
+/// The process a number names: its own, or a thread's.
+fn process_named(kernel: &Kernel, pid: Pid) -> &crate::process::Process {
+    match kernel.processes.get(&pid) {
+        Some(process) => process,
+        None => &kernel.processes[&kernel.threads[&pid].process],
+    }
 }
 
 /// What pollers of a process's descriptors wait on.
@@ -44,19 +57,25 @@ pub(crate) fn channel(node: &Node) -> Channel {
     Channel::Object(Rc::as_ptr(node) as *const () as usize)
 }
 
-/// `pidfd_poll`: readable once the process has ended, and hung up as well once it is reaped.
+/// `pidfd_poll`: readable once the process has ended, and hung up as well once it is reaped or the
+/// thread is gone.
 pub(super) fn poll(kernel: &Kernel, file: &OpenFile) -> u16 {
     match named(kernel, file) {
         Ok(Named { exists: false, .. }) => (POLLIN | POLLRDNORM | POLLHUP) as u16,
-        Ok(Named { pid, .. }) if kernel.processes[&pid].ended.is_some() => {
+        Ok(Named { pid, .. })
+            if kernel
+                .processes
+                .get(&pid)
+                .is_some_and(|p| p.ended.is_some()) =>
+        {
             (POLLIN | POLLRDNORM) as u16
         }
         _ => 0,
     }
 }
 
-/// A new open file naming `pid`, which must exist: one inode per process, as pidfs keeps one per
-/// `struct pid`, owned by root with no file type (measured).
+/// A new open file naming `pid`, a process or thread which must exist: one inode per number, as
+/// pidfs keeps one per `struct pid`, owned by root with no file type (measured).
 pub(super) fn make(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -64,7 +83,7 @@ pub(super) fn make(
     pid: Pid,
     flags: u32,
 ) -> Result<FileRef, Errno> {
-    let node = match kernel.processes[&pid].pidfd.clone() {
+    let node = match inode_of(kernel, pid).cloned() {
         Some(node) => node,
         None => {
             let now = kernel.now(cx);
@@ -88,15 +107,14 @@ pub(super) fn make(
                     name: LINK.to_vec(),
                 },
             )?;
-            kernel
-                .processes
-                .get_mut(&pid)
-                .expect("process exists")
-                .pidfd = Some(node.clone());
+            match kernel.processes.get_mut(&pid) {
+                Some(process) => process.pidfd = Some(node.clone()),
+                None => kernel.thread_mut(pid).pidfd = Some(node.clone()),
+            }
             node
         }
     };
-    let opener = kernel.process_of(tid).credentials.serial;
+    let opener = kernel.credentials(tid).serial;
     Ok(OpenFile::new(node, O_RDWR | flags, LINK.to_vec(), opener))
 }
 
@@ -114,20 +132,11 @@ pub(super) fn pidfd_open(
     if pid <= 0 {
         return Err(Errno::EINVAL);
     }
-    // `find_get_pid`, then `pidfd_prepare`: a number that names only a group or session is EINVAL, as
-    // is a thread other than the first without PIDFD_THREAD.
+    // `find_get_pid`, then `pidfd_prepare`: a number that names only a group or session is EINVAL,
+    // a thread other than the first without PIDFD_THREAD ENOENT (measured).
     match kernel.threads.get(&pid) {
-        Some(thread) if thread.process != pid => {
-            if flags & PIDFD_THREAD == 0 {
-                return Err(Errno::EINVAL);
-            }
-            // Descriptors for threads other than a process's first come with threads.
-            return Err(kernel.counters.refuse_flag(
-                cx.host,
-                __NR_pidfd_open,
-                flags.into(),
-                Errno::EINVAL,
-            ));
+        Some(thread) if thread.process != pid && flags & PIDFD_THREAD == 0 => {
+            return Err(Errno::ENOENT);
         }
         Some(_) => {}
         None if kernel.processes.contains_key(&pid) => {}
@@ -207,7 +216,7 @@ pub(super) fn pidfd_send_signal(
         } else {
             SI_USER as i32
         };
-        crate::signal::sender_info(signal, code, sender.pid, sender.credentials.uid)
+        crate::signal::sender_info(signal, code, sender.pid, kernel.credentials(tid).uid)
     } else {
         let info = super::signals::user_info(kernel, cx, tid, info_address)?;
         let signo = u32::from_le_bytes(info[0..4].try_into().expect("four bytes"));
@@ -257,7 +266,7 @@ pub(super) fn process_mrelease(
     }
     let file = super::io::open_file(kernel, tid, fd)?;
     let target = named(kernel, &file.borrow())?;
-    if !target.exists || kernel.processes[&target.pid].ended.is_some() {
+    if !target.exists || process_named(kernel, target.pid).ended.is_some() {
         return Err(Errno::ESRCH);
     }
     Err(Errno::EINVAL)
@@ -270,14 +279,15 @@ pub(super) fn next_descriptor(kernel: &Kernel, tid: Tid) -> Result<i32, Errno> {
     kernel.files(tid).lowest_free(0, limit)
 }
 
-/// Gives a parent its descriptor for a child it just made (CLONE_PIDFD), close on exec.
+/// Gives a parent its descriptor for a child or thread it just made (CLONE_PIDFD), close on exec.
 pub(super) fn give_child_descriptor(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     child: Pid,
+    flags: u32,
 ) -> Result<i32, Errno> {
-    let file = make(kernel, cx, tid, child, 0)?;
+    let file = make(kernel, cx, tid, child, flags)?;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     kernel.files_mut(tid).add(file, true, 0, limit)
 }
@@ -317,14 +327,13 @@ pub(super) fn ioctl(
         return Err(Errno::ENOTTY);
     }
     let named = named(kernel, &file.borrow())?;
-    if !named.exists || kernel.processes[&named.pid].ended.is_some() {
+    if !named.exists || process_named(kernel, named.pid).ended.is_some() {
         return Err(Errno::ESRCH);
     }
     if argument != 0 {
         return Err(Errno::EINVAL);
     }
-    let caller = kernel.threads[&tid].process;
-    if !kernel.ptrace_may_read(caller, named.pid) {
+    if !kernel.ptrace_may_read(tid, process_named(kernel, named.pid).pid) {
         return Err(Errno::EACCES);
     }
     // Namespace files (nsfs) are not built: EOPNOTSUPP, as Linux answers for a namespace it lacks.
@@ -370,7 +379,7 @@ fn pidfd_info(
     let cgroup = mask & PIDFD_INFO_CGROUPID != 0;
     let named = named(kernel, &file.borrow())?;
     if named.exists {
-        let process = &kernel.processes[&pid];
+        let process = process_named(kernel, pid);
         // A process that has ended has no memory, so nothing about its core dump is known.
         if asked & PIDFD_INFO_COREDUMP != 0 && process.ended.is_none() {
             let dump = if process.dumpable {
@@ -381,7 +390,7 @@ fn pidfd_info(
             put(64, dump);
             mask |= PIDFD_INFO_COREDUMP;
         }
-        let c = &process.credentials;
+        let c = kernel.credentials(tid);
         for (at, id) in [
             (28, c.uid),
             (32, c.gid),
@@ -395,9 +404,9 @@ fn pidfd_info(
             put(at, id);
         }
         mask |= PIDFD_INFO_CREDS | PIDFD_INFO_CGROUPID | PIDFD_INFO_PID;
-        // The parent, the process and its first thread.
+        // The parent, the process and the thread named.
         put(24, process.parent as u32);
-        put(20, pid as u32);
+        put(20, process.pid as u32);
         put(16, pid as u32);
     } else if asked & PIDFD_INFO_EXIT == 0 {
         return Err(Errno::ESRCH);
