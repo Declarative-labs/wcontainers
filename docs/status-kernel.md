@@ -37,10 +37,19 @@ processes) is partly done; this is its first run. Built in it:
 - A shell (busybox sh) runs pipelines, subshells, background jobs, traps, kills and waits, and matches
   the reference (tests/shell.rs).
 
+- Saving and bringing back (section 12): `Kernel::restore` after the CPU side is restored from the
+  same save (`StandIn::restored`: every memory, block and register block copied under the same
+  handles onto new emulator instances): every thread starts from its saved registers (a value a call
+  was to return is put in x0 first) and every parked call runs again. tests/saving.rs saves the
+  processes program 8 times at seeded moments and compares it with the reference
+  (`SAVING_SEEDS`, default 3; 20 seeds passed).
+- Layer 1 generates pipe2 (always nonblocking), wait4, waitid, rt_sigqueueinfo, rt_tgsigqueueinfo
+  and rt_sigtimedwait (always with a timeout).
+
 Not done yet in K2, in order: pseudo-terminals with line handling and job control (section 9), and the
-shell's job control through one; saving and bringing back (section 12); layer 1 generating the new
-calls (pipes, kill, wait, signals) and the three fresh 20000-sequence seeds; private file mappings that
-see later file changes (still copies); FIFOs (named pipes are still refused, counted).
+shell's job control through one; the three fresh 20000-sequence layer 1 seeds; private file mappings
+that see later file changes (still copies); FIFOs (named pipes are still refused, counted); fork and
+clone in layer 1 (each runner would have to compare a child's calls too).
 Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
 turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
 instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
@@ -602,6 +611,10 @@ All pass except the ignored known failures listed above. Added in K2's first run
   flags, records and syndromes, si_addr, the mask in the handler and in the frame, the alternate
   stack, a one-shot handler, a re-entrant one, a handler that moves the pc past a fault, a handler
   with no restorer returning through the vDSO, floating point kept. Same output.
+- saving: see "Where things stand".
+- shell `runs_repeat_for_a_seed`: four background pipelines run twice with one seed give the same
+  output and the same counters, down to the measured wake-to-run nanoseconds; two other seeds give the
+  same lines.
 - shell: busybox sh with pipelines, exit statuses through pipes, redirections, subshells, command
   substitution, background jobs and wait, traps, kill, descriptors opened by exec. Same output, exit
   code and files.
@@ -714,6 +727,14 @@ commands: same stdout, stderr, exit code and files changed), xattr, memfd, sched
 one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, procaccess, layer1.
 
 ## Layer 1
+
+K2's first run: with the new calls, seeds 300 (2000), 301 and 302 (3000 each) found three things:
+shared anonymous memory took mmap's offset (Linux starts it at 0), rt_tgsigqueueinfo compared the
+caller with the group, not the thread (EPERM first), and waitid writes the information's fields (zeros
+when nothing is found or it fails, EFAULT for a bad pointer) as its wrapper does; seed 303 found a
+pipe mapped with PROT_EXEC refused ENODEV where pipefs's SB_I_NOEXEC gives EPERM first. All fixed; 300
+(2000, 42 s, load 55 to 62), 301 and 302 (3000, 50 s each, three side by side, load 63 to 20) passed
+after their fixes. The milestone's three fresh 20000 seeds are not run yet.
 
 Thirteenth run (seventh close-out), after the fifth check: with the harness fixes and the sysctl
 fix (head after 321c3cd's kernel work, before the generator was widened) the check's seeds 6060601 and
@@ -887,6 +908,11 @@ All on this shared Mac; noisy, not benchmarks.
 - `/proc/sys/{abi,debug,dev,net,sunrpc,user}` exist as empty directories so paths through them resolve.
 - statfs reports a block size of 4096 for every file system, `/proc` included (measured); stat reports
   1024 for `/proc` files (measured).
+- Saving natively moves the kernel's state rather than copying it (its data lives in Rust's heap, not
+  one memory as under WebAssembly); what is proven is that the CPU side holds nothing the kernel
+  needs beyond memories, blocks and register blocks, and that parked calls and pending return values
+  come back. The host's clock is the same across the save here; on a real host the monotonic clock
+  must be set from the saved time (`restore`'s duty on the host, not built until K7).
 - Layer 2's clock is not the wall clock: time passes only by a seeded step per turn and by skipped
   waits, so CPU times and the scheduler's choices repeat for a seed. Layer 1 keeps the wall clock (its
   reference runs beside it).
@@ -984,10 +1010,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
    handling: echo, canonical editing, signals from keys, window size; the controlling terminal,
    TIOCSPGRP and the background job checks with SIGTTIN and SIGTTOU), then the shell's job control
    through a terminal against the reference (a guest program that opens `/dev/ptmx` and drives
-   `sh -i` on the slave); saving and bringing back (copy the kernel state, every memory and block,
-   restore into a fresh kernel and stand-in, rerun parked calls; layer 2 test at random moments);
-   layer 1 generating pipe2, kill, wait4, waitid and the signal calls, then three fresh seeds of 20000;
-   FIFOs; private file mappings that see later file
+   `sh -i` on the slave); three fresh layer 1 seeds of 20000 (seeds 300 and up were used in this
+   run); FIFOs; private file mappings that see later file
    changes; a test of rseq critical sections aborted by a handler (built in `rseq_fixup`, untested).
 2. The missing calls above by their milestone; the known gaps above before K6's bar.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
