@@ -857,9 +857,19 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K2's seventh run; counts under Measurements)
+## Tests (last run 2026-11-16, K2's eighth run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's seventh run (each guest's
+All pass except the ignored known failures listed above. Added in K2's eighth run:
+- terminal `making_pairs`: TIOCSETD with 2 (EPERM), 4, -1 and 31 on both sides; `waiting_for_room`:
+  sendfile and splice into a full blocking terminal finish once the master is read, and a signal ends
+  a waiting sendfile with the part written (how much fits is not printed, see Departures).
+- sigio: close_range over a writer and two readers in both orders, dup2 over the writer, closes after
+  it; the terminal echo is read until whole (the reference's buffer work handed it over in two parts
+  once under load).
+- posixmq: preadv2 of a queue with RWF_HIPRI and with RWF_NOWAIT. signalfd and pidfd: an O_PATH
+  descriptor given to signalfd4, pidfd_send_signal and waitid.
+
+Added in K2's seventh run (each guest's
 reference output was read and checked against Linux's source):
 - sysvsem: semget's keys, sizes and limits, semop whole or not at all, operations naming a semaphore
   twice, IPC_NOWAIT on the operation that blocks, the order waiting operations finish in (simple and
@@ -1069,6 +1079,16 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K2's eighth run: TIOCSETD's disciplines come from a table (see "Where things stand"). Seed 711 passed
+20000 after that fix (345 s alone, load 31 to 44). Then, with the terminal, pipe release and process
+state work in (head 54a857f, before the queue fix), seeds 721 and 723 passed 20000 (334 s and
+393 s, three side by side beside the whole suite, load 39 to 44); 722 found preadv2 with RWF_NOWAIT on a
+message queue (Linux's queue files have no iterating read, so `do_loop_readv_writev` refuses every
+flag but RWF_HIPRI before copying: EOPNOTSUPP; ours copied into a bad buffer: EFAULT). After that fix
+722 and 724 passed 20000 (330 s and 329 s, three side by side, load 20 to 36); 725 found signalfd4
+given an O_PATH descriptor (Linux's `fdget` passes over it: EBADF; ours EINVAL), and the process
+descriptor calls and mq_notify had the same fault; fixed (head b01b1de).
+
 K2's sixth run: with the fixes for 516, 517 and 518 in (head 603f689), those seeds passed 20000 each
 (335 to 344 s, three side by side, load 82 at the start, 40 to 48 at the end). Then process
 descriptors, signal descriptors and message queues are generated (see "Where things stand"). Seeds
@@ -1265,6 +1285,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 eighth run: the whole test suite of both crates, beside three 20000-sequence layer 1 runs (load
+  39 at the start, 42 at the end): 71 passed and sigio failed in the reference (its echo came in two
+  parts; the test now reads it until whole), and cargo stopped there. Layer 1 at 20000: 329 to 393 s
+  each, three side by side (load 20 to 44).
 - K2 seventh run: the whole test suite of both crates 92 passed, 0 failed, 6 ignored: one run of
   2 min 44 s wall with two test threads beside one 20000-sequence layer 1 run (load 56 at the start,
   35 at the end) had terminal's `making_pairs` fail in the reference (`exec /wc/tty: no such file`,
