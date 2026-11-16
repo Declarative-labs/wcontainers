@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Optimise};
 use wcontainers_translator_test::browser;
+use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer2::{OUTPUT, area_offset, assemble, program};
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
@@ -49,15 +50,10 @@ fn full_matches_none_and_the_cpu() {
     let natives = knob("WC_LAYER2_NATIVE", 8);
     let chrome = knob("WC_LAYER2_CHROME", 1);
     let jobs = knob("WC_LAYER2_JOBS", 1).max(1);
-    let next = AtomicU64::new(0);
     let [ran, faulted, left, lost, forgotten] = std::array::from_fn(|_| AtomicU64::new(0));
     let failures = Mutex::new(Vec::new());
     let count = |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed);
-    let work = || loop {
-        let i = next.fetch_add(1, Ordering::Relaxed);
-        if i >= cases {
-            return;
-        }
+    at_once(jobs, cases, |i| {
         let case = from + i;
         let (on_cpu, in_chrome) = (i < natives, i < chrome);
         let result = generator(seed, case).run(
@@ -155,11 +151,6 @@ fn full_matches_none_and_the_cpu() {
         if let Err(error) = result {
             eprintln!("layer 2, seed {seed}, case {case}: {error}");
             failures.lock().unwrap().push(case);
-        }
-    };
-    std::thread::scope(|scope| {
-        for _ in 0..jobs {
-            scope.spawn(work);
         }
     });
     let mut failures = failures.into_inner().unwrap();

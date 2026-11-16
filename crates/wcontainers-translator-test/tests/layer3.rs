@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
+use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer3::{
     Compiler, LEVELS, Position, build, csmith, native_in_time, ordinary,
 };
@@ -156,44 +157,33 @@ fn csmith_programs_match_linux() {
     let from = setting("WC_LAYER3_FROM", 0);
     let chrome = setting("WC_LAYER3_CHROME", 1);
     let jobs = setting("WC_LAYER3_JOBS", 1).max(1);
-    let (next, in_chrome) = (AtomicU64::new(0), AtomicU64::new(0));
+    let in_chrome = AtomicU64::new(0);
     let (ran, too_long, done) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
     let failures = Mutex::new(Vec::new());
-    let work = || {
-        loop {
-            let i = next.fetch_add(1, Ordering::Relaxed);
-            if i >= cases {
-                return;
+    at_once(jobs, cases, |i| {
+        let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
+        let (source, compiler, level, position) = csmith_case(number);
+        let blob = build(&source, compiler, level, position);
+        let own = || ordinary(&source, compiler, level, position);
+        let checked = compare(&blob, own).and_then(|theirs| match theirs {
+            Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
+                compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
             }
-            let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
-            let (source, compiler, level, position) = csmith_case(number);
-            let blob = build(&source, compiler, level, position);
-            let own = || ordinary(&source, compiler, level, position);
-            let checked = compare(&blob, own).and_then(|theirs| match theirs {
-                Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
-                    compare_in_chrome(&blob, &theirs).map(|()| Some(theirs))
-                }
-                other => Ok(other),
-            });
-            match checked {
-                Ok(Some(_)) => ran.fetch_add(1, Ordering::Relaxed),
-                Ok(None) => too_long.fetch_add(1, Ordering::Relaxed),
-                Err(report) => {
-                    eprintln!("csmith {number} (case {}): {report}", from + i);
-                    failures.lock().unwrap().push(number);
-                    0
-                }
-            };
-            let done = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if done.is_multiple_of(1000) {
-                let failing = failures.lock().unwrap().len();
-                eprintln!("layer 3: {done} of {cases} done, {failing} failing so far");
+            other => Ok(other),
+        });
+        match checked {
+            Ok(Some(_)) => ran.fetch_add(1, Ordering::Relaxed),
+            Ok(None) => too_long.fetch_add(1, Ordering::Relaxed),
+            Err(report) => {
+                eprintln!("csmith {number} (case {}): {report}", from + i);
+                failures.lock().unwrap().push(number);
+                0
             }
-        }
-    };
-    std::thread::scope(|scope| {
-        for _ in 0..jobs {
-            scope.spawn(work);
+        };
+        let done = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if done.is_multiple_of(1000) {
+            let failing = failures.lock().unwrap().len();
+            eprintln!("layer 3: {done} of {cases} done, {failing} failing so far");
         }
     });
     let mut failures = failures.into_inner().unwrap();

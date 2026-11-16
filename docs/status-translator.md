@@ -4,11 +4,91 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M5 (real code at scale): built in four runs (under "M5, fourth run" back to "M5, first run"); every part
-is built and recorded, and refinements are listed under "M5, fourth run, what comes next". M0 to M4 and S1 are built; their work is recorded
-below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million
-programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
-under "How to run".
+M0 to M5 and S1 are built; their work is recorded below, newest first. P1 (close-out of M5, the long-run
+driver) is done: see "P1" just below. What is left of the translator track is the long runs to the plan's pass
+bars, started by the orchestrator with one command (under "P1, the long-run driver"). Refinements of M5 that
+remain are listed under "M5, fourth run, what comes next".
+
+## P1: close-out of M5 and the long-run driver
+
+Merge: `origin/phase-1` merged into `phase-1-translator` (a fast forward to 7bf2809; the integration branch
+already held this branch). The shared crate's two changes from the kernel half (`CounterReading::detail`, set to
+0 by the runner, and `Host::output(Stream, bytes)`) need nothing more here: the three crates build and lint, and
+their whole suite passed after the merge (debug, `RAYON_NUM_THREADS=4`, `--test-threads=4`: 69 passed, 7 ignored,
+16.7 minutes, load 26 to 36).
+
+The independent check's findings (`m5-check-findings.json`), each fixed:
+- The size setting now runs in Chrome in the normal tests: `tests/browser.rs` runs every program at full and at
+  bounded made at run time in both settings; layer 3's Chrome sample, layer 2's new Chrome sample, the
+  unwinding, stack switching, written code, deep recursion and cut function tests and `checks.rs`'s Chrome test
+  run full in both settings. `browser::translated_with` takes the setting with the look-ahead.
+- Layers 2 and 3 compare full with none in registers and memory, plain and stopping at every check, in both
+  settings, every case. The programs tests (`match_linux`, `every_look_ahead_matches`, stops at every check)
+  do the same.
+- A normal test, `tests/binaries.rs` `small_binaries_translate_and_load`, translates busybox and musl whole in
+  both settings, validates every module, loads them in wasmtime and in Chrome (a refusal fails), and checks that
+  every piece is counted once by the means that found it (13.6 s in release, load 37).
+- "Found by the translator" is now split by means: `Translation::found`, by `Means` (given, call targets, built
+  addresses, followed (look-ahead none only), kept reducible, cuts for the translator's own limit or an
+  engine's). The old figure counted the reducibility and size cuts as found: busybox 3,100 "found" were 2,000
+  call targets, 130 built addresses and 970 entries kept reducible. Output bytes are unchanged.
+- Reading `.eh_frame` counts and warns of every entry it cannot read (`Binary::unwind_errors`, printed by
+  `measure_binaries`; the normal test requires 0 for busybox and musl). All nine binaries: 0.
+- The elfconv comparison is one command in the repository:
+  `nix develop -c crates/wcontainers-translator-test/elfconv.sh` (see "How to run").
+- The engines' figures and the static counters are taken again on the final code (below), replacing the stale
+  ones.
+- Not done: the two lookup designs' memory as process memory (finding 6, not blocking); still worked out from
+  table sizes only.
+
+Each binary, final code (`measure_binaries`, release, `RAYON_NUM_THREADS=6`, nothing else of this half
+running; the seven small ones together at load 21 to 31, then Node alone at load 21 to 31, then Bun alone at
+load 23 to 31). Bytes of WebAssembly (the same as the fourth run's, byte for byte in size), translation time,
+pieces by means (given / call targets / built addresses / kept reducible / cuts), wasmtime's compile time and
+machine code, Chrome making the modules compiled at first call / at once and how much its processes grew
+(noise about 100 MB; python's first call figure came out at -120 MB). Instances took at most 17 ms in wasmtime.
+- busybox: speed 32,472,392, 0.24 s, 420 / 2,000 / 130 / 970 / 0, wasmtime 2.33 s to 51.2 MB, Chrome 0.01 /
+  0.06 s, 60 / 342 MB; size 13,533,418, 0.29 s, wasmtime 1.11 s to 27.5 MB, Chrome 0.00 / 0.03 s, 43 / 198 MB.
+- musl: speed 14,546,689, 0.08 s, 1,513 / 250 / 30 / 31 / 0, 0.99 s to 22.6 MB, 0.00 / 0.03 s, 39 / 194 MB;
+  size 6,996,354, 0.05 s, 0.57 s to 13.5 MB, 0.00 / 0.02 s, 31 / 139 MB.
+- rg: speed 137,298,326, 0.55 s, 5,073 / 154 / 22 / 714 / 0, 16.03 s to 188.4 MB, 0.03 / 0.42 s, 175 / 1,314
+  MB; size 41,973,706, 0.32 s, 4.52 s to 72.1 MB, 0.01 / 0.10 s, 81 / 642 MB.
+- git: speed 107,719,042, 0.55 s, 6,084 / 245 / 5 / 2,975 / 0, 8.08 s to 169.2 MB, 0.03 / 0.17 s, 150 / 985 MB;
+  size 43,777,767, 0.35 s, 3.82 s to 87.7 MB, 0.01 / 0.09 s, 88 / 547 MB.
+- python: speed 137,603,117, 0.56 s, 5,878 / 1,263 / 72 / 655 / 374, 10.20 s to 210.3 MB, 0.03 / 0.22 s, -120
+  / 1,336 MB; size 57,678,120, 0.43 s, 4.37 s to 112.7 MB, 0.01 / 0.12 s, 109 / 794 MB.
+- java: speed 543,298,928, 2.38 s, 46,890 / 242 / 131 / 2,000 / 0, 43.59 s to 867.4 MB, 0.11 / 0.89 s, 660 /
+  4,644 MB; size 235,237,352, 1.91 s, 20.01 s to 519.3 MB, 0.06 / 0.45 s, 350 / 2,471 MB.
+- go: speed 347,710,233, 1.10 s, 17,595 / 57 / 2,106 / 1,101 / 0, 24.51 s to 546.0 MB, 0.07 / 0.47 s, 426 /
+  2,949 MB; size 148,076,420, 0.91 s, 11.39 s to 315.6 MB, 0.04 / 0.25 s, 224 / 1,619 MB.
+- node: speed 2,515,099,638 in 3 modules, 12.85 s, 99,365 / 498 / 2,009 / 18,685 / 29, wasmtime 189.74 s to
+  3,810.2 MB (alone: so the third run's 194 s was not slowed by Chrome; the first run's 89.6 s was on other
+  code), Chrome 0.46 s at first call (2,938 MB), compiled at once the page crashed; size 895,334,387 in 1
+  module, 7.32 s, 80.86 s to 1,895.3 MB, Chrome 0.21 / 2.77 s, 305 / 8,781 MB.
+- bun: speed 3,761,902,687 in 4 modules, 17.69 s, 64,343 / 819 / 2,215 / 10,312 / 65,849, wasmtime 340.33 s
+  to 5,532.9 MB, Chrome 0.71 s at first call (4,154 MB), compiled at once the page crashed; size 1,058,185,079
+  in 2 modules, 8.98 s, 139.54 s to 2,117.5 MB, Chrome 0.22 / 4.04 s, 1,441 / 7,724 MB.
+- Places that may take each slow path, speed / size (left to an address; jump through a register not
+  recognised; stopped by the flag; memory fault; loop not proven; engine stack nearly full; unsupported
+  instruction reached where any):
+  busybox 37,300 / 21,950; 528 / 459; 15,318 / 8,004; 63,243 / 35,589; 346 / 326; 5,932 / 3,342.
+  musl 11,567 / 7,473; 57 / 45; 7,310 / 3,788; 21,020 / 11,175; 414 / 377; 2,668 / 1,384.
+  rg 109,780 / 43,806; 510 / 473; 30,807 / 14,625; 204,956 / 76,469; 2,403 / 2,262; 10,912 / 5,044.
+  git 145,137 / 82,366; 341 / 317; 37,113 / 19,990; 235,899 / 126,213; 896 / 827; 15,163 / 8,931.
+  python 113,812 / 68,542; 2,766 / 2,531; 31,049 / 17,229; 292,111 / 169,776; 1,822 / 1,774; 13,245 / 7,849.
+  java 466,074 / 312,032; 3,579 / 3,212; 114,920 / 61,903; 1,143,350 / 693,667; 4,786 / 4,367; 51,636 /
+  32,337; 8 / 6.
+  go 232,053 / 148,546; 391 / 286; 71,564 / 46,397; 883,594 / 553,930; 3,315 / 3,135; 28,393 / 18,144; 40 / 39.
+  node 1,885,890 / 1,047,843; 8,143 / 6,025; 484,150 / 240,461; 5,036,524 / 2,393,326; 25,426 / 22,657;
+  185,164 / 98,982; 102 / 99.
+  bun 3,455,257 / 1,268,611; 8,913 / 6,346; 629,509 / 308,535; 6,234,847 / 2,258,415; 32,887 / 30,158; 257,328
+  / 136,310; 54 / 52.
+
+ELFCONV_PLACEHOLDER
+
+### P1, the long-run driver
+
+LONG_PLACEHOLDER
 
 ## M5, fourth run
 
@@ -71,8 +151,7 @@ translation time, speed / size:
   176,121,046, 10.92 s (third run: 72.74 s / 52.08 s).
 - node 2,515,099,638 in 3 modules (62.9), 380,762,969, 14.74 s / 895,334,387 in 1 module (22.4),
   155,537,459, 8.11 s (third run: 18.79 s / 9.27 s).
-- The engines' figures (compile time, machine code, Chrome's memory) under "M5, third run" are for that
-  run's code, 3 to 6% larger; not taken again.
+- The engines' figures on this code are under "P1" (taken again there, alone).
 
 What a call between two modules costs, again on this run's code (`measure_calls`, best of 3, load 24 to 32):
 wasmtime speed 2.81 ns, size 2.20 ns; Chrome speed 2.71 ns (0.135 s in one module, 0.406 s a module a
@@ -92,8 +171,7 @@ M5, fourth run, what comes next (the milestone's parts are all built and recorde
 2. Size mode: a proven loop with loops inside it still has only its checked copy.
 3. A split translation is emitted twice (Node and Bun only), as each module's code depends on which pieces
    it holds.
-4. The engines' compile times and memory on this run's code alone, without Chrome or the other half beside
-   them.
+4. (Done in P1: the engines' figures on this code, taken alone.)
 
 ## M5, third run
 
@@ -157,7 +235,8 @@ modules).
 
 Static counters: each code module now carries how many places in its code may take each slow path
 (`CodeModule::sites`, by reason; floating point paths, decided by a hook at run time, are not counted), and
-`measure_binaries` prints them. Speed / size settings (load 22 to 11):
+`measure_binaries` prints them. The figures below are stale (the size setting's were taken before later changes
+of this run); the current ones are under "P1". Speed / size settings (load 22 to 11):
 - busybox: left to an address 37,300 / 21,944; jump through a register not recognised 528 / 459; stopped by the
   flag 15,318 / 7,662; memory fault 63,243 / 35,346; loop not proven 346 / 0; engine stack nearly full 5,932 /
   3,342.
@@ -171,7 +250,7 @@ Static counters: each code module now carries how many places in its code may ta
   instruction reached 40 / 39.
 - (The size setting has fewer places because a function has no loop pieces, which repeat their loop's code.)
 
-Each binary in each setting with both engines, on the final code of this run (`measure_binaries`, release,
+Each binary in each setting with both engines, on the final code of this run, superseded by "P1" (`measure_binaries`, release,
 `RAYON_NUM_THREADS=6`, one run, load 24 to 36). Bytes of WebAssembly; translation time; wasmtime's compile time
 and bytes of machine code; Chrome's time to make the modules compiled at first call / at once, and how much
 the resident memory of Chrome's processes grew from before the worker started to after the modules and their
@@ -1853,6 +1932,15 @@ contract's bits, in both runners).
 
 ## How to run
 
+- The long runs to the plan's pass bars, resumable, one command (from the repository root, detached; it runs
+  for days): `WC_LONG_DIR=<scratch directory> nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &`.
+  Knobs (`WC_LONG_PERCENT`, `WC_LONG_LAYERS`, `WC_LONG_SEED`, `WC_LONG_ACCEPT`, `WC_LONG_JOBS`,
+  `WC_LONG_LIMIT`) and the ledger's fields are described at the top of the script and under "P1, the long-run
+  driver". To carry on after a stop, run the same command again; to keep chunks run on an older commit, set
+  `WC_LONG_ACCEPT=<that commit>`.
+- The benchmark set against elfconv: `nix develop -c crates/wcontainers-translator-test/elfconv.sh` (needs
+  Docker and the image `ghcr.io/yomaytk/elfconv:arm64`; converted programs kept in `target/elfconv`;
+  `WC_BENCH_RUNS` best of, default 3).
 - Everything: `nix develop -c cargo test -p wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test`
   (includes the Chrome test; it needs Google Chrome installed and Docker running).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
@@ -1870,14 +1958,18 @@ contract's bits, in both runners).
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
 - Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_CHROME=100 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
   (defaults: 64 cases, seed 1, 1 case a form in Chrome, 1000 cases to a Chrome page; 6075 took 25.5 s).
+  `WC_LAYER1_JOBS` forms at once (default 1), each job with its own reference container.
   Replay a failure: same seed and cases, plus `WC_LAYER1_FORMS=<form name>` (the wasmtime run only). The
   filter drops the runners' warnings (memory faults and stops), one per case.
 - Decoding against Arm's forms: `WC_DECODE_CASES` (default 64 per form), `WC_DECODE_WORDS` (random words
   from the whole space, default 200,000), `WC_DECODE_SEED` (default 1).
 - Words in no form against the CPU: part of the layer 1 command; `WC_LAYER1_CASES` words.
 - Translator proptest: `PROPTEST_CASES`, `PROPTEST_RNG_SEED` (default seed 1).
-- Layer 2: `WC_LAYER2_CASES=1000000 WC_LAYER2_SEED=<n> WC_LAYER2_NATIVE=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
-  (defaults 64 cases, seed 1, 8 of them on the CPU; each CPU case starts a container, about 0.3 s).
+- Layer 2: `WC_LAYER2_CASES=<n> WC_LAYER2_SEED=<s> WC_LAYER2_FROM=<first case> WC_LAYER2_JOBS=6 WC_LAYER2_NATIVE=<k> WC_LAYER2_CHROME=<c> nix develop -c cargo test --release -p wcontainers-translator-test --test layer2 -- --nocapture`
+  (defaults 64 cases, seed 1, from case 0, one at a time, the first 8 on the CPU, the first 1 in Chrome; each
+  CPU case starts a container, about 0.3 s, and each Chrome case Chrome three times). Since P1 case `i` is made
+  from the seed and `i` alone, so a failure replays with `WC_LAYER2_FROM=i WC_LAYER2_CASES=1`; seeds of earlier
+  runs give other programs than they did then.
 - Bounded look-ahead of random N against none (C programs, every piece but the first made at run time):
   `WC_LOOKAHEAD_CASES=<n> WC_LOOKAHEAD_SEED=<s> nix develop -c cargo test --release -p wcontainers-translator-test --test lookaheads -- --nocapture`
   (defaults 4 a program, seed 1). Layers 2 and 3 also run every case at bounded look-ahead of a random N and
@@ -1893,6 +1985,8 @@ contract's bits, in both runners).
 - Permissions changed at random stops and system calls: `WC_CHANGES_CASES=100000 WC_CHANGES_SEED=<n> WC_CHANGES_PROGRAM_SEEDS=<k> nix develop -c cargo test --release -p wcontainers-translator-test --test changes -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
   (defaults 64 random programs, seed 1, 3 seeds for each C program; since the eleventh run about 33 ms
   a random program at load 16 to 21, as every program now calls a function that makes a system call).
+- Real binaries, as a check (busybox and musl, both settings, in the normal suite):
+  `nix develop -c cargo test --release -p wcontainers-translator-test --test binaries`.
 - Real binaries (M5): `WC_BINARIES=busybox,musl nix develop -c cargo test --release -p wcontainers-translator-test --test binaries measure_binaries -- --ignored --nocapture 2>&1 | grep -v "^chrome:"`
   (names: busybox, musl, rg, git, node, python, bun, java, go; all when unset; each is taken from its Docker
   image into `target/binaries` once, which needs network). Node and Bun take minutes each and 15 to 20 GB of
@@ -2123,9 +2217,9 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M5 is built; refinements under "M5, fourth run, what comes next". Then M6 as the plan says.
-2. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
-   (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
+1. The long runs to the pass bars, started by the orchestrator with the driver (under "How to run"; its
+   length from the 1 percent run is under "P1, the long-run driver").
+2. Refinements of M5 under "M5, fourth run, what comes next".
 
 ## Known gaps (behave as the plan says: illegal instruction, counted, warned)
 
@@ -2171,6 +2265,13 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
+- P1: the long-run driver is a shell script (`long-runs.sh`), not Rust: it only runs test commands one after
+  another and keeps a ledger.
+- P1: layer 2 now runs a sample in Chrome (the task for P1 asks for one; the plan asks for a sample of each
+  layer in Chrome). Its cases are each made from the seed and the case number, so a layer can be cut into
+  chunks by case offset and run at once; the seeds of earlier runs no longer give the programs they gave.
+- P1: the plan's pass bar for layer 1 counts 10,000 cases a form; the driver runs them as ten seeds of 1,000
+  cases a form, which is 10,000 different cases a form.
 - M5, fourth run: the translator's maps use `rustc-hash` (an established crate, already a dependency)
   instead of std's SipHash: keys are guest offsets, and translation speed is a goal while hash flooding is
   not a risk here (a hostile binary can only slow its own translation).
@@ -2399,6 +2500,10 @@ contract's bits, in both runners).
   `memory_may_move(false)`).
 
 ## Shared crate (wcontainers-abi)
+
+- P1: no change by this half. The merge of `origin/phase-1` brought the kernel half's two changes
+  (`CounterReading::detail`, `Host::output(Stream, bytes)` in place of `Host::terminal_output`); the runner
+  already sets `detail` to 0, as it counts by reason only, and nothing here implements `Host`.
 
 - M5, second run: no change. The array of slots, its imports and the exact slot are in the translator's
   contract (`contract.rs`).

@@ -41,8 +41,9 @@ if [ -n "$(git status --porcelain -- crates Cargo.lock Cargo.toml)" ]; then
   commit="$commit-changed"
 fi
 accepted=$( (echo "$accept"; git rev-list "$accept..HEAD") | sort)
-# Translations inside a chunk use one thread each, so a chunk keeps to its jobs.
-export RAYON_NUM_THREADS=1
+# A chunk's cases run on a pool of its jobs' threads, which the translator and wasmtime share; anything run
+# outside that pool keeps to the same number.
+export RAYON_NUM_THREADS=$jobs
 test_command="cargo test --release -p wcontainers-translator-test"
 
 loadavg() { sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | xargs; }
@@ -180,14 +181,14 @@ if [[ ",$layers," == *,2,* ]]; then
   done
 fi
 
-# Layer 3: chunks of up to 2,000 Csmith programs from one seed, by case offset.
+# Layer 3: chunks of up to 1,000 Csmith programs from one seed, by case offset.
 if [[ ",$layers," == *,3,* ]]; then
   total=$(part 100000)
-  chunks=$(ceil "$total" 2000)
+  chunks=$(ceil "$total" 1000)
   chrome=$(ceil "$(part 1000)" "$chunks")
   for ((k = 0; k < chunks; k++)); do
-    cases=$(( k < chunks - 1 ? 2000 : total - 2000 * (chunks - 1) ))
-    knobs="WC_LAYER3_SEED=$base WC_LAYER3_FROM=$((k * 2000)) WC_LAYER3_CASES=$cases WC_LAYER3_CHROME=$chrome WC_LAYER3_JOBS=$jobs"
+    cases=$(( k < chunks - 1 ? 1000 : total - 1000 * (chunks - 1) ))
+    knobs="WC_LAYER3_SEED=$base WC_LAYER3_FROM=$((k * 1000)) WC_LAYER3_CASES=$cases WC_LAYER3_CHROME=$chrome WC_LAYER3_JOBS=$jobs"
     run_chunk 3 $((k + 1)) "$chunks" "$knobs" csmith_programs_match_linux
   done
 fi
