@@ -13,7 +13,8 @@ fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc, six le
 position independent code loaded away from where it is linked). The third run made layer 3's long run one
 command that runs cases side by side (`WC_LAYER3_JOBS`; 2000 programs in 14 minutes with 12 at once), and
 made instructions of features we do not offer count and warn as "unsupported instruction reached" while still
-raising illegal instruction. Layers 1 and 3 each have a one command long run with its Chrome sample under "How
+raising illegal instruction. It ran 12,000 Csmith programs (all matching but one reference flake, see "M3,
+third run") and layer 1 with 100 cases a form in Chrome (no mismatch). Layers 1 and 3 each have a one command long run with its Chrome sample under "How
 to run"; neither has reached the plan's pass bar yet (layer 2 has no Chrome sample; it is not M3's). See "M3,
 third run", "M3, second run" and "M3, first run" below.
 
