@@ -885,9 +885,32 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K2's eighth run; counts under Measurements)
+## Tests (last run 2026-11-16, K2's ninth run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's eighth run:
+All pass except the ignored known failures listed above. Added in K2's ninth run (each guest's
+reference output was read and checked against Linux's source):
+- deadlines: guest/deadlines.c: nanosleep, clock_nanosleep with an absolute time, ppoll, pselect6,
+  sigtimedwait, semtimedop and mq_timedreceive of 20 ms each while a child computes for ever (with
+  and without system calls in its loop), a sleep beside two such children, and a short sleep that
+  ends before a computing child does. Ours hung for ever before the fix.
+- lockwaits: guest/lockwaits.c: a record lock waiter woken by an unlock, two readers by a change to
+  read (a writer not), an unlock elsewhere leaving the waiter waiting, a close of another descriptor
+  and the holder's end waking it, loops of two and three processes refused with EDEADLK (and the
+  later try EAGAIN), a wait behind an open file's lock, an open file's wait, signals with and without
+  SA_RESTART; flock waiters woken by a conversion to shared, an unlock, the last close, and a signal.
+  Waiters are seen asleep through `/proc/<pid>/stat`'s state, so nothing depends on time.
+- orphans: guest/orphans.c: a group orphaned by its leader's end with a stopped member (SIGCONT and
+  SIGHUP reach it), a group whose outside parent is the first process (SIGTSTP stops its member), an
+  orphan made with exit signal SIGUSR1 reported to its new parent by SIGCHLD.
+- pidfd: PIDFD_GET_INFO of the caller in sizes 64, 72, 80 and 96 and with each mask bit, of a
+  running, ended, reaped and killed child, another user's child and one that may not dump; sizes,
+  directions and numbers refused, null and bad pointers, FS_IOC_GETVERSION; the namespace requests
+  with an argument, on ended and reaped children, another user's and an undumpable one. The caller's
+  own namespace requests are made but not printed (they give a descriptor in the reference); the test
+  checks they are counted.
+- posixmq: fstatfs of a queue from mq_open and of one opened by path.
+
+Added in K2's eighth run:
 - terminal `making_pairs`: TIOCSETD with 2 (EPERM), 4, -1 and 31 on both sides; `waiting_for_room`:
   sendfile and splice into a full blocking terminal finish once the master is read, and a signal ends
   a waiting sendfile with the part written (how much fits is not printed, see Departures).
@@ -1433,7 +1456,13 @@ All on this shared Mac; noisy, not benchmarks.
   one memory as under WebAssembly); what is proven is that the CPU side holds nothing the kernel
   needs beyond memories, blocks and register blocks, and that parked calls and pending return values
   come back. The host's clock is the same across the save here; on a real host the monotonic clock
-  must be set from the saved time (`restore`'s duty on the host, not built until K7).
+  must be set from the saved time (`restore`'s duty on the host, not built until K7). The K2 check
+  asked for a restore into a fresh kernel and host: natively the kernel's state is a graph of Rust
+  heap objects shared through `Rc` (inodes, open files, terminals), so a byte copy into a new
+  `Kernel` is not possible here; tests/saving.rs keeps the same `Kernel` and `TestHost` and makes the
+  CPU side new. A copy into a fresh kernel comes with K7, where the kernel runs in its own WebAssembly
+  memory and saving copies that memory (plan rule 5 is proven there).
+
 - Layer 2's clock is not the wall clock: time passes only by a seeded step per turn and by skipped
   waits, so CPU times and the scheduler's choices repeat for a seed. Layer 1 keeps the wall clock (its
   reference runs beside it).
@@ -1528,7 +1557,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "prctl option not built": the prctl list under Partial.
 - "line discipline not built": TIOCSETD with a discipline other than `n_tty` (detail: its number).
 - "ioctl request not built": the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
-  caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference).
+  caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference);
+  pidfs's ten namespace requests once their checks pass (nsfs is not built; EOPNOTSUPP).
 - "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
 - "device not built": the console (5:1) and `/dev/net/tun` (10:200), which Docker's rules allow
   (ENODEV; detail the device number).
@@ -1540,6 +1570,8 @@ fields not tracked", "fault syndrome approximated", "core dump not
 written", "vmsplice pages copied". "wake to run" is a measurement (count and total nanoseconds), not a slow path.
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K2, ninth run: none.
 
 - K2, eighth run: none.
 - K2, seventh run: none.

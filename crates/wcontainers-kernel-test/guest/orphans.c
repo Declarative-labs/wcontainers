@@ -34,8 +34,11 @@ int main(void) {
     {
         // M leads a session; C leads group G in it; GC in G stops itself; C ends. GC's new parent,
         // the first process, is in another session, so G is orphaned with a stopped member.
-        int ends[2];
+        // The grandchild reports through `ends`; the session's leader waits for its end through
+        // `held`, which only the grandchild keeps open.
+        int ends[2], held[2];
         pipe(ends);
+        pipe(held);
         pid_t m = fork();
         if (m == 0) {
             setsid();
@@ -45,6 +48,7 @@ int main(void) {
                 pid_t gc = fork();
                 if (gc == 0) {
                     close(ends[0]);
+                    close(held[0]);
                     signal(SIGHUP, on_signal);
                     signal(SIGCONT, on_signal);
                     raise(SIGSTOP);
@@ -56,13 +60,17 @@ int main(void) {
                 waitpid(gc, &status, WUNTRACED);
                 _exit(0);
             }
-            waitpid(c, &status, 0);
+            close(ends[0]);
             close(ends[1]);
+            close(held[1]);
+            waitpid(c, &status, 0);
             char byte;
-            read(ends[0], &byte, 1);
+            read(held[0], &byte, 1);
             _exit(0);
         }
         close(ends[1]);
+        close(held[0]);
+        close(held[1]);
         char line[128];
         struct pollfd poller = {ends[0], POLLIN, 0};
         int ready = poll(&poller, 1, 3000);
