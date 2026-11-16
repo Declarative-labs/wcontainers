@@ -66,8 +66,8 @@ What is built:
   gone; their forms are in `Simd`.
 - Floating point has two paths. Fast: WebAssembly's own operations (exact for numbers, as FPCR is at its
   default whenever it runs). Slow: `exact.rs`, Arm's rules (not-a-number choice, flush to zero, default
-  not-a-number, alternative half precision, underflow after rounding, overflow when rounding gives the
-  largest number, the estimates) over `rustc_apfloat` 0.2.3 and `ieee-apsqrt` 0.1.1 for the arithmetic,
+  not-a-number, alternative half precision, underflow when the exact result is tiny, overflow when rounding
+  gives the largest number, the estimates) over `rustc_apfloat` 0.2.3 and `ieee-apsqrt` 0.1.1 for the arithmetic,
   through the new `float` hook, one call per element. The slow path runs when FPCR is not zero or the
   program has written FPSR (a CPU-side word, `FLOAT_TRACKING`, is set then; until then the cumulative flags
   are not kept), and always for fused multiply-adds on a host whose relaxed multiply-add does not fuse.
@@ -1035,6 +1035,11 @@ contract's bits, in both runners).
 ## Cases actually run
 
 - M3, layer 1, release: 1215 forms x 100 cases, seed 2: 0 mismatches (121,500 cases, 177 s, load 18 to 21).
+  1215 x 1000, seed 3 (1,215,000 cases, 27 minutes, load 12 to 23): 4 forms failing, all in the software
+  path or its rules: underflow is raised when the exact result is tiny (before rounding, as Arm's
+  `FPRoundBase` does), not after; `ieee-apsqrt` rounds a denormal input wrongly under a directed rounding
+  (now the root of x * 2^64, scaled back); the software FRSQRTS halved an operand whose half is denormal.
+  Fixed; those 12 forms at 1000 seed 3 and the whole layer at 100, seed 4: 0 mismatches (153 s, load 19 to 23).
 - M3, layer 3, release: 4 Csmith programs seed 1 and the 48 hand-picked builds (hello and differences x
   clang, gcc x six levels x two positions): all match (59 s, load 5 to 6). 300 Csmith programs, seed 2
   (18.8 minutes, load 5 to 30): 256 compared and matching, 43 did not end on Linux in 20 seconds, 1
