@@ -9,6 +9,7 @@ use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::DfsPostOrder;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_arm64::{
@@ -51,7 +52,7 @@ pub(crate) fn plan<'a>(
 ) -> Planned<'a> {
     let mut finder = Finder {
         code,
-        decoded: HashMap::new(),
+        decoded: Decodes::default(),
     };
     let functions = match bound {
         None => finder.functions(starts),
@@ -59,13 +60,13 @@ pub(crate) fn plan<'a>(
     };
     let entries: BTreeSet<u64> = functions.iter().map(|f| f.entry).collect();
     let plans: Vec<Plan> = functions
-        .iter()
+        .par_iter()
         .map(|f| Plan::new(f, &finder.decoded, Seed::NOTHING))
         .collect();
 
     // Loop pieces, by the function they come from; with no stop checks nothing enters them. Translated for
     // size, there are none: a stop at a jump back carries on in place.
-    let mut loops: Vec<Vec<(Function, Plan)>> = Vec::new();
+    let mut found: Vec<Vec<(Function, Seed)>> = Vec::new();
     let pieced = !omit.stop && optimise == Optimise::Speed;
     for (function, plan) in functions.iter().zip(&plans) {
         let mut own = Vec::new();
@@ -88,11 +89,21 @@ pub(crate) fn plan<'a>(
                 frame: plan.frame_in[*h],
                 aligned: plan.aligned_in[*h],
             };
-            let piece_plan = Plan::new(&piece, &finder.decoded, seed);
-            own.push((piece, piece_plan));
+            own.push((piece, seed));
         }
-        loops.push(own);
+        found.push(own);
     }
+    let loops: Vec<Vec<(Function, Plan)>> = found
+        .into_par_iter()
+        .map(|own| {
+            own.into_iter()
+                .map(|(piece, seed)| {
+                    let plan = Plan::new(&piece, &finder.decoded, seed);
+                    (piece, plan)
+                })
+                .collect()
+        })
+        .collect();
     Planned {
         finder,
         functions,
@@ -140,6 +151,7 @@ impl Planned<'_> {
         let decoded = &self.finder.decoded;
         group
             .clone()
+            .into_par_iter()
             .zip(&loop_index)
             .map(|(i, loops)| {
                 let function = &self.functions[i];
@@ -166,6 +178,16 @@ impl Planned<'_> {
                 }
             })
             .collect()
+    }
+}
+
+fn decode_at(code: &Code<'_>, offset: u64) -> Decoded {
+    let word = code.word(offset);
+    let instruction = wcontainers_arm64::decode(word);
+    Decoded {
+        word,
+        instruction,
+        effects: instruction.effects(),
     }
 }
 
@@ -196,8 +218,11 @@ struct Function {
 
 struct Finder<'a> {
     code: &'a Code<'a>,
-    decoded: HashMap<u64, Decoded>,
+    decoded: Decodes,
 }
+
+/// Decoded instructions by offset.
+type Decodes = rustc_hash::FxHashMap<u64, Decoded>;
 
 /// How far exploring a function may go.
 #[derive(Clone, Copy)]
@@ -388,17 +413,24 @@ fn ends_block(instruction: &Instruction) -> bool {
 }
 
 impl Finder<'_> {
-    fn get(&mut self, offset: u64) -> Decoded {
+    /// The instruction at an offset, decoded again unless it is kept.
+    fn get(&self, offset: u64) -> Decoded {
+        match self.decoded.get(&offset) {
+            Some(&d) => d,
+            None => decode_at(self.code, offset),
+        }
+    }
+
+    /// Keep every instruction of these functions decoded, for planning and emitting them.
+    fn keep(&mut self, functions: &[Function]) {
         let code = self.code;
-        *self.decoded.entry(offset).or_insert_with(|| {
-            let word = code.word(offset);
-            let instruction = wcontainers_arm64::decode(word);
-            Decoded {
-                word,
-                instruction,
-                effects: instruction.effects(),
-            }
-        })
+        let decoded = &self.decoded;
+        let missing: Vec<(u64, Decoded)> = functions
+            .par_iter()
+            .flat_map_iter(|f| function_instructions(f).filter(|o| !decoded.contains_key(o)))
+            .map(|o| (o, decode_at(code, o)))
+            .collect();
+        self.decoded.extend(missing);
     }
 
     /// Every function: the starts, targets of direct calls, addresses the code builds that point into code,
@@ -408,19 +440,27 @@ impl Finder<'_> {
         let mut entries: BTreeSet<u64> = starts.iter().copied().collect();
         let mut explored = BTreeSet::new();
         loop {
+            // In rounds: every entry not yet explored, all at once, then what they found.
             let mut work: Vec<u64> = entries.difference(&explored).copied().collect();
-            while let Some(entry) = work.pop() {
-                explored.insert(entry);
-                let mut found = BTreeSet::new();
-                self.explore(entry, (&entries, &[]), &mut found, Reach::All);
-                for offset in found {
+            while !work.is_empty() {
+                explored.extend(&work);
+                let found: Vec<BTreeSet<u64>> = work
+                    .par_iter()
+                    .map(|&entry| {
+                        let mut found = BTreeSet::new();
+                        self.explore(entry, (&entries, &[]), &mut found, Reach::All);
+                        found
+                    })
+                    .collect();
+                work = Vec::new();
+                for offset in found.into_iter().flatten() {
                     if self.code.inside(offset) && entries.insert(offset) {
                         work.push(offset);
                     }
                 }
             }
             let functions: Vec<Function> = entries
-                .iter()
+                .par_iter()
                 .map(|&entry| {
                     self.explore(entry, (&entries, &[]), &mut BTreeSet::new(), Reach::All)
                 })
@@ -436,6 +476,7 @@ impl Finder<'_> {
                 }
             }
             if !more {
+                self.keep(&functions);
                 return functions;
             }
         }
@@ -448,7 +489,7 @@ impl Finder<'_> {
         let mut bounds = starts.clone();
         loop {
             let stretches: Vec<Function> = starts
-                .iter()
+                .par_iter()
                 .map(|&s| {
                     let reach = Reach::Count(limit);
                     self.explore(s, (&bounds, &[]), &mut BTreeSet::new(), reach)
@@ -462,6 +503,7 @@ impl Finder<'_> {
                 }
             }
             if !more {
+                self.keep(&stretches);
                 return stretches;
             }
         }
@@ -470,7 +512,7 @@ impl Finder<'_> {
     /// The function at an entry, stopping at the other entries and at the other offsets given with them,
     /// with what it shows of other entries added to `found`.
     fn explore(
-        &mut self,
+        &self,
         entry: u64,
         (entries, others): (&BTreeSet<u64>, &[u64]),
         found: &mut BTreeSet<u64>,
@@ -576,7 +618,7 @@ impl Finder<'_> {
             let joined = previous.is_some_and(|p| {
                 p + 4 == offset
                     && !leaders.contains(&offset)
-                    && !ends_block(&self.decoded[&p].instruction)
+                    && !ends_block(&self.get(p).instruction)
             });
             if joined {
                 blocks.last_mut().unwrap().end = offset + 4;
@@ -599,7 +641,7 @@ impl Finder<'_> {
             .collect();
         for block in &mut blocks {
             let last = block.end - 4;
-            let instruction = self.decoded[&last].instruction;
+            let instruction = self.get(last).instruction;
             let flow = instruction.flow();
             let mut targets = Vec::new();
             if let Some(by) = flow.target
@@ -625,7 +667,7 @@ impl Finder<'_> {
 
     /// The targets of a switch's jump table ending at the jump through a register at `offset`, if the code
     /// before it has that shape and every target is code.
-    fn jump_table(&mut self, offset: u64, rn: Reg) -> Option<Vec<u64>> {
+    fn jump_table(&self, offset: u64, rn: Reg) -> Option<Vec<u64>> {
         let first = offset
             .saturating_sub(4 * SWITCH_WINDOW)
             .max(self.code.range.start);
@@ -929,7 +971,7 @@ impl Seed {
 }
 
 impl Plan {
-    fn new(function: &Function, decoded: &HashMap<u64, Decoded>, seed: Seed) -> Plan {
+    fn new(function: &Function, decoded: &Decodes, seed: Seed) -> Plan {
         let blocks = &function.blocks;
         let n = blocks.len();
         let (graph, rank) = ranks(function);
@@ -1393,7 +1435,7 @@ struct Checks {
     frame_across: HashSet<u64>,
 }
 
-fn checks(function: &Function, decoded: &HashMap<u64, Decoded>, frame_in: &[Frame]) -> Checks {
+fn checks(function: &Function, decoded: &Decodes, frame_in: &[Frame]) -> Checks {
     let mut plans = HashMap::new();
     let mut frame_checks = HashMap::new();
     let mut frame_across = HashSet::new();
@@ -1583,7 +1625,7 @@ enum Pc {
 struct FullEmitter<'a> {
     function: &'a Function,
     plan: &'a Plan,
-    decoded: &'a HashMap<u64, Decoded>,
+    decoded: &'a Decodes,
     index: &'a BTreeMap<u64, u32>,
     /// The loop pieces of the function this piece comes from, by header offset.
     loops: &'a HashMap<u64, u32>,
@@ -1628,7 +1670,7 @@ impl<'a> FullEmitter<'a> {
     fn piece(
         function: &'a Function,
         plan: &'a Plan,
-        decoded: &'a HashMap<u64, Decoded>,
+        decoded: &'a Decodes,
         index: &'a BTreeMap<u64, u32>,
         loops: &'a HashMap<u64, u32>,
         own: u32,

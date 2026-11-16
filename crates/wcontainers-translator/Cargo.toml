@@ -13,6 +13,10 @@ wcontainers-arm64 = { path = "../wcontainers-arm64" }
 wasm-encoder = "0.263.0"
 blake3 = "1"
 petgraph = { version = "0.8.3", default-features = false, features = ["std"] }
+# Plans and emits functions on every core; where threads cannot start (wasm32), on the calling thread.
+rayon = "1.12.0"
+# A fast hash for maps keyed by code offsets.
+rustc-hash = "2.1.3"
 
 [features]
 # Makes `Omit` and `translate_omitting` public: output without some checks, only for measuring what each

@@ -57,6 +57,19 @@ line above: busybox 13,626,082 / 13,980,688 (+2.6%), musl +6.3%, rg +7.2%, git +
 settings (the loop not proven counts hold in both), and `tests/changes.rs` translates for size when the plan's
 seed is odd.
 
+Translation speed: profiled Node with macOS `sample` (speed setting, translation only). It ran on one thread;
+finding functions (`Finder::explore`, with a SipHash map of decoded instructions) took about half, planning
+and emitting the rest. Now (with `rayon` and `rustc-hash`, both established crates): functions are found in
+rounds, every entry of a round explored at once; exploring decodes on the fly and keeps nothing, and the
+instructions of the functions found are decoded once afterwards into a map with a fast hash; plans, loop piece
+plans and emitting run on every core (on wasm32, where threads cannot start, rayon runs them on the calling
+thread). Same pieces and same bytes for all eight binaries tried. Measured with `RAYON_NUM_THREADS=6` (this
+machine's limit for one job), load 21 to 55: Node 92.98 s before (one thread) / 35.37 s with planning and
+emitting in parallel / 19.42 s with exploring too (2.06 MB of code a second); busybox 0.67 / 0.25 s, rg 2.63
+/ 0.95 s, java 12.16 / 3.76 s, go 5.49 / 1.73 s. What is left on one thread: the rounds' bookkeeping, the
+check for irreducible loops and cuts, and a translation split into modules is emitted twice (Node: 3
+modules).
+
 Static counters: each code module now carries how many places in its code may take each slow path
 (`CodeModule::sites`, by reason; floating point paths, decided by a hook at run time, are not counted), and
 `measure_binaries` prints them. Speed / size settings (load 22 to 11):

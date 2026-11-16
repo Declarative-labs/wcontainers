@@ -123,7 +123,7 @@ pub(super) struct Versioned {
 /// What [`versioned`] needs to know about the function.
 pub(super) struct LoopShape<'a> {
     pub(super) function: &'a Function,
-    pub(super) decoded: &'a HashMap<u64, Decoded>,
+    pub(super) decoded: &'a super::Decodes,
     pub(super) checks: &'a HashMap<u64, CheckPlan>,
     pub(super) body: &'a [bool],
     /// Blocks of the body inside a loop within it.
