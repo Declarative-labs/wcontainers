@@ -997,7 +997,12 @@ descriptors, signal descriptors and message queues are generated (see "Where thi
 mmap of a process descriptor with PROT_EXEC (pidfs is `SB_I_NOEXEC`: EPERM); 603 to 605 (3000 each)
 found MSG_COPY loading the caller's buffer before the queue (EFAULT) and sendfile from a process
 descriptor (EINVAL even for nothing). All fixed; then 600 to 605 passed 3000 each (49 to 51 s, three
-side by side, load 14 to 40).
+side by side, load 14 to 40). At 20000 (head 1f9cffe, four side by side, load 16 to 37): 608 passed
+(339 s); 511, 606 and 607 found extended attributes on descriptors (Linux's security layer passes over
+private inodes, so `security.` names reach "no attributes": EOPNOTSUPP, measured). After that fix 511
+and 606 passed 20000 (330 s each, three side by side, load 9 at the start, 56 at the end); 607 then
+found a pipe's reading end showing O_DIRECT (only the writing end takes it, `create_pipe_files`;
+fixed); 607 then passed 20000 (350 s alone, load 62 at the start, 33 at the end; head 7d54a79). Seed 511's SHM_HUGETLB fix from the fifth run is confirmed by its pass.
 
 K2's fifth run: shmget, shmat, shmdt, shmctl, splice (twice), tee and vmsplice are generated.
 Segment identifiers differ between the runners (the reference's slots and sequence numbers carry
