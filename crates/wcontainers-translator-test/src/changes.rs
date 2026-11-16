@@ -123,11 +123,12 @@ fn choose(
     ];
     let frames = frames(registers);
     let within = |page: &u64| universe.iter().any(|pages| pages.contains(page));
-    // Registers that point where a change may touch, as a base does.
+    // Registers that point where a change may touch, as a base does, and the page below sp's.
     let pointers: Vec<u64> = registers
         .x
         .iter()
         .map(|value| value / PAGE_SIZE)
+        .chain([(registers.sp / PAGE_SIZE).wrapping_sub(1)])
         .filter(|page| within(page) && !frames.contains(page))
         .collect();
     let mut pages = Vec::new();
