@@ -931,7 +931,7 @@ pub(crate) fn permission(
     if let Content::Proc(entry) = inode.content {
         match entry {
             proc::Entry::Process(_) if mask & W_OK != 0 => return Err(Errno::EPERM),
-            proc::Entry::Fds(pid) if pid == caller => return Ok(()),
+            proc::Entry::Fds(task) if task.pid == caller => return Ok(()),
             // `proc_sys_permission`: the root of `/proc/sys` may not be written and is otherwise open
             // to all; below it no file runs, and the table's bits decide with no power over them
             // (`test_perm`, by the effective ids).

@@ -9,7 +9,7 @@ use wcontainers_abi::{Next, RegisterBlock, Resume, Syscall};
 
 use crate::counters::reason;
 use crate::linux::general::*;
-use crate::process::{Call, Channel, Pid, Report, Tid};
+use crate::process::{Call, Channel, Leader, Pid, Report, Tid};
 use crate::schedule;
 use crate::{Context, Kernel, syscall};
 
@@ -428,6 +428,7 @@ impl Kernel {
         syscall::mqueue::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         cx.cpu.thread_drop(thread.cpu);
+        let leader = (tid == thread.process).then(|| Leader::of(&thread));
         self.give_up_opening(thread.opening);
         let process = self
             .processes
@@ -435,6 +436,9 @@ impl Kernel {
             .expect("process exists");
         process.threads.retain(|other| *other != tid);
         process.ended_time += thread.runtime;
+        if let Some(leader) = leader {
+            process.ended_leader = leader;
+        }
     }
 
     /// `de_thread`: ends every other thread of the caller's process, and the caller takes the
@@ -484,14 +488,7 @@ impl Kernel {
             let process = self.processes.get_mut(&pid).expect("process exists");
             process.ended_time += thread.runtime;
             if tid == pid {
-                process.ended_leader = crate::process::Leader {
-                    schedule: crate::process::Schedule {
-                        io_priority: 0,
-                        ..thread.schedule
-                    },
-                    signal_mask: thread.signal_mask,
-                    filters: thread.filters.len(),
-                };
+                process.ended_leader = Leader::of(&thread);
             }
         }
         self.release_vfork(pid);

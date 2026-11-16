@@ -324,6 +324,7 @@ impl Kernel {
             processes: &self.processes,
             threads: &self.threads,
             caller: 0,
+            caller_thread: 0,
             fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
@@ -385,7 +386,6 @@ impl Kernel {
             umask: 0o022,
             credentials,
             limits: docker_limits(),
-            name: Vec::new(),
             executable: (root.clone(), Vec::new()),
             starting_stack: Default::default(),
             dumpable: true,
@@ -551,7 +551,6 @@ impl Kernel {
         process.vdso = image.vdso;
         process.execed = true;
         process.self_exec_id += 1;
-        process.set_name(&image.name);
         // Dumpable unless a file could not be read or the ids differ, before or after (Linux's
         // `begin_new_exec` and `commit_creds`).
         let old = &process.credentials;
@@ -583,6 +582,7 @@ impl Kernel {
             action.sa_mask = kernel_sigset_t { sig: [0] };
         }
         let thread = self.threads.get_mut(&tid).expect("thread");
+        thread.set_name(&image.name);
         // The new program has not registered its area. A program in secure mode, or one whose ids
         // change, cannot be signalled by its parent's end.
         thread.rseq = None;
@@ -763,6 +763,7 @@ impl Kernel {
             processes: &self.processes,
             threads: &self.threads,
             caller: 0,
+            caller_thread: 0,
             fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,

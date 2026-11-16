@@ -395,17 +395,25 @@ impl Kernel {
         self.processes.get_mut(&pid).expect("process exists")
     }
 
-    /// Runs `f` with a path walker from the point of view of process `pid`.
+    /// The process of thread `tid`. The first process loads its program before its thread is made,
+    /// under the number the thread then takes.
+    pub(crate) fn process_number(&self, tid: Tid) -> Pid {
+        self.threads.get(&tid).map_or(tid, |thread| thread.process)
+    }
+
+    /// Runs `f` with a path walker from the point of view of thread `tid`.
     pub(crate) fn with_walk<R>(
         &self,
-        pid: Pid,
+        tid: Tid,
         f: impl FnOnce(&fs::Walk<'_>, &Process) -> Result<R, Errno>,
     ) -> Result<R, Errno> {
+        let pid = self.process_number(tid);
         let process = &self.processes[&pid];
         let view = fs::proc::View {
             processes: &self.processes,
             threads: &self.threads,
             caller: pid,
+            caller_thread: tid,
             fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,

@@ -57,8 +57,7 @@ pub(super) fn lookup(
         return Ok(process.files.file(dirfd as i32)?.borrow().node.clone());
     }
     let at = start(kernel, tid, dirfd, &path)?;
-    let pid = kernel.threads[&tid].process;
-    kernel.with_walk(pid, |walk, _| walk.resolve(&at, &path, follow))
+    kernel.with_walk(tid, |walk, _| walk.resolve(&at, &path, follow))
 }
 
 fn parent(
@@ -70,15 +69,13 @@ fn parent(
 ) -> Result<crate::fs::Parent, Errno> {
     let path = guest(kernel, cx, tid).read_path(address)?;
     let at = start(kernel, tid, dirfd, &path)?;
-    let pid = kernel.threads[&tid].process;
-    kernel.with_walk(pid, |walk, _| walk.parent(&at, &path))
+    kernel.with_walk(tid, |walk, _| walk.parent(&at, &path))
 }
 
 /// The absolute path of `name` in `directory`, for `/proc/<pid>/fd`.
 fn path_in(kernel: &Kernel, tid: Tid, directory: &Node, name: &[u8]) -> Vec<u8> {
-    let pid = kernel.threads[&tid].process;
     let mut path = kernel
-        .with_walk(pid, |walk, _| {
+        .with_walk(tid, |walk, _| {
             Ok(walk.path_of(directory).unwrap_or_default())
         })
         .unwrap_or_default();
@@ -185,8 +182,7 @@ fn not_removed(directory: &Node) -> Result<(), Errno> {
 /// missing name is an error of the lookup itself (`ENOENT`), as Linux's proc lookups return it.
 fn check_absent(kernel: &Kernel, tid: Tid, parent: &crate::fs::Parent) -> Result<(), Errno> {
     not_removed(&parent.directory)?;
-    let pid = kernel.threads[&tid].process;
-    match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
+    match kernel.with_walk(tid, |walk, _| walk.step(&parent.directory, &parent.name)) {
         Ok(_) => Err(Errno::EEXIST),
         Err(Errno::ENOENT) if matches!(parent.directory.borrow().content, Content::Proc(_)) => {
             Err(Errno::ENOENT)
@@ -401,7 +397,7 @@ pub(super) fn open(
     let accmode = flags & O_ACCMODE;
     let at = start(kernel, tid, dirfd, path)?;
     let pid = kernel.threads[&tid].process;
-    let parent = kernel.with_walk(pid, |walk, _| walk.parent(&at, path))?;
+    let parent = kernel.with_walk(tid, |walk, _| walk.parent(&at, path))?;
     let creating = flags & O_CREAT != 0 && flags & O_PATH == 0;
     // Creating a name written with a trailing slash is refused before it is looked up.
     if creating && parent.trailing_slash && !parent.name.is_empty() {
@@ -410,7 +406,7 @@ pub(super) fn open(
     let found = if parent.name.is_empty() {
         Some(parent.directory.clone())
     } else {
-        match kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name)) {
+        match kernel.with_walk(tid, |walk, _| walk.step(&parent.directory, &parent.name)) {
             Ok(node) => Some(node),
             // A proc lookup that fails is an error, not a name that may be made.
             Err(Errno::ENOENT)
@@ -440,7 +436,7 @@ pub(super) fn open(
                     }
                 } else {
                     let mut links = 0;
-                    let followed = kernel.with_walk(pid, |walk, _| {
+                    let followed = kernel.with_walk(tid, |walk, _| {
                         walk.follow(&parent.directory, node.clone(), &mut links)
                     });
                     match followed {
@@ -611,7 +607,7 @@ pub(super) fn open(
     let follows = flags & O_NOFOLLOW == 0;
     let full_path = if follows {
         kernel
-            .with_walk(pid, |walk, _| walk.locate(&at, path))
+            .with_walk(tid, |walk, _| walk.locate(&at, path))
             .map(|(_, full)| full)
             .unwrap_or_else(|_| path_in(kernel, tid, &parent.directory, &parent.name))
     } else if parent.name.is_empty() {
@@ -709,7 +705,6 @@ pub(super) fn proc_contents(
             .counters
             .count(cx.host, reason::PROC_FIELDS_NOT_TRACKED, detail);
     }
-    let pid = kernel.threads[&tid].process;
     let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic);
     let mut fresh = [0u8; 16];
     cx.host.random(&mut fresh);
@@ -728,7 +723,7 @@ pub(super) fn proc_contents(
         bytes
     };
     let kernel_ref: &Kernel = kernel;
-    kernel_ref.with_walk(pid, |walk, _| {
+    kernel_ref.with_walk(tid, |walk, _| {
         let mut source = proc::Source {
             view: walk.proc,
             machine: &kernel_ref.machine,
@@ -979,9 +974,8 @@ pub(super) fn unlinkat(
     if parent.directory.borrow().fs.read_only() {
         return Err(Errno::EROFS);
     }
-    let pid = kernel.threads[&tid].process;
     // A mount point is found as the root mounted on it.
-    let node = kernel.with_walk(pid, |walk, _| walk.step(&parent.directory, &parent.name))?;
+    let node = kernel.with_walk(tid, |walk, _| walk.step(&parent.directory, &parent.name))?;
     // In Linux's order: a trailing slash on a file, then `may_delete`, then the directory's own checks.
     let is_directory = node.borrow().is_directory();
     if !removing_directory && parent.trailing_slash {
@@ -1135,10 +1129,9 @@ fn rename(
     if from.directory.borrow().fs.read_only() {
         return Err(Errno::EROFS);
     }
-    let pid = kernel.threads[&tid].process;
-    let source = kernel.with_walk(pid, |walk, _| walk.step(&from.directory, &from.name))?;
+    let source = kernel.with_walk(tid, |walk, _| walk.step(&from.directory, &from.name))?;
     not_removed(&to.directory)?;
-    let target = match kernel.with_walk(pid, |walk, _| walk.step(&to.directory, &to.name)) {
+    let target = match kernel.with_walk(tid, |walk, _| walk.step(&to.directory, &to.name)) {
         Ok(node) => Some(node),
         Err(Errno::ENOENT) if !matches!(to.directory.borrow().content, Content::Proc(_)) => None,
         Err(error) => return Err(error),
@@ -1360,9 +1353,8 @@ pub(super) fn readlinkat(
             Content::Proc(entry) if inode.file_type() == S_IFLNK => {
                 let entry = *entry;
                 drop(inode);
-                let pid = kernel.threads[&tid].process;
                 let target =
-                    kernel.with_walk(pid, |walk, _| proc::link_target(walk.proc, walk, &entry))?;
+                    kernel.with_walk(tid, |walk, _| proc::link_target(walk.proc, walk, &entry))?;
                 let source = wcontainers_abi::PAGE_SIZE.wrapping_sub(1 + target.len() as u64);
                 (target, source)
             }
@@ -1393,8 +1385,8 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     let inode = node.borrow();
     // A process's directory reports its owner as it is now (`pid_getattr`); other inodes as made.
     let (uid, gid) = match inode.content {
-        Content::Proc(proc::Entry::Process(pid)) => {
-            proc::dump_owner(&kernel.processes, pid, inode.mode)
+        Content::Proc(proc::Entry::Process(task)) => {
+            proc::dump_owner(&kernel.processes, task.pid, inode.mode)
         }
         _ => (inode.uid, inode.gid),
     };
@@ -1412,9 +1404,9 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
         __pad1: 0,
         st_size: match inode.content {
             // A descriptor directory's size is how many descriptors are open, as on Linux.
-            Content::Proc(proc::Entry::Fds(pid)) => kernel
+            Content::Proc(proc::Entry::Fds(task)) => kernel
                 .processes
-                .get(&pid)
+                .get(&task.pid)
                 .map_or(0, |process| process.files.iter().count())
                 as i64,
             _ => inode.size() as i64,
@@ -2278,8 +2270,7 @@ pub(super) fn getcwd(
     tid: Tid,
     [buffer, size, ..]: Args,
 ) -> Result<u64, Errno> {
-    let pid = kernel.threads[&tid].process;
-    let path = kernel.with_walk(pid, |walk, process| walk.cwd_path(&process.cwd))?;
+    let path = kernel.with_walk(tid, |walk, process| walk.cwd_path(&process.cwd))?;
     let length = path.len() as u64 + 1;
     if length > size {
         return Err(Errno::ERANGE);

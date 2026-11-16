@@ -19,8 +19,10 @@ use crate::process::{Channel, Pid, Process, Thread, Tid};
 pub(crate) struct View<'a> {
     pub processes: &'a BTreeMap<Pid, Process>,
     pub threads: &'a BTreeMap<Tid, Thread>,
-    /// The process walking, which `/proc/self` names.
+    /// The process walking, which `/proc/self` names, and its thread, which `/proc/thread-self`
+    /// names.
     pub caller: Pid,
+    pub caller_thread: Tid,
     pub fs: FileSystem,
     pub boot: Time,
     /// Attributes changed on entries that keep them, by inode number.
@@ -58,13 +60,42 @@ impl Kept {
 pub(crate) enum Entry {
     Root,
     SelfLink,
-    Process(Pid),
-    ProcessFile(Pid, ProcessFile),
-    ProcessLink(Pid, ProcessLink),
-    Fds(Pid),
-    Fd(Pid, i32),
+    ThreadSelfLink,
+    /// A process's directory or a thread's, and what is in it.
+    Process(Task),
+    ProcessFile(Task, ProcessFile),
+    ProcessLink(Task, ProcessLink),
+    Fds(Task),
+    Fd(Task, i32),
+    /// A process's `task` directory, which holds a directory for each of its threads.
+    Tasks(Pid),
     /// A directory or file outside the process directories, by its index in [`GLOBAL`].
     Global(usize),
+}
+
+/// Whose directory: the thread whose details its files show, and its process. A thread's own
+/// directory (under `task`) holds Linux's `tid_base_stuff`; a process's, found by its number or by
+/// one of its threads' numbers, `tgid_base_stuff`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Task {
+    pub pid: Pid,
+    pub tid: Tid,
+    pub own: bool,
+}
+
+impl Task {
+    fn path(&self) -> String {
+        if self.own {
+            format!("/{}/task/{}", self.pid, self.tid)
+        } else {
+            format!("/{}", self.tid)
+        }
+    }
+
+    /// Its entries' list in [`LINUX_ENTRIES`].
+    fn listing(&self) -> &'static str {
+        if self.own { "<tid>" } else { "<pid>" }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +212,16 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
             "stack schedstat cpuset cgroup oom_score oom_adj oom_score_adj loginuid ",
             "sessionid coredump_filter io uid_map gid_map projid_map setgroups timers ",
             "timerslack_ns ksm_merging_pages ksm_stat",
+        ),
+    ),
+    (
+        "<tid>",
+        concat!(
+            "fd fdinfo ns net environ auxv status personality limits sched comm syscall ",
+            "cmdline stat statm maps children mem cwd root exe mounts mountinfo clear_refs ",
+            "smaps smaps_rollup pagemap attr wchan stack schedstat cpuset cgroup oom_score ",
+            "oom_adj oom_score_adj loginuid sessionid io uid_map gid_map projid_map ",
+            "setgroups ksm_merging_pages ksm_stat",
         ),
     ),
     ("sys", "abi debug dev fs kernel net sunrpc user vm"),
@@ -315,8 +356,9 @@ impl Entry {
     pub fn directory_path(&self) -> Option<String> {
         match *self {
             Entry::Root => Some(String::new()),
-            Entry::Process(pid) => Some(format!("/{pid}")),
-            Entry::Fds(pid) => Some(format!("/{pid}/fd")),
+            Entry::Process(task) => Some(task.path()),
+            Entry::Fds(task) => Some(format!("{}/fd", task.path())),
+            Entry::Tasks(pid) => Some(format!("/{pid}/task")),
             Entry::Global(index) => Some(format!("/{}", GLOBAL[index].0)),
             _ => None,
         }
@@ -326,18 +368,22 @@ impl Entry {
     /// directory itself.
     pub fn of_process(&self) -> Option<Pid> {
         match *self {
-            Entry::Process(pid)
-            | Entry::ProcessFile(pid, _)
-            | Entry::ProcessLink(pid, _)
-            | Entry::Fds(pid)
-            | Entry::Fd(pid, _) => Some(pid),
-            Entry::Root | Entry::SelfLink | Entry::Global(_) => None,
+            Entry::Process(task)
+            | Entry::ProcessFile(task, _)
+            | Entry::ProcessLink(task, _)
+            | Entry::Fds(task)
+            | Entry::Fd(task, _) => Some(task.pid),
+            Entry::Tasks(pid) => Some(pid),
+            Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_) => None,
         }
     }
 
     /// Whether a change to the entry's owner, mode or times lasts (see [`Kept`]).
     pub fn keeps_attributes(&self) -> bool {
-        matches!(self, Entry::Root | Entry::SelfLink | Entry::Global(_))
+        matches!(
+            self,
+            Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_)
+        )
     }
 
     /// The size `stat` reports: none, except for descriptor links.
@@ -386,7 +432,7 @@ impl Entry {
 
     fn mode(&self) -> u32 {
         match self {
-            Entry::Root | Entry::Process(_) => S_IFDIR | 0o555,
+            Entry::Root | Entry::Process(_) | Entry::Tasks(_) => S_IFDIR | 0o555,
             Entry::Fds(_) => S_IFDIR | 0o500,
             Entry::Global(index) => match GLOBAL[*index].1 {
                 Global::Directory => S_IFDIR | 0o555,
@@ -396,36 +442,35 @@ impl Entry {
             Entry::ProcessFile(_, ProcessFile::Comm) => S_IFREG | 0o644,
             Entry::ProcessFile(_, ProcessFile::Environ | ProcessFile::Auxv) => S_IFREG | 0o400,
             Entry::ProcessFile(..) => S_IFREG | 0o444,
-            Entry::SelfLink | Entry::ProcessLink(..) => S_IFLNK | 0o777,
+            Entry::SelfLink | Entry::ThreadSelfLink | Entry::ProcessLink(..) => S_IFLNK | 0o777,
             Entry::Fd(..) => S_IFLNK | 0o700,
         }
     }
 
     /// A stable inode number for the entry.
     fn ino(&self) -> u64 {
-        let process = |pid: Pid, index: u64| ((pid as u64) << 16) | index;
+        let task = |task: &Task, index: u64| {
+            ((task.tid as u64) << 16) | (u64::from(task.own) << 47) | index
+        };
         match self {
             Entry::Root => 1,
             Entry::SelfLink => 2,
+            Entry::ThreadSelfLink => 3,
             Entry::Global(index) => 16 + *index as u64,
-            Entry::Process(pid) => process(*pid, 1),
-            Entry::Fds(pid) => process(*pid, 2),
-            Entry::ProcessFile(pid, file) => process(*pid, 16 + *file as u64),
-            Entry::ProcessLink(pid, link) => process(*pid, 64 + *link as u64),
-            Entry::Fd(pid, fd) => process(*pid, 0x1000 + *fd as u64 % 0xf000),
+            Entry::Process(t) => task(t, 1),
+            Entry::Fds(t) => task(t, 2),
+            Entry::Tasks(pid) => ((*pid as u64) << 16) | 3,
+            Entry::ProcessFile(t, file) => task(t, 16 + *file as u64),
+            Entry::ProcessLink(t, link) => task(t, 64 + *link as u64),
+            Entry::Fd(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000),
         }
     }
 
     fn owner(&self, view: &View<'_>) -> (u32, u32) {
-        let pid = match self {
-            Entry::Process(pid)
-            | Entry::Fds(pid)
-            | Entry::ProcessFile(pid, _)
-            | Entry::ProcessLink(pid, _)
-            | Entry::Fd(pid, _) => *pid,
-            _ => return (0, 0),
-        };
-        dump_owner(view.processes, pid, self.mode())
+        match self.of_process() {
+            Some(pid) => dump_owner(view.processes, pid, self.mode()),
+            None => (0, 0),
+        }
     }
 }
 
@@ -442,16 +487,12 @@ pub(crate) fn dump_owner(processes: &BTreeMap<Pid, Process>, pid: Pid, mode: u32
     })
 }
 
-/// Makes the inode for an entry found in `parent` under `name`.
-/// A process's state as its first thread's (`get_task_state`): ended and not reaped, stopped, parked
-/// (unkillably only for a `vfork` parent's wait), or running.
-fn state(view: &View<'_>, process: &Process) -> (char, &'static str) {
-    let wait = process
-        .threads
-        .first()
-        .and_then(|tid| view.threads.get(tid))
-        .and_then(|thread| thread.call.wait);
-    if process.ended.is_some() {
+/// A thread's state (`get_task_state`): ended and not reaped (a process's first thread stays so
+/// while others go on), stopped, parked (unkillably only for a `vfork` parent's wait), or running.
+fn state(view: &View<'_>, process: &Process, tid: Tid) -> (char, &'static str) {
+    let thread = view.threads.get(&tid);
+    let wait = thread.and_then(|thread| thread.call.wait);
+    if process.ended.is_some() || thread.is_none() {
         ('Z', "zombie")
     } else if process.stopped {
         ('T', "stopped")
@@ -464,15 +505,16 @@ fn state(view: &View<'_>, process: &Process) -> (char, &'static str) {
     }
 }
 
+/// Makes the inode for an entry found in `parent` under `name`.
 pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: Entry) -> Node {
     let (uid, gid) = entry.owner(view);
     let mut mode = entry.mode();
     // A descriptor's link shows how the file was opened: reading gives read and execute, writing
     // write and execute, and an `O_PATH` descriptor nothing (Linux's `tid_fd_update_inode`).
-    if let Entry::Fd(pid, fd) = entry
+    if let Entry::Fd(task, fd) = entry
         && let Some(file) = view
             .processes
-            .get(&pid)
+            .get(&task.pid)
             .and_then(|process| process.files.file(fd).ok())
     {
         let file = file.borrow();
@@ -519,9 +561,15 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
         node.borrow_mut().place.held_parent = parent.cloned();
     }
     // Link counts as the reference reports them: a process directory counts Linux's seven
-    // subdirectories, and the sysctl directories count none.
+    // subdirectories, a thread's five, `task` its threads, and the sysctl directories none.
     match entry {
-        Entry::Process(_) => node.borrow_mut().nlink = 9,
+        Entry::Process(task) => node.borrow_mut().nlink = if task.own { 7 } else { 9 },
+        Entry::Tasks(pid) => {
+            node.borrow_mut().nlink = 2 + view
+                .processes
+                .get(&pid)
+                .map_or(0, |process| tasks(process).count() as u32);
+        }
         // The root of Docker's read-only mount of `/proc/sys`.
         Entry::Global(index) if is_sysctl_root(index) => {
             let mut inode = node.borrow_mut();
@@ -573,12 +621,18 @@ pub(crate) fn lookup(
         .into_iter()
         .find(|(child, _, _)| child.as_slice() == name)
         .map(|(_, child, _)| child);
-    // Process directories that are not listed (threads) can still be looked up.
+    // Threads other than a process's first are not listed in `/proc`, and are found there too.
     let found = found.or_else(|| match entry {
         Entry::Root => parse_number(name)
-            .and_then(|pid| i32::try_from(pid).ok())
-            .filter(|pid| view.processes.contains_key(pid))
-            .map(Entry::Process),
+            .and_then(|tid| i32::try_from(tid).ok())
+            .and_then(|tid| view.threads.get(&tid).map(|thread| (thread.process, tid)))
+            .map(|(pid, tid)| {
+                Entry::Process(Task {
+                    pid,
+                    tid,
+                    own: false,
+                })
+            }),
         _ => None,
     });
     let Some(child) = found else {
@@ -592,7 +646,7 @@ pub(crate) fn lookup(
 fn not_built(view: &View<'_>, entry: &Entry, name: &[u8]) {
     let directory = match entry {
         Entry::Root => "",
-        Entry::Process(_) => "<pid>",
+        Entry::Process(task) => task.listing(),
         Entry::Global(index) => GLOBAL[*index].0,
         _ => return,
     };
@@ -659,34 +713,65 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 Entry::SelfLink,
                 linux_position("", "self"),
             ));
+            out.push((
+                b"thread-self".to_vec(),
+                Entry::ThreadSelfLink,
+                linux_position("", "thread-self"),
+            ));
             for pid in view.processes.keys() {
                 out.push((
                     format!("{pid}").into_bytes(),
-                    Entry::Process(*pid),
+                    Entry::Process(Task {
+                        pid: *pid,
+                        tid: *pid,
+                        own: false,
+                    }),
                     process_position(*pid),
                 ));
             }
         }
-        Entry::Process(pid) => {
+        Entry::Process(task) => {
+            let task = *task;
             let mut add = |name: &[u8], child: Entry| {
-                let position =
-                    linux_position("<pid>", core::str::from_utf8(name).unwrap_or_default());
+                let position = linux_position(
+                    task.listing(),
+                    core::str::from_utf8(name).unwrap_or_default(),
+                );
                 out.push((name.to_vec(), child, position));
             };
             for (name, file) in PROCESS_FILES {
-                add(name, Entry::ProcessFile(*pid, *file));
+                add(name, Entry::ProcessFile(task, *file));
             }
             for (name, link) in PROCESS_LINKS {
-                add(name, Entry::ProcessLink(*pid, *link));
+                add(name, Entry::ProcessLink(task, *link));
             }
-            add(b"fd", Entry::Fds(*pid));
+            add(b"fd", Entry::Fds(task));
+            if !task.own {
+                add(b"task", Entry::Tasks(task.pid));
+            }
         }
-        Entry::Fds(pid) => {
+        // `proc_task_readdir`: the threads from position 2 on, in the order they were made.
+        Entry::Tasks(pid) => {
             if let Some(process) = view.processes.get(pid) {
+                for (index, tid) in tasks(process).enumerate() {
+                    out.push((
+                        format!("{tid}").into_bytes(),
+                        Entry::Process(Task {
+                            pid: *pid,
+                            tid,
+                            own: true,
+                        }),
+                        index as u64 + 2,
+                    ));
+                }
+            }
+        }
+        Entry::Fds(task) => {
+            if let Some(process) = view.processes.get(&task.pid) {
                 for (fd, _) in process.files.iter() {
                     out.push((
                         format!("{fd}").into_bytes(),
-                        Entry::Fd(*pid, fd),
+                        Entry::Fd(*task, fd),
                         fd as u64 + 2,
                     ));
                 }
@@ -708,6 +793,18 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
     out
 }
 
+/// A process's threads as its `task` directory lists them: the first, which stays until the process
+/// is reaped, then the others in the order they were made.
+fn tasks(process: &Process) -> impl Iterator<Item = Tid> + '_ {
+    core::iter::once(process.pid).chain(
+        process
+            .threads
+            .iter()
+            .copied()
+            .filter(move |tid| *tid != process.pid),
+    )
+}
+
 /// The process a process link names: one that has ended has no program, working directory or root
 /// (its memory and file system context are gone), so the link leads nowhere.
 fn linked<'a>(view: &'a View<'_>, pid: Pid) -> Result<&'a Process, Errno> {
@@ -725,20 +822,23 @@ pub(crate) fn link_target(
 ) -> Result<Vec<u8>, Errno> {
     match entry {
         Entry::SelfLink => Ok(format!("{}", view.caller).into_bytes()),
+        Entry::ThreadSelfLink => {
+            Ok(format!("{}/task/{}", view.caller, view.caller_thread).into_bytes())
+        }
         Entry::Global(index) => match GLOBAL[*index].1 {
             Global::Link(target) => Ok(target.as_bytes().to_vec()),
             _ => Err(Errno::EINVAL),
         },
-        Entry::ProcessLink(pid, link) => {
-            let process = linked(view, *pid)?;
+        Entry::ProcessLink(task, link) => {
+            let process = linked(view, task.pid)?;
             match link {
                 ProcessLink::Exe => Ok(process.executable.1.clone()),
                 ProcessLink::Cwd => Ok(walk.path_of(&process.cwd).unwrap_or_default()),
                 ProcessLink::Root => Ok(walk.path_of(&process.root).unwrap_or_default()),
             }
         }
-        Entry::Fd(pid, fd) => {
-            let process = view.processes.get(pid).ok_or(Errno::ENOENT)?;
+        Entry::Fd(task, fd) => {
+            let process = view.processes.get(&task.pid).ok_or(Errno::ENOENT)?;
             let file = process.files.file(*fd).map_err(|_| Errno::ENOENT)?;
             let file = file.borrow();
             let inode = file.node.borrow();
@@ -768,8 +868,8 @@ pub(crate) fn link_target(
 pub(crate) fn magic_path(view: &View<'_>, walk: &Walk<'_>, entry: &Entry) -> Option<Vec<u8>> {
     match entry {
         Entry::ProcessLink(..) => link_target(view, walk, entry).ok(),
-        Entry::Fd(pid, fd) => {
-            let file = view.processes.get(pid)?.files.file(*fd).ok()?;
+        Entry::Fd(task, fd) => {
+            let file = view.processes.get(&task.pid)?.files.file(*fd).ok()?;
             let file = file.borrow();
             if file.node.borrow().is_directory() {
                 return walk.path_of(&file.node).or_else(|| Some(file.path.clone()));
@@ -790,16 +890,16 @@ pub(crate) fn follow(
     links: &mut u32,
 ) -> Result<Node, Errno> {
     match entry {
-        Entry::ProcessLink(pid, link) => {
-            let process = linked(view, *pid)?;
+        Entry::ProcessLink(task, link) => {
+            let process = linked(view, task.pid)?;
             Ok(match link {
                 ProcessLink::Exe => process.executable.0.clone(),
                 ProcessLink::Cwd => process.cwd.clone(),
                 ProcessLink::Root => process.root.clone(),
             })
         }
-        Entry::Fd(pid, fd) => {
-            let process = view.processes.get(pid).ok_or(Errno::ENOENT)?;
+        Entry::Fd(task, fd) => {
+            let process = view.processes.get(&task.pid).ok_or(Errno::ENOENT)?;
             let file = process.files.file(*fd).map_err(|_| Errno::ENOENT)?;
             let node = file.borrow().node.clone();
             Ok(node)
@@ -815,11 +915,11 @@ pub(crate) fn follow(
 /// process that need its memory (`__mem_open` finds none) or its mount namespace
 /// (`mounts_open_common`).
 pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> Result<(), Errno> {
-    let Entry::ProcessFile(pid, file) = entry else {
+    let Entry::ProcessFile(task, file) = entry else {
         return Ok(());
     };
     if processes
-        .get(pid)
+        .get(&task.pid)
         .is_some_and(|process| process.ended.is_some())
     {
         match file {
@@ -835,9 +935,9 @@ pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> R
 pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>, Errno> {
     let mut out = String::new();
     match entry {
-        Entry::ProcessFile(pid, file) => {
-            let process = source.view.processes.get(pid).ok_or(Errno::ESRCH)?;
-            return process_file(source, process, *file);
+        Entry::ProcessFile(task, file) => {
+            let process = source.view.processes.get(&task.pid).ok_or(Errno::ESRCH)?;
+            return process_file(source, process, task.tid, *file);
         }
         Entry::Global(index) => {
             let (path, _) = GLOBAL[*index];
@@ -956,11 +1056,14 @@ pub(crate) struct Source<'a> {
     pub memory_in_use: (u64, u64),
 }
 
+/// A file of a process's or thread's directory, which shows thread `tid` of `process`.
 fn process_file(
     source: &mut Source<'_>,
     process: &Process,
+    tid: Tid,
     file: ProcessFile,
 ) -> Result<Vec<u8>, Errno> {
+    let shown = shown(source.view, process, tid);
     let mut out = String::new();
     let stack = &process.starting_stack;
     let range = |(start, end): (u64, u64)| (start, end - start);
@@ -981,7 +1084,7 @@ fn process_file(
         }
         ProcessFile::Auxv => return Ok(stack.auxiliary.clone()),
         ProcessFile::Comm => {
-            let mut bytes = process.name.clone();
+            let mut bytes = shown.name.clone();
             bytes.push(b'\n');
             return Ok(bytes);
         }
@@ -1047,10 +1150,9 @@ fn process_file(
             }
         }
         ProcessFile::Stat => {
-            let name = String::from_utf8_lossy(&process.name);
+            let name = String::from_utf8_lossy(&shown.name);
             let (vsize, _) = sizes(process);
-            let leader = leader(source.view, process);
-            let schedule = leader.schedule;
+            let schedule = shown.schedule;
             // Linux's `task_prio`: 20 plus nice for the fair policies, below 0 for real time.
             let priority = match schedule.policy {
                 SCHED_FIFO | SCHED_RR => -1 - schedule.priority as i32,
@@ -1058,7 +1160,7 @@ fn process_file(
                 _ => 20 + schedule.nice,
             };
             let (ignored, caught) = ignored_and_caught(process);
-            let blocked = leader.signal_mask;
+            let blocked = shown.signal_mask;
             // The controlling terminal's device number as `new_encode_dev` packs it, and its
             // foreground group.
             let (terminal, foreground) = process.terminal.as_ref().map_or((0, -1), |pty| {
@@ -1072,9 +1174,9 @@ fn process_file(
             let _ = writeln!(
                 out,
                 "{} ({}) {} {} {} {} {} {} 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 {} 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 {}",
-                process.pid,
+                tid,
                 name,
-                state(source.view, process).0,
+                state(source.view, process, tid).0,
                 process.parent,
                 process.group,
                 process.session,
@@ -1101,12 +1203,12 @@ fn process_file(
         }
         ProcessFile::Status => {
             let credentials = &process.credentials;
-            let leader = leader(source.view, process);
             let (vsize, _) = sizes(process);
-            let ended = process.ended.is_some();
-            // An ended process has no file system context, descriptor table or memory, so its umask,
+            let state = state(source.view, process, tid);
+            let ended = process.ended.is_some() || !source.view.threads.contains_key(&tid);
+            // An ended thread has no file system context, descriptor table or memory, so its umask,
             // table size and memory lines are left out or empty (`task_state`, `task_mem`).
-            let _ = writeln!(out, "Name:\t{}", String::from_utf8_lossy(&process.name));
+            let _ = writeln!(out, "Name:\t{}", String::from_utf8_lossy(&shown.name));
             if !ended {
                 let _ = writeln!(out, "Umask:\t{:04o}", process.umask);
             }
@@ -1114,10 +1216,10 @@ fn process_file(
                 out,
                 "State:\t{} ({})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\n\
                  TracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
-                state(source.view, process).0,
-                state(source.view, process).1,
+                state.0,
+                state.1,
                 process.pid,
-                process.pid,
+                tid,
                 process.parent,
                 credentials.uid,
                 credentials.euid,
@@ -1145,7 +1247,7 @@ fn process_file(
                  CapInh:\t{:016x}\nCapPrm:\t{:016x}\nCapEff:\t{:016x}\nCapBnd:\t{:016x}\nCapAmb:\t{:016x}\n\
                  NoNewPrivs:\t{}\nSeccomp:\t2\nSeccomp_filters:\t{}\n",
                 thread_count(process),
-                leader.signal_mask,
+                shown.signal_mask,
                 ignored,
                 caught,
                 credentials.inheritable,
@@ -1155,7 +1257,7 @@ fn process_file(
                 credentials.ambient,
                 u8::from(credentials.no_new_privileges),
                 // Docker's profile, then the first thread's own.
-                1 + leader.filters,
+                1 + shown.filters,
             );
         }
         ProcessFile::Mounts => out.push_str(source.mounts),
@@ -1213,29 +1315,21 @@ fn process_file(
     Ok(out.into_bytes())
 }
 
-/// What `stat` and `status` show of a process's first thread, kept once the process has ended.
-fn leader(view: &View<'_>, process: &Process) -> crate::process::Leader {
-    match process
-        .threads
-        .first()
-        .and_then(|tid| view.threads.get(tid))
-    {
+/// What the files show of thread `tid` of `process`; a first thread that has ended keeps it until
+/// the process is reaped.
+fn shown(view: &View<'_>, process: &Process, tid: Tid) -> crate::process::Leader {
+    match view.threads.get(&tid) {
         Some(thread) => crate::process::Leader {
             schedule: thread.schedule,
-            signal_mask: thread.signal_mask,
-            filters: thread.filters.len(),
+            ..crate::process::Leader::of(thread)
         },
-        None => process.ended_leader,
+        None => process.ended_leader.clone(),
     }
 }
 
-/// A process's count of threads; an ended one keeps its first until it is reaped.
+/// A process's count of threads, its first among them until the process is reaped.
 fn thread_count(process: &Process) -> usize {
-    if process.ended.is_some() {
-        1
-    } else {
-        process.threads.len()
-    }
+    tasks(process).count()
 }
 
 /// The signals a process ignores and those it has handlers for, one bit each from bit 0 for signal 1

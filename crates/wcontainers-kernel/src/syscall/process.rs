@@ -194,20 +194,20 @@ fn exec(
     };
     let program = if path.is_empty() && dirfd == AT_FDCWD {
         let cwd = kernel.processes[&pid].cwd.clone();
-        crate::loader::program_of(kernel, cx.cpu, pid, cwd, Vec::new())?
+        crate::loader::program_of(kernel, cx.cpu, tid, cwd, Vec::new())?
     } else if path.is_empty() {
         let file = kernel.processes[&pid].files.file(dirfd)?;
         let (node, full) = {
             let file = file.borrow();
             (file.node.clone(), file.path.clone())
         };
-        crate::loader::program_of(kernel, cx.cpu, pid, node, full)?
+        crate::loader::program_of(kernel, cx.cpu, tid, node, full)?
     } else {
         let at = super::files::start(kernel, tid, dirfd as u64, &path)?;
         crate::loader::open_program_at(
             kernel,
             cx.cpu,
-            pid,
+            tid,
             &at,
             &path,
             flags & AT_SYMLINK_NOFOLLOW == 0,
@@ -236,7 +236,7 @@ fn exec(
     let loaded = crate::loader::load(
         kernel,
         cx,
-        pid,
+        tid,
         &file_name,
         program,
         arguments,
@@ -1162,11 +1162,11 @@ pub(super) fn prctl(
                 }
                 name.push(byte);
             }
-            kernel.process_of_mut(tid).set_name_exact(&name);
+            kernel.thread_mut(tid).set_name_exact(&name);
             Ok(0)
         }
         PR_GET_NAME => {
-            let mut name = kernel.process_of(tid).name.clone();
+            let mut name = kernel.threads[&tid].name.clone();
             name.resize(16, 0);
             guest(kernel, cx, tid).write(second, &name)?;
             Ok(0)

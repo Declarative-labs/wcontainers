@@ -1069,24 +1069,20 @@ fn write_proc(
     count: u64,
 ) -> Result<u64, Errno> {
     match entry.writing() {
-        // `comm_write`: the first 15 bytes name the process, up to a zero, and the whole count is
-        // taken; only a process's own threads may name it.
+        // `comm_write`: the first 15 bytes name the file's thread, up to a zero, and the whole count
+        // is taken; only threads of the same process may name it.
         Writing::Comm => {
             let bytes = guest(kernel, cx, tid).read(buffer, count.min(15))?;
-            let crate::fs::proc::Entry::ProcessFile(pid, _) = entry else {
+            let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {
                 return Err(Errno::EINVAL);
             };
-            if !kernel.processes.contains_key(&pid) {
+            if !kernel.threads.contains_key(&task.tid) {
                 return Err(Errno::ESRCH);
             }
-            if pid != kernel.threads[&tid].process {
+            if task.pid != kernel.threads[&tid].process {
                 return Err(Errno::EINVAL);
             }
-            let end = bytes
-                .iter()
-                .position(|byte| *byte == 0)
-                .unwrap_or(bytes.len());
-            kernel.process_of_mut(tid).set_name_exact(&bytes[..end]);
+            kernel.thread_mut(task.tid).set_name_exact(&bytes);
             Ok(count)
         }
         Writing::Io => Err(Errno::EIO),
@@ -1723,24 +1719,28 @@ pub(super) fn getdents64(
                 drop(inode);
                 // Each entry has Linux's position. What follows an entry (its `d_off`) is the position
                 // after its own, except where Linux moves to the next entry's before listing it:
-                // descriptors (`proc_readfd_common`, which ends at the table's size plus 2) and
-                // processes in `/proc` (`proc_pid_readdir`, which ends past the largest number).
+                // descriptors (`proc_readfd_common`, which ends at the table's size plus 2), and
+                // `thread-self` and processes in `/proc` (`proc_pid_readdir`, which ends past the
+                // largest number).
                 use crate::fs::proc::Entry;
-                let pid = kernel.threads[&tid].process;
-                let (listed, end) = kernel.with_walk(pid, |walk, _| {
+                let (listed, end) = kernel.with_walk(tid, |walk, _| {
                     let mut out = Vec::new();
                     for (name, child, position) in crate::fs::proc::list(walk.proc, &entry) {
-                        let jumps = matches!(child, Entry::Fd(..) | Entry::Process(_));
+                        let jumps = match child {
+                            Entry::Fd(..) | Entry::ThreadSelfLink => true,
+                            Entry::Process(task) => !task.own,
+                            _ => false,
+                        };
                         let child_node = crate::fs::proc::node(walk.proc, None, &name, child);
                         let child_inode = child_node.borrow();
                         let kind = child_inode.dirent_type();
                         out.push((name, child_inode.ino, kind, position, jumps));
                     }
                     let end = match entry {
-                        Entry::Fds(pid) => walk
+                        Entry::Fds(task) => walk
                             .proc
                             .processes
-                            .get(&pid)
+                            .get(&task.pid)
                             .map_or(2, |process| u64::from(process.files.capacity()) + 2),
                         _ => crate::fs::proc::PROCESSES_END,
                     };

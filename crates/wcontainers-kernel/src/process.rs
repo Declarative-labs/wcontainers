@@ -72,8 +72,6 @@ pub(crate) struct Process {
     pub umask: u32,
     pub credentials: Credentials,
     pub limits: [Limit; LIMITS],
-    /// The name `comm` shows, at most 15 bytes.
-    pub name: Vec<u8>,
     /// The program file and the path it was started by.
     pub executable: (Node, Vec<u8>),
     pub starting_stack: StartingStack,
@@ -227,13 +225,14 @@ impl Pending {
 /// Linux's `TASK_COMM_LEN` less the terminating zero.
 const NAME_LENGTH: usize = 15;
 
-impl Process {
+impl Thread {
     /// Sets the `comm` name from a path's last part, as `execve` does.
     pub fn set_name(&mut self, name: &[u8]) {
         let name = name.rsplit(|byte| *byte == b'/').next().unwrap_or(name);
         self.name = name[..name.len().min(NAME_LENGTH)].to_vec();
     }
 
+    /// Sets the `comm` name to the bytes up to the first zero, as `PR_SET_NAME` does.
     pub fn set_name_exact(&mut self, name: &[u8]) {
         let end = name
             .iter()
@@ -247,6 +246,8 @@ impl Process {
 pub(crate) struct Thread {
     pub process: Pid,
     pub cpu: ThreadId,
+    /// The name `comm` shows, at most 15 bytes.
+    pub name: Vec<u8>,
     /// How the thread continues the next time it runs.
     pub resume: Resume,
     /// `set_tid_address`: where to clear and wake when the thread ends.
@@ -294,14 +295,29 @@ pub(crate) struct Thread {
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
 pub(crate) const TIMER_SLACK: u64 = 50_000;
 
-/// What an ended process's first thread keeps for `/proc` and the scheduling calls until it is
-/// reaped: its scheduling values (its I/O priority is gone with its I/O context), its blocked signals
-/// and how many seccomp filters it installed.
-#[derive(Clone, Copy, Debug, Default)]
+/// What a process's first thread keeps for `/proc` and the scheduling calls once it has ended, until
+/// the process is reaped: its name, its scheduling values (its I/O priority is gone with its I/O
+/// context), its blocked signals and how many seccomp filters it installed.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Leader {
+    pub name: Vec<u8>,
     pub schedule: Schedule,
     pub signal_mask: u64,
     pub filters: usize,
+}
+
+impl Leader {
+    pub fn of(thread: &Thread) -> Self {
+        Self {
+            name: thread.name.clone(),
+            schedule: Schedule {
+                io_priority: 0,
+                ..thread.schedule
+            },
+            signal_mask: thread.signal_mask,
+            filters: thread.filters.len(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -383,6 +399,7 @@ impl Thread {
         Self {
             process,
             cpu,
+            name: Vec::new(),
             resume: Resume::FromRegisters,
             clear_child_tid: 0,
             robust_list: (0, 0),

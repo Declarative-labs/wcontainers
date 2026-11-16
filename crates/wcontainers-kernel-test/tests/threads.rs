@@ -36,3 +36,17 @@ fn thread_groups_match_reference() {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
     }
 }
+
+/// Each thread's directory in `/proc`, names per thread, and a process whose first thread ended.
+#[test]
+fn proc_task_matches_reference() {
+    for run in assert_same_output_seeded(&out(), "proctask", &[], 0) {
+        // `stat` and `status` leave fields out, which every read of them counts.
+        let others: Vec<_> = run
+            .warnings
+            .iter()
+            .filter(|warned| warned.reason != "proc fields not tracked")
+            .collect();
+        assert!(others.is_empty(), "{others:?}");
+    }
+}

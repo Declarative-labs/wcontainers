@@ -15,7 +15,7 @@ use crate::fs::{Content, Node};
 use crate::linux::auxvec::*;
 use crate::linux::general::{ARG_MAX, PATH_MAX, R_OK, S_IFLNK, S_IFMT, S_IFREG, X_OK};
 use crate::memory::{AddressMap, Backing, Mapping, STACK_LIMIT, page_down, page_up};
-use crate::process::{Pid, StartingStack};
+use crate::process::{StartingStack, Tid};
 use crate::{Context, Errno, Kernel, errno};
 
 /// Linux's `AT_PLATFORM` string on ARM64.
@@ -131,11 +131,11 @@ pub(crate) struct Program {
 pub(crate) fn open_program(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     path: &[u8],
 ) -> Result<Program, Errno> {
-    let cwd = kernel.processes[&pid].cwd.clone();
-    open_program_at(kernel, cpu, pid, &cwd, path, true)
+    let cwd = kernel.processes[&kernel.process_number(tid)].cwd.clone();
+    open_program_at(kernel, cpu, tid, &cwd, path, true)
 }
 
 /// Finds a file to run by a name the kernel made (`open_exec`): one that may be empty
@@ -143,21 +143,21 @@ pub(crate) fn open_program(
 fn open_named_program(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     path: &[u8],
 ) -> Result<Program, Errno> {
     if path.is_empty() {
-        let cwd = kernel.processes[&pid].cwd.clone();
-        return program_of(kernel, cpu, pid, cwd, Vec::new());
+        let cwd = kernel.processes[&kernel.process_number(tid)].cwd.clone();
+        return program_of(kernel, cpu, tid, cwd, Vec::new());
     }
-    open_program(kernel, cpu, pid, path)
+    open_program(kernel, cpu, tid, path)
 }
 
 /// The same from `start`; not following a link as the last part makes one ELOOP.
 pub(crate) fn open_program_at(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     start: &Node,
     path: &[u8],
     follow: bool,
@@ -165,7 +165,7 @@ pub(crate) fn open_program_at(
     // A trailing slash follows a last link whatever the flags say and asks for a directory, which
     // no program is (`open_last_lookups`, `do_open`).
     let trailing_slash = path.ends_with(b"/");
-    let (node, full) = kernel.with_walk(pid, |walk, _| {
+    let (node, full) = kernel.with_walk(tid, |walk, _| {
         if !follow
             && !trailing_slash
             && walk.resolve(start, path, false)?.borrow().file_type() == S_IFLNK
@@ -177,18 +177,18 @@ pub(crate) fn open_program_at(
     if trailing_slash && !node.borrow().is_directory() {
         return Err(Errno::ENOTDIR);
     }
-    program_of(kernel, cpu, pid, node, full)
+    program_of(kernel, cpu, tid, node, full)
 }
 
 /// Linux's checks on a file to run (`do_open_execat`), for a file already found.
 pub(crate) fn program_of(
     kernel: &Kernel,
     cpu: &mut dyn Cpu,
-    pid: Pid,
+    tid: Tid,
     node: Node,
     path: Vec<u8>,
 ) -> Result<Program, Errno> {
-    let credentials = &kernel.processes[&pid].credentials;
+    let credentials = &kernel.processes[&kernel.process_number(tid)].credentials;
     let inode = node.borrow();
     if inode.mode & S_IFMT != S_IFREG || inode.fs.no_execute() {
         return Err(Errno::EACCES);
@@ -211,7 +211,7 @@ pub(crate) fn program_of(
     })
 }
 
-/// Loads the program at `path` into a new memory for process `pid`. Nothing about the process changes;
+/// Loads the program at `path` into a new memory for thread `tid`'s process. Nothing about the process changes;
 /// on failure nothing is left behind.
 #[allow(
     clippy::too_many_arguments,
@@ -220,7 +220,7 @@ pub(crate) fn program_of(
 pub(crate) fn load(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    pid: Pid,
+    tid: Tid,
     path: &[u8],
     program: Program,
     arguments: Vec<Vec<u8>>,
@@ -259,7 +259,7 @@ pub(crate) fn load(
         new_arguments.push(file_name.clone());
         new_arguments.extend(arguments.into_iter().skip(1));
         arguments = new_arguments;
-        program = open_named_program(kernel, cx.cpu, pid, &interpreter)?;
+        program = open_named_program(kernel, cx.cpu, tid, &interpreter)?;
         readable &= program.readable;
         file_name = interpreter;
     }
@@ -267,7 +267,7 @@ pub(crate) fn load(
     let result = place(
         kernel,
         cx,
-        pid,
+        tid,
         memory,
         program,
         path,
@@ -446,7 +446,7 @@ struct Placed {
 fn place(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    pid: Pid,
+    tid: Tid,
     memory: MemoryId,
     program: Program,
     exec_path: &[u8],
@@ -483,7 +483,7 @@ fn place(
                     return Err(Errno::ENOEXEC.into());
                 }
                 let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
-                let found = open_named_program(kernel, cx.cpu, pid, name)?;
+                let found = open_named_program(kernel, cx.cpu, tid, name)?;
                 elf_read(&found.bytes, 0, size_of::<Header>() as u64)?;
                 interpreter = Some(found);
                 break;
@@ -522,7 +522,7 @@ fn place(
             .is_none_or(|(program, ..)| program.readable);
     let after = {
         let inode = program.node.borrow();
-        kernel.processes[&pid]
+        kernel.processes[&kernel.process_number(tid)]
             .credentials
             .for_program(&crate::credentials::ProgramFile {
                 mode: inode.mode,
