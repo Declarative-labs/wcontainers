@@ -80,6 +80,13 @@ pub(crate) const IOPRIO_CLASS_IDLE: u32 = 3;
 pub(crate) const IOPRIO_WHO_PROCESS: u64 = 1;
 pub(crate) const IOPRIO_WHO_USER: u64 = 3;
 
+/// Process descriptors (`linux/pidfd.h`, which linux-raw-sys does not generate): one for a thread
+/// rather than its process, and the scope `pidfd_send_signal` may be given.
+pub(crate) const PIDFD_THREAD: u32 = crate::linux::general::O_EXCL;
+pub(crate) const PIDFD_SIGNAL_THREAD: u32 = 1;
+pub(crate) const PIDFD_SIGNAL_THREAD_GROUP: u32 = 2;
+pub(crate) const PIDFD_SIGNAL_PROCESS_GROUP: u32 = 4;
+
 /// `rseq`'s flags (`linux/rseq.h`, which linux-raw-sys does not generate): unregister, and turn time
 /// slice extensions on from the start.
 pub(crate) const RSEQ_FLAG_UNREGISTER: u32 = 1;
@@ -148,6 +155,8 @@ pub(crate) const MAX_HANDLE_SZ: u32 = 128;
 pub(crate) const FILEID_INO32_GEN: i32 = 1;
 pub(crate) const FILEID_INO64_GEN: i32 = 0x81;
 pub(crate) const FILEID_INVALID: i32 = 0xff;
+/// The handle type kernfs and pidfs give: a 64-bit inode number.
+pub(crate) const FILEID_KERNFS: i32 = 0xfe;
 
 // The encoding of CPU clock ids below zero, from Linux's `linux/posix-timers_types.h`, which is not a
 // uapi header: the C library's `clock_getcpuclockid` and `pthread_getcpuclockid` make these ids.

@@ -33,7 +33,7 @@ fn may_signal(kernel: &Kernel, tid: Tid, target: Pid, signal: u32) -> Result<(),
 }
 
 /// Sends `signal` from the caller to a process, after the permission check.
-fn signal_process(
+pub(super) fn signal_process(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -106,11 +106,40 @@ pub(super) fn kill(
         }
         return result;
     }
-    // `__kill_pgrp_info`: any success, else the last answer.
+    signal_members(kernel, cx, tid, &targets, signal, info)
+}
+
+/// `__kill_pgrp_info`: a signal to every process of a group, ended ones too.
+pub(super) fn signal_group(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    group: Pid,
+    signal: u32,
+    info: [u8; 128],
+) -> Result<u64, Errno> {
+    let targets: alloc::vec::Vec<Pid> = kernel
+        .processes
+        .values()
+        .filter(|process| process.group == group)
+        .map(|process| process.pid)
+        .collect();
+    signal_members(kernel, cx, tid, &targets, signal, info)
+}
+
+/// A group's answer: any success, else the last answer.
+fn signal_members(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    targets: &[Pid],
+    signal: u32,
+    info: [u8; 128],
+) -> Result<u64, Errno> {
     let mut result = Err(Errno::ESRCH);
     let mut any = false;
     for target in targets {
-        match signal_process(kernel, cx, tid, target, signal, info) {
+        match signal_process(kernel, cx, tid, *target, signal, info) {
             Ok(()) => any = true,
             Err(error) => result = Err(error),
         }
@@ -118,8 +147,8 @@ pub(super) fn kill(
     if any { Ok(0) } else { result }
 }
 
-/// A signal to one thread, from `tkill`, `tgkill` and `rt_tgsigqueueinfo`.
-fn signal_thread(
+/// A signal to one thread, from `tkill`, `tgkill`, `rt_tgsigqueueinfo` and `pidfd_send_signal`.
+pub(super) fn signal_thread(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -202,18 +231,14 @@ fn known_layout(signal: u32, code: i32) -> bool {
     code >= SI_DETHREAD || code == SI_ASYNCNL
 }
 
-/// The `siginfo` a program queues: refused if it claims to come from the kernel or `tkill` and the
-/// target is not the caller itself (`do_rt_sigqueueinfo`, `do_rt_tgsigqueueinfo`).
-fn queued_info(
+/// `copy_siginfo_from_user`: the kernel's part of a program's `siginfo`, and for a layout Linux does
+/// not know, the rest, which must be zero.
+pub(super) fn user_info(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    target: Pid,
-    signal: u32,
     address: u64,
 ) -> Result<[u8; 128], Errno> {
-    // `copy_siginfo_from_user`: the kernel's part of the structure, and for a layout Linux does not
-    // know, the rest, which must be zero.
     let bytes = guest(kernel, cx, tid).read(address, KERNEL_SIGINFO)?;
     let mut info = [0u8; 128];
     info[..KERNEL_SIGINFO as usize].copy_from_slice(&bytes);
@@ -225,6 +250,21 @@ fn queued_info(
             return Err(Errno::E2BIG);
         }
     }
+    Ok(info)
+}
+
+/// The `siginfo` a program queues: refused if it claims to come from the kernel or `tkill` and the
+/// target is not the caller itself (`do_rt_sigqueueinfo`, `do_rt_tgsigqueueinfo`).
+fn queued_info(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    target: Pid,
+    signal: u32,
+    address: u64,
+) -> Result<[u8; 128], Errno> {
+    let mut info = user_info(kernel, cx, tid, address)?;
+    let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
     if (code >= 0 || code == SI_TKILL) && tid != target {
         return Err(Errno::EPERM);
     }

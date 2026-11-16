@@ -1341,6 +1341,10 @@ pub const CALLS: &[u32] = &[
     linux::__NR_shmdt,
     linux::__NR_shmctl,
     linux::__NR_shmctl,
+    linux::__NR_pidfd_open,
+    linux::__NR_pidfd_open,
+    linux::__NR_pidfd_send_signal,
+    linux::__NR_process_mrelease,
 ];
 
 /// Turns a generated call into real arguments.
@@ -1534,6 +1538,43 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             ]
         }
         linux::__NR_memfd_secret => [pick(&[0, 0, 0x80000, 1, 0x80001], a), 0, 0, 0, 0, 0],
+        // Process descriptors: of the caller (others' numbers differ between the runners; a child's
+        // comes from clone's CLONE_PIDFD), with every flag, and signals sent through them, the
+        // caller's own numbers and other files.
+        linux::__NR_pidfd_open => [
+            pick(&[SELF, SELF, SELF, 0, 99999, u64::MAX], a),
+            pick(
+                &[
+                    0,
+                    0,
+                    u64::from(linux::O_NONBLOCK),
+                    u64::from(linux::O_EXCL),
+                    u64::from(linux::O_CLOEXEC),
+                    3,
+                ],
+                b,
+            ),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_pidfd_send_signal => [
+            match a % 4 {
+                0 => linux::PIDFD_SELF_THREAD as u64,
+                1 => linux::PIDFD_SELF_THREAD_GROUP as u64,
+                _ => fd(a >> 2),
+            },
+            signal(b),
+            match c % 2 {
+                0 => 0,
+                _ => buffer(c >> 1),
+            },
+            pick(&[0, 0, 1, 2, 4, 3, 8], d),
+            0,
+            0,
+        ],
+        linux::__NR_process_mrelease => [fd(a), pick(&[0, 0, 1], b), 0, 0, 0, 0],
         linux::__NR_name_to_handle_at => [
             dirfd(a),
             path(b),
@@ -2324,9 +2365,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         // Fork and vfork, whose child ends at once with status 7 (see `CHILD_STATUS`), with exit
-        // signals both callers ignore; refusals of flags that ask for threads without what they
-        // need, and of a namespace (Docker's profile). Not the sharing of tables or a parent, nor a
-        // process descriptor, which are not built.
+        // signals both callers ignore, and with a process descriptor for the parent; refusals of
+        // flags that ask for threads without what they need, and of a namespace (Docker's profile).
+        // Not the sharing of tables or a parent, which are not built.
         linux::__NR_clone => [
             u64::from(pick(
                 &[
@@ -2341,11 +2382,16 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     linux::CLONE_THREAD | linux::SIGCHLD,
                     linux::CLONE_NEWNS | linux::SIGCHLD,
                     u32::MAX,
+                    linux::CLONE_PIDFD | linux::SIGCHLD,
+                    linux::CLONE_PIDFD | linux::SIGCHLD,
+                    linux::CLONE_PIDFD | linux::CLONE_VFORK | linux::CLONE_VM | linux::SIGCHLD,
+                    linux::CLONE_PIDFD | linux::CLONE_PARENT_SETTID | linux::SIGCHLD,
+                    linux::CLONE_PIDFD | linux::CLONE_DETACHED | linux::SIGCHLD,
                 ],
                 a,
             )),
             0,
-            0,
+            buffer(c),
             0,
             buffer(b),
             0,

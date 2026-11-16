@@ -12,6 +12,7 @@ pub(crate) mod ipc;
 mod list;
 mod memfd;
 mod memory;
+pub(crate) mod pidfd;
 pub(crate) mod pipe;
 mod process;
 mod rseq;
@@ -143,6 +144,9 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_cachestat, S(io::cachestat)),
         (__NR_name_to_handle_at, S(handle::name_to_handle_at)),
         (__NR_memfd_secret, S(memfd::memfd_secret)),
+        (__NR_pidfd_open, S(pidfd::pidfd_open)),
+        (__NR_pidfd_send_signal, S(pidfd::pidfd_send_signal)),
+        (__NR_process_mrelease, S(pidfd::process_mrelease)),
         (__NR_openat, S(files::openat)),
         (__NR_openat2, S(files::openat2)),
         (__NR_flock, F(files::flock)),

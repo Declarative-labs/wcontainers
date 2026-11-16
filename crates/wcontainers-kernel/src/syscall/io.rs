@@ -751,7 +751,7 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::Pipe(_) | Content::Symlink(_) => return Err(Errno::EINVAL),
+        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(_) => return Err(Errno::EINVAL),
     })
 }
 
@@ -1061,7 +1061,7 @@ pub(super) fn write_bytes(
                 _ => Err(Errno::ENXIO),
             };
         }
-        Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) => {
+        Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) | Content::Pidfd(_) => {
             return Err(Errno::EINVAL);
         }
     };
@@ -1359,7 +1359,7 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::Pipe(_) => return Err(Errno::ESPIPE),
+        Content::Pipe(_) | Content::Pidfd(_) => return Err(Errno::ESPIPE),
         Content::Special => match Device::from_number(inode.rdev) {
             // `/dev/null`, `/dev/zero` and `/dev/full` always seek to 0 (`null_lseek`); the random
             // devices keep their position (`noop_llseek`).
@@ -2306,7 +2306,7 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 
 /// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
 /// or what the file's own says. The host's pipes always have room.
-fn poll_mask(_kernel: &Kernel, file: &FileRef) -> u16 {
+fn poll_mask(kernel: &Kernel, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
     if super::tty::end(file).is_some() {
         return super::tty::poll(file);
@@ -2324,6 +2324,10 @@ fn poll_mask(_kernel: &Kernel, file: &FileRef) -> u16 {
         }
         // `mounts_poll`: the mount table cannot change within the container.
         Content::Proc(Entry::ProcessFile(_, ProcessFile::Mounts)) => (POLLIN | POLLRDNORM) as u16,
+        Content::Pidfd(_) => {
+            drop(node);
+            super::pidfd::poll(kernel, &file)
+        }
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
 }

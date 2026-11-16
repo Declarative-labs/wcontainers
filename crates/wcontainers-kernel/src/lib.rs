@@ -73,6 +73,8 @@ pub(crate) struct Files {
     pub memfd_fs: FileSystem,
     /// The internal file system secret memory files live on, made at the first `memfd_secret`.
     pub secretmem_fs: Option<FileSystem>,
+    /// The file system process descriptors are on, once one is made.
+    pub pidfs: Option<FileSystem>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
@@ -181,6 +183,7 @@ impl Kernel {
                     space: Some(memfd_space),
                 },
                 secretmem_fs: None,
+                pidfs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
                 proc_kept: BTreeMap::new(),

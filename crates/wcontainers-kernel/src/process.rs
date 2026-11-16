@@ -96,6 +96,8 @@ pub(crate) struct Process {
     /// A zombie's scheduling values, which its leader keeps until reaped (its I/O priority is gone
     /// with its I/O context).
     pub ended_schedule: Schedule,
+    /// The inode its process descriptors share, once one is made.
+    pub pidfd: Option<Node>,
     /// A `vfork` child: the parent's thread that waits until the child lets go of the memory it
     /// borrows by starting a program or ending.
     pub vfork_parent: Option<Tid>,

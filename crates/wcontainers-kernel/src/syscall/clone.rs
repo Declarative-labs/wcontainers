@@ -30,6 +30,10 @@ pub(super) fn clone(
     }
     let exit_signal = flags & CSIGNAL;
     let flags = (flags as u32) & !(CSIGNAL as u32);
+    // Legacy clone gives the descriptor CLONE_PIDFD makes where the parent's thread id would go.
+    if flags & CLONE_PIDFD != 0 && flags & CLONE_PARENT_SETTID != 0 {
+        return Err(Errno::EINVAL).into();
+    }
     match make_child(
         kernel,
         cx,
@@ -39,6 +43,7 @@ pub(super) fn clone(
         stack,
         tls,
         child_tid,
+        parent_tid,
     ) {
         Ok(child) => {
             // The parent's copy of the child's number, written after the child exists.
@@ -82,6 +87,7 @@ fn make_child(
     stack: u64,
     tls: u64,
     child_tid: u64,
+    pidfd_out: u64,
 ) -> Result<Pid, Errno> {
     let pid = kernel.threads[&tid].process;
     if flags & (CLONE_NEWNS | CLONE_FS) == CLONE_NEWNS | CLONE_FS
@@ -96,14 +102,20 @@ fn make_child(
     // Sharing a process's tables between processes, threads, and memory shared by two running
     // processes are not built.
     let shares_memory = flags & CLONE_VM != 0 && flags & CLONE_VFORK == 0;
-    if flags & (SHARING_NOT_BUILT | CLONE_PIDFD) != 0 || shares_memory {
-        let unbuilt = flags & (SHARING_NOT_BUILT | CLONE_PIDFD | CLONE_VM);
+    if flags & SHARING_NOT_BUILT != 0 || shares_memory {
+        let unbuilt = flags & (SHARING_NOT_BUILT | CLONE_VM);
         return Err(kernel.counters.refuse_flag(
             cx.host,
             __NR_clone,
             unbuilt.into(),
             Errno::ENOSYS,
         ));
+    }
+    // The parent's descriptor for the child: its number is written before the child exists, and
+    // nothing is made if that faults.
+    if flags & CLONE_PIDFD != 0 {
+        let fd = super::pidfd::next_descriptor(kernel, pid)?;
+        guest(kernel, cx, tid).put(pidfd_out, &fd.to_le_bytes())?;
     }
     let child = kernel.allocate_id();
     let parent = &kernel.processes[&pid];
@@ -166,6 +178,7 @@ fn make_child(
     process.started = kernel.entry_now;
     process.execed = false;
     process.terminal_old_group = None;
+    process.pidfd = None;
     if flags & CLONE_PARENT != 0 {
         process.parent = parent.parent;
         process.exit_signal = parent.exit_signal;
@@ -212,6 +225,9 @@ fn make_child(
     }
     kernel.processes.insert(child, process);
     kernel.threads.insert(child, thread);
+    if flags & CLONE_PIDFD != 0 {
+        super::pidfd::give_child_descriptor(kernel, cx, tid, child)?;
+    }
     // `schedule_tail`: the child writes its own number where it was asked to.
     if flags & CLONE_CHILD_SETTID != 0 {
         let _ = guest(kernel, cx, child).put(child_tid, &child.to_le_bytes());
@@ -404,7 +420,7 @@ pub(super) fn waitid(
     [kind, id, info_out, options, usage_out, _]: Args,
 ) -> Outcome {
     // `kernel_waitid`: what it found, or its error.
-    let found = match find_for_waitid(kernel, cx, tid, kind, id, options as u32) {
+    let found = match find_for_waitid(kernel, tid, kind, id, options as u32) {
         Err(Errno::PARKED) => return Outcome::Parked,
         found => found,
     };
@@ -450,7 +466,6 @@ type Reported = (Pid, u32, i32, u32, rusage);
 /// the `siginfo` code and status, its user and use), none with WNOHANG, or a wait.
 fn find_for_waitid(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
     tid: Tid,
     kind: u64,
     id: u64,
@@ -464,23 +479,25 @@ fn find_for_waitid(
         return Err(Errno::EINVAL);
     }
     let id = id as i32;
+    let mut nonblocking = false;
     let which = match kind as u32 {
         P_ALL => Which::Any,
         P_PID if id > 0 => Which::Process(id),
         P_PGID if id >= 0 => Which::Group(id),
-        // No descriptor can name a process yet.
+        // A process descriptor's process while it exists; one reaped is no one's child.
         P_PIDFD if id >= 0 => {
-            return Err(kernel.counters.refuse_flag(
-                cx.host,
-                __NR_waitid,
-                P_PIDFD.into(),
-                Errno::EBADF,
-            ));
+            let file = super::io::file(kernel, tid, id as u64)?;
+            let file = file.borrow();
+            let named = super::pidfd::named(kernel, &file)?;
+            nonblocking = file.flags & O_NONBLOCK != 0;
+            Which::Process(if named.exists { named.pid } else { 0 })
         }
         _ => return Err(Errno::EINVAL),
     };
     match find_child(kernel, tid, which, options | WNOWAIT)? {
         Found::None if options & WNOHANG != 0 => Ok(None),
+        // A nonblocking descriptor waits as with WNOHANG, then says so.
+        Found::None if nonblocking => Err(Errno::EAGAIN),
         Found::None => {
             if kernel.signal_pending(tid) {
                 return Err(Errno::ERESTARTSYS);

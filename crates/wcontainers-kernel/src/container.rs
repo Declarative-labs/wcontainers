@@ -391,6 +391,7 @@ impl Kernel {
             exit_signal: SIGCHLD,
             ended: None,
             ended_schedule: Default::default(),
+            pidfd: None,
             vfork_parent: None,
             stopped: false,
             report: None,

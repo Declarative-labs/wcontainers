@@ -402,6 +402,7 @@ impl Kernel {
         let process = self.processes.get_mut(&pid).expect("process exists");
         process.threads.clear();
         process.ended = Some(wait_status);
+        let pidfd = process.pidfd.clone();
         process.stopped = false;
         process.report = None;
         process.pending = Default::default();
@@ -412,6 +413,9 @@ impl Kernel {
         process.peak_mapped = map.iter().map(|mapping| mapping.end - mapping.start).sum();
         if !self.memory_in_use_elsewhere(pid, memory) {
             cx.cpu.memory_drop(memory);
+        }
+        if let Some(node) = pidfd {
+            self.wake(syscall::pidfd::channel(&node));
         }
         syscall::tty::disassociate(self, cx, pid, true);
         syscall::ipc::settle(self, cx, pid);
@@ -590,6 +594,9 @@ impl Kernel {
         let Some(process) = self.processes.remove(&pid) else {
             return;
         };
+        if let Some(node) = &process.pidfd {
+            self.wake(syscall::pidfd::channel(node));
+        }
         if let Some(parent) = self.processes.get_mut(&process.parent) {
             parent.children_time += process.ended_time + process.children_time;
             parent.children_maxrss = parent.children_maxrss.max(process.children_maxrss);
