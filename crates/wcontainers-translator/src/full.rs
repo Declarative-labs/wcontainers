@@ -1445,7 +1445,7 @@ impl<'a> FullEmitter<'a> {
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
             let block = Fixed::Global(G_THREAD_BLOCK);
-            depth_check(&mut s, e.depth, block, function.entry);
+            depth_check(&mut s, L_DEPTH, block, function.entry);
         }
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
         f.raw(entry);
@@ -1897,7 +1897,6 @@ impl<'a> FullEmitter<'a> {
     fn stop_check_or_deep(&mut self, pc: Pc, after: AfterStop, deep: Option<u64>) {
         self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
-        let depth = self.depth;
         let mut s = self.sink();
         block.push(&mut s);
         s.i32_load(memarg(
@@ -1906,12 +1905,14 @@ impl<'a> FullEmitter<'a> {
             2,
         ));
         if let Some(entry) = deep {
-            s.local_get(depth)
+            // The callers' depth, not this piece's own frame, so a piece called from the bottom loop always
+            // runs, however large its frame.
+            s.local_get(L_DEPTH)
                 .i64_const(STACK_BUDGET)
                 .i64_gt_u()
                 .i32_or()
                 .if_(BlockType::Empty);
-            depth_check(&mut s, depth, block, entry);
+            depth_check(&mut s, L_DEPTH, block, entry);
         } else {
             s.if_(BlockType::Empty);
         }
