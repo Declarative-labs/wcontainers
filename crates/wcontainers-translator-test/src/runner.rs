@@ -1106,7 +1106,7 @@ fn instantiate(
     let memory = host.memory.unwrap();
     let state = host.state.clone().unwrap();
     let load_address = load.load_address;
-    let slot_base = slot_base.unwrap_or(((load_address - host.table_base) / 4) as i32);
+    let slot_base = slot_base.unwrap_or(own_slot_base(load_address, host.table_base));
     if slot_base_is_own(slot_base, load_address, host.table_base) {
         let placed: Vec<u64> = load.pieces.iter().map(|o| load_address + o).collect();
         store.data_mut().placed.extend(placed);
@@ -1157,7 +1157,13 @@ fn instantiate(
 
 /// Whether a slot base puts pieces at their own addresses.
 fn slot_base_is_own(slot_base: i32, load_address: u64, table_base: u64) -> bool {
-    slot_base == ((load_address - table_base) / 4) as i32
+    slot_base == own_slot_base(load_address, table_base)
+}
+
+/// The slot base that puts a blob's pieces at their own addresses; below zero when the table starts past the
+/// blob's start.
+fn own_slot_base(load_address: u64, table_base: u64) -> i32 {
+    (load_address.wrapping_sub(table_base) as i64 / 4) as i32
 }
 
 /// Make a thread instance, with an empty lookup table, for the machine's memories; its run function.

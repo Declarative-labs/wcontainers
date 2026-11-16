@@ -185,6 +185,16 @@ fn run_in_chrome(
 /// Run the browser runner on a case directory holding `translator.wasm`, `blob.bin`, `stack.bin` and, for
 /// instruction cases, `cases.bin`, with this setup and V8 flags if given; give its answer.
 fn launch(directory: &Path, setup: &Value, flags: Option<&str>) -> Value {
+    launch_or_refused(directory, setup, flags)
+        .unwrap_or_else(|error| panic!("the browser runner failed: {error}"))
+}
+
+/// [`launch`], or what the page threw.
+fn launch_or_refused(
+    directory: &Path,
+    setup: &Value,
+    flags: Option<&str>,
+) -> Result<Value, String> {
     std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
 
     let mut command = Command::new("node");
@@ -200,13 +210,52 @@ fn launch(directory: &Path, setup: &Value, flags: Option<&str>) -> Value {
     eprint!("{errors}");
     assert!(output.status.success(), "the browser runner failed");
     let result: Value = serde_json::from_slice(&output.stdout).expect("the runner's JSON");
-    if let Some(error) = result.get("error") {
-        panic!(
-            "the browser runner failed: {}",
-            error.as_str().unwrap_or_default()
-        );
+    match result.get("error") {
+        Some(error) => Err(error.as_str().unwrap_or_default().to_string()),
+        None => Ok(result),
     }
-    result
+}
+
+/// Load code modules translated ahead of time from an image placed at `load`, its code at `code`, in Chrome,
+/// V8 given these flags, without running anything: the milliseconds making the modules took, and making
+/// their instances; or what the page threw, such as an engine refusing a limit. The lookup table covers the
+/// code alone.
+pub fn load_modules(
+    name: &str,
+    image: &[u8],
+    load: u64,
+    code: std::ops::Range<u64>,
+    modules: &[&[u8]],
+    flags: &str,
+) -> Result<(f64, f64), String> {
+    let directory = target().join("cases").join(format!("load-{name}"));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
+    std::fs::write(directory.join("blob.bin"), image).unwrap();
+    std::fs::write(directory.join("stack.bin"), []).unwrap();
+    for (i, module) in modules.iter().enumerate() {
+        std::fs::write(directory.join(format!("module-{i}.wasm")), module).unwrap();
+    }
+    let memory = (load + image.len() as u64).next_multiple_of(1 << 16);
+    let setup = serde_json::json!({
+        "codeBytes": code.end,
+        "codeStart": code.start,
+        "load": load,
+        "memoryBytes": memory,
+        "regions": [],
+        "sp": 0,
+        "lookAhead": 1,
+        "repeat": 0,
+        "omit": 0,
+        "modules": modules.len(),
+    });
+    let result = launch_or_refused(&directory, &setup, Some(flags));
+    std::fs::remove_dir_all(&directory).unwrap();
+    let result = result?;
+    Ok((
+        result["compiling"].as_f64().expect("a time"),
+        result["instantiating"].as_f64().expect("a time"),
+    ))
 }
 
 /// One instruction case: its code word, the thread state to start from (the contract's

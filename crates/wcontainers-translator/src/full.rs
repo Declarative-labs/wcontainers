@@ -2208,6 +2208,11 @@ impl<'a> FullEmitter<'a> {
         let lo = present.iter().map(|c| c.0).min().unwrap();
         let hi = present.iter().map(|c| c.0).max().unwrap();
         let slots = (hi - lo) / 4 + 1;
+        // The engines take at most this many targets in one `br_table`.
+        if slots > BR_TABLE_TARGETS {
+            self.unrecognised_jump(target);
+            return;
+        }
         if !self.omit.stop
             && present
                 .iter()

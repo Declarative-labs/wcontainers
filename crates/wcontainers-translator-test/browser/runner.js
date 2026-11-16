@@ -44,6 +44,8 @@ function run({
   caseBytes,
   areas,
   stopAtSyscall,
+  moduleBytes,
+  codeStart,
 }) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
@@ -343,9 +345,12 @@ function run({
     });
   }
 
-  const tableBase = BigInt(load);
-  // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
-  const threadModule = new WebAssembly.Module(result(translator.thread_module(Math.ceil(blob.length / 4))));
+  // Modules translated ahead of time from an image have a table for their code alone, from its start.
+  const tableBase = BigInt(load + (codeStart ?? 0));
+  // The table covers the whole blob, every page of it that may run code, so code the program writes runs;
+  // for modules translated ahead of time from an image, its code.
+  const slots = Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / 4);
+  const threadModule = new WebAssembly.Module(result(translator.thread_module(slots)));
   thread = new WebAssembly.Instance(threadModule, {
     [contract.hooks]: hooks,
     [contract.env]: {
@@ -359,9 +364,38 @@ function run({
   guest().set(blob, load);
   const loaded = { bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) };
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
+  if (moduleBytes.length) return loadModules();
   instantiateCode(loaded, 0n, lookAhead, omit, bound);
 
   if (cases) return runCases();
+
+  // Code modules translated ahead of time, loaded only: how long making each module and its instance took.
+  function loadModules() {
+    let compiling = 0;
+    let instantiating = 0;
+    for (const bytes of moduleBytes) {
+      const started = performance.now();
+      const module = new WebAssembly.Module(bytes);
+      const compiled = performance.now();
+      new WebAssembly.Instance(module, {
+        [contract.hooks]: hooks,
+        [contract.env]: {
+          [contract.memory]: memory,
+          [contract.state]: state,
+          [contract.loadAddress]: constant(BigInt(load), "i64"),
+          [contract.slotBase]: constant(Number(BigInt.asIntN(32, (BigInt(load) - tableBase) / 4n)), "i32"),
+          [contract.tableBase]: constant(tableBase, "i64"),
+          [contract.threadBlock]: constant(BLOCK_AT, "i32"),
+          [contract.permissions]: constant(PERMISSIONS_AT, "i32"),
+          [contract.permissionPages]: constant(BigInt(permissionPages), "i64"),
+        },
+        [contract.thread]: thread.exports,
+      });
+      compiling += compiled - started;
+      instantiating += performance.now() - compiled;
+    }
+    return { compiling, instantiating };
+  }
 
   // Instruction cases, one after another in the same memory and instances: each is `codeBytes` of code put
   // at the blob's place and translated there, the thread state, then the bytes of each of `areas`.

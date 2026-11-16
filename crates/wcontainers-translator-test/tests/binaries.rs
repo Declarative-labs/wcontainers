@@ -100,9 +100,33 @@ fn measure_binaries() {
             validate(&module.wasm);
         }
         let load = 0x10_0000;
+        let wasm: Vec<&[u8]> = translation.modules.iter().map(|m| &m.wasm[..]).collect();
+        for (what, flags) in [
+            ("compiled at first call", ""),
+            ("compiled at once", "--no-wasm-lazy-compilation"),
+        ] {
+            match wcontainers_translator_test::browser::load_modules(
+                &binary.name,
+                &binary.image,
+                load,
+                binary.code.clone(),
+                &wasm,
+                flags,
+            ) {
+                Ok((compiling, instantiating)) => println!(
+                    "{}: Chrome, {what}, made its modules in {:.2} s and their instances in {:.3} s",
+                    binary.name,
+                    compiling / 1e3,
+                    instantiating / 1e3
+                ),
+                Err(error) => println!("{}: Chrome, {what}, refused: {error}", binary.name),
+            }
+        }
         let memory = (load + binary.image.len() as u64).next_multiple_of(1 << 16);
-        let slots = (binary.code.end / 4) as u32;
-        let mut machine = Machine::new(memory, load, slots, Syscalls::StandIn);
+        // The lookup table covers the code alone.
+        let slots = ((binary.code.end - binary.code.start) / 4) as u32;
+        let table_base = load + binary.code.start;
+        let mut machine = Machine::new(memory, table_base, slots, Syscalls::StandIn);
         let (compiled, instantiated, machine_code) =
             machine.load_translation(&binary.image, binary.code.clone(), load, translation);
         println!(

@@ -86,6 +86,8 @@ const ENGINE_MODULE_BYTES: usize = 1 << 30;
 const ENGINE_FUNCTIONS: usize = 1_000_000;
 const ENGINE_BODY_BYTES: usize = 7_654_321;
 const ENGINE_LOCALS: usize = 50_000;
+/// Engine limit (V8's and wasmtime's): the targets of one `br_table`.
+pub(crate) const BR_TABLE_TARGETS: u64 = 65_520;
 
 /// Tuning number: the bytes of code a module may hold before the translation is split, the engine's limit
 /// less room for the rest of the module.

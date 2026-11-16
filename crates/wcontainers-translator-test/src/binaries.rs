@@ -18,14 +18,20 @@ pub struct Source {
     path: &'static str,
 }
 
-/// The binaries M5 measures: busybox, the C library, ripgrep, git and Node from Alpine, and runtimes of other
-/// kinds: Python (its library holds the interpreter), Bun, a Java runtime and a Go program (Go's own tool).
+/// The binaries M5 measures: busybox, the C library, ripgrep and git from Alpine, Node from its own image on
+/// Alpine (with its libraries built in, the largest), and runtimes of other kinds: Python (its library holds
+/// the interpreter), Bun, a Java runtime and a Go program (Go's own tool).
 pub const SOURCES: [Source; 9] = [
     Source::alpine("busybox", "", "/bin/busybox"),
     Source::alpine("musl", "", "/lib/ld-musl-aarch64.so.1"),
     Source::alpine("rg", "ripgrep", "/usr/bin/rg"),
     Source::alpine("git", "git", "/usr/bin/git"),
-    Source::alpine("node", "nodejs", "/usr/bin/node"),
+    Source {
+        name: "node",
+        image: "node:24-alpine3.22",
+        packages: "",
+        path: "/usr/local/bin/node",
+    },
     Source {
         name: "python",
         image: "python:3.13-alpine3.22",
