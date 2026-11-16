@@ -181,6 +181,9 @@ impl Kernel {
     /// turn, until nothing is left; then notes the time and reports what was counted.
     pub(crate) fn settle(&mut self, cx: &mut Context<'_>) {
         loop {
+            if !self.files.terminals.is_empty() {
+                syscall::tty::released(self, cx);
+            }
             if let Some(tid) = self.woken.pop_front() {
                 let Some(thread) = self.threads.get(&tid) else {
                     continue;
@@ -206,11 +209,11 @@ impl Kernel {
                 if thread.call.wait.is_some() || stopped || self.woken.contains(&tid) {
                     continue;
                 }
+                // A thread waiting its turn, the current one, or one of a process just continued
+                // after a stop acts on its signals and goes back in line.
                 let resume = thread.resume;
-                let queued = self.take_out_of_line(tid);
-                if queued || self.current == Some(tid) {
-                    self.return_to_user(cx, tid, resume);
-                }
+                self.take_out_of_line(tid);
+                self.return_to_user(cx, tid, resume);
                 continue;
             }
             break;
@@ -385,6 +388,7 @@ impl Kernel {
         if !self.memory_in_use_elsewhere(pid, memory) {
             cx.cpu.memory_drop(memory);
         }
+        syscall::tty::disassociate(self, cx, pid, true);
         crate::shared::release(self, cx);
         self.files_released();
         if self.init == Some(pid) {

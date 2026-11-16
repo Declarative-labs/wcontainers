@@ -18,6 +18,7 @@ mod seccomp;
 mod signals;
 mod system;
 mod time;
+pub(crate) mod tty;
 mod xattr;
 
 use wcontainers_abi::Syscall;

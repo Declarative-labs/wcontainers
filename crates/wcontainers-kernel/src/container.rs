@@ -401,6 +401,7 @@ impl Kernel {
             vdso: 0,
             execed: false,
             terminal: None,
+            terminal_old_group: None,
             actions: [kernel_sigaction {
                 sa_handler_kernel: crate::linux_extra::SIG_DFL,
                 sa_flags: 0,

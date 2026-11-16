@@ -113,8 +113,11 @@ pub(crate) struct Process {
     pub vdso: u64,
     /// Whether it has started a program since it was made (`setpgid` from its parent is refused).
     pub execed: bool,
-    /// The session's controlling terminal, if the process has one.
-    pub terminal: Option<crate::fs::Node>,
+    /// The session's controlling terminal, if the process has one: a pair whose slave it is.
+    pub terminal: Option<Rc<core::cell::RefCell<crate::tty::Pty>>>,
+    /// For a session leader whose terminal was hung up, the foreground group it had
+    /// (`tty_old_pgrp`), which is sent SIGHUP when the leader ends.
+    pub terminal_old_group: Option<Pid>,
 }
 
 /// A change in a child's state that `wait` with `WUNTRACED` or `WCONTINUED` reports once.

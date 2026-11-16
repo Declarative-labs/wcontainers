@@ -487,6 +487,7 @@ pub(super) fn open(
     if (flags & O_DIRECTORY != 0 || parent.trailing_slash) && file_type != S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
+    let mut terminal = None;
     if flags & O_PATH == 0 {
         if file_type == S_IFDIR && (accmode != O_RDONLY || flags & O_TRUNC != 0) {
             return Err(Errno::EISDIR);
@@ -528,14 +529,8 @@ pub(super) fn open(
             S_IFCHR | S_IFBLK => {
                 let rdev = node.borrow().rdev;
                 match Device::from_number(rdev) {
-                    Some(Device::Tty) => return Err(Errno::ENXIO),
-                    Some(Device::Ptmx) => {
-                        return Err(kernel.counters.refuse(
-                            cx.host,
-                            reason::DEVICE_NOT_BUILT,
-                            rdev,
-                            Errno::ENODEV,
-                        ));
+                    Some(device @ (Device::Tty | Device::Ptmx | Device::Pts)) => {
+                        terminal = Some(device);
                     }
                     Some(_) => {}
                     None => return Err(Errno::ENXIO),
@@ -595,6 +590,9 @@ pub(super) fn open(
         credentials(kernel, tid).serial,
     );
     file.borrow_mut().created = created;
+    if let Some(device) = terminal {
+        super::tty::open(kernel, cx, tid, &file, device, flags)?;
+    }
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .process_of_mut(tid)

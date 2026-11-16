@@ -29,6 +29,7 @@ mod shared;
 mod signal;
 mod syscall;
 mod task;
+mod tty;
 mod user;
 mod vdso;
 
@@ -80,6 +81,8 @@ pub(crate) struct Files {
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
     /// Every tmpfs's count of what it holds, for the machine's memory in use.
     pub spaces: Vec<Rc<fs::Space>>,
+    /// Pseudo-terminal pairs by number, until both sides have closed.
+    pub terminals: BTreeMap<u32, Rc<core::cell::RefCell<tty::Pty>>>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -179,6 +182,7 @@ impl Kernel {
                 generation_key: [0; 16],
                 proc_kept: BTreeMap::new(),
                 spaces,
+                terminals: BTreeMap::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",

@@ -27,6 +27,15 @@ pub(crate) struct OpenFile {
     pub owner: Option<Owner>,
     /// The open that made it also made the file (Linux's `FMODE_CREATED`).
     pub created: bool,
+    /// For a terminal, the side it opened.
+    pub terminal: Option<TerminalEnd>,
+}
+
+/// The terminal side an open file reads and writes, and whether a hangup cut the file off.
+pub(crate) struct TerminalEnd {
+    pub pty: Rc<RefCell<crate::tty::Pty>>,
+    pub side: usize,
+    pub hung_up: bool,
 }
 
 /// Linux's `fown_struct`: a process number of a kind (none is 0) and the signal (0 is `SIGIO`).
@@ -60,6 +69,7 @@ impl OpenFile {
             opener,
             owner: None,
             created: false,
+            terminal: None,
         }))
     }
 

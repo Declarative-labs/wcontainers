@@ -14,6 +14,8 @@ pub(crate) enum Device {
     Tty,
     /// The pseudo-terminal multiplexer.
     Ptmx,
+    /// A pseudo-terminal slave.
+    Pts,
 }
 
 /// The devices a default Docker container has in `/dev`: name, major and minor, in the order runc
@@ -37,6 +39,7 @@ impl Device {
             (1, 9) => Device::Urandom,
             (5, 0) => Device::Tty,
             (5, 2) => Device::Ptmx,
+            (crate::linux_extra::UNIX98_PTY_SLAVE_MAJOR, _) => Device::Pts,
             _ => return None,
         })
     }

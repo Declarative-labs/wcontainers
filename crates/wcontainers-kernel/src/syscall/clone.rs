@@ -165,6 +165,7 @@ fn make_child(
     process.child_subreaper = false;
     process.started = kernel.entry_now;
     process.execed = false;
+    process.terminal_old_group = None;
     if flags & CLONE_PARENT != 0 {
         process.parent = parent.parent;
         process.exit_signal = parent.exit_signal;

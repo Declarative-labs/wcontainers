@@ -273,3 +273,29 @@ pub(crate) const ERESTART_RESTARTBLOCK: u32 = 516;
 /// `AT_MINSIGSTKSZ` on the reference's CPU: arm64's `signal_minsigstksz`, the frame's size with the
 /// records that CPU has, which the made-up machine reports too (measured: 4720).
 pub(crate) const SIGNAL_MINSIGSTKSZ: u64 = 4720;
+
+// Terminal values from Linux's internal headers (`linux/tty.h`, `linux/major.h`,
+// `asm-generic/termios.h`, `drivers/tty`), which are not uapi.
+
+/// The line discipline number of `n_tty`, the only one built (`N_TTY`).
+pub(crate) const N_TTY: u32 = 0;
+/// The device major of pseudo-terminal slaves (`UNIX98_PTY_SLAVE_MAJOR`).
+pub(crate) const UNIX98_PTY_SLAVE_MAJOR: u32 = 136;
+/// The size of a line discipline's read and echo buffers (`N_TTY_BUF_SIZE`).
+pub(crate) const N_TTY_BUF_SIZE: usize = 4096;
+/// The bytes a pseudo-terminal's other side may have waiting for the line discipline
+/// (`tty_buffer_set_limit` in `pty_common_install`).
+pub(crate) const PTY_BUFFER_LIMIT: usize = 8192;
+/// The control characters a new terminal starts with (`INIT_C_CC`), by `V*` index.
+pub(crate) const INIT_C_CC: [u8; 19] = [
+    0o3, 0o34, 0o177, 0o25, 0o4, 0, 1, 0, 0o21, 0o23, 0o32, 0, 0o22, 0o17, 0o27, 0o26, 0, 0, 0,
+];
+/// How many pseudo-terminals a container's devpts may make: `kernel.pty.max` less
+/// `kernel.pty.reserve`, since Docker's devpts is a new instance (`devpts_new_index`).
+pub(crate) const PTY_LIMIT: u32 = 4096 - 1024;
+/// The baud rates of the `B*` speed codes, by index (`baud_table` in `tty_baudrate.c`).
+pub(crate) const BAUD_TABLE: [u32; 31] = [
+    0, 50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800, 2400, 4800, 9600, 19200, 38400, 57600,
+    115200, 230400, 460800, 500000, 576000, 921600, 1000000, 1152000, 1500000, 2000000, 2500000,
+    3000000, 3500000, 4000000,
+];

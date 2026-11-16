@@ -994,14 +994,26 @@ fn process_file(
             };
             let (ignored, caught) = ignored_and_caught(process);
             let blocked = source.view.threads[&process.threads[0]].signal_mask;
+            // The controlling terminal's device number as `new_encode_dev` packs it, and its
+            // foreground group.
+            let (terminal, foreground) = process.terminal.as_ref().map_or((0, -1), |pty| {
+                let pty = pty.borrow();
+                let index = pty.index;
+                let number = (index & 0xff)
+                    | (crate::linux_extra::UNIX98_PTY_SLAVE_MAJOR << 8)
+                    | ((index & !0xff) << 12);
+                (number, pty.sides[crate::tty::SLAVE].pgrp.unwrap_or(0))
+            });
             let _ = writeln!(
                 out,
-                "{} ({}) R {} {} {} 0 -1 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
+                "{} ({}) R {} {} {} {} {} 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 0 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 0",
                 process.pid,
                 name,
                 process.parent,
                 process.group,
                 process.session,
+                terminal,
+                foreground,
                 priority,
                 schedule.nice,
                 process.threads.len(),

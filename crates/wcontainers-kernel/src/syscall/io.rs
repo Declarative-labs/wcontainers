@@ -429,7 +429,12 @@ fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let sequence = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
-    if matches!(inode.content, Content::Pipe(_)) || inode.is_secret() || (writing && sequence) {
+    // Terminals are opened unseekable (`nonseekable_open`).
+    if matches!(inode.content, Content::Pipe(_))
+        || inode.is_secret()
+        || (writing && sequence)
+        || file.terminal.is_some()
+    {
         return Err(Errno::ESPIPE);
     }
     Ok(())
@@ -648,6 +653,12 @@ fn vectored(
     if total == 0 {
         return Ok(0);
     }
+    if super::tty::end(file).is_some() {
+        return match writing {
+            Some(_) => super::tty::write(kernel, cx, tid, file, parts),
+            None => super::tty::read(kernel, cx, tid, file, parts),
+        };
+    }
     // A pipe takes or gives the whole vector in one go (`pipe_read`, `pipe_write`).
     if super::pipe::is_pipe(file) {
         return match writing {
@@ -787,6 +798,9 @@ pub(super) fn read_at(
     count: u64,
     at: Option<u64>,
 ) -> Result<u64, Errno> {
+    if super::tty::end(file).is_some() {
+        return super::tty::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     if super::pipe::is_pipe(file) {
         return super::pipe::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
@@ -872,6 +886,9 @@ pub(super) fn write_at(
     append: bool,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
+    if super::tty::end(file).is_some() {
+        return super::tty::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     if super::pipe::is_pipe(file) {
         return super::pipe::write(kernel, cx, tid, file, &[(buffer, count)]);
     }
@@ -1241,7 +1258,7 @@ pub(super) fn lseek(
     if whence > SEEK_MAX {
         return Err(Errno::EINVAL);
     }
-    if file.node.borrow().is_secret() {
+    if file.node.borrow().is_secret() || file.terminal.is_some() {
         return Err(Errno::ESPIPE);
     }
     let current = || {
@@ -2104,6 +2121,9 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 /// or what the file's own says. The host's pipes always have room.
 fn poll_mask(_kernel: &Kernel, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
+    if super::tty::end(file).is_some() {
+        return super::tty::poll(file);
+    }
     let file = file.borrow();
     if file.is_path() {
         return POLLNVAL as u16;

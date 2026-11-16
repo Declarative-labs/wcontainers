@@ -235,7 +235,7 @@ pub(super) fn set_async(file: &FileRef, on: bool) -> Option<()> {
             _ => false,
         }
     };
-    if !has_fasync {
+    if !has_fasync && !super::tty::can_async(file) {
         return None;
     }
     let mut file = file.borrow_mut();
@@ -358,6 +358,9 @@ fn own(
     request: u32,
     argument: u64,
 ) -> Result<u64, Errno> {
+    if super::tty::end(file).is_some() {
+        return super::tty::ioctl(kernel, cx, tid, file, request, argument);
+    }
     let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();
