@@ -4,17 +4,18 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M3 (every instruction) is built, second run done; waiting for the long runs to the pass bars and an
+M3 (every instruction) is built, third run done; waiting for the long runs to the pass bars and an
 independent check. Every one of the 1215 forms of the CPU we present translates and matches the CPU in
 layer 1 (1215 x 1000 cases, seed 5: no mismatch), the decoding test shows no offered form left untranslated,
 `programs/differences.c` (section 8, printed as bits) matches Linux at every level, at none and full, in
 wasmtime and Chrome, and also on a host made to need the software fused multiply-add and the not-a-number
 fix-up, and layer 3 runs (Csmith and hand-picked programs, clang and gcc, six levels, fixed position code and
-position independent code loaded away from where it is linked). The second run took floating point's slow
-path out of the hot function (floats at full: 4.41 to 2.43 times native), loaded position independent blobs
-at another address, measured vector registers in locals, and added Chrome samples to layers 1 and 3. Layers
-1 and 3 each have a one command long run with its Chrome sample under "How to run"; neither has reached the
-plan's pass bar yet (layer 2 has no Chrome sample; it is not M3's). See "M3, second run" and "M3, first run" below.
+position independent code loaded away from where it is linked). The third run made layer 3's long run one
+command that runs cases side by side (`WC_LAYER3_JOBS`; 2000 programs in 14 minutes with 12 at once), and
+made instructions of features we do not offer count and warn as "unsupported instruction reached" while still
+raising illegal instruction. Layers 1 and 3 each have a one command long run with its Chrome sample under "How
+to run"; neither has reached the plan's pass bar yet (layer 2 has no Chrome sample; it is not M3's). See "M3,
+third run", "M3, second run" and "M3, first run" below.
 
 M0 (skeleton) and M1 (hello world at look-ahead none, in wasmtime and Chrome) are built, tested and
 pushed. M2 (full look-ahead) is built and tested: every part of the plan's list is in, hello and the
@@ -40,6 +41,33 @@ below). S1 waits for its next independent check. The third run's work is under "
 calls) under "S1, sixth run", the seventh's (the switch's case, and the floor of a call under the plan's
 rules) under "S1, seventh run", the eighth's (bounded indices proven, such as a switch's table) under "S1,
 eighth run", and what is left under "S1, what remains after the eighth run".
+
+## M3, third run
+
+- Layer 3's long run is one command that runs `WC_LAYER3_JOBS` cases at once (default 1), each case still
+  picked and replayed by its number alone; a line every thousand cases shows progress. Measured: 2000 Csmith
+  programs, seed 11, 12 at once, in 852 s (0.43 s a program; load 15 to 70, the full test suite ran beside it
+  for part of the time), against 3.8 s a program one at a time in the first run. At that rate 100,000 take
+  about 12 hours. Most of a program's time is Docker (gcc and the reference each start a container) and the
+  20 seconds Linux is given before a program that does not end is dropped (12% of programs).
+- When Linux ends a layer 3 program by a signal, the report now says what three more runs on Linux gave, so a
+  fault of the reference can be told from one of the program. The case still fails.
+- Instructions of features we do not offer now decode as `Unsupported`, not `Undefined`: both raise illegal
+  instruction at the instruction, but these are counted and warned as "unsupported instruction reached"
+  (the project's rule for anything unsupported). Two kinds: words of a form in Arm's list whose condition
+  holds on a CPU with every feature but not on ours (`forms::of_feature_not_offered`: the encryption
+  extensions, scalable vectors, pointer signing loads and branches, FlagM, MTE and so on), and encodings inside
+  a form we present that Arm's decode makes undefined without a feature (64 bit PMULL, half precision fixed
+  point conversions, the SSBS, DIT, TCO, RNDR, RNDRRS and CNTVCTSS registers, MSR to SSBS, DIT, SVCR and TCO,
+  and the MTE and persistence cache operations). The second kind is one list in layer 1
+  (`layer1::of_feature_not_offered`), which layer 1 leaves out of the comparison (the reference CPU has
+  most of these features) and which `every_offered_form_is_translated` checks the decoder against both ways.
+  Words in no form at all stay undefined and uncounted, as on any CPU. New tests:
+  `features_not_offered_are_unsupported` (AES, SHA, PMULL, SVE and the second kind),
+  `words_of_forms_not_offered_are_undefined_or_unsupported`, and `smoke`'s
+  `instructions_not_offered_are_illegal_and_counted` (end to end: illegal instruction at the word, registers
+  kept, counted once; a word in no form not counted). Layer 1 on the 13 forms concerned, 1000 cases each,
+  seed 8: 0 mismatches.
 
 ## M3, second run
 
@@ -1051,11 +1079,12 @@ contract's bits, in both runners).
 - Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
-- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "^wcontainers warning"`
-  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and full; the
-  hand-picked programs are 48 builds each run). Needs Docker, Chrome, and network once to
-  make the gcc image. At the first run's rate (300 programs in 18.8 minutes) 100,000 take about 4.4 days in
-  one process; several seeds can run side by side.
+- Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 WC_LAYER3_JOBS=12 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "wcontainers warning"`
+  (defaults 4 Csmith programs, seed 1, the first 1 that ends in time also in Chrome at none and full, one at
+  a time; the hand-picked programs are 48 builds each run). Needs Docker, Chrome, and network once to make
+  the gcc image. At the third run's rate (2000 programs in 14 minutes, 12 at once) 100,000 take about 12
+  hours. Replay one program: the same seed with `WC_LAYER3_FROM=<case>` and `WC_LAYER3_CASES=1` (a failure
+  prints its case and its Csmith number, `seed * 1000003 + case`).
 - Floating point timing: `nix develop -c cargo test --release -p wcontainers-translator-test --test programs floats_speed -- --ignored --nocapture`.
 - Every form valid WebAssembly: `WC_VALID_WORDS=<n> nix develop -c cargo test -p wcontainers-translator --test valid`.
 - Layer 1, long: `WC_LAYER1_CASES=10000 WC_LAYER1_CHROME=100 WC_LAYER1_SEED=<n> nix develop -c cargo test --release -p wcontainers-translator-test --test layer1 -- --nocapture 2>&1 | grep -v "wcontainers warning"`

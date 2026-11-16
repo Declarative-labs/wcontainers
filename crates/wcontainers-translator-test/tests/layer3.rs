@@ -4,9 +4,9 @@
 //!
 //! `WC_LAYER3_CASES` Csmith programs (default 4), seeded from `WC_LAYER3_SEED` (default 1): case `i` is
 //! Csmith seed `seed * 1_000_003 + i`, with the compiler, level and position picked from the same number,
-//! so a failure replays from the two values. The first `WC_LAYER3_CHROME` of them that end in time (default
-//! one) also run in Chrome, at none and full. `WC_LAYER3_JOBS` cases run at once (default one). A line
-//! every thousand cases shows progress.
+//! so a failure replays from the two values: `WC_LAYER3_FROM=i` (default 0) starts at case `i`. The first
+//! `WC_LAYER3_CHROME` of them that end in time (default one) also run in Chrome, at none and full.
+//! `WC_LAYER3_JOBS` cases run at once (default one). A line every thousand cases shows progress.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -100,6 +100,7 @@ fn csmith_blob(number: u64) -> Blob {
 fn csmith_programs_match_linux() {
     let cases = setting("WC_LAYER3_CASES", 4);
     let seed = setting("WC_LAYER3_SEED", 1);
+    let from = setting("WC_LAYER3_FROM", 0);
     let chrome = setting("WC_LAYER3_CHROME", 1);
     let jobs = setting("WC_LAYER3_JOBS", 1).max(1);
     let (next, in_chrome) = (AtomicU64::new(0), AtomicU64::new(0));
@@ -111,7 +112,7 @@ fn csmith_programs_match_linux() {
             if i >= cases {
                 return;
             }
-            let number = seed.wrapping_mul(1_000_003).wrapping_add(i);
+            let number = seed.wrapping_mul(1_000_003).wrapping_add(from + i);
             let blob = csmith_blob(number);
             let checked = compare(&blob).and_then(|theirs| match theirs {
                 Some(theirs) if in_chrome.fetch_add(1, Ordering::Relaxed) < chrome => {
@@ -123,7 +124,7 @@ fn csmith_programs_match_linux() {
                 Ok(Some(_)) => ran.fetch_add(1, Ordering::Relaxed),
                 Ok(None) => too_long.fetch_add(1, Ordering::Relaxed),
                 Err(report) => {
-                    eprintln!("csmith {number}: {report}");
+                    eprintln!("csmith {number} (case {}): {report}", from + i);
                     failures.lock().unwrap().push(number);
                     0
                 }
@@ -143,7 +144,7 @@ fn csmith_programs_match_linux() {
     let mut failures = failures.into_inner().unwrap();
     failures.sort();
     eprintln!(
-        "layer 3: {cases} Csmith programs, seed {seed}, {jobs} at once: {} compared ({} also in Chrome), {} did not end in time on Linux, {} failing: {failures:?}",
+        "layer 3: {cases} Csmith programs from case {from}, seed {seed}, {jobs} at once: {} compared ({} also in Chrome), {} did not end in time on Linux, {} failing: {failures:?}",
         ran.into_inner(),
         in_chrome.into_inner().min(chrome),
         too_long.into_inner(),
