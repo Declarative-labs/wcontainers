@@ -4,8 +4,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M5 (real code at scale): partly built in two runs (under "M5, second run" and "M5, first run"; what is left is
-under "M5, what comes next" in the second run's section). M0 to M4 and S1 are built; their work is recorded
+M5 (real code at scale): built in three runs (under "M5, third run", "M5, second run" and "M5, first run");
+what is left is under "M5, third run, what comes next". M0 to M4 and S1 are built; their work is recorded
 below, newest first. The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million
 programs, layer 3 at 100,000) are run once by the orchestrator at the end of the translator track; commands
 under "How to run".
@@ -86,10 +86,63 @@ Static counters: each code module now carries how many places in its code may ta
   instruction reached 40 / 39.
 - (The size setting has fewer places because a function has no loop pieces, which repeat their loop's code.)
 
+Each binary in each setting with both engines, on the final code of this run (`measure_binaries`, release,
+`RAYON_NUM_THREADS=6`, one run, load 24 to 36). Bytes of WebAssembly; translation time; wasmtime's compile time
+and bytes of machine code; Chrome's time to make the modules compiled at first call / at once, and how much
+the resident memory of Chrome's processes grew from before the worker started to after the modules and their
+instances were made, at first call / at once. The difference of the two is Chrome's memory for the code its
+baseline compiler made (noise about 100 MB: git's first-call figure came out at -88 MB). Instances took at most
+11 ms everywhere.
+- busybox: speed 33,789,527, 0.25 s, wasmtime 2.28 s to 50.7 MB, Chrome 0.01 / 0.06 s, 62 / 352 MB; size
+  14,295,760, 0.13 s, 1.14 s to 27.2 MB, 0.00 / 0.03 s, 41 / 206 MB.
+- musl: speed 15,102,460, 0.10 s, 1.02 s to 22.5 MB, 0.00 / 0.03 s, 40 / 205 MB; size 7,313,689, 0.06 s, 0.62
+  s to 13.4 MB, 0.00 / 0.02 s, 32 / 143 MB.
+- rg: speed 143,403,426, 0.97 s, 13.41 s to 187.5 MB, 0.03 / 0.22 s, 182 / 1,375 MB; size 44,311,195, 0.37 s,
+  4.62 s to 72.1 MB, 0.01 / 0.10 s, 84 / 655 MB.
+- git: speed 112,629,083, 0.77 s, 8.16 s to 167.1 MB, 0.03 / 0.18 s, -88 / 1,030 MB; size 46,661,991, 0.41 s,
+  3.90 s to 86.7 MB, 0.01 / 0.10 s, 90 / 561 MB.
+- python: speed 142,820,698, 0.95 s, 10.77 s to 209.3 MB, 0.03 / 0.23 s, 190 / 1,374 MB; size 60,678,646, 0.55
+  s, 4.85 s to 112.0 MB, 0.02 / 0.13 s, 107 / 830 MB.
+- java: speed 562,179,318, 3.52 s, 44.13 s to 863.4 MB, 0.11 / 0.96 s, 679 / 4,789 MB; size 247,101,181, 2.34
+  s, 18.91 s to 516.8 MB, 0.06 / 0.46 s, 363 / 2,538 MB.
+- go: speed 358,903,616, 1.52 s, 24.26 s to 543.5 MB, 0.07 / 0.49 s, 437 / 3,009 MB; size 155,086,202, 1.00 s,
+  13.08 s to 313.7 MB, 0.03 / 0.28 s, 233 / 1,654 MB.
+- node (load 33 to 43): speed 2,605,496,053 in 3 modules, 18.79 s, wasmtime 194.03 s to 3,795.4 MB (beside
+  Chrome; 89.6 s in the first run), Chrome 0.73 s at first call (3,028 MB, mostly the module bytes it keeps);
+  compiled at once Chrome's page crashed again. Size 941,973,129 in 1 module (23.5 a byte of code), 9.27 s,
+  wasmtime 74.00 s to 1,886.0 MB, Chrome 0.26 / 2.83 s, 387 / 5,498 MB. Static counters, speed / size: left to
+  an address 1,885,890 / 1,047,843; jump through a register not recognised 8,143 / 6,025; unsupported
+  instruction reached 102 / 99; stopped by the flag 484,150 / 240,461; memory fault 5,036,524 / 2,393,326; loop
+  not proven 25,426 / 22,657; engine stack nearly full 185,164 / 98,982.
+- bun (load 34 to 43): speed 3,918,787,999 in 4 modules (75.3 a byte of code), 72.74 s (still slow: see next),
+  wasmtime 373.90 s to 5,507.2 MB (beside Chrome), Chrome 1.11 s at first call (4,312 MB); compiled at once its
+  page crashed. Size 1,115,588,488 in 2 modules (21.4 a byte), 52.08 s, wasmtime 102.08 s to 2,095.0 MB, Chrome
+  0.31 / 4.61 s, 1,498 / 3,871 MB. Static counters, speed / size: left to an address 3,455,257 / 1,268,611; jump
+  through a register not recognised 8,913 / 6,346; unsupported instruction reached 54 / 52; stopped by the flag
+  629,509 / 308,535; memory fault 6,234,847 / 2,258,415; loop not proven 32,887 / 30,158; engine stack nearly
+  full 257,328 / 136,310.
+- So all nine load in both engines in both settings; Chrome compiling everything at once refuses (the page
+  crashes) only Node and Bun for speed, whose baseline code would be about 20 GB.
+- Chrome's eager timings do cover compiling every function: its memory grows with the module's size, 7 to 9
+  bytes for each byte of WebAssembly (V8's baseline code is about 5 to 6.5 times wasmtime's machine code),
+  within the synchronous `new WebAssembly.Module`. Compiled at first call, it holds only the module.
+- (wasmtime's compile times here are about twice the second run's: it compiled beside Chrome's runs and the
+  other half's tests; not re-taken alone.)
+
 What a call between two modules costs in Chrome: the Chrome runner can now split a translation (`splitBytes`
 in its setup, `browser::repeated_split`). `measure_calls_between_modules` (best of 3, the program run twice in
 its instances, load 17 to 20): speed 0.135 s in one module, 0.400 s a module a piece, 2.65 ns more a call;
 size 0.152 / 0.427 s, 2.75 ns. wasmtime in the same run: speed 2.41 ns, size 2.35 ns.
+
+M5, third run, what comes next (most important first; the milestone's parts are all built and recorded):
+1. Bun still translates slowly (72.74 s for speed, 52 s for size, against Node's 18.79 s for less code): not
+   profiled after the parallel work. Likely the rounds of cuts (a function of more than 2048 blocks makes
+   every function be explored again) and a split translation being emitted twice.
+2. Size: nothing free was found this run. Left to try: the meanings' own waste (copies between locals, a
+   register's set then get), measured in both settings on loops that run with their checks (sieve in the size
+   setting shows what the benchmark set in the speed setting hides).
+3. Size mode: a proven loop with loops inside it still has only its checked copy.
+4. Chrome's own timings of calls between modules and of memory are from one run each.
 
 ## M5, second run
 
@@ -1753,8 +1806,9 @@ contract's bits, in both runners).
   (names: busybox, musl, rg, git, node, python, bun, java, go; all when unset; each is taken from its Docker
   image into `target/binaries` once, which needs network). Node and Bun take minutes each and 15 to 20 GB of
   memory (wasmtime compiling several GB of WebAssembly); run them alone.
-- What a call between code modules costs (wasmtime): `nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks measure_calls -- --ignored --nocapture`
-  (`WC_CALLS`, default 100 million; `WC_BENCH_RUNS`).
+- What a call between code modules costs (wasmtime and Chrome): `nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks measure_calls -- --ignored --nocapture`
+  (`WC_CALLS`, default 100 million; `WC_BENCH_RUNS`; `WC_BENCH_CHROME=0` leaves Chrome out).
+- The translator uses every core; on this machine set `RAYON_NUM_THREADS=6` for measurements and long runs.
 - Size only, no engines: `WC_BINARIES_ENGINES=0` on the real binaries command; `WC_OPTIMISE=speed` or `size`
   for one setting (both by default); `WC_BINARIES_DUMP=<dir>` writes each module.
 - Benchmarks: `WC_BENCH_RUNS=3 nix develop -c cargo test --release -p wcontainers-translator-test --test benchmarks -- --ignored --nocapture 2>&1 | grep -v "^wcontainers warning"`
@@ -1978,7 +2032,7 @@ contract's bits, in both runners).
 
 ## Next
 
-1. M5's remaining work (see "M5, what comes next").
+1. M5's remaining work (see "M5, third run, what comes next").
 2. At the end of the translator track, the long runs to the pass bars, started by the orchestrator
    (commands under "How to run"; layer 3 expected to take about a day at 6 at once).
 
@@ -2030,6 +2084,13 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
+- M5, third run: section 11 asks first for what makes the output smaller at no cost in run speed. The slow
+  paths out of line (shared functions for the write back on paths that never come back) were built as that,
+  and measured free on the benchmark set in the speed setting, but they slow loops that run with their checks
+  (sieve in the size setting 0.83 to 1.3 s), so they are a size trade. Nothing found this run is free; the
+  speed setting's output is as before (less 0.4% from the depth check's shared save).
+- M5, third run: the translator uses every core (rayon). Tuning the number of threads is the host's
+  (`RAYON_NUM_THREADS`), not a setting of the translator. The measurements here ran with 6.
 - M5, second run: the compact lookup's array of slots is in the state memory, per process, written by the
   runner (later the kernel) from each code module's list of pieces; the table is per thread and grows; slot 0
   is always empty and slot 1 holds the exact path's piece (the plan says only "an array in memory from code
