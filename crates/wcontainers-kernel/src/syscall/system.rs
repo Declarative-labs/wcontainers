@@ -154,11 +154,12 @@ pub(super) fn getrandom(
 }
 
 pub(super) fn sched_yield(
-    _: &mut Kernel,
+    kernel: &mut Kernel,
     _: &mut Context<'_>,
-    _: Tid,
+    tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
+    kernel.yield_turn(tid);
     Ok(0)
 }
 

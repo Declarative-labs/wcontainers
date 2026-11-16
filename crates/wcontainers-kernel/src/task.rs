@@ -95,6 +95,39 @@ impl Kernel {
         self.run_queue.update_min(Some(vruntime));
     }
 
+    /// Linux's scheduler tick (`check_preempt_tick`), at every return from the CPU side whatever
+    /// brought the thread back: the current thread gives way once it has had its share while others
+    /// wait.
+    pub(crate) fn tick(&mut self, tid: Tid) {
+        if self.current != Some(tid) || self.run_queue.len() == 0 {
+            return;
+        }
+        let thread = &self.threads[&tid];
+        let weight = schedule::weight(&thread.schedule);
+        let ideal = schedule::slice(
+            weight,
+            self.run_queue.load + weight,
+            self.run_queue.len() + 1,
+        );
+        if thread.runtime - self.picked_runtime >= ideal {
+            self.resched = true;
+        }
+    }
+
+    /// `sched_yield`: the current thread goes behind every thread waiting for its turn, as the
+    /// reference's scheduler (EEVDF, which forfeits the caller's deadline) lets them run first.
+    pub(crate) fn yield_turn(&mut self, tid: Tid) {
+        if self.current != Some(tid) {
+            return;
+        }
+        let Some(last) = self.run_queue.rightmost() else {
+            return;
+        };
+        let thread = self.thread_mut(tid);
+        thread.vruntime = thread.vruntime.max(last);
+        self.resched = true;
+    }
+
     /// Deals with why a thread came back.
     pub(crate) fn came_back(
         &mut self,
@@ -105,20 +138,8 @@ impl Kernel {
         use wcontainers_abi::Exit;
         match exit {
             Exit::Syscall(call) => self.system_call(cx, tid, call, false),
-            Exit::Stop => {
-                // The slice timer, or a signal or event that needed the thread back.
-                let thread = &self.threads[&tid];
-                let weight = schedule::weight(&thread.schedule);
-                let ideal = schedule::slice(
-                    weight,
-                    self.run_queue.load + weight,
-                    self.run_queue.len() + 1,
-                );
-                if self.run_queue.len() > 0 && thread.runtime - self.picked_runtime >= ideal {
-                    self.resched = true;
-                }
-                self.return_to_user(cx, tid, Resume::Continue);
-            }
+            // The slice timer, or a signal or event that needed the thread back.
+            Exit::Stop => self.return_to_user(cx, tid, Resume::Continue),
             Exit::MemoryFault { address, access } => self.memory_fault(cx, tid, address, access),
             Exit::MemoryFaultWithoutRegisters => self.fatal_fault(cx, tid, SIGSEGV),
             Exit::AlignmentFault { address } => {

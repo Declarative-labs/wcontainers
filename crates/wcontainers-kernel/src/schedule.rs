@@ -93,6 +93,11 @@ impl RunQueue {
         self.queue.first().map(|entry| (entry.0, entry.2))
     }
 
+    /// The greatest virtual runtime queued.
+    pub fn rightmost(&self) -> Option<u64> {
+        self.queue.last().map(|entry| entry.0)
+    }
+
     pub fn len(&self) -> usize {
         self.queue.len()
     }

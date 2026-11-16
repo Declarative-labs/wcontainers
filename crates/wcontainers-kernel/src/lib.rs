@@ -233,6 +233,7 @@ impl Kernel {
             .expect("an exit was handed back with no thread running");
         let mut cx = Context { cpu, host };
         self.account(&mut cx, tid);
+        self.tick(tid);
         self.wake_due();
         self.came_back(&mut cx, tid, exit);
         self.settle(&mut cx);
