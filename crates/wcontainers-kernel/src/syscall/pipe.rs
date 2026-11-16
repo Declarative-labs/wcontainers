@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use wcontainers_abi::PAGE_SIZE;
+use wcontainers_abi::{PAGE_SIZE, Permissions};
 
 use super::{Args, guest};
 use crate::file::{FileRef, OpenFile};
@@ -115,6 +115,8 @@ pub(super) fn read(
         return Ok(0);
     }
     let node = file.borrow().node.clone();
+    // Empty pages a faulted write left are passed over.
+    with_pipe(file, |pipe| pipe.drop_empty());
     if with_pipe(file, |pipe| pipe.is_empty()) {
         let (writers, nonblocking) = (
             with_pipe(file, |pipe| pipe.writers()),
@@ -181,18 +183,28 @@ pub(super) fn write(
         let file = file.borrow();
         (file.flags & O_NONBLOCK != 0, file.flags & O_DIRECT != 0)
     };
-    // The bytes from `done` on, a page at most, as far as the buffer can be read.
+    // Up to `most` bytes from `done` on, across segments, as far as the buffer can be read; and
+    // whether a fault stopped it short.
     let next = |kernel: &mut Kernel, cx: &mut Context<'_>, done: u64, most: u64| {
+        let mut out = Vec::new();
         let mut skipped = 0;
+        let mut guest = guest(kernel, cx, tid);
         for &(base, length) in parts {
-            if done < skipped + length {
-                let at = base + (done - skipped);
-                let length = (skipped + length - done).min(most);
-                return guest(kernel, cx, tid).read(at, length);
+            let end = skipped + length;
+            if done + (out.len() as u64) < end && (out.len() as u64) < most {
+                let from = done + out.len() as u64 - skipped;
+                let wanted = (length - from).min(most - out.len() as u64);
+                let readable = guest.accessible(base + from, wanted, Permissions::READ);
+                if readable > 0 {
+                    out.extend(guest.read(base + from, readable).expect("readable bytes"));
+                }
+                if readable < wanted {
+                    return (out, true);
+                }
             }
-            skipped += length;
+            skipped = end;
         }
-        Ok(Vec::new())
+        (out, false)
     };
     let result = loop {
         if with_pipe(file, |pipe| pipe.readers()) == 0 {
@@ -210,38 +222,40 @@ pub(super) fn write(
             break Ok(());
         }
         if let Some(stream) = host {
-            // The host takes whole pages as they come; a page that cannot be read ends the write.
-            match next(kernel, cx, done, PAGE_SIZE) {
-                Ok(bytes) => {
-                    cx.host.output(stream, &bytes);
-                    done += bytes.len() as u64;
-                    continue;
-                }
-                Err(error) => break Err(error),
+            // The host takes whole pages as they come; a page that cannot be read in full ends the
+            // write and is dropped.
+            let (bytes, faulted) = next(kernel, cx, done, PAGE_SIZE);
+            if faulted {
+                break Err(Errno::EFAULT);
             }
+            cx.host.output(stream, &bytes);
+            done += bytes.len() as u64;
+            continue;
         }
+        // The part that is not whole pages joins the last page if it fits; a fault in it ends the
+        // write with nothing merged.
         if first_run && done == 0 {
             let merge = with_pipe(file, |pipe| pipe.mergeable(total as usize, packet)) as u64;
             if merge > 0 {
-                match next(kernel, cx, 0, merge) {
-                    Ok(bytes) if bytes.len() as u64 == merge => {
-                        with_pipe(file, |pipe| pipe.merge(&bytes));
-                        done = merge;
-                        continue;
-                    }
-                    _ => break Err(Errno::EFAULT),
+                let (bytes, faulted) = next(kernel, cx, 0, merge);
+                if faulted {
+                    break Err(Errno::EFAULT);
                 }
+                with_pipe(file, |pipe| pipe.merge(&bytes));
+                done = merge;
+                continue;
             }
         }
+        // A new page; one the buffer cannot fill takes its slot empty and ends the write.
         if !with_pipe(file, |pipe| pipe.is_full()) {
-            match next(kernel, cx, done, PAGE_SIZE) {
-                Ok(bytes) => {
-                    done += bytes.len() as u64;
-                    with_pipe(file, |pipe| pipe.push(bytes, packet));
-                    continue;
-                }
-                Err(error) => break Err(error),
+            let (bytes, faulted) = next(kernel, cx, done, PAGE_SIZE);
+            if faulted {
+                with_pipe(file, |pipe| pipe.push(Vec::new(), packet));
+                break Err(Errno::EFAULT);
             }
+            done += bytes.len() as u64;
+            with_pipe(file, |pipe| pipe.push(bytes, packet));
+            continue;
         }
         if nonblocking {
             break Err(Errno::EAGAIN);
