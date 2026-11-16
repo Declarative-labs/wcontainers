@@ -5,10 +5,10 @@
 use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{
-    Blob, LOAD, STACK_BYTES, native, reachable_memory, translated,
+    Blob, LOAD, STACK_BYTES, native, reachable_memory, translated, translated_omitting,
 };
 use wcontainers_translator_test::runner::Machine;
 
@@ -58,27 +58,36 @@ fn blob(name: &str, ops: Ops) -> Blob {
     }
 }
 
-/// Linux, none and full agree, and full ends with the registers and memory of none. Returns the machine that
-/// ran at full, for its counters.
-fn compare(blob: &Blob) -> Machine {
+/// Linux, none and full (translated for speed and for size) agree, and full ends with the registers and
+/// memory of none. Returns the machines that ran at full, for their counters.
+fn compare(blob: &Blob) -> [Machine; 2] {
     let theirs = native(blob);
     let (none, mut none_machine, none_registers) = translated(blob, LookAhead::None);
-    let (full, mut full_machine, full_registers) = translated(blob, LookAhead::Full);
-    eprintln!(
-        "{}: status {}, full counters {:?}",
-        blob.name,
-        theirs.status,
-        full_machine.counters()
-    );
     assert_eq!(none, theirs, "{}: none against Linux", blob.name);
-    assert_eq!(full, theirs, "{}: full against Linux", blob.name);
-    assert_eq!(full_registers, none_registers, "{}: registers", blob.name);
-    assert!(
-        reachable_memory(&mut full_machine, blob) == reachable_memory(&mut none_machine, blob),
-        "{}: memory",
-        blob.name
-    );
-    full_machine
+    let none_memory = reachable_memory(&mut none_machine, blob);
+    [Optimise::Speed, Optimise::Size].map(|optimise| {
+        let how = (LookAhead::Full, optimise);
+        let (full, mut full_machine, full_registers, _) =
+            translated_omitting(blob, how, Omit::default());
+        eprintln!(
+            "{} for {optimise:?}: status {}, full counters {:?}",
+            blob.name,
+            theirs.status,
+            full_machine.counters()
+        );
+        assert_eq!(
+            full, theirs,
+            "{} for {optimise:?}: full against Linux",
+            blob.name
+        );
+        assert_eq!(full_registers, none_registers, "{}: registers", blob.name);
+        assert!(
+            reachable_memory(&mut full_machine, blob) == none_memory,
+            "{} for {optimise:?}: memory",
+            blob.name
+        );
+        full_machine
+    })
 }
 
 /// Recursion with 4 KiB frames, each made by the function's first instruction; 300 deep runs off the 1 MiB
@@ -116,8 +125,10 @@ fn recursion(depth: u32) -> Blob {
 #[test]
 fn recursion_off_the_stack() {
     for depth in [100, 300] {
-        let left = compare(&recursion(depth)).count(Reason::LeftToAddress);
-        assert_eq!(left > 0, depth == 300, "left to an address {left} times");
+        for full in compare(&recursion(depth)) {
+            let left = full.count(Reason::LeftToAddress);
+            assert_eq!(left > 0, depth == 300, "left to an address {left} times");
+        }
     }
 }
 
@@ -144,7 +155,9 @@ fn group_entry() -> Blob {
 
 #[test]
 fn group_at_a_function_entry() {
-    assert!(compare(&group_entry()).count(Reason::LeftToAddress) > 0);
+    for full in compare(&group_entry()) {
+        assert!(full.count(Reason::LeftToAddress) > 0);
+    }
 }
 
 /// A function entered twice whose frame reaches below the stack but is used only in its mapped part, then
@@ -181,7 +194,9 @@ fn frame_below(fault: bool) -> Blob {
 #[test]
 fn frame_partly_below_the_stack() {
     for fault in [false, true] {
-        assert!(compare(&frame_below(fault)).count(Reason::LeftToAddress) > 0);
+        for full in compare(&frame_below(fault)) {
+            assert!(full.count(Reason::LeftToAddress) > 0);
+        }
     }
 }
 
@@ -403,8 +418,9 @@ fn loop_not_proven_is_counted() {
         );
         dump(&mut ops);
         ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
-        let full = compare(&blob(&format!("not-proven-{turns}"), ops));
-        assert_eq!(full.count(Reason::LoopNotProven), entries, "{turns} turns");
+        for full in compare(&blob(&format!("not-proven-{turns}"), ops)) {
+            assert_eq!(full.count(Reason::LoopNotProven), entries, "{turns} turns");
+        }
     }
 }
 
@@ -434,12 +450,13 @@ fn structure_loops_are_proven() {
             );
             dump(&mut ops);
             ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
-            let full = compare(&blob(&format!("structure-proven-{name}-{span}"), ops));
-            assert_eq!(
-                full.count(Reason::LoopNotProven),
-                entries,
-                "{name} over {span} bytes"
-            );
+            for full in compare(&blob(&format!("structure-proven-{name}-{span}"), ops)) {
+                assert_eq!(
+                    full.count(Reason::LoopNotProven),
+                    entries,
+                    "{name} over {span} bytes"
+                );
+            }
         }
     }
 }

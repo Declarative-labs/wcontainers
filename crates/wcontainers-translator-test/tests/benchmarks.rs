@@ -151,12 +151,15 @@ fn measure_benchmarks() {
         eprintln!("{name}: native {native_time:.3} s (load {})", load());
         for &(label, omit) in &variants {
             let mut best = f64::INFINITY;
+            let mut counters = Vec::new();
             for _ in 0..runs {
-                let (ran, _, _, time) =
+                let (ran, machine, _, time) =
                     translated_omitting(&blob, (LookAhead::Full, optimise()), omit);
                 assert_eq!(ran, expected, "{name} with {label}");
                 best = best.min(time.as_secs_f64());
+                counters = machine.counters();
             }
+            eprintln!("{name}: wasmtime, {label}: counters {counters:?}");
             eprintln!(
                 "{name}: wasmtime, {label}: {best:.3} s, {:.2} times native (load {})",
                 best / native_time,

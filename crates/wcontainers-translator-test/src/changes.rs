@@ -10,7 +10,7 @@
 //! memory there: between two comebacks a program that ends never returns to the same state, so the first
 //! stop of none in that state is the point.
 
-use crate::programs::{Blob, Ran, STACK_TOP, placement, ran, ready};
+use crate::programs::{Blob, Ran, STACK_TOP, placement, ran, ready, ready_for};
 use crate::runner::{Machine, Pause, Paused, Stopped};
 use proptest::prelude::RngExt;
 use proptest::test_runner::{RngAlgorithm, TestRng};
@@ -21,7 +21,7 @@ use std::ops::Range;
 use std::rc::Rc;
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions, RegisterBlock};
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// How a run with changes is made.
 #[derive(Clone, Copy, Debug)]
@@ -225,14 +225,19 @@ fn bytes(machine: &mut Machine, universe: &[Range<u64>]) -> Vec<u8> {
 }
 
 /// Run a blob at full making changes as `plan` says, then at none making the same changes at the same
-/// points, and compare how they went. Panics on any difference.
+/// points, and compare how they went. Panics on any difference. The run at full is translated for speed or
+/// for size as the plan's seed is even or odd.
 pub fn compare(blob: &Blob, plan: Plan) -> Compared {
     let universe = universe(blob);
     let runnable = runnable(blob);
     let made = Rc::new(RefCell::new(Vec::new()));
 
     let full_came_back = Rc::new(Cell::new(0));
-    let mut full = ready(blob, LookAhead::Full, Omit::default());
+    let optimise = match plan.seed % 2 {
+        0 => Optimise::Speed,
+        _ => Optimise::Size,
+    };
+    let mut full = ready_for(blob, LookAhead::Full, optimise, Omit::default());
     {
         let made = made.clone();
         let runnable = runnable.clone();

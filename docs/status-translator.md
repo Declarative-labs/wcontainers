@@ -12,40 +12,50 @@ under "How to run".
 
 ## M5, third run
 
-Size, free (section 11, step 1), each measured by itself (translation only, release, bytes of WebAssembly at
-full look-ahead; before / after; load 120 to 260 for the first two, which does not change sizes):
-- A write back on the way to the runner (before a hook and an unwind, or a system call) now stores the passed
-  registers and pc through a function each module holds once (`F_SAVE`, pc given as a blob offset). busybox
-  33,934,500 / 30,794,415 (-9.3%), musl 15,157,213 / 14,038,301 (-7.4%), rg 143,614,742 / 134,177,916
-  (-6.6%), git 112,987,851 / 101,607,621 (-10.1%), python 143,036,317 / 131,149,290 (-8.3%).
-- On the same paths, the flags word is worked out by a module function for each shape of kept flags (and one
-  for flags in locals), from the kept locals (`flags_word_functions`). From the line above: busybox 28,679,642
-  (-6.9%), musl 13,154,114 (-6.3%), rg 125,371,053 (-6.6%), git 95,563,100 (-5.9%), python 121,691,140
-  (-7.2%). The same work before a call, a jump to another piece or a return stays in place: it is on the hot
-  path (every call in fib writes the word back).
-- Both together, speed setting, all seven: busybox 28,694,762 (-15.4%), musl 13,170,890 (-13.1%), rg
-  125,441,692 (-12.7%), git 95,604,328 (-15.4%), python 121,766,190 (-14.9%), java 474,329,503 (-15.8%), go
-  299,837,599 (-16.6%); the benchmark set 312,018 / 272,853 (-12.6%). Slow paths went from 33.4% to 24.3% of
-  musl's instructions.
-- Run speed (benchmark set, best of 3, load 17 to 22, every check): wasmtime fib 2.379, sort 1.163, interpret
-  0.567, matrix 0.253, sieve 0.640, hash 0.577, walk 2.132, search 0.231; Chrome fib 2.321, sort 1.236,
-  interpret 0.597, matrix 0.201, sieve 0.530, walk 2.019, search 0.238. Within the earlier rounds' spread
-  in wasmtime; Chrome's fib and matrix are 6 to 15% above earlier best figures (2.007 to 2.179 and 0.168),
-  inside its noise on this machine but not re-run. Kept in both settings.
+Size, slow paths out of line. Built and measured as free first, then found not to be free, so it is a
+size trade (section 11), not a change for both settings:
+- What it is: a write back on a path the thread never comes back on (a memory fault, leaving to exact code,
+  an unsupported instruction) stores the passed registers and pc through a function each module holds once
+  (`F_SAVE`, pc as a blob offset), and works out the flags word through a module function for each shape of
+  kept flags and one for flags in locals (`flags_word_functions`). The same work before a call, a jump to
+  another piece, a return, a stop check or a system call is always in place. The depth check at a piece's
+  entry uses `F_SAVE` in both settings (busybox speed 33,934,500 / 33,789,527, -0.4%).
+- Size, measured each by itself in the speed setting (translation only; load 120 to 260, which does not
+  change sizes): `F_SAVE` busybox 33,934,500 / 30,794,415 (-9.3%), musl 15,157,213 / 14,038,301 (-7.4%), rg
+  143,614,742 / 134,177,916 (-6.6%), git 112,987,851 / 101,607,621 (-10.1%), python 143,036,317 / 131,149,290
+  (-8.3%); then the flags word functions busybox 28,679,642 (-6.9%), musl 13,154,114 (-6.3%), rg 125,371,053
+  (-6.6%), git 95,563,100 (-5.9%), python 121,691,140 (-7.2%). Slow paths went from 33.4% to 24.3% of musl's
+  instructions.
+- Cost: the benchmark set in the speed setting showed nothing (best of 3, load 17 to 22: wasmtime fib 2.379,
+  sort 1.163, interpret 0.567, matrix 0.253, sieve 0.640), because its hot loops there run their copies without
+  checks. In the size setting, where loops run with their checks, sieve went from 0.910 (the run's start
+  commit, same tree, load 14) to 1.25 to 1.41 (several runs, load 14 to 40); with these paths in place again
+  0.827, with only the flags word in place 1.025. Calls on a path that ends in `unreachable` still slow the
+  engine's code for the loop around them (the register allocator does not know the path is cold). Checked
+  loops exist in the speed setting too (loops not proven), so it is made only for size.
 - Tried and dropped: a register's `local.set` followed by its `local.get` made a `local.tee`: 0.3% (busybox
   24,543,043 / 24,463,163), not worth the state it needs.
 
-Size mode, trade 3: the exact permission test (run only when the fast one fails) is a call to a module
-function (`F_PERMISSION`) instead of in place. Size, from the size setting with the free changes: busybox
+Size mode, the exact permission test (run only when the fast one fails) is a call to a module function
+(`F_PERMISSION`) instead of in place. Size, from the size setting with the slow paths out of line: busybox
 15,986,588 / 13,626,082 (-14.8%), musl 7,445,171 / 6,678,359 (-10.3%), rg 46,019,767 / 40,599,353 (-11.8%),
 git 52,999,449 / 44,966,585 (-15.2%), python 68,029,417 / 57,266,627 (-15.8%), java 284,163,910 / 238,563,513
-(-16.0%), go 184,241,116 / 149,926,790 (-18.6%) (load 12 to 22). That makes busybox 19.3 bytes of WebAssembly a
-byte of code, java 18.1, go 25.6. Its cost was measured in the speed setting, alternating (best of 3, load 17
-to 25, in place / called): wasmtime fib 2.379 / 2.876, sort 1.163 / 1.292, interpret 0.567 / 0.647, matrix
-0.253 / 0.352 (1.39 times); Chrome interpret 0.597 / 0.807 (1.35 times), sort 1.236 / 1.432, matrix 0.201 /
-0.184, fib 2.321 / 2.209. The call returns into the piece, so the engine must keep every value live across it
-(spills in hot loops), which an `unreachable` after the fault hook never needed. So it is a trade, made only
-for size; the free changes above all end in the unwind or sit where a call already returned.
+(-16.0%), go 184,241,116 / 149,926,790 (-18.6%) (load 12 to 22). Its cost was measured in the speed setting,
+alternating (best of 3, load 17 to 25, in place / called): wasmtime fib 2.379 / 2.876, sort 1.163 / 1.292,
+interpret 0.567 / 0.647, matrix 0.253 / 0.352 (1.39 times); Chrome interpret 0.597 / 0.807 (1.35 times), sort
+1.236 / 1.432, matrix 0.201 / 0.184, fib 2.321 / 2.209. The call returns into the piece, so the engine keeps
+every value live across it.
+
+Size mode, a proven loop with no loop inside it keeps its copy without checks (what trade 1 took away). The
+proof and both copies sit in a `loop`; a stop at the loop's own jump back in the unchecked copy loads the
+registers back and branches there, so the proof is made again with the registers as they are (it depends only
+on them at the loop's header). A loop with loops inside it still has only its checked copy, since a stop at an
+inner loop's jump back cannot carry on in the outer loop's checked copy without a loop piece. Size, from the
+line above: busybox 13,626,082 / 13,980,688 (+2.6%), musl +6.3%, rg +7.2%, git +2.2%, python +4.4%, java
++2.3%, go +2.4%. Speed (size setting, wasmtime, best of 3, load 20 to 40): matrix 0.770 without / 0.306 to
+0.350 with; search 0.328 with (0.478 at trade 2). Tests: `tests/checks.rs` now runs every case at full in both
+settings (the loop not proven counts hold in both), and `tests/changes.rs` translates for size when the plan's
+seed is odd.
 
 Static counters: each code module now carries how many places in its code may take each slow path
 (`CodeModule::sites`, by reason; floating point paths, decided by a hook at run time, are not counted), and
