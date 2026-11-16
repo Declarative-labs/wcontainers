@@ -150,9 +150,12 @@ impl Pipe {
         self.slots.len() >= self.capacity
     }
 
-    /// Takes up to `count` bytes, slot by slot; a packet slot is taken whole even if not all of it
-    /// fits, and ends the read.
-    pub fn take(&mut self, count: usize) -> Vec<u8> {
+    /// Takes up to `count` bytes, slot by slot, into a buffer of which only the first `room` bytes
+    /// can be written; a packet slot is taken whole even if not all of it fits, and ends the read. A
+    /// slot's piece that does not fit is copied up to the fault and left unread, and the read ends
+    /// there, as `pipe_read` does when a copy falls short. Returns what was taken and what was copied
+    /// but left.
+    pub fn take_into(&mut self, count: usize, room: usize) -> (Vec<u8>, Vec<u8>) {
         let mut out = Vec::new();
         while out.len() < count {
             let Some(slot) = self.slots.front_mut() else {
@@ -160,6 +163,10 @@ impl Pipe {
             };
             let available = slot.page.len() - slot.read;
             let chunk = available.min(count - out.len());
+            if out.len() + chunk > room {
+                let fits = room - out.len();
+                return (out, slot.page[slot.read..slot.read + fits].to_vec());
+            }
             out.extend_from_slice(&slot.page[slot.read..slot.read + chunk]);
             slot.read += chunk;
             let packet = slot.packet;
@@ -170,7 +177,7 @@ impl Pipe {
                 break;
             }
         }
-        out
+        (out, Vec::new())
     }
 
     /// How many bytes of a `length`-byte write the merge step puts in the last slot: the part that

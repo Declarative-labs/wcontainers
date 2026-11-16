@@ -1294,22 +1294,27 @@ pub(super) fn readlinkat(
     if matches!(node.borrow().content, Content::Symlink(_)) {
         super::io::accessed(kernel, cx, &node, 0);
     }
-    let target = {
+    // Where the kernel's copy of the target lies decides what a buffer that faults part way gets:
+    // a tmpfs link's own allocation, or the end of a page `d_path` filled before its last byte.
+    let (target, source) = {
         let inode = node.borrow();
         match &inode.content {
-            Content::Symlink(target) => target.clone(),
+            Content::Symlink(target) => (target.clone(), 0),
             Content::Proc(entry) if inode.file_type() == S_IFLNK => {
                 let entry = *entry;
                 drop(inode);
                 let pid = kernel.threads[&tid].process;
-                kernel.with_walk(pid, |walk, _| proc::link_target(walk.proc, walk, &entry))?
+                let target =
+                    kernel.with_walk(pid, |walk, _| proc::link_target(walk.proc, walk, &entry))?;
+                let source = wcontainers_abi::PAGE_SIZE.wrapping_sub(1 + target.len() as u64);
+                (target, source)
             }
             // An empty path names `dirfd` itself, and when that is no link Linux says it is not there.
             _ => return Err(if empty { Errno::ENOENT } else { Errno::EINVAL }),
         }
     };
     let length = target.len().min(size as usize);
-    guest(kernel, cx, tid).write(buffer, &target[..length])?;
+    guest(kernel, cx, tid).write_from(buffer, &target[..length], source)?;
     Ok(length as u64)
 }
 
@@ -2180,7 +2185,12 @@ pub(super) fn getcwd(
     }
     let mut bytes = path;
     bytes.push(0);
-    guest(kernel, cx, tid).write(buffer, &bytes)?;
+    // The path is made at the end of a page, which is where the copy starts from.
+    guest(kernel, cx, tid).write_from(
+        buffer,
+        &bytes,
+        wcontainers_abi::PAGE_SIZE.wrapping_sub(length),
+    )?;
     Ok(length)
 }
 

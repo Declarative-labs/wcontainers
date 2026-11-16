@@ -76,23 +76,94 @@ impl Guest<'_> {
         Ok(bytes)
     }
 
-    /// `copy_to_user` of the whole range, or `EFAULT`.
+    /// `copy_to_user` of the whole range from a kernel buffer aligned to 8 bytes, or `EFAULT` after
+    /// storing what arm64's copy routine stores before the fault.
     pub fn write(&mut self, address: u64, bytes: &[u8]) -> Result<(), Errno> {
+        self.write_from(address, bytes, 0)
+    }
+
+    /// `copy_to_user` from a kernel buffer at `source` (only its place within 16 bytes matters, as
+    /// the copy routine first aligns its loads): on a fault the stores made before it stay, and when
+    /// none was counted one byte is tried (`copy_to_user.S`'s fixup).
+    pub fn write_from(&mut self, address: u64, bytes: &[u8], source: u64) -> Result<(), Errno> {
+        if self.copy_out(address, bytes, source) == bytes.len() as u64 {
+            Ok(())
+        } else {
+            Err(Errno::EFAULT)
+        }
+    }
+
+    /// `write_from`'s copy, returning how many bytes it reports copied (`copy_to_iter`'s answer).
+    pub fn copy_out(&mut self, address: u64, bytes: &[u8], source: u64) -> u64 {
         let length = bytes.len() as u64;
         // Copying nothing succeeds wherever it points, as `copy_to_user` reports nothing uncopied.
         if length == 0 {
-            return Ok(());
+            return 0;
         }
         if !access_ok(address, length) {
-            return Err(Errno::EFAULT);
+            return 0;
         }
-        if self.accessible(address, length, Permissions::WRITE) != length {
+        let writable = self.accessible(address, length, Permissions::WRITE);
+        let (stored, reported) = match stored_before_fault(length, writable, source) {
+            (stored, 0) => (stored.max(writable.min(1)), writable.min(1)),
+            counts => counts,
+        };
+        if stored > 0
+            && (self.copy_on_write(address, stored).is_err()
+                || self
+                    .cpu
+                    .write(self.memory, address, &bytes[..stored as usize])
+                    .is_err())
+        {
+            return 0;
+        }
+        reported
+    }
+
+    /// `put_user`: one store, made whole or not at all.
+    pub fn put(&mut self, address: u64, bytes: &[u8]) -> Result<(), Errno> {
+        let length = bytes.len() as u64;
+        if !access_ok(address, length)
+            || self.accessible(address, length, Permissions::WRITE) != length
+        {
             return Err(Errno::EFAULT);
         }
         self.copy_on_write(address, length)?;
         self.cpu
             .write(self.memory, address, bytes)
             .map_err(errno::from_cpu)
+    }
+
+    /// `unsafe_put_user` stores in order, each at an offset from `address`, ending at the first that
+    /// faults. Returns how many were made.
+    pub fn put_each(&mut self, address: u64, stores: &[(u64, &[u8])]) -> usize {
+        let end = stores
+            .iter()
+            .map(|(offset, bytes)| offset + bytes.len() as u64)
+            .max()
+            .unwrap_or(0);
+        if !access_ok(address, end) {
+            return 0;
+        }
+        let writable = self.accessible(address, end, Permissions::WRITE);
+        let made = stores
+            .iter()
+            .position(|(offset, bytes)| offset + bytes.len() as u64 > writable)
+            .unwrap_or(stores.len());
+        for (offset, bytes) in &stores[..made] {
+            if self
+                .copy_on_write(address + offset, bytes.len() as u64)
+                .and_then(|()| {
+                    self.cpu
+                        .write(self.memory, address + offset, bytes)
+                        .map_err(errno::from_cpu)
+                })
+                .is_err()
+            {
+                return 0;
+            }
+        }
+        made
     }
 
     /// Makes the private file pages of a range about to be written the process's own copies, as a
@@ -262,6 +333,42 @@ impl Guest<'_> {
     pub fn read_path_maybe_empty(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
         self.read_string(address, crate::linux::general::PATH_MAX.into())
     }
+}
+
+/// How many of `count` bytes arm64's `copy_to_user` stores, and how many it reports copied, from a
+/// source at `source` when only the first `writable` bytes of the target can be written. Its stores
+/// go up through the target in order: pieces of 1, 2, 4 and 8 bytes that align the source (only when
+/// 16 or more are copied), pairs of 8 (`user_stp` is two `sttr`, and the target moves on only after
+/// both), then 8, 4, 2 and 1 for the rest. A store that would reach past `writable` faults whole
+/// (measured), and nothing after it is stored; the first half of a pair that faults stays stored but
+/// is not counted (measured).
+fn stored_before_fault(count: u64, writable: u64, source: u64) -> (u64, u64) {
+    let leading = if count < 16 {
+        0
+    } else {
+        source.wrapping_neg() & 15
+    };
+    let middle = (count - leading) & !15;
+    let pieces = [1, 2, 4, 8]
+        .into_iter()
+        .filter(|size| leading & size != 0)
+        .chain(core::iter::repeat_n(16, (middle / 16) as usize))
+        .chain(
+            [8, 4, 2, 1]
+                .into_iter()
+                .filter(|size| (count - leading) & 15 & size != 0),
+        );
+    let mut stored = 0;
+    for size in pieces {
+        if stored + size > writable {
+            if size == 16 && stored + 8 <= writable {
+                return (stored + 8, stored);
+            }
+            break;
+        }
+        stored += size;
+    }
+    (stored, stored)
 }
 
 /// ARM64 Linux's `copy_template.S` run on `bytes`: copies `count` bytes from offset `source` to

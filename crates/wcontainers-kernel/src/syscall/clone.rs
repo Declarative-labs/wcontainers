@@ -43,7 +43,7 @@ pub(super) fn clone(
         Ok(child) => {
             // The parent's copy of the child's number, written after the child exists.
             if flags & CLONE_PARENT_SETTID != 0 {
-                let _ = guest(kernel, cx, tid).write(parent_tid, &child.to_le_bytes());
+                let _ = guest(kernel, cx, tid).put(parent_tid, &child.to_le_bytes());
             }
             if flags & CLONE_VFORK != 0 {
                 let call = &mut kernel.thread_mut(tid).call;
@@ -214,7 +214,7 @@ fn make_child(
     kernel.threads.insert(child, thread);
     // `schedule_tail`: the child writes its own number where it was asked to.
     if flags & CLONE_CHILD_SETTID != 0 {
-        let _ = guest(kernel, cx, child).write(child_tid, &child.to_le_bytes());
+        let _ = guest(kernel, cx, child).put(child_tid, &child.to_le_bytes());
     }
     kernel.start_new(child);
     Ok(child)
@@ -376,7 +376,7 @@ pub(super) fn wait4(
                 unreachable!("the child was found a moment ago");
             };
             if status_out != 0
-                && let Err(error) = guest(kernel, cx, tid).write(status_out, &status.to_le_bytes())
+                && let Err(error) = guest(kernel, cx, tid).put(status_out, &status.to_le_bytes())
             {
                 return Err(error).into();
             }

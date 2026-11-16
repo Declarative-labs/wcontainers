@@ -289,8 +289,8 @@ pub(super) fn read(
         kernel.park(tid, channel(&node));
         return Err(Errno::PARKED);
     }
-    // Only as much as the buffer takes leaves the pipe: a copy stops at the first fault and the
-    // rest stays to be read.
+    // A slot's piece leaves the pipe only when it is copied whole: the copy stores up to the first
+    // fault (exactly, measured) and the piece stays to be read.
     let mut guest = guest(kernel, cx, tid);
     let mut room = 0;
     for &(base, length) in parts {
@@ -300,20 +300,22 @@ pub(super) fn read(
             break;
         }
     }
-    if room == 0 {
-        signal_ends(kernel, cx, &node, false);
-        return Err(Errno::EFAULT);
-    }
-    let bytes = with_pipe(file, |pipe| pipe.take(room as usize));
+    let (taken, left) = with_pipe(file, |pipe| pipe.take_into(total as usize, room as usize));
+    let bytes = [taken.as_slice(), left.as_slice()].concat();
     let mut done = 0usize;
     for &(base, length) in parts {
         if done == bytes.len() {
             break;
         }
         let chunk = &bytes[done..(done + length as usize).min(bytes.len())];
-        guest.write(base, chunk)?;
+        guest.put(base, chunk)?;
         done += chunk.len();
     }
+    if taken.is_empty() {
+        signal_ends(kernel, cx, &node, false);
+        return Err(Errno::EFAULT);
+    }
+    let done = taken.len();
     kernel.wake(channel(&node));
     signal_ends(kernel, cx, &node, false);
     Ok(done as u64)

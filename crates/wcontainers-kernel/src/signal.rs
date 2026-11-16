@@ -525,7 +525,7 @@ impl Kernel {
                 return Err(Errno::EINVAL);
             }
         }
-        guest.write(area + 8, &0u64.to_le_bytes())?;
+        guest.put(area + 8, &0u64.to_le_bytes())?;
         if inside {
             registers.pc = abort;
         }

@@ -47,7 +47,9 @@ pub(super) fn uname(
     {
         bytes[index * 65..(index + 1) * 65].copy_from_slice(part);
     }
-    guest(kernel, cx, tid).write(out, &bytes)?;
+    // The reference's copy is from a stack buffer one byte past 16-byte alignment (measured), which
+    // decides what a buffer that faults part way receives.
+    guest(kernel, cx, tid).write_from(out, &bytes, 1)?;
     Ok(0)
 }
 
@@ -147,21 +149,7 @@ pub(super) fn getrandom(
     if !crate::user::access_ok(buffer, length) {
         return Err(Errno::EFAULT);
     }
-    let mut done = 0;
-    let mut chunk = vec![0u8; 4096];
-    while done < length {
-        let part = (length - done).min(4096) as usize;
-        cx.host.random(&mut chunk[..part]);
-        let written = guest(kernel, cx, tid).write_partial(buffer + done, &chunk[..part]);
-        done += written as u64;
-        if written < part {
-            break;
-        }
-    }
-    if done == 0 && length > 0 {
-        return Err(Errno::EFAULT);
-    }
-    Ok(done)
+    super::io::random_bytes(kernel, cx, tid, &[(buffer, length)])
 }
 
 pub(super) fn sched_yield(
@@ -213,10 +201,10 @@ pub(super) fn getcpu(
     [cpu, node, ..]: Args,
 ) -> Result<u64, Errno> {
     if cpu != 0 {
-        guest(kernel, cx, tid).write(cpu, &0u32.to_le_bytes())?;
+        guest(kernel, cx, tid).put(cpu, &0u32.to_le_bytes())?;
     }
     if node != 0 {
-        guest(kernel, cx, tid).write(node, &0u32.to_le_bytes())?;
+        guest(kernel, cx, tid).put(node, &0u32.to_le_bytes())?;
     }
     Ok(0)
 }

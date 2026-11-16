@@ -279,9 +279,7 @@ pub struct CallResult {
     /// The call's result depends on what the two runners cannot share: a directory that outlives
     /// the sequence (`/dev/shm` or `/dev`, whose offsets in the reference count every entry earlier
     /// sequences made), or a working directory in `/proc` (whose path names the caller's process
-    /// number, and so differs in length), or a read of a random device that moved less than it was
-    /// asked for (where a copy that meets a fault stops differs, a known gap). Only the reference
-    /// reports it.
+    /// number, and so differs in length). Only the reference reports it.
     pub unshared: bool,
     /// The call put a random device's bytes in memory or a file, which the reference's runner then
     /// zeroed (see `clear_random` in the runner); ours does the same when the reference says so.

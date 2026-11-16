@@ -102,9 +102,9 @@ pub(super) fn name_to_handle_at(
         }
     }
     let written = if flags & AT_HANDLE_MNT_ID_UNIQUE != 0 {
-        guest.write(mount, &unique_mount_id.to_le_bytes())
+        guest.put(mount, &unique_mount_id.to_le_bytes())
     } else {
-        guest.write(mount, &(mount_id as u32).to_le_bytes())
+        guest.put(mount, &(mount_id as u32).to_le_bytes())
     };
     written?;
     guest.write(handle, &out)?;

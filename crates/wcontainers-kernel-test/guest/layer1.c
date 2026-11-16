@@ -169,7 +169,7 @@ static uint32_t clear_random(const uint64_t *call, int64_t result, int64_t out_b
         }
         uint64_t wanted = a[2] < MAX_RW_COUNT ? a[2] : MAX_RW_COUNT;
         clear_range(a[1], wanted);
-        return 2 | ((uint64_t)result < wanted);
+        return 2;
     }
     case SYS_readv:
     case SYS_preadv:
@@ -187,7 +187,7 @@ static uint32_t clear_random(const uint64_t *call, int64_t result, int64_t out_b
             clear_range((uint64_t)parts[index].iov_base, length);
             total += length;
         }
-        return 2 | ((uint64_t)result < total);
+        return 2;
     }
     case SYS_sendfile:
         if (out_before < 0) {

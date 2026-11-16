@@ -105,7 +105,7 @@ fn every_file(
         FIGETBSZ => {
             let size = kind.block_size() as i32;
             guest(kernel, cx, tid)
-                .write(argument, &size.to_le_bytes())
+                .put(argument, &size.to_le_bytes())
                 .map(|()| 0)
         }
         FICLONE => clone_range(kernel, tid, file, argument as u32 as i32),
@@ -116,14 +116,14 @@ fn every_file(
         FIONREAD if regular => {
             let left = node.borrow().size() as i64 - file.borrow().offset as i64;
             guest(kernel, cx, tid)
-                .write(argument, &(left as i32).to_le_bytes())
+                .put(argument, &(left as i32).to_le_bytes())
                 .map(|()| 0)
         }
         FIONREAD => return None,
         FS_IOC_GETFLAGS => {
             let flags = attributes(&node.borrow())?;
             guest(kernel, cx, tid)
-                .write(argument, &flags.to_le_bytes())
+                .put(argument, &flags.to_le_bytes())
                 .map(|()| 0)
         }
         FS_IOC_SETFLAGS => {
@@ -180,7 +180,7 @@ fn every_file(
                     if block < 0 {
                         return Err(Errno::EINVAL);
                     }
-                    guest.write(argument, &0i32.to_le_bytes())?;
+                    guest.put(argument, &0i32.to_le_bytes())?;
                     Err(Errno::EINVAL)
                 })
             }
@@ -398,7 +398,7 @@ fn own(
         // `pipe_ioctl`: the bytes waiting; the host takes a stream's bytes as they are written.
         return match request {
             FIONREAD => guest(kernel, cx, tid)
-                .write(argument, &(unread as i32).to_le_bytes())
+                .put(argument, &(unread as i32).to_le_bytes())
                 .map(|()| 0),
             IOC_WATCH_QUEUE_SET_SIZE | IOC_WATCH_QUEUE_SET_FILTER => Err(kernel.counters.refuse(
                 cx.host,
@@ -430,7 +430,7 @@ fn random(
     let capable = kernel.process_of(tid).credentials.has(CAP_SYS_ADMIN);
     let mut guest = guest(kernel, cx, tid);
     match request {
-        RNDGETENTCNT => guest.write(argument, &256i32.to_le_bytes()).map(|()| 0),
+        RNDGETENTCNT => guest.put(argument, &256i32.to_le_bytes()).map(|()| 0),
         RNDADDTOENTCNT | RNDADDENTROPY | RNDZAPENTCNT | RNDCLEARPOOL | RNDRESEEDCRNG
             if !capable =>
         {

@@ -431,9 +431,9 @@ pub(super) fn getresuid(
 ) -> Result<u64, Errno> {
     let credentials = kernel.process_of(tid).credentials.clone();
     let mut guest = guest(kernel, cx, tid);
-    guest.write(ruid, &credentials.uid.to_le_bytes())?;
-    guest.write(euid, &credentials.euid.to_le_bytes())?;
-    guest.write(suid, &credentials.suid.to_le_bytes())?;
+    guest.put(ruid, &credentials.uid.to_le_bytes())?;
+    guest.put(euid, &credentials.euid.to_le_bytes())?;
+    guest.put(suid, &credentials.suid.to_le_bytes())?;
     Ok(0)
 }
 
@@ -445,9 +445,9 @@ pub(super) fn getresgid(
 ) -> Result<u64, Errno> {
     let credentials = kernel.process_of(tid).credentials.clone();
     let mut guest = guest(kernel, cx, tid);
-    guest.write(rgid, &credentials.gid.to_le_bytes())?;
-    guest.write(egid, &credentials.egid.to_le_bytes())?;
-    guest.write(sgid, &credentials.sgid.to_le_bytes())?;
+    guest.put(rgid, &credentials.gid.to_le_bytes())?;
+    guest.put(egid, &credentials.egid.to_le_bytes())?;
+    guest.put(sgid, &credentials.sgid.to_le_bytes())?;
     Ok(0)
 }
 
@@ -748,11 +748,11 @@ pub(super) fn getgroups(
     if (size as usize) < groups.len() {
         return Err(Errno::EINVAL);
     }
-    let bytes: Vec<u8> = groups
-        .iter()
-        .flat_map(|group| group.to_le_bytes())
-        .collect();
-    guest(kernel, cx, tid).write(list, &bytes)?;
+    // One store per group (`groups_to_user`).
+    let mut guest = guest(kernel, cx, tid);
+    for (index, group) in groups.iter().enumerate() {
+        guest.put(list + 4 * index as u64, &group.to_le_bytes())?;
+    }
     Ok(groups.len() as u64)
 }
 
@@ -823,8 +823,8 @@ pub(super) fn get_robust_list(
     let (list, _) = kernel.threads.get(&target).ok_or(Errno::ESRCH)?.robust_list;
     // The length is always the head's size, and is written first, as on Linux.
     let mut guest = guest(kernel, cx, tid);
-    guest.write(length, &ROBUST_LIST_HEAD_SIZE.to_le_bytes())?;
-    guest.write(head, &list.to_le_bytes())?;
+    guest.put(length, &ROBUST_LIST_HEAD_SIZE.to_le_bytes())?;
+    guest.put(head, &list.to_le_bytes())?;
     Ok(0)
 }
 
@@ -1213,7 +1213,7 @@ pub(super) fn prctl(
         }
         PR_GET_CHILD_SUBREAPER => {
             let value = i32::from(kernel.process_of(tid).child_subreaper);
-            guest(kernel, cx, tid).write(second, &value.to_le_bytes())?;
+            guest(kernel, cx, tid).put(second, &value.to_le_bytes())?;
             Ok(0)
         }
         PR_SET_PDEATHSIG => {
@@ -1225,7 +1225,7 @@ pub(super) fn prctl(
         }
         PR_GET_PDEATHSIG => {
             let signal = kernel.threads[&tid].parent_death_signal;
-            guest(kernel, cx, tid).write(second, &signal.to_le_bytes())?;
+            guest(kernel, cx, tid).put(second, &signal.to_le_bytes())?;
             Ok(0)
         }
         PR_GET_TIMERSLACK => Ok(kernel.threads[&tid].timer_slack),
@@ -1297,7 +1297,7 @@ pub(super) fn prctl(
             }
             if form == PR_SET_MM_MAP_SIZE {
                 let size = size_of::<prctl_mm_map>() as u32;
-                guest(kernel, cx, tid).write(third, &size.to_le_bytes())?;
+                guest(kernel, cx, tid).put(third, &size.to_le_bytes())?;
                 return Ok(0);
             }
             if form != PR_SET_MM_MAP && !kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE) {

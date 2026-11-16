@@ -687,6 +687,16 @@ fn vectored(
     if writing.is_none() && is_sysctl(file) {
         return read_sysctl(kernel, cx, tid, file, &parts, offset);
     }
+    // The random devices fill the whole vector block by block.
+    if writing.is_none()
+        && matches!(&file.borrow().node.borrow().content, Content::Special)
+        && matches!(
+            Device::from_number(file.borrow().node.borrow().rdev),
+            Some(Device::Random | Device::Urandom)
+        )
+    {
+        return random_bytes(kernel, cx, tid, &parts);
+    }
     let mut done = 0;
     for &(base, length) in &parts {
         if length == 0 {
@@ -769,23 +779,77 @@ fn read_sysctl(
     let bytes = file_bytes(cx, file, total, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
     accessed(kernel, cx, &node, flags);
-    let mut done = 0;
-    for &(base, length) in parts {
-        let piece = &bytes[done..(done + length as usize).min(bytes.len())];
-        if piece.is_empty() {
-            break;
-        }
-        if guest(kernel, cx, tid).write_partial(base, piece) < piece.len() {
-            return Err(Errno::EFAULT);
-        }
-        done += piece.len();
+    let done = bytes.len() as u64;
+    if copy_to_segments(&mut guest(kernel, cx, tid), parts, 0, &bytes, 0) < done {
+        return Err(Errno::EFAULT);
     }
-    let done = done as u64;
     file.borrow_mut().read_position = offset + done;
     if at.is_none() {
         file.borrow_mut().offset = offset + done;
     }
     Ok(done)
+}
+
+/// `get_random_bytes_user`: the whole request filled from the host's generator in 64-byte blocks,
+/// each copied with arm64's copy routine, until a copy falls short. The reference's block lies 8
+/// bytes past 16-byte alignment (measured).
+pub(super) fn random_bytes(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    parts: &[(u64, u64)],
+) -> Result<u64, Errno> {
+    const BLOCK: usize = 64;
+    let count: u64 = parts.iter().map(|(_, length)| length).sum();
+    let mut done = 0;
+    let mut bytes = vec![0; count.min(KERNEL_BUFFER) as usize];
+    while done < count {
+        let part = (count - done).min(KERNEL_BUFFER) as usize;
+        cx.host.random(&mut bytes[..part]);
+        let mut guest = guest(kernel, cx, tid);
+        for block in bytes[..part].chunks(BLOCK) {
+            let stored = copy_to_segments(&mut guest, parts, done, block, 8);
+            done += stored;
+            if stored < block.len() as u64 {
+                return if done == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(done)
+                };
+            }
+        }
+    }
+    Ok(done)
+}
+
+/// `copy_to_iter` of `bytes` from a kernel buffer at `source` into the segments, from `done` bytes
+/// into them: one copy per segment it reaches, stopping at the first that falls short. Returns how
+/// many bytes were counted copied.
+pub(super) fn copy_to_segments(
+    guest: &mut crate::user::Guest<'_>,
+    parts: &[(u64, u64)],
+    done: u64,
+    bytes: &[u8],
+    source: u64,
+) -> u64 {
+    let mut copied = 0;
+    let mut start = 0;
+    for &(base, length) in parts {
+        let end = start + length;
+        let at = done + copied;
+        if at < end && copied < bytes.len() as u64 {
+            let within = at - start;
+            let part = (length - within).min(bytes.len() as u64 - copied) as usize;
+            let from = copied as usize;
+            let stored = guest.copy_out(base + within, &bytes[from..from + part], source + copied);
+            copied += stored;
+            if stored < part as u64 {
+                break;
+            }
+        }
+        start = end;
+    }
+    copied
 }
 
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
@@ -815,23 +879,8 @@ pub(super) fn read_at(
             _ => None,
         }
     };
-    // The random devices fill the whole request, block by block, up to where the buffer stops being
-    // writable (`get_random_bytes_user`).
     if matches!(device, Some(Device::Random | Device::Urandom)) {
-        let mut done = 0;
-        while done < count {
-            let mut bytes = vec![0; (count - done).min(KERNEL_BUFFER) as usize];
-            cx.host.random(&mut bytes);
-            let written = guest(kernel, cx, tid).write_partial(buffer + done, &bytes) as u64;
-            done += written;
-            if written < bytes.len() as u64 {
-                break;
-            }
-        }
-        if done == 0 && count > 0 {
-            return Err(Errno::EFAULT);
-        }
-        return Ok(done);
+        return random_bytes(kernel, cx, tid, &[(buffer, count)]);
     }
     if let Some(device) = device.filter(|device| matches!(device, Device::Zero | Device::Full)) {
         let mut guest = guest(kernel, cx, tid);
@@ -859,7 +908,15 @@ pub(super) fn read_at(
     let bytes = file_bytes(cx, file, count, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
     accessed(kernel, cx, &node, flags);
-    let written = guest(kernel, cx, tid).write_partial(buffer, &bytes);
+    // A `seq_file` copies from its kernel buffer with arm64's copy routine; pages of files and the
+    // process's memory reach exactly up to a fault (measured).
+    let sequence = matches!(node.borrow().content, Content::Proc(entry)
+        if entry.style() == Style::Sequence);
+    let written = if sequence {
+        guest(kernel, cx, tid).copy_out(buffer, &bytes, offset) as usize
+    } else {
+        guest(kernel, cx, tid).write_partial(buffer, &bytes)
+    };
     if written == 0 && !bytes.is_empty() {
         return Err(Errno::EFAULT);
     }
@@ -1068,7 +1125,7 @@ pub(super) fn sendfile(
     }
     let mut offset: i64 = guest(kernel, cx, tid).read_value(offset_address)?;
     let result = send(kernel, cx, tid, out_fd, in_fd, Some(&mut offset), count);
-    guest(kernel, cx, tid).write(offset_address, &offset.to_le_bytes())?;
+    guest(kernel, cx, tid).put(offset_address, &offset.to_le_bytes())?;
     result
 }
 
@@ -1448,8 +1505,7 @@ pub(super) fn getdents64(
     let count = count as u32 as u64;
     let node = file.borrow().node.clone();
     let position = file.borrow().offset;
-    // Every entry from the position on: name, inode number, type, and the position after it.
-    let mut entries: Vec<(Vec<u8>, u64, u8, u64)> = Vec::new();
+    let mut entries: Vec<Listed> = Vec::new();
     {
         if !node.borrow().is_directory() {
             return Err(Errno::ENOTDIR);
@@ -1470,16 +1526,17 @@ pub(super) fn getdents64(
             // next number, newest first.
             Content::Directory(directory) if inode.fs.kind == crate::fs::Kind::Devpts => {
                 if position == 0 {
-                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 1));
+                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 0, 1));
                 }
                 if position <= 1 {
-                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 2));
+                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 1, 2));
                 }
                 for (index, (_, name, child)) in directory.listed_from(2).enumerate() {
                     let own = index as u64 + 2;
                     if own >= position {
                         let child = child.borrow();
-                        entries.push((name.to_vec(), child.ino, child.dirent_type(), own + 1));
+                        let kind = child.dirent_type();
+                        entries.push((name.to_vec(), child.ino, kind, own, own + 1));
                     }
                 }
             }
@@ -1488,24 +1545,26 @@ pub(super) fn getdents64(
                 // position.
                 let newest = directory.listed_from(2).next().map(|(at, _, _)| at);
                 if position == 0 {
-                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 1));
+                    entries.push((b".".to_vec(), inode.ino, DT_DIR as u8, 0, 1));
                 }
                 if position <= 1 {
                     entries.push((
                         b"..".to_vec(),
                         parent_ino,
                         DT_DIR as u8,
+                        1,
                         newest.unwrap_or(END_OF_DIRECTORY),
                     ));
                 }
                 if position != END_OF_DIRECTORY {
                     let listed: Vec<_> = directory.listed_from(position).collect();
-                    for (index, (_, name, child)) in listed.iter().enumerate() {
+                    for (index, (at, name, child)) in listed.iter().enumerate() {
                         let next = listed
                             .get(index + 1)
                             .map_or(END_OF_DIRECTORY, |(at, _, _)| *at);
                         let child = child.borrow();
-                        entries.push((name.to_vec(), child.ino, child.dirent_type(), next));
+                        let kind = child.dirent_type();
+                        entries.push((name.to_vec(), child.ino, kind, *at, next));
                     }
                 }
             }
@@ -1540,7 +1599,7 @@ pub(super) fn getdents64(
                 let ino = node.borrow().ino;
                 let fds = matches!(entry, Entry::Fds(_));
                 if position == 0 {
-                    entries.push((b".".to_vec(), ino, DT_DIR as u8, 1));
+                    entries.push((b".".to_vec(), ino, DT_DIR as u8, 0, 1));
                 }
                 if position <= 1 {
                     let after = if fds {
@@ -1548,7 +1607,7 @@ pub(super) fn getdents64(
                     } else {
                         2
                     };
-                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, after));
+                    entries.push((b"..".to_vec(), parent_ino, DT_DIR as u8, 1, after));
                 }
                 let nexts: Vec<u64> = listed
                     .iter()
@@ -1558,42 +1617,111 @@ pub(super) fn getdents64(
                     .collect();
                 for ((name, ino, kind, own, jumps), next) in listed.into_iter().zip(nexts) {
                     if own >= position {
-                        entries.push((name, ino, kind, if jumps { next } else { own + 1 }));
+                        let after = if jumps { next } else { own + 1 };
+                        entries.push((name, ino, kind, own, after));
                     }
                 }
             }
             _ => return Err(Errno::ENOTDIR),
         }
     }
-    let mut out = Vec::new();
-    let mut new_position = position;
-    for (name, ino, kind, next) in entries {
-        let length = (19 + name.len() + 1).next_multiple_of(8);
-        if (out.len() + length) as u64 > count {
-            if out.is_empty() {
+    // The entries that fit, each at its offset in the buffer.
+    let mut placed = Vec::new();
+    let mut size = 0;
+    for entry in entries {
+        let length = (19 + entry.0.len() + 1).next_multiple_of(8) as u64;
+        if size + length > count {
+            if placed.is_empty() {
                 return Err(Errno::EINVAL);
             }
             break;
         }
-        out.extend_from_slice(&ino.to_le_bytes());
-        out.extend_from_slice(&next.to_le_bytes());
-        out.extend_from_slice(&(length as u16).to_le_bytes());
-        out.push(kind);
-        out.extend_from_slice(&name);
-        out.resize(out.len() + length - 19 - name.len(), 0);
-        new_position = next;
+        placed.push((size, length, entry));
+        size += length;
     }
-    if !out.is_empty() {
-        guest(kernel, cx, tid).write(buffer, &out)?;
+    let (complete, size) = store_entries(&mut guest(kernel, cx, tid), buffer, &placed);
+    if complete == 0 && !placed.is_empty() {
+        return Err(Errno::EFAULT);
     }
-    if !out.is_empty() || position <= 1 {
-        file.borrow_mut().offset = if out.is_empty() {
-            position
-        } else {
-            new_position
+    if complete > 0 || position <= 1 {
+        file.borrow_mut().offset = match complete {
+            0 => position,
+            complete => placed[complete - 1].2.4,
         };
     }
-    Ok(out.len() as u64)
+    Ok(size)
+}
+
+/// A directory entry to list: name, inode number, type, its own position and the one after it.
+type Listed = (Vec<u8>, u64, u8, u64, u64);
+
+/// Stores listed entries as `filldir64` does, entry by entry: the previous entry's `d_off` (for the
+/// first, its own position), `d_ino`, `d_reclen`, `d_type`, the name's closing zero, then the name
+/// in pieces of 8, 4, 2 and 1 bytes, and at the end the last entry's `d_off`; padding is not written.
+/// A store that faults ends the listing there. Returns how many entries were stored whole and their
+/// size.
+fn store_entries(
+    guest: &mut crate::user::Guest<'_>,
+    buffer: u64,
+    placed: &[(u64, u64, Listed)],
+) -> (usize, u64) {
+    let Some(&(last_at, last_length, _)) = placed.last() else {
+        return (0, 0);
+    };
+    let extent = last_at + last_length;
+    let writable = if crate::user::access_ok(buffer, extent) {
+        guest.accessible(buffer, extent, wcontainers_abi::Permissions::WRITE)
+    } else {
+        0
+    };
+    if writable == extent {
+        // Nothing faults: each entry's bytes as they end up, in one store each.
+        for (at, _, (name, ino, kind, _, next)) in placed {
+            let mut bytes = Vec::with_capacity(20 + name.len());
+            bytes.extend_from_slice(&ino.to_le_bytes());
+            bytes.extend_from_slice(&next.to_le_bytes());
+            bytes.extend_from_slice(
+                &((19 + name.len() + 1).next_multiple_of(8) as u16).to_le_bytes(),
+            );
+            bytes.push(*kind);
+            bytes.extend_from_slice(name);
+            bytes.push(0);
+            if guest.put(buffer + at, &bytes).is_err() {
+                return (0, 0);
+            }
+        }
+        return (placed.len(), extent);
+    }
+    let mut stores: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut ends = Vec::new();
+    for (index, (at, length, (name, ino, kind, own, _))) in placed.iter().enumerate() {
+        let previous = if index == 0 { *at } else { placed[index - 1].0 };
+        stores.push((previous + 8, own.to_le_bytes().to_vec()));
+        stores.push((*at, ino.to_le_bytes().to_vec()));
+        stores.push((at + 16, (*length as u16).to_le_bytes().to_vec()));
+        stores.push((at + 18, alloc::vec![*kind]));
+        stores.push((at + 19 + name.len() as u64, alloc::vec![0]));
+        let mut done = 0;
+        for size in [8, 4, 2, 1] {
+            while name.len() - done >= size {
+                stores.push((at + 19 + done as u64, name[done..done + size].to_vec()));
+                done += size;
+            }
+        }
+        ends.push(stores.len());
+    }
+    let borrowed: Vec<(u64, &[u8])> = stores
+        .iter()
+        .map(|(offset, bytes)| (*offset, bytes.as_slice()))
+        .collect();
+    let made = guest.put_each(buffer, &borrowed);
+    let complete = ends.iter().take_while(|end| **end <= made).count();
+    if complete == 0 {
+        return (0, 0);
+    }
+    let (at, length, (.., next)) = &placed[complete - 1];
+    let _ = guest.put(buffer + at + 8, &next.to_le_bytes());
+    (complete, at + length)
 }
 
 pub(super) fn close(
@@ -2453,7 +2581,17 @@ fn ppoll_typed(
             ready += 1;
         }
     }
-    guest(kernel, cx, tid).write(fds, &entries)?;
+    // Only each entry's `revents` is stored, one store each.
+    let stores: Vec<(u64, &[u8])> = entries
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (8 * index as u64 + 6, &entry[6..]))
+        .collect();
+    if guest(kernel, cx, tid).put_each(fds, &stores) < stores.len() {
+        return Err(Errno::EFAULT);
+    }
     Ok(ready)
 }
 

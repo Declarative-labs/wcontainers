@@ -391,15 +391,15 @@ pub(super) fn read(
         pair.sides[side].take(&mut bytes, limit as usize, packet);
         pair.settle();
     }
-    let copied = (bytes.len() as u64).min(room);
-    let mut done = 0usize;
-    for &(base, length) in parts {
-        if done as u64 == copied {
+    // Each piece is copied from the kernel's buffer with arm64's copy routine (`copy_to_iter`),
+    // segment by segment, until a copy falls short.
+    let mut copied = 0u64;
+    for piece in bytes.chunks(READ_CHUNK as usize) {
+        let stored = super::io::copy_to_segments(&mut guest, parts, copied, piece, 0);
+        copied += stored;
+        if stored < piece.len() as u64 {
             break;
         }
-        let chunk = &bytes[done..(done + length as usize).min(copied as usize)];
-        guest.write(base, chunk)?;
-        done += chunk.len();
     }
     after(kernel, cx, &pty);
     if copied == 0 && !bytes.is_empty() {
@@ -568,7 +568,7 @@ fn requests(
     }
     let put_int = |kernel: &mut Kernel, cx: &mut Context<'_>, value: i32| {
         guest(kernel, cx, tid)
-            .write(argument, &value.to_le_bytes())
+            .put(argument, &value.to_le_bytes())
             .map(|()| 0)
     };
     let get_int = |kernel: &mut Kernel, cx: &mut Context<'_>| {
@@ -877,7 +877,7 @@ fn settings(
         TIOCGSOFTCAR => {
             let local = current.c_cflag & CLOCAL != 0;
             guest(kernel, cx, tid)
-                .write(argument, &i32::from(local).to_le_bytes())
+                .put(argument, &i32::from(local).to_le_bytes())
                 .map(|()| 0)
         }
         TIOCSSOFTCAR => {

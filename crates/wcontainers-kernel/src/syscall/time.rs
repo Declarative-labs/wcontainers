@@ -134,11 +134,16 @@ pub(super) fn gettimeofday(
 ) -> Result<u64, Errno> {
     let now = cx.host.realtime_nanoseconds();
     if out != 0 {
-        let value = __kernel_old_timeval {
-            tv_sec: (now / 1_000_000_000) as i64,
-            tv_usec: (now % 1_000_000_000 / 1000) as i64,
-        };
-        guest(kernel, cx, tid).write_value(out, &value)?;
+        // Each field is its own store (`put_user`).
+        let mut guest = guest(kernel, cx, tid);
+        guest.put(
+            out + core::mem::offset_of!(__kernel_old_timeval, tv_sec) as u64,
+            &(now / 1_000_000_000).to_le_bytes(),
+        )?;
+        guest.put(
+            out + core::mem::offset_of!(__kernel_old_timeval, tv_usec) as u64,
+            &(now % 1_000_000_000 / 1000).to_le_bytes(),
+        )?;
     }
     if zone != 0 {
         guest(kernel, cx, tid).write(zone, &[0; 8])?;
