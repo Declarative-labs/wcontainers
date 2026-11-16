@@ -131,7 +131,12 @@ impl Host for TestHost {
     }
 
     fn warn(&mut self, warning: Warning<'_>) {
-        let name = wcontainers_kernel::system_call_name(warning.detail).unwrap_or("");
+        // Only a missing call's detail is a call number.
+        let name = if warning.reason == wcontainers_kernel::reason::NOT_IMPLEMENTED {
+            wcontainers_kernel::system_call_name(warning.detail).unwrap_or("")
+        } else {
+            ""
+        };
         eprintln!(
             "kernel warning: {} (detail {} {name}, count {})",
             warning.reason, warning.detail, warning.count
