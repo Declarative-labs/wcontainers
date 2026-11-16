@@ -9,7 +9,7 @@ use proptest::test_runner::{RngAlgorithm, TestRng};
 use std::cell::Cell;
 use std::rc::Rc;
 use wcontainers_abi::RegisterBlock;
-use wcontainers_translator::{BOUND, LookAhead};
+use wcontainers_translator::{BOUND, LookAhead, Optimise};
 
 /// What was injected into one run.
 #[derive(Clone, Copy, Debug, Default)]
@@ -46,11 +46,20 @@ pub fn mixed(blob: &Blob, seed: u64) -> (Ran, Machine, RegisterBlock, Events) {
     for _ in 0..(blob.code_bytes / 64).clamp(1, 64) {
         starts.push(4 * pick.random_range(0..blob.code_bytes / 4));
     }
+    let optimise = |size: bool| {
+        if size {
+            Optimise::Size
+        } else {
+            Optimise::Speed
+        }
+    };
     let translations = [
-        (LookAhead::None, vec![0]),
-        (LookAhead::Bounded(bound), starts),
-        (LookAhead::Full, vec![0]),
+        (LookAhead::None, Optimise::Speed, vec![0]),
+        (LookAhead::Bounded(bound), optimise(pick.random()), starts),
+        (LookAhead::Full, Optimise::Speed, vec![0]),
+        (LookAhead::Full, Optimise::Size, vec![0]),
     ];
+    let at_run_time = optimise(pick.random());
     let mut machine = ready_with(blob, crate::runner::probe(), |machine| {
         machine.load_mixed(
             &blob.bytes,
@@ -60,6 +69,7 @@ pub fn mixed(blob: &Blob, seed: u64) -> (Ran, Machine, RegisterBlock, Events) {
             seed,
         );
     });
+    machine.optimise_for(at_run_time);
     let mut at_run_time = rng(seed, b"run time");
     machine.translate_at_run_time(move || match at_run_time.random_range(0..3) {
         0 => LookAhead::Bounded(1),

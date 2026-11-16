@@ -32,6 +32,16 @@ impl LookAhead {
     pub const AT_RUN_TIME: LookAhead = LookAhead::Bounded(BOUND);
 }
 
+/// What a translation is made for: the one setting the translator has. Both give the same results.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Optimise {
+    /// Nothing is given up for size.
+    #[default]
+    Speed,
+    /// Run speed may be given up for smaller output.
+    Size,
+}
+
 /// Tuning number: the default N of bounded look-ahead.
 pub const BOUND: u32 = 256;
 
@@ -233,9 +243,18 @@ pub fn translate(
     code: Range<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
+    optimise: Optimise,
     host: Host,
 ) -> Result<Translation, Error> {
-    translate_omitting(blob, code, starts, look_ahead, host, Omit::default())
+    translate_omitting(
+        blob,
+        code,
+        starts,
+        look_ahead,
+        optimise,
+        host,
+        Omit::default(),
+    )
 }
 
 /// [`translate`] without some checks at full look-ahead, only to measure what they cost. Look-ahead none
@@ -245,10 +264,12 @@ pub fn translate_omitting(
     code: Range<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
+    optimise: Optimise,
     host: Host,
     omit: Omit,
 ) -> Result<Translation, Error> {
-    translate_within(blob, code, starts, look_ahead, host, omit, MODULE_BYTES)
+    let how = (look_ahead, optimise);
+    translate_within(blob, code, starts, how, host, omit, MODULE_BYTES)
 }
 
 /// [`translate`] split into modules of at most `module_bytes` of code each, only to test calls between
@@ -259,18 +280,20 @@ pub fn translate_in_modules(
     code: Range<u64>,
     starts: &[u64],
     look_ahead: LookAhead,
+    optimise: Optimise,
     host: Host,
     module_bytes: usize,
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
-    translate_within(blob, code, starts, look_ahead, host, omit, module_bytes)
+    let how = (look_ahead, optimise);
+    translate_within(blob, code, starts, how, host, omit, module_bytes)
 }
 
 fn translate_within(
     blob: &[u8],
     code: Range<u64>,
     starts: &[u64],
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     host: Host,
     omit: Omit,
     module_bytes: usize,
@@ -294,7 +317,8 @@ fn translate_within(
             let found = none_found(&blob_code, starts, look_ahead == LookAhead::None);
             let entries: Vec<u64> = found.iter().map(|f| f.0).collect();
             let first = none_emit(&blob_code, &found, 0..found.len());
-            modules(blob, look_ahead, &entries, first, module_bytes, |group| {
+            let how = (look_ahead, optimise);
+            modules(blob, how, &entries, first, module_bytes, |group| {
                 none_emit(&blob_code, &found, group)
             })
         }
@@ -306,13 +330,14 @@ fn translate_within(
             // A function too large for an engine is cut in two by more starts, until none is.
             let mut starts = starts.to_vec();
             loop {
-                let planned = crate::full::plan(&blob_code, &starts, bound, omit);
+                let planned = crate::full::plan(&blob_code, &starts, bound, omit, optimise);
                 let entries = planned.entries();
                 let first = planned.emit(0..entries.len());
                 let over: Vec<usize> = (0..first.len()).filter(|&i| first[i].too_large()).collect();
                 if over.is_empty() {
                     let emit = |group| planned.emit(group);
-                    break modules(blob, look_ahead, &entries, first, module_bytes, emit);
+                    let how = (look_ahead, optimise);
+                    break modules(blob, how, &entries, first, module_bytes, emit);
                 }
                 for i in over {
                     starts.extend(planned.halves(i));
@@ -328,7 +353,7 @@ fn translate_within(
 /// otherwise as many modules as needed, each emitted for its group of units by `emit`.
 fn modules(
     blob: &[u8],
-    look_ahead: LookAhead,
+    how: (LookAhead, Optimise),
     entries: &[u64],
     first: Vec<Unit>,
     module_bytes: usize,
@@ -353,17 +378,22 @@ fn modules(
         }
     }
     if groups.len() <= 1 {
-        return vec![module(blob, look_ahead, entries, first)];
+        return vec![module(blob, how, entries, first)];
     }
     drop(first);
     groups
         .into_iter()
-        .map(|group| module(blob, look_ahead, &entries[group.clone()], emit(group)))
+        .map(|group| module(blob, how, &entries[group.clone()], emit(group)))
         .collect()
 }
 
 /// A code module holding these units, the table's pieces at `entries`.
-fn module(blob: &[u8], look_ahead: LookAhead, entries: &[u64], units: Vec<Unit>) -> CodeModule {
+fn module(
+    blob: &[u8],
+    how: (LookAhead, Optimise),
+    entries: &[u64],
+    units: Vec<Unit>,
+) -> CodeModule {
     let mut module = Module::new();
     module.section(&types());
     module.section(&imports());
@@ -394,7 +424,7 @@ fn module(blob: &[u8], look_ahead: LookAhead, entries: &[u64], units: Vec<Unit>)
     module.section(&own_globals());
     module.section(&elements(entries.len() as u32));
     module.section(&code_section);
-    module.section(&description(blob, look_ahead, entries.iter()));
+    module.section(&description(blob, how, entries.iter()));
     CodeModule {
         wasm: module.finish(),
         pieces: entries.to_vec(),
@@ -885,7 +915,7 @@ pub(crate) fn elements(pieces: u32) -> ElementSection {
 
 pub(crate) fn description<'a>(
     blob: &[u8],
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     pieces: impl ExactSizeIterator<Item = &'a u64>,
 ) -> CustomSection<'static> {
     let (kind, bound) = match look_ahead {
@@ -893,7 +923,7 @@ pub(crate) fn description<'a>(
         LookAhead::Full => (1, 0),
         LookAhead::Bounded(n) => (2, n),
     };
-    let mut data = vec![2, kind];
+    let mut data = vec![3, kind, optimise as u8];
     bound.encode(&mut data);
     data.extend_from_slice(blake3::hash(blob).as_bytes());
     (pieces.len() as u64).encode(&mut data);

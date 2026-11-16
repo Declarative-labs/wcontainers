@@ -4,7 +4,7 @@
 
 use crate::code::*;
 use crate::contract::*;
-use crate::state::{Slot, load_flag, store_flags};
+use crate::state::{Slot, load_flag};
 use crate::thread::memarg;
 use petgraph::algo::dominators;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -37,6 +37,7 @@ pub(crate) struct Planned<'a> {
     /// Each function's loop pieces, with their plans.
     loops: Vec<Vec<(Function, Plan)>>,
     omit: Omit,
+    optimise: Optimise,
 }
 
 /// Find and plan the functions of a translation from `starts`: the whole blob's (`bound` none) or one stretch
@@ -46,6 +47,7 @@ pub(crate) fn plan<'a>(
     starts: &[u64],
     bound: Option<usize>,
     omit: Omit,
+    optimise: Optimise,
 ) -> Planned<'a> {
     let mut finder = Finder {
         code,
@@ -95,6 +97,7 @@ pub(crate) fn plan<'a>(
         plans,
         loops,
         omit,
+        optimise,
     }
 }
 
@@ -139,7 +142,8 @@ impl Planned<'_> {
             .map(|(i, loops)| {
                 let function = &self.functions[i];
                 let emit = |function, plan, own| {
-                    FullEmitter::piece(function, plan, decoded, &index, loops, own, self.omit, host)
+                    let how = (self.omit, self.optimise, host);
+                    FullEmitter::piece(function, plan, decoded, &index, loops, own, how)
                 };
                 let (piece, mut locals) = emit(function, &self.plans[i], index[&function.entry]);
                 let others = self.loops[i]
@@ -1403,6 +1407,7 @@ struct FullEmitter<'a> {
     /// The loop pieces of the function this piece comes from, by header offset.
     loops: &'a HashMap<u64, u32>,
     omit: Omit,
+    optimise: Optimise,
     host: Host,
     /// Whether floating point takes the slow path, loaded once until something may change it.
     float_mode_local: Option<u32>,
@@ -1445,8 +1450,7 @@ impl<'a> FullEmitter<'a> {
         index: &'a BTreeMap<u64, u32>,
         loops: &'a HashMap<u64, u32>,
         own: u32,
-        omit: Omit,
-        host: Host,
+        (omit, optimise, host): (Omit, Optimise, Host),
     ) -> (wasm_encoder::Function, usize) {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
@@ -1456,6 +1460,7 @@ impl<'a> FullEmitter<'a> {
             index,
             loops,
             omit,
+            optimise,
             host,
             float_mode_local: None,
             body: Vec::new(),
@@ -1775,9 +1780,11 @@ impl<'a> FullEmitter<'a> {
 
     /// Whether the loop at block `b` gets its copy without proven checks: after a stop at a jump back in it
     /// or in any loop inside it, the thread must carry on where the proof is made again, at a loop's entry.
+    /// Translated for size, a loop has only its copy with checks.
     fn copies(&self, b: usize) -> bool {
         let pieced = |h: usize| h == 0 || self.loops.contains_key(&self.function.blocks[h].start);
-        !self.omit.permissions
+        self.optimise == Optimise::Speed
+            && !self.omit.permissions
             && (self.omit.stop
                 || (pieced(b) && self.plan.versioned[&b].inner.iter().all(|&g| pieced(g))))
     }
@@ -1937,11 +1944,59 @@ impl<'a> FullEmitter<'a> {
         }
     }
 
-    /// Put the flags in the thread block, unless they are there.
+    /// Put the flags in the thread block, unless they are there. The word is worked out once for each state
+    /// the flags may be in.
     fn write_back_flags(&mut self) {
-        if self.at.flags != 1 << FLAGS_IN_BLOCK {
-            let block = self.fixed(G_THREAD_BLOCK);
-            store_flags(self, block, |e, flag| e.push_flag(flag));
+        let states = self.at.flags;
+        if states == 1 << FLAGS_IN_BLOCK {
+            return;
+        }
+        let block = self.fixed(G_THREAD_BLOCK);
+        block.push(&mut self.sink());
+        let ids: Vec<u32> = (0..32).filter(|i| states >> i & 1 == 1).collect();
+        for (k, &id) in ids.iter().enumerate() {
+            if k + 1 < ids.len() {
+                let state = self.flag_state;
+                self.sink()
+                    .local_get(state)
+                    .i32_const(id as i32)
+                    .i32_eq()
+                    .if_(BlockType::Result(ValType::I32));
+            }
+            self.push_flags_word(id);
+            if k + 1 < ids.len() {
+                self.sink().else_();
+            }
+        }
+        for _ in 1..ids.len() {
+            self.sink().end();
+        }
+        Slot::Flags.store(&mut self.sink());
+    }
+
+    /// Push the flags word of the thread block, with the flags in one state.
+    fn push_flags_word(&mut self, state: u32) {
+        let shape = match state {
+            FLAGS_IN_BLOCK => {
+                let block = self.fixed(G_THREAD_BLOCK);
+                let mut s = self.sink();
+                block.push(&mut s);
+                Slot::Flags.load(&mut s);
+                return;
+            }
+            FLAGS_IN_LOCALS => None,
+            shape => Some(self.shape_flags(shape as usize - 2)),
+        };
+        for (i, flag) in Flag::ALL.into_iter().enumerate() {
+            match shape {
+                Some(flags) => flag_value(&mut self.sink(), flags, flag),
+                None => self.push_flag_from(state, flag),
+            }
+            let mut s = self.sink();
+            s.i32_const(flag.bit() as i32).i32_shl();
+            if i > 0 {
+                s.i32_or();
+            }
         }
     }
 

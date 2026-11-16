@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 fn package() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser")
@@ -76,24 +76,25 @@ pub fn translated(blob: &Blob) -> Report {
 
 /// Run a blob in Chrome at a look-ahead, leaving out some checks only to measure them.
 pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report {
-    repeated(blob, look_ahead, omit, 1)
+    repeated(blob, (look_ahead, Optimise::Speed), omit, 1)
 }
 
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
 /// The report holds the output of the last run.
-pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> Report {
-    run_in_chrome(blob, look_ahead, omit, repeat, None)
+pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32) -> Report {
+    run_in_chrome(blob, how, omit, repeat, None)
 }
 
 /// [`translated_with`] with V8 given these flags, only for measuring what the engine does (such as compiling
 /// every function when its module is made, not at its first call).
 pub fn translated_with_engine_flags(blob: &Blob, look_ahead: LookAhead, flags: &str) -> Report {
-    run_in_chrome(blob, look_ahead, Omit::default(), 1, Some(flags))
+    let how = (look_ahead, Optimise::Speed);
+    run_in_chrome(blob, how, Omit::default(), 1, Some(flags))
 }
 
 fn run_in_chrome(
     blob: &Blob,
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
     repeat: u32,
     flags: Option<&str>,
@@ -125,6 +126,7 @@ fn run_in_chrome(
             _ => 0,
         },
         "repeat": repeat,
+        "optimise": optimise as u8,
         "omit": u8::from(omit.stop)
             | (u8::from(omit.permissions) << 1)
             | (u8::from(omit.returns) << 2)

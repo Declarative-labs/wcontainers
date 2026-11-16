@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
 pub const LOAD: u64 = 0x40_0000;
@@ -245,7 +245,8 @@ pub fn placement(blob: &Blob) -> Placement {
 
 /// Run a blob through the translator in wasmtime, starting at its first byte.
 pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = translated_omitting(blob, look_ahead, Omit::default());
+    let how = (look_ahead, Optimise::Speed);
+    let (ran, machine, registers, _) = translated_omitting(blob, how, Omit::default());
     (ran, machine, registers)
 }
 
@@ -253,10 +254,10 @@ pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, Register
 /// included).
 pub fn translated_omitting(
     blob: &Blob,
-    look_ahead: LookAhead,
+    how: (LookAhead, Optimise),
     omit: Omit,
 ) -> (Ran, Machine, RegisterBlock, Duration) {
-    run_blob(blob, look_ahead, omit, false)
+    run_blob(blob, how, omit, false)
 }
 
 /// [`translated`] with the thread stopping at every stop check it reaches and carrying on each time.
@@ -264,17 +265,18 @@ pub fn translated_stopping_everywhere(
     blob: &Blob,
     look_ahead: LookAhead,
 ) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = run_blob(blob, look_ahead, Omit::default(), true);
+    let how = (look_ahead, Optimise::Speed);
+    let (ran, machine, registers, _) = run_blob(blob, how, Omit::default(), true);
     (ran, machine, registers)
 }
 
 fn run_blob(
     blob: &Blob,
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
     stop_everywhere: bool,
 ) -> (Ran, Machine, RegisterBlock, Duration) {
-    let mut machine = ready(blob, look_ahead, omit);
+    let mut machine = ready_for(blob, look_ahead, optimise, omit);
     if stop_everywhere {
         machine.stop_at_every_check();
     }
@@ -287,17 +289,23 @@ fn run_blob(
 
 /// A machine with a blob placed, translated and ready to run from its first byte.
 pub fn ready(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine {
-    ready_on(blob, look_ahead, omit, crate::runner::probe())
+    ready_for(blob, look_ahead, Optimise::Speed, omit)
+}
+
+/// [`ready`], translated for `optimise`.
+pub fn ready_for(blob: &Blob, look_ahead: LookAhead, optimise: Optimise, omit: Omit) -> Machine {
+    ready_on(blob, (look_ahead, optimise), omit, crate::runner::probe())
 }
 
 /// [`ready`], translated for a host with these facts instead of the probe's.
 pub fn ready_on(
     blob: &Blob,
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
     host: wcontainers_arm64::Host,
 ) -> Machine {
     ready_with(blob, host, |machine| {
+        machine.optimise_for(optimise);
         machine.load_omitting(
             &blob.bytes,
             0..blob.code_bytes,

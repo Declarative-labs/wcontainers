@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
 use wcontainers_translator::contract;
-use wcontainers_translator::{LookAhead, Omit, translate_omitting};
+use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
 
 thread_local! {
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -48,6 +48,7 @@ pub extern "C" fn translate(
     bound: u32,
     probe: i32,
     omit: u32,
+    optimise: u32,
 ) -> i32 {
     let look_ahead = match look_ahead {
         0 => LookAhead::None,
@@ -66,6 +67,11 @@ pub extern "C" fn translate(
             code_start..code_end,
             &[start],
             look_ahead,
+            if optimise == 1 {
+                Optimise::Size
+            } else {
+                Optimise::Speed
+            },
             wcontainers_arm64::Host::from_probe(probe),
             omit,
         )

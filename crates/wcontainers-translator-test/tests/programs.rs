@@ -171,6 +171,7 @@ fn cut_functions_and_split_translations_match_linux() {
                 0..blob.code_bytes,
                 &[0],
                 LookAhead::Full,
+                wcontainers_translator::Optimise::Speed,
                 wcontainers_translator_test::runner::probe(),
                 module_bytes,
             )
@@ -272,7 +273,7 @@ fn differences_match_linux_on_other_hosts() {
         for look_ahead in [LookAhead::None, LookAhead::Full] {
             let mut machine = ready_on(
                 &blob,
-                look_ahead,
+                (look_ahead, wcontainers_translator::Optimise::Speed),
                 wcontainers_translator::Omit::default(),
                 host,
             );
@@ -414,6 +415,7 @@ fn measure() {
                 0..blob.code_bytes,
                 &starts,
                 LookAhead::None,
+                wcontainers_translator::Optimise::Speed,
                 wcontainers_translator_test::runner::probe(),
             )
             .unwrap();
@@ -502,7 +504,7 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     for _ in 0..runs {
         let (ours, _, _, time) = translated_omitting(
             blob,
-            LookAhead::Full,
+            (LookAhead::Full, wcontainers_translator::Optimise::Speed),
             wcontainers_translator::Omit::default(),
         );
         assert_eq!(ours, theirs);
@@ -520,7 +522,7 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     for _ in 0..runs {
         let report = browser::repeated(
             blob,
-            LookAhead::Full,
+            (LookAhead::Full, wcontainers_translator::Optimise::Speed),
             wcontainers_translator::Omit::default(),
             1,
         );

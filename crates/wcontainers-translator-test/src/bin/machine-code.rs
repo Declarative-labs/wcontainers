@@ -8,7 +8,7 @@
 //! checks out, as the benchmarks do.
 
 use std::process::Command;
-use wcontainers_translator::{LookAhead, Omit, translate_omitting};
+use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
 use wcontainers_translator_test::programs::{Library, build_with};
 use wcontainers_translator_test::runner::precompile;
 
@@ -31,6 +31,7 @@ fn main() {
         0..blob.code_bytes,
         &[0],
         LookAhead::Full,
+        Optimise::Speed,
         wcontainers_translator_test::runner::probe(),
         omit,
     )

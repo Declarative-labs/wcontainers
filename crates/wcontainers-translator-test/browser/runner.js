@@ -46,6 +46,7 @@ function run({
   stopAtSyscall,
   moduleBytes,
   codeStart,
+  optimise,
 }) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
@@ -337,6 +338,7 @@ function run({
       bound,
       probe,
       omit,
+      optimise ?? 0,
     );
     if (length < 0) throw new Error(`no translation from ${start}`);
     const modules = [result(length)];
@@ -348,7 +350,7 @@ function run({
   function pieceOffsets(module) {
     const [section] = WebAssembly.Module.customSections(module, contract.descriptionSection);
     const bytes = new Uint8Array(section);
-    let at = 2;
+    let at = 3;
     const leb = () => {
       let value = 0n;
       let shift = 0n;

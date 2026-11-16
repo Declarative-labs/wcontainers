@@ -15,7 +15,7 @@ use wcontainers_abi::{
 };
 use wcontainers_translator::contract::{self, Reason};
 use wcontainers_translator::{
-    LookAhead, Omit, Translation, translate_in_modules, translate_omitting,
+    LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
 };
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -122,6 +122,8 @@ pub struct Host {
     exact_pieces: HashMap<u64, wasmtime::Func>,
     /// The look-ahead code reached at run time with no piece is translated at, chosen each time.
     run_time: Box<dyn FnMut() -> LookAhead>,
+    /// What translations are made for, unless a load says.
+    optimise: Optimise,
     /// The code translated ahead of time, in the order it was loaded, made again in a fresh thread instance.
     loads: Vec<Load>,
     /// After every load, the piece each of these addresses gets: the one of this load.
@@ -244,6 +246,7 @@ impl Machine {
                 code_ranges: Vec::new(),
                 exact_pieces: HashMap::new(),
                 run_time: Box::new(|| LookAhead::AT_RUN_TIME),
+                optimise: Optimise::Speed,
                 loads: Vec::new(),
                 picks: Vec::new(),
                 placed: Vec::new(),
@@ -320,20 +323,20 @@ impl Machine {
         bytes: &[u8],
         code: Range<u64>,
         load_address: u64,
-        translations: &[(LookAhead, Vec<u64>)],
+        translations: &[(LookAhead, Optimise, Vec<u64>)],
         seed: u64,
     ) {
         use proptest::prelude::RngExt;
         use proptest::test_runner::{RngAlgorithm, TestRng};
         self.place(bytes, code.clone(), load_address);
         let mut pieces: Vec<HashMap<u64, u32>> = Vec::new();
-        for (look_ahead, starts) in translations {
+        for (look_ahead, optimise, starts) in translations {
             let load = translate_load(
                 &mut self.store,
                 (bytes, load_address),
                 code.clone(),
                 starts,
-                *look_ahead,
+                (*look_ahead, *optimise),
                 Omit::default(),
             );
             pieces.push(instantiate(&mut self.store, &load, false));
@@ -414,12 +417,13 @@ impl Machine {
         omit: Omit,
     ) {
         self.place(bytes, code.clone(), load_address);
+        let optimise = self.store.data().optimise;
         let load = translate_load(
             &mut self.store,
             (bytes, load_address),
             code,
             starts,
-            look_ahead,
+            (look_ahead, optimise),
             omit,
         );
         instantiate(&mut self.store, &load, false);
@@ -443,6 +447,7 @@ impl Machine {
             code,
             starts,
             LookAhead::Full,
+            host.optimise,
             host.facts,
             module_bytes,
         )
@@ -485,6 +490,11 @@ impl Machine {
             .push(load_address + code.start..load_address + code.end);
         let end = (load_address + bytes.len() as u64).next_multiple_of(PAGE_SIZE);
         host.program_break = host.program_break.max(end);
+    }
+
+    /// From now on translations are made for `optimise`, those made at run time included.
+    pub fn optimise_for(&mut self, optimise: Optimise) {
+        self.store.data_mut().optimise = optimise;
     }
 
     /// From now on code reached with no piece is translated at the look-ahead `choose` gives each time.
@@ -1036,12 +1046,13 @@ fn translate_load(
     (bytes, load_address): (&[u8], u64),
     code: Range<u64>,
     starts: &[u64],
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
 ) -> Load {
     let host = store.as_context().data();
     let translation =
-        translate_omitting(bytes, code, starts, look_ahead, host.facts, omit).expect("translate");
+        translate_omitting(bytes, code, starts, look_ahead, optimise, host.facts, omit)
+            .expect("translate");
     compile(&host.engine, load_address, translation)
 }
 
@@ -1072,7 +1083,8 @@ fn instantiate_code(
     exact: bool,
 ) {
     let range = 0..code.0.len() as u64;
-    let load = translate_load(store, code, range, &[start], look_ahead, Omit::default());
+    let how = (look_ahead, store.as_context().data().optimise);
+    let load = translate_load(store, code, range, &[start], how, Omit::default());
     instantiate(store, &load, exact);
 }
 
