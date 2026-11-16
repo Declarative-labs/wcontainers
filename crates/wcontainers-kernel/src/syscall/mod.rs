@@ -315,6 +315,10 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_shmat, S(ipc::shmat)),
         (__NR_shmdt, S(ipc::shmdt)),
         (__NR_shmctl, S(ipc::shmctl)),
+        (__NR_msgget, S(ipc::msgget)),
+        (__NR_msgsnd, S(ipc::msgsnd)),
+        (__NR_msgrcv, S(ipc::msgrcv)),
+        (__NR_msgctl, S(ipc::msgctl)),
     ];
     let mut index = 0;
     while index < implemented.len() {

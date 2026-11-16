@@ -110,6 +110,8 @@ pub const SELF: u64 = 0x5e1f_5e1f_0000_0001;
 pub const SEGMENT: u64 = 0x5e1f_5e1f_0000_0002;
 /// An identifier whose slot neither runner reaches.
 pub const NO_SEGMENT: u64 = 4000;
+/// As `SEGMENT`, for the last identifier msgget gave (`NO_SEGMENT` before one).
+pub const QUEUE: u64 = 0x5e1f_5e1f_0000_0003;
 const OUTPUT: u64 = 0x4000;
 
 /// The sequence's work directory, made and entered by its first two calls and removed afterwards.
@@ -693,7 +695,9 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         passed.extend([linux::__NR_waitid, linux::__NR_getpid]);
     }
     for call in &calls {
-        if (call.arguments.contains(&SELF) || call.arguments.contains(&SEGMENT))
+        if (call.arguments.contains(&SELF)
+            || call.arguments.contains(&SEGMENT)
+            || call.arguments.contains(&QUEUE))
             && !passed.contains(&call.number)
         {
             passed.push(call.number);
@@ -1347,7 +1351,19 @@ pub const CALLS: &[u32] = &[
     linux::__NR_process_mrelease,
     linux::__NR_signalfd4,
     linux::__NR_signalfd4,
+    linux::__NR_msgget,
+    linux::__NR_msgget,
+    linux::__NR_msgsnd,
+    linux::__NR_msgsnd,
+    linux::__NR_msgrcv,
+    linux::__NR_msgrcv,
+    linux::__NR_msgctl,
 ];
+
+/// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
+mod linux_extra_ipc {
+    pub const IPC_NOWAIT: u32 = 0o4000;
+}
 
 /// Turns a generated call into real arguments.
 fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
@@ -1484,6 +1500,7 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             word,
         )
     };
+    let queue = |word: u64| pick(&[QUEUE, QUEUE, QUEUE, QUEUE, u64::MAX, NO_SEGMENT], word);
     let arguments = match number {
         // One open in eight names a random device, so that later reads reach their bytes.
         linux::__NR_openat if b % 8 == 0 => {
@@ -1948,6 +1965,47 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 &[0u64, 1, 2, 3, 11, 12, 13, 14, 15, 2, 2, 99, u64::MAX, 0x102],
                 b,
             ),
+            buffer(c),
+            0,
+            0,
+            0,
+        ],
+        // Message queues: keys and modes as shmget's, messages from the arena (their type is its
+        // first word), every search and flag, and never a wait (IPC_NOWAIT always).
+        linux::__NR_msgget => [
+            pick(&[0u64, 0x1234, 0x1234, 0x5678, 0xffff_ffff], a),
+            pick(&[0u64, 0o1000, 0o1000, 0o3000, 0o4000], b >> 9) | (b % 0o1000),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_msgsnd => [
+            queue(a),
+            buffer(b),
+            pick(&[0, 1, 5, 100, 8192, 8193, u64::MAX], c),
+            u64::from(linux_extra_ipc::IPC_NOWAIT) | pick(&[0, 0, 0o10000, 1 << 20], d),
+            0,
+            0,
+        ],
+        linux::__NR_msgrcv => [
+            queue(a),
+            buffer(b),
+            pick(&[0, 1, 4, 100, 8192, u64::MAX], c),
+            pick(
+                &[0, 0, 1, 2, u64::MAX, -5i64 as u64, i64::MIN as u64, 1 << 40],
+                d,
+            ),
+            u64::from(linux_extra_ipc::IPC_NOWAIT)
+                | pick(
+                    &[0, 0, 0o10000, 0o20000, 0o40000, 0o60000, 0o50000, 1 << 20],
+                    e,
+                ),
+            0,
+        ],
+        linux::__NR_msgctl => [
+            queue(a),
+            pick(&[0u64, 1, 2, 3, 11, 12, 13, 2, 2, 99, u64::MAX], b),
             buffer(c),
             0,
             0,
@@ -3185,6 +3243,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
     };
     let mut results = Vec::new();
     let mut segment = NO_SEGMENT;
+    let mut queue = NO_SEGMENT;
     for (index, each) in sequence.calls.iter().enumerate() {
         let mut each = *each;
         for argument in &mut each.arguments {
@@ -3193,6 +3252,9 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
             }
             if *argument == SEGMENT {
                 *argument = segment;
+            }
+            if *argument == QUEUE {
+                *argument = queue;
             }
         }
         let random = theirs.calls.get(index).is_some_and(|call| call.random);
@@ -3212,6 +3274,12 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
             && id >= 0
         {
             segment = id as u64;
+        }
+        if let Ok(id) = outcome
+            && each.number == linux::__NR_msgget
+            && id >= 0
+        {
+            queue = id as u64;
         }
         // The runner's wait for a child to end, left to be reaped.
         if let Ok(child) = outcome
@@ -3581,6 +3649,10 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
             _ => {}
         }
     }
+    // A queue's sequence number, times and processes.
+    if call.number == linux::__NR_msgctl && value >= 0 && matches!(b, 2 | 11 | 13) {
+        out.extend([(c + 24, 2), (c + 48, 24), (c + 96, 8)]);
+    }
     // The CPU number, written before a fault on the node number.
     if call.number == linux::__NR_getcpu {
         out.push((a, 4));
@@ -3731,6 +3803,8 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         linux::__NR_shmget => true,
         linux::__NR_shmctl => matches!(call.arguments[1], 3 | 13 | 14 | 15),
         linux::__NR_shmat => call.arguments[1] < 4096,
+        linux::__NR_msgget => true,
+        linux::__NR_msgctl => matches!(call.arguments[1], 3 | 11 | 12 | 13),
         _ => false,
     }
 }

@@ -18,6 +18,7 @@ impl Errno {
     pub const EEXIST: Self = Self(errno::EEXIST);
     pub const EFAULT: Self = Self(errno::EFAULT);
     pub const EFBIG: Self = Self(errno::EFBIG);
+    pub const EIDRM: Self = Self(errno::EIDRM);
     pub const EINTR: Self = Self(errno::EINTR);
     pub const EINVAL: Self = Self(errno::EINVAL);
     pub const EIO: Self = Self(errno::EIO);
@@ -32,6 +33,7 @@ impl Errno {
     pub const ENOENT: Self = Self(errno::ENOENT);
     pub const ENOEXEC: Self = Self(errno::ENOEXEC);
     pub const ENOMEM: Self = Self(errno::ENOMEM);
+    pub const ENOMSG: Self = Self(errno::ENOMSG);
     pub const ENOSPC: Self = Self(errno::ENOSPC);
     pub const ENOSYS: Self = Self(errno::ENOSYS);
     pub const ENOTDIR: Self = Self(errno::ENOTDIR);

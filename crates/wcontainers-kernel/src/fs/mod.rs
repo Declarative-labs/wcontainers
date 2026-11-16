@@ -171,13 +171,15 @@ impl FileSystem {
         self.flags & crate::linux_extra::ST_NODEV != 0
     }
 
-    /// Programs on it may not run (`noexec`).
-    /// Whether nothing on it may run: a `noexec` mount, or secret memory and pipes, whose file
-    /// systems say so themselves (`SB_I_NOEXEC`, as `init_pseudo` sets; measured) without showing it
-    /// in statfs's flags.
+    /// Whether nothing on it may run: a `noexec` mount, or secret memory, pipes, process descriptors
+    /// and the anonymous inode, whose file systems say so themselves (`SB_I_NOEXEC`; measured)
+    /// without showing it in statfs's flags.
     pub fn no_execute(&self) -> bool {
         self.flags & crate::linux_extra::ST_NOEXEC != 0
-            || matches!(self.kind, Kind::Secretmem | Kind::Pipe)
+            || matches!(
+                self.kind,
+                Kind::Secretmem | Kind::Pipe | Kind::Pidfs | Kind::Anon
+            )
     }
 }
 

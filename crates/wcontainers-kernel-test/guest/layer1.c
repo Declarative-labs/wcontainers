@@ -50,6 +50,8 @@
 // Replaced by the last identifier shmget gave in the sequence (`SEGMENT` in layer1.rs).
 #define SEGMENT 0x5e1f5e1f00000002ULL
 #define NO_SEGMENT 4000
+// Replaced by the last identifier msgget gave (`QUEUE` in layer1.rs).
+#define QUEUE 0x5e1f5e1f00000003ULL
 #define PLAY 0x71000000UL
 #define PLAY_PAGES 16
 // The ranges sent with each call (`CLEARS` in layer1.rs).
@@ -457,6 +459,7 @@ int main(void) {
             uint64_t self = (uint64_t)self_pid;
             int terminal = opens_terminal(sequence, calls);
             uint64_t segment = NO_SEGMENT;
+            uint64_t queue = NO_SEGMENT;
             for (uint32_t index = 0; index < calls; index++) {
                 for (int argument = 1; argument < 7; argument++) {
                     if (sequence[index][argument] == SELF) {
@@ -465,11 +468,17 @@ int main(void) {
                     if (sequence[index][argument] == SEGMENT) {
                         sequence[index][argument] = segment;
                     }
+                    if (sequence[index][argument] == QUEUE) {
+                        sequence[index][argument] = queue;
+                    }
                 }
                 int64_t out_before = random_output(sequence[index]);
                 int64_t result = raw(sequence[index][0], &sequence[index][1]);
                 if (sequence[index][0] == SYS_shmget && result >= 0) {
                     segment = (uint64_t)result;
+                }
+                if (sequence[index][0] == SYS_msgget && result >= 0) {
+                    queue = (uint64_t)result;
                 }
                 // A child is waited for until it has ended, left to be reaped.
                 if (sequence[index][0] == SYS_clone && result > 0) {
@@ -572,6 +581,20 @@ int main(void) {
                 syscall(SYS_shmctl, id, 0, 0);
                 syscall(SYS_setresuid, -1, 0, -1);
                 // A change of user takes away dumpable, which later sequences inherit.
+                prctl(PR_SET_DUMPABLE, 1);
+            }
+        }
+        // So does every message queue.
+        static unsigned char queue_status[120];
+        highest = syscall(SYS_msgctl, 0, 3, queue_status);
+        for (long slot = 0; slot <= highest; slot++) {
+            long id = syscall(SYS_msgctl, slot, 13, queue_status);
+            if (id >= 0) {
+                uint32_t creator;
+                memcpy(&creator, queue_status + 12, 4);
+                syscall(SYS_setresuid, -1, creator, -1);
+                syscall(SYS_msgctl, id, 0, 0);
+                syscall(SYS_setresuid, -1, 0, -1);
                 prctl(PR_SET_DUMPABLE, 1);
             }
         }

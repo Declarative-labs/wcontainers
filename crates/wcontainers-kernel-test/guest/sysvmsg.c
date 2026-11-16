@@ -53,9 +53,10 @@ static void show(const char *what, long result) {
 
 static long get(long key, long flags) { return syscall(SYS_msgget, key, flags); }
 static long snd(int id, long type, const char *text, size_t size, long flags) {
-    struct message m;
+    static struct message m;
     m.type = type;
-    memcpy(m.text, text, size < sizeof m.text ? size : sizeof m.text);
+    memset(m.text, 0, sizeof m.text);
+    memcpy(m.text, text, strlen(text));
     return syscall(SYS_msgsnd, id, &m, size, flags);
 }
 static long rcv(int id, size_t size, long type, long flags, struct message *m) {
@@ -216,6 +217,8 @@ static void waits(void) {
     show("send type 1", snd(id, 1, "first", 5, 0));
     usleep(100000);
     show("send type 2", snd(id, 2, "second", 6, 0));
+    usleep(100000);
+    show("send type 9", snd(id, 9, "toolong", 7, 0));
     for (int i = 0; i < 3; i++)
         waitpid(kids[i], NULL, 0);
     char buffer[1000];
@@ -238,8 +241,9 @@ static void waits(void) {
         _exit(0);
     }
     usleep(100000);
-    received("make room", rcv(id, 100, 0, 0, &m), &m);
+    long room = rcv(id, 100, 0, 0, &m);
     waitpid(child_pid, NULL, 0);
+    received("make room", room, &m);
     status("after waiting sender", id);
     rcv(id, 100, 0, 0, &m);
     child_pid = fork();
@@ -253,17 +257,10 @@ static void waits(void) {
     ctl(id, RMID, NULL);
     waitpid(child_pid, NULL, 0);
 
-    // A signal ends a wait with EINTR, even with SA_RESTART.
+    // A signal whose handler asks for restarts still ends a wait with EINTR.
     id = get(0, 0600);
-    struct sigaction action = {0};
-    action.sa_handler = (void (*)(int))1 == SIG_IGN ? SIG_DFL : SIG_DFL;
     child_pid = fork();
     if (child_pid == 0) {
-        struct sigaction restart = {0};
-        restart.sa_handler = (void (*)(int))0;
-        restart.sa_flags = SA_RESTART;
-        restart.sa_handler = SIG_IGN;
-        sigaction(SIGUSR2, &restart, NULL);
         struct sigaction handled = {0};
         handled.sa_handler = (void (*)(int))abs;
         handled.sa_flags = SA_RESTART;
@@ -273,7 +270,6 @@ static void waits(void) {
         printf("interrupted receiver: %ld errno %d\n", r, r < 0 ? errno : 0);
         _exit(0);
     }
-    (void)action;
     usleep(100000);
     kill(child_pid, SIGUSR1);
     waitpid(child_pid, NULL, 0);

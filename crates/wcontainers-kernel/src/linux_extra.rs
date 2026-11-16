@@ -325,6 +325,8 @@ pub(crate) const IPC_PRIVATE: i32 = 0;
 /// `*get` flags: make the object if the key has none, and fail if it has one.
 pub(crate) const IPC_CREAT: u32 = 0o1000;
 pub(crate) const IPC_EXCL: u32 = 0o2000;
+/// Return at once rather than wait.
+pub(crate) const IPC_NOWAIT: u32 = 0o4000;
 /// `*ctl` commands every kind of object takes.
 pub(crate) const IPC_RMID: i32 = 0;
 pub(crate) const IPC_SET: i32 = 1;
@@ -422,4 +424,55 @@ pub(crate) struct shm_info {
     pub shm_swp: u64,
     pub swap_attempts: u64,
     pub swap_successes: u64,
+}
+
+/// Message queues (`linux/msg.h`): `msgrcv`'s flags, `msgctl`'s own commands, and the limits of a new
+/// IPC namespace (`MSGMNI`, `MSGMAX`, `MSGMNB`) with the fixed values `IPC_INFO` shows.
+pub(crate) const MSG_NOERROR: u32 = 0o10000;
+pub(crate) const MSG_EXCEPT: u32 = 0o20000;
+pub(crate) const MSG_COPY: u32 = 0o40000;
+pub(crate) const MSG_STAT: i32 = 11;
+pub(crate) const MSG_INFO: i32 = 12;
+pub(crate) const MSG_STAT_ANY: i32 = 13;
+pub(crate) const MSGMNI: u64 = 32000;
+pub(crate) const MSGMAX: u64 = 8192;
+pub(crate) const MSGMNB: u64 = 16384;
+pub(crate) const MSGPOOL: i32 = (MSGMNI * MSGMNB / 1024) as i32;
+pub(crate) const MSGSSZ: i32 = 16;
+pub(crate) const MSGSEG: u16 = 0xffff;
+
+/// A message queue's status (`struct msqid64_ds`).
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct msqid64_ds {
+    pub msg_perm: ipc64_perm,
+    pub msg_stime: i64,
+    pub msg_rtime: i64,
+    pub msg_ctime: i64,
+    pub msg_cbytes: u64,
+    pub msg_qnum: u64,
+    pub msg_qbytes: u64,
+    pub msg_lspid: i32,
+    pub msg_lrpid: i32,
+    pub unused4: u64,
+    pub unused5: u64,
+}
+
+/// What `IPC_INFO` and `MSG_INFO` show of message queues (`struct msginfo`).
+#[repr(C)]
+#[derive(
+    Clone, Copy, Debug, Default, zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable,
+)]
+pub(crate) struct msginfo {
+    pub msgpool: i32,
+    pub msgmap: i32,
+    pub msgmax: i32,
+    pub msgmnb: i32,
+    pub msgmni: i32,
+    pub msgssz: i32,
+    pub msgtql: i32,
+    pub msgseg: u16,
+    pub pad: u16,
 }

@@ -1,6 +1,6 @@
 //! System V IPC as Linux's `ipc/` builds it for a container's own IPC namespace: identifiers,
-//! keys and permissions shared by every kind of object, and shared memory segments, which are files on
-//! the internal tmpfs mapped shared (`ipc/shm.c`).
+//! keys and permissions shared by every kind of object, shared memory segments, which are files on
+//! the internal tmpfs mapped shared (`ipc/shm.c`), and message queues (`ipc/msg.c`).
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -15,7 +15,7 @@ use crate::credentials::Credentials;
 use crate::fs::{Content, Node};
 use crate::linux::general::*;
 use crate::linux_extra::*;
-use crate::process::{Pid, Tid};
+use crate::process::{Channel, Pid, Tid};
 use crate::{Context, Errno, Kernel};
 
 /// An object's key, owners, mode and identifier (Linux's `kern_ipc_perm`).
@@ -185,6 +185,10 @@ impl Segment {
 #[derive(Clone, Default)]
 pub(crate) struct Ipc {
     shm: Ids<Segment>,
+    msg: Ids<Queue>,
+    /// What a receiver waiting in `msgrcv` was handed while parked: a message, or why its wait ended
+    /// (Linux's `r_msg`), taken when its call runs again.
+    handed: BTreeMap<Tid, Result<Message, Errno>>,
     /// Pages of every segment (`shm_tot`).
     shm_pages: u64,
     /// Pages of segments locked by `SHM_LOCK`, by the real user that locked them
@@ -698,4 +702,459 @@ fn attachments(kernel: &Kernel) -> BTreeMap<u32, u64> {
         }
     }
     counts
+}
+
+/// A message (Linux's `msg_msg`): its type and text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Message {
+    kind: i64,
+    text: Vec<u8>,
+}
+
+/// How a receiver chooses a message (`convert_mode`), with the type it names.
+#[derive(Clone, Copy)]
+enum Search {
+    Any,
+    /// The message at this position, for `MSG_COPY`.
+    Number(i64),
+    Equal(i64),
+    NotEqual(i64),
+    /// The lowest type at or below this one.
+    LessEqual(i64),
+}
+
+impl Search {
+    fn new(kind: i64, flags: u32) -> Self {
+        if flags & MSG_COPY != 0 {
+            Search::Number(kind)
+        } else if kind == 0 {
+            Search::Any
+        } else if kind < 0 {
+            Search::LessEqual(kind.checked_neg().unwrap_or(i64::MAX))
+        } else if flags & MSG_EXCEPT != 0 {
+            Search::NotEqual(kind)
+        } else {
+            Search::Equal(kind)
+        }
+    }
+
+    /// `testmsg`.
+    fn takes(self, kind: i64) -> bool {
+        match self {
+            Search::Any | Search::Number(_) => true,
+            Search::Equal(wanted) => kind == wanted,
+            Search::NotEqual(wanted) => kind != wanted,
+            Search::LessEqual(most) => kind <= most,
+        }
+    }
+}
+
+/// A receiver parked in `msgrcv`, in the order receivers came (`msg_receiver`).
+#[derive(Clone, Copy)]
+struct Receiver {
+    tid: Tid,
+    search: Search,
+    /// The largest text it takes; any with `MSG_NOERROR`.
+    largest: u64,
+}
+
+/// A message queue (Linux's `msg_queue`).
+#[derive(Clone)]
+struct Queue {
+    perm: Perm,
+    messages: alloc::collections::VecDeque<Message>,
+    bytes: u64,
+    limit: u64,
+    stime: i64,
+    rtime: i64,
+    ctime: i64,
+    last_sender: Pid,
+    last_receiver: Pid,
+    receivers: Vec<Receiver>,
+    /// Two addresses no other object has: senders wait on the first, receivers on the second.
+    waits: alloc::rc::Rc<[u8; 2]>,
+}
+
+impl Object for Queue {
+    fn perm(&self) -> &Perm {
+        &self.perm
+    }
+}
+
+impl Queue {
+    fn senders(&self) -> Channel {
+        Channel::Object(alloc::rc::Rc::as_ptr(&self.waits) as *const u8 as usize)
+    }
+
+    fn receivers_channel(&self) -> Channel {
+        Channel::Object(alloc::rc::Rc::as_ptr(&self.waits) as *const u8 as usize + 1)
+    }
+
+    /// `msg_fits_inqueue`: the bytes and the count of messages are both held to the byte limit.
+    fn fits(&self, size: u64) -> bool {
+        size + self.bytes <= self.limit && (self.messages.len() as u64) < self.limit
+    }
+
+    /// `find_msg`: the position of the first message the search takes; for `LessEqual` the first
+    /// of the lowest type.
+    fn find(&self, search: Search) -> Option<usize> {
+        let mut found = None;
+        let mut most = match search {
+            Search::LessEqual(most) => most,
+            _ => 0,
+        };
+        let mut count = 0;
+        for (index, message) in self.messages.iter().enumerate() {
+            let search = match search {
+                Search::LessEqual(_) => Search::LessEqual(most),
+                other => other,
+            };
+            if !search.takes(message.kind) {
+                continue;
+            }
+            match search {
+                Search::LessEqual(_) if message.kind != 1 => {
+                    most = message.kind - 1;
+                    found = Some(index);
+                }
+                Search::Number(wanted) => {
+                    if wanted == count {
+                        return Some(index);
+                    }
+                }
+                _ => return Some(index),
+            }
+            count += 1;
+        }
+        found
+    }
+}
+
+pub(super) fn msgget(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [key, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let (key, flags) = (key as i32, flags as u32);
+    let credentials = kernel.process_of(tid).credentials.clone();
+    if let Some(id) = get(&kernel.ipc.msg, &credentials, key, flags, |_| Ok(()))? {
+        return Ok(id as u64);
+    }
+    // `newque`.
+    let slot = kernel.ipc.msg.allocate(MSGMNI)?;
+    let perm = new_perm(&credentials, key, flags, slot);
+    let id = perm.id;
+    let now = kernel.now(cx).seconds;
+    kernel.ipc.msg.slots.insert(
+        slot.0,
+        Queue {
+            perm,
+            messages: Default::default(),
+            bytes: 0,
+            limit: MSGMNB,
+            stime: 0,
+            rtime: 0,
+            ctime: now,
+            last_sender: 0,
+            last_receiver: 0,
+            receivers: Vec::new(),
+            waits: alloc::rc::Rc::new([0; 2]),
+        },
+    );
+    Ok(id as u64)
+}
+
+pub(super) fn msgsnd(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [id, buffer, size, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    // `ksys_msgsnd` and `do_msgsnd`, in their order. A sender that waited runs again from here; its
+    // queue gone since is EIDRM.
+    let waited = kernel.threads[&tid].call.started;
+    let kind: i64 = guest(kernel, cx, tid).read_value(buffer)?;
+    let (id, flags) = (id as i32, flags as u32);
+    if size > MSGMAX || (size as i64) < 0 || id < 0 || kind < 1 {
+        return Err(Errno::EINVAL);
+    }
+    let text = guest(kernel, cx, tid).read(buffer + 8, size)?;
+    let index = kernel
+        .ipc
+        .msg
+        .checked(id)
+        .map_err(|error| if waited { Errno::EIDRM } else { error })?;
+    let credentials = &kernel.process_of(tid).credentials;
+    let queue = &kernel.ipc.msg.slots[&index];
+    if !queue.perm.permits(credentials, 0o222) {
+        return Err(Errno::EACCES);
+    }
+    if !queue.fits(size) {
+        if flags & IPC_NOWAIT != 0 {
+            return Err(Errno::EAGAIN);
+        }
+        if waited && kernel.signal_pending(tid) {
+            return Err(Errno::ERESTARTNOHAND);
+        }
+        let channel = queue.senders();
+        kernel.thread_mut(tid).call.started = true;
+        kernel.park(tid, channel);
+        return Err(Errno::PARKED);
+    }
+    let pid = kernel.threads[&tid].process;
+    let now = kernel.now(cx).seconds;
+    let message = Message { kind, text };
+    let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
+    queue.last_sender = pid;
+    queue.stime = now;
+    // `pipelined_send`: the first receiver in line the message suits takes it at once; one whose
+    // buffer is too small is woken with E2BIG and the next is tried.
+    let receivers = core::mem::take(&mut queue.receivers);
+    let mut kept = Vec::new();
+    let mut message = Some(message);
+    let channel = queue.receivers_channel();
+    for receiver in receivers {
+        let waiting = kernel
+            .threads
+            .get(&receiver.tid)
+            .is_some_and(|thread| thread.call.wait == Some(channel));
+        let Some(sent) = message.as_ref().filter(|_| waiting) else {
+            if waiting {
+                kept.push(receiver);
+            }
+            continue;
+        };
+        if !receiver.search.takes(sent.kind) {
+            kept.push(receiver);
+            continue;
+        }
+        if receiver.largest < sent.text.len() as u64 {
+            kernel.ipc.handed.insert(receiver.tid, Err(Errno::E2BIG));
+        } else {
+            let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
+            queue.last_receiver = receiver.tid;
+            queue.rtime = now;
+            let sent = message.take().expect("a message");
+            kernel.ipc.handed.insert(receiver.tid, Ok(sent));
+        }
+        kernel.wake_thread(receiver.tid);
+    }
+    let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
+    queue.receivers = kept;
+    if let Some(message) = message {
+        queue.bytes += message.text.len() as u64;
+        queue.messages.push_back(message);
+    }
+    Ok(0)
+}
+
+pub(super) fn msgrcv(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [id, buffer, size, kind, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let (id, flags, kind) = (id as i32, flags as u32, kind as i64);
+    let waited = kernel.threads[&tid].call.started;
+    // What a send or a removal handed it while it waited comes first.
+    let handed = kernel.ipc.handed.remove(&tid);
+    if waited && let Some(handed) = handed {
+        return fill(kernel, cx, tid, buffer, size, handed?);
+    }
+    if id < 0 || (size as i64) < 0 {
+        return Err(Errno::EINVAL);
+    }
+    if flags & MSG_COPY != 0 && (flags & MSG_EXCEPT != 0 || flags & IPC_NOWAIT == 0) {
+        return Err(Errno::EINVAL);
+    }
+    let search = Search::new(kind, flags);
+    let index = kernel
+        .ipc
+        .msg
+        .checked(id)
+        .map_err(|error| if waited { Errno::EIDRM } else { error })?;
+    let credentials = kernel.process_of(tid).credentials.clone();
+    let now = kernel.now(cx).seconds;
+    let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
+    queue.receivers.retain(|receiver| receiver.tid != tid);
+    if !queue.perm.permits(&credentials, 0o444) {
+        return Err(Errno::EACCES);
+    }
+    if let Some(position) = queue.find(search) {
+        let found = &queue.messages[position];
+        if size < found.text.len() as u64 && flags & MSG_NOERROR == 0 {
+            return Err(Errno::E2BIG);
+        }
+        if flags & MSG_COPY != 0 {
+            // `copy_msg`: the copy is made at the size asked for, at most the largest message.
+            if size.min(MSGMAX) < found.text.len() as u64 {
+                return Err(Errno::EINVAL);
+            }
+            let message = found.clone();
+            return fill(kernel, cx, tid, buffer, size, message);
+        }
+        let message = queue.messages.remove(position).expect("found");
+        queue.bytes -= message.text.len() as u64;
+        queue.rtime = now;
+        let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
+        queue.last_receiver = kernel.threads[&tid].process;
+        let senders = queue.senders();
+        kernel.wake(senders);
+        return fill(kernel, cx, tid, buffer, size, message);
+    }
+    if flags & IPC_NOWAIT != 0 {
+        return Err(Errno::ENOMSG);
+    }
+    if kernel.signal_pending(tid) {
+        return Err(Errno::ERESTARTNOHAND);
+    }
+    let largest = if flags & MSG_NOERROR != 0 {
+        i32::MAX as u64
+    } else {
+        size
+    };
+    let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
+    queue.receivers.push(Receiver {
+        tid,
+        search,
+        largest,
+    });
+    let channel = queue.receivers_channel();
+    kernel.thread_mut(tid).call.started = true;
+    kernel.park(tid, channel);
+    Err(Errno::PARKED)
+}
+
+/// `do_msg_fill`: the type, then as much of the text as the buffer takes. A message that cannot be
+/// stored is lost, as on Linux.
+fn fill(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    buffer: u64,
+    size: u64,
+    message: Message,
+) -> Result<u64, Errno> {
+    let mut guest = guest(kernel, cx, tid);
+    guest.put(buffer, &message.kind.to_le_bytes())?;
+    let length = size.min(message.text.len() as u64);
+    guest
+        .write(buffer + 8, &message.text[..length as usize])
+        .map_err(|_| Errno::EFAULT)?;
+    Ok(length)
+}
+
+pub(super) fn msgctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [id, command, buffer, ..]: Args,
+) -> Result<u64, Errno> {
+    let (id, command) = (id as i32, command as i32);
+    if id < 0 || command < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let credentials = kernel.process_of(tid).credentials.clone();
+    let msg = &kernel.ipc.msg;
+    match command {
+        IPC_INFO | MSG_INFO => {
+            let mut info = msginfo {
+                msgpool: MSGPOOL,
+                msgmap: MSGMNB as i32,
+                msgmax: MSGMAX as i32,
+                msgmnb: MSGMNB as i32,
+                msgmni: MSGMNI as i32,
+                msgssz: MSGSSZ,
+                msgtql: MSGMNB as i32,
+                msgseg: MSGSEG,
+                pad: 0,
+            };
+            if command == MSG_INFO {
+                info.msgpool = msg.slots.len() as i32;
+                info.msgmap = msg
+                    .slots
+                    .values()
+                    .map(|queue| queue.messages.len() as i32)
+                    .sum();
+                info.msgtql = msg.slots.values().map(|queue| queue.bytes as i32).sum();
+            }
+            let max = msg.max_index();
+            guest(kernel, cx, tid).write(buffer, info.as_bytes())?;
+            Ok(max)
+        }
+        IPC_STAT | MSG_STAT | MSG_STAT_ANY => {
+            let index = if command == IPC_STAT {
+                msg.checked(id)?
+            } else {
+                msg.by_index(id)?
+            };
+            let queue = &msg.slots[&index];
+            if command != MSG_STAT_ANY && !queue.perm.permits(&credentials, 0o444) {
+                return Err(Errno::EACCES);
+            }
+            let status = msqid64_ds {
+                msg_perm: queue.perm.shown(),
+                msg_stime: queue.stime,
+                msg_rtime: queue.rtime,
+                msg_ctime: queue.ctime,
+                msg_cbytes: queue.bytes,
+                msg_qnum: queue.messages.len() as u64,
+                msg_qbytes: queue.limit,
+                msg_lspid: queue.last_sender,
+                msg_lrpid: queue.last_receiver,
+                ..Default::default()
+            };
+            let answer = if command == IPC_STAT {
+                0
+            } else {
+                queue.perm.id as u64
+            };
+            guest(kernel, cx, tid).write(buffer, status.as_bytes())?;
+            Ok(answer)
+        }
+        IPC_SET | IPC_RMID => {
+            let wanted = if command == IPC_SET {
+                Some(guest(kernel, cx, tid).read_value::<msqid64_ds>(buffer)?)
+            } else {
+                None
+            };
+            let index = kernel.ipc.msg.checked(id)?;
+            let now = kernel.now(cx).seconds;
+            let queue = kernel.ipc.msg.slots.get_mut(&index).expect("checked");
+            if !queue.perm.may_control(&credentials) {
+                return Err(Errno::EPERM);
+            }
+            let (senders, receivers) = (queue.senders(), queue.receivers_channel());
+            match wanted {
+                Some(wanted) => {
+                    if wanted.msg_qbytes > MSGMNB && !credentials.has(CAP_SYS_RESOURCE) {
+                        return Err(Errno::EPERM);
+                    }
+                    let perm = wanted.msg_perm;
+                    if perm.uid == u32::MAX || perm.gid == u32::MAX {
+                        return Err(Errno::EINVAL);
+                    }
+                    queue.perm.uid = perm.uid;
+                    queue.perm.gid = perm.gid;
+                    queue.perm.mode = (queue.perm.mode & !0o777) | (perm.mode & 0o777);
+                    queue.limit = wanted.msg_qbytes;
+                    queue.ctime = now;
+                    // Receivers look again under the new permissions, senders under the new size.
+                    queue.receivers.clear();
+                }
+                None => {
+                    // `freeque`: receivers are told the queue is gone; senders find it gone.
+                    let queue = kernel.ipc.msg.slots.remove(&index).expect("checked");
+                    for receiver in queue.receivers {
+                        kernel.ipc.handed.insert(receiver.tid, Err(Errno::EIDRM));
+                    }
+                }
+            }
+            kernel.wake(senders);
+            kernel.wake(receivers);
+            Ok(0)
+        }
+        _ => Err(Errno::EINVAL),
+    }
 }
