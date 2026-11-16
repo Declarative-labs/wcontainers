@@ -316,8 +316,59 @@ static void orphans(void) {
     while (waitpid(-1, &st, WNOHANG) > 0) {}
 }
 
+// Memory after fork: shared anonymous memory and shared file mappings are seen by both, private
+// memory is each one's own, and the fork advice is followed.
+static void memory(void) {
+    volatile int *shared = mmap(0, 8192, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    volatile int *private = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    volatile int *dropped = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    volatile int *wiped = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    int fd = open("/dev/shm/processes", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    ftruncate(fd, 4096);
+    volatile int *file = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    shared[0] = 1;
+    shared[1024] = 1;
+    private[0] = 1;
+    dropped[0] = 1;
+    wiped[0] = 1;
+    file[0] = 1;
+    printf("dontfork %d wipeonfork %d\n", madvise((void *)dropped, 4096, MADV_DONTFORK),
+           madvise((void *)wiped, 4096, MADV_WIPEONFORK));
+    pid_t child = fork();
+    if (child == 0) {
+        shared[0] = 2;
+        shared[1024] = 3;
+        private[0] = 2;
+        file[0] = 2;
+        printf("child wiped %d\n", wiped[0]);
+        fflush(stdout);
+        // The page it did not get faults.
+        signal(SIGSEGV, SIG_DFL);
+        (void)dropped[0];
+        _exit(0);
+    }
+    int st;
+    waitpid(child, &st, 0);
+    status("dropped page", st);
+    int bytes = 0;
+    pread(fd, &bytes, 4, 0);
+    printf("parent sees shared %d %d private %d file %d read %d wiped %d\n", shared[0], shared[1024], private[0],
+           file[0], bytes, wiped[0]);
+    // A vfork child shares everything until it execs.
+    child = vfork();
+    if (child == 0) {
+        private[0] = 9;
+        _exit(0);
+    }
+    waitpid(child, &st, 0);
+    printf("after vfork private %d\n", private[0]);
+    close(fd);
+    unlink("/dev/shm/processes");
+}
+
 int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
+    memory();
     forks();
     pipes();
     signals();

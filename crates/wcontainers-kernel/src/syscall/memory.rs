@@ -273,15 +273,20 @@ pub(super) fn mmap(
             }
         }
     };
+    // Linux's `shmem_zero_setup`: shared anonymous memory and shared `/dev/zero` are a shared
+    // mapping of a removed file on its internal tmpfs, from offset 0 for anonymous memory and where
+    // asked for `/dev/zero`, so a child sees the same pages.
+    let file = match (file, &zero_device) {
+        (None, zero) if shared => {
+            let offset = if zero.is_some() { offset } else { 0 };
+            Some((
+                shared_zero_file(kernel, cx, offset + length)?,
+                b"/dev/zero".to_vec(),
+            ))
+        }
+        (file, _) => file,
+    };
     let backing = match (&file, zero_device) {
-        // Linux's `shmem_zero_setup`: a removed file on its internal tmpfs, from offset 0 for
-        // anonymous memory and where asked for `/dev/zero`.
-        (None, zero) if shared => Backing::Zero {
-            device: kernel.files.memfd_fs.device,
-            ino: kernel.files.numbers.ino(),
-            offset: if zero.is_some() { offset } else { 0 },
-            name: b"/dev/zero (deleted)".to_vec(),
-        },
         // A private mapping of `/dev/zero` is anonymous memory that keeps the file
         // (`mmap_zero_private_success`).
         (None, Some((device, ino, path))) => Backing::Zero {
@@ -353,6 +358,34 @@ pub(super) fn mmap(
     show_file(kernel, cx, memory, &mapping, start, length)?;
     crate::shared::release(kernel, cx);
     Ok(start)
+}
+
+/// The removed file on the internal tmpfs that shared anonymous memory is (`shmem_kernel_file_setup`).
+fn shared_zero_file(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    size: u64,
+) -> Result<crate::fs::Node, Errno> {
+    let now = kernel.now(cx);
+    let ino = kernel.files.numbers.ino();
+    let mut regular = crate::fs::Regular::default();
+    regular.truncate(cx.cpu, size);
+    let node = crate::fs::new_inode(
+        kernel.files.memfd_fs.clone(),
+        ino,
+        crate::fs::New {
+            mode: S_IFREG | 0o777,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            now,
+            content: Content::Regular(regular),
+            parent: None,
+            name: b"dev/zero".to_vec(),
+        },
+    )?;
+    node.borrow_mut().nlink = 0;
+    Ok(node)
 }
 
 /// Makes `[start, start + length)` of a file mapping show the file: its block of shared pages for a
