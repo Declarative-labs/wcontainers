@@ -7,6 +7,7 @@ pub mod generate;
 pub mod guest;
 pub mod image;
 pub mod layer1;
+pub mod libctest;
 pub mod reference;
 pub mod standin;
 
@@ -100,8 +101,28 @@ pub fn assert_same_output_seeded(
     arguments: &[&str],
     saves: usize,
 ) -> Vec<driver::Run> {
+    same_output_seeded(out, name, arguments, saves, reference::run)
+}
+
+/// As [`assert_same_output_seeded`], with the reference on one CPU like the made-up machine.
+pub fn assert_same_output_one_cpu_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+) -> Vec<driver::Run> {
+    same_output_seeded(out, name, arguments, saves, reference::run_one_cpu)
+}
+
+fn same_output_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+    reference: fn(&Path, &[&str]) -> driver::Outcome,
+) -> Vec<driver::Run> {
     let program = guest::build(name, &[], out);
-    let theirs = reference::run(&program, arguments);
+    let theirs = reference(&program, arguments);
     let path = format!(
         "/wc/{}",
         program.file_name().expect("a name").to_string_lossy()

@@ -125,6 +125,8 @@ pub(crate) struct FdTable {
     slots: BTreeMap<i32, Descriptor>,
     /// The highest descriptor ever used, which sets how large Linux's table has grown.
     highest: i32,
+    /// Every descriptor below it is in use (Linux's `next_fd`), where a search for a free one starts.
+    next_fd: i32,
     /// Who the record locks taken through this table belong to (Linux's `files_struct` as a lock's
     /// owner).
     lock_owner: u64,
@@ -162,8 +164,8 @@ impl FdTable {
 
     /// The lowest free descriptor at or above `minimum`, below `limit`.
     pub fn lowest_free(&self, minimum: i32, limit: u64) -> Result<i32, Errno> {
-        let mut fd = minimum;
-        for (&used, _) in self.slots.range(minimum..) {
+        let mut fd = minimum.max(self.next_fd);
+        for (&used, _) in self.slots.range(fd..) {
             if used != fd {
                 break;
             }
@@ -185,6 +187,9 @@ impl FdTable {
     ) -> Result<i32, Errno> {
         let fd = self.lowest_free(minimum, limit)?;
         self.highest = self.highest.max(fd);
+        if minimum <= self.next_fd {
+            self.next_fd = fd + 1;
+        }
         self.slots.insert(
             fd,
             Descriptor {
@@ -204,6 +209,7 @@ impl FdTable {
 
     pub fn remove(&mut self, fd: i32) -> Result<(), Errno> {
         let old = self.slots.remove(&fd).ok_or(Errno::EBADF)?;
+        self.next_fd = self.next_fd.min(fd);
         self.closed(old);
         Ok(())
     }
@@ -233,6 +239,7 @@ impl FdTable {
     }
 
     pub fn close_all(&mut self) {
+        self.next_fd = 0;
         for (_, old) in core::mem::take(&mut self.slots) {
             self.closed(old);
         }
