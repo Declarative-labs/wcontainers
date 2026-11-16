@@ -51,9 +51,11 @@ of nothing succeeding (Linux refuses secret memory as input even then, unless th
 and as output at the first byte; measured; fixed). It also found a harness race under load 60 to 80:
 the reference's runner counted the arena's changed ranges and then wrote them in a second pass, while
 the reference kernel rewrote a registered rseq area's CPU number between the passes, which garbled
-the report (it now reports from one copy). Layer 1 now generates every mmap flag,
-more advice, statx masks, null stat paths and `/dev/pts`. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
-end of the kernel track. Next is K2.
+the report (it now reports from one copy). Layer 1 now generates mmap's kinds and flags (all but the
+ones listed below), more advice, statx masks, null stat paths and `/dev/pts`. The alignment fault's
+BUS_ADRALN and address are still not kept (only a handler can read them; K2, see Known gaps); its
+visible behaviour, death by SIGBUS, matches. The one-million-sequence layer 1 run is not part of K1:
+by the orchestrator's ruling it runs once at the end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
