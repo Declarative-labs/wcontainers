@@ -54,12 +54,13 @@ below, newest first.
   container ignores, and then ends itself by a fault, so Docker reported status 139, as if the guest had
   ended by SIGSEGV. Evidence (scratch `m3-close/flake`, the blob of Csmith 2000136, a runner printing the
   file's size and hash, and at a fault the address, registers, words at pc and /proc/self/maps): 20,000
-  runs in four containers (load 26 to 92): 5 failed, status 134 (the runner not the first process), each the
+  runs in four containers (load 26 to 92): 4 failed, status 134 (the runner not the first process), each the
   map panic with the heap inside 0x400000 to 0x455000; about 10,000 runs each in a fresh container as layer
   3 runs them (five at once, load 49 to 117): 3 failed, status 139, the same panic. Fixes: the runner is
   linked at 2 GiB (`--image-base=0x80000000` in `reference/.cargo/config.toml`), above every address a test
   gives the guest, so its heap never reaches a blob or a stack; and a panic of the runner now ends it with
-  status 101 (a panic hook calling `_exit`), never a signal a guest could end with. After the fix (the same printing runner, linked at 2 GiB): about 10,200 runs, each in a fresh
+  status 101 (a panic hook calling `_exit`) after its message on stderr, never a signal a guest could end
+  with, and `programs::native` fails the case on that status with that message (fifth run). After the fix (the same printing runner, linked at 2 GiB): about 10,200 runs, each in a fresh
   container, three at once (load 27 to 113), all ended 0 with the checksum; 300 runs in one container, the
   same. While looping, a script of mine ran two workers on one output file, which lost output and looked
   like a Docker fault; it was not.

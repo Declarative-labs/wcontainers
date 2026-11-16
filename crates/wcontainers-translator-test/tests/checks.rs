@@ -289,6 +289,30 @@ fn alloca_loop_off_the_stack() {
     }
 }
 
+/// The same with structures: each turn stores four registers at a new frame and pops half of it with a
+/// structure load post-indexed by its 64 bytes; 20,000 turns run off the stack.
+#[test]
+fn structure_frames_off_the_stack() {
+    for turns in [1000u32, 20000] {
+        let mut ops: Ops = VecAssembler::new(0);
+        zero(&mut ops);
+        let top = ops.new_dynamic_label();
+        dynasm!(ops ; .arch aarch64
+            ; mov x29, sp
+            ; movz x3, #turns
+            ; =>top
+            ; sub sp, sp, #128
+            ; .u32 0x4c00_23e0 // st1 {v0.16b-v3.16b}, [sp]
+            ; .u32 0x4cdf_03e0 // ld4 {v0.16b-v3.16b}, [sp], #64
+            ; subs x3, x3, #1
+            ; b.ne =>top
+            ; mov sp, x29
+        );
+        dump(&mut ops);
+        compare(&blob(&format!("structure-frames-{turns}"), ops));
+    }
+}
+
 /// Loops that make no call read or write through a base and an index moved by a fixed step each turn,
 /// until the access reaches the page after the blob, which allows nothing. These accesses keep the page they
 /// last found allowed, so the fault must still land on the exact turn.
