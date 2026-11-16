@@ -556,7 +556,6 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         linux::__NR_name_to_handle_at,
         linux::__NR_readlinkat,
         linux::__NR_fstat,
-        linux::__NR_newfstatat,
         linux::__NR_lseek,
         linux::__NR_pwrite64,
         linux::__NR_process_vm_readv,

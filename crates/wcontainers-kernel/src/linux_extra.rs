@@ -112,6 +112,32 @@ pub(crate) const LEGACY_MAP_MASK: u32 = {
         | MAP_HUGE_1GB
 };
 
+/// The extended flag for atomic writes (`FS_XFLAG_ATOMICWRITES`, newer than linux-raw-sys's headers),
+/// and every extended flag Linux knows (`FS_XFLAGS_MASK` in its internal `linux/fileattr.h`): a set
+/// request with any other is refused before the file is asked (measured on the reference).
+pub(crate) const FS_XFLAG_ATOMICWRITES: u32 = 0x2_0000;
+pub(crate) const FS_XFLAGS_MASK: u32 = {
+    use crate::linux::general::*;
+    FS_XFLAG_REALTIME
+        | FS_XFLAG_PREALLOC
+        | FS_XFLAG_IMMUTABLE
+        | FS_XFLAG_APPEND
+        | FS_XFLAG_SYNC
+        | FS_XFLAG_NOATIME
+        | FS_XFLAG_NODUMP
+        | FS_XFLAG_RTINHERIT
+        | FS_XFLAG_PROJINHERIT
+        | FS_XFLAG_NOSYMLINKS
+        | FS_XFLAG_EXTSIZE
+        | FS_XFLAG_EXTSZINHERIT
+        | FS_XFLAG_NODEFRAG
+        | FS_XFLAG_FILESTREAM
+        | FS_XFLAG_DAX
+        | FS_XFLAG_COWEXTSIZE
+        | FS_XFLAG_ATOMICWRITES
+        | FS_XFLAG_HASATTR
+};
+
 /// Where Linux's never reused mount numbers start (`MNT_UNIQUE_ID_OFFSET` in `fs/namespace.c`), above
 /// every plain mount number.
 pub(crate) const MNT_UNIQUE_ID_OFFSET: u64 = 1 << 31;

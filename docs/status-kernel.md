@@ -42,7 +42,11 @@ statx reports the unique mount number when asked and each file system's own rule
 generic ones); newfstatat and statx take a null path with AT_EMPTY_PATH (and with a descriptor ignore
 the other flags, as `vfs_fstatat` and `do_statx_fd` do, measured). Layer 1 then found a sysctl's
 vectored read sized segment by segment (Linux makes one buffer of the whole request: ENOMEM at 4 MiB,
-and EFAULT unless every byte made is copied out; fixed). Layer 1 now generates every mmap flag,
+and EFAULT unless every byte made is copied out; fixed), and, once `/dev/pts` was in its paths,
+devpts's root taking new names like tmpfs (Linux's has only a lookup: EPERM, and EACCES for a file
+made by open or mknod; fixed), and FS_IOC_FSSETXATTR answering ENOTTY for extended flags Linux does
+not know on files that keep none (Linux refuses them first, EOPNOTSUPP; and it drops the report-only
+flags PREALLOC, ATOMICWRITES and HASATTR on tmpfs, measured; fixed). Layer 1 now generates every mmap flag,
 more advice, statx masks, null stat paths and `/dev/pts`. The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it runs once at the
 end of the kernel track. Next is K2.
 
@@ -134,8 +138,8 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   uname and name_to_handle_at also write only where no call reads. Before this, a clock_gettime result
   read as a later call's segment list made the check's seed 6060602 fail.
 - A sequence's seccomp filters let through, first, every call the runners make themselves (write,
-  exit_group, name_to_handle_at, readlinkat, fstat, newfstatat, lseek, pwrite64, process_vm_readv and
-  process_vm_writev): their arguments (process numbers, the runners' own buffers) differ between the
+  exit_group, name_to_handle_at, readlinkat, fstat (made bare, as musl's fstat may also call fcntl),
+  lseek, pwrite64, process_vm_readv and process_vm_writev): their arguments (process numbers, the runners' own buffers) differ between the
   runners, so a filter could treat them differently (the check's seed 6060601). The sequence's own
   calls of those numbers are therefore never filtered; filters are still tested on every other call.
 - statfs's free inode count in the play area (where it cannot be turned into the count in use) is
@@ -580,8 +584,10 @@ All pass except the ignored known failures listed above. Added in the thirteenth
   memory and a hole, advice 12, 13 and unknown ones; statx of eight files on five file systems with
   eight masks (mask, attributes, link count, which mount number); newfstatat and statx with null,
   empty and bad paths, junk flags, bad and O_PATH descriptors; a sysctl read split at a fault, too
-  large in all, and across two segments. Same output. A second case checks that MADV_COLLAPSE and the
-  guard advice are counted.
+  large in all, and across two segments; making, linking, renaming and removing names in devpts's
+  root, as root and not, and its attributes; FS_IOC_FSSETXATTR of every bit on a tmpfs file and of
+  known and unknown flags on `/dev/null`, secret memory and a `/proc` file. Same output. A second case checks that MADV_COLLAPSE and
+  the guard advice are counted.
 Added in the twelfth run:
 - pollmask: guest/pollmask.c polls (twice, every event bit) and selects each kind of file one process
   opens: the five devices, a tmpfs file (read, write, O_PATH) and directory, `/dev`, `/dev/pts`, the
@@ -855,6 +861,8 @@ All on this shared Mac; noisy, not benchmarks.
   mounted first at boot (measured in the reference's maps).
 - tmpfs's identity (FS_IOC_GETFSUUID), which Linux draws at random at each mount, is a keyed hash of
   the mount's device number with the key drawn at random when the container starts (siphasher).
+- FS_XFLAG_ATOMICWRITES and the set of extended flags Linux knows (`FS_XFLAGS_MASK`, internal) are
+  typed in linux_extra.rs: newer than linux-raw-sys's headers; the set was measured bit by bit.
 - The preallocation requests (`FS_IOC_RESVSP` and the rest) and `struct space_resv`'s size are typed
   in linux_extra.rs: they are in Linux's internal `linux/falloc.h`, not a uapi header. The file system
   identity requests are built there with `_IOR`'s rule from linux-raw-sys's structures. Layer 1 types

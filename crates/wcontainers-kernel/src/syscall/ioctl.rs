@@ -142,7 +142,16 @@ fn every_file(
                 .map(|()| 0)
         }
         FS_IOC_FSSETXATTR => {
-            let wanted = guest(kernel, cx, tid).read_value::<fsxattr>(argument);
+            // `copy_fsxattr_from_user` refuses flags Linux does not know, whatever the file.
+            let wanted = guest(kernel, cx, tid)
+                .read_value::<fsxattr>(argument)
+                .and_then(|wanted| {
+                    if wanted.fsx_xflags & !crate::linux_extra::FS_XFLAGS_MASK != 0 {
+                        Err(Errno::EOPNOTSUPP)
+                    } else {
+                        Ok(wanted)
+                    }
+                });
             match wanted.and_then(|wanted| writable_mount(&node.borrow()).map(|()| wanted)) {
                 Err(error) => Err(error),
                 Ok(wanted) => set_attributes(kernel, cx, tid, file, Attributes::Extended(wanted))?,
@@ -525,7 +534,10 @@ fn set_attributes(
     }
     if let Some(wanted) = extended {
         let file_type = inode.file_type();
-        let mut xflags = wanted.fsx_xflags;
+        // Flags that are only reported are dropped from a request (Linux's `FS_XFLAG_RDONLY_MASK`,
+        // measured on the reference).
+        let mut xflags = wanted.fsx_xflags
+            & !(FS_XFLAG_PREALLOC | crate::linux_extra::FS_XFLAG_ATOMICWRITES | FS_XFLAG_HASATTR);
         if xflags & FS_XFLAG_EXTSIZE != 0 && file_type != S_IFREG
             || xflags & FS_XFLAG_EXTSZINHERIT != 0 && file_type != S_IFDIR
             || xflags & FS_XFLAG_COWEXTSIZE != 0 && !matches!(file_type, S_IFREG | S_IFDIR)

@@ -121,10 +121,11 @@ static uint32_t lists_processes(int fd) {
     return 1;
 }
 
-// Whether a descriptor is on /dev/random or /dev/urandom, whose bytes differ between the runners.
+// Whether a descriptor is on /dev/random or /dev/urandom, whose bytes differ between the runners. By
+// the bare call: musl's fstat may also call fcntl, which a sequence's filter would see.
 static int random_device(uint64_t fd) {
     struct stat st;
-    return fstat((int)fd, &st) == 0 && S_ISCHR(st.st_mode) && major(st.st_rdev) == 1 &&
+    return syscall(SYS_fstat, (int)fd, &st) == 0 && S_ISCHR(st.st_mode) && major(st.st_rdev) == 1 &&
            (minor(st.st_rdev) == 8 || minor(st.st_rdev) == 9);
 }
 
@@ -225,7 +226,7 @@ static void clear_machine(const uint64_t *clears, int64_t result) {
 // For a sendfile from a random device to a regular file, the output's position before the call.
 static int64_t random_output(const uint64_t *call) {
     struct stat st;
-    if (call[0] != SYS_sendfile || !random_device(call[2]) || fstat((int)call[1], &st) != 0 ||
+    if (call[0] != SYS_sendfile || !random_device(call[2]) || syscall(SYS_fstat, (int)call[1], &st) != 0 ||
         !S_ISREG(st.st_mode)) {
         return -1;
     }

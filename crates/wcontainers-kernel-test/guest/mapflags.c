@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -225,6 +226,28 @@ int main(int argc, char **argv) {
     show("sysctl across two", readv(ostype, fine, 2));
     printf("sysctl bytes %.2s|%.5s\n", edge, edge + 100);
     show("sysctl position after", lseek(ostype, 0, SEEK_CUR));
+
+    // Extended flags Linux does not know are refused before the file is asked, whatever it is.
+    int targets[4] = {open("/dev/null", O_RDWR), (int)syscall(447, 0), open("/proc/self/comm", O_RDONLY), file};
+    static const unsigned xflags[] = {0x1, 0x4, 0x8, 0x20000, 0x40000, 0x40000000, 0x80000000, 0x40000001};
+    for (int target = 0; target < 4; target++) {
+        for (unsigned index = 0; index < sizeof xflags / sizeof xflags[0]; index++) {
+            uint32_t attributes[7] = {xflags[index]};
+            char what[64];
+            snprintf(what, sizeof what, "file %d xflags %#x", target, xflags[index]);
+            show(what, ioctl(targets[target], 0x401c5820, attributes));
+        }
+    }
+
+    for (int bit = 0; bit < 32; bit++) {
+        uint32_t attributes[7] = {1u << bit}, now[7] = {0}, none[7] = {0};
+        char what[64];
+        snprintf(what, sizeof what, "tmpfs xflag bit %d", bit);
+        show(what, ioctl(file, 0x401c5820, attributes));
+        ioctl(file, 0x801c581f, now);
+        printf("  now %#x\n", now[0]);
+        ioctl(file, 0x401c5820, none);
+    }
 
     // devpts's root has no operations that make, remove or rename names.
     chdir("/dev/pts");
