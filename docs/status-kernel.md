@@ -945,7 +945,14 @@ found that). Sizes stay within our address space. splice, tee and vmsplice alway
 SPLICE_F_NONBLOCK (vmsplice ignores O_NONBLOCK, and a named pipe opened for reading and writing is
 its own writer), and splice into a terminal is capped like write. Seed 500 (3000) also found our
 runner taking a failed shmget's error as an identifier. Seeds 500, 501 and 502 passed 3000 each
-(52 to 79 s, load 50 to 125).
+(52 to 79 s, load 50 to 125). At 20000: seed 512 passed (466 s, beside the whole suite and two
+other runs, load 50 to 67); 513 passed (395 s, five side by side, load 25 to 95). Found and fixed:
+sendfile answers EOVERFLOW past the largest file of either side's file system (`MAX_NON_LFS` for
+pipefs, devpts and secret memory, whose `s_maxbytes` stays as `alloc_super` sets it; seed 511),
+TIOCGPTPEER with O_PATH gives a file even for a locked slave (no open is run; seed 510), shmat and
+shmdt keep an address's tag (the tagged address ABI leaves them out: ENOMEM, EINVAL; seeds 514,
+515), and the runners' links to pipes name each machine's own inode numbers, now not compared
+(seed 510).
 
 K2's fourth run: seed 410 (statfs into a buffer that faults part way) passed 20000 after the copy
 fix (337 s, load about 60 to 90). Terminals generated (see "Where things stand"): seed 420 (1000)
