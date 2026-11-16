@@ -59,7 +59,7 @@ pub(super) fn memfd_create(
     let process = kernel.process_of(tid);
     let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
     let now = kernel.now(cx);
-    let fs = kernel.files.memfd_fs;
+    let fs = kernel.files.memfd_fs.clone();
     let ino = kernel.files.numbers.ino();
     let mut regular = Regular::default();
     let mut mode = S_IFREG | 0o777;
@@ -84,7 +84,7 @@ pub(super) fn memfd_create(
             parent: None,
             name: full_name.clone(),
         },
-    );
+    )?;
     // It has no name in any directory.
     node.borrow_mut().nlink = 0;
     let mut path: Vec<u8> = b"/".to_vec();
@@ -114,10 +114,11 @@ pub(super) fn memfd_secret(
     process.files.lowest_free(0, limit)?;
     let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
     let now = kernel.now(cx);
-    let fs = *kernel
+    let fs = kernel
         .files
         .secretmem_fs
-        .get_or_insert_with(|| kernel.files.numbers.file_system(Kind::Secretmem, 0));
+        .get_or_insert_with(|| kernel.files.numbers.file_system(Kind::Secretmem, 0))
+        .clone();
     let ino = kernel.files.numbers.ino();
     let node: Node = new_inode(
         fs,
@@ -132,7 +133,7 @@ pub(super) fn memfd_secret(
             parent: None,
             name: b"secretmem".to_vec(),
         },
-    );
+    )?;
     let opener = kernel.process_of(tid).credentials.serial;
     let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, b"/secretmem".to_vec(), opener);
     let added = kernel

@@ -300,14 +300,21 @@ fn set(
     permission(&inode, &credentials, caller, &name, true)?;
     security_check(&credentials, &name, false)?;
     resolve_name(&inode, &name)?;
+    // tmpfs takes the value's space before it looks for the name (`shmem_xattr_handler_set`).
+    inode.reserve_xattr(&name, &value)?;
     let exists = inode.xattrs.contains_key(&name);
-    if exists && flags & XATTR_CREATE != 0 {
-        return Err(Errno::EEXIST);
+    let refused = if exists && flags & XATTR_CREATE != 0 {
+        Some(Errno::EEXIST)
+    } else if !exists && flags & XATTR_REPLACE != 0 {
+        Some(Errno::ENODATA)
+    } else {
+        None
+    };
+    if let Some(error) = refused {
+        inode.unreserve_xattr(&name, &value);
+        return Err(error);
     }
-    if !exists && flags & XATTR_REPLACE != 0 {
-        return Err(Errno::ENODATA);
-    }
-    inode.xattrs.insert(name, value);
+    inode.put_xattr(name, value);
     inode.ctime = now;
     Ok(0)
 }
@@ -417,7 +424,7 @@ fn remove(
     permission(&inode, &credentials, caller, &name, true)?;
     security_check(&credentials, &name, true)?;
     resolve_name(&inode, &name)?;
-    inode.xattrs.remove(&name).ok_or(Errno::ENODATA)?;
+    inode.remove_xattr(&name).ok_or(Errno::ENODATA)?;
     inode.ctime = now;
     Ok(0)
 }

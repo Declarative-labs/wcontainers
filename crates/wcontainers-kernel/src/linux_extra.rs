@@ -139,3 +139,35 @@ pub(crate) struct tms {
     pub tms_cutime: i64,
     pub tms_cstime: i64,
 }
+
+/// An `_IOR` or `_IOW` request number (`asm-generic/ioctl.h`, whose macros bindgen does not expand).
+const fn ioc(direction: u32, kind: u8, number: u8, size: usize) -> u32 {
+    (direction << 30) | ((size as u32) << 16) | ((kind as u32) << 8) | number as u32
+}
+const IOC_WRITE: u32 = 1;
+const IOC_READ: u32 = 2;
+
+/// The size of `struct space_resv`, which only Linux's internal `linux/falloc.h` defines: two
+/// 16 bit fields, two 64 bit ones, two 32 bit ones and four 32 bit pads.
+pub(crate) const SPACE_RESV_SIZE: usize = 48;
+
+/// The preallocation requests of `linux/falloc.h` (not a uapi header), on `struct space_resv`.
+pub(crate) const FS_IOC_RESVSP: u32 = ioc(IOC_WRITE, b'X', 40, SPACE_RESV_SIZE);
+pub(crate) const FS_IOC_UNRESVSP: u32 = ioc(IOC_WRITE, b'X', 41, SPACE_RESV_SIZE);
+pub(crate) const FS_IOC_RESVSP64: u32 = ioc(IOC_WRITE, b'X', 42, SPACE_RESV_SIZE);
+pub(crate) const FS_IOC_UNRESVSP64: u32 = ioc(IOC_WRITE, b'X', 43, SPACE_RESV_SIZE);
+pub(crate) const FS_IOC_ZERO_RANGE: u32 = ioc(IOC_WRITE, b'X', 57, SPACE_RESV_SIZE);
+
+/// `linux/fs.h`'s file system identity requests, which linux-raw-sys's ioctl list lacks.
+pub(crate) const FS_IOC_GETFSUUID: u32 = ioc(
+    IOC_READ,
+    0x15,
+    0,
+    size_of::<crate::linux::general::fsuuid2>(),
+);
+pub(crate) const FS_IOC_GETFSSYSFSPATH: u32 = ioc(
+    IOC_READ,
+    0x15,
+    1,
+    size_of::<crate::linux::general::fs_sysfs_path>(),
+);

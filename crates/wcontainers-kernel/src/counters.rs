@@ -37,9 +37,9 @@ pub mod reason {
     pub const PRCTL_UNKNOWN: &str = "prctl option unknown";
     /// A flag of a memory call the kernel does not implement. Detail: the flag bits.
     pub const MEMORY_FLAG_NOT_IMPLEMENTED: &str = "memory call flag not implemented";
-    /// `mincore` or `getrusage` reported every mapped page as in memory, or `cachestat` counted a
-    /// mapped file's pages without those its faults brought in: which pages a program has touched is
-    /// not known here. Detail: none.
+    /// `mincore`, `getrusage`, `sysinfo` or `/proc/meminfo` reported every mapped page as in
+    /// memory, or `cachestat` or `statfs` counted a mapped file's pages without those its faults
+    /// brought in: which pages a program has touched is not known here. Detail: none.
     pub const RESIDENCY_NOT_TRACKED: &str = "page residency not tracked";
     /// A seccomp filter asked for a listener, through which another process would answer the calls it
     /// stops; not built. Detail: the flags.
@@ -47,8 +47,8 @@ pub mod reason {
     /// A `/proc` entry Linux has and this kernel does not build was looked up; it answers ENOENT.
     /// Detail: the directory's index in Linux's list of entries, times 1024, plus the name's.
     pub const PROC_ENTRY_NOT_BUILT: &str = "proc entry not built";
-    /// A `/proc` file was opened whose fields this kernel does not track all of (those show 0 or are
-    /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`).
+    /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
+    /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
     /// A file changed that a private mapping holds a copy of, made when the mapping was, or a file
     /// is mapped both shared and private: Linux's private pages not yet written would show the file's

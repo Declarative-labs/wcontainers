@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use alloc::vec;
+use core::cell::Cell;
 use wcontainers_abi::{Cpu, SharedId, Stream};
 
 use crate::Errno;
@@ -44,13 +45,118 @@ impl Time {
 }
 
 /// One file system instance: its device number and the numbers it gives its inodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct FileSystem {
     pub kind: Kind,
     /// The device number `stat` reports, as Linux's `st_dev` encodes it.
     pub device: u64,
     /// How it is mounted, as `statfs`'s `ST_*` bits.
     pub flags: u32,
+    /// For tmpfs, what it holds against its limits.
+    pub space: Option<Rc<Space>>,
+}
+
+impl PartialEq for FileSystem {
+    fn eq(&self, other: &Self) -> bool {
+        self.device == other.device
+    }
+}
+
+/// The space each inode takes from tmpfs's inode limit (`BOGO_INODE_SIZE`).
+pub(crate) const INODE_SPACE: u64 = 1024;
+
+/// A symbolic link target tmpfs keeps in the inode, with its zero, at most this long; a longer one
+/// takes a page (`SHORT_SYMLINK_LEN`).
+const SHORT_SYMLINK: usize = 128;
+
+/// What tmpfs counts against its limits (`shmem_sb_info`): pages, and the inode space inodes, extra
+/// links and extended attributes take. A limit of zero is none, as on the kernel's internal mount,
+/// which still counts its pages.
+pub(crate) struct Space {
+    max_blocks: Cell<u64>,
+    max_inodes: Cell<u64>,
+    used_blocks: Cell<u64>,
+    used_ispace: Cell<u64>,
+    /// Files whose pages a mapping's faults may have brought in, which are not known here.
+    mapped: Cell<u64>,
+}
+
+impl Space {
+    pub fn new(max_blocks: u64, max_inodes: u64) -> Rc<Self> {
+        Rc::new(Self {
+            max_blocks: Cell::new(max_blocks),
+            max_inodes: Cell::new(max_inodes),
+            used_blocks: Cell::new(0),
+            used_ispace: Cell::new(0),
+            mapped: Cell::new(0),
+        })
+    }
+
+    /// Sets the limits, as mounting with `size=` and `nr_inodes=` does.
+    pub fn set_limits(&self, max_blocks: u64, max_inodes: u64) {
+        self.max_blocks.set(max_blocks);
+        self.max_inodes.set(max_inodes);
+    }
+
+    pub fn max_blocks(&self) -> u64 {
+        self.max_blocks.get()
+    }
+
+    pub fn max_inodes(&self) -> u64 {
+        self.max_inodes.get()
+    }
+
+    /// Takes inode space (`shmem_reserve_inode` takes [`INODE_SPACE`]); `ENOSPC` when too little
+    /// is left.
+    pub fn take_ispace(&self, amount: u64) -> Result<(), Errno> {
+        let used = self.used_ispace.get();
+        let max = self.max_inodes.get();
+        if max != 0 && used + amount > max * INODE_SPACE {
+            return Err(Errno::ENOSPC);
+        }
+        self.used_ispace.set(used + amount);
+        Ok(())
+    }
+
+    pub fn give_ispace(&self, amount: u64) {
+        self.used_ispace.set(self.used_ispace.get() - amount);
+    }
+
+    /// The pages that may still be taken.
+    pub fn free_blocks(&self) -> u64 {
+        match self.max_blocks.get() {
+            0 => u64::MAX,
+            max => max.saturating_sub(self.used_blocks.get()),
+        }
+    }
+
+    pub fn used_blocks(&self) -> u64 {
+        self.used_blocks.get()
+    }
+
+    /// The inodes there is still space for, as `statfs` reports them.
+    pub fn free_inodes(&self) -> u64 {
+        (self.max_inodes.get() * INODE_SPACE).saturating_sub(self.used_ispace.get()) / INODE_SPACE
+    }
+
+    /// Whether a file on it has been mapped, so that pages faults bring in may be missing from the
+    /// count.
+    pub fn has_mapped_files(&self) -> bool {
+        self.mapped.get() != 0
+    }
+
+    fn take_blocks(&self, count: u64) {
+        self.used_blocks.set(self.used_blocks.get() + count);
+    }
+
+    fn give_blocks(&self, count: u64) {
+        self.used_blocks.set(self.used_blocks.get() - count);
+    }
+}
+
+/// What an extended attribute takes from tmpfs's inode space (`simple_xattr_space`).
+pub(crate) fn xattr_space(name: &[u8], value: &[u8]) -> u64 {
+    40 + (name.len() + value.len()) as u64
 }
 
 impl FileSystem {
@@ -88,7 +194,7 @@ impl Kind {
     /// reference, where proc's files say 1024 and its file system 4096).
     pub fn block_size(self) -> u32 {
         match self {
-            Kind::Proc => 1024,
+            Kind::Proc | Kind::Devpts => 1024,
             _ => 4096,
         }
     }
@@ -127,6 +233,34 @@ pub(crate) struct Inode {
     pub flocks: Vec<(alloc::rc::Weak<RefCell<crate::file::OpenFile>>, bool)>,
     /// Extended attributes by full name, for file systems that keep them.
     pub xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// tmpfs's inode flags (`FS_*_FL`, as `FS_IOC_GETFLAGS` shows them).
+    pub fsflags: u32,
+}
+
+impl Drop for Inode {
+    /// An inode gone gives back its space, its extended attributes' and a long link target's page
+    /// (`shmem_evict_inode`).
+    fn drop(&mut self) {
+        let Some(space) = &self.fs.space else {
+            return;
+        };
+        let xattrs: u64 = self
+            .xattrs
+            .iter()
+            .filter(|(name, _)| charged_xattr(name))
+            .map(|(name, value)| xattr_space(name, value))
+            .sum();
+        space.give_ispace(INODE_SPACE + xattrs);
+        if self.has_long_target() {
+            space.give_blocks(1);
+        }
+    }
+}
+
+/// Whether an extended attribute counts against tmpfs's inode space: all but the access control
+/// lists, which tmpfs keeps apart (`system.*`).
+pub(crate) fn charged_xattr(name: &[u8]) -> bool {
+    !name.starts_with(b"system.")
 }
 
 pub(crate) enum Content {
@@ -155,7 +289,9 @@ pub(crate) struct Regular {
     pub seals: u32,
     /// Whether the file has been mapped: tmpfs then brings in the pages a program's faults touch,
     /// which are not known here.
-    pub mapped: bool,
+    mapped: bool,
+    /// The tmpfs its pages count against.
+    space: Option<Rc<Space>>,
 }
 
 impl Default for Regular {
@@ -167,32 +303,113 @@ impl Default for Regular {
             allocated: alloc::collections::BTreeSet::new(),
             seals: F_SEAL_SEAL,
             mapped: false,
+            space: None,
+        }
+    }
+}
+
+impl Drop for Regular {
+    fn drop(&mut self) {
+        if let Some(space) = &self.space {
+            space.give_blocks((self.pages.len() + self.allocated.len()) as u64);
+            if self.mapped {
+                space.mapped.set(space.mapped.get() - 1);
+            }
         }
     }
 }
 
 impl Regular {
+    /// Counts the file's pages against a tmpfs from now on.
+    fn count_against(&mut self, space: &Option<Rc<Space>>) {
+        if let Some(space) = space {
+            space.take_blocks((self.pages.len() + self.allocated.len()) as u64);
+        }
+        self.space.clone_from(space);
+    }
+
+    pub fn is_mapped(&self) -> bool {
+        self.mapped
+    }
+
+    pub fn set_mapped(&mut self) {
+        if !self.mapped
+            && let Some(space) = &self.space
+        {
+            space.mapped.set(space.mapped.get() + 1);
+        }
+        self.mapped = true;
+    }
+
+    fn holds(&self, page: u64) -> bool {
+        self.pages.contains(&page) || self.allocated.contains(&page)
+    }
+
+    /// How many pages from `first` up to `end` (not included) are not held yet.
+    pub fn missing_pages(&self, first: u64, end: u64) -> u64 {
+        (first..end).filter(|page| !self.holds(*page)).count() as u64
+    }
+
+    /// Reserves a page for `fallocate` if it holds none; `false` when tmpfs is full.
+    pub fn reserve(&mut self, page: u64) -> bool {
+        if self.holds(page) {
+            return true;
+        }
+        if let Some(space) = &self.space {
+            if space.free_blocks() == 0 {
+                return false;
+            }
+            space.take_blocks(1);
+        }
+        self.allocated.insert(page);
+        true
+    }
+
+    /// Gives back pages `fallocate` reserved in this call, when it fails part way.
+    pub fn unreserve(&mut self, pages: &[u64]) {
+        for page in pages {
+            if self.allocated.remove(page)
+                && let Some(space) = &self.space
+            {
+                space.give_blocks(1);
+            }
+        }
+    }
+
     /// How many of `length` bytes at `offset` a write may change, as tmpfs's `shmem_write_begin` allows
     /// them page by page under its seals; `EPERM` when none.
     pub fn writable(&self, offset: u64, length: u64) -> Result<u64, Errno> {
         if self.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 {
             return Err(Errno::EPERM);
         }
-        if self.seals & F_SEAL_GROW == 0 {
-            return Ok(length);
-        }
+        // Page by page, as `shmem_write_begin`: the seals, then a page from tmpfs if the file holds
+        // none there.
         let size = self.data.len() as u64;
         let end = offset + length;
+        let mut free = self
+            .space
+            .as_ref()
+            .map_or(u64::MAX, |space| space.free_blocks());
         let mut at = offset;
         while at < end {
-            let chunk_end = ((at / 4096 + 1) * 4096).min(end);
-            if chunk_end > size {
+            let page = at / 4096;
+            let chunk_end = ((page + 1) * 4096).min(end);
+            if self.seals & F_SEAL_GROW != 0 && chunk_end > size {
+                if at == offset {
+                    return Err(Errno::EPERM);
+                }
                 break;
             }
+            if !self.holds(page) {
+                if free == 0 {
+                    if at == offset {
+                        return Err(Errno::ENOSPC);
+                    }
+                    break;
+                }
+                free -= 1;
+            }
             at = chunk_end;
-        }
-        if at == offset && length > 0 {
-            return Err(Errno::EPERM);
         }
         Ok(at - offset)
     }
@@ -259,9 +476,24 @@ impl Regular {
     fn mark_written(&mut self, offset: u64, length: u64) {
         if length > 0 {
             for page in offset / 4096..=(offset + length - 1) / 4096 {
-                self.pages.insert(page);
-                self.allocated.remove(&page);
+                let was_reserved = self.allocated.remove(&page);
+                if self.pages.insert(page)
+                    && !was_reserved
+                    && let Some(space) = &self.space
+                {
+                    space.take_blocks(1);
+                }
             }
+        }
+    }
+
+    /// Drops the pages `keep` refuses, giving them back to tmpfs.
+    fn drop_pages(&mut self, keep: impl Fn(u64) -> bool) {
+        let before = self.pages.len() + self.allocated.len();
+        self.pages.retain(|page| keep(*page));
+        self.allocated.retain(|page| keep(*page));
+        if let Some(space) = &self.space {
+            space.give_blocks((before - self.pages.len() - self.allocated.len()) as u64);
         }
     }
 
@@ -272,8 +504,7 @@ impl Regular {
         self.zero_block(cpu, from, to);
         let first = offset.div_ceil(4096);
         let last = end / 4096;
-        self.pages.retain(|page| *page < first || *page >= last);
-        self.allocated.retain(|page| *page < first || *page >= last);
+        self.drop_pages(|page| page < first || page >= last);
     }
 
     fn zero_block(&mut self, cpu: &mut dyn Cpu, from: u64, to: u64) {
@@ -296,8 +527,7 @@ impl Regular {
         }
         self.data.resize(length as usize, 0);
         let pages = length.div_ceil(4096);
-        self.pages.retain(|page| *page < pages);
-        self.allocated.retain(|page| *page < pages);
+        self.drop_pages(|page| page < pages);
     }
 
     /// Moves the bytes the block holds back into the file's own memory, ending the block.
@@ -479,8 +709,48 @@ impl Inode {
     pub fn blocks(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => (file.pages.len() + file.allocated.len()) as u64 * 8,
+            _ if self.has_long_target() => 8,
             _ => 0,
         }
+    }
+
+    /// A tmpfs link whose target takes a page of its own.
+    pub fn has_long_target(&self) -> bool {
+        self.fs.kind == Kind::Tmpfs
+            && matches!(&self.content, Content::Symlink(target) if target.len() + 1 > SHORT_SYMLINK)
+    }
+
+    /// Takes the inode space a new value of an extended attribute needs, before the checks of
+    /// whether it may be set (`shmem_xattr_handler_set`).
+    pub fn reserve_xattr(&self, name: &[u8], value: &[u8]) -> Result<(), Errno> {
+        match &self.fs.space {
+            Some(space) if charged_xattr(name) => space.take_ispace(xattr_space(name, value)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Gives back space [`Self::reserve_xattr`] took, when the attribute was not set after all.
+    pub fn unreserve_xattr(&self, name: &[u8], value: &[u8]) {
+        if let Some(space) = &self.fs.space
+            && charged_xattr(name)
+        {
+            space.give_ispace(xattr_space(name, value));
+        }
+    }
+
+    /// Puts a value whose space is reserved in place of the old one, giving the old one's back.
+    pub fn put_xattr(&mut self, name: Vec<u8>, value: Vec<u8>) {
+        let old = self.xattrs.insert(name.clone(), value);
+        if let Some(old) = old {
+            self.unreserve_xattr(&name, &old);
+        }
+    }
+
+    /// Removes an extended attribute, giving back its space.
+    pub fn remove_xattr(&mut self, name: &[u8]) -> Option<Vec<u8>> {
+        let old = self.xattrs.remove(name)?;
+        self.unreserve_xattr(name, &old);
+        Some(old)
     }
 
     /// What a write, truncation or change of owner takes away from a file that is not a directory: the
@@ -496,7 +766,7 @@ impl Inode {
                 .get(crate::syscall::CAPABILITY)
                 .is_some_and(|value| !value.is_empty())
         {
-            self.xattrs.remove(crate::syscall::CAPABILITY);
+            self.remove_xattr(crate::syscall::CAPABILITY);
         }
     }
 
@@ -641,6 +911,7 @@ impl Numbers {
             kind,
             device: encode_device(0, minor),
             flags,
+            space: None,
         }
     }
 
@@ -677,9 +948,30 @@ pub(crate) struct New {
     pub name: Vec<u8>,
 }
 
-pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Node {
+/// Makes an inode, taking its space from tmpfs (`shmem_reserve_inode`): `ENOSPC` when tmpfs has
+/// room for no more inodes, or a long link target finds no page.
+pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errno> {
     let nlink = if new.mode & S_IFMT == S_IFDIR { 2 } else { 1 };
-    Rc::new(RefCell::new(Inode {
+    let mut content = new.content;
+    if let Some(space) = &fs.space {
+        space.take_ispace(INODE_SPACE)?;
+        if let Content::Regular(regular) = &mut content {
+            regular.count_against(&fs.space);
+        }
+    }
+    let long_target =
+        matches!(&content, Content::Symlink(target) if target.len() + 1 > SHORT_SYMLINK);
+    if fs.kind == Kind::Tmpfs
+        && long_target
+        && let Some(space) = &fs.space
+    {
+        if space.free_blocks() == 0 {
+            space.give_ispace(INODE_SPACE);
+            return Err(Errno::ENOSPC);
+        }
+        space.take_blocks(1);
+    }
+    Ok(Rc::new(RefCell::new(Inode {
         fs,
         ino,
         mode: new.mode,
@@ -698,10 +990,11 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Node {
             mount_root: false,
             held_parent: None,
         },
-        content: new.content,
+        content,
         flocks: Vec::new(),
         xattrs: BTreeMap::new(),
-    }))
+        fsflags: 0,
+    })))
 }
 
 /// Where a walk starts and what it may not go above.

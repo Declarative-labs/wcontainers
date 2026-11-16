@@ -3,6 +3,7 @@
 use alloc::vec;
 
 use super::{Args, guest};
+use crate::counters::reason;
 use crate::linux::general::*;
 use crate::linux::system::{__NEW_UTS_LEN, new_utsname};
 use crate::linux_extra::{SCHED_ATTR_SIZE_VER0, SCHED_ATTR_SIZE_VER1, sched_attr};
@@ -105,6 +106,10 @@ pub(super) fn sysinfo(
         .saturating_sub(kernel.boot_monotonic)
         / 1_000_000_000;
     let memory = kernel.machine.memory_bytes;
+    let (in_use, shared) = kernel.memory_in_use();
+    kernel
+        .counters
+        .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);
     // `struct sysinfo` has padding, so its fields are placed by their offsets, with the padding zero.
     use crate::linux::system::sysinfo as Info;
     use core::mem::offset_of;
@@ -114,7 +119,8 @@ pub(super) fn sysinfo(
     };
     put(offset_of!(Info, uptime), &uptime.max(1).to_le_bytes());
     put(offset_of!(Info, totalram), &memory.to_le_bytes());
-    put(offset_of!(Info, freeram), &memory.to_le_bytes());
+    put(offset_of!(Info, freeram), &(memory - in_use).to_le_bytes());
+    put(offset_of!(Info, sharedram), &shared.to_le_bytes());
     put(
         offset_of!(Info, procs),
         &(kernel.processes.len() as u16).to_le_bytes(),

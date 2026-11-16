@@ -6,6 +6,7 @@
 mod files;
 mod handle;
 mod io;
+mod ioctl;
 mod list;
 mod memfd;
 mod memory;
@@ -124,7 +125,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_dup, S(io::dup)),
         (__NR_dup3, S(io::dup3)),
         (__NR_fcntl, S(io::fcntl)),
-        (__NR_ioctl, S(io::ioctl)),
+        (__NR_ioctl, S(ioctl::ioctl)),
         (__NR_ppoll, F(io::ppoll)),
         (__NR_pselect6, F(io::pselect6)),
         (__NR_fsync, S(io::fsync)),

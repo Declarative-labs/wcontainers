@@ -12,7 +12,6 @@ use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::fs::proc::{Style, Writing};
 use crate::linux::general::*;
-use crate::linux::ioctl::{FIOCLEX, FIONBIO, FIONCLEX, TCGETS, TIOCGWINSZ};
 use crate::process::Tid;
 use crate::user::{Guest, access_ok};
 use crate::{Context, Errno, Kernel};
@@ -1463,6 +1462,12 @@ pub(super) fn fcntl(
                     return Err(Errno::EINVAL);
                 }
             }
+            // A change of `FASYNC` goes to the file's `fasync`, if it has one, which sets the flag.
+            if (wanted ^ file.flags) & FASYNC != 0 {
+                drop(file);
+                let _ = super::ioctl::set_async(&descriptor.file, wanted & FASYNC != 0);
+                file = descriptor.file.borrow_mut();
+            }
             // `O_APPEND` cannot be taken off an append-only file; nothing here is append-only.
             file.flags = (file.flags & !SETTABLE_FLAGS) | (wanted & SETTABLE_FLAGS);
             Ok(0)
@@ -1483,52 +1488,6 @@ pub(super) fn fcntl(
                 .counters
                 .count(cx.host, reason::FCNTL_UNKNOWN, command);
             Err(Errno::EINVAL)
-        }
-    }
-}
-
-pub(super) fn ioctl(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    tid: Tid,
-    [fd, request, argument, ..]: Args,
-) -> Result<u64, Errno> {
-    let fd = fd as i32;
-    let descriptor = kernel.process_of(tid).files.get(fd)?.clone();
-    if descriptor.file.borrow().is_path() {
-        return Err(Errno::EBADF);
-    }
-    match request as u32 {
-        FIOCLEX | FIONCLEX => {
-            kernel.process_of_mut(tid).files.get_mut(fd)?.close_on_exec = request as u32 == FIOCLEX;
-            Ok(0)
-        }
-        FIONBIO => {
-            let value: i32 = guest(kernel, cx, tid).read_value(argument)?;
-            let mut file = descriptor.file.borrow_mut();
-            if value != 0 {
-                file.flags |= O_NONBLOCK;
-            } else {
-                file.flags &= !O_NONBLOCK;
-            }
-            Ok(0)
-        }
-        // Nothing open is a terminal yet: terminal requests fail as on a file or pipe.
-        TCGETS | TIOCGWINSZ => Err(Errno::ENOTTY),
-        _ => {
-            let is_regular_or_pipe = matches!(
-                descriptor.file.borrow().node.borrow().content,
-                Content::Regular(_)
-                    | Content::HostStream(_)
-                    | Content::Directory(_)
-                    | Content::Proc(_)
-            );
-            if !is_regular_or_pipe {
-                kernel
-                    .counters
-                    .count(cx.host, reason::IOCTL_UNKNOWN, request);
-            }
-            Err(Errno::ENOTTY)
         }
     }
 }
@@ -1879,7 +1838,7 @@ pub(super) fn cachestat(
     if let Content::Regular(regular) = &node.borrow().content
         && first <= last
     {
-        if regular.mapped {
+        if regular.is_mapped() {
             kernel
                 .counters
                 .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);

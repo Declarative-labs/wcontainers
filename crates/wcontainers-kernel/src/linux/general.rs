@@ -331,7 +331,15 @@ pub struct mnt_id_req {
     pub mnt_ns_id: __u64,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct file_clone_range {
     pub src_fd: __s64,
     pub src_offset: __u64,
@@ -346,7 +354,15 @@ pub struct fstrim_range {
     pub minlen: __u64,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct fsuuid2 {
     pub len: __u8,
     pub uuid: [__u8; 16usize],
@@ -407,7 +423,15 @@ pub struct inodes_stat_t {
     pub dummy: [super::ctypes::c_long; 5usize],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+)]
 pub struct fsxattr {
     pub fsx_xflags: __u32,
     pub fsx_extsize: __u32,

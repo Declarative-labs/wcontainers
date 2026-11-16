@@ -91,7 +91,8 @@ static void requests(const char *what, int fd) {
         printf("\n");                                                                              \
     } while (0)
 
-    ONE("FIONREAD", FIONREAD, 1);
+    // What waits unread in the reference's standard output depends on when Docker drained it.
+    ONE("FIONREAD", FIONREAD, strcmp(what, "stdout") != 0);
     ONE("FIOQSIZE", FIOQSIZE, 1);
     ONE("FIGETBSZ", FIGETBSZ, 1);
     ONE("FIBMAP", FIBMAP, 1);

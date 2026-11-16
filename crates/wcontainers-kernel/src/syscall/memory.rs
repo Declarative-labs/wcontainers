@@ -281,7 +281,7 @@ pub(super) fn mmap(
         (Some((node, path)), _) => {
             let size = match &mut node.borrow_mut().content {
                 Content::Regular(regular) => {
-                    regular.mapped = true;
+                    regular.set_mapped();
                     regular.size()
                 }
                 _ => 0,

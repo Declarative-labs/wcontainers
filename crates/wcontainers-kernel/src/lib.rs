@@ -28,6 +28,7 @@ mod syscall;
 mod user;
 
 use alloc::collections::{BTreeMap, VecDeque};
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 use wcontainers_abi::{Access, CounterReading, Cpu, Event, Exit, Host, Next, Resume};
@@ -73,6 +74,8 @@ pub(crate) struct Files {
     pub generation_key: [u8; 16],
     /// Changed attributes of the `/proc` entries that keep them.
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
+    /// Every tmpfs's count of what it holds, for the machine's memory in use.
+    pub spaces: Vec<Rc<fs::Space>>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -119,6 +122,11 @@ impl Kernel {
             ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
         );
         let pipe_fs = numbers.file_system(fs::Kind::Pipe, 0);
+        let memfd_space = fs::Space::new(0, 0);
+        let spaces = [root.borrow().fs.space.clone(), Some(memfd_space.clone())]
+            .into_iter()
+            .flatten()
+            .collect();
         Self {
             processes: BTreeMap::new(),
             threads: BTreeMap::new(),
@@ -138,11 +146,13 @@ impl Kernel {
                     kind: fs::Kind::Tmpfs,
                     device: fs::encode_device(0, 1),
                     flags: 0,
+                    space: Some(memfd_space),
                 },
                 secretmem_fs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
                 proc_kept: BTreeMap::new(),
+                spaces,
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
@@ -323,7 +333,7 @@ impl Kernel {
             processes: &self.processes,
             threads: &self.threads,
             caller: pid,
-            fs: self.files.proc_fs,
+            fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,
@@ -337,6 +347,24 @@ impl Kernel {
     }
 
     /// The time now on the wall clock.
+    /// The memory in use, in bytes, and how much of it tmpfs holds: every mapped page and every
+    /// tmpfs page, counted as present, since which pages a program has touched is not known.
+    pub(crate) fn memory_in_use(&self) -> (u64, u64) {
+        let tmpfs: u64 = self
+            .files
+            .spaces
+            .iter()
+            .map(|space| space.used_blocks() * wcontainers_abi::PAGE_SIZE)
+            .sum();
+        let mapped: u64 = self
+            .processes
+            .values()
+            .flat_map(|process| process.map.iter())
+            .map(|mapping| mapping.end - mapping.start)
+            .sum();
+        ((tmpfs + mapped).min(self.machine.memory_bytes), tmpfs)
+    }
+
     pub(crate) fn now(&self, cx: &mut Context<'_>) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }

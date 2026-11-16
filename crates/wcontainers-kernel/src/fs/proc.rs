@@ -459,13 +459,13 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
         Entry::Global(index) if GLOBAL[index].0 == "sys" || GLOBAL[index].0.starts_with("sys/") => {
             FileSystem {
                 flags: view.fs.flags | crate::linux_extra::ST_RDONLY,
-                ..view.fs
+                ..view.fs.clone()
             }
         }
-        _ => view.fs,
+        _ => view.fs.clone(),
     };
     let node = new_inode(
-        fs,
+        fs.clone(),
         entry.ino(),
         New {
             mode,
@@ -477,7 +477,8 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
             parent: parent.filter(|_| is_directory).cloned(),
             name: name.to_vec(),
         },
-    );
+    )
+    .expect("proc counts no space");
     if let Some(kept) = view.kept.get(&entry.ino()) {
         let mut inode = node.borrow_mut();
         inode.mode = kept.mode;
@@ -750,11 +751,15 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 "meminfo" => {
                     let total = machine.memory_bytes / 1024;
+                    let (in_use, shared) = source.memory_in_use;
+                    let free = total - in_use / 1024;
+                    let shared = shared / 1024;
                     let _ = write!(
                         out,
-                        "MemTotal:       {total:8} kB\nMemFree:        {total:8} kB\n\
-                         MemAvailable:   {total:8} kB\nBuffers:               0 kB\n\
-                         Cached:                0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n"
+                        "MemTotal:       {total:8} kB\nMemFree:        {free:8} kB\n\
+                         MemAvailable:   {free:8} kB\nBuffers:               0 kB\n\
+                         Cached:                0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n\
+                         Shmem:          {shared:8} kB\n"
                     );
                 }
                 "stat" => {
@@ -834,6 +839,8 @@ pub(crate) struct Source<'a> {
     pub read_memory: &'a mut dyn FnMut(&Process, u64, u64) -> Vec<u8>,
     /// The mount table as `/proc/<pid>/mounts` shows it.
     pub mounts: &'a str,
+    /// The memory in use and what of it tmpfs holds, in bytes.
+    pub memory_in_use: (u64, u64),
 }
 
 fn process_file(

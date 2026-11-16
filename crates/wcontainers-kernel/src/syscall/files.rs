@@ -198,7 +198,7 @@ fn create(
     mode: u32,
     rdev: u64,
     content: Content,
-) -> Node {
+) -> Result<Node, Errno> {
     let now = kernel.now(cx);
     let (uid, gid, inherit) = new_owner(directory, credentials(kernel, tid));
     let mut mode = mode;
@@ -221,9 +221,9 @@ fn create(
         rdev,
         now,
         content,
-    );
+    )?;
     touch_directory(directory, now);
-    node
+    Ok(node)
 }
 
 pub(super) fn openat(
@@ -466,7 +466,7 @@ pub(super) fn open(
                 S_IFREG | (mode & 0o7777 & !umask),
                 0,
                 Content::Regular(Regular::default()),
-            );
+            )?;
             (node, true)
         }
     };
@@ -613,6 +613,7 @@ pub(super) fn proc_contents(
         proc::Entry::ProcessFile(_, ProcessFile::Statm) => Some(1),
         proc::Entry::ProcessFile(_, ProcessFile::Status) => Some(2),
         proc::Entry::ProcessFile(_, ProcessFile::Mounts) => Some(3),
+        proc::Entry::Global(index) if proc::GLOBAL[*index].0 == "meminfo" => Some(4),
         _ => None,
     };
     if let Some(detail) = untracked {
@@ -628,6 +629,7 @@ pub(super) fn proc_contents(
     let mut fresh = [0u8; 16];
     cx.host.random(&mut fresh);
     let mounts = mount_table();
+    let memory_in_use = kernel.memory_in_use();
     let cpu = &mut *cx.cpu;
     let mut read_memory = |process: &crate::process::Process, start: u64, length: u64| {
         let mut bytes = alloc::vec![0; length as usize];
@@ -652,6 +654,7 @@ pub(super) fn proc_contents(
             fresh_random: fresh,
             read_memory: &mut read_memory,
             mounts: &mounts,
+            memory_in_use,
         };
         proc::contents(&mut source, entry)
     })
@@ -691,7 +694,7 @@ pub(super) fn mkdirat(
         mode,
         0,
         Content::Directory(Directory::new()),
-    );
+    )?;
     Ok(0)
 }
 
@@ -746,7 +749,7 @@ pub(super) fn mknodat(
         file_type | (mode & 0o7777 & !umask),
         rdev,
         content,
-    );
+    )?;
     Ok(0)
 }
 
@@ -776,7 +779,7 @@ pub(super) fn symlinkat(
         S_IFLNK | 0o777,
         0,
         Content::Symlink(target),
-    );
+    )?;
     Ok(0)
 }
 
@@ -835,6 +838,10 @@ pub(super) fn linkat(
     }
     if node.borrow().nlink == 0 {
         return Err(Errno::ENOENT);
+    }
+    // tmpfs counts each link as an inode (`shmem_link`).
+    if let Some(space) = &node.borrow().fs.space {
+        space.take_ispace(crate::fs::INODE_SPACE)?;
     }
     let now = kernel.now(cx);
     {
@@ -928,10 +935,20 @@ pub(super) fn unlinkat(
         inode.nlink = 0;
         parent.directory.borrow_mut().nlink -= 1;
     } else {
+        give_back_link(&inode);
         inode.nlink -= 1;
     }
     inode.ctime = now;
     Ok(0)
+}
+
+/// A name of a file with others gone gives back the inode space the link took (`shmem_unlink`).
+fn give_back_link(inode: &crate::fs::Inode) {
+    if inode.nlink > 1
+        && let Some(space) = &inode.fs.space
+    {
+        space.give_ispace(crate::fs::INODE_SPACE);
+    }
 }
 
 pub(super) fn renameat(
@@ -1165,7 +1182,7 @@ fn rename(
                 S_IFCHR,
                 0,
                 Content::Special,
-            );
+            )?;
         } else {
             entries(&from.directory)(&mut |d| {
                 d.remove(&from.name);
@@ -1178,6 +1195,7 @@ fn rename(
                 drop(inode);
                 to.directory.borrow_mut().nlink -= 1;
             } else {
+                give_back_link(&inode);
                 inode.nlink -= 1;
                 inode.ctime = now;
             }
@@ -1233,7 +1251,9 @@ pub(super) fn readlinkat(
 /// here: counted when reported.
 fn count_unknown_blocks(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
     let inode = node.borrow();
-    if !inode.is_secret() && matches!(&inode.content, Content::Regular(regular) if regular.mapped) {
+    if !inode.is_secret()
+        && matches!(&inode.content, Content::Regular(regular) if regular.is_mapped())
+    {
         kernel
             .counters
             .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);
@@ -1395,6 +1415,16 @@ pub(super) fn statx(
     });
     if inode.place.mount_root {
         out.stx_attributes = u64::from(STATX_ATTR_MOUNT_ROOT);
+    }
+    // tmpfs shows its inode flags that have an attribute (`shmem_getattr`).
+    for (flag, attribute) in [
+        (FS_APPEND_FL, STATX_ATTR_APPEND),
+        (FS_IMMUTABLE_FL, STATX_ATTR_IMMUTABLE),
+        (FS_NODUMP_FL, STATX_ATTR_NODUMP),
+    ] {
+        if inode.fsflags & flag != 0 {
+            out.stx_attributes |= u64::from(attribute);
+        }
     }
     out.stx_atime = time(inode.atime);
     out.stx_btime = if reported & STATX_BTIME != 0 {
@@ -1957,8 +1987,9 @@ pub(super) fn fallocate(
     }
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
+    // Files of `/proc` have no `fallocate`.
     let Content::Regular(regular) = &mut inode.content else {
-        return Err(Errno::ENODEV);
+        return Err(Errno::EOPNOTSUPP);
     };
     if punch && regular.seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0
         || !punch && regular.seals & F_SEAL_GROW != 0 && end > regular.size()
@@ -1969,13 +2000,31 @@ pub(super) fn fallocate(
         regular.punch(cx.cpu, offset, end);
         inode.mtime = now;
     } else {
+        // tmpfs refuses a range larger than it could ever hold at once, then takes the pages one
+        // by one, giving back those it took if it runs out, and only then sets the size.
+        let (first, last) = (offset / 4096, end.div_ceil(4096));
+        if let Some(space) = &inode.fs.space
+            && space.max_blocks() != 0
+            && last - first > space.max_blocks()
+        {
+            return Err(Errno::ENOSPC);
+        }
+        let Content::Regular(regular) = &mut inode.content else {
+            return Err(Errno::ENODEV);
+        };
+        let mut taken = Vec::new();
+        for page in first..last {
+            let held = regular.missing_pages(page, page + 1) == 0;
+            if !regular.reserve(page) {
+                regular.unreserve(&taken);
+                return Err(Errno::ENOSPC);
+            }
+            if !held {
+                taken.push(page);
+            }
+        }
         if mode & FALLOC_FL_KEEP_SIZE == 0 && regular.size() < end {
             regular.truncate(cx.cpu, end);
-        }
-        for page in offset / 4096..end.div_ceil(4096) {
-            if !regular.pages.contains(&page) {
-                regular.allocated.insert(page);
-            }
         }
     }
     inode.ctime = now;
@@ -2083,19 +2132,33 @@ pub(super) fn umask(
     Ok(old.into())
 }
 
-fn statfs_of(node: &Node) -> statfs {
+/// What `statfs` reports for the file system holding `node`: tmpfs's limits and what is in use
+/// (`shmem_statfs`; a limit of zero, as on the internal mount, reports nothing), and nothing for
+/// the others (`simple_statfs`).
+fn statfs_of(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> statfs {
     let inode = node.borrow();
     let mut out: statfs = zerocopy::FromZeros::new_zeroed();
     out.f_type = inode.fs.kind.magic() as i64;
     out.f_bsize = wcontainers_abi::PAGE_SIZE as i64;
     out.f_namelen = 255;
     out.f_frsize = wcontainers_abi::PAGE_SIZE as i64;
-    if inode.fs.kind == crate::fs::Kind::Tmpfs {
-        out.f_blocks = 16384;
-        out.f_bfree = 16384;
-        out.f_bavail = 16384;
-        out.f_files = 1 << 20;
-        out.f_ffree = 1 << 20;
+    if let Some(space) = &inode.fs.space {
+        if space.max_blocks() != 0 {
+            let free = space.free_blocks();
+            out.f_blocks = space.max_blocks() as i64;
+            out.f_bfree = free as i64;
+            out.f_bavail = free as i64;
+            // Pages a mapping's faults brought in are counted by tmpfs and not known here.
+            if space.has_mapped_files() {
+                kernel
+                    .counters
+                    .count(cx.host, reason::RESIDENCY_NOT_TRACKED, 0);
+            }
+        }
+        if space.max_inodes() != 0 {
+            out.f_files = space.max_inodes() as i64;
+            out.f_ffree = space.free_inodes() as i64;
+        }
     }
     let (major, minor) = crate::fs::decode_device(inode.fs.device);
     out.f_fsid = __kernel_fsid_t {
@@ -2112,7 +2175,8 @@ pub(super) fn statfs(
     [path, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
     let node = lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, true)?;
-    guest(kernel, cx, tid).write_value(buffer, &statfs_of(&node))?;
+    let out = statfs_of(kernel, cx, &node);
+    guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)
 }
 
@@ -2129,7 +2193,8 @@ pub(super) fn fstatfs(
         .borrow()
         .node
         .clone();
-    guest(kernel, cx, tid).write_value(buffer, &statfs_of(&node))?;
+    let out = statfs_of(kernel, cx, &node);
+    guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)
 }
 

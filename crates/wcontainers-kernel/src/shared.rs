@@ -131,7 +131,7 @@ pub(crate) fn copies_stale(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Nod
     let Content::Regular(regular) = &inode.content else {
         return;
     };
-    if !regular.mapped {
+    if !regular.is_mapped() {
         return;
     }
     let copied = kernel.processes.values().any(|process| {

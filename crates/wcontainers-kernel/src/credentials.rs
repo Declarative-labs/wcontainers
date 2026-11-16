@@ -14,6 +14,8 @@ pub(crate) const CAP_SETUID: u32 = general::CAP_SETUID;
 pub(crate) const CAP_MKNOD: u32 = general::CAP_MKNOD;
 pub(crate) const CAP_SYS_CHROOT: u32 = general::CAP_SYS_CHROOT;
 pub(crate) const CAP_SYS_ADMIN: u32 = general::CAP_SYS_ADMIN;
+pub(crate) const CAP_SYS_RAWIO: u32 = general::CAP_SYS_RAWIO;
+pub(crate) const CAP_LINUX_IMMUTABLE: u32 = general::CAP_LINUX_IMMUTABLE;
 pub(crate) const CAP_SETFCAP: u32 = general::CAP_SETFCAP;
 
 /// The powers a default Docker container gives its processes.

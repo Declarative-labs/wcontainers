@@ -5,7 +5,7 @@ use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use wcontainers_abi::{Cpu, Host, Resume, Stream};
+use wcontainers_abi::{Cpu, Host, PAGE_SIZE, Resume, Stream};
 
 use crate::credentials::Credentials;
 use crate::file::{FdTable, OpenFile};
@@ -74,7 +74,9 @@ pub struct FileRecord {
 
 /// The root of the container's file system: an empty in-memory directory.
 pub(crate) fn new_root(numbers: &mut Numbers) -> Node {
-    let fs = numbers.file_system(Kind::Tmpfs, ST_RELATIME);
+    let mut fs = numbers.file_system(Kind::Tmpfs, ST_RELATIME);
+    // Its limits are tmpfs's defaults for the machine, set when the container starts.
+    fs.space = Some(fs::Space::new(0, 0));
     let ino = numbers.ino();
     let root = fs::new_inode(
         fs,
@@ -89,7 +91,8 @@ pub(crate) fn new_root(numbers: &mut Numbers) -> Node {
             parent: None,
             name: Vec::new(),
         },
-    );
+    )
+    .expect("a new container's file systems have room");
     root.borrow_mut().place.mount_root = true;
     root
 }
@@ -122,8 +125,8 @@ pub(crate) fn make(
     rdev: u64,
     now: Time,
     content: Content,
-) -> Node {
-    let fs = directory.borrow().fs;
+) -> Result<Node, Errno> {
+    let fs = directory.borrow().fs.clone();
     let ino = numbers.ino();
     let node = fs::new_inode(
         fs,
@@ -138,9 +141,9 @@ pub(crate) fn make(
             parent: Some(directory.clone()),
             name: name.to_vec(),
         },
-    );
+    )?;
     link(directory, name, node.clone());
-    node
+    Ok(node)
 }
 
 /// A new empty in-memory file system, mounted on a directory.
@@ -151,8 +154,10 @@ fn mount_tmpfs(
     now: Time,
     kind: Kind,
     flags: u32,
+    space: Option<Rc<fs::Space>>,
 ) -> Node {
-    let fs = numbers.file_system(kind, flags);
+    let mut fs = numbers.file_system(kind, flags);
+    fs.space = space;
     let ino = numbers.ino();
     let root = fs::new_inode(
         fs,
@@ -167,10 +172,15 @@ fn mount_tmpfs(
             parent: None,
             name: Vec::new(),
         },
-    );
+    )
+    .expect("a new container's file systems have room");
     fs::mount(on, &root);
     root
 }
+
+/// The size Docker gives the tmpfs at `/dev` (runc's `size=65536k`) and at `/dev/shm` (its default
+/// `--shm-size` of 64 MiB).
+const DOCKER_TMPFS_BYTES: u64 = 64 << 20;
 
 /// The directory at an absolute path in the root file system, made if missing.
 fn directory_at(kernel: &mut Kernel, path: &[u8], now: Time) -> Node {
@@ -198,7 +208,8 @@ fn directory_at(kernel: &mut Kernel, path: &[u8], now: Time) -> Node {
                 0,
                 now,
                 Content::Directory(Directory::new()),
-            ),
+            )
+            .expect("a new container's file systems have room"),
         };
     }
     at
@@ -298,7 +309,8 @@ impl Kernel {
             rdev,
             time,
             content,
-        );
+        )
+        .expect("a new container's file systems have room");
         Ok(())
     }
 
@@ -312,7 +324,7 @@ impl Kernel {
             processes: &self.processes,
             threads: &self.threads,
             caller: 0,
-            fs: self.files.proc_fs,
+            fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,
@@ -409,7 +421,7 @@ impl Kernel {
             .map(|stream| {
                 let ino = self.files.numbers.ino();
                 fs::new_inode(
-                    self.files.pipe_fs,
+                    self.files.pipe_fs.clone(),
                     ino,
                     New {
                         mode: S_IFIFO | 0o600,
@@ -422,6 +434,7 @@ impl Kernel {
                         name: Vec::new(),
                     },
                 )
+                .expect("a new container's file systems have room")
             })
             .collect();
         let limit = u64::MAX;
@@ -525,10 +538,26 @@ impl Kernel {
         crate::shared::release(self, cx);
     }
 
+    /// A tmpfs's count, kept for the machine's memory in use.
+    fn new_space(&mut self, max_blocks: u64, max_inodes: u64) -> Rc<fs::Space> {
+        let space = fs::Space::new(max_blocks, max_inodes);
+        self.files.spaces.push(space.clone());
+        space
+    }
+
     /// The mounts and device files `docker run` sets up.
     fn make_mounts(&mut self) {
         let now = self.boot;
+        // tmpfs's default limits are half the machine's pages, in pages and in inodes
+        // (`shmem_default_max_blocks`, `shmem_default_max_inodes`); Docker mounts `/dev` and
+        // `/dev/shm` with 64 MiB.
+        let half = self.machine.memory_bytes / PAGE_SIZE / 2;
+        let docker_size = DOCKER_TMPFS_BYTES / PAGE_SIZE;
+        if let Some(space) = &self.files.root.borrow().fs.space {
+            space.set_limits(half, half);
+        }
         let dev_point = directory_at(self, b"/dev", now);
+        let dev_space = self.new_space(docker_size, half);
         let dev = mount_tmpfs(
             &mut self.files.numbers,
             &dev_point,
@@ -536,6 +565,7 @@ impl Kernel {
             now,
             Kind::Tmpfs,
             ST_NOSUID,
+            Some(dev_space),
         );
         // In runc's order, which a listing of `/dev` shows (newest first): the mount points in the
         // order of Docker's mounts, the devices, the `ptmx` link, then the standard links.
@@ -550,7 +580,8 @@ impl Kernel {
                 0,
                 now,
                 Content::Directory(Directory::new()),
-            );
+            )
+            .expect("a new container's file systems have room");
         }
         for (name, major, minor) in DOCKER_DEVICES {
             make(
@@ -563,7 +594,8 @@ impl Kernel {
                 encode_device(*major, *minor),
                 now,
                 Content::Special,
-            );
+            )
+            .expect("a new container's file systems have room");
         }
         let links: [(&[u8], &[u8]); 6] = [
             (b"ptmx", b"pts/ptmx"),
@@ -584,7 +616,8 @@ impl Kernel {
                 0,
                 now,
                 Content::Symlink(target.to_vec()),
-            );
+            )
+            .expect("a new container's file systems have room");
         }
         let shm_point = dev
             .borrow()
@@ -592,6 +625,7 @@ impl Kernel {
             .expect("dev")
             .get(b"shm")
             .expect("shm");
+        let shm_space = self.new_space(docker_size, half);
         mount_tmpfs(
             &mut self.files.numbers,
             &shm_point,
@@ -599,6 +633,7 @@ impl Kernel {
             now,
             Kind::Tmpfs,
             ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+            Some(shm_space),
         );
         let pts_point = dev
             .borrow()
@@ -613,6 +648,7 @@ impl Kernel {
             now,
             Kind::Devpts,
             ST_NOSUID | ST_NOEXEC | ST_RELATIME,
+            None,
         );
         make(
             &mut self.files.numbers,
@@ -624,14 +660,15 @@ impl Kernel {
             encode_device(5, 2),
             now,
             Content::Special,
-        );
+        )
+        .expect("a new container's file systems have room");
 
         let proc_point = directory_at(self, b"/proc", now);
         let view = fs::proc::View {
             processes: &self.processes,
             threads: &self.threads,
             caller: 0,
-            fs: self.files.proc_fs,
+            fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,

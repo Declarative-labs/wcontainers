@@ -46,6 +46,9 @@ const BYTES: &[&str] = &[
     "seccomp_notif_sizes",
     "cachestat_range",
     "cachestat",
+    "fsxattr",
+    "file_clone_range",
+    "fsuuid2",
 ];
 
 /// One file the generator writes, relative to the workspace root, and what it holds.
