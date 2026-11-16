@@ -245,7 +245,7 @@ fn deadline(
         .saturating_mul(1_000_000_000)
         .saturating_add(timeout.tv_nsec as u64);
     let left = at.saturating_sub(cx.host.realtime_nanoseconds());
-    Ok(Some(cx.host.monotonic_nanoseconds().saturating_add(left)))
+    Ok(Some(cx.monotonic().saturating_add(left)))
 }
 
 fn with_queue<R>(node: &Node, act: impl FnOnce(&mut MessageQueue) -> R) -> R {
@@ -494,7 +494,7 @@ fn waited(
     } else if kernel.threads[&tid]
         .call
         .deadline
-        .is_some_and(|deadline| deadline <= cx.host.monotonic_nanoseconds())
+        .is_some_and(|deadline| deadline <= cx.monotonic())
     {
         Errno::ETIMEDOUT
     } else {

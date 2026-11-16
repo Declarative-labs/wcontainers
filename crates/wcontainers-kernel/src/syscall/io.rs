@@ -2543,7 +2543,7 @@ fn start_wait(
     mask: u64,
     mask_size: u64,
 ) -> Result<(), Errno> {
-    let now = cx.host.monotonic_nanoseconds();
+    let now = cx.monotonic();
     let new_mask = if mask != 0 {
         if mask_size != 8 {
             return Err(Errno::EINVAL);
@@ -2584,7 +2584,7 @@ fn nothing_ready(
     let call = kernel.threads[&tid].call;
     if call
         .deadline
-        .is_some_and(|_| call.progress <= cx.host.monotonic_nanoseconds())
+        .is_some_and(|_| call.progress <= cx.monotonic())
     {
         return Some(Ok(0));
     }
@@ -2610,9 +2610,7 @@ fn finish_wait(
     };
     let call = kernel.threads[&tid].call;
     if timeout != 0 && call.deadline.is_some() {
-        let left = call
-            .progress
-            .saturating_sub(cx.host.monotonic_nanoseconds());
+        let left = call.progress.saturating_sub(cx.monotonic());
         let value = __kernel_timespec {
             tv_sec: (left / 1_000_000_000) as i64,
             tv_nsec: (left % 1_000_000_000) as i64,
@@ -2753,7 +2751,7 @@ fn select_typed(
     }
     if ready == 0 {
         let call = kernel.threads[&tid].call;
-        let over = call.deadline.is_some() && call.progress <= cx.host.monotonic_nanoseconds();
+        let over = call.deadline.is_some() && call.progress <= cx.monotonic();
         if !over {
             return Ok(None);
         }

@@ -51,6 +51,19 @@ use process::{Pid, Process, Thread, Tid};
 pub(crate) struct Context<'a> {
     pub cpu: &'a mut dyn Cpu,
     pub host: &'a mut dyn Host,
+    /// What is added to the host's monotonic clock to give the kernel's (see
+    /// [`Kernel::restore`]).
+    monotonic_offset: u64,
+}
+
+impl Context<'_> {
+    /// The kernel's monotonic clock, which never goes backwards, also across a restore on another
+    /// host.
+    pub fn monotonic(&mut self) -> u64 {
+        self.host
+            .monotonic_nanoseconds()
+            .wrapping_add(self.monotonic_offset)
+    }
 }
 
 /// What the guest is told about the machine besides its CPU features.
@@ -107,6 +120,9 @@ pub struct Kernel {
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
     signalled: VecDeque<Tid>,
+    /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
+    /// host whose clock reads differently.
+    monotonic_offset: u64,
     /// The monotonic clock when the kernel was last entered.
     entry_now: u64,
     /// The monotonic clock when the kernel last handed control back, which is when the thread it
@@ -169,6 +185,7 @@ impl Kernel {
             parked: schedule::Parked::default(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
+            monotonic_offset: 0,
             entry_now: 0,
             last_now: 0,
             picked_runtime: 0,
@@ -234,7 +251,11 @@ impl Kernel {
             .running
             .take()
             .expect("an exit was handed back with no thread running");
-        let mut cx = Context { cpu, host };
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+        };
         self.account(&mut cx, tid);
         self.tick(tid);
         self.wake_due();
@@ -244,10 +265,14 @@ impl Kernel {
 
     /// Something happened outside.
     pub fn event(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, event: Event<'_>) {
-        let mut cx = Context { cpu, host };
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+        };
         let detail = match event {
             Event::Timer => {
-                self.entry_now = cx.host.monotonic_nanoseconds();
+                self.entry_now = cx.monotonic();
                 self.wake_due();
                 self.settle(&mut cx);
                 return;
@@ -265,14 +290,20 @@ impl Kernel {
         self.settle(&mut cx);
     }
 
-    /// Brings back a saved container on a CPU side restored from the same save (every memory, block
-    /// and thread's registers under the same handles, nothing else): every thread starts again from
-    /// its saved registers, and every parked call runs again. The host's monotonic clock must not
-    /// have gone backwards.
+    /// Brings back a saved container, on a CPU side restored from the same save (every memory, block
+    /// and thread's registers under the same handles, nothing else) and a host whose clocks may read
+    /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
+    /// again from its saved registers, and every parked call runs again, its deadline on the clock
+    /// it had.
     pub fn restore(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host) {
         assert!(self.running.is_none(), "restored while a thread runs");
-        let mut cx = Context { cpu, host };
-        self.entry_now = cx.host.monotonic_nanoseconds();
+        self.monotonic_offset = self.last_now.wrapping_sub(host.monotonic_nanoseconds());
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+        };
+        self.entry_now = cx.monotonic();
         let tids: Vec<Tid> = self.threads.keys().copied().collect();
         for tid in tids {
             let thread = self.threads.get_mut(&tid).expect("thread");

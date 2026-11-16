@@ -366,7 +366,7 @@ pub(super) fn rt_sigtimedwait(
             let duration = (value.tv_sec as u64)
                 .saturating_mul(1_000_000_000)
                 .saturating_add(value.tv_nsec as u64);
-            Some(cx.host.monotonic_nanoseconds().saturating_add(duration))
+            Some(cx.monotonic().saturating_add(duration))
         } else {
             None
         };
@@ -386,7 +386,7 @@ pub(super) fn rt_sigtimedwait(
     }
     if call
         .deadline
-        .is_some_and(|deadline| deadline <= cx.host.monotonic_nanoseconds())
+        .is_some_and(|deadline| deadline <= cx.monotonic())
     {
         return Err(Errno::EAGAIN).into();
     }

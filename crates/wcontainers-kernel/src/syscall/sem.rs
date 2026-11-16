@@ -206,7 +206,7 @@ fn operate(
             let length = (timeout.tv_sec as u64)
                 .saturating_mul(1_000_000_000)
                 .saturating_add(timeout.tv_nsec as u64);
-            Some(cx.host.monotonic_nanoseconds().saturating_add(length))
+            Some(cx.monotonic().saturating_add(length))
         }
         None => None,
     };
@@ -294,7 +294,7 @@ fn waited(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Result<(), Err
     let call = kernel.threads[&tid].call;
     let error = if call
         .deadline
-        .is_some_and(|deadline| deadline <= cx.host.monotonic_nanoseconds())
+        .is_some_and(|deadline| deadline <= cx.monotonic())
     {
         Errno::EAGAIN
     } else if kernel.signal_pending(tid) {

@@ -76,7 +76,7 @@ fn clock(kernel: &Kernel, cx: &mut Context<'_>, tid: Tid, clock: u64) -> Result<
         | CLOCK_MONOTONIC_RAW
         | CLOCK_MONOTONIC_COARSE
         | CLOCK_BOOTTIME
-        | CLOCK_BOOTTIME_ALARM => cx.host.monotonic_nanoseconds(),
+        | CLOCK_BOOTTIME_ALARM => cx.monotonic(),
         CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => cpu_time(kernel, cx, tid),
         _ => return Err(Errno::EINVAL),
     })
@@ -195,7 +195,7 @@ fn sleep_until(
         thread.call.deadline = Some(until.saturating_add(thread.timer_slack));
     }
     let call = thread.call;
-    let now = cx.host.monotonic_nanoseconds();
+    let now = cx.monotonic();
     if call.deadline.is_some_and(|deadline| deadline <= now) {
         return Outcome::Return(0);
     }
@@ -267,10 +267,7 @@ pub(super) fn nanosleep(
     }
     match read_duration(kernel, cx, tid, request) {
         Ok(duration) => {
-            let until = cx
-                .host
-                .monotonic_nanoseconds()
-                .saturating_add(nanoseconds(&duration));
+            let until = cx.monotonic().saturating_add(nanoseconds(&duration));
             sleep_until(kernel, cx, tid, until, Some(left))
         }
         Err(error) => Err(error).into(),
@@ -343,7 +340,7 @@ pub(super) fn clock_nanosleep(
         }
         return sleep_forever(kernel, tid, !absolute);
     }
-    let now = cx.host.monotonic_nanoseconds();
+    let now = cx.monotonic();
     let until = if absolute {
         let clock_now = if realtime {
             cx.host.realtime_nanoseconds()
@@ -374,5 +371,5 @@ pub(super) fn times(
         };
         guest(kernel, cx, tid).write_value(out, &value)?;
     }
-    Ok(ticks(cx.host.monotonic_nanoseconds()))
+    Ok(ticks(cx.monotonic()))
 }

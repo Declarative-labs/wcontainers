@@ -710,10 +710,7 @@ pub(super) fn proc_contents(
             .count(cx.host, reason::PROC_FIELDS_NOT_TRACKED, detail);
     }
     let pid = kernel.threads[&tid].process;
-    let uptime = cx
-        .host
-        .monotonic_nanoseconds()
-        .saturating_sub(kernel.boot_monotonic);
+    let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic);
     let mut fresh = [0u8; 16];
     cx.host.random(&mut fresh);
     let mounts = mount_table();

@@ -354,9 +354,13 @@ impl Kernel {
         start: &Start<'_>,
     ) -> Result<(), Errno> {
         assert!(self.init.is_none(), "the container has already started");
-        let mut cx = Context { cpu, host };
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+        };
         self.boot = Time::from_nanoseconds(cx.host.realtime_nanoseconds());
-        self.boot_monotonic = cx.host.monotonic_nanoseconds();
+        self.boot_monotonic = cx.monotonic();
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
@@ -400,7 +404,7 @@ impl Kernel {
             children_time: 0,
             children_maxrss: 0,
             peak_mapped: 0,
-            started: cx.host.monotonic_nanoseconds(),
+            started: cx.monotonic(),
             vdso: 0,
             execed: false,
             self_exec_id: 0,
@@ -523,7 +527,7 @@ impl Kernel {
         self.threads.insert(pid, Thread::new(pid, thread));
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);
-        self.entry_now = cx.host.monotonic_nanoseconds();
+        self.entry_now = cx.monotonic();
         self.make_runnable(pid, Resume::FromRegisters);
         self.settle(cx);
         Ok(())

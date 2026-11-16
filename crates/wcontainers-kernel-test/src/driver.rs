@@ -103,6 +103,23 @@ impl TestHost {
 }
 
 impl TestHost {
+    /// The host a saved container is brought back on. What the container wrote has already left;
+    /// the monotonic clock reads from an earlier start than this one's (a kernel that did not carry
+    /// its clock over would see it go back) and the wall clock goes on; randomness and the length of
+    /// turns come from `seed`.
+    fn moved(&self, seed: u64) -> Self {
+        Self {
+            started: Instant::now(),
+            skipped: self.skipped,
+            random: StdRng::seed_from_u64(seed),
+            stdout: self.stdout.clone(),
+            stderr: self.stderr.clone(),
+            warnings: self.warnings.clone(),
+            virtual_now: self.virtual_now.map(|_| 0),
+            schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+        }
+    }
+
     /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
     pub fn skip_to(&mut self, until: u64) {
         let now = self.monotonic_nanoseconds();
@@ -211,8 +228,11 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
 }
 
 /// As [`run`], saving the container up to `saves` times at moments drawn from the seed (each 1 to
-/// 100 turns after the last) and bringing it back each time on a new CPU side, as a host that saves
-/// memories does.
+/// 100 turns after the last) and bringing it back each time from the copy alone. A save is a new
+/// process holding a copy of this one's memory, as a host that saves copies the kernel's memory
+/// and every guest memory: the copy goes on with a new CPU side made from the saved memories and
+/// registers and a new host whose clock reads differently, while this process only waits for the
+/// copy's run.
 pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<Run, Failure> {
     let mut moments = StdRng::seed_from_u64(seed ^ 0x5a7e);
     let mut last = 0;
@@ -224,6 +244,8 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
         .collect();
     let mut turns = 0u64;
     let mut saved = 0;
+    // In a copy, where its run is reported to the process it was copied from.
+    let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
     let mut kernel = Kernel::new();
@@ -257,9 +279,14 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
                 resume,
                 slice_nanoseconds,
             } => {
-                let exit = cpu
-                    .run(thread, resume, slice_nanoseconds)
-                    .map_err(Failure::StandIn)?;
+                let exit = match cpu.run(thread, resume, slice_nanoseconds) {
+                    Ok(exit) => exit,
+                    // A copy cannot hand a failure back; it says what it was and ends.
+                    Err(unsupported) if report.is_some() => {
+                        panic!("the stand-in failed: {unsupported:?}")
+                    }
+                    Err(unsupported) => return Err(Failure::StandIn(unsupported)),
+                };
                 host.ran(cpu.last_instructions);
 
                 kernel.exit(&mut cpu, &mut host, exit);
@@ -267,7 +294,30 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
                 while at.first() == Some(&turns) {
                     at.remove(0);
                     saved += 1;
+                    let mut ends = [0; 2];
+                    // SAFETY: plain system calls; the copy goes on in this thread alone and ends with
+                    // `_exit` once it has reported.
+                    unsafe {
+                        assert_eq!(libc::pipe(ends.as_mut_ptr()), 0, "a pipe for the copy");
+                        match libc::fork() {
+                            -1 => panic!("fork failed"),
+                            0 => {
+                                libc::close(ends[0]);
+                                std::panic::set_hook(Box::new(|info| {
+                                    panic_in_copy(&info.to_string())
+                                }));
+                                if let Some(earlier) = report.replace(ends[1]) {
+                                    libc::close(earlier);
+                                }
+                            }
+                            copy => {
+                                libc::close(ends[1]);
+                                return Ok(finish(copied_run(copy, ends[0]), report));
+                            }
+                        }
+                    }
                     cpu = cpu.restored();
+                    host = host.moved(seed ^ ((saved as u64) << 32));
                     kernel.restore(&mut cpu, &mut host);
                 }
             }
@@ -287,7 +337,7 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
             Next::Finished { status } => break status,
         }
     };
-    Ok(Run {
+    let run = Run {
         outcome: Outcome {
             stdout: host.stdout,
             stderr: host.stderr,
@@ -297,5 +347,164 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
         counters: kernel.counters().collect(),
         files: kernel.root_files(&mut cpu),
         saved,
-    })
+    };
+    Ok(finish(run, report))
+}
+
+/// A run's end: returned, or in a copy made at a save reported to the process it was copied from,
+/// which ends the copy.
+fn finish(run: Run, report: Option<i32>) -> Run {
+    if let Some(fd) = report {
+        let bytes = encode(&run);
+        // SAFETY: writes to the pipe this copy was given, then ends the copy without unwinding.
+        unsafe {
+            let mut written = 0;
+            while written < bytes.len() {
+                let count =
+                    libc::write(fd, bytes[written..].as_ptr().cast(), bytes.len() - written);
+                assert!(count > 0, "reporting a copy's run");
+                written += count as usize;
+            }
+            libc::_exit(0);
+        }
+    }
+    run
+}
+
+/// Ends a copy made at a save that panics, after saying why on the standard error, since a copy
+/// must not unwind into the test harness it was copied with.
+fn panic_in_copy(why: &str) -> ! {
+    let message = format!("a copy made at a save failed: {why}\n");
+    // SAFETY: a write to the standard error, then the copy ends.
+    unsafe {
+        libc::write(2, message.as_ptr().cast(), message.len());
+        libc::_exit(1)
+    }
+}
+
+/// The run of a copy made at a save, read from its pipe once it has ended.
+fn copied_run(copy: libc::pid_t, fd: i32) -> Run {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 65536];
+    // SAFETY: reads the copy's pipe until it closes, then reaps the copy.
+    let status = unsafe {
+        loop {
+            let count = libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len());
+            if count <= 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count as usize]);
+        }
+        libc::close(fd);
+        let mut status = 0;
+        libc::waitpid(copy, &mut status, 0);
+        status
+    };
+    assert!(
+        !bytes.is_empty() && status == 0,
+        "the copy made at a save ended without a run (wait status {status}); why is above"
+    );
+    decode(&bytes)
+}
+
+/// A run as bytes, for a copy to hand it to the process it was copied from.
+fn encode(run: &Run) -> Vec<u8> {
+    fn bytes(out: &mut Vec<u8>, value: &[u8]) {
+        out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        out.extend_from_slice(value);
+    }
+    fn number(out: &mut Vec<u8>, value: u64) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    let mut out = Vec::new();
+    bytes(&mut out, &run.outcome.stdout);
+    bytes(&mut out, &run.outcome.stderr);
+    number(&mut out, run.outcome.exit_code as u64);
+    number(&mut out, run.saved as u64);
+    number(&mut out, run.warnings.len() as u64);
+    for warned in &run.warnings {
+        bytes(&mut out, warned.reason.as_bytes());
+        number(&mut out, warned.count);
+        number(&mut out, warned.detail);
+    }
+    number(&mut out, run.counters.len() as u64);
+    for counter in &run.counters {
+        bytes(&mut out, counter.reason.as_bytes());
+        number(&mut out, counter.detail);
+        number(&mut out, counter.count);
+        number(&mut out, counter.nanoseconds);
+    }
+    number(&mut out, run.files.len() as u64);
+    for file in &run.files {
+        bytes(&mut out, &file.path);
+        number(&mut out, file.mode.into());
+        number(&mut out, file.uid.into());
+        number(&mut out, file.gid.into());
+        bytes(&mut out, &file.contents);
+        number(&mut out, file.rdev);
+    }
+    out
+}
+
+/// Reads what [`encode`] wrote.
+fn decode(input: &[u8]) -> Run {
+    struct Reader<'a>(&'a [u8]);
+    impl Reader<'_> {
+        fn number(&mut self) -> u64 {
+            let (value, rest) = self.0.split_at(8);
+            self.0 = rest;
+            u64::from_le_bytes(value.try_into().expect("eight bytes"))
+        }
+        fn bytes(&mut self) -> Vec<u8> {
+            let length = self.number() as usize;
+            let (value, rest) = self.0.split_at(length);
+            self.0 = rest;
+            value.to_vec()
+        }
+        fn text(&mut self) -> String {
+            String::from_utf8(self.bytes()).expect("a reason's name")
+        }
+    }
+    let mut reader = Reader(input);
+    let stdout = reader.bytes();
+    let stderr = reader.bytes();
+    let exit_code = reader.number() as i32;
+    let saved = reader.number() as usize;
+    let warnings = (0..reader.number())
+        .map(|_| Warned {
+            reason: reader.text(),
+            count: reader.number(),
+            detail: reader.number(),
+        })
+        .collect();
+    let counters = (0..reader.number())
+        .map(|_| CounterReading {
+            // The kernel's reasons are fixed names; the copy's are leaked to stay for the run.
+            reason: reader.text().leak(),
+            detail: reader.number(),
+            count: reader.number(),
+            nanoseconds: reader.number(),
+        })
+        .collect();
+    let files = (0..reader.number())
+        .map(|_| FileRecord {
+            path: reader.bytes(),
+            mode: reader.number() as u32,
+            uid: reader.number() as u32,
+            gid: reader.number() as u32,
+            contents: reader.bytes(),
+            rdev: reader.number(),
+        })
+        .collect();
+    Run {
+        outcome: Outcome {
+            stdout,
+            stderr,
+            exit_code,
+        },
+        warnings,
+        counters,
+        files,
+        saved,
+    }
 }

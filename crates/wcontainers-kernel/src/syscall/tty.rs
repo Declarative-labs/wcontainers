@@ -330,7 +330,7 @@ fn read_into(
         return Ok(0);
     }
     let nonblocking = file.borrow().flags & O_NONBLOCK != 0;
-    let now = cx.host.monotonic_nanoseconds();
+    let now = cx.monotonic();
     let (packet, canonical, (vmin, vtime), available, status) = {
         let pair = pty.borrow();
         let tty = &pair.sides[side];

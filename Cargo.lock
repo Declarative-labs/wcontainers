@@ -1859,6 +1859,7 @@ name = "wcontainers-kernel-test"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "libc",
  "linux-raw-sys",
  "memmap2",
  "proptest",

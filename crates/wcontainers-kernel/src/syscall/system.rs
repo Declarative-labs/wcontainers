@@ -103,11 +103,7 @@ pub(super) fn sysinfo(
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
-    let uptime = cx
-        .host
-        .monotonic_nanoseconds()
-        .saturating_sub(kernel.boot_monotonic)
-        / 1_000_000_000;
+    let uptime = cx.monotonic().saturating_sub(kernel.boot_monotonic) / 1_000_000_000;
     let memory = kernel.machine.memory_bytes;
     let (in_use, shared) = kernel.memory_in_use();
     kernel

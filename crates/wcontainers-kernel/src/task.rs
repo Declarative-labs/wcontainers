@@ -33,8 +33,11 @@ impl Kernel {
                     .run_queue
                     .pop(|tid| schedule::weight(&threads[&tid].schedule))
                 else {
+                    // The host's clock, which the kernel's runs ahead of by the offset.
                     return Next::Idle {
-                        until_nanoseconds: self.next_deadline(),
+                        until_nanoseconds: self
+                            .next_deadline()
+                            .map(|at| at.wrapping_sub(self.monotonic_offset)),
                     };
                 };
                 let thread = self.threads.get_mut(&tid).expect("queued thread exists");
@@ -85,7 +88,7 @@ impl Kernel {
 
     /// Charges the thread that ran for the time since it was handed out.
     pub(crate) fn account(&mut self, cx: &mut Context<'_>, tid: Tid) {
-        let now = cx.host.monotonic_nanoseconds();
+        let now = cx.monotonic();
         self.entry_now = now;
         let delta = now.saturating_sub(self.last_now);
         let thread = self.thread_mut(tid);
@@ -263,7 +266,7 @@ impl Kernel {
             }
             break;
         }
-        self.last_now = cx.host.monotonic_nanoseconds();
+        self.last_now = cx.monotonic();
         self.counters.flush(cx.host);
     }
 
