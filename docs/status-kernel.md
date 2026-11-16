@@ -4,9 +4,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process): the seventh run closed it out; an independent check then found ten
-problems, and the eighth run (the second close-out run) fixed them all (see "Eighth run" under Layer
-1 and Tests). The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it
+K0 is done. K1 (one process) is complete: the seventh run closed it out; an independent check then
+found ten problems, and the eighth run (the second close-out run) fixed them all and five more that
+its layer 1 runs found. With every fix in, the fresh seeds 97, 98 and 99 passed 20000 sequences each
+(see Layer 1). The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it
 runs once at the end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
@@ -17,7 +18,8 @@ Layer 1 long run (one command, for the orchestrator):
 `LAYER1_CASES=1000000 LAYER1_SEED=<n> nix develop -c cargo test -p wcontainers-kernel-test --test layer1`
 `LAYER1_CASES` is the number of sequences (default 64), `LAYER1_SEED` the seed (default 0). A failure is
 shrunk and printed call by call with the seed. A sequence that runs past 60 s in the reference is
-killed there (SIGKILL), which our side reports for a wait that never ends. Seeds 94 and up are fresh.
+killed there (SIGKILL), which our side reports for a wait that never ends. Seeds 100 and up are fresh
+(the independent check used 4242, 5353, 6464 and 777001 to 777003).
 
 ## For the independent check
 
@@ -165,7 +167,11 @@ What layer 1 does not generate, and why:
   AT_SYSINFO_EHDR and AT_MINSIGSTKSZ (counted and warned at each start; they come with the vDSO and
   signal frames in K2). Set-user and set-group bits, file capabilities, AT_SECURE, dumpability.
 - Credentials: uid/euid/suid/fsuid and gids, supplementary groups (Docker's), Docker's 14 powers,
-  Linux's rules for changing ids and what that does to powers and `dumpable`, capget/capset.
+  Linux's rules for changing ids and what that does to powers and `dumpable`, capget/capset. Each
+  change Linux commits (`commit_creds`: the id setters unless a no-op, setgroups, capset, keepcaps,
+  dropping a bounding power, execve) gives the credentials a new serial, and an open file keeps the
+  serial it was opened with (`f_cred`): linkat with AT_EMPTY_PATH walks from a descriptor only with
+  the same credentials or CAP_DAC_READ_SEARCH (which Docker's root lacks), else ENOENT.
 - Time: clocks from the host, coarse clocks at 1 ms resolution (measured), sleeps park the thread and
   the kernel goes idle until the time; the test host jumps its clocks instead of waiting. CPU time is
   the time since the container started less the time the process's threads spent parked. CPU clock
@@ -319,12 +325,13 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   mappings that see later file changes; O_TMPFILE.
 - K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
 
-## Tests (last run 2026-11-15, eighth run: 52 passed, 7 ignored known failures)
+## Tests (last run 2026-11-15, eighth run: 49 passed, 7 ignored known failures)
 
 All pass except the ignored known failures listed above. Added in the eighth run:
 - opencheck: guest/opencheck.c: opens of "f/", "lf/", "ld/", "/dev/null/", "/etc/passwd/" and
   `/proc` entries with a slash, with O_PATH, O_NOFOLLOW and O_CREAT; copy_file_range between memory
-  files, secret memory and `/dev/shm`; reads, writes and seeks of the five devices; chmod and chown of
+  files, secret memory and `/dev/shm`; linkat with AT_EMPTY_PATH before and after no-op and real
+  credential changes; reads, writes and seeks of the five devices; chmod and chown of
   `/proc`, `/proc/self` and `/proc/cpuinfo`; at RLIMIT_NOFILE 6 with every slot used, open of a bad
   descriptor, a bad pointer, a missing path, O_TMPFILE, openat2, memfd_create and memfd_secret. Same
   output.
@@ -334,7 +341,8 @@ All pass except the ignored known failures listed above. Added in the eighth run
 - procstatus: FDSize and Groups after 70 opens, dup2 to 300, close, setgroups of 3, 1 and 0 groups;
   maps lines of shared anonymous memory before and after splitting it with mprotect and merging it
   back, shared and private `/dev/zero`. Same output (inode numbers and `/dev`'s device left out:
-  machine-specific). Also: lookups of mountinfo and entropy_avail are counted, a missing name is not;
+  machine-specific); a process directory's owner after setuid, and a file's. Also: lookups of
+  mountinfo and entropy_avail are counted, a missing name is not;
   the private mapping copy is counted; and the ignored known failure above.
 - proclist `device_listings_match_the_reference`: `/dev`, `/dev/pts`, `/dev/shm` whole and in order.
 - busybox: `cat /etc/hostname/`, `cat /dev/null/`, `find /dev`, `ls -f /dev`.
@@ -361,6 +369,17 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+Eighth run (second close-out, after the independent check): the check's failing seeds were fixed
+first (4242: open took its descriptor last; 777001: chmod of `/proc` refused; 777002: copy across
+superblocks). Then at 20000 each: 777001 found fstat of an open `/proc/<pid>` directory showing the
+owner from before setuid (fixed: `pid_getattr` reports it live); 777002 found a sleep until 1 us on
+the user time CPU clock that never ends in the reference (Linux samples user time at ticks; such
+sleeps left out of layer 1, see above); 94 and 4242 found linkat with AT_EMPTY_PATH walking from a
+descriptor opened before a credential change (fixed: credential serials); 96 found MADV_PAGEOUT on
+locked memory (fixed: EINVAL before a gap's ENOMEM). 777001 and 777002 then passed 20000 each (305 s,
+load 8 to 17). With every fix in (head e46ef66), seeds 4242, 94, 96 and the fresh seeds 97, 98 and 99
+passed 20000 each: 303 s each, six side by side, load 20 at the start and 18 at the end.
+
 Seventh run (close-out): seeds 82 to 84 at 20000 (side by side, load 6 to 18): 82 and 84 passed
 (301 s each); 83 failed after 311 s: F_GETFL on an O_PATH descriptor showed O_LARGEFILE, which
 F_GETFL added to every file (fixed: open keeps it, never with O_PATH). Seeds 85 to 87 (load 5 to 11):
@@ -381,11 +400,15 @@ whole report with a length, then the wait status. The child first makes itself a
 our caller (the container's first process) is. An argument SELF is replaced on each side by the
 caller's own process number. 1 to 15 calls follow mkdirat and chdir into `/dev/shm/w`; arguments come
 from pools with bad pointers, bad descriptors, huge counts, unknown flags and invalid values. After
-each sequence the runner puts back what a sequence can change outside its directory.
+each sequence the runner puts back what a sequence can change outside its directory (`/dev/shm`, `/dev`,
+`/` and the three zero devices, and `/proc`'s owner and mode, which `/proc` keeps).
 
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- Eighth run, layer 1 20000 sequences, six side by side: 303 s each (load 18 to 20); two side by
+  side: 305 s each (load 8 to 17).
+- The whole test suite of both crates, eighth run: 69 s wall (load about 9).
 - Seventh run, layer 1 20000 sequences, three side by side: 294 to 311 s each (load 5 to 18).
   Seeds 91 to 93: 301 s each (load 10 to 15).
 - Sixth run, layer 1 20000 sequences, three side by side: about 290 to 330 s each (load 6 to 15).
