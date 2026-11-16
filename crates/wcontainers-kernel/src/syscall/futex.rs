@@ -184,11 +184,10 @@ fn read_timespec(
     cx: &mut Context<'_>,
     tid: Tid,
     address: u64,
-    checked: bool,
 ) -> Result<u64, Errno> {
     let value: __kernel_timespec = guest(kernel, cx, tid).read_value(address)?;
-    // `timespec64_valid`, which the futex2 calls do not check.
-    if checked && (value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec)) {
+    // `timespec64_valid`.
+    if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
         return Err(Errno::EINVAL);
     }
     Ok((value.tv_sec as u64)
@@ -238,7 +237,7 @@ pub(super) fn futex(
     );
     let mut wait_until = Timeout::None;
     if timeout != 0 && has_timeout {
-        let time = match read_timespec(kernel, cx, tid, timeout, true) {
+        let time = match read_timespec(kernel, cx, tid, timeout) {
             Ok(time) => time,
             Err(error) => return Err(error).into(),
         };
@@ -613,6 +612,10 @@ fn atomic_op(
     }
     if !crate::user::access_ok(address, 4) {
         return Err(Errno::EFAULT);
+    }
+    // An unknown operation is refused before the word is touched.
+    if op > FUTEX_OP_XOR {
+        return Err(Errno::ENOSYS);
     }
     let old = read_word(kernel, cx, tid, address)?;
     let new = match op {
@@ -1139,7 +1142,7 @@ fn futex2_timeout(
         CLOCK_MONOTONIC => false,
         _ => return Err(Errno::EINVAL),
     };
-    let at = read_timespec(kernel, cx, tid, timeout, false)?;
+    let at = read_timespec(kernel, cx, tid, timeout)?;
     Ok(Timeout::Absolute { at, realtime })
 }
 
@@ -1327,12 +1330,16 @@ pub(super) fn futex_requeue(
         __NR_futex_requeue,
         vector + size_of::<futex_waitv>() as u64,
     )?;
-    let key = key_of(kernel, tid, address, shared)?;
-    let key2 = key_of(kernel, tid, address2, shared2)?;
+    // Both futexes must have the same flags, as `sys_futex`'s requeue has.
+    if shared != shared2 {
+        return Err(Errno::EINVAL);
+    }
     let (wake, requeue_count) = (wake as i32, requeue_count as i32);
     if wake < 0 || requeue_count < 0 {
         return Err(Errno::EINVAL);
     }
+    let key = key_of(kernel, tid, address, shared)?;
+    let key2 = key_of(kernel, tid, address2, shared2)?;
     if read_word(kernel, cx, tid, address)? != value {
         return Err(Errno::EAGAIN);
     }
