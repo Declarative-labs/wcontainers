@@ -50,8 +50,23 @@ eighth run", and what is left under "S1, what remains after the eighth run".
   for part of the time), against 3.8 s a program one at a time in the first run. At that rate 100,000 take
   about 12 hours. Most of a program's time is Docker (gcc and the reference each start a container) and the
   20 seconds Linux is given before a program that does not end is dropped (12% of programs).
-- When Linux ends a layer 3 program by a signal, the report now says what three more runs on Linux gave, so a
-  fault of the reference can be told from one of the program. The case still fails.
+- A layer 3 blob that Linux ends by a signal is now compared (ours must end the same way, at none and full)
+  when the program built as an ordinary static Linux executable (`layer3::ordinary`, same compiler, level and
+  position, no `flat.ld`, 20 seconds) ends with the same status and output; otherwise the case fails, and the
+  report says what three more runs of the blob on Linux gave and how the ordinary executable ended. Found by
+  Csmith 12001408 (seed 12, case 1372, clang -O2, position independent), which faults on Linux as an ordinary
+  executable too, at -O2 also with an unlimited stack (at -O0 it ran for minutes): the program's own
+  undefined behaviour or a compiler fault, not ours. Replayed after the change: compared and matching Linux
+  (status 139, no output) at none and full, in wasmtime and Chrome. Csmith 12003654 (clang -O3) and 12004814
+  (clang -O1, position independent) were the same kind and match under the rule too (replayed).
+- The reference flake came back once: Csmith 12008340 (seed 12, case 8304, clang -O0, position
+  independent): Linux ended the blob by SIGSEGV with no output, then three more runs of the same blob gave
+  status 0 and the checksum. Load was 30 to 300 during that run. With the first run's 2000136 (also clang
+  -O0) that is 2 in about 12,300 programs on Linux, each time on the reference's side only. Not understood:
+  the blob mode maps fixed addresses with `MAP_FIXED_NOREPLACE` (an overlap would panic, not fault), and
+  nothing in it depends on time but the 20 second alarm. The case fails, as it should; under the new rule the
+  ordinary executable decides, so a flake like this can only fail a case, never pass a wrong one. At the
+  pass bar's 100,000 programs, expect about 16 such failures, each to be replayed with `WC_LAYER3_FROM`.
 - Instructions of features we do not offer now decode as `Unsupported`, not `Undefined`: both raise illegal
   instruction at the instruction, but these are counted and warned as "unsupported instruction reached"
   (the project's rule for anything unsupported). Two kinds: words of a form in Arm's list whose condition
@@ -1105,6 +1120,17 @@ contract's bits, in both runners).
 
 ## Cases actually run
 
+- M3, third run, release: layer 3, 2000 Csmith programs, seed 11, 12 at once, 10 also in Chrome: 1751 compared
+  and matching, 249 did not end on Linux in 20 seconds, 0 failing (852 s, load 15 to 70). Layer 1, 1215 forms
+  x 64 cases, seed 9, with 100 cases a form in Chrome (121,500 Chrome cases): 0 mismatches (829 s, load 19 to
+  74). Layer 1, the 13 forms whose decoding changed, 1000 cases each, seed 8: 0 mismatches. Decoding,
+  `WC_DECODE_CASES=2000`: all pass. Layer 3, 10,000 Csmith programs, seed 12, 12 at once, 20 also in Chrome,
+  and the 48 hand-picked builds: 8780 compared and matching, 1216 did not end on Linux in time, 4 failing,
+  hand-picked all matching (4423 s, load 26 to 308). Of the 4, three were programs that fault as ordinary
+  executables too (compared and matching after the rule above, replayed one by one) and one the reference
+  flake (12008340). Every test of the three crates passes (debug build, Chrome tests included; 8.6 minutes,
+  load 17 to 67), and layer 3 at its defaults after the last change (69 s, load 14 to 17).
+
 - M3, second run, release, after its changes: layer 1, 1215 forms x 200 cases, seed 6: 0 mismatches
   (243,000 cases, 292 s, load 15 to 21). Layer 3, 100 Csmith programs, seed 3 (moved position independent
   blobs among them; 1 also in Chrome), and the 48 hand-picked builds: 86 compared and matching, 14 did not
@@ -1289,8 +1315,9 @@ contract's bits, in both runners).
 ## Next
 
 1. M3: the long runs, started by the orchestrator: layer 1 at 10,000 a form with `WC_LAYER1_CHROME` set
-   for its Chrome sample, layer 3 at 100,000 Csmith programs with `WC_LAYER3_CHROME` set (commands under
-   "How to run").
+   for its Chrome sample, layer 3 at 100,000 Csmith programs with `WC_LAYER3_CHROME` and `WC_LAYER3_JOBS`
+   set (commands under "How to run"; about 12 hours for layer 3 with 12 at once). Expect a few reference
+   flakes in layer 3 (see "M3, third run"); replay each.
 2. M3's independent check.
 3. S1's independent check, the long runs for the pass bars, and the second lookup design (M5).
 
@@ -1335,11 +1362,17 @@ contract's bits, in both runners).
   second thread mid-loop). The Chrome runner has the same hook code.
 - Slow paths taken inside translated code (left to an address) and hook calls that do no work are counted
   with zero time; only the runner's own work is timed.
+- Layer 3's reference flake (2 in about 12,300 programs: Linux faults a clang -O0 blob once, then runs it
+  correctly) is not understood. The case fails when it happens.
 - Layer 1 checks only words the CPU we present has. Whether undefined words really raise SIGILL on a CPU
   without the feature is checked against Arm's list, not against a CPU (the reference CPU has newer
   features than the one we present).
 
 ## Departures from the plan
+
+- M3, third run: layer 3 compares a blob that Linux ends by a signal (ours must end the same way) when the
+  program built as an ordinary Linux executable ends the same way; Csmith's programs are meant to have no
+  undefined behaviour, but some fault on Linux all the same.
 
 - M3, second run: at full the floating point slow path leaves the piece by a tail call to code at none
   from the instruction (counted as "left to an address" besides the float hook's own count), instead of
@@ -1501,6 +1534,7 @@ contract's bits, in both runners).
 
 ## Shared crate (wcontainers-abi)
 
+- M3, third run: no change.
 - M3, second run: no change.
 - M3: no change. The CPU side's own words (float tracking, exclusive monitor) are after the abi's block, in
   the translator's contract (`THREAD_STATE_SIZE`), not in the abi.
