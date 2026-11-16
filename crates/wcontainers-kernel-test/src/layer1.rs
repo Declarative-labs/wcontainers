@@ -794,6 +794,7 @@ fn keep_terminals_settled(arena: &mut [u8], calls: &mut [Call]) {
                 };
                 arguments[count] = arguments[count].min(MOST);
             }
+            linux::__NR_splice => arguments[4] = arguments[4].min(MOST),
             linux::__NR_writev | linux::__NR_pwritev | linux::__NR_pwritev2
                 if arguments[2] <= 16 =>
             {
@@ -1329,6 +1330,10 @@ pub const CALLS: &[u32] = &[
     // Two more times, so that waits often find children.
     linux::__NR_clone,
     linux::__NR_clone,
+    linux::__NR_splice,
+    linux::__NR_splice,
+    linux::__NR_tee,
+    linux::__NR_vmsplice,
     linux::__NR_shmget,
     linux::__NR_shmget,
     linux::__NR_shmat,
@@ -1464,6 +1469,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     // any other (the reference's caller): nothing, or a refusal of the number.
     let signal = |word: u64| pick(&[0u64, 17, 18, 23, 28, 65], word);
     let prot = |word: u64| (word % 8) | if word >> 62 == 3 { 0x100 } else { 0 };
+    let splice_flags = |word: u64| {
+        u64::from(linux::SPLICE_F_NONBLOCK) | pick(&[0u64, 0, 1, 4, 8, 0x10, 0x8000_0000], word)
+    };
     let segment = |word: u64| {
         pick(
             &[SEGMENT, SEGMENT, SEGMENT, SEGMENT, u64::MAX, NO_SEGMENT],
@@ -1784,6 +1792,25 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         linux::__NR_chdir => [path(a), 0, 0, 0, 0, 0],
         linux::__NR_umask => [a % 0o1000, 0, 0, 0, 0, 0],
         linux::__NR_fstatfs => [fd(a), buffer(b), 0, 0, 0, 0],
+        // Never waiting: vmsplice takes no notice of a descriptor's O_NONBLOCK, and a named pipe
+        // opened for reading and writing is its own writer.
+        linux::__NR_splice => [
+            fd(a),
+            pick(&[0, 0, value(b), buffer(b >> 3)], b),
+            fd(c),
+            pick(&[0, 0, value(d), buffer(d >> 3)], d),
+            count(e),
+            splice_flags(f),
+        ],
+        linux::__NR_tee => [fd(a), fd(b), count(c), splice_flags(d), 0, 0],
+        linux::__NR_vmsplice => [
+            fd(a),
+            ARENA + IOVECS + (b % 16) * 16,
+            pick(&[0, 1, 2, 3, 16, 1025], c),
+            splice_flags(d),
+            0,
+            0,
+        ],
         linux::__NR_sendfile => [
             fd(a),
             fd(b),

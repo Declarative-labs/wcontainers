@@ -5,7 +5,35 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done after four runs. Built in K2's fourth run:
+processes) is partly done after five runs. Built in K2's fifth run:
+- System V shared memory (src/syscall/ipc.rs) as `ipc/shm.c` in a container's own IPC namespace:
+  identifiers as `ipc_idr_alloc` hands them out (slots in a cycle of at least 64, the sequence number
+  grows when a slot at or below the last comes round; measured), keys, `ipcperms` (Docker's root has
+  no CAP_IPC_OWNER, so a segment's mode binds root too; measured), `newseg`'s limits (SHMMAX, SHMALL,
+  4096 segments, `MAX_LFS_FILESIZE`; no memory reservation, as the reference's `overcommit_memory` is
+  1, which `/proc/sys/vm/overcommit_memory` now says too), segments as removed files `SYSVxxxxxxxx` on
+  the internal tmpfs whose inode number is the identifier, shmat through mmap's `do_mmap` (SHM_RND,
+  SHM_REMAP, SHM_RDONLY, SHM_EXEC, the overlap check), shmdt as `ksys_shmdt` (pieces left by mprotect
+  and munmap), every shmctl command (IPC_STAT, SHM_STAT, SHM_STAT_ANY, IPC_INFO, SHM_INFO, IPC_SET,
+  IPC_RMID with SHM_DEST and the key hidden, SHM_LOCK and SHM_UNLOCK with the locked pages counted per
+  user against RLIMIT_MEMLOCK). A segment's attachments are its mappings in every memory (never
+  merged, as `shm_vm_ops` has a `close`), counted after every call and process end: a count that grew
+  sets the attach time and process, one that fell the detach time and process, and a removed segment
+  nothing shows goes then. tests/sysvshm.rs.
+- splice, tee and vmsplice (src/syscall/splice.rs) as `fs/splice.c`: pipe to pipe (whole slots move as
+  they are, a part is a copy), file to pipe (`splice_file_to_pipe`: room first, one slot per file page,
+  `/dev/null`, directories, secret memory and process files refused), pipe to file
+  (`iter_file_splice_write` and `splice_write_null`: tmpfs files, terminals, the devices; `/dev/full`
+  and `/proc` refused), offsets and their write back, O_NONBLOCK and SPLICE_F_NONBLOCK as each path
+  takes them, SIGPIPE, waits that park before anything moves, tee's copies, vmsplice both ways. Slots
+  spliced into a pipe (also by sendfile) are ones no later write adds to (`PIPE_BUF_FLAG_CAN_MERGE`),
+  measured. vmsplice copies the caller's pages when called (counted "vmsplice pages copied"); Linux
+  puts the pages themselves in the pipe. tests/splice.rs.
+- A regular file holds its bytes only up to the last one written; past that it reads as zero up to its
+  size, so a large size costs nothing (a 1 TiB segment, measured to succeed in the reference).
+- Layer 1 generates shmget, shmat, shmdt, shmctl, splice, tee and vmsplice (see Layer 1).
+
+Built in K2's fourth run:
 - What a call leaves in a buffer that runs into memory it cannot write, measured call by call against
   the reference (tests/partialcopy.rs, guest/partialcopy.c: 47 kinds of call at every count of
   writable bytes). `Guest::write` is now arm64's `copy_to_user` (src/user.rs `stored_before_fault`):
@@ -492,7 +520,7 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (180): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+Done (187): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
 clock_nanosleep, clone, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit,
 exit_group, faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2,
 fchown, fchownat, fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat,
@@ -510,9 +538,10 @@ rt_sigtimedwait, rt_tgsigqueueinfo, sched_get_priority_max, sched_get_priority_m
 sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler, sched_rr_get_interval,
 sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler, sched_yield, seccomp,
 sendfile, set_robust_list, set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid,
-setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr,
-sigaltstack, statfs, statx, symlinkat, sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill,
-truncate, umask, uname, unlinkat, utimensat, wait4, waitid, write, writev.
+setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr, shmat,
+shmctl, shmdt, shmget, sigaltstack, splice, statfs, statx, symlinkat, sync, sync_file_range, syncfs,
+sysinfo, tee, tgkill, times, tkill, truncate, umask, uname, unlinkat, utimensat, vmsplice, wait4,
+waitid, write, writev.
 
 Partial (inside the list above), each with its reason:
 - fcntl: record locks are built (above); between processes (K2) a wait must also wake when a holder
@@ -602,6 +631,12 @@ Partial (inside the list above), each with its reason:
 - waitid: P_PIDFD counted "call flag not built", EBADF (no process descriptors yet).
 - pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
+- shmget: SHM_HUGETLB counted "call flag not built", ENOMEM (the reference, with no huge pages
+  reserved, answers ENOMEM). shmctl SHM_INFO's resident pages are those the kernel wrote (counted "page
+  residency not tracked"). A call that both adds and removes mappings of one segment (munmap of the
+  middle of an attachment: two pieces made, one closed) sets only the attach time; Linux sets both.
+- vmsplice: copies the pages when called (counted "vmsplice pages copied"); Linux's pipe holds the
+  caller's pages, so a later change to them shows in what is read.
 - Core dumps: not written (counted "core dump not written"; Linux writes `core` and sets 0x80 when the
   limit is above zero; the reference's default limit is 0).
 
@@ -617,11 +652,10 @@ file_getattr, file_setattr, acct, vhangup, swapoff, init_module, finit_module, r
 fspick, fsmount, move_mount, sethostname, setdomainname, fanotify_init. (sethostname and
 setdomainname keep handlers the profile keeps out of reach.)
 
-Missing (80, each counted "system call not implemented" and ENOSYS), with what each needs:
+Missing (73, each counted "system call not implemented" and ENOSYS), with what each needs:
 - Processes (K2, after terminals): ptrace (tracing is out of phase one), pidfd_open,
   pidfd_send_signal, process_mrelease.
 - signalfd4 (K2, with the descriptors that wait on many things, K5).
-- Splicing (K2): vmsplice, splice, tee.
 - Futexes (K3, with threads): futex, futex_waitv, futex_wake, futex_wait, futex_requeue.
 - Timers (K3, through the kernel's one timer queue): getitimer, setitimer, timer_create,
   timer_gettime, timer_getoverrun, timer_settime, timer_delete, timerfd_create, timerfd_settime,
@@ -632,9 +666,9 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg, recvmmsg, sendmmsg.
 - Asynchronous I/O (K5 or later, needs the waiting design for many requests): io_setup, io_destroy,
   io_submit, io_cancel, io_getevents, io_pgetevents.
-- System V IPC and message queues (K2, shared between processes): mq_open, mq_unlink, mq_timedsend,
-  mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv, msgsnd, semget, semctl,
-  semtimedop, semop, shmget, shmctl, shmat, shmdt.
+- System V semaphores and message queues and POSIX message queues (K2, shared between processes):
+  mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, msgget, msgctl, msgrcv,
+  msgsnd, semget, semctl, semtimedop, semop.
 - Single-process calls not built, each before K6's bar: adjtimex and clock_adjtime (reading the
   clock's adjustment state: the made-up machine's values; setting needs CAP_SYS_TIME, which Docker's
   root lacks), remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping),
@@ -1226,7 +1260,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
   (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), execve from a
   process with more than one thread (ENOSYS), clone's thread and table sharing and CLONE_PIDFD
-  (ENOSYS), waitid's P_PIDFD (EBADF), pipe2's O_NOTIFICATION_PIPE (EINVAL).
+  (ENOSYS), waitid's P_PIDFD (EBADF), pipe2's O_NOTIFICATION_PIPE (EINVAL), shmget's SHM_HUGETLB
+  (ENOMEM).
 - "fcntl command not built": the fcntl list under Partial.
 - "prctl option not built": the prctl list under Partial.
 - "ioctl request not built": the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
@@ -1239,10 +1274,11 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
 Approximations that are not refusals have their own counters: "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
-written". "wake to run" is a measurement (count and total nanoseconds), not a slow path.
+written", "vmsplice pages copied". "wake to run" is a measurement (count and total nanoseconds), not a slow path.
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K2, fifth run: none.
 - K2, fourth run: none.
 - K2, third run: none.
 
