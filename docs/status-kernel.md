@@ -33,7 +33,11 @@ Built in K2's ninth run (the check's findings):
   one opened by path under `/dev/mqueue` keeps Docker's. tests/posixmq.rs.
 - Parked threads are found by channel and by deadline, and queued threads by number, through indexes
   (`schedule::Parked`, the run queue's positions) instead of walks over every thread.
-- A pass over every catch-all answer in the kernel for requests, commands, flags and entries Linux
+- Writes and copy_file_range follow `generic_write_check_limits`: a file opened without O_LARGEFILE
+  is held to `MAX_NON_LFS`, others to their file system's largest file, and copy_file_range checks
+  its output position even when there is nothing to copy (layer 1 seed 729).
+- A pass over every catch-all answer in the kernel
+ for requests, commands, flags and entries Linux
   has: the only silent one left was pidfs's (above); the others answer values Linux does not know.
 
 Built in K2's eighth run:
@@ -1130,6 +1134,15 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K2's ninth run: with the check's fixes in (head after the scheduler indexes), the check's seed 91003
+passed 30000 sequences (507 s, beside the others, load 35 at the start, 20 at the end), so the
+mqueue fstatfs fix holds. Fresh seeds 730 and 731 passed 20000; 729 found copy_file_range into a
+process descriptor at an output position past 2^31 answering 0 where Linux answers EFBIG
+(`generic_write_check_limits` runs even for nothing to copy, and a file opened without O_LARGEFILE
+is held to `MAX_NON_LFS`; ours skipped both). Fixed for every write path. With every fix in (head 1152610), seed 729 and the fresh seeds 732, 733 and 734 passed
+20000 sequences each (303 s each, four side by side beside 91003, load 19 at the start, 22 at the
+end). Seeds up to 734 are used.
+
 K2's eighth run: TIOCSETD's disciplines come from a table (see "Where things stand"). Seed 711 passed
 20000 after that fix (345 s alone, load 31 to 44). Then, with the terminal, pipe release and process
 state work in (head 54a857f, before the queue fix), seeds 721 and 723 passed 20000 (334 s and
@@ -1339,6 +1352,12 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 ninth run: the whole test suite of both crates 96 passed, 0 failed, 6 ignored, 166 s wall alone
+  (load 25 at the start, 35 at the end), on the final head. An earlier whole run beside four layer 1
+  runs (170 s, load 36 to 18) had sigio fail once in the reference (Known issues). Layer 1 at
+  20000: 303 to 333 s each, three or four side by side (load 19 to 33); 30000: 507 s. tests/deadlines.rs
+  about 4 s (its children compute 20 ms of virtual time per wait, about 20 million emulated
+  instructions each), lockwaits, orphans and pidfd under 1 s each.
 - K2 eighth run: the whole test suite of both crates 93 passed, 0 failed, 6 ignored, 2 min 25 s wall
   beside four 20000-sequence layer 1 runs (load 22 at the start, 28 at the end), head b01b1de. An
   earlier run beside three layer 1 runs (load 39 to 42) had sigio fail in the reference (its echo
@@ -1600,6 +1619,12 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Known issues
 
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
+- K2's ninth run: sigio failed once in a whole-suite run beside four layer 1 runs (load 36): the
+  reference counted no signal for the raw byte a master wrote after the switch to raw mode (ours,
+  as every other run of the reference, one). Three reruns passed. Cause not found; the guest takes in
+  the byte with a poll of the slave (`n_tty_poll` flushes Linux's buffer work), so this may be a race
+  in the reference's buffer work under load.
+
 - K2's seventh run: terminal's `making_pairs` failed once in a whole-suite run because the reference
   found no `/wc/tty` (test binaries build guest programs into one shared directory while others run
   containers from it); it passed alone. Not fixed yet: each test binary could build into its own
@@ -1616,9 +1641,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2 is done. The next milestone is K3 (see the plan); the known gaps above come before K6's bar.
+1. K2's check findings are all fixed (ninth run) and the milestone's bars are met again: three fresh
+   layer 1 seeds of 20000 with every fix in, the whole suite passing. The next milestone is K3 (see
+   the plan); the known gaps above come before K6's bar. Left open from the check, by choice: a
+   restore into a fresh `Kernel` (needs the kernel in its own WebAssembly memory, K7; see
+   Departures), rseq aborts on preemption (K3), `/proc/<pid>/stat` and `status` pending signals
+   (counted "proc fields not tracked").
 2. Test binaries build guest programs into one shared directory, which a reference container may
    read while another cargo invocation rewrites it (Known issues); each binary could build into its
    own.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator). Seeds up
-   to 728 are used.
+   to 734 are used (and the checks' 91001 to 91003).
+
