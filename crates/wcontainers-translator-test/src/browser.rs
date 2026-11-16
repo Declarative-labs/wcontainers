@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 fn package() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser")
@@ -47,8 +47,8 @@ pub struct Report {
     /// How long the guest ran in the page each time it was run, translating and compiling the first module
     /// not included.
     pub runs: Vec<f64>,
-    /// The slow paths taken, as `(reason, count)`.
-    pub counters: Vec<(String, u64)>,
+    /// The slow paths taken, as `(reason, count, nanoseconds spent)`.
+    pub counters: Vec<(String, u64, u64)>,
     pub user_agent: String,
 }
 
@@ -56,8 +56,16 @@ impl Report {
     pub fn count(&self, reason: &str) -> u64 {
         self.counters
             .iter()
-            .find(|(name, _)| name == reason)
+            .find(|(name, ..)| name == reason)
             .map_or(0, |c| c.1)
+    }
+
+    /// The time spent on a slow path, in nanoseconds.
+    pub fn time(&self, reason: &str) -> u64 {
+        self.counters
+            .iter()
+            .find(|(name, ..)| name == reason)
+            .map_or(0, |c| c.2)
     }
 }
 
@@ -68,12 +76,37 @@ pub fn translated(blob: &Blob) -> Report {
 
 /// Run a blob in Chrome at a look-ahead, leaving out some checks only to measure them.
 pub fn translated_with(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Report {
-    repeated(blob, look_ahead, omit, 1)
+    repeated(blob, (look_ahead, Optimise::Speed), omit, 1)
 }
 
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
 /// The report holds the output of the last run.
-pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> Report {
+pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32) -> Report {
+    run_in_chrome(blob, how, omit, repeat, None, 0)
+}
+
+/// [`repeated`] at full look-ahead, the translation split into modules of at most `module_bytes` of code,
+/// only to measure calls between modules.
+pub fn repeated_split(blob: &Blob, optimise: Optimise, repeat: u32, module_bytes: u32) -> Report {
+    let how = (LookAhead::Full, optimise);
+    run_in_chrome(blob, how, Omit::default(), repeat, None, module_bytes)
+}
+
+/// [`translated_with`] with V8 given these flags, only for measuring what the engine does (such as compiling
+/// every function when its module is made, not at its first call).
+pub fn translated_with_engine_flags(blob: &Blob, look_ahead: LookAhead, flags: &str) -> Report {
+    let how = (look_ahead, Optimise::Speed);
+    run_in_chrome(blob, how, Omit::default(), 1, Some(flags), 0)
+}
+
+fn run_in_chrome(
+    blob: &Blob,
+    (look_ahead, optimise): (LookAhead, Optimise),
+    omit: Omit,
+    repeat: u32,
+    flags: Option<&str>,
+    module_bytes: u32,
+) -> Report {
     let place = placement(blob);
     let directory = target().join("cases").join(&blob.name);
     std::fs::create_dir_all(&directory).unwrap();
@@ -94,11 +127,21 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
         "lookAhead": match look_ahead {
             LookAhead::None => 0,
             LookAhead::Full => 1,
+            LookAhead::Bounded(_) => 2,
+        },
+        "bound": match look_ahead {
+            LookAhead::Bounded(n) => n,
+            _ => 0,
         },
         "repeat": repeat,
-        "omit": u8::from(omit.stop) | (u8::from(omit.permissions) << 1) | (u8::from(omit.returns) << 2),
+        "optimise": optimise as u8,
+        "splitBytes": module_bytes,
+        "omit": u8::from(omit.stop)
+            | (u8::from(omit.permissions) << 1)
+            | (u8::from(omit.returns) << 2)
+            | (u8::from(omit.depth) << 3),
     });
-    let result = launch(&directory, &setup);
+    let result = launch(&directory, &setup, flags);
     let bytes = |name: &str| -> Vec<u8> {
         result[name]
             .as_array()
@@ -129,6 +172,7 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
             (
                 c["reason"].as_str().unwrap().to_string(),
                 c["count"].as_u64().unwrap(),
+                c["nanoseconds"].as_u64().unwrap(),
             )
         })
         .collect();
@@ -150,26 +194,93 @@ pub fn repeated(blob: &Blob, look_ahead: LookAhead, omit: Omit, repeat: u32) -> 
 }
 
 /// Run the browser runner on a case directory holding `translator.wasm`, `blob.bin`, `stack.bin` and, for
-/// instruction cases, `cases.bin`, with this setup; give its answer.
-fn launch(directory: &Path, setup: &Value) -> Value {
+/// instruction cases, `cases.bin`, with this setup and V8 flags if given; give its answer.
+fn launch(directory: &Path, setup: &Value, flags: Option<&str>) -> Value {
+    launch_or_refused(directory, setup, flags)
+        .unwrap_or_else(|error| panic!("the browser runner failed: {error}"))
+}
+
+/// [`launch`], or what the page threw.
+fn launch_or_refused(
+    directory: &Path,
+    setup: &Value,
+    flags: Option<&str>,
+) -> Result<Value, String> {
     std::fs::write(directory.join("case.json"), setup.to_string()).unwrap();
 
-    let output = Command::new("node")
+    let mut command = Command::new("node");
+    if let Some(flags) = flags {
+        command.env("WC_CHROME_JS_FLAGS", flags);
+    }
+    let output = command
         .arg(package().join("run.mjs"))
         .arg(directory)
         .output()
         .expect("run node (from the Nix shell)");
     let errors = String::from_utf8_lossy(&output.stderr);
     eprint!("{errors}");
+    // A page that crashes (the engine giving up on a module) is a refusal too.
+    if errors.contains("Target crashed") {
+        return Err("the page crashed".into());
+    }
     assert!(output.status.success(), "the browser runner failed");
     let result: Value = serde_json::from_slice(&output.stdout).expect("the runner's JSON");
-    if let Some(error) = result.get("error") {
-        panic!(
-            "the browser runner failed: {}",
-            error.as_str().unwrap_or_default()
-        );
+    match result.get("error") {
+        Some(error) => Err(error.as_str().unwrap_or_default().to_string()),
+        None => Ok(result),
     }
-    result
+}
+
+/// What loading code modules in Chrome took.
+pub struct Loaded {
+    /// Milliseconds making the modules took, and making their instances.
+    pub compiling: f64,
+    pub instantiating: f64,
+    /// Bytes the resident memory of Chrome's processes grew by from before the worker started to after.
+    pub memory: i64,
+}
+
+/// Load code modules translated ahead of time from an image placed at `load`, its code at `code`, in Chrome,
+/// V8 given these flags, without running anything; or what the page threw, such as an engine refusing a
+/// limit. The lookup table covers the code alone.
+pub fn load_modules(
+    name: &str,
+    image: &[u8],
+    load: u64,
+    code: std::ops::Range<u64>,
+    modules: &[&[u8]],
+    flags: &str,
+) -> Result<Loaded, String> {
+    let directory = target().join("cases").join(format!("load-{name}"));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
+    std::fs::write(directory.join("blob.bin"), image).unwrap();
+    std::fs::write(directory.join("stack.bin"), []).unwrap();
+    for (i, module) in modules.iter().enumerate() {
+        std::fs::write(directory.join(format!("module-{i}.wasm")), module).unwrap();
+    }
+    let memory = (load + image.len() as u64).next_multiple_of(1 << 16);
+    let setup = serde_json::json!({
+        "codeBytes": code.end,
+        "codeStart": code.start,
+        "load": load,
+        "memoryBytes": memory,
+        "regions": [],
+        "sp": 0,
+        "lookAhead": 1,
+        "repeat": 0,
+        "omit": 0,
+        "modules": modules.len(),
+    });
+    let result = launch_or_refused(&directory, &setup, Some(flags));
+    std::fs::remove_dir_all(&directory).unwrap();
+    let result = result?;
+    Ok(Loaded {
+        compiling: result["compiling"].as_f64().expect("a time"),
+        instantiating: result["instantiating"].as_f64().expect("a time"),
+        memory: result["memoryAfter"].as_i64().expect("bytes")
+            - result["memoryBefore"].as_i64().expect("bytes"),
+    })
 }
 
 /// One instruction case: its code word, the thread state to start from (the contract's
@@ -232,7 +343,7 @@ pub fn cases(
         "areas": places,
         "stopAtSyscall": true,
     });
-    let result = launch(&directory, &setup);
+    let result = launch(&directory, &setup, None);
     let numbers = |value: &Value| -> Vec<u8> {
         value
             .as_array()

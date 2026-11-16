@@ -5,9 +5,12 @@
 use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use wcontainers_translator::contract::Reason;
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
-use wcontainers_translator_test::programs::{Blob, LOAD, native, reachable_memory, translated};
+use wcontainers_translator_test::programs::{
+    Blob, LOAD, STACK_BYTES, native, reachable_memory, translated, translated_omitting,
+};
+use wcontainers_translator_test::runner::Machine;
 
 type Ops = VecAssembler<Aarch64Relocation>;
 
@@ -51,30 +54,40 @@ fn blob(name: &str, ops: Ops) -> Blob {
         bytes,
         load: LOAD,
         program_headers: None,
+        stack_bytes: STACK_BYTES,
     }
 }
 
-/// Linux, none and full agree, and full ends with the registers and memory of none. Returns how often full
-/// left to an address.
-fn compare(blob: &Blob) -> u64 {
+/// Linux, none and full (translated for speed and for size) agree, and full ends with the registers and
+/// memory of none. Returns the machines that ran at full, for their counters.
+fn compare(blob: &Blob) -> [Machine; 2] {
     let theirs = native(blob);
     let (none, mut none_machine, none_registers) = translated(blob, LookAhead::None);
-    let (full, mut full_machine, full_registers) = translated(blob, LookAhead::Full);
-    eprintln!(
-        "{}: status {}, full counters {:?}",
-        blob.name,
-        theirs.status,
-        full_machine.counters()
-    );
     assert_eq!(none, theirs, "{}: none against Linux", blob.name);
-    assert_eq!(full, theirs, "{}: full against Linux", blob.name);
-    assert_eq!(full_registers, none_registers, "{}: registers", blob.name);
-    assert!(
-        reachable_memory(&mut full_machine, blob) == reachable_memory(&mut none_machine, blob),
-        "{}: memory",
-        blob.name
-    );
-    full_machine.count(Reason::LeftToAddress)
+    let none_memory = reachable_memory(&mut none_machine, blob);
+    [Optimise::Speed, Optimise::Size].map(|optimise| {
+        let how = (LookAhead::Full, optimise);
+        let (full, mut full_machine, full_registers, _) =
+            translated_omitting(blob, how, Omit::default());
+        eprintln!(
+            "{} for {optimise:?}: status {}, full counters {:?}",
+            blob.name,
+            theirs.status,
+            full_machine.counters()
+        );
+        assert_eq!(
+            full, theirs,
+            "{} for {optimise:?}: full against Linux",
+            blob.name
+        );
+        assert_eq!(full_registers, none_registers, "{}: registers", blob.name);
+        assert!(
+            reachable_memory(&mut full_machine, blob) == none_memory,
+            "{} for {optimise:?}: memory",
+            blob.name
+        );
+        full_machine
+    })
 }
 
 /// Recursion with 4 KiB frames, each made by the function's first instruction; 300 deep runs off the 1 MiB
@@ -112,8 +125,10 @@ fn recursion(depth: u32) -> Blob {
 #[test]
 fn recursion_off_the_stack() {
     for depth in [100, 300] {
-        let left = compare(&recursion(depth));
-        assert_eq!(left > 0, depth == 300, "left to an address {left} times");
+        for full in compare(&recursion(depth)) {
+            let left = full.count(Reason::LeftToAddress);
+            assert_eq!(left > 0, depth == 300, "left to an address {left} times");
+        }
     }
 }
 
@@ -140,7 +155,9 @@ fn group_entry() -> Blob {
 
 #[test]
 fn group_at_a_function_entry() {
-    assert!(compare(&group_entry()) > 0);
+    for full in compare(&group_entry()) {
+        assert!(full.count(Reason::LeftToAddress) > 0);
+    }
 }
 
 /// A function entered twice whose frame reaches below the stack but is used only in its mapped part, then
@@ -177,7 +194,9 @@ fn frame_below(fault: bool) -> Blob {
 #[test]
 fn frame_partly_below_the_stack() {
     for fault in [false, true] {
-        assert!(compare(&frame_below(fault)) > 0);
+        for full in compare(&frame_below(fault)) {
+            assert!(full.count(Reason::LeftToAddress) > 0);
+        }
     }
 }
 
@@ -288,6 +307,30 @@ fn alloca_loop_off_the_stack() {
     }
 }
 
+/// The same with structures: each turn stores four registers at a new frame and pops half of it with a
+/// structure load post-indexed by its 64 bytes; 20,000 turns run off the stack.
+#[test]
+fn structure_frames_off_the_stack() {
+    for turns in [1000u32, 20000] {
+        let mut ops: Ops = VecAssembler::new(0);
+        zero(&mut ops);
+        let top = ops.new_dynamic_label();
+        dynasm!(ops ; .arch aarch64
+            ; mov x29, sp
+            ; movz x3, #turns
+            ; =>top
+            ; sub sp, sp, #128
+            ; .u32 0x4c00_23e0 // st1 {v0.16b-v3.16b}, [sp]
+            ; .u32 0x4cdf_03e0 // ld4 {v0.16b-v3.16b}, [sp], #64
+            ; subs x3, x3, #1
+            ; b.ne =>top
+            ; mov sp, x29
+        );
+        dump(&mut ops);
+        compare(&blob(&format!("structure-frames-{turns}"), ops));
+    }
+}
+
 /// Loops that make no call read or write through a base and an index moved by a fixed step each turn,
 /// until the access reaches the page after the blob, which allows nothing. These accesses keep the page they
 /// last found allowed, so the fault must still land on the exact turn.
@@ -318,6 +361,102 @@ fn loops_running_onto_a_forbidden_page() {
             ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
             let name = format!("loop-step-{step}-{}", if write { "store" } else { "load" });
             compare(&blob(&name, ops));
+        }
+    }
+}
+
+/// The same with the longest accesses there are, structures of three and four 128 bit registers (48 and 64
+/// bytes), so the access that runs onto the forbidden page starts well inside the last allowed one.
+#[test]
+fn structure_loops_running_onto_a_forbidden_page() {
+    // ld1 and st1 of four registers, ld4 and st4, ld1 and st3 of three, all of 16 bytes, through x7.
+    let forms = [
+        ("ld1x4", 0x4c40_20e0u32),
+        ("st1x4", 0x4c00_20e0),
+        ("ld4", 0x4c40_00e0),
+        ("st4", 0x4c00_00e0),
+        ("ld1x3", 0x4c40_60e0),
+        ("st3", 0x4c00_40e0),
+    ];
+    for step in [16u32, 32, 64] {
+        for (name, word) in forms {
+            let mut ops: Ops = VecAssembler::new(0);
+            zero(&mut ops);
+            dynasm!(ops ; .arch aarch64
+                ; movz x1, #0x40, lsl #16
+                ; movz x3, #0x200
+                ; movz x6, step
+                ; ->turn:
+                ; add x7, x1, x3
+                ; .u32 word
+                ; add x3, x3, x6
+                ; add x5, x5, #1
+                ; b ->turn
+            );
+            dump(&mut ops);
+            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            compare(&blob(&format!("structure-step-{step}-{name}"), ops));
+        }
+    }
+}
+
+/// A counted loop of loads whose range is proven allowed at its entry, or not when its last turns run onto
+/// the page after the blob: the loop that is not proven is counted once for each entry.
+#[test]
+fn loop_not_proven_is_counted() {
+    for (turns, entries) in [(1000u32, 0u64), (4000, 1)] {
+        let mut ops: Ops = VecAssembler::new(0);
+        zero(&mut ops);
+        dynasm!(ops ; .arch aarch64
+            ; movz x1, #0x40, lsl #16
+            ; movz x3, turns
+            ; ->turn:
+            ; ldr x2, [x1], #8
+            ; add x4, x4, x2
+            ; subs x3, x3, #1
+            ; b.ne ->turn
+        );
+        dump(&mut ops);
+        ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+        for full in compare(&blob(&format!("not-proven-{turns}"), ops)) {
+            assert_eq!(full.count(Reason::LoopNotProven), entries, "{turns} turns");
+        }
+    }
+}
+
+/// Loops of structure loads and stores post-indexed by their size are proven too: counted when one runs onto
+/// the page after the blob.
+#[test]
+fn structure_loops_are_proven() {
+    // ld1 {v0.16b-v3.16b}, [x1], #64; st4 {v0.16b-v3.16b}, [x1], #64; ld4r {v0.16b-v3.16b}, [x1], #4.
+    for (name, word, bytes) in [
+        ("ld1x4", 0x4cdf_2020u32, 64u32),
+        ("st4", 0x4c9f_0020, 64),
+        ("ld4r", 0x4dff_e020, 4),
+    ] {
+        for (span, entries) in [(8192u32, 0u64), (20480, 1)] {
+            let turns = span / bytes;
+            let mut ops: Ops = VecAssembler::new(0);
+            zero(&mut ops);
+            // From the second page, after the code.
+            dynasm!(ops ; .arch aarch64
+                ; movz x1, #0x40, lsl #16
+                ; movk x1, #0x1000
+                ; movz x3, turns
+                ; ->turn:
+                ; .u32 word
+                ; subs x3, x3, #1
+                ; b.ne ->turn
+            );
+            dump(&mut ops);
+            ops.extend(std::iter::repeat_n(0u8, 3 * 4096));
+            for full in compare(&blob(&format!("structure-proven-{name}-{span}"), ops)) {
+                assert_eq!(
+                    full.count(Reason::LoopNotProven),
+                    entries,
+                    "{name} over {span} bytes"
+                );
+            }
         }
     }
 }

@@ -156,8 +156,8 @@ pub trait Emitter {
     fn get(&mut self, r: Reg);
     /// Pop an i64 into a register. Writes to the zero register are dropped.
     fn set(&mut self, r: Reg);
-    /// Push the guest address of this instruction.
-    fn this_address(&mut self);
+    /// Push the guest address of this instruction plus `by`.
+    fn this_address(&mut self, by: i64);
     fn set_flags(&mut self, flags: Flags);
     /// Push one flag as an i32 0 or 1.
     fn flag(&mut self, flag: Flag);
@@ -691,14 +691,15 @@ pub(crate) fn address<E: Emitter + ?Sized>(
             }
             e.sink().i64_add();
         }
-        Address::Literal { offset } => {
-            e.this_address();
-            e.sink().i64_const(offset).i64_add();
-        }
+        Address::Literal { offset } => e.this_address(offset),
     }
     e.sink().local_set(local);
     if let Address::PreIndex { base, .. } = address {
         post = Some((base, 0));
+    }
+    // A write back keeps the tagged address; otherwise the check may untag it where it is.
+    if post.is_none() {
+        return (local, None);
     }
     let at = e.local(ValType::I64);
     e.sink().local_get(local).local_set(at);
@@ -893,6 +894,25 @@ fn multiply_high<E: Emitter + ?Sized>(e: &mut E, a: u32, b: u32) {
 pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
     use Instruction as I;
     match *instruction {
+        // Without flags, a plain addition or subtraction; adding zero is a copy.
+        I::AddSub {
+            width: w,
+            subtract,
+            set_flags: false,
+            rd,
+            rn,
+            operand: source,
+        } => {
+            get(e, rn, w);
+            if source != Operand::Imm(0) {
+                operand(e, w, source);
+                match subtract {
+                    false => op!(e, w, i32_add, i64_add),
+                    true => op!(e, w, i32_sub, i64_sub),
+                }
+            }
+            set(e, rd, w);
+        }
         I::AddSub {
             width: w,
             subtract,
@@ -936,13 +956,18 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             rn,
             operand: source,
         } => {
-            get(e, rn, w);
+            // A copy (`mov`, `mvn`) is an or or exclusive or with the zero register.
+            let copy = rn == Reg::Zero && op != Logic::And;
+            if !copy {
+                get(e, rn, w);
+            }
             operand(e, w, source);
             if invert {
                 constant(e, w, u64::MAX);
                 op!(e, w, i32_xor, i64_xor);
             }
             match op {
+                _ if copy => {}
                 Logic::And => op!(e, w, i32_and, i64_and),
                 Logic::Or => op!(e, w, i32_or, i64_or),
                 Logic::Xor => op!(e, w, i32_xor, i64_xor),
@@ -1036,11 +1061,13 @@ pub fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
             set(e, rd, w);
         }
         I::PcRelative { rd, page, offset } => {
-            e.this_address();
             if page {
+                e.this_address(0);
                 e.sink().i64_const(!0xfff).i64_and();
+                e.sink().i64_const(offset).i64_add();
+            } else {
+                e.this_address(offset);
             }
-            e.sink().i64_const(offset).i64_add();
             e.set(rd);
         }
         I::CondCompare {
@@ -1584,8 +1611,7 @@ fn crc32<E: Emitter + ?Sized>(e: &mut E, castagnoli: bool, bytes: u8, rd: Reg, r
 
 /// x30 = the address of the next instruction.
 pub(crate) fn link_register<E: Emitter + ?Sized>(e: &mut E) {
-    e.this_address();
-    e.sink().i64_const(4).i64_add();
+    e.this_address(4);
     e.set(Reg::X(30));
 }
 

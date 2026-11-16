@@ -434,8 +434,8 @@ pub(crate) fn step_fast<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32
     s.local_set(k);
     fused(e, size, k, negated, b);
     if sqrt {
-        // (3 - a * b) / 2: halving the fused sum is exact, unless the sum overflowed; then a is large, and
-        // -a/2 * b + 3/2 is the same single rounding.
+        // (3 - a * b) / 2: halving the fused sum is exact, unless the sum overflowed with b finite; then a is
+        // large, and -a/2 * b + 3/2 is the same single rounding. With b infinite the infinite sum is exact.
         let (halved, alternative) = (e.local(ValType::V128), e.local(ValType::V128));
         let mut s = e.sink();
         constant(&mut s, size, 0.5);
@@ -454,6 +454,11 @@ pub(crate) fn step_fast<E: Emitter + ?Sized>(e: &mut E, size: u8, a: u32, b: u32
         op(&mut s, Op::Abs, size);
         constant(&mut s, size, f64::INFINITY);
         op(&mut s, Op::Eq, size);
+        s.local_get(b);
+        op(&mut s, Op::Abs, size);
+        constant(&mut s, size, f64::INFINITY);
+        op(&mut s, Op::Eq, size);
+        s.v128_andnot();
         s.v128_bitselect();
     }
     let mut s = e.sink();

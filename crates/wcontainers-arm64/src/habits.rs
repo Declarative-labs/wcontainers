@@ -48,6 +48,7 @@ pub fn jump_table(
     let table = constant(before, table, load)?;
     let count = bound(&before[..load])?;
     let mut targets = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for k in 0..count {
         let raw = read(table.checked_add(k * u64::from(bytes))?, bytes)?;
         let bits = 8 * u32::from(bytes);
@@ -67,7 +68,7 @@ pub fn jump_table(
             };
         }
         let target = base.wrapping_add(value << shift);
-        if !targets.contains(&target) {
+        if seen.insert(target) {
             targets.push(target);
         }
     }

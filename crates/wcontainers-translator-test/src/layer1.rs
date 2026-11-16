@@ -5,7 +5,7 @@ use crate::layout::*;
 use crate::reference::{Cases, Landed};
 use crate::runner::{Machine, Stopped, Syscalls};
 use proptest::prelude::*;
-use wcontainers_abi::{Exit, Permissions, RegisterBlock};
+use wcontainers_abi::{Access, Exit, Permissions, RegisterBlock};
 use wcontainers_arm64::forms::Form;
 use wcontainers_translator::{LookAhead, contract};
 use zerocopy::{FromBytes, IntoBytes};
@@ -533,7 +533,8 @@ fn outcome(stop: Stop, after: &RegisterBlock, changed: Vec<(u32, u8)>) -> Outcom
 
 /// Run a case through the translator.
 pub fn translated(case: &Case) -> Outcome {
-    let mut machine = Machine::new(MEMORY, CODE, 1024, Syscalls::Stop);
+    // The table covers the case's one instruction only, so control that lands anywhere else stops there.
+    let mut machine = Machine::new(MEMORY, CODE, 1, Syscalls::Stop);
     for (range, permissions) in regions() {
         machine.set_permissions(range, permissions);
     }
@@ -547,6 +548,11 @@ pub fn translated(case: &Case) -> Outcome {
     let (stopped, after) = machine.run();
     let stop = match stopped {
         Stopped::NoCode(address) => Stop::Landed(address),
+        // Control reached a page that does not allow running code.
+        Stopped::Exit(Exit::MemoryFault {
+            address,
+            access: Access::Execute,
+        }) => Stop::Landed(address),
         Stopped::Exit(Exit::IllegalInstruction) => Stop::Illegal,
         Stopped::Exit(Exit::Breakpoint { .. }) => Stop::Breakpoint,
         Stopped::Exit(Exit::Syscall(_)) => Stop::Syscall,
@@ -617,6 +623,9 @@ fn translated_in_one_page(cases: &[Case]) -> Vec<Outcome> {
             Some("undefined" | "unsupported") => Stop::Illegal,
             Some("breakpoint") => Stop::Breakpoint,
             Some("syscall") => Stop::Syscall,
+            Some("memory fault") if stopped["execute"] == true => {
+                Stop::Landed(address(&stopped["address"]))
+            }
             Some("memory fault") => Stop::MemoryFault(address(&stopped["address"])),
             Some("alignment") => Stop::Alignment(address(&stopped["detail"])),
             _ => panic!("no counterpart on the reference: {stopped}"),

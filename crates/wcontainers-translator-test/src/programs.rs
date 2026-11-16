@@ -9,15 +9,16 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
 pub const LOAD: u64 = 0x40_0000;
 /// Where a position independent blob is loaded, away from where it is linked.
 pub const MOVED: u64 = 0x2345_6000;
-/// The top of the 1 MiB stack, above the reach of the reference's own randomised heap.
+/// The top of the stack, above the reach of the reference's own randomised heap.
 pub const STACK_TOP: u64 = 0x4810_0000;
-const STACK_BYTES: u64 = 1 << 20;
+/// The stack a blob gets unless it asks for more.
+pub const STACK_BYTES: u64 = 1 << 20;
 
 /// A flat blob and how much of its start is code.
 pub struct Blob {
@@ -29,6 +30,8 @@ pub struct Blob {
     pub load: u64,
     /// Where in it its program's ELF program headers are, and how many: the runners tell the program.
     pub program_headers: Option<(u64, u64)>,
+    /// How much stack it gets, below [`STACK_TOP`].
+    pub stack_bytes: u64,
 }
 
 impl Blob {
@@ -71,7 +74,8 @@ pub enum Library {
     C,
 }
 
-/// Build `programs/<name>.c` (or `<name>.S`, assembly) at an optimisation level, such as "-O2", into a flat blob.
+/// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
+/// assembly) at an optimisation level, such as "-O2", into a flat blob.
 pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
     build_with(name, optimisation, library, &[])
 }
@@ -89,17 +93,25 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
     let elf = out.join(format!("{own}.elf"));
-    let source = source_directory().join(format!("{name}.c"));
-    let source = if source.exists() {
-        source
-    } else {
-        source_directory().join(format!("{name}.S"))
-    };
+    let source = ["c", "cpp", "rs", "S"]
+        .iter()
+        .map(|extension| source_directory().join(format!("{name}.{extension}")))
+        .find(|source| source.exists())
+        .expect("a program of that name");
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
+    if source.extension().unwrap() == "rs" {
+        rust(&source, &elf, &script, optimisation);
+        return flatten(&elf, &own, stem);
+    }
     let script = format!("-Wl,-T,{}", text(&script));
+    let driver = if source.extension().unwrap() == "cpp" {
+        "c++"
+    } else {
+        "cc"
+    };
     let mut arguments = vec![
-        "cc",
+        driver,
         "-target",
         "aarch64-linux-musl",
         optimisation,
@@ -125,6 +137,35 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     arguments.extend(["-o", &elf_text, &source_text]);
     zig(&arguments);
     flatten(&elf, &own, stem)
+}
+
+/// Build a Rust program with its standard library, statically, linked with `script`.
+fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
+    let level = optimisation.trim_start_matches("-O");
+    let status = Command::new("rustc")
+        .args([
+            "--edition",
+            "2024",
+            "--target",
+            "aarch64-unknown-linux-musl",
+        ])
+        .args(["-C", &format!("opt-level={level}")])
+        .args(["-C", "panic=unwind", "-C", "relocation-model=static"])
+        .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
+        .args([
+            "-C",
+            "link-self-contained=yes",
+            "-C",
+            "link-arg=--build-id=none",
+        ])
+        .arg("-C")
+        .arg(format!("link-arg=-T{}", script.display()))
+        .arg("-o")
+        .arg(elf)
+        .arg(source)
+        .status()
+        .expect("run rustc (from the Nix shell)");
+    assert!(status.success(), "rustc {} failed", source.display());
 }
 
 /// The flat blob of a linked program, `own` being the unique name its build works under. The ELF file is
@@ -158,6 +199,7 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
         load: LOAD,
         program_headers: Some((at, headers.len() as u64)),
         name,
+        stack_bytes: STACK_BYTES,
     };
     std::fs::remove_file(&built).unwrap();
     std::fs::remove_file(&code).unwrap();
@@ -192,7 +234,7 @@ pub fn placement(blob: &Blob) -> Placement {
         regions: vec![
             (blob.load..end, Permissions::all()),
             (
-                STACK_TOP - STACK_BYTES..STACK_TOP,
+                STACK_TOP - blob.stack_bytes..STACK_TOP,
                 Permissions::READ | Permissions::WRITE,
             ),
         ],
@@ -203,7 +245,8 @@ pub fn placement(blob: &Blob) -> Placement {
 
 /// Run a blob through the translator in wasmtime, starting at its first byte.
 pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = translated_omitting(blob, look_ahead, Omit::default());
+    let how = (look_ahead, Optimise::Speed);
+    let (ran, machine, registers, _) = translated_omitting(blob, how, Omit::default());
     (ran, machine, registers)
 }
 
@@ -211,10 +254,10 @@ pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, Register
 /// included).
 pub fn translated_omitting(
     blob: &Blob,
-    look_ahead: LookAhead,
+    how: (LookAhead, Optimise),
     omit: Omit,
 ) -> (Ran, Machine, RegisterBlock, Duration) {
-    run_blob(blob, look_ahead, omit, false)
+    run_blob(blob, how, omit, false)
 }
 
 /// [`translated`] with the thread stopping at every stop check it reaches and carrying on each time.
@@ -222,17 +265,18 @@ pub fn translated_stopping_everywhere(
     blob: &Blob,
     look_ahead: LookAhead,
 ) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = run_blob(blob, look_ahead, Omit::default(), true);
+    let how = (look_ahead, Optimise::Speed);
+    let (ran, machine, registers, _) = run_blob(blob, how, Omit::default(), true);
     (ran, machine, registers)
 }
 
 fn run_blob(
     blob: &Blob,
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
     stop_everywhere: bool,
 ) -> (Ran, Machine, RegisterBlock, Duration) {
-    let mut machine = ready(blob, look_ahead, omit);
+    let mut machine = ready_for(blob, look_ahead, optimise, omit);
     if stop_everywhere {
         machine.stop_at_every_check();
     }
@@ -245,31 +289,54 @@ fn run_blob(
 
 /// A machine with a blob placed, translated and ready to run from its first byte.
 pub fn ready(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine {
-    ready_on(blob, look_ahead, omit, crate::runner::probe())
+    ready_for(blob, look_ahead, Optimise::Speed, omit)
+}
+
+/// [`ready`], translated for `optimise`.
+pub fn ready_for(blob: &Blob, look_ahead: LookAhead, optimise: Optimise, omit: Omit) -> Machine {
+    ready_on(blob, (look_ahead, optimise), omit, crate::runner::probe())
 }
 
 /// [`ready`], translated for a host with these facts instead of the probe's.
 pub fn ready_on(
     blob: &Blob,
-    look_ahead: LookAhead,
+    (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
     host: wcontainers_arm64::Host,
 ) -> Machine {
-    let slots = blob.code_bytes.div_ceil(4) as u32;
+    ready_with(blob, host, |machine| {
+        machine.optimise_for(optimise);
+        machine.load_omitting(
+            &blob.bytes,
+            0..blob.code_bytes,
+            blob.load,
+            &[0],
+            look_ahead,
+            omit,
+        );
+        // The reference stays at none throughout.
+        if look_ahead == LookAhead::None {
+            machine.translate_at_run_time(|| LookAhead::None);
+        }
+    })
+}
+
+/// A machine with the blob's memory and permissions, its code put in place by `load`, and the stack and
+/// registers ready to run from its first byte.
+pub fn ready_with(
+    blob: &Blob,
+    host: wcontainers_arm64::Host,
+    load: impl FnOnce(&mut Machine),
+) -> Machine {
+    // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
+    let slots = (blob.bytes.len() as u64).div_ceil(4) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
     for (range, permissions) in place.regions {
         machine.set_permissions(range, permissions);
     }
-    machine.load_omitting(
-        &blob.bytes,
-        0..blob.code_bytes,
-        blob.load,
-        &[0],
-        look_ahead,
-        omit,
-    );
+    load(&mut machine);
     machine.write(place.sp, &place.stack);
     let mut registers = RegisterBlock::ZERO;
     registers.pc = blob.load;
@@ -329,8 +396,9 @@ pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
     let file = format!("{}.bin", unique(&blob.name));
     std::fs::write(directory.join(&file), &blob.bytes).unwrap();
     let script = format!(
-        "/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {} > /dev/null",
+        "/r/wcontainers-reference time {runs} /p/{file} {:#x} {STACK_TOP:#x} {:#x} {} > /dev/null",
         blob.load,
+        blob.stack_bytes,
         headers_arguments(blob).join(" ")
     );
     let output = Command::new("docker")
@@ -378,13 +446,29 @@ pub fn native(blob: &Blob) -> Ran {
         .arg(format!("/p/{file}"))
         .arg(format!("{:#x}", blob.load))
         .arg(format!("{STACK_TOP:#x}"))
+        .arg(format!("{:#x}", blob.stack_bytes))
         .args(headers_arguments(blob))
         .output()
         .expect("run docker");
     std::fs::remove_file(directory.join(&file)).unwrap();
+    let status = output.status.code().expect("an exit status");
+    // The runner's own failure is no result of the guest's: it fails the case, never compares.
+    assert!(
+        !(status == RUNNER_FAILED
+            && output
+                .stderr
+                .windows(RUNNER_FAILED_SAYS.len())
+                .any(|w| w == RUNNER_FAILED_SAYS)),
+        "the reference runner failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ran {
         stdout: output.stdout,
         stderr: output.stderr,
-        status: output.status.code().expect("an exit status"),
+        status,
     }
 }
+
+/// How the reference runner ends when it fails itself, and what it writes on stderr before.
+const RUNNER_FAILED: i32 = 101;
+const RUNNER_FAILED_SAYS: &[u8] = b"wcontainers-reference: ";

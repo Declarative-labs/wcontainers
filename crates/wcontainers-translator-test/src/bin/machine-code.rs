@@ -8,7 +8,7 @@
 //! checks out, as the benchmarks do.
 
 use std::process::Command;
-use wcontainers_translator::{LookAhead, Omit, translate_omitting};
+use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
 use wcontainers_translator_test::programs::{Library, build_with};
 use wcontainers_translator_test::runner::precompile;
 
@@ -23,17 +23,21 @@ fn main() {
         stop: omitted.contains("stop"),
         permissions: omitted.contains("permissions"),
         returns: omitted.contains("returns"),
+        depth: omitted.contains("depth"),
     };
     let blob = build_with(program, optimisation, Library::None, &defines);
-    let translation = translate_omitting(
+    let mut translation = translate_omitting(
         &blob.bytes,
         0..blob.code_bytes,
         &[0],
         LookAhead::Full,
+        Optimise::Speed,
         wcontainers_translator_test::runner::probe(),
         omit,
     )
     .expect("translation");
+    // A test program is far below every engine limit, so its translation is one module.
+    let translation = translation.modules.remove(0);
     std::fs::create_dir_all(out).unwrap();
     let base = format!("{out}/{}", blob.name);
     std::fs::write(format!("{base}.wasm"), &translation.wasm).unwrap();

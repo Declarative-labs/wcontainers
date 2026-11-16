@@ -2,7 +2,13 @@
 //!
 //! Two kinds of module run per guest thread. The **thread module** ([`crate::thread_module`]) holds the
 //! lookup table and the bottom loop. **Code modules** ([`crate::translate`]) hold pieces; they import the
-//! thread module's table and add their pieces to the table when instantiated.
+//! thread module's table and put their pieces in it, in order from [`SLOT_BASE`], when instantiated.
+//!
+//! **Looking up an address.** The lookup table holds one slot per piece. An array of slots in the state
+//! memory ([`SLOTS`]), one i32 per 4 bytes of guest address from [`TABLE_BASE`], gives the slot of the piece
+//! for each address, 0 for none. The runner writes the array: each code module's pieces are
+//! [`crate::CodeModule::pieces`]. The array is per process; every thread's table must hold the same piece
+//! in the same slot, so a code module is instantiated with the same [`SLOT_BASE`] in every thread.
 //!
 //! Registers that are not in a piece's locals live in the thread block in the state memory, so whenever a hook
 //! runs or `run` has returned, the block holds them all ("registers are saved"), and a runner sets registers
@@ -37,10 +43,14 @@ pub const MEMORY: &str = "memory";
 pub const STATE: &str = "state";
 /// i64: the guest address where the blob's first byte sits.
 pub const LOAD_ADDRESS: &str = "load_address";
-/// i32: the lookup table slot of the blob's first byte, `(load_address - table_base) / 4`.
+/// i32: the lookup table slot of the code module's first piece; the others follow in order.
 pub const SLOT_BASE: &str = "slot_base";
-/// i64: the guest address of lookup table slot zero. Slot `i` holds the piece for `table_base + 4 * i`.
+/// i64: the guest address of the first entry of the array of slots. Entry `i` is for `table_base + 4 * i`.
 pub const TABLE_BASE: &str = "table_base";
+/// i32: where in the state memory the array of slots starts.
+pub const SLOTS: &str = "slots";
+/// i64: the bytes of guest address, from [`TABLE_BASE`], the array of slots covers (4 for each entry).
+pub const SLOTS_COVER: &str = "slots_cover";
 /// i32: where in the state memory this thread's block is (a [`wcontainers_abi::RegisterBlock`] followed by
 /// the stop flag), a multiple of 16.
 pub const THREAD_BLOCK: &str = "thread_block";
@@ -51,19 +61,26 @@ pub const PERMISSIONS: &str = "permissions";
 /// or above `pages * PAGE_SIZE` fault.
 pub const PERMISSION_PAGES: &str = "permission_pages";
 
-/// The lookup table, exported by the thread module.
+/// The lookup table, exported by the thread module. Slot 0 is always empty, so an address with no piece finds
+/// none. Slot [`EXACT_SLOT`] holds a piece for no address. The runner grows the table for the pieces it adds.
 pub const LOOKUP: &str = "lookup";
+/// The lookup table slot where [`HOOK_LOAD_CODE`] puts the piece of one instruction a thread must carry on in
+/// exactly.
+pub const EXACT_SLOT: i32 = 1;
 /// The exception tag that unwinds to the bottom loop, exported by the thread module. Its i32 payload is
-/// [`UNWIND_GO_TO`], [`UNWIND_GO_TO_EXACT`] or [`UNWIND_LEAVE`].
+/// [`UNWIND_GO_TO`], [`UNWIND_GO_TO_EXACT`], [`UNWIND_DEEP`] or [`UNWIND_LEAVE`].
 pub const UNWIND: &str = "unwind";
 /// Unwind payload: carry on at the address in `pc`.
 pub const UNWIND_GO_TO: i32 = 0;
 /// Unwind payload: return from `run` to the runner. Registers are saved and `pc` is set.
 pub const UNWIND_LEAVE: i32 = 1;
 /// Unwind payload: carry on at the address in `pc` from code that checks every access exactly. A check that
-/// covers several accesses failed there, so the piece the table holds for `pc` may be the one that made it;
-/// the bottom loop asks [`HOOK_LOAD_CODE`] for code at `pc` first.
+/// covers several accesses failed there, so the bottom loop runs that one instruction from the piece of
+/// look-ahead none [`HOOK_LOAD_CODE`] puts in [`EXACT_SLOT`], and carries on from the table after it.
 pub const UNWIND_GO_TO_EXACT: i32 = 2;
+/// Unwind payload: the engine's stack is nearly used up. Carry on at the address in `pc` (a piece's entry)
+/// with the WebAssembly stack empty; the functions in progress continue when they return to the bottom loop.
+pub const UNWIND_DEEP: i32 = 3;
 
 /// Thread module export: run from the registers in the thread block until a hook asks to leave, or no piece
 /// can be found for an address. Takes and returns nothing.
@@ -78,9 +95,11 @@ pub const HOOK_STOP: &str = "stop";
 /// Hook `(address: i64, access: i32)`: an access the page permissions do not allow. Access is 0 for a read
 /// and 1 for a write. Registers are saved and `pc` is the instruction. The thread then leaves.
 pub const HOOK_MEMORY_FAULT: &str = "memory_fault";
-/// Hook `(address: i64) -> i32`: no piece is known for this address, or (after [`UNWIND_GO_TO_EXACT`]) the
-/// one there must be replaced by one translated at look-ahead none, unless it already is one. Return 1 once
-/// such a piece is in the lookup table, or 0 to leave. Registers are saved and `pc` is the address.
+/// Hook `(address: i64, exact: i32) -> i32`: with `exact` 0, the lookup finds no piece for this address:
+/// put one there, translated from it (at bounded look-ahead). With `exact` 1, put the piece of the one
+/// instruction at the address, of look-ahead none, in [`EXACT_SLOT`], whatever the lookup finds for the
+/// address. Return 1 once the piece is in place, or 0 to leave. Registers are saved and `pc` is the
+/// address.
 pub const HOOK_LOAD_CODE: &str = "load_code";
 /// Hook `(reason: i32, detail: i64)`: a slow path was taken; see [`Reason`].
 pub const HOOK_WARN: &str = "warn";
@@ -136,10 +155,17 @@ pub fn permission_byte(
 /// locals. The rest of the parameter is the address the caller expects control back at.
 pub const FLAGS_WANTED: i64 = 1;
 
-/// The return address the bottom loop passes to the first piece it calls (with [`FLAGS_WANTED`]). Any even
-/// value is correct: a piece returns only when the guest returns to exactly this address, and the loop then
-/// carries on there.
-pub const BOTTOM_RETURN: i64 = -2;
+/// The return address the bottom loop passes to the piece it calls (with [`FLAGS_WANTED`]). No return reaches
+/// it, because return targets are untagged and an untagged address with bit 55 clear has a top byte of zero.
+/// A return that does not go where its caller expects, when that caller is the bottom loop, sets `pc` to its
+/// target and returns: the function it returns to was in progress without its WebAssembly frame, and
+/// carries on from the bottom loop, counted as "continued after stack loss".
+pub const BOTTOM_RETURN: i64 = i64::MIN;
+
+/// Tuning number: the bytes of the engine's stack the pieces in progress may use before the next call leaves
+/// to the bottom loop ([`UNWIND_DEEP`]). The last parameter of every piece is an estimate of what its callers
+/// use.
+pub const STACK_BUDGET: i64 = 128 * 1024;
 
 /// Why the instruction at `pc` stopped the thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,10 +215,14 @@ pub enum Reason {
     StoppedByFlag = 9,
     MemoryFault = 10,
     FaultWithoutExactRegisters = 11,
+    /// A loop's accesses were not proven allowed at its entry, so it runs its copy with every check.
+    LoopNotProven = 12,
+    /// The engine's stack was nearly used up, so the thread left to the bottom loop ([`UNWIND_DEEP`]).
+    StackNearlyFull = 13,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 12] = [
+    pub const ALL: [Reason; 14] = [
         Reason::TranslatedAtRunTime,
         Reason::LeftToAddress,
         Reason::ContinuedAfterStackLoss,
@@ -205,6 +235,8 @@ impl Reason {
         Reason::StoppedByFlag,
         Reason::MemoryFault,
         Reason::FaultWithoutExactRegisters,
+        Reason::LoopNotProven,
+        Reason::StackNearlyFull,
     ];
 
     pub fn from_i32(value: i32) -> Option<Self> {
@@ -225,11 +257,14 @@ impl Reason {
             Reason::StoppedByFlag => "stopped by the flag",
             Reason::MemoryFault => "memory fault",
             Reason::FaultWithoutExactRegisters => "fault without exact registers",
+            Reason::LoopNotProven => "loop not proven",
+            Reason::StackNearlyFull => "engine stack nearly full",
         }
     }
 }
 
-/// Name of the custom section describing a code module: format version (one byte), look-ahead (one byte,
-/// 0 for none, 1 for full), the blob's BLAKE3 hash (32 bytes), then the number of pieces and each piece's offset in the
-/// blob, as unsigned LEB128.
+/// Name of the custom section describing a code module: format version (one byte, 3), look-ahead (one byte,
+/// 0 for none, 1 for full, 2 for bounded), what it is optimised for (one byte, 0 for speed, 1 for size), the
+/// look-ahead's N (unsigned LEB128, 0 unless bounded), the blob's BLAKE3 hash (32 bytes), then the number of
+/// pieces and each piece's offset in the blob in slot order, as unsigned LEB128.
 pub const DESCRIPTION_SECTION: &str = "wcontainers";

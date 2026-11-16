@@ -42,11 +42,14 @@ pub(crate) fn memarg(memory: u32, offset: u64, align: u32) -> MemArg {
     }
 }
 
-/// Build the thread module, with a lookup table of `slots` entries.
-pub fn thread_module(slots: u32) -> Vec<u8> {
+/// Build the thread module. Its lookup table starts with [`EXACT_SLOT`] and the slot before it; the runner
+/// grows it for the pieces it adds.
+pub fn thread_module() -> Vec<u8> {
     let mut types = TypeSection::new();
     piece_type(&mut types); // 0
-    types.ty().function([ValType::I64], [ValType::I32]); // 1: load_code
+    types
+        .ty()
+        .function([ValType::I64, ValType::I32], [ValType::I32]); // 1: load_code
     types.ty().function([ValType::I32, ValType::I64], []); // 2: warn
     types.ty().function([], []); // 3: run
     types.ty().function([ValType::I32], []); // 4: unwind tag
@@ -56,6 +59,8 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     const TRAP: u32 = 2;
     const TABLE_BASE_G: u32 = 0;
     const BLOCK: u32 = 1;
+    const SLOTS_G: u32 = 2;
+    const SLOTS_COVER_G: u32 = 3;
     // The state memory is this module's only memory.
     const STATE_M: u32 = 0;
 
@@ -73,13 +78,15 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     };
     imports.import(ENV, TABLE_BASE, constant(ValType::I64));
     imports.import(ENV, THREAD_BLOCK, constant(ValType::I32));
+    imports.import(ENV, SLOTS, constant(ValType::I32));
+    imports.import(ENV, SLOTS_COVER, constant(ValType::I64));
 
     let mut tables = TableSection::new();
     tables.table(TableType {
         element_type: piece_ref(),
         table64: false,
-        minimum: slots.into(),
-        maximum: Some(slots.into()),
+        minimum: EXACT_SLOT as u64 + 1,
+        maximum: None,
         shared: false,
     });
     let mut tags = TagSection::new();
@@ -96,43 +103,60 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     let mut f = wasm_encoder::Function::new([
         (2, ValType::I64),
         (1, ValType::Ref(piece_ref())),
-        (1, ValType::I32),
+        (2, ValType::I32),
     ]);
-    let (pc, offset, piece, payload) = (0, 1, 2, 3);
+    // `exact`: the piece to call next is the one in the exact slot.
+    let (pc, offset, piece, payload, exact) = (0, 1, 2, 3, 4);
     let mut s = f.instructions();
     s.loop_(BlockType::Empty);
     s.block(BlockType::Result(ValType::I32));
     s.try_table(BlockType::Empty, [Catch::One { tag: 0, label: 0 }]);
+    s.local_get(exact).if_(BlockType::Empty);
+    s.i32_const(0).local_set(exact);
+    s.i32_const(EXACT_SLOT).table_get(0).local_set(piece);
+    s.else_();
     s.global_get(BLOCK);
     Slot::Pc.load_from(&mut s, STATE_M);
     s.local_set(pc);
-    lookup(&mut s, pc, TABLE_BASE_G, offset, piece);
+    let slots = Slots {
+        memory: STATE_M,
+        table_base: Value::Global(TABLE_BASE_G),
+        at: Value::Global(SLOTS_G),
+        cover: Value::Global(SLOTS_COVER_G),
+    };
+    lookup(&mut s, pc, slots, offset, piece);
     s.local_get(piece).ref_is_null().if_(BlockType::Empty);
     misaligned_code(&mut s, pc, TRAP);
     s.return_().end();
     s.local_get(pc)
+        .i32_const(0)
         .call(LOAD_CODE)
         .i32_eqz()
         .if_(BlockType::Empty)
         .return_()
         .end();
-    s.br(3);
+    // Look the address up again.
+    s.br(4);
+    s.end();
     s.end();
     for slot in crate::code::passed_slots() {
         s.global_get(BLOCK);
         slot.load_from(&mut s, STATE_M);
     }
     s.i64_const(BOTTOM_RETURN | FLAGS_WANTED)
+        .i64_const(0)
         .local_get(piece)
         .ref_as_non_null()
         .call_ref(0);
-    // The results, last first, go back to the block.
+    // The results, last first, go back to the block. `pc` is where the guest returned to.
     for slot in crate::code::passed_slots().rev() {
         s.local_set(offset).global_get(BLOCK).local_get(offset);
         slot.store_to(&mut s, STATE_M);
     }
-    s.global_get(BLOCK).i64_const(BOTTOM_RETURN);
-    Slot::Pc.store_to(&mut s, STATE_M);
+    s.i32_const(Reason::ContinuedAfterStackLoss as i32)
+        .global_get(BLOCK);
+    Slot::Pc.load_from(&mut s, STATE_M);
+    s.call(WARN);
     s.br(2);
     s.end(); // try_table
     s.unreachable();
@@ -146,20 +170,27 @@ pub fn thread_module(slots: u32) -> Vec<u8> {
     s.global_get(BLOCK);
     Slot::Pc.load_from(&mut s, STATE_M);
     s.local_set(pc);
-    s.i32_const(Reason::LeftToAddress as i32)
+    s.i32_const(Reason::StackNearlyFull as i32)
+        .i32_const(Reason::LeftToAddress as i32)
+        .local_get(payload)
+        .i32_const(UNWIND_DEEP)
+        .i32_eq()
+        .select()
         .local_get(pc)
         .call(WARN);
-    // The piece at `pc` may be the one whose check failed, so code that checks each access is put there.
     s.local_get(payload)
         .i32_const(UNWIND_GO_TO_EXACT)
         .i32_eq()
         .if_(BlockType::Empty)
         .local_get(pc)
+        .i32_const(1)
         .call(LOAD_CODE)
         .i32_eqz()
         .if_(BlockType::Empty)
         .return_()
         .end()
+        .i32_const(1)
+        .local_set(exact)
         .end();
     s.br(0);
     s.end(); // loop
@@ -198,35 +229,57 @@ pub(crate) fn misaligned_code(s: &mut wasm_encoder::InstructionSink<'_>, address
         .call(trap);
 }
 
-/// Leave the piece for the guest address in i64 local `pc` in local `piece`, or null if there is none.
-/// `table_base` is the global holding [`TABLE_BASE`]; `offset` is an i64 scratch local.
+/// A global or a local.
+#[derive(Clone, Copy)]
+pub(crate) enum Value {
+    Global(u32),
+    Local(u32),
+}
+
+impl Value {
+    pub(crate) fn push(self, s: &mut wasm_encoder::InstructionSink<'_>) {
+        match self {
+            Value::Global(g) => s.global_get(g),
+            Value::Local(l) => s.local_get(l),
+        };
+    }
+}
+
+/// Where a lookup finds the array of slots: the memory it is in, and the values of [`TABLE_BASE`],
+/// [`SLOTS`] and [`SLOTS_COVER`].
+#[derive(Clone, Copy)]
+pub(crate) struct Slots {
+    pub(crate) memory: u32,
+    pub(crate) table_base: Value,
+    pub(crate) at: Value,
+    pub(crate) cover: Value,
+}
+
+/// Leave the piece for the guest address in i64 local `pc` in local `piece`, or null if there is none:
+/// the array of slots gives its slot in the lookup table. `offset` is an i64 scratch local.
 pub(crate) fn lookup(
     s: &mut wasm_encoder::InstructionSink<'_>,
     pc: u32,
-    table_base: u32,
+    slots: Slots,
     offset: u32,
     piece: u32,
 ) {
     s.ref_null(HeapType::Concrete(0)).local_set(piece);
-    s.local_get(pc)
-        .global_get(table_base)
-        .i64_sub()
+    s.local_get(pc);
+    slots.table_base.push(s);
+    s.i64_sub()
         .local_tee(offset)
         .i64_const(3)
         .i64_and()
         .i64_eqz()
-        .local_get(offset)
-        .i64_const(2)
-        .i64_shr_u()
-        .table_size(0)
-        .i64_extend_i32_u()
-        .i64_lt_u()
-        .i32_and()
-        .if_(BlockType::Empty)
-        .local_get(offset)
-        .i64_const(2)
-        .i64_shr_u()
+        .local_get(offset);
+    slots.cover.push(s);
+    s.i64_lt_u().i32_and().if_(BlockType::Empty);
+    slots.at.push(s);
+    s.local_get(offset)
         .i32_wrap_i64()
+        .i32_add()
+        .i32_load(memarg(slots.memory, 0, 2))
         .table_get(0)
         .local_set(piece)
         .end();

@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
 use wcontainers_translator::contract;
-use wcontainers_translator::{LookAhead, Omit, translate_omitting};
+use wcontainers_translator::{LookAhead, Omit, Optimise, translate_in_modules, translate_omitting};
 
 thread_local! {
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -35,43 +35,76 @@ fn answer(bytes: Vec<u8>) -> i32 {
     length
 }
 
-/// Translate the blob in the input buffer from one start, at look-ahead none (0) or full (1), for the host
-/// the probe found (`probe`, its answer), leaving out the checks set in `omit` (1: stop, 2: permissions, 4:
-/// returns; only to measure them). Returns the length of the code module, or -1 if the start or the code
-/// range is not valid.
+/// Translate the blob in the input buffer from one start, at look-ahead none (0), full (1) or bounded (2, N
+/// in `bound`), for the host the probe found (`probe`, its answer), leaving out the checks set in `omit` (1:
+/// stop, 2: permissions, 4: returns, 8: depth; only to measure them), for speed (0) or size (1), split into
+/// modules of at most `module_bytes` of code when not 0 (only to measure calls between modules). Returns the
+/// length of the first code module, or -1 if the start, the code range or the bound is not valid;
+/// [`more_modules`] gives the rest.
 #[unsafe(no_mangle)]
 pub extern "C" fn translate(
     code_start: u64,
     code_end: u64,
     start: u64,
     look_ahead: u32,
+    bound: u32,
     probe: i32,
     omit: u32,
+    optimise: u32,
+    module_bytes: u32,
 ) -> i32 {
-    let look_ahead = if look_ahead == 1 {
-        LookAhead::Full
-    } else {
-        LookAhead::None
+    let look_ahead = match look_ahead {
+        0 => LookAhead::None,
+        1 => LookAhead::Full,
+        _ => LookAhead::Bounded(bound),
     };
     let omit = Omit {
         stop: omit & 1 != 0,
         permissions: omit & 2 != 0,
         returns: omit & 4 != 0,
+        depth: omit & 8 != 0,
     };
-    let result = INPUT.with_borrow(|blob| {
-        translate_omitting(
-            blob,
-            code_start..code_end,
-            &[start],
-            look_ahead,
-            wcontainers_arm64::Host::from_probe(probe),
-            omit,
-        )
+    let optimise = if optimise == 1 {
+        Optimise::Size
+    } else {
+        Optimise::Speed
+    };
+    let host = wcontainers_arm64::Host::from_probe(probe);
+    let code = code_start..code_end;
+    let result = INPUT.with_borrow(|blob| match module_bytes {
+        0 => translate_omitting(blob, code, &[start], look_ahead, optimise, host, omit),
+        _ => {
+            let module_bytes = module_bytes as usize;
+            translate_in_modules(blob, code, &[start], look_ahead, optimise, host, module_bytes)
+        }
     });
     match result {
-        Ok(translation) => answer(translation.wasm),
+        Ok(translation) => {
+            let mut modules = translation.modules.into_iter().map(|m| m.wasm);
+            let first = modules.next().expect("a translation has a module");
+            MORE.set(modules.collect());
+            answer(first)
+        }
         Err(_) => -1,
     }
+}
+
+thread_local! {
+    /// The code modules of the last translation after its first.
+    static MORE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many code modules the last translation has after the one [`translate`] gave.
+#[unsafe(no_mangle)]
+pub extern "C" fn more_modules() -> u32 {
+    MORE.with_borrow(|more| more.len() as u32)
+}
+
+/// The `i`th code module of the last translation after its first. Returns its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn more_module(i: u32) -> i32 {
+    let module = MORE.with_borrow(|more| more[i as usize].clone());
+    answer(module)
 }
 
 /// The module whose `probe` export finds what the engine does where WebAssembly leaves results open. Returns
@@ -109,10 +142,10 @@ pub extern "C" fn float_reason(operation: i32, fpcr: u32, tracking: u32) -> u32 
     u32::from(kind.fused() && fpcr == 0 && tracking == 0)
 }
 
-/// The thread module with a lookup table of `slots` entries. Returns its length.
+/// The thread module. Returns its length.
 #[unsafe(no_mangle)]
-pub extern "C" fn thread_module(slots: u32) -> i32 {
-    answer(wcontainers_translator::thread_module(slots))
+pub extern "C" fn thread_module() -> i32 {
+    answer(wcontainers_translator::thread_module())
 }
 
 /// Everything the runner must agree on with the translator and the shared crate, as JSON. Returns its
@@ -139,10 +172,15 @@ pub extern "C" fn contract() -> i32 {
         "loadAddress": LOAD_ADDRESS,
         "slotBase": SLOT_BASE,
         "tableBase": TABLE_BASE,
+        "slots": SLOTS,
+        "slotsCover": SLOTS_COVER,
+        "exactSlot": EXACT_SLOT,
+        "descriptionSection": DESCRIPTION_SECTION,
         "threadBlock": THREAD_BLOCK,
         "permissions": PERMISSIONS,
         "permissionPages": PERMISSION_PAGES,
         "run": RUN,
+        "bound": wcontainers_translator::BOUND,
         "unwindLeave": UNWIND_LEAVE,
         "hookSyscall": HOOK_SYSCALL,
         "hookStop": HOOK_STOP,

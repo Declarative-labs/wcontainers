@@ -10,7 +10,7 @@
 //! memory there: between two comebacks a program that ends never returns to the same state, so the first
 //! stop of none in that state is the point.
 
-use crate::programs::{Blob, Ran, STACK_TOP, placement, ran, ready};
+use crate::programs::{Blob, Ran, STACK_TOP, placement, ran, ready, ready_for};
 use crate::runner::{Machine, Pause, Paused, Stopped};
 use proptest::prelude::RngExt;
 use proptest::test_runner::{RngAlgorithm, TestRng};
@@ -20,7 +20,8 @@ use std::hash::{DefaultHasher, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions, RegisterBlock};
-use wcontainers_translator::{LookAhead, Omit};
+use wcontainers_translator::contract::Reason;
+use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// How a run with changes is made.
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +70,9 @@ pub struct Compared {
     /// Faults handled and carried on from.
     pub handled: usize,
     pub stopped: Stopped,
+    /// At full: pieces translated at run time, and instructions run alone at none after a check failed.
+    pub translated: u64,
+    pub left: u64,
 }
 
 /// Pages a change may touch: the blob's pages and the page after it, the stack and the page below it.
@@ -149,8 +153,26 @@ fn choose(
     pages
 }
 
-fn apply(paused: &mut Paused<'_, '_>, pages: &[(u64, Permissions)]) {
+/// The pages that may run code, the blob's. Changes leave that as placed: the stand-in drops no pieces when a
+/// page stops allowing it, and translates only from pages that allow it.
+fn runnable(blob: &Blob) -> Range<u64> {
+    let (range, _) = &placement(blob).regions[0];
+    range.start / PAGE_SIZE..range.end / PAGE_SIZE
+}
+
+/// What a page allows with these reading and writing permissions.
+fn with_running(runnable: &Range<u64>, page: u64, permissions: Permissions) -> Permissions {
+    let running = if runnable.contains(&page) {
+        Permissions::EXECUTE
+    } else {
+        Permissions::empty()
+    };
+    permissions.difference(Permissions::EXECUTE) | running
+}
+
+fn apply(paused: &mut Paused<'_, '_>, pages: &[(u64, Permissions)], runnable: &Range<u64>) {
     for &(page, permissions) in pages {
+        let permissions = with_running(runnable, page, permissions);
         paused.set_permissions(page * PAGE_SIZE..(page + 1) * PAGE_SIZE, permissions);
     }
 }
@@ -175,11 +197,13 @@ fn end(
                         .iter()
                         .any(|pages| pages.contains(&(address / PAGE_SIZE))) =>
             {
-                let page = address / PAGE_SIZE * PAGE_SIZE;
-                machine.set_permissions(
-                    page..page + PAGE_SIZE,
+                let page = address / PAGE_SIZE;
+                let permissions = with_running(
+                    &runnable(blob),
+                    page,
                     Permissions::READ | Permissions::WRITE,
                 );
+                machine.set_permissions(page * PAGE_SIZE..(page + 1) * PAGE_SIZE, permissions);
             }
             _ => {
                 let ran = ran(blob, &machine, stopped, &registers);
@@ -201,15 +225,22 @@ fn bytes(machine: &mut Machine, universe: &[Range<u64>]) -> Vec<u8> {
 }
 
 /// Run a blob at full making changes as `plan` says, then at none making the same changes at the same
-/// points, and compare how they went. Panics on any difference.
+/// points, and compare how they went. Panics on any difference. The run at full is translated for speed or
+/// for size as the plan's seed is even or odd.
 pub fn compare(blob: &Blob, plan: Plan) -> Compared {
     let universe = universe(blob);
+    let runnable = runnable(blob);
     let made = Rc::new(RefCell::new(Vec::new()));
 
     let full_came_back = Rc::new(Cell::new(0));
-    let mut full = ready(blob, LookAhead::Full, Omit::default());
+    let optimise = match plan.seed % 2 {
+        0 => Optimise::Speed,
+        _ => Optimise::Size,
+    };
+    let mut full = ready_for(blob, LookAhead::Full, optimise, Omit::default());
     {
         let made = made.clone();
+        let runnable = runnable.clone();
         let came_back = full_came_back.clone();
         let universe = universe.clone();
         let mut seed = [0u8; 32];
@@ -239,7 +270,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
                 },
                 Pause::Syscall => Point::Syscall(syscalls),
             };
-            apply(paused, &pages);
+            apply(paused, &pages, &runnable);
             made.borrow_mut().push(Change { point, pages });
         });
     }
@@ -255,6 +286,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
     let mut none = ready(blob, LookAhead::None, Omit::default());
     {
         let pending = pending.clone();
+        let runnable = runnable.clone();
         let came_back = none_came_back.clone();
         let universe = universe.clone();
         let mut syscalls = 0;
@@ -285,7 +317,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
                 if !reached {
                     break;
                 }
-                apply(paused, &change.pages);
+                apply(paused, &change.pages, &runnable);
                 pending.pop_front();
             }
         });
@@ -326,5 +358,7 @@ pub fn compare(blob: &Blob, plan: Plan) -> Compared {
         changes,
         handled: full_ended.stops.len() - 1,
         stopped: full_ended.stops.last().unwrap().0,
+        translated: full.count(Reason::TranslatedAtRunTime),
+        left: full.count(Reason::LeftToAddress),
     }
 }
