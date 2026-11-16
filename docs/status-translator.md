@@ -86,7 +86,42 @@ one trade at a time:
   sieve 0.918 (1.7 times), interpret 0.800 (1.3 times); fib, sort, walk unchanged.
 - Translation is faster in size mode (busybox 0.50 s against 0.59 s; rg 1.53 against 2.31).
 
-elfconv (the benchmark to beat): see "elfconv" below.
+elfconv (the benchmark to beat), set up and compared on the benchmark set:
+- Set up from its published image `ghcr.io/yomaytk/elfconv:arm64` (6.1 GB, built 2026-07-05; remill, LLVM 16,
+  WASI SDK 24, Emscripten), not built from source. Its lifter accepts only statically linked glibc programs (it
+  looks for glibc's `_start` pattern to find `main`), so the flat blobs of `bench.c` cannot be given to it.
+  Each workload was built inside the image as an ordinary static glibc program with clang 16 (`-O2 -static`,
+  bench.c's own `_start` renamed away) and converted with `TARGET=aarch64-wasi32 ./exe.sh` (about 55 s a
+  workload, 5.7 MB of WebAssembly each). Scripts in scratch: `m5r2/elfconv/convert.sh` and `time.sh`.
+- Run in wasmtime 50 (compiled ahead with `wasmtime compile`, best of 3, so the time includes wasmtime
+  starting and instantiating, a few milliseconds), and the same glibc executables natively in Docker (best of
+  3), load 24 to 30. Times native, each against its own native build (ours: speed setting, wasmtime, from the
+  run above; our blobs are built by zig's clang without a C library, elfconv's by clang 16 with glibc, so the
+  machine code differs and only the ratios compare): fib elfconv 8.7 (3.60 s / 0.414), ours 6.0; sieve 1.05
+  (0.48 / 0.459), ours 1.44; hash elfconv failed ("No lifted instruction at (0x40103c) was executed", no
+  output; native 0.640 s); sort 6.9 (2.42 / 0.353), ours 3.2; interpret 14.8 (4.14 / 0.279), ours 3.7; matrix
+  1.17 (0.11 / 0.094), ours 3.0; walk 0.84 (2.29 / 2.728), ours 0.96; search 1.17 (0.17 / 0.145), ours 1.9.
+- So elfconv is ahead on loops over memory (sieve, matrix, search, walk: LLVM -O3 optimises the lifted
+  loops, and it has no permission checks) and well behind on calls, calls through registers and the switch
+  interpreter (fib, sort, interpret). It also gave a wrong result where we do not (hash). Not compared in
+  Chrome (its browser output needs Emscripten's page).
+
+M5, what comes next (most important first):
+1. Size, free reductions not yet done: slow paths are 28% of the output (each writes back its registers, the
+   flags word, the passed registers and pc, inline): a shared function per module for the part that is the
+   same everywhere (passed registers, pc, the hook call, the unwind). Then the meanings' own waste (a move
+   that is an `or` with zero, constants extended at run time, copies between locals), each measured.
+2. Size mode: a way for a proven loop to keep its unchecked copy without a loop piece (a stop at its jump
+   back going to a re-proof at the loop's entry), which would win back trade 1's loss.
+3. Records for each binary in each setting with both engines (started at the end of the second run; see
+   "Measured with the engines" below if it finished), Node and Bun in Chrome with the compact lookup, and the
+   memory each engine uses for compiled code (wasmtime: machine code bytes; Chrome: not measured, nothing
+   in the runner reads V8's code space yet).
+4. A call between modules in Chrome (the Chrome runner needs to split translations).
+5. Translation speed on the largest binaries (Node 65 to 99 s, Bun 137 to 165 s): not profiled again in
+   this run.
+6. Static counters for each binary: not recorded yet.
+7. Check that Chrome's eager-compile timings cover compiling every function.
 
 ## M5, first run
 
