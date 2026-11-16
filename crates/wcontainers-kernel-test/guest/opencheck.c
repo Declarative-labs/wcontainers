@@ -3,6 +3,8 @@
 
 #define _GNU_SOURCE
 #include <errno.h>
+#include <grp.h>
+#include <sys/fsuid.h>
 #include <fcntl.h>
 #include <linux/openat2.h>
 #include <stdio.h>
@@ -74,6 +76,30 @@ int main(void) {
     R(copy_file_range(memory, &(off_t){0}, secret, &(off_t){0}, 6, 0));
     R(copy_file_range(file, &(off_t){0}, file, &(off_t){10}, 6, 0));
     R(copy_file_range(memory, &(off_t){0}, file, &(off_t){0}, 0, 0));
+    // linkat with AT_EMPTY_PATH walks from a descriptor only with the credentials it was opened with:
+    // each committed change of credentials makes new ones.
+    int before = open("f", O_RDONLY);
+    R(linkat(before, "", AT_FDCWD, "l1", AT_EMPTY_PATH));
+    R(setresuid(-1, -1, -1));
+    R(linkat(before, "", AT_FDCWD, "l2", AT_EMPTY_PATH));
+    R(setuid(0));
+    R(linkat(before, "", AT_FDCWD, "l3", AT_EMPTY_PATH));
+    R(linkat(before, "/dev/shm/t/f", AT_FDCWD, "l4", AT_EMPTY_PATH));
+    R(linkat(before, "x", AT_FDCWD, "l5", AT_EMPTY_PATH));
+    R(linkat(before, "", AT_FDCWD, "l5", 0));
+    R(linkat(99, "", AT_FDCWD, "l5", AT_EMPTY_PATH));
+    int after = open("f", O_RDONLY);
+    R(linkat(after, "", AT_FDCWD, "l6", AT_EMPTY_PATH));
+    R(setfsuid(0));
+    R(linkat(after, "", AT_FDCWD, "l7", AT_EMPTY_PATH));
+    R(setgroups(0, NULL));
+    R(linkat(after, "", AT_FDCWD, "l8", AT_EMPTY_PATH));
+    int dir = open(".", O_RDONLY | O_DIRECTORY);
+    R(linkat(dir, "f", AT_FDCWD, "l9", AT_EMPTY_PATH));
+    R(linkat(dir, "f", AT_FDCWD, "l9", 0));
+    R(close(before));
+    R(close(after));
+    R(close(dir));
     // The random devices keep their position; the zero devices always seek to 0.
     const char *devices[] = {"/dev/urandom", "/dev/random", "/dev/zero", "/dev/full", "/dev/null"};
     for (int index = 0; index < 5; index++) {

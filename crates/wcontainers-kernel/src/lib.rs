@@ -89,6 +89,9 @@ pub struct Kernel {
     init: Option<Pid>,
     /// The first process's wait status once it has ended.
     finished: Option<i32>,
+    /// The last serial given to committed credentials; 0 is the credentials of whoever opened the
+    /// container's first descriptors.
+    last_credentials: u64,
     counters: Counters,
     files: Files,
     machine: Machine,
@@ -124,6 +127,7 @@ impl Kernel {
             last_id: 0,
             init: None,
             finished: None,
+            last_credentials: 0,
             counters: Counters::default(),
             files: Files {
                 numbers,
@@ -277,6 +281,17 @@ impl Kernel {
     fn resume(&mut self, tid: Tid, resume: Resume) {
         self.thread_mut(tid).resume = resume;
         self.runnable.push_front(tid);
+    }
+
+    /// Gives a process's credentials a new serial after a change Linux commits (`commit_creds`).
+    pub(crate) fn commit_credentials(&mut self, pid: Pid) {
+        self.last_credentials += 1;
+        let serial = self.last_credentials;
+        self.processes
+            .get_mut(&pid)
+            .expect("process exists")
+            .credentials
+            .serial = serial;
     }
 
     fn allocate_id(&mut self) -> i32 {

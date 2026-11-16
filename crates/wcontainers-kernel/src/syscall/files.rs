@@ -582,6 +582,7 @@ pub(super) fn open(
         node.clone(),
         (flags | large) & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         full_path,
+        credentials(kernel, tid).serial,
     );
     file.borrow_mut().contents = contents;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
@@ -797,6 +798,20 @@ pub(super) fn linkat(
     let flags = flags as u32;
     if flags & !(AT_SYMLINK_FOLLOW | AT_EMPTY_PATH) != 0 {
         return Err(Errno::EINVAL);
+    }
+    // With `AT_EMPTY_PATH`, a walk from a descriptor needs the credentials it was opened with or
+    // `CAP_DAC_READ_SEARCH`, else the name is not found (Linux's `LOOKUP_LINKAT_EMPTY` in `path_init`).
+    if flags & AT_EMPTY_PATH != 0 && old_dirfd as i32 != AT_FDCWD {
+        let path = guest(kernel, cx, tid).read_path_maybe_empty(old_path)?;
+        if !path.starts_with(b"/") {
+            let file = kernel.process_of(tid).files.file(old_dirfd as i32)?;
+            let credentials = credentials(kernel, tid);
+            if file.borrow().opener != credentials.serial
+                && !credentials.has(crate::credentials::CAP_DAC_READ_SEARCH)
+            {
+                return Err(Errno::ENOENT);
+            }
+        }
     }
     let node = lookup(
         kernel,

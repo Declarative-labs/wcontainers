@@ -44,7 +44,7 @@ const fn bits(capabilities: &[u32]) -> u64 {
     set
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Credentials {
     pub uid: u32,
     pub euid: u32,
@@ -65,6 +65,9 @@ pub(crate) struct Credentials {
     pub keep_capabilities: bool,
     /// `PR_SET_NO_NEW_PRIVS`.
     pub no_new_privileges: bool,
+    /// Which committed change of credentials these are: Linux makes a new credential structure at
+    /// each `commit_creds`, and some checks compare an open file's with the caller's by identity.
+    pub serial: u64,
 }
 
 impl Credentials {
@@ -88,6 +91,7 @@ impl Credentials {
             ambient: 0,
             keep_capabilities: false,
             no_new_privileges: false,
+            serial: 0,
         }
     }
 

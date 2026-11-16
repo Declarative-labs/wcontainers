@@ -394,7 +394,7 @@ pub(super) fn setresuid(
     tid: Tid,
     [ruid, euid, suid, ..]: Args,
 ) -> Result<u64, Errno> {
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, false, |credentials| {
         let wanted = [ruid as u32, euid as u32, suid as u32];
         let current = [credentials.uid, credentials.euid, credentials.suid];
         // Linux returns at once when nothing changes, leaving even the file system id alone.
@@ -429,7 +429,7 @@ pub(super) fn setresgid(
     tid: Tid,
     [rgid, egid, sgid, ..]: Args,
 ) -> Result<u64, Errno> {
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, false, |credentials| {
         let wanted = [rgid as u32, egid as u32, sgid as u32];
         let current = [credentials.gid, credentials.egid, credentials.sgid];
         if unchanged(wanted, current, credentials.fsgid) {
@@ -466,7 +466,7 @@ pub(super) fn setuid(
     if uid == u32::MAX {
         return Err(Errno::EINVAL);
     }
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, true, |credentials| {
         let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
         if credentials.has(CAP_SETUID) {
             credentials.uid = uid;
@@ -492,7 +492,7 @@ pub(super) fn setgid(
     if gid == u32::MAX {
         return Err(Errno::EINVAL);
     }
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, true, |credentials| {
         if credentials.has(CAP_SETGID) {
             credentials.gid = gid;
             credentials.egid = gid;
@@ -514,7 +514,7 @@ pub(super) fn setreuid(
     [ruid, euid, ..]: Args,
 ) -> Result<u64, Errno> {
     let (ruid, euid) = (ruid as u32, euid as u32);
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, true, |credentials| {
         let privileged = credentials.has(CAP_SETUID);
         let (old_uid, old_euid, old_suid) = (credentials.uid, credentials.euid, credentials.suid);
         if ruid != u32::MAX && !privileged && ruid != old_uid && ruid != old_euid {
@@ -549,7 +549,7 @@ pub(super) fn setregid(
     [rgid, egid, ..]: Args,
 ) -> Result<u64, Errno> {
     let (rgid, egid) = (rgid as u32, egid as u32);
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, true, |credentials| {
         let privileged = credentials.has(CAP_SETGID);
         let (old_gid, old_egid, old_sgid) = (credentials.gid, credentials.egid, credentials.sgid);
         if rgid != u32::MAX && !privileged && rgid != old_gid && rgid != old_egid {
@@ -584,7 +584,7 @@ pub(super) fn setfsuid(
     [uid, ..]: Args,
 ) -> Result<u64, Errno> {
     let uid = uid as u32;
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, false, |credentials| {
         let old = credentials.fsuid;
         let allowed = [
             credentials.uid,
@@ -609,7 +609,7 @@ pub(super) fn setfsgid(
     [gid, ..]: Args,
 ) -> Result<u64, Errno> {
     let gid = gid as u32;
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, false, |credentials| {
         let old = credentials.fsgid;
         let allowed = [
             credentials.gid,
@@ -637,9 +637,12 @@ fn unchanged(wanted: [u32; 3], current: [u32; 3], fs_id: u32) -> bool {
         && (wanted[1] == u32::MAX || wanted[1] == fs_id)
 }
 
+/// The change is committed (new credentials) whenever it succeeds if `always`, otherwise only when it
+/// changed something.
 fn changing(
     kernel: &mut Kernel,
     tid: Tid,
+    always: bool,
     change: impl FnOnce(&mut crate::credentials::Credentials) -> Result<u64, Errno>,
 ) -> Result<u64, Errno> {
     let process = kernel.process_of_mut(tid);
@@ -647,6 +650,10 @@ fn changing(
     let result = change(&mut process.credentials);
     if process.credentials.loses_dumpable(&old) {
         process.dumpable = false;
+    }
+    if result.is_ok() && (always || process.credentials != old) {
+        let pid = process.pid;
+        kernel.commit_credentials(pid);
     }
     result
 }
@@ -704,8 +711,10 @@ pub(super) fn setgroups(
         return Err(Errno::EINVAL);
     }
     groups.sort_unstable();
-    kernel.process_of_mut(tid).credentials.groups = groups;
-    Ok(0)
+    changing(kernel, tid, true, |credentials| {
+        credentials.groups = groups;
+        Ok(0)
+    })
 }
 
 pub(super) fn set_tid_address(
@@ -1111,8 +1120,10 @@ pub(super) fn prctl(
             if second > 1 {
                 return Err(Errno::EINVAL);
             }
-            kernel.process_of_mut(tid).credentials.keep_capabilities = second == 1;
-            Ok(0)
+            changing(kernel, tid, true, |credentials| {
+                credentials.keep_capabilities = second == 1;
+                Ok(0)
+            })
         }
         PR_CAPBSET_READ => {
             if second > u64::from(CAP_LAST_CAP) {
@@ -1129,6 +1140,8 @@ pub(super) fn prctl(
                 return Err(Errno::EINVAL);
             }
             credentials.bounding &= !(1 << second);
+            let pid = kernel.threads[&tid].process;
+            kernel.commit_credentials(pid);
             Ok(0)
         }
         PR_GET_NO_NEW_PRIVS => {
@@ -1240,7 +1253,7 @@ pub(super) fn capset(
     let effective = word(0) | word(3) << 32;
     let permitted = word(1) | word(4) << 32;
     let inheritable = word(2) | word(5) << 32;
-    changing(kernel, tid, |credentials| {
+    changing(kernel, tid, true, |credentials| {
         let can_set_pcap = credentials.has(crate::linux::general::CAP_SETPCAP);
         // Linux's `cap_capset` rules.
         if !can_set_pcap && inheritable & !(credentials.inheritable | credentials.permitted) != 0 {

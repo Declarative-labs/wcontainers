@@ -90,7 +90,9 @@ What layer 1 does not generate, and why:
 - brk (its values are addresses that differ by layout; tests/memory.rs and tests/limits.rs test it).
 - CPU clock ids of process 1 (our caller is process 1, the reference's is not); those of the
   caller's own process and thread (encoded pid 0), of a missing process, and clock devices are
-  generated. tests/clocks.rs compares every kind of clock id, process 1's and the caller's own
+  generated. Sleeps on the profiling and user time CPU clocks: Linux samples those times at ticks, so
+  a young process's may still be 0 and a sleep until a past time may never end there (seed 777002);
+  here they are always the time not parked. The scheduler time clocks are slept on. tests/clocks.rs compares every kind of clock id, process 1's and the caller's own
   number included, in a program that is process 1 on both sides.
 - Paths reach `/dev/shm/w` (the sequence's directory), the three zero devices and `/proc/self/...`
   through a fixed pool; never the root file system, never `/proc` files' contents (those are compared
@@ -228,7 +230,8 @@ Partial (inside the list above), each with its reason:
 - execve, execveat: only from a process with one thread (threads, K3).
 - rt_sigaction, rt_sigprocmask, sigaltstack: handlers recorded, not run (K2).
 - getrusage, times, CPU-time clocks: CPU time is time not parked since the container started, all of
-  it user time; with several threads (K3) a thread waiting for its turn would count. ru_maxrss is the
+  it user time, never sampled at ticks as Linux's user and system times are (so a young process's
+  profiling and user clocks are not 0 here as they may be there); with several threads (K3) a thread waiting for its turn would count. ru_maxrss is the
   mapped size, counted "page residency not tracked"; the other fields are 0 (no faults, switches or
   I/O are counted yet).
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.

@@ -595,7 +595,9 @@ pub(super) fn madvise(
     {
         return Err(Errno::EINVAL);
     }
-    if matches!(advice, MADV_DONTNEED | MADV_FREE)
+    // Locked memory is neither dropped nor aged (`madvise_dontneed_free_valid_vma`,
+    // `can_madv_lru_vma`), whatever gaps the range has.
+    if matches!(advice, MADV_DONTNEED | MADV_FREE | MADV_COLD | MADV_PAGEOUT)
         && process.map.iter().any(|mapping| {
             mapping.start < end && mapping.end > address && mapping.locked != Lock::None
         })

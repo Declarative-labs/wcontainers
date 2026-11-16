@@ -428,15 +428,18 @@ impl Kernel {
         let process = self.processes.get_mut(&pid).expect("process");
         process.cwd = cwd;
         process.files.add(
-            OpenFile::new(null, O_RDWR | O_LARGEFILE, b"/dev/null".to_vec()),
+            OpenFile::new(null, O_RDWR | O_LARGEFILE, b"/dev/null".to_vec(), 0),
             false,
             0,
             limit,
         )?;
         for pipe in pipes {
-            process
-                .files
-                .add(OpenFile::new(pipe, O_WRONLY, Vec::new()), false, 0, limit)?;
+            process.files.add(
+                OpenFile::new(pipe, O_WRONLY, Vec::new(), 0),
+                false,
+                0,
+                limit,
+            )?;
         }
         let program = crate::loader::open_program(self, cx.cpu, pid, start.path)?;
         let image = crate::loader::load(
@@ -490,6 +493,9 @@ impl Kernel {
         }
         process.credentials = image.after.credentials;
         process.files.close_on_exec();
+        // New credentials (`commit_creds` in `begin_new_exec`).
+        self.last_credentials += 1;
+        process.credentials.serial = self.last_credentials;
         for action in &mut process.actions {
             if action.sa_handler_kernel != crate::linux_extra::SIG_IGN {
                 action.sa_handler_kernel = crate::linux_extra::SIG_DFL;

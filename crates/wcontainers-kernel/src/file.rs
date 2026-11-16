@@ -19,18 +19,21 @@ pub(crate) struct OpenFile {
     pub path: Vec<u8>,
     /// For files of the process information tree, the bytes made when the file was opened.
     pub contents: Option<Vec<u8>>,
+    /// The serial of the credentials it was opened with (Linux's `f_cred`).
+    pub opener: u64,
 }
 
 pub(crate) type FileRef = Rc<RefCell<OpenFile>>;
 
 impl OpenFile {
-    pub fn new(node: Node, flags: u32, path: Vec<u8>) -> FileRef {
+    pub fn new(node: Node, flags: u32, path: Vec<u8>, opener: u64) -> FileRef {
         Rc::new(RefCell::new(Self {
             node,
             flags,
             offset: 0,
             path,
             contents: None,
+            opener,
         }))
     }
 
