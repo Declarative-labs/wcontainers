@@ -14,6 +14,7 @@ impl Errno {
     pub const EAGAIN: Self = Self(errno::EAGAIN);
     pub const EBADF: Self = Self(errno::EBADF);
     pub const EBUSY: Self = Self(errno::EBUSY);
+    pub const EDEADLK: Self = Self(errno::EDEADLK);
     pub const ECHILD: Self = Self(errno::ECHILD);
     pub const EEXIST: Self = Self(errno::EEXIST);
     pub const EFAULT: Self = Self(errno::EFAULT);

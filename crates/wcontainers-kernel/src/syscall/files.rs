@@ -2502,6 +2502,10 @@ fn flock_typed(
             return Ok(Some(0));
         }
         inode.flocks.remove(index);
+        // Waiters blocked on the lock let go try again (`locks_delete_lock_ctx`).
+        drop(inode);
+        kernel.wake(crate::process::Channel::Locks);
+        inode = node.borrow_mut();
     }
     let Some(exclusive) = exclusive else {
         return Ok(Some(0));

@@ -268,6 +268,9 @@ pub(crate) struct Call {
     pub started: bool,
     /// How much of the call is done, such as bytes of a large write.
     pub progress: u64,
+    /// For F_SETLKW's wait: the descriptor table asking, and the table holding the lock in the way
+    /// (none for an open file's lock), as Linux's `blocked_hash` finds them.
+    pub lock_wait: Option<(u64, Option<u64>)>,
 }
 
 /// What a parked call waits for, besides its deadline and a signal.

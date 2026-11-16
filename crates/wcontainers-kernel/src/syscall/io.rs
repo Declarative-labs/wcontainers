@@ -2099,11 +2099,64 @@ fn record_lock(
         guest(kernel, cx, tid).write(argument, &raw)?;
         return Ok(Some(0));
     }
-    match crate::locks::set(&mut node.borrow_mut().record_locks, request, unlock) {
-        Ok(()) => Ok(Some(0)),
-        Err(_) if matches!(command, F_SETLKW | F_OFD_SETLKW) => Ok(None),
+    let asking = match &request.owner {
+        LockOwner::Table(table) => Some(*table),
+        LockOwner::File(_) => None,
+    };
+    let result = crate::locks::set(&mut node.borrow_mut().record_locks, request, unlock);
+    match result {
+        Ok(()) => {
+            // Waiters blocked on a lock this changed try again (`locks_wake_up_blocks`).
+            kernel.wake(crate::process::Channel::Locks);
+            Ok(Some(0))
+        }
+        Err(held) if matches!(command, F_SETLKW | F_OFD_SETLKW) => {
+            let holder = match held.owner {
+                LockOwner::Table(table) => Some(table),
+                LockOwner::File(_) => None,
+            };
+            // An open file's request is not looked at for deadlocks, nor kept where others look.
+            if let Some(asking) = asking {
+                if posix_locks_deadlock(kernel, asking, holder) {
+                    return Err(Errno::EDEADLK);
+                }
+                kernel.thread_mut(tid).call.lock_wait = Some((asking, holder));
+            }
+            Ok(None)
+        }
         Err(_) => Err(Errno::EAGAIN),
     }
+}
+
+/// Linux's `posix_locks_deadlock`: whether following who the lock in the way's holder waits for
+/// comes back to the table asking, giving up after `MAX_DEADLK_ITERATIONS`.
+fn posix_locks_deadlock(kernel: &Kernel, asking: u64, mut holder: Option<u64>) -> bool {
+    const MAX_DEADLK_ITERATIONS: usize = 10;
+    let waiting_for = |table: u64| {
+        kernel
+            .threads
+            .values()
+            .find_map(|thread| match thread.call {
+                crate::process::Call {
+                    wait: Some(crate::process::Channel::Locks),
+                    lock_wait: Some((waiter, blocker)),
+                    ..
+                } if waiter == table => Some(blocker),
+                _ => None,
+            })
+    };
+    let mut iterations = 0;
+    while let Some(blocker) = holder.and_then(waiting_for) {
+        if iterations > MAX_DEADLK_ITERATIONS {
+            return false;
+        }
+        iterations += 1;
+        if blocker == Some(asking) {
+            return true;
+        }
+        holder = blocker;
+    }
+    false
 }
 
 /// Every other `fcntl` command.
