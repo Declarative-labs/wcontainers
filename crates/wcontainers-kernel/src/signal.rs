@@ -373,9 +373,10 @@ impl Kernel {
                     }
                 }
             }
-            if self
-                .setup_frame(cx, tid, &queued, &action, &mut registers)
-                .is_err()
+            if self.rseq_fixup(cx, tid, &mut registers).is_err()
+                || self
+                    .setup_frame(cx, tid, &queued, &action, &mut registers)
+                    .is_err()
             {
                 // A frame that cannot be written is SIGSEGV (`force_sigsegv`).
                 let pid = self.threads[&tid].process;
@@ -405,6 +406,53 @@ impl Kernel {
             self.thread_mut(tid).signal_mask = saved;
         }
         Some(resume)
+    }
+
+    /// Linux's `rseq_ip_fixup` before a handler runs: a thread inside its registered restartable
+    /// sequence's critical section goes to the sequence's abort handler, whose signature must match;
+    /// the area's current sequence is cleared. A bad area is an error (SIGSEGV).
+    fn rseq_fixup(
+        &mut self,
+        cx: &mut Context<'_>,
+        tid: Tid,
+        registers: &mut RegisterBlock,
+    ) -> Result<(), Errno> {
+        let Some((area, _, signature)) = self.threads[&tid].rseq else {
+            return Ok(());
+        };
+        let pc = registers.pc;
+        let mut guest = crate::syscall::guest(self, cx, tid);
+        // `struct rseq`'s `rseq_cs` and `struct rseq_cs`'s fields.
+        let sequence: u64 = guest.read_value(area + 8)?;
+        if sequence == 0 {
+            return Ok(());
+        }
+        let fields = guest.read(sequence, 32)?;
+        let word = |at: usize| u64::from_le_bytes(fields[at..at + 8].try_into().expect("8 bytes"));
+        let version = u32::from_le_bytes(fields[0..4].try_into().expect("4 bytes"));
+        let (start, post_commit, abort) = (word(8), word(16), word(24));
+        if version > 0
+            || start
+                .checked_add(post_commit)
+                .is_none_or(|end| end > crate::user::ADDRESS_LIMIT)
+        {
+            return Err(Errno::EINVAL);
+        }
+        let inside = pc >= start && pc - start < post_commit;
+        if inside {
+            if abort >= start && abort - start < post_commit {
+                return Err(Errno::EINVAL);
+            }
+            let found: u32 = guest.read_value(abort.wrapping_sub(4))?;
+            if found != signature {
+                return Err(Errno::EINVAL);
+            }
+        }
+        guest.write(area + 8, &0u64.to_le_bytes())?;
+        if inside {
+            registers.pc = abort;
+        }
+        Ok(())
     }
 
     /// Whether a signal pending for the thread was forced (a fault's), which even the first process

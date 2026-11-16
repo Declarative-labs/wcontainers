@@ -4,58 +4,45 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is complete. The seventh run closed it out; two independent checks
-followed. The eighth run fixed the first check's ten problems. The ninth run (the third close-out
-run) fixed the second check's six: ioctl's generic file requests, tmpfs's size and inode limits with
-statfs reporting them, writes to `/proc/<pid>/comm` and the other `/proc` writes, seeks on cmdline,
-environ and auxv, layer 1's narrow coverage of `/proc` files, ioctl and statfs, and sysinfo's free
-memory. It also made `/proc` files' bytes at Linux's moments (not at open) and access times move on
-reads. The tenth run (the fourth close-out run) fixed the third check's eight: random device reads,
-getrandom and sendfile now move the whole count; sendfile of nothing succeeds before the input is
-checked; `#!` lines are split as `load_script` splits them; `/proc` lists in Linux's order at Linux's
-positions; fcntl and prctl gained what one process uses (owners, signals, hints, queries, the parent's
-death signal, timer slack, the subreaper, huge page disabling, the saved auxiliary vector, the forms
-that need powers), record locks answered as Linux without file locking (built in the eleventh run); a fault with its signal
-ignored is no longer counted as a handler not run. Layer 1 now reaches the random devices. The
-eleventh run (the fifth close-out run) fixed the fourth check's five blocking problems: sleeps and
-waits now end as late as the thread's timer slack (seed 3141592 hung on a sleep with the largest
-slack, which the reference never ends); the loader follows Linux's error rules for the named loader
-(EIO, ELIBBAD, the property note) and kills the process with SIGSEGV after the point of no return; a
-start with no arguments gets an empty one; argument room is `bprm_stack_limits`'s; record locks are
-built (process and open file owners, joined and split ranges, let go at close); layer 1 compares the
-play area after each sequence's last call. Of the minor ones, prctl's ambient powers are built; the
-rest are recorded below with their reasons. The twelfth run (the sixth close-out run) found, by
-reading Linux's memory calls against ours and then through layer 1, that lengths in the last page
-must wrap to 0 as `PAGE_ALIGN` does (msync and mlock answered errors where Linux succeeds; an mremap
-shrink by such a length unmapped the whole address space), that arm64 Linux strips a top byte tag
-from the memory calls' addresses, and that `/dev/random` and the mounts files have their own poll
-masks; all fixed, with layer 1 now generating those lengths and tagged addresses. See Layer 1 for the
-fresh seeds. The thirteenth run (the seventh close-out run) fixed the fifth check's problems: layer 1
-let machine bytes (times, inode numbers, statfs's free inodes) feed later calls and let a sequence's
-filter act on the runners' own calls (both runners now zero a call's machine bytes after reporting it,
-and every filter lets the runners' own calls through); mmap now follows `do_mmap` for MAP_GROWSDOWN
-(refused for files and shared memory, a grows-down mapping that grows on a fault or copy below it,
-mprotect's PROT_GROWSDOWN), MAP_DROPPABLE, huge page size bits under MAP_SHARED_VALIDATE and
-MAP_HUGETLB on a plain file (EINVAL); madvise takes MADV_DONTNEED_LOCKED and counts the advice it does
-not build (MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE: EINVAL, as a Linux without them);
-statx reports the unique mount number when asked and each file system's own rules (devpts's as the
-generic ones); newfstatat and statx take a null path with AT_EMPTY_PATH (and with a descriptor ignore
-the other flags, as `vfs_fstatat` and `do_statx_fd` do, measured). Layer 1 then found a sysctl's
-vectored read sized segment by segment (Linux makes one buffer of the whole request: ENOMEM at 4 MiB,
-and EFAULT unless every byte made is copied out; fixed), and, once `/dev/pts` was in its paths,
-devpts's root taking new names like tmpfs (Linux's has only a lookup: EPERM, and EACCES for a file
-made by open or mknod; fixed), and FS_IOC_FSSETXATTR answering ENOTTY for extended flags Linux does
-not know on files that keep none (Linux refuses them first, EOPNOTSUPP; and it drops the report-only
-flags PREALLOC, ATOMICWRITES and HASATTR on tmpfs, measured; fixed), and sendfile from secret memory
-of nothing succeeding (Linux refuses secret memory as input even then, unless the output is a pipe,
-and as output at the first byte; measured; fixed). It also found a harness race under load 60 to 80:
-the reference's runner counted the arena's changed ranges and then wrote them in a second pass, while
-the reference kernel rewrote a registered rseq area's CPU number between the passes, which garbled
-the report (it now reports from one copy). Layer 1 now generates mmap's kinds and flags (all but the
-ones listed below), more advice, statx masks, null stat paths and `/dev/pts`. The alignment fault's
-BUS_ADRALN and address are still not kept (only a handler can read them; K2, see Known gaps); its
-visible behaviour, death by SIGBUS, matches. The one-million-sequence layer 1 run is not part of K1:
-by the orchestrator's ruling it runs once at the end of the kernel track. Next is K2.
+K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
+processes) is partly done; this is its first run. Built in it:
+- One counted and warned path for everything Linux has that is not built: `Counters::refuse` and
+  `refuse_flag` (src/counters.rs), with the reasons in `reason::NOT_BUILT`. The list "Not built, by
+  counter" below is made from those names.
+- Processes: clone's fork and vfork forms (through `Cpu::memory_duplicate` and `Cpu::thread_new`),
+  exec from any process, exit statuses, zombies, wait4 and waitid with every option, orphans handed to
+  the nearest subreaper or the first process, the parent death signal, process groups and sessions
+  (setpgid of a child, orphaned groups sent SIGHUP and SIGCONT), fork advice (MADV_DONTFORK,
+  MADV_WIPEONFORK, droppable memory wiped).
+- The waiting rule: a call that cannot finish parks its thread on a `Channel` (src/process.rs) and
+  returns; when the channel changes, its deadline comes or a signal arrives, the same call runs again
+  from the thread's saved registers, with what it must remember in the thread's one `Call` slot.
+  Going cold is `Next::Idle` with the earliest deadline. src/task.rs holds the main loop.
+- The scheduler: Linux's CFS for one CPU (src/schedule.rs): weights by nice value, virtual runtime,
+  sleepers placed half a period back, new children a slice back, wakeup preemption by granularity,
+  slices from `sched_slice`. The wake-to-run wait is measured ("wake to run" counter, with time).
+- Pipes (src/pipe.rs, src/syscall/pipe.rs) as `fs/pipe.c`: page slots, merged small writes, packet
+  mode, partial and blocking reads and writes, SIGPIPE, FIONREAD, F_GETPIPE_SZ and F_SETPIPE_SZ, poll.
+  The container's standard output pipes are pipes whose reader is the host.
+- Signals in full (src/signal.rs): process and thread pending sets with queued `siginfo`, kill to
+  processes, groups and everyone, tkill, tgkill, sigqueue, handlers with arm64's exact frame (records,
+  fault address, syndrome, alternate stack, mask), SA_RESTART and the restart answers,
+  restart_syscall for sleeps, sigsuspend, sigtimedwait, ppoll and pselect6 masks, stop and continue
+  with reports to the parent, SIGCHLD, seccomp's SIGSYS trap with its information. A fault's code and
+  address (BUS_ADRALN and the pc or stack pointer for an alignment fault) reach a handler.
+- The vDSO (src/vdso.rs): `[vvar]` and `[vdso]` mapped as Linux maps them, with
+  `__kernel_rt_sigreturn`, AT_SYSINFO_EHDR and AT_MINSIGSTKSZ.
+- Memory shared between processes: shared anonymous memory and shared `/dev/zero` are shared mappings
+  of a removed file on the internal tmpfs (Linux's `shmem_zero_setup`), so children see the same pages.
+- A shell (busybox sh) runs pipelines, subshells, background jobs, traps, kills and waits, and matches
+  the reference (tests/shell.rs).
+
+Not done yet in K2, in order: pseudo-terminals with line handling and job control (section 9), and the
+shell's job control through one; saving and bringing back (section 12); layer 1 generating the new
+calls (pipes, kill, wait, signals) and the three fresh 20000-sequence seeds; private file mappings that
+see later file changes (still copies); FIFOs (named pipes are still refused, counted); seeded
+scheduling for layer 2 (the scheduler is deterministic here, but its slice timer comes from the host's
+clock, see Departures).
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -232,11 +219,12 @@ What layer 1 does not generate, and why:
   the start (as unpacking an image does), `start(cpu, host, &Start { path, arguments, environment,
   working_directory, hostname, groups })`, `next`, `exit`, `event`, `counters`, `root_files()`,
   `system_calls()`.
-- Exits: system calls, stops, memory faults (stack growth, SIGSEGV, SIGBUS past a file's end),
-  `MemoryFaultWithoutRegisters` (SIGSEGV), `AlignmentFault` (SIGBUS as Linux's `do_sp_pc_abort`;
-  BUS_ADRALN and the address reach only a handler, and handlers run in K2), illegal instructions
-  (SIGILL), breakpoints (SIGTRAP). With no handler, or the signal ignored (a forced signal resets it), the
-  process dies of the signal as on Linux; with a handler it dies too, counted "signal handler not run".
+- Exits: system calls, stops, memory faults (stack growth, SIGSEGV with SEGV_MAPERR or SEGV_ACCERR,
+  SIGBUS BUS_ADRERR past a file's end), `MemoryFaultWithoutRegisters` (SIGSEGV, no handler),
+  `AlignmentFault` (SIGBUS BUS_ADRALN at the address, as `do_sp_pc_abort`), illegal instructions
+  (SIGILL ILL_ILLOPC at the pc), breakpoints (SIGTRAP TRAP_BRKPT at the pc). A fault's signal is forced
+  (`force_sig_fault`): a blocked or ignored one goes back to the default; a handler runs with the
+  fault's information and frame.
 - File layer (src/fs): inodes shared by `Rc`, mounts, path walk with symlinks (40 at most), `..`
   across mounts, `d_path` paths (a removed directory gets " (deleted)", one outside the caller's root
   its path from the top; getcwd's "(unreachable)" is separate), permission checks
@@ -356,10 +344,9 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
   process and thread, any process, a thread of the caller's; profiling and user time at 1 ms
   resolution, scheduler time at 1 ns (measured); clock devices EINVAL, and EOPNOTSUPP for sleeps.
   Alarm clock sleeps refuse unknown flags and need CAP_WAKE_ALARM (EPERM in Docker), as measured.
-- Signals within one process (src/signal.rs): sent to itself, dropped if ignored, kept pending while
-  blocked, acted on when let through. The container's first process ignores signals it has no handler
-  for (`SIGNAL_UNKILLABLE`); faults still kill it. A signal that would need its handler run, or would
-  stop the process, is refused with ENOSYS and counted.
+- Signals (src/signal.rs, src/syscall/signals.rs): see "Where things stand". The container's first
+  process ignores signals it has no handler for (`SIGNAL_UNKILLABLE`); a fault's forced signal still
+  kills it.
 - Resource limits enforced: RLIMIT_FSIZE, RLIMIT_AS, RLIMIT_DATA (with `check_data_rlimit`),
   RLIMIT_STACK, RLIMIT_MEMLOCK, RLIMIT_NOFILE. RLIMIT_CPU is kept, not enforced (needs timers, K3).
 - Docker's default seccomp profile (src/seccomp.rs), measured on the reference, and a program's own
@@ -381,26 +368,27 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (170): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
-clock_nanosleep, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit, exit_group,
-faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat,
-fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat, fstatfs, fsync,
-ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid, getgroups,
-getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage,
-getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill, lgetxattr,
-linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
+Done (180): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+clock_nanosleep, clone, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit,
+exit_group, faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2,
+fchown, fchownat, fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat,
+fstatfs, fsync, ftruncate, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
+getgroups, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit,
+getrusage, getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill,
+lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
 membarrier, memfd_create, memfd_secret, mincore, mkdirat, mknodat, mlock, mlock2, mlockall, mmap,
 mprotect, mremap, msync, munlock, munlockall, munmap, name_to_handle_at, nanosleep, newfstatat,
-openat, openat2, personality, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64, preadv,
-preadv2, prlimit64, process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev, pwritev2, read,
-readahead, readlinkat, readv, removexattr, renameat, renameat2, rseq, rt_sigaction, rt_sigpending,
-rt_sigprocmask, sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getattr,
-sched_getparam, sched_getscheduler, sched_rr_get_interval, sched_setaffinity, sched_setattr,
-sched_setparam, sched_setscheduler, sched_yield, seccomp, sendfile, set_robust_list,
-set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid, setpriority, setregid, setresgid,
-setresuid, setreuid, setrlimit, setsid, setuid, setxattr, sigaltstack, statfs, statx, symlinkat,
-sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill, truncate, umask, uname, unlinkat,
-utimensat, write, writev.
+openat, openat2, personality, pipe2, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64,
+preadv, preadv2, prlimit64, process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev,
+pwritev2, read, readahead, readlinkat, readv, removexattr, renameat, renameat2, restart_syscall,
+rseq, rt_sigaction, rt_sigpending, rt_sigprocmask, rt_sigqueueinfo, rt_sigreturn, rt_sigsuspend,
+rt_sigtimedwait, rt_tgsigqueueinfo, sched_get_priority_max, sched_get_priority_min,
+sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler, sched_rr_get_interval,
+sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler, sched_yield, seccomp,
+sendfile, set_robust_list, set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid,
+setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr,
+sigaltstack, statfs, statx, symlinkat, sync, sync_file_range, syncfs, sysinfo, tgkill, times, tkill,
+truncate, umask, uname, unlinkat, utimensat, wait4, waitid, write, writev.
 
 Partial (inside the list above), each with its reason:
 - fcntl: record locks are built (above); between processes (K2) a wait must also wake when a holder
@@ -430,9 +418,7 @@ Partial (inside the list above), each with its reason:
   NO_SYMLINKS, BENEATH, IN_ROOT) are not built: counted "system call not implemented", ENOSYS, as a
   kernel before openat2 answers the whole call (Linux has had them as long as openat2); they need the
   path walk to refuse mount crossings, links and escapes, before K6's bar. RESOLVE_CACHED taken.
-- kill, tkill, tgkill: only to the caller itself; others ESRCH (no other process in K1).
 - execve, execveat: only from a process with one thread (threads, K3).
-- rt_sigaction, rt_sigprocmask, sigaltstack: handlers recorded, not run (K2).
 - getrusage, times, CPU-time clocks: CPU time is time not parked since the container started, all of
   it user time, never sampled at ticks as Linux's user and system times are (so a young process's
   profiling and user clocks are not 0 here as they may be there); with several threads (K3) a thread waiting for its turn would count. ru_maxrss is the
@@ -463,7 +449,9 @@ Partial (inside the list above), each with its reason:
 - statfs, sysinfo, `/proc/meminfo`: pages a mapping's faults bring in are not known (counted); free
   memory is the made-up machine's size less every mapped and tmpfs page (counted "page residency not
   tracked"); `/proc/meminfo` has only some of Linux's lines (counted "proc fields not tracked", 4).
-- ppoll, pselect6: every file is always ready: Linux's default poll mask, readable only for
+- ppoll, pselect6: they park until a file's readiness may have changed (any pipe or lock change, any
+  close), their deadline or a signal, with their signal mask applied while they wait. Files other than
+  pipes are always ready: Linux's default poll mask, readable only for
   `/dev/random` (`random_poll`, the generator ready from the start) and the mounts files
   (`mounts_poll`), invalid for O_PATH (in every select set, as `select_poll_one`); the host's pipes
   always have room; a wait with nothing ready sleeps until its timeout, or for ever (until K2's signals). The
@@ -481,14 +469,20 @@ Partial (inside the list above), each with its reason:
 - mincore: every mapped page reported in memory, counted "page residency not tracked".
 - Extended attributes: tmpfs's space limit for them (ENOSPC) is not modelled.
 - ioprio_get, ioprio_set: kept per thread; nothing does I/O by it.
-- seccomp: no listener (counted, EINVAL as a kernel without listeners); TRAP with a handler kills (K2).
+- seccomp: no listener (counted, EINVAL as a kernel without listeners). TRAP sends SIGSYS with the
+  call, its address and the filter's data.
 - rseq: a critical section is never aborted yet (signal delivery K2, preemption K3). The time slice
   extension flag is counted and refused with EINVAL; the reference takes it.
-- process_vm_readv, process_vm_writev: only the caller's own process (the only one in K1).
+- process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
+  `ptrace_may_access`, counted "call on another process not built", ENOSYS.
+- clone: the fork and vfork forms. Threads and shared tables (CLONE_THREAD, CLONE_FILES, CLONE_FS,
+  CLONE_SIGHAND), CLONE_VM without CLONE_VFORK, and CLONE_PIDFD are counted "call flag not built",
+  ENOSYS (K3 for threads). Namespaces are refused by Docker's profile as in the reference.
+- waitid: P_PIDFD counted "call flag not built", EBADF (no process descriptors yet).
+- pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
 - Core dumps: not written (counted "core dump not written"; Linux writes `core` and sets 0x80 when the
   limit is above zero; the reference's default limit is 0).
-- sigaltstack: refuses a change while on the alternate stack; handlers need K2.
 
 Refused by Docker's profile as in the reference (65; they never reach the kernel there, so nothing to
 build): lookup_dcookie, umount2, mount, pivot_root, nfsservctl, quotactl, unshare, kexec_load,
@@ -502,12 +496,11 @@ file_getattr, file_setattr, acct, vhangup, swapoff, init_module, finit_module, r
 fspick, fsmount, move_mount, sethostname, setdomainname, fanotify_init. (sethostname and
 setdomainname keep handlers the profile keeps out of reach.)
 
-Missing (90, each counted "system call not implemented" and ENOSYS), with what each needs:
-- Processes and waiting (K2): clone, wait4, waitid, ptrace (tracing is out of phase one), pidfd_open,
+Missing (80, each counted "system call not implemented" and ENOSYS), with what each needs:
+- Processes (K2, after terminals): ptrace (tracing is out of phase one), pidfd_open,
   pidfd_send_signal, process_mrelease.
-- Signals (K2: handler frames and the vDSO return path): rt_sigreturn, rt_sigsuspend,
-  rt_sigtimedwait, rt_sigqueueinfo, rt_tgsigqueueinfo, restart_syscall, signalfd4.
-- Pipes and splicing (K2): pipe2, vmsplice, splice, tee.
+- signalfd4 (K2, with the descriptors that wait on many things, K5).
+- Splicing (K2): vmsplice, splice, tee.
 - Futexes (K3, with threads): futex, futex_waitv, futex_wake, futex_wait, futex_requeue.
 - Timers (K3, through the kernel's one timer queue): getitimer, setitimer, timer_create,
   timer_gettime, timer_getoverrun, timer_settime, timer_delete, timerfd_create, timerfd_settime,
@@ -564,9 +557,18 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   a reference pipe Docker has not drained holds less room.
 - busybox `su` fails here (`can't set groups: Function not implemented`): musl's `initgroups` asks
   nscd through a socket, and sockets are K5; `adjtimex` fails (missing, above).
-- An alignment fault's BUS_ADRALN and address, and a memory fault's code and address, are not kept:
-  only a handler can read them, and they belong in the pending signal's information, which comes with
-  K2's signal queue and frames.
+- A memory fault's syndrome in a handler's frame: whether the page was present and the level of the
+  missing table are Linux's page tables' own; given as a level 3 translation fault for a page that
+  allows nothing or is unmapped, a level 3 permission fault otherwise (counted "fault syndrome
+  approximated"; measured: the reference reported level 2 for an address in an empty 2 MiB region).
+  tests/sigframe.rs prints a translation fault's syndrome without its level.
+- PSTATE.BTYPE: the reference's CPU has BTI and its frames show BTYPE after an indirect branch
+  (measured 0x800 after a jump to a misaligned address); the made-up CPU has no BTI (HWCAP2 0) and the
+  register block keeps only the flags, so ours shows 0. tests/sigframe.rs prints only the flags.
+- Shared anonymous memory is an internal tmpfs file whose bytes are a `Vec` the size of the mapping,
+  as every tmpfs file here; a large shared reservation costs that much kernel memory at once.
+- A memory file's or tmpfs file's pages are not counted against user pipe limits; pipes' per-user
+  page limits (`pipe-user-pages-soft`) are not modelled.
 - Two opens of one `/proc` file are two inodes here (made at each lookup), so their open file locks
   (and flock locks) do not conflict as Linux's do.
 - An open file's record locks go at its last close here; Linux keeps them while a mapping still holds
@@ -581,9 +583,28 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-15, thirteenth run: 63 passed, 8 ignored known failures)
+## Tests (last run 2026-11-16, K2's first run: see Measurements for the counts)
 
-All pass except the ignored known failures listed above. Added in the thirteenth run:
+All pass except the ignored known failures listed above. Added in K2's first run:
+- processes: guest/processes.c: memory after fork (shared anonymous memory, a shared file mapping,
+  private memory, MADV_DONTFORK and MADV_WIPEONFORK, vfork sharing), fork and exit statuses (exit,
+  SIGTERM, SIGSEGV, abort), wait with no children and a stranger, WNOHANG, waitid with WNOWAIT, vfork,
+  exec of `/bin/sh` in a child, five children reaped; pipes (sizes, FIONREAD, nonblocking ends,
+  filling, poll, F_SETPIPE_SZ, a child writing 300000 bytes, no reader with SIGPIPE ignored and
+  default, packet mode, bad flags); signals (a handler's code, SIGCHLD's information, pending while
+  blocked, a sleep interrupted with the time left, a read restarted with SA_RESTART and interrupted
+  without, stop and continue seen by waitpid, a group kill, sigtimedwait and sigqueue); an orphan
+  handed to the first process. Same output.
+- sigframe: guest/sigframe.c: the vDSO (magic, type, machine, maps lines), AT_MINSIGSTKSZ, frames for
+  a raised signal and for faults (write and read of an unmapped page, a read-only page, a page that
+  allows nothing, an undefined instruction, a breakpoint, a misaligned jump): code, fault address,
+  flags, records and syndromes, si_addr, the mask in the handler and in the frame, the alternate
+  stack, a one-shot handler, a re-entrant one, a handler that moves the pc past a fault, a handler
+  with no restorer returning through the vDSO, floating point kept. Same output.
+- shell: busybox sh with pipelines, exit statuses through pipes, redirections, subshells, command
+  substitution, background jobs and wait, traps, kill, descriptors opened by exec. Same output, exit
+  code and files.
+Added in the thirteenth run:
 - mapflags: guest/mapflags.c: every kind of mmap with validated sharing and huge page sizes, MAP_SYNC,
   MAP_FIXED_NOREPLACE, an unknown bit, MAP_GROWSDOWN and MAP_HUGETLB on a file, `/dev/zero` and
   anonymous memory, droppable memory (locked, grows-down, populated, mlocked, dropped); a grows-down
@@ -794,6 +815,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 first run: the whole test suite of both crates (before sigframe and shell were added) 64
+  passed, 0 failed, 8 ignored, 197 s wall (load 75 at the start, 67 at the end). The shell test 9.4 s,
+  processes 2 s, sigframe 1.1 s (load 60 to 90).
 - Thirteenth run: the whole test suite of both crates 88 s wall (load 13 to 18), 181 s (load 59 to
   69); layer 1 20000 sequences: two side by side 303 s each (load 10 to 17), six side by side 322 s
   (load 12 to 15), four side by side 334 to 384 s (load 34 to 83); 1500 sequences alone 23 s (load
@@ -862,6 +886,13 @@ All on this shared Mac; noisy, not benchmarks.
 - `/proc/sys/{abi,debug,dev,net,sunrpc,user}` exist as empty directories so paths through them resolve.
 - statfs reports a block size of 4096 for every file system, `/proc` included (measured); stat reports
   1024 for `/proc` files (measured).
+- AT_MINSIGSTKSZ is the reference's measured 4720 (typed in linux_extra.rs): arm64 computes it from
+  the CPU's records at boot.
+- The vDSO is laid out by hand with `object`'s ELF structures (src/vdso.rs): one function, its
+  version and soname as Linux's; Linux's own also has the time functions, which programs find
+  missing here and fall back to system calls for (musl and glibc both do).
+- A background job's output order in tests is sorted: which child runs first after fork is a race in
+  the reference's four CPUs, while here the scheduler decides it the same way every time.
 - The made-up machine has one CPU (default time slice 0.7 ms, sched_rr_get_interval in whole 1 ms
   ticks), no permission overlays and no guarded control stacks, like the reference's CPU for the last
   two.
@@ -896,6 +927,28 @@ All on this shared Mac; noisy, not benchmarks.
   `sysinfo` and `stack_t` have padding, so their fields are placed by `offset_of!` on linux-raw-sys's
   structures instead of zerocopy.
 
+## Not built, by counter
+
+Every answer to something Linux has and this kernel does not build goes through `Counters::refuse`
+or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The names:
+- "system call not implemented": the Missing list above (detail: the call number).
+- "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
+  flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
+  (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), execve from a
+  process with more than one thread (ENOSYS), clone's thread and table sharing and CLONE_PIDFD
+  (ENOSYS), waitid's P_PIDFD (EBADF), pipe2's O_NOTIFICATION_PIPE (EINVAL).
+- "fcntl command not built": the fcntl list under Partial.
+- "prctl option not built": the prctl list under Partial.
+- "ioctl request not built": the watch queue requests on pipes.
+- "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
+- "device not built": opening `/dev/ptmx` (ENODEV) and named pipes (ENXIO; detail the inode).
+- "proc entry not built": the `/proc` entries not built (detail: directory and name index).
+- "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
+- "call on another process not built": process_vm_readv and process_vm_writev on another process.
+Approximations that are not refusals have their own counters: "page residency not tracked", "proc
+fields not tracked", "private file mapping is a copy", "fault syndrome approximated", "core dump not
+written". "wake to run" is a measurement (count and total nanoseconds), not a slow path.
+
 ## Changes to the shared crate (wcontainers-abi)
 
 - K0: `Host::output(stream, bytes)` with `Stream`; `CounterReading::detail`.
@@ -905,6 +958,7 @@ All on this shared Mac; noisy, not benchmarks.
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
   packages, only additions). The eighth to thirteenth runs changed nothing in the shared crate
   (origin/phase-1 had nothing new to merge in the ninth to thirteenth).
+- K2, first run: none. (Event, Host and the rest are used as they were.)
 
 ## Questions for the orchestrator (boundary)
 
@@ -922,10 +976,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2: processes, fork, wait, pipes, signal delivery with Linux's frames and a vDSO (then
-   AT_SYSINFO_EHDR and AT_MINSIGSTKSZ), terminals, job control, shared memory between processes; abort
-   rseq critical sections and run seccomp TRAP handlers on delivery; a fault's signal information
-   (BUS_ADRALN and the address for `Exit::AlignmentFault`, the code and address of memory faults);
-   droppable memory wiped at fork.
+1. K2, what is left, in order: pseudo-terminals (`/dev/ptmx`, devpts slaves, Linux's `n_tty` line
+   handling: echo, canonical editing, signals from keys, window size; the controlling terminal,
+   TIOCSPGRP and the background job checks with SIGTTIN and SIGTTOU), then the shell's job control
+   through a terminal against the reference (a guest program that opens `/dev/ptmx` and drives
+   `sh -i` on the slave); saving and bringing back (copy the kernel state, every memory and block,
+   restore into a fresh kernel and stand-in, rerun parked calls; layer 2 test at random moments);
+   layer 1 generating pipe2, kill, wait4, waitid and the signal calls, then three fresh seeds of 20000;
+   seeded, repeatable scheduling in layer 2 (the stand-in's slice timer and the test host's clock
+   from executed instructions, not the wall clock); FIFOs; private file mappings that see later file
+   changes; a test of rseq critical sections aborted by a handler (built in `rseq_fixup`, untested).
 2. The missing calls above by their milestone; the known gaps above before K6's bar.
 3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
