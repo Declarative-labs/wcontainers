@@ -15,7 +15,7 @@ use crate::file::{FileRef, OpenFile, TerminalEnd};
 use crate::fs::{self, Content, New, Node};
 use crate::linux::general::*;
 use crate::linux::ioctl::*;
-use crate::linux_extra::{N_TTY, PTY_LIMIT, SIG_IGN, UNIX98_PTY_SLAVE_MAJOR};
+use crate::linux_extra::{N_MOUSE, N_TTY, NR_LDISCS, PTY_LIMIT, SIG_IGN, UNIX98_PTY_SLAVE_MAJOR};
 use crate::process::{Channel, Pid, Tid};
 use crate::tty::{MASTER, Pty, SLAVE, load_speeds};
 use crate::{Context, Errno, Kernel};
@@ -717,15 +717,19 @@ fn requests(
             put_int(kernel, cx, i32::from(exclusive))
         }
         TIOCGETD => put_int(kernel, cx, N_TTY as i32),
-        TIOCSETD => {
-            // Only `n_tty` is built, and the reference has no other line discipline loaded.
-            let discipline = get_int(kernel, cx)?;
-            if discipline == N_TTY as i32 {
-                Ok(0)
-            } else {
-                Err(Errno::EINVAL)
-            }
-        }
+        // `tty_set_ldisc`: the discipline is looked up, then the current one is kept as it is, then
+        // the new one's open runs.
+        TIOCSETD => match get_int(kernel, cx)? {
+            discipline if !(N_TTY as i32..NR_LDISCS).contains(&discipline) => Err(Errno::EINVAL),
+            discipline if discipline == N_TTY as i32 => Ok(0),
+            N_MOUSE if !admin => Err(Errno::EPERM),
+            discipline => Err(kernel.counters.refuse(
+                cx.host,
+                crate::counters::reason::LDISC_NOT_BUILT,
+                discipline as u64,
+                Errno::EINVAL,
+            )),
+        },
         TIOCVHANGUP if !admin => Err(Errno::EPERM),
         TIOCVHANGUP => {
             hang_up(kernel, cx, pty, side);

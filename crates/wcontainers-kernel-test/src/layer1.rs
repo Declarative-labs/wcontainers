@@ -64,6 +64,12 @@ const FLOCK_COUNT: u64 = 8;
 const SEMBUFS: u64 = 0x1d00;
 const SEMBUF_COUNT: u64 = 16;
 const SEMBUFS_NOWAIT: u64 = 12;
+/// Line disciplines for TIOCSETD, 4 bytes apart: `n_tty`, ones neither machine has registered,
+/// `N_MOUSE` (registered on the reference; its open needs a power a container lacks) and numbers out
+/// of range. Not those the reference has registered and this kernel does not build. No call writes
+/// here.
+const DISCIPLINES: u64 = 0x1d60;
+const DISCIPLINE_VALUES: [i32; 8] = [0, 0, 1, 2, 4, -1, 31, 256];
 /// Four `struct mq_attr` for mq_open and mq_getsetattr, 64 bytes apart.
 const MQ_ATTRS: u64 = 0x1d80;
 /// Four `struct sigevent` for mq_notify, 64 bytes apart, and the cookie a thread notification reads.
@@ -437,6 +443,10 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at..at + 2].copy_from_slice(&num.to_le_bytes());
         arena[at + 2..at + 4].copy_from_slice(&op.to_le_bytes());
         arena[at + 4..at + 6].copy_from_slice(&(undo | nowait).to_le_bytes());
+    }
+    for (index, discipline) in DISCIPLINE_VALUES.iter().enumerate() {
+        let at = DISCIPLINES as usize + index * 4;
+        arena[at..at + 4].copy_from_slice(&discipline.to_le_bytes());
     }
     // Queue attributes: flags (O_NONBLOCK or not, or another bit), limits within and past the
     // namespace's.
@@ -1858,6 +1868,13 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     ],
                     c,
                 ))
+            } else if request == u64::from(ioctl::TIOCSETD) {
+                // Never memory other calls write, which could name any discipline.
+                match c % 8 {
+                    0 => 0,
+                    1 => u64::MAX - 4095,
+                    _ => ARENA + DISCIPLINES + (c >> 3) % DISCIPLINE_VALUES.len() as u64 * 4,
+                }
             } else if BY_VALUE_REQUESTS.contains(&request) {
                 pick(&[0, 1, 2, 3, 4, 17, 28, 65, u64::MAX], c)
             } else if SETTINGS_REQUESTS.contains(&request) && c % 4 < 3 {

@@ -10,10 +10,13 @@ fn compare(name: &str, arguments: &[&str]) {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let ours = assert_same_output(&out, name, arguments);
     // `/proc/self/stat` is read for its terminal fields; the fields it does not track are others.
+    // TIOCSETD asks for disciplines the reference has not registered either.
     assert!(
-        ours.warnings
-            .iter()
-            .all(|warned| warned.reason == reason::PROC_FIELDS_NOT_TRACKED),
+        ours.warnings.iter().all(|warned| [
+            reason::PROC_FIELDS_NOT_TRACKED,
+            reason::LDISC_NOT_BUILT
+        ]
+        .contains(&warned.reason.as_str())),
         "{:?}",
         ours.warnings
     );

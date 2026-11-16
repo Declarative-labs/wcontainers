@@ -204,6 +204,12 @@ static void making(void) {
     result("TIOCSETD", ioctl(s, TIOCSETD, &zero));
     int one = 1;
     result("TIOCSETD 1", ioctl(s, TIOCSETD, &one));
+    int others[] = {2, 4, -1, 31};
+    for (int i = 0; i < 4; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "TIOCSETD %d", others[i]);
+        result(name, ioctl(i % 2 ? m : s, TIOCSETD, &others[i]));
+    }
     result("TCSBRK", ioctl(s, TCSBRK, 1));
     result("TIOCMGET", ioctl(s, TIOCMGET, &disc));
     result("TIOCSCTTY", ioctl(s, TIOCSCTTY, 0));

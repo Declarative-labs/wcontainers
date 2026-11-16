@@ -30,6 +30,9 @@ pub mod reason {
     /// An `ioctl` request of a file whose Linux driver has requests this kernel does not build; it
     /// answers as that driver does for a request it does not know. Detail: the request.
     pub const IOCTL_NOT_BUILT: &str = "ioctl request not built";
+    /// A terminal line discipline Linux has other than `n_tty`; it answers EINVAL, as a Linux that
+    /// has not registered it does. Detail: the discipline's number.
+    pub const LDISC_NOT_BUILT: &str = "line discipline not built";
     /// A process's memory, files or other state reached from another process in a way not built.
     /// Detail: the call number.
     pub const CROSS_PROCESS_NOT_BUILT: &str = "call on another process not built";
@@ -67,6 +70,7 @@ pub mod reason {
         FCNTL_NOT_BUILT,
         PRCTL_NOT_BUILT,
         IOCTL_NOT_BUILT,
+        LDISC_NOT_BUILT,
         ADVICE_NOT_BUILT,
         DEVICE_NOT_BUILT,
         PROC_ENTRY_NOT_BUILT,

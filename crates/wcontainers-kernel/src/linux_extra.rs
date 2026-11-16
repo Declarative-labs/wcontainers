@@ -292,6 +292,10 @@ pub(crate) const SIGNAL_MINSIGSTKSZ: u64 = 4720;
 
 /// The line discipline number of `n_tty`, the only one built (`N_TTY`).
 pub(crate) const N_TTY: u32 = 0;
+/// The serial mouse discipline (`N_MOUSE`), whose open needs CAP_SYS_ADMIN (`serport_ldisc_open`).
+pub(crate) const N_MOUSE: i32 = 2;
+/// The number of line discipline slots (`NR_LDISCS`).
+pub(crate) const NR_LDISCS: i32 = 31;
 /// The device major of pseudo-terminal slaves (`UNIX98_PTY_SLAVE_MAJOR`).
 pub(crate) const UNIX98_PTY_SLAVE_MAJOR: u32 = 136;
 /// The size of a line discipline's read and echo buffers (`N_TTY_BUF_SIZE`).
