@@ -79,6 +79,9 @@ pub struct Translation {
 /// One code module and where its pieces start.
 pub struct CodeModule {
     pub wasm: Vec<u8>,
+    /// How many places in its code may take each slow path, by [`Reason`] number: what translating alone can
+    /// count. Slow paths decided by a hook (floating point) are not counted here.
+    pub sites: Sites,
     /// Blob offsets of the pieces the module puts in the lookup table, in order from its slot base.
     pub pieces: Vec<u64>,
 }
@@ -108,12 +111,22 @@ const MODULE_FUNCTIONS: usize = ENGINE_FUNCTIONS - 1000;
 /// one function nests, and so the translator's own stack.
 pub(crate) const FUNCTION_BLOCKS: usize = 2048;
 
+/// A count for each [`Reason`], by its number.
+pub type Sites = [u64; Reason::ALL.len()];
+
+pub(crate) fn add_sites(sites: &mut Sites, more: &Sites) {
+    for (a, b) in sites.iter_mut().zip(more) {
+        *a += b;
+    }
+}
+
 /// One piece the lookup table holds, with the functions only it calls (its loop pieces).
 pub(crate) struct Unit {
     pub(crate) piece: wasm_encoder::Function,
     pub(crate) others: Vec<wasm_encoder::Function>,
     /// The most locals any of them has.
     pub(crate) locals: usize,
+    pub(crate) sites: Sites,
 }
 
 impl Unit {
@@ -406,6 +419,10 @@ fn module(
     module.section(&imports());
     let mut functions = FunctionSection::new();
     let mut code_section = CodeSection::new();
+    let mut sites = Sites::default();
+    for unit in &units {
+        add_sites(&mut sites, &unit.sites);
+    }
     functions.function(6);
     code_section.function(&dispatcher());
     functions.function(7);
@@ -442,6 +459,7 @@ fn module(
     module.section(&description(blob, how, entries.iter()));
     CodeModule {
         wasm: module.finish(),
+        sites,
         pieces: entries.to_vec(),
     }
 }
@@ -521,6 +539,7 @@ fn none_emit(code: &Code<'_>, found: &[(u64, Instruction)], group: Range<usize>)
                 pieces: &index,
                 body: Vec::new(),
                 locals: Vec::new(),
+                sites: Sites::default(),
             };
             emitter.entry();
             wcontainers_arm64::emit(&mut emitter, instruction);
@@ -532,6 +551,7 @@ fn none_emit(code: &Code<'_>, found: &[(u64, Instruction)], group: Range<usize>)
                 piece: function,
                 others: Vec::new(),
                 locals,
+                sites: emitter.sites,
             }
         })
         .collect()
@@ -606,25 +626,68 @@ pub(crate) fn permission_fast(
         .if_(BlockType::Empty);
 }
 
+/// Where the exact permission test is: in place, with the table and an i64 and an i32 local it may use, or in
+/// the module's function for it, which is smaller but makes the engine keep what is live across a call.
+#[derive(Clone, Copy)]
+pub(crate) enum Exact {
+    InPlace(Table, (u32, u32)),
+    Called,
+}
+
 /// Open an `if` entered when `len` bytes (at most a page) at the address in i64 local `at` may not all be
 /// accessed as `this` says, with the first address that may not be accessed in i64 local `fault_at`. The
-/// caller writes the slow path and ends the `if`. It runs only when the fast test fails, so through the
-/// module's function for it.
+/// caller writes the slow path and ends the `if`.
 pub(crate) fn permission_exact(
     s: &mut InstructionSink<'_>,
     at: u32,
     len: u32,
     this: u8,
     fault_at: u32,
+    exact: Exact,
 ) {
     // The table's bits reach only to the next page.
     assert!(u64::from(len) <= wcontainers_abi::PAGE_SIZE && len > 0);
-    s.local_get(at)
-        .i32_const(len as i32)
+    let Exact::InPlace(table, (page, allowed)) = exact else {
+        s.local_get(at)
+            .i32_const(len as i32)
+            .i32_const(this.into())
+            .call(F_PERMISSION)
+            .local_set(fault_at)
+            .if_(BlockType::Empty);
+        return;
+    };
+    let next = this << 2;
+    permission_byte(s, table, at, page);
+    // Bits wanted and missing: this page's, and the next page's if the access runs onto it.
+    s.local_tee(allowed)
+        .i32_const(-1)
+        .i32_xor()
+        .i32_const((this | next).into())
         .i32_const(this.into())
-        .call(F_PERMISSION)
-        .local_set(fault_at)
+        .local_get(at)
+        .i64_const(0xfff)
+        .i64_and()
+        .i64_const(len.into())
+        .i64_add()
+        .i64_const(0x1000)
+        .i64_gt_u()
+        .select()
+        .i32_and()
         .if_(BlockType::Empty);
+    // The address itself if this page forbids it, otherwise the start of the next page.
+    s.local_get(at)
+        .local_get(at)
+        .i64_const(0xfff)
+        .i64_or()
+        .i64_const(1)
+        .i64_add()
+        .local_get(allowed)
+        .i32_const(this.into())
+        .i32_and()
+        .i32_const(this.into())
+        .i32_ne()
+        .select()
+        .local_set(fault_at);
 }
 
 /// The function [`permission_exact`] calls. Parameters: the address, the length and the permission bits;
@@ -1021,6 +1084,7 @@ struct NoneEmitter<'a> {
     pieces: &'a BTreeMap<u64, u32>,
     body: Vec<u8>,
     locals: Vec<ValType>,
+    sites: Sites,
 }
 
 impl NoneEmitter<'_> {
@@ -1028,11 +1092,13 @@ impl NoneEmitter<'_> {
     fn entry(&mut self) {
         let offset = self.offset;
         depth_check(&mut self.sink(), L_DEPTH, offset);
+        self.sites[Reason::StackNearlyFull as usize] += 1;
         self.stop_check(0);
     }
 
     /// Call the stop hook if the stop flag is raised, with `pc` at this instruction plus `step`.
     fn stop_check(&mut self, step: u64) {
+        self.sites[Reason::StoppedByFlag as usize] += 1;
         let pc = self.offset + step;
         let mut s = self.sink();
         BLOCK.push(&mut s);
@@ -1233,12 +1299,13 @@ impl Emitter for NoneEmitter<'_> {
             Access::Write => PAGE_WRITE,
         };
         let (page, fault_at) = (self.local(ValType::I64), self.local(ValType::I64));
+        self.sites[Reason::MemoryFault as usize] += 1;
         let pc = self.offset;
         let mut s = self.sink();
         wcontainers_arm64::untag(&mut s, address);
         s.local_set(address);
         permission_fast(&mut s, Table::GLOBALS, address, this, page);
-        permission_exact(&mut s, address, bytes, this, fault_at);
+        permission_exact(&mut s, address, bytes, this, fault_at, Exact::Called);
         save(&mut s, |s| {
             s.i64_const(pc as i64);
         });
@@ -1320,6 +1387,9 @@ impl Emitter for NoneEmitter<'_> {
     }
 
     fn trap(&mut self, trap: Trap) {
+        if let Trap::Unsupported = trap {
+            self.sites[Reason::UnsupportedInstructionReached as usize] += 1;
+        }
         self.save(0);
         let word = i64::from(self.word);
         let mut s = self.sink();

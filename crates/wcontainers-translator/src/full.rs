@@ -147,12 +147,14 @@ impl Planned<'_> {
                     let how = (self.omit, self.optimise, host);
                     FullEmitter::piece(function, plan, decoded, &index, loops, own, how)
                 };
-                let (piece, mut locals) = emit(function, &self.plans[i], index[&function.entry]);
+                let (piece, mut locals, mut sites) =
+                    emit(function, &self.plans[i], index[&function.entry]);
                 let others = self.loops[i]
                     .iter()
                     .map(|(piece, plan)| {
-                        let (f, n) = emit(piece, plan, loops[&piece.entry]);
+                        let (f, n, more) = emit(piece, plan, loops[&piece.entry]);
                         locals = locals.max(n);
+                        add_sites(&mut sites, &more);
                         f
                     })
                     .collect();
@@ -160,6 +162,7 @@ impl Planned<'_> {
                     piece,
                     others,
                     locals,
+                    sites,
                 }
             })
             .collect()
@@ -1584,6 +1587,7 @@ struct FullEmitter<'a> {
     host: Host,
     /// Whether floating point takes the slow path, loaded once until something may change it.
     float_mode_local: Option<u32>,
+    sites: Sites,
     body: Vec<u8>,
     locals: Vec<ValType>,
     free: Vec<(ValType, u32)>,
@@ -1624,7 +1628,7 @@ impl<'a> FullEmitter<'a> {
         loops: &'a HashMap<u64, u32>,
         own: u32,
         (omit, optimise, host): (Omit, Optimise, Host),
-    ) -> (wasm_encoder::Function, usize) {
+    ) -> (wasm_encoder::Function, usize, Sites) {
         let loop_piece = index.get(&function.entry) != Some(&own);
         let mut e = FullEmitter {
             function,
@@ -1636,6 +1640,7 @@ impl<'a> FullEmitter<'a> {
             optimise,
             host,
             float_mode_local: None,
+            sites: Sites::default(),
             body: Vec::new(),
             locals: Vec::new(),
             free: Vec::new(),
@@ -1703,12 +1708,13 @@ impl<'a> FullEmitter<'a> {
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
             depth_check(&mut s, L_DEPTH, function.entry);
+            e.sites[Reason::StackNearlyFull as usize] += 1;
         }
         let locals = e.locals.len();
         let mut f = wasm_encoder::Function::new_with_locals_types(e.locals);
         f.raw(entry);
         f.raw(e.body);
-        (f, locals)
+        (f, locals, e.sites)
     }
 
     fn new_local(&mut self, ty: ValType) -> u32 {
@@ -1858,6 +1864,7 @@ impl<'a> FullEmitter<'a> {
                         }
                         _ => {
                             // Counted at each entry whose proof fails, warned once for the loop.
+                            self.sites[Reason::LoopNotProven as usize] += 1;
                             self.sink().i32_const(Reason::LoopNotProven as i32);
                             self.address(self.function.blocks[b].start);
                             self.sink().call(F_WARN);
@@ -2194,6 +2201,10 @@ impl<'a> FullEmitter<'a> {
     /// [`Self::stop_check`], at a piece's entry also leaving to the bottom loop when the depth is past the
     /// budget, with `pc` at the entry given.
     fn stop_check_or_deep(&mut self, pc: Pc, after: AfterStop, deep: Option<u64>) {
+        self.sites[Reason::StoppedByFlag as usize] += 1;
+        if deep.is_some() {
+            self.sites[Reason::StackNearlyFull as usize] += 1;
+        }
         self.at.float_mode = false;
         let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
@@ -2262,6 +2273,7 @@ impl<'a> FullEmitter<'a> {
 
     /// Carry on at an instruction from code translated from there, which checks every access exactly.
     fn leave_to(&mut self, offset: u64) {
+        self.sites[Reason::LeftToAddress as usize] += 1;
         self.save(Pc::Offset(offset));
         self.sink()
             .i32_const(UNWIND_GO_TO_EXACT)
@@ -2275,6 +2287,7 @@ impl<'a> FullEmitter<'a> {
         let at = self.temporary(ValType::I64);
         let (page, fault_at) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
         let table = self.table();
+        let exact = self.exact(table, page);
         for chunk in (0..len).step_by(4096) {
             let piece = (len - chunk).min(4096);
             self.sink()
@@ -2284,7 +2297,7 @@ impl<'a> FullEmitter<'a> {
                 .local_set(at);
             let mut s = self.sink();
             permission_fast(&mut s, table, at, PAGE_READ | PAGE_WRITE, page);
-            permission_exact(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at);
+            permission_exact(&mut s, at, piece, PAGE_READ | PAGE_WRITE, fault_at, exact);
             let offset = self.at.offset;
             self.leave_to(offset);
             self.sink().end().end();
@@ -2302,6 +2315,14 @@ impl<'a> FullEmitter<'a> {
             }
         };
         Fixed::Local(local)
+    }
+
+    /// Where an exact permission test goes: in place for speed, in the module's function for size.
+    fn exact(&mut self, table: Table, page: u32) -> Exact {
+        match self.optimise {
+            Optimise::Speed => Exact::InPlace(table, (page, self.temporary(ValType::I32))),
+            Optimise::Size => Exact::Called,
+        }
     }
 
     fn table(&mut self) -> Table {
@@ -2454,6 +2475,7 @@ impl<'a> FullEmitter<'a> {
 
     /// Leave the piece through the lookup, counted.
     fn unrecognised_jump(&mut self, target: u32) {
+        self.sites[Reason::JumpThroughRegisterNotRecognised as usize] += 1;
         self.write_back();
         self.sink()
             .i32_const(Reason::JumpThroughRegisterNotRecognised as i32)
@@ -2717,6 +2739,7 @@ impl Emitter for FullEmitter<'_> {
         } else {
             self.table()
         };
+        let exact = self.exact(table, page);
         match plan {
             CheckPlan::Skip => {}
             CheckPlan::Exact => {
@@ -2743,7 +2766,8 @@ impl Emitter for FullEmitter<'_> {
                 permission_fast(&mut s, table, address, this, page);
                 untag(&mut s, address);
                 s.local_set(address);
-                permission_exact(&mut s, address, bytes, this, fault_at);
+                permission_exact(&mut s, address, bytes, this, fault_at, exact);
+                self.sites[Reason::MemoryFault as usize] += 1;
                 self.save(Pc::Offset(offset));
                 let mut s = self.sink();
                 s.local_get(fault_at)
@@ -2769,7 +2793,7 @@ impl Emitter for FullEmitter<'_> {
                     .local_set(start);
                 let mut s = self.sink();
                 permission_fast(&mut s, table, start, this, page);
-                permission_exact(&mut s, start, len, this, fault_at);
+                permission_exact(&mut s, start, len, this, fault_at, exact);
                 self.leave_to(offset);
                 self.sink().end().end();
             }
@@ -2941,6 +2965,9 @@ impl Emitter for FullEmitter<'_> {
     }
 
     fn trap(&mut self, trap: Trap) {
+        if let Trap::Unsupported = trap {
+            self.sites[Reason::UnsupportedInstructionReached as usize] += 1;
+        }
         let offset = self.at.offset;
         self.save(Pc::Offset(offset));
         let word = i64::from(self.decoded().word);
