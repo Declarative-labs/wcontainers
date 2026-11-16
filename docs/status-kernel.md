@@ -5,7 +5,51 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done after six runs. Built in K2's sixth run:
+processes) is partly done after seven runs. Built in K2's seventh run:
+- System V semaphores (src/syscall/sem.rs) as `ipc/sem.c`: semget (with `newary`'s and
+  `sem_more_checks`' limits), semop and semtimedop (the timeout read first, E2BIG, the operations,
+  then `find_alloc_undo` before the set is looked up, so a failed call still leaves an undo entry,
+  EFBIG, EACCES), both forms of `perform_atomic_semop` (a set named twice after a change takes the
+  slow form), IPC_NOWAIT per operation, waiting operations kept as data in Linux's queues (per
+  semaphore and per set, `merge_queues` and `unmerge_queues` as the lock's release does, complex
+  count) and completed by `update_queue`, `wake_const_ops` and `do_smart_update` in their order, the
+  waiter told its result in `Semaphores::told` and woken; a timeout ends with EAGAIN, a signal with
+  EINTR (never restarted), removal with EIDRM. SEM_UNDO adjustments in undo lists (most recently used
+  first), shared through CLONE_SYSVSEM, undone at the end of the last sharer (held to 0 and SEMVMX,
+  the time of the last operation set), cleared by SETVAL and SETALL, dropped with their set. Every
+  semctl command (IPC_STAT, SEM_STAT, SEM_STAT_ANY, IPC_INFO, SEM_INFO, GETALL, SETALL, GETVAL,
+  SETVAL, GETPID, GETNCNT, GETZCNT with `check_qop`'s rule, IPC_SET, IPC_RMID). A thread that ends
+  leaves its queue. tests/sysvsem.rs.
+- POSIX message queues (src/syscall/mqueue.rs) as `ipc/mqueue.c`: the mqueue file system mounted at
+  `/dev/mqueue` (`Kind::Mqueue`, root 01777, listed by count as `dcache_readdir`, statfs's magic,
+  in the mount table), queues as `Content::Mqueue` files (size 80 that only truncation changes, the
+  `QSIZE:... NOTIFY_PID:...` text on read, poll, write EINVAL, mmap ENODEV, fsync EINVAL, fallocate
+  EOPNOTSUPP, `default_llseek`). mq_open (names checked as `lookup_noperm`, the limits of
+  `mqueue_get_inode`, 256 queues, each user's bytes against RLIMIT_MSGQUEUE with the arm64 sizes of
+  `msg_msg` and the tree node, EMFILE; always close-on-exec, no O_LARGEFILE, O_DIRECT refused), open
+  with O_CREAT and mknod of a plain file in `/dev/mqueue` make a default queue, mkdir, symlink,
+  link, rename and other nodes there EPERM; mq_unlink with `may_delete`'s checks. mq_timedsend and
+  mq_timedreceive by priority (oldest first in each), absolute real time timeouts (ETIMEDOUT), waiting
+  senders and receivers kept in `wq_add`'s order (task priority, then first come) and handed what
+  they wait for (`pipelined_send`, `pipelined_receive`; a receiver's message kept until its call runs
+  again), ERESTARTSYS on a signal. mq_notify (SIGEV_NONE, SIGEV_SIGNAL with SI_MESGQ and the value,
+  sent once when a message comes to an empty queue with no receiver waiting, not after the owner's
+  exec; SIGEV_THREAD reads its cookie and then needs a netlink socket, so a descriptor that is not
+  one is ENOTSOCK as on Linux; a close by the owner takes the request away). mq_getsetattr.
+  tests/posixmq.rs.
+- Layer 1 generates semget, semop, semtimedop and semctl (operations from a table in the arena; those
+  semop reaches always carry IPC_NOWAIT, and semtimedop reaches the others only with a timeout of a
+  microsecond, none or a refused one; a placeholder `SEMAPHORES` is the last semget identifier; the
+  reference's runner removes every set after each sequence as its creator), and mq_open, mq_unlink,
+  mq_timedsend, mq_timedreceive, mq_notify and mq_getsetattr (names from the path pool, opens always
+  O_NONBLOCK, sends and receives always with a time already past or refused, attributes and
+  notification requests from arena tables with only signals whose default action is nothing). The
+  path pool has `/dev/mqueue` and `/dev/mqueue/a`. A read of a queue's file is zeroed by both
+  runners as a random device's is (its text holds the requester's process number); the reference's
+  runner unlinks every queue after each sequence and gives the root back its owner and mode.
+- Seed 701 passed 20000 sequences with semaphores in; seed 710 passed 2000 with message queues in.
+
+Built in K2's sixth run:
 - The three open layer 1 findings: MADV_DODUMP and MADV_KEEPONFORK refused on droppable memory and
   DODUMP on the kernel's own pages, mapping by mapping (`madvise_vma_behavior`: the mappings before the
   refusing one keep the change; MADV_WIPEONFORK the same way); sendfile takes the largest file of
@@ -431,7 +475,7 @@ What layer 1 does not generate, and why:
   when there is none. `.`=0, `..`=1, end 2^31-1.
 - Mounts as `docker run` makes them: `/` (tmpfs here, see departures), `/proc`, `/dev` (tmpfs with
   null, zero, full, random, urandom, tty and Docker's links, made in runc's order so listings match),
-  `/dev/pts` (devpts, with ptmx), `/dev/shm` (tmpfs), `/dev/mqueue` as a plain directory. fd 0 is `/dev/null` opened read-write, fds 1 and 2 are
+  `/dev/pts` (devpts, with ptmx), `/dev/shm` (tmpfs), `/dev/mqueue` (mqueue). fd 0 is `/dev/null` opened read-write, fds 1 and 2 are
   pipes the host reads (as Docker's; no O_LARGEFILE, as Linux's `create_pipe_files`, measured).
 - Open files keep O_LARGEFILE from open as a 64 bit kernel sets it, except with O_PATH
   (`build_open_how`); F_GETFL reports the file's own flags. open, openat and openat2 take the
@@ -707,9 +751,6 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg, recvmmsg, sendmmsg.
 - Asynchronous I/O (K5 or later, needs the waiting design for many requests): io_setup, io_destroy,
   io_submit, io_cancel, io_getevents, io_pgetevents.
-- System V semaphores and message queues and POSIX message queues (K2, shared between processes):
-  mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr, semget, semctl,
-  semtimedop, semop.
 - Single-process calls not built, each before K6's bar: adjtimex and clock_adjtime (reading the
   clock's adjustment state: the made-up machine's values; setting needs CAP_SYS_TIME, which Docker's
   root lacks), remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping),
@@ -734,8 +775,7 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
 - Inodes of `/proc` are made at each lookup. chown of a process's entries succeeds with no effect, as
   on Linux; utimensat on them succeeds with no effect (Linux keeps the times while the inode is
   cached). Entries outside the process directories keep their changes (above).
-- `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts, `/dev/pts`, `/dev/mqueue`
-  or `/sys` (counted "proc fields not tracked", detail 3).
+- `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts, `/dev/pts` or `/sys` (counted "proc fields not tracked", detail 3).
 - RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; O_TMPFILE.
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
 - An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
@@ -790,9 +830,22 @@ Missing (65, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K2's sixth run; counts under Measurements)
+## Tests (last run 2026-11-16, K2's seventh run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K2's sixth run (each guest's
+All pass except the ignored known failures listed above. Added in K2's seventh run (each guest's
+reference output was read and checked against Linux's source):
+- sysvsem: semget's keys, sizes and limits, semop whole or not at all, operations naming a semaphore
+  twice, IPC_NOWAIT on the operation that blocks, the order waiting operations finish in (simple and
+  on several semaphores), waits for zero, GETNCNT and GETZCNT, timeouts, signals, stops, kills and
+  removal during waits, undo at exit (held to the range, cleared by SETVAL, shared by CLONE_SYSVSEM,
+  dropped with the set, left by a failed call), every semctl command, another user's permissions.
+- posixmq: mq_open's names, flags, modes and limits, the queue files and directory and what the file
+  calls do with them, sends and receives by priority, sizes, nonblocking and timed calls, waiting
+  receivers and senders handed messages in order, signals with and without SA_RESTART, a killed
+  waiter, notification by signal and its rules, attributes, unlinking, RLIMIT_MSGQUEUE (6 default
+  queues fit beside the others), another user.
+
+Before: Added in K2's sixth run (each guest's
 reference output was read and checked against Linux's source):
 - priorities: nice values and I/O priorities of one process, a group with a running child, an ended
   child and another user's child, a user's processes, refusals and their order, inheritance by fork.
@@ -1185,6 +1238,13 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 All on this shared Mac; noisy, not benchmarks.
+- K2 seventh run: the whole test suite of both crates 92 passed, 0 failed, 6 ignored: one run of
+  2 min 44 s wall with two test threads beside one 20000-sequence layer 1 run (load 56 at the start,
+  35 at the end) had terminal's `making_pairs` fail in the reference (`exec /wc/tty: no such file`,
+  the known race of test binaries sharing the guest directory; see Known issues), and cargo stopped
+  there; terminal and the four test binaries after it then passed alone. Layer 1: seed 701, 20000
+  sequences, 349 s (load 44 to 92); seed 710, 2000 sequences, 36 s (load 78). tests/sysvsem.rs 3.7 to
+  3.9 s, tests/posixmq.rs 2.6 to 3.3 s (their waits sleep 0.1 s in places).
 - K2 sixth run: the whole test suite of both crates 90 passed, 0 failed, 6 ignored, 144 s wall beside
   four 20000-sequence layer 1 runs (load 16 at the start, 34 at the end), on head 1f9cffe. Layer 1 at
   3000: 36 to 58 s each, three side by side (load 8 to 60). tests/pidfd.rs, signalfd.rs,
@@ -1252,7 +1312,7 @@ All on this shared Mac; noisy, not benchmarks.
 - Docker's `/etc/hostname` is given the container's name; `/etc/hosts` and `/etc/resolv.conf` keep the
   image's empty placeholders (contents come with the network, K5) with Docker's mode 0644. The test
   programs' directory `/wc` is a plain directory here, a read-only bind mount in the reference. `/sys`
-  is the image's empty directory (Docker mounts sysfs there). `/dev/mqueue` is a plain directory.
+  is the image's empty directory (Docker mounts sysfs there).
 - No address randomization: the break starts right after the program, mmap goes top-down from
   end-128 MiB, the stack is at the top.
 - `uname` says release "7.0.0-wcontainers", version "#1 SMP PREEMPT"; the reference says
@@ -1358,6 +1418,12 @@ All on this shared Mac; noisy, not benchmarks.
 - Layer 1's reference runner polls every descriptor twice after each call of a sequence with a
   pseudo-terminal (Linux's buffer work runs later from a work queue; ours at once), and such
   sequences write at most 256 bytes a call. A child made by clone in layer 1 ends at once.
+- Semaphore undo lists belong to processes here (Linux's belong to tasks, shared by CLONE_SYSVSEM,
+  which glibc's threads use); with threads (K3) they move to threads. A message queue's absolute
+  real time timeout becomes a deadline on the monotonic clock when the call starts (the made-up
+  machine's real time clock cannot be set). A close takes away a queue's notification request when
+  the closing table's process asked for it (Linux checks the closing task's process; tables are not
+  shared until K3).
 - A named pipe's open waiting for the other end keeps the file it makes in the thread's `opening`
   slot beside the call slot (the plan's one fixed slot holds only plain values): the file must count
   as an end while it waits, as Linux's does. It is given up when the call ends any other way or the
@@ -1391,6 +1457,7 @@ written", "vmsplice pages copied". "wake to run" is a measurement (count and tot
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K2, seventh run: none.
 - K2, sixth run: none.
 - K2, fifth run: none.
 - K2, fourth run: none.
@@ -1416,6 +1483,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Known issues
 
 - Building the test crate prints a linker warning from unicorn-engine-sys (a missing lib64 directory).
+- K2's seventh run: terminal's `making_pairs` failed once in a whole-suite run because the reference
+  found no `/wc/tty` (test binaries build guest programs into one shared directory while others run
+  containers from it); it passed alone. Not fixed yet: each test binary could build into its own
+  directory.
 - The dispatch test failed twice in whole-suite runs beside layer 1 runs: the reference container
   found no `/wc/syscall` (its five tests each built the program and renamed it over the others while
   a container started it, through Docker's shared directory). It now builds the program once.
@@ -1428,18 +1499,14 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-1. K2, what is left, in order: System V semaphores (semget, semop, semtimedop, semctl, SEM_UNDO undone
-   at a process's end; blocked operations kept as data in the array and completed by the change that
-   lets them, in queue order, as `update_queue` does, the way `Ipc::handed` does it for message queues)
-   and POSIX message queues (mq_open and the rest, on the mqueue file system Docker mounts at
-   `/dev/mqueue`, which is a plain directory here now). Each with a guest test against the reference
-   and layer 1 generation (src/syscall/ipc.rs has the identifiers, keys and permissions).
-2. Small gaps of K2: when several ends of a pipe close at once (close_range, a process's end), one
+1. Small gaps of K2: when several ends of a pipe close at once (close_range, a process's end), one
    release I/O signal is sent; Linux sends one per end released whose release leaves readers without
    writers or the other way round (`pipe_release`, in descriptor order), which needs the releases
    themselves, not counts. sendfile into a full blocking terminal answers what fit; Linux waits for room
-   (`tty_write`). The sched_* calls do not find an ended process not yet reaped (Linux does).
-3. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
-   the milestone. Seeds up to 608 are used.
-4. The missing calls of later milestones; the known gaps above before K6's bar.
-5. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
+   (`tty_write`). The sched_* calls (`scheduled` and the affinity calls in src/syscall/system.rs) do not
+   find an ended process not yet reaped (Linux does; `named_tasks`' `Task::Ended` shows how).
+2. With every fix in, three fresh layer 1 seeds of 20000 (one command each, see Layer 1) at the end of
+   the milestone. Seeds up to 711 are used (711, 20000 sequences with message queues, was started at
+   the end of the seventh run; see Measurements for its result if recorded).
+3. The missing calls of later milestones; the known gaps above before K6's bar.
+4. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
