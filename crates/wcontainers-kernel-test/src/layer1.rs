@@ -105,6 +105,11 @@ const OUTPUT: u64 = 0x4000;
 /// The sequence's work directory, made and entered by its first two calls and removed afterwards.
 pub const WORK: &str = "/dev/shm/w";
 
+/// The name in the work directory a named pipe is made at. Opens of it never wait: they are
+/// nonblocking unless for reading and writing (a reopen through `/proc/self/fd` may still wait, which
+/// both runners end at the reference's deadline).
+const FIFO: &str = "p";
+
 /// The paths calls choose from, laid out one after another from the arena's start. Nothing reaches the
 /// root file system, whose kind differs until the file backend exists.
 const PATH_POOL: &[&str] = &[
@@ -293,6 +298,25 @@ pub struct SequenceResult {
     pub play: Option<Vec<u8>>,
 }
 
+/// How many calls of a sequence the reference answered with success on its named pipe: opens of it,
+/// and its making, to show they are reached.
+pub fn named_pipe_calls(sequence: &Sequence, theirs: &SequenceResult) -> u64 {
+    let fifo = ARENA + *path_offsets().1.last().expect("paths");
+    sequence
+        .calls
+        .iter()
+        .zip(&theirs.calls)
+        .filter(|(call, result)| {
+            result.value >= 0
+                && match call.number {
+                    linux::__NR_openat => call.arguments[1] == fifo,
+                    linux::__NR_mknodat => call.arguments[1] == fifo,
+                    _ => false,
+                }
+        })
+        .count() as u64
+}
+
 /// The size of a play area record: a byte and the bytes of each page.
 const PLAY_RECORD: usize = PLAY_PAGES as usize * 4097;
 
@@ -312,6 +336,10 @@ fn path_offsets() -> (Vec<u8>, Vec<u64>) {
     for _ in 0..1100 {
         bytes.extend_from_slice(b"abc/");
     }
+    bytes.push(0);
+    // Last, the one name a named pipe is made at, which only mknodat and openat choose.
+    offsets.push(PATHS + bytes.len() as u64);
+    bytes.extend_from_slice(FIFO.as_bytes());
     bytes.push(0);
     assert!(
         PATHS + (bytes.len() as u64) <= UNAME,
@@ -524,15 +552,27 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
             arguments: [ARENA + path_at[0], 0, 0, 0, 0, 0],
         },
     ];
-    // Half the sequences may install seccomp filters, which needs no_new_privs (Docker's root lacks
-    // CAP_SYS_ADMIN).
-    if values
+    let choice = values
         .get(FILTER_VALUES + FILTER_WORDS * FILTER_COUNT as usize)
         .copied()
-        .unwrap_or(0)
-        % 2
-        == 1
-    {
+        .unwrap_or(0);
+    // A quarter of the sequences start with the named pipe made.
+    if (choice >> 1) % 4 == 0 {
+        calls.push(Call {
+            number: linux::__NR_mknodat,
+            arguments: [
+                linux::AT_FDCWD as u64,
+                ARENA + path_at.last().expect("paths"),
+                u64::from(linux::S_IFIFO | 0o600),
+                0,
+                0,
+                0,
+            ],
+        });
+    }
+    // Half the sequences may install seccomp filters, which needs no_new_privs (Docker's root lacks
+    // CAP_SYS_ADMIN).
+    if choice % 2 == 1 {
         calls.push(Call {
             number: linux::__NR_prctl,
             arguments: [
@@ -1060,6 +1100,8 @@ pub const CALLS: &[u32] = &[
 fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
     let number = CALLS[*kind as usize % CALLS.len()];
     let [a, b, c, d, e, f] = *words;
+    let (fifo, path_at) = path_at.split_last().expect("paths");
+    let fifo = ARENA + fifo;
     let path = |word: u64| ARENA + pick(path_at, word);
     let fd = |word: u64| pick(&[3u64, 3, 4, 4, 5, 6, u64::MAX, 100], word);
     let dirfd = |word: u64| {
@@ -1192,6 +1234,15 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 0,
                 0,
             ]
+        }
+        linux::__NR_openat if e % 4 == 0 => {
+            let flags = open_flags(c);
+            let flags = if flags & u64::from(linux::O_ACCMODE) == u64::from(linux::O_RDWR) {
+                flags
+            } else {
+                flags | u64::from(linux::O_NONBLOCK)
+            };
+            [linux::AT_FDCWD as u64, fifo, flags, mode(d), 0, 0]
         }
         linux::__NR_openat => [dirfd(a), path(b), open_flags(c), mode(d), 0, 0],
         linux::__NR_close | linux::__NR_dup | linux::__NR_fsync | linux::__NR_fchdir => {
@@ -1367,11 +1418,15 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
         }
         linux::__NR_mkdirat => [dirfd(a), path(b), mode(c), 0, 0, 0],
         linux::__NR_mknodat => {
-            // No named pipes: opening one waits for the other end, and pipes come with K2.
-            let kind = pick(&[0u64, 0o100000, 0o020000, 0o040000, 0o140000, 0o170000], c);
+            let kind = pick(
+                &[
+                    0u64, 0o100000, 0o020000, 0o040000, 0o140000, 0o170000, 0o010000,
+                ],
+                c,
+            );
             [
                 dirfd(a),
-                path(b),
+                if kind == 0o010000 { fifo } else { path(b) },
                 kind | mode(d) & 0o777,
                 pick(&[0, 0x103], e),
                 0,

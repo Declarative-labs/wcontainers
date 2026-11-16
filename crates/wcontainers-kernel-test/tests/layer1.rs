@@ -43,10 +43,13 @@ fn sequences_match_reference() {
     );
     // How many calls put a random device's bytes somewhere, to show they are reached.
     let random = std::cell::Cell::new(0u64);
+    // And how many made or opened the named pipe.
+    let named_pipe = std::cell::Cell::new(0u64);
     let result = runner.run(&strategy, |(values, raw)| {
         let sequence = layer1::build(&values, &raw);
         let theirs = reference.borrow_mut().run(&sequence);
         random.set(random.get() + theirs.calls.iter().filter(|call| call.random).count() as u64);
+        named_pipe.set(named_pipe.get() + layer1::named_pipe_calls(&sequence, &theirs));
         let ours = layer1::run_ours(&sequence, &program, &theirs);
         match layer1::difference(&sequence, &ours, &theirs) {
             None => Ok(()),
@@ -54,8 +57,10 @@ fn sequences_match_reference() {
         }
     });
     eprintln!(
-        "layer 1: {cases} sequences, seed {seed}, {} calls with a random device's bytes",
-        random.get()
+        "layer 1: {cases} sequences, seed {seed}, {} calls with a random device's bytes, {} that \
+         made or opened the named pipe",
+        random.get(),
+        named_pipe.get()
     );
     if let Err(error) = result {
         panic!("layer 1 (seed {seed}): {error}");
