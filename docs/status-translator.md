@@ -2044,7 +2044,9 @@ contract's bits, in both runners).
   cases, seed 1, 6 jobs (12 s); layer 3, 4 Csmith programs seed 1 and the hand-picked builds, then 24 seed 5
   with 6 jobs, 2 in Chrome (46 s, load 27); checks, Chrome and programs tests; the new binaries test: all
   passing. The 1 percent run of the long-run driver (seed 7) above: 121,500 layer 1 cases, 10,000 layer 2
-  programs, 1,000 Csmith programs, 0 mismatches.
+  programs, 1,000 Csmith programs, 0 mismatches. Last, every test of the three crates on the final code
+  (debug, `RAYON_NUM_THREADS=4`, `--test-threads=4`, Chrome and the defaults of every layer included): 70
+  passed, 7 ignored (the measurements), 20.5 minutes, load 20 to 43.
 
 - M3 close-out, second run (fifth run), release: layer 2 with the area check, the generator fixed and the
   translator before the structure proof change: seed 4, 1000 cases (none on the CPU; with the generator fix
