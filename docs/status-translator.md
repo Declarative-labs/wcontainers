@@ -4,18 +4,102 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 
 ## Where things stand
 
-M3 (every instruction) is closed out (fifth run, "M3, close-out, second run" below, fixing what the check of
-the fourth found) and waits for its independent check. Every one of the 1215 forms of the CPU we present
-translates and matches the CPU in layer 1: the current code at 300 cases a form (seed 13); the most cases a form,
-1000 (seed 5, no mismatch), were run in the first M3 run, before later runs changed decoding and the
-floating point slow path. `programs/differences.c` (section 8) matches Linux at every level, at none and
-full, in wasmtime and Chrome, and layer 3 runs Csmith and hand-picked programs against Linux. The long runs to
-the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million programs, layer 3 at 100,000) are not
-M3's: the orchestrator runs them once at the end of the translator track, as M4 and M5 still change the
-translator. Commands are under "How to run".
+M4 (bounded look-ahead and the rare paths) is built, tested against Linux and pushed, first run; it waits
+for its independent check. What it added, how it was proven and what was measured is under "M4, first run".
+M0 to M3 and S1 are built and passed their independent checks; their work is recorded below, newest first.
+The long runs to the plan's pass bars (layer 1 at 10,000 a form, layer 2 at one million programs, layer 3 at
+100,000) are run once by the orchestrator at the end of the translator track; commands under "How to run".
 
-M0, M1, M2 and S1 are built and passed their independent checks. Their work is recorded in the sections
-below, newest first.
+## M4, first run
+
+Fixes from the check of M3's fifth run:
+- FRSQRTS on the fast path gave the default NaN for the smallest denormal times an infinity: the branch for an
+  overflowed fused sum (-a/2 * b + 1.5) is now taken only when b is finite; with b infinite the infinite sum is
+  exact. Test `tests/layer1.rs` `step_edges_match_the_cpu` (FRECPS and FRSQRTS, 2s, 4s, 2d, s, d, denormals
+  against infinities, flags kept and not, against the CPU): failed before the fix, passes after. Layer 1 on the
+  four FRECPS/FRSQRTS forms: seed 4711 at 400 cases (the check's failing replay) and seed 4712 at 5000 cases: 0
+  failing (release, load 41 to 72).
+- The fifth run's flake "after the fix" count (about 10,200 fresh-container runs) rests on the leftover file
+  names of the workers' last runs (run-1-3416.bin, run-3-3422.bin), not on a summary the script wrote: the
+  workers were stopped before fresh.sh printed DONE, and it prints a line only for a bad run, so the three logs
+  are empty. The count is plausible but not recorded directly.
+- The scratch copy m3-close/tree had a .git file pointing at the real worktree's git directory; removed. Copies
+  of the tree for deliberate breaks must leave out .git (copy with rsync --exclude .git).
+- The check found that the random changes test does catch the break "kept runs allow 32 bytes" (seed 4713,
+  within 781 programs, shrinking included); the fifth run's note said only seed 1 at 1000 missed it.
+
+What M4 built:
+- Bounded look-ahead, `LookAhead::Bounded(n)`: one piece per start, holding what the code reaches from it in
+  its first n instructions (the next instruction is followed first), with everything full look-ahead does
+  inside it (registers in locals, kept flags, blocks and loops, loop pieces kept within the stretch, proofs,
+  kept runs, jump tables, direct calls). It leaves where the stretch ends through the lookup. Blocks that would
+  make a stretch irreducible are left out of it. `Bounded(1)` is the instruction's piece of look-ahead none
+  and nothing else. The default N, `BOUND`, is 256 (a tuning number, not measured against others).
+- Code reached at run time with no piece is translated at `LookAhead::AT_RUN_TIME` (bounded, the default N)
+  from that address and put in the table at that address only, and only where the table holds no piece (the
+  wasmtime runner asserts it). So carrying on after a fault, a go to address, an unrecognised jump or a lost
+  stack never takes over the table entry of a function translated at full.
+- The exact path (a frame or group check that fails, and floating point's slow path at full) runs the one
+  instruction from its piece of look-ahead none, which the load code hook puts in the lookup table's last
+  slot, a slot for no address; the hook takes a second argument for it (`exact`). The thread then carries on
+  through the table from the next instruction.
+- The bottom loop and "go to address" were there since M0; now the bottom loop passes an expected return
+  address no return can reach (`BOTTOM_RETURN`, i64::MIN: return targets are untagged), and a return that
+  does not go where its caller expects, when that caller is the bottom loop, sets pc and returns to it
+  instead of throwing. Each such return is counted and warned as "continued after stack loss": a function
+  that was in progress carries on without its WebAssembly frame (after a lost stack, a go to address, or a
+  stack left for being nearly full).
+- Deep recursion: every piece takes one more parameter, an estimate of the engine stack its callers use
+  (`frame_bytes`: 64 bytes, 8 per parameter and per i32/i64 local, 16 per vector local). A piece passes its
+  own estimate on to what it calls and its parameter to what it tail calls. At the entry of a piece that
+  calls or leaves to others, in the same branch as the entry stop check, a depth past `STACK_BUDGET` (128 KiB,
+  a tuning number) leaves to the bottom loop (`UNWIND_DEEP`, counted and warned as the new reason "engine
+  stack nearly full", 13) with exact registers and pc at the entry, so the WebAssembly stack starts empty
+  again; the frames given up continue one by one as they return to the bottom loop. Look-ahead none checks
+  at every piece's entry. The engine's own stack overflow is never relied on.
+- The stack is lost: a runner can make the thread leave at a stop and carry on from its registers in a fresh
+  thread instance (new lookup table, the code translated ahead of time instantiated again, nothing translated
+  since kept): `Paused::lose_stack` in the wasmtime runner.
+- Across the layers (`src/mixed.rs`): a run with the program's code at none, at bounded of a random N from its
+  first instruction and random other starts, and at full, each address's piece picked at random among them;
+  code at run time at a random look-ahead (1, a random N, or the default); and at random stop checks the stack
+  lost, an address forgotten ("no piece yet"), and the stop flag raised again at random. Layer 2 runs every
+  case at bounded of a random N (ahead of time and at run time) and mixed; layer 3 runs every Csmith and
+  hand-picked program at a bounded N and mixed; `tests/lookaheads.rs` runs C programs at random N with every
+  piece but the first made at run time; the changes test (permissions changed at random points, faults) now
+  carries on at bounded after each handled fault. All against none in the same engine (registers and memory),
+  and layer 2 and 3 against Linux.
+- Programs with setjmp and longjmp (`programs/jumps.c`), C++ exceptions (`programs/exceptions.cpp`, zig's
+  libc++ and libunwind) and Rust panics (`programs/panics.rs`, the standard library, catch_unwind): at -O0 and
+  -O2, against Linux at none, full and bounded, mixed with events injected (two seeds), and at full in Chrome
+  (`tests/programs.rs` `unwinding_matches_linux`). Built with `flat.ld`, which now keeps the unwind table's
+  index in a section of its own (the unwinder finds it through its program header; before, it was merged
+  into read-only data and C++ and Rust crashed), places thread local data, and keeps libc++'s replaceable
+  operators (`__lcxx_override`) in the code with their bounds.
+- Deep recursion against Linux on an 8 MiB stack (blobs now say their stack size, `Blob::stack_bytes`, and the
+  reference maps it): C 150,000 calls deep at -O0 and -O2, and a million calls deep through 8 byte frames
+  (`programs/deep_small_frames.S`), at none, full and bounded in wasmtime and at none and full in Chrome
+  (`deep_recursion_matches_linux`). The million-deep run at full left a nearly full stack 1831 times and
+  continued 999,726 frames from the bottom loop; the whole test took 3.2 s in a debug build before Chrome
+  was added (load about 60).
+- Adding code to a running program, proven in wasmtime (every look-ahead test above) and in Chrome
+  (`tests/browser.rs` now runs every program at bounded from its first instruction, every other piece added
+  while it runs, and checks some were).
+
+Measured (release, best of 5 unless said; load in brackets):
+- The stack budget check, on the call benchmarks (fib, sort), every check against the same without it.
+  As its own branch at the entry (best of 3, load 47 to 82): fib wasmtime 2.268 s against 2.151 (5% slower),
+  Chrome 2.049 against 1.980 (3.5%); sort 1.141 against 1.139 and 1.080 against 1.104 (no difference). In the
+  stop check's branch, kept (load 70 to 101): fib wasmtime 2.262 against 2.276 (no difference), Chrome 2.099
+  against 2.021 (4%); sort 1.153 against 1.145 and 1.083 against 1.078 (no difference). Identical runs vary
+  by 10 to 15% on this machine, so differences under that are not settled. A counter in memory or in a global
+  (which needs a decrement at every return too) was not built or measured.
+- Translating and loading one piece while a program runs (translation, the engine's compile and
+  instantiation, as the runner's counter times it; load 82 to 101): at bounded 256, bench 15 pieces, 4.1 ms
+  each in wasmtime and 0.87 ms in Chrome; hello 52 pieces, 6.7 ms in wasmtime and 0.71 ms in Chrome. At
+  bounded 16 in wasmtime: 1.1 ms and 0.95 ms. Chrome compiles lazily, so its compile is paid later, at
+  first call, and is not in its figure. An earlier run (load 44 to 50) gave 5.3 and 3.4 ms in wasmtime and
+  0.89 and 0.74 ms in Chrome at 256.
 
 ## M3, close-out, second run (fifth run)
 
@@ -1442,6 +1526,30 @@ contract's bits, in both runners).
 
 ## Departures from the plan
 
+- M4: every piece takes one more parameter than the plan's (passed registers and the expected return
+  address): the estimate of the engine stack its callers use, for leaving deep recursion to the bottom loop.
+  The plan names no mechanism; this one needs no memory access and nothing at returns.
+- M4: a return to the bottom loop that does not go where it expects returns to it (pc set) instead of
+  throwing, and is counted as "continued after stack loss" whatever lost the frame (a lost stack, a go to
+  address, a stack left for being nearly full). The plan counts "continued after stack loss" only for the
+  first.
+- M4: one new reason, "engine stack nearly full" (13), for leaving to the bottom loop at the stack budget.
+- M4: the lookup table has one slot more than the addresses it covers, holding the one-instruction piece of
+  the exact path, and the load code hook takes `exact` to fill it; the table's address slots are only ever
+  filled where empty, so code made at run time never replaces a piece.
+- M4: `Bounded(1)` is defined as the one instruction's piece of look-ahead none (seeing one instruction is
+  what none is); `LookAhead::None` still translates every instruction the starts reach, for the reference.
+- M4: a runner's reference machine at none translates code reached at run time at none (whatever its
+  starts reach), so the reference stays at none; other machines use bounded. The Chrome runner makes run time
+  pieces at the default N only.
+- M4: the C++ and Rust test programs bring their own allocator over a static area, because the stand-in has
+  no mmap (and its brk never moves); the Rust program is `#![no_main]`, so the C library calls its `main`
+  directly, because the standard library's own start makes system calls the stand-in does not answer (poll,
+  sigaction) and aborts on "not implemented". They are built at fixed positions only (musl finds thread
+  local data only in a blob that is not moved).
+- M4: blobs carry a stack size and the reference runner takes it as an argument (`<stack bytes>` after the
+  stack top); 1 MiB as before unless a test asks for more (deep recursion: 8 MiB, Linux's default).
+
 - M3, third run: layer 3 compares a blob that Linux ends by a signal (ours must end the same way) when the
   program built as an ordinary Linux executable ends the same way; Csmith's programs are meant to have no
   undefined behaviour, but some fault on Linux all the same.
@@ -1602,6 +1710,9 @@ contract's bits, in both runners).
   `memory_may_move(false)`).
 
 ## Shared crate (wcontainers-abi)
+
+- M4: no change. The new unwind payload, hook argument, reason and the piece's depth parameter are in the
+  translator's contract (`contract.rs`), not in the abi.
 
 - M3 close-out: no change. The new reason "loop not proven" is in the translator's contract
   (`contract::Reason`), not in the abi.
