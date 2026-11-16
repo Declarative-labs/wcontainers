@@ -502,6 +502,45 @@ pub(super) fn write(
     result.map(|()| 0)
 }
 
+/// Kernel bytes into a terminal without waiting, as sendfile's splicing writes them (`tty_write`
+/// through `iter_file_splice_write`): what fits, EAGAIN when nothing does.
+pub(super) fn put(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    bytes: &[u8],
+) -> Result<u64, Errno> {
+    let (pty, side, hung_up) = end(file).expect("a terminal");
+    if pty.borrow().sides[side].io_error || hung_up {
+        return Err(Errno::EIO);
+    }
+    if pty.borrow().sides[side].tostop() {
+        check_change(kernel, cx, tid, &pty, side, SIGTTOU)?;
+    }
+    if side == SLAVE && pty.borrow().count(MASTER) == 0 {
+        return Err(Errno::EIO);
+    }
+    pty.borrow_mut().process_echoes(side);
+    let mut done = 0;
+    for chunk in bytes.chunks(WRITE_CHUNK as usize) {
+        let written = pty.borrow_mut().write(side, chunk);
+        done += written;
+        if written < chunk.len() {
+            break;
+        }
+    }
+    if done < bytes.len() && !async_files(&pty, side).is_empty() {
+        pty.borrow_mut().sides[side].write_wakeup = true;
+    }
+    after(kernel, cx, &pty);
+    if done > 0 {
+        update_time(kernel, cx, &pty, side, true);
+        return Ok(done as u64);
+    }
+    Err(Errno::EAGAIN)
+}
+
 /// The open files of a side with `FASYNC` set (`tty->fasync`).
 fn async_files(pty: &PtyRef, side: usize) -> Vec<FileRef> {
     pty.borrow().files[side]

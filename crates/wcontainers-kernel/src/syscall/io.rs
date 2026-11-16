@@ -1249,6 +1249,8 @@ fn send(
             || matches!(output_node.borrow().content, Content::Proc(_))
         {
             Err(Errno::EINVAL)
+        } else if super::tty::end(&output).is_some() {
+            super::tty::put(kernel, cx, tid, &output, &bytes)
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
             write_limit(kernel, cx, tid, at, bytes.len() as u64).and_then(|allowed| {

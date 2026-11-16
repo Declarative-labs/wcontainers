@@ -5,7 +5,47 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes) is partly done after three runs. Built in K2's third run:
+processes) is partly done after four runs. Built in K2's fourth run:
+- What a call leaves in a buffer that runs into memory it cannot write, measured call by call against
+  the reference (tests/partialcopy.rs, guest/partialcopy.c: 47 kinds of call at every count of
+  writable bytes). `Guest::write` is now arm64's `copy_to_user` (src/user.rs `stored_before_fault`):
+  stores of 1, 2, 4 and 8 bytes that align the kernel's source, then pairs of 8, then the rest; a
+  store that would cross into the page faults whole (measured); the first half of a pair that faults
+  stays stored but is not counted (measured: the random devices' reads answer 8, 24, 40 where the
+  memory shows 8, 16, 24); when nothing was counted one byte is tried (the fixup). `write_from` names
+  where the kernel's source lies when it matters: uname (1 past 16-byte alignment, measured), the
+  random devices' 64-byte block (8 past, measured), `d_path`'s page end for getcwd and `/proc` links.
+  `Guest::put` is `put_user` (one store, whole or not): getresuid, getgroups (one per group), getcpu,
+  wait4's status, gettimeofday (each field), sendfile's offset, prctl's and ioctl's integers, the
+  robust list, clone's thread ids. ppoll stores only each entry's `revents`; getdents64 stores as
+  `filldir64` does (the previous entry's `d_off` first, padding never written, a fault ends the
+  listing with the entries before it counted). Copies of whole pages (file and pipe reads, cmdline)
+  stop exactly at the fault (measured); a pipe's piece that does not fit stays in the pipe (copied up
+  to the fault, EFAULT if nothing before it), as `pipe_read`. `seq_file`s, sysctls, terminal reads
+  and the random devices copy with the routine. The transfer test's known failure passes now, and
+  layer 1 compares a random device's short read count again. Seed 410's difference is fixed (it
+  passed 20000).
+- Terminals in layer 1: `/dev/ptmx`, `/dev/pts/0`, `/dev/pts/1` and `/dev/tty` in the path pool, a
+  quarter of the sequences start with a pair open on descriptors 3 and 4 (slave unlocked), and the
+  terminal requests (settings in every form, sizes, flushes, flow, packet mode, locks, numbers, peers,
+  exclusive mode, line discipline, signals, soft carrier, hangup) with three settings structures (the
+  default, raw, generated). The reference's runner polls every descriptor twice after each call in
+  such sequences, which runs Linux's buffer work (`n_tty_poll`), so both sides agree between calls;
+  each call writes at most 256 bytes there so nothing fills within a call, and every descriptor stays
+  nonblocking. Every open in layer 1 is O_NOCTTY. Found and fixed: O_DIRECT on a terminal is refused
+  after its open (ENXIO first for `/dev/tty`), a terminal as sendfile's input is EINVAL (no
+  `FMODE_LSEEK`), RWF_NOWAIT on a terminal is EOPNOTSUPP.
+- Fork in layer 1: clone with fork, vfork, no or other exit signals, the child's thread id flags,
+  TLS, and refused flags. The child ends at once with status 7 (the reference's runner does it in the
+  same assembly as the call, before touching a stack vfork shares), and both runners wait for it to
+  end without reaping it (`waitid` with WNOWAIT and __WALL), so waits never wait (WNOHANG is added in
+  such sequences). The buffer CPU now duplicates memories. Found and fixed: a wait for stops or
+  continues alone finds no child in one that has ended (`notask_error`): ECHILD, not 0. The runner
+  now reaps the orphans a sequence leaves, which `kill(-1)` reached in later sequences.
+- A terminal writer that found no room hears of it by its I/O signal when the other side's reader
+  leaves 128 bytes or fewer (`TTY_DO_WRITE_WAKEUP`, `n_tty_check_unthrottle`); tests/sigio.rs.
+
+Built in K2's third run:
 - Private file mappings as Linux's copy on write: a private mapping shows the file's block of shared
   pages (the same one shared mappings use, src/shared.rs), with writing turned off at the CPU side
   for each page not yet written; the first write faults and the page becomes the process's own copy
@@ -112,10 +152,7 @@ Built in K2's first run:
 - Layer 1 generates pipe2 (always nonblocking), wait4, waitid, rt_sigqueueinfo, rt_tgsigqueueinfo
   and rt_sigtimedwait (always with a timeout).
 
-Not done yet in K2, in order: terminal calls in layer 1 (`/dev/ptmx` is not in the path pool;
-tests/terminal.rs covers them; the reference's runner would have to make Linux's buffer work happen
-after each call, which a poll of each terminal descriptor does, since `n_tty_poll` flushes it); fork
-and clone in layer 1 (each runner would have to compare a child's calls too).
+Not done yet in K2: see Next.
 Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
 turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
 instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
@@ -149,11 +186,6 @@ Ignored tests (each attribute gives the reason):
   counted by the reference and not known here (counted "page residency not tracked").
 - proclist `thread_listings_are_a_subset_of_the_reference`: `/proc/<pid>/task` is not built (threads,
   K3).
-- transfer `partial_copies_match_reference`: a read of a random device (or getrandom) into a buffer
-  that faults part way stops up to 15 bytes short of the fault in the reference (measured: 88 where 96
-  bytes were writable; 1 where fewer than 8 were), by where arm64's copy routine had stored when the
-  fault came (the kernel's 64-byte block sits 8 bytes off 16-byte alignment); ours stops at the fault.
-  Reads of files and `/dev/zero` stop where Linux's do (measured).
 
 Comparisons that are subsets rather than equality, and why:
 - tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
@@ -229,9 +261,17 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   both runners zero the whole range the call was given (up to the first page they cannot write, by
   process_vm_writev), and after a sendfile from one into a regular file they zero what it put there
   (pwrite at the output's old position); the reference's runner says when it did, and ours does the
-  same calls. The bytes are then compared (as zeros) with everything else. A read of one that moved less
-  than it was asked for (a fault part way) has its count not compared: where the copy stops differs (the
-  known failure above). The test prints how many calls put a random device's bytes somewhere.
+  same calls. The bytes are then compared (as zeros) with everything else, and the count of a read
+  that a fault cut short too. The test prints how many calls put a random device's bytes somewhere,
+  made or opened the named pipe, opened a pseudo-terminal, and how many children were made.
+- In sequences with a pseudo-terminal the reference's runner polls every descriptor (3 to 1023) twice
+  after each call, which our runner does not need (its terminals move bytes at once), so ppoll is let
+  through by those sequences' filters first; and writes are cut to 256 bytes, vectors to one segment,
+  and every open, F_SETFL and FIONBIO keep O_NONBLOCK (see "What layer 1 does not generate").
+- A child made by clone ends at once with status 7 on both sides and is waited for (not reaped)
+  after the call, so waitid is let through first by those sequences' filters. clone's and wait4's
+  values (process numbers), wait4's and waitid's resource use, and waitid's process number and
+  times are masked and zeroed.
 - Before each sequence both runners remake `/dev/null` once: the reference container's first
   `/dev/null` is held from outside the container once removed (measured: its inode is never given
   back), and the reference's runner remakes the devices after every sequence, so `/dev` always has one
@@ -239,6 +279,16 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   one.
 
 What layer 1 does not generate, and why:
+- Terminal writes of more than 256 bytes, blocking terminal descriptors, a controlling terminal
+  (every open is O_NOCTTY, TIOCSCTTY and opens of the peer without it are not generated): Linux moves
+  a terminal's bytes from a work queue on another CPU, so how much a large write takes depends on when
+  that work runs; a blocking read would cost the reference's deadline; and a controlling terminal
+  brings job control signals that end the reference's caller and not ours. tests/terminal.rs covers
+  them.
+- A child that runs calls of its own (the child of clone ends at once), threads and shared tables
+  (CLONE_THREAD with what it needs, CLONE_FILES, CLONE_FS: not built until K3), CLONE_PARENT (our
+  caller is the first process, which Linux refuses it to), CLONE_PIDFD (not built), CLONE_PARENT_SETTID
+  (it writes a process number into the arena), waits without WNOHANG in sequences with a child.
 - Named pipes other than the one at `p` in the work directory, made at the start of a quarter of the
   sequences; opens of it are nonblocking unless for reading and writing (a reopen through
   `/proc/self/fd` could still wait, which both runners end at the reference's deadline); descriptors 0 to 2 (the reference's runner reports
@@ -615,8 +665,9 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
 - An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
   whether ours answers the same since the vDSO was built is not checked.
-- I/O signals not sent: a terminal's when room comes back after a write that did not fit
-  (`n_tty_write_wakeup`) and at a hangup; a random device's (nothing is ever waited for there).
+- I/O signals not sent: a random device's (nothing is ever waited for there). At a terminal's hangup
+  Linux's `__tty_hangup` takes each file's `FASYNC` away before the line discipline's wakeup, so none
+  is expected there; not measured.
   A fallback to SIGIO when a chosen real-time signal cannot be queued is not made.
 - Several ends of a pipe closed at once (one close_range, an exit) send one release I/O signal; Linux
   sends one per end.
@@ -627,9 +678,10 @@ Missing (80, each counted "system call not implemented" and ENOSYS), with what e
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
-- A copy of the random devices' bytes (read, getrandom) to a buffer that faults part way stops at the
-  fault here and up to 15 bytes short of it in the reference (arm64's copy routine; an ignored test
-  shows it). Files and `/dev/zero` match.
+- Where the kernel's source of a copy lies within 16 bytes decides what a buffer that faults part
+  way receives; it is measured for the calls tests/partialcopy.rs makes and assumed aligned to 8
+  elsewhere (Linux's stack layout of each call is its compiler's). Calls Linux copies field by field
+  with `put_user` that are not listed under "Where things stand" are copied whole here.
 - sendfile into the standard stream pipes moves at most an empty pipe's worth (the host drains them);
   a reference pipe Docker has not drained holds less room.
 - busybox `su` fails here (`can't set groups: Function not implemented`): musl's `initgroups` asks
