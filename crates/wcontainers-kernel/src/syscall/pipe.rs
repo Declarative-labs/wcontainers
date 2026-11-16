@@ -444,7 +444,7 @@ pub(super) fn write(
 }
 
 /// Puts kernel bytes into a pipe without waiting, as splicing into a pipe does: as many whole
-/// pages as fit; the host's pipes take everything.
+/// pages as fit; the host's pipes take everything. Readers with `FASYNC` hear of them.
 pub(super) fn put(cx: &mut Context<'_>, kernel: &mut Kernel, file: &FileRef, bytes: &[u8]) -> u64 {
     let node = file.borrow().node.clone();
     let mut done = 0;
@@ -463,5 +463,9 @@ pub(super) fn put(cx: &mut Context<'_>, kernel: &mut Kernel, file: &FileRef, byt
         done
     });
     kernel.wake(channel(&node));
+    // `splice_file_to_pipe`'s `wakeup_pipe_readers`.
+    if taken > 0 {
+        signal_ends(kernel, cx, &node, true);
+    }
     taken as u64
 }
