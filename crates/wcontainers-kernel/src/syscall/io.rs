@@ -30,7 +30,7 @@ pub(super) const MAX_SEGMENTS: u64 = 1024;
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
 
 pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
-    kernel.process_of(tid).files.file(fd as i32)
+    kernel.files(tid).file(fd as i32)
 }
 
 /// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
@@ -1739,9 +1739,9 @@ pub(super) fn getdents64(
                     let end = match entry {
                         Entry::Fds(task) => walk
                             .proc
-                            .processes
-                            .get(&task.pid)
-                            .map_or(2, |process| u64::from(process.files.capacity()) + 2),
+                            .threads
+                            .get(&task.tid)
+                            .map_or(2, |thread| u64::from(thread.files.borrow().capacity()) + 2),
                         _ => crate::fs::proc::PROCESSES_END,
                     };
                     Ok((out, end))
@@ -1880,7 +1880,7 @@ pub(super) fn close(
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    kernel.process_of_mut(tid).files.remove(fd as i32)?;
+    kernel.files_mut(tid).remove(fd as i32)?;
     kernel.files_released(cx);
     Ok(0)
 }
@@ -1900,8 +1900,11 @@ pub(super) fn close_range(
     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 || first > last {
         return Err(Errno::EINVAL);
     }
-    // The table is never shared between processes yet, so unsharing it changes nothing.
-    let files = &mut kernel.process_of_mut(tid).files;
+    // A shared table is copied first, and the copy closes (`__close_range`).
+    if flags & CLOSE_RANGE_UNSHARE != 0 {
+        kernel.unshare_files(tid);
+    }
+    let mut files = kernel.files_mut(tid);
     let fds: Vec<i32> = files
         .iter()
         .map(|(fd, _)| fd)
@@ -1915,6 +1918,7 @@ pub(super) fn close_range(
             files.remove(fd)?;
         }
     }
+    drop(files);
     if closes {
         kernel.files_released(cx);
     }
@@ -1928,7 +1932,7 @@ pub(super) fn dup(
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     let limit = nofile_limit(kernel, tid);
-    let files = &mut kernel.process_of_mut(tid).files;
+    let mut files = kernel.files_mut(tid);
     let file = files.file(fd as i32)?;
     Ok(files.add(file, false, 0, limit)? as u64)
 }
@@ -1950,7 +1954,7 @@ pub(super) fn dup3(
     if new < 0 || new as u64 >= limit {
         return Err(Errno::EBADF);
     }
-    let files = &mut kernel.process_of_mut(tid).files;
+    let mut files = kernel.files_mut(tid);
     let file = files.file(old)?;
     let replaced = files.set(
         new,
@@ -1959,6 +1963,7 @@ pub(super) fn dup3(
             close_on_exec: flags & O_CLOEXEC != 0,
         },
     );
+    drop(files);
     if replaced {
         kernel.files_released(cx);
     }
@@ -2001,7 +2006,7 @@ fn fcntl_typed(
         command,
         F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW
     ) {
-        let file = kernel.process_of(tid).files.file(fd)?;
+        let file = kernel.files(tid).file(fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }
@@ -2096,7 +2101,7 @@ fn record_lock(
         owner: if private {
             LockOwner::File(alloc::rc::Rc::downgrade(file))
         } else {
-            LockOwner::Table(kernel.processes[&pid].files.lock_owner())
+            LockOwner::Table(kernel.files(tid).lock_owner())
         },
         pid,
         write,
@@ -2202,8 +2207,8 @@ fn fcntl_other(
     argument: u64,
 ) -> Result<u64, Errno> {
     let limit = nofile_limit(kernel, tid);
-    let files = &mut kernel.process_of_mut(tid).files;
-    let descriptor = files.get(fd)?.clone();
+    let files = kernel.threads[&tid].files.clone();
+    let descriptor = files.borrow().get(fd)?.clone();
     let path_only = descriptor.file.borrow().is_path();
     match command {
         F_DUPFD | F_DUPFD_CLOEXEC => {
@@ -2212,11 +2217,13 @@ fn fcntl_other(
                 return Err(Errno::EINVAL);
             }
             let close_on_exec = command == F_DUPFD_CLOEXEC;
-            Ok(files.add(descriptor.file, close_on_exec, minimum, limit)? as u64)
+            Ok(files
+                .borrow_mut()
+                .add(descriptor.file, close_on_exec, minimum, limit)? as u64)
         }
         F_GETFD => Ok(u64::from(descriptor.close_on_exec)),
         F_SETFD => {
-            files.get_mut(fd)?.close_on_exec = argument & u64::from(FD_CLOEXEC) != 0;
+            files.borrow_mut().get_mut(fd)?.close_on_exec = argument & u64::from(FD_CLOEXEC) != 0;
             Ok(0)
         }
         F_GETFL => Ok(u64::from(descriptor.file.borrow().flags)),
@@ -2257,7 +2264,7 @@ fn fcntl_other(
         }
         F_CREATED_QUERY => Ok(u64::from(descriptor.file.borrow().created)),
         F_DUPFD_QUERY => {
-            let other = files.file(argument as i32)?;
+            let other = files.borrow().file(argument as i32)?;
             Ok(u64::from(alloc::rc::Rc::ptr_eq(&other, &descriptor.file)))
         }
         // No lease can be taken, so a file never holds one.
@@ -2716,8 +2723,7 @@ fn select_typed(
     if count < 0 {
         return Err(Errno::EINVAL);
     }
-    let files = &kernel.process_of(tid).files;
-    let count = (count as u32).min(files.capacity()) as u64;
+    let count = (count as u32).min(kernel.files(tid).capacity()) as u64;
     let bytes = count.div_ceil(64) * 8;
     let mut wanted = [const { Vec::new() }; 3];
     for (index, address) in sets.iter().enumerate() {
@@ -2728,7 +2734,7 @@ fn select_typed(
         };
     }
     let asked = |set: &[u8], fd: u64| set[(fd / 8) as usize] & (1 << (fd % 8)) != 0;
-    let files = &kernel.process_of(tid).files;
+    let files = kernel.files(tid);
     for fd in 0..count {
         if wanted.iter().any(|set| asked(set, fd)) && files.get(fd as i32).is_err() {
             return Err(Errno::EBADF);
@@ -2758,6 +2764,7 @@ fn select_typed(
         }
         results[index] = result;
     }
+    drop(files);
     if ready == 0 {
         let call = kernel.threads[&tid].call;
         let over = call.deadline.is_some() && call.progress <= cx.monotonic();
@@ -2792,7 +2799,7 @@ fn ppoll_typed(
         let revents = if fd < 0 {
             0
         } else {
-            match kernel.process_of(tid).files.file(fd) {
+            match kernel.files(tid).file(fd) {
                 Ok(file) => {
                     poll_mask(kernel, tid, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
                 }

@@ -513,9 +513,9 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
     // write and execute, and an `O_PATH` descriptor nothing (Linux's `tid_fd_update_inode`).
     if let Entry::Fd(task, fd) = entry
         && let Some(file) = view
-            .processes
-            .get(&task.pid)
-            .and_then(|process| process.files.file(fd).ok())
+            .threads
+            .get(&task.tid)
+            .and_then(|thread| thread.files.borrow().file(fd).ok())
     {
         let file = file.borrow();
         mode = S_IFLNK
@@ -767,8 +767,8 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
             }
         }
         Entry::Fds(task) => {
-            if let Some(process) = view.processes.get(&task.pid) {
-                for (fd, _) in process.files.iter() {
+            if let Some(thread) = view.threads.get(&task.tid) {
+                for (fd, _) in thread.files.borrow().iter() {
                     out.push((
                         format!("{fd}").into_bytes(),
                         Entry::Fd(*task, fd),
@@ -805,13 +805,12 @@ fn tasks(process: &Process) -> impl Iterator<Item = Tid> + '_ {
     )
 }
 
-/// The process a process link names: one that has ended has no program, working directory or root
-/// (its memory and file system context are gone), so the link leads nowhere.
-fn linked<'a>(view: &'a View<'_>, pid: Pid) -> Result<&'a Process, Errno> {
-    view.processes
-        .get(&pid)
-        .filter(|process| process.ended.is_none())
-        .ok_or(Errno::ENOENT)
+/// The process and thread a process link names: a thread that has ended has no program, working
+/// directory or root (its memory and file system context are gone), so the link leads nowhere.
+fn linked<'a>(view: &'a View<'_>, task: &Task) -> Result<(&'a Process, &'a Thread), Errno> {
+    let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
+    let process = view.processes.get(&task.pid).ok_or(Errno::ENOENT)?;
+    Ok((process, thread))
 }
 
 /// Where a symbolic link of the tree points, as `readlink` gives it.
@@ -830,16 +829,17 @@ pub(crate) fn link_target(
             _ => Err(Errno::EINVAL),
         },
         Entry::ProcessLink(task, link) => {
-            let process = linked(view, task.pid)?;
+            let (process, thread) = linked(view, task)?;
+            let fs = thread.fs.borrow();
             match link {
                 ProcessLink::Exe => Ok(process.executable.1.clone()),
-                ProcessLink::Cwd => Ok(walk.path_of(&process.cwd).unwrap_or_default()),
-                ProcessLink::Root => Ok(walk.path_of(&process.root).unwrap_or_default()),
+                ProcessLink::Cwd => Ok(walk.path_of(&fs.cwd).unwrap_or_default()),
+                ProcessLink::Root => Ok(walk.path_of(&fs.root).unwrap_or_default()),
             }
         }
         Entry::Fd(task, fd) => {
-            let process = view.processes.get(&task.pid).ok_or(Errno::ENOENT)?;
-            let file = process.files.file(*fd).map_err(|_| Errno::ENOENT)?;
+            let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
+            let file = thread.files.borrow().file(*fd).map_err(|_| Errno::ENOENT)?;
             let file = file.borrow();
             let inode = file.node.borrow();
             Ok(match &inode.content {
@@ -869,7 +869,7 @@ pub(crate) fn magic_path(view: &View<'_>, walk: &Walk<'_>, entry: &Entry) -> Opt
     match entry {
         Entry::ProcessLink(..) => link_target(view, walk, entry).ok(),
         Entry::Fd(task, fd) => {
-            let file = view.processes.get(&task.pid)?.files.file(*fd).ok()?;
+            let file = view.threads.get(&task.tid)?.files.borrow().file(*fd).ok()?;
             let file = file.borrow();
             if file.node.borrow().is_directory() {
                 return walk.path_of(&file.node).or_else(|| Some(file.path.clone()));
@@ -891,16 +891,16 @@ pub(crate) fn follow(
 ) -> Result<Node, Errno> {
     match entry {
         Entry::ProcessLink(task, link) => {
-            let process = linked(view, task.pid)?;
+            let (process, thread) = linked(view, task)?;
             Ok(match link {
                 ProcessLink::Exe => process.executable.0.clone(),
-                ProcessLink::Cwd => process.cwd.clone(),
-                ProcessLink::Root => process.root.clone(),
+                ProcessLink::Cwd => thread.fs.borrow().cwd.clone(),
+                ProcessLink::Root => thread.fs.borrow().root.clone(),
             })
         }
         Entry::Fd(task, fd) => {
-            let process = view.processes.get(&task.pid).ok_or(Errno::ENOENT)?;
-            let file = process.files.file(*fd).map_err(|_| Errno::ENOENT)?;
+            let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
+            let file = thread.files.borrow().file(*fd).map_err(|_| Errno::ENOENT)?;
             let node = file.borrow().node.clone();
             Ok(node)
         }
@@ -1209,8 +1209,8 @@ fn process_file(
             // An ended thread has no file system context, descriptor table or memory, so its umask,
             // table size and memory lines are left out or empty (`task_state`, `task_mem`).
             let _ = writeln!(out, "Name:\t{}", String::from_utf8_lossy(&shown.name));
-            if !ended {
-                let _ = writeln!(out, "Umask:\t{:04o}", process.umask);
+            if !ended && let Some(thread) = source.view.threads.get(&tid) {
+                let _ = writeln!(out, "Umask:\t{:04o}", thread.fs.borrow().umask);
             }
             let _ = write!(
                 out,
@@ -1229,7 +1229,11 @@ fn process_file(
                 credentials.egid,
                 credentials.sgid,
                 credentials.fsgid,
-                if ended { 0 } else { process.files.capacity() }
+                source
+                    .view
+                    .threads
+                    .get(&tid)
+                    .map_or(0, |thread| thread.files.borrow().capacity())
             );
             // Separated by spaces, then always one more (Linux's `task_state`).
             for (index, group) in credentials.groups.iter().enumerate() {

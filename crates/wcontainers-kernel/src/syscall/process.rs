@@ -187,16 +187,16 @@ fn exec(
             name.push(b'/');
             name.extend_from_slice(&path);
         }
-        let descriptor = kernel.processes[&pid].files.get(dirfd)?;
-        (name, !descriptor.close_on_exec)
+        let close_on_exec = kernel.files(tid).get(dirfd)?.close_on_exec;
+        (name, !close_on_exec)
     } else {
         (path.clone(), true)
     };
     let program = if path.is_empty() && dirfd == AT_FDCWD {
-        let cwd = kernel.processes[&pid].cwd.clone();
+        let cwd = kernel.fs(tid).cwd.clone();
         crate::loader::program_of(kernel, cx.cpu, tid, cwd, Vec::new())?
     } else if path.is_empty() {
-        let file = kernel.processes[&pid].files.file(dirfd)?;
+        let file = kernel.files(tid).file(dirfd)?;
         let (node, full) = {
             let file = file.borrow();
             (file.node.clone(), file.path.clone())

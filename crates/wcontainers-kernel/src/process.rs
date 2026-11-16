@@ -3,6 +3,7 @@
 use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use wcontainers_abi::{MemoryId, Resume, ThreadId};
 
@@ -66,10 +67,6 @@ pub(crate) struct Process {
     pub memory: MemoryId,
     pub map: AddressMap,
     pub threads: Vec<Tid>,
-    pub files: FdTable,
-    pub root: Node,
-    pub cwd: Node,
-    pub umask: u32,
     pub credentials: Credentials,
     pub limits: [Limit; LIMITS],
     /// The program file and the path it was started by.
@@ -242,10 +239,27 @@ impl Thread {
     }
 }
 
+/// A descriptor table, shared by the threads and processes made with CLONE_FILES (Linux's
+/// `files_struct`).
+pub(crate) type Files = Rc<RefCell<FdTable>>;
+
+/// The root, working directory and umask, shared by the threads and processes made with CLONE_FS
+/// (Linux's `fs_struct`).
+#[derive(Clone)]
+pub(crate) struct FsContext {
+    pub root: Node,
+    pub cwd: Node,
+    pub umask: u32,
+}
+
+pub(crate) type Fs = Rc<RefCell<FsContext>>;
+
 #[derive(Clone)]
 pub(crate) struct Thread {
     pub process: Pid,
     pub cpu: ThreadId,
+    pub files: Files,
+    pub fs: Fs,
     /// The name `comm` shows, at most 15 bytes.
     pub name: Vec<u8>,
     /// How the thread continues the next time it runs.
@@ -395,10 +409,12 @@ pub(crate) enum Restart {
 }
 
 impl Thread {
-    pub fn new(process: Pid, cpu: ThreadId) -> Self {
+    pub fn new(process: Pid, cpu: ThreadId, files: Files, fs: Fs) -> Self {
         Self {
             process,
             cpu,
+            files,
+            fs,
             name: Vec::new(),
             resume: Resume::FromRegisters,
             clear_child_tid: 0,

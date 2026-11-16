@@ -43,9 +43,8 @@ pub(super) fn memfd_create(
         Err(Errno::ENAMETOOLONG) => return Err(Errno::EINVAL),
         Err(_) => return Err(Errno::EFAULT),
     };
-    let process = kernel.process_of(tid);
-    let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    process.files.lowest_free(0, limit)?;
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    kernel.files(tid).lowest_free(0, limit)?;
     // Huge page files live on hugetlbfs, which is not built: refused as by a kernel without it.
     if flags & MFD_HUGETLB != 0 {
         return Err(kernel.counters.refuse_flag(
@@ -91,9 +90,8 @@ pub(super) fn memfd_create(
     let opener = kernel.process_of(tid).credentials.serial;
     let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, path, opener);
     file.borrow_mut().direct_io = false;
-    let process = kernel.process_of_mut(tid);
-    let added = process
-        .files
+    let added = kernel
+        .files_mut(tid)
         .add(file, flags & MFD_CLOEXEC != 0, 0, limit)?;
     Ok(added as u64)
 }
@@ -111,7 +109,7 @@ pub(super) fn memfd_secret(
     }
     let process = kernel.process_of(tid);
     let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    process.files.lowest_free(0, limit)?;
+    kernel.files(tid).lowest_free(0, limit)?;
     let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
     let now = kernel.now(cx);
     let fs = kernel
@@ -137,8 +135,7 @@ pub(super) fn memfd_secret(
     let opener = kernel.process_of(tid).credentials.serial;
     let file = OpenFile::new(node, O_RDWR | O_LARGEFILE, b"/secretmem".to_vec(), opener);
     let added = kernel
-        .process_of_mut(tid)
-        .files
+        .files_mut(tid)
         .add(file, flags & O_CLOEXEC != 0, 0, limit)?;
     Ok(added as u64)
 }

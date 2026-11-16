@@ -19,15 +19,14 @@ use crate::{Context, Errno, Kernel};
 
 /// The start of a walk for a `*at` call: the directory `dirfd` names, or the working directory.
 pub(super) fn start(kernel: &Kernel, tid: Tid, dirfd: u64, path: &[u8]) -> Result<Node, Errno> {
-    let process = kernel.process_of(tid);
     let dirfd = dirfd as i32;
     if path.starts_with(b"/") {
-        return Ok(process.root.clone());
+        return Ok(kernel.fs(tid).root.clone());
     }
     if dirfd == AT_FDCWD {
-        return Ok(process.cwd.clone());
+        return Ok(kernel.fs(tid).cwd.clone());
     }
-    let node = process.files.file(dirfd)?.borrow().node.clone();
+    let node = kernel.files(tid).file(dirfd)?.borrow().node.clone();
     if !path.is_empty() && !node.borrow().is_directory() {
         return Err(Errno::ENOTDIR);
     }
@@ -50,11 +49,7 @@ pub(super) fn lookup(
         guest(kernel, cx, tid).read_path(address)?
     };
     if path.is_empty() {
-        let process = kernel.process_of(tid);
-        if dirfd as i32 == AT_FDCWD {
-            return Ok(process.cwd.clone());
-        }
-        return Ok(process.files.file(dirfd as i32)?.borrow().node.clone());
+        return empty_path_node(kernel, tid, dirfd);
     }
     let at = start(kernel, tid, dirfd, &path)?;
     kernel.with_walk(tid, |walk, _| walk.resolve(&at, &path, follow))
@@ -324,9 +319,8 @@ const VALID_RESOLVE_FLAGS: u32 = RESOLVE_NO_XDEV
 
 /// Linux's `get_unused_fd_flags` before an open: EMFILE when no descriptor is free below the limit.
 fn free_descriptor(kernel: &Kernel, tid: Tid) -> Result<(), Errno> {
-    let process = kernel.process_of(tid);
-    let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    process.files.lowest_free(0, limit).map(|_| ())
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    kernel.files(tid).lowest_free(0, limit).map(|_| ())
 }
 
 /// The flags an open keeps, after `build_open_flags`'s checks.
@@ -481,7 +475,7 @@ pub(super) fn open(
             if fixed_names(&parent.directory) {
                 return Err(Errno::EACCES);
             }
-            let umask = kernel.process_of(tid).umask;
+            let umask = kernel.fs(tid).umask;
             let node = create(
                 kernel,
                 cx,
@@ -646,7 +640,7 @@ fn named_opened(
     flags: u32,
 ) -> Result<u64, Errno> {
     if flags & O_DIRECT != 0 {
-        kernel.process_of_mut(tid).files.release(file);
+        kernel.files_mut(tid).release(file);
         kernel.files_released(cx);
         return Err(Errno::EINVAL);
     }
@@ -662,8 +656,7 @@ fn install(
 ) -> Result<u64, Errno> {
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
-        .process_of_mut(tid)
-        .files
+        .files_mut(tid)
         .add(file, flags & O_CLOEXEC != 0, 0, limit)?;
     Ok(fd as u64)
 }
@@ -764,7 +757,7 @@ pub(super) fn mkdirat(
     check_absent(kernel, tid, &parent)?;
     may_change(kernel, tid, &parent.directory)?;
     changes_names(&parent.directory)?;
-    let umask = kernel.process_of(tid).umask;
+    let umask = kernel.fs(tid).umask;
     let mode = S_IFDIR | (mode as u32 & 0o1777 & !umask);
     create(
         kernel,
@@ -817,7 +810,7 @@ pub(super) fn mknodat(
     {
         return Err(Errno::EPERM);
     }
-    let umask = kernel.process_of(tid).umask;
+    let umask = kernel.fs(tid).umask;
     let rdev = if matches!(file_type, S_IFCHR | S_IFBLK) {
         let device = device as u32;
         crate::fs::encode_device(
@@ -885,7 +878,7 @@ pub(super) fn linkat(
     if flags & AT_EMPTY_PATH != 0 && old_dirfd as i32 != AT_FDCWD {
         let path = guest(kernel, cx, tid).read_path_maybe_empty(old_path)?;
         if !path.starts_with(b"/") {
-            let file = kernel.process_of(tid).files.file(old_dirfd as i32)?;
+            let file = kernel.files(tid).file(old_dirfd as i32)?;
             let credentials = credentials(kernel, tid);
             if file.borrow().opener != credentials.serial
                 && !credentials.has(crate::credentials::CAP_DAC_READ_SEARCH)
@@ -998,7 +991,7 @@ pub(super) fn unlinkat(
             return Err(Errno::ENOTDIR);
         }
         changes_names(&parent.directory)?;
-        if Rc::ptr_eq(&node, &kernel.process_of(tid).root) || node.borrow().place.mount_root {
+        if Rc::ptr_eq(&node, &kernel.fs(tid).root) || node.borrow().place.mount_root {
             return Err(Errno::EBUSY);
         }
         if node
@@ -1405,9 +1398,9 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
         st_size: match inode.content {
             // A descriptor directory's size is how many descriptors are open, as on Linux.
             Content::Proc(proc::Entry::Fds(task)) => kernel
-                .processes
-                .get(&task.pid)
-                .map_or(0, |process| process.files.iter().count())
+                .threads
+                .get(&task.tid)
+                .map_or(0, |thread| thread.files.borrow().iter().count())
                 as i64,
             _ => inode.size() as i64,
         },
@@ -1443,11 +1436,10 @@ fn names_descriptor(
 
 /// The file an empty path names: the descriptor's (an `O_PATH` one too), or the working directory.
 fn empty_path_node(kernel: &Kernel, tid: Tid, dirfd: u64) -> Result<Node, Errno> {
-    let process = kernel.process_of(tid);
     if dirfd as i32 == AT_FDCWD {
-        return Ok(process.cwd.clone());
+        return Ok(kernel.fs(tid).cwd.clone());
     }
-    Ok(process.files.file(dirfd as i32)?.borrow().node.clone())
+    Ok(kernel.files(tid).file(dirfd as i32)?.borrow().node.clone())
 }
 
 pub(super) fn newfstatat(
@@ -1491,13 +1483,7 @@ pub(super) fn fstat(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel
-        .process_of(tid)
-        .files
-        .file(fd as i32)?
-        .borrow()
-        .node
-        .clone();
+    let node = kernel.files(tid).file(fd as i32)?.borrow().node.clone();
     count_unknown_blocks(kernel, cx, &node);
     let value = stat_of(kernel, &node);
     guest(kernel, cx, tid).write_value(buffer, &value)?;
@@ -1761,7 +1747,7 @@ pub(super) fn fchmod(
     tid: Tid,
     [fd, mode, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let file = kernel.files(tid).file(fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -1874,7 +1860,7 @@ pub(super) fn fchown(
     tid: Tid,
     [fd, uid, gid, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let file = kernel.files(tid).file(fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -1927,7 +1913,7 @@ pub(super) fn utimensat(
             return Err(Errno::EINVAL);
         }
         // Linux's `do_utimes_fd` takes no `O_PATH` descriptor.
-        let file = kernel.process_of(tid).files.file(dirfd as i32)?;
+        let file = kernel.files(tid).file(dirfd as i32)?;
         let file = file.borrow();
         if file.is_path() {
             return Err(Errno::EBADF);
@@ -2133,7 +2119,7 @@ pub(super) fn ftruncate(
     if (length as i64) < 0 {
         return Err(Errno::EINVAL);
     }
-    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let file = kernel.files(tid).file(fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2154,7 +2140,7 @@ pub(super) fn fallocate(
     [fd, mode, offset, length, ..]: Args,
 ) -> Result<u64, Errno> {
     // In the order of Linux's `vfs_fallocate`; tmpfs takes keeping the size and punching holes.
-    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let file = kernel.files(tid).file(fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2299,7 +2285,7 @@ fn change_directory(kernel: &mut Kernel, tid: Tid, node: Node) -> Result<u64, Er
             kernel.threads[&tid].process,
         )?;
     }
-    kernel.process_of_mut(tid).cwd = node;
+    kernel.fs_mut(tid).cwd = node;
     Ok(0)
 }
 
@@ -2319,13 +2305,7 @@ pub(super) fn fchdir(
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel
-        .process_of(tid)
-        .files
-        .file(fd as i32)?
-        .borrow()
-        .node
-        .clone();
+    let node = kernel.files(tid).file(fd as i32)?.borrow().node.clone();
     change_directory(kernel, tid, node)
 }
 
@@ -2351,7 +2331,7 @@ pub(super) fn chroot(
     if !credentials(kernel, tid).has(CAP_SYS_CHROOT) {
         return Err(Errno::EPERM);
     }
-    kernel.process_of_mut(tid).root = node;
+    kernel.fs_mut(tid).root = node;
     Ok(0)
 }
 
@@ -2361,9 +2341,9 @@ pub(super) fn umask(
     tid: Tid,
     [mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    let process = kernel.process_of_mut(tid);
-    let old = process.umask;
-    process.umask = mask as u32 & 0o777;
+    let mut fs = kernel.fs_mut(tid);
+    let old = fs.umask;
+    fs.umask = mask as u32 & 0o777;
     Ok(old.into())
 }
 
@@ -2421,7 +2401,7 @@ pub(super) fn fstatfs(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let file = kernel.files(tid).file(fd as i32)?;
     let node = file.borrow().node.clone();
     let mut out = statfs_of(kernel, cx, &node);
     if file.borrow().internal_mount {
@@ -2472,7 +2452,7 @@ fn flock_typed(
         LOCK_UN => None,
         _ => return Err(Errno::EINVAL),
     };
-    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let file = kernel.files(tid).file(fd as i32)?;
     let usable = {
         let file = file.borrow();
         file.readable() || file.writable()

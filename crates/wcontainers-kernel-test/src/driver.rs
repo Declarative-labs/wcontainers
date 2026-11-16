@@ -64,6 +64,9 @@ pub struct TestHost {
     /// A clock that moves only when the driver says, so a run repeats exactly; none for the wall
     /// clock (layer 1, where the reference runs beside it).
     virtual_now: Option<u64>,
+    /// With a clock that moves only when the driver says, the wall clock's reading when the
+    /// monotonic clock read 0: the wall clock moves with it.
+    wall_base: u64,
     /// What a run's choices come from: how long each turn on the CPU side lasts.
     schedule: StdRng,
 }
@@ -79,17 +82,20 @@ impl TestHost {
             stderr: Vec::new(),
             warnings: Vec::new(),
             virtual_now: None,
+            wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
         }
     }
 
-    /// A host whose clock moves only with the work run and the waits skipped, both from the seed,
+    /// A host whose clocks move only with the work run and the waits skipped, both from the seed,
     /// so the kernel's choices repeat exactly for a seed.
     pub fn repeatable(seed: u64) -> Self {
-        Self {
+        let mut host = Self {
             virtual_now: Some(1_000_000_000),
             ..Self::new(seed)
-        }
+        };
+        host.wall_base = wall_clock() - 1_000_000_000;
+        host
     }
 
     /// Advances a repeatable clock by the time one turn on the CPU side took: a nanosecond for each
@@ -102,13 +108,22 @@ impl TestHost {
     }
 }
 
+/// The machine's wall clock, in nanoseconds since 1970.
+fn wall_clock() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_nanos() as u64
+}
+
 impl TestHost {
     /// The host a saved container is brought back on. What the container wrote has already left;
     /// the monotonic clock reads from an earlier start than this one's (a kernel that did not carry
-    /// its clock over would see it go back) and the wall clock goes on; randomness and the length of
-    /// turns come from `seed`.
-    fn moved(&self, seed: u64) -> Self {
-        Self {
+    /// its clock over would see it go back) and the wall clock goes on from the save (a repeatable
+    /// one without the time the save took); randomness and the length of turns come from `seed`.
+    fn moved(&mut self, seed: u64) -> Self {
+        let wall = self.realtime_nanoseconds();
+        let mut host = Self {
             started: Instant::now(),
             skipped: self.skipped,
             random: StdRng::seed_from_u64(seed),
@@ -116,8 +131,11 @@ impl TestHost {
             stderr: self.stderr.clone(),
             warnings: self.warnings.clone(),
             virtual_now: self.virtual_now.map(|_| 0),
+            wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
-        }
+        };
+        host.wall_base = wall - host.monotonic_nanoseconds();
+        host
     }
 
     /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
@@ -136,11 +154,10 @@ impl Host for TestHost {
     }
 
     fn realtime_nanoseconds(&mut self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("the clock is after 1970")
-            .as_nanos() as u64
-            + self.skipped
+        match self.virtual_now {
+            Some(_) => self.wall_base + self.monotonic_nanoseconds(),
+            None => wall_clock() + self.skipped,
+        }
     }
 
     fn random(&mut self, into: &mut [u8]) {

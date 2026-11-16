@@ -425,10 +425,12 @@ impl Kernel {
         syscall::futex::thread_end(self, cx, tid, true);
         self.unschedule(tid);
         syscall::sem::forget(self, tid);
+        syscall::sem::exit_sem(self, cx, tid);
         syscall::mqueue::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         cx.cpu.thread_drop(thread.cpu);
         let leader = (tid == thread.process).then(|| Leader::of(&thread));
+        self.put_files(thread.files);
         self.give_up_opening(thread.opening);
         let process = self
             .processes
@@ -438,6 +440,9 @@ impl Kernel {
         process.ended_time += thread.runtime;
         if let Some(leader) = leader {
             process.ended_leader = leader;
+        }
+        if !self.released.is_empty() {
+            self.files_released(cx);
         }
     }
 
@@ -455,6 +460,7 @@ impl Kernel {
         let mut thread = self.threads.remove(&tid).expect("thread exists");
         thread.call = Call::default();
         self.threads.insert(pid, thread);
+        syscall::sem::renumber(self, tid, pid);
         self.processes
             .get_mut(&pid)
             .expect("process exists")
@@ -473,6 +479,8 @@ impl Kernel {
             return;
         }
         let threads = self.processes[&pid].threads.clone();
+        // The threads' descriptor tables, closed where the process's files close.
+        let mut tables = alloc::vec::Vec::new();
         let memory = self.processes[&pid].memory;
         let shared = self.memory_in_use_elsewhere(pid, memory);
         for (index, &tid) in threads.iter().enumerate() {
@@ -482,6 +490,7 @@ impl Kernel {
         for tid in threads {
             self.unschedule(tid);
             syscall::sem::forget(self, tid);
+            syscall::sem::exit_sem(self, cx, tid);
             syscall::mqueue::forget(self, tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);
@@ -490,10 +499,10 @@ impl Kernel {
             if tid == pid {
                 process.ended_leader = Leader::of(&thread);
             }
+            tables.push(thread.files);
         }
         self.release_vfork(pid);
         syscall::timer::process_end(self, pid, false);
-        syscall::sem::exit_sem(self, cx, pid);
         let process = self.processes.get_mut(&pid).expect("process exists");
         process.threads.clear();
         process.ended = Some(wait_status);
@@ -501,13 +510,15 @@ impl Kernel {
         process.stopped = false;
         process.report = None;
         process.pending = Default::default();
-        process.files.close_all();
         let memory = process.memory;
         let empty = crate::memory::AddressMap::new(cx.cpu.address_space().end);
         let map = core::mem::replace(&mut process.map, empty);
         process.peak_mapped = map.iter().map(|mapping| mapping.end - mapping.start).sum();
         if !self.memory_in_use_elsewhere(pid, memory) {
             cx.cpu.memory_drop(memory);
+        }
+        for files in tables {
+            self.put_files(files);
         }
         if let Some(node) = pidfd {
             self.wake(syscall::pidfd::channel(&node));
@@ -783,11 +794,10 @@ impl Kernel {
     /// Descriptors were closed: locks may have been let go and pipes and terminals may have lost an
     /// end, so every wait on a file looks again.
     pub(crate) fn files_released(&mut self, cx: &mut Context<'_>) {
-        let files: alloc::vec::Vec<_> = self
-            .processes
-            .values_mut()
-            .flat_map(|process| process.files.take_released())
-            .collect();
+        let mut files = core::mem::take(&mut self.released);
+        for thread in self.threads.values() {
+            files.extend(thread.files.borrow_mut().take_released());
+        }
         crate::syscall::pipe::released(self, cx, files);
         let woken = self.parked.on(|channel| {
             matches!(

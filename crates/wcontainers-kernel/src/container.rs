@@ -380,10 +380,6 @@ impl Kernel {
             memory: wcontainers_abi::MemoryId(0),
             map: crate::memory::AddressMap::new(cx.cpu.address_space().end),
             threads: vec![pid],
-            files: FdTable::new(pid as u64),
-            root: root.clone(),
-            cwd: root.clone(),
-            umask: 0o022,
             credentials,
             limits: docker_limits(),
             executable: (root.clone(), Vec::new()),
@@ -421,9 +417,19 @@ impl Kernel {
             }; SIGNALS],
         };
         self.processes.insert(pid, process);
+        // Its CPU side thread is made once its program is loaded.
+        let files = Rc::new(core::cell::RefCell::new(FdTable::new(pid as u64)));
+        let fs = Rc::new(core::cell::RefCell::new(crate::process::FsContext {
+            root: root.clone(),
+            cwd: root.clone(),
+            umask: 0o022,
+        }));
+        let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs);
+        self.threads.insert(pid, thread);
         let result = self.start_first(&mut cx, pid, start);
         if result.is_err() {
             self.processes.remove(&pid);
+            self.threads.remove(&pid);
             // Counts what was refused on the way.
             self.settle(&mut cx);
         }
@@ -468,22 +474,23 @@ impl Kernel {
             })
             .collect();
         let limit = u64::MAX;
-        let process = self.processes.get_mut(&pid).expect("process");
-        process.cwd = cwd;
-        process.files.add(
+        self.fs_mut(pid).cwd = cwd;
+        let mut files = self.files_mut(pid);
+        files.add(
             OpenFile::new(null, O_RDWR | O_LARGEFILE, b"/dev/null".to_vec(), 0),
             false,
             0,
             limit,
         )?;
         for pipe in pipes {
-            process.files.add(
+            files.add(
                 OpenFile::new(pipe, O_WRONLY, Vec::new(), 0),
                 false,
                 0,
                 limit,
             )?;
         }
+        drop(files);
         let program = crate::loader::open_program(self, cx.cpu, pid, start.path)?;
         // The strings in the order and room of Linux's `do_execveat_common`.
         let stack_limit = self.processes[&pid].limits[RLIMIT_STACK as usize].current;
@@ -522,6 +529,7 @@ impl Kernel {
             // Past the point of no return the first process dies of SIGSEGV before it runs.
             Err(crate::loader::Failed::Fatal) => {
                 self.processes.remove(&pid);
+                self.threads.remove(&pid);
                 self.init = Some(pid);
                 self.finished = Some(SIGSEGV as i32);
                 self.counters.flush(cx.host);
@@ -532,7 +540,7 @@ impl Kernel {
             .cpu
             .thread_new(image.memory)
             .map_err(|error| cx.cpu_error(error))?;
-        self.threads.insert(pid, Thread::new(pid, thread));
+        self.thread_mut(pid).cpu = thread;
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);
         self.entry_now = cx.monotonic();
@@ -569,7 +577,6 @@ impl Kernel {
             stack.current = crate::memory::STACK_LIMIT;
         }
         process.credentials = image.after.credentials;
-        process.files.close_on_exec();
         // New credentials (`commit_creds` in `begin_new_exec`).
         self.last_credentials += 1;
         process.credentials.serial = self.last_credentials;
@@ -581,6 +588,9 @@ impl Kernel {
             action.sa_restorer = 0;
             action.sa_mask = kernel_sigset_t { sig: [0] };
         }
+        // The program's descriptor table is its own (`unshare_files`), less what closes on exec.
+        self.unshare_files(tid);
+        self.files_mut(tid).close_on_exec();
         let thread = self.threads.get_mut(&tid).expect("thread");
         thread.set_name(&image.name);
         // The new program has not registered its area. A program in secure mode, or one whose ids

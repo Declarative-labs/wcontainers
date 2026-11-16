@@ -55,10 +55,9 @@ pub(super) fn signalfd4(
     let opener = kernel.process_of(tid).credentials.serial;
     let file = OpenFile::new(node, O_RDWR | (flags & O_NONBLOCK), LINK.to_vec(), opener);
     file.borrow_mut().anon = Some(Anon::Signals(mask));
-    let process = kernel.process_of_mut(tid);
-    let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    let fd = process
-        .files
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    let fd = kernel
+        .files_mut(tid)
         .add(file, flags & SFD_CLOEXEC != 0, 0, limit)?;
     Ok(fd as u64)
 }

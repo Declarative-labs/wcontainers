@@ -274,7 +274,7 @@ pub(super) fn mq_open(
     };
     let name = guest(kernel, cx, tid).read_path(name)?;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
-    kernel.process_of(tid).files.lowest_free(0, limit)?;
+    kernel.files(tid).lowest_free(0, limit)?;
     // `lookup_noperm`: one name in the file system's root.
     if name == b"." || name == b".." || name.contains(&b'/') {
         return Err(Errno::EACCES);
@@ -289,7 +289,7 @@ pub(super) fn mq_open(
             if flags & O_CREAT == 0 {
                 return Err(Errno::ENOENT);
             }
-            let umask = kernel.process_of(tid).umask;
+            let umask = kernel.fs(tid).umask;
             super::files::may_change(kernel, tid, &root)?;
             let queue = Content::Mqueue(alloc::boxed::Box::new(new_queue(kernel, tid, limits)?));
             super::files::create(
@@ -336,7 +336,7 @@ pub(super) fn mq_open(
         kernel.process_of(tid).credentials.serial,
     );
     file.borrow_mut().internal_mount = true;
-    let fd = kernel.process_of_mut(tid).files.add(file, true, 0, limit)?;
+    let fd = kernel.files_mut(tid).add(file, true, 0, limit)?;
     Ok(fd as u64)
 }
 

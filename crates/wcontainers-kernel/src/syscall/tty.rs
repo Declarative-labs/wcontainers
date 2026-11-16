@@ -1123,8 +1123,7 @@ fn open_peer(
     }
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
-        .process_of_mut(tid)
-        .files
+        .files_mut(tid)
         .add(file, flags & O_CLOEXEC != 0, 0, limit)?;
     Ok(fd as u64)
 }

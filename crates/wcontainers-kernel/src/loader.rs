@@ -134,7 +134,7 @@ pub(crate) fn open_program(
     tid: Tid,
     path: &[u8],
 ) -> Result<Program, Errno> {
-    let cwd = kernel.processes[&kernel.process_number(tid)].cwd.clone();
+    let cwd = kernel.fs(tid).cwd.clone();
     open_program_at(kernel, cpu, tid, &cwd, path, true)
 }
 
@@ -147,7 +147,7 @@ fn open_named_program(
     path: &[u8],
 ) -> Result<Program, Errno> {
     if path.is_empty() {
-        let cwd = kernel.processes[&kernel.process_number(tid)].cwd.clone();
+        let cwd = kernel.fs(tid).cwd.clone();
         return program_of(kernel, cpu, tid, cwd, Vec::new());
     }
     open_program(kernel, cpu, tid, path)
@@ -188,7 +188,7 @@ pub(crate) fn program_of(
     node: Node,
     path: Vec<u8>,
 ) -> Result<Program, Errno> {
-    let credentials = &kernel.processes[&kernel.process_number(tid)].credentials;
+    let credentials = &kernel.process_of(tid).credentials;
     let inode = node.borrow();
     if inode.mode & S_IFMT != S_IFREG || inode.fs.no_execute() {
         return Err(Errno::EACCES);
@@ -522,7 +522,8 @@ fn place(
             .is_none_or(|(program, ..)| program.readable);
     let after = {
         let inode = program.node.borrow();
-        kernel.processes[&kernel.process_number(tid)]
+        kernel
+            .process_of(tid)
             .credentials
             .for_program(&crate::credentials::ProgramFile {
                 mode: inode.mode,

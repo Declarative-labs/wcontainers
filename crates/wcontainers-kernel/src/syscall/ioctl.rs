@@ -27,7 +27,7 @@ pub(super) fn ioctl(
     [fd, request, argument, ..]: Args,
 ) -> Result<u64, Errno> {
     let fd = fd as i32;
-    let file = kernel.process_of(tid).files.file(fd)?;
+    let file = kernel.files(tid).file(fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -60,14 +60,10 @@ fn every_file(
     };
     let has = |kernel: &Kernel, power: u32| kernel.process_of(tid).credentials.has(power);
     Some(match request {
-        FIOCLEX | FIONCLEX => kernel
-            .process_of_mut(tid)
-            .files
-            .get_mut(fd)
-            .map(|descriptor| {
-                descriptor.close_on_exec = request == FIOCLEX;
-                0
-            }),
+        FIOCLEX | FIONCLEX => kernel.files_mut(tid).get_mut(fd).map(|descriptor| {
+            descriptor.close_on_exec = request == FIOCLEX;
+            0
+        }),
         FIONBIO => guest(kernel, cx, tid)
             .read_value::<i32>(argument)
             .map(|value| {
@@ -273,7 +269,7 @@ fn clone_range(
     destination: &FileRef,
     source: i32,
 ) -> Result<u64, Errno> {
-    let source = kernel.process_of(tid).files.file(source)?;
+    let source = kernel.files(tid).file(source)?;
     if source.borrow().is_path() {
         return Err(Errno::EBADF);
     }

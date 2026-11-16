@@ -884,9 +884,11 @@ pub(super) fn timerfd_create(
         clock_id,
     });
     file.borrow_mut().anon = Some(Anon::Timer(id));
-    let process = kernel.process_of_mut(tid);
-    let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    match process.files.add(file, flags & TFD_CLOEXEC != 0, 0, limit) {
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    let added = kernel
+        .files_mut(tid)
+        .add(file, flags & TFD_CLOEXEC != 0, 0, limit);
+    match added {
         Ok(fd) => Ok(fd as u64),
         Err(error) => {
             kernel.timers.remove(id);
@@ -896,7 +898,7 @@ pub(super) fn timerfd_create(
 }
 
 fn timer_descriptor(kernel: &Kernel, tid: Tid, fd: u64) -> Result<u64, Errno> {
-    let file = kernel.process_of(tid).files.file(fd as i32)?;
+    let file = kernel.files(tid).file(fd as i32)?;
     kernel.timers.descriptor(&file).ok_or(Errno::EINVAL)
 }
 

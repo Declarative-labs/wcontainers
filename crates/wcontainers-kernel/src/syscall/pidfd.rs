@@ -141,9 +141,8 @@ pub(super) fn pidfd_open(
         None => return Err(Errno::ESRCH),
     }
     let file = make(kernel, cx, tid, pid, flags)?;
-    let process = kernel.process_of_mut(tid);
-    let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    let fd = process.files.add(file, true, 0, limit)?;
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    let fd = kernel.files_mut(tid).add(file, true, 0, limit)?;
     Ok(fd as u64)
 }
 
@@ -264,12 +263,11 @@ pub(super) fn process_mrelease(
     Err(Errno::EINVAL)
 }
 
-/// The descriptor numbers a process's table would give the next files, for `clone`'s CLONE_PIDFD,
+/// The descriptor number a thread's table would give the next file, for `clone`'s CLONE_PIDFD,
 /// which tells the parent its number before the child exists.
-pub(super) fn next_descriptor(kernel: &Kernel, pid: Pid) -> Result<i32, Errno> {
-    let process = &kernel.processes[&pid];
-    let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    process.files.lowest_free(0, limit)
+pub(super) fn next_descriptor(kernel: &Kernel, tid: Tid) -> Result<i32, Errno> {
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    kernel.files(tid).lowest_free(0, limit)
 }
 
 /// Gives a parent its descriptor for a child it just made (CLONE_PIDFD), close on exec.
@@ -280,9 +278,8 @@ pub(super) fn give_child_descriptor(
     child: Pid,
 ) -> Result<i32, Errno> {
     let file = make(kernel, cx, tid, child, 0)?;
-    let process = kernel.process_of_mut(tid);
-    let limit = process.limits[RLIMIT_NOFILE as usize].current;
-    process.files.add(file, true, 0, limit)
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    kernel.files_mut(tid).add(file, true, 0, limit)
 }
 
 /// The cgroup every process of the container is in, as `cgroup_id` reports it: the made-up machine

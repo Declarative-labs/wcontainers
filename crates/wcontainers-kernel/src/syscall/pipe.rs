@@ -75,23 +75,26 @@ pub(super) fn pipe2(
     attach(&node, &writer);
     let close_on_exec = flags & O_CLOEXEC != 0;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
-    let files = &mut kernel.process_of_mut(tid).files;
+    let mut files = kernel.files_mut(tid);
     let read_fd = files.add(reader, close_on_exec, 0, limit)?;
     let write_fd = match files.add(writer, close_on_exec, 0, limit) {
         Ok(fd) => fd,
         Err(error) => {
             let _ = files.remove(read_fd);
+            drop(files);
             kernel.files_released(cx);
             return Err(error);
         }
     };
+    drop(files);
     let mut bytes = [0u8; 8];
     bytes[..4].copy_from_slice(&read_fd.to_le_bytes());
     bytes[4..].copy_from_slice(&write_fd.to_le_bytes());
     if let Err(error) = guest(kernel, cx, tid).write(fds, &bytes) {
-        let files = &mut kernel.process_of_mut(tid).files;
+        let mut files = kernel.files_mut(tid);
         let _ = files.remove(read_fd);
         let _ = files.remove(write_fd);
+        drop(files);
         kernel.files_released(cx);
         return Err(error);
     }

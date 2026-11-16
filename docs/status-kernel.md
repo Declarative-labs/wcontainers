@@ -7,7 +7,53 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
 processes): the eighth run declared it done; two independent checks followed; the ninth run fixed the
 first one's findings and the tenth the second's (below). K3 (threads): the first run fixed the K2
-check's last findings and built threads, futexes and timers (below); K3 is not complete, see Next.
+check's last findings and built threads, futexes and timers; the second built the per-thread `/proc`,
+layer 2's libc-test, scheduling between threads and clone's sharing flags (below); K3 is not
+complete, see Next.
+
+Built in K3's second run:
+- `/proc/<pid>/task/<tid>/` (Linux's `tid_base_stuff` order and positions; the files built for a
+  process, per thread), `/proc/thread-self`, and `/proc/<tid>` for any thread (a process directory
+  showing that thread, as `proc_pid_lookup` finds any task). `stat`, `status` and `comm` show the
+  directory's thread: its number, name, state, scheduling values, blocked signals and filters. A
+  first thread that ended while others go on shows state Z, no umask, FDSize 0, and still counts in
+  Threads and in `task` (measured). The `comm` name is per thread (`Thread::name`): PR_SET_NAME and
+  PR_GET_NAME are the caller's, a write to a thread's `comm` names that thread (musl's
+  pthread_setname_np for another thread), execve names the caller. Path walks know the walking
+  thread (`with_walk(tid, ..)`). tests/threads.rs `proc_task_matches_reference` (guest/proctask.c),
+  tests/proclist.rs `thread_listings_are_a_subset_of_the_reference` (no longer ignored).
+- clone's sharing flags: each thread holds its descriptor table (`Thread::files`, Linux's
+  `files_struct`) and its root, working directory and umask (`Thread::fs`, `fs_struct`), shared by
+  CLONE_FILES and CLONE_FS and copied otherwise, for threads and processes alike; semaphore undo
+  lists are per thread (`list_of` by thread), shared by CLONE_SYSVSEM, undone when a thread's own
+  list's last holder ends. The last holder's end closes a table (`Kernel::put_files`); execve gives
+  the caller a table of its own before closing on exec (`unshare_files`), as close_range's
+  CLOSE_RANGE_UNSHARE now does. `/proc` reads a task's table and context. tests/threads.rs
+  `clone_tables_match_reference` (guest/clonetables.c, raw clone for threads since musl's wrapper
+  refuses CLONE_THREAD with EINVAL).
+- Descriptor searches start at Linux's `next_fd` (every descriptor below it in use): libc-test's
+  daemon-failure fills the whole 2^20 table with dup, which took quadratic time before.
+- Layer 2: musl's libc-test (MIT; its common, functional and regression tests vendored in
+  crates/wcontainers-kernel-test/libc-test from repo.or.cz commit 63e36e9, less those that load
+  shared libraries), each test run by the suite's own `runtest -t 600` as the container's first
+  process here and in the reference (src/libctest.rs, tests/libctest.rs). Threads, signals, timers
+  and IPC tests (43) under `SCHEDULE_SEEDS` seeds, with and without saves; the rest (97) under one
+  seed. `LIBC_TEST` picks tests by name, `LIBC_TEST_JOBS` sets how many run side by side (4).
+  Known failure: functional-socket (sockets are K5).
+- Scheduling between threads compared on one CPU under seeds (tests/turns.rs
+  `thread_scheduling_matches_one_cpu_reference`, guest/threadsched.c): setpriority and
+  getpriority by thread number (one thread's nice value is its own; raising it back is EACCES under
+  RLIMIT_NICE 0), PRIO_PGRP and PRIO_USER over threads, sched_setscheduler and getscheduler by
+  thread (FIFO and RR EPERM, leaving SCHED_IDLE EPERM), sched_getparam, sched_rr_get_interval
+  against the thread's slice, affinity by thread, two threads taking turns with sched_yield (15 or
+  more changes of turn in 19), and two threads that only compute sharing the CPU by weight (nice 0
+  against nice 10 gets 80 to 97 per cent of the CPU time; 1024/1134 is 90).
+- The test driver's repeatable host moves its wall clock with its monotonic clock (both from the
+  instructions run and the seed), and a host brought back from a save goes on from the save's wall
+  clock. Before, CLOCK_REALTIME was the machine's own, so the time a save took (a fork of the test
+  process, 0.1 s to 2 s under load) and the stand-in's slowness under load passed in the guest's
+  wall clock: libc-test's pthread_cond-smasher (0.5 s timeouts), pthread_mutex and pthread_mutex_pi
+  (0.1 s) timed out in 11 of 430 saved runs and once in a whole-suite run.
 
 Built in K3's first run:
 - The K2 check's findings: preadv2 and pwritev2 with RWF_NOWAIT refuse every regular tmpfs file
@@ -877,12 +923,12 @@ Partial (inside the list above), each with its reason:
   slice extension flag is counted and refused with EINVAL; the reference takes it.
 - process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
   `ptrace_may_access`, counted "call on another process not built", ENOSYS.
-- clone: fork, vfork and threads. The process holds its descriptor table, file system context,
-  handlers and semaphore undo list, so a thread without CLONE_FILES, CLONE_FS or CLONE_SYSVSEM, a
-  thread with CLONE_VFORK or CLONE_PIDFD, and a process sharing the caller's tables (CLONE_FILES,
-  CLONE_FS, CLONE_SIGHAND without CLONE_THREAD) or its memory while both run (CLONE_VM without
-  CLONE_VFORK) are counted "call flag not built", ENOSYS (Linux accepts them). Every C library makes
-  its threads with all three. Namespaces are refused by Docker's profile as in the reference.
+- clone: fork, vfork and threads, with descriptor tables, file system contexts and semaphore undo
+  lists shared or copied as the flags say. The process holds its signal handlers and its memory, so
+  a process sharing the caller's handlers (CLONE_SIGHAND without CLONE_THREAD) or its memory while
+  both run (CLONE_VM without CLONE_VFORK), and a thread with CLONE_VFORK or CLONE_PIDFD (thread
+  process descriptors are not built), are counted "call flag not built", ENOSYS (Linux accepts
+  them). Namespaces are refused by Docker's profile as in the reference.
 - futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL. A shared
   futex in a private file mapping is keyed by memory and address even before the page is copied
   (Linux keys an unwritten page by the file).
@@ -930,10 +976,13 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
 
 ## Known gaps (with reasons)
 
-- A thread's credentials, `comm` name and personality are its process's here; Linux keeps them per
-  thread (the C libraries change ids in every thread together, so only a raw setuid in one thread
-  shows the difference; PR_SET_NAME in a thread renames the process here). `/proc/<pid>/task` is
-  still not built (musl's pthread_setname_np writes `/proc/self/task/<tid>/comm`).
+- A thread's credentials and personality are its process's here; Linux keeps them per thread (the
+  C libraries change ids in every thread together, so only a raw setuid in one thread shows the
+  difference). `/proc/<pid>/task/<tid>/status` shows the process's ids.
+- A message queue's notification request goes when a descriptor of it is closed through a table
+  whose record lock owner is the requesting process's number (`FdTable::closed`); Linux compares
+  the closing thread's process (`mqueue_flush_file`), so a close through a thread's own table
+  (CLONE_THREAD without CLONE_FILES) leaves the request here.
 - Woken calls run again at once (`settle`), not when their thread next gets the CPU. A terminal splice
   into a pipe that a reader waits on hands the reader the line before the splicer runs again, so
   `cat /dev/tty | cat` (busybox `cat` uses sendfile) shows the first line at once here; in the
@@ -941,7 +990,6 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   runs), and the first line waits for the second. A reader that comes to the pipe after the splicer
   waits does wait (tests/terminal.rs `splice_holds_the_pipe`).
 
-- `/proc/<pid>/task` is not built (threads, K3); listing it is ENOENT here (an ignored test shows it).
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
   addresses and the pending signals are 0 (the loader knows the addresses but does not keep them).
 
@@ -1513,6 +1561,18 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K3, second run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`, default case counts) passed: 118 tests, 0 failed,
+  5 ignored, about 212 s of test time, load 24.26 at the start and 16.56 at the end.
+- K3, second run, libc-test: the 97 other tests under seed 1 and the 43 thread, signal, timer and
+  IPC tests under seeds 1 to 3 with and without 4 saves (129 runs each) matched (72.5 s for all
+  three, load about 33). Seeds 100 to 109 (430 runs each): without saves all matched (load about
+  33); with saves 11 differed before the wall clock fix (above) and all 430 matched after it (84 s,
+  load 24.26 at the start, 22.66 at the end). Typical times here: 3 to 30 ms a test, 1 to 3 s with
+  saves; raise-race 2.6 s, daemon-failure 5 s (2^20 dups).
+- K3, second run, guest/threadsched.c on the reference pinned to one CPU, three runs: identical
+  output each time, the weighted share and yield turns both within their bounds.
+
 - K3, first run: layer 1 seed 93103 (the K2 check's) passed 25000 sequences with the RWF_NOWAIT fix,
   378.88 s beside other work (load 36.75 at the start, 29.12 at the end).
 - K3, first run: the whole suite (`cargo test --no-fail-fast -p wcontainers-kernel -p
@@ -1609,6 +1669,10 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- libc-test runs each test through its own runner with a 600 s time limit (`runtest -t 600`), not
+  its default 5 s: the stand-in CPU on a loaded machine is far slower than the reference, and only a
+  test that never ends should time out.
 
 - A fatal signal ends a process at once here, where Linux ends it when it next runs. So
   process_mrelease never finds a dying process with memory to free: a running process is EINVAL and an
@@ -1755,7 +1819,7 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
   flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
   (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), clone's
-  table sharing between processes and threads that keep their own tables (ENOSYS), NUMA futexes
+  handlers or memory shared between processes and its CLONE_VFORK and CLONE_PIDFD threads (ENOSYS), NUMA futexes
   (EINVAL), pidfd_open's
   PIDFD_THREAD for a thread other than the first (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
   shmget's SHM_HUGETLB
@@ -1848,14 +1912,17 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K3, in order:
-1. `/proc/<pid>/task/<tid>/` (stat, status, comm, and the rest of a process directory per thread)
-   and per-thread `comm` (PR_SET_NAME, pthread_setname_np).
-2. The scheduling calls and CFS weights with threads compared on one CPU (tests/turns.rs pinned),
-   sched_yield between threads, now that compute-only threads take turns.
-3. Layer 2: the C library's own thread tests (musl's libc-test functional pthread and timer tests)
-   under several seeds.
-4. Per-thread credentials and the clone combinations counted as not built.
-5. Three fresh layer 1 seeds of 20000 at the end of the milestone (used so far: up to 737, the
+1. The clone combinations still counted as not built: processes sharing memory while both run
+   (CLONE_VM without CLONE_VFORK: the address map would become shared like the tables, see
+   `Thread::files`) and signal handlers (CLONE_SIGHAND between processes), threads with CLONE_VFORK
+   (`Process::vfork_parent` would move to the thread) and CLONE_PIDFD (needs process descriptors
+   for threads, PIDFD_THREAD).
+2. Per-thread credentials and personality (`Process::credentials` would move to the thread, 120
+   uses).
+3. Woken calls run again when their thread next gets the CPU rather than at once (`settle`; see
+   Known gaps, the terminal splice finding). `Kernel::next` has no CPU or host, so the rerun would
+   happen at the end of `exit` and `event`, picking as `pick` does.
+4. Three fresh layer 1 seeds of 20000 at the end of the milestone (used so far: up to 737, the
    checks' seeds, 3001 and 3002).
 
 Earlier:

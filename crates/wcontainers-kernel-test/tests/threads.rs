@@ -50,3 +50,12 @@ fn proc_task_matches_reference() {
         assert!(others.is_empty(), "{others:?}");
     }
 }
+
+/// clone's sharing flags for threads and processes: descriptor tables, file system contexts and
+/// semaphore undo lists of their own or shared.
+#[test]
+fn clone_tables_match_reference() {
+    for run in assert_same_output_seeded(&out(), "clonetables", &[], 0) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}

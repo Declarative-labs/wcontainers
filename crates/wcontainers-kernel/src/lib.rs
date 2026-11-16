@@ -127,6 +127,9 @@ pub struct Kernel {
     running: Option<Tid>,
     /// Parked threads by channel and deadline.
     parked: schedule::Parked,
+    /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
+    /// releasing.
+    released: Vec<file::FileRef>,
     /// Parked threads whose wait ended, whose calls are run again before anything else happens.
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
@@ -198,6 +201,7 @@ impl Kernel {
             resched: false,
             running: None,
             parked: schedule::Parked::default(),
+            released: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,
@@ -395,20 +399,54 @@ impl Kernel {
         self.processes.get_mut(&pid).expect("process exists")
     }
 
-    /// The process of thread `tid`. The first process loads its program before its thread is made,
-    /// under the number the thread then takes.
-    pub(crate) fn process_number(&self, tid: Tid) -> Pid {
-        self.threads.get(&tid).map_or(tid, |thread| thread.process)
+    /// Thread `tid`'s descriptor table.
+    pub(crate) fn files(&self, tid: Tid) -> core::cell::Ref<'_, file::FdTable> {
+        self.threads[&tid].files.borrow()
+    }
+
+    pub(crate) fn files_mut(&self, tid: Tid) -> core::cell::RefMut<'_, file::FdTable> {
+        self.threads[&tid].files.borrow_mut()
+    }
+
+    /// Thread `tid`'s root, working directory and umask.
+    pub(crate) fn fs(&self, tid: Tid) -> core::cell::Ref<'_, process::FsContext> {
+        self.threads[&tid].fs.borrow()
+    }
+
+    pub(crate) fn fs_mut(&self, tid: Tid) -> core::cell::RefMut<'_, process::FsContext> {
+        self.threads[&tid].fs.borrow_mut()
+    }
+
+    /// Lets go of a thread's hold on a descriptor table; the last holder's going closes it
+    /// (`put_files_struct`).
+    pub(crate) fn put_files(&mut self, files: process::Files) {
+        if let Some(table) = Rc::into_inner(files) {
+            let mut table = table.into_inner();
+            table.close_all();
+            self.released.extend(table.take_released());
+        }
+    }
+
+    /// Gives thread `tid` a copy of its descriptor table if it shares it (`unshare_fd`); the copy's
+    /// record locks are its own.
+    pub(crate) fn unshare_files(&mut self, tid: Tid) {
+        let thread = self.thread_mut(tid);
+        if Rc::strong_count(&thread.files) > 1 {
+            let copy = thread.files.borrow().duplicate(tid as u64);
+            thread.files = Rc::new(core::cell::RefCell::new(copy));
+        }
     }
 
     /// Runs `f` with a path walker from the point of view of thread `tid`.
     pub(crate) fn with_walk<R>(
         &self,
         tid: Tid,
-        f: impl FnOnce(&fs::Walk<'_>, &Process) -> Result<R, Errno>,
+        f: impl FnOnce(&fs::Walk<'_>, &process::FsContext) -> Result<R, Errno>,
     ) -> Result<R, Errno> {
-        let pid = self.process_number(tid);
+        let thread = &self.threads[&tid];
+        let pid = thread.process;
         let process = &self.processes[&pid];
+        let context = thread.fs.borrow();
         let view = fs::proc::View {
             processes: &self.processes,
             threads: &self.threads,
@@ -420,11 +458,11 @@ impl Kernel {
             counters: &self.counters,
         };
         let walk = fs::Walk {
-            root: &process.root,
+            root: &context.root,
             credentials: &process.credentials,
             proc: &view,
         };
-        f(&walk, process)
+        f(&walk, &context)
     }
 
     /// The time now on the wall clock.

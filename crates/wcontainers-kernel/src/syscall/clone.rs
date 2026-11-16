@@ -13,10 +13,6 @@ use crate::{Context, Errno, Kernel, errno};
 /// Linux's `CSIGNAL`: the low byte of clone's flags is the signal sent to the parent at the end.
 const CSIGNAL: u64 = 0xff;
 
-/// What a thread shares here with the rest of its process: the process holds its descriptor
-/// table, its file system context and its semaphore undo list, so a thread must share them all.
-const THREAD_SHARES: u32 = CLONE_FILES | CLONE_FS | CLONE_SYSVSEM;
-
 /// `clone(flags, stack, parent_tid, tls, child_tid)`, arm64's argument order.
 pub(super) fn clone(
     kernel: &mut Kernel,
@@ -101,15 +97,14 @@ fn make_child(
     {
         return Err(Errno::EINVAL);
     }
-    // A thread that keeps its own tables or waits like vfork, or a process that shares the
-    // caller's tables or its memory while both run, is not built.
+    // A thread that waits like vfork or has a process descriptor made, or a process that shares
+    // the caller's signal handlers or its memory while both run, is not built.
     let thread = flags & CLONE_THREAD != 0;
     let unbuilt = if thread {
-        (THREAD_SHARES & !flags) | (flags & (CLONE_VFORK | CLONE_PIDFD))
+        flags & (CLONE_VFORK | CLONE_PIDFD)
     } else {
         let shares_memory = flags & CLONE_VM != 0 && flags & CLONE_VFORK == 0;
-        (flags & (CLONE_FILES | CLONE_FS | CLONE_SIGHAND))
-            | if shares_memory { CLONE_VM } else { 0 }
+        (flags & CLONE_SIGHAND) | if shares_memory { CLONE_VM } else { 0 }
     };
     if unbuilt != 0 {
         return Err(kernel.counters.refuse_flag(
@@ -136,7 +131,7 @@ fn make_child(
     // The parent's descriptor for the child: its number is written before the child exists, and
     // nothing is made if that faults.
     if flags & CLONE_PIDFD != 0 {
-        let fd = super::pidfd::next_descriptor(kernel, pid)?;
+        let fd = super::pidfd::next_descriptor(kernel, tid)?;
         guest(kernel, cx, tid).put(pidfd_out, &fd.to_le_bytes())?;
     }
     if thread {
@@ -189,7 +184,6 @@ fn make_child(
     process.memory = memory;
     process.map = map;
     process.threads = alloc::vec![child];
-    process.files = parent.files.duplicate(child as u64);
     process.pending = Default::default();
     process.ended = None;
     process.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
@@ -228,6 +222,7 @@ fn make_child(
     }
     cx.cpu.set_registers(thread_cpu, &registers);
     let mut thread = kernel.threads[&tid].clone();
+    share_or_copy(&mut thread, flags, child);
     thread.process = child;
     thread.cpu = thread_cpu;
     thread.resume = Resume::FromRegisters;
@@ -255,7 +250,7 @@ fn make_child(
     }
     kernel.processes.insert(child, process);
     kernel.threads.insert(child, thread);
-    super::sem::copy_undo(kernel, pid, child, flags & CLONE_SYSVSEM != 0);
+    super::sem::copy_undo(kernel, tid, child, flags & CLONE_SYSVSEM != 0);
     if flags & CLONE_PIDFD != 0 {
         super::pidfd::give_child_descriptor(kernel, cx, tid, child)?;
     }
@@ -265,6 +260,19 @@ fn make_child(
     }
     kernel.start_new(child);
     Ok(child)
+}
+
+/// `copy_files` and `copy_fs`: a new thread or process shares its maker's descriptor table and file
+/// system context when the flags say so, and otherwise has copies of its own.
+fn share_or_copy(thread: &mut crate::process::Thread, flags: u32, child: Tid) {
+    if flags & CLONE_FILES == 0 {
+        let copy = thread.files.borrow().duplicate(child as u64);
+        thread.files = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+    }
+    if flags & CLONE_FS == 0 {
+        let copy = thread.fs.borrow().clone();
+        thread.fs = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+    }
 }
 
 /// `copy_process` for a thread of the caller's process: it shares everything the process holds and
@@ -297,6 +305,7 @@ fn make_thread(
     }
     cx.cpu.set_registers(thread_cpu, &registers);
     let mut thread = kernel.threads[&tid].clone();
+    share_or_copy(&mut thread, flags, child);
     thread.cpu = thread_cpu;
     thread.resume = Resume::FromRegisters;
     thread.pending = Default::default();
@@ -323,6 +332,7 @@ fn make_thread(
         thread.schedule.reset_on_fork = false;
     }
     kernel.threads.insert(child, thread);
+    super::sem::copy_undo(kernel, tid, child, flags & CLONE_SYSVSEM != 0);
     kernel
         .processes
         .get_mut(&pid)
