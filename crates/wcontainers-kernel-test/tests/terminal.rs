@@ -48,3 +48,10 @@ fn closing_sides() {
 fn job_control() {
     compare("jobs", &[]);
 }
+
+/// The image's shell with its job control on a terminal: jobs stopped and continued, background
+/// reads and writes stopped, and keys that interrupt.
+#[test]
+fn interactive_shell() {
+    compare("shpty", &[]);
+}

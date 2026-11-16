@@ -47,6 +47,8 @@ pub enum Unsupported {
 struct Stopped {
     exception: Option<u32>,
     fault: Option<(u64, Access)>,
+    /// Instructions of the blocks entered, for how long the turn took.
+    instructions: u64,
 }
 
 struct Memory {
@@ -81,6 +83,8 @@ pub struct StandIn {
     last_memory: u32,
     last_thread: u32,
     last_block: u32,
+    /// How many instructions the last turn ran, about: whole blocks are counted.
+    pub last_instructions: u64,
 }
 
 fn prot(permissions: Permissions) -> Prot {
@@ -127,6 +131,11 @@ impl Memory {
                 unicorn.emu_stop().expect("stopping unicorn");
             })
             .expect("adding the interrupt hook");
+        unicorn
+            .add_block_hook(1, 0, |unicorn, _, size| {
+                unicorn.get_data_mut().instructions += u64::from(size / 4);
+            })
+            .expect("adding the block hook");
         let invalid = HookType(
             HookType::MEM_READ_UNMAPPED.0
                 | HookType::MEM_WRITE_UNMAPPED.0
@@ -413,6 +422,7 @@ impl StandIn {
             last_memory: self.last_memory,
             last_thread: self.last_thread,
             last_block: self.last_block,
+            last_instructions: 0,
         }
     }
 
@@ -449,6 +459,7 @@ impl StandIn {
             .save_registers(&mut state.registers)
             .expect("reading registers from unicorn");
         let stopped = std::mem::take(memory.unicorn.get_data_mut());
+        self.last_instructions = stopped.instructions;
         // A jump to an address that is not a multiple of 4 faults on alignment before any fetch.
         if let Some((address, access)) = stopped.fault {
             if access == Access::Execute && !address.is_multiple_of(4) {

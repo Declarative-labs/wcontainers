@@ -92,10 +92,10 @@ impl TestHost {
         }
     }
 
-    /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
-    /// microseconds, drawn from the seed.
-    fn ran(&mut self) {
-        let step = self.schedule.random_range(500..1500);
+    /// Advances a repeatable clock by the time one turn on the CPU side took: a nanosecond for each
+    /// instruction it ran, and between 0.5 and 1.5 microseconds more, drawn from the seed.
+    fn ran(&mut self, instructions: u64) {
+        let step = instructions + self.schedule.random_range(500..1500);
         if let Some(now) = &mut self.virtual_now {
             *now += step;
         }
@@ -260,7 +260,7 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
                 let exit = cpu
                     .run(thread, resume, slice_nanoseconds)
                     .map_err(Failure::StandIn)?;
-                host.ran();
+                host.ran(cpu.last_instructions);
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;

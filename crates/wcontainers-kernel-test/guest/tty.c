@@ -71,11 +71,15 @@ static void type(const char *label, const char *input, long length) {
     while ((n = read(slave, buf, sizeof buf)) >= 0)
         show("read slave", buf, n);
     result("read slave", n);
-    n = read(master, buf, sizeof buf);
-    if (n < 0)
+    // Each piece the slave side wrote arrives on its own; a read that finds nothing waits for the
+    // pieces still on their way.
+    long total = 0;
+    while ((n = read(master, buf + total, sizeof buf - total)) > 0)
+        total += n;
+    if (total == 0)
         result("read master", n);
     else
-        show("read master", buf, n);
+        show("read master", buf, total);
 }
 
 #define TYPE(label, text) type(label, text, sizeof(text) - 1)
