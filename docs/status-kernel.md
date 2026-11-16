@@ -4,10 +4,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 is done. K1 (one process) is complete as the orchestrator ruled it (seventh run, the close-out):
-every item of the K1 list is built, layer 1 covers every call built, and with every fix in three
-fresh seeds passed 20000 sequences each (see Layer 1). The one-million-sequence layer 1 run is not
-part of K1: by the orchestrator's ruling it runs once at the end of the kernel track. Next is K2.
+K0 is done. K1 (one process): the seventh run closed it out; an independent check then found ten
+problems, and the eighth run (the second close-out run) fixed them all (see "Eighth run" under Layer
+1 and Tests). The one-million-sequence layer 1 run is not part of K1: by the orchestrator's ruling it
+runs once at the end of the kernel track. Next is K2.
 
 How to test everything: `nix develop -c cargo test -p wcontainers-kernel -p wcontainers-kernel-test`.
 Known failures are `#[ignore]`d with their reason; see them with `-- --include-ignored`.
@@ -36,14 +36,21 @@ Ignored tests (each attribute gives the reason):
   counted by the reference and not known here (counted "page residency not tracked").
 - proclist `thread_listings_are_a_subset_of_the_reference`: `/proc/<pid>/task` is not built (threads,
   K3).
+- procstatus `private_mapping_sees_later_writes`: a private file mapping is a copy made at mmap, so
+  pages it has not written do not see later writes to the file, as Linux's do (counted "private file
+  mapping is a copy"; procstatus `private_mapping_copy_is_counted` checks the counter).
 
 Comparisons that are subsets rather than equality, and why:
-- tests/proclist.rs compares listings of `/proc`, `/proc/self`, `/proc/1`, `/proc/self/fd`,
-  `/proc/sys/...`, `/dev`, `/dev/pts` and `/dev/shm`: every entry we list must be in the reference's
-  listing with the same type, mode, owner, group and link count. The reference has 331 more entries
-  (printed by the test): `/proc` holds a chosen subset (plan section 15). The link counts of `/proc`
-  itself (Linux counts every process on the machine) and of `/` (the root file system's kind) are left
-  out of that comparison.
+- tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
+  `/proc/self`, `/proc/1`, `/proc/self/fd` and `/proc/sys/...`: every entry we list must be in the
+  reference's listing with the same type, mode, owner, group and link count. The reference has about
+  330 more entries (printed by the test): `/proc` holds a chosen subset (plan section 15). A lookup of
+  any of Linux's entries that is not built is counted "proc entry not built" and warned (the list of
+  Linux's names per directory is in fs/proc.rs, from the reference; procstatus
+  `entries_not_built_are_counted` checks it). The link counts of `/proc` itself (Linux counts every
+  process on the machine) and of `/` (the root file system's kind) are left out.
+- `/dev`, `/dev/pts` and `/dev/shm` are compared whole and in order (proclist
+  `device_listings_match_the_reference`), except the link count of `..` of `/dev`, which is `/`.
 - tests/sharedmap.rs sorts `/proc/self/maps` (placement differs: no address randomization here).
 - tests/schedattr.rs shows time slices relative to the default (the CPU count differs).
 
@@ -60,7 +67,8 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   runner asks after each call; "unshared"): `/dev` and `/dev/shm` outlive a sequence in the reference
   and keep tmpfs's position counter across sequences; `/proc` and process directories list the
   machine's processes and the chosen subset of entries. These listings are compared in layer 2 by
-  tests/proclist.rs (above) instead. Listings of the sequence's own directories are compared in full.
+  tests/proclist.rs (above) instead: `/dev` in full and in order, `/proc` as a subset. Listings of the
+  sequence's own directories are compared in full.
 - A call's random or machine bytes are kept out of later calls by writing them only to areas no later
   call reads (getrandom, uname, name_to_handle_at).
 
@@ -80,6 +88,10 @@ What layer 1 does not generate, and why:
   instruction pointer (the runners' differ); alternate signal stacks that could hold either caller's
   stack pointer; rseq areas where other calls write.
 - brk (its values are addresses that differ by layout; tests/memory.rs and tests/limits.rs test it).
+- CPU clock ids of process 1 (our caller is process 1, the reference's is not); those of the
+  caller's own process and thread (encoded pid 0), of a missing process, and clock devices are
+  generated. tests/clocks.rs compares every kind of clock id, process 1's and the caller's own
+  number included, in a program that is process 1 on both sides.
 - Paths reach `/dev/shm/w` (the sequence's directory), the three zero devices and `/proc/self/...`
   through a fixed pool; never the root file system, never `/proc` files' contents (those are compared
   in layer 2 only where a test reads them: procsignals, the busybox commands, execveat, memfd).
@@ -107,11 +119,16 @@ What layer 1 does not generate, and why:
   head at 2 or below, otherwise at the entry with the greatest position at or below it, or at the head
   when there is none. `.`=0, `..`=1, end 2^31-1.
 - Mounts as `docker run` makes them: `/` (tmpfs here, see departures), `/proc`, `/dev` (tmpfs with
-  null, zero, full, random, urandom, tty and Docker's links), `/dev/pts` (devpts, with ptmx), `/dev/shm`
-  (tmpfs), `/dev/mqueue` as a plain directory. fd 0 is `/dev/null` opened read-write, fds 1 and 2 are
+  null, zero, full, random, urandom, tty and Docker's links, made in runc's order so listings match),
+  `/dev/pts` (devpts, with ptmx), `/dev/shm` (tmpfs), `/dev/mqueue` as a plain directory. fd 0 is `/dev/null` opened read-write, fds 1 and 2 are
   pipes the host reads (as Docker's; no O_LARGEFILE, as Linux's `create_pipe_files`, measured).
 - Open files keep O_LARGEFILE from open as a 64 bit kernel sets it, except with O_PATH
-  (`build_open_how`); F_GETFL reports the file's own flags.
+  (`build_open_how`); F_GETFL reports the file's own flags. open, openat and openat2 take the
+  descriptor right after checking the flags (`do_sys_openat2`'s `FD_ADD`), so at the limit EMFILE
+  comes before any path error; a trailing slash on an existing name asks for a directory (ENOTDIR).
+- Devices: reads and writes leave a device's position alone; `/dev/null`, `/dev/zero` and `/dev/full`
+  always seek to 0 (`null_lseek`), the random devices keep their position (`noop_llseek`).
+- copy_file_range needs one superblock (EXDEV otherwise; no file system here has its own copy).
 - `/proc`: self, `<pid>/` with cmdline, comm, environ, auxv, maps, stat, statm, status, mounts, limits,
   cgroup, exe, cwd, root, fd/ (magic links); cpuinfo, meminfo, uptime, loadavg, stat, version,
   filesystems, mounts, sys/kernel/{hostname, osrelease, ostype, pid_max, ngroups_max, cap_last_cap,
@@ -121,10 +138,19 @@ What layer 1 does not generate, and why:
   read-only mount (EROFS), owners follow `task_dump_owner`, link counts (9 for a process directory, 1
   for sysctl directories), an `fd` directory's size is its number of descriptors, its listing
   positions are a descriptor's number plus 2 (`proc_readfd_common`). status and stat show the blocked,
-  ignored and caught signals (stat only the first 31, as `do_task_stat`).
+  ignored and caught signals (stat only the first 31, as `do_task_stat`); status shows FDSize as the
+  table's size (`max_fds`) and the groups as `task_state` prints them. `/proc` itself, `self` and the
+  entries outside the process directories keep a change of owner, mode or times (kept by inode
+  number, as Linux keeps them in the root's inode and in each `proc_dir_entry`). A lookup of an entry
+  Linux has that is not built is counted "proc entry not built"; opening stat, statm, status or
+  mounts is counted "proc fields not tracked" (zeroed or missing fields, below).
 - Memory (src/memory.rs): ranges with what the program asked for, top-down placement below
   end-128 MiB, reused ranges cleared, brk, mmap (anonymous, private file copies, `/dev/zero`, shared
-  file mappings through shared blocks), munmap, mprotect, madvise, mremap, msync, mlock family.
+  file mappings through shared blocks), munmap, mprotect, madvise, mremap, msync, mlock family. Shared
+  anonymous memory and shared `/dev/zero` show in maps as Linux's removed `/dev/zero` on its internal
+  tmpfs (device 0:1, an inode each, never merged with another), a private `/dev/zero` mapping as the
+  device's file. A change to a file a private mapping copied is counted "private file mapping is a
+  copy".
   Pages wholly past a file's end are inaccessible (SIGBUS). The stack grows on a fault below it up to
   its limit, keeping Linux's 1 MiB guard gap. Pages that may only run cannot be read (measured: the
   reference's CPU has execute-only pages).
@@ -140,7 +166,11 @@ What layer 1 does not generate, and why:
   Linux's rules for changing ids and what that does to powers and `dumpable`, capget/capset.
 - Time: clocks from the host, coarse clocks at 1 ms resolution (measured), sleeps park the thread and
   the kernel goes idle until the time; the test host jumps its clocks instead of waiting. CPU time is
-  the time since the container started less the time the process's threads spent parked.
+  the time since the container started less the time the process's threads spent parked. CPU clock
+  ids below zero (`clock_getcpuclockid`, `pthread_getcpuclockid`) as Linux's `pid_for_clock`: own
+  process and thread, any process, a thread of the caller's; profiling and user time at 1 ms
+  resolution, scheduler time at 1 ns (measured); clock devices EINVAL, and EOPNOTSUPP for sleeps.
+  Alarm clock sleeps refuse unknown flags and need CAP_WAKE_ALARM (EPERM in Docker), as measured.
 - Signals within one process (src/signal.rs): sent to itself, dropped if ignored, kept pending while
   blocked, acted on when let through. The container's first process ignores signals it has no handler
   for (`SIGNAL_UNKILLABLE`); faults still kill it. A signal that would need its handler run, or would
@@ -187,8 +217,10 @@ Partial (inside the list above), each with its reason:
   counted when the file is a device.
 - mmap: MAP_HUGETLB counted, ENOMEM (no huge pages). MAP_SHARED anonymous is private memory here,
   exact while there is no fork (K2). A private file mapping is a copy made at mmap, so pages not yet
-  written do not see later changes to the file (no counter: the CPU side does not say which pages were
-  written). MAP_SYNC EOPNOTSUPP, as tmpfs.
+  written do not see later changes to the file: counted "private file mapping is a copy" when such a
+  file is written, truncated or allocated, or is mapped both shared and private (the CPU side does not
+  say which pages were written, so the count includes pages a program had already written). MAP_SYNC
+  EOPNOTSUPP, as tmpfs.
 - openat, openat2: O_TMPFILE counted, EOPNOTSUPP; named pipes counted, ENXIO (pipes, K2); `/dev/ptmx`
   counted, ENODEV (terminals, K2). openat2's restricted lookups counted, ENOSYS, as a kernel without
   them; RESOLVE_CACHED taken.
@@ -266,22 +298,44 @@ Missing (90, each counted "system call not implemented" and ENOSYS), with what e
 - `/proc/<pid>/stat`: the start time, rss, rsslim, the code, data, stack, argument and environment
   addresses and the pending signals are 0 (the loader knows the addresses but does not keep them;
   pending signals are one set per thread here while Linux keeps shared and thread pending apart, K2).
+  statm shows only the size (resident pages are not known; text and data need the loader's addresses).
   `/proc/<pid>/status` has only some of Linux's lines (no memory, SigQ, SigPnd, ShdPnd or context
-  switch lines).
+  switch lines). Each open of these is counted "proc fields not tracked". Built with K2's processes,
+  before K6's bar.
+- About 330 of Linux's `/proc` entries are not built (mountinfo, mem, fdinfo, task, oom_score_adj,
+  uid_map, smaps, entropy_avail and more; proclist prints them): ENOENT, counted "proc entry not
+  built" with the entry in the detail. Those programs commonly read come before K6's bar.
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen
   (directories are followed live).
-- Inodes of `/proc` are made at each lookup, so changes to them do not last: chown of a process's
-  entries succeeds with no effect, as on Linux; chmod or chown of entries outside the process
-  directories are refused with EPERM and counted ("proc attribute change not kept"); utimensat on them
-  succeeds with no effect (Linux keeps the times while the inode is cached).
-- `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts.
+- Inodes of `/proc` are made at each lookup. chown of a process's entries succeeds with no effect, as
+  on Linux; utimensat on them succeeds with no effect (Linux keeps the times while the inode is
+  cached). Entries outside the process directories keep their changes (above).
+- `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts, `/dev/pts`, `/dev/mqueue`
+  or `/sys` (counted "proc fields not tracked", detail 3).
 - RLIMIT_CPU is not enforced (timers, K3); xattr space limits; huge page memory files; private file
   mappings that see later file changes; O_TMPFILE.
 - K2 must abort rseq critical sections when it delivers signals, and run seccomp TRAP handlers.
 
-## Tests (last run 2026-11-15: 43 passed, 6 ignored known failures)
+## Tests (last run 2026-11-15, eighth run: 52 passed, 7 ignored known failures)
 
-All pass except the ignored known failures listed above. Added in the seventh run:
+All pass except the ignored known failures listed above. Added in the eighth run:
+- opencheck: guest/opencheck.c: opens of "f/", "lf/", "ld/", "/dev/null/", "/etc/passwd/" and
+  `/proc` entries with a slash, with O_PATH, O_NOFOLLOW and O_CREAT; copy_file_range between memory
+  files, secret memory and `/dev/shm`; reads, writes and seeks of the five devices; chmod and chown of
+  `/proc`, `/proc/self` and `/proc/cpuinfo`; at RLIMIT_NOFILE 6 with every slot used, open of a bad
+  descriptor, a bad pointer, a missing path, O_TMPFILE, openat2, memfd_create and memfd_secret. Same
+  output.
+- clocks: guest/clocks.c: gettime, getres (with and without a buffer) and four sleeps on every fixed
+  clock id 0 to 12 and on CPU clock ids of pid 0, self, process 1, a missing process and process 2,
+  for all eight low-bit values. Same output.
+- procstatus: FDSize and Groups after 70 opens, dup2 to 300, close, setgroups of 3, 1 and 0 groups;
+  maps lines of shared anonymous memory before and after splitting it with mprotect and merging it
+  back, shared and private `/dev/zero`. Same output (inode numbers and `/dev`'s device left out:
+  machine-specific). Also: lookups of mountinfo and entropy_avail are counted, a missing name is not;
+  the private mapping copy is counted; and the ignored known failure above.
+- proclist `device_listings_match_the_reference`: `/dev`, `/dev/pts`, `/dev/shm` whole and in order.
+- busybox: `cat /etc/hostname/`, `cat /dev/null/`, `find /dev`, `ls -f /dev`.
+Added in the seventh run:
 - dirorder: guest/dirorder.c: tmpfs listings whole, one entry per call and from every position, after
   creating, renaming over a name, renaming to a new name, exchanging, linking, removing, renaming a
   directory over an empty one, moving out and back, refused renames, whiteouts, lseek to 2, 3, 5, 100,
@@ -387,6 +441,16 @@ All on this shared Mac; noisy, not benchmarks.
 - cachestat on the root file system counts tmpfs pages, where the reference's overlayfs file has none.
 - Many checks were reordered to match the order Linux makes them in: which error comes first is part of
   the behaviour.
+- The names of Linux's `/proc` entries that are not built (for counting lookups of them) are taken
+  from the reference's listing of its own kernel (Linux 7.0 with linuxkit's configuration), since which
+  entries exist depends on the configuration; a lookup of a name not in that list is a plain ENOENT.
+- `/dev` is filled in runc's order (Docker's mount points, runc's default devices, the `ptmx` link,
+  the standard links), measured from the reference's listing and matching runc's source.
+- The internal tmpfs (memory files, shared anonymous memory) has device 0:1, as Linux's `shm_mnt`
+  mounted first at boot (measured in the reference's maps).
+- `struct tms` (`linux/times.h`) is typed in linux_extra.rs (linux-raw-sys does not generate it);
+  `sysinfo` and `stack_t` have padding, so their fields are placed by `offset_of!` on linux-raw-sys's
+  structures instead of zerocopy.
 
 ## Changes to the shared crate (wcontainers-abi)
 
@@ -395,7 +459,7 @@ All on this shared Mac; noisy, not benchmarks.
   address }` (the translator's side) and moved a layout assertion in registers.rs to a constant
   assertion; the kernel handles the new exit (SIGBUS) and the stand-in reports it for misaligned
   fetches. Cargo.lock was regenerated by cargo for the merge (the kernel's lock plus the translator's
-  packages, only additions).
+  packages, only additions). The eighth run changed nothing in the shared crate.
 
 ## Questions for the orchestrator (boundary)
 

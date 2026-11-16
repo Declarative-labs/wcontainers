@@ -106,5 +106,17 @@ int main(int argc, char **argv) {
     char *private = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, zero, 0);
     printf("private /dev/zero\n");
     maps(private);
+    // A process's directory shows its owner as it is now; its files as they were when looked up.
+    int directory = open("/proc/self/", O_RDONLY);
+    int file = open("/proc/self/status", O_RDONLY);
+    setgid(2000);
+    setuid(1000);
+    struct stat st;
+    fstat(directory, &st);
+    printf("directory owner %d group %d\n", st.st_uid, st.st_gid);
+    fstat(file, &st);
+    printf("file owner %d group %d\n", st.st_uid, st.st_gid);
+    stat("/proc/self/status", &st);
+    printf("looked up again owner %d group %d\n", st.st_uid, st.st_gid);
     return 0;
 }

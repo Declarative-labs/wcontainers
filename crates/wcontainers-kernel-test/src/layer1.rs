@@ -758,9 +758,10 @@ const CLOCKS: &[u64] = &[
     cpu_clock(99999, 6),
 ];
 
-/// The process CPU clocks: a relative sleep on one never ends (it does not move while the caller
-/// sleeps), so they are only slept on until a time already past.
-const PROCESS_CPU_CLOCKS: &[u64] = &[2, cpu_clock(0, 0), cpu_clock(0, 1), cpu_clock(0, 2)];
+/// The process CPU clocks slept on: a relative sleep on one never ends (it does not move while the
+/// caller sleeps), so they are only slept on until a time already past. The profiling and user time
+/// clocks are left out of sleeps: Linux samples them at ticks, so a young process's may still be 0.
+const PROCESS_CPU_CLOCKS: &[u64] = &[2, cpu_clock(0, 2)];
 
 const SLEEP_CLOCKS: &[u64] = &[
     0,
@@ -771,8 +772,6 @@ const SLEEP_CLOCKS: &[u64] = &[
     8,
     9,
     99,
-    cpu_clock(0, 0),
-    cpu_clock(0, 1),
     cpu_clock(0, 2),
     cpu_clock(0, 3),
     cpu_clock(0, 6),

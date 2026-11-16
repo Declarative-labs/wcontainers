@@ -357,16 +357,21 @@ impl Entry {
             | Entry::Fd(pid, _) => *pid,
             _ => return (0, 0),
         };
-        // Linux's `task_dump_owner`: the process's effective ids, except that what is not a world
-        // readable directory belongs to root while the process may not be dumped.
-        view.processes.get(&pid).map_or((0, 0), |process| {
-            if self.mode() != S_IFDIR | 0o555 && !process.dumpable {
-                (0, 0)
-            } else {
-                (process.credentials.euid, process.credentials.egid)
-            }
-        })
+        dump_owner(view.processes, pid, self.mode())
     }
+}
+
+/// Linux's `task_dump_owner`: the owner of a process's entry with `mode`, the process's effective ids,
+/// except that what is not a world readable directory belongs to root while the process may not be
+/// dumped.
+pub(crate) fn dump_owner(processes: &BTreeMap<Pid, Process>, pid: Pid, mode: u32) -> (u32, u32) {
+    processes.get(&pid).map_or((0, 0), |process| {
+        if mode != S_IFDIR | 0o555 && !process.dumpable {
+            (0, 0)
+        } else {
+            (process.credentials.euid, process.credentials.egid)
+        }
+    })
 }
 
 /// Makes the inode for an entry found in `parent` under `name`.

@@ -1237,6 +1237,13 @@ fn count_unknown_blocks(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) 
 /// Fills Linux's `stat` for an inode.
 pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
     let inode = node.borrow();
+    // A process's directory reports its owner as it is now (`pid_getattr`); other inodes as made.
+    let (uid, gid) = match inode.content {
+        Content::Proc(proc::Entry::Process(pid)) => {
+            proc::dump_owner(&kernel.processes, pid, inode.mode)
+        }
+        _ => (inode.uid, inode.gid),
+    };
     stat {
         st_dev: inode.fs.device,
         st_ino: inode.ino,
@@ -1245,8 +1252,8 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
             Content::Proc(proc::Entry::Root) => proc::root_links(kernel.processes.len()),
             _ => inode.nlink,
         },
-        st_uid: inode.uid,
-        st_gid: inode.gid,
+        st_uid: uid,
+        st_gid: gid,
         st_rdev: inode.rdev,
         __pad1: 0,
         st_size: match inode.content {
@@ -1368,8 +1375,8 @@ pub(super) fn statx(
     out.stx_mask = reported;
     out.stx_blksize = inode.fs.kind.block_size();
     out.stx_nlink = plain.st_nlink;
-    out.stx_uid = inode.uid;
-    out.stx_gid = inode.gid;
+    out.stx_uid = plain.st_uid;
+    out.stx_gid = plain.st_gid;
     out.stx_mode = inode.mode as u16;
     out.stx_ino = inode.ino;
     out.stx_size = plain.st_size as u64;
