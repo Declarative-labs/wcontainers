@@ -243,6 +243,33 @@ impl Kernel {
         self.settle(&mut cx);
     }
 
+    /// Brings back a saved container on a CPU side restored from the same save (every memory, block
+    /// and thread's registers under the same handles, nothing else): every thread starts again from
+    /// its saved registers, and every parked call runs again. The host's monotonic clock must not
+    /// have gone backwards.
+    pub fn restore(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host) {
+        assert!(self.running.is_none(), "restored while a thread runs");
+        let mut cx = Context { cpu, host };
+        self.entry_now = cx.host.monotonic_nanoseconds();
+        let tids: Vec<Tid> = self.threads.keys().copied().collect();
+        for tid in tids {
+            let thread = self.threads.get_mut(&tid).expect("thread");
+            // A parked thread's registers still hold its call; it gets its value when the call ends.
+            if thread.call.wait.is_some() {
+                self.wake_thread(tid);
+                continue;
+            }
+            if let wcontainers_abi::Resume::Return(value) = thread.resume {
+                let mut registers = wcontainers_abi::RegisterBlock::ZERO;
+                cx.cpu.registers(thread.cpu, &mut registers);
+                registers.x[0] = value;
+                cx.cpu.set_registers(thread.cpu, &registers);
+            }
+            thread.resume = wcontainers_abi::Resume::FromRegisters;
+        }
+        self.settle(&mut cx);
+    }
+
     /// Every counter that has been bumped.
     pub fn counters(&self) -> impl Iterator<Item = CounterReading> + '_ {
         self.counters.readings()

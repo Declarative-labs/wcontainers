@@ -162,7 +162,7 @@ pub(super) fn tgkill(
 }
 
 /// The `siginfo` a program queues: refused if it claims to come from the kernel or `tkill` and the
-/// target is another process (`do_rt_sigqueueinfo`).
+/// target is not the caller itself (`do_rt_sigqueueinfo`, `do_rt_tgsigqueueinfo`).
 fn queued_info(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -175,7 +175,7 @@ fn queued_info(
     let mut info = [0u8; 128];
     info.copy_from_slice(&bytes);
     let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
-    if (code >= 0 || code == SI_TKILL) && kernel.threads[&tid].process != target {
+    if (code >= 0 || code == SI_TKILL) && tid != target {
         return Err(Errno::EPERM);
     }
     info[0..4].copy_from_slice(&signal.to_le_bytes());
@@ -206,7 +206,7 @@ pub(super) fn rt_tgsigqueueinfo(
     if group <= 0 || target <= 0 {
         return Err(Errno::EINVAL);
     }
-    let info = queued_info(kernel, cx, tid, group, signal, info)?;
+    let info = queued_info(kernel, cx, tid, target, signal, info)?;
     signal_thread(kernel, cx, tid, Some(group), target, signal, Some(info))
 }
 

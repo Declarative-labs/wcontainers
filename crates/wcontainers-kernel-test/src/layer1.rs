@@ -956,6 +956,12 @@ pub const CALLS: &[u32] = &[
     linux::__NR_kill,
     linux::__NR_tkill,
     linux::__NR_tgkill,
+    linux::__NR_pipe2,
+    linux::__NR_wait4,
+    linux::__NR_waitid,
+    linux::__NR_rt_sigqueueinfo,
+    linux::__NR_rt_tgsigqueueinfo,
+    linux::__NR_rt_sigtimedwait,
     linux::__NR_setpgid,
     linux::__NR_setsid,
     linux::__NR_chroot,
@@ -1914,6 +1920,67 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
+        // Always nonblocking: a read of an empty pipe or a write to a full one would wait for ever.
+        // O_NOTIFICATION_PIPE is not generated (watch queues are not built, counted).
+        linux::__NR_pipe2 => [
+            buffer(a),
+            u64::from(linux::O_NONBLOCK)
+                | pick(
+                    &[
+                        0,
+                        u64::from(linux::O_CLOEXEC),
+                        u64::from(linux::O_DIRECT),
+                        u64::from(linux::O_APPEND),
+                    ],
+                    b,
+                ),
+            0,
+            0,
+            0,
+            0,
+        ],
+        // Neither runner's caller has children, so no wait waits.
+        linux::__NR_wait4 => [
+            pick(&[u64::MAX, 0, SELF, 99999, i32::MIN as u32 as u64], a),
+            buffer(b),
+            pick(&[0, 1, 2, 8, 1 << 30, 1 << 31, 0x100], c),
+            buffer(d),
+            0,
+            0,
+        ],
+        linux::__NR_waitid => [
+            pick(&[0, 1, 2, 3, 9], a),
+            pick(&[0, SELF, 99999, 3, u64::MAX], b),
+            buffer(c),
+            pick(&[4, 5, 2, 8, 0, 0x0100_0004, 1 << 30], d),
+            buffer(e),
+            0,
+        ],
+        linux::__NR_rt_sigqueueinfo => [
+            pick(&[SELF, SELF, 0, 99999], a),
+            signal(b),
+            buffer(c),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_rt_tgsigqueueinfo => [
+            pick(&[SELF, SELF, 99999], a),
+            pick(&[SELF, SELF, 99999], b),
+            signal(c),
+            buffer(d),
+            0,
+            0,
+        ],
+        // Always a timeout, so nothing waits for ever.
+        linux::__NR_rt_sigtimedwait => [
+            buffer(a),
+            if b % 3 == 0 { 0 } else { buffer(b) },
+            ARENA + VALUES + 56 * 8 + (c % 4) * 16,
+            pick(&[8, 8, 4], d),
+            0,
+            0,
+        ],
         linux::__NR_setpgid => {
             let pid = |word: u64| pick(&[0, SELF, 99999, u64::MAX], word);
             [pid(a), pid(b), 0, 0, 0, 0]
@@ -2250,6 +2317,8 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
     };
     let clears = match call.number {
         linux::__NR_ppoll if c != 0 => vec![fixed(c, 16)],
+        // The sender's process number in a signal's information.
+        linux::__NR_rt_sigtimedwait if b != 0 => vec![fixed(b + 16, 4)],
         linux::__NR_pselect6 if e != 0 => vec![fixed(e, 16)],
         linux::__NR_fcntl if matches!(b as u32, linux::F_GETLK | linux::F_OFD_GETLK) => {
             vec![fixed(c + 24, 4)]

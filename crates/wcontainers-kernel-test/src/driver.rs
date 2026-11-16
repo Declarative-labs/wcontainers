@@ -47,6 +47,8 @@ pub struct Run {
     pub counters: Vec<CounterReading>,
     /// The root file system when the container ended.
     pub files: Vec<FileRecord>,
+    /// How many times it was saved and brought back.
+    pub saved: usize,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -205,6 +207,23 @@ pub struct Container<'a> {
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
 pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
+    run_saving(container, seed, 0)
+}
+
+/// As [`run`], saving the container up to `saves` times at moments drawn from the seed (each 1 to
+/// 100 turns after the last) and bringing it back each time on a new CPU side, as a host that saves
+/// memories does.
+pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<Run, Failure> {
+    let mut moments = StdRng::seed_from_u64(seed ^ 0x5a7e);
+    let mut last = 0;
+    let mut at: Vec<u64> = (0..saves)
+        .map(|_| {
+            last += moments.random_range(1..100);
+            last
+        })
+        .collect();
+    let mut turns = 0u64;
+    let mut saved = 0;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
     let mut kernel = Kernel::new();
@@ -242,7 +261,15 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
                     .run(thread, resume, slice_nanoseconds)
                     .map_err(Failure::StandIn)?;
                 host.ran();
+
                 kernel.exit(&mut cpu, &mut host, exit);
+                turns += 1;
+                while at.first() == Some(&turns) {
+                    at.remove(0);
+                    saved += 1;
+                    cpu = cpu.restored();
+                    kernel.restore(&mut cpu, &mut host);
+                }
             }
             Next::Idle { until_nanoseconds } => {
                 let Some(until) = until_nanoseconds else {
@@ -269,5 +296,6 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
         warnings: host.warnings,
         counters: kernel.counters().collect(),
         files: kernel.root_files(&mut cpu),
+        saved,
     })
 }

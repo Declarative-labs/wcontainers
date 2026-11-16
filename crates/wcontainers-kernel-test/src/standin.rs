@@ -354,6 +354,68 @@ impl StandIn {
         Self::default()
     }
 
+    /// A new CPU side holding what this one holds, as bringing back a saved container makes it: every
+    /// memory, block of shared pages and thread's registers copied under the same handles, on new
+    /// emulator instances with nothing translated or cached.
+    pub fn restored(&self) -> Self {
+        let mut blocks = HashMap::new();
+        let mut moved = Vec::new();
+        for (id, block) in &self.blocks {
+            let mut bytes = MmapMut::map_anon(block.bytes.len()).expect("host memory for a block");
+            bytes.copy_from_slice(&block.bytes);
+            moved.push((
+                block.bytes.as_ptr() as usize,
+                block.bytes.len(),
+                bytes.as_mut_ptr(),
+            ));
+            blocks.insert(*id, Block { bytes });
+        }
+        let translate = |pointer: *mut u8| {
+            let address = pointer as usize;
+            let (old, _, new) = moved
+                .iter()
+                .find(|(old, length, _)| (*old..old + length).contains(&address))
+                .expect("a shared range shows a block");
+            // SAFETY: the same offset inside the copy, which is as long as the original.
+            unsafe { new.add(address - old) }
+        };
+        let memories = self
+            .memories
+            .iter()
+            .map(|(id, memory)| {
+                let mut copy = memory.duplicate().expect("a new emulator instance");
+                copy.shared = memory
+                    .shared
+                    .iter()
+                    .map(|(start, (end, base))| (*start, (*end, translate(*base))))
+                    .collect();
+                copy.remap(0, ADDRESS_SPACE_END);
+                (*id, copy)
+            })
+            .collect();
+        let threads = self
+            .threads
+            .iter()
+            .map(|(id, thread)| {
+                (
+                    *id,
+                    Thread {
+                        memory: thread.memory,
+                        registers: thread.registers,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            memories,
+            threads,
+            blocks,
+            last_memory: self.last_memory,
+            last_thread: self.last_thread,
+            last_block: self.last_block,
+        }
+    }
+
     /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
     /// slice, the stop flag is raised after that many instructions (one a nanosecond), so where a
     /// turn ends repeats exactly.

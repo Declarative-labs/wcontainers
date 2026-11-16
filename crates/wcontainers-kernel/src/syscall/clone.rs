@@ -395,77 +395,100 @@ pub(super) fn waitid(
     tid: Tid,
     [kind, id, info_out, options, usage_out, _]: Args,
 ) -> Outcome {
-    let options = options as u32;
+    // `kernel_waitid`: what it found, or its error.
+    let found = match find_for_waitid(kernel, cx, tid, kind, id, options as u32) {
+        Err(Errno::PARKED) => return Outcome::Parked,
+        found => found,
+    };
+    // The child's use is written only when one was found, then the information always, zeros when
+    // nothing was found or it failed (`SYSCALL_DEFINE5(waitid)`).
+    let (result, fields) = match found {
+        Ok(Some((child, code, value, uid, usage))) => {
+            if usage_out != 0
+                && let Err(error) = guest(kernel, cx, tid).write_value(usage_out, &usage)
+            {
+                return Err(error).into();
+            }
+            (
+                Ok(0),
+                [SIGCHLD as i32, 0, code as i32, child, uid as i32, value],
+            )
+        }
+        Ok(None) => (Ok(0), [0; 6]),
+        Err(error) => (Err(error), [0; 6]),
+    };
+    if info_out == 0 {
+        return result.into();
+    }
+    if !crate::user::access_ok(info_out, 128) {
+        return Err(Errno::EFAULT).into();
+    }
+    let mut guest = guest(kernel, cx, tid);
+    for (offset, value) in [0u64, 4, 8, 16, 20, 24].into_iter().zip(fields) {
+        if guest
+            .write(info_out + offset, &value.to_le_bytes())
+            .is_err()
+        {
+            return Err(Errno::EFAULT).into();
+        }
+    }
+    result.into()
+}
+
+/// What `waitid` reports of a child: its number, the `siginfo` code and status, its user and use.
+type Reported = (Pid, u32, i32, u32, rusage);
+
+/// `kernel_waitid`: the checks in order, then the first child with something to report (its number,
+/// the `siginfo` code and status, its user and use), none with WNOHANG, or a wait.
+fn find_for_waitid(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    kind: u64,
+    id: u64,
+    options: u32,
+) -> Result<Option<Reported>, Errno> {
     if options
         & !(WNOHANG | WNOWAIT | WEXITED | WSTOPPED | WCONTINUED | __WNOTHREAD | __WCLONE | __WALL)
         != 0
         || options & (WEXITED | WSTOPPED | WCONTINUED) == 0
     {
-        return Err(Errno::EINVAL).into();
+        return Err(Errno::EINVAL);
     }
     let id = id as i32;
     let which = match kind as u32 {
         P_ALL => Which::Any,
         P_PID if id > 0 => Which::Process(id),
         P_PGID if id >= 0 => Which::Group(id),
-        P_PIDFD => {
-            // No descriptor can name a process yet.
+        // No descriptor can name a process yet.
+        P_PIDFD if id >= 0 => {
             return Err(kernel.counters.refuse_flag(
                 cx.host,
                 __NR_waitid,
                 P_PIDFD.into(),
                 Errno::EBADF,
-            ))
-            .into();
+            ));
         }
-        _ => return Err(Errno::EINVAL).into(),
+        _ => return Err(Errno::EINVAL),
     };
-    let found = match find_child(kernel, tid, which, options | WNOWAIT) {
-        Err(error) => return Err(error).into(),
-        Ok(Found::None) if options & WNOHANG == 0 => return wait_more(kernel, tid),
-        Ok(found) => found,
-    };
-    let mut info = [0u8; 128];
-    let usage = match found {
+    match find_child(kernel, tid, which, options | WNOWAIT)? {
+        Found::None if options & WNOHANG != 0 => Ok(None),
+        Found::None => {
+            if kernel.signal_pending(tid) {
+                return Err(Errno::ERESTARTSYS);
+            }
+            kernel.park(tid, Channel::Children);
+            Err(Errno::PARKED)
+        }
         Found::Child { pid: child, .. } => {
             let usage = child_usage(kernel, child);
-            let Ok(Found::Child {
-                pid: child,
-                code,
-                value,
-                ..
-            }) = find_child(kernel, tid, Which::Process(child), options)
+            let uid = kernel.processes[&child].credentials.uid;
+            let Found::Child { code, value, .. } =
+                find_child(kernel, tid, Which::Process(child), options)?
             else {
                 unreachable!("the child was found a moment ago");
             };
-            let uid = kernel
-                .processes
-                .get(&child)
-                .map_or(0, |process| process.credentials.uid);
-            info[0..4].copy_from_slice(&SIGCHLD.to_le_bytes());
-            info[8..12].copy_from_slice(&code.to_le_bytes());
-            info[16..20].copy_from_slice(&child.to_le_bytes());
-            info[20..24].copy_from_slice(&uid.to_le_bytes());
-            info[24..28].copy_from_slice(&value.to_le_bytes());
-            Some(usage)
-        }
-        Found::None => None,
-    };
-    if usage_out != 0
-        && let Err(error) =
-            guest(kernel, cx, tid).write_value(usage_out, &usage.unwrap_or_else(rusage::new_zeroed))
-    {
-        return Err(error).into();
-    }
-    if info_out != 0 {
-        // `waitid` fills the fields it reports, the rest of `siginfo` stays as it was.
-        let mut guest = guest(kernel, cx, tid);
-        let written = guest
-            .write(info_out, &info[..12])
-            .and_then(|()| guest.write(info_out + 16, &info[16..28]));
-        if let Err(error) = written {
-            return Err(error).into();
+            Ok(Some((child, code, value, uid, usage)))
         }
     }
-    Outcome::Return(0)
 }

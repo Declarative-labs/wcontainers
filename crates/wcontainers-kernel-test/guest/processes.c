@@ -186,14 +186,19 @@ static void signals(void) {
     raise(SIGUSR1);
     printf("caught %d code %d\n", caught, last_code);
     // SIGCHLD with its information.
+    // SIGCHLD stays blocked until the parent knows the child's number.
     handle(SIGCHLD, 0);
     caught = 0;
+    sigset_t chld, none;
+    sigemptyset(&chld);
+    sigaddset(&chld, SIGCHLD);
+    sigemptyset(&none);
+    sigprocmask(SIG_BLOCK, &chld, 0);
     pid_t child = fork();
     if (child == 0) _exit(6);
     expected_child = child;
-    sigset_t none;
-    sigemptyset(&none);
     while (!caught) sigsuspend(&none);
+    sigprocmask(SIG_UNBLOCK, &chld, 0);
     printf("sigchld %d code %d status %d from child %d\n", caught, last_code, last_status, last_pid_is_child);
     int st;
     waitpid(child, &st, 0);
