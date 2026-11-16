@@ -5,7 +5,9 @@
 # time are made but not compared, so it runs chunks until that many were compared). Each chunk is one test run;
 # when it ends, one line is appended to the ledger. A chunk the ledger holds as passed on an accepted commit is
 # skipped, so a stopped run loses at most the chunk it was in; a chunk that failed or was stopped runs again. A
-# failing chunk is recorded with its replay command and the run goes on.
+# failing chunk is recorded with its replay command and the run goes on. The run is of one commit: it refuses
+# a tree with uncommitted changes, and builds and runs a copy of the commit in WC_LONG_DIR, so work in the
+# checkout while it runs does not reach it.
 #
 # From the repository root, detached (it runs for many hours):
 #   WC_LONG_DIR=<directory> nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &
@@ -16,8 +18,7 @@
 #   WC_LONG_SEED     the base seed (default 1): layer 1's chunk k runs seed SEED*1000+k; layers 2 and 3 run
 #                    seed SEED from the chunk's first case.
 #   WC_LONG_ACCEPT   the oldest commit whose ledger lines count (default HEAD): chunks that passed on it or on
-#                    any commit after it up to HEAD are skipped. Runs on a tree with changes to the code are
-#                    recorded as such and never skipped.
+#                    any commit after it up to HEAD are skipped.
 #   WC_LONG_JOBS     cases or forms at once inside a chunk (default 6, the most this machine allows).
 #   WC_LONG_LIMIT    minutes a chunk may take before it is stopped and recorded as stopped (default 90).
 #
@@ -39,11 +40,19 @@ mkdir -p "$dir/logs"
 ledger=$dir/ledger.txt
 touch "$ledger"
 
-commit=$(git rev-parse HEAD)
-if [ -n "$(git status --porcelain -- crates Cargo.lock Cargo.toml)" ]; then
-  commit="$commit-changed"
+if [ -n "$(git status --porcelain -- crates Cargo.lock Cargo.toml flake.nix flake.lock rust-toolchain.toml)" ]; then
+  echo "the tree has uncommitted changes; commit them first, as a run is of one commit" >&2
+  exit 1
 fi
+commit=$(git rev-parse HEAD)
 accepted=$( (echo "$accept"; git rev-list "$accept..HEAD") | sort)
+# The commit's own copy, built into one target directory shared by every copy.
+tree=$dir/trees/${commit:0:12}
+if [ ! -f "$tree/Cargo.toml" ]; then
+  rm -rf "$tree" && mkdir -p "$tree" && git archive HEAD | tar -x -C "$tree" || exit 1
+fi
+cd "$tree" || exit 1
+export CARGO_TARGET_DIR=$dir/target
 # A chunk's cases run on a pool of its jobs' threads, which the translator and wasmtime share; anything run
 # outside that pool keeps to the same number.
 export RAYON_NUM_THREADS=$jobs
@@ -68,14 +77,12 @@ run_chunk() {
   local layer=$1 k=$2 of=$3 knobs=$4 filter=$5
   local name=$k${of:+/$of}
   ran=0
-  if [ "$commit" = "${commit%-changed}" ]; then
-    local passed
-    passed=$(held "$layer" "$knobs")
-    if [ -n "$passed" ]; then
-      echo "layer $layer chunk $name: passed in the ledger, skipped"
-      ran=$passed
-      return
-    fi
+  local passed
+  passed=$(held "$layer" "$knobs")
+  if [ -n "$passed" ]; then
+    echo "layer $layer chunk $name: passed in the ledger, skipped"
+    ran=$passed
+    return
   fi
   local log="$dir/logs/layer$layer-$k${of:+-of-$of}-${commit:0:12}.log"
   local command="$knobs $test_command --test layer$layer $filter -- --nocapture"
@@ -169,6 +176,7 @@ parse_layer3() {
 
 echo "long runs at $percent percent of the bars, layers $layers, base seed $base, commit $commit, $jobs at once; ledger $ledger"
 $test_command --no-run 2>&1 | tail -1
+[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1
 all_started=$(date +%s)
 
 # Layer 1: chunks of up to 1,000 cases a form, each its own seed.
