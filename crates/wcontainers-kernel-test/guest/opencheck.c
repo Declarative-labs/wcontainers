@@ -57,6 +57,12 @@ int main(void) {
     R(close(open("ld/", O_RDONLY | O_NOFOLLOW)));
     R(close(open("ld/", O_PATH | O_NOFOLLOW)));
     R(open("/dev/null/", O_RDONLY));
+    // A program named with a trailing slash.
+    R(execve("f/", 0, 0));
+    R(execve("lf/", 0, 0));
+    R(syscall(SYS_execveat, AT_FDCWD, "lf/", 0, 0, AT_SYMLINK_NOFOLLOW));
+    R(execve("d/", 0, 0));
+    R(execve("ld/", 0, 0));
     R(open("/etc/passwd/", O_RDONLY));
     R(open("/proc/self/status/", O_RDONLY));
     R(open("/proc/self/exe/", O_RDONLY));

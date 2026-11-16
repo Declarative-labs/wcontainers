@@ -82,12 +82,21 @@ pub(crate) fn open_program_at(
     path: &[u8],
     follow: bool,
 ) -> Result<Program, Errno> {
+    // A trailing slash follows a last link whatever the flags say and asks for a directory, which
+    // no program is (`open_last_lookups`, `do_open`).
+    let trailing_slash = path.ends_with(b"/");
     let (node, full) = kernel.with_walk(pid, |walk, _| {
-        if !follow && walk.resolve(start, path, false)?.borrow().file_type() == S_IFLNK {
+        if !follow
+            && !trailing_slash
+            && walk.resolve(start, path, false)?.borrow().file_type() == S_IFLNK
+        {
             return Err(Errno::ELOOP);
         }
         walk.locate(start, path)
     })?;
+    if trailing_slash && !node.borrow().is_directory() {
+        return Err(Errno::ENOTDIR);
+    }
     program_of(kernel, cpu, pid, node, full)
 }
 

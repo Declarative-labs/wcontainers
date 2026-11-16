@@ -1208,6 +1208,10 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             let request = pick(IOCTL_REQUESTS, b);
             let argument = if request == u64::from(ioctl::FICLONE) {
                 fd(c)
+            } else if request == u64::from(ioctl::FICLONERANGE) {
+                // The range names its source descriptor, which must not be one of 0 to 2: the
+                // reference's runner reports through them.
+                pick(&[ARENA + IOCTL_ARGS + 6 * 64, 0, u64::MAX - 4095], c)
             } else {
                 match c % 4 {
                     0 | 1 => ARENA + IOCTL_ARGS + (c >> 2) % IOCTL_ARG_COUNT * 64,
