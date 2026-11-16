@@ -82,6 +82,8 @@ run_chunk() {
   local result=pass
   if [ "$status" -eq 124 ]; then
     result=stopped
+    # The stopped run's reference containers; nothing else of this half runs beside the driver.
+    docker ps -aq --filter name=wc-translator- | xargs docker rm -f > /dev/null 2>&1
   elif [ "$status" -ne 0 ] || [ "$mismatches" != 0 ]; then
     result=fail
   fi
