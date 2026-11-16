@@ -47,12 +47,13 @@ pub(crate) fn docker_limits() -> [Limit; LIMITS] {
     limits
 }
 
-/// What `/proc/<pid>/cmdline`, `environ` and `auxv` read from: ranges of the starting stack.
-#[derive(Clone, Copy, Debug, Default)]
+/// What `/proc/<pid>/cmdline`, `environ` and `auxv` read from: ranges of the starting stack, and the
+/// auxiliary vector as the kernel keeps it (`saved_auxv`).
+#[derive(Clone, Debug, Default)]
 pub(crate) struct StartingStack {
     pub arguments: (u64, u64),
     pub environment: (u64, u64),
-    pub auxiliary: (u64, u64),
+    pub auxiliary: Vec<u8>,
 }
 
 pub(crate) struct Process {

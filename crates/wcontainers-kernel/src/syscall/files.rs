@@ -475,7 +475,6 @@ pub(super) fn open(
     if (flags & O_DIRECTORY != 0 || parent.trailing_slash) && file_type != S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
-    let mut contents = None;
     if flags & O_PATH == 0 {
         if file_type == S_IFDIR && (accmode != O_RDONLY || flags & O_TRUNC != 0) {
             return Err(Errno::EISDIR);
@@ -536,13 +535,6 @@ pub(super) fn open(
             S_IFSOCK => return Err(Errno::ENXIO),
             _ => {}
         }
-        let entry = match &node.borrow().content {
-            Content::Proc(entry) if file_type == S_IFREG => Some(*entry),
-            _ => None,
-        };
-        if let Some(entry) = entry {
-            contents = Some(proc_contents(kernel, cx, tid, &entry)?);
-        }
         // A secret memory file cannot be opened again, as through `/proc/self/fd` (`no_open`).
         if node.borrow().is_secret() {
             return Err(Errno::ENXIO);
@@ -584,7 +576,6 @@ pub(super) fn open(
         full_path,
         credentials(kernel, tid).serial,
     );
-    file.borrow_mut().contents = contents;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .process_of_mut(tid)
@@ -608,7 +599,7 @@ fn resolve_relative(link_path: &[u8], target: &[u8]) -> Vec<u8> {
 }
 
 /// Makes the bytes of a file of the process information tree.
-fn proc_contents(
+pub(super) fn proc_contents(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,

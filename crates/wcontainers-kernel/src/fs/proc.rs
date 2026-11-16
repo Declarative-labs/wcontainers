@@ -262,6 +262,33 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
     ),
 ];
 
+/// How a file of the tree makes its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Style {
+    /// `cmdline`, `environ` and `auxv`: made at each read, from the process's memory or its saved
+    /// auxiliary vector; they seek as `generic_file_llseek` with a size of zero.
+    Memory,
+    /// A sysctl: made at each read (`proc_sys_call_handler`); seeks as `default_llseek`.
+    Sysctl,
+    /// Linux's `seq_file`: made by a read from the start or from anywhere but where the last read
+    /// stopped, and by a seek elsewhere, and kept between; no positioned writes (`seq_open` clears
+    /// `FMODE_PWRITE`); seeks as `seq_lseek`.
+    Sequence,
+}
+
+/// What a write to a file of the tree does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Writing {
+    /// `comm_write`: names the process.
+    Comm,
+    /// A sysctl's own write; `/proc/sys` is mounted read-only, so no file is open for it.
+    Sysctl,
+    /// `EIO`, as `pde_write` for an entry with no write of its own.
+    Io,
+    /// The file has no write (`FMODE_CAN_WRITE` unset): `EINVAL`.
+    None,
+}
+
 /// The link count of `/proc` itself, as Linux's `proc_root_getattr` gives it: two, one for each
 /// directory below it, and one for each process on the machine.
 pub(crate) fn root_links(processes: usize) -> u32 {
@@ -313,6 +340,41 @@ impl Entry {
             // Linux's `proc_fd_instantiate` gives descriptor links a size of 64 (measured too).
             Entry::Fd(..) => 64,
             _ => 0,
+        }
+    }
+
+    /// How a file of the tree makes its bytes, which also sets how it seeks and what it takes.
+    pub fn style(&self) -> Style {
+        match self {
+            Entry::ProcessFile(
+                _,
+                ProcessFile::Cmdline | ProcessFile::Environ | ProcessFile::Auxv,
+            ) => Style::Memory,
+            Entry::Global(index) if GLOBAL[*index].0.starts_with("sys/") => Style::Sysctl,
+            _ => Style::Sequence,
+        }
+    }
+
+    /// What a write to the file does.
+    pub fn writing(&self) -> Writing {
+        match self {
+            Entry::ProcessFile(_, ProcessFile::Comm) => Writing::Comm,
+            Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
+            // `proc_reg_write` with no `proc_write` of the entry's own.
+            Entry::Global(_) => Writing::Io,
+            _ => Writing::None,
+        }
+    }
+
+    /// Whether reads and writes go a segment at a time (Linux's `do_loop_readv_writev`, which takes
+    /// no flag but RWF_HIPRI): the files with a plain `read` or `write` and no iterating one.
+    pub fn loops(&self, writing: bool) -> bool {
+        match self.style() {
+            Style::Sysctl => false,
+            // `proc_reg_read_iter` reads the entries outside the process directories; their writes
+            // are `proc_reg_write`.
+            _ if matches!(self, Entry::Global(_)) => writing,
+            _ => true,
         }
     }
 
@@ -780,7 +842,7 @@ fn process_file(
     file: ProcessFile,
 ) -> Result<Vec<u8>, Errno> {
     let mut out = String::new();
-    let stack = process.starting_stack;
+    let stack = &process.starting_stack;
     let range = |(start, end): (u64, u64)| (start, end - start);
     match file {
         ProcessFile::Cmdline => {
@@ -791,10 +853,7 @@ fn process_file(
             let (start, length) = range(stack.environment);
             return Ok((source.read_memory)(process, start, length));
         }
-        ProcessFile::Auxv => {
-            let (start, length) = range(stack.auxiliary);
-            return Ok((source.read_memory)(process, start, length));
-        }
+        ProcessFile::Auxv => return Ok(stack.auxiliary.clone()),
         ProcessFile::Comm => {
             let mut bytes = process.name.clone();
             bytes.push(b'\n');

@@ -617,12 +617,12 @@ fn build_stack(
         table.extend_from_slice(&(strings_start + offset).to_le_bytes());
     }
     table.extend_from_slice(&0u64.to_le_bytes());
-    let auxiliary_start = sp + table.len() as u64;
+    let auxiliary_start = table.len();
     for (key, value) in vector {
         table.extend_from_slice(&u64::from(key).to_le_bytes());
         table.extend_from_slice(&value.to_le_bytes());
     }
-    let auxiliary_end = sp + table.len() as u64;
+    let auxiliary = table[auxiliary_start..].to_vec();
 
     let write = |cpu: &mut dyn Cpu, address: u64, bytes: &[u8]| {
         cpu.write(memory, address, bytes).map_err(errno::from_cpu)
@@ -639,7 +639,7 @@ fn build_stack(
                 strings_start + arguments_end,
                 strings_start + environment_end,
             ),
-            auxiliary: (auxiliary_start, auxiliary_end),
+            auxiliary,
         },
     ))
 }

@@ -17,8 +17,10 @@ pub(crate) struct OpenFile {
     pub offset: u64,
     /// The path it was opened by, from the root, for `/proc/<pid>/fd`.
     pub path: Vec<u8>,
-    /// For files of the process information tree, the bytes made when the file was opened.
+    /// For files of the process information tree, the bytes last made, and where the last read of
+    /// them stopped (`seq_file`'s `read_pos`).
     pub contents: Option<Vec<u8>>,
+    pub read_position: u64,
     /// The serial of the credentials it was opened with (Linux's `f_cred`).
     pub opener: u64,
 }
@@ -33,6 +35,7 @@ impl OpenFile {
             offset: 0,
             path,
             contents: None,
+            read_position: 0,
             opener,
         }))
     }

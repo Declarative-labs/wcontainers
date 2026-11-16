@@ -10,6 +10,7 @@ use crate::counters::reason;
 use crate::file::{Descriptor, FileRef};
 use crate::fs::Content;
 use crate::fs::dev::Device;
+use crate::fs::proc::{Style, Writing};
 use crate::linux::general::*;
 use crate::linux::ioctl::{FIOCLEX, FIONBIO, FIONCLEX, TCGETS, TIOCGWINSZ};
 use crate::process::Tid;
@@ -39,7 +40,7 @@ pub(super) fn read(
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
-    moves_bytes(&file)?;
+    moves_bytes(&file, false)?;
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
@@ -67,7 +68,7 @@ pub(super) fn write(
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
-    moves_bytes(&file)?;
+    moves_bytes(&file, true)?;
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
@@ -97,10 +98,11 @@ pub(super) fn pread64(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
+    positioned(&file, false)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
-    positioned(&file, offset)?;
+    moves_bytes(&file, false)?;
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
@@ -126,10 +128,11 @@ pub(super) fn pwrite64(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
+    positioned(&file, true)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
-    positioned(&file, offset)?;
+    moves_bytes(&file, true)?;
     if !access_ok(buffer, count) {
         return Err(Errno::EFAULT);
     }
@@ -182,7 +185,7 @@ fn vectored2(
     }
     let file = file(kernel, tid, fd)?;
     if !current {
-        positioned(&file, offset)?;
+        positioned(&file, writing)?;
     }
     let allowed = if writing {
         file.borrow().writable()
@@ -192,7 +195,7 @@ fn vectored2(
     if !allowed {
         return Err(Errno::EBADF);
     }
-    moves_bytes(&file)?;
+    moves_bytes(&file, writing)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     if parts.iter().all(|(_, length)| *length == 0) {
         return Ok(0);
@@ -216,8 +219,14 @@ fn vectored2(
             || writing
                 && matches!(inode.content, Content::Special)
                 && matches!(Device::from_number(inode.rdev), Some(Device::Full))
+            || matches!(inode.content, Content::Proc(entry) if entry.loops(writing))
     };
     if looped && flags & !RWF_HIPRI != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    // `/proc`'s files do not take reads that may not wait (`FMODE_NOWAIT` unset).
+    let waits = matches!(file.borrow().node.borrow().content, Content::Proc(_));
+    if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
     let known =
@@ -391,21 +400,32 @@ pub(super) fn sync_file_range(
     Ok(0)
 }
 
-/// The checks for a read or write at a given offset: a negative offset is invalid, and a pipe or a
-/// secret memory file has none.
-fn positioned(file: &FileRef, _offset: u64) -> Result<(), Errno> {
+/// Whether a file takes reads or writes at a given offset (Linux's `FMODE_PREAD` and `FMODE_PWRITE`):
+/// a pipe and a secret memory file take neither, and a `seq_file` of `/proc` no writes. A descriptor
+/// open only for its path is no descriptor here.
+fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let file = file.borrow();
+    if file.is_path() {
+        return Err(Errno::EBADF);
+    }
     let inode = file.node.borrow();
-    if matches!(inode.content, Content::HostStream(_)) || inode.is_secret() {
+    let sequence = matches!(inode.content, Content::Proc(entry)
+        if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
+    if matches!(inode.content, Content::HostStream(_)) || inode.is_secret() || (writing && sequence)
+    {
         return Err(Errno::ESPIPE);
     }
     Ok(())
 }
 
-/// A secret memory file has no read or write operation (Linux's `FMODE_CAN_READ` and
-/// `FMODE_CAN_WRITE` unset).
-pub(super) fn moves_bytes(file: &FileRef) -> Result<(), Errno> {
-    if file.borrow().node.borrow().is_secret() {
+/// Whether a file has a read or write operation at all (Linux's `FMODE_CAN_READ` and
+/// `FMODE_CAN_WRITE`): a secret memory file has neither, and most of `/proc`'s files no write.
+pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
+    let file = file.borrow();
+    let inode = file.node.borrow();
+    let no_write = matches!(inode.content, Content::Proc(entry)
+        if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
+    if inode.is_secret() || (writing && no_write) {
         return Err(Errno::EINVAL);
     }
     Ok(())
@@ -519,7 +539,7 @@ pub(super) fn readv(
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
-    moves_bytes(&file)?;
+    moves_bytes(&file, false)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, None, None)
 }
@@ -534,7 +554,7 @@ pub(super) fn writev(
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
-    moves_bytes(&file)?;
+    moves_bytes(&file, true)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, None, Some(appends(&file)))
 }
@@ -549,10 +569,11 @@ pub(super) fn preadv(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
-    positioned(&file, offset)?;
+    positioned(&file, false)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
+    moves_bytes(&file, false)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(kernel, cx, tid, &file, &parts, Some(offset), None)
 }
@@ -567,10 +588,11 @@ pub(super) fn pwritev(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
-    positioned(&file, offset)?;
+    positioned(&file, true)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
+    moves_bytes(&file, true)?;
     let parts = segments(&mut guest(kernel, cx, tid), vector, count)?;
     vectored(
         kernel,
@@ -726,13 +748,15 @@ pub(super) fn read_at(
         }
         return Ok(cleared);
     }
-    moves_bytes(file)?;
+    moves_bytes(file, false)?;
     let offset = at.unwrap_or(file.borrow().offset);
+    refresh_proc(kernel, cx, tid, file, offset)?;
     let bytes = file_bytes(cx, file, count, offset)?;
     let written = guest(kernel, cx, tid).write_partial(buffer, &bytes);
     if written == 0 && !bytes.is_empty() {
         return Err(Errno::EFAULT);
     }
+    file.borrow_mut().read_position = offset + written as u64;
     // A device's reads leave the position alone.
     let device = matches!(file.borrow().node.borrow().content, Content::Special);
     if at.is_none() && !device {
@@ -762,7 +786,14 @@ pub(super) fn write_at(
     if let Some(stream) = stream {
         return write_host_stream(kernel, cx, tid, stream, buffer, count);
     }
-    moves_bytes(file)?;
+    moves_bytes(file, true)?;
+    let entry = match &node.borrow().content {
+        Content::Proc(entry) => Some(*entry),
+        _ => None,
+    };
+    if let Some(entry) = entry {
+        return write_proc(kernel, cx, tid, entry, buffer, count);
+    }
     let (regular, device) = {
         let inode = node.borrow();
         (
@@ -791,6 +822,42 @@ pub(super) fn write_at(
         return write_bytes(kernel, cx, tid, file, &[], at, append).map(|_| count);
     };
     write_bytes(kernel, cx, tid, file, &bytes, at, append)
+}
+
+/// A write to a file of `/proc`, which takes no position and moves none.
+fn write_proc(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    entry: crate::fs::proc::Entry,
+    buffer: u64,
+    count: u64,
+) -> Result<u64, Errno> {
+    match entry.writing() {
+        // `comm_write`: the first 15 bytes name the process, up to a zero, and the whole count is
+        // taken; only a process's own threads may name it.
+        Writing::Comm => {
+            let bytes = guest(kernel, cx, tid).read(buffer, count.min(15))?;
+            let crate::fs::proc::Entry::ProcessFile(pid, _) = entry else {
+                return Err(Errno::EINVAL);
+            };
+            if !kernel.processes.contains_key(&pid) {
+                return Err(Errno::ESRCH);
+            }
+            if pid != kernel.threads[&tid].process {
+                return Err(Errno::EINVAL);
+            }
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(bytes.len());
+            kernel.process_of_mut(tid).set_name_exact(&bytes[..end]);
+            Ok(count)
+        }
+        Writing::Io => Err(Errno::EIO),
+        Writing::Sysctl => Err(Errno::EROFS),
+        Writing::None => Err(Errno::EINVAL),
+    }
 }
 
 /// Writes bytes the kernel holds to a file, at its position or at `at`. Devices that take anything
@@ -896,7 +963,7 @@ fn send(
         return Err(Errno::EBADF);
     }
     if explicit.is_some() {
-        positioned(&input, 0)?;
+        positioned(&input, false)?;
     }
     let position = match &explicit {
         Some(offset) => **offset,
@@ -925,6 +992,7 @@ fn send(
         return Err(Errno::EINVAL);
     }
     let offset = position as u64;
+    refresh_proc(kernel, cx, tid, &input, offset)?;
     let mut bytes = file_bytes(cx, &input, count, offset)?;
     if matches!(output.borrow().node.borrow().content, Content::Regular(_)) {
         let at = output.borrow().offset;
@@ -932,6 +1000,7 @@ fn send(
         bytes.truncate(allowed as usize);
     }
     let written = write_bytes(kernel, cx, tid, &output, &bytes, None, false)?;
+    input.borrow_mut().read_position = offset + written;
     match explicit {
         Some(offset) => *offset = (position as u64 + written) as i64,
         // A device's reads leave the position alone.
@@ -967,12 +1036,12 @@ fn write_host_stream(
 
 pub(super) fn lseek(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, offset, whence, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = file(kernel, tid, fd)?;
-    let mut file = file.borrow_mut();
+    let file_ref = file(kernel, tid, fd)?;
+    let mut file = file_ref.borrow_mut();
     if file.is_path() {
         return Err(Errno::EBADF);
     }
@@ -985,7 +1054,13 @@ pub(super) fn lseek(
     if file.node.borrow().is_secret() {
         return Err(Errno::ESPIPE);
     }
+    let current = || {
+        (file.offset as i64)
+            .checked_add(offset)
+            .ok_or(Errno::EINVAL)
+    };
     let inode = file.node.borrow();
+    let mut sequence = None;
     let new = match &inode.content {
         Content::HostStream(_) => return Err(Errno::ESPIPE),
         Content::Special => match Device::from_number(inode.rdev) {
@@ -998,9 +1073,7 @@ pub(super) fn lseek(
             let size = regular.size() as i64;
             match whence {
                 SEEK_SET => offset,
-                SEEK_CUR => (file.offset as i64)
-                    .checked_add(offset)
-                    .ok_or(Errno::EINVAL)?,
+                SEEK_CUR => current()?,
                 SEEK_END => size.checked_add(offset).ok_or(Errno::EINVAL)?,
                 SEEK_DATA | SEEK_HOLE => {
                     if offset < 0 || offset >= size {
@@ -1029,19 +1102,13 @@ pub(super) fn lseek(
                 _ => return Err(Errno::EINVAL),
             }
         }
-        // The process information tree's directories and `/proc/sys`'s files seek as Linux's
-        // `generic_file_llseek` does with a size of zero.
-        Content::Proc(entry)
-            if inode.is_directory()
-                || matches!(entry, crate::fs::proc::Entry::Global(index)
-                    if crate::fs::proc::GLOBAL[*index].0.starts_with("sys/")) =>
-        {
-            // proc's largest offset is the default one, `MAX_NON_LFS` (`vfs_setpos`).
+        // The process information tree's directories and `cmdline`, `environ` and `auxv` seek as
+        // Linux's `generic_file_llseek` does with a size of zero, up to proc's largest offset, the
+        // default `MAX_NON_LFS` (`vfs_setpos`).
+        Content::Proc(entry) if inode.is_directory() || entry.style() == Style::Memory => {
             let new = match whence {
                 SEEK_SET | SEEK_END => offset,
-                SEEK_CUR => (file.offset as i64)
-                    .checked_add(offset)
-                    .ok_or(Errno::EINVAL)?,
+                SEEK_CUR => current()?,
                 _ => return Err(Errno::ENXIO),
             };
             if new > i64::from(i32::MAX) {
@@ -1049,11 +1116,23 @@ pub(super) fn lseek(
             }
             new
         }
-        Content::Directory(_) | Content::Proc(_) | Content::Symlink(_) => match whence {
+        // Sysctls seek as `default_llseek` with a size of zero, with no largest offset.
+        Content::Proc(entry) if entry.style() == Style::Sysctl => match whence {
+            SEEK_SET | SEEK_END => offset,
+            SEEK_CUR => current()?,
+            _ => return Err(Errno::ENXIO),
+        },
+        Content::Proc(entry) => {
+            sequence = Some(*entry);
+            match whence {
+                SEEK_SET => offset,
+                SEEK_CUR => current()?,
+                _ => return Err(Errno::EINVAL),
+            }
+        }
+        Content::Directory(_) | Content::Symlink(_) => match whence {
             SEEK_SET => offset,
-            SEEK_CUR => (file.offset as i64)
-                .checked_add(offset)
-                .ok_or(Errno::EINVAL)?,
+            SEEK_CUR => current()?,
             _ => return Err(Errno::EINVAL),
         },
     };
@@ -1062,7 +1141,52 @@ pub(super) fn lseek(
     }
     drop(inode);
     file.offset = new as u64;
+    // `seq_lseek` to anywhere but where the last read stopped makes the bytes again and keeps them
+    // from there (`traverse`); to the start it only forgets them.
+    if let Some(entry) = sequence
+        && new as u64 != file.read_position
+    {
+        file.read_position = new as u64;
+        file.contents = None;
+        drop(file);
+        if new != 0 {
+            let bytes = super::files::proc_contents(kernel, cx, tid, &entry)?;
+            file_ref.borrow_mut().contents = Some(bytes);
+        }
+    }
     Ok(new as u64)
+}
+
+/// Makes a `/proc` file's bytes again where Linux would before a read at `offset`: at each read for
+/// a file read from memory or a sysctl, and for a `seq_file` at a read from the start or from
+/// anywhere but where the last read stopped.
+fn refresh_proc(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    offset: u64,
+) -> Result<(), Errno> {
+    let entry = {
+        let file = file.borrow();
+        let inode = file.node.borrow();
+        match inode.content {
+            Content::Proc(entry) if inode.file_type() == S_IFREG => entry,
+            _ => return Ok(()),
+        }
+    };
+    let again = match entry.style() {
+        Style::Memory | Style::Sysctl => true,
+        Style::Sequence => {
+            let file = file.borrow();
+            offset == 0 || offset != file.read_position || file.contents.is_none()
+        }
+    };
+    if again {
+        let bytes = super::files::proc_contents(kernel, cx, tid, &entry)?;
+        file.borrow_mut().contents = Some(bytes);
+    }
+    Ok(())
 }
 
 pub(super) fn getdents64(
