@@ -1372,6 +1372,16 @@ one_cpu, dispatch, loader, faults, standin, boundary, layouts, limits, seccomp, 
 
 ## Layer 1
 
+K3's third run, with its clone and credential changes in (before the deferred rerun, which was taken
+back): fresh seeds 3004 and 3005 passed 20000 sequences each (324 s each, side by side with 3003,
+load 23 at the start, 14 at the end). Seed 3003 found readv on a nonblocking timer descriptor with
+two buffers (4 and 4 bytes) answering EINVAL where Linux answers EAGAIN: a timer descriptor's read
+needs eight bytes in all and writes them across the buffers (measured with readv: 4+4, 0+8, 2+10
+and 3+5 read 8 bytes; 7+0 and 0+7 EINVAL); ours wanted the first buffer to hold all eight. Fixed
+(`signalfd::store` writes across buffers for both); 3003 then passed 20000 (307 s, load 18). These
+three count for K3 only if nothing after them changes what layer 1 reaches; the deferred rerun
+would (see Next).
+
 K2's ninth run: with the check's fixes in (head after the scheduler indexes), the check's seed 91003
 passed 30000 sequences (507 s, beside the others, load 35 at the start, 20 at the end), so the
 mqueue fstatfs fix holds. Fresh seeds 730 and 731 passed 20000; 729 found copy_file_range into a
@@ -1589,6 +1599,10 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K3, third run, at its end (timerfd fix in): the whole suite passed but for sigio (119 passed, 1
+  failed, 5 ignored; 4 min 26 s, load 19.83 at the start, 13.74 at the end); sigio's reference
+  counted no signal for output to the master where ours, and three reruns of both, counted one (see
+  Known issues).
 - K3, third run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
   wcontainers-kernel -p wcontainers-kernel-test`, default case counts) with the clone and
   credential changes: 119 passed, 1 failed (pidfd: PIDFD_GET_INFO gave the caller's ids, fixed and
@@ -1916,6 +1930,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K3, third run: sigio failed once in a whole-suite run beside a layer 1 run (load about 20): the
+  reference counted 0 signals for "output to the master" (ours 1, as three reruns of both). The
+  same family as the ninth run's sigio entry below: the reference's terminal buffer work races
+  under load.
 - K3, first run: the busybox shell test `processes` failed once in a run beside layer 1 at load
   about 50 (standard error differed); four reruns passed. Not looked into further.
 
@@ -1960,7 +1978,9 @@ K3, in order:
    two tests broke: lockwaits hangs in "a wait for an open file's lock is never a loop" (after the
    open file unlock wakes b and e, b takes byte 0 and ends, and e, run again only after b's end,
    finds byte 1 still in its way and waits for ever; with calls run at once e ran before b's end
-   and was woken by it; find what holds byte 1 then), and saving's clockwatch reported "the clocks
+   and was woken by it; find what holds byte 1 then; note that `posix_locks_deadlock` sees only waiters parked on
+   `Channel::Locks`, so a woken waiter not yet run again drops out of its loops, which Linux's
+   `__locks_wake_up_blocks` also does), and saving's clockwatch reported "the clocks
    held: 0" (seen before the x0 fix; not run again after it).
 2. Three fresh layer 1 seeds of 20000 once the milestone's fixes are all in (the third run ran 3003,
    3004 and 3005 with its own changes; see Measurements). Used so far: up to 737, the checks'

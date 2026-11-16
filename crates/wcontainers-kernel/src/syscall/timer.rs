@@ -1001,10 +1001,8 @@ pub(super) fn read(
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
     let id = of(&file.borrow()).expect("a timer descriptor");
-    let Some(&(buffer, length)) = parts.iter().find(|(_, length)| *length > 0) else {
-        return Err(Errno::EINVAL);
-    };
-    if parts.iter().map(|(_, length)| length).sum::<u64>() < 8 || length < 8 && parts.len() > 1 {
+    // Eight bytes in all, across the buffers (measured with readv).
+    if parts.iter().map(|(_, length)| length).sum::<u64>() < 8 {
         return Err(Errno::EINVAL);
     }
     if kernel.timers.all[&id].ticks == 0 {
@@ -1021,7 +1019,7 @@ pub(super) fn read(
     let timer = kernel.timers.all.get_mut(&id).expect("timer");
     let ticks = core::mem::take(&mut timer.ticks);
     timer.expired = false;
-    guest(kernel, cx, tid).write_value(buffer, &ticks)?;
+    super::signalfd::store(kernel, cx, tid, parts, 0, &ticks.to_le_bytes())?;
     Ok(8)
 }
 

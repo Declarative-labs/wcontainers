@@ -115,14 +115,14 @@ pub(super) fn read(
     Ok(done * RECORD)
 }
 
-/// Stores a record at `offset` into the reader's buffers.
-fn store(
+/// Stores bytes at `offset` into a reader's buffers, across them as `copy_to_iter` does.
+pub(super) fn store(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     parts: &[(u64, u64)],
     offset: u64,
-    record: &[u8; RECORD as usize],
+    record: &[u8],
 ) -> Result<(), Errno> {
     let mut skip = offset;
     let mut from = 0usize;
