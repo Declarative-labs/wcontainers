@@ -2810,8 +2810,17 @@ pub(super) fn statfs(
     tid: Tid,
     [path, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, true)?;
-    let out = statfs_of(kernel, cx, &node)?;
+    let path = super::path_argument(kernel, cx, tid, path, false)?;
+    let at = start(kernel, tid, AT_FDCWD as u64, &path)?;
+    // A descriptor's link to a file opened through the kernel's own mount reaches that mount.
+    let (node, internal) = kernel.with_walk(tid, |walk, _| {
+        let node = walk.resolve(&at, &path, true)?;
+        Ok((node, walk.internal.get()))
+    })?;
+    let mut out = statfs_of(kernel, cx, &node)?;
+    if internal {
+        out.f_flags = i64::from(crate::linux_extra::ST_VALID);
+    }
     guest(kernel, cx, tid).write_value(buffer, &out)?;
     Ok(0)
 }

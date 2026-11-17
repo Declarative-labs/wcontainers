@@ -1159,6 +1159,9 @@ pub(crate) struct Walk<'a> {
     pub root: &'a Node,
     pub credentials: &'a Credentials,
     pub proc: &'a proc::View<'a>,
+    /// The last descriptor link followed named a file opened through the kernel's own mount of
+    /// its file system (mq_open's), whose mount has no flags.
+    pub internal: core::cell::Cell<bool>,
 }
 
 /// The result of walking all but the last part of a path.

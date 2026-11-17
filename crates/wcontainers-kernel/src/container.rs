@@ -363,6 +363,7 @@ impl Kernel {
             root: &self.files.root,
             credentials: &credentials,
             proc: &view,
+            internal: core::cell::Cell::new(false),
         };
         f(&walk, &self.files.root)
     }

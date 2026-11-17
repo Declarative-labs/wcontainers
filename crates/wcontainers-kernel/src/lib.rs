@@ -601,6 +601,7 @@ impl Kernel {
             root: &context.root,
             credentials: &thread.credentials,
             proc: &view,
+            internal: core::cell::Cell::new(false),
         };
         f(&walk, &context)
     }

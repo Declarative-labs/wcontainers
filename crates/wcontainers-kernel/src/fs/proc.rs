@@ -1013,6 +1013,7 @@ pub(crate) fn follow(
             let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
             let file = thread.files.borrow().file(*fd).map_err(|_| Errno::ENOENT)?;
             let node = file.borrow().node.clone();
+            walk.internal.set(file.borrow().internal_mount);
             Ok(node)
         }
         _ => {
