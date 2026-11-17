@@ -14,5 +14,11 @@ blake3 = { version = "1", default-features = false }
 naga = { workspace = true, features = ["wgsl-in"] }
 slab = "0.4"
 
+[dev-dependencies]
+wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir"] }
+pollster = "1.0.1"
+png = "0.18.1"
+
 [lints]
 workspace = true
