@@ -1109,7 +1109,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
     match entry {
         Entry::ProcessFile(task, file) => {
             let process = source.view.processes.get(&task.pid).ok_or(Errno::ESRCH)?;
-            return process_file(source, process, task.tid, *file);
+            return process_file(source, process, *task, *file);
         }
         Entry::Global(index) => {
             let (path, _) = GLOBAL[*index];
@@ -1232,9 +1232,10 @@ pub(crate) struct Source<'a> {
 fn process_file(
     source: &mut Source<'_>,
     process: &Process,
-    tid: Tid,
+    task: Task,
     file: ProcessFile,
 ) -> Result<Vec<u8>, Errno> {
+    let tid = task.tid;
     let shown = shown(source.view, process, tid);
     let mut out = String::new();
     let stack = &process.starting_stack;
@@ -1343,9 +1344,29 @@ fn process_file(
                     | ((index & !0xff) << 12);
                 (number, pty.sides[crate::tty::SLAVE].pgrp.unwrap_or(0))
             });
+            // CPU time in clock ticks (USER_HZ 100), all of it as the user's, as `times`
+            // gives it: a thread's own in its task directory, else the process's with its
+            // ended threads (`do_task_stat`), and its reaped children's.
+            let ticks = |nanoseconds: u64| nanoseconds / 10_000_000;
+            let used = if task.own {
+                source
+                    .view
+                    .threads
+                    .get(&tid)
+                    .map_or(0, |thread| thread.runtime)
+            } else {
+                process.ended_time
+                    + process
+                        .threads
+                        .iter()
+                        .filter_map(|thread| source.view.threads.get(thread))
+                        .map(|thread| thread.runtime)
+                        .sum::<u64>()
+            };
+            let children = if task.own { 0 } else { process.children_time };
             let _ = writeln!(
                 out,
-                "{} ({}) {} {} {} {} {} {} 4194560 0 0 0 0 0 0 0 0 {} {} {} 0 0 {} 0 {} 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 {}",
+                "{} ({}) {} {} {} {} {} {} 4194560 0 0 0 0 {} 0 {} 0 {} {} {} 0 0 {} 0 {} 0 0 0 0 0 0 {} {} {} 0 0 0 17 0 {} {} 0 0 0 0 0 0 0 0 0 0 {}",
                 tid,
                 name,
                 state(source.view, process, tid).0,
@@ -1354,6 +1375,8 @@ fn process_file(
                 process.session,
                 terminal,
                 foreground,
+                ticks(used),
+                ticks(children),
                 priority,
                 schedule.nice,
                 thread_count(process),
