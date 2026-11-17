@@ -335,19 +335,25 @@ crate's test writes every built-in program as WGSL and, all but the two cube-arr
 3.00 for WebGL 2; Chrome compiled all of them (6.3).
 
 Present or absent, with no cheap default:
-- `dispatch(&DispatchCall)`: compute (`COMPUTE`). WebGPU has it; WebGL 2 does not.
+- `dispatch(&DispatchCall)`: compute (`COMPUTE`), outside a pass. WebGPU has it; WebGL 2 does not. Each
+  dispatch is one usage scope (a buffer it binds as writable storage it binds no other way), and its
+  group counts, workgroup size and workgroup variables stay within the compute limits.
 - `capture_vertices(&call, targets, rasterize)`: transform feedback (`TRANSFORM_FEEDBACK`). With
   `rasterize` false it runs outside a pass and draws nothing (rasterizer discard); with it true it runs
   inside a pass and also draws the primitives in the same run of the vertex work, as Direct3D's
   `RasterizedStream` naming the captured stream and OpenGL's transform feedback without discard do.
   It writes the vertex stage's location outputs in location order as packed 32-bit components (no
   built-ins): with one target interleaved, vertex after vertex; with more, output n into target n
-  (OpenGL's interleaved and separate modes), once per vertex of each primitive, strips as lists.
+  (OpenGL's interleaved and separate modes), once per vertex of each primitive, strips as the lists
+  they draw (odd triangles `(i, i + 2, i + 1)`, or `(i + 1, i, i + 2)` with the last vertex
+  provoking). At most `Limits::capture_buffers` targets, each a range with `BufferUsage::CAPTURE`
+  that holds every vertex the draw makes and that the call uses no other way (WebGL 2 refuses a buffer
+  bound for capture and elsewhere at once).
   WebGL 2 has both natively; WebGPU has neither, and the shaders crate's stage helper builds stream
   output from compute instead (section 7), whose draw of the captured vertices is the rasterised part.
 - `create_resource_table`, `write_resource_table`: big resource tables (`RESOURCE_TABLES`). Absent in both
   browsers today (Chrome has a sampling table only behind its unsafe flag).
-- `write_timestamp`: GPU timestamps (`TIMESTAMPS`), outside a pass. WebGPU writes timestamps only where
+- `write_timestamp`: GPU timestamps (`TIMESTAMPS`), outside a pass, into a timestamp query set. WebGPU writes timestamps only where
   passes begin and end, so its back end attaches the write to the next pass (or an empty one); a front
   asked for a timestamp between draws ends its pass first (`TimestampSplitPass`).
 - `timestamps_disjoint() -> bool` (`TIMESTAMPS`): whether timestamps written since the last call are

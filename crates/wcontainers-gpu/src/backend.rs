@@ -565,8 +565,16 @@ pub trait Backend: Sized {
                 }),
             }])?)
         };
-        let width = rects.iter().map(|r| r.x + r.width).max().unwrap_or(0);
-        let height = rects.iter().map(|r| r.y + r.height).max().unwrap_or(0);
+        let width = rects
+            .iter()
+            .map(|r| r.x + r.width)
+            .max()
+            .unwrap_or(0);
+        let height = rects
+            .iter()
+            .map(|r| r.y + r.height)
+            .max()
+            .unwrap_or(0);
         let viewport = [full_viewport(width, height)];
         self.begin_pass(&pass);
         for rect in rects {
@@ -928,8 +936,12 @@ pub trait Backend: Sized {
     /// position is captured writes it to a location too). With one target every output of a vertex is
     /// written one after another, vertex after vertex; with more, output n goes to target n alone and
     /// there are as many targets as outputs, at most [`crate::Limits::capture_buffers`]. Vertices are
-    /// written once per vertex of each primitive (strips as the lists they draw), in draw order,
-    /// instance after instance, and the targets hold every vertex the draw makes.
+    /// written once per vertex of each whole primitive, in draw order, instance after instance, and the
+    /// targets hold every vertex the draw makes. Strips are written as the lists they draw: triangle
+    /// `i` of a strip is `(i, i + 1, i + 2)` for even `i`, and for odd `i` `(i, i + 2, i + 1)`, or
+    /// `(i + 1, i, i + 2)` with [`crate::ProvokingVertex::Last`] (each keeps the winding and the
+    /// provoking vertex every API gives the triangle). Fans and loops need
+    /// [`Features::FAN_AND_LOOP`].
     fn capture_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,
@@ -957,7 +969,7 @@ pub trait Backend: Sized {
         Err(GpuError::Absent(Features::RESOURCE_TABLES))
     }
 
-    /// Writes the GPU time into query `index`, outside a pass: back ends whose API writes timestamps only
+    /// Writes the GPU time into query `index` of a [`QueryKind::Timestamp`] set, outside a pass: back ends whose API writes timestamps only
     /// where passes begin and end attach it to the next pass, or to an empty one. A front asked for one
     /// between draws ends the pass first (slow path [`SlowPath::TimestampSplitPass`]). Needs
     /// [`Features::TIMESTAMPS`].
