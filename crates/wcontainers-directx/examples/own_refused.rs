@@ -39,19 +39,24 @@ fn main() -> windows::core::Result<()> {
     let r = unsafe { device.CreateGeometryShader(GS, None, Some(&mut gs)) };
     println!("CreateGeometryShader {:#010x}", code(r));
 
-    let desc = D3D11_TEXTURE3D_DESC {
+    let desc = D3D11_TEXTURE2D_DESC {
         Width: 4,
         Height: 4,
-        Depth: 4,
         MipLevels: 1,
+        ArraySize: 1,
         Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-        Usage: D3D11_USAGE_DEFAULT,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DYNAMIC,
         BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
         ..Default::default()
     };
-    let mut volume = None;
-    let r = unsafe { device.CreateTexture3D(&desc, None, Some(&mut volume)) };
-    println!("CreateTexture3D {:#010x}", code(r));
+    let mut dynamic = None;
+    let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut dynamic)) };
+    println!("CreateTexture2D(dynamic) {:#010x}", code(r));
 
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: 64,

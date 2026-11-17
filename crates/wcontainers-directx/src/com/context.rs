@@ -537,6 +537,12 @@ impl Context {
         self.front.borrow_mut().clear_render_target_view(&v, c);
     }
 
+    pub(super) fn generate_mips(&self, view: Ref<ID3D11ShaderResourceView>) {
+        if let Some(v) = front_of(&view, |v: &ShaderResourceView| &*v.front) {
+            self.front.borrow_mut().generate_mips(&v);
+        }
+    }
+
     pub(super) fn clear_depth_stencil_view(
         &self,
         view: Ref<ID3D11DepthStencilView>,
@@ -637,7 +643,7 @@ impl Context {
         dst_box: *const D3D11_BOX,
         data: *const c_void,
         row_pitch: u32,
-        _depth_pitch: u32,
+        depth_pitch: u32,
     ) {
         let Some(d) = dst.as_ref().and_then(resource_of) else {
             return;
@@ -650,24 +656,32 @@ impl Context {
             Resource::Buffer(buf) => {
                 b.map_or(buf.desc.byte_width, |b| b.right.saturating_sub(b.left)) as usize
             }
-            Resource::Texture2D(t) => {
-                let mip = sub % t.desc.mip_levels;
-                let (w, h) = t.mip_size(mip);
-                let (w, h) = b.map_or((w, h), |b| {
+            Resource::Texture(t) => {
+                let e = t.mip_extent(sub % t.desc.mip_levels);
+                let (w, h, z) = b.map_or((e.width, e.height, e.depth_or_layers), |b| {
                     (
                         b.right.saturating_sub(b.left),
                         b.bottom.saturating_sub(b.top),
+                        b.back.saturating_sub(b.front),
                     )
                 });
                 let (row, rows) = format::row_bytes(t.format, w, h);
-                (row_pitch * rows.saturating_sub(1) + row) as usize
+                if z == 0 || rows == 0 {
+                    0
+                } else {
+                    (depth_pitch * (z - 1) + row_pitch * (rows - 1) + row) as usize
+                }
             }
         };
         let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
-        let r = self
-            .front
-            .borrow_mut()
-            .update_subresource(&d, sub, b.as_ref(), bytes, row_pitch);
+        let r = self.front.borrow_mut().update_subresource(
+            &d,
+            sub,
+            b.as_ref(),
+            bytes,
+            row_pitch,
+            depth_pitch,
+        );
         self.quiet("UpdateSubresource", r);
     }
 

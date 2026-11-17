@@ -15,7 +15,7 @@ use windows::core::{
     implement,
 };
 
-use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData};
+use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData, TextureDesc};
 use wcontainers_direct3d_11::format;
 use wcontainers_gpu::SourceStage;
 
@@ -180,6 +180,56 @@ impl Device_Impl {
         give(out, Buffer::new(front, self.me()).into())
     }
 
+    /// The front texture of a description and the program's initial data.
+    fn texture(
+        &self,
+        d: TextureDesc,
+        init: *const D3D11_SUBRESOURCE_DATA,
+    ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
+        let mut data = Vec::new();
+        if !init.is_null() {
+            // The description is checked before the program's array of initial data is read by it.
+            let (fmt, mips) = self
+                .front
+                .borrow()
+                .check_texture(&d, true)
+                .map_err(hresult)?;
+            for i in 0..mips * d.array_size {
+                let s = unsafe { &*init.add(i as usize) };
+                let mip = i % mips;
+                let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
+                let slices = (d.depth >> mip).max(1);
+                let (row, rows) = format::row_bytes(fmt, w, h);
+                let len = s.SysMemSlicePitch * (slices - 1) + s.SysMemPitch * (rows - 1) + row;
+                if s.pSysMem.is_null() {
+                    return Err(E_INVALIDARG.into());
+                }
+                data.push(SubresourceData {
+                    bytes: unsafe {
+                        std::slice::from_raw_parts(s.pSysMem.cast::<u8>(), len as usize)
+                    },
+                    row_pitch: s.SysMemPitch,
+                    slice_pitch: s.SysMemSlicePitch,
+                });
+            }
+        }
+        self.front
+            .borrow_mut()
+            .create_texture(&d, &data)
+            .map_err(hresult)
+    }
+
+    pub(super) fn create_texture1_d(
+        &self,
+        desc: *const D3D11_TEXTURE1D_DESC,
+        init: *const D3D11_SUBRESOURCE_DATA,
+        out: OutRef<ID3D11Texture1D>,
+    ) -> Result<()> {
+        let d = convert::texture1d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
+        let front = self.texture(d, init)?;
+        give(out, Texture1D::new(front, self.me()).into())
+    }
+
     pub(super) fn create_texture2_d(
         &self,
         desc: *const D3D11_TEXTURE2D_DESC,
@@ -187,44 +237,27 @@ impl Device_Impl {
         out: OutRef<ID3D11Texture2D>,
     ) -> Result<()> {
         let d = convert::texture2d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
-        let mut data = Vec::new();
-        if !init.is_null() {
-            // The description is checked before the program's array of initial data is read by it.
-            let (fmt, mips) = self
-                .front
-                .borrow()
-                .check_texture_2d(&d, true)
-                .map_err(hresult)?;
-            for i in 0..mips * d.array_size {
-                let s = unsafe { &*init.add(i as usize) };
-                let mip = i % mips;
-                let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
-                let (row, rows) = format::row_bytes(fmt, w, h);
-                let len = (s.SysMemPitch * (rows - 1) + row) as usize;
-                if s.pSysMem.is_null() {
-                    return Err(E_INVALIDARG.into());
-                }
-                data.push(SubresourceData {
-                    bytes: unsafe { std::slice::from_raw_parts(s.pSysMem.cast::<u8>(), len) },
-                    row_pitch: s.SysMemPitch,
-                    slice_pitch: s.SysMemSlicePitch,
-                });
-            }
-        }
-        let front = self
-            .front
-            .borrow_mut()
-            .create_texture_2d(&d, &data)
-            .map_err(hresult)?;
+        let front = self.texture(d, init)?;
         give(out, Texture2D::new(front, self.me()).into())
+    }
+
+    pub(super) fn create_texture3_d(
+        &self,
+        desc: *const D3D11_TEXTURE3D_DESC,
+        init: *const D3D11_SUBRESOURCE_DATA,
+        out: OutRef<ID3D11Texture3D>,
+    ) -> Result<()> {
+        let d = convert::texture3d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
+        let front = self.texture(d, init)?;
+        give(out, Texture3D::new(front, self.me()).into())
     }
 
     /// The front texture behind a resource, refusing buffers (no buffer views yet) and foreign objects.
     fn texture_of(
         resource: &Ref<ID3D11Resource>,
-    ) -> Result<Rc<wcontainers_direct3d_11::object::Texture2D<Chosen>>> {
+    ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
         match resource.as_ref().and_then(resource_of) {
-            Some(wcontainers_direct3d_11::object::Resource::Texture2D(t)) => Ok(t),
+            Some(wcontainers_direct3d_11::object::Resource::Texture(t)) => Ok(t),
             Some(_) => Err(missing("buffer views")),
             None => Err(E_INVALIDARG.into()),
         }
