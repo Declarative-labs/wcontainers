@@ -423,6 +423,10 @@ console, Mac load average 25 to 60):
   immediate context, as many as the scenes make, once contexts were wrapped; with the context's
   table patched instead it counted 2 (the runtime changes those entries). Saved frames equal the
   stored references exactly (frames 1 and 3 of the swap chain scene, flip and blit).
+- End of the second R1 run: the 6 unit tests pass through `remote`, clippy with warnings denied
+  passes for both crates on the desktop, shellcheck passes for every Mac script, `queue-check`
+  passes all five rules, `loop` passes, and `cargo tree --workspace -e all` (2095 lines) names no
+  Wine or vkd3d crate.
 - Disk: C:\wc 9.27 GB in all (C:\wc\target 5.50, C:\wc\programs 0.94, C:\wc\wine 0.16), 503.9 GB
   free on C: (508.8 GB at the end of R0's third run).
 
