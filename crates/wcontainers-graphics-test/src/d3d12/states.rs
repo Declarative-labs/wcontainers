@@ -1,7 +1,7 @@
 //! The pipeline-state scenes of Direct3D 11 (blending, depth, stencil, render target formats,
-//! samplers) drawn
-//! through Direct3D
-//! 12: the same cells, each combination of state made into its own pipeline state object.
+//! samplers) drawn through Direct3D 12: the same cells, each combination of state made into its own
+//! pipeline state object; and the helper that draws Direct3D 11's way on a Direct3D 12 list, which
+//! the texture, rasterizer, multisampling and multiple-target scenes share.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -27,65 +27,64 @@ use crate::d3d11::{cell, checker, solid};
 use crate::dxil;
 use crate::output::Output;
 
-const RT: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATE_RENDER_TARGET;
+pub(super) const RT: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATE_RENDER_TARGET;
 const DEPTH: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
 /// Direct3D 11's way of drawing on a Direct3D 12 list: state set piece by piece, and a pipeline
-/// made (once per combination) at each draw. One root signature: four root constants at b0.
-struct Immediate<'a> {
+/// made (once per combination) at each draw. The root signature starts as four root constants at
+/// b0.
+pub(super) struct Immediate<'a> {
     gpu: &'a Gpu,
-    root: ID3D12RootSignature,
-    vs: &'static [u8],
-    ps: &'static [u8],
-    colored: bool,
-    blend: D3D11_BLEND_DESC,
-    depth: D3D11_DEPTH_STENCIL_DESC,
-    raster: D3D11_RASTERIZER_DESC,
-    target: DXGI_FORMAT,
-    depth_format: DXGI_FORMAT,
+    pub root: ID3D12RootSignature,
+    /// Root constants set after the root signature at each draw, as parameter 0, when any.
+    pub constants: Vec<f32>,
+    pub vs: &'static [u8],
+    pub hs: Option<&'static [u8]>,
+    pub ds: Option<&'static [u8]>,
+    pub gs: Option<&'static [u8]>,
+    pub ps: &'static [u8],
+    pub topology: D3D_PRIMITIVE_TOPOLOGY,
+    pub cut: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE,
+    pub colored: bool,
+    pub blend: D3D11_BLEND_DESC,
+    pub sample_mask: u32,
+    pub depth: D3D11_DEPTH_STENCIL_DESC,
+    pub raster: D3D11_RASTERIZER_DESC,
+    pub targets: Vec<DXGI_FORMAT>,
+    pub depth_format: DXGI_FORMAT,
+    pub samples: DXGI_SAMPLE_DESC,
     /// Descriptor tables set after the root signature at each draw: parameter and handle.
-    tables: Vec<(u32, D3D12_GPU_DESCRIPTOR_HANDLE)>,
+    pub tables: Vec<(u32, D3D12_GPU_DESCRIPTOR_HANDLE)>,
     pipelines: RefCell<HashMap<String, ID3D12PipelineState>>,
 }
 
 impl<'a> Immediate<'a> {
-    fn new(gpu: &'a Gpu) -> Result<Self> {
-        let constants = D3D12_ROOT_PARAMETER {
-            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-            Anonymous: D3D12_ROOT_PARAMETER_0 {
-                Constants: D3D12_ROOT_CONSTANTS {
-                    ShaderRegister: 0,
-                    RegisterSpace: 0,
-                    Num32BitValues: 4,
-                },
-            },
-            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
-        };
-        let root = gpu.root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
-            Version: D3D_ROOT_SIGNATURE_VERSION_1_0,
-            Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
-                Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
-                    NumParameters: 1,
-                    pParameters: &constants,
-                    Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-                    ..Default::default()
-                },
-            },
-        })?;
+    pub fn new(gpu: &'a Gpu) -> Result<Self> {
         Ok(Immediate {
             gpu,
-            root,
+            root: constants_root(gpu, 4)?,
+            constants: Vec::new(),
             vs: dxil!("common.vs_color"),
+            hs: None,
+            ds: None,
+            gs: None,
             ps: dxil!("common.ps_color"),
+            topology: D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+            cut: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
             colored: true,
             blend: no_blend(),
+            sample_mask: u32::MAX,
             depth: D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: false.into(),
                 ..depth_test(D3D11_COMPARISON_ALWAYS, false)
             },
             raster: solid(),
-            target: DXGI_FORMAT_R8G8B8A8_UNORM,
+            targets: vec![DXGI_FORMAT_R8G8B8A8_UNORM],
             depth_format: DXGI_FORMAT_UNKNOWN,
+            samples: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             tables: Vec::new(),
             pipelines: RefCell::new(HashMap::new()),
         })
@@ -93,7 +92,7 @@ impl<'a> Immediate<'a> {
 
     /// Binds an 8-bit colour target and, if given, a depth target: cleared, with the whole of them
     /// as viewport and scissor.
-    fn begin(
+    pub fn begin(
         &mut self,
         rtv: Option<&ID3D12DescriptorHeap>,
         dsv: Option<&ID3D12DescriptorHeap>,
@@ -130,10 +129,10 @@ impl<'a> Immediate<'a> {
                 bottom: height as i32,
             }]);
         }
-        self.target = if rtv.is_some() {
-            DXGI_FORMAT_R8G8B8A8_UNORM
+        self.targets = if rtv.is_some() {
+            vec![DXGI_FORMAT_R8G8B8A8_UNORM]
         } else {
-            DXGI_FORMAT_UNKNOWN
+            Vec::new()
         };
         self.depth_format = format;
         self.viewport(D3D11_VIEWPORT {
@@ -146,7 +145,7 @@ impl<'a> Immediate<'a> {
         });
     }
 
-    fn viewport(&self, v: D3D11_VIEWPORT) {
+    pub fn viewport(&self, v: D3D11_VIEWPORT) {
         unsafe { self.gpu.list.RSSetViewports(&[transmute_copy(&v)]) };
     }
 
@@ -163,40 +162,49 @@ impl<'a> Immediate<'a> {
         let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
             pRootSignature: unsafe { transmute_copy(&self.root) },
             VS: bytecode(self.vs),
+            HS: self.hs.map(bytecode).unwrap_or_default(),
+            DS: self.ds.map(bytecode).unwrap_or_default(),
+            GS: self.gs.map(bytecode).unwrap_or_default(),
             PS: bytecode(self.ps),
             BlendState: blend12(&self.blend),
-            SampleMask: u32::MAX,
+            SampleMask: self.sample_mask,
             RasterizerState: raster12(&self.raster),
             DepthStencilState: depth12(&self.depth),
             InputLayout: D3D12_INPUT_LAYOUT_DESC {
                 pInputElementDescs: layout.as_ptr(),
                 NumElements: if self.colored { 2 } else { 0 },
             },
-            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-            NumRenderTargets: (self.target != DXGI_FORMAT_UNKNOWN) as u32,
+            IBStripCutValue: self.cut,
+            PrimitiveTopologyType: topology_type(self.topology),
+            NumRenderTargets: self.targets.len() as u32,
             DSVFormat: self.depth_format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
+            SampleDesc: self.samples,
             ..Default::default()
         };
-        desc.RTVFormats[0] = self.target;
+        desc.RTVFormats[..self.targets.len()].copy_from_slice(&self.targets);
         if self.depth_format == DXGI_FORMAT_UNKNOWN {
             desc.DepthStencilState.DepthEnable = false.into();
             desc.DepthStencilState.StencilEnable = false.into();
         }
         // Debug's text of each block (and the shaders' and root's addresses) names the combination.
         let key = format!(
-            "{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+            "{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {} {:?} {:?} {:?} {:?} {:?}",
             self.root.as_raw(),
             self.vs.as_ptr(),
+            self.hs.map(<[u8]>::as_ptr),
+            self.ds.map(<[u8]>::as_ptr),
+            self.gs.map(<[u8]>::as_ptr),
             self.ps.as_ptr(),
+            desc.PrimitiveTopologyType,
+            self.cut,
+            self.colored,
             self.blend,
+            self.sample_mask,
             self.depth,
             self.raster,
-            self.target,
-            self.depth_format
+            self.targets,
+            self.depth_format,
+            self.samples
         );
         if let Some(pipeline) = self.pipelines.borrow().get(&key) {
             return Ok(pipeline.clone());
@@ -212,17 +220,59 @@ impl<'a> Immediate<'a> {
         unsafe {
             list.SetPipelineState(&self.pipeline()?);
             list.SetGraphicsRootSignature(&self.root);
+            if !self.constants.is_empty() {
+                list.SetGraphicsRoot32BitConstants(
+                    0,
+                    self.constants.len() as u32,
+                    self.constants.as_ptr().cast(),
+                    0,
+                );
+            }
             for &(parameter, handle) in &self.tables {
                 list.SetGraphicsRootDescriptorTable(parameter, handle);
             }
-            list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            list.IASetPrimitiveTopology(self.topology);
         }
         Ok(())
     }
 
-    /// Draws coloured vertices as a triangle list.
-    fn draw_colored(&self, vertices: &[Colored]) -> Result<()> {
+    /// Draws coloured vertices in the topology set.
+    pub fn draw_colored(&self, vertices: &[Colored]) -> Result<()> {
         self.bind()?;
+        self.vertices(vertices)?;
+        unsafe { self.gpu.list.DrawInstanced(vertices.len() as u32, 1, 0, 0) };
+        Ok(())
+    }
+
+    /// Draws coloured vertices by `indices` (of `format`) in the topology set.
+    pub fn draw_indexed(
+        &self,
+        vertices: &[Colored],
+        indices: &[u8],
+        format: DXGI_FORMAT,
+    ) -> Result<()> {
+        self.bind()?;
+        self.vertices(vertices)?;
+        let buffer = self.gpu.upload(indices)?;
+        let size = if format == DXGI_FORMAT_R16_UINT { 2 } else { 4 };
+        unsafe {
+            self.gpu
+                .list
+                .IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+                    BufferLocation: buffer.GetGPUVirtualAddress(),
+                    SizeInBytes: indices.len() as u32,
+                    Format: format,
+                }));
+            self.gpu
+                .list
+                .DrawIndexedInstanced(indices.len() as u32 / size, 1, 0, 0, 0);
+        }
+        self.gpu.keep(&buffer);
+        Ok(())
+    }
+
+    /// Binds coloured vertices as slot 0.
+    fn vertices(&self, vertices: &[Colored]) -> Result<()> {
         let buffer = self.gpu.upload(bytemuck::cast_slice(vertices))?;
         unsafe {
             self.gpu.list.IASetVertexBuffers(
@@ -233,14 +283,20 @@ impl<'a> Immediate<'a> {
                     StrideInBytes: 28,
                 }]),
             );
-            self.gpu.list.DrawInstanced(vertices.len() as u32, 1, 0, 0);
         }
         self.gpu.keep(&buffer);
         Ok(())
     }
 
     /// Draws `count` vertices without a vertex buffer, with the four root constants.
-    fn draw(&self, count: u32, constants: [f32; 4]) -> Result<()> {
+    /// Draws `count` vertices without a vertex buffer, with only the bindings set.
+    pub fn draw_generated(&self, count: u32) -> Result<()> {
+        self.bind()?;
+        unsafe { self.gpu.list.DrawInstanced(count, 1, 0, 0) };
+        Ok(())
+    }
+
+    pub fn draw(&self, count: u32, constants: [f32; 4]) -> Result<()> {
         self.bind()?;
         unsafe {
             self.gpu
@@ -290,8 +346,49 @@ impl<'a> Immediate<'a> {
     }
 }
 
+/// A root signature of `count` root constants at b0, seen by every stage.
+pub(super) fn constants_root(gpu: &Gpu, count: u32) -> Result<ID3D12RootSignature> {
+    let constants = D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Constants: D3D12_ROOT_CONSTANTS {
+                ShaderRegister: 0,
+                RegisterSpace: 0,
+                Num32BitValues: count,
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+    };
+    gpu.root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
+        Version: D3D_ROOT_SIGNATURE_VERSION_1_0,
+        Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
+            Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
+                NumParameters: 1,
+                pParameters: &constants,
+                Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+                ..Default::default()
+            },
+        },
+    })
+}
+
+/// The kind of primitive a topology draws, which a pipeline is made for.
+fn topology_type(topology: D3D_PRIMITIVE_TOPOLOGY) -> D3D12_PRIMITIVE_TOPOLOGY_TYPE {
+    match topology {
+        D3D_PRIMITIVE_TOPOLOGY_POINTLIST => D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT,
+        D3D_PRIMITIVE_TOPOLOGY_LINELIST
+        | D3D_PRIMITIVE_TOPOLOGY_LINESTRIP
+        | D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ
+        | D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ => D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE,
+        t if t.0 >= D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST.0 => {
+            D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH
+        }
+        _ => D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+    }
+}
+
 /// Direct3D 11's blend description as Direct3D 12's: the values of each enumeration are the same.
-fn blend12(d: &D3D11_BLEND_DESC) -> D3D12_BLEND_DESC {
+pub(super) fn blend12(d: &D3D11_BLEND_DESC) -> D3D12_BLEND_DESC {
     let mut out = D3D12_BLEND_DESC {
         AlphaToCoverageEnable: d.AlphaToCoverageEnable,
         IndependentBlendEnable: d.IndependentBlendEnable,
@@ -337,7 +434,7 @@ fn depth12(d: &D3D11_DEPTH_STENCIL_DESC) -> D3D12_DEPTH_STENCIL_DESC {
 }
 
 /// Direct3D 12 has no scissor switch: the scenes drawn here set the scissor to the whole target.
-fn raster12(r: &D3D11_RASTERIZER_DESC) -> D3D12_RASTERIZER_DESC {
+pub(super) fn raster12(r: &D3D11_RASTERIZER_DESC) -> D3D12_RASTERIZER_DESC {
     D3D12_RASTERIZER_DESC {
         FillMode: D3D12_FILL_MODE(r.FillMode.0),
         CullMode: D3D12_CULL_MODE(r.CullMode.0),
@@ -635,7 +732,7 @@ pub fn formats(gpu: &Gpu) -> Result<Vec<Output>> {
         )?;
         let (texture, rtv) = gpu.target(SIZE, SIZE, format)?;
         im.begin(Some(&rtv), None, DXGI_FORMAT_UNKNOWN, SIZE, SIZE);
-        im.target = format;
+        im.targets = vec![format];
         im.ps = match kind {
             Kind::Float => dxil!("formats.ps_float"),
             Kind::Uint => dxil!("formats.ps_uint"),
@@ -649,7 +746,7 @@ pub fn formats(gpu: &Gpu) -> Result<Vec<Output>> {
     let srgb = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     let (texture, rtv) = gpu.target(SIZE, SIZE, srgb)?;
     im.begin(Some(&rtv), None, DXGI_FORMAT_UNKNOWN, SIZE, SIZE);
-    im.target = srgb;
+    im.targets = vec![srgb];
     im.ps = dxil!("formats.ps_float");
     im.draw(3, [0.0; 4])?;
     im.blend.RenderTarget[0] = blend::target(
@@ -683,9 +780,9 @@ fn sampler12(d: &D3D11_SAMPLER_DESC) -> D3D12_SAMPLER_DESC {
     }
 }
 
-/// Records copies of every level of a texture now in the copy destination state, each level's
-/// texels packed in rows.
-fn fill_levels(gpu: &Gpu, texture: &ID3D12Resource, levels: &[Vec<u8>]) -> Result<()> {
+/// Records copies of the first subresources of a texture now in the copy destination state, one
+/// for each of `levels`, whose texels (or blocks) are packed in rows and slices.
+pub(super) fn fill_levels(gpu: &Gpu, texture: &ID3D12Resource, levels: &[Vec<u8>]) -> Result<()> {
     let desc = unsafe { texture.GetDesc() };
     let n = levels.len();
     let mut footprints = vec![D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); n];
@@ -706,10 +803,11 @@ fn fill_levels(gpu: &Gpu, texture: &ID3D12Resource, levels: &[Vec<u8>]) -> Resul
     };
     let mut staged = vec![0u8; total as usize];
     for (i, bytes) in levels.iter().enumerate() {
-        let (f, size) = (footprints[i], row_sizes[i] as usize);
-        for y in 0..rows[i] as usize {
-            let at = f.Offset as usize + y * f.Footprint.RowPitch as usize;
-            staged[at..at + size].copy_from_slice(&bytes[y * size..(y + 1) * size]);
+        let (f, size, rows) = (footprints[i], row_sizes[i] as usize, rows[i] as usize);
+        // Rows of every slice in turn: a slice's rows follow the last one's in both.
+        for row in 0..rows * f.Footprint.Depth as usize {
+            let at = f.Offset as usize + row * f.Footprint.RowPitch as usize;
+            staged[at..at + size].copy_from_slice(&bytes[row * size..(row + 1) * size]);
         }
     }
     let upload = gpu.upload(&staged)?;

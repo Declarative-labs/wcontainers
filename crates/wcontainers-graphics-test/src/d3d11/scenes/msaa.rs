@@ -12,11 +12,11 @@ use crate::d3d11::{Gpu, solid, tex2d};
 use crate::dxbc;
 use crate::output::Output;
 
-const SIZE: u32 = 128;
-const FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
+pub const SIZE: u32 = 128;
+pub const FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 /// Thin wedges, whose edges cross pixels at every angle.
-fn wedges() -> Vec<Colored> {
+pub fn wedges() -> Vec<Colored> {
     let mut v = Vec::new();
     for k in 0..5u32 {
         let a0 = k as f32 * 0.31 + 0.05;
@@ -26,6 +26,20 @@ fn wedges() -> Vec<Colored> {
         v.extend([p(a0, 0.1), p(a1, 1.9), p(a0, 1.9)]);
     }
     v
+}
+
+/// A square whose alpha runs from 0 on the left to 1 on the right.
+pub fn fade() -> [Colored; 6] {
+    let mut fade = quad(-0.9, -0.9, 0.9, 0.9, 0.5, 0.5, [0.95, 0.8, 0.3, 0.0]);
+    for v in fade.iter_mut().filter(|v| v[0] > 0.0) {
+        v[6] = 1.0;
+    }
+    fade
+}
+
+/// The square the pixel shader's coverage is written over.
+pub fn square() -> [Colored; 6] {
+    quad(-0.9, -0.9, 0.9, 0.9, 0.5, 0.5, [0.3, 0.8, 0.95, 1.0])
 }
 
 /// A multisampled target with the standard pattern, bindable as a texture when `read`.
@@ -95,11 +109,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let mut coverage = no_blend();
     coverage.AlphaToCoverageEnable = true.into();
     unsafe { c.OMSetBlendState(&gpu.blend(&coverage)?, None, u32::MAX) };
-    let mut fade = quad(-0.9, -0.9, 0.9, 0.9, 0.5, 0.5, [0.95, 0.8, 0.3, 0.0]);
-    for v in fade.iter_mut().filter(|v| v[0] > 0.0) {
-        v[6] = 1.0;
-    }
-    draw_colored(gpu, &fade)?;
+    draw_colored(gpu, &fade())?;
     outputs.push(Output::picture(
         "alpha_to_coverage",
         resolve(gpu, &texture)?,
@@ -112,10 +122,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
 
     let (texture, _rtv) = fresh(4)?;
     unsafe { c.PSSetShader(&gpu.ps(dxbc!("msaa.ps_coverage"))?, None) };
-    draw_colored(
-        gpu,
-        &quad(-0.9, -0.9, 0.9, 0.9, 0.5, 0.5, [0.3, 0.8, 0.95, 1.0]),
-    )?;
+    draw_colored(gpu, &square())?;
     outputs.push(Output::picture("shader_coverage", resolve(gpu, &texture)?));
 
     // The wedges at 4 samples, then each quarter of a single-sampled picture shows one sample.

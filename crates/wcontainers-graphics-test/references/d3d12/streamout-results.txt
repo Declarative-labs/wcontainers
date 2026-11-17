@@ -1,0 +1,2 @@
+enough: 4 primitives written, 4 needed, 384 bytes filled
+small: 1 primitives written, 4 needed, 96 bytes filled
