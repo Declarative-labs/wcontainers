@@ -565,16 +565,20 @@ pub trait Backend: Sized {
                 }),
             }])?)
         };
+        // The view is no larger than the largest texture, so a viewport cut to it covers the view.
+        let most = self.caps().limits.max_texture_2d;
         let width = rects
             .iter()
             .map(|r| r.x.saturating_add(r.width))
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(most);
         let height = rects
             .iter()
             .map(|r| r.y.saturating_add(r.height))
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(most);
         let viewport = [full_viewport(width, height)];
         self.begin_pass(&pass);
         for rect in rects {
