@@ -203,6 +203,26 @@ K5 built (all four runs):
     its receiver or to the outside; a receiver with UDP_GRO takes it whole with a UDP_GRO
     message naming the segment size (`udp_unexpected_gso`). UDP_ENCAP stays counted (IPsec and
     L2TP encapsulation need the kernel's IPsec, which is not built).
+  - SO_TIMESTAMPING (old and new): the flags checked and kept as `sock_set_timestamping` (an
+    int or `struct so_timestamping`; unknown bits, OPT_ID_TCP without OPT_ID, OPT_STATS without
+    OPT_TSONLY, OPT_ID on an unconnected TCP socket: EINVAL; a bound clock: EOPNOTSUPP) and read
+    back; software receive timestamps (SCM_TIMESTAMPING: the time and two empty ones) on UDP,
+    TCP (the last buffer's) and local datagrams beside SO_TIMESTAMP, as measured; hardware flags
+    are kept and give nothing, as on Linux's loopback. Software send timestamps (TX_SOFTWARE,
+    TX_SCHED, TX_ACK, TX_COMPLETION) are refused and counted, as an option and per send.
+  - IPv4 multicast and broadcast inside the container: IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP,
+    MCAST_JOIN_GROUP and MCAST_LEAVE_GROUP (`ip_mc_join_group`'s checks; at most 20 groups,
+    ENOBUFS; EPROTO on TCP), IP_MULTICAST_IF (an address, `ip_mreq` or `ip_mreqn`), a group's
+    datagram given to every socket on its port bound to the any address or the group (connected
+    to none or the sender) that joined it on the interface it left by or takes every group
+    (IP_MULTICAST_ALL), while some socket joined it there and the sender loops it back, with
+    IP_MULTICAST_TTL; broadcasts (255.255.255.255 and eth0's) need SO_BROADCAST (EACCES) and go
+    to every socket on the port. The copies the outside would get are not sent, counted
+    "multicast or broadcast not sent outside" (the host carries neither). They were dropped
+    without a count before.
+  - statfs through `/proc/self/fd/N` of an mq_open queue gives the kernel's own mount's flags
+    (the walk keeps whether the last descriptor link followed named such a file), fixing the
+    fifth run's open layer 1 difference (seed 5050446).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -214,7 +234,10 @@ Tests added in the sixth run (each against the reference):
 - tests/inet.rs `tcp_info_matches_reference` (guest/tcpinfo.c: exact fields through a
   connection's life over IPv4 and IPv6, timing fields only as plausible),
   `send_control_messages_match_reference` (guest/inetsend.c, as root and a user),
-  `udp_segmentation_matches_reference` (guest/udpsegment.c).
+  `udp_segmentation_matches_reference` (guest/udpsegment.c), `timestamping_matches_reference`
+  (guest/timestamping.c; each receiver waits 100 ms after asking, as Linux turns stamping on
+  for the machine through deferred work), `multicast_and_broadcast_match_reference`
+  (guest/multicast.c).
 - Layer 1 sets SO_MARK, SO_PRIORITY, SO_RCVMARK, SO_RCVPRIORITY, SO_TXTIME and IP_TOS, and sends
   IPv4 packet information naming 127.0.0.5 as the source.
 
@@ -1605,6 +1628,10 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K5, sixth run: Linux stamps received packets once any socket on the machine asks for receive
+  timestamps (a global switch, turned on a moment later); here a packet is stamped when its
+  receiver asked, so SOF_TIMESTAMPING_SOFTWARE without RX_SOFTWARE reports a time only when the
+  receiver also has SO_TIMESTAMP, which is what a quiet Linux machine does.
 - K5, sixth run: TCP_INFO of a connection is a model (counted "tcp info modelled"): Linux's
   round trips, rates, RTO, delayed acknowledgements, window growth and segment counts depend on
   timing and load (retransmissions were measured on a loaded reference), so they cannot be
@@ -1903,8 +1930,11 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   messages to another socket's port (ECONNREFUSED); detail family times 2^32 plus kind times 2^16
   plus protocol.
 - "socket option not built": socket options not built (detail: level times 2^32 plus option;
-  ENOPROTOOPT), among them TCP_INFO, TCP_ZEROCOPY_RECEIVE, SO_TIMESTAMPING and the internet send
-  control messages listed under Where things stand.
+  ENOPROTOOPT), among them TCP_ZEROCOPY_RECEIVE, TCP_DEFER_ACCEPT (set), TCP_SAVE_SYN,
+  TCP_MD5SIG, TCP_ULP, UDP_ENCAP, IP_RECVOPTS, IP_RETOPTS, IP_RECVORIGDSTADDR, IP_MINTTL,
+  IP_UNICAST_IF, the source-specific multicast options and IPv6's group and extension header
+  options; SO_TIMESTAMPING with software send flags; and as send control messages (EINVAL)
+  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps.
 - "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
   RTM_GETROUTE dumps and RTM_GETLINK of one link (EOPNOTSUPP; detail the type plus 2^16 for a
   dump), such as `ip route get`, neighbours, rules and queue disciplines.
@@ -1914,7 +1944,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 Notices the backend sends that Linux refuses are counted "backend notice refused" (not a
 refusal of the guest).
 Approximations that are not refusals have their own counters: "outside datagram error not
-queued", "tcp room modelled", "tcp
+queued", "tcp room modelled", "tcp info modelled", "multicast or broadcast not sent outside",
+"tcp
 connect waits for backlog room", "interface counters not kept", "name query not answered",
 "recvmmsg returned early", "listening outside failed" (a host that cannot accept from outside
 or whose port is taken), "outside datagram header made up",
@@ -1927,6 +1958,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K5, sixth run: none.
 - K5, fifth run: none.
 - K5, fourth run: none.
 - K5, third run (host.rs): documentation only. `Host::listen` now says its port is the
@@ -2078,19 +2110,17 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K5, in this order (what the five runs built is under Where things stand):
-1. Layer 1's per-milestone bar is met at f73d3aa (5050448 to 5050450). One difference found and
-   not fixed: statfs of `/proc/self/fd/N` where N is an mq_open queue gives Linux's internal
-   mqueue mount's flags (ST_VALID alone) there, and here `/dev/mqueue`'s (fstatfs is right;
-   the path walk through the descriptor's magic link returns only the inode, not that the file
-   is on the internal mount). Seed 5050446 replays it. Fresh seeds start at 5050451.
-2. Not built, counted "socket option not built": TCP_INFO (Linux 7.0 gives 280 bytes, measured;
-   about half its fields are timings and rates of real segments this TCP does not have, so a
-   model needs a decision on what to give for them), TCP_ZEROCOPY_RECEIVE, SO_TIMESTAMPING (old
-   and new), UDP_SEGMENT, UDP_GRO, UDP_ENCAP, and the internet send control messages listed
-   under Where things stand. Urgent
-   data to the outside (a send with MSG_OOB and bytes on an outside connection is refused,
-   counted).
+K5, in this order (what the six runs built is under Where things stand):
+1. Software send timestamps (SO_TIMESTAMPING's TX_SOFTWARE, TX_SCHED, TX_ACK; refused and
+   counted now). Measured on the reference (k5r6/tsing.c in scratch): per UDP datagram an error
+   queue entry for SCHED (ee_info 1) then SND (0), each ENOMSG with origin 4
+   (SO_EE_ORIGIN_TIMESTAMPING), SCM_TIMESTAMPING before IP_RECVERR, OPT_ID counting sends from
+   0; OPT_TSONLY gives no bytes, without it the frame from its Ethernet header (14 zero bytes,
+   then IPv4 and UDP headers whose checksum and id are hard to match). TCP adds ACK and keys by
+   byte. Then TCP_DEFER_ACCEPT (an accept and a listener's poll wait for data or the deferral's
+   end; `secs_to_retrans` for the value), the other options under Not built.
+2. Urgent data to the outside (a send with MSG_OOB and bytes on an outside connection is
+   refused, counted): the Host hooks carry no urgent data.
 3. Local sockets left: a socket's `/proc/<pid>/fdinfo` (fdinfo is not built at all). A SCM_PIDFD
    or SO_PEERPIDFD for a reaped process whose number was given again would name the new one
    (numbers are kept, not Linux's `struct pid`). ETOOMANYREFS is checked just before the
@@ -2106,6 +2136,10 @@ K5, in this order (what the five runs built is under Where things stand):
    Linux sends them at the last unmap; events of files changed on the backend from outside are
    not seen (plan section 15's kind). IN_UNMOUNT is never sent, as nothing in a default Docker
    container can unmount (umount needs CAP_SYS_ADMIN).
+6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
+   ENETUNREACH, as eth0 has no IPv6). SYN_SENT's TCP_MAXSEG is 536 here and 524 on Linux.
+7. The per-milestone layer 1 bar (three fresh seeds of 20000) is to be run again at the
+   milestone's end with every fix in; fresh seeds start at 5050453.
 
 K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
 found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
@@ -2126,6 +2160,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050450 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050452 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
