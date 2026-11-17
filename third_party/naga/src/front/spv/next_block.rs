@@ -1961,6 +1961,13 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     inst.expect(1)?;
                     break Some(crate::Statement::Kill);
                 }
+                // The IR's `Kill` is WGSL's `discard`, which demotes the invocation to a helper.
+                Op::DemoteToHelperInvocation => {
+                    inst.expect(1)?;
+                    block.extend(emitter.finish(ctx.expressions));
+                    block.push(crate::Statement::Kill, span);
+                    emitter.start(ctx.expressions);
+                }
                 Op::Unreachable => {
                     inst.expect(1)?;
                     break None;
