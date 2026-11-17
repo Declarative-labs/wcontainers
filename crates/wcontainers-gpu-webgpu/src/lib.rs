@@ -906,12 +906,13 @@ impl Backend for WebGpu {
         usage |= copies & allowed;
         // Depth and stencil copies and read backs WebGPU has no copy for are draws: from a bound
         // source into an attachment.
-        if desc.usage.contains(TextureUsage::COPY_SRC) && fill::DepthSource::readable(desc.format) {
+        if desc.usage.contains(TextureUsage::COPY_SRC)
+            && (fill::DepthSource::readable(desc.format) || desc.format.is_depth_stencil())
+        {
             usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
         }
-        if desc.format.is_depth_stencil() {
-            usage |= allowed
-                & (wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT);
+        if desc.usage.contains(TextureUsage::COPY_DST) && desc.format.is_depth_stencil() {
+            usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
         let srgb_twin = (format.remove_srgb_suffix() != format)
             .then(|| format.remove_srgb_suffix())
