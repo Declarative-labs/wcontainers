@@ -114,6 +114,11 @@ fn block_compressed_and_shared_exponent_textures_read_back_as_written() {
 }
 
 #[test]
+fn fragment_depth_follows_the_clip_convention() {
+    checks::fragment_depth_follows_the_clip_convention::<Angle>();
+}
+
+#[test]
 fn captured_indices_drawn_both_ways() {
     checks::captured_indices_drawn_both_ways::<Angle>();
 }

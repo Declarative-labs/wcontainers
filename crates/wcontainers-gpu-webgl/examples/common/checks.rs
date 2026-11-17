@@ -1793,3 +1793,89 @@ pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Hos
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// A triangle over the target at clip z 0.5, writing its fragments' window z.
+const FRAGMENT_Z: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(p.z, 0.0, 0.0, 1.0);
+}
+";
+
+/// The fragment's window z (WGSL's position z) and the depth stored are clip z mapped by the raster
+/// block's convention: 0.5 from zero to one, 0.75 from minus one to one.
+pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let colour = Format::R32Float;
+    let wanted = FormatUse::RENDER | FormatUse::COPY_OUT;
+    if !b.caps().formats.get(colour).contains(wanted) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, FRAGMENT_Z, "vs", "fs");
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        colour,
+        [2, 2, 1],
+        1,
+        usage,
+        false,
+    );
+    let v = kit::target(&mut b, &t, colour, 0, 0);
+    let depth = Format::Depth32Float;
+    let d = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        depth,
+        [2, 2, 1],
+        1,
+        usage,
+        false,
+    );
+    let dv = kit::target(&mut b, &d, depth, 0, 0);
+    let ds = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
+    let whole = [kit::viewport(0.0, 0.0, 2.0, 2.0)];
+    let mut conventions = vec![(true, 0.75f32)];
+    if b.caps().has(Features::CLIP_DEPTH_ZERO_ONE) {
+        conventions.push((false, 0.5));
+    }
+    for (minus_one, want) in conventions {
+        let raster = b
+            .create_raster(&RasterDesc {
+                fill: FillMode::Solid,
+                cull: CullMode::None,
+                front: FrontFace::Clockwise,
+                depth_bias: 0,
+                depth_bias_slope: 0,
+                depth_bias_clamp: 0,
+                depth_clip: true,
+                scissor: false,
+                line_width: 1.0f32.to_bits(),
+                provoking: ProvokingVertex::Last,
+                depth_minus_one: minus_one,
+                sample_mask: u32::MAX,
+            })
+            .expect("create_raster");
+        b.begin_pass(&kit::pass(&v, [0; 4], Some((&dv, 1.0, false))));
+        b.draw(&DrawCall {
+            raster: &raster,
+            depth_stencil: &ds,
+            ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+        });
+        b.end_pass();
+        let got = kit::read(&mut b, &t, 0, 0, [2, 2, 1], 4, false);
+        let stored = kit::read(&mut b, &d, 0, 0, [2, 2, 1], 4, false);
+        for (what, bytes) in [("position z", &got), ("stored depth", &stored)] {
+            for texel in bytes.chunks_exact(4) {
+                let z = f32::from_le_bytes(texel.try_into().unwrap());
+                assert_eq!(z, want, "{what} with depth_minus_one {minus_one}");
+            }
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
