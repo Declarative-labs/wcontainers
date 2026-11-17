@@ -39,6 +39,19 @@ the desktop"), and committed locally, not pushed. What it did:
   now logs `prepare` and hands out a buffer's bytes. Never run.
 - The real-Direct3D test of the bases is the rig's `draws` scene (start vertex, base vertex,
   start instance, and both indirect draws), which stopped with `E_NOTIMPL` before; run it first.
+- f114492: staging textures of depth with stencil (`D24_UNORM_S8_UINT`, `D32_FLOAT_S8X24_UINT`,
+  and typeless ones stored so) move each aspect apart, since the interface reads and writes one
+  aspect per call (depth in four bytes, stencil in one): a copy into one starts two read backs and
+  `Map` merges them into Direct3D's layout; `Unmap` and initial data split the texels into two
+  writes. Before, only depth came back, which is why Wine's test_clear_depth_stencil_view read
+  0x00ffffff where Direct3D gives 0xffffffff. The recorder now keeps such textures in Direct3D's
+  layout and moves the aspect a region names; front test
+  `staging_depth_with_stencil_moves_both_aspects_in_direct3ds_layout` (never run).
+- Read Wine's source for two other wrong answers of run 3, both outside this front (Asked of
+  other tracks): test_depth_stencil_sampling reads stencil from the green channel of an
+  `X24_TYPELESS_G8_UINT` view, where WebGPU's stencil view gives it in red; and
+  test_cb_relative_addressing indexes a constant buffer past the array its shader declares (inside
+  the bound buffer), which Direct3D reads and the converted program clamps to the last element.
 - A one-command check for when the desktop answers: scratch `resume.sh <label> [lint front lib
   scenes wine]` (How to run).
 
@@ -491,7 +504,7 @@ buffer and unordered access views, geometry, stream output and compute), so they
 ## What comes next (G4b and on)
 
 After G4 run 5, first, once the desktop answers again: run 4's list below, where item 1 now also
-covers 1034db1 and bf33687 (run `resume.sh g4r6`, which does items 1 and 2 in one go), and the
+covers 1034db1, bf33687 and f114492 (run `resume.sh g4r6`, which does items 1 and 2 in one go), and the
 rig's `draws` scene for the bases. Then, still open from section 12's list and needing more than
 the desktop:
 - Move the context onto the interface's `PassTracker` (item 7 of the older list): it gives
@@ -714,9 +727,9 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
-- crates/wcontainers-direct3d-11/tests/front.rs, 23 tests since G4 run 5 (the bases in the
-  helper block and indirect draws read back, in place of the removal test; building ahead), never
-  run; 22 before (since G4 run 1 also: depth-stencil
+- crates/wcontainers-direct3d-11/tests/front.rs, 24 tests since G4 run 5 (the bases in the
+  helper block and indirect draws read back, in place of the removal test; building ahead; depth
+  with stencil staging in Direct3D's layouts), never run; 22 before (since G4 run 1 also: depth-stencil
   copies whole and of both aspects, typeless textures viewed through their group's members): the three scenes' calls on the recording
   back end (the scenes' own DXBC from the rig's corpus, converted), shader stages read from every
   corpus container, feature level choice, destruction after release, creation refusals (wrong stage,
@@ -941,6 +954,18 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 - The rig's replacement check cannot see wcontainers_directx.dll behind the forwarder (above).
 
 ## Asked of other tracks
+
+- Interface and shaders track (from Wine's test_depth_stencil_sampling): Direct3D's stencil views
+  (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`) give the stencil in the green channel;
+  WebGPU's stencil-aspect view gives it in red. It needs a view swizzle (the interface names
+  `VIEW_SWIZZLE` but `TextureViewDesc` has no swizzle field yet; WebGPU's texture component swizzle
+  where present) with a program rewrite as the default, which Direct3D 12's and Vulkan's component
+  mappings need too.
+- Shaders track (from Wine's test_cb_relative_addressing): a dynamically indexed constant buffer
+  read past the array the shader declares, inside the bound buffer (Direct3D reads the buffer's
+  bytes; up to 4096 registers), comes back as the clamped last element. Declaring such buffers at
+  their exact size is what lets small buffers bind without `ConstantBufferGrown`; reading them as
+  storage (`ConstantsAsStorage`, bounded by the bound range) would serve both.
 
 - Infrastructure crate (Direct3D 12 track), from Wine's test_swapchain_views and
   test_swapchain_flip: list the sRGB twin in the surface's view formats, so a back buffer takes
