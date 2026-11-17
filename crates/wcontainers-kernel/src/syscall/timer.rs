@@ -80,6 +80,9 @@ struct Timer {
     sequence: u64,
     /// The count when its signal now queued was sent.
     sent_at: Option<u64>,
+    /// A POSIX timer's place for its signal in its maker's count (its preallocated `sigqueue`).
+    #[allow(dead_code, reason = "held for what its drop does")]
+    charge: Option<crate::process::Charge>,
     /// On the wall clock's base (`HRTIMER_BASE_REALTIME`): its expiry moves when the wall clock is
     /// set. Set by `settime`.
     wall: bool,
@@ -328,19 +331,6 @@ fn signal_queued(kernel: &Kernel, pid: Pid, id: i32, notify: Notify) -> bool {
     pending.is_some_and(|pending| pending.queue.iter().any(is_ours))
 }
 
-/// Marks the signal a timer just queued as the timer's.
-fn mark_sent(pending: Option<&mut crate::process::Pending>, signal: u32) {
-    if let Some(queued) = pending.and_then(|pending| {
-        pending
-            .queue
-            .iter_mut()
-            .rev()
-            .find(|queued| queued.signal == signal)
-    }) {
-        queued.timer = true;
-    }
-}
-
 /// A timer's time has come.
 fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
     let timer = kernel.timers.all[&id].clone();
@@ -369,29 +359,15 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             let entry = kernel.timers.all.get_mut(&id).expect("timer");
             entry.sent_at = Some(entry.sequence);
             let info = timer_info(signal, number, 0, value);
-            match target {
-                Some(tid) if kernel.threads.contains_key(&tid) => {
-                    kernel.send_to_thread(cx, tid, signal, info);
-                    let pending = kernel
-                        .threads
-                        .get_mut(&tid)
-                        .map(|thread| &mut thread.pending);
-                    mark_sent(pending, signal);
-                }
-                Some(_) => {}
-                None if kernel
+            let live = match target {
+                Some(tid) => kernel.threads.contains_key(&tid),
+                None => kernel
                     .processes
                     .get(&pid)
-                    .is_some_and(|p| p.ended.is_none()) =>
-                {
-                    kernel.send_to_process(cx, pid, signal, info);
-                    let pending = kernel
-                        .processes
-                        .get_mut(&pid)
-                        .map(|process| &mut process.pending);
-                    mark_sent(pending, signal);
-                }
-                None => {}
+                    .is_some_and(|p| p.ended.is_none()),
+            };
+            if live {
+                kernel.send_from_timer(cx, target, pid, signal, info);
             }
         }
         Owner::Interval { pid, which } => {
@@ -517,6 +493,7 @@ pub(super) fn start_cpu_sleep(
         clock_id: 0,
         sequence: 0,
         sent_at: None,
+        charge: None,
         wall: false,
         might_cancel: false,
         canceled: false,
@@ -698,6 +675,7 @@ pub(super) fn timer_create(
         raw.copy_from_slice(&bytes);
     }
     let mut clock = timer_clock(kernel, tid, clock_id)?;
+    let charge = kernel.timer_charge(tid).ok_or(Errno::EAGAIN)?;
     // The number is taken, and the next one counts on, even if the rest fails.
     let pid = kernel.threads[&tid].process;
     let number = {
@@ -767,6 +745,7 @@ pub(super) fn timer_create(
         expired: false,
         sequence: 0,
         sent_at: None,
+        charge: Some(charge),
         wall: false,
         might_cancel: false,
         canceled: false,
@@ -977,6 +956,7 @@ pub(super) fn setitimer(
             expired: false,
             sequence: 0,
             sent_at: None,
+            charge: None,
             clock_id: CLOCK_MONOTONIC as i32,
             wall: false,
             might_cancel: false,
@@ -1030,6 +1010,7 @@ pub(super) fn timerfd_create(
         expired: false,
         sequence: 0,
         sent_at: None,
+        charge: None,
         wall: false,
         might_cancel: false,
         canceled: false,

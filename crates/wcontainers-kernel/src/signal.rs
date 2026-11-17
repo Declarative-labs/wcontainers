@@ -183,6 +183,29 @@ impl Kernel {
         let _ = self.send(cx, Target::Process(pid), signal, info);
     }
 
+    /// A POSIX timer's signal, to one thread or (with none) the process: it goes in the timer's own
+    /// place in the user's count, taken when the timer was made, so it always fits.
+    pub(crate) fn send_from_timer(
+        &mut self,
+        cx: &mut Context<'_>,
+        thread: Option<Tid>,
+        pid: Pid,
+        signal: u32,
+        info: [u8; 128],
+    ) {
+        let target = thread.map_or(Target::Process(pid), Target::Thread);
+        let _ = self.send_queued(cx, target, signal, info, true);
+    }
+
+    /// Linux's `posixtimer_init_sigqueue`: a place in the calling user's count for a new timer's
+    /// signal, or none (EAGAIN) when the count is at the caller's RLIMIT_SIGPENDING.
+    pub(crate) fn timer_charge(&mut self, tid: Tid) -> Option<crate::process::Charge> {
+        let uid = self.credentials(tid).uid;
+        let limit = self.process_of(tid).limits[RLIMIT_SIGPENDING as usize].current;
+        let count = self.signal_users.entry(uid).or_default().clone();
+        (count.get() < limit).then(|| crate::process::Charge::new(&count))
+    }
+
     /// As [`Self::send_to_process`], telling the sender as [`Self::queue_to_thread`] does.
     pub(crate) fn queue_to_process(
         &mut self,
@@ -303,6 +326,18 @@ impl Kernel {
         signal: u32,
         info: [u8; 128],
     ) -> Result<(), crate::Errno> {
+        self.send_queued(cx, target, signal, info, false)
+    }
+
+    /// As `send`; a timer's signal (`timer`) is queued in the timer's place, not charged again.
+    fn send_queued(
+        &mut self,
+        cx: &mut Context<'_>,
+        target: Target,
+        signal: u32,
+        info: [u8; 128],
+        timer: bool,
+    ) -> Result<(), crate::Errno> {
         if signal == 0 {
             return Ok(());
         }
@@ -333,18 +368,23 @@ impl Kernel {
         if signal < SIGRTMIN && pending.set & bit(signal) != 0 {
             return Ok(());
         }
-        let charge = self.charge_signal(pid, signal, &info)?;
+        let (queued, charge) = if timer {
+            (true, None)
+        } else {
+            let charge = self.charge_signal(pid, signal, &info)?;
+            (charge.is_some(), charge)
+        };
         let pending = match target {
             Target::Thread(tid) => &mut self.thread_mut(tid).pending,
             Target::Process(pid) => &mut self.processes.get_mut(&pid).expect("process").pending,
         };
         pending.set |= bit(signal);
-        if charge.is_some() {
+        if queued {
             pending.queue.push_back(Queued {
                 signal,
                 info,
                 charge,
-                timer: false,
+                timer,
             });
         }
         self.wake_readiness_of(pid);

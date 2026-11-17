@@ -148,6 +148,7 @@ pub(crate) struct Queued {
 
 /// One queued signal in a user's count (Linux's `UCOUNT_RLIMIT_SIGPENDING`), which
 /// RLIMIT_SIGPENDING bounds: the count goes up when one is made or copied and down when it goes.
+#[derive(Debug)]
 pub(crate) struct Charge(Rc<core::cell::Cell<u64>>);
 
 impl Charge {

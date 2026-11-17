@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/timerfd.h>
@@ -69,6 +70,34 @@ static void *wait_in_thread(void *arg) {
     while (usr1s == 0)
         usleep(1000);
     return NULL;
+}
+
+// A POSIX timer takes its signal's place in the user's RLIMIT_SIGPENDING count when it is made:
+// none left is EAGAIN (and no timer number used), and a timer made before always sends its signal,
+// with its information, however full the count is.
+static void pending_limit(void) {
+    struct rlimit saved, none = {0, 0};
+    getrlimit(RLIMIT_SIGPENDING, &saved);
+    sigset_t rt;
+    sigemptyset(&rt);
+    sigaddset(&rt, SIGRTMIN + 1);
+    sigprocmask(SIG_BLOCK, &rt, NULL);
+    struct sigevent event = {.sigev_notify = SIGEV_SIGNAL, .sigev_signo = SIGRTMIN + 1};
+    timer_t made, refused, after;
+    p("timer_create before the limit", timer_create(CLOCK_MONOTONIC, &event, &made));
+    setrlimit(RLIMIT_SIGPENDING, &none);
+    p("timer_create at a limit of 0", timer_create(CLOCK_MONOTONIC, &event, &refused));
+    p("timer_create at a limit of 0, bad address", syscall(SYS_timer_create, CLOCK_MONOTONIC, NULL, (void *)8));
+    struct itimerspec soon = {.it_value = {0, 1000000}};
+    timer_settime(made, 0, &soon, NULL);
+    siginfo_t info;
+    int signal = sigwaitinfo(&rt, &info);
+    printf("its signal came at the limit: %d code %d\n", signal == SIGRTMIN + 1, info.si_code);
+    setrlimit(RLIMIT_SIGPENDING, &saved);
+    timer_create(CLOCK_MONOTONIC, &event, &after);
+    printf("the refused one took no number: %d\n", (long)after - (long)made == 1);
+    timer_delete(made);
+    timer_delete(after);
 }
 
 int main(void) {
@@ -318,5 +347,6 @@ int main(void) {
     r = read(waiting, &ticks, 8);
     printf("blocking read %ld ticks %llu\n", r, (unsigned long long)ticks);
     p("lseek", lseek(waiting, 5, SEEK_SET));
+    pending_limit();
     return 0;
 }
