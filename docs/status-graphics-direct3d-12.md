@@ -644,7 +644,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - The desktop refused new ssh logins all through run 9 (reset after key exchange, from before
   11:45 to past 12:08 Pacific). Run 9 sent its rig commands over another checkout's shared
   connection that was still open (a symlink at this checkout's control socket path to it,
-  ~/.ssh/wc-rig-78928cb75b0c7924, one session at a time), nothing in that checkout touched.
+  ~/.ssh/wc-rig-78928cb75b0c7924, one session at a time), nothing in that checkout touched. The
+  link was removed at the end of run 9; if new logins still fail, the rig waits up to 20 minutes.
 
 The next entries came with run 8's patch, committed in run 9 (d89ad8d).
 - Views reinterpreting a typeless texture's bits (run 8) get a twin texture in the view's format,
