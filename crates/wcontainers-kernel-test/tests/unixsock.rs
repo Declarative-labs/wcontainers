@@ -15,3 +15,9 @@ fn urgent_bytes_and_io_signals_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "unixoob", &[]);
 }
+
+#[test]
+fn process_descriptor_and_queue_options_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "sockpidfd", &[]);
+}

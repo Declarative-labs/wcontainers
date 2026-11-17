@@ -631,6 +631,9 @@ pub(crate) const SOCK_MAX: u32 = 11;
 /// `recvmmsg`'s flag to wait only for the first message (`linux/socket.h`, not in uapi).
 pub(crate) const MSG_WAITFORONE: u32 = 0x10000;
 
+/// The control message carrying a sender's process descriptor (`linux/socket.h`, not in uapi).
+pub(crate) const SCM_PIDFD: u32 = 0x04;
+
 /// TCP's states as `/proc/net/tcp` shows them (`net/tcp_states.h`, which only the kernel's own
 /// headers hold); UDP shows the first and seventh.
 pub(crate) const TCP_ESTABLISHED: u8 = 1;

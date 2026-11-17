@@ -114,6 +114,10 @@ pub(crate) struct Socket {
     /// The true size of what it sent and its receivers hold (`sk_wmem_alloc`).
     written: u64,
     passcred: bool,
+    /// SO_PASSPIDFD, SO_PASSRIGHTS (on unless turned off) and SO_INQ: what its receives carry.
+    pass_pidfd: bool,
+    pass_rights: bool,
+    report_queued: bool,
     /// The credentials of the other end, as at connect or listen (`sk_peer_cred`).
     peer_cred: Option<Cred>,
     /// Released: its last descriptor is gone (`SOCK_DEAD`).
@@ -170,6 +174,9 @@ impl Socket {
             rcvbuf: DEFAULT_BUFFER,
             written: 0,
             passcred: false,
+            pass_pidfd: false,
+            pass_rights: true,
+            report_queued: false,
             peer_cred: None,
             dead: false,
             options: BTreeMap::new(),
@@ -196,6 +203,11 @@ impl Socket {
     /// A local socket, not an internet or netlink one.
     pub(crate) fn local(&self) -> bool {
         self.inet.is_none() && self.netlink.is_none()
+    }
+
+    /// `unix_may_passcred`: its receives carry who sent.
+    fn may_pass_cred(&self) -> bool {
+        self.passcred || self.pass_pidfd
     }
 
     /// SO_OOBINLINE (`SOCK_URGINLINE`).
@@ -829,7 +841,7 @@ pub(super) fn connect(
         return Err(Errno::PARKED);
     }
     // Only a socket that passes credentials gets a name of its own here.
-    if socket.borrow().passcred && socket.borrow().name.is_none() {
+    if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() {
         autobind(kernel, cx, &socket)?;
     }
     // The listener's end of the connection, waiting to be accepted; it takes the listener's name
@@ -843,6 +855,8 @@ pub(super) fn connect(
         new.name = listener.name.clone();
         new.peer_cred = Some(peer_cred(kernel, tid));
         new.passcred = listener.passcred;
+        new.pass_pidfd = listener.pass_pidfd;
+        new.pass_rights = listener.pass_rights;
     }
     {
         let mut client = socket.borrow_mut();
@@ -864,7 +878,7 @@ fn dgram_connect(
     name: Name,
 ) -> Result<u64, Errno> {
     let other = find(kernel, cx, tid, &name, SOCK_DGRAM)?;
-    if socket.borrow().passcred && socket.borrow().name.is_none() {
+    if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() {
         autobind(kernel, cx, socket)?;
     }
     let mut own = socket.borrow_mut();
@@ -1381,6 +1395,9 @@ fn send_stream(
         if let Some(error) = wait_send_room(kernel, tid, socket, nonblocking, sent) {
             return error;
         }
+        if !files_sent && !message.files.is_empty() && !peer.borrow().pass_rights {
+            return Err(Errno::EPERM);
+        }
         let (size, pages) = stream_piece(ordinary - sent, sndbuf);
         let data = gather(kernel, cx, tid, message.data, sent, size)?;
         let packet = Packet {
@@ -1418,6 +1435,9 @@ fn send_stream(
     let partial = |error: Errno| if sent > 0 { Ok(sent) } else { Err(error) };
     if peer.borrow().dead || peer.borrow().shutdown & RCV_SHUTDOWN != 0 {
         return partial(Errno::EPIPE);
+    }
+    if !files_sent && !message.files.is_empty() && !peer.borrow().pass_rights {
+        return partial(Errno::EPERM);
     }
     let data = match gather(kernel, cx, tid, message.data, sent, 1) {
         Ok(data) => data,
@@ -1566,7 +1586,7 @@ fn send_packet(
     if total > sndbuf.saturating_sub(32) {
         return Err(Errno::EMSGSIZE);
     }
-    if socket.borrow().passcred && socket.borrow().name.is_none() && kind == SOCK_DGRAM {
+    if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() && kind == SOCK_DGRAM {
         autobind(kernel, cx, socket)?;
     }
     if target.borrow().dead {
@@ -1585,6 +1605,9 @@ fn send_packet(
     }
     if kind == SOCK_SEQPACKET && target.borrow().shutdown & RCV_SHUTDOWN != 0 {
         return Err(Errno::EPIPE);
+    }
+    if !message.files.is_empty() && !target.borrow().pass_rights {
+        return Err(Errno::EPERM);
     }
     // The receiver's queue is full for a sender it is not connected back to.
     let back = target
@@ -1790,7 +1813,7 @@ fn receive_stream(
     let discard = is_inet && flags & MSG_TRUNC != 0;
     let mut copied = kernel.threads[&tid].call.progress;
     let mut received = Received::default();
-    let check_creds = socket.borrow().passcred;
+    let check_creds = socket.borrow().may_pass_cred();
     let mut skip = if peek {
         socket.borrow().peek_offset.unwrap_or(0)
     } else {
@@ -2466,6 +2489,27 @@ pub(super) fn recvmsg(
             &mut out_flags,
         );
     }
+    // `scm_pidfd_recv`: a process descriptor (close on exec) for the sender, made only when its
+    // whole message fits.
+    if socket.borrow().pass_pidfd {
+        if room.saturating_sub(control.len()) < CMSG_HEADER as usize + 4 {
+            out_flags |= MSG_CTRUNC;
+        } else if let Some(pid) = received.cred.map(|cred| cred.pid).filter(|pid| *pid != 0) {
+            let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+            let fd = super::pidfd::make(kernel, cx, tid, pid, 0)
+                .and_then(|file| kernel.files_mut(tid).add(file, true, 0, limit))
+                .unwrap_or_else(|error| -(error.0 as i32));
+            let data = fd.to_le_bytes();
+            put_control(
+                &mut control,
+                room,
+                SOL_SOCKET,
+                crate::linux_extra::SCM_PIDFD,
+                &data,
+                &mut out_flags,
+            );
+        }
+    }
     if !received.files.is_empty() {
         let space = room.saturating_sub(control.len());
         let fits = space.saturating_sub(CMSG_HEADER as usize) / 4;
@@ -2493,8 +2537,25 @@ pub(super) fn recvmsg(
             control.extend_from_slice(&SOL_SOCKET.to_le_bytes());
             control.extend_from_slice(&SCM_RIGHTS.to_le_bytes());
             control.extend_from_slice(&data);
-            // The last message's padding is not counted.
+            // `scm_detach_fds` counts the padding too, within the room.
+            let padded = control
+                .len()
+                .next_multiple_of(CMSG_ALIGN as usize)
+                .min(room);
+            control.resize(padded, 0);
         }
+    }
+    // SO_INQ: what is left to read, once the read went well.
+    if socket.borrow().report_queued {
+        let left = queued(&socket.borrow()) as i32;
+        put_control(
+            &mut control,
+            room,
+            SOL_SOCKET,
+            crate::linux::net::SCM_INQ,
+            &left.to_le_bytes(),
+            &mut out_flags,
+        );
     }
     if !control.is_empty() {
         guest(kernel, cx, tid).write(header.control, &control)?;
@@ -2504,6 +2565,15 @@ pub(super) fn recvmsg(
     guest(kernel, cx, tid).write_value(address + 40, &(control.len() as u64))?;
     guest(kernel, cx, tid).write_value(address + 48, &out_flags)?;
     Ok(received.reported.unwrap_or(copied))
+}
+
+/// What a stream holds unread, as FIONREAD and SCM_INQ tell it (`unix_inq_len`, `tcp_inq`).
+fn queued(own: &Socket) -> u64 {
+    own.queue
+        .iter()
+        .map(|packet| (packet.data.len() - packet.consumed) as u64)
+        .sum::<u64>()
+        + own.skipped_urgent
 }
 
 /// The bits of [`Socket::stamps`].
@@ -2592,7 +2662,24 @@ pub(super) fn setsockopt(
             }
         }
         SO_SNDBUFFORCE | SO_RCVBUFFORCE | SO_MARK => return Err(Errno::EPERM),
+        // `sk_may_scm_recv` and `sk_is_unix`.
+        SO_PASSCRED if own.inet.is_some() => return Err(Errno::EOPNOTSUPP),
+        SO_PASSPIDFD | SO_PASSRIGHTS if own.family != AF_UNIX => return Err(Errno::EOPNOTSUPP),
         SO_PASSCRED => own.passcred = int()? != 0,
+        SO_PASSPIDFD => own.pass_pidfd = int()? != 0,
+        SO_PASSRIGHTS => own.pass_rights = int()? != 0,
+        // `unix_setsockopt`, which only local streams reach: 0 or 1.
+        SO_INQ if own.family == AF_UNIX && own.kind == SOCK_STREAM => {
+            if bytes.len() != 4 {
+                return Err(Errno::EINVAL);
+            }
+            own.report_queued = match int()? {
+                0 => false,
+                1 => true,
+                _ => return Err(Errno::EINVAL),
+            };
+        }
+        SO_INQ => return Err(Errno::ENOPROTOOPT),
         SO_PEEK_OFF => {
             let offset = int()?;
             own.peek_offset = (offset >= 0).then_some(offset as u64);
@@ -2622,8 +2709,6 @@ pub(super) fn setsockopt(
         }
         // `sock_setsockopt`: zero copy sends are for internet sockets only.
         SO_ZEROCOPY if own.inet.is_none() => return Err(Errno::EOPNOTSUPP),
-        // Options whose control messages (SCM_PIDFD, SCM_TIMESTAMP, SCM_TIMESTAMPNS) are not
-        // built: answered as a Linux without them.
         // `sock_set_timestamp`.
         SO_TIMESTAMP_OLD | SO_TIMESTAMPNS_OLD | SO_TIMESTAMP_NEW | SO_TIMESTAMPNS_NEW => {
             let new = if matches!(name, SO_TIMESTAMP_NEW | SO_TIMESTAMPNS_NEW) {
@@ -2638,7 +2723,8 @@ pub(super) fn setsockopt(
                 (true, true) => STAMP | STAMP_NS | new,
             };
         }
-        SO_PASSPIDFD | SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
+        // SO_TIMESTAMPING's reports are not built: answered as a Linux without them.
+        SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
             drop(own);
             return Err(kernel.counters.refuse(
                 cx.host,
@@ -2685,6 +2771,33 @@ pub(super) fn setsockopt(
     Ok(0)
 }
 
+/// SO_PEERPIDFD: a new process descriptor (close on exec) for the process the other end was made
+/// by, which may have been reaped since (`PIDFD_STALE`), its number cut to the room given.
+fn peer_pidfd(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    value: u64,
+    length: u64,
+    room: i32,
+) -> Result<u64, Errno> {
+    let pid = socket
+        .borrow()
+        .peer_cred
+        .map(|cred| cred.pid)
+        .filter(|pid| *pid != 0)
+        .ok_or(Errno::ENODATA)?;
+    let file = super::pidfd::make(kernel, cx, tid, pid, 0)?;
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    let fd = kernel.files(tid).lowest_free(0, limit)?;
+    let room = (room as usize).min(4);
+    guest(kernel, cx, tid).write(value, &fd.to_le_bytes()[..room])?;
+    guest(kernel, cx, tid).write_value(length, &(room as i32))?;
+    kernel.files_mut(tid).add(file, true, 0, limit)?;
+    Ok(0)
+}
+
 pub(super) fn getsockopt(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -2727,6 +2840,9 @@ pub(super) fn getsockopt(
         return Err(Errno::EOPNOTSUPP);
     }
     use crate::linux::net::*;
+    if name == SO_PEERPIDFD {
+        return peer_pidfd(kernel, cx, tid, &socket, value, length, room);
+    }
     let int = |value: i32| value.to_le_bytes().to_vec();
     let bytes = {
         let mut own = socket.borrow_mut();
@@ -2741,7 +2857,14 @@ pub(super) fn getsockopt(
             SO_ACCEPTCONN => int(i32::from(own.state == State::Listening)),
             SO_SNDBUF => int(own.sndbuf as i32),
             SO_RCVBUF => int(own.rcvbuf as i32),
+            SO_PASSCRED if own.inet.is_some() => return Err(Errno::EOPNOTSUPP),
+            SO_PASSPIDFD | SO_PASSRIGHTS if own.family != AF_UNIX => {
+                return Err(Errno::EOPNOTSUPP);
+            }
             SO_PASSCRED => int(i32::from(own.passcred)),
+            SO_PASSPIDFD => int(i32::from(own.pass_pidfd)),
+            SO_PASSRIGHTS => int(i32::from(own.pass_rights)),
+            SO_INQ => return Err(Errno::ENOPROTOOPT),
             SO_PEEK_OFF => int(own.peek_offset.map_or(-1, |offset| offset as i32)),
             SO_SNDLOWAT => int(1),
             SO_RCVLOWAT => own
@@ -2776,8 +2899,8 @@ pub(super) fn getsockopt(
                 bytes
             }
             SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE
-            | SO_DONTROUTE | SO_PASSSEC | SO_PRIORITY | SO_PASSPIDFD | SO_ZEROCOPY
-            | SO_BUSY_POLL | SO_INCOMING_CPU | SO_MARK => own
+            | SO_DONTROUTE | SO_PASSSEC | SO_PRIORITY | SO_ZEROCOPY | SO_BUSY_POLL
+            | SO_INCOMING_CPU | SO_MARK => own
                 .options
                 .get(&(level, name))
                 .cloned()
@@ -2865,11 +2988,7 @@ pub(super) fn ioctl(
                 let amount = if kind == SOCK_DGRAM {
                     own.queue.front().map_or(0, |packet| packet.data.len())
                 } else {
-                    own.queue
-                        .iter()
-                        .map(|packet| packet.data.len() - packet.consumed)
-                        .sum::<usize>()
-                        + own.skipped_urgent as usize
+                    queued(&own) as usize
                 };
                 drop(own);
                 return put_int(kernel, cx, amount as i32);

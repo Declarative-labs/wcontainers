@@ -74,8 +74,9 @@ pub(super) fn poll(kernel: &Kernel, file: &OpenFile) -> u16 {
     }
 }
 
-/// A new open file naming `pid`, a process or thread which must exist: one inode per number, as
-/// pidfs keeps one per `struct pid`, owned by root with no file type (measured).
+/// A new open file naming `pid`, a process or thread, or one reaped since a socket's message or
+/// connection was made by it: one inode per number, as pidfs keeps one per `struct pid`, owned by
+/// root with no file type (measured).
 pub(super) fn make(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -107,9 +108,12 @@ pub(super) fn make(
                     name: LINK.to_vec(),
                 },
             )?;
-            match kernel.processes.get_mut(&pid) {
-                Some(process) => process.pidfd = Some(node.clone()),
-                None => kernel.thread_mut(pid).pidfd = Some(node.clone()),
+            // One made for a number since reaped (`PIDFD_STALE`) is kept by no process, so it
+            // names it gone.
+            if let Some(process) = kernel.processes.get_mut(&pid) {
+                process.pidfd = Some(node.clone());
+            } else if let Some(thread) = kernel.threads.get_mut(&pid) {
+                thread.pidfd = Some(node.clone());
             }
             node
         }
