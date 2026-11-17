@@ -416,7 +416,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   -- --ignored --nocapture'`. Each case is printed before it runs; `WCONTAINERS_FUZZ_FIRST=n` starts
   at case n. It ends at the first case that crashes (Known gaps); scratch
   `graphics-shaders/fuzz/resume.sh <seed> <cases>`, run on the laptop after one build, restarts past
-  each crash and lists them.
+  each crash and lists them; the cases our own checks refused go to
+  `~/wcontainers-graphics/fuzz-ours-<seed>.txt`.
+- WebAssembly in one command: scratch `graphics-shaders/run5/wasm.sh` (copied to
+  `~/wcontainers-graphics/wasm-run5.sh`), run through `tools/graphics-rig/linux bash -c
+  '$HOME/wcontainers-graphics/wasm-run5.sh'` after a native corpus run has filled
+  `~/wcontainers-graphics/out`: builds `wasm_imports` and the corpus test, runs the test under wasmtime
+  and counts the written files that differ from the native ones.
 - WebAssembly: add `WASI_SDK_PATH=$HOME/wcontainers-graphics/tools/wasi-sdk` and `--target
   wasm32-wasip1`; run a test with `~/wcontainers-graphics/tools/wasmtime/wasmtime run --dir $S::$S
   --dir corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm --include-ignored`,
