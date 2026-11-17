@@ -121,6 +121,8 @@ static void serve(const char *what, int s) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGPIPE, SIG_IGN);
+    // A run whose clients never come ends rather than waiting for ever.
+    alarm(120);
     if (argc < 3)
         return 2;
     int v4 = listener(AF_INET, "0.0.0.0", 8080);
