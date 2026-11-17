@@ -96,3 +96,12 @@ fn thread_credentials_match_reference() {
         assert!(others.is_empty(), "{others:?}");
     }
 }
+
+/// A signal sent to the process is taken by the thread Linux's `complete_signal` chooses, with the
+/// others in `pause`.
+#[test]
+fn process_signal_takers_match_reference() {
+    for run in assert_same_output_seeded(&out(), "sigpick", &[], 0) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}

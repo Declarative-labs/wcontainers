@@ -2603,11 +2603,13 @@ fn start_wait(
 }
 
 /// After a run of `ppoll` or `pselect6` found nothing ready: it ends with none when its time is up,
-/// is interrupted by a signal, or parks until a file's readiness changes.
+/// is interrupted by a signal, or parks until a file's readiness changes. A call watching no file
+/// (musl's `pause`) parks until its time or a signal only, as no wait queue holds it in Linux.
 fn nothing_ready(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
+    watching: bool,
 ) -> Option<Result<u64, Errno>> {
     let call = kernel.threads[&tid].call;
     if call
@@ -2619,7 +2621,12 @@ fn nothing_ready(
     if kernel.signal_pending(tid) {
         return Some(Err(Errno::ERESTARTNOHAND));
     }
-    kernel.park(tid, crate::process::Channel::Readiness);
+    let channel = if watching {
+        crate::process::Channel::Readiness
+    } else {
+        crate::process::Channel::Nothing
+    };
+    kernel.park(tid, channel);
     None
 }
 
@@ -2671,8 +2678,8 @@ pub(super) fn ppoll(
         }
     }
     let result = match ppoll_typed(kernel, cx, tid, fds, count) {
-        Ok(0) => nothing_ready(kernel, cx, tid),
-        result => Some(result),
+        Ok((0, watching)) => nothing_ready(kernel, cx, tid, watching),
+        result => Some(result.map(|(ready, _)| ready)),
     };
     finish_wait(kernel, cx, tid, timeout, result)
 }
@@ -2705,17 +2712,15 @@ pub(super) fn pselect6(
         }
     }
     let result = match select_typed(kernel, cx, tid, count, [read, write, except]) {
-        Ok(None) => nothing_ready(kernel, cx, tid).map(|result| {
+        Ok((None, watching)) => nothing_ready(kernel, cx, tid, watching).map(|result| {
             // A timeout writes back the sets, empty.
             if result == Ok(0) {
-                select_typed(kernel, cx, tid, count, [read, write, except])
-                    .map(|ready| ready.unwrap_or(0))
-                    .and(Ok(0))
+                select_typed(kernel, cx, tid, count, [read, write, except]).and(Ok(0))
             } else {
                 result
             }
         }),
-        Ok(Some(ready)) => Some(Ok(ready)),
+        Ok((Some(ready), _)) => Some(Ok(ready)),
         Err(error) => Some(Err(error)),
     };
     finish_wait(kernel, cx, tid, timeout, result)
@@ -2723,14 +2728,14 @@ pub(super) fn pselect6(
 
 /// One look at `pselect6`'s sets, as Linux's `core_sys_select`: Some(count) and the sets written
 /// back when something is ready, None when nothing is (the sets are then written back empty only
-/// when the call returns).
+/// when the call returns); and whether any descriptor is asked about.
 fn select_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     count: u64,
     sets: [u64; 3],
-) -> Result<Option<u64>, Errno> {
+) -> Result<(Option<u64>, bool), Errno> {
     let count = count as i32;
     if count < 0 {
         return Err(Errno::EINVAL);
@@ -2747,9 +2752,13 @@ fn select_typed(
     }
     let asked = |set: &[u8], fd: u64| set[(fd / 8) as usize] & (1 << (fd % 8)) != 0;
     let files = kernel.files(tid);
+    let mut watching = false;
     for fd in 0..count {
-        if wanted.iter().any(|set| asked(set, fd)) && files.get(fd as i32).is_err() {
-            return Err(Errno::EBADF);
+        if wanted.iter().any(|set| asked(set, fd)) {
+            if files.get(fd as i32).is_err() {
+                return Err(Errno::EBADF);
+            }
+            watching = true;
         }
     }
     // Linux's `POLLIN_SET`, `POLLOUT_SET` and `POLLEX_SET`.
@@ -2781,7 +2790,7 @@ fn select_typed(
         let call = kernel.threads[&tid].call;
         let over = call.deadline.is_some() && call.progress <= cx.monotonic();
         if !over {
-            return Ok(None);
+            return Ok((None, watching));
         }
     }
     for (address, result) in sets.iter().zip(&results) {
@@ -2789,24 +2798,27 @@ fn select_typed(
             guest(kernel, cx, tid).write(*address, result)?;
         }
     }
-    Ok(Some(ready))
+    Ok((Some(ready), watching))
 }
 
-/// One look at `ppoll`'s descriptors: how many are ready, each one's events written back.
+/// One look at `ppoll`'s descriptors: how many are ready, each one's events written back; and
+/// whether any descriptor is watched (a negative one is not).
 fn ppoll_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     fds: u64,
     count: u64,
-) -> Result<u64, Errno> {
+) -> Result<(u64, bool), Errno> {
     if count > nofile_limit(kernel, tid) {
         return Err(Errno::EINVAL);
     }
     let mut entries = guest(kernel, cx, tid).read(fds, count * 8)?;
     let mut ready = 0;
+    let mut watching = false;
     for entry in entries.as_chunks_mut::<8>().0 {
         let fd = i32::from_le_bytes(entry[..4].try_into().expect("4 bytes"));
+        watching |= fd >= 0;
         let events = u16::from_le_bytes([entry[4], entry[5]]);
         let revents = if fd < 0 {
             0
@@ -2834,7 +2846,7 @@ fn ppoll_typed(
     if guest(kernel, cx, tid).put_each(fds, &stores) < stores.len() {
         return Err(Errno::EFAULT);
     }
-    Ok(ready)
+    Ok((ready, watching))
 }
 
 /// `cachestat`: how many of a file's pages are in memory. Only tmpfs files hold pages here (as in
