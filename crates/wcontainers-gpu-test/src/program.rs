@@ -1,7 +1,7 @@
 //! Runs one entry point of a program in the common form on the CPU, for the recording back end's
 //! draws. It covers what drawing programs use: arithmetic, vectors and matrices, structs and arrays,
-//! local variables, branches and loops, uniform and read-only storage buffers, texture samples and
-//! loads. Anything else is an error naming it, which the back end reports as device loss, never a
+//! local variables, branches and loops, uniform and storage buffers (written by fragments), texture
+//! samples and loads. Anything else is an error naming it, which the back end reports as device loss, never a
 //! silent wrong answer.
 
 use naga::{
@@ -111,6 +111,17 @@ pub trait Resources {
     fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error>;
 }
 
+/// A program's write into a storage buffer: group, binding, byte offset in the bound range, bytes.
+pub type StorageWrite = (u32, u32, u32, Vec<u8>);
+
+/// Where a pointer into a buffer leads.
+enum Place {
+    Typed(Handle<naga::Type>, u32),
+    Scalar(ScalarKind, u32),
+    /// A matrix column whose vector type the module does not declare.
+    Column(usize, u32),
+}
+
 /// How a function ended.
 enum Flow {
     Next,
@@ -129,15 +140,18 @@ pub struct Invocation<'a, R: Resources> {
     locals: Vec<Value>,
     cache: Vec<Option<Value>>,
     resources: &'a R,
+    writes: &'a mut Vec<StorageWrite>,
 }
 
-/// Runs entry point `index` with its arguments; None when the invocation was discarded.
+/// Runs entry point `index` with its arguments; None when the invocation was discarded. Its writes into
+/// storage buffers are added to `writes`, in order; the invocation's own loads see them.
 pub fn run<R: Resources>(
     module: &Module,
     info: &naga::valid::ModuleInfo,
     index: usize,
     args: Vec<Value>,
     resources: &R,
+    writes: &mut Vec<StorageWrite>,
 ) -> Result<Option<Value>, Error> {
     let ep = &module.entry_points[index];
     let fun = &ep.function;
@@ -149,6 +163,7 @@ pub fn run<R: Resources>(
         locals: Vec::new(),
         cache: vec![None; fun.expressions.len()],
         resources,
+        writes,
     };
     for (_, local) in fun.local_variables.iter() {
         let v = match local.init {
@@ -429,8 +444,38 @@ impl<R: Resources> Invocation<'_, R> {
                 let Value::Pointer(p) = self.eval(pointer)? else {
                     return Err("store through a non-pointer".into());
                 };
-                let Root::Local(local) = p.root else {
-                    return Err("store into a global".into());
+                let local = match p.root {
+                    Root::Local(local) => local,
+                    Root::Global(g) => {
+                        let var = &self.module.global_variables[g];
+                        let naga::AddressSpace::Storage { access } = var.space else {
+                            return Err("store into a global that is not a storage buffer".into());
+                        };
+                        if !access.contains(naga::StorageAccess::STORE) {
+                            return Err("store into a read-only storage buffer".into());
+                        }
+                        let b = var.binding.as_ref().ok_or("a buffer without a binding")?;
+                        let (group, binding) = (b.group, b.binding);
+                        let mut bytes = Vec::new();
+                        let at = match self.place(&p)? {
+                            Place::Typed(ty, at) => {
+                                write_typed(self.module, ty, &value, &mut bytes)?;
+                                at
+                            }
+                            Place::Scalar(_, at) | Place::Column(_, at) => {
+                                for c in value.components() {
+                                    bytes.extend_from_slice(&scalar_bits(&c)?.to_le_bytes());
+                                }
+                                at
+                            }
+                        };
+                        let bound = self.resources.buffer(group, binding)?.len();
+                        if at as usize + bytes.len() > bound {
+                            return Err("a store past the bound range".into());
+                        }
+                        self.writes.push((group, binding, at, bytes));
+                        return Ok(Flow::Next);
+                    }
                 };
                 let mut slot = &mut self.locals[local.index()];
                 for &i in &p.path {
@@ -746,36 +791,95 @@ impl<R: Resources> Invocation<'_, R> {
             Root::Global(g) => {
                 let var = &self.module.global_variables[g];
                 let b = var.binding.as_ref().ok_or("a buffer without a binding")?;
-                let bytes = self.resources.buffer(b.group, b.binding)?;
-                let (mut ty, mut offset) = (var.ty, 0u32);
-                for &i in &p.path {
-                    (ty, offset) = match self.module.types[ty].inner {
-                        TypeInner::Struct { ref members, .. } => {
-                            (members[i as usize].ty, offset + members[i as usize].offset)
-                        }
-                        TypeInner::Array { base, stride, .. } => (base, offset + stride * i),
-                        TypeInner::Vector { scalar, .. } => {
-                            return read_scalar(scalar.kind, bytes, offset + 4 * i);
-                        }
-                        TypeInner::Matrix { rows, scalar, .. } => {
-                            let column = self.module.types.iter().find_map(|(h, t)| {
-                                (t.inner == TypeInner::Vector { size: rows, scalar }).then_some(h)
-                            });
-                            let stride = if rows == naga::VectorSize::Bi { 8 } else { 16 };
-                            match column {
-                                Some(c) => (c, offset + stride * i),
-                                None => {
-                                    return read_vector(rows as usize, bytes, offset + stride * i);
-                                }
-                            }
-                        }
-                        ref other => return Err(format!("path into {other:?}")),
-                    };
+                let mut bytes = self.resources.buffer(b.group, b.binding)?;
+                // The invocation's own earlier writes, laid over the bound range.
+                let written;
+                if self
+                    .writes
+                    .iter()
+                    .any(|w| (w.0, w.1) == (b.group, b.binding))
+                {
+                    let mut copy = bytes.to_vec();
+                    for (_, _, at, w) in self
+                        .writes
+                        .iter()
+                        .filter(|w| (w.0, w.1) == (b.group, b.binding))
+                    {
+                        copy.get_mut(*at as usize..*at as usize + w.len())
+                            .ok_or("a write past the bound range")?
+                            .copy_from_slice(w);
+                    }
+                    written = copy;
+                    bytes = &written;
                 }
-                read_typed(self.module, ty, bytes, offset)
+                match self.place(p)? {
+                    Place::Typed(ty, at) => read_typed(self.module, ty, bytes, at),
+                    Place::Scalar(kind, at) => read_scalar(kind, bytes, at),
+                    Place::Column(rows, at) => read_vector(rows, bytes, at),
+                }
             }
         }
     }
+
+    /// Where a pointer into a buffer leads, from the start of the bound range.
+    fn place(&self, p: &Pointer) -> Result<Place, Error> {
+        let Root::Global(g) = p.root else {
+            return Err("a local is not in a buffer".into());
+        };
+        let (mut ty, mut offset) = (self.module.global_variables[g].ty, 0u32);
+        for &i in &p.path {
+            (ty, offset) = match self.module.types[ty].inner {
+                TypeInner::Struct { ref members, .. } => {
+                    (members[i as usize].ty, offset + members[i as usize].offset)
+                }
+                TypeInner::Array { base, stride, .. } => (base, offset + stride * i),
+                TypeInner::Vector { scalar, .. } => {
+                    return Ok(Place::Scalar(scalar.kind, offset + 4 * i));
+                }
+                TypeInner::Matrix { rows, scalar, .. } => {
+                    let column = self.module.types.iter().find_map(|(h, t)| {
+                        (t.inner == TypeInner::Vector { size: rows, scalar }).then_some(h)
+                    });
+                    let stride = if rows == naga::VectorSize::Bi { 8 } else { 16 };
+                    match column {
+                        Some(c) => (c, offset + stride * i),
+                        None => return Ok(Place::Column(rows as usize, offset + stride * i)),
+                    }
+                }
+                ref other => return Err(format!("path into {other:?}")),
+            };
+        }
+        Ok(Place::Typed(ty, offset))
+    }
+}
+
+/// The bits of a scalar as a buffer holds them.
+fn scalar_bits(v: &Value) -> Result<u32, Error> {
+    Ok(match *v {
+        Value::F32(x) => x.to_bits(),
+        Value::I32(x) => x as u32,
+        Value::U32(x) => x,
+        Value::Bool(x) => u32::from(x),
+        ref other => return Err(format!("writing {other:?} as a scalar")),
+    })
+}
+
+/// Lays out a scalar or vector value of type `ty` as a buffer holds it.
+fn write_typed(
+    module: &Module,
+    ty: Handle<naga::Type>,
+    value: &Value,
+    out: &mut Vec<u8>,
+) -> Result<(), Error> {
+    match module.types[ty].inner {
+        TypeInner::Scalar(_) | TypeInner::Vector { .. } => {
+            for c in value.components() {
+                out.extend_from_slice(&scalar_bits(&c)?.to_le_bytes());
+            }
+        }
+        ref other => return Err(format!("writing {other:?} into a buffer in one store")),
+    }
+    Ok(())
 }
 
 fn read_scalar(kind: ScalarKind, bytes: &[u8], at: u32) -> Result<Value, Error> {

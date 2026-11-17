@@ -73,8 +73,9 @@ back end; the guest stand-in libraries and the call channel; sound and input.
 
 ## 3. Crates and which way they depend
 
-- `wcontainers-gpu`: the interface (section 4). Depends on `naga` (the common form), `bitflags` and
-  `blake3` (content keys of the built-in programs, as of every key, section 8) only.
+- `wcontainers-gpu`: the interface (section 4). Depends on `naga` (the common form), `bitflags`,
+  `blake3` (content keys of the built-in programs, as of every key, section 8) and `half` (the
+  occlusion counter's `r16float` sums) only.
 - `wcontainers-gpu-webgpu`: the WebGPU back end, written on the `wgpu` crate, which runs natively (Metal,
   Direct3D 12, Vulkan) for tests and on the browser's WebGPU when built for WebAssembly. Depends on the
   interface only (plus `wgpu`).
@@ -523,8 +524,12 @@ Nothing is mapped across the boundary. Every API's mapping rule becomes a write 
   write only part of the buffer, as the ring default does when it wraps (its first part is `Discard`,
   later parts `NoOverwrite` at higher offsets), so `bufferData` with only the part's bytes, which would
   shrink the GL buffer and make those later writes fail, is never used.
-- **WriteMode::NoOverwrite**: the caller promises no unfinished command reads the bytes. Direct3D 11
-  `Map(WRITE_NO_OVERWRITE)`, OpenGL `GL_MAP_UNSYNCHRONIZED_BIT`. Both back ends write at once.
+- **WriteMode::NoOverwrite**: the caller promises no unfinished command, and no `Ordered` write made
+  since it last waited, reads or writes the bytes. Direct3D 11 `Map(WRITE_NO_OVERWRITE)` (on dynamic
+  resources, which copies and `UpdateSubresource` cannot write), OpenGL `GL_MAP_UNSYNCHRONIZED_BIT`
+  (whose writes over bytes pending operations touch are undefined). Both back ends write at once,
+  ahead of the commands recorded before it; writes of any mode but `Ordered` keep their order among
+  themselves.
 
 Which memory a write may read, and how long. Calls run on the device thread after the guest's stand-in
 has returned (the call buffer crosses once a frame, 4.8), so a slice given to `write_buffer` or
@@ -656,7 +661,9 @@ Rules a pass description follows:
   the buffers and subresources its draws named as writable storage and those they named any other way
   (both sets empty in the common pass, so the check is a test of one flag); before a draw that would
   put a resource in both, it ends the pass with `Store` and begins the next on the same targets with
-  `Load` (`UsageScopeSplit`, counted); a resolve target is named only by the last part. Running
+  `Load` (`UsageScopeSplit`, counted); each part names the resolve target, whose last resolve is the
+  one that stays (a part cannot be known to be the last when it begins; a split pass costs one more
+  resolve). Running
 queries carry over as at any split (below). Exact: the
   later draw sees the storage writes, as the APIs promise after their barrier or hazard rule. Within one
   draw, Direct3D forbids the same resource as a storage view and any other binding (Direct3D 11's
@@ -896,7 +903,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      from the front, which gets it from the shaders crate (`VariantFlags::COUNTING`); so the helper
      (G1) needs nothing from G6, and G1's tests give it counting programs written in WGSL. Blending happens exactly for the samples that
      pass every per-fragment test, so each sample holds how many fragments passed there.
-  4. A reduction sums the target into the query's result (WebGPU: a dispatch; WebGL 2: a read back
+  4. A reduction sums the target into the query's result (the helper as built at G1 reads the target
+     back now and sums it on the device thread on every back end, so on WebGPU it waits, counted
+     `ReadBackWait`; a dispatch summing it on the GPU is to come with G2; WebGL 2: a read back
      summed on the device thread, a multisampled target resolved first and the average multiplied by
      the sample count). If any sample reached the counting format's exact bound (2^24 for `r32float`,
      2048 for `r16float`), the replay runs again with the draws split into halves and the halves added,
@@ -1405,7 +1414,10 @@ fresh shadow block; `Unmap` is `write_buffer(Discard)` (4.6). `UpdateSubresource
 `write_buffer(Ordered)` or `write_texture` of the stand-in's copy, except that a write covering the
 whole buffer, which is every `UpdateSubresource` of a constant buffer in Direct3D 11.0 (partial updates
 come only with `UpdateSubresource1`), is `write_buffer(Discard)`: the same meaning, so older engines
-that update constants this way per draw never split a pass (4.6). `ClearView` is `clear_rects`,
+that update constants this way per draw never split a pass (4.6). A constant buffer smaller than the size
+its shader declares (dxbc-spirv declares a dynamically indexed one whole, 65536 bytes, and WebGPU binds no
+smaller buffer) is moved into a buffer of that size whose bytes past its own are zero, as Direct3D reads
+them, and its whole writes are padded with zeros (`ConstantBufferGrown`). `ClearView` is `clear_rects`,
 `GenerateMips` is `generate_mips`, `ClearUnorderedAccessView*` on buffers is `clear_buffer` with the
 element's bits. On textures it is a `dispatch` of a built-in compute program (WGSL in the shaders crate,
 one per format class) writing the value through a storage view of the cleared range, where the view's

@@ -9,12 +9,22 @@ pub const UPPER_LEFT: u32 = 0x8CA2;
 pub const ZERO_TO_ONE: u32 = 0x935F;
 pub const NEGATIVE_ONE_TO_ONE: u32 = 0x935E;
 
+/// GL_FIRST_VERTEX_CONVENTION and GL_LAST_VERTEX_CONVENTION (GL's initial one), for
+/// `provokingVertexWEBGL` and `glProvokingVertexANGLE`.
+pub const FIRST_VERTEX: u32 = 0x8E4D;
+pub const LAST_VERTEX: u32 = 0x8E4E;
+
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 5] = [
+const EXTENSIONS: [(&str, &str); 7] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
+    ("WEBGL_provoking_vertex", "GL_ANGLE_provoking_vertex"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
     ("OES_texture_float_linear", "GL_OES_texture_float_linear"),
     ("EXT_float_blend", "GL_EXT_float_blend"),
+    (
+        "KHR_parallel_shader_compile",
+        "GL_KHR_parallel_shader_compile",
+    ),
     (
         "EXT_texture_filter_anisotropic",
         "GL_EXT_texture_filter_anisotropic",
@@ -45,10 +55,12 @@ mod native {
     use std::path::Path;
 
     type ClipControl = unsafe extern "system" fn(u32, u32);
+    type ProvokingVertex = unsafe extern "system" fn(u32);
 
     /// The calls past glow, and the EGL objects the context lives in.
     pub struct Platform {
         clip_control: Option<ClipControl>,
+        provoking_vertex: Option<ProvokingVertex>,
         _egl: Option<Egl>,
     }
 
@@ -73,6 +85,7 @@ mod native {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.debug_struct("Platform")
                 .field("clip_control", &self.clip_control.is_some())
+                .field("provoking_vertex", &self.provoking_vertex.is_some())
                 .finish()
         }
     }
@@ -82,6 +95,13 @@ mod native {
             if let Some(f) = self.clip_control {
                 // SAFETY: the pointer was loaded for this context's glClipControlEXT.
                 unsafe { f(origin, depth) };
+            }
+        }
+
+        pub fn provoking_vertex(&self, _gl: &glow::Context, mode: u32) {
+            if let Some(f) = self.provoking_vertex {
+                // SAFETY: the pointer was loaded for this context's glProvokingVertexANGLE.
+                unsafe { f(mode) };
             }
         }
     }
@@ -156,8 +176,18 @@ mod native {
             && gl.supported_extensions().contains("GL_EXT_clip_control"))
         // SAFETY: glClipControlEXT takes two GLenums and returns nothing.
         .then(|| unsafe { core::mem::transmute::<*const core::ffi::c_void, ClipControl>(clip) });
+        let provoking = load("glProvokingVertexANGLE");
+        let provoking_vertex = (!provoking.is_null()
+            && gl
+                .supported_extensions()
+                .contains("GL_ANGLE_provoking_vertex"))
+        // SAFETY: glProvokingVertexANGLE takes one GLenum and returns nothing.
+        .then(|| unsafe {
+            core::mem::transmute::<*const core::ffi::c_void, ProvokingVertex>(provoking)
+        });
         let platform = Platform {
             clip_control,
+            provoking_vertex,
             _egl: Some(Egl {
                 instance,
                 display,
@@ -166,6 +196,33 @@ mod native {
             }),
         };
         Ok((gl, platform))
+    }
+
+    /// Copies bytes of the buffer bound at `target` into `dst`, waiting for the GPU: what WebGL's
+    /// `getBufferSubData` does, by mapping the range for reading, as GLES does. False when the map
+    /// failed and `dst` holds nothing read.
+    ///
+    /// # Safety
+    /// A buffer at least `offset + dst.len()` bytes long is bound at `target`.
+    pub unsafe fn get_buffer_sub_data(
+        gl: &glow::Context,
+        target: u32,
+        offset: i32,
+        dst: &mut [u8],
+    ) -> bool {
+        if dst.is_empty() {
+            return true;
+        }
+        // SAFETY: the caller's range is inside the bound buffer.
+        unsafe {
+            let p = gl.map_buffer_range(target, offset, dst.len() as i32, glow::MAP_READ_BIT);
+            if p.is_null() {
+                return false;
+            }
+            core::ptr::copy_nonoverlapping(p, dst.as_mut_ptr(), dst.len());
+            gl.unmap_buffer(target);
+            true
+        }
     }
 
     /// The renderer string, which names the GPU and ANGLE's own back end.
@@ -185,6 +242,7 @@ mod web {
     #[derive(Debug)]
     pub struct Platform {
         clip_control: Option<(js_sys::Object, js_sys::Function)>,
+        provoking_vertex: Option<(js_sys::Object, js_sys::Function)>,
     }
 
     impl Platform {
@@ -193,21 +251,55 @@ mod web {
                 let _ = f.call2(ext, &JsValue::from(origin), &JsValue::from(depth));
             }
         }
+
+        pub fn provoking_vertex(&self, _gl: &glow::Context, mode: u32) {
+            if let Some((ext, f)) = &self.provoking_vertex {
+                let _ = f.call1(ext, &JsValue::from(mode));
+            }
+        }
+    }
+
+    /// The extension object `name` and its function `call`, enabled on the context.
+    fn extension_call(
+        context: &WebGl2RenderingContext,
+        name: &str,
+        call: &str,
+    ) -> Option<(js_sys::Object, js_sys::Function)> {
+        let ext = context.get_extension(name).ok().flatten()?;
+        let f = js_sys::Reflect::get(&ext, &JsValue::from_str(call)).ok()?;
+        Some((ext, f.dyn_into::<js_sys::Function>().ok()?))
+    }
+
+    /// Copies bytes of the buffer bound at `target` into `dst` (WebGL's `getBufferSubData`, which
+    /// waits for the GPU). False when the context reports an error, so `dst` holds nothing read.
+    ///
+    /// # Safety
+    /// A buffer at least `offset + dst.len()` bytes long is bound at `target`.
+    pub unsafe fn get_buffer_sub_data(
+        gl: &glow::Context,
+        target: u32,
+        offset: i32,
+        dst: &mut [u8],
+    ) -> bool {
+        // SAFETY: as the caller promises. WebGL reports a failed read only through getError; an error
+        // already pending is a device loss whichever call raised it.
+        unsafe {
+            gl.get_buffer_sub_data(target, offset, dst);
+            gl.get_error() == glow::NO_ERROR
+        }
     }
 
     /// Wraps a canvas's WebGL 2 context, enabling the extensions glow does not enable itself.
     pub fn canvas(context: WebGl2RenderingContext) -> (glow::Context, Platform) {
-        let clip_control = context
-            .get_extension("EXT_clip_control")
-            .ok()
-            .flatten()
-            .and_then(|ext| {
-                let f = js_sys::Reflect::get(&ext, &JsValue::from_str("clipControlEXT")).ok()?;
-                Some((ext, f.dyn_into::<js_sys::Function>().ok()?))
-            });
+        let clip_control = extension_call(&context, "EXT_clip_control", "clipControlEXT");
+        let provoking_vertex =
+            extension_call(&context, "WEBGL_provoking_vertex", "provokingVertexWEBGL");
         (
             glow::Context::from_webgl2_context(context),
-            Platform { clip_control },
+            Platform {
+                clip_control,
+                provoking_vertex,
+            },
         )
     }
 

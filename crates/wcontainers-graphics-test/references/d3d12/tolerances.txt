@@ -7,6 +7,8 @@ bundles.png 1 0 warp 1568 1
 compute-image.exr 0 0 warp 0 0
 compute-sums.txt exact warp same
 compute.png 1 0 warp 279 1
+constants-slots.png 1 0 warp 988 1
+constants-window.png 1 0 warp 288 1
 copies-buffer.txt exact warp same
 copies-region.png 0 0 warp 0 0
 copies-resolve.png 1 0 warp 780 1
@@ -17,6 +19,7 @@ depth-clip_depth.exr 0.0000002980232238769531 0 warp 4630 0.00000029802322387695
 depth-funcs.png 1 0 warp 21280 1
 depth-shader.png 0 0 warp 0 0
 depth-shader_depth.exr 0.00000011920928955078125 0 warp 1952 0.00000011920928955078125
+draws.png 1 0 warp 335 1
 formats-b5g6r5_unorm.png 1 0 warp 698 1
 formats-bgra8_srgb.png 1 0 warp 611 1
 formats-bgra8_unorm.png 1 0 warp 186 1
@@ -41,12 +44,31 @@ formats-rgba8_uint.png 0 0 warp 0 0
 formats-rgba8_unorm.png 1 0 warp 186 1
 formats-srgb_blend.png 1 0 warp 2890 1
 formats-support.txt exact warp same
+geometry-adjacency.png 1 0 warp 345 1
+geometry-layer0.png 1 0 warp 41 1
+geometry-layer1.png 1 0 warp 39 1
+geometry-layer2.png 1 0 warp 44 1
+geometry-points.png 1 0 warp 337 1
+geometry-primitive_id.png 1 0 warp 2885 1
+geometry-strips.png 1 0 warp 236 1
 heaps-first.png 1 0 warp 1599 1
 heaps-second.png 1 0 warp 1365 1
+msaa-alpha_to_coverage.png 8 2580 warp 9396 108
+msaa-edges2.png 1 0 warp 724 1
+msaa-edges4.png 1 0 warp 842 1
+msaa-edges8.png 1 0 warp 539 1
+msaa-load.png 0 0 warp 0 0
+msaa-per_sample.png 1 0 warp 4471 1
+msaa-sample_mask.png 1 0 warp 4341 1
+msaa-shader_coverage.png 1 0 warp 6693 1
 queries-results.txt exact warp same
 queries.png 1 0 warp 470 1
 queues-sums.txt exact warp same
 queues.png 1 0 warp 1980 1
+raster-cull.png 1 0 warp 5408 1
+raster-fill.png 1 0 warp 1921 1
+raster-scissor.png 1 0 warp 126 1
+raster-viewports.png 1 0 warp 494 1
 roots.png 1 0 warp 5714 1
 samplers-address.png 2 0 warp 17370 2
 samplers-compare.png 1 0 warp 17880 1
@@ -55,9 +77,29 @@ samplers-filters.png 8 6004 warp 20414 179
 samplers-gather.png 0 0 warp 0 0
 stencil-values.png 0 0 warp 0 0
 stencil.png 1 0 warp 4448 1
+streamout-buffer.exr 0.000000014901161193847656 0 warp 5 0.000000014901161193847656
+streamout-results.txt exact warp same
+streamout.png 1 0 warp 82 1
 swapchain-frame0.png 1 0 warp 3408 1
 swapchain-frame1.png 1 0 warp 7037 1
 swapchain-frame2.png 1 0 warp 3408 1
 swapchain-frame3.png 1 0 warp 2912 1
 swapchain-results.txt exact warp same
+targets-r32ui.exr 0 0 warp 0 0
+targets-rgb10a2.png 1 0 warp 6605 1
+targets-rgba16f.exr 0 0 warp 0 0
+targets-rgba8.png 1 0 warp 9779 1
+tessellation.png 8 464 warp 1232 228
+textures-1d.png 1 0 warp 603 1
+textures-1d_array.png 0 0 warp 0 0
+textures-2d_array.png 1 0 warp 192 1
+textures-3d.png 2 0 warp 464 2
+textures-bc.exr 0.0078125 2310 warp 8645 0.05166783928871155
+textures-cube.png 2 0 warp 492 2
+textures-cube_array.png 1 0 warp 529 1
+textures-mips.png 1 0 warp 2800 1
+topology.png 1 0 warp 641 1
 triangle.png 1 0 warp 1950 1
+views-rtv_layer.png 1 0 warp 441 1
+views-rtv_mip.png 1 0 warp 441 1
+views.png 2 0 warp 6938 2

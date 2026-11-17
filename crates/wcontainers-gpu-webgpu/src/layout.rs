@@ -12,6 +12,25 @@ const FIRST_TEXTURE_BINDING: u32 = 32;
 /// The entries of each bind group, sorted by binding, or a rule the program broke.
 pub type GroupEntries = [Vec<BindGroupLayoutEntry>; MAX_BINDING_SETS];
 
+/// The texture bits, per set, of the textures an entry point samples through a sampler: the only
+/// textures whose layout depends on the bound view, since a texture only loaded from is
+/// `unfilterable-float` whatever is bound.
+pub fn paired(module: &naga::Module, info: &naga::valid::FunctionInfo) -> [u128; MAX_BINDING_SETS] {
+    let mut sets = [0; MAX_BINDING_SETS];
+    for k in info.sampling_set.iter() {
+        if let Some(b) = &module.global_variables[k.image].binding
+            && let Some(bit) = b
+                .binding
+                .checked_sub(FIRST_TEXTURE_BINDING)
+                .filter(|bit| *bit < 128)
+            && let Some(set) = sets.get_mut(b.group as usize)
+        {
+            *set |= 1u128 << bit;
+        }
+    }
+    sets
+}
+
 /// Reads every global the stages' entry points use and gives each its binding type. Uniform buffers
 /// get dynamic offsets in set and binding order, up to `max_dynamic`.
 pub fn derive(
@@ -20,6 +39,12 @@ pub fn derive(
     max_dynamic: u32,
 ) -> Result<GroupEntries, &'static str> {
     let mut groups: GroupEntries = Default::default();
+    let mut sampled = [0u128; MAX_BINDING_SETS];
+    for shader in stages {
+        for (all, own) in sampled.iter_mut().zip(shader.paired) {
+            *all |= own;
+        }
+    }
     for shader in stages {
         let visibility = match shader.stage {
             naga::ShaderStage::Vertex => ShaderStages::VERTEX,
@@ -28,16 +53,21 @@ pub fn derive(
         };
         let module = &shader.module;
         let info = shader.info.get_entry_point(shader.entry_index);
-        // Textures each non-comparison sampler is paired with in this stage.
-        let unfilterable = |image: naga::Handle<naga::GlobalVariable>| {
+        // Whether a texture's bit is set in the program's sampled textures and in the set's key.
+        let bit_in = |image: naga::Handle<naga::GlobalVariable>, of: &dyn Fn(usize) -> u128| {
             let Some(b) = &module.global_variables[image].binding else {
                 return false;
             };
-            let key = keys.get(b.group as usize).copied().unwrap_or_default();
             b.binding
                 .checked_sub(FIRST_TEXTURE_BINDING)
                 .filter(|bit| *bit < 128)
-                .is_some_and(|bit| key.unfilterable_textures & (1u128 << bit) != 0)
+                .is_some_and(|bit| of(b.group as usize) & (1u128 << bit) != 0)
+        };
+        let sampled = |image| bit_in(image, &|g| sampled.get(g).copied().unwrap_or(0));
+        let unfilterable = |image| {
+            bit_in(image, &|g| {
+                keys.get(g).map_or(0, |k| k.unfilterable_textures)
+            })
         };
         for (handle, var) in module.global_variables.iter() {
             if info[handle].is_empty() {
@@ -78,7 +108,7 @@ pub fn derive(
                                 ScalarKind::Sint => wgpu::TextureSampleType::Sint,
                                 ScalarKind::Uint => wgpu::TextureSampleType::Uint,
                                 _ => wgpu::TextureSampleType::Float {
-                                    filterable: !multi && !unfilterable(handle),
+                                    filterable: !multi && sampled(handle) && !unfilterable(handle),
                                 },
                             },
                             view_dimension,

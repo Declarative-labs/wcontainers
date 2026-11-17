@@ -1,6 +1,7 @@
 //! The device: `ID3D11Device` and `IDXGIDevice` on one object.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -8,7 +9,7 @@ use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice};
-use windows::core::{GUID, IUnknownImpl, Interface, OutRef, Ref, Result, implement};
+use windows::core::{GUID, IUnknownImpl, Interface, OutRef, Ref, Result, Weak, implement};
 
 use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData};
 use wcontainers_direct3d_11::format;
@@ -25,6 +26,83 @@ pub struct Device {
     adapter: IDXGIAdapter1,
     flags: u32,
     exception_mode: Cell<u32>,
+    /// The live state objects by description: Direct3D hands out the existing object for a
+    /// description equal to a live one's.
+    states: States,
+}
+
+#[derive(Default)]
+struct States {
+    blend: RefCell<HashMap<Vec<u32>, Weak<ID3D11BlendState>>>,
+    depth_stencil: RefCell<HashMap<Vec<u32>, Weak<ID3D11DepthStencilState>>>,
+    raster: RefCell<HashMap<Vec<u32>, Weak<ID3D11RasterizerState>>>,
+    sampler: RefCell<HashMap<Vec<u32>, Weak<ID3D11SamplerState>>>,
+}
+
+/// The live state object of description `key` in `live`, or a new one from `make`, recorded.
+fn shared_state<I: Interface>(
+    live: &RefCell<HashMap<Vec<u32>, Weak<I>>>,
+    key: Vec<u32>,
+    out: OutRef<I>,
+    make: impl FnOnce() -> Result<I>,
+) -> Result<()> {
+    let found = live.borrow().get(&key).and_then(Weak::upgrade);
+    let object = match found {
+        Some(o) => o,
+        None => {
+            let o = make()?;
+            let weak = o.downgrade()?;
+            let mut live = live.borrow_mut();
+            live.retain(|_, w| w.upgrade().is_some());
+            live.insert(key, weak);
+            o
+        }
+    };
+    give(out, object)
+}
+
+/// A description's fields as words, for comparing descriptions without their padding.
+fn words<T: Copy>(d: &T) -> Vec<u32> {
+    assert!(size_of::<T>().is_multiple_of(4));
+    let p = (d as *const T).cast::<u32>();
+    (0..size_of::<T>() / 4)
+        .map(|i| unsafe { p.add(i).read_unaligned() })
+        .collect()
+}
+
+fn blend_key(d: &D3D11_BLEND_DESC) -> Vec<u32> {
+    let mut k = vec![
+        d.AlphaToCoverageEnable.0 as u32,
+        d.IndependentBlendEnable.0 as u32,
+    ];
+    for t in &d.RenderTarget {
+        k.extend([
+            t.BlendEnable.0 as u32,
+            t.SrcBlend.0 as u32,
+            t.DestBlend.0 as u32,
+            t.BlendOp.0 as u32,
+            t.SrcBlendAlpha.0 as u32,
+            t.DestBlendAlpha.0 as u32,
+            t.BlendOpAlpha.0 as u32,
+            u32::from(t.RenderTargetWriteMask),
+        ]);
+    }
+    k
+}
+
+fn depth_stencil_key(d: &D3D11_DEPTH_STENCIL_DESC) -> Vec<u32> {
+    let mut k = vec![
+        d.DepthEnable.0 as u32,
+        d.DepthWriteMask.0 as u32,
+        d.DepthFunc.0 as u32,
+        d.StencilEnable.0 as u32,
+        u32::from(d.StencilReadMask),
+        u32::from(d.StencilWriteMask),
+    ];
+    for f in [&d.FrontFace, &d.BackFace] {
+        k.extend(words(f));
+    }
+    k
 }
 
 /// Makes a device and its immediate context at the first of `levels` served.
@@ -35,17 +113,16 @@ pub fn create_device(
     let _lock = lock();
     let backend = backend().ok_or(windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED)?;
     let front = Front::new(backend, levels).map_err(hresult)?;
-    let info = wcontainers_gpu::Backend::caps(&front.backend)
-        .adapter
-        .clone();
+    let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend));
     let level = front.feature_level();
     let device: ID3D11Device = Device {
         front: Locked::new(Rc::new(RefCell::new(front))),
         private: Private::default(),
         context: Locked::new(Rc::new(Cell::new(std::ptr::null_mut()))),
-        adapter: Adapter::new(info).into(),
+        adapter: adapter.into(),
         flags,
         exception_mode: Cell::new(0),
+        states: States::default(),
     }
     .into();
     let context = unsafe { device.GetImmediateContext() }?;
@@ -65,9 +142,15 @@ impl Device_Impl {
         self.to_interface()
     }
 
+    pub(super) fn call(&self) -> Call<'_> {
+        Call::new(&self.front)
+    }
+
     pub(super) fn unserved(&self, what: &'static str) {
         missing_void(what);
-        self.front.borrow_mut().removed = true;
+        self.front
+            .borrow_mut()
+            .lose(wcontainers_direct3d_11::Error::NotImplemented(what));
     }
 
     pub(super) fn create_buffer(
@@ -99,13 +182,12 @@ impl Device_Impl {
         let d = convert::texture2d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         let mut data = Vec::new();
         if !init.is_null() {
-            let fmt = format::texture_format(d.format).ok_or(E_INVALIDARG)?;
-            let full = 32 - d.width.max(d.height).leading_zeros();
-            let mips = if d.mip_levels == 0 {
-                full
-            } else {
-                d.mip_levels
-            };
+            // The description is checked before the program's array of initial data is read by it.
+            let (fmt, mips) = self
+                .front
+                .borrow()
+                .check_texture_2d(&d, true)
+                .map_err(hresult)?;
             for i in 0..mips * d.array_size {
                 let s = unsafe { &*init.add(i as usize) };
                 let mip = i % mips;
@@ -278,12 +360,14 @@ impl Device_Impl {
         out: OutRef<ID3D11BlendState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let state = self
-            .front
-            .borrow_mut()
-            .create_blend_state(&convert::blend(d))
-            .map_err(hresult)?;
-        give(out, BlendState::new(state, *d, self.me()).into())
+        shared_state(&self.states.blend, blend_key(d), out, || {
+            let state = self
+                .front
+                .borrow_mut()
+                .create_blend_state(&convert::blend(d))
+                .map_err(hresult)?;
+            Ok(BlendState::new(state, *d, self.me()).into())
+        })
     }
 
     pub(super) fn create_depth_stencil_state(
@@ -292,12 +376,19 @@ impl Device_Impl {
         out: OutRef<ID3D11DepthStencilState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let state = self
-            .front
-            .borrow_mut()
-            .create_depth_stencil_state(&convert::depth_stencil(d)?)
-            .map_err(hresult)?;
-        give(out, DepthStencilState::new(state, *d, self.me()).into())
+        shared_state(
+            &self.states.depth_stencil,
+            depth_stencil_key(d),
+            out,
+            || {
+                let state = self
+                    .front
+                    .borrow_mut()
+                    .create_depth_stencil_state(&convert::depth_stencil(d)?)
+                    .map_err(hresult)?;
+                Ok(DepthStencilState::new(state, *d, self.me()).into())
+            },
+        )
     }
 
     pub(super) fn create_rasterizer_state(
@@ -306,12 +397,14 @@ impl Device_Impl {
         out: OutRef<ID3D11RasterizerState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let state = self
-            .front
-            .borrow_mut()
-            .create_rasterizer_state(&convert::rasterizer(d))
-            .map_err(hresult)?;
-        give(out, RasterizerState::new(state, *d, self.me()).into())
+        shared_state(&self.states.raster, words(d), out, || {
+            let state = self
+                .front
+                .borrow_mut()
+                .create_rasterizer_state(&convert::rasterizer(d))
+                .map_err(hresult)?;
+            Ok(RasterizerState::new(state, *d, self.me()).into())
+        })
     }
 
     pub(super) fn create_sampler_state(
@@ -320,12 +413,14 @@ impl Device_Impl {
         out: OutRef<ID3D11SamplerState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let state = self
-            .front
-            .borrow_mut()
-            .create_sampler_state(&convert::sampler(d))
-            .map_err(hresult)?;
-        give(out, SamplerState::new(state, *d, self.me()).into())
+        shared_state(&self.states.sampler, words(d), out, || {
+            let state = self
+                .front
+                .borrow_mut()
+                .create_sampler_state(&convert::sampler(d))
+                .map_err(hresult)?;
+            Ok(SamplerState::new(state, *d, self.me()).into())
+        })
     }
 
     pub(super) fn get_feature_level(&self) -> D3D_FEATURE_LEVEL {
@@ -337,11 +432,7 @@ impl Device_Impl {
     }
 
     pub(super) fn get_device_removed_reason(&self) -> Result<()> {
-        if self.front.borrow().removed {
-            Err(windows::Win32::Graphics::Dxgi::DXGI_ERROR_DRIVER_INTERNAL_ERROR.into())
-        } else {
-            Ok(())
-        }
+        removal(self.front.borrow_mut().poll_removed())
     }
 
     pub(super) fn get_immediate_context(&self, out: OutRef<ID3D11DeviceContext>) {

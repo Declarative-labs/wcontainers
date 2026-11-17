@@ -3,11 +3,11 @@
 
 use glow::HasContext;
 use std::collections::BTreeSet;
-use wcontainers_gpu::{Caps, Features, Format, FormatCaps, FormatUse, Limits};
+use wcontainers_gpu::{AdapterInfo, Caps, Features, Format, FormatCaps, FormatUse, Limits};
 
 use crate::format::{self, FormatExtensions};
 
-pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
+pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) -> Caps {
     // SAFETY: plain queries of the current context.
     let get = |name| unsafe { gl.get_parameter_i32(name) }.max(0) as u32;
     let range = |name| {
@@ -19,6 +19,8 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
     let mut features = Features::READ_BACK_NOW
         // GL's provoking vertex is the last; its rule for every topology is Direct3D 9's and OpenGL's.
         | Features::PROVOKING_VERTEX_LAST
+        // TRIANGLE_FAN and LINE_LOOP are WebGL 2 topologies.
+        | Features::FAN_AND_LOOP
         // GL's own clip depth; with EXT_clip_control set per raster block.
         | Features::CLIP_DEPTH_MINUS_ONE
         | Features::INDEX_U8
@@ -28,6 +30,10 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
     features.set(
         Features::CLIP_DEPTH_ZERO_ONE,
         ext.contains("EXT_clip_control"),
+    );
+    features.set(
+        Features::PROVOKING_VERTEX_FIRST,
+        ext.contains("WEBGL_provoking_vertex"),
     );
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");
     let units_vertex = get(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
@@ -66,7 +72,8 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
         compute_invocations: 0,
         compute_size: [0; 3],
         max_dispatch: 0,
-        max_point_size: range(glow::ALIASED_POINT_SIZE_RANGE),
+        // Programs write gl_PointSize 1 (POINT_SIZE is absent).
+        max_point_size: 1.0,
         max_line_width: range(glow::ALIASED_LINE_WIDTH_RANGE),
         max_anisotropy: if anisotropic {
             // SAFETY: a plain query the extension defines.
@@ -76,11 +83,7 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
         },
         capture_buffers: 0,
     };
-    let format_ext = FormatExtensions {
-        color_buffer_float: ext.contains("EXT_color_buffer_float"),
-        float_linear: ext.contains("OES_texture_float_linear"),
-        float_blend: ext.contains("EXT_float_blend"),
-    };
+    let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {
         uses: [FormatUse::empty(); Format::COUNT],
         // Multisampled targets (renderbuffers) are not built yet: one sample only.
@@ -94,8 +97,17 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
             formats.samples[i] = 1;
         }
     }
+    // WebGL names the GPU only in its renderer string; the software renderers say so in it.
+    let software = ["SwiftShader", "llvmpipe", "Microsoft Basic Render Driver"]
+        .iter()
+        .any(|s| renderer.contains(s));
     Caps {
-        adapter: Default::default(),
+        adapter: AdapterInfo {
+            name: renderer.into(),
+            vendor: 0,
+            device: 0,
+            software,
+        },
         features,
         limits,
         formats,

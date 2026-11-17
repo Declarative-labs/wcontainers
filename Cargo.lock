@@ -2705,6 +2705,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "blake3",
+ "half",
  "naga",
 ]
 
@@ -2715,6 +2716,7 @@ dependencies = [
  "blake3",
  "half",
  "naga",
+ "proptest",
  "wcontainers-gpu",
 ]
 
@@ -2729,6 +2731,7 @@ dependencies = [
  "naga",
  "wasm-bindgen",
  "wcontainers-gpu",
+ "wcontainers-gpu-test",
  "wcontainers-graphics-test",
  "web-sys",
 ]
@@ -2815,7 +2818,13 @@ dependencies = [
  "blake3",
  "cc",
  "naga",
+ "pollster",
  "wcontainers-gpu",
+ "wcontainers-gpu-webgl",
+ "wcontainers-gpu-webgpu",
+ "wcontainers-graphics-test",
+ "wgpu",
+ "windows",
 ]
 
 [[package]]

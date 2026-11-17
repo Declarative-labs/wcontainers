@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 bitflags.workspace = true
 blake3 = { version = "1", default-features = false }
+half = { version = "2", default-features = false }
 naga = { workspace = true, features = ["wgsl-in"] }
 
 [dev-dependencies]

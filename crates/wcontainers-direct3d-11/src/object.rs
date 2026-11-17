@@ -1,7 +1,7 @@
 //! The front's objects. Each holds the back end's handle in a [`Kept`], which hands the handle to the
 //! device's graveyard when the last reference goes, so the device destroys it at its next call.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use wcontainers_gpu::{Backend, Format, Object, Reflection, TextureDesc, VertexFormat};
@@ -52,9 +52,23 @@ impl<B: Backend, H: Clone> Drop for Kept<B, H> {
 
 pub struct Buffer<B: Backend> {
     pub desc: BufferDesc,
-    pub gpu: Kept<B, B::Buffer>,
-    /// The latest contents of a dynamic or staging buffer, which a map hands out.
+    /// The back end's buffer, replaced when a constant buffer grows to its shader's size.
+    pub gpu: RefCell<Kept<B, B::Buffer>>,
+    /// Bytes of the back end's buffer: `desc.byte_width` rounded up to the copy granule, or the size
+    /// it grew to.
+    pub size: Cell<u64>,
+    /// It grew: its bytes past `desc.byte_width` are zero, and whole writes keep them so.
+    pub grown: Cell<bool>,
+    /// The latest contents of a dynamic or staging buffer, which a map hands out; for a grown dynamic
+    /// buffer, all of its bytes.
     pub shadow: RefCell<Vec<u8>>,
+}
+
+impl<B: Backend> Buffer<B> {
+    /// The back end's buffer.
+    pub fn handle(&self) -> B::Buffer {
+        self.gpu.borrow().handle.clone()
+    }
 }
 
 pub struct Texture2D<B: Backend> {
@@ -141,4 +155,6 @@ pub struct InputLayout {
 pub struct Shader<B: Backend> {
     pub gpu: Kept<B, B::Shader>,
     pub reflection: Reflection,
+    /// The bytes each constant buffer the program reads is declared with, by binding number.
+    pub constant_sizes: Vec<(u32, u64)>,
 }

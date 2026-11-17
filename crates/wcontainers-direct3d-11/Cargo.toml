@@ -12,6 +12,7 @@ publish = false
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-shaders = { path = "../wcontainers-shaders" }
 blake3 = { version = "1", default-features = false }
+naga = { workspace = true }
 
 [lints]
 workspace = true

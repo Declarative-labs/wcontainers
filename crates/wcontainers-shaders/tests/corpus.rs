@@ -211,14 +211,14 @@ fn rig_dxil_shaders_convert_or_fail_with_a_named_reason() {
 fn own_shaders_convert() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
     let counts = run(&dir, "dxbc", "own");
-    // All five give valid WGSL; GLSL ES 3.00 lacks the bitfield operations two of them use, which
-    // the WebGL 2 back end lowers (plan 6.5).
+    // All give valid WGSL; GLSL ES 3.00 lacks the bitfield operations two of them use, which the
+    // WebGL 2 back end lowers (plan 6.5).
     let wgsl: usize = counts
         .iter()
         .filter(|(k, _)| k.starts_with("ok"))
         .map(|(_, n)| n)
         .sum();
-    assert_eq!(wgsl, 5, "{counts:?}");
+    assert_eq!(wgsl, shaders(&dir, "dxbc").len(), "{counts:?}");
 }
 
 /// The same HLSL compiled by fxc (DXBC) and by dxc (DXIL) gives the same values at the same locations,
@@ -312,4 +312,64 @@ fn dxil_draw_bases_from_the_helpers() {
     assert!(wgsl.contains("@group(3) @binding(0)"), "{wgsl}");
     let without = convert(Source::Dxil(&bytes), &VariantKey::default(), None).unwrap();
     assert!(without.reflection.helpers.is_empty());
+}
+
+/// Every rig shader compiled both by fxc (DXBC) and by dxc (DXIL) that converts by both routes gets the
+/// same bindings and the same sampled pairs from each.
+#[test]
+fn dxil_bindings_and_sampled_pairs_match_dxbc() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders");
+    let mut compared = 0;
+    let mut sampling = 0;
+    for dxil_path in shaders(&dir.join("dxil"), "dxil") {
+        let name = dxil_path
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let Ok(dxbc) = std::fs::read(dir.join("dxbc").join(format!("{name}.dxbc"))) else {
+            continue;
+        };
+        let dxil = std::fs::read(&dxil_path).unwrap();
+        let key = VariantKey::default();
+        let (Ok(a), Ok(b)) = (
+            convert(Source::Dxbc(&dxbc), &key, None),
+            convert(Source::Dxil(&dxil), &key, None),
+        ) else {
+            continue;
+        };
+        let bindings = |r: &wcontainers_gpu::Reflection| {
+            let mut v: Vec<_> = r
+                .bindings
+                .iter()
+                .map(|b| (b.set, b.binding, b.register, format!("{:?}", b.kind)))
+                .collect();
+            v.sort();
+            v
+        };
+        let (a, b) = (&a.reflection, &b.reflection);
+        assert_eq!(bindings(a), bindings(b), "{name} bindings");
+        assert_eq!(a.sampled_pairs, b.sampled_pairs, "{name} sampled pairs");
+        compared += 1;
+        sampling += usize::from(!a.sampled_pairs.is_empty());
+    }
+    eprintln!("compared {compared} shaders, {sampling} of them sampling");
+    assert!(compared >= 18 && sampling >= 4, "{compared} {sampling}");
+}
+
+/// A dynamically indexed constant buffer is declared with the size the bytecode gives it (the rig's
+/// instanced vertex shader indexes 33 vectors by instance), not dxbc-spirv's 4096, so a program
+/// binding just its buffer satisfies WebGPU's minimum binding size.
+#[test]
+fn dynamically_indexed_constants_keep_their_declared_size() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wcontainers-graphics-test/shaders/dxbc/instanced.vs.dxbc");
+    let bytes = std::fs::read(path).unwrap();
+    let c = convert(Source::Dxbc(&bytes), &VariantKey::default(), None).unwrap();
+    let m = &c.modules[0];
+    let wgsl =
+        naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())
+            .unwrap();
+    assert!(wgsl.contains("array<vec4<f32>, 33>"), "{wgsl}");
+    assert!(!wgsl.contains("4096"), "{wgsl}");
 }

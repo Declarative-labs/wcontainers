@@ -31,6 +31,8 @@ pub struct Recorder {
     textures: HashMap<Id, Texture>,
     views: HashMap<Id, (Id, TextureViewDesc)>,
     reads: HashMap<Id, Vec<u8>>,
+    /// Set to lose the device: what `status` reports.
+    pub lost: Option<LossReason>,
 }
 
 impl std::fmt::Debug for Recorder {
@@ -102,6 +104,7 @@ impl Recorder {
             textures: HashMap::new(),
             views: HashMap::new(),
             reads: HashMap::new(),
+            lost: None,
         }
     }
 
@@ -161,7 +164,10 @@ impl Backend for Recorder {
     }
 
     fn status(&mut self) -> DeviceStatus {
-        DeviceStatus::Ok
+        match self.lost {
+            Some(reason) => DeviceStatus::Lost(reason),
+            None => DeviceStatus::Ok,
+        }
     }
 
     fn helpers(&mut self) -> &mut Helpers<Self> {

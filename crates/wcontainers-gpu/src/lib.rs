@@ -32,10 +32,13 @@ extern crate alloc;
 
 mod backend;
 mod caps;
+mod combinations;
 mod draw;
 mod error;
 mod format;
 mod helpers;
+mod occlusion;
+mod passes;
 mod reflect;
 mod resource;
 mod shader;
@@ -44,6 +47,7 @@ mod state;
 
 pub use backend::{Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc, RingKind};
 pub use caps::{AdapterInfo, Caps, Features, FormatCaps, FormatUse, Limits};
+pub use combinations::CombinationTracker;
 pub use draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups,
     DrawCall, DrawRange, EmptyPass, IndexBinding, LoadOp, PassDesc, ScissorRect, StoreOp,
@@ -52,6 +56,8 @@ pub use draw::{
 pub use error::{DeviceStatus, GpuError, LossReason};
 pub use format::{Format, FormatKind};
 pub use helpers::Helpers;
+pub use occlusion::OcclusionCounter;
+pub use passes::{ColorTarget, PassOps, PassTargets, PassTracker, ScopeUse, Target, cut_scissors};
 pub use reflect::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource,
     EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation,

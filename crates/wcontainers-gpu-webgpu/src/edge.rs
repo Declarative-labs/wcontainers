@@ -4,7 +4,7 @@
 
 use wcontainers_gpu::SlowPath;
 
-use crate::WebGpu;
+use crate::{Stream, WebGpu};
 
 /// Copies bytes of `src` over bytes of `dst` in the words it touches, keeping the rest of each word.
 const EDGE_WGSL: &str = r#"
@@ -38,9 +38,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 /// Threads per workgroup of the program.
 const GROUP: u64 = 64;
 
-/// The most bytes one dispatch merges, so its workgroups stay under WebGPU's default limit.
-const MAX_BYTES: u64 = 16 << 20;
-
 /// The program, made at its first use.
 pub struct EdgeProgram {
     pipeline: wgpu::ComputePipeline,
@@ -49,11 +46,12 @@ pub struct EdgeProgram {
 
 impl WebGpu {
     /// Copies `size` bytes from `src` at `src_at` to `dst` at `dst_at`, two different GPU buffers,
-    /// on the encoder outside a pass: natively where both ends and the size are whole words; where
-    /// the two offsets agree in their word, the middle natively and the edge words by the program;
+    /// in `stream` outside a pass: natively where both ends and the size are whole words; where the
+    /// two offsets agree in their word, the middle natively and the edge words by the program;
     /// otherwise every word by the program.
     pub(crate) fn copy_bytes(
         &mut self,
+        stream: Stream,
         src: &wgpu::Buffer,
         src_at: u64,
         dst: &wgpu::Buffer,
@@ -64,24 +62,30 @@ impl WebGpu {
             return;
         }
         if [src_at, dst_at, size].iter().all(|v| v.is_multiple_of(4)) {
-            self.encoder()
+            self.stream(stream)
                 .copy_buffer_to_buffer(src, src_at, dst, dst_at, size);
             return;
         }
         self.slow.hit(SlowPath::UnalignedBufferEdge);
         if src_at % 4 != dst_at % 4 {
-            self.merge(src, src_at, dst, dst_at, size);
+            self.merge(stream, src, src_at, dst, dst_at, size);
             return;
         }
         let head = ((4 - dst_at % 4) % 4).min(size);
         let middle = (size - head) & !3;
         let tail = size - head - middle;
-        self.merge(src, src_at, dst, dst_at, head);
+        self.merge(stream, src, src_at, dst, dst_at, head);
         if middle > 0 {
-            self.encoder()
-                .copy_buffer_to_buffer(src, src_at + head, dst, dst_at + head, middle);
+            self.stream(stream).copy_buffer_to_buffer(
+                src,
+                src_at + head,
+                dst,
+                dst_at + head,
+                middle,
+            );
         }
         self.merge(
+            stream,
             src,
             src_at + head + middle,
             dst,
@@ -90,26 +94,35 @@ impl WebGpu {
         );
     }
 
-    /// Runs the program over the words of `dst` the range touches, in pieces of at most
-    /// `MAX_BYTES`.
+    /// Runs the program over the words of `dst` the range touches, in pieces whose workgroups and
+    /// bound windows stay inside the device's limits.
     fn merge(
         &mut self,
+        stream: Stream,
         src: &wgpu::Buffer,
         src_at: u64,
         dst: &wgpu::Buffer,
         dst_at: u64,
         size: u64,
     ) {
+        let limits = self.device.limits();
+        let align = u64::from(limits.min_storage_buffer_offset_alignment);
+        // A piece's window adds up to `align` bytes before it and a word after it, and one more
+        // word may need one more workgroup.
+        let piece = ((u64::from(limits.max_compute_workgroups_per_dimension) - 1) * GROUP * 4)
+            .min(limits.max_storage_buffer_binding_size - align - 4)
+            & !3;
         let mut done = 0;
         while done < size {
-            let n = (size - done).min(MAX_BYTES);
-            self.merge_piece(src, src_at + done, dst, dst_at + done, n);
+            let n = (size - done).min(piece);
+            self.merge_piece(stream, src, src_at + done, dst, dst_at + done, n);
             done += n;
         }
     }
 
     fn merge_piece(
         &mut self,
+        stream: Stream,
         src: &wgpu::Buffer,
         src_at: u64,
         dst: &wgpu::Buffer,
@@ -182,7 +195,7 @@ impl WebGpu {
         });
         let pipeline = edge.pipeline.clone();
         let mut pass = self
-            .encoder()
+            .stream(stream)
             .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &group, &[]);

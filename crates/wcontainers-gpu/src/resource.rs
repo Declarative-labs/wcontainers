@@ -12,6 +12,12 @@ bitflags! {
     /// GL buffers, each made when first used its way, every write from the host made to both and every
     /// GPU write to the one it can reach (slow paths [`crate::SlowPath::IndexBufferTwin`],
     /// [`crate::SlowPath::IndexTwinReadBack`]; plan section 4.6).
+    ///
+    /// What each use needs: `COPY_DST` to be written ([`crate::Backend::write_buffer`], a copy's
+    /// destination, [`crate::Backend::clear_buffer`], [`crate::Backend::resolve_queries`]); `COPY_SRC` to
+    /// be read (a copy's source, [`crate::Backend::read_back`]); `VERTEX`, `INDEX` and `INDIRECT` for a
+    /// draw's streams, indices and arguments; `UNIFORM` and `STORAGE` for those bindings; `CAPTURE` for
+    /// [`crate::Backend::capture_vertices`].
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
     pub struct BufferUsage: u16 {
         const VERTEX = 1 << 0;
@@ -58,13 +64,20 @@ pub enum WriteMode {
     /// only part of the buffer: the buffer keeps its size and the bytes outside the part are undefined
     /// until written (WebGL 2 orphans with `bufferData(size, null)`, then writes the part).
     Discard,
-    /// The caller promises no command recorded earlier and not yet finished reads the bytes written.
-    /// A back end may write in place at once.
+    /// The caller promises that no command recorded earlier and not yet finished, and no `Ordered`
+    /// write made since the caller last waited, reads or writes the bytes written. A back end may
+    /// write in place at once, ahead of the commands recorded before it; it keeps the order of these
+    /// writes among themselves and with `Discard` writes.
     NoOverwrite,
 }
 
 bitflags! {
-    /// How a texture will be used.
+    /// How a texture will be used. What each use needs: `COPY_DST` to be written
+    /// ([`crate::Backend::write_texture`], a copy's destination); `COPY_SRC` to be read (a copy's
+    /// source, [`crate::Backend::read_back`]); `SAMPLE` and `STORAGE` for those bindings; `RENDER` for
+    /// an attachment or resolve target, and so for [`crate::Backend::clear_texture`],
+    /// [`crate::Backend::clear_rects`] and [`crate::Backend::generate_mips`] (which also samples);
+    /// `PRESENT` for a surface's texture.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
     pub struct TextureUsage: u16 {
         const SAMPLE = 1 << 0;
@@ -155,7 +168,8 @@ pub struct TextureViewDesc {
     /// Which of depth and stencil a depth-stencil view reads: true for stencil, read as unsigned
     /// integers. Every back end serves both aspects; one whose API cannot sample stencil fills an 8-bit
     /// texture from the stencil by draws when the stencil changed (slow path
-    /// [`crate::SlowPath::StencilCopiedByDraw`]).
+    /// [`crate::SlowPath::StencilCopiedByDraw`]). A view of a format with both aspects that a pass
+    /// draws into ([`crate::DepthAttachment`]) holds both whatever this says.
     pub stencil: bool,
 }
 

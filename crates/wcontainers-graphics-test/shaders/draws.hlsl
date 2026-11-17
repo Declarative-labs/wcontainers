@@ -1,6 +1,7 @@
 // Vertices from slot 0 offset and coloured per instance from slot 1; the vertex and instance ids
 // shade each corner, so a wrong start vertex, base vertex or start instance shows.
 // fxc: vs_5_0 vs, ps_5_0 ps
+// dxc: vs_6_0 vs, ps_6_0 ps
 struct VsIn {
     float2 pos : POSITION;
     float2 offset : OFFSET;

@@ -10,26 +10,154 @@ pub mod scene;
 pub use scene::Scene;
 use scene::{HEIGHT, WIDTH};
 
-/// A deliberate change to the quads scene, which the comparison must catch.
+/// A change to how a scene is drawn. The altered ones change the picture, and the comparison must
+/// catch them; the others reach the same picture by another route, and must still match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
     None,
-    /// The colour blend's destination factor One instead of one minus source alpha.
+    /// Quads: the colour blend's destination factor One instead of one minus source alpha.
     BlendFactor,
-    /// The depth test Greater instead of Less.
+    /// Quads: the depth test Greater instead of Less.
     DepthFunction,
+    /// Quads: the same draw made first into another target, then a new texture made and written
+    /// between it and the draw into the real target, with the same program and binding set.
+    StaleUnit,
+    /// Quads: the index buffer also holds other data, and gets its indices by a copy from a buffer of
+    /// other data.
+    TwinCopy,
+    /// Quads: the vertices sit after four others, reached by the draw's base vertex.
+    BaseVertex,
+    /// Triangle (clip z 0): drawn over depth cleared to 0.25 and tested Less, which passes only if
+    /// clip depth runs from zero.
+    ClearNear,
+    /// Quads: drawn as two fans from guest indices with a restart between them.
+    Fan,
+    /// Quads: drawn as two fans of sequential vertices.
+    FanSequential,
+    /// Triangle: its outline as a line strip from indices 0, 1, 2, 0.
+    LineStrip,
+    /// Triangle: its outline as a line loop of its three vertices, which must equal `LineStrip`.
+    LineLoop,
+    /// Triangle: its colour read from a second stream of stride 0 holding red, so every pixel the
+    /// triangle covers is red.
+    StrideZero,
+    /// Triangle: its colour flat, from the first vertex (red) where the first may provoke, otherwise
+    /// from the last with the vertices rotated so red is last.
+    FlatRed,
+    /// Triangle: then `CLEARED` cleared to red by `clear_rects`, which draws with the interface's
+    /// built-in programs.
+    ClearRects,
+}
+
+/// The square `Change::ClearRects` clears to red.
+pub const CLEARED: ScissorRect = ScissorRect {
+    x: 64,
+    y: 64,
+    width: 64,
+    height: 64,
+};
+
+/// What a picture must equal.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expected {
+    /// The scene's Direct3D picture.
+    Reference,
+    /// The Direct3D picture with every pixel the scene covers red.
+    CoveredRed,
+    /// The Direct3D picture with `CLEARED` red.
+    RectRed,
+    /// Another picture of this run, exactly.
+    Same(Change),
+    /// Nothing: the picture is what another is compared with, and must only hold something.
+    Base,
 }
 
 impl Change {
-    pub const ALTERED: [Change; 2] = [Change::BlendFactor, Change::DepthFunction];
+    /// Every picture a run draws.
+    pub const PICTURES: [(Scene, Change); 16] = [
+        (Scene::Triangle, Change::None),
+        (Scene::Quads, Change::None),
+        (Scene::Instanced, Change::None),
+        (Scene::Quads, Change::BlendFactor),
+        (Scene::Quads, Change::DepthFunction),
+        (Scene::Quads, Change::StaleUnit),
+        (Scene::Quads, Change::TwinCopy),
+        (Scene::Quads, Change::BaseVertex),
+        (Scene::Triangle, Change::ClearNear),
+        (Scene::Quads, Change::Fan),
+        (Scene::Quads, Change::FanSequential),
+        (Scene::Triangle, Change::LineStrip),
+        (Scene::Triangle, Change::LineLoop),
+        (Scene::Triangle, Change::StrideZero),
+        (Scene::Triangle, Change::FlatRed),
+        (Scene::Triangle, Change::ClearRects),
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Change::None => "",
             Change::BlendFactor => "blend_factor",
             Change::DepthFunction => "depth_function",
+            Change::StaleUnit => "stale_unit",
+            Change::TwinCopy => "twin_copy",
+            Change::BaseVertex => "base_vertex",
+            Change::ClearNear => "clear_near",
+            Change::Fan => "fan",
+            Change::FanSequential => "fan_sequential",
+            Change::LineStrip => "line_strip",
+            Change::LineLoop => "line_loop",
+            Change::StrideZero => "stride_zero",
+            Change::FlatRed => "flat_red",
+            Change::ClearRects => "clear_rects",
         }
     }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_name(name: &str) -> Option<Change> {
+        Change::PICTURES
+            .iter()
+            .map(|(_, c)| *c)
+            .find(|c| c.name() == name)
+    }
+
+    /// Whether the picture differs from the scene's reference.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn altered(self) -> bool {
+        matches!(self, Change::BlendFactor | Change::DepthFunction)
+    }
+
+    /// What the picture is compared with.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn expected(self) -> Expected {
+        match self {
+            Change::StrideZero | Change::FlatRed => Expected::CoveredRed,
+            Change::ClearRects => Expected::RectRed,
+            Change::LineLoop => Expected::Same(Change::LineStrip),
+            Change::LineStrip => Expected::Base,
+            _ => Expected::Reference,
+        }
+    }
+}
+
+/// What a front does without [`Features::CLIP_DEPTH_ZERO_ONE`] (`ClipDepthRewrite`), for these test
+/// programs, whose vertex entries each end `return VsOut(...);` with the position first: clip z
+/// from zero is rewritten as 2z - w, from minus one.
+fn clip_depth_rewrite(source: &str) -> String {
+    let mut out = String::with_capacity(source.len() + 128);
+    for line in source.lines() {
+        match line.trim_end().strip_suffix(';') {
+            Some(statement) if line.trim_start().starts_with("return VsOut(") => {
+                out += &statement.replacen("return VsOut(", "return clip_depth(VsOut(", 1);
+                out += ");\n";
+            }
+            _ => {
+                out += line;
+                out += "\n";
+            }
+        }
+    }
+    out + "fn clip_depth(o: VsOut) -> VsOut { var r = o; r.pos.z = 2.0 * r.pos.z - r.pos.w; return r; }\n"
 }
 
 /// A validated module of one entry point of WGSL source.
@@ -51,6 +179,14 @@ fn module(source: &str, entry: &str, stage: ShaderStage) -> Result<ShaderModule,
 }
 
 fn program<B: Backend>(b: &mut B, source: &str) -> Result<B::Program, String> {
+    let rewritten;
+    let source = if b.caps().has(Features::CLIP_DEPTH_ZERO_ONE) {
+        source
+    } else {
+        b.slow_paths().hit(SlowPath::ClipDepthRewrite);
+        rewritten = clip_depth_rewrite(source);
+        &rewritten
+    };
     let vs = b
         .create_shader(&module(source, "vs", ShaderStage::Vertex)?)
         .map_err(|e| format!("{e:?}"))?;
@@ -72,7 +208,9 @@ fn bits(v: [f32; 4]) -> [u32; 4] {
     v.map(f32::to_bits)
 }
 
-fn layout(stride: u32, attributes: &[(u32, VertexFormat)]) -> VertexLayoutDesc {
+/// The layout of one stream at `stride`; with `change` StrideZero, the triangle's colour (location 1)
+/// comes from stream 1 at stride 0 instead.
+fn layout(stride: u32, attributes: &[(u32, VertexFormat)], change: Change) -> VertexLayoutDesc {
     let mut l = VertexLayoutDesc {
         streams: [None; MAX_VERTEX_STREAMS],
         attributes: [None; MAX_VERTEX_STREAMS],
@@ -89,11 +227,24 @@ fn layout(stride: u32, attributes: &[(u32, VertexFormat)]) -> VertexLayoutDesc {
             format: *format,
         });
     }
+    if change == Change::StrideZero {
+        l.streams[1] = Some(VertexStream {
+            stride: 0,
+            step: StepMode::Vertex,
+        });
+        l.attributes[1] = Some(VertexAttribute {
+            location: 1,
+            stream: 1,
+            offset: 0,
+            format: VertexFormat::Float32x3,
+        });
+    }
     l
 }
 
-/// Direct3D 11's default rasteriser state with culling off, as the rig's `solid()`.
-fn solid() -> RasterDesc {
+/// Direct3D 11's default rasteriser state with culling off, as the rig's `solid()`; clip depth from
+/// minus one where the program was rewritten.
+fn solid(depth_minus_one: bool) -> RasterDesc {
     RasterDesc {
         fill: FillMode::Solid,
         cull: CullMode::None,
@@ -105,7 +256,7 @@ fn solid() -> RasterDesc {
         scissor: false,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::Last,
-        depth_minus_one: false,
+        depth_minus_one,
         sample_mask: u32::MAX,
     }
 }
@@ -191,7 +342,7 @@ fn as_bytes(v: &[impl Copy]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(v.as_ptr().cast(), core::mem::size_of_val(v)) }
 }
 
-/// Draws `scene` with `change` applied (quads only) and reads the target back.
+/// Draws `scene` with `change` applied and reads the target back.
 pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u8>, String> {
     let target = texture(
         b,
@@ -200,7 +351,15 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     )?;
     let target_view = whole_view(b, &target, Format::Rgba8Unorm)?;
-    let raster = b.create_raster(&solid()).map_err(|e| format!("{e:?}"))?;
+    let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
+    let first_provokes = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
+    let mut raster_desc = solid(minus_one);
+    if change == Change::FlatRed && first_provokes {
+        raster_desc.provoking = ProvokingVertex::First;
+    }
+    let raster = b
+        .create_raster(&raster_desc)
+        .map_err(|e| format!("{e:?}"))?;
     let viewport = [Viewport {
         x: 0,
         y: 0,
@@ -236,10 +395,40 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
             &[(0, VertexFormat::Float32x2)],
         ),
     };
+    let flat;
+    let source = if change == Change::FlatRed {
+        flat = source.replacen(
+            "@location(0) color: vec3f,",
+            "@location(0) @interpolate(flat) color: vec3f,",
+            1,
+        );
+        &flat[..]
+    } else {
+        source
+    };
     let program = program(b, source)?;
+    let mut moved = Vec::new();
+    let (vertices, base_vertex) = if change == Change::BaseVertex {
+        moved.resize(4 * stride as usize, 0);
+        moved.extend_from_slice(vertices);
+        (&moved[..], 4)
+    } else if change == Change::FlatRed && !first_provokes {
+        // The same triangle with red last.
+        moved.extend_from_slice(&vertices[stride as usize..]);
+        moved.extend_from_slice(&vertices[..stride as usize]);
+        (&moved[..], 0)
+    } else {
+        (vertices, 0)
+    };
+    let attributes = if change == Change::StrideZero {
+        &attributes[..1]
+    } else {
+        attributes
+    };
     let vertex_buffer = buffer(b, BufferUsage::VERTEX, vertices)?;
+    let red = buffer(b, BufferUsage::VERTEX, as_bytes(&[1.0f32, 0.0, 0.0]))?;
     let vertex_layout = b
-        .create_vertex_layout(&layout(stride, attributes))
+        .create_vertex_layout(&layout(stride, attributes, change))
         .map_err(|e| format!("{e:?}"))?;
 
     let mut blend_desc = opaque();
@@ -270,13 +459,20 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
             _ => CompareFn::Less,
         });
         depth_desc.depth_write = true;
-        let depth = texture(b, Format::Depth32Float, WIDTH, TextureUsage::RENDER)?;
-        depth_target = Some((whole_view(b, &depth, Format::Depth32Float)?, depth));
-        index = Some(buffer(
-            b,
-            BufferUsage::INDEX,
-            as_bytes(&scene::QUAD_INDICES),
-        )?);
+        let indices = as_bytes(&scene::QUAD_INDICES);
+        index = Some(if change == Change::TwinCopy {
+            let twin = buffer(
+                b,
+                BufferUsage::INDEX | BufferUsage::VERTEX,
+                &vec![0; indices.len()],
+            )?;
+            let from = buffer(b, BufferUsage::VERTEX | BufferUsage::COPY_SRC, indices)?;
+            b.copy_buffer(&from, 0, &twin, 0, indices.len() as u64);
+            b.destroy(Object::Buffer(from));
+            twin
+        } else {
+            buffer(b, BufferUsage::INDEX, indices)?
+        });
         let size = scene::TEXTURE_SIZE;
         let checker = texture(
             b,
@@ -332,6 +528,18 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         sets[1] = Some(set);
         keep.push((checker, view, sampler));
     }
+    if change == Change::LineStrip {
+        index = Some(buffer(b, BufferUsage::INDEX, as_bytes(&[0u16, 1, 2, 0]))?);
+    }
+    let mut depth_clear = 1.0f32;
+    if which == Scene::Quads || change == Change::ClearNear {
+        if change == Change::ClearNear {
+            depth_desc.depth_compare = Some(CompareFn::Less);
+            depth_clear = 0.25;
+        }
+        let depth = texture(b, Format::Depth32Float, WIDTH, TextureUsage::RENDER)?;
+        depth_target = Some((whole_view(b, &depth, Format::Depth32Float)?, depth));
+    }
     let constants;
     if which == Scene::Instanced {
         constants = buffer(
@@ -358,36 +566,58 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         .create_depth_stencil(&depth_desc)
         .map_err(|e| format!("{e:?}"))?;
 
-    let mut pass = PassDesc {
-        colors: Default::default(),
-        depth: None,
-        empty: None,
-        occlusion: None,
+    // The other target of `StaleUnit`, drawn into first.
+    let other = if change == Change::StaleUnit {
+        let t = texture(b, Format::Rgba8Unorm, WIDTH, TextureUsage::RENDER)?;
+        Some((whole_view(b, &t, Format::Rgba8Unorm)?, t))
+    } else {
+        None
     };
-    pass.colors[0] = Some(ColorAttachment {
-        view: &target_view,
-        depth_slice: 0,
-        resolve: None,
-        load: LoadOp::Clear(bits(scene::CLEAR)),
-        store: StoreOp::Store,
-    });
-    if let Some((view, _)) = &depth_target {
-        pass.depth = Some(DepthAttachment {
+    let pass = |view| {
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
+        pass.colors[0] = Some(ColorAttachment {
             view,
-            depth: Some(AspectOps {
-                load: LoadOp::Clear(1.0f32.to_bits()),
-                store: StoreOp::Discard,
-                read_only: false,
-            }),
-            stencil: None,
+            depth_slice: 0,
+            resolve: None,
+            load: LoadOp::Clear(bits(scene::CLEAR)),
+            store: StoreOp::Store,
         });
-    }
-    b.begin_pass(&pass);
-    let streams = [Some(VertexBinding {
-        buffer: &vertex_buffer,
-        offset: 0,
-    })];
+        if let Some((view, _)) = &depth_target {
+            pass.depth = Some(DepthAttachment {
+                view,
+                depth: Some(AspectOps {
+                    load: LoadOp::Clear(depth_clear.to_bits()),
+                    store: StoreOp::Discard,
+                    read_only: false,
+                }),
+                stencil: None,
+            });
+        }
+        pass
+    };
+    let streams = [
+        Some(VertexBinding {
+            buffer: &vertex_buffer,
+            offset: 0,
+        }),
+        Some(VertexBinding {
+            buffer: &red,
+            offset: 0,
+        }),
+    ];
     let range = match which {
+        Scene::Triangle if change == Change::LineStrip => DrawRange::Indexed {
+            first: 0,
+            count: 4,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        },
         Scene::Triangle => DrawRange::Vertices {
             first: 0,
             count: 3,
@@ -397,7 +627,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         Scene::Quads => DrawRange::Indexed {
             first: 0,
             count: scene::QUAD_INDICES.len() as u32,
-            base_vertex: 0,
+            base_vertex,
             first_instance: 0,
             instances: 1,
         },
@@ -408,7 +638,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
             instances: scene::INSTANCES,
         },
     };
-    b.draw(&DrawCall {
+    let call = DrawCall {
         program: &program,
         blend: &blend,
         depth_stencil: &depth_stencil,
@@ -421,16 +651,95 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
             offset: 0,
             format: IndexFormat::U16,
         }),
-        topology: Topology::TriangleList,
-        restart: false,
+        topology: if change == Change::LineStrip {
+            Topology::LineStrip
+        } else {
+            Topology::TriangleList
+        },
+        restart: change == Change::Fan,
         viewports: &viewport,
         scissors: &[],
         blend_constant: [0; 4],
         stencil_reference: [0; 2],
         immediates: &[],
         range,
-    });
+    };
+    let mut extra = Vec::new();
+    if let Some((other_view, _)) = &other {
+        b.begin_pass(&pass(other_view));
+        b.draw(&call);
+        b.end_pass();
+        let size = scene::TEXTURE_SIZE;
+        let magenta = texture(
+            b,
+            Format::Rgba8Unorm,
+            size,
+            TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+        )?;
+        b.write_texture(
+            &TextureRegion {
+                texture: &magenta,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: size,
+                height: size,
+                depth_or_layers: 1,
+            },
+            &[255, 0, 255, 255].repeat((size * size) as usize),
+            size * 4,
+            size,
+            WriteMode::Discard,
+        );
+        let magenta_view = whole_view(b, &magenta, Format::Rgba8Unorm)?;
+        extra.push((magenta_view, magenta));
+    }
+    let converted = |b: &mut B| {
+        let s = b.slow_paths();
+        s.count(SlowPath::FanConverted) + s.count(SlowPath::LoopConverted)
+    };
+    let before = converted(b);
+    let fan = |first, count| IndexSource::Sequential { first, count };
+    let err = |e| format!("{e:?}");
+    b.begin_pass(&pass(&target_view));
+    match change {
+        Change::Fan => {
+            let indices: [u16; 9] = [0, 1, 2, 3, 0xffff, 4, 5, 6, 7];
+            let source = IndexSource::Guest {
+                indices: as_bytes(&indices),
+                format: IndexFormat::U16,
+                base_vertex: 0,
+            };
+            let kind = FanOrLoop::TriangleFan;
+            b.draw_fan_or_loop(&call, kind, source, ProvokingVertex::Last, 0, 1)
+                .map_err(err)?;
+        }
+        Change::FanSequential => {
+            for first in [0, 4] {
+                let kind = FanOrLoop::TriangleFan;
+                b.draw_fan_or_loop(&call, kind, fan(first, 4), ProvokingVertex::Last, 0, 1)
+                    .map_err(err)?;
+            }
+        }
+        Change::LineLoop => {
+            let kind = FanOrLoop::LineLoop;
+            b.draw_fan_or_loop(&call, kind, fan(0, 3), ProvokingVertex::Last, 0, 1)
+                .map_err(err)?;
+        }
+        _ => b.draw(&call),
+    }
     b.end_pass();
+    if b.caps().has(Features::FAN_AND_LOOP) && converted(b) != before {
+        return Err("a fan or loop was converted although FAN_AND_LOOP is present".into());
+    }
+    if change == Change::ClearRects {
+        let red = ClearValue::Color(bits([1.0, 0.0, 0.0, 1.0]));
+        b.clear_rects(&target_view, Format::Rgba8Unorm, red, &[CLEARED])
+            .map_err(err)?;
+    }
     let mut texels = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
     b.read_back_now(
         &ReadSource::Texture {
@@ -455,6 +764,10 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
     if let DeviceStatus::Lost(reason) = b.status() {
         return Err(format!("device lost: {reason:?}"));
     }
+    for (view, texture) in other.into_iter().chain(extra) {
+        b.destroy(Object::TextureView(view));
+        b.destroy(Object::Texture(texture));
+    }
     b.destroy(Object::TextureView(target_view));
     b.destroy(Object::Texture(target));
     if let Some((view, depth)) = depth_target {
@@ -468,6 +781,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
     }
     b.destroy(Object::Program(program));
     b.destroy(Object::Buffer(vertex_buffer));
+    b.destroy(Object::Buffer(red));
     if let Some(index) = index {
         b.destroy(Object::Buffer(index));
     }

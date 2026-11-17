@@ -5,7 +5,7 @@ rem build.cmd; run from the checkout root.
 setlocal
 set OUT=%~1
 set OFF=
-if not "%~2"=="" set OFF=--off %~2
+if not "%~2"=="" set OFF=--off "%~2"
 set ANGLE=C:\wc\tools\angle-mozangle-0.7.1
 set FAIL=
 "%CARGO_TARGET_DIR%\debug\examples\webgl-scenes.exe" angle "%ANGLE%" "%OUT%\angle" %OFF% || set FAIL=1

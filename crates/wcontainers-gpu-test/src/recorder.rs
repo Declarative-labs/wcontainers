@@ -4,6 +4,7 @@
 //! a GPU, so the suite and the shared helpers can be tested anywhere.
 
 use crate::program::Value;
+use crate::stream::{self, BufferSide, Call, Draw, Region, Shader, bind_of, kind_of};
 use crate::texel;
 use std::rc::Rc;
 use wcontainers_gpu::*;
@@ -25,6 +26,7 @@ pub struct Frame {
 
 pub(crate) struct BufferObj {
     pub bytes: Vec<u8>,
+    pub usage: BufferUsage,
 }
 
 pub(crate) struct TextureObj {
@@ -41,7 +43,12 @@ pub(crate) struct ViewObj {
 /// A resource bound in a binding set.
 #[derive(Clone, Debug)]
 pub(crate) enum Bound {
-    Buffer { buffer: Id, offset: u64, size: u64 },
+    Buffer {
+        buffer: Id,
+        offset: u64,
+        size: u64,
+        writable: bool,
+    },
     Texture(Id),
     Sampler(Id),
 }
@@ -63,9 +70,16 @@ pub(crate) enum Obj {
     Raster(RasterDesc),
     VertexLayout(Box<VertexLayoutDesc>),
     BindingSet(Vec<(u32, Bound)>),
-    QuerySet { kind: QueryKind, results: Vec<u64> },
-    Readback { bytes: Vec<u8>, ready_at: u64 },
-    Fence,
+    QuerySet {
+        kind: QueryKind,
+        results: Vec<u64>,
+    },
+    Readback {
+        bytes: Vec<u8>,
+        ready_at: u64,
+    },
+    /// A fence, and the submit it ends.
+    Fence(u64),
     Surface(SurfaceObj),
 }
 
@@ -87,6 +101,9 @@ pub(crate) struct Pass {
     pub occlusion: Option<Id>,
     /// The running occlusion query and whether any sample passed.
     pub query: Option<(u32, u64)>,
+    /// Buffers the pass's draws bound as writable storage, and those they used any other way.
+    pub written: Vec<Id>,
+    pub other: Vec<Id>,
 }
 
 /// The recording back end.
@@ -98,8 +115,13 @@ pub struct Recorder {
     pub(crate) objects: Vec<Option<Obj>>,
     pub(crate) pass: Option<Pass>,
     submits: u64,
-    /// Every base call, in order, as text.
-    pub calls: Vec<String>,
+    /// Every base call, in order, with its answer.
+    pub calls: Vec<Call>,
+    /// How deep the calls being made are inside another base call, whose own entry is the one kept.
+    nested: u32,
+    /// Buffer ranges commands read or wrote, and `Ordered` writes wrote, with the submit they belong
+    /// to, until the caller waits for that submit: what no `NoOverwrite` write may touch.
+    pub(crate) touched: Vec<(Id, u64, u64, u64)>,
     /// Every rule of the interface a caller broke, and every call this back end could not carry out.
     /// Either loses the device.
     pub violations: Vec<String>,
@@ -198,7 +220,8 @@ impl Recorder {
                     | Features::INDEX_U8
                     | Features::DEPTH24_UNORM
                     | Features::BASE_VERTEX_INSTANCE
-                    | Features::CLIP_DEPTH_ZERO_ONE,
+                    | Features::CLIP_DEPTH_ZERO_ONE
+                    | Features::FRAGMENT_STORAGE_WRITE,
                 limits,
                 formats: FormatCaps { uses, samples },
             },
@@ -209,9 +232,29 @@ impl Recorder {
             pass: None,
             submits: 0,
             calls: Vec::new(),
+            nested: 0,
+            touched: Vec::new(),
             violations: Vec::new(),
             shown: Vec::new(),
         }
+    }
+
+    /// The bytes every live buffer and texture holds, by object, and the frames shown: what two
+    /// recordings of one stream must agree on.
+    pub fn contents(&self) -> (Vec<Option<Vec<u8>>>, Vec<Vec<u8>>) {
+        let objects = self
+            .objects
+            .iter()
+            .map(|o| match o {
+                Some(Obj::Buffer(b)) => Some(b.bytes.clone()),
+                Some(Obj::Texture(t)) => Some(t.subresources.concat()),
+                _ => None,
+            })
+            .collect();
+        (
+            objects,
+            self.shown.iter().map(|f| f.bytes.clone()).collect(),
+        )
     }
 
     fn add(&mut self, obj: Obj) -> Id {
@@ -222,13 +265,14 @@ impl Recorder {
     /// Records a broken rule or a call this back end cannot carry out, and loses the device.
     pub(crate) fn violate(&mut self, what: impl Into<String>) {
         let what = what.into();
-        self.calls.push(format!("violation: {what}"));
         self.violations.push(what);
         self.lost = Some(LossReason::Error);
     }
 
-    fn log(&mut self, call: String) {
-        self.calls.push(call);
+    fn log(&mut self, call: Call) {
+        if self.nested == 0 {
+            self.calls.push(call);
+        }
     }
 
     pub(crate) fn obj(&self, id: Id) -> Result<&Obj, String> {
@@ -249,6 +293,29 @@ impl Recorder {
         match self.objects.get_mut(id.0 as usize).and_then(Option::as_mut) {
             Some(Obj::Buffer(b)) => Ok(b),
             _ => Err(format!("object {} is not a live buffer", id.0)),
+        }
+    }
+
+    /// Checks a buffer was made with `usage` for what `what` does with it.
+    pub(crate) fn buffer_for(&self, id: Id, usage: BufferUsage, what: &str) -> Result<(), String> {
+        if self.buffer(id)?.usage.contains(usage) {
+            Ok(())
+        } else {
+            Err(format!("{what} of buffer {} made without {usage:?}", id.0))
+        }
+    }
+
+    /// Checks a texture was made with `usage` for what `what` does with it.
+    pub(crate) fn texture_for(
+        &self,
+        id: Id,
+        usage: TextureUsage,
+        what: &str,
+    ) -> Result<(), String> {
+        if self.texture(id)?.desc.usage.contains(usage) {
+            Ok(())
+        } else {
+            Err(format!("{what} of texture {} made without {usage:?}", id.0))
         }
     }
 
@@ -350,6 +417,9 @@ impl Recorder {
         }
         if !t.desc.usage.contains(TextureUsage::RENDER) {
             return Err("an attachment without render usage".into());
+        }
+        if slice >= level_size(&t.desc, v.desc.base_mip).2 {
+            return Err("an attachment's slice outside its level".into());
         }
         Ok((
             v.texture,
@@ -489,6 +559,8 @@ impl Recorder {
             height,
             occlusion: pass.occlusion.copied(),
             query: None,
+            written: Vec::new(),
+            other: Vec::new(),
         });
         Ok(())
     }
@@ -525,6 +597,8 @@ impl Recorder {
                 offset,
                 size,
             } => {
+                self.buffer_for(**buffer, BufferUsage::COPY_SRC, "a read back")?;
+                self.touch(**buffer, *offset, *offset + *size);
                 let b = self.buffer(**buffer)?;
                 let range = *offset as usize..(*offset + *size) as usize;
                 b.bytes
@@ -532,8 +606,16 @@ impl Recorder {
                     .map(<[u8]>::to_vec)
                     .ok_or_else(|| "read back past the buffer's end".into())
             }
-            ReadSource::Texture { region, extent } => self.read_region(region, *extent),
+            ReadSource::Texture { region, extent } => {
+                self.texture_for(*region.texture, TextureUsage::COPY_SRC, "a read back")?;
+                self.read_region(region, *extent)
+            }
         }
+    }
+
+    /// Notes bytes a command recorded now reads or writes, part of the next submit.
+    pub(crate) fn touch(&mut self, buffer: Id, start: u64, end: u64) {
+        self.touched.push((buffer, start, end, self.submits + 1));
     }
 
     fn readback(&mut self, bytes: Vec<u8>) -> Id {
@@ -751,198 +833,323 @@ impl Backend for Recorder {
     }
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> Result<Id, GpuError> {
-        if desc.size > self.caps.limits.max_buffer_size {
-            return Err(GpuError::Invalid("buffer larger than the limit"));
-        }
-        let id = self.add(Obj::Buffer(BufferObj {
-            bytes: vec![0; desc.size as usize],
-        }));
-        self.log(format!("create_buffer {} {desc:?}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            if desc.size > self.caps.limits.max_buffer_size {
+                return Err(GpuError::Invalid("buffer larger than the limit"));
+            }
+            let id = self.add(Obj::Buffer(BufferObj {
+                bytes: vec![0; desc.size as usize],
+                usage: desc.usage,
+            }));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateBuffer(*desc, made));
+        made
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Id, GpuError> {
-        let uses = self.caps.formats.get(desc.format);
-        if uses.is_empty() {
-            return Err(GpuError::Invalid(
-                "texture of a format this back end does not hold",
-            ));
-        }
-        if !self.caps.formats.takes_samples(desc.format, desc.samples) {
-            return Err(GpuError::Invalid(
-                "texture sample count the format does not take",
-            ));
-        }
-        if desc.mip_levels == 0 || desc.width == 0 || desc.height == 0 || desc.depth_or_layers == 0
-        {
-            return Err(GpuError::Invalid("empty texture"));
-        }
-        if desc.cube && !desc.depth_or_layers.is_multiple_of(6) {
-            return Err(GpuError::Invalid(
-                "cube texture whose layers are not whole cubes",
-            ));
-        }
-        let mut subresources = Vec::new();
-        for mip in 0..desc.mip_levels {
-            let (row, rows) = level_rows(desc, mip);
-            let (_, _, slices) = level_size(desc, mip);
-            for _ in 0..layers(desc) {
-                subresources.push(vec![0; row * rows * slices as usize]);
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let uses = self.caps.formats.get(desc.format);
+            if uses.is_empty() {
+                return Err(GpuError::Invalid(
+                    "texture of a format this back end does not hold",
+                ));
             }
-        }
-        let id = self.add(Obj::Texture(TextureObj {
-            desc: *desc,
-            subresources,
-        }));
-        self.log(format!("create_texture {} {desc:?}", id.0));
-        Ok(id)
+            if !self.caps.formats.takes_samples(desc.format, desc.samples) {
+                return Err(GpuError::Invalid(
+                    "texture sample count the format does not take",
+                ));
+            }
+            if desc.mip_levels == 0
+                || desc.width == 0
+                || desc.height == 0
+                || desc.depth_or_layers == 0
+            {
+                return Err(GpuError::Invalid("empty texture"));
+            }
+            if desc.cube && !desc.depth_or_layers.is_multiple_of(6) {
+                return Err(GpuError::Invalid(
+                    "cube texture whose layers are not whole cubes",
+                ));
+            }
+            let mut subresources = Vec::new();
+            for mip in 0..desc.mip_levels {
+                let (row, rows) = level_rows(desc, mip);
+                let (_, _, slices) = level_size(desc, mip);
+                for _ in 0..layers(desc) {
+                    subresources.push(vec![0; row * rows * slices as usize]);
+                }
+            }
+            let id = self.add(Obj::Texture(TextureObj {
+                desc: *desc,
+                subresources,
+            }));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateTexture(*desc, made));
+        made
     }
 
     fn create_view(&mut self, texture: &Id, desc: &TextureViewDesc) -> Result<Id, GpuError> {
-        let t = self
-            .texture(*texture)
-            .map_err(|_| GpuError::Invalid("view of an object that is not a live texture"))?;
-        let twin = desc.format.linear() == t.desc.format.linear();
-        if desc.format != t.desc.format && !(twin && t.desc.reinterpret) {
-            return Err(GpuError::Invalid(
-                "view format neither the texture's nor its twin",
-            ));
-        }
-        if desc.base_mip + desc.mip_count > t.desc.mip_levels
-            || desc.base_layer + desc.layer_count > layers(&t.desc)
-            || desc.mip_count == 0
-            || desc.layer_count == 0
-        {
-            return Err(GpuError::Invalid("view range outside the texture"));
-        }
-        let id = self.add(Obj::View(ViewObj {
-            texture: *texture,
-            desc: *desc,
-        }));
-        self.log(format!("create_view {} of {} {desc:?}", id.0, texture.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let t = self
+                .texture(*texture)
+                .map_err(|_| GpuError::Invalid("view of an object that is not a live texture"))?;
+            let twin = desc.format.linear() == t.desc.format.linear();
+            if desc.format != t.desc.format && !(twin && t.desc.reinterpret) {
+                return Err(GpuError::Invalid(
+                    "view format neither the texture's nor its twin",
+                ));
+            }
+            if desc.base_mip + desc.mip_count > t.desc.mip_levels
+                || desc.base_layer + desc.layer_count > layers(&t.desc)
+                || desc.mip_count == 0
+                || desc.layer_count == 0
+            {
+                return Err(GpuError::Invalid("view range outside the texture"));
+            }
+            let id = self.add(Obj::View(ViewObj {
+                texture: *texture,
+                desc: *desc,
+            }));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateView(*texture, *desc, made));
+        made
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Id, GpuError> {
-        if desc
-            .address
-            .iter()
-            .any(|a| matches!(a, AddressMode::Border | AddressMode::MirrorOnce))
-        {
-            return Err(GpuError::Absent(
-                Features::BORDER_COLOR | Features::MIRROR_ONCE,
-            ));
-        }
-        let id = self.add(Obj::Sampler(*desc));
-        self.log(format!("create_sampler {} {desc:?}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            if desc
+                .address
+                .iter()
+                .any(|a| matches!(a, AddressMode::Border | AddressMode::MirrorOnce))
+            {
+                return Err(GpuError::Absent(
+                    Features::BORDER_COLOR | Features::MIRROR_ONCE,
+                ));
+            }
+            let id = self.add(Obj::Sampler(*desc));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateSampler(*desc, made));
+        made
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Id, GpuError> {
-        let id = self.add(Obj::Shader(Rc::new(module.clone())));
-        self.log(format!(
-            "create_shader {} {:?} {}",
-            id.0, module.stage, module.entry_point
-        ));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let id = self.add(Obj::Shader(Rc::new(module.clone())));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateShader(Shader(Rc::new(module.clone())), made));
+        made
     }
 
     fn create_program(&mut self, program: &Program<'_, Self>) -> Result<Id, GpuError> {
-        let shader = |r: &Self, id: &Id| match r.obj(*id) {
-            Ok(Obj::Shader(s)) => Ok(s.clone()),
-            _ => Err(GpuError::Invalid(
-                "program of an object that is not a live shader",
-            )),
-        };
-        let obj = match program {
-            Program::Render { vertex, fragment } => ProgramObj {
-                vertex: shader(self, vertex)?,
-                fragment: fragment.map(|f| shader(self, f)).transpose()?,
-            },
-            Program::Compute(_) => return Err(GpuError::Absent(Features::COMPUTE)),
-        };
-        let id = self.add(Obj::Program(obj));
-        self.log(format!("create_program {}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let shader = |r: &Self, id: &Id| match r.obj(*id) {
+                Ok(Obj::Shader(s)) => Ok(s.clone()),
+                _ => Err(GpuError::Invalid(
+                    "program of an object that is not a live shader",
+                )),
+            };
+            let obj = match program {
+                Program::Render { vertex, fragment } => ProgramObj {
+                    vertex: shader(self, vertex)?,
+                    fragment: fragment.map(|f| shader(self, f)).transpose()?,
+                },
+                Program::Compute(_) => return Err(GpuError::Absent(Features::COMPUTE)),
+            };
+            let id = self.add(Obj::Program(obj));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(match program {
+            Program::Render { vertex, fragment } => {
+                Call::CreateProgram(**vertex, fragment.copied(), false, made)
+            }
+            Program::Compute(c) => Call::CreateProgram(**c, None, true, made),
+        });
+        made
     }
 
     fn create_blend(&mut self, desc: &BlendDesc) -> Result<Id, GpuError> {
-        if desc.logic_op.is_some() {
-            return Err(GpuError::Absent(Features::LOGIC_OP));
-        }
-        let id = self.add(Obj::Blend(Box::new(*desc)));
-        self.log(format!("create_blend {} {desc:?}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            if desc.logic_op.is_some() {
+                return Err(GpuError::Absent(Features::LOGIC_OP));
+            }
+            let second_source = |f: BlendFactor| {
+                use BlendFactor::*;
+                matches!(f, Src1 | OneMinusSrc1 | Src1Alpha | OneMinusSrc1Alpha)
+            };
+            if desc
+                .targets
+                .iter()
+                .filter_map(|t| t.blend)
+                .flat_map(|(c, a)| [c.src, c.dst, a.src, a.dst])
+                .any(second_source)
+            {
+                return Err(GpuError::Absent(Features::DUAL_SOURCE_BLEND));
+            }
+            let id = self.add(Obj::Blend(Box::new(*desc)));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateBlend(Box::new(*desc), made));
+        made
     }
 
     fn create_depth_stencil(&mut self, desc: &DepthStencilDesc) -> Result<Id, GpuError> {
-        if desc.depth_bounds.is_some() {
-            return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
-        }
-        let id = self.add(Obj::DepthStencil(*desc));
-        self.log(format!("create_depth_stencil {} {desc:?}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            if desc.depth_bounds.is_some() {
+                return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
+            }
+            let id = self.add(Obj::DepthStencil(*desc));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateDepthStencil(*desc, made));
+        made
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Id, GpuError> {
-        if desc.fill != FillMode::Solid {
-            return Err(GpuError::Absent(Features::POLYGON_MODE));
-        }
-        if !desc.depth_clip {
-            return Err(GpuError::Absent(Features::DEPTH_CLAMP));
-        }
-        if desc.depth_minus_one {
-            return Err(GpuError::Absent(Features::CLIP_DEPTH_MINUS_ONE));
-        }
-        let id = self.add(Obj::Raster(*desc));
-        self.log(format!("create_raster {} {desc:?}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            if desc.fill != FillMode::Solid {
+                return Err(GpuError::Absent(Features::POLYGON_MODE));
+            }
+            if !desc.depth_clip {
+                return Err(GpuError::Absent(Features::DEPTH_CLAMP));
+            }
+            if desc.depth_minus_one {
+                return Err(GpuError::Absent(Features::CLIP_DEPTH_MINUS_ONE));
+            }
+            let id = self.add(Obj::Raster(*desc));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateRaster(*desc, made));
+        made
     }
 
     fn create_vertex_layout(&mut self, desc: &VertexLayoutDesc) -> Result<Id, GpuError> {
-        let id = self.add(Obj::VertexLayout(Box::new(*desc)));
-        self.log(format!("create_vertex_layout {} {desc:?}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let id = self.add(Obj::VertexLayout(Box::new(*desc)));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateVertexLayout(Box::new(*desc), made));
+        made
     }
 
     fn create_binding_set(&mut self, entries: &[BindingEntry<'_, Self>]) -> Result<Id, GpuError> {
-        let mut set = Vec::new();
-        for e in entries {
-            let bound = match e.resource {
-                BindingResource::UniformBuffer(r)
-                | BindingResource::StorageBuffer {
-                    range: r,
-                    writable: false,
-                } => Bound::Buffer {
-                    buffer: *r.buffer,
-                    offset: r.offset,
-                    size: r.size,
-                },
-                BindingResource::Texture(v) => Bound::Texture(*v),
-                BindingResource::Sampler(s) => Bound::Sampler(*s),
-                BindingResource::StorageBuffer { writable: true, .. }
-                | BindingResource::StorageTexture { .. } => {
-                    return Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE));
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let mut set = Vec::new();
+            for e in entries {
+                let bound = match e.resource {
+                    BindingResource::UniformBuffer(r)
+                        if !self
+                            .buffer(*r.buffer)
+                            .is_ok_and(|b| b.usage.contains(BufferUsage::UNIFORM)) =>
+                    {
+                        return Err(GpuError::Invalid(
+                            "a uniform binding of a buffer without UNIFORM",
+                        ));
+                    }
+                    BindingResource::StorageBuffer { range: r, .. }
+                        if !self
+                            .buffer(*r.buffer)
+                            .is_ok_and(|b| b.usage.contains(BufferUsage::STORAGE)) =>
+                    {
+                        return Err(GpuError::Invalid(
+                            "a storage binding of a buffer without STORAGE",
+                        ));
+                    }
+                    BindingResource::Texture(v)
+                        if !self
+                            .view(*v)
+                            .and_then(|v| self.texture(v.texture))
+                            .is_ok_and(|t| t.desc.usage.contains(TextureUsage::SAMPLE)) =>
+                    {
+                        return Err(GpuError::Invalid(
+                            "a texture binding of a texture without SAMPLE",
+                        ));
+                    }
+                    BindingResource::UniformBuffer(r) => Bound::Buffer {
+                        buffer: *r.buffer,
+                        offset: r.offset,
+                        size: r.size,
+                        writable: false,
+                    },
+                    BindingResource::StorageBuffer { writable: true, .. }
+                        if e.stages.contains(StageSet::VERTEX) =>
+                    {
+                        return Err(GpuError::Absent(Features::VERTEX_STORAGE_WRITE));
+                    }
+                    BindingResource::StorageBuffer { range: r, writable } => Bound::Buffer {
+                        buffer: *r.buffer,
+                        offset: r.offset,
+                        size: r.size,
+                        writable,
+                    },
+                    BindingResource::Texture(v) => Bound::Texture(*v),
+                    BindingResource::Sampler(s) => Bound::Sampler(*s),
+                    // No format this back end holds has storage uses.
+                    BindingResource::StorageTexture { .. } => {
+                        return Err(GpuError::Invalid(
+                            "a storage texture of a format without storage uses",
+                        ));
+                    }
+                    BindingResource::TexelBuffer { .. } => {
+                        return Err(GpuError::Invalid("typed texel buffers are fronts' routes"));
+                    }
+                    BindingResource::Table(_) => {
+                        return Err(GpuError::Absent(Features::RESOURCE_TABLES));
+                    }
+                };
+                if set.iter().any(|(b, _)| *b == e.binding) {
+                    return Err(GpuError::Invalid("two entries at one binding"));
                 }
-                BindingResource::TexelBuffer { .. } => {
-                    return Err(GpuError::Invalid("typed texel buffers are fronts' routes"));
-                }
-                BindingResource::Table(_) => {
-                    return Err(GpuError::Absent(Features::RESOURCE_TABLES));
-                }
-            };
-            if set.iter().any(|(b, _)| *b == e.binding) {
-                return Err(GpuError::Invalid("two entries at one binding"));
+                set.push((e.binding, bound));
             }
-            set.push((e.binding, bound));
-        }
-        let id = self.add(Obj::BindingSet(set));
-        self.log(format!(
-            "create_binding_set {} {} entries",
-            id.0,
-            entries.len()
+            let id = self.add(Obj::BindingSet(set));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateBindingSet(
+            entries
+                .iter()
+                .map(|e| (e.binding, e.stages, bind_of(&e.resource)))
+                .collect(),
+            made,
         ));
-        Ok(id)
+        made
     }
 
     fn binding_layout_key(&self, _: &Id) -> BindingLayoutKey {
@@ -950,20 +1157,27 @@ impl Backend for Recorder {
     }
 
     fn create_query_set(&mut self, kind: QueryKind, count: u32) -> Result<Id, GpuError> {
-        match kind {
-            QueryKind::OcclusionAny => {}
-            QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
-            QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
-        }
-        let id = self.add(Obj::QuerySet {
-            kind,
-            results: vec![0; count as usize],
-        });
-        self.log(format!("create_query_set {} {kind:?} {count}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            match kind {
+                QueryKind::OcclusionAny => {}
+                QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
+                QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
+            }
+            let id = self.add(Obj::QuerySet {
+                kind,
+                results: vec![0; count as usize],
+            });
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateQuerySet(kind, count, made));
+        made
     }
 
     fn destroy(&mut self, object: Object<Self>) {
+        let kind = kind_of(&object);
         let id = match object {
             Object::Buffer(i)
             | Object::Texture(i)
@@ -980,7 +1194,7 @@ impl Backend for Recorder {
             | Object::ResourceTable(i)
             | Object::Surface(i) => i,
         };
-        self.log(format!("destroy {}", id.0));
+        self.log(Call::Destroy(kind.0, kind.1));
         match self.objects.get_mut(id.0 as usize) {
             Some(slot @ Some(_)) => *slot = None,
             _ => self.violate(format!("object {} destroyed twice", id.0)),
@@ -988,12 +1202,24 @@ impl Backend for Recorder {
     }
 
     fn write_buffer(&mut self, buffer: &Id, offset: u64, data: &[u8], mode: WriteMode) {
-        self.log(format!(
-            "write_buffer {} at {offset} {} bytes {mode:?}",
-            buffer.0,
-            data.len()
-        ));
+        self.log(Call::WriteBuffer(*buffer, offset, data.to_vec(), mode));
         self.check(|r| {
+            r.buffer_for(*buffer, BufferUsage::COPY_DST, "write_buffer")?;
+            let end = offset + data.len() as u64;
+            if mode == WriteMode::NoOverwrite
+                && r.touched
+                    .iter()
+                    .any(|&(b, s, e, _)| b == *buffer && s < end && offset < e)
+            {
+                return Err(format!(
+                    "a NoOverwrite write over bytes of buffer {} an unfinished command or an \
+                     ordered write touches",
+                    buffer.0
+                ));
+            }
+            if mode == WriteMode::Ordered {
+                r.touch(*buffer, offset, end);
+            }
             let b = r.buffer_mut(*buffer)?;
             let end = offset as usize + data.len();
             b.bytes
@@ -1013,36 +1239,39 @@ impl Backend for Recorder {
         rows_per_layer: u32,
         mode: WriteMode,
     ) {
-        self.log(format!(
-            "write_texture {} mip {} layer {} {:?} {extent:?} pitch {row_pitch} {mode:?}",
-            region.texture.0, region.mip, region.layer, region.origin
+        self.log(Call::WriteTexture(
+            Region::of(region),
+            extent,
+            data.to_vec(),
+            row_pitch,
+            rows_per_layer,
+            mode,
         ));
-        self.check(|r| r.write_region(region, extent, data, row_pitch, rows_per_layer));
+        self.check(|r| {
+            r.texture_for(*region.texture, TextureUsage::COPY_DST, "write_texture")?;
+            r.write_region(region, extent, data, row_pitch, rows_per_layer)
+        });
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
-        let views: Vec<_> = pass.colors.iter().flatten().map(|c| c.view.0).collect();
-        self.log(format!(
-            "begin_pass colors {views:?} depth {:?}",
-            pass.depth.as_ref().map(|d| d.view.0)
-        ));
+        self.log(Call::BeginPass(stream::Pass::of(pass)));
         if let Err(e) = self.start_pass(pass) {
             self.violate(e);
         }
     }
 
     fn end_pass(&mut self) {
-        self.log("end_pass".into());
+        self.log(Call::EndPass);
         self.check(Self::finish_pass);
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
-        self.log(format!("draw {:?} {:?}", call.topology, call.range));
+        self.log(Call::Draw(Box::new(Draw::of(call))));
         self.check(|r| r.draw_call(call));
     }
 
     fn begin_query(&mut self, index: u32) {
-        self.log(format!("begin_query {index}"));
+        self.log(Call::BeginQuery(index));
         self.check(|r| {
             let pass = r.pass.as_mut().ok_or("begin_query outside a pass")?;
             if pass.occlusion.is_none() {
@@ -1056,7 +1285,7 @@ impl Backend for Recorder {
     }
 
     fn end_query(&mut self) {
-        self.log("end_query".into());
+        self.log(Call::EndQuery);
         self.check(|r| {
             let pass = r.pass.as_mut().ok_or("end_query outside a pass")?;
             let (index, passed) = pass
@@ -1077,12 +1306,13 @@ impl Backend for Recorder {
     }
 
     fn copy_buffer(&mut self, src: &Id, src_offset: u64, dst: &Id, dst_offset: u64, size: u64) {
-        self.log(format!(
-            "copy_buffer {} at {src_offset} to {} at {dst_offset}, {size} bytes",
-            src.0, dst.0
-        ));
+        self.log(Call::CopyBuffer(*src, src_offset, *dst, dst_offset, size));
         self.check(|r| {
             r.outside_pass("copy_buffer")?;
+            r.buffer_for(*src, BufferUsage::COPY_SRC, "copy_buffer")?;
+            r.touch(*src, src_offset, src_offset + size);
+            r.touch(*dst, dst_offset, dst_offset + size);
+            r.buffer_for(*dst, BufferUsage::COPY_DST, "copy_buffer")?;
             if src == dst && src_offset < dst_offset + size && dst_offset < src_offset + size {
                 return Err("copy between overlapping ranges of one buffer".into());
             }
@@ -1108,18 +1338,17 @@ impl Backend for Recorder {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.log(format!(
-            "copy_texture {} mip {} to {} mip {}, {extent:?}",
-            src.texture.0, src.mip, dst.texture.0, dst.mip
-        ));
+        self.log(Call::CopyTexture(Region::of(src), Region::of(dst), extent));
         self.check(|r| {
             r.outside_pass("copy_texture")?;
+            r.texture_for(*src.texture, TextureUsage::COPY_SRC, "copy_texture")?;
+            r.texture_for(*dst.texture, TextureUsage::COPY_DST, "copy_texture")?;
             let (sf, df) = (
                 r.texture(*src.texture)?.desc.format,
                 r.texture(*dst.texture)?.desc.format,
             );
-            if sf.block().2 != df.block().2 {
-                return Err("copy between formats of different block sizes".into());
+            if texel::bits_group(sf) != texel::bits_group(df) {
+                return Err("copy between formats of different typeless groups".into());
             }
             let bytes = r.read_region(src, extent)?;
             let (bw, bh, size) = sf.block();
@@ -1141,12 +1370,27 @@ impl Backend for Recorder {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.log(format!(
-            "copy_buffer_to_texture {} at {} pitch {} to {} mip {}, {extent:?}",
-            src.buffer.0, src.offset, src.row_pitch, dst.texture.0, dst.mip
+        self.log(Call::CopyBufferToTexture(
+            BufferSide::of(src),
+            Region::of(dst),
+            extent,
         ));
         self.check(|r| {
             r.outside_pass("copy_buffer_to_texture")?;
+            r.buffer_for(*src.buffer, BufferUsage::COPY_SRC, "copy_buffer_to_texture")?;
+            let (bw, bh, size) = r.texture(*dst.texture)?.desc.format.block();
+            let rows = u64::from(extent.height.div_ceil(bh));
+            let pitch = u64::from(src.row_pitch);
+            let rows_per_layer = u64::from(src.rows_per_layer).max(rows);
+            let end = src.offset
+                + (u64::from(extent.depth_or_layers - 1) * rows_per_layer + rows - 1) * pitch
+                + u64::from(extent.width.div_ceil(bw) * size);
+            r.touch(*src.buffer, src.offset, end);
+            r.texture_for(
+                *dst.texture,
+                TextureUsage::COPY_DST,
+                "copy_buffer_to_texture",
+            )?;
             let bytes = r
                 .buffer(*src.buffer)?
                 .bytes
@@ -1163,12 +1407,19 @@ impl Backend for Recorder {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        self.log(format!(
-            "copy_texture_to_buffer {} mip {} to {} at {} pitch {}, {extent:?}",
-            src.texture.0, src.mip, dst.buffer.0, dst.offset, dst.row_pitch
+        self.log(Call::CopyTextureToBuffer(
+            Region::of(src),
+            BufferSide::of(dst),
+            extent,
         ));
         self.check(|r| {
             r.outside_pass("copy_texture_to_buffer")?;
+            r.texture_for(
+                *src.texture,
+                TextureUsage::COPY_SRC,
+                "copy_texture_to_buffer",
+            )?;
+            r.buffer_for(*dst.buffer, BufferUsage::COPY_DST, "copy_texture_to_buffer")?;
             let bytes = r.read_region(src, extent)?;
             let format = r.texture(*src.texture)?.desc.format;
             let (bw, bh, size) = format.block();
@@ -1182,6 +1433,11 @@ impl Backend for Recorder {
             if (dst.row_pitch as usize) < len || rows_per_layer < rows {
                 return Err("copy pitch smaller than the region".into());
             }
+            let span = bytes.len().div_ceil(len.max(1)).saturating_sub(1);
+            let last = dst.offset
+                + ((span / rows * rows_per_layer + span % rows) * dst.row_pitch as usize + len)
+                    as u64;
+            r.touch(*dst.buffer, dst.offset, last);
             let b = r.buffer_mut(*dst.buffer)?;
             for (n, row) in bytes.chunks_exact(len.max(1)).enumerate() {
                 let (layer, y) = (n / rows, n % rows);
@@ -1198,12 +1454,11 @@ impl Backend for Recorder {
     }
 
     fn clear_buffer(&mut self, buffer: &Id, offset: u64, size: u64, pattern: &[u8]) {
-        self.log(format!(
-            "clear_buffer {} at {offset} {size} bytes {pattern:?}",
-            buffer.0
-        ));
+        self.log(Call::ClearBuffer(*buffer, offset, size, pattern.to_vec()));
         self.check(|r| {
             r.outside_pass("clear_buffer")?;
+            r.buffer_for(*buffer, BufferUsage::COPY_DST, "clear_buffer")?;
+            r.touch(*buffer, offset, offset + size);
             if !matches!(pattern.len(), 1 | 2 | 4 | 8 | 16)
                 || !size.is_multiple_of(pattern.len() as u64)
             {
@@ -1227,10 +1482,7 @@ impl Backend for Recorder {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
-        self.log(format!(
-            "resolve {} to {} as {format:?}",
-            src.texture.0, dst.texture.0
-        ));
+        self.log(Call::Resolve(Region::of(src), Region::of(dst), format));
         self.violate("resolve: this back end makes no multisampled texture to resolve");
     }
 
@@ -1239,49 +1491,79 @@ impl Backend for Recorder {
             self.violate("submit inside a pass");
         }
         self.submits += 1;
-        self.log(format!("submit {}", self.submits));
-        self.add(Obj::Fence)
+        let id = self.add(Obj::Fence(self.submits));
+        self.log(Call::Submit(id));
+        id
     }
 
+    /// The recording back end finishes all work at a submit, so every fence is done; the caller now
+    /// knows the work before it finished.
     fn fence_done(&mut self, fence: &Id) -> bool {
-        if !matches!(self.obj(*fence), Ok(Obj::Fence)) {
-            self.violate("fence_done of an object that is not a fence");
+        self.log(Call::FenceDone(*fence));
+        match self.obj(*fence) {
+            Ok(&Obj::Fence(n)) => self.touched.retain(|t| t.3 > n),
+            _ => self.violate("fence_done of an object that is not a fence"),
         }
         true
     }
 
     fn wait_fence(&mut self, fence: &Id) {
+        self.log(Call::WaitFence(*fence));
+        self.nested += 1;
         self.fence_done(fence);
+        self.nested -= 1;
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Id, GpuError> {
-        self.log(format!("read_back {src:?}"));
-        match self.snapshot(src) {
-            Ok(bytes) => Ok(self.readback(bytes)),
-            Err(e) => {
-                self.violate(e);
-                Err(GpuError::Invalid(
-                    "read back the recording back end refused",
-                ))
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            match self.snapshot(src) {
+                Ok(bytes) => Ok(self.readback(bytes)),
+                Err(e) => {
+                    self.violate(e);
+                    Err(GpuError::Invalid(
+                        "read back the recording back end refused",
+                    ))
+                }
             }
-        }
+        })();
+        self.nested -= 1;
+        self.log(Call::ReadBack(
+            match src {
+                ReadSource::Buffer {
+                    buffer,
+                    offset,
+                    size,
+                } => Ok((**buffer, *offset, *size)),
+                ReadSource::Texture { region, extent } => Err((Region::of(region), *extent)),
+            },
+            made,
+        ));
+        made
     }
 
     fn read_queries(&mut self, set: &Id, first: u32, count: u32) -> Result<Id, GpuError> {
-        self.log(format!("read_queries {} {first}+{count}", set.0));
-        let results = match self.obj(*set) {
-            Ok(Obj::QuerySet { results, .. }) => results
-                .get(first as usize..(first + count) as usize)
-                .map(|r| r.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()),
-            _ => None,
-        };
-        match results {
-            Some(bytes) if self.pass.is_none() => Ok(self.readback(bytes)),
-            _ => {
-                self.violate("read_queries of a range outside a live set, or inside a pass");
-                Err(GpuError::Invalid("read_queries refused"))
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let results = match self.obj(*set) {
+                Ok(Obj::QuerySet { results, .. }) => results
+                    .get(first as usize..(first + count) as usize)
+                    .map(|r| r.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()),
+                _ => None,
+            };
+            match results {
+                Some(bytes) if self.pass.is_none() => Ok(self.readback(bytes)),
+                _ => {
+                    self.violate("read_queries of a range outside a live set, or inside a pass");
+                    Err(GpuError::Invalid("read_queries refused"))
+                }
             }
-        }
+        })();
+        self.nested -= 1;
+        self.log(Call::ReadQueries(*set, first, count, made));
+        made
     }
 
     fn read_state(&mut self, readback: &Id) -> ReadState {
@@ -1296,39 +1578,54 @@ impl Backend for Recorder {
     }
 
     fn wait_read(&mut self, readback: &Id) {
+        self.log(Call::WaitRead(*readback));
         if self.read_state(readback) == ReadState::Pending {
+            self.nested += 1;
             self.submit();
+            self.nested -= 1;
+        }
+        if let Ok(&Obj::Readback { ready_at, .. }) = self.obj(*readback) {
+            self.touched.retain(|t| t.3 > ready_at);
         }
     }
 
     fn finish_read(&mut self, readback: Id, dst: &mut [u8]) {
-        self.log(format!("finish_read {}", readback.0));
-        if self.read_state(&readback) == ReadState::Pending {
-            return self.violate("finish_read of a read back that is not ready");
-        }
-        let Some(Some(Obj::Readback { bytes, .. })) =
-            self.objects.get_mut(readback.0 as usize).map(Option::take)
-        else {
-            return self.violate("finish_read of an object that is not a read back");
-        };
-        if dst.len() != bytes.len() {
-            return self.violate(format!(
-                "finish_read into {} bytes of a {}-byte read back",
-                dst.len(),
-                bytes.len()
-            ));
-        }
-        dst.copy_from_slice(&bytes);
+        #[allow(clippy::redundant_closure_call)]
+        (|| {
+            if self.read_state(&readback) == ReadState::Pending {
+                return self.violate("finish_read of a read back that is not ready");
+            }
+            let Some(Some(Obj::Readback { bytes, .. })) =
+                self.objects.get_mut(readback.0 as usize).map(Option::take)
+            else {
+                return self.violate("finish_read of an object that is not a read back");
+            };
+            if dst.len() != bytes.len() {
+                return self.violate(format!(
+                    "finish_read into {} bytes of a {}-byte read back",
+                    dst.len(),
+                    bytes.len()
+                ));
+            }
+            dst.copy_from_slice(&bytes);
+        })();
+        self.log(Call::FinishRead(readback, dst.to_vec()));
     }
 
     fn create_surface(&mut self, window: u32) -> Result<Id, GpuError> {
-        let id = self.add(Obj::Surface(SurfaceObj {
-            window,
-            config: None,
-            current: None,
-        }));
-        self.log(format!("create_surface {} window {window}", id.0));
-        Ok(id)
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let id = self.add(Obj::Surface(SurfaceObj {
+                window,
+                config: None,
+                current: None,
+            }));
+            Ok(id)
+        })();
+        self.nested -= 1;
+        self.log(Call::CreateSurface(window, made));
+        made
     }
 
     fn configure_surface(
@@ -1339,107 +1636,123 @@ impl Backend for Recorder {
         height: u32,
         vsync: bool,
     ) -> Result<(), GpuError> {
-        self.log(format!(
-            "configure_surface {} {format:?} {width}x{height} vsync {vsync}",
-            surface.0
-        ));
-        if !self.caps.formats.get(format).contains(FormatUse::PRESENT) {
-            return Err(GpuError::Invalid("surface format without PRESENT"));
-        }
-        match self
-            .objects
-            .get_mut(surface.0 as usize)
-            .and_then(Option::as_mut)
-        {
-            Some(Obj::Surface(s)) => {
-                s.config = Some((format, width, height));
-                Ok(())
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<(), GpuError> {
+            if !self.caps.formats.get(format).contains(FormatUse::PRESENT) {
+                return Err(GpuError::Invalid("surface format without PRESENT"));
             }
-            _ => Err(GpuError::Invalid(
-                "configure_surface of an object that is not a surface",
-            )),
-        }
+            match self
+                .objects
+                .get_mut(surface.0 as usize)
+                .and_then(Option::as_mut)
+            {
+                Some(Obj::Surface(s)) => {
+                    s.config = Some((format, width, height));
+                    Ok(())
+                }
+                _ => Err(GpuError::Invalid(
+                    "configure_surface of an object that is not a surface",
+                )),
+            }
+        })();
+        self.log(Call::ConfigureSurface(
+            *surface, format, width, height, vsync, made,
+        ));
+        made
     }
 
     fn current_texture(&mut self, surface: &Id) -> Result<Id, GpuError> {
-        let config = match self.obj(*surface) {
-            Ok(Obj::Surface(s)) => s.config,
-            _ => {
-                return Err(GpuError::Invalid(
-                    "current_texture of an object that is not a surface",
-                ));
-            }
-        };
-        let (format, width, height) = config.ok_or(GpuError::Invalid(
-            "current_texture of an unconfigured surface",
-        ))?;
-        let desc = TextureDesc {
-            dimension: TextureDimension::D2,
-            format,
-            width,
-            height,
-            depth_or_layers: 1,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::RENDER | TextureUsage::COPY_DST | TextureUsage::PRESENT,
-            cube: false,
-            reinterpret: false,
-        };
-        let texture = self.create_texture(&desc)?;
-        let view = self.create_view(
-            &texture,
-            &TextureViewDesc {
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<Id, GpuError> {
+            let config = match self.obj(*surface) {
+                Ok(Obj::Surface(s)) => s.config,
+                _ => {
+                    return Err(GpuError::Invalid(
+                        "current_texture of an object that is not a surface",
+                    ));
+                }
+            };
+            let (format, width, height) = config.ok_or(GpuError::Invalid(
+                "current_texture of an unconfigured surface",
+            ))?;
+            let desc = TextureDesc {
+                dimension: TextureDimension::D2,
                 format,
-                dimension: ViewDimension::D2,
-                base_mip: 0,
-                mip_count: 1,
-                base_layer: 0,
-                layer_count: 1,
-                stencil: false,
-            },
-        )?;
-        if let Some(Some(Obj::Surface(s))) = self.objects.get_mut(surface.0 as usize) {
-            s.current = Some((texture, view));
-        }
-        Ok(view)
+                width,
+                height,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_DST | TextureUsage::PRESENT,
+                cube: false,
+                reinterpret: false,
+            };
+            let texture = self.create_texture(&desc)?;
+            let view = self.create_view(
+                &texture,
+                &TextureViewDesc {
+                    format,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )?;
+            if let Some(Some(Obj::Surface(s))) = self.objects.get_mut(surface.0 as usize) {
+                s.current = Some((texture, view));
+            }
+            Ok(view)
+        })();
+        self.nested -= 1;
+        self.log(Call::CurrentTexture(*surface, made));
+        made
     }
 
     fn present(&mut self, surface: &Id) -> Result<(), GpuError> {
-        self.log(format!("present {}", surface.0));
-        let (window, config, current) = match self
-            .objects
-            .get_mut(surface.0 as usize)
-            .and_then(Option::as_mut)
-        {
-            Some(Obj::Surface(s)) => (s.window, s.config, s.current.take()),
-            _ => {
-                return Err(GpuError::Invalid(
-                    "present of an object that is not a surface",
-                ));
+        self.nested += 1;
+        #[allow(clippy::redundant_closure_call)]
+        let made = (|| -> Result<(), GpuError> {
+            let (window, config, current) = match self
+                .objects
+                .get_mut(surface.0 as usize)
+                .and_then(Option::as_mut)
+            {
+                Some(Obj::Surface(s)) => (s.window, s.config, s.current.take()),
+                _ => {
+                    return Err(GpuError::Invalid(
+                        "present of an object that is not a surface",
+                    ));
+                }
+            };
+            let (Some((format, width, height)), Some((texture, view))) = (config, current) else {
+                self.violate("present without a current texture");
+                return Err(GpuError::Invalid("present without a current texture"));
+            };
+            if self.pass.is_some() {
+                self.violate("present inside a pass");
             }
-        };
-        let (Some((format, width, height)), Some((texture, view))) = (config, current) else {
-            self.violate("present without a current texture");
-            return Err(GpuError::Invalid("present without a current texture"));
-        };
-        if self.pass.is_some() {
-            self.violate("present inside a pass");
-        }
-        let bytes = self
-            .texture(texture)
-            .map(|t| t.subresources[0].clone())
-            .unwrap_or_default();
-        self.shown.push(Frame {
-            window,
-            format,
-            width,
-            height,
-            bytes,
-        });
-        self.objects[view.0 as usize] = None;
-        self.objects[texture.0 as usize] = None;
-        self.submit();
-        Ok(())
+            let bytes = self
+                .texture(texture)
+                .map(|t| t.subresources[0].clone())
+                .unwrap_or_default();
+            self.shown.push(Frame {
+                window,
+                format,
+                width,
+                height,
+                bytes,
+            });
+            self.objects[view.0 as usize] = None;
+            self.objects[texture.0 as usize] = None;
+            self.submit();
+            Ok(())
+        })();
+        self.nested -= 1;
+        self.log(Call::Present(*surface, made));
+        made
     }
 }
 

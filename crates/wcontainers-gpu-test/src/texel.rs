@@ -218,3 +218,20 @@ pub fn stencil_byte(format: Format) -> Option<usize> {
         _ => None,
     }
 }
+
+/// The typeless group of a format: the formats whose texels are the same bits seen differently
+/// (Direct3D's typeless groups, such as `R8G8B8A8_UNORM` and `R8G8B8A8_UINT`, or `R32_FLOAT` and
+/// `D32_FLOAT`), between which copies move texels.
+pub fn bits_group(format: Format) -> String {
+    let name = format!("{format:?}");
+    let name = match name.as_str() {
+        "Depth32Float" => "R32Float",
+        "Depth16Unorm" => "R16Unorm",
+        n => n,
+    };
+    ["UnormSrgb", "Unorm", "Snorm", "Uint", "Sint", "Float"]
+        .iter()
+        .find_map(|s| name.strip_suffix(s))
+        .unwrap_or(name)
+        .into()
+}

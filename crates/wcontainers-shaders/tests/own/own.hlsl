@@ -1,4 +1,4 @@
-// Five small shaders written for the shaders crate's own check, compiled by fxc on the desktop:
+// Six small shaders written for the shaders crate's own check, compiled by fxc on the desktop:
 //   fxc /nologo /T vs_5_0 /E vs_transform /Fo vs_transform.dxbc own.hlsl   (and so on for each)
 
 cbuffer Camera : register(b0) {
@@ -59,4 +59,10 @@ float4 ps_loop(VsOut i) : SV_Target0 {
 float4 vs_fullscreen(uint id : SV_VertexID) : SV_Position {
     float2 uv = float2((id << 1) & 2, id & 2);
     return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+
+// A colour from the pixel's window position, for drawing with the full-screen triangle.
+float4 ps_window(float4 position : SV_Position) : SV_Target0 {
+    float2 cell = frac(position.xy / 16.0);
+    return float4(cell, position.x > position.y ? 1.0 : 0.25, 1.0);
 }
