@@ -151,6 +151,31 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
     verdicts were rerun (80 of 95 compile; plan 6.3). dxil-spirv's `bc` attribution corrected.
   - 79 slow path reasons. 28 tests (three new: query resolve default, separate rings, 8-bit indices).
 
+- G0, run 7 (2026-11-17): every finding of the sixth independent check fixed:
+  - Vertex and instance numbers: the common form's `vertex_index` and `instance_index` include the
+    draw's bases (as WebGPU and Vulkan count them; `DrawRange` doc, plan 4.4, 4.12). `SV_VertexID`,
+    `SV_InstanceID`, `gl_InstanceID`, `gl_BaseVertex`, `gl_BaseInstance` and `gl_DrawID` read the bases
+    through `VariantKey::draw_base`: from `HelperValue::DrawBase` for direct draws
+    (`DrawBaseInHelpers`), from the argument buffer at `DRAW_ARGUMENTS_BINDING` for indirect ones on
+    WebGPU (`DrawBaseFromArguments`). WebGL 2 keeps the promise under `BaseVertexRebind` with naga's
+    `naga_vs_first_instance` and a `naga_vs_base_vertex` uniform G6 adds to naga's GLSL writer.
+    `SystemValue` gained `BaseVertex`, `BaseInstance`, `DrawIndex`.
+  - Typed storage stores on formats WebGPU stores into only with `texture-formats-tier1`: the atomics
+    route generalised (`VariantKey::texels_through_buffer`, renamed from `atomics_through_buffer`; new
+    `StorageFormatThroughBuffer`). Video and packed formats: `Format::Rgbg8Unorm` and `Grgb8Unorm`
+    (decoded, `BlockDecoded`); `NV12`, `YUY2`, `420_OPAQUE` built by the front from ordinary textures;
+    no video device (plan 4.12, 9).
+  - Copies between multisampled textures on WebGL 2: `MultisampleCopyResolved`, a listed loss.
+  - Direct3D 12 placed resources: own storage each, with the defined inheritance cases (overlapping
+    buffers; identically described textures at one offset) made exact by copies before use
+    (`AliasCopied`, plan 5.2).
+  - Alpha-antialiased lines: `AntialiasedLinesAsQuads`, `VariantFlags::LINE_COVERAGE` (plan 4.12, 7).
+  - Depth and stencil read back on WebGL 2 by `DepthReadByDraw`; partial `Discard` on WebGL 2 orphans the
+    whole buffer at its size; `CopyBufferRegion` within one buffer named; the fan walk is generic (no
+    `dyn` left in the crate); `generate_mips` builds and counts nothing when no level is drawn, and
+    counts `FilterInShader` per draw (new test).
+  - 85 slow path reasons. 29 tests.
+
 ## Partly done
 
 - Nothing in G0. Designed for G1, not in the crate yet: the pass tracker (plan 4.7), the occlusion
@@ -158,13 +183,13 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## Next
 
-- G0's independent check, again (the sixth).
+- G0's independent check, again (the seventh).
 - G1 to G6 as in plan section 12; they can run in parallel. G1 is short and every other milestone builds
   its tests on it, so start it first.
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (28 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (29 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
@@ -206,6 +231,10 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   Chrome's WebGL 2 with every offered extension enabled: 80 compiled, 15 failed (7 bitfield, 6
   `textureGather`, 1 multisampled sampler, 1 naga writer bug on `gl_SampleID`'s type). WGSL unchanged
   (111 of 112). Counts, not timings. File: `corpus/dxbc-via-spv-chrome-run6.txt`.
+- Run 7 took no new measurements (load average 22.28, 26.71, 28.80 when its tests ran); facts it used
+  were read in Microsoft's format tables (`downloads/msdocs/`), the functional specification
+  (`downloads/d3d11spec/`, 3.4.4, 8.16, 8.18), the aliasing page (`check6/spec/aliasing.md`), the WebGPU
+  specification copy (`check-g0/spec/webgpu.bs`), naga 30.0.2's GLSL writer and dxil-spirv's source.
 - Run 3, on the Mac, load average 14.71, 16.16, 16.39: Chrome's adapter limits (plan 4.11), counts not
   timings. WebGPU: 16384 2D, 2048 3D and layers, 8 vertex buffers, 30 attributes, 12 uniform buffers, 10
   storage buffers, 48 sampled textures, 28 inter-stage slots, 64 immediate bytes, BC and BC sliced 3D
@@ -252,8 +281,15 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 - Multisample counts per format fall short of Microsoft's 10_1 and 11_0 format tables (8 samples on 47
   formats at 11_0; 4 samples on `R32_UINT` and others; on WebGPU adapters without
   `texture-formats-tier1`, the 16-bit normalised formats too). They are reported through the API's
-  per-format queries; no exact emulation exists. This is the one place reported answers fall short of a
-  level's table, and the owner should know.
+  per-format queries; no exact emulation exists. The owner should know.
+- The second shortfall against the format tables: the video abilities of `NV12`, `YUY2` and
+  `420_OPAQUE` (video decoder, video processor). The Direct3D 11 front offers no `ID3D11VideoDevice`;
+  the formats themselves are served (plan 4.12).
+- On WebGL 2, a copy between multisampled textures keeps only the source's resolved value in every
+  sample (`MultisampleCopyResolved`), a listed loss: no exact route exists there.
+- The common form never holds base vertex or base instance built-ins (WGSL has none); `vertex_index`
+  and `instance_index` include the bases, and API values that leave them out are made by a variant.
+  This needs a change to naga's GLSL writer (`naga_vs_base_vertex`) in our naga fork, sent upstream.
 - On WebGL 2 without OES_sample_variables (10.3% of WebGL 2 browsers, nearly all Firefox) the Direct3D
   fronts report no multisampling at all, because a partial sample mask has no route there. With it,
   4 samples as before.
