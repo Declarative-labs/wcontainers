@@ -50,6 +50,7 @@ macro_rules! suite {
             fragments_write_storage_buffers,
             multisampled_targets_cover_their_samples_and_resolve,
             programs_run_per_sample_and_read_samples,
+            occlusion_queries_answer_whether_samples_passed,
             present_shows_the_frame,
         );
     };

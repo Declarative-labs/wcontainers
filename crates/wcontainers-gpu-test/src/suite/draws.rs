@@ -1047,3 +1047,83 @@ pub fn programs_run_per_sample_and_read_samples<H: Host>() {
     assert_close(&got, &[0, 85, 170, 255].repeat(4), 0, 4, N as usize);
     ok(&mut b);
 }
+
+/// Occlusion queries of "any" kind answer non-zero where a sample passed and zero where none did (a
+/// quad drawn, a quad clipped away, no draw), read back by `read_queries` and written to a buffer at
+/// an offset by `resolve_queries`, alike.
+pub fn occlusion_queries_answer_whether_samples_passed<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let (_t, v) = rgba8_target(&mut b, N);
+    // On screen, then wholly right of it.
+    let vb = vertex_buffer(
+        &mut b,
+        &[
+            -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, //
+            2.0, -1.0, 2.0, 1.0, 3.0, -1.0, 3.0, 1.0,
+        ],
+    );
+    let p = program(&mut b, CONSTANT, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = b
+        .create_raster(&raster_desc(ProvokingVertex::First))
+        .expect("create_raster");
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let set = b
+        .create_query_set(QueryKind::OcclusionAny, 3)
+        .expect("create_query_set");
+    let mut pass = color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4]));
+    pass.occlusion = Some(&set);
+    b.begin_pass(&pass);
+    for (query, first) in [(0, Some(0)), (1, Some(4)), (2, None)] {
+        b.begin_query(query);
+        if let Some(first) = first {
+            b.draw(&call(
+                &p,
+                &bl,
+                &ds,
+                &rs,
+                &vl,
+                &streams,
+                &vp,
+                Topology::TriangleStrip,
+                vertices(first, 4),
+            ));
+        }
+        b.end_query();
+    }
+    b.end_pass();
+    let answers = |bytes: &[u8]| -> Vec<bool> {
+        bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c) != 0)
+            .collect()
+    };
+    let rb = b.read_queries(&set, 0, 3).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut out = [0u8; 24];
+    b.finish_read(rb, &mut out);
+    assert_eq!(answers(&out), [true, false, false], "read_queries");
+    let dst = buffer(&mut b, 40, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.write_buffer(&dst, 0, &[0xab; 40], WriteMode::Discard);
+    b.resolve_queries(&set, 0, 3, &dst, 8)
+        .expect("resolve_queries");
+    let got = read_buffer(&mut b, &dst, 0, 40);
+    assert_eq!(
+        answers(&got[8..32]),
+        [true, false, false],
+        "resolve_queries"
+    );
+    assert_eq!(&got[..8], [0xab; 8]);
+    assert_eq!(&got[32..], [0xab; 8]);
+    ok(&mut b);
+}
