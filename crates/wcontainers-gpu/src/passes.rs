@@ -164,7 +164,8 @@ struct Open {
     resolves: [Option<usize>; MAX_COLOR_TARGETS],
     /// The area every attachment covers, where it is smaller than the pass.
     common: Option<ScissorRect>,
-    /// Resources the pass's draws named as writable storage, and those they named any other way.
+    /// Resources the pass's draws named as writable storage, and those they named any other way,
+    /// each sorted.
     written: Vec<u64>,
     other: Vec<u64>,
     /// An occlusion query segment runs in this pass.
@@ -190,6 +191,7 @@ pub struct PassTracker<B: Backend> {
     open: Option<Open>,
     pool: Vec<Temporary<B>>,
     queries: Option<Queries<B>>,
+    generation: u64,
 }
 
 impl<B: Backend> Default for PassTracker<B> {
@@ -200,6 +202,7 @@ impl<B: Backend> Default for PassTracker<B> {
             open: None,
             pool: Vec::new(),
             queries: None,
+            generation: 0,
         }
     }
 }
@@ -208,6 +211,11 @@ impl<B: Backend> PassTracker<B> {
     /// The targets set, if any.
     pub fn targets(&self) -> Option<&PassTargets<B>> {
         self.targets.as_ref()
+    }
+
+    /// A number that changes whenever the targets are set or the depth-stencil target is cleared.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Whether a pass is open.
@@ -220,6 +228,7 @@ impl<B: Backend> PassTracker<B> {
         self.close(b)?;
         self.targets = Some(targets);
         self.ops = PassOps::LOAD_STORE;
+        self.generation += 1;
         Ok(())
     }
 
@@ -248,6 +257,7 @@ impl<B: Backend> PassTracker<B> {
         if self.open.is_some() {
             self.close(b)?;
         }
+        self.generation += 1;
         if let Some(d) = depth {
             self.ops.depth.load = LoadOp::Clear(d);
         }
@@ -267,6 +277,7 @@ impl<B: Backend> PassTracker<B> {
         self.close(b)?;
         self.targets = Some(targets);
         self.ops = ops;
+        self.generation += 1;
         self.open_pass(b)
     }
 
@@ -288,13 +299,16 @@ impl<B: Backend> PassTracker<B> {
         if self.open.is_none() {
             self.open_pass(b)?;
         } else if let Some(open) = &self.open {
-            let conflict = uses.iter().any(|u| {
-                if u.storage_write {
-                    open.other.contains(&u.resource)
-                } else {
-                    open.written.contains(&u.resource)
-                }
-            });
+            // Without storage writes in the pass or the draw, nothing conflicts.
+            let conflict = (!open.written.is_empty() || uses.iter().any(|u| u.storage_write))
+                && uses.iter().any(|u| {
+                    let list = if u.storage_write {
+                        &open.other
+                    } else {
+                        &open.written
+                    };
+                    list.binary_search(&u.resource).is_ok()
+                });
             if conflict {
                 b.slow_paths().hit(SlowPath::UsageScopeSplit);
                 self.close(b)?;
@@ -308,8 +322,8 @@ impl<B: Backend> PassTracker<B> {
             } else {
                 &mut open.other
             };
-            if !list.contains(&u.resource) {
-                list.push(u.resource);
+            if let Err(at) = list.binary_search(&u.resource) {
+                list.insert(at, u.resource);
             }
         }
         Ok(open.common)

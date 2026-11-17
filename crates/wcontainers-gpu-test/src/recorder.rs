@@ -165,7 +165,7 @@ impl Recorder {
             } else {
                 *u |= FormatUse::RENDER;
                 if !texel::integer(f) {
-                    *u |= FormatUse::FILTER | FormatUse::BLEND;
+                    *u |= FormatUse::FILTER | FormatUse::BLEND | FormatUse::RESOLVE;
                 }
             }
             if matches!(f, Format::Rgba8Unorm | Format::Bgra8Unorm) {
@@ -271,6 +271,12 @@ impl Recorder {
         )
     }
 
+    /// A live texture's bytes as held: its subresources in order, a multisampled one's samples as
+    /// consecutive planes.
+    pub fn texture_bytes(&self, texture: Id) -> Option<Vec<u8>> {
+        self.texture(texture).ok().map(|t| t.subresources.concat())
+    }
+
     fn add(&mut self, obj: Obj) -> Id {
         self.objects.push(Some(obj));
         Id(self.objects.len() as u32 - 1)
@@ -333,6 +339,18 @@ impl Recorder {
         }
     }
 
+    /// Checks a texture's format copies out into buffers.
+    fn copies_out(&self, id: Id) -> Result<(), String> {
+        let format = self.texture(id)?.desc.format;
+        if self.caps.formats.get(format).contains(FormatUse::COPY_OUT) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{format:?} copied out, which this back end does not declare"
+            ))
+        }
+    }
+
     pub(crate) fn texture(&self, id: Id) -> Result<&TextureObj, String> {
         match self.obj(id)? {
             Obj::Texture(t) => Ok(t),
@@ -368,8 +386,8 @@ impl Recorder {
         }
     }
 
-    /// The bytes of a texture region, rows of blocks tightly packed, layer after layer.
-    pub(crate) fn read_region(
+    /// The whole texels of a texture region, rows of blocks tightly packed, layer after layer.
+    fn read_texels(
         &self,
         region: &TextureRegion<'_, Self>,
         extent: Extent,
@@ -382,8 +400,79 @@ impl Recorder {
         Ok(out)
     }
 
-    /// Writes `data` (rows `row_pitch` apart, layers `rows_per_layer` rows apart) into a region.
+    /// The bytes of a texture region as a buffer copy or read back moves them: whole texels, or of
+    /// a format with depth and stencil the aspect the region names.
+    pub(crate) fn read_region(
+        &self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) -> Result<Vec<u8>, String> {
+        let format = self.texture(*region.texture)?.desc.format;
+        let texels = self.read_texels(region, extent)?;
+        if aspect_size(format, region.stencil)?.is_none() {
+            return Ok(texels);
+        }
+        let size = format.block().2 as usize;
+        let mut out = Vec::new();
+        for t in texels.chunks_exact(size) {
+            match (region.stencil, texel::stencil_byte(format)) {
+                (true, Some(at)) => out.push(t[at]),
+                // 24-bit depth in the low bits of a word.
+                (false, Some(3)) => out.extend_from_slice(&[t[0], t[1], t[2], 0]),
+                _ => out.extend_from_slice(&t[..4]),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Writes `data` (rows `row_pitch` apart, layers `rows_per_layer` rows apart) into a region: whole
+    /// texels, or of a format with depth and stencil the aspect the region names.
     pub(crate) fn write_region(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+        data: &[u8],
+        row_pitch: u32,
+        rows_per_layer: u32,
+    ) -> Result<(), String> {
+        let format = self.texture(*region.texture)?.desc.format;
+        let Some(n) = aspect_size(format, region.stencil)? else {
+            return self.write_texels(region, extent, data, row_pitch, rows_per_layer);
+        };
+        let row = extent.width as usize * n;
+        let rows = extent.height as usize;
+        let rows_per_layer = if rows_per_layer == 0 {
+            rows
+        } else {
+            rows_per_layer as usize
+        };
+        if rows_per_layer < rows || (row_pitch as usize) < row {
+            return Err("write or copy pitch smaller than the region".into());
+        }
+        let mut texels = self.read_texels(region, extent)?;
+        let size = format.block().2 as usize;
+        for (i, t) in texels.chunks_exact_mut(size).enumerate() {
+            let (layer, y, x) = (
+                i / (rows * extent.width as usize),
+                i / extent.width as usize % rows,
+                i % extent.width as usize,
+            );
+            let from = (layer * rows_per_layer + y) * row_pitch as usize + x * n;
+            let src = data
+                .get(from..from + n)
+                .ok_or("data shorter than the region")?;
+            match (region.stencil, texel::stencil_byte(format)) {
+                (true, Some(at)) => t[at] = src[0],
+                (false, Some(3)) => t[..3].copy_from_slice(&src[..3]),
+                _ => t[..4].copy_from_slice(src),
+            }
+        }
+        let pitch = extent.width * size as u32;
+        self.write_texels(region, extent, &texels, pitch, extent.height)
+    }
+
+    /// Writes whole texels, `data` rows `row_pitch` apart and layers `rows_per_layer` rows apart.
+    fn write_texels(
         &mut self,
         region: &TextureRegion<'_, Self>,
         extent: Extent,
@@ -519,7 +608,7 @@ impl Recorder {
                 if self.view(*r)?.desc.format != format {
                     return Err("a resolve target of another format than its attachment".into());
                 }
-                if !resolvable(format) {
+                if !self.caps.formats.get(format).contains(FormatUse::RESOLVE) {
                     return Err("a resolve of a format that cannot be averaged".into());
                 }
                 resolves.push((*c.view, *r));
@@ -664,6 +753,7 @@ impl Recorder {
             }
             ReadSource::Texture { region, extent } => {
                 self.texture_for(*region.texture, TextureUsage::COPY_SRC, "a read back")?;
+                self.copies_out(*region.texture)?;
                 self.read_region(region, *extent)
             }
         }
@@ -711,9 +801,16 @@ impl Recorder {
     }
 }
 
-/// Whether samples of `format` can be averaged by a resolve: colour formats that are not integers.
-fn resolvable(format: Format) -> bool {
-    !format.is_depth_stencil() && !texel::integer(format)
+/// Bytes per texel of the aspect a buffer copy or read back of a region of `format` moves, where the
+/// format has both depth and stencil: one for stencil, four for depth (32-bit float, or 24-bit unorm
+/// in the low bits of a word). None where the region moves whole texels.
+fn aspect_size(format: Format, stencil: bool) -> Result<Option<usize>, String> {
+    match texel::stencil_byte(format) {
+        Some(at) if at > 0 => Ok(Some(if stencil { 1 } else { 4 })),
+        Some(_) => Ok(None),
+        None if stencil => Err("a stencil region of a format without stencil".into()),
+        None => Ok(None),
+    }
 }
 
 /// Every format, in the order of [`Caps::formats`].
@@ -958,6 +1055,16 @@ impl Backend for Recorder {
                     "texture of a format this back end does not hold",
                 ));
             }
+            let render = FormatUse::RENDER | FormatUse::DEPTH_STENCIL;
+            if (desc.usage.contains(TextureUsage::RENDER) && !uses.intersects(render))
+                || (desc.usage.contains(TextureUsage::SAMPLE) && !uses.contains(FormatUse::SAMPLE))
+                || (desc.usage.contains(TextureUsage::STORAGE)
+                    && !uses.intersects(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE))
+            {
+                return Err(GpuError::Invalid(
+                    "a texture usage its format does not take",
+                ));
+            }
             if !self.caps.formats.takes_samples(desc.format, desc.samples) {
                 return Err(GpuError::Invalid(
                     "texture sample count the format does not take",
@@ -1024,6 +1131,16 @@ impl Backend for Recorder {
                 || desc.layer_count == 0
             {
                 return Err(GpuError::Invalid("view range outside the texture"));
+            }
+            // Without TEXTURE_VIEWS: views to draw into of one level and one layer or all layers,
+            // and views of all layers in the texture's own dimension.
+            let all_layers = desc.base_layer == 0 && desc.layer_count == layers(&t.desc);
+            let to_draw = desc.mip_count == 1 && (desc.layer_count == 1 || all_layers);
+            if !self.caps.features.contains(Features::TEXTURE_VIEWS)
+                && !to_draw
+                && !(all_layers && desc.dimension == t.desc.own_view())
+            {
+                return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
             }
             let id = self.add(Obj::View(ViewObj {
                 texture: *texture,
@@ -1103,21 +1220,35 @@ impl Backend for Recorder {
         self.nested += 1;
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
+            let has = self.caps.features;
             if desc.logic_op.is_some() {
                 return Err(GpuError::Absent(Features::LOGIC_OP));
             }
+            if !desc.same_for_all && !has.contains(Features::INDEPENDENT_BLEND) {
+                return Err(GpuError::Absent(Features::INDEPENDENT_BLEND));
+            }
+            let factors = || {
+                desc.targets
+                    .iter()
+                    .filter_map(|t| t.blend)
+                    .flat_map(|(c, a)| [c.src, c.dst, a.src, a.dst])
+            };
             let second_source = |f: BlendFactor| {
                 use BlendFactor::*;
                 matches!(f, Src1 | OneMinusSrc1 | Src1Alpha | OneMinusSrc1Alpha)
             };
-            if desc
-                .targets
-                .iter()
-                .filter_map(|t| t.blend)
-                .flat_map(|(c, a)| [c.src, c.dst, a.src, a.dst])
-                .any(second_source)
-            {
+            if factors().any(second_source) {
                 return Err(GpuError::Absent(Features::DUAL_SOURCE_BLEND));
+            }
+            if !has.contains(Features::BLEND_CONSTANT_ALPHA)
+                && factors().any(|f| {
+                    matches!(
+                        f,
+                        BlendFactor::ConstantAlpha | BlendFactor::OneMinusConstantAlpha
+                    )
+                })
+            {
+                return Err(GpuError::Absent(Features::BLEND_CONSTANT_ALPHA));
             }
             let id = self.add(Obj::Blend(Box::new(*desc)));
             Ok(id)
@@ -1133,6 +1264,12 @@ impl Backend for Recorder {
         let made = (|| -> Result<Id, GpuError> {
             if desc.depth_bounds.is_some() {
                 return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
+            }
+            if (desc.stencil_read_mask[0] != desc.stencil_read_mask[1]
+                || desc.stencil_write_mask[0] != desc.stencil_write_mask[1])
+                && !self.caps.features.contains(Features::STENCIL_PER_FACE)
+            {
+                return Err(GpuError::Absent(Features::STENCIL_PER_FACE));
             }
             let id = self.add(Obj::DepthStencil(*desc));
             Ok(id)
@@ -1154,6 +1291,44 @@ impl Backend for Recorder {
             }
             if desc.depth_minus_one {
                 return Err(GpuError::Absent(Features::CLIP_DEPTH_MINUS_ONE));
+            }
+            let has = self.caps.features;
+            let needs = [
+                (
+                    !has.contains(Features::CLIP_DEPTH_ZERO_ONE),
+                    Features::CLIP_DEPTH_ZERO_ONE,
+                ),
+                (
+                    desc.provoking == ProvokingVertex::First
+                        && !has.contains(Features::PROVOKING_VERTEX_FIRST),
+                    Features::PROVOKING_VERTEX_FIRST,
+                ),
+                (
+                    desc.provoking == ProvokingVertex::Last
+                        && !has.contains(Features::PROVOKING_VERTEX_LAST),
+                    Features::PROVOKING_VERTEX_LAST,
+                ),
+                (
+                    f32::from_bits(desc.line_width) != 1.0 && !has.contains(Features::WIDE_LINES),
+                    Features::WIDE_LINES,
+                ),
+                (
+                    f32::from_bits(desc.depth_bias_clamp) != 0.0
+                        && !has.contains(Features::DEPTH_BIAS_CLAMP),
+                    Features::DEPTH_BIAS_CLAMP,
+                ),
+                (
+                    f32::from_bits(desc.depth_bias).fract() != 0.0
+                        && !has.contains(Features::FRACTIONAL_DEPTH_BIAS),
+                    Features::FRACTIONAL_DEPTH_BIAS,
+                ),
+                (
+                    desc.sample_mask != !0 && !has.contains(Features::SAMPLE_MASK),
+                    Features::SAMPLE_MASK,
+                ),
+            ];
+            if let Some(&(_, f)) = needs.iter().find(|(missing, _)| *missing) {
+                return Err(GpuError::Absent(f));
             }
             let id = self.add(Obj::Raster(*desc));
             Ok(id)
@@ -1180,7 +1355,72 @@ impl Backend for Recorder {
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
             let mut set = Vec::new();
+            let (limits, has) = (self.caps.limits, self.caps.features);
             for e in entries {
+                let range = match e.resource {
+                    BindingResource::UniformBuffer(r) => Some((
+                        r,
+                        limits.min_uniform_offset_alignment,
+                        u64::from(limits.max_uniform_buffer_size),
+                    )),
+                    BindingResource::StorageBuffer { range: r, .. } => Some((
+                        r,
+                        limits.min_storage_offset_alignment,
+                        limits.max_storage_buffer_size,
+                    )),
+                    _ => None,
+                };
+                if let Some((r, align, max)) = range {
+                    if !r.offset.is_multiple_of(u64::from(align)) {
+                        return Err(GpuError::Invalid(
+                            "a buffer binding at an offset off the limit's alignment",
+                        ));
+                    }
+                    if r.size > max {
+                        return Err(GpuError::Invalid("a buffer binding larger than the limit"));
+                    }
+                    if self
+                        .buffer(*r.buffer)
+                        .is_ok_and(|b| r.offset + r.size > b.bytes.len() as u64)
+                    {
+                        return Err(GpuError::Invalid("a buffer binding past the buffer's end"));
+                    }
+                }
+                if let BindingResource::StorageBuffer { writable: true, .. } = e.resource
+                    && e.stages.contains(StageSet::FRAGMENT)
+                    && !has.contains(Features::FRAGMENT_STORAGE_WRITE)
+                {
+                    return Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE));
+                }
+                if let BindingResource::StorageBuffer {
+                    writable: false, ..
+                } = e.resource
+                    && e.stages.contains(StageSet::VERTEX)
+                    && !has.contains(Features::VERTEX_STORAGE_READ)
+                {
+                    return Err(GpuError::Absent(Features::VERTEX_STORAGE_READ));
+                }
+                if let BindingResource::Texture(v) = e.resource
+                    && !has.contains(Features::TEXTURE_VIEWS)
+                    && self.view(*v).is_ok_and(|v| {
+                        self.texture(v.texture).is_ok_and(|t| {
+                            v.desc.dimension != t.desc.own_view()
+                                || v.desc.base_layer != 0
+                                || v.desc.layer_count != layers(&t.desc)
+                        })
+                    })
+                {
+                    return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
+                }
+                if let BindingResource::Texture(v) = e.resource
+                    && self
+                        .view(*v)
+                        .and_then(|v| self.texture(v.texture))
+                        .is_ok_and(|t| t.desc.samples > 1)
+                    && !has.contains(Features::MULTISAMPLE_READ)
+                {
+                    return Err(GpuError::Absent(Features::MULTISAMPLE_READ));
+                }
                 let bound = match e.resource {
                     BindingResource::UniformBuffer(r)
                         if !self
@@ -1476,7 +1716,12 @@ impl Backend for Recorder {
                 r.texture_mut(*dst.texture)?.subresources[0] = bytes;
                 return Ok(());
             }
-            let bytes = r.read_region(src, extent)?;
+            if (src.stencil || dst.stencil) && aspect_size(sf, true)?.is_some() {
+                return Err(
+                    "a copy between textures naming one aspect of depth and stencil".into(),
+                );
+            }
+            let bytes = r.read_texels(src, extent)?;
             let (bw, bh, size) = sf.block();
             let pitch = extent.width.div_ceil(bw) * size;
             // The destination's extent in its own blocks.
@@ -1486,7 +1731,7 @@ impl Backend for Recorder {
                 height: extent.height.div_ceil(bh) * dbh,
                 depth_or_layers: extent.depth_or_layers,
             };
-            r.write_region(dst, dst_extent, &bytes, pitch, extent.height.div_ceil(bh))
+            r.write_texels(dst, dst_extent, &bytes, pitch, extent.height.div_ceil(bh))
         });
     }
 
@@ -1504,7 +1749,9 @@ impl Backend for Recorder {
         self.check(|r| {
             r.outside_pass("copy_buffer_to_texture")?;
             r.buffer_for(*src.buffer, BufferUsage::COPY_SRC, "copy_buffer_to_texture")?;
-            let (bw, bh, size) = r.texture(*dst.texture)?.desc.format.block();
+            let format = r.texture(*dst.texture)?.desc.format;
+            let (bw, bh, size) = format.block();
+            let size = aspect_size(format, dst.stencil)?.map_or(size, |n| n as u32);
             let rows = u64::from(extent.height.div_ceil(bh));
             let pitch = u64::from(src.row_pitch);
             let rows_per_layer = u64::from(src.rows_per_layer).max(rows);
@@ -1546,9 +1793,11 @@ impl Backend for Recorder {
                 "copy_texture_to_buffer",
             )?;
             r.buffer_for(*dst.buffer, BufferUsage::COPY_DST, "copy_texture_to_buffer")?;
+            r.copies_out(*src.texture)?;
             let bytes = r.read_region(src, extent)?;
             let format = r.texture(*src.texture)?.desc.format;
             let (bw, bh, size) = format.block();
+            let size = aspect_size(format, src.stencil)?.map_or(size, |n| n as u32);
             let len = (extent.width.div_ceil(bw) * size) as usize;
             let rows = extent.height.div_ceil(bh) as usize;
             let rows_per_layer = if dst.rows_per_layer == 0 {
@@ -1624,7 +1873,7 @@ impl Backend for Recorder {
                     "a resolve between formats other than one format and its sRGB twin".into(),
                 );
             }
-            if !resolvable(format) {
+            if !r.caps.formats.get(format).contains(FormatUse::RESOLVE) {
                 return Err("a resolve of a format that cannot be averaged".into());
             }
             if dst.mip >= d.mip_levels

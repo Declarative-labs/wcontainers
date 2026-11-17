@@ -561,3 +561,378 @@ pub fn depth_and_stencil_read_back<H: Host>() {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// Fetches the stencil under each fragment through a stencil view.
+const STENCIL_FETCH: &str = "
+@group(0) @binding(32) var s: texture_2d<u32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<u32> {
+    return vec4<u32>(textureLoad(s, vec2<i32>(p.xy), 0).r, 0u, 0u, 0u);
+}
+";
+
+/// The stencil of a depth-stencil texture, sampled through a stencil view and read back, twice (the
+/// second time after the stencil changed): every pixel holds its own value, so each bit is seen set
+/// and clear. Each host runs it with and without WEBGL_stencil_texturing; the answers must not differ.
+pub fn stencil_sampled_and_read_back<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, STENCIL_FETCH, "vs", "fs");
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        Format::R32Uint,
+        [4, 4, 1],
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, Format::R32Uint, 0, 0);
+    let viewports = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
+        let uses = b.caps().formats.get(format);
+        assert!(
+            uses.contains(FormatUse::SAMPLE | FormatUse::COPY_OUT),
+            "{format:?} samples and reads back on every route"
+        );
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 4, 1],
+            1,
+            TextureUsage::RENDER | TextureUsage::SAMPLE | TextureUsage::COPY_SRC,
+            false,
+        );
+        let target = kit::target(&mut b, &t, format, 0, 0);
+        let stencil = b
+            .create_view(
+                &t,
+                &TextureViewDesc {
+                    format,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: true,
+                },
+            )
+            .expect("create_view of the stencil");
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&stencil),
+            }])
+            .expect("create_binding_set");
+        for round in 0..2u32 {
+            let value = |p: u32| (p * 17 + round * 101 + 3) as u8;
+            for p in 0..16 {
+                b.clear_rects(
+                    &target,
+                    format,
+                    ClearValue::DepthStencil {
+                        depth: None,
+                        stencil: Some(value(p)),
+                    },
+                    &[ScissorRect {
+                        x: p % 4,
+                        y: p / 4,
+                        width: 1,
+                        height: 1,
+                    }],
+                )
+                .expect("clear_rects");
+            }
+            let want: Vec<u8> = (0..16).map(value).collect();
+            let read = kit::read(&mut b, &t, 0, 0, [4, 4, 1], 1, true);
+            assert_eq!(read, want, "{format:?}: stencil read back, round {round}");
+            b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &viewports,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            let sampled: Vec<u8> = kit::read(&mut b, &out, 0, 0, [4, 4, 1], 4, false)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w) as u8)
+                .collect();
+            assert_eq!(
+                sampled,
+                want,
+                "{format:?}: stencil sampled, round {round} (device {:?})",
+                b.status()
+            );
+        }
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(stencil));
+        b.destroy(Object::TextureView(target));
+        b.destroy(Object::Texture(t));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Bytes of every value, from a fixed xorshift sequence: floats among them hit NaNs, infinities and
+/// denormals.
+fn pattern(len: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect()
+}
+
+/// Copies between formats of one typeless group keep every byte: a region of two layers of a 2D
+/// array texture written with every bit pattern is copied into a texture of the other format at
+/// another place, and read back. Pairs whose destination does not read back here are skipped; so is a
+/// pair whose formats the back end lacks.
+pub fn copies_within_a_typeless_group<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let pairs = [
+        (Format::Rgba8Unorm, Format::Rgba8Uint),
+        (Format::Rgba8Uint, Format::Rgba8Unorm),
+        (Format::Rgba8Uint, Format::Rgba8Sint),
+        (Format::Rgba8Sint, Format::Rgba8Unorm),
+        (Format::Rg16Float, Format::Rg16Uint),
+        (Format::Rg16Sint, Format::Rg16Uint),
+        (Format::Rg16Uint, Format::Rg16Float),
+        (Format::R32Float, Format::R32Uint),
+        (Format::R32Uint, Format::R32Float),
+        (Format::R32Sint, Format::R32Uint),
+        (Format::Rgba32Float, Format::Rgba32Sint),
+        (Format::Rgba32Uint, Format::Rgba32Float),
+        (Format::Rgba8Unorm, Format::Rgba8UnormSrgb),
+        (Format::Rgba8UnormSrgb, Format::Rgba8Uint),
+    ];
+    let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    for (i, (from, to)) in pairs.into_iter().enumerate() {
+        let caps = &b.caps().formats;
+        if caps.get(from).is_empty() || !caps.get(to).contains(FormatUse::COPY_OUT) {
+            continue;
+        }
+        let texel = from.block().2 as usize;
+        let make = |b: &mut H::Backend, format| {
+            kit::texture(b, TextureDimension::D2, format, [4, 4, 2], 1, usage, false)
+        };
+        let src = make(&mut b, from);
+        let dst = make(&mut b, to);
+        let bytes = pattern(32 * texel, 0x9e37_79b9 ^ i as u32);
+        let region = |texture, x, y| TextureRegion {
+            texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin { x, y, z: 0 },
+            stencil: false,
+        };
+        let whole = Extent {
+            width: 4,
+            height: 4,
+            depth_or_layers: 2,
+        };
+        b.write_texture(
+            &region(&src, 0, 0),
+            whole,
+            &bytes,
+            4 * texel as u32,
+            4,
+            WriteMode::Ordered,
+        );
+        b.write_texture(
+            &region(&dst, 0, 0),
+            whole,
+            &vec![0; 32 * texel],
+            4 * texel as u32,
+            4,
+            WriteMode::Ordered,
+        );
+        // Three by two texels from (1, 1) to (0, 2), in both layers.
+        let part = Extent {
+            width: 3,
+            height: 2,
+            depth_or_layers: 2,
+        };
+        b.copy_texture(&region(&src, 1, 1), &region(&dst, 0, 2), part);
+        let got = kit::read(&mut b, &dst, 0, 0, [4, 4, 2], texel, false);
+        let mut want = vec![0u8; 32 * texel];
+        for layer in 0..2 {
+            for y in 0..2 {
+                for x in 0..3 {
+                    let at = |x: usize, y: usize| (layer * 16 + y * 4 + x) * texel;
+                    let (s, d) = (at(x + 1, y + 1), at(x, y + 2));
+                    want[d..d + texel].copy_from_slice(&bytes[s..s + texel]);
+                }
+            }
+        }
+        assert_eq!(got, want, "{from:?} to {to:?} (device {:?})", b.status());
+        b.destroy(Object::Texture(src));
+        b.destroy(Object::Texture(dst));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Loads the texel at the fragment from level `l` of the view, and asks that level's width.
+const LEVEL_LOAD: &str = "
+@group(0) @binding(32) var t: texture_2d<u32>;
+@group(0) @binding(0) var<uniform> l: vec4<u32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<u32> {
+    let level = i32(l.x);
+    return vec4<u32>(textureLoad(t, vec2<i32>(p.xy), level).x, textureDimensions(t, level).x, 0u, 0u);
+}
+";
+
+/// Loads and sizes count levels from the view's first, as WGSL's `textureLoad` and
+/// `textureDimensions` do: each level of an `rgba8uint` texture holds its own number, and views
+/// starting at each level are loaded and sized at each of their levels.
+pub fn loads_count_levels_from_the_view<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LEVEL_LOAD, "vs", "fs");
+    let f = Format::Rgba8Uint;
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 3, usage, false);
+    for mip in 0..3u32 {
+        let n = 4 >> mip;
+        b.write_texture(
+            &TextureRegion {
+                texture: &t,
+                mip,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: n,
+                height: n,
+                depth_or_layers: 1,
+            },
+            &vec![mip as u8; (n * n * 4) as usize],
+            n * 4,
+            n,
+            WriteMode::Ordered,
+        );
+    }
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(&mut b, TextureDimension::D2, f, [1, 1, 1], 1, usage, false);
+    let out_view = kit::target(&mut b, &out, f, 0, 0);
+    let params = b
+        .create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            intent: MapIntent::Often,
+        })
+        .expect("create_buffer");
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    for base in 0..3u32 {
+        let view = kit::view(&mut b, &t, f, ViewDimension::D2, base, 3 - base, 0, 1);
+        let set = b
+            .create_binding_set(&[
+                BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&view),
+                },
+                BindingEntry {
+                    binding: 0,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &params,
+                        offset: 0,
+                        size: 16,
+                    }),
+                },
+            ])
+            .expect("create_binding_set");
+        for level in 0..3 - base {
+            let mut word = [0u8; 16];
+            word[0] = level as u8;
+            b.write_buffer(&params, 0, &word, WriteMode::Discard);
+            b.begin_pass(&kit::pass(&out_view, [9; 4], None));
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &vp,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+            let at = base + level;
+            assert_eq!(
+                got,
+                vec![at as u8, 4 >> at, 0, 0],
+                "level {level} of the view from level {base}: its number and width"
+            );
+        }
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(view));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A triangle covering the target, writing 1.
+const WRITE_ONE: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<u32> {
+    return vec4<u32>(1u);
+}
+";
+
+/// Without `FRACTIONAL_VIEWPORT` a draw with a viewport at a fraction of a pixel breaks the
+/// interface's rule: the device is lost rather than the viewport rounded.
+pub fn fractional_viewports_are_refused<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if b.caps().has(Features::FRACTIONAL_VIEWPORT) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
+    let f = Format::R32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let fraction = [kit::viewport(0.5, 0.0, 3.0, 4.0)];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &whole,
+        Topology::TriangleList,
+        3,
+    ));
+    assert_eq!(b.status(), DeviceStatus::Ok, "a whole-pixel viewport draws");
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &fraction,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error));
+}

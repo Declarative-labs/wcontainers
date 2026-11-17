@@ -1,7 +1,5 @@
 //! What a front call answers when it does not succeed, in the API's own terms.
 
-use wcontainers_gpu::GpuError;
-
 /// Why a call failed. The shell turns each into the HRESULT the API documents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -13,17 +11,10 @@ pub enum Error {
     Unsupported,
     /// The resource cannot be mapped now without waiting (`DXGI_ERROR_WAS_STILL_DRAWING`).
     StillDrawing,
+    /// The back end has no memory for the object (`E_OUTOFMEMORY`).
+    OutOfMemory,
     /// The device is lost (`DXGI_ERROR_DEVICE_REMOVED`).
     DeviceRemoved,
-}
-
-impl From<GpuError> for Error {
-    fn from(e: GpuError) -> Self {
-        match e {
-            GpuError::Absent(_) => Error::NotImplemented("a feature the back end lacks"),
-            _ => Error::DeviceRemoved,
-        }
-    }
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

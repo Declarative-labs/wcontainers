@@ -1,6 +1,5 @@
 //! A small Direct3D 11 program asking for what the front does not serve yet: a geometry shader, a 3D
-//! texture, a structured buffer, and a draw whose pixel shader samples a slot nothing is bound to
-//! (Direct3D reads zeros there). Prints what each call answered, as `<call> <hresult>`, and the device's
+//! texture, a structured buffer, and a draw blending with the pixel shader's second output. Prints what each call answered, as `<call> <hresult>`, and the device's
 //! removal reason after the draw; real Direct3D answers 0 to all of them.
 
 #[cfg(windows)]
@@ -16,7 +15,7 @@ fn main() -> windows::core::Result<()> {
     const VS: &[u8] =
         include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/msaa.vs_full.dxbc");
     const PS: &[u8] =
-        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/textures.ps_load.dxbc");
+        include_bytes!("../../wcontainers-graphics-test/shaders/dxbc/blend.ps_dual.dxbc");
 
     let code = |r: windows::core::Result<()>| r.err().map_or(0, |e| e.code().0) as u32;
     let (mut device, mut context) = (None, None);
@@ -80,8 +79,21 @@ fn main() -> windows::core::Result<()> {
         BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
         ..Default::default()
     };
-    let (mut target, mut rtv, mut vs, mut ps) = (None, None, None, None);
+    let (mut target, mut rtv, mut vs, mut ps, mut blend) = (None, None, None, None, None);
+    let mut blend_desc = D3D11_BLEND_DESC::default();
+    blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: true.into(),
+        SrcBlend: D3D11_BLEND_ONE,
+        DestBlend: D3D11_BLEND_SRC1_COLOR,
+        BlendOp: D3D11_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D11_BLEND_ONE,
+        DestBlendAlpha: D3D11_BLEND_ZERO,
+        BlendOpAlpha: D3D11_BLEND_OP_ADD,
+        RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    };
     unsafe {
+        device.CreateBlendState(&blend_desc, Some(&mut blend))?;
+        context.OMSetBlendState(blend.as_ref(), None, 0xffff_ffff);
         device.CreateTexture2D(&desc, None, Some(&mut target))?;
         device.CreateRenderTargetView(target.as_ref().unwrap(), None, Some(&mut rtv))?;
         device.CreateVertexShader(VS, None, Some(&mut vs))?;
