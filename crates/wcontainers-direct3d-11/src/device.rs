@@ -180,6 +180,14 @@ impl<B: Backend> Device<B> {
         if format::index_format(dxgi).is_some() {
             bits |= IA_INDEX_BUFFER;
         }
+        // A typeless format is reported as its storage: textures of it, not its uses (its members').
+        if format::is_typeless(dxgi) {
+            let stored = format::storage_format(dxgi, false).ok();
+            if stored.is_some_and(|f| !self.backend.caps().formats.get(f).is_empty()) {
+                bits |= TEXTURE2D | TEXTURECUBE | MIP;
+            }
+            return bits;
+        }
         let Some(f) = format::texture_format(dxgi) else {
             return bits;
         };
@@ -496,9 +504,14 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
-        let format = format::texture_format_of(d.format)?;
-        if d.sample_count != 1 || d.sample_quality != 0 {
-            return not_implemented("multisampled textures");
+        let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
+        // Multisampling is not served, so the device reports no quality level above one sample, and a
+        // count and quality it reports no level for is invalid, as in Direct3D.
+        if d.sample_quality >= self.multisample_quality_levels(d.format, d.sample_count) {
+            eprintln!("wcontainers direct3d 11: not served: multisampled textures");
+            return Err(Error::InvalidArg(
+                "a sample count and quality the device reports no level for",
+            ));
         }
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
         if d.misc_flags & !MISC_TEXTURECUBE != 0 {
@@ -695,9 +708,13 @@ impl<B: Backend> Device<B> {
         {
             return Err(Error::InvalidArg("the view reaches past the resource"));
         }
-        let format = format::texture_format_of(v.format)?;
-        if format != texture.format {
-            return not_implemented("views in another format of the typeless group");
+        let (format, stencil) = format::view_format(v.format, t.format, texture.format)?;
+        // Depth-stencil views take the D formats and only they; the others read depth through
+        // their own members of the group (R24_UNORM_X8_TYPELESS and the like).
+        if (kind == bind::DEPTH_STENCIL) != matches!(v.format, 20 | 40 | 45 | 55) {
+            return Err(Error::InvalidArg(
+                "a view format the view's binding cannot take",
+            ));
         }
         let dimension = match v.dimension {
             ViewDim::Texture2D => ViewDimension::D2,
@@ -722,7 +739,7 @@ impl<B: Backend> Device<B> {
                 mip_count: v.mip_count,
                 base_layer: v.first_layer,
                 layer_count: v.layer_count,
-                stencil: false,
+                stencil,
             },
         );
         let gpu = self.gpu(gpu)?;
@@ -1041,7 +1058,8 @@ fn constant_sizes(module: &naga::Module) -> Vec<(u32, u64)> {
 }
 
 /// What stands in for an empty slot of each texture and sampler `module` reads, by binding number;
-/// `None` for one-dimensional, multisampled and depth textures and comparison samplers.
+/// `None` for multisampled and depth textures and comparison samplers. Converted DXBC reads a
+/// one-dimensional texture as a two-dimensional one, so the 1D arm is for modules that keep 1D.
 fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
     use naga::{ImageClass, ImageDimension, ScalarKind, TypeInner};
     module
