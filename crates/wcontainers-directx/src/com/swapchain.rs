@@ -343,6 +343,18 @@ impl SwapChain_Impl {
         Ok(())
     }
 
+    /// The back buffers are presented unrotated; asking for that changes nothing.
+    pub(super) fn set_rotation(&self, rotation: DXGI_MODE_ROTATION) -> Result<()> {
+        if rotation != DXGI_MODE_ROTATION_IDENTITY {
+            return Err(missing("swap chains rotating their back buffers"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn get_rotation(&self) -> Result<DXGI_MODE_ROTATION> {
+        Ok(DXGI_MODE_ROTATION_IDENTITY)
+    }
+
     pub(super) fn get_desc1(&self) -> Result<DXGI_SWAP_CHAIN_DESC1> {
         Ok(self.desc.get())
     }

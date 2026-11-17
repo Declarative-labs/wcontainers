@@ -271,9 +271,15 @@ pub struct DepthStencil<B: Backend> {
     pub gpu: Kept<B, B::DepthStencil>,
 }
 
+/// A raster block made with one sample mask.
+pub type MaskedRaster<B> = (u32, Kept<B, <B as Backend>::Raster>);
+
 pub struct Rasterizer<B: Backend> {
     pub desc: RasterizerDesc,
     pub gpu: Kept<B, B::Raster>,
+    /// The block made with each sample mask leaving out samples, which Direct3D sets with the
+    /// blend state and the back ends keep in the raster block; made at a mask's first draw.
+    pub masked: RefCell<Vec<MaskedRaster<B>>>,
 }
 
 /// One input element resolved against the vertex shader's signature.

@@ -158,6 +158,7 @@ impl<B: Backend> Device<B> {
             raster: Rc::new(Rasterizer {
                 desc: raster_desc,
                 gpu: Kept::new(raster, id(), Object::Raster, &graveyard),
+                masked: RefCell::new(Vec::new()),
             }),
         };
         Ok(Device {
@@ -571,11 +572,20 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
-        // A count and quality the device reports no level for is invalid, as in Direct3D.
-        if d.sample_quality >= self.multisample_quality_levels(d.format, d.sample_count) {
-            return Err(Error::InvalidArg(
-                "a sample count and quality the device reports no level for",
-            ));
+        // A count and quality the device reports no level for is invalid, as in Direct3D. The
+        // standard pattern is the back end's own; the centred one it cannot place.
+        let levels = self.multisample_quality_levels(d.format, d.sample_count);
+        match d.sample_quality {
+            STANDARD_MULTISAMPLE_PATTERN if levels > 0 => {}
+            CENTER_MULTISAMPLE_PATTERN if levels > 0 => {
+                return not_implemented("samples all at the pixel's centre");
+            }
+            q if q < levels => {}
+            _ => {
+                return Err(Error::InvalidArg(
+                    "a sample count and quality the device reports no level for",
+                ));
+            }
         }
         if d.sample_count > 1
             && (d.dimension != TexDim::D2
@@ -679,8 +689,13 @@ impl<B: Backend> Device<B> {
                 usage |= u;
             }
         }
-        // The back end multisamples only textures drawn into, which Direct3D does not require.
-        if d.sample_count > 1 {
+        // The back end multisamples and resolves only into textures drawn into, which Direct3D does
+        // not require of a multisampled texture or of a resolve's destination.
+        let resolves_into = d.usage == usage::DEFAULT
+            && d.dimension == TexDim::D2
+            && resolvable(format)
+            && [2, 4, 8, 16].iter().any(|&n| self.takes_samples(format, n));
+        if d.sample_count > 1 || resolves_into {
             usage |= TextureUsage::RENDER;
         }
         // Unordered access views are cleared by clearing passes where the format can be drawn into.
@@ -900,7 +915,8 @@ impl<B: Backend> Device<B> {
             v.dimension,
             ViewDim::Texture2DMS | ViewDim::Texture2DMSArray
         );
-        if of != t.dimension || ms_view != multisampled {
+        // Direct3D takes a multisampled view of a single-sampled texture: its first level.
+        if of != t.dimension || (multisampled && !ms_view) {
             return Err(Error::InvalidArg(
                 "a view of a dimension the texture does not have",
             ));
@@ -1309,6 +1325,7 @@ impl<B: Backend> Device<B> {
         Ok(Rc::new(Rasterizer {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::Raster, &self.graveyard),
+            masked: RefCell::new(Vec::new()),
         }))
     }
 
