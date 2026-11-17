@@ -414,6 +414,19 @@ pub(super) fn open(
         return named_opened(kernel, cx, tid, file, flags);
     }
     if flags & (O_TMPFILE & !O_DIRECTORY) != 0 {
+        // `do_tmpfile`: the directory is found, its mount writable and the directory too, before
+        // a file is made in it, which is not built.
+        let at = start(kernel, tid, dirfd, path)?;
+        let directory = kernel.with_walk(tid, |walk, _| walk.resolve(&at, path, true))?;
+        let inode = directory.borrow();
+        if !inode.is_directory() {
+            return Err(Errno::ENOTDIR);
+        }
+        if inode.fs.read_only() {
+            return Err(Errno::EROFS);
+        }
+        let caller = kernel.threads[&tid].process;
+        crate::fs::permission(&inode, credentials(kernel, tid), W_OK | X_OK, caller)?;
         return Err(kernel.counters.refuse_flag(
             cx.host,
             __NR_openat,

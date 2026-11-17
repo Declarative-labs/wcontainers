@@ -123,6 +123,17 @@ fn arguments_taken_once_match_reference() {
     }
 }
 
+/// Listing a directory while removing from it, where the entries each answer holds show, and
+/// O_TMPFILE's checks of the directory.
+#[test]
+fn listings_match_reference() {
+    for cached in [false, true] {
+        for run in same_on("backendlisting", driver::Injections::default(), cached) {
+            assert_warned_only(&run, &[wcontainers_kernel::reason::FLAG_NOT_BUILT]);
+        }
+    }
+}
+
 /// Appends while another thread truncates the file: the inode is held across each.
 #[test]
 fn truncations_and_appends_match_reference() {
@@ -244,8 +255,8 @@ fn file_calls_survive_saves() {
 }
 
 /// Notices the backend sends unasked, of every kind and about nodes the kernel holds or not, change
-/// nothing the program sees, and none is left unhandled. Every kind reaches the runs, and each
-/// RETRIEVE is answered.
+/// nothing the program sees, and none is left unhandled. Every kind reaches the runs, each
+/// RETRIEVE is answered, and those cut short are refused.
 #[test]
 fn backend_notices_are_handled() {
     use fuse_abi::linux::fuse_notify_code::*;
@@ -256,9 +267,13 @@ fn backend_notices_are_handled() {
     };
     let mut handled = std::collections::BTreeMap::<u64, u64>::new();
     let mut replies = 0;
+    let mut refused = 0;
     for run in same_on_backend("backendfiles", injections) {
-        assert_warned_only(&run, &[]);
+        assert_warned_only(&run, &[reason::BACKEND_NOTICE_REFUSED]);
         for counter in &run.counters {
+            if counter.reason == reason::BACKEND_NOTICE_REFUSED {
+                refused += counter.count;
+            }
             if counter.reason == reason::BACKEND_NOTICE {
                 *handled.entry(counter.detail).or_default() += counter.count;
             }
@@ -269,7 +284,8 @@ fn backend_notices_are_handled() {
             }
         }
     }
-    eprintln!("notices handled by code: {handled:?}");
+    eprintln!("notices handled by code: {handled:?}, refused {refused}");
+    assert!(refused > 0, "no notice cut short was refused");
     for code in [
         FUSE_NOTIFY_POLL,
         FUSE_NOTIFY_INVAL_INODE,

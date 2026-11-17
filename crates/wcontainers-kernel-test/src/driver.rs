@@ -495,7 +495,7 @@ const ANSWER_ARRIVES_WITHIN: u64 = 50_000;
 const RETRIEVED: u64 = 1 << 62;
 
 /// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node (one of the first
-/// few the backend numbers, some never looked up) drawn from `random`. The kernel's NOTIFY_REPLY to
+/// few the backend numbers, some never looked up) drawn from `random`, sometimes cut short. The kernel's NOTIFY_REPLY to
 /// a RETRIEVE comes back to this host, which sent it, not to the server ([`RETRIEVED`]).
 fn notice(random: &mut StdRng) -> Vec<u8> {
     use fuse_abi::linux::*;
@@ -503,7 +503,7 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
     let node: u64 = random.random_range(1..12);
     let name = b"backend-file\0";
     let namelen = (name.len() - 1) as u32;
-    let (code, body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
+    let (code, mut body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
         0 => (
             fuse_notify_code::FUSE_NOTIFY_POLL,
             fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec(),
@@ -566,6 +566,10 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
             (fuse_notify_code::FUSE_NOTIFY_STORE, body)
         }
     };
+    // One in eight is cut short, which Linux refuses.
+    if random.random_ratio(1, 8) {
+        body.truncate(random.random_range(0..body.len()));
+    }
     let header = fuse_out_header {
         len: (size_of::<fuse_out_header>() + body.len()) as u32,
         error: code as i32,

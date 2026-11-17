@@ -1967,7 +1967,7 @@ pub(super) fn getdents64(
                 let file = file.borrow();
                 let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
                 let mut own = position;
-                for entry in crate::fs::backend::readdir(handle, position)? {
+                for entry in crate::fs::backend::readdir(handle, position, count)? {
                     entries.push((entry.name, entry.ino, entry.kind, own, entry.next));
                     own = entry.next;
                 }
