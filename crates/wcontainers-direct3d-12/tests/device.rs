@@ -57,7 +57,7 @@ fn bytecode_that_is_not_dxil_is_refused() {
 #[test]
 fn the_triangle_scene_replays() {
     let mut device = Device::new(Recorder::new());
-    let queue = device.create_queue();
+    let queue = device.create_queue().unwrap();
     triangle::pipeline(&mut device, VS).unwrap();
     let prepared = device.backend().calls.len();
     assert!(
@@ -131,7 +131,7 @@ fn a_bad_list_fails_at_close() {
 #[test]
 fn a_rectangle_clear_comes_after_a_whole_clear_before_it() {
     let mut device = Device::new(Recorder::new());
-    let queue = device.create_queue();
+    let queue = device.create_queue().unwrap();
     let desc = ResourceDesc {
         dimension: DIMENSION_TEXTURE2D,
         width: 64,
@@ -175,7 +175,7 @@ fn a_rectangle_clear_comes_after_a_whole_clear_before_it() {
 #[test]
 fn fence_events_are_set_without_waiting() {
     let mut device = Device::new(Recorder::new());
-    let queue = device.create_queue();
+    let queue = device.create_queue().unwrap();
     let fence = device.create_fence(0);
     device.add_waiter(fence, 1, 7);
     device.queue_signal(queue, fence, 1).unwrap();
@@ -195,7 +195,7 @@ fn fence_events_are_set_without_waiting() {
 fn back_buffers_are_resources_and_present_follows_the_work() {
     use wcontainers_directx_graphics_infrastructure::{Model, SwapChainDesc};
     let mut device = Device::new(Recorder::new());
-    let queue = device.create_queue();
+    let queue = device.create_queue().unwrap();
     let chain = device
         .create_swap_chain(
             1,
@@ -248,7 +248,10 @@ fn back_buffers_are_resources_and_present_follows_the_work() {
 #[test]
 fn queues_wait_for_fences_signalled_late() {
     let mut device = Device::new(Recorder::new());
-    let (copy, compute) = (device.create_queue(), device.create_queue());
+    let (copy, compute) = (
+        device.create_queue().unwrap(),
+        device.create_queue().unwrap(),
+    );
     let (upload, done) = (device.create_fence(0), device.create_fence(0));
     let mut list = CommandList::new();
     list.close().unwrap();
@@ -280,7 +283,7 @@ fn queues_wait_for_fences_signalled_late() {
 fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
     use wcontainers_gpu::SlowPath::AliasCopied;
     let mut device = Device::new(Recorder::new());
-    let queue = device.create_queue();
+    let queue = device.create_queue().unwrap();
     let page = 64 << 10;
     let heap = device.create_heap(4 * page, HeapType::Default, 0).unwrap();
     let buffer = |width| ResourceDesc {

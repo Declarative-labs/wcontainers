@@ -99,6 +99,85 @@ impl RootSignatureDesc {
         }
         out
     }
+
+    /// Direct3D 12's rules for a signature `CreateRootSignature` accepts: ranges are not empty and
+    /// end within the register numbers, samplers have tables of their own, a table's offsets fit and
+    /// do not follow an unbounded range, and no register is bound twice for one stage.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        /// A register range: class (0 SRV, 1 UAV, 2 CBV, 3 sampler), space, first, last, visibility.
+        type Span = (u32, u32, u32, u32, u32);
+        let mut spans: Vec<Span> = Vec::new();
+        for p in &self.parameters {
+            let v = p.visibility;
+            match &p.kind {
+                RootParameterKind::Table(ranges) => {
+                    let samplers = ranges.iter().filter(|r| r.kind == 3).count();
+                    if samplers != 0 && samplers != ranges.len() {
+                        return Err("samplers in a table with other descriptors");
+                    }
+                    let mut end = 0u64;
+                    for r in ranges {
+                        if r.count == 0 {
+                            return Err("an empty descriptor range");
+                        }
+                        let unbounded = r.count == u32::MAX;
+                        let last = if unbounded {
+                            u32::MAX
+                        } else {
+                            r.register
+                                .checked_add(r.count - 1)
+                                .ok_or("a descriptor range past the last register")?
+                        };
+                        let start = if r.offset == u32::MAX {
+                            if end == u64::MAX {
+                                return Err("a range appended after an unbounded one");
+                            }
+                            end
+                        } else {
+                            u64::from(r.offset)
+                        };
+                        end = if unbounded {
+                            u64::MAX
+                        } else {
+                            start + u64::from(r.count)
+                        };
+                        if end != u64::MAX && end > u64::from(u32::MAX) {
+                            return Err("a descriptor range past the table's offsets");
+                        }
+                        spans.push((r.kind, r.space, r.register, last, v));
+                    }
+                }
+                RootParameterKind::Constants {
+                    register, space, ..
+                } => spans.push((2, *space, *register, *register, v)),
+                RootParameterKind::Descriptor {
+                    kind,
+                    register,
+                    space,
+                    ..
+                } => {
+                    let class = match kind {
+                        2 => 2,
+                        3 => 0,
+                        _ => 1,
+                    };
+                    spans.push((class, *space, *register, *register, v));
+                }
+            }
+        }
+        for s in &self.samplers {
+            spans.push((3, s.space(), s.register(), s.register(), s.0[12]));
+        }
+        for (i, a) in spans.iter().enumerate() {
+            for b in &spans[i + 1..] {
+                let seen_together = a.4 == 0 || b.4 == 0 || a.4 == b.4;
+                if a.0 == b.0 && a.1 == b.1 && a.2 <= b.3 && b.2 <= a.3 && seen_together {
+                    return Err("a register bound twice for one stage");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 const RTS0: [u8; 4] = *b"RTS0";

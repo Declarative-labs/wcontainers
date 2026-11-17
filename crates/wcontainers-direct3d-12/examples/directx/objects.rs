@@ -2,6 +2,7 @@
 //! of their interfaces is in com.rs and reports itself as not implemented.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
@@ -267,7 +268,7 @@ macro_rules! based {
     )*};
 }
 based!(
-    Device => base, Queue => 1, Allocator => 1, Fence => base, Resource => base,
+    Device => base, Queue => 1, Allocator => base, Fence => base, Resource => base,
     RootSignature => 1, PipelineState => 1, QueryHeap => 1, Heap => 2, DescriptorHeap => base, List => base,
     CommandSignature => 1
 );
@@ -341,7 +342,7 @@ impl Device {
     ) -> D3D12_RESOURCE_ALLOCATION_INFO {
         let failed = D3D12_RESOURCE_ALLOCATION_INFO {
             SizeInBytes: u64::MAX,
-            Alignment: 0,
+            Alignment: D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT as u64,
         };
         if descs.is_null() {
             return failed;
@@ -394,7 +395,7 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let id = gpu::call(|d| d.create_queue());
+        let id = gpu::call(|d| d.create_queue()).map_err(hr)?;
         give::<ID3D12CommandQueue>(
             crate::abi::fixed(Queue(*desc, Base::child(), id).into()),
             riid,
@@ -409,7 +410,12 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         list_type(r#type)?;
-        give::<ID3D12CommandAllocator>(Allocator(r#type, Base::child()).into(), riid, out)
+        let allocator = Allocator {
+            kind: r#type,
+            user: Arc::default(),
+            base: Base::child(),
+        };
+        give::<ID3D12CommandAllocator>(allocator.into(), riid, out)
     }
 
     pub fn CreateCommandList(
@@ -422,17 +428,13 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         list_type(r#type)?;
-        // The allocator must be one for lists of this type.
-        // SAFETY: allocators come from this library.
-        match allocator.as_ref().map(|a| unsafe { a.as_impl() }.0) {
-            Some(kind) if kind == r#type => {}
-            _ => return Err(E_INVALIDARG.into()),
-        }
         let list = List {
             kind: r#type,
             rec: Mutex::new(CommandList::new()),
+            allocator: Mutex::new(None),
             base: Base::child(),
         };
+        list.take(allocator)?;
         list.start(initial);
         give::<ID3D12GraphicsCommandList>(list.into(), riid, out)
     }
@@ -491,10 +493,26 @@ impl Device {
         if blob.is_null() {
             return Err(E_INVALIDARG.into());
         }
+        /// Live root signatures by their blobs: equal blobs give the same object, as Direct3D 12
+        /// gives.
+        static MADE: Mutex<Vec<(Vec<u8>, windows::core::Weak<ID3D12RootSignature>)>> =
+            Mutex::new(Vec::new());
         // SAFETY: the caller's blob of `length` bytes.
         let bytes = unsafe { std::slice::from_raw_parts(blob.cast::<u8>(), length) }.to_vec();
-        let id = gpu::call(move |d| d.create_root_signature(&bytes)).map_err(hr)?;
-        give::<ID3D12RootSignature>(RootSignature(id, Base::child()).into(), riid, out)
+        let mut made = MADE.lock().unwrap();
+        made.retain(|(_, w)| w.upgrade().is_some());
+        if let Some(root) = made
+            .iter()
+            .find(|(b, _)| *b == bytes)
+            .and_then(|(_, w)| w.upgrade())
+        {
+            return give(root, riid, out);
+        }
+        let copy = bytes.clone();
+        let id = gpu::call(move |d| d.create_root_signature(&copy)).map_err(hr)?;
+        let root: ID3D12RootSignature = RootSignature(id, Base::child()).into();
+        made.push((bytes, root.downgrade()?));
+        give(root, riid, out)
     }
 
     pub fn CreateGraphicsPipelineState(
@@ -1131,12 +1149,17 @@ impl Device {
         )
     }
 
+    /// A call breaking the API's rules removes the device with `DXGI_ERROR_INVALID_CALL`, as
+    /// Direct3D 12 does; work the front cannot carry out with `DXGI_ERROR_DRIVER_INTERNAL_ERROR`.
     pub fn GetDeviceRemovedReason(&self) -> Result<()> {
         match gpu::call(|d| d.removed()) {
             None => Ok(()),
-            Some(why) => Err(windows::core::Error::new(
+            Some(Error::Invalid(why)) => {
+                Err(windows::core::Error::new(DXGI_ERROR_INVALID_CALL, why))
+            }
+            Some(e) => Err(windows::core::Error::new(
                 DXGI_ERROR_DRIVER_INTERNAL_ERROR,
-                why,
+                format!("{e:?}"),
             )),
         }
     }
@@ -1426,17 +1449,21 @@ impl Queue {
                 Some(c) => commands.push(Arc::clone(c)),
                 None => {
                     eprintln!("wcontainers: ExecuteCommandLists of a list that is not closed");
+                    gpu::call(|d| {
+                        d.remove(Error::Invalid(
+                            "ExecuteCommandLists of a list that is not closed",
+                        ))
+                    });
                     return;
                 }
             }
         }
         let queue = self.2;
-        if let Err(e) = gpu::call(move |d| d.execute(queue, &commands)) {
+        if gpu::call(move |d| d.execute(queue, &commands)).is_err() {
             eprintln!(
                 "wcontainers: the device was removed: {:?}",
-                gpu::call(|d| d.removed()).unwrap_or("?")
+                gpu::call(|d| d.removed())
             );
-            let _ = e;
         }
     }
 
@@ -1469,11 +1496,21 @@ impl Queue {
 }
 
 #[implement(ID3D12CommandAllocator)]
-pub struct Allocator(D3D12_COMMAND_LIST_TYPE, Base);
+pub struct Allocator {
+    kind: D3D12_COMMAND_LIST_TYPE,
+    /// The list recording from this allocator (its address), or 0: one at a time, as the API
+    /// requires.
+    user: Arc<AtomicUsize>,
+    base: Base,
+}
 
 impl Allocator {
-    /// Lists keep their own commands, so there is nothing to free here.
+    /// Lists keep their own commands, so there is nothing to free; a list still recording from the
+    /// allocator makes this fail, as Direct3D 12 does.
     pub fn Reset(&self) -> Result<()> {
+        if self.user.load(Ordering::Acquire) != 0 {
+            return Err(E_FAIL.into());
+        }
         Ok(())
     }
 }
@@ -1755,7 +1792,15 @@ impl Blob {
 pub struct List {
     kind: D3D12_COMMAND_LIST_TYPE,
     rec: Mutex<CommandList>,
+    /// The user slot of the allocator the list records from while it is open.
+    allocator: Mutex<Option<Arc<AtomicUsize>>>,
     base: Base,
+}
+
+impl Drop for List {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 /// The descriptor a CPU handle points at.
@@ -1808,15 +1853,43 @@ impl List {
         self.kind
     }
 
+    /// Starts recording from `allocator`: one of this list's type that no other open list
+    /// records from.
+    fn take(&self, allocator: Ref<ID3D12CommandAllocator>) -> Result<()> {
+        // SAFETY: allocators come from this library.
+        let a = allocator.as_ref().map(|a| unsafe { a.as_impl() });
+        let a = a.filter(|a| a.kind == self.kind).ok_or(E_INVALIDARG)?;
+        let me = self as *const List as usize;
+        a.user
+            .compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| E_INVALIDARG)?;
+        *self.allocator.lock().unwrap() = Some(Arc::clone(&a.user));
+        Ok(())
+    }
+
+    /// Stops recording: the allocator is free for another list.
+    fn release(&self) {
+        if let Some(user) = self.allocator.lock().unwrap().take() {
+            user.store(0, Ordering::Release);
+        }
+    }
+
+    /// Ends recording whether or not the list's calls were valid; a failed list must be reset.
     pub fn Close(&self) -> Result<()> {
+        self.release();
         self.rec.lock().unwrap().close().map_err(hr)
     }
 
+    /// Fails with `E_FAIL` while the list is open, as Direct3D 12 does.
     pub fn Reset(
         &self,
-        _allocator: Ref<ID3D12CommandAllocator>,
+        allocator: Ref<ID3D12CommandAllocator>,
         initial: Ref<ID3D12PipelineState>,
     ) -> Result<()> {
+        if self.allocator.lock().unwrap().is_some() {
+            return Err(E_FAIL.into());
+        }
+        self.take(allocator)?;
         self.rec.lock().unwrap().reset();
         self.start(initial);
         Ok(())
@@ -2298,6 +2371,30 @@ impl List {
     }
 
     /// The whole resource: a buffer's bytes, or every subresource of a texture.
+    pub fn ResolveSubresource(
+        &self,
+        dst: Ref<ID3D12Resource>,
+        dst_index: u32,
+        src: Ref<ID3D12Resource>,
+        src_index: u32,
+        format: DXGI_FORMAT,
+    ) {
+        let (Some(dst), Some(src)) = (id(&dst), id(&src)) else {
+            return self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("ResolveSubresource with no resource"));
+        };
+        self.record(Command::Resolve {
+            dst,
+            dst_index,
+            src,
+            src_index,
+            format: format.0 as u32,
+        });
+    }
+
     pub fn CopyResource(&self, dst: Ref<ID3D12Resource>, src: Ref<ID3D12Resource>) {
         let (Some(d), Some(s)) = (dst.as_ref(), src.as_ref()) else {
             return self
