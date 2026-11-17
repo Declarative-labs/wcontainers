@@ -453,6 +453,58 @@ fn queries_run_one_at_a_time_inside_a_pass_with_a_set() {
     );
 }
 
+/// A query ended after its set was destroyed writes into a destroyed object.
+#[test]
+fn a_query_ends_into_a_live_set() {
+    let mut d = Drawing::new();
+    let set = d.r.create_query_set(QueryKind::OcclusionAny, 1).unwrap();
+    let v = d.target_view;
+    d.r.begin_pass(&PassDesc {
+        occlusion: Some(&set),
+        ..pass_of([color(&v)])
+    });
+    d.r.begin_query(0);
+    d.r.destroy(Object::QuerySet(set));
+    d.r.end_query();
+    d.refused("the occlusion set was destroyed");
+}
+
+#[test]
+fn objects_are_used_live_and_as_their_kind() {
+    let mut r = Recorder::new();
+    let b = buffer(&mut r, 16, COPIES);
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.write_texture(&region(&b), extent(1), &[0; 4], 4, 1, WriteMode::Ordered);
+    r.write_buffer(&t, 0, &[0], WriteMode::Ordered);
+    assert_eq!(
+        r.create_view(
+            &b,
+            &TextureViewDesc {
+                format: Format::Rgba8Unorm,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            }
+        ),
+        Err(GpuError::Invalid(
+            "view of an object that is not a live texture"
+        ))
+    );
+    r.destroy(Object::Buffer(b));
+    r.write_buffer(&b, 0, &[0], WriteMode::Ordered);
+    assert_eq!(
+        r.violations,
+        [
+            format!("object {} is not a texture", n(&b)),
+            format!("object {} is not a buffer", n(&t)),
+            format!("object {} used after it was destroyed", n(&b)),
+        ]
+    );
+}
+
 #[test]
 fn a_query_index_lies_inside_its_set() {
     let mut d = Drawing::new();
@@ -1045,7 +1097,7 @@ fn views_take_the_textures_format_or_its_twin() {
     assert_eq!(
         r.create_view(&t, &desc),
         Err(GpuError::Invalid(
-            "view format neither the texture's nor its twin"
+            "view format neither the texture's nor one of its size it may take"
         ))
     );
     assert_eq!(
@@ -1059,6 +1111,154 @@ fn views_take_the_textures_format_or_its_twin() {
         ),
         Err(GpuError::Invalid("view range outside the texture"))
     );
+}
+
+/// A 2 by 2 `rgba8unorm` texture made to be viewed in other formats.
+fn reinterpreting(r: &mut Recorder) -> Id {
+    r.create_texture(&TextureDesc {
+        dimension: TextureDimension::D2,
+        format: Format::Rgba8Unorm,
+        width: 2,
+        height: 2,
+        depth_or_layers: 1,
+        mip_levels: 1,
+        samples: 1,
+        usage: ALL,
+        cube: false,
+        reinterpret: true,
+    })
+    .unwrap()
+}
+
+#[test]
+fn views_in_other_formats_of_the_same_size_need_format_reinterpret() {
+    let other = Err(GpuError::Invalid(
+        "view format neither the texture's nor one of its size it may take",
+    ));
+    let desc = |format| TextureViewDesc {
+        format,
+        dimension: ViewDimension::D2,
+        base_mip: 0,
+        mip_count: 1,
+        base_layer: 0,
+        layer_count: 1,
+        stencil: false,
+    };
+    let mut r = Recorder::new();
+    let t = reinterpreting(&mut r);
+    assert!(r.create_view(&t, &desc(Format::Rgba8Uint)).is_ok());
+    assert!(r.create_view(&t, &desc(Format::R32Float)).is_ok());
+    // Not another size, nor a depth format of the same size.
+    assert_eq!(r.create_view(&t, &desc(Format::R8Unorm)), other);
+    assert_eq!(r.create_view(&t, &desc(Format::Depth32Float)), other);
+
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::FORMAT_REINTERPRET));
+    let t = reinterpreting(&mut r);
+    assert_eq!(
+        r.create_view(&t, &desc(Format::R32Float)),
+        Err(GpuError::Absent(Features::FORMAT_REINTERPRET))
+    );
+    // The sRGB twin needs no feature.
+    assert!(r.create_view(&t, &desc(Format::Rgba8UnormSrgb)).is_ok());
+}
+
+/// A draw reads a texture through a view in another format by that format's meaning of the bytes.
+#[test]
+fn a_view_in_another_format_reads_the_bytes_as_that_format() {
+    let mut d = Drawing::new();
+    let t = reinterpreting(&mut d.r);
+    let one = 1.0f32.to_le_bytes().repeat(4);
+    d.r.write_texture(&region(&t), extent(2), &one, 8, 2, WriteMode::Ordered);
+    let as_float = view(&mut d.r, &t, Format::R32Float);
+    let set =
+        d.r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&as_float),
+        }])
+        .unwrap();
+    let p = d.program("loads");
+    d.begin();
+    d.draw(&p, Some(&set), Topology::TriangleList, false);
+    d.r.end_pass();
+    assert!(d.r.violations.is_empty());
+    assert_eq!(
+        d.r.texture_bytes(d.target).unwrap(),
+        [255, 0, 0, 255].repeat(4)
+    );
+}
+
+/// Without `TEXTURE_VIEWS` a draw binds each texture through one mip range.
+#[test]
+fn a_draw_binds_a_texture_through_one_mip_range_without_texture_views() {
+    for has in [true, false] {
+        let mut d = Drawing::with_caps(|c| {
+            if !has {
+                c.features.remove(Features::TEXTURE_VIEWS);
+            }
+        });
+        let t =
+            d.r.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format: Format::Rgba8Unorm,
+                width: 4,
+                height: 4,
+                depth_or_layers: 1,
+                mip_levels: 2,
+                samples: 1,
+                usage: ALL,
+                cube: false,
+                reinterpret: false,
+            })
+            .unwrap();
+        let level = |r: &mut Recorder, base_mip| {
+            let v = r
+                .create_view(
+                    &t,
+                    &TextureViewDesc {
+                        format: Format::Rgba8Unorm,
+                        dimension: ViewDimension::D2,
+                        base_mip,
+                        mip_count: 1,
+                        base_layer: 0,
+                        layer_count: 1,
+                        stencil: false,
+                    },
+                )
+                .unwrap();
+            r.create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&v),
+            }])
+            .unwrap()
+        };
+        let (first, again, second) = (level(&mut d.r, 0), level(&mut d.r, 0), level(&mut d.r, 1));
+        let p = d.program("loads");
+        d.begin();
+        let sets = |a, b| [Some(a), Some(b), None, None];
+        // One range through two views is one range.
+        d.draw_sets(
+            &p,
+            sets(&first, &again),
+            Topology::TriangleList,
+            false,
+            |_, _| {},
+        );
+        assert!(d.r.violations.is_empty());
+        d.draw_sets(
+            &p,
+            sets(&first, &second),
+            Topology::TriangleList,
+            false,
+            |_, _| {},
+        );
+        if has {
+            assert!(d.r.violations.is_empty());
+        } else {
+            d.refused("one texture through two mip ranges without TEXTURE_VIEWS");
+        }
+    }
 }
 
 #[test]
@@ -1082,20 +1282,45 @@ fn writes_copies_and_clears_stay_inside_their_buffers() {
 
 #[test]
 fn buffer_texture_copies_take_pitches_covering_the_region() {
+    // A row of two texels is 8 bytes, and the region two rows: a pitch of 4 bytes, or of 1 row.
+    for (row_pitch, rows_per_layer) in [(4, 2), (8, 1), (8, 2)] {
+        let mut r = Recorder::new();
+        let b = buffer(&mut r, 256, COPIES);
+        let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+        r.copy_texture_to_buffer(
+            &region(&t),
+            &CopyBufferTexture {
+                buffer: &b,
+                offset: 0,
+                row_pitch,
+                rows_per_layer,
+            },
+            extent(2),
+        );
+        let want: &[&str] = if (row_pitch, rows_per_layer) == (8, 2) {
+            &[]
+        } else {
+            &["copy pitch smaller than the region"]
+        };
+        assert_eq!(r.violations, want, "{row_pitch} {rows_per_layer}");
+    }
+}
+
+#[test]
+fn reads_back_stay_inside_their_buffers() {
     let mut r = Recorder::new();
-    let b = buffer(&mut r, 256, COPIES);
-    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
-    r.copy_texture_to_buffer(
-        &region(&t),
-        &CopyBufferTexture {
+    let b = buffer(&mut r, 16, COPIES);
+    let read = |r: &mut Recorder, offset, size| {
+        r.read_back(&ReadSource::Buffer {
             buffer: &b,
-            offset: 0,
-            row_pitch: 4,
-            rows_per_layer: 2,
-        },
-        extent(2),
-    );
-    assert_eq!(r.violations, ["copy pitch smaller than the region"]);
+            offset,
+            size,
+        })
+    };
+    assert!(read(&mut r, 8, 8).is_ok());
+    assert!(r.violations.is_empty());
+    assert!(read(&mut r, 12, 8).is_err());
+    assert_eq!(r.violations, ["read back past the buffer's end"]);
 }
 
 #[test]
@@ -1354,6 +1579,20 @@ fn a_multisampled_textures_bytes_move_by_draws_resolves_and_whole_copies() {
         f(&mut r, &ms, &other, &single, &b);
         assert_eq!(r.violations, [violation]);
     }
+    // Whole on one side only: all of a 2 by 2 into part of a 4 by 4, and part of the 4 by 4 into
+    // all of the 2 by 2.
+    for small_to_large in [true, false] {
+        let mut r = Recorder::new();
+        let small = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+        let large = multisampled(&mut r, Format::Rgba8Unorm, 4).unwrap();
+        let (src, dst) = if small_to_large {
+            (&small, &large)
+        } else {
+            (&large, &small)
+        };
+        r.copy_texture(&region(src), &region(dst), extent(2));
+        assert_eq!(r.violations, [not_whole], "{small_to_large}");
+    }
     // A whole copy between equal sample counts is one of the ways.
     let mut r = Recorder::new();
     let ms = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
@@ -1438,7 +1677,7 @@ fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
         });
         r.begin_pass(&pass);
     }
-    let cases: [(&str, Breaks); 6] = [
+    let cases: [(&str, Breaks); 8] = [
         (
             "a resolve from a single-sampled attachment or into a multisampled one",
             |r| {
@@ -1447,6 +1686,26 @@ fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
                 let b = texture(r, Format::Rgba8Unorm, 2, ALL);
                 let b = view(r, &b, Format::Rgba8Unorm);
                 pass_resolving(r, &a, &b);
+            },
+        ),
+        (
+            "a resolve from a single-sampled attachment or into a multisampled one",
+            |r| {
+                let a = multisampled(r, Format::Rgba8Unorm, 2).unwrap();
+                let a = view(r, &a, Format::Rgba8Unorm);
+                let b = multisampled(r, Format::Rgba8Unorm, 2).unwrap();
+                let b = view(r, &b, Format::Rgba8Unorm);
+                pass_resolving(r, &a, &b);
+            },
+        ),
+        // The destination outside the source's format and its twin, with the format named the
+        // source's.
+        (
+            "a resolve between formats other than one format and its sRGB twin",
+            |r| {
+                let a = multisampled(r, Format::Rgba8Unorm, 2).unwrap();
+                let b = texture(r, Format::Bgra8Unorm, 2, ALL);
+                r.resolve(&region(&a), &region(&b), Format::Rgba8Unorm);
             },
         ),
         (
@@ -1820,6 +2079,18 @@ fn textures_take_only_the_usages_their_format_does() {
     );
     assert!(
         r.create_texture(&desc(Format::R32Float, TextureUsage::SAMPLE))
+            .is_ok()
+    );
+    let mut r = Recorder::with_caps(|c| {
+        let at = Format::R32Float.index();
+        c.formats.uses[at].remove(FormatUse::SAMPLE);
+    });
+    assert_eq!(
+        r.create_texture(&desc(Format::R32Float, TextureUsage::SAMPLE)),
+        refused
+    );
+    assert!(
+        r.create_texture(&desc(Format::R32Float, TextureUsage::RENDER))
             .is_ok()
     );
 }
@@ -2344,6 +2615,48 @@ fn the_depth_attachment_has_a_depth_format() {
     d.refused("a colour format as the depth attachment");
 }
 
+/// The depth attachment names exactly the aspects its format has (the stencil aspect's half is in
+/// `tests/recorder.rs`).
+#[test]
+fn the_depth_attachment_names_depth_exactly_when_its_format_has_it() {
+    let cases = [
+        (Format::Depth32Float, false, false, false),
+        (Format::Depth32Float, true, false, true),
+        (Format::Stencil8, true, true, false),
+        (Format::Stencil8, false, true, true),
+    ];
+    for (format, depth, stencil, fits) in cases {
+        let depth = depth.then_some(AspectOps {
+            load: LoadOp::Load,
+            store: StoreOp::Store,
+            read_only: false,
+        });
+        let stencil = stencil.then_some(AspectOps {
+            load: LoadOp::Load,
+            store: StoreOp::Store,
+            read_only: false,
+        });
+        let mut d = Drawing::new();
+        let t = texture(&mut d.r, format, 2, TextureUsage::RENDER);
+        let v = view(&mut d.r, &t, format);
+        let c = d.target_view;
+        d.r.begin_pass(&PassDesc {
+            depth: Some(DepthAttachment {
+                view: &v,
+                depth,
+                stencil,
+            }),
+            ..pass_of([color(&c)])
+        });
+        let want: &[&str] = if fits {
+            &[]
+        } else {
+            &["depth attachment aspects differ from the format's"]
+        };
+        assert_eq!(d.r.violations, want, "{format:?}");
+    }
+}
+
 /// A depth-stencil block that writes depth (compare `Always`) or stencil (replace on pass).
 fn writing(d: &mut Drawing, depth: bool, stencil: bool) -> Id {
     let face = StencilFace {
@@ -2772,7 +3085,8 @@ fn texture_writes_take_pitches_covering_the_region() {
         ..region(&ds)
     };
     r.write_texture(&stencil, extent(2), &[0; 4], 1, 2, WriteMode::Ordered);
-    assert_eq!(r.violations, [short; 4]);
+    r.write_texture(&stencil, extent(2), &[0; 4], 2, 1, WriteMode::Ordered);
+    assert_eq!(r.violations, [short; 5]);
     r.violations.clear();
     r.write_texture(&stencil, extent(2), &[0; 4], 2, 2, WriteMode::Ordered);
     assert!(r.violations.is_empty());
