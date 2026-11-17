@@ -4,10 +4,56 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K3 are done (their runs are in git history and below). K4 (files outside) is partly built: its
-first run fixed the last K3 check's findings and built the FUSE side with the backend mounted as a
-volume; the root file system on the backend, mappings of backend files and layer 1 on the backend
-are not built yet (see Next).
+K0 to K3 are done (their runs are in git history and below). K4 (files outside) is partly built:
+its first run built the FUSE side with the backend as a volume; its second run put the root file
+system on the backend, built private mappings, extended attributes and fallocate of backend files,
+FLUSH at every close and tests of backend notices. Layer 1 on the backend and the milestone's
+fresh layer 1 seeds are not done yet (see Next).
+
+Built in K4's second run:
+- Root file system on the backend. `Start::backend` (was `volume`) names where the backend is
+  mounted; `/` makes it the root (mounted `relatime`, as Docker's root), any other path a volume as
+  before. The test driver (`driver::Container::backend`) unpacks the container's files (the image
+  plus test programs, as a tar from `image::to_tar`) into the server's tmpfs with busybox tar before
+  the server starts, and reads them back after the run with `docker exec tar` (`Backend::files`,
+  `image::records`) to compare the files left behind.
+- The container's start is a parked call like any other (`Kernel::run_start`, container.rs): the
+  first thread has no registers yet, so `settle` runs the start again from where it got when the
+  backend answers. It has two parts, each asking afresh: the mount points `/dev` and `/proc`, found
+  on the root (made there when missing, as runc makes mount points) and held while mounted
+  (`Files::mount_points`), then the first program (working directory, made when missing as Docker
+  does; the program loaded; then the standard descriptors). `Kernel::start` returns nothing now;
+  a start that fails ends the container with the exit status `docker run` gives (measured: 127 not
+  found, 126 not permitted, 125 otherwise) and `Kernel::start_failure` says why.
+- Layer 2 on a backend root: `busybox::compare` (busybox.rs and shell.rs tests, 30 + 13 + 18 + 10
+  commands) now runs ours twice, root in memory and root on the backend, each against the one
+  reference run, and checks the backend run sent messages. tests/threads.rs
+  `threads_match_reference_on_backend_root` (3 seeds, 6 saves each). All pass.
+- Extended attributes on backend files: GETXATTR, SETXATTR (the compat 8-byte header: INIT does
+  not ask for FUSE_SETXATTR_EXT), LISTXATTR (no trusted filtering, names checked as
+  `fuse_verify_xattr_list`), REMOVEXATTR; every name goes to the backend (`fuse_xattr_handler`);
+  ENOSYS is EOPNOTSUPP. File capabilities of a program on the backend are read at exec
+  (`get_vfs_caps_from_disk`, one GETXATTR into 24 bytes) unless the mount is nosuid. Access control
+  list names are counted "backend call not built" (EOPNOTSUPP). tests/backend.rs
+  `attributes_and_allocation_match_reference` (guest/backendattrs.c).
+- fallocate on backend files: FALLOCATE with keep-size, punch-hole and zero-range; other modes
+  EOPNOTSUPP (`fuse_file_fallocate`), after the generic checks.
+- Mappings of backend files: a private mapping reads the mapped range at mmap (GETATTR with the
+  handle for the size, then READ) and holds the bytes as its own copies; a shared mapping of a file
+  the backend opened with FOPEN_DIRECT_IO is ENODEV, as Linux (`fuse_file_mmap`; the first backend
+  opens every file so, so the reference refuses too, measured). A shared mapping of a file opened
+  without direct IO is counted "backend call not built" (ENODEV). MADV_DONTNEED on a private
+  backend mapping keeps its pages (counted, see Known gaps) and mremap growing one is refused
+  (counted, ENOMEM). tests/backend.rs `file_mappings_match_reference` (guest/backendmap.c, 4 saves).
+- FLUSH at every close of a backend descriptor (`FdTable::closed`): `close` asks and waits as
+  before; dup2/dup3 over it, close_range, exec and exit send it with nothing waiting
+  (`backend::flush_unwaited`). Lock owner is the table's.
+- Backend notices tested: the test driver sends POLL, INVAL_INODE, INVAL_ENTRY, DELETE and STORE
+  notices about node ids 1 to 11 at seeded moments (`Injections::notices`); tests/backend.rs
+  `backend_notices_are_handled` (18 notices reached the three seeds' runs). RETRIEVE is not sent:
+  the kernel's NOTIFY_REPLY would reach a server that never asked (fuse-backend-rs answers it,
+  which breaks the test host's in-order check).
+- Fixed: `BACKEND_CALL_NOT_BUILT` was missing from `reason::NOT_BUILT` (a debug assertion fired).
 
 Built in K4's first run:
 - The K3 check's findings (each tested against the reference unless said otherwise):
@@ -1989,6 +2035,17 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K4, second run: the image is unpacked into the backend's directory by the server's container
+  (busybox tar) before the server starts, not as FUSE messages from the kernel; the plan's section 1
+  says tests unpack an image into a directory.
+- K4, second run: a private mapping of a backend file is a copy read at mmap (as the plan's section
+  7 says), where Linux reads each page at its first fault; a change to the file after the mmap and
+  before a page is first touched shows on Linux and not here. INIT does not ask for
+  FUSE_DIRECT_IO_ALLOW_MMAP or FUSE_SETXATTR_EXT (flags2 is 0), which Linux asks for; the first
+  backend grants neither, so the reference behaves the same.
+- K4, second run: FLUSH for a descriptor closed by anything but `close` is sent with nothing
+  waiting for it; Linux's `filp_close` waits for it (and ignores its error).
+
 - K4: the backend is mounted as a volume (`Start::volume`), not yet as the root (Next). The
   reference for the backend runs the server as the container's first process and the program as
   its child, in a container with /dev/fuse and CAP_SYS_ADMIN (dropped from the program's sets), so
@@ -2193,6 +2250,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K4, second run: none.
 - K4, first run: none. (`Host::backend_send`, `Event::BackendReply` and `Event::BackendNotice` are
   used as they were.)
 
@@ -2232,6 +2290,11 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K4, second run: getxattr of `security.capability` on the reference's FUSE mount answers EINVAL
+  (with size 0 and with a buffer), though the server holds a valid v2 value (read on the server's
+  side) and ours gives it; cause not found (`cap_inode_getsecurity` reads it through
+  `vfs_getxattr_alloc`). tests/backend.rs `file_capabilities_match_reference` is ignored with this
+  reason (guest/backendcaps.c).
 - K4, first run (from the K3 check): terminal's `job_control` (guest/jobs.c `leader_exit`) can fail
   from a race in the reference: Linux's `disassociate_ctty` sends SIGHUP to the foreground group
   before `session_clear_tty`, and on a loaded multi-CPU reference the job can open `/dev/tty` in that
@@ -2291,20 +2354,16 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K4 goes on. Left for this milestone, most important first:
-1. The root file system on the backend, and a container's files unpacked from an image through
-   it: `Kernel::start` loads the first program synchronously today; with the root on the backend
-   the first exec must be a parked call like any other. Then layer 2's busybox, shell and thread
-   programs again on a backend root.
-2. Mappings of backend files, private and shared (counted "backend call not built", ENODEV;
-   tests/backend.rs `file_mappings_match_reference` is ignored for it). A private mapping can copy
-   the file's pages at the mapping (READ); a shared one needs a block of shared pages filled from
-   the backend and written back with WRITE at msync, munmap and exit.
-3. Layer 1 on the backend, against Linux's FUSE on the same server, call by call.
-4. Extended attributes (GETXATTR, SETXATTR, LISTXATTR, REMOVEXATTR) and fallocate on backend
-   files: counted "backend call not built" and EOPNOTSUPP for now. copy_file_range, splice,
-   sendfile, cachestat and fadvise on backend files are untested (they reach the generic read and
-   write paths or tmpfs code). FLUSH at every close; tests of the notices (the test host could send
-   them).
+1. Layer 1 on the backend: the generated file calls run in a directory on the backend in ours and
+   in a reference that mounts the same server through its FUSE, compared call by call.
+2. Shared mappings of backend files opened without direct IO (a block of shared pages filled with
+   READ, written back with WRITE at msync, munmap and exit, and reads and writes of the file going
+   through the block while it is mapped). Untestable against the reference with the first backend,
+   which opens every file for direct IO; would need the server run with caching.
+3. Re-reading a backend file's private pages on MADV_DONTNEED, and mremap growth of such mappings
+   (both counted "backend call not built" now).
+4. Access control lists on backend files (counted, EOPNOTSUPP now). copy_file_range, splice,
+   sendfile, cachestat and fadvise on backend files are untested.
 5. The milestone's three fresh layer 1 seeds of 20000 with every fix in, at the end.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
