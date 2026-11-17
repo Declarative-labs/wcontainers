@@ -633,7 +633,9 @@ tracker of 4.4) so each implicit front uses the same one.
 Rules a pass description follows:
 - A depth-stencil attachment names only the aspects its format has (`AspectOps` for depth and for
   stencil, each with its load, store and read-only flag), so no back end sees an operation on a missing
-  aspect.
+  aspect. No draw writes an aspect marked read-only (WebGPU's `depthReadOnly` and `stencilReadOnly`).
+- No subresource or 3D slice is attached, or resolved into, twice in one pass. Colour attachments stay
+  within `color_targets` and `color_bytes_per_sample`.
 - A color attachment of a 3D view names the slice it draws into (`depth_slice`, WebGPU's `depthSlice`).
 - Every attachment and resolve target has the same width and height. WebGPU requires it (its
   `GPURenderPassDescriptor` validation: every view's render extent must match), and so does WebGL 2 (its

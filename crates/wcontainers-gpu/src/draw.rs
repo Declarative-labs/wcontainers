@@ -50,7 +50,8 @@ pub struct AspectOps<V> {
     pub load: LoadOp<V>,
     pub store: StoreOp,
     /// The pass only reads this aspect, so it may also be sampled during the pass (Direct3D's read-only
-    /// depth and stencil views).
+    /// depth and stencil views). No draw of the pass writes it: depth writes off, or stencil operations
+    /// that keep or a write mask of zero, on each face.
     pub read_only: bool,
 }
 
@@ -80,7 +81,9 @@ pub struct EmptyPass {
 /// limited to their common area (Direct3D 9 to 11 with a larger depth buffer, OpenGL, Vulkan), passes
 /// them through the shared pass tracker, which puts temporaries of one size in their place (slow path
 /// [`crate::SlowPath::AttachmentsFitted`], plan section 4.7). Every attachment has the same sample
-/// count; a resolve target is a single-sampled view of its attachment's format.
+/// count; a resolve target is a single-sampled view of its attachment's format. No subresource (or 3D
+/// slice) is attached or resolved into twice, and colour attachments stay within
+/// `Limits::color_targets` and `Limits::color_bytes_per_sample`.
 ///
 /// One pass is one usage scope, as WebGPU defines it: a buffer, or a texture subresource, that any draw
 /// of the pass binds as writable storage is used no other way by any draw of the pass (not as vertices,
