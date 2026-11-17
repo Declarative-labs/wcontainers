@@ -2706,6 +2706,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "blake3",
+ "half",
  "naga",
 ]
 
@@ -2730,6 +2731,7 @@ dependencies = [
  "naga",
  "wasm-bindgen",
  "wcontainers-gpu",
+ "wcontainers-gpu-test",
  "wcontainers-graphics-test",
  "web-sys",
 ]

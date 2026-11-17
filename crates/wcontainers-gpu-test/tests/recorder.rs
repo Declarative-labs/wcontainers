@@ -174,3 +174,35 @@ fn objects_used_after_destroy_are_refused() {
     r.destroy(Object::Buffer(buffer));
     assert_eq!(r.violations.len(), 2);
 }
+
+#[test]
+fn blocks_needing_absent_features_are_refused_at_creation() {
+    let mut r = Recorder::new();
+    let mut desc = BlendDesc {
+        targets: [RenderTargetBlend {
+            blend: None,
+            writes: ColorWrites::all(),
+        }; MAX_COLOR_TARGETS],
+        same_for_all: true,
+        alpha_to_coverage: false,
+        logic_op: None,
+    };
+    let second_source = BlendComponent {
+        src: BlendFactor::One,
+        dst: BlendFactor::OneMinusSrc1Alpha,
+        op: BlendOp::Add,
+    };
+    desc.targets[0].blend = Some((second_source, second_source));
+    assert_eq!(
+        r.create_blend(&desc).unwrap_err(),
+        GpuError::Absent(Features::DUAL_SOURCE_BLEND)
+    );
+    desc.targets[0].blend = None;
+    desc.logic_op = Some(LogicOp::Xor);
+    assert_eq!(
+        r.create_blend(&desc).unwrap_err(),
+        GpuError::Absent(Features::LOGIC_OP)
+    );
+    assert!(r.violations.is_empty());
+    assert_eq!(r.status(), DeviceStatus::Ok);
+}

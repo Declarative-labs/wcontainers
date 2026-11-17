@@ -5,6 +5,9 @@
 
 use wcontainers_gpu::*;
 
+mod draws;
+pub use draws::*;
+
 /// What the suite needs of a back end beyond the interface.
 pub trait Host {
     type Backend: Backend;
@@ -37,6 +40,13 @@ macro_rules! suite {
             a_fragment_covering_no_sample_writes_nothing,
             srgb_targets_convert_colour_but_not_alpha,
             generate_mips_averages_in_the_values_format,
+            values_are_interpolated_with_perspective,
+            the_scissor_bounds_the_draw,
+            stencil_operations_and_tests,
+            near_clipping_and_the_viewport_depth_range,
+            linear_filtering_and_address_modes,
+            instances_start_at_the_first_instance,
+            indexed_strips_restart_and_add_the_base_vertex,
             present_shows_the_frame,
         );
     };
@@ -478,8 +488,8 @@ pub fn texture_writes_land_and_read_back<H: Host>() {
 }
 
 /// Copies between buffers (at byte offsets, and within one buffer), from a buffer into a texture at a
-/// 256-byte and at a tight row pitch over several rows, between textures and from a texture into a buffer move exactly
-/// the bytes they name.
+/// 256-byte and at a tight row pitch over several rows, between textures, and from a texture into a
+/// buffer (at offset 0, and at an offset over two layers) move exactly the bytes they name.
 pub fn copies_move_bytes_exactly<H: Host>() {
     let mut b = H::make();
     needs(
@@ -579,19 +589,55 @@ pub fn copies_move_bytes_exactly<H: Host>() {
         dst_bytes[y * 256..y * 256 + 16].copy_from_slice(&c_bytes[y * 16..y * 16 + 16]);
     }
     assert_eq!(read_buffer(&mut b, &dst, 0, 1024), dst_bytes);
+
+    // Two layers of two rows of three texels from (1, 1) into a buffer at offset 12, rows 20 bytes
+    // apart and layers three rows apart: the bytes between rows and layers keep their values.
+    let layered = texture(&mut b, Format::Rgba8Unorm, (4, 4), 2, 1, tusage);
+    let l_bytes = pattern(128, 201);
+    b.write_texture(
+        &region(&layered, 0, 0, 0, 0),
+        extent(4, 4, 2),
+        &l_bytes,
+        16,
+        4,
+        WriteMode::Ordered,
+    );
+    let out = buffer(&mut b, 160, usage);
+    let mut out_bytes = pattern(160, 3);
+    b.write_buffer(&out, 0, &out_bytes, WriteMode::Discard);
+    b.copy_texture_to_buffer(
+        &region(&layered, 0, 0, 1, 1),
+        &CopyBufferTexture {
+            buffer: &out,
+            offset: 12,
+            row_pitch: 20,
+            rows_per_layer: 3,
+        },
+        extent(3, 2, 2),
+    );
+    for layer in 0..2 {
+        for y in 0..2 {
+            let to = 12 + layer * 60 + y * 20;
+            let from = layer * 64 + (1 + y) * 16 + 4;
+            out_bytes[to..to + 12].copy_from_slice(&l_bytes[from..from + 12]);
+        }
+    }
+    assert_eq!(read_buffer(&mut b, &out, 0, 160), out_bytes);
     ok(&mut b);
 }
 
-/// A pass's clear load writes the value in each target's format exactly, and a buffer clear repeats
+/// A pass's clear load writes the value in each target's format exactly (unorm rounded to nearest), and a buffer clear repeats
 /// its pattern over exactly its range.
 pub fn clears_fill_exactly<H: Host>() {
     let mut b = H::make();
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
     for (format, value, expected) in [
+        // 63.75, 216.75 and 140.25 steps: rounded to nearest, as WebGPU does and within the 0.6
+        // step Direct3D allows.
         (
             Format::Rgba8Unorm,
-            f32_bits([0.2, 0.4, 0.6, 1.0]),
-            vec![51u8, 102, 153, 255],
+            f32_bits([0.25, 0.85, 0.55, 1.0]),
+            vec![64u8, 217, 140, 255],
         ),
         (
             Format::R32Uint,
