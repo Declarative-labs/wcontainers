@@ -168,7 +168,8 @@ pub struct TextureViewDesc {
     /// Which of depth and stencil a depth-stencil view reads: true for stencil, read as unsigned
     /// integers. Every back end serves both aspects; one whose API cannot sample stencil fills an 8-bit
     /// texture from the stencil by draws when the stencil changed (slow path
-    /// [`crate::SlowPath::StencilCopiedByDraw`]).
+    /// [`crate::SlowPath::StencilCopiedByDraw`]). A view of a format with both aspects that a pass
+    /// draws into ([`crate::DepthAttachment`]) holds both whatever this says.
     pub stencil: bool,
 }
 

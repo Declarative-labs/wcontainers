@@ -13,11 +13,43 @@ use crate::d3d11::{Gpu, cell, checker, data, made, seeded, solid, tex2d};
 use crate::dxbc;
 use crate::output::Output;
 
-const SIZE: u32 = 64;
+pub const SIZE: u32 = 64;
+
+/// The block-compressed formats drawn, with the bytes of a block of each; 32 by 32 texels each.
+pub const BC: [(DXGI_FORMAT, usize); 16] = [
+    (DXGI_FORMAT_BC1_UNORM, 8),
+    (DXGI_FORMAT_BC1_UNORM_SRGB, 8),
+    (DXGI_FORMAT_BC2_UNORM, 16),
+    (DXGI_FORMAT_BC3_UNORM, 16),
+    (DXGI_FORMAT_BC3_UNORM_SRGB, 16),
+    (DXGI_FORMAT_BC4_UNORM, 8),
+    (DXGI_FORMAT_BC4_SNORM, 8),
+    (DXGI_FORMAT_BC5_UNORM, 16),
+    (DXGI_FORMAT_BC5_SNORM, 16),
+    (DXGI_FORMAT_BC6H_UF16, 16),
+    (DXGI_FORMAT_BC6H_SF16, 16),
+    (DXGI_FORMAT_BC7_UNORM, 16),
+    (DXGI_FORMAT_BC7_UNORM_SRGB, 16),
+    (DXGI_FORMAT_BC2_UNORM_SRGB, 16),
+    (DXGI_FORMAT_BC7_UNORM, 16),
+    (DXGI_FORMAT_BC6H_UF16, 16),
+];
+
+/// The random blocks of each block-compressed format, in the order of `BC`.
+pub fn bc_blocks() -> Vec<Vec<u8>> {
+    let mut random = seeded(11);
+    BC.iter()
+        .map(|&(_, block)| {
+            let mut blocks = vec![0u8; 8 * 8 * block];
+            random.fill_bytes(&mut blocks);
+            blocks
+        })
+        .collect()
+}
 
 /// The initial data of every subresource, layer by layer and mip by mip, `index` naming the colour
 /// of each.
-fn subresources(
+pub fn subresources(
     width: u32,
     height: u32,
     depth: u32,
@@ -183,31 +215,10 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     ));
 
     // Block-compressed: 32 by 32 texels of random blocks per format, read exactly.
-    let formats = [
-        (DXGI_FORMAT_BC1_UNORM, 8),
-        (DXGI_FORMAT_BC1_UNORM_SRGB, 8),
-        (DXGI_FORMAT_BC2_UNORM, 16),
-        (DXGI_FORMAT_BC3_UNORM, 16),
-        (DXGI_FORMAT_BC3_UNORM_SRGB, 16),
-        (DXGI_FORMAT_BC4_UNORM, 8),
-        (DXGI_FORMAT_BC4_SNORM, 8),
-        (DXGI_FORMAT_BC5_UNORM, 16),
-        (DXGI_FORMAT_BC5_SNORM, 16),
-        (DXGI_FORMAT_BC6H_UF16, 16),
-        (DXGI_FORMAT_BC6H_SF16, 16),
-        (DXGI_FORMAT_BC7_UNORM, 16),
-        (DXGI_FORMAT_BC7_UNORM_SRGB, 16),
-        (DXGI_FORMAT_BC2_UNORM_SRGB, 16),
-        (DXGI_FORMAT_BC7_UNORM, 16),
-        (DXGI_FORMAT_BC6H_UF16, 16),
-    ];
     let (target, rtv) = gpu.target(128, 128, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
     gpu.begin(&rtv, None, 128, 128);
     gpu.program(dxbc!("common.vs_full"), dxbc!("textures.ps_load"), &[])?;
-    let mut random = seeded(11);
-    for (i, (format, block)) in formats.into_iter().enumerate() {
-        let mut blocks = vec![0u8; 8 * 8 * block];
-        random.fill_bytes(&mut blocks);
+    for (i, ((format, block), blocks)) in BC.into_iter().zip(bc_blocks()).enumerate() {
         let mut desc = tex2d(32, 32, format, D3D11_BIND_SHADER_RESOURCE);
         desc.Usage = D3D11_USAGE_IMMUTABLE;
         let texture = gpu.texture2d(&desc, &[data(&blocks, 8 * block as u32, 0)])?;

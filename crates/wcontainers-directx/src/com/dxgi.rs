@@ -1,5 +1,5 @@
-//! The adapter a device reports (`IDXGIDevice::GetAdapter`). Adapter and output discovery belong to the
-//! shared infrastructure crate; until it exists this names the back end the library was built with.
+//! The adapter a device reports (`IDXGIDevice::GetAdapter`), described by the shared infrastructure
+//! crate from the back end's caps.
 
 use std::ffi::c_void;
 
@@ -7,43 +7,47 @@ use windows::Win32::Foundation::{E_NOINTERFACE, LUID};
 use windows::Win32::Graphics::Dxgi::*;
 use windows::core::{GUID, Result, implement};
 
+use wcontainers_directx_graphics_infrastructure::AdapterDesc;
+
 use super::*;
 
 #[implement(IDXGIAdapter1)]
 pub struct Adapter {
     pub(super) private: Private,
-    info: wcontainers_gpu::AdapterInfo,
+    desc: AdapterDesc,
 }
 
 impl Adapter {
-    pub fn new(info: wcontainers_gpu::AdapterInfo) -> Self {
+    pub fn new(caps: &wcontainers_gpu::Caps) -> Self {
         Adapter {
             private: Private::default(),
-            info,
+            desc: AdapterDesc::from_caps(caps),
         }
     }
 
+    /// The shared infrastructure's description: its adapter identifier, and memory sizes of zero,
+    /// since no browser API reports them.
     pub(super) fn get_desc1(&self) -> Result<DXGI_ADAPTER_DESC1> {
-        let mut d = DXGI_ADAPTER_DESC1 {
-            AdapterLuid: LUID::default(),
-            VendorId: self.info.vendor,
-            DeviceId: self.info.device,
-            Flags: if self.info.software {
+        let d = &self.desc;
+        Ok(DXGI_ADAPTER_DESC1 {
+            Description: d.description_utf16(),
+            VendorId: d.vendor_id,
+            DeviceId: d.device_id,
+            SubSysId: d.sub_sys_id,
+            Revision: d.revision,
+            DedicatedVideoMemory: d.dedicated_video_memory as usize,
+            DedicatedSystemMemory: d.dedicated_system_memory as usize,
+            SharedSystemMemory: d.shared_system_memory as usize,
+            AdapterLuid: LUID {
+                LowPart: d.luid as u32,
+                HighPart: (d.luid >> 32) as i32,
+            },
+            Flags: if d.software {
                 DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32
             } else {
                 0
             },
-            ..Default::default()
-        };
-        for (o, c) in d
-            .Description
-            .iter_mut()
-            .take(127)
-            .zip(self.info.name.encode_utf16())
-        {
-            *o = c;
-        }
-        Ok(d)
+        })
     }
 
     pub(super) fn get_desc(&self) -> Result<DXGI_ADAPTER_DESC> {

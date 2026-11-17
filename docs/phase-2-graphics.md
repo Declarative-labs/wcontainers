@@ -1414,7 +1414,10 @@ fresh shadow block; `Unmap` is `write_buffer(Discard)` (4.6). `UpdateSubresource
 `write_buffer(Ordered)` or `write_texture` of the stand-in's copy, except that a write covering the
 whole buffer, which is every `UpdateSubresource` of a constant buffer in Direct3D 11.0 (partial updates
 come only with `UpdateSubresource1`), is `write_buffer(Discard)`: the same meaning, so older engines
-that update constants this way per draw never split a pass (4.6). `ClearView` is `clear_rects`,
+that update constants this way per draw never split a pass (4.6). A constant buffer smaller than the size
+its shader declares (dxbc-spirv declares a dynamically indexed one whole, 65536 bytes, and WebGPU binds no
+smaller buffer) is moved into a buffer of that size whose bytes past its own are zero, as Direct3D reads
+them, and its whole writes are padded with zeros (`ConstantBufferGrown`). `ClearView` is `clear_rects`,
 `GenerateMips` is `generate_mips`, `ClearUnorderedAccessView*` on buffers is `clear_buffer` with the
 element's bits. On textures it is a `dispatch` of a built-in compute program (WGSL in the shaders crate,
 one per format class) writing the value through a storage view of the cleared range, where the view's

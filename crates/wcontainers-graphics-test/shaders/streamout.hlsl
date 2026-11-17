@@ -1,6 +1,7 @@
 // A geometry shader writing each triangle and a moved copy to stream output, and a pass-through
 // for drawing the written vertices back with DrawAuto.
 // fxc: gs_5_0 gs, vs_5_0 vs_back
+// dxc: gs_6_0 gs, vs_6_0 vs_back
 struct ColorOut { float4 pos : SV_Position; float4 color : COLOR; };
 [maxvertexcount(6)]
 void gs(triangle ColorOut t[3], inout TriangleStream<ColorOut> s) {

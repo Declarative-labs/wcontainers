@@ -13,7 +13,7 @@ use crate::dxbc;
 use crate::output::Output;
 
 /// A clockwise red triangle on the left and an anticlockwise green one on the right.
-fn windings() -> Vec<Colored> {
+pub fn windings() -> Vec<Colored> {
     let red = |x: f32, y: f32| [x, y, 0.5, 0.9, 0.2, 0.2, 1.0];
     let green = |x: f32, y: f32| [x, y, 0.5, 0.2, 0.9, 0.3, 1.0];
     vec![
@@ -27,7 +27,7 @@ fn windings() -> Vec<Colored> {
 }
 
 /// Three triangles of a fan, coloured by corner.
-fn fan() -> Vec<Colored> {
+pub fn fan() -> Vec<Colored> {
     let points = [
         [0.0f32, 0.0],
         [0.8, -0.6],
@@ -45,6 +45,77 @@ fn fan() -> Vec<Colored> {
     v
 }
 
+/// Each cull mode with clockwise, then anticlockwise, front faces.
+pub fn culls() -> Vec<(bool, D3D11_CULL_MODE)> {
+    [false, true]
+        .into_iter()
+        .flat_map(|ccw| [D3D11_CULL_NONE, D3D11_CULL_FRONT, D3D11_CULL_BACK].map(|c| (ccw, c)))
+        .collect()
+}
+
+pub const FILLS: [(D3D11_FILL_MODE, D3D11_CULL_MODE); 4] = [
+    (D3D11_FILL_WIREFRAME, D3D11_CULL_NONE),
+    (D3D11_FILL_WIREFRAME, D3D11_CULL_BACK),
+    (D3D11_FILL_WIREFRAME, D3D11_CULL_FRONT),
+    (D3D11_FILL_SOLID, D3D11_CULL_NONE),
+];
+
+/// The scissor rectangle of cell `i` of the scissor picture.
+pub fn scissor(i: i32) -> RECT {
+    let left = 64 * i;
+    RECT {
+        left: left + 13,
+        top: 9,
+        right: left + 47,
+        bottom: 51,
+    }
+}
+
+/// Eight viewports of different sizes and depth ranges.
+pub fn viewports() -> Vec<D3D11_VIEWPORT> {
+    (0..8)
+        .map(|i| {
+            let mut v = cell(i, 4, 64.0);
+            let shrink = 3.0 * i as f32;
+            v.TopLeftX += shrink;
+            v.TopLeftY += shrink / 2.0;
+            v.Width -= 2.0 * shrink;
+            v.Height -= shrink;
+            v
+        })
+        .collect()
+}
+
+/// A scissor rectangle for each of the eight viewports.
+pub fn scissors() -> Vec<RECT> {
+    (0..8)
+        .map(|i| {
+            let (x, y) = (64 * (i % 4), 64 * (i / 4));
+            RECT {
+                left: x + 2 * i,
+                top: y + i,
+                right: x + 64 - i,
+                bottom: y + 60 - 3 * i,
+            }
+        })
+        .collect()
+}
+
+/// What the geometry shader sends to every viewport: the fan and a white square.
+pub fn spread() -> Vec<Colored> {
+    let mut v = fan();
+    v.extend(quad(
+        -0.95,
+        -0.95,
+        -0.5,
+        -0.5,
+        0.5,
+        0.5,
+        [1.0, 1.0, 1.0, 1.0],
+    ));
+    v
+}
+
 pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let mut outputs = Vec::new();
     let c = &gpu.context;
@@ -52,12 +123,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
 
     let (target, rtv) = gpu.target(192, 128, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     gpu.begin(&rtv, None, 192, 128);
-    let culls = [D3D11_CULL_NONE, D3D11_CULL_FRONT, D3D11_CULL_BACK];
-    for (i, (ccw, cull)) in [false, true]
-        .into_iter()
-        .flat_map(|ccw| culls.map(|c| (ccw, c)))
-        .enumerate()
-    {
+    for (i, (ccw, cull)) in culls().into_iter().enumerate() {
         let state = gpu.rasterizer(&D3D11_RASTERIZER_DESC {
             CullMode: cull,
             FrontCounterClockwise: ccw.into(),
@@ -73,13 +139,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
 
     let (target, rtv) = gpu.target(256, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     gpu.begin(&rtv, None, 256, 64);
-    let fills = [
-        (D3D11_FILL_WIREFRAME, D3D11_CULL_NONE),
-        (D3D11_FILL_WIREFRAME, D3D11_CULL_BACK),
-        (D3D11_FILL_WIREFRAME, D3D11_CULL_FRONT),
-        (D3D11_FILL_SOLID, D3D11_CULL_NONE),
-    ];
-    for (i, (fill, cull)) in fills.into_iter().enumerate() {
+    for (i, (fill, cull)) in FILLS.into_iter().enumerate() {
         let state = gpu.rasterizer(&D3D11_RASTERIZER_DESC {
             FillMode: fill,
             CullMode: cull,
@@ -103,16 +163,10 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
             ScissorEnable: on.into(),
             ..solid()
         })?;
-        let left = 64 * i as i32;
         unsafe {
             c.RSSetState(&state);
             c.RSSetViewports(Some(&[cell(i as u32, 2, 64.0)]));
-            c.RSSetScissorRects(Some(&[RECT {
-                left: left + 13,
-                top: 9,
-                right: left + 47,
-                bottom: 51,
-            }]));
+            c.RSSetScissorRects(Some(&[scissor(i as i32)]));
         }
         draw_colored(gpu, &fan())?;
     }
@@ -122,28 +176,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let (target, rtv) = gpu.target(256, 128, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     gpu.begin(&rtv, None, 256, 128);
     gpu.program(dxbc!("raster.vs"), dxbc!("raster.ps"), &colored_layout())?;
-    let viewports: Vec<D3D11_VIEWPORT> = (0..8)
-        .map(|i| {
-            let mut v = cell(i, 4, 64.0);
-            let shrink = 3.0 * i as f32;
-            v.TopLeftX += shrink;
-            v.TopLeftY += shrink / 2.0;
-            v.Width -= 2.0 * shrink;
-            v.Height -= shrink;
-            v
-        })
-        .collect();
-    let scissors: Vec<RECT> = (0..8)
-        .map(|i| {
-            let (x, y) = (64 * (i % 4), 64 * (i / 4));
-            RECT {
-                left: x + 2 * i,
-                top: y + i,
-                right: x + 64 - i,
-                bottom: y + 60 - 3 * i,
-            }
-        })
-        .collect();
+    let (viewports, scissors) = (viewports(), scissors());
     unsafe {
         c.GSSetShader(&gpu.gs(dxbc!("raster.gs"))?, None);
         c.RSSetState(&gpu.rasterizer(&D3D11_RASTERIZER_DESC {
@@ -153,16 +186,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         c.RSSetViewports(Some(&viewports));
         c.RSSetScissorRects(Some(&scissors));
     }
-    let mut v = fan();
-    v.extend(quad(
-        -0.95,
-        -0.95,
-        -0.5,
-        -0.5,
-        0.5,
-        0.5,
-        [1.0, 1.0, 1.0, 1.0],
-    ));
+    let v = spread();
     gpu.vertices(0, bytemuck::cast_slice(&v), 28)?;
     unsafe {
         c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

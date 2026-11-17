@@ -15,6 +15,32 @@ use crate::output::Output;
 /// Hull and domain shader, patch topology and control points.
 type Patch<'a> = (&'a [u8], &'a [u8], D3D_PRIMITIVE_TOPOLOGY, &'a [Colored]);
 
+/// The edge and inside factors of every patch: the constant buffer at b0.
+pub const FACTORS: [f32; 8] = [3.3, 4.7, 2.2, 5.9, 3.6, 2.4, 0.0, 0.0];
+
+fn point(x: f32, y: f32, k: u32) -> Colored {
+    let [r, g, b] = hue(k, 4);
+    [x, y, 0.5, r, g, b, 1.0]
+}
+
+/// The control points of the triangle, quad and isoline patches.
+pub fn control_points() -> ([Colored; 3], [Colored; 4], [Colored; 2]) {
+    (
+        [
+            point(0.0, 0.85, 0),
+            point(0.85, -0.75, 1),
+            point(-0.85, -0.75, 2),
+        ],
+        [
+            point(-0.85, 0.85, 0),
+            point(0.85, 0.85, 1),
+            point(0.85, -0.85, 2),
+            point(-0.85, -0.85, 3),
+        ],
+        [point(-0.9, 0.0, 0), point(0.9, 0.0, 2)],
+    )
+}
+
 pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let c = &gpu.context;
     let (target, rtv) = gpu.target(256, 128, DXGI_FORMAT_R8G8B8A8_UNORM)?;
@@ -24,24 +50,8 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         dxbc!("tessellation.ps"),
         &colored_layout(),
     )?;
-    let point = |x: f32, y: f32, k: u32| {
-        let [r, g, b] = hue(k, 4);
-        [x, y, 0.5, r, g, b, 1.0]
-    };
-    let tri = [
-        point(0.0, 0.85, 0),
-        point(0.85, -0.75, 1),
-        point(-0.85, -0.75, 2),
-    ];
-    let quad = [
-        point(-0.85, 0.85, 0),
-        point(0.85, 0.85, 1),
-        point(0.85, -0.85, 2),
-        point(-0.85, -0.85, 3),
-    ];
-    let line = [point(-0.9, 0.0, 0), point(0.9, 0.0, 2)];
-    let factors: [f32; 8] = [3.3, 4.7, 2.2, 5.9, 3.6, 2.4, 0.0, 0.0];
-    let constants = gpu.immutable(bytemuck::cast_slice(&factors), D3D11_BIND_CONSTANT_BUFFER)?;
+    let (tri, quad, line) = control_points();
+    let constants = gpu.immutable(bytemuck::cast_slice(&FACTORS), D3D11_BIND_CONSTANT_BUFFER)?;
     let wire = gpu.rasterizer(&D3D11_RASTERIZER_DESC {
         FillMode: D3D11_FILL_WIREFRAME,
         ..solid()

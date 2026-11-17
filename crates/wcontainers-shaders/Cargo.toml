@@ -18,6 +18,20 @@ cc = { version = "1", features = ["parallel"] }
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }
 
+# tests/draw.rs: real Direct3D 11 beside the WebGPU and WebGL 2 back ends.
+[target.'cfg(windows)'.dev-dependencies]
+pollster = "1.0.1"
+wcontainers-gpu-webgl = { path = "../wcontainers-gpu-webgl" }
+wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
+wgpu = "30.0.2"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
 [lints]
 workspace = true
 
