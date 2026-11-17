@@ -8,6 +8,7 @@
 
 mod convert;
 mod draw;
+mod edge;
 mod layout;
 mod memory;
 
@@ -21,8 +22,8 @@ use std::sync::{Arc, Mutex};
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps,
     CopyBufferTexture, DepthStencilDesc, DeviceStatus, Extent, Features, FillMode, Filter, Format,
-    FormatCaps, FormatKind, FormatUse, GpuError, Helpers, Limits, LossReason, Object, PassDesc,
-    Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource, ReadState, SamplerDesc,
+    FormatCaps, FormatKind, FormatUse, GpuError, Helpers, Limits, LossReason, MapIntent, Object,
+    PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource, ReadState, SamplerDesc,
     ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc, TextureDimension, TextureRegion,
     TextureUsage, TextureViewDesc, VertexLayoutDesc, WriteMode,
 };
@@ -58,6 +59,13 @@ pub struct WebGpu {
     blocks: draw::BlockTables,
     caches: draw::Caches,
     pool: memory::BufferPool,
+    arena: Option<memory::Arena>,
+    edge: Option<edge::EdgeProgram>,
+    /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
+    float_clears: bool,
+    /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
+    /// longer be right; draws rebind nothing while it stays the same.
+    bind_epoch: u64,
     /// Host windows the graphics hook registered, by the number it gives them.
     windows: HashMap<u32, wgpu::Surface<'static>>,
     counters: Counters,
@@ -76,6 +84,15 @@ macro_rules! handle {
         $(#[$m])*
         #[derive(Clone, Debug)]
         pub struct $name(Rc<$obj>);
+
+        /// Handles are equal when they name the same object.
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                Rc::ptr_eq(&self.0, &other.0)
+            }
+        }
+
+        impl Eq for $name {}
     };
 }
 
@@ -103,9 +120,20 @@ struct BufferObj {
     id: u64,
     desc: BufferDesc,
     usage: wgpu::BufferUsages,
+    /// The GPU buffer holding its bytes: its own, or the uniform arena's.
     raw: RefCell<wgpu::Buffer>,
-    /// Bumped at every rename, so bind groups naming the old storage are made again.
+    /// Where its bytes start in `raw`: zero unless it lives in the arena.
+    base: Cell<u64>,
+    /// A number for `raw` that no other GPU buffer had, changed when `raw` is.
+    storage: Cell<u64>,
+    /// Bumped whenever `raw` or `base` changes, so bindings naming the old place are made again.
     generation: Cell<u64>,
+    /// It lives in the uniform arena: uniform-only and written often.
+    in_arena: bool,
+    /// A binding set names it, so a change of `raw` may change bind groups.
+    in_sets: Cell<bool>,
+    /// A bind group names it at a fixed offset, so a change of `base` changes that group.
+    static_bound: Cell<bool>,
     /// The serial of the last encoder that named it.
     used_in: Cell<u64>,
 }
@@ -226,6 +254,7 @@ impl WebGpu {
             | wgpu::Features::INDIRECT_FIRST_INSTANCE
             | wgpu::Features::SHADER_F16
             | wgpu::Features::FLOAT32_FILTERABLE
+            | wgpu::Features::FLOAT32_BLENDABLE
             | wgpu::Features::DUAL_SOURCE_BLENDING
             | wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
@@ -260,6 +289,8 @@ impl WebGpu {
             on_lost.lock().unwrap().get_or_insert(reason);
         });
         let (caps, usages) = caps(adapter, &device);
+        // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
+        let float_clears = adapter.get_info().backend == wgpu::Backend::Dx12;
         WebGpu {
             device,
             queue,
@@ -277,6 +308,10 @@ impl WebGpu {
             blocks: Default::default(),
             caches: Default::default(),
             pool: Default::default(),
+            arena: None,
+            edge: None,
+            float_clears,
+            bind_epoch: 0,
             windows: HashMap::new(),
             counters: Counters::default(),
             usages,
@@ -602,8 +637,10 @@ fn format_at(i: usize) -> Format {
     ALL[i]
 }
 
+/// Every buffer can be copied either way, and written by the edge program of unaligned ranges.
 fn buffer_usage(u: BufferUsage) -> wgpu::BufferUsages {
-    let mut w = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
+    let mut w =
+        wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE;
     for (ours, theirs) in [
         (BufferUsage::VERTEX, wgpu::BufferUsages::VERTEX),
         (BufferUsage::INDEX, wgpu::BufferUsages::INDEX),
@@ -659,19 +696,31 @@ impl Backend for WebGpu {
         if desc.size > self.caps.limits.max_buffer_size {
             return Err(GpuError::Invalid("buffer larger than max_buffer_size"));
         }
-        let usage = buffer_usage(desc.usage);
-        let raw = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: desc.size.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
-            usage,
-            mapped_at_creation: false,
-        });
+        let in_arena = desc.usage == BufferUsage::UNIFORM && desc.intent == MapIntent::Often;
+        let (usage, raw, base, storage) = if in_arena {
+            let (raw, base, storage) = self.arena_slice(desc.size);
+            (memory::arena_usage(), raw, base, storage)
+        } else {
+            let usage = buffer_usage(desc.usage);
+            let raw = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: desc.size.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
+                usage,
+                mapped_at_creation: false,
+            });
+            (usage, raw, 0, self.id())
+        };
         Ok(Buffer(Rc::new(BufferObj {
             id: self.id(),
             desc: *desc,
             usage,
             raw: RefCell::new(raw),
+            base: Cell::new(base),
+            storage: Cell::new(storage),
             generation: Cell::new(0),
+            in_arena,
+            in_sets: Cell::new(false),
+            static_bound: Cell::new(false),
             used_in: Cell::new(0),
         })))
     }
@@ -754,7 +803,10 @@ impl Backend for WebGpu {
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Sampler, GpuError> {
         let mut address = [wgpu::AddressMode::ClampToEdge; 3];
         for (a, ours) in address.iter_mut().zip(desc.address) {
-            *a = convert::address(ours).ok_or(GpuError::Absent(Features::BORDER_COLOR))?;
+            *a = convert::address(ours).ok_or(GpuError::Absent(match ours {
+                wcontainers_gpu::AddressMode::MirrorOnce => Features::MIRROR_ONCE,
+                _ => Features::BORDER_COLOR,
+            }))?;
         }
         let raw = self.device.create_sampler(&wgpu::SamplerDescriptor {
             label: None,
@@ -830,9 +882,17 @@ impl Backend for WebGpu {
             .iter()
             .filter_map(|t| t.blend)
             .flat_map(|(c, a)| [c.src, c.dst, a.src, a.dst]);
+        let dual = self.caps.features.contains(Features::DUAL_SOURCE_BLEND);
         for f in factors {
-            if convert::blend_factor(f).is_none() {
-                return Err(GpuError::Absent(Features::BLEND_CONSTANT_ALPHA));
+            match convert::blend_factor(f) {
+                None => return Err(GpuError::Absent(Features::BLEND_CONSTANT_ALPHA)),
+                Some(
+                    wgpu::BlendFactor::Src1
+                    | wgpu::BlendFactor::OneMinusSrc1
+                    | wgpu::BlendFactor::Src1Alpha
+                    | wgpu::BlendFactor::OneMinusSrc1Alpha,
+                ) if !dual => return Err(GpuError::Absent(Features::DUAL_SOURCE_BLEND)),
+                Some(_) => {}
             }
         }
         let id = self.next_id + 1;
@@ -949,6 +1009,7 @@ impl Backend for WebGpu {
     fn destroy(&mut self, object: Object<Self>) {
         let pending = |used_in: u64| used_in == self.serial && self.encoder.is_some();
         match object {
+            Object::Buffer(b) if b.0.in_arena => self.release_slice(&b.0),
             Object::Buffer(b) => {
                 let raw = b.0.raw.borrow().clone();
                 if pending(b.0.used_in.get()) {
@@ -1088,6 +1149,10 @@ impl Backend for WebGpu {
         }
         let commands = self.encoder.take().map(|e| e.finish());
         let index = self.queue.submit(commands);
+        if let Some(a) = &mut self.arena {
+            a.submitted();
+        }
+        self.caches.prune_groups();
         for rb in self.to_map.drain(..) {
             let state = rb.0.state.clone();
             rb.0.buffer
