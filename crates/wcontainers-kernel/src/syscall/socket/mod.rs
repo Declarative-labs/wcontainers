@@ -2118,9 +2118,22 @@ pub(super) fn setsockopt(
             }
             own.options.insert((level, name), bytes[..16].to_vec());
         }
+        // `sock_setsockopt`: zero copy sends are for internet sockets only.
+        SO_ZEROCOPY if own.inet.is_none() => return Err(Errno::EOPNOTSUPP),
+        // Options whose control messages (SCM_PIDFD, SCM_TIMESTAMP, SCM_TIMESTAMPNS) are not
+        // built: answered as a Linux without them.
+        SO_PASSPIDFD | SO_TIMESTAMP_OLD | SO_TIMESTAMPNS_OLD | SO_TIMESTAMP_NEW
+        | SO_TIMESTAMPNS_NEW | SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
+            drop(own);
+            return Err(kernel.counters.refuse(
+                cx.host,
+                crate::reason::OPTION_NOT_BUILT,
+                (u64::from(level) << 32) | u64::from(name),
+                Errno::ENOPROTOOPT,
+            ));
+        }
         SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
-        | SO_PASSSEC | SO_TIMESTAMP_OLD | SO_TIMESTAMPNS_OLD | SO_RCVLOWAT | SO_PRIORITY
-        | SO_PASSPIDFD | SO_ZEROCOPY | SO_BUSY_POLL | SO_INCOMING_CPU => {
+        | SO_PASSSEC | SO_RCVLOWAT | SO_PRIORITY | SO_ZEROCOPY | SO_BUSY_POLL | SO_INCOMING_CPU => {
             let value = int()?;
             if name == SO_PRIORITY && !(0..=6).contains(&value) {
                 return Err(Errno::EPERM);
