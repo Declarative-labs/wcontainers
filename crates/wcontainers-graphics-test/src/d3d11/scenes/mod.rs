@@ -2,19 +2,25 @@
 
 mod basic;
 mod blend;
+mod compute;
 mod constants;
 mod copies;
+mod deferred;
 mod depth;
 mod draws;
 mod dynamic;
 mod formats;
+mod geometry;
+mod levels;
 mod mips;
 mod msaa;
 mod queries;
 mod raster;
 mod samplers;
 mod stencil;
+mod streamout;
 mod targets;
+mod tessellation;
 mod textures;
 mod topology;
 mod views;
@@ -52,6 +58,12 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("copies", copies::run),
     ("queries", queries::run),
     ("mips", mips::run),
+    ("compute", compute::run),
+    ("geometry", geometry::run),
+    ("tessellation", tessellation::run),
+    ("streamout", streamout::run),
+    ("deferred", deferred::run),
+    ("levels", levels::run),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {

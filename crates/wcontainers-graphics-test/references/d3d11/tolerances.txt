@@ -3,6 +3,10 @@ blend-alpha.png 2 0 warp 15714 2
 blend-factors.png 2 0 warp 53491 2
 blend-masks.png 1 0 warp 34040 1
 blend-ops.png 2 0 warp 50930 2
+compute-overlaps.exr 0 0 warp 0 0
+compute-results.txt exact warp same
+compute-texture.exr 0 0 warp 0 0
+compute.png 0 0 warp 0 0
 constants-slots.png 1 0 warp 988 1
 constants-window.png 1 0 warp 288 1
 copies-bc_as_uint.txt exact warp same
@@ -11,6 +15,7 @@ copies-region.png 0 0 warp 0 0
 copies-resource_mip1.png 0 0 warp 0 0
 copies-staging.png 0 0 warp 0 0
 copies-uint.png 0 0 warp 0 0
+deferred.png 1 0 warp 4992 1
 depth-bias.png 0 0 warp 0 0
 depth-bias_depth.exr 0.00000017881393432617188 0 warp 6207 0.00000017881393432617188
 depth-clip.png 0 0 warp 0 0
@@ -48,7 +53,16 @@ formats-rgba8_uint.png 0 0 warp 0 0
 formats-rgba8_unorm.png 1 0 warp 186 1
 formats-srgb_blend.png 1 0 warp 2890 1
 formats-support.txt exact warp same
+geometry-adjacency.png 1 0 warp 345 1
+geometry-layer0.png 1 0 warp 41 1
+geometry-layer1.png 1 0 warp 39 1
+geometry-layer2.png 1 0 warp 44 1
+geometry-points.png 1 0 warp 337 1
+geometry-primitive_id.png 1 0 warp 2885 1
+geometry-strips.png 1 0 warp 236 1
 instanced.png 0 0 warp 0 0
+levels-9_1.png 1 0 warp 86 1
+levels-results.txt exact warp same
 mips-rgba16f_1.exr 0.001953125 0 warp 717 0.001953125
 mips-rgba16f_2.exr 0.00390625 0 warp 192 0.00390625
 mips-rgba16f_3.exr 0.00390625 0 warp 48 0.00390625
@@ -89,10 +103,14 @@ samplers-filters.png 8 6074 warp 29706 179
 samplers-gather.png 0 0 warp 0 0
 stencil-values.exr 0 0 warp 0 0
 stencil.png 1 0 warp 4448 1
+streamout-buffer.exr 0.000000014901161193847656 0 warp 5 0.000000014901161193847656
+streamout-results.txt exact warp same
+streamout.png 1 0 warp 82 1
 targets-r32ui.exr 0 0 warp 0 0
 targets-rgb10a2.png 1 0 warp 6605 1
 targets-rgba16f.exr 0 0 warp 0 0
 targets-rgba8.png 1 0 warp 9779 1
+tessellation.png 4 0 warp 768 4
 textures-1d.png 2 0 warp 2663 2
 textures-1d_array.png 0 0 warp 0 0
 textures-2d_array.png 1 0 warp 2144 1
