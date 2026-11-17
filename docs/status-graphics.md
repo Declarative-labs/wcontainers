@@ -127,8 +127,8 @@ branches into it at the start and end of every run.
   running query carried across as two interface queries), and the recording back end rejects the
   same draws in one pass: `a_pass_is_split_where_a_draw_reads_what_one_wrote_as_storage`.
 - 100,000 random sequences, seeded, recorded and replayed identically (same stream with every
-  answer, same bytes in every buffer and texture, same frames, no rule broken): run for seeds 0x5eed
-  and 0xc0ffee, 100,000 each (Measurements).
+  answer, same bytes in every buffer and texture, same frames, no rule broken): in run 3, on the
+  widened generator, seeds 0x5eed, 0xc0ffee and 0x7a11ed, 100,000 each (Measurements).
 
 ## G1a's second check, and how each finding was settled
 
@@ -200,6 +200,9 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     `PassTracker::generation` (new), `Combination` and `CombinationTracker::combination` (new;
     `drawn` now takes a `Combination`, `record` is for the cache's record only). No other track uses
     the helpers yet. Plan 4.7 and 4.12 say the same.
+  - From the shaders track (1ffcab5, merged at the start): `VariantKey::output_interpolation`. From
+    the webgpu track (b999c16, merged at the end): `SlowPath::IntegerClearByDraw`. Both kept as
+    they are; neither conflicts with anything here.
 
 - G1 run 2:
   - 54ff74f ("interface: stated the rules for multisampled textures, attachments and resolve
