@@ -6,20 +6,25 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library) is partly done; its first run (2026-11-17) did this:
-- Fixed the four findings of R0's check (see "R1 first run" under Measurements).
-- Part 1, scenes, is done but for swap chains: 26 Direct3D 11 scenes (125 outputs) and 8 Direct3D
-  12 scenes (16 outputs), each run on the RTX 3080 and on WARP with the debug layer on, the GPU's
-  outputs stored as references with an allowance derived from WARP, the HLSL kept beside its
-  compiled DXBC and DXIL. `tools/graphics-rig/scenes` checks every scene, through replacement
-  libraries if given, and prints what passes and what differs.
-- Part 2, Wine's Direct3D tests: the four test files (d3d11, d3d10core, dxgi, d3d12) of Wine 11.22
-  build as 64-bit Windows programs in C:\wc\wine (`wine-tests build`) and run through the queue
-  (`wine-tests run`), but every one of them stops within its first second: each creates a swap
-  chain early, DXGI refuses it in session 0, and the test then crashes. No baseline yet.
-- Part 3 (real programs and their call census) is not started.
-- The blocker for the rest: jobs run in session 0, where DXGI refuses every swap chain (see Known
-  issues). Wine's tests, a swap chain scene and real programs all need a session with a desktop.
+R1 (the Direct3D reference library) is nearly done. Its first run (2026-11-17) fixed R0's findings
+and built the scenes; its second run (2026-11-17) did this:
+- Jobs that present now run on a hidden desktop ("wc-rig") in the session of the user logged in
+  at the console (`gpu-job --desktop`, see How to run): windows and swap chains work there and
+  nothing shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
+- Part 1, scenes: done. 27 Direct3D 11 scenes (130 outputs) and 9 Direct3D 12 scenes (21 outputs),
+  now with swap chains (D3D11 flip and blit models, D3D12 flip model with resizing). Each ran on the
+  RTX 3080 twice and on WARP with the debug layer; `scenes` checks them, through replacement
+  libraries if given. Still missing: Direct3D 12 versions of the pipeline-state scenes.
+- Part 2, Wine's Direct3D tests: done. Each test of the d3d11, d3d10core, dxgi and d3d12 files runs
+  in its own process, chosen by name; 19 tests that would change the owner's screen are never run
+  (wine-excluded.txt). Baseline on the RTX 3080 and WARP in tools/graphics-rig/wine-baseline (see
+  Measurements). vkd3d's own Direct3D 12 tests are not built (Departures).
+- Part 3, real programs: done for 11 programs (5 DirectX SDK tutorials, 6 bgfx examples on its
+  Direct3D 11 renderer), each run for 120 frames through the forwarding library, which now takes
+  a census of device, context, swap chain and factory calls and saves frames 10, 60 and 120. The
+  census files are in tools/graphics-rig/census. Only two sources of programs, both samples and
+  demos; no game yet (Next).
+- The milestone's independent check has not been run.
 
 The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
 its sections 10 to 12 (one source two builds, testing, milestones G4 and G5) were read for this run.
@@ -36,7 +41,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   cmd.exe, with `CARGO_TARGET_DIR=C:\wc\target\<branch>`. Example:
   `tools/graphics-rig/remote cargo build -p wcontainers-graphics-test`. Runs of one branch take turns,
   and wait for that branch's running GPU jobs (each job holds the branch's lock shared).
-- `tools/graphics-rig/gpu-job [--priority N] [--alone] [--build <command>] -- <command>`: runs a
+- `tools/graphics-rig/gpu-job [--priority N] [--alone] [--desktop] [--build <command>] -- <command>`: runs a
   command as a GPU job in C:\wc\src\<branch>. That copy must hold this working tree as it is now; the
   job checks the git tree id when it starts and fails with 125 and a message if it differs.
   `--build <command>` sends the working tree and runs the build command there first, as `remote`
@@ -47,7 +52,13 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   all hardware C:\wc\out\x"`. Without it the job runs whatever the build directory holds, which may
   have been built from an earlier tree. N is any integer, higher starts first; `--alone` waits until
   no other job runs and holds new ones back until it ends. The command is any cmd.exe command line,
-  quotes and backslashes included. Prints the job's standard output on standard output and its
+  quotes and backslashes included. `--desktop` runs the command on the hidden desktop wc-rig of the
+  session of whoever is logged in at the desktop's console, for anything that creates a window or
+  a swap chain: the job (in session 0) writes the command, its directory and its whole environment
+  to C:\wc\desktop\<guid>, starts the scheduled task wc-desktop (interactive logon, so it runs in
+  that session) with that directory, and gt-desktop.exe runs the command there on wc-rig, with its
+  output in files the job then prints; leftover processes are killed when the command ends. It
+  fails after 30 s with a message when nobody is logged in. Prints the job's standard output on standard output and its
   standard error, the wrapper's messages and a timing line on standard error; exits with the job's
   code (125: the queue client or the job's wrapper failed, with a message saying which).
 - `tools/graphics-rig/queue-check`: sends the working tree, then on an idle queue submits sleeping jobs
@@ -55,7 +66,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   exactly as many as there are slots run at once, that a later priority-10 job starts before an
   earlier priority-0 one when every slot is taken, and that an alone job runs with nothing beside it.
   About 40 s.
-- `tools/graphics-rig/loop [picture-dir]`: one `gpu-job --build` that builds the rig on the desktop
+- `tools/graphics-rig/loop [picture-dir]`: one `gpu-job --desktop --build` that builds the rig on the desktop
   (and reinstalls the browser driver's packages when package-lock.json's hash changed), then
   (tools/graphics-rig/loop.cmd) checks every scene as `scenes` does, checks triangle, quads and
   topology again through the forwarding d3d11.dll (`--dll d3d11.dll=...forward.dll`), and draws the
@@ -67,7 +78,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   software adapter (DXGI's software flag: WARP or the Microsoft Basic Render Driver), and gt-wgpu
   when its adapter is a CPU one. With a directory, the pictures are also copied there.
 - `tools/graphics-rig/scenes [--build <command>] [--dll <name>=<path>]... [--api d3d11|d3d12]
-  [--driver hardware|warp] [<scene>...]`: one GPU job that builds the rig, copies gt-d3d11.exe and
+  [--driver hardware|warp] [<scene>...]`: one GPU job (on the hidden desktop) that builds the rig, copies gt-d3d11.exe and
   gt-d3d12.exe into C:\wc\out\<branch>\scenes\bin with each `--dll` beside them under its name
   (paths on the desktop, relative to its checkout; `%CARGO_TARGET_DIR%` works), runs every scene (or
   the named ones) in its own process with a 120 s limit, and checks every output against
@@ -102,13 +113,45 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - `tools/graphics-rig/wine-tests build`: fetches llvm-mingw 20261104 and the Direct3D test sources
   of Wine 11.22 (commit 9f8c4ae4d35c7ff4153267aba9618c026f5f5583, sparse: the four test
   directories, libs/winecrt0, include/wine, include/ddk) into C:\wc\wine and builds
-  C:\wc\wine\build\<test>_test.exe for d3d11, d3d10core, dxgi and d3d12 (desktop/wine-tests.ps1).
-  Not a GPU job. About 50 s from nothing.
-- `tools/graphics-rig/wine-tests run [--warp] [<test>...]`: one GPU job running the named test files
-  (all four by default; a test file is Wine's unit of selection, its framework has no way to pick
-  one test function) on the GPU or on WARP; prints for each its summary line, failed-check count,
-  exit code and time; logs in C:\wc\out\<branch>\wine and copied to the scratch directory
-  (wine-logs). Exits 1 if any test failed or crashed.
+  C:\wc\wine\build\<file>_test.exe for d3d11, d3d10core, dxgi and d3d12 (desktop/wine-tests.ps1).
+  Each statement directly in a file's START_TEST body that names a test_ function is rewritten in
+  the copy built (C:\wc\wine\build\<file>.c) to run only when wc_wanted("<name>") says so
+  (desktop/wine-select.h: the names in WC_WINE_ONLY, or all); the names go to <file>.tests. Not a
+  GPU job. About 14 s with the sources present.
+- `tools/graphics-rig/wine-tests list <file>`: the names of a file's tests.
+- `tools/graphics-rig/wine-tests run [--warp] [--record] [--dll <name>=<path>]...
+  [<file>[:<test>/<test>...]]...`: one GPU job on the hidden desktop (desktop/wine-run.ps1) running
+  every test of the named files (all four by default), or only the named tests, each in its own
+  process with a 120 s limit, on the GPU or on WARP, with replacement libraries beside the test
+  programs if given. Tests listed in tools/graphics-rig/wine-excluded.txt never run. Each test
+  gets a verdict (pass, fail, crash, timeout) from Wine's summary line and exit code, compared with
+  tools/graphics-rig/wine-baseline/<file>-<driver>.txt: "pass", "FAIL, passes on real Direct3D",
+  or "known, <verdict> on real Direct3D" for tests that fail on the real thing (not counted).
+  Exits 1 on any FAIL. `--record` runs real Direct3D and copies the results into wine-baseline.
+  Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs). Example:
+  `wine-tests run d3d11:test_blend_state/test_texture`.
+- `tools/graphics-rig/programs build`: fetches the real programs at pinned commits into
+  C:\wc\programs\src and builds them with the Build Tools' MSBuild (desktop/programs.ps1, which
+  lists them). About 6 minutes from nothing, most of it bgfx.
+- `tools/graphics-rig/programs run [--census] [--capture <frames>] [--dll <name>=<path>]...
+  [<program>...]`: one GPU job on the hidden desktop running each program (copied to
+  C:\wc\out\<branch>\programs\<program>\bin, in its own working directory) with the forwarding
+  library as d3d11.dll, which saves the frames listed (default 10,60,120) and ends the program at
+  the last. A replacement d3d11.dll given with --dll sits behind the forwarding one (WC_D3D11);
+  other --dll libraries go beside the program. Prints pass (presented the last frame, every frame
+  saved) or FAIL per program, exits 1 on any FAIL; frames and census to the scratch directory
+  (programs/<program>). `--census` (real Direct3D only) also copies each census into
+  tools/graphics-rig/census/<program>.txt.
+- The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
+  directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
+  tables of the device, swap chain and DXGI factory with counting thunks (names read from the
+  SDK's C headers at build time) and hand the program a wrapper for each immediate and deferred
+  context, whose methods count and jump through the context's own table at that moment (the
+  runtime rewrites entries of a context's table as it runs, which patching missed). census.txt:
+  "# frames", what was counted, any table entries the runtime changed after patching, then
+  "<table> <method> <calls>" and "d3d11.dll <export> <calls>". WC_CAPTURE: frames to save, before
+  their present, as frame-<n>.png (8-bit RGBA and BGRA back buffers; other formats are noted as not
+  saved); calls made while saving are taken back out; test presents are not frames.
 - `tools/graphics-rig/inventory`: prints the desktop's installed programs, root scheduled tasks,
   services, Graphics Tools state, PATHs and C:\wc, to compare with "The desktop" below. The listing
   taken before anything was installed is in the scratch directory
@@ -183,6 +226,12 @@ versions it finds and writes them to C:\wc\setup\versions.txt; on 2026-11-17 (R1
 - Chrome for Testing 157.0.8103.78 in C:\wc\chrome (0.43 GB), pinned, downloaded by
   @puppeteer/browsers; draw.mjs refuses to run if C:\wc\chrome holds any other build.
   Not installed into Windows: no updater, no services, no shortcuts. Never signed in.
+
+- Since R1's second run: C:\wc\bin\gt-desktop.exe (0.2 MB, built from this checkout by
+  `setup-desktop`) and the scheduled task wc-desktop (runs it as tom with an interactive logon,
+  limited rights, any number at once, no trigger: only started by jobs). It creates the desktop
+  wc-rig in the owner's session while a job runs; nothing is shown on his screen. Requests pass
+  through C:\wc\desktop. The real programs' sources and builds are in C:\wc\programs (0.94 GB).
 
 C:\wc holds, besides the tools above (bin, cargo, chrome, rustup, pueue): the installers in
 downloads (0.12 GB), the Graphics Tools task's log in setup, checkouts (C:\wc\src\<branch>, 0.02 GB),
@@ -336,6 +385,51 @@ R1 first run (2026-11-17; desktop CPU load 1 to 4 % before each run, Mac load av
   DXGI_ERROR_NOT_CURRENTLY_AVAILABLE (0x887A0022). The scene is kept out of the list (its source is
   in the scratch directory, swapchain-scene.rs).
 
+R1 second run (2026-11-17; desktop CPU load 1 to 5 % before each run, owner logged in at the
+console, Mac load average 25 to 60):
+- Presenting on the hidden desktop: a desktop job runs in session 1 on desktop wc-rig while the
+  input desktop stays Default (checked with GetThreadDesktop and OpenInputDesktop from inside a
+  job). The D3D11 and D3D12 swap chain scenes create, present (success codes), resize and draw on
+  the GPU and on WARP with the debug layer; every Present there returns DXGI_STATUS_OCCLUDED
+  (0x087A0001), as for any window nobody sees. A desktop job of `exit 3` took 0.6 s.
+- Scenes: `scenes --record` drew all 36 scenes; the existing 141 outputs were unchanged and the 10
+  new swap chain outputs equal on the two GPU runs; WARP differs from the GPU by at most 1 step in
+  them. `loop`: 16 s end to end, 151 scene outputs, 3 through the forwarding library, 4 other
+  renderers, all passing.
+- Wine's tests, baseline (whole recorded run 1 min 36 s on the GPU, 18 s on WARP; a second GPU run
+  gave the same verdict and the same number of checks for every test):
+  d3d11: 166 tests run (1 excluded), 162 pass on the GPU (508407 checks, 51.5 s), 165 on WARP
+  (508210 checks, 9.0 s). d3d10core: 111 run, 110 pass on both (198038 checks on the GPU, 32.8 s;
+  3.6 s on WARP). dxgi: 24 run (18 excluded), 20 pass on the GPU (6228 checks), 21 on WARP.
+  d3d12 (Wine's own, 10 tests): 7 pass on both (698 checks). The GPU's slowness per test is device
+  creation, about 0.3 s a test against 0.02 s on WARP.
+- Failing on real Direct3D, so not in the bar, with the reason read from their failed checks:
+  Present returns DXGI_STATUS_OCCLUDED on the hidden desktop where the test expects S_OK, on the
+  GPU and WARP alike: d3d11 and d3d10core test_desktop_window, dxgi test_swapchain_backbuffer_index,
+  test_frame_latency_event, test_swapchain_present_count, d3d12 test_swapchain_draw,
+  test_swapchain_size_mismatch, test_swapchain_backbuffer_index. Only on the RTX 3080's driver:
+  d3d11 test_clear_buffer_unordered_access_view (223 checks: a raw clear writes 0xffffffff where
+  0xfefefefe or 0x80808080 is expected), test_clear_image_unordered_access_view (3 checks: 0xffff7fff
+  for 0xffff8000), test_h264_decoder (1 check: the decoder exists where the test expects it not
+  to), dxgi test_output (3 checks: this monitor's modes are not sorted by refresh rate).
+- Real programs: all 11 pass (120 frames presented, frames 10, 60 and 120 saved) on real Direct3D
+  and through the forwarding library given as the replacement d3d11.dll (sdk-tutorial07 and
+  bgfx-21-deferred; the log shows D3D11CreateDevice in both copies). Each takes 0.3 s (tutorials)
+  or 2.4 to 2.9 s (bgfx). Over two runs, frames are the same only for still pictures
+  (sdk-tutorial02, and sdk-tutorial07 by chance); the others animate by the clock. The census is
+  the same over two runs for the tutorials and bgfx-24-nbody; the other bgfx examples differ by up
+  to 8 lines, by a few calls of the device's AddRef, Release, QueryInterface and GetPrivateData.
+- The census of our own scenes (swapchain, deferred, triangle) counted Draw 11 times on the
+  immediate context, as many as the scenes make, once contexts were wrapped; with the context's
+  table patched instead it counted 2 (the runtime changes those entries). Saved frames equal the
+  stored references exactly (frames 1 and 3 of the swap chain scene, flip and blit).
+- End of the second R1 run: the 6 unit tests pass through `remote`, clippy with warnings denied
+  passes for both crates on the desktop, shellcheck passes for every Mac script, `queue-check`
+  passes all five rules, `loop` passes, and `cargo tree --workspace -e all` (2095 lines) names no
+  Wine or vkd3d crate.
+- Disk: C:\wc 9.27 GB in all (C:\wc\target 5.50, C:\wc\programs 0.94, C:\wc\wine 0.16), 503.9 GB
+  free on C: (508.8 GB at the end of R0's third run).
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -427,18 +521,47 @@ There is no plan document in this checkout; these depart from the task or brief 
   with llvm-dlltool. Wine's other headers are not used: half of them are generated from .idl files
   by Wine's build and clash with mingw-w64's. vkd3d's own Direct3D 12 tests are not built; Wine's
   dlls/d3d12/tests is.
+- Jobs that present run on a hidden desktop in the owner's session (the earlier blocker, which
+  the first run left for the owner): it keeps everything off his screen and uses only a scheduled
+  task with an interactive logon, which changes nothing in Windows' settings. Windows of a desktop
+  nobody sees are occluded, which costs the eight Wine tests and the program named in Known issues.
+- Wine's tests run one test per process rather than one file per process, so a crash loses one
+  test; Wine's framework has no way to pick a test, so the build rewrites START_TEST in its copy.
+- Nineteen Wine tests that would change the owner's display are excluded, found by searching each
+  test's calls for ChangeDisplaySettings, SetFullscreenState, fullscreen swap chains,
+  SetGammaControl and ClipCursor.
+- vkd3d's Direct3D 12 conformance tests, which the task allows instead of Wine's small d3d12 file,
+  are not built yet: Wine's d3d12 file (10 tests) is the Direct3D 12 part of the baseline.
+- The DirectX SDK samples built on DXUT are not used: DXUT needs Microsoft's D3DX NuGet package,
+  whose licence must be accepted on download (requireLicenseAcceptance, Microsoft's own terms).
+  Only the five plain Direct3D 11 tutorials are used, which need nothing but the Windows SDK.
+- No open-source game yet: the real programs are Microsoft's samples and bgfx's examples (demos).
+- The census forwarding library hands the program wrapped contexts instead of patching their table
+  (see Measurements); devices, swap chains and factories are patched, and any entry the runtime
+  changes afterwards is reported in census.txt.
 - Texts hold only facts every correct implementation shares; values the implementation chooses
   (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
 
 ## Known issues
 
-- No swap chain can be created in session 0, where the queue runs its jobs (see Measurements), so
-  presenting is untested, Wine's tests crash early, and real programs, which present to a window,
-  cannot run in the queue. Running them needs jobs in an interactive session with a desktop: the
-  owner's own (his screen would show their windows while they run, and they would compete with his
-  games), or a second Windows user's session (Windows 10 Home allows fast user switching, but such a
-  session exists only while someone has logged that user in). This needs the owner's decision; until
-  then parts 2 and 3 cannot be finished.
+- Jobs that present need someone logged in at the desktop's console (the owner normally is): the
+  hidden desktop lives in that session. Without it, `gpu-job --desktop` fails after 30 s with a
+  message; `scenes`, `loop`, `wine-tests run` and `programs run` all use it.
+- On the hidden desktop every window counts as occluded: Present returns DXGI_STATUS_OCCLUDED. Eight
+  of Wine's tests fail on real Direct3D for that alone (see Measurements), and programs that stop
+  drawing while occluded cannot be run there: Dear ImGui's Direct3D 11 example was tried and only
+  test-presents after its first frame, so it was taken out of the list.
+- Nineteen of Wine's tests (wine-excluded.txt) are never run here because they would change the
+  owner's display (modes, fullscreen, gamma, cursor clipping); they need a machine whose display
+  nobody uses.
+- The census counts calls made through the program's objects, including those made by Windows' own
+  libraries on them (most of the device's AddRef, Release, QueryInterface and GetPrivateData), and
+  only on the device, contexts, swap chains and factories: methods of resources, views, states and
+  queries are not counted. Factory calls made before the program's first device are not counted.
+  A program that gets a context other than through D3D11CreateDevice(AndSwapChain),
+  GetImmediateContext* or CreateDeferredContext* would not be counted on it.
+- Frames of programs animated by the clock differ from run to run, so a replacement's frames are
+  for looking at, not for comparing; `programs run` passes a program that presents every frame.
 
 - SSH to the desktop has refused new connections (reset right after key exchange) for about 9 to 10
   minutes at a time and then recovered by itself, with no reboot and nothing in the OpenSSH or System
@@ -483,25 +606,24 @@ its scripts ISC, LLVM Apache-2.0 with LLVM exceptions, mingw-w64 headers and run
 permissive and public-domain terms) and Wine 11.22's test sources (C:\wc\wine, 0.16 GB with the
 builds, LGPL-2.1, testing only, never in the repository or any crate); its download is in
 C:\wc\downloads (now 0.30 GB);
+Real programs (built in C:\wc\programs, run for testing, never in a crate; licences read at the
+source on 2026-11-17): microsoft/DirectX-SDK-Samples at 07e3eaa1 (MIT, LICENSE file; only
+C++/Direct3D11/Tutorials fetched), bgfx at 3aab3201, bx at 365db1e2 and bimg at f091e14e
+(BSD-2-Clause each, per GitHub's licence detection of their LICENSE files). In R1's second run
+the forwarding crate gained png 0.18.1 (MIT OR Apache-2.0, already in the lock file), anyhow and
+windows (MIT OR Apache-2.0).
 pueue MIT, Git GPL-2.0, Node MIT, Rust MIT OR Apache-2.0, Visual Studio Build Tools and Windows SDK
 under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
 R1 continues, in this order:
-1. Settle where presenting jobs run (Known issues), then add that kind of job to the queue.
-2. Part 2, Wine's Direct3D tests: run all four on the RTX 3080 and on WARP in that session and
-   record the baseline (tests and checks run, failures on real Direct3D with their reasons, time).
-3. Part 3, real programs, in that session too. Candidates whose licence GitHub reports (checked on
-   2026-11-17 through its API; read each LICENSE file when fetching): microsoft/DirectX-SDK-Samples
-   (MIT; the Direct3D 11 tutorials and samples of the old DirectX SDK), microsoft/DirectXTK (MIT)
-   and microsoft/Xbox-ATG-Samples (MIT; its PC Direct3D 11 samples), microsoft/DirectX-Graphics-
-   Samples (MIT; mostly Direct3D 12), bkaradzic/bgfx (BSD-2-Clause; its examples run on a Direct3D
-   11 renderer), floooh/sokol-samples (MIT; Direct3D 11 on Windows) and ocornut/imgui (MIT; its
-   win32 Direct3D 11 example). Games or demos beyond these are still to be found. Candidates to
-   check at their source: DirectX-Graphics-Samples (MIT), DirectXTK samples (MIT), and two or three
-   open-source games or demos with 64-bit Direct3D 11 renderers. For each: a fetch-or-build script
-   into C:\wc, a fixed number of frames run repeatably, saved pictures, and a call census through a
-   forwarding library that also sees the COM methods (R0's sees only the 51 exports).
-4. Direct3D 12 versions of the pipeline-state scenes (blending, depth and stencil, formats,
-   textures and samplers), and a swap chain scene once presenting can run.
+1. One or two open-source games with 64-bit Direct3D 11 renderers and clear licences, through
+   `programs` (an SDL 2 game forced to SDL's direct3d11 renderer is one route; candidates must be
+   read at their source, and must keep drawing while occluded).
+2. Direct3D 12 versions of the pipeline-state scenes (blending, depth and stencil, formats,
+   textures and samplers).
+3. vkd3d's Direct3D 12 tests built and baselined like Wine's (LGPL, testing only, in C:\wc).
+4. The milestone's independent check from a fresh checkout: a sample of scenes, one Wine test file,
+   the forwarding library beside three scenes and one program, a scene broken on purpose, no Wine
+   test in any crate's dependency tree, each licence read at its source.
