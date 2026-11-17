@@ -1928,7 +1928,9 @@ impl<'a, W: Write> Writer<'a, W> {
                                                 true,
                                             ),
                                         };
-                                        write!(self.out, "{varying_name} = ")?;
+                                        let (open, close) =
+                                            output_assignment(member.binding.as_ref());
+                                        write!(self.out, "{varying_name}{open}")?;
 
                                         if let Some(struct_name) = temp_struct_name {
                                             write!(self.out, "{struct_name}")?;
@@ -1939,7 +1941,7 @@ impl<'a, W: Write> Writer<'a, W> {
                                         // Write field name
                                         writeln!(
                                             self.out,
-                                            ".{};",
+                                            ".{}{close};",
                                             &self.names
                                                 [&NameKey::StructMember(result.ty, index as u32)]
                                         )?;
@@ -1955,9 +1957,10 @@ impl<'a, W: Write> Writer<'a, W> {
                                             true,
                                         ),
                                     };
-                                    write!(self.out, "{name} = ")?;
+                                    let (open, close) = output_assignment(result.binding.as_ref());
+                                    write!(self.out, "{name}{open}")?;
                                     self.write_expr(value, ctx)?;
-                                    writeln!(self.out, ";")?;
+                                    writeln!(self.out, "{close};")?;
                                     write!(self.out, "{level}")?;
                                 }
                             }
@@ -4641,5 +4644,14 @@ impl<'a, W: Write> Writer<'a, W> {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+/// What goes between an entry point output's GLSL name and its value, and after the value:
+/// `gl_SampleMask` is an array of `int`, naga's sample mask one `u32`.
+const fn output_assignment(binding: Option<&crate::Binding>) -> (&'static str, &'static str) {
+    match binding {
+        Some(&crate::Binding::BuiltIn(crate::BuiltIn::SampleMask)) => ("[0] = int(", ")"),
+        _ => (" = ", ""),
     }
 }

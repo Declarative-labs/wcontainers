@@ -122,7 +122,7 @@ pub(in crate::back::glsl) const fn glsl_built_in(
             if options.output {
                 "gl_SampleMask"
             } else {
-                "gl_SampleMaskIn"
+                "uint(gl_SampleMaskIn[0])"
             }
         }
         // compute
