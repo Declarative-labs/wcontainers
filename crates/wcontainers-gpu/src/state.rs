@@ -213,7 +213,7 @@ pub struct RasterDesc {
 /// formats Direct3D and OpenGL use. A back end that lacks one (WebGPU has no three-component 8 or 16-bit
 /// formats) fetches it in the vertex program from a storage buffer or converts it on upload (slow path
 /// [`crate::SlowPath::VertexFormatConverted`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VertexFormat {
     Uint8x1,
     Uint8x2,

@@ -2,7 +2,7 @@
 //! end says in [`crate::Caps`] what it can do with each one.
 
 /// A texel format. Names follow the channel order in memory, then the number type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 #[repr(u16)]
 pub enum Format {
     R8Unorm,
