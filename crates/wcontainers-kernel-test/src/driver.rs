@@ -187,10 +187,13 @@ impl Host for TestHost {
         } else {
             ""
         };
-        eprintln!(
-            "kernel warning: {} (detail {} {name}, count {})",
-            warning.reason, warning.detail, warning.count
-        );
+        // Printed at counts 1, 2, 4, 8 and on, as a program can give millions.
+        if warning.count.is_power_of_two() {
+            eprintln!(
+                "kernel warning: {} (detail {} {name}, count {})",
+                warning.reason, warning.detail, warning.count
+            );
+        }
         self.warnings.push(Warned {
             reason: warning.reason.to_string(),
             count: warning.count,
