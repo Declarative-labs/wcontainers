@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod dxbc;
+mod dxil;
 mod ir;
 mod lower;
 
@@ -39,6 +40,8 @@ pub enum ConvertError {
     Rejected(String),
     /// The shader uses something this conversion does not provide yet, named.
     Unsupported(&'static str),
+    /// naga's SPIR-V reader cannot read what dxil-spirv wrote: one of the reader's gaps (plan 6.2).
+    Reader(String),
     /// The converter's output is not what this crate understands.
     Malformed(String),
     /// The converted module failed naga's validation.
@@ -50,6 +53,7 @@ impl core::fmt::Display for ConvertError {
         match self {
             ConvertError::Rejected(s) => write!(f, "rejected: {s}"),
             ConvertError::Unsupported(s) => write!(f, "unsupported: {s}"),
+            ConvertError::Reader(s) => write!(f, "spirv-reader: {s}"),
             ConvertError::Malformed(s) => write!(f, "malformed: {s}"),
             ConvertError::Invalid(s) => write!(f, "invalid: {s}"),
         }
@@ -65,7 +69,8 @@ pub const WEBGPU_CAPABILITIES: Capabilities = Capabilities::MULTISAMPLED_SHADING
 /// converters' revisions.
 pub const CONVERTER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+dxbc-spirv.6196cc6c62b7b04acb4f3e713ff3bb1a7e7950fd"
+    "+dxbc-spirv.6196cc6c62b7b04acb4f3e713ff3bb1a7e7950fd",
+    "+dxil-spirv.510991e707cda3aa389305448edad7c7dd76e3e7"
 );
 
 /// Converts a shader into the common form, as the variant asks. `root_signature` is the Direct3D 12
@@ -76,13 +81,11 @@ pub fn convert(
     root_signature: Option<&[u8]>,
 ) -> Result<Converted, ConvertError> {
     let _ = root_signature;
-    let bytes = match source {
-        Source::Dxbc(bytes) => bytes,
-        Source::Dxil(_) => return Err(ConvertError::Unsupported("Dxil")),
+    let (bytes, (module, reflection, stage)) = match source {
+        Source::Dxbc(bytes) => (bytes, lower::lower(&dxbc::to_ir(bytes)?, variant)?),
+        Source::Dxil(bytes) => (bytes, dxil::lower(bytes, variant)?),
         Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
     };
-    let ir = dxbc::to_ir(bytes)?;
-    let (module, reflection, stage) = lower::lower(&ir, variant)?;
     let info = validate(&module)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(bytes);

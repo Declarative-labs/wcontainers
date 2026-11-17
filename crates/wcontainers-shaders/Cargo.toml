@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
-naga = { workspace = true }
+naga = { workspace = true, features = ["spv-in"] }
 blake3 = { version = "1", default-features = false }
 
 [build-dependencies]

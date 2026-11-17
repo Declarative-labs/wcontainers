@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 use wcontainers_gpu::VariantKey;
 use wcontainers_shaders::{ConvertError, Source, WEBGPU_CAPABILITIES, convert};
 
-fn shaders(dir: &Path) -> Vec<PathBuf> {
+fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect())
         .unwrap_or_default();
-    v.retain(|p| p.extension().is_some_and(|e| e == "dxbc"));
+    v.retain(|p| p.extension().is_some_and(|e| e == ext));
     v.sort();
     v
 }
@@ -23,9 +23,17 @@ fn shaders(dir: &Path) -> Vec<PathBuf> {
 /// The verdict for one shader: "ok" or the first failing step and its reason.
 fn verdict(path: &Path, out: Option<&Path>) -> String {
     let bytes = std::fs::read(path).unwrap();
-    let converted = match convert(Source::Dxbc(&bytes), &VariantKey::default(), None) {
+    let source = |b| {
+        if path.extension().is_some_and(|e| e == "dxil") {
+            Source::Dxil(b)
+        } else {
+            Source::Dxbc(b)
+        }
+    };
+    let converted = match convert(source(&bytes), &VariantKey::default(), None) {
         Ok(c) => c,
         Err(ConvertError::Unsupported(what)) => return format!("unsupported {what}"),
+        Err(ConvertError::Reader(what)) => return format!("spirv-reader {what}"),
         Err(e) => return format!("convert {e}"),
     };
     let m = &converted.modules[0];
@@ -43,7 +51,7 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
         std::fs::write(out.join(format!("{name}.wgsl")), &wgsl).unwrap();
     }
     // The converted module is a function of the source and the variant alone.
-    let again = convert(Source::Dxbc(&bytes), &VariantKey::default(), None).unwrap();
+    let again = convert(source(&bytes), &VariantKey::default(), None).unwrap();
     let m2 = &again.modules[0];
     let wgsl2 = naga::back::wgsl::write_string(
         &m2.module,
@@ -119,14 +127,14 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     "ok".into()
 }
 
-fn run(dir: &Path, label: &str) -> BTreeMap<String, usize> {
+fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
     let out = std::env::var_os("WCONTAINERS_SHADERS_OUT").map(|o| PathBuf::from(o).join(label));
     if let Some(out) = &out {
         std::fs::create_dir_all(out).unwrap();
     }
     let mut counts = BTreeMap::new();
     let mut lines = String::new();
-    for path in shaders(dir) {
+    for path in shaders(dir, ext) {
         let v = verdict(&path, out.as_deref());
         let class: String = v.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
         *counts.entry(class).or_insert(0) += 1;
@@ -149,7 +157,7 @@ fn run(dir: &Path, label: &str) -> BTreeMap<String, usize> {
 fn rig_shaders_convert_or_fail_with_a_named_reason() {
     let dir =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders/dxbc");
-    let counts = run(&dir, "rig");
+    let counts = run(&dir, "dxbc", "rig");
     assert!(counts.values().sum::<usize>() > 0);
     let unnamed: usize = counts
         .iter()
@@ -168,7 +176,7 @@ fn corpus_converts_or_fails_with_a_named_reason() {
         eprintln!("WCONTAINERS_SHADER_CORPUS not set; skipped");
         return;
     };
-    let counts = run(Path::new(&dir), "corpus");
+    let counts = run(Path::new(&dir), "dxbc", "corpus");
     let unnamed: usize = counts
         .iter()
         .filter(|(k, _)| k.starts_with("convert "))
@@ -178,4 +186,35 @@ fn corpus_converts_or_fails_with_a_named_reason() {
         unnamed, 0,
         "shaders failing without a named reason: {counts:?}"
     );
+}
+
+#[test]
+fn rig_dxil_shaders_convert_or_fail_with_a_named_reason() {
+    let dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders/dxil");
+    let counts = run(&dir, "dxil", "rig-dxil");
+    assert!(counts.values().sum::<usize>() > 0);
+    let unnamed: usize = counts
+        .iter()
+        .filter(|(k, _)| k.starts_with("convert "))
+        .map(|(_, n)| n)
+        .sum();
+    assert_eq!(
+        unnamed, 0,
+        "shaders failing without a named reason: {counts:?}"
+    );
+}
+
+#[test]
+fn own_shaders_convert() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
+    let counts = run(&dir, "dxbc", "own");
+    // All five give valid WGSL; GLSL ES 3.00 lacks the bitfield operations two of them use, which
+    // the WebGL 2 back end lowers (plan 6.5).
+    let wgsl: usize = counts
+        .iter()
+        .filter(|(k, _)| k.starts_with("ok"))
+        .map(|(_, n)| n)
+        .sum();
+    assert_eq!(wgsl, 5, "{counts:?}");
 }
