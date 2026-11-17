@@ -581,9 +581,10 @@ fn backend_value(node: &Node, name: &[u8], size: usize) -> Result<Vec<u8>, Errno
     if name != CAPABILITY {
         return crate::fs::backend::getxattr(node, name, size as u32);
     }
-    // Measured on the reference (7.0): reading file capabilities of a FUSE file is EINVAL, with
-    // them set or not and whatever the size; `cap_inode_getsecurity` answers so when it finds no
-    // dentry for the inode, the one EINVAL on its way (why it finds none is not known).
+    // `security.capability` is read through the capability module (`xattr_getsecurity`), not the
+    // file system. Measured on the reference (7.0.14): on a FUSE file it answers EINVAL, set or
+    // not, whatever the size, and no GETXATTR reaches the backend (traced at the server), where
+    // `security.` names of other modules reach it and tmpfs files answer ENODATA.
     Err(Errno::EINVAL)
 }
 

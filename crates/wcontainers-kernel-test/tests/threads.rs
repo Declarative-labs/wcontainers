@@ -30,7 +30,13 @@ fn threads_survive_saving() {
 #[test]
 fn threads_match_reference_on_backend_root() {
     for run in assert_same_output_on_backend_root_seeded(&out(), "threads", &[], 6) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        // The program on the backend is read whole when it starts.
+        let others: Vec<_> = run
+            .warnings
+            .iter()
+            .filter(|warned| warned.reason != wcontainers_kernel::reason::BACKEND_READ_WHOLE)
+            .collect();
+        assert!(others.is_empty(), "{others:?}");
         assert!(run.saved > 0);
     }
 }

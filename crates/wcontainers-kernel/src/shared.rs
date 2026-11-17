@@ -60,6 +60,11 @@ pub(crate) fn backend_block(
     let have = old.map_or(0, |old| old.length);
     if have < length {
         let bytes = crate::fs::backend::read(&through, have, length - have)?;
+        kernel.counters.count(
+            cx.host,
+            crate::reason::BACKEND_READ_WHOLE,
+            bytes.len() as u64,
+        );
         backend_grow(kernel, cx, node, old, &through, length, &bytes)?;
     }
     if writer
@@ -85,6 +90,11 @@ pub(crate) fn backend_block_of(
     let old = node.borrow().content.block();
     let have = old.map_or(0, |old| old.length);
     let length = page_up(bytes.len() as u64);
+    kernel.counters.count(
+        cx.host,
+        crate::reason::BACKEND_READ_WHOLE,
+        bytes.len() as u64,
+    );
     if have < length {
         let tail = &bytes[(have as usize).min(bytes.len())..];
         backend_grow(kernel, cx, node, old, handle, length, tail)?;

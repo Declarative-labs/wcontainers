@@ -475,6 +475,7 @@ pub(super) fn open(
                         Err(Errno::ENOENT) if creating => {
                             let target = match &node.borrow().content {
                                 Content::Symlink(target) => target.clone(),
+                                Content::Backend(_) => crate::fs::backend::readlink(&node)?,
                                 _ => return Err(Errno::ENOENT),
                             };
                             return open(
@@ -640,7 +641,7 @@ pub(super) fn open(
                 if crate::fs::backend::truncates_on_open(&opened) {
                     // `fuse_finish_open`: the file is empty now.
                     if let Content::Backend(remote) = &node.borrow().content {
-                        remote.size.set(0);
+                        remote.set_size(0);
                     }
                 } else {
                     crate::fs::backend::setattr(
@@ -2433,7 +2434,7 @@ pub(super) fn fallocate(
             && mode & FALLOC_FL_KEEP_SIZE == 0
             && remote.size.get() < end
         {
-            remote.size.set(end);
+            remote.set_size(end);
         }
         crate::shared::changed(kernel, cx, &node)?;
         return Ok(0);

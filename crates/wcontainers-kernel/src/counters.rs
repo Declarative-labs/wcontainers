@@ -60,16 +60,27 @@ pub mod reason {
     /// One message to the file backend and the time until its answer, measured: every file call on
     /// the backend sends its messages, with no cache in phase one. Detail: the FUSE opcode.
     pub const BACKEND_MESSAGE: &str = "backend message";
+    /// A notice the backend sent unasked and the kernel handled, measured, not a slow path. Detail:
+    /// the notice's code.
+    pub const BACKEND_NOTICE: &str = "backend notice";
     /// The host could not hand a message to the backend; the call that asked gets ENOTCONN, as from
     /// a FUSE connection that is gone. Detail: the FUSE opcode.
     pub const BACKEND_UNREACHABLE: &str = "backend unreachable";
     /// A mapped backend file's pages were written back whole, changed or not, since which pages a
     /// shared mapping wrote is not known (Linux writes back only dirty pages). Detail: none.
     pub const BACKEND_PAGES_WRITTEN_WHOLE: &str = "backend pages written whole";
+    /// A backend file was read from its start to the end of a mapping when mapped, or whole when
+    /// run, where Linux reads each page at its first fault. Detail: the bytes read.
+    pub const BACKEND_READ_WHOLE: &str = "backend file read whole when mapped";
     /// The backend said a mapped file's bytes changed (INVAL_INODE): its mapped pages, and reads of
     /// it while mapped, keep the bytes they had, where Linux reads them again (plan section 15).
     /// Detail: the node number.
     pub const BACKEND_CHANGE_NOT_MAPPED: &str = "backend change not seen by mapped pages";
+    /// A parked call asked the backend a question other than the one an earlier run of it had
+    /// answered (what the call read changed while it waited, which the locks a waiting call holds
+    /// do not cover): that answer and the ones after it were dropped and the question sent, so the
+    /// backend may have done an earlier one's work too. Detail: the FUSE opcode.
+    pub const BACKEND_ASKED_AGAIN: &str = "backend question asked again";
     /// An answer or notice from the backend that the kernel could not read or does not handle.
     /// Detail: the request number, or the notice's code.
     pub const BACKEND_UNEXPECTED: &str = "backend message unexpected";

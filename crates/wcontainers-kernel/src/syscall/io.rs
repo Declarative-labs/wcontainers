@@ -1,5 +1,6 @@
 //! Reading, writing and moving around in open files, and what descriptors refer to.
 
+use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -12,7 +13,7 @@ use crate::fs::Content;
 use crate::fs::dev::Device;
 use crate::fs::proc::{Style, Writing};
 use crate::linux::general::*;
-use crate::process::Tid;
+use crate::process::{Channel, Tid};
 use crate::user::{Guest, access_ok};
 use crate::{Context, Errno, Kernel};
 
@@ -49,6 +50,7 @@ pub(super) fn read(
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
@@ -77,6 +79,7 @@ pub(super) fn write(
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
@@ -196,7 +199,9 @@ fn vectored2(
         return Err(Errno::EINVAL);
     }
     let file = file(kernel, tid, fd)?;
-    if !current {
+    if current {
+        lock_position(kernel, tid, &file)?;
+    } else {
         positioned(&file, writing)?;
     }
     let allowed = if writing {
@@ -602,6 +607,7 @@ pub(super) fn readv(
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().readable() {
         return Err(Errno::EBADF);
     }
@@ -617,6 +623,7 @@ pub(super) fn writev(
     [fd, vector, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if !file.borrow().writable() {
         return Err(Errno::EBADF);
     }
@@ -746,6 +753,12 @@ fn vectored(
         )
     {
         return random_bytes(kernel, cx, tid, &parts);
+    }
+    if on_backend_regular(file) {
+        return match writing {
+            Some(append) => write_parts(kernel, cx, tid, file, &parts, offset, append),
+            None => read_parts(kernel, cx, tid, file, &parts, offset),
+        };
     }
     let mut done = 0;
     for &(base, length) in &parts {
@@ -990,19 +1003,11 @@ pub(super) fn read_at(
     if is_sysctl(file) {
         return read_sysctl(kernel, cx, tid, file, &[(buffer, count)], at);
     }
+    if on_backend_regular(file) {
+        return read_parts(kernel, cx, tid, file, &[(buffer, count)], at);
+    }
     let offset = at.unwrap_or(file.borrow().offset);
     refresh_proc(kernel, cx, tid, file, offset)?;
-    // `fuse_direct_io`: a file the backend opened for direct reads and writes is read into the
-    // buffer's pages, taken first: as far as they can be written, EFAULT if not at all.
-    let count = if direct_on_backend(file) {
-        let reachable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::WRITE);
-        if reachable == 0 && count > 0 {
-            return Err(Errno::EFAULT);
-        }
-        reachable
-    } else {
-        count
-    };
     let bytes = file_bytes(cx, file, count, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
     accessed(kernel, cx, &node, flags);
@@ -1025,6 +1030,150 @@ pub(super) fn read_at(
         file.borrow_mut().offset = offset + written as u64;
     }
     Ok(written as u64)
+}
+
+/// Whether a file is a regular file on the backend.
+fn on_backend_regular(file: &FileRef) -> bool {
+    let file = file.borrow();
+    let inode = file.node.borrow();
+    matches!(inode.content, Content::Backend(_)) && !inode.is_directory()
+}
+
+/// Reads a backend file into the segments in one go at the file's position, or at `at` without
+/// moving it, as Linux's FUSE takes the whole iterator: a run of the call after a wait asks the
+/// same questions again.
+fn read_parts(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let offset = at.unwrap_or(file.borrow().offset);
+    let total: u64 = parts.iter().map(|(_, length)| length).sum();
+    // `fuse_direct_io`: a file the backend opened for direct reads and writes is read into the
+    // buffers' pages, taken first: as far as they can be written, EFAULT if not at all.
+    let count = if direct_on_backend(file) {
+        let mut guest = guest(kernel, cx, tid);
+        let mut reachable = 0;
+        for &(base, length) in parts {
+            let part = guest.accessible(base, length, Permissions::WRITE);
+            reachable += part;
+            if part < length {
+                break;
+            }
+        }
+        if reachable == 0 && total > 0 {
+            return Err(Errno::EFAULT);
+        }
+        reachable
+    } else {
+        total
+    };
+    let bytes = file_bytes(cx, file, count, offset)?;
+    let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
+    accessed(kernel, cx, &node, flags);
+    // Pages of files reach exactly up to a fault (measured).
+    let mut written = 0;
+    let mut guest = guest(kernel, cx, tid);
+    for &(base, length) in parts {
+        let piece = &bytes[written..(written + length as usize).min(bytes.len())];
+        if piece.is_empty() {
+            break;
+        }
+        let stored = guest.write_partial(base, piece);
+        written += stored;
+        if stored < piece.len() {
+            break;
+        }
+    }
+    if written == 0 && !bytes.is_empty() {
+        return Err(Errno::EFAULT);
+    }
+    let mut file = file.borrow_mut();
+    file.read_position = offset + written as u64;
+    if at.is_none() {
+        file.offset = offset + written as u64;
+    }
+    Ok(written as u64)
+}
+
+/// Writes the segments to a regular file in one go at the file's position, or at `at` without
+/// moving it, or at the file's end if `append`: as much as can be read, up to the file size limit.
+#[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
+fn write_parts(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    at: Option<u64>,
+    append: bool,
+) -> Result<u64, Errno> {
+    let node = file.borrow().node.clone();
+    lock_backend_writes(kernel, tid, &node)?;
+    // A backend's file ends where the backend says now (`fuse_update_attributes`).
+    if append && let Some(handle) = &file.borrow().backend {
+        crate::fs::backend::getattr(&node, Some(handle.fh))?;
+    }
+    let offset = if append {
+        node.borrow().size()
+    } else {
+        at.unwrap_or(file.borrow().offset)
+    };
+    let total = parts.iter().map(|(_, length)| length).sum();
+    let count = write_limit(kernel, cx, tid, file, offset, total)?;
+    // As much of the buffers as can be read; where it stops, the write ends (`write_bytes`).
+    let mut bytes = Vec::new();
+    let mut left = count;
+    let mut guest = guest(kernel, cx, tid);
+    for &(base, length) in parts {
+        let length = length.min(left);
+        let readable = guest.accessible(base, length, Permissions::READ);
+        bytes.extend_from_slice(&guest.read(base, readable)?);
+        left -= length;
+        if readable < length || left == 0 {
+            break;
+        }
+    }
+    write_bytes(kernel, cx, tid, file, &bytes, count, at, append)
+}
+
+/// `inode_lock` around a write to a backend file (`fuse_direct_write_iter` without
+/// FOPEN_PARALLEL_DIRECT_WRITES, `fuse_cache_write_iter`), held while the write waits for the
+/// backend. Files in memory finish a write without waiting, so nothing else needs it.
+fn lock_backend_writes(kernel: &mut Kernel, tid: Tid, node: &crate::fs::Node) -> Result<(), Errno> {
+    let holder = match &node.borrow().content {
+        Content::Backend(remote) if !node.borrow().is_directory() => remote.writer.get(),
+        _ => return Ok(()),
+    };
+    kernel.take_lock(
+        tid,
+        holder,
+        Channel::Held(Rc::as_ptr(node) as *const () as usize),
+    )?;
+    if let Content::Backend(remote) = &node.borrow().content {
+        remote.writer.set(Some(tid));
+    }
+    Ok(())
+}
+
+/// `fdget_pos`: a regular file's or directory's position is moved by one call at a time
+/// (`f_pos_lock` under FMODE_ATOMIC_POS), held while the call waits.
+pub(super) fn lock_position(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), Errno> {
+    let kind = file.borrow().node.borrow().file_type();
+    if kind != S_IFREG && kind != S_IFDIR {
+        return Ok(());
+    }
+    let holder = file.borrow().position_holder;
+    kernel.take_lock(
+        tid,
+        holder,
+        Channel::Held(Rc::as_ptr(file) as *const () as usize),
+    )?;
+    file.borrow_mut().position_holder = Some(tid);
+    Ok(())
 }
 
 /// Writes up to `count` bytes from the guest at the file's position, or at `at` without moving it, or
@@ -1064,20 +1213,7 @@ pub(super) fn write_at(
         )
     };
     if regular {
-        // A backend's file ends where the backend says now (`fuse_update_attributes`).
-        if append && let Some(handle) = &file.borrow().backend {
-            crate::fs::backend::getattr(&node, Some(handle.fh))?;
-        }
-        let offset = if append {
-            node.borrow().size()
-        } else {
-            at.unwrap_or(file.borrow().offset)
-        };
-        let count = write_limit(kernel, cx, tid, file, offset, count)?;
-        // As much of the buffer as can be read; where it stops, the write ends (`write_bytes`).
-        let readable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::READ);
-        let bytes = guest(kernel, cx, tid).read(buffer, readable)?;
-        return write_bytes(kernel, cx, tid, file, &bytes, count, at, append);
+        return write_parts(kernel, cx, tid, file, &[(buffer, count)], at, append);
     }
     // The random devices take in as much of the buffer as can be read (`write_pool_user`); the rest
     // only count the bytes.
@@ -1138,6 +1274,7 @@ pub(super) fn write_bytes(
     append: bool,
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
+    lock_backend_writes(kernel, tid, &node)?;
     let now = kernel.now(cx);
     let may_keep_privileges = kernel.credentials(tid).has(crate::credentials::CAP_FSETID);
     let mut inode = node.borrow_mut();
@@ -1171,7 +1308,7 @@ pub(super) fn write_bytes(
             if let Content::Backend(remote) = &node.borrow().content
                 && remote.size.get() < offset + written
             {
-                remote.size.set(offset + written);
+                remote.set_size(offset + written);
             }
             crate::shared::changed(kernel, cx, &node)?;
             if written == 0 && wanted > 0 {
@@ -1507,6 +1644,7 @@ pub(super) fn lseek(
     [fd, offset, whence, ..]: Args,
 ) -> Result<u64, Errno> {
     let file_ref = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file_ref)?;
     let mut file = file_ref.borrow_mut();
     if file.is_path() {
         return Err(Errno::EBADF);
@@ -1735,6 +1873,7 @@ pub(super) fn getdents64(
     [fd, buffer, count, ..]: Args,
 ) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
+    lock_position(kernel, tid, &file)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -1817,8 +1956,7 @@ pub(super) fn getdents64(
                 let file = file.borrow();
                 let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
                 let mut own = position;
-                let size = count.min(u64::from(u32::MAX)) as u32;
-                for entry in crate::fs::backend::readdir(handle, position, size)? {
+                for entry in crate::fs::backend::readdir(handle, position)? {
                     entries.push((entry.name, entry.ino, entry.kind, own, entry.next));
                     own = entry.next;
                 }

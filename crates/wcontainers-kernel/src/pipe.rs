@@ -47,6 +47,9 @@ pub(crate) struct Pipe {
     /// The thread whose call may hold the pipe's lock while it waits (a splice from a terminal);
     /// it holds it while it is parked in that call.
     pub held_by: Option<crate::process::Tid>,
+    /// A named pipe's inode on the backend, whose attributes stay the backend's while its buffer
+    /// is the kernel's (a FUSE inode keeps its inode operations under `pipefifo_fops`).
+    pub backend: Option<alloc::rc::Rc<crate::fs::backend::Remote>>,
 }
 
 impl Pipe {
@@ -70,6 +73,7 @@ impl Pipe {
             opened_readers: 0,
             opened_writers: 0,
             held_by: None,
+            backend: None,
         }
     }
 

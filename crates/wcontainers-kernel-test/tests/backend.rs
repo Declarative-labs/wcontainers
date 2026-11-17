@@ -56,7 +56,7 @@ fn same_on(name: &str, injections: driver::Injections, cached: bool) -> Vec<driv
 #[test]
 fn file_calls_match_reference() {
     for run in same_on_backend("backendfiles", driver::Injections::default()) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert_warned_only(&run, &[]);
         let messages: u64 = run
             .counters
             .iter()
@@ -71,7 +71,7 @@ fn file_calls_match_reference() {
 #[test]
 fn attributes_and_allocation_match_reference() {
     for run in same_on_backend("backendattrs", driver::Injections::default()) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert_warned_only(&run, &[]);
     }
 }
 
@@ -80,7 +80,28 @@ fn attributes_and_allocation_match_reference() {
 #[test]
 fn file_capabilities_match_reference() {
     for run in same_on_backend("backendcaps", driver::Injections::default()) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert_warned_only(&run, &[]);
+    }
+}
+
+/// Processes and threads sharing one open file's position while their calls wait for the backend,
+/// also saved and brought back.
+#[test]
+fn shared_positions_match_reference() {
+    let injections = driver::Injections {
+        saves: 4,
+        ..Default::default()
+    };
+    for run in same_on_backend("sharedpos", injections) {
+        assert_warned_only(&run, &[]);
+    }
+}
+
+/// Creating through links to missing files, and extended attributes of named pipes.
+#[test]
+fn special_files_match_reference() {
+    for run in same_on_backend("backendspecial", driver::Injections::default()) {
+        assert_warned_only(&run, &[]);
     }
 }
 
@@ -93,7 +114,7 @@ fn file_mappings_match_reference() {
         ..Default::default()
     };
     for run in same_on_backend("backendmap", injections) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert_warned_only(&run, &[]);
     }
 }
 
@@ -127,12 +148,23 @@ fn cached_mappings_share_pages_as_reference() {
 /// whole, and the syndrome of a fault past a file's end.
 fn assert_only_written_whole(run: &driver::Run) {
     use wcontainers_kernel::reason;
+    assert_warned_only(
+        run,
+        &[
+            reason::BACKEND_PAGES_WRITTEN_WHOLE,
+            reason::FAULT_SYNDROME_APPROXIMATED,
+        ],
+    );
+}
+
+/// Checks that a run warned of nothing but `allowed` and of backend files read whole when mapped.
+fn assert_warned_only(run: &driver::Run, allowed: &[&str]) {
     let others: Vec<_> = run
         .warnings
         .iter()
         .filter(|warning| {
-            warning.reason != reason::BACKEND_PAGES_WRITTEN_WHOLE
-                && warning.reason != reason::FAULT_SYNDROME_APPROXIMATED
+            warning.reason != wcontainers_kernel::reason::BACKEND_READ_WHOLE
+                && !allowed.contains(&warning.reason.as_str())
         })
         .collect();
     assert!(others.is_empty(), "{others:?}");
@@ -147,23 +179,52 @@ fn file_calls_survive_saves() {
         ..Default::default()
     };
     for run in same_on_backend("backendfiles", injections) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert_warned_only(&run, &[]);
         assert!(run.saved > 0);
     }
 }
 
 /// Notices the backend sends unasked, of every kind and about nodes the kernel holds or not, change
-/// nothing the program sees, and none is left unhandled (about one every 50 turns: 18 reached the
-/// three seeds' runs when this was written).
+/// nothing the program sees, and none is left unhandled. Every kind reaches the runs, and each
+/// RETRIEVE is answered.
 #[test]
 fn backend_notices_are_handled() {
+    use fuse_abi::linux::fuse_notify_code::*;
+    use wcontainers_kernel::reason;
     let injections = driver::Injections {
         notices: 400,
         ..Default::default()
     };
+    let mut handled = std::collections::BTreeMap::<u64, u64>::new();
+    let mut replies = 0;
     for run in same_on_backend("backendfiles", injections) {
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert_warned_only(&run, &[]);
+        for counter in &run.counters {
+            if counter.reason == reason::BACKEND_NOTICE {
+                *handled.entry(counter.detail).or_default() += counter.count;
+            }
+            if counter.reason == reason::BACKEND_MESSAGE
+                && counter.detail == fuse_abi::linux::fuse_opcode::FUSE_NOTIFY_REPLY as u64
+            {
+                replies += counter.count;
+            }
+        }
     }
+    eprintln!("notices handled by code: {handled:?}");
+    for code in [
+        FUSE_NOTIFY_POLL,
+        FUSE_NOTIFY_INVAL_INODE,
+        FUSE_NOTIFY_INVAL_ENTRY,
+        FUSE_NOTIFY_STORE,
+        FUSE_NOTIFY_RETRIEVE,
+        FUSE_NOTIFY_DELETE,
+    ] {
+        assert!(
+            handled.get(&(code as u64)).is_some_and(|count| *count > 0),
+            "{code:?}"
+        );
+    }
+    assert_eq!(Some(&replies), handled.get(&(FUSE_NOTIFY_RETRIEVE as u64)));
 }
 
 /// The messages each kind of file call sends to the backend (every call goes there in phase one;

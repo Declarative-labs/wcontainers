@@ -195,6 +195,10 @@ impl Host for TestHost {
 
     fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
         let backend = self.backend.as_mut().ok_or(HostError::NotSupported)?;
+        // The answer to a RETRIEVE this host sent in the server's place stays here.
+        if request.0 & RETRIEVED == RETRIEVED {
+            return Ok(());
+        }
         backend.send(request.0, message);
         Ok(())
     }
@@ -278,11 +282,17 @@ pub struct Injections {
 
 /// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
 fn moments(seed: u64, count: usize) -> Vec<u64> {
+    moments_apart(seed, count, 100)
+}
+
+/// Turn counts at which something is injected: `count` of them, each 1 to `apart` turns after the
+/// last.
+fn moments_apart(seed: u64, count: usize, apart: u64) -> Vec<u64> {
     let mut moments = StdRng::seed_from_u64(seed);
     let mut last = 0;
     (0..count)
         .map(|_| {
-            last += moments.random_range(1..100);
+            last += moments.random_range(1..apart);
             last
         })
         .collect()
@@ -303,7 +313,8 @@ pub fn run_injected(
     let mut at = moments(seed ^ 0x5a7e, injections.saves);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
     let mut signal_at = moments(seed ^ 0x5197, signals);
-    let mut notice_at = moments(seed ^ 0x6e07, injections.notices);
+    // Notices come close together, so that a short program meets many of them.
+    let mut notice_at = moments_apart(seed ^ 0x6e07, injections.notices, 10);
     let mut notices = StdRng::seed_from_u64(seed ^ 0x6e08);
     let mut turns = 0u64;
     let mut saved = 0;
@@ -467,16 +478,19 @@ pub fn run_injected(
     Ok(finish(run, report))
 }
 
+/// The request numbers of RETRIEVE notices this host sends: above any the kernel numbers.
+const RETRIEVED: u64 = 1 << 62;
+
 /// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node (one of the first
-/// few the backend numbers, some never looked up) drawn from `random`. RETRIEVE is not sent: the
-/// kernel's NOTIFY_REPLY to it would reach a server that never asked.
+/// few the backend numbers, some never looked up) drawn from `random`. The kernel's NOTIFY_REPLY to
+/// a RETRIEVE comes back to this host, which sent it, not to the server ([`RETRIEVED`]).
 fn notice(random: &mut StdRng) -> Vec<u8> {
     use fuse_abi::linux::*;
     use zerocopy::IntoBytes;
     let node: u64 = random.random_range(1..12);
     let name = b"backend-file\0";
     let namelen = (name.len() - 1) as u32;
-    let (code, body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..5) {
+    let (code, body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
         0 => (
             fuse_notify_code::FUSE_NOTIFY_POLL,
             fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec(),
@@ -514,6 +528,18 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
             body.extend_from_slice(name);
             (fuse_notify_code::FUSE_NOTIFY_DELETE, body)
         }
+        4 => (
+            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+            fuse_notify_retrieve_out {
+                notify_unique: RETRIEVED | node,
+                nodeid: node,
+                offset: 0,
+                size: 4096,
+                padding: 0,
+            }
+            .as_bytes()
+            .to_vec(),
+        ),
         _ => {
             let mut body = fuse_notify_store_out {
                 nodeid: node,

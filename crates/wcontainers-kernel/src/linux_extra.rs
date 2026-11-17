@@ -618,3 +618,7 @@ pub(crate) struct mq_attr {
     pub mq_curmsgs: i64,
     pub reserved: [i64; 4],
 }
+
+/// The longest name a FUSE backend may answer with (`FUSE_NAME_MAX`, Linux's internal
+/// `fs/fuse/fuse_i.h`).
+pub(crate) const FUSE_NAME_MAX: usize = 1024;

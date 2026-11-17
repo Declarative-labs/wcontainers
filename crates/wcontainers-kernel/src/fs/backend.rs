@@ -48,13 +48,31 @@ pub(crate) struct Settled {
     pub max_read: u32,
 }
 
+/// A request a call made: its number, what it asked (opcode, node and body, hashed), and the
+/// attribute version when it was sent (Linux's `fuse_get_attr_version`).
+#[derive(Clone, Copy)]
+struct Request {
+    unique: u64,
+    opcode: u32,
+    nodeid: u64,
+    asked: u64,
+    version: u64,
+}
+
+/// An answer a call had, with the request it answers.
+#[derive(Clone)]
+struct Reply {
+    request: Request,
+    result: Result<Rc<[u8]>, Errno>,
+}
+
 /// One call's questions: the replies its runs have had, how many of them this run has used, and
 /// the request it waits for.
 #[derive(Clone, Default)]
 struct Asked {
-    replies: Vec<Result<Rc<[u8]>, Errno>>,
+    replies: Vec<Reply>,
     used: usize,
-    waiting: Option<u64>,
+    waiting: Option<Request>,
     /// The inodes its answers named and the handles they gave, held until the call ends, as
     /// Linux holds what a call has looked up and opened: dropped between runs, the backend would
     /// be told to forget or release them.
@@ -104,6 +122,12 @@ struct State {
     asker: Option<Asker>,
     /// Counts each run of a call, for which attributes a run has already had.
     run: u64,
+    /// Counts changes to attributes the kernel holds (Linux's `fc->attr_version`).
+    attr_version: u64,
+    /// The attribute version of the request whose answer was taken last in this run.
+    taken: Option<u64>,
+    /// Opcodes of questions a call asked again because its earlier answer was to another question.
+    asked_again: Vec<u32>,
     calls: BTreeMap<Tid, Asked>,
     outbox: Vec<Outgoing>,
     sent: BTreeMap<u64, Sent>,
@@ -128,12 +152,17 @@ pub(crate) struct Remote {
     pub nodeid: u64,
     /// The run of a call whose reply last gave its attributes.
     fresh: Cell<u64>,
+    /// The attribute version of its last change (Linux's `fi->attr_version`): an answer to a
+    /// request sent before it is older than what the inode holds.
+    version: Cell<u64>,
     /// The size, blocks and block size the last answer gave.
     pub size: Cell<u64>,
     pub blocks: Cell<u64>,
     pub block_size: Cell<u32>,
     /// While a mapping shows the file: the pages its mappings show.
     pub pages: Option<Pages>,
+    /// The thread whose call took its writes' lock last (`io::lock_backend_writes`).
+    pub writer: Cell<Option<Tid>>,
 }
 
 /// A mapped backend file's first `block.length` bytes in a block of shared pages, as Linux's page
@@ -145,6 +174,20 @@ pub(crate) struct Pages {
     pub handle: Rc<Handle>,
     /// Whether a shared mapping that may write has shown it, so its bytes go back to the backend.
     pub written: bool,
+}
+
+impl Remote {
+    /// The file's size changed here (`fuse_write_update_attr`, a truncation): answers to requests
+    /// sent before it are older.
+    pub fn set_size(&self, size: u64) {
+        self.size.set(size);
+        self.changed();
+    }
+
+    /// What the inode holds changed, or the backend said it did (`fuse_reverse_inval_inode`).
+    pub fn changed(&self) {
+        self.version.set(self.client.next_version());
+    }
 }
 
 impl Drop for Remote {
@@ -238,6 +281,7 @@ impl Client {
         let mut state = self.state.borrow_mut();
         state.run += 1;
         state.asker = Some(asker);
+        state.taken = None;
         if let Some(asked) = state.calls.get_mut(&asker.tid) {
             asked.used = 0;
         }
@@ -288,25 +332,54 @@ impl Client {
     }
 
     /// Asks the backend: the answer's body, the error it gave, or `PARKED` while it is awaited.
+    /// An answer an earlier run had is taken only for the same question; a call that asks
+    /// something else in its place (what it read changed while it waited) drops that answer and
+    /// the ones after it, and asks afresh.
     pub fn ask(
         &self,
         opcode: fuse_opcode,
         nodeid: u64,
         parts: &[&[u8]],
     ) -> Result<Rc<[u8]>, Errno> {
+        let asked_now = fingerprint(opcode as u32, nodeid, parts);
         let mut state = self.state.borrow_mut();
         let asker = state
             .asker
             .expect("a question to the backend outside a system call");
         let asked = state.calls.entry(asker.tid).or_default();
         if let Some(reply) = asked.replies.get(asked.used) {
-            asked.used += 1;
-            return reply.clone();
+            if reply.request.asked == asked_now {
+                asked.used += 1;
+                let (version, result) = (reply.request.version, reply.result.clone());
+                state.taken = Some(version);
+                return result;
+            }
+            let used = asked.used;
+            let dropped = asked.replies.split_off(used);
+            let handles = asked.handles.split_off(&used);
+            state.asked_again.push(opcode as u32);
+            drop(state);
+            // An answer whose handle the call took gives it back as the handle goes.
+            for (index, reply) in dropped.into_iter().enumerate() {
+                if !handles.contains_key(&(used + index)) {
+                    self.give_back(reply.request.opcode, reply.request.nodeid, &reply.result);
+                }
+            }
+            drop(handles);
+            state = self.state.borrow_mut();
         }
+        let asked = state.calls.get_mut(&asker.tid).expect("asked");
         if asked.waiting.is_none() {
             state.last += 1;
             let unique = state.last;
-            state.calls.get_mut(&asker.tid).expect("asked").waiting = Some(unique);
+            let request = Request {
+                unique,
+                opcode: opcode as u32,
+                nodeid,
+                asked: asked_now,
+                version: state.attr_version,
+            };
+            state.calls.get_mut(&asker.tid).expect("asked").waiting = Some(request);
             let bytes = message(unique, opcode as u32, nodeid, &asker, parts);
             state.outbox.push(Outgoing {
                 unique,
@@ -431,39 +504,45 @@ impl Client {
             }
         }
         let waiter = sent.tid.filter(|tid| {
-            state
-                .calls
-                .get(tid)
-                .is_some_and(|asked| asked.waiting == Some(unique))
+            state.calls.get(tid).is_some_and(|asked| {
+                asked
+                    .waiting
+                    .is_some_and(|request| request.unique == unique)
+            })
         });
         let Some(tid) = waiter else {
             drop(state);
-            self.give_back(&sent, &result);
+            self.give_back(sent.opcode, sent.nodeid, &result);
             return Answered::Nobody(Some((sent.opcode, sent.at)));
         };
         let asked = state.calls.get_mut(&tid).expect("waiting");
-        asked.waiting = None;
-        asked.replies.push(result);
+        let request = asked.waiting.take().expect("waiting");
+        asked.replies.push(Reply { request, result });
         Answered::Call(tid, sent.opcode, sent.at)
+    }
+
+    /// The opcodes of questions asked again since the last time, for their counter.
+    pub fn asked_again(&self) -> Vec<u32> {
+        core::mem::take(&mut self.state.borrow_mut().asked_again)
     }
 
     /// An answer no call takes gives back what it handed out: a lookup the kernel holds no node for,
     /// and an open handle.
-    fn give_back(&self, sent: &Sent, result: &Result<Rc<[u8]>, Errno>) {
+    fn give_back(&self, opcode: u32, nodeid: u64, result: &Result<Rc<[u8]>, Errno>) {
         let Ok(body) = result else {
             return;
         };
-        if gives_entry(sent.opcode)
+        if gives_entry(opcode)
             && let Ok((entry, _)) = fuse_entry_out::read_from_prefix(body)
             && entry.nodeid != 0
             && !self.holds(entry.nodeid)
         {
             self.forget(entry.nodeid);
         }
-        let open = match sent.opcode {
-            opcode if opcode == fuse_opcode::FUSE_OPEN as u32 => Some((body.as_ref(), false)),
-            opcode if opcode == fuse_opcode::FUSE_OPENDIR as u32 => Some((body.as_ref(), true)),
-            opcode if opcode == fuse_opcode::FUSE_CREATE as u32 => body
+        let open = match opcode {
+            known if known == fuse_opcode::FUSE_OPEN as u32 => Some((body.as_ref(), false)),
+            known if known == fuse_opcode::FUSE_OPENDIR as u32 => Some((body.as_ref(), true)),
+            known if known == fuse_opcode::FUSE_CREATE as u32 => body
                 .get(size_of::<fuse_entry_out>()..)
                 .map(|rest| (rest, false)),
             _ => None,
@@ -471,10 +550,10 @@ impl Client {
         if let Some((open, directory)) = open
             && let Ok((open, _)) = fuse_open_out::read_from_prefix(open)
         {
-            let nodeid = if sent.opcode == fuse_opcode::FUSE_CREATE as u32 {
+            let nodeid = if opcode == fuse_opcode::FUSE_CREATE as u32 {
                 fuse_entry_out::read_from_prefix(body).map_or(0, |(entry, _)| entry.nodeid)
             } else {
-                sent.nodeid
+                nodeid
             };
             drop(Handle {
                 client: self.me.upgrade().expect("the connection is held"),
@@ -559,10 +638,12 @@ impl Client {
                     client: self.clone(),
                     nodeid: entry.nodeid,
                     fresh: Cell::new(0),
+                    version: Cell::new(0),
                     size: Cell::new(0),
                     blocks: Cell::new(0),
                     block_size: Cell::new(0),
                     pages: None,
+                    writer: Cell::new(None),
                 }),
                 flocks: Vec::new(),
                 record_locks: Vec::new(),
@@ -611,10 +692,21 @@ impl Client {
         self.node(&entry, None, b"")
     }
 
-    /// Sets an inode's attributes from an answer, as fresh for this run.
+    /// Sets an inode's attributes from an answer, as fresh for this run, unless the inode changed
+    /// after its request was sent (`fuse_change_attributes`), as when an earlier run of the call
+    /// already took the answer.
     pub fn refresh(&self, node: &Node, attr: &fuse_attr) {
-        let run = self.state.borrow().run;
+        let (run, taken) = {
+            let state = self.state.borrow();
+            (state.run, state.taken)
+        };
         let mut inode = node.borrow_mut();
+        if let Content::Backend(remote) = &inode.content
+            && taken.is_some_and(|version| remote.version.get() > version)
+        {
+            remote.fresh.set(run);
+            return;
+        }
         inode.ino = attr.ino;
         inode.mode = attr.mode;
         inode.uid = attr.uid;
@@ -626,10 +718,18 @@ impl Client {
         inode.ctime = time(attr.ctime, attr.ctimensec);
         if let Content::Backend(remote) = &inode.content {
             remote.fresh.set(run);
+            remote.version.set(self.next_version());
             remote.size.set(attr.size);
             remote.blocks.set(attr.blocks);
             remote.block_size.set(attr.blksize);
         }
+    }
+
+    /// A new attribute version, for a change to what an inode holds.
+    fn next_version(&self) -> u64 {
+        let mut state = self.state.borrow_mut();
+        state.attr_version += 1;
+        state.attr_version
     }
 
     /// Whether a node's attributes came from an answer this run of a call had.
@@ -659,6 +759,18 @@ fn time(seconds: u64, nanoseconds: u32) -> Time {
     }
 }
 
+/// What a request asks, hashed: its opcode, node and body.
+fn fingerprint(opcode: u32, nodeid: u64, parts: &[&[u8]]) -> u64 {
+    use core::hash::Hasher;
+    let mut hasher = siphasher::sip::SipHasher13::new();
+    hasher.write_u32(opcode);
+    hasher.write_u64(nodeid);
+    for part in parts {
+        hasher.write(part);
+    }
+    hasher.finish()
+}
+
 /// A request: the header, then its parts one after another.
 fn message(unique: u64, opcode: u32, nodeid: u64, asker: &Asker, parts: &[&[u8]]) -> Vec<u8> {
     let length = size_of::<fuse_in_header>() + parts.iter().map(|part| part.len()).sum::<usize>();
@@ -685,6 +797,10 @@ fn message(unique: u64, opcode: u32, nodeid: u64, asker: &Asker, parts: &[&[u8]]
 pub(crate) fn remote(node: &Node) -> Option<(Rc<Client>, u64)> {
     match &node.borrow().content {
         Content::Backend(remote) => Some((remote.client.clone(), remote.nodeid)),
+        Content::Pipe(pipe) => pipe
+            .backend
+            .as_ref()
+            .map(|remote| (remote.client.clone(), remote.nodeid)),
         _ => None,
     }
 }
@@ -693,6 +809,7 @@ pub(crate) fn remote(node: &Node) -> Option<(Rc<Client>, u64)> {
 pub(crate) fn remote_number(inode: &Inode) -> u64 {
     match &inode.content {
         Content::Backend(remote) => remote.nodeid,
+        Content::Pipe(pipe) => pipe.backend.as_ref().map_or(0, |remote| remote.nodeid),
         _ => 0,
     }
 }
@@ -1119,8 +1236,12 @@ pub(crate) fn write_back(
     Ok(())
 }
 
-/// `fuse_flush`: a descriptor of the file closed.
+/// `fuse_flush`: a descriptor of the file closed. Directories have no flush
+/// (`fuse_dir_operations`).
 pub(crate) fn flush(handle: &Handle, owner: u64) -> Result<(), Errno> {
+    if handle.directory {
+        return Ok(());
+    }
     let input = fuse_flush_in {
         fh: handle.fh,
         unused: 0,
@@ -1139,6 +1260,9 @@ pub(crate) fn flush(handle: &Handle, owner: u64) -> Result<(), Errno> {
 
 /// `fuse_flush` for a descriptor closed by anything but `close`, whose answer nothing waits for.
 pub(crate) fn flush_unwaited(handle: &Handle, owner: u64) {
+    if handle.directory {
+        return;
+    }
     let input = fuse_flush_in {
         fh: handle.fh,
         unused: 0,
@@ -1189,12 +1313,13 @@ pub(crate) struct Entry {
     pub name: Vec<u8>,
 }
 
-/// `fuse_readdir`: the entries from position `offset`, up to `size` bytes of them.
-pub(crate) fn readdir(handle: &Handle, offset: u64, size: u32) -> Result<Vec<Entry>, Errno> {
+/// `fuse_readdir_uncached`: the entries from position `offset`, one page of them, as
+/// `parse_dirfile` takes them.
+pub(crate) fn readdir(handle: &Handle, offset: u64) -> Result<Vec<Entry>, Errno> {
     let input = fuse_read_in {
         fh: handle.fh,
         offset,
-        size,
+        size: wcontainers_abi::PAGE_SIZE as u32,
         read_flags: 0,
         lock_owner: 0,
         flags: handle.flags,
@@ -1207,23 +1332,24 @@ pub(crate) fn readdir(handle: &Handle, offset: u64, size: u32) -> Result<Vec<Ent
     )?;
     let mut entries = Vec::new();
     let mut rest: &[u8] = &body;
-    // `struct fuse_dirent`: ino, off, namelen, type, then the name padded to eight bytes.
-    while rest.len() >= 24 {
-        let number = |at: usize| u64::from_le_bytes(rest[at..at + 8].try_into().expect("eight"));
-        let ino = number(0);
-        let next = number(8);
-        let length = u32::from_le_bytes(rest[16..20].try_into().expect("four")) as usize;
-        let kind = rest[20];
-        if length == 0 || 24 + length > rest.len() {
+    while let Ok((dirent, after)) = fuse_dirent::read_from_prefix(rest) {
+        let length = dirent.namelen as usize;
+        // Each entry's name is padded to eight bytes (`FUSE_DIRENT_ALIGN`).
+        let record = (size_of::<fuse_dirent>() + length).next_multiple_of(8);
+        if record > rest.len() {
+            break;
+        }
+        let name = &after[..length];
+        if length == 0 || length > crate::linux_extra::FUSE_NAME_MAX || name.contains(&b'/') {
             return Err(Errno::EIO);
         }
         entries.push(Entry {
-            ino,
-            next,
-            kind,
-            name: rest[24..24 + length].to_vec(),
+            ino: dirent.ino,
+            next: dirent.off,
+            kind: dirent.type_ as u8,
+            name: name.to_vec(),
         });
-        rest = &rest[((24 + length + 7) & !7).min(rest.len())..];
+        rest = &rest[record..];
     }
     Ok(entries)
 }
@@ -1382,6 +1508,13 @@ impl crate::Kernel {
         let Some(client) = self.files.backend.clone() else {
             return;
         };
+        for opcode in client.asked_again() {
+            self.counters.count(
+                cx.host,
+                crate::reason::BACKEND_ASKED_AGAIN,
+                u64::from(opcode),
+            );
+        }
         let now = cx.monotonic();
         for request in client.outgoing(now) {
             // A message with no answer is counted when it goes; the rest when answered, with
@@ -1475,6 +1608,7 @@ impl crate::Kernel {
                     && let Content::Backend(remote) = &node.borrow().content
                 {
                     remote.fresh.set(0);
+                    remote.changed();
                     if out.off >= 0 && remote.pages.is_some() {
                         self.counters.count(
                             cx.host,
@@ -1508,7 +1642,7 @@ impl crate::Kernel {
                     crate::shared::backend_written(cx, &node, out.offset, data);
                     if let Content::Backend(remote) = &node.borrow().content {
                         let end = out.offset + data.len() as u64;
-                        remote.size.set(remote.size.get().max(end));
+                        remote.set_size(remote.size.get().max(end));
                     }
                     let _ = crate::shared::changed(self, cx, &node);
                 }
@@ -1547,7 +1681,10 @@ impl crate::Kernel {
             }
             _ => false,
         };
-        if !handled {
+        if handled {
+            self.counters
+                .measure(crate::reason::BACKEND_NOTICE, code as u64, 0);
+        } else {
             self.counters
                 .count(cx.host, crate::reason::BACKEND_UNEXPECTED, code as u64);
         }

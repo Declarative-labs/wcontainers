@@ -43,6 +43,8 @@ pub(crate) struct OpenFile {
     pub internal_mount: bool,
     /// For a file on a backend, its handle there.
     pub backend: Option<Rc<crate::fs::backend::Handle>>,
+    /// The thread whose call took its position last (`io::lock_position`).
+    pub position_holder: Option<crate::process::Tid>,
 }
 
 /// The state of a file on the shared anonymous inode.
@@ -102,6 +104,7 @@ impl OpenFile {
             anon: None,
             internal_mount: false,
             backend: None,
+            position_holder: None,
         }))
     }
 

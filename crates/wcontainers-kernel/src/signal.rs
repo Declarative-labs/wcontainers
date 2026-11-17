@@ -458,7 +458,7 @@ impl Kernel {
             return;
         }
         let wait = self.threads[&tid].call.wait;
-        if wait.is_some_and(|channel| channel != Channel::Backend) {
+        if wait.is_some_and(|channel| !matches!(channel, Channel::Backend | Channel::Held(_))) {
             self.wake_thread(tid);
         } else if wait.is_none() && self.running != Some(tid) && !self.signalled.contains(&tid) {
             self.signalled.push_back(tid);
