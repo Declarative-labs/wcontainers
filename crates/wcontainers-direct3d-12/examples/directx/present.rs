@@ -662,10 +662,14 @@ impl SwapChain {
         })
     }
 
+    /// Each format presents in one colour space, so there is nothing to change.
     pub fn SetColorSpace1(&self, space: DXGI_COLOR_SPACE_TYPE) -> Result<()> {
-        let id = self.id;
-        let space = space.0 as u32;
-        gpu::call(move |d| d.set_color_space(id, space)).map_err(|_| E_INVALIDARG.into())
+        let format = self.state.lock().unwrap().desc.Format.0 as u32;
+        if presents_in(format, space.0 as u32) {
+            Ok(())
+        } else {
+            Err(E_INVALIDARG.into())
+        }
     }
 }
 

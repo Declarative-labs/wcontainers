@@ -733,14 +733,6 @@ impl<B: Backend> Device<B> {
         c.chain.present(&mut self.backend, sync_interval)
     }
 
-    /// `SetColorSpace1`.
-    pub fn set_color_space(&mut self, id: ChainId, space: u32) -> Result<(), SwapChainError> {
-        match self.chains.get_mut(id.0 as usize) {
-            Some(c) => c.chain.set_color_space(&mut self.backend, space),
-            None => Err(SwapChainError::InvalidCall("no such swap chain")),
-        }
-    }
-
     /// Whether a present now would wait for frame pacing (`DXGI_PRESENT_DO_NOT_WAIT`).
     pub fn would_wait(&mut self, id: ChainId) -> bool {
         match self.chains.get_mut(id.0 as usize) {

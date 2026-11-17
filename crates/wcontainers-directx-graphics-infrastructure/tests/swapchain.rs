@@ -245,7 +245,7 @@ fn format_support_follows_the_back_ends_format_uses() {
 #[test]
 fn outputs_present_sdr_only() {
     // R8G8B8A8_UNORM and R16G16B16A16_FLOAT back buffers; G2084 P2020 is HDR10.
-    assert!(presents_in(28, COLOR_SPACE_SRGB) && presents_in(10, COLOR_SPACE_SRGB));
+    assert!(presents_in(28, COLOR_SPACE_SRGB) && !presents_in(10, COLOR_SPACE_SRGB));
     assert!(presents_in(10, COLOR_SPACE_LINEAR) && !presents_in(28, COLOR_SPACE_LINEAR));
     assert!(!presents_in(24, 12) && !presents_in(10, 12));
 }

@@ -65,22 +65,27 @@ pub const COLOR_SPACE_SRGB: u32 = 0;
 pub const COLOR_SPACE_LINEAR: u32 = 1;
 
 /// Whether a swap chain with back buffers of `format` (a `DXGI_FORMAT`) presents in colour space
-/// `space` (`CheckColorSpaceSupport`'s present bit): sRGB always, linear light from 16-bit float
-/// buffers. No HDR space is presented: values beyond one are clipped, as on an SDR display.
+/// `space` (`CheckColorSpaceSupport`'s present bit): linear light from 16-bit float buffers, sRGB
+/// from the others, as Windows answers on an SDR display. No HDR or studio-range space is
+/// presented: values beyond one are clipped, as on an SDR display.
 pub fn presents_in(format: u32, space: u32) -> bool {
     const R16G16B16A16_FLOAT: u32 = 10;
-    space == COLOR_SPACE_SRGB || space == COLOR_SPACE_LINEAR && format == R16G16B16A16_FLOAT
+    if format == R16G16B16A16_FLOAT {
+        space == COLOR_SPACE_LINEAR
+    } else {
+        space == COLOR_SPACE_SRGB
+    }
 }
 
-/// What `IDXGIOutput6::GetDesc1` reports of every output beyond its place: an SDR display as sRGB
-/// defines its reference display (IEC 61966-2-1: BT.709 primaries, D65 white, 80 cd/m² white,
-/// 0.2 cd/m² black). The host says nothing more of its displays.
+/// What `IDXGIOutput6::GetDesc1` reports of every output beyond its place: an SDR display with
+/// sRGB's primaries and white point (BT.709, D65), and the luminance Windows reports for an SDR
+/// display. The host says nothing more of its displays.
 pub mod sdr {
     pub const BITS_PER_COLOR: u32 = 8;
     /// Red, green, blue and white, as CIE 1931 x and y.
     pub const PRIMARIES: [[f32; 2]; 4] =
         [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06], [0.3127, 0.3290]];
-    pub const MIN_LUMINANCE: f32 = 0.2;
-    pub const MAX_LUMINANCE: f32 = 80.0;
-    pub const MAX_FULL_FRAME_LUMINANCE: f32 = 80.0;
+    pub const MIN_LUMINANCE: f32 = 0.5;
+    pub const MAX_LUMINANCE: f32 = 270.0;
+    pub const MAX_FULL_FRAME_LUMINANCE: f32 = 270.0;
 }
