@@ -570,7 +570,17 @@ impl WebGpu {
                     })
                 }
                 SetRes::View(v) => wgpu::BindingResource::TextureView(&v.0.read),
-                SetRes::Sampler(s) => wgpu::BindingResource::Sampler(&s.0.raw),
+                SetRes::Sampler(s) => {
+                    if s.0.filtering
+                        && le.ty
+                            == wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+                    {
+                        return Err(
+                            "a filtering sampler with a texture this device cannot filter; fronts filter in the program (FilterInShader)",
+                        );
+                    }
+                    wgpu::BindingResource::Sampler(&s.0.raw)
+                }
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: le.binding,
@@ -683,12 +693,16 @@ impl WebGpu {
             }
         }
         let fragment = match fragment {
-            Some(f) => Some((f, targets)),
+            Some(f) => Some((f.0.raw.clone(), f.0.entry.as_str(), targets)),
             None if targets.iter().all(Option::is_none) => None,
+            // WebGPU draws into colour targets only with a fragment stage: one writing nothing,
+            // so the targets keep what they hold, as with no fragment shader in other APIs.
             None => {
-                return Err(
-                    "a program without a fragment shader drawing into color targets is not built yet",
-                );
+                for t in targets.iter_mut().flatten() {
+                    t.write_mask = wgpu::ColorWrites::empty();
+                    t.blend = None;
+                }
+                Some((self.no_fragment(), "none", targets))
             }
         };
         let raster = &call.raster.0.desc;
@@ -757,12 +771,14 @@ impl WebGpu {
                     mask: u64::from(raster.sample_mask),
                     alpha_to_coverage_enabled: blend.alpha_to_coverage,
                 },
-                fragment: fragment.as_ref().map(|(f, targets)| wgpu::FragmentState {
-                    module: &f.0.raw,
-                    entry_point: Some(&f.0.entry),
-                    compilation_options: Default::default(),
-                    targets,
-                }),
+                fragment: fragment
+                    .as_ref()
+                    .map(|(module, entry, targets)| wgpu::FragmentState {
+                        module,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets,
+                    }),
                 multiview_mask: None,
                 cache: None,
             });
@@ -783,6 +799,7 @@ impl WebGpu {
         };
         let (mut width, mut height) = (0, 0);
         let mut colors = Vec::new();
+        let mut by_draw = Vec::new();
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else {
                 colors.push(None);
@@ -812,11 +829,12 @@ impl WebGpu {
                             _ => true,
                         };
                         if self.float_clears && !bits.iter().all(|b| exact(*b)) {
-                            self.fail(
-                                "an integer clear past 2^24, which wgpu's Direct3D 12 rounds through a float, is not built yet",
-                            );
+                            // Loaded, then cleared by a draw once the pass is open.
+                            by_draw.push((i, bits));
+                            None
+                        } else {
+                            Some(color_value(bits, kind))
                         }
-                        Some(color_value(bits, kind))
                     }
                     LoadOp::DontCare => Some(wgpu::Color::TRANSPARENT),
                 },
@@ -892,13 +910,16 @@ impl WebGpu {
             }));
         }
         let occlusion_set = pass.occlusion.map(|q| q.0.raw.clone());
-        let rp = open(
+        let mut rp = open(
             self.encoder(),
             &colors,
             &depth,
             occlusion_set.as_ref(),
             false,
         );
+        for (i, bits) in by_draw {
+            self.clear_by_draw(&mut rp, &targets, i, bits);
+        }
         self.pass = Some(Pass {
             rp,
             occlusion: occlusion_set.is_some(),

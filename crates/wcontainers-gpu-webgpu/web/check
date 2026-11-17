@@ -8,9 +8,9 @@ root=$(git rev-parse --show-toplevel)
 rig=$root/tools/graphics-rig
 # shellcheck source=tools/graphics-rig/common.sh
 . "$rig/common.sh"
-build="cargo build -j 3 -p wcontainers-gpu-webgpu --example scenes"
-build+=" && cargo build -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"
-build+=" && cargo build -j 3 -p wcontainers-graphics-test --bin gt-compare"
+build="cargo build --locked -j 3 -p wcontainers-gpu-webgpu --example scenes"
+build+=" && cargo build --locked -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"
+build+=" && cargo build --locked -j 3 -p wcontainers-graphics-test --bin gt-compare"
 build+=" && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1"
 set +e
 "$rig/gpu-job" --build "$build" -- "crates\\wcontainers-gpu-webgpu\\web\\check.cmd $name"
