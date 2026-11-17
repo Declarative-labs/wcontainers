@@ -523,8 +523,12 @@ Nothing is mapped across the boundary. Every API's mapping rule becomes a write 
   write only part of the buffer, as the ring default does when it wraps (its first part is `Discard`,
   later parts `NoOverwrite` at higher offsets), so `bufferData` with only the part's bytes, which would
   shrink the GL buffer and make those later writes fail, is never used.
-- **WriteMode::NoOverwrite**: the caller promises no unfinished command reads the bytes. Direct3D 11
-  `Map(WRITE_NO_OVERWRITE)`, OpenGL `GL_MAP_UNSYNCHRONIZED_BIT`. Both back ends write at once.
+- **WriteMode::NoOverwrite**: the caller promises no unfinished command, and no `Ordered` write made
+  since it last waited, reads or writes the bytes. Direct3D 11 `Map(WRITE_NO_OVERWRITE)` (on dynamic
+  resources, which copies and `UpdateSubresource` cannot write), OpenGL `GL_MAP_UNSYNCHRONIZED_BIT`
+  (whose writes over bytes pending operations touch are undefined). Both back ends write at once,
+  ahead of the commands recorded before it; writes of any mode but `Ordered` keep their order among
+  themselves.
 
 Which memory a write may read, and how long. Calls run on the device thread after the guest's stand-in
 has returned (the call buffer crosses once a frame, 4.8), so a slice given to `write_buffer` or
