@@ -358,9 +358,9 @@ impl GlLayout {
     }
 }
 
-/// The state of a draw of the back end's own that covers a `width` by `height` target from its
-/// origin: no blending, tests or culling. The caller opens the write masks and the scissor.
-pub fn plain(gl: &glow::Context, v: &mut GlValues, width: i32, height: i32) {
+/// The state of a draw of the back end's own into the viewport `rect`: no blending, tests or culling.
+/// The caller opens the write masks and the scissor.
+pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4]) {
     set_if!(v.blend, false, |on| enable(gl, glow::BLEND, on));
     set_if!(v.alpha_to_coverage, false, |on| enable(
         gl,
@@ -377,7 +377,7 @@ pub fn plain(gl: &glow::Context, v: &mut GlValues, width: i32, height: i32) {
         enable(gl, glow::CULL_FACE, false);
         v.cull = None;
     }
-    set_if!(v.viewport, [0, 0, width, height], |r: [i32; 4]| gl
+    set_if!(v.viewport, rect, |r: [i32; 4]| gl
         .viewport(r[0], r[1], r[2], r[3]));
 }
 
