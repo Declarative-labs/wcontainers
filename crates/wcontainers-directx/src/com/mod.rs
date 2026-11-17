@@ -37,7 +37,7 @@ pub use device::{Device, create_device};
 pub use dxgi::Adapter;
 pub use objects::*;
 
-use context::Context_Impl;
+use context::{Context_Impl, DeviceContextState_Impl};
 use device::Device_Impl;
 use dxgi::Adapter_Impl;
 use output::Output_Impl;

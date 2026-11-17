@@ -41,9 +41,29 @@ pub struct Context {
     /// What is bound, as the program's objects, for the `Get` methods; holding a library reference
     /// on each, as Direct3D's context does.
     bound: RefCell<Bound>,
+    /// The immediate context's state object, once the program swaps one in.
+    state: RefCell<Option<ID3DDeviceContextState>>,
     /// `ID3D11Multithread`: the program's `Enter` calls not yet left, and its protection flag.
     entered: Cell<u32>,
     protected: Cell<bool>,
+}
+
+/// A context state object (`CreateDeviceContextState`): the bindings it holds while another is
+/// in the immediate context.
+pub struct DeviceContextState {
+    bound: Locked<RefCell<Bound>>,
+    pub(super) child: Child,
+}
+
+super::counted::counted!(DeviceContextState => DeviceContextState_Impl { main: ID3DDeviceContextState, ID3DDeviceContextState_Vtbl });
+
+impl DeviceContextState {
+    pub fn new(device: ID3D11Device) -> Self {
+        DeviceContextState {
+            bound: Locked::new(RefCell::new(Bound::default())),
+            child: Child::new(device),
+        }
+    }
 }
 
 /// The objects and values bound to the context.
@@ -148,6 +168,7 @@ impl Context {
             recorded: None,
             staged: RefCell::new(HashMap::new()),
             bound: RefCell::new(Bound::default()),
+            state: RefCell::new(None),
             entered: Cell::new(0),
             protected: Cell::new(false),
         }
@@ -1662,6 +1683,47 @@ impl Context {
 
     pub(super) fn get_context_flags(&self) -> u32 {
         0
+    }
+
+    /// `SwapDeviceContextState`: the immediate context's bindings go into the state object in it
+    /// (one holding the device's first state, the first time) and `state`'s are bound. A
+    /// deferred context swaps nothing and hands back none.
+    pub(super) fn swap_device_context_state(
+        &self,
+        state: Ref<ID3DDeviceContextState>,
+        previous: OutRef<ID3DDeviceContextState>,
+    ) {
+        let next = state.as_ref().cloned();
+        let incoming = ours::<_, DeviceContextState>(next.as_ref());
+        if self.is_deferred() || incoming.is_none() {
+            let _ = previous.write(if self.is_deferred() {
+                None
+            } else {
+                self.state.borrow().clone()
+            });
+            return;
+        }
+        let current = self
+            .state
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| DeviceContextState::new(self.child.device().clone()).into());
+        let outgoing = ours::<_, DeviceContextState>(Some(&current)).expect("ours");
+        {
+            let mut bound = self.bound.borrow_mut();
+            std::mem::swap(&mut *bound, &mut *outgoing.bound.borrow_mut());
+            std::mem::swap(
+                &mut *bound,
+                &mut *incoming.expect("ours").bound.borrow_mut(),
+            );
+        }
+        *self.state.borrow_mut() = next;
+        let _ = previous.write(Some(current));
+        self.run("ClearState", |f| {
+            f.clear_state();
+            Ok(())
+        });
+        self.reapply();
     }
 
     /// `FinishCommandList`: what the deferred context recorded becomes a command list. Its next

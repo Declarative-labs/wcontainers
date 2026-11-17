@@ -147,6 +147,13 @@ fn give<I: windows::core::Type<I, Default = Option<I>>>(out: OutRef<I>, object: 
     out.write(Some(object))
 }
 
+/// The interface identifiers of `ID3D10Device` and `ID3D10Device1`, as Direct3D 10's headers give
+/// them.
+const ID3D10_DEVICE: windows::core::GUID =
+    windows::core::GUID::from_u128(0x9b7e4c0f_342c_4106_a19f_4f2704f689f0);
+const ID3D10_DEVICE1: windows::core::GUID =
+    windows::core::GUID::from_u128(0x9b7e4c8f_342c_4106_a19f_4f2704f689f0);
+
 impl Device_Impl {
     fn me(&self) -> ID3D11Device {
         self.to_interface::<ID3D11Device1>().into()
@@ -847,6 +854,51 @@ impl Device_Impl {
         out.write(Some(
             Context::deferred(self.front.clone(), self.me()).into(),
         ))
+    }
+
+    /// `CreateDeviceContextState`: a state object for this device's own interface, at the first
+    /// of `levels` the device has. Direct3D 10's interfaces (a device emulating Direct3D 10) are
+    /// not served.
+    #[allow(clippy::too_many_arguments, reason = "the COM method's own arguments")]
+    pub(super) fn create_device_context_state(
+        &self,
+        _flags: u32,
+        levels: *const D3D_FEATURE_LEVEL,
+        count: u32,
+        _sdk_version: u32,
+        emulated: *const windows::core::GUID,
+        chosen: *mut D3D_FEATURE_LEVEL,
+        out: OutRef<ID3DDeviceContextState>,
+    ) -> Result<()> {
+        let chosen = unsafe { chosen.as_mut() };
+        let level = (!levels.is_null() && count > 0)
+            .then(|| unsafe { std::slice::from_raw_parts(levels, count as usize) })
+            .and_then(|l| {
+                let top = self.front.borrow().feature_level();
+                l.iter()
+                    .copied()
+                    .find(|l| (0xa000..=top).contains(&(l.0 as u32)))
+            });
+        let Some(level) = level else {
+            if let Some(c) = chosen {
+                *c = D3D_FEATURE_LEVEL(0);
+            }
+            return Err(E_INVALIDARG.into());
+        };
+        let emulated = unsafe { emulated.as_ref() }.ok_or(E_INVALIDARG)?;
+        if [ID3D10_DEVICE, ID3D10_DEVICE1].contains(emulated) {
+            return Err(missing("context states emulating Direct3D 10"));
+        }
+        if ![ID3D11Device::IID, ID3D11Device1::IID].contains(emulated) {
+            return Err(E_INVALIDARG.into());
+        }
+        if let Some(c) = chosen {
+            *c = level;
+        }
+        give(
+            out,
+            super::context::DeviceContextState::new(self.me()).into(),
+        )
     }
 
     /// The immediate context, made at the first call.

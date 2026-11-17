@@ -19,7 +19,7 @@ CHILD = ["ID3D11DeviceChild"]
 # What DXGI offers on every resource, and on buffers and textures of one subresource.
 DXGI_RESOURCE = ["IDXGIResource1", "IDXGIResource", "IDXGIDeviceSubObject", "IDXGIObject"]
 DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
-for empty in ("ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11Predicate"):
+for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
     "Device": ["ID3D11Device1", "ID3D11Device", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
@@ -48,13 +48,14 @@ structs = {
     "PixelShader": ["ID3D11PixelShader"] + CHILD,
     "ComputeShader": ["ID3D11ComputeShader"] + CHILD,
     "CommandList": ["ID3D11CommandList"] + CHILD,
+    "DeviceContextState": ["ID3DDeviceContextState"] + CHILD,
 }
 
 hand = {
     "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CreateDeferredContext CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
-    "ID3D11Device1": "GetImmediateContext1 CreateDeferredContext1 CreateBlendState1 CreateRasterizerState1",
+    "ID3D11Device1": "GetImmediateContext1 CreateDeferredContext1 CreateDeviceContextState CreateBlendState1 CreateRasterizerState1",
     "IDXGIDevice1": "SetMaximumFrameLatency GetMaximumFrameLatency",
-    "ID3D11DeviceContext1": "CopySubresourceRegion1 UpdateSubresource1 DiscardResource DiscardView DiscardView1 VSSetConstantBuffers1 PSSetConstantBuffers1 VSGetConstantBuffers1 PSGetConstantBuffers1 CSSetConstantBuffers1 CSGetConstantBuffers1 ClearView",
+    "ID3D11DeviceContext1": "SwapDeviceContextState CopySubresourceRegion1 UpdateSubresource1 DiscardResource DiscardView DiscardView1 VSSetConstantBuffers1 PSSetConstantBuffers1 VSGetConstantBuffers1 PSGetConstantBuffers1 CSSetConstantBuffers1 CSGetConstantBuffers1 ClearView",
     "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
     "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
     "IDXGIResource": "GetUsage",

@@ -58,7 +58,15 @@ impl ID3D11Device1_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppcontextstate, |ppcontextstate| {
-            Err(missing("ID3D11Device1::CreateDeviceContextState"))
+            self.create_device_context_state(
+                flags,
+                pfeaturelevels,
+                featurelevels,
+                sdkversion,
+                emulatedinterface,
+                pchosenfeaturelevel,
+                ppcontextstate,
+            )
         })
     }
     fn OpenSharedResource1(
@@ -803,7 +811,7 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pppreviousstate: windows::core::OutRef<ID3DDeviceContextState>,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext1::SwapDeviceContextState")
+        self.swap_device_context_state(pstate, pppreviousstate)
     }
     fn ClearView(
         &self,
@@ -3676,6 +3684,41 @@ impl ID3D11CommandList_Impl for CommandList_Impl {
 }
 
 impl ID3D11DeviceChild_Impl for CommandList_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3DDeviceContextState_Impl for DeviceContextState_Impl {}
+
+impl ID3D11DeviceChild_Impl for DeviceContextState_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
