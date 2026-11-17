@@ -239,6 +239,10 @@ struct Heap {
 /// Where GPU descriptor handles start, far from GPU virtual addresses.
 const HANDLE_BASE: u64 = 1 << 56;
 
+/// An event waiting for fences: the fences and values, whether any one reaching its value is
+/// enough, and the shell's token for the event.
+type Waiter = (Vec<(FenceId, u64)>, bool, u64);
+
 /// The device: every object and the replay of command lists, on one back end owned by one thread.
 pub struct Device<B: Backend> {
     backend: B,
@@ -254,8 +258,8 @@ pub struct Device<B: Backend> {
     uploaded: Vec<ResourceId>,
     layouts: HashMap<VertexLayoutDesc, B::VertexLayout>,
     reads: Vec<PendingRead<B>>,
-    /// Events to set when a fence reaches a value: fence, value, and the shell's token for the event.
-    waiters: Vec<(FenceId, u64, u64)>,
+    /// Events to set when fences reach values.
+    waiters: Vec<Waiter>,
     chains: Slab<Chain<B>>,
     /// Each queue's held work, in order, numbered by the call that made it.
     queues: Slab<VecDeque<(u64, Work)>>,
@@ -1044,13 +1048,19 @@ impl<B: Backend> Device<B> {
 
     pub fn destroy_fence(&mut self, id: FenceId) {
         self.fences.try_remove(id.0 as usize);
-        self.waiters.retain(|w| w.0 != id);
+        self.waiters.retain(|w| w.0.iter().all(|f| f.0 != id));
     }
 
     /// `SetEventOnCompletion` with an event: `token` comes back from [`Device::reached_events`]
     /// once the fence reaches `value`. Nothing waits here.
     pub fn add_waiter(&mut self, id: FenceId, value: u64, token: u64) {
-        self.waiters.push((id, value, token));
+        self.add_waiter_many(vec![(id, value)], false, token);
+    }
+
+    /// `SetEventOnMultipleFenceCompletion`: `token` comes back once every fence (or, with `any`,
+    /// one of them) reaches its value.
+    pub fn add_waiter_many(&mut self, fences: Vec<(FenceId, u64)>, any: bool, token: u64) {
+        self.waiters.push((fences, any, token));
     }
 
     pub fn has_waiters(&self) -> bool {
@@ -1091,8 +1101,17 @@ impl<B: Backend> Device<B> {
         let mut out = Vec::new();
         let mut i = 0;
         while i < self.waiters.len() {
-            let (id, value, token) = self.waiters[i];
-            if self.completed(id) >= value {
+            let (fences, any, token) = std::mem::take(&mut self.waiters[i]);
+            let mut reached = fences
+                .iter()
+                .map(|&(id, value)| self.completed(id) >= value);
+            let done = if any {
+                reached.any(|r| r)
+            } else {
+                reached.all(|r| r)
+            };
+            self.waiters[i] = (fences, any, token);
+            if done {
                 out.push(token);
                 self.waiters.swap_remove(i);
             } else {
@@ -1454,6 +1473,27 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// `WriteBufferImmediate`: four bytes written by the GPU, in order with the work around them,
+    /// into a buffer the GPU may write (not one in an upload heap).
+    fn write_immediate(&mut self, address: u64, value: u32) -> Result<(), Error> {
+        let (id, offset) = self
+            .addresses
+            .find(address)
+            .filter(|_| address.is_multiple_of(4))
+            .ok_or(Error::Invalid("an immediate write to no buffer"))?;
+        let (buffer, heap) = self.buffer(id)?;
+        if heap == HeapType::Upload {
+            return Err(Error::Invalid("an immediate write into an upload heap"));
+        }
+        let buffer = buffer.clone();
+        self.backend
+            .clear_buffer(&buffer, offset, 4, &value.to_le_bytes());
+        if heap == HeapType::Readback {
+            self.read_into(id, offset, 4)?;
+        }
+        Ok(())
+    }
+
     /// `ResolveSubresource`: a multisampled subresource averaged into a single-sampled one of the
     /// same size, read as `format`, which must be the source's stored format or its sRGB twin.
     fn resolve_subresource(
@@ -1534,24 +1574,41 @@ impl<B: Backend> Device<B> {
             self.resources.get(v.resource.0 as usize).map(|r| &r.storage),
             Some(Storage::Texture { desc, .. }) if desc.dimension == TextureDimension::D3
         );
+        // Draws write the view's first slice: no stage chooses another (`SV_RenderTargetArrayIndex`
+        // is reported absent). Clears of every slice go by `clear_texture`.
         self.texture_view(
             v.resource,
             TextureViewDesc {
                 format: dxgi(v.format)?,
                 dimension: if three_d {
                     ViewDimension::D3
-                } else if v.layers > 1 {
-                    ViewDimension::D2Array
                 } else {
                     ViewDimension::D2
                 },
                 base_mip: v.mip,
                 mip_count: 1,
                 base_layer: if three_d { 0 } else { v.first_layer },
-                layer_count: if three_d { 1 } else { v.layers.max(1) },
+                layer_count: 1,
                 stencil: false,
             },
         )
+    }
+
+    /// One view to draw into for each array slice `v` covers (one for a 3D texture's level).
+    fn slice_views(&mut self, v: &TargetView) -> Result<Vec<B::TextureView>, Error> {
+        let three_d = matches!(
+            self.resources.get(v.resource.0 as usize).map(|r| &r.storage),
+            Some(Storage::Texture { desc, .. }) if desc.dimension == TextureDimension::D3
+        );
+        let slices = if three_d { 1 } else { v.layers.max(1) };
+        (v.first_layer..v.first_layer.saturating_add(slices))
+            .map(|layer| {
+                self.view(&TargetView {
+                    first_layer: layer,
+                    ..*v
+                })
+            })
+            .collect()
     }
 
     /// The back end's view `desc` of texture `resource`, made once.
@@ -1573,10 +1630,14 @@ impl<B: Backend> Device<B> {
         else {
             return Err(Error::Invalid("a texture view of no texture"));
         };
+        let stored = tdesc.format;
+        let mut desc = desc;
+        if ResourceDesc::depth_read_as(desc.format) == Some(stored) {
+            desc.format = stored;
+        }
         if let Some((_, view)) = views.iter().find(|(k, _)| *k == desc) {
             return Ok(view.clone());
         }
-        let stored = tdesc.format;
         if stored.linear() != desc.format.linear()
             && !stored.is_depth_stencil()
             && !self.backend.caps().has(Features::FORMAT_REINTERPRET)
@@ -2049,14 +2110,15 @@ impl<B: Backend> Replay<B> {
                 } else {
                     // Clears still waiting come first, so the rectangles land on them.
                     self.settle(d)?;
-                    let view = d.view(v)?;
                     let rects: Vec<_> = rects.iter().map(scissor).collect();
-                    d.backend.clear_rects(
-                        &view,
-                        dxgi(v.format)?,
-                        ClearValue::Color(value),
-                        &rects,
-                    )?;
+                    for view in d.slice_views(v)? {
+                        d.backend.clear_rects(
+                            &view,
+                            dxgi(v.format)?,
+                            ClearValue::Color(value),
+                            &rects,
+                        )?;
+                    }
                 }
             }
             Command::ClearDepth {
@@ -2093,14 +2155,15 @@ impl<B: Backend> Replay<B> {
                     ));
                 } else {
                     self.settle(d)?;
-                    let view = d.view(v)?;
                     let rects: Vec<_> = rects.iter().map(scissor).collect();
-                    d.backend.clear_rects(
-                        &view,
-                        format,
-                        ClearValue::DepthStencil { depth, stencil },
-                        &rects,
-                    )?;
+                    for view in d.slice_views(v)? {
+                        d.backend.clear_rects(
+                            &view,
+                            format,
+                            ClearValue::DepthStencil { depth, stencil },
+                            &rects,
+                        )?;
+                    }
                 }
             }
             Command::Draw {
@@ -2168,6 +2231,10 @@ impl<B: Backend> Replay<B> {
             } => {
                 self.settle(d)?;
                 d.resolve_subresource(*dst, *dst_index, *src, *src_index, *format)?;
+            }
+            Command::WriteImmediate { address, value } => {
+                self.settle(d)?;
+                d.write_immediate(*address, *value)?;
             }
             Command::Dispatch(groups) => {
                 if let Some(record) = self.predicated(d)? {
@@ -2240,6 +2307,11 @@ impl<B: Backend> Replay<B> {
                 ..
             } => d.note(v.resource, true),
             Command::ClearStorage { view, .. } => d.note(view.resource, true),
+            Command::WriteImmediate { address, .. } => {
+                if let Some((id, _)) = d.addresses.find(*address) {
+                    d.note(id, true);
+                }
+            }
             Command::ResolveQueries { dst, .. } => d.note(*dst, true),
             Command::ExecuteIndirect { args, count, .. } => {
                 d.note(*args, false);
@@ -2644,8 +2716,11 @@ impl<B: Backend> Replay<B> {
             }),
             topology: self.topology,
             restart,
-            viewports: &self.viewports,
-            scissors: &self.scissors,
+            // With no stage choosing a viewport (geometry shaders are refused, and
+            // `SV_ViewportArrayIndex` from the vertex stage is reported absent), Direct3D 12 draws
+            // through the first viewport and scissor.
+            viewports: &self.viewports[..self.viewports.len().min(1)],
+            scissors: &self.scissors[..self.scissors.len().min(1)],
             blend_constant: self.blend_constant,
             stencil_reference: [self.stencil_reference; 2],
             immediates: &[],

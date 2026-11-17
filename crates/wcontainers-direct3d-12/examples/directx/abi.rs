@@ -46,32 +46,52 @@ pub fn fixed<I: StructReturns>(object: I) -> I {
     object
 }
 
-impl StructReturns for ID3D12Device {
-    fn patched(original: &ID3D12Device_Vtbl) -> &'static ID3D12Device_Vtbl {
-        static VTBL: OnceLock<ID3D12Device_Vtbl> = OnceLock::new();
+impl StructReturns for ID3D12Device8 {
+    fn patched(original: &ID3D12Device8_Vtbl) -> &'static ID3D12Device8_Vtbl {
+        static VTBL: OnceLock<ID3D12Device8_Vtbl> = OnceLock::new();
         VTBL.get_or_init(|| {
             // SAFETY: a bitwise copy of a table of function pointers.
             let mut v = unsafe { std::ptr::read(original) };
-            returns_pointer!(v.GetAdapterLuid() -> LUID);
             returns_pointer!(
-                v.GetResourceAllocationInfo(mask: u32, count: u32, descs: *const D3D12_RESOURCE_DESC)
+                v.GetResourceAllocationInfo2(
+                    mask: u32,
+                    count: u32,
+                    descs: *const D3D12_RESOURCE_DESC1,
+                    infos: *mut D3D12_RESOURCE_ALLOCATION_INFO1
+                ) -> D3D12_RESOURCE_ALLOCATION_INFO
+            );
+            let v4 = &mut v.base__.base__.base__.base__;
+            returns_pointer!(
+                v4.GetResourceAllocationInfo1(
+                    mask: u32,
+                    count: u32,
+                    descs: *const D3D12_RESOURCE_DESC,
+                    infos: *mut D3D12_RESOURCE_ALLOCATION_INFO1
+                ) -> D3D12_RESOURCE_ALLOCATION_INFO
+            );
+            let v0 = &mut v4.base__.base__.base__.base__;
+            returns_pointer!(v0.GetAdapterLuid() -> LUID);
+            returns_pointer!(
+                v0.GetResourceAllocationInfo(mask: u32, count: u32, descs: *const D3D12_RESOURCE_DESC)
                     -> D3D12_RESOURCE_ALLOCATION_INFO
             );
             returns_pointer!(
-                v.GetCustomHeapProperties(mask: u32, kind: D3D12_HEAP_TYPE) -> D3D12_HEAP_PROPERTIES
+                v0.GetCustomHeapProperties(mask: u32, kind: D3D12_HEAP_TYPE) -> D3D12_HEAP_PROPERTIES
             );
             v
         })
     }
 }
 
-impl StructReturns for ID3D12Resource {
-    fn patched(original: &ID3D12Resource_Vtbl) -> &'static ID3D12Resource_Vtbl {
-        static VTBL: OnceLock<ID3D12Resource_Vtbl> = OnceLock::new();
+impl StructReturns for ID3D12Resource2 {
+    fn patched(original: &ID3D12Resource2_Vtbl) -> &'static ID3D12Resource2_Vtbl {
+        static VTBL: OnceLock<ID3D12Resource2_Vtbl> = OnceLock::new();
         VTBL.get_or_init(|| {
             // SAFETY: a bitwise copy of a table of function pointers.
             let mut v = unsafe { std::ptr::read(original) };
-            returns_pointer!(v.GetDesc() -> D3D12_RESOURCE_DESC);
+            returns_pointer!(v.GetDesc1() -> D3D12_RESOURCE_DESC1);
+            let v0 = &mut v.base__.base__;
+            returns_pointer!(v0.GetDesc() -> D3D12_RESOURCE_DESC);
             v
         })
     }
