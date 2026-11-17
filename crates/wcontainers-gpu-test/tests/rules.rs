@@ -687,6 +687,68 @@ fn a_program_finds_every_binding_it_reads() {
 }
 
 #[test]
+fn shaders_and_programs_hold_entry_points_of_their_stages() {
+    let module = naga::front::wgsl::parse_str(PROGRAM).unwrap();
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::MULTISAMPLED_SHADING,
+    )
+    .validate(&module)
+    .unwrap();
+    let shader = |r: &mut Recorder, entry: &str, stage| {
+        r.create_shader(&ShaderModule {
+            module: module.clone(),
+            info: info.clone(),
+            entry_point: entry.into(),
+            stage,
+            key: [0; 32],
+        })
+    };
+    let mut r = Recorder::new();
+    let lacks = Err(GpuError::Invalid(
+        "a shader naming an entry point of its stage its module lacks",
+    ));
+    assert_eq!(shader(&mut r, "none", ShaderStage::Vertex), lacks);
+    assert_eq!(shader(&mut r, "plain", ShaderStage::Vertex), lacks);
+    let v = shader(&mut r, "vs", ShaderStage::Vertex).unwrap();
+    let f = shader(&mut r, "plain", ShaderStage::Fragment).unwrap();
+    let other = Err(GpuError::Invalid("a program of shaders of other stages"));
+    let program = |r: &mut Recorder, vertex, fragment| {
+        r.create_program(&Program::Render {
+            vertex,
+            fragment: Some(fragment),
+        })
+    };
+    assert_eq!(program(&mut r, &f, &f), other);
+    assert_eq!(program(&mut r, &v, &v), other);
+    assert!(program(&mut r, &v, &f).is_ok());
+}
+
+#[test]
+fn a_vertex_program_reads_only_locations_its_layout_has() {
+    let mut d = Drawing::new();
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 8,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 1,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    d.layout = d.r.create_vertex_layout(&desc).unwrap();
+    let p = d.program("plain");
+    d.begin();
+    d.draw(&p, None, Topology::TriangleList, false);
+    d.refused("no attribute at location 0");
+}
+
+#[test]
 fn a_binding_set_names_each_binding_once() {
     let mut r = Recorder::new();
     let b = buffer(&mut r, 256, BufferUsage::UNIFORM);

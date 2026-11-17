@@ -1261,6 +1261,21 @@ impl Backend for Recorder {
         self.nested += 1;
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
+            let stage = match module.stage {
+                ShaderStage::Vertex => naga::ShaderStage::Vertex,
+                ShaderStage::Fragment => naga::ShaderStage::Fragment,
+                ShaderStage::Compute => naga::ShaderStage::Compute,
+            };
+            if !module
+                .module
+                .entry_points
+                .iter()
+                .any(|e| e.name == module.entry_point && e.stage == stage)
+            {
+                return Err(GpuError::Invalid(
+                    "a shader naming an entry point of its stage its module lacks",
+                ));
+            }
             let id = self.add(Obj::Shader(Rc::new(module.clone())));
             Ok(id)
         })();
@@ -1286,6 +1301,14 @@ impl Backend for Recorder {
                 },
                 Program::Compute(_) => return Err(GpuError::Absent(Features::COMPUTE)),
             };
+            if obj.vertex.stage != ShaderStage::Vertex
+                || obj
+                    .fragment
+                    .as_ref()
+                    .is_some_and(|f| f.stage != ShaderStage::Fragment)
+            {
+                return Err(GpuError::Invalid("a program of shaders of other stages"));
+            }
             if varyings(&obj.vertex) > self.caps.limits.inter_stage_slots as usize {
                 return Err(GpuError::Invalid(
                     "vertex outputs past the inter-stage limit",
