@@ -296,9 +296,16 @@ static void hangup(void) {
     if (job == 0) {
         handle(SIGHUP);
         handle(SIGCONT);
+        // The hangup sends SIGHUP and then SIGCONT, and with more than one CPU the job may run
+        // between the two, so it waits for both with them blocked outside the wait.
+        sigset_t both, others;
+        sigemptyset(&both);
+        sigaddset(&both, SIGHUP);
+        sigaddset(&both, SIGCONT);
+        sigprocmask(SIG_BLOCK, &both, &others);
         signal_ready();
-        while (!got[SIGHUP])
-            pause();
+        while (!got[SIGHUP] || !got[SIGCONT])
+            sigsuspend(&others);
         printf("job after leader ended: SIGHUP %d SIGCONT %d\n", got[SIGHUP], got[SIGCONT]);
         result("job /dev/tty", open("/dev/tty", O_RDWR));
         fflush(stdout);
