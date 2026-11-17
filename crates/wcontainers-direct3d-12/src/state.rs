@@ -238,8 +238,15 @@ impl Blend {
 }
 
 impl Raster {
-    /// The rasterising block, with the pipeline's sample mask.
-    pub fn block(&self, caps: &Caps, sample_mask: u32, samples: u32) -> Result<RasterDesc, Error> {
+    /// The rasterising block, with the pipeline's sample mask; `triangles` for pipelines drawing
+    /// triangles, the only primitives back ends bias.
+    pub fn block(
+        &self,
+        caps: &Caps,
+        sample_mask: u32,
+        samples: u32,
+        triangles: bool,
+    ) -> Result<RasterDesc, Error> {
         let fill = match self.fill {
             2 => FillMode::Line,
             3 => FillMode::Solid,
@@ -254,15 +261,19 @@ impl Raster {
             3 => CullMode::Back,
             _ => return Err(Error::Invalid("unknown cull mode")),
         };
-        if self.depth_bias != 0
-            || self.slope_scaled_depth_bias != 0.0
-            || self.depth_bias_clamp != 0.0
-            || !self.depth_clip
-            || self.forced_sample_count != 0
-            || self.conservative != 0
-        {
+        let biased = self.depth_bias != 0 || self.slope_scaled_depth_bias != 0.0;
+        if biased && !triangles {
+            return Err(Error::NotImplemented("depth bias of lines and points"));
+        }
+        if biased && self.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
+            return Err(Error::NotImplemented("a depth bias clamp"));
+        }
+        if !self.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
+            return Err(Error::NotImplemented("depth clamping"));
+        }
+        if self.forced_sample_count != 0 || self.conservative != 0 {
             return Err(Error::NotImplemented(
-                "depth bias, depth clamp, forced sample counts and conservative rasterization",
+                "forced sample counts and conservative rasterization",
             ));
         }
         let mask = sample_mask & ((1u64 << samples.min(32)) - 1) as u32;
@@ -279,10 +290,22 @@ impl Raster {
             } else {
                 FrontFace::Clockwise
             },
-            depth_bias: 0,
-            depth_bias_slope: 0,
-            depth_bias_clamp: 0,
-            depth_clip: true,
+            depth_bias: if biased {
+                (self.depth_bias as f32).to_bits()
+            } else {
+                0
+            },
+            depth_bias_slope: if biased {
+                self.slope_scaled_depth_bias.to_bits()
+            } else {
+                0
+            },
+            depth_bias_clamp: if biased {
+                self.depth_bias_clamp.to_bits()
+            } else {
+                0
+            },
+            depth_clip: self.depth_clip,
             scissor: true,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::First,

@@ -495,7 +495,12 @@ impl<B: Backend> Device<B> {
         bind::check(&self.roots[root.0 as usize], &bindings)?;
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
-        let raster = desc.raster.block(caps, desc.sample_mask, targets.samples)?;
+        let raster = desc.raster.block(
+            caps,
+            desc.sample_mask,
+            targets.samples,
+            desc.topology_type == 3,
+        )?;
         let depth_stencil = desc.depth_stencil.block(targets.depth_stencil.is_some())?;
         let topology = match desc.topology_type {
             1 => Topology::PointList,
@@ -696,6 +701,10 @@ impl<B: Backend> Device<B> {
     /// `GetCompletedValue`. Read backs whose work is done are in readback memory first (waiting only
     /// for their bytes to arrive), so the program sees the bytes when it sees the value.
     pub fn completed(&mut self, id: FenceId) -> u64 {
+        // A removed device's fences report every value reached, as Direct3D 12's do.
+        if self.removed.is_some() {
+            return u64::MAX;
+        }
         let Some(f) = self.fences.get_mut(id.0 as usize) else {
             return 0;
         };
@@ -1169,7 +1178,7 @@ impl Replay {
                 &desc,
                 dxgi(v.format)?,
                 v.mip..v.mip + 1,
-                v.first_layer..v.first_layer + v.layers.max(1),
+                v.first_layer..v.first_layer.saturating_add(v.layers.max(1)),
                 value,
             )?;
         }
@@ -1381,9 +1390,10 @@ impl Replay {
         d: &mut Device<B>,
         range: DrawRange<'_, B>,
     ) -> Result<(), Error> {
-        let pid = self
-            .pipeline
-            .ok_or(Error::Invalid("drawing with no pipeline state"))?;
+        // A draw with no pipeline state draws nothing, as the hardware does.
+        let Some(pid) = self.pipeline else {
+            return Ok(());
+        };
         let bases = match &range {
             DrawRange::Vertices {
                 first,

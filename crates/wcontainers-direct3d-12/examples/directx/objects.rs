@@ -622,6 +622,19 @@ impl Device {
                             layers: t.ArraySize,
                         })
                     }
+                    Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE3D => {
+                        // SAFETY: the member the dimension names.
+                        let t = unsafe { v.Anonymous.Texture3D };
+                        let depth = (u32::from(r.desc.DepthOrArraySize) >> t.MipSlice).max(1);
+                        Some(TargetView {
+                            resource: r.id,
+                            format: v.Format.0 as u32,
+                            mip: t.MipSlice,
+                            first_layer: t.FirstWSlice,
+                            // All slices from the first, for a size of -1.
+                            layers: t.WSize.min(depth.saturating_sub(t.FirstWSlice)),
+                        })
+                    }
                     Some(_) => {
                         self.unsupported("CreateRenderTargetView of this dimension");
                         None
