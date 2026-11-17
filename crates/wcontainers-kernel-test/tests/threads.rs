@@ -114,3 +114,11 @@ fn parent_threads_match_reference() {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
     }
 }
+
+/// How shared and private futexes are keyed: by file, by memory, or refused, on every kind of page.
+#[test]
+fn futex_keys_match_reference() {
+    for run in assert_same_output_seeded(&out(), "futexkeys", &[], 2) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}

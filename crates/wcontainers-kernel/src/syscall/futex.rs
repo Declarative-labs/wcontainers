@@ -9,7 +9,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
 use smallvec::SmallVec;
-use wcontainers_abi::Permissions;
+use wcontainers_abi::{PAGE_SIZE, Permissions};
 
 use super::{Args, Outcome, guest};
 use crate::linux::general::*;
@@ -150,8 +150,10 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
 }
 
 /// `get_futex_key`: the address must be aligned and in user space; a shared futex's page must be
-/// mapped and readable, or writable for the calls that change the word (`FUTEX_WRITE`), and one in
-/// a shared mapping is known by its file.
+/// mapped and readable, or writable for the calls that change the word (`FUTEX_WRITE`). A page of
+/// a file is known by the file: one in a shared mapping, or a private one read-only and not yet
+/// copied. A private page the futex cannot write is otherwise EFAULT (the zero page, or an
+/// anonymous page reached read-only); a writable one is the process's own.
 fn key_of(
     kernel: &Kernel,
     tid: Tid,
@@ -172,15 +174,31 @@ fn key_of(
     let map = process.map.borrow();
     let mapping = map.find(address).ok_or(Errno::EFAULT)?;
     let allows = mapping.page_permissions(address);
-    if !allows.contains(Permissions::READ) || (write && !allows.contains(Permissions::WRITE)) {
+    let writable = allows.contains(Permissions::WRITE);
+    if !allows.contains(Permissions::READ) || (write && !writable) {
         return Err(Errno::EFAULT);
     }
     match &mapping.backing {
-        Backing::File { node, offset, .. } if mapping.shared => Ok(Key::Shared(
-            alloc::rc::Rc::as_ptr(node) as *const () as usize,
-            offset + (address - mapping.start),
-        )),
-        _ => Ok(Key::Private(process.memory.0, address)),
+        Backing::File {
+            node,
+            offset,
+            copied,
+            ..
+        } => {
+            let at = offset + (address - mapping.start);
+            if mapping.shared || (!writable && !copied.contains(&(at / PAGE_SIZE))) {
+                Ok(Key::Shared(
+                    alloc::rc::Rc::as_ptr(node) as *const () as usize,
+                    at,
+                ))
+            } else if writable {
+                Ok(Key::Private(process.memory.0, address))
+            } else {
+                Err(Errno::EFAULT)
+            }
+        }
+        _ if writable => Ok(Key::Private(process.memory.0, address)),
+        _ => Err(Errno::EFAULT),
     }
 }
 
