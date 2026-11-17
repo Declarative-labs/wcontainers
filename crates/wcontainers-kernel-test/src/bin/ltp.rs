@@ -7,7 +7,8 @@
 //! With no tests named, the whole suite runs. `LTP_TAR` is the image's files as `ltp/build.sh`
 //! leaves them; `LTP_JOBS` how many tests run side by side (4); `LTP_SEED` the seed of our runs'
 //! schedules (1); `LTP_LIMIT` the seconds a test may run before it is stopped (900 on our
-//! kernel, 1800 in the reference). Each test's output goes under `<results file>.logs/`.
+//! kernel, 1800 in the reference). Each test's output goes under `<results file>.logs/`. A
+//! results file that exists is continued: the tests it has are not run again.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -51,17 +52,32 @@ fn main() {
         eprintln!("LTP_TAR names the image's files that ltp/build.sh left");
         std::process::exit(2)
     }));
-    let tests = ltp::select(&ltp::groups(&tar), selection);
-    let jobs = number("LTP_JOBS", 4) as usize;
     let results = PathBuf::from(results);
+    let done: Vec<String> = if results.exists() {
+        ltp::read_results(&results)
+            .into_iter()
+            .map(|line| line.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let tests: Vec<ltp::Test> = ltp::select(&ltp::groups(&tar), selection)
+        .into_iter()
+        .filter(|test| !done.contains(&test.id()))
+        .collect();
+    let jobs = number("LTP_JOBS", 4) as usize;
     let logs = PathBuf::from(format!("{}.logs", results.display()));
-    let mut out = std::fs::File::create(&results).expect("the results file");
+    let mut out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&results)
+        .expect("the results file");
     let mut report = |line: &Line| {
         out.write_all(line.to_text().as_bytes())
             .expect("writing the results file");
         eprint!("{}", line.to_text());
     };
-    eprintln!("{} tests", tests.len());
+    eprintln!("{} tests to run, {} done before", tests.len(), done.len());
     match mode.as_str() {
         "reference" => {
             let limit = Duration::from_secs(number("LTP_LIMIT", 1800));

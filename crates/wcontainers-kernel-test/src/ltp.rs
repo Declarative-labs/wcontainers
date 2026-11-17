@@ -441,23 +441,40 @@ fn warnings(warned: &[driver::Warned]) -> String {
         .join("; ")
 }
 
-/// Why a test's verdict on our kernel differs from the reference's.
-fn cause(ours: &Line) -> &'static str {
-    match ours.verdict.as_str() {
-        "crash" => "a crash of the kernel",
-        "hang" => "a hang",
-        _ if ours.warnings != "-" => "a call or part not built (the kernel warned)",
-        _ => "a wrong answer",
+/// A results line's warnings as (reason, detail) pairs.
+fn warned(line: &Line) -> Vec<(String, String)> {
+    if line.warnings == "-" {
+        return Vec::new();
     }
+    line.warnings
+        .split("; ")
+        .filter_map(|part| {
+            let (reason, details) = part.rsplit_once(" (")?;
+            let details = details.trim_end_matches(')');
+            Some(
+                details
+                    .split(' ')
+                    .map(|detail| (reason.to_string(), detail.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .flatten()
+        .collect()
 }
 
 /// The comparison of two results files: how many verdicts match and every test whose verdict
-/// differs, grouped by cause.
+/// differs, grouped by cause: a crash of the kernel, a hang, a part not built (a warning the
+/// test gave that no test whose verdict matches gave), or else a wrong answer.
 pub fn compare(reference: &[Line], ours: &[Line]) -> String {
-    let theirs: BTreeMap<&str, &Line> = reference
-        .iter()
-        .map(|line| (line.id.as_str(), line))
-        .collect();
+    let theirs: BTreeMap<&str, &Line> =
+        reference.iter().map(|line| (line.id.as_str(), line)).collect();
+    let matched = |line: &&Line| {
+        theirs
+            .get(line.id.as_str())
+            .is_some_and(|their| their.verdict == line.verdict)
+    };
+    let harmless: std::collections::BTreeSet<(String, String)> =
+        ours.iter().filter(matched).flat_map(warned).collect();
     let mut matching = 0;
     let mut by_cause: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut missing = Vec::new();
@@ -468,12 +485,24 @@ pub fn compare(reference: &[Line], ours: &[Line]) -> String {
         };
         if their.verdict == line.verdict {
             matching += 1;
-        } else {
-            by_cause.entry(cause(line)).or_default().push(format!(
-                "{}: reference {}, ours {} [{}]",
-                line.id, their.verdict, line.verdict, line.warnings
-            ));
+            continue;
         }
+        let new: Vec<String> = warned(line)
+            .into_iter()
+            .filter(|pair| !harmless.contains(pair))
+            .map(|(reason, detail)| format!("{reason} ({detail})"))
+            .collect();
+        let cause = match line.verdict.as_str() {
+            "crash" => "a crash of the kernel",
+            "hang" => "a hang",
+            _ if !new.is_empty() => "a part not built (a warning no matching test gave)",
+            _ => "a wrong answer",
+        };
+        let mut text = format!("{}: reference {}, ours {}", line.id, their.verdict, line.verdict);
+        if !new.is_empty() {
+            text += &format!(" [{}]", new.join("; "));
+        }
+        by_cause.entry(cause).or_default().push(text);
     }
     let differing: usize = by_cause.values().map(Vec::len).sum();
     let mut text = format!(
