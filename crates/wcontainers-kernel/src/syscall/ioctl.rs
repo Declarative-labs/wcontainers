@@ -378,6 +378,9 @@ fn own(
     if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
         return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
     }
+    if let Some(socket) = super::socket::of(file) {
+        return super::socket::ioctl(kernel, cx, tid, file, &socket, request, argument);
+    }
     // `timerfd_ioctl`.
     if super::timer::of(&file.borrow()).is_some() {
         return match request {

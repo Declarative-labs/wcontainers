@@ -1,0 +1,924 @@
+//! Netlink sockets (`net/netlink/af_netlink.c`) for NETLINK_ROUTE (`net/core/rtnetlink.c`): the
+//! questions programs ask about the container's interfaces, addresses and routes, answered from
+//! the made-up network in [`crate::network`]. Nothing in that network changes, so no notices are
+//! ever sent to the groups a socket joins.
+
+use alloc::vec::Vec;
+
+use super::{Packet, Received, Socket, SocketRef, channel, gather, scatter, wait_room};
+use crate::linux::general::*;
+use crate::linux::if_arp::{ARPHRD_ETHER, ARPHRD_LOOPBACK};
+use crate::linux::net::net_device_flags::{
+    IFF_BROADCAST, IFF_LOOPBACK, IFF_LOWER_UP, IFF_MULTICAST, IFF_RUNNING, IFF_UP,
+};
+use crate::linux::net::{
+    AF_INET, AF_INET6, AF_NETLINK, AF_UNSPEC, IF_OPER_UNKNOWN, IF_OPER_UP, MSG_PEEK, MSG_TRUNC,
+    SOCK_DGRAM, SOCK_RAW, SOL_NETLINK,
+};
+use crate::linux::netlink::rtattr_type_t::*;
+use crate::linux::netlink::*;
+use crate::network;
+use crate::process::Tid;
+use crate::{Context, Errno, Kernel};
+
+/// `sizeof(struct sockaddr_nl)`.
+const ADDRESS_SIZE: usize = 12;
+/// `sizeof(struct nlmsghdr)` and the alignment of messages and attributes.
+const HEADER: usize = 16;
+const ALIGN: usize = 4;
+
+/// A netlink socket's own state.
+pub(crate) struct Netlink {
+    /// Its port number (`portid`), 0 until bound.
+    pub portid: u32,
+    /// The groups it joined.
+    pub groups: u32,
+    /// Options at SOL_NETLINK, by number.
+    pub flags: u32,
+}
+
+/// `netlink_create`: NETLINK_ROUTE only.
+pub(super) fn create(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    kind: u32,
+    protocol: u32,
+) -> Result<Socket, Errno> {
+    if kind != SOCK_RAW && kind != SOCK_DGRAM {
+        return Err(Errno::ESOCKTNOSUPPORT);
+    }
+    if protocol >= MAX_LINKS {
+        return Err(Errno::EPROTONOSUPPORT);
+    }
+    if protocol != NETLINK_ROUTE {
+        let detail = (u64::from(AF_NETLINK) << 32) | (u64::from(kind) << 16) | u64::from(protocol);
+        return Err(kernel.counters.refuse(
+            cx.host,
+            crate::reason::PROTOCOL_NOT_BUILT,
+            detail,
+            Errno::EPROTONOSUPPORT,
+        ));
+    }
+    let mut socket = Socket::new(AF_NETLINK, kind, protocol);
+    socket.netlink = Some(alloc::boxed::Box::new(Netlink {
+        portid: 0,
+        groups: 0,
+        flags: 0,
+    }));
+    Ok(socket)
+}
+
+/// `MAX_LINKS`: how many netlink protocols there are.
+const MAX_LINKS: u32 = 32;
+
+fn part(socket: &SocketRef) -> core::cell::RefMut<'_, Netlink> {
+    core::cell::RefMut::map(socket.borrow_mut(), |own| {
+        own.netlink.as_deref_mut().expect("a netlink socket")
+    })
+}
+
+/// `netlink_autobind`: the process's number if no socket holds it, else a negative one.
+fn autobind(kernel: &mut Kernel, tid: Tid, socket: &SocketRef) {
+    if part(socket).portid != 0 {
+        return;
+    }
+    let pid = kernel.threads[&tid].process as u32;
+    let mut candidate = pid;
+    let mut rover = -4096i32;
+    while kernel.sockets.portid_taken(candidate) {
+        rover -= 1;
+        candidate = rover as u32;
+    }
+    kernel.sockets.hold_portid(candidate, socket);
+    part(socket).portid = candidate;
+}
+
+/// A `sockaddr_nl`.
+fn address(portid: u32, groups: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(ADDRESS_SIZE);
+    bytes.extend_from_slice(&(AF_NETLINK as u16).to_le_bytes());
+    bytes.extend_from_slice(&[0; 2]);
+    bytes.extend_from_slice(&portid.to_le_bytes());
+    bytes.extend_from_slice(&groups.to_le_bytes());
+    bytes
+}
+
+fn read_address(bytes: &[u8]) -> Result<(u32, u32), Errno> {
+    if bytes.len() < ADDRESS_SIZE || u16::from_le_bytes([bytes[0], bytes[1]]) as u32 != AF_NETLINK {
+        return Err(Errno::EINVAL);
+    }
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+    Ok((word(4), word(8)))
+}
+
+pub(super) fn bind(
+    kernel: &mut Kernel,
+    tid: Tid,
+    socket: &SocketRef,
+    bytes: &[u8],
+) -> Result<u64, Errno> {
+    let (portid, groups) = read_address(bytes)?;
+    let bound = part(socket).portid;
+    if bound != 0 && portid != 0 && portid != bound {
+        return Err(Errno::EINVAL);
+    }
+    if bound == 0 {
+        if portid == 0 {
+            autobind(kernel, tid, socket);
+        } else {
+            if kernel.sockets.portid_taken(portid) {
+                return Err(Errno::EADDRINUSE);
+            }
+            kernel.sockets.hold_portid(portid, socket);
+            part(socket).portid = portid;
+        }
+    }
+    part(socket).groups = groups;
+    Ok(0)
+}
+
+pub(super) fn connect(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    bytes: &[u8],
+) -> Result<u64, Errno> {
+    if bytes.len() >= 2 && u16::from_le_bytes([bytes[0], bytes[1]]) as u32 == AF_UNSPEC {
+        return Ok(0);
+    }
+    let (portid, _) = read_address(bytes)?;
+    if portid != 0 {
+        return Err(kernel.counters.refuse(
+            cx.host,
+            crate::reason::PROTOCOL_NOT_BUILT,
+            u64::from(portid),
+            Errno::ECONNREFUSED,
+        ));
+    }
+    autobind(kernel, tid, socket);
+    Ok(0)
+}
+
+pub(super) fn name(socket: &SocketRef, peer: bool) -> Vec<u8> {
+    let own = socket.borrow();
+    let netlink = own.netlink.as_deref().expect("a netlink socket");
+    if peer {
+        address(0, 0)
+    } else {
+        address(netlink.portid, netlink.groups)
+    }
+}
+
+pub(super) fn poll(socket: &SocketRef) -> u16 {
+    let own = socket.borrow();
+    let mut mask = EPOLLOUT | EPOLLWRNORM;
+    if !own.queue.is_empty() {
+        mask |= EPOLLIN | EPOLLRDNORM;
+    }
+    if own.error != 0 {
+        mask |= EPOLLERR;
+    }
+    mask as u16
+}
+
+pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+    let portid = part(socket).portid;
+    if portid != 0 {
+        kernel.sockets.let_go_portid(portid, socket);
+    }
+    let mut own = socket.borrow_mut();
+    own.dead = true;
+    own.queue.clear();
+}
+
+/// `netlink_sendmsg` to the kernel: every request in the bytes is answered into the socket's own
+/// queue, as `netlink_rcv_skb` and `rtnetlink_rcv_msg` answer.
+pub(super) fn send(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    parts: &[(u64, u64)],
+    to: Option<&[u8]>,
+    total: u64,
+) -> Result<u64, Errno> {
+    if let Some(bytes) = to.filter(|bytes| !bytes.is_empty()) {
+        let (portid, groups) = read_address(bytes)?;
+        if portid != 0 || groups != 0 {
+            return Err(kernel.counters.refuse(
+                cx.host,
+                crate::reason::PROTOCOL_NOT_BUILT,
+                u64::from(portid),
+                Errno::ECONNREFUSED,
+            ));
+        }
+    }
+    if total > socket.borrow().sndbuf.saturating_sub(32) {
+        return Err(Errno::EMSGSIZE);
+    }
+    autobind(kernel, tid, socket);
+    let data = gather(kernel, cx, tid, parts, 0, total)?;
+    let (portid, flags) = {
+        let netlink = part(socket);
+        (netlink.portid, netlink.flags)
+    };
+    let mut at = 0;
+    let mut replies: Vec<Vec<u8>> = Vec::new();
+    while data.len() - at >= HEADER {
+        let request = &data[at..];
+        let length = u32::from_le_bytes(request[..4].try_into().expect("4 bytes")) as usize;
+        if length < HEADER || length > request.len() {
+            break;
+        }
+        let request = &request[..length];
+        let kind = u16::from_le_bytes([request[4], request[5]]);
+        let request_flags = u16::from_le_bytes([request[6], request[7]]) as u32;
+        let mut error = 0;
+        if request_flags & NLM_F_REQUEST != 0 && u32::from(kind) >= NLMSG_MIN_TYPE {
+            match answer(kernel, cx, request, portid, flags) {
+                Ok(Answer::Dump(messages)) => {
+                    replies.extend(messages);
+                    at += length.next_multiple_of(ALIGN);
+                    continue;
+                }
+                Ok(Answer::One(message)) => replies.push(message),
+                Ok(Answer::Nothing) => {}
+                Err(errno) => error = -(errno.0 as i32),
+            }
+        }
+        if request_flags & NLM_F_ACK != 0 || error != 0 {
+            replies.push(acknowledgement(request, error, portid, flags));
+        }
+        at += length.next_multiple_of(ALIGN);
+    }
+    for reply in replies {
+        let packet = Packet {
+            truesize: super::truesize(reply.len() as u64, 0),
+            data: reply,
+            consumed: 0,
+            files: Vec::new(),
+            cred: super::own_cred(kernel, tid),
+            sender: alloc::rc::Weak::new(),
+            source: None,
+        };
+        socket.borrow_mut().queue.push_back(packet);
+    }
+    kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);
+    Ok(total)
+}
+
+/// What a request gets: a dump (its parts, then NLMSG_DONE, each one read), one message, or
+/// nothing but an acknowledgement if asked for.
+enum Answer {
+    Dump(Vec<Vec<u8>>),
+    One(Vec<u8>),
+    Nothing,
+}
+
+/// `netlink_ack`: NLMSG_ERROR with the error (0 for an acknowledgement) and the request's header,
+/// and for an error its whole body unless NETLINK_CAP_ACK is set.
+fn acknowledgement(request: &[u8], error: i32, portid: u32, flags: u32) -> Vec<u8> {
+    let capped = error == 0 || flags & (1 << NETLINK_CAP_ACK) != 0;
+    let body = if capped { &request[..HEADER] } else { request };
+    let mut message = Message::new(
+        NLMSG_ERROR as u16,
+        if capped { NLM_F_CAPPED as u16 } else { 0 },
+        request,
+        portid,
+    );
+    message.push(&error.to_le_bytes());
+    message.push(body);
+    message.finish()
+}
+
+/// One netlink message being built.
+struct Message(Vec<u8>);
+
+impl Message {
+    /// A message of a kind answering `request`, with its sequence number, to `portid`.
+    fn new(kind: u16, flags: u16, request: &[u8], portid: u32) -> Self {
+        let mut bytes = Vec::with_capacity(256);
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&kind.to_le_bytes());
+        bytes.extend_from_slice(&flags.to_le_bytes());
+        bytes.extend_from_slice(&request[8..12]);
+        bytes.extend_from_slice(&portid.to_le_bytes());
+        Self(bytes)
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+        self.0.resize(self.0.len().next_multiple_of(ALIGN), 0);
+    }
+
+    /// An attribute (`struct rtattr`).
+    fn attr(&mut self, kind: u32, value: &[u8]) {
+        let length = 4 + value.len();
+        self.0.extend_from_slice(&(length as u16).to_le_bytes());
+        self.0.extend_from_slice(&(kind as u16).to_le_bytes());
+        self.push(value);
+    }
+
+    fn u32(&mut self, kind: u32, value: u32) {
+        self.attr(kind, &value.to_le_bytes());
+    }
+
+    fn u8(&mut self, kind: u32, value: u8) {
+        self.attr(kind, &[value]);
+    }
+
+    fn text(&mut self, kind: u32, value: &str) {
+        let mut bytes = value.as_bytes().to_vec();
+        bytes.push(0);
+        self.attr(kind, &bytes);
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        let length = self.0.len() as u32;
+        self.0[..4].copy_from_slice(&length.to_le_bytes());
+        self.0
+    }
+}
+
+/// `rtnetlink_rcv_msg`: GET requests are answered; anything that would change the network needs
+/// CAP_NET_ADMIN, which Docker does not give.
+fn answer(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    request: &[u8],
+    portid: u32,
+    flags: u32,
+) -> Result<Answer, Errno> {
+    let kind = u32::from(u16::from_le_bytes([request[4], request[5]]));
+    let request_flags = u32::from(u16::from_le_bytes([request[6], request[7]]));
+    if kind >= __RTM_MAX as u32 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let body = &request[HEADER..];
+    if body.is_empty() {
+        return Ok(Answer::Nothing);
+    }
+    let family = u32::from(body[0]);
+    let get = (kind - RTM_BASE as u32) & 3 == 2;
+    if !get {
+        return Err(Errno::EPERM);
+    }
+    let strict = flags & (1 << NETLINK_GET_STRICT_CHK) != 0;
+    let dump = request_flags & NLM_F_DUMP == NLM_F_DUMP;
+    let messages = match kind {
+        _ if kind == RTM_GETLINK as u32 => {
+            if !dump {
+                return one_link(request, portid, body);
+            }
+            kernel
+                .counters
+                .count(cx.host, crate::reason::INTERFACE_COUNTERS_NOT_KEPT, 0);
+            INTERFACES
+                .iter()
+                .map(|interface| link(interface, request, portid, NLM_F_MULTI as u16))
+                .collect::<Vec<_>>()
+        }
+        _ if kind == RTM_GETADDR as u32 && dump => {
+            let index = (strict && body.len() >= 8)
+                .then(|| u32::from_le_bytes(body[4..8].try_into().expect("4 bytes")))
+                .filter(|&index| index != 0);
+            addresses(family, index, request, portid)
+        }
+        _ if kind == RTM_GETROUTE as u32 && dump => routes(family, request, portid),
+        _ => {
+            return Err(kernel.counters.refuse(
+                cx.host,
+                crate::reason::NETLINK_REQUEST_NOT_BUILT,
+                u64::from(kind) | (u64::from(dump) << 16),
+                Errno::EOPNOTSUPP,
+            ));
+        }
+    };
+    // The answers fill one read, and NLMSG_DONE comes in the next (`netlink_dump`).
+    let mut joined = Vec::new();
+    for message in messages {
+        joined.extend_from_slice(&message);
+    }
+    let mut done = Message::new(NLMSG_DONE as u16, NLM_F_MULTI as u16, request, portid);
+    done.push(&0i32.to_le_bytes());
+    let mut parts = Vec::new();
+    if !joined.is_empty() {
+        parts.push(joined);
+    }
+    parts.push(done.finish());
+    Ok(Answer::Dump(parts))
+}
+
+/// An interface of the made-up network.
+pub(super) struct Interface {
+    pub index: u32,
+    pub name: &'static str,
+    pub kind: u32,
+    pub flags: u32,
+    pub mtu: u32,
+    min_mtu: u32,
+    max_mtu: u32,
+    pub queue_length: u32,
+    operstate: u8,
+    pub hardware: [u8; 6],
+    broadcast: [u8; 6],
+    carrier_changes: u32,
+    /// Its IPv4 address, prefix length and broadcast address.
+    pub v4: ([u8; 4], u8, [u8; 4]),
+}
+
+pub(super) const INTERFACES: [Interface; 2] = [
+    Interface {
+        index: network::LOOPBACK_INDEX,
+        name: network::LOOPBACK_NAME,
+        kind: ARPHRD_LOOPBACK,
+        flags: IFF_UP as u32 | IFF_LOOPBACK as u32 | IFF_RUNNING as u32 | IFF_LOWER_UP as u32,
+        mtu: network::LOOPBACK_MTU,
+        min_mtu: 0,
+        max_mtu: 0,
+        queue_length: 1000,
+        operstate: IF_OPER_UNKNOWN as u8,
+        hardware: [0; 6],
+        broadcast: [0; 6],
+        carrier_changes: 0,
+        v4: ([127, 0, 0, 1], 8, [0; 4]),
+    },
+    Interface {
+        index: network::ETHERNET_INDEX,
+        name: network::ETHERNET_NAME,
+        kind: ARPHRD_ETHER,
+        flags: IFF_UP as u32
+            | IFF_BROADCAST as u32
+            | IFF_RUNNING as u32
+            | IFF_MULTICAST as u32
+            | IFF_LOWER_UP as u32,
+        mtu: network::MTU,
+        min_mtu: 68,
+        max_mtu: 65535,
+        queue_length: 0,
+        operstate: IF_OPER_UP as u8,
+        hardware: network::HARDWARE,
+        broadcast: [0xff; 6],
+        carrier_changes: 2,
+        v4: (network::ADDRESS, network::PREFIX, network::BROADCAST),
+    },
+];
+
+/// `rtnl_fill_ifinfo`, with the attributes programs read. The traffic counters are not kept and
+/// read zero.
+fn link(interface: &Interface, request: &[u8], portid: u32, flags: u16) -> Vec<u8> {
+    let mut message = Message::new(RTM_NEWLINK as u16, flags, request, portid);
+    let mut head = Vec::with_capacity(16);
+    head.extend_from_slice(&[0, 0]);
+    head.extend_from_slice(&(interface.kind as u16).to_le_bytes());
+    head.extend_from_slice(&interface.index.to_le_bytes());
+    head.extend_from_slice(&interface.flags.to_le_bytes());
+    head.extend_from_slice(&0u32.to_le_bytes());
+    message.push(&head);
+    message.text(IFLA_IFNAME as u32, interface.name);
+    message.u32(IFLA_TXQLEN as u32, interface.queue_length);
+    message.u8(IFLA_OPERSTATE as u32, interface.operstate);
+    message.u8(IFLA_LINKMODE as u32, 0);
+    message.u32(IFLA_MTU as u32, interface.mtu);
+    message.u32(IFLA_MIN_MTU as u32, interface.min_mtu);
+    message.u32(IFLA_MAX_MTU as u32, interface.max_mtu);
+    message.u32(IFLA_GROUP as u32, 0);
+    message.u32(IFLA_PROMISCUITY as u32, 0);
+    message.u32(IFLA_ALLMULTI as u32, 0);
+    message.u32(IFLA_NUM_TX_QUEUES as u32, 1);
+    message.u32(IFLA_GSO_MAX_SEGS as u32, 65535);
+    message.u32(IFLA_GSO_MAX_SIZE as u32, 65536);
+    message.u32(IFLA_NUM_RX_QUEUES as u32, 1);
+    message.u8(IFLA_CARRIER as u32, 1);
+    message.u32(IFLA_CARRIER_CHANGES as u32, interface.carrier_changes);
+    message.u8(IFLA_PROTO_DOWN as u32, 0);
+    message.attr(IFLA_ADDRESS as u32, &interface.hardware);
+    message.attr(IFLA_BROADCAST as u32, &interface.broadcast);
+    message.attr(IFLA_STATS64 as u32, &[0; 200]);
+    message.attr(IFLA_STATS as u32, &[0; 96]);
+    message.text(IFLA_QDISC as u32, "noqueue");
+    message.attr(IFLA_MAP as u32, &[0; 32]);
+    message.finish()
+}
+
+/// RTM_GETLINK for one interface, by number or by IFLA_IFNAME (`rtnl_getlink`).
+fn one_link(request: &[u8], portid: u32, body: &[u8]) -> Result<Answer, Errno> {
+    if body.len() < 16 {
+        return Err(Errno::EINVAL);
+    }
+    let index = i32::from_le_bytes(body[4..8].try_into().expect("4 bytes"));
+    let mut name: Option<&[u8]> = None;
+    let mut at = 16;
+    while at + 4 <= body.len() {
+        let length = u16::from_le_bytes([body[at], body[at + 1]]) as usize;
+        let kind = u16::from_le_bytes([body[at + 2], body[at + 3]]);
+        if length < 4 || at + length > body.len() {
+            break;
+        }
+        if u32::from(kind) == IFLA_IFNAME as u32 {
+            let value = &body[at + 4..at + length];
+            name = Some(&value[..value.iter().position(|&b| b == 0).unwrap_or(value.len())]);
+        }
+        at += length.next_multiple_of(ALIGN);
+    }
+    let found = INTERFACES.iter().find(|interface| {
+        if index > 0 {
+            interface.index == index as u32
+        } else {
+            name.is_some_and(|name| name == interface.name.as_bytes())
+        }
+    });
+    if index <= 0 && name.is_none() {
+        return Err(Errno::EINVAL);
+    }
+    let interface = found.ok_or(Errno::ENODEV)?;
+    Ok(Answer::One(link(interface, request, portid, 0)))
+}
+
+/// One address message (`inet_fill_ifaddr`, `inet6_fill_ifaddr`).
+#[allow(clippy::too_many_arguments, reason = "an address has many parts")]
+fn address_message(
+    request: &[u8],
+    portid: u32,
+    family: u32,
+    prefix: u8,
+    scope: u8,
+    index: u32,
+    address: &[u8],
+    broadcast: Option<[u8; 4]>,
+    label: Option<&str>,
+) -> Vec<u8> {
+    let mut message = Message::new(RTM_NEWADDR as u16, NLM_F_MULTI as u16, request, portid);
+    let mut head = Vec::with_capacity(8);
+    head.push(family as u8);
+    head.push(prefix);
+    head.push(IFA_F_PERMANENT as u8);
+    head.push(scope);
+    head.extend_from_slice(&index.to_le_bytes());
+    message.push(&head);
+    let mut cache = Vec::with_capacity(16);
+    cache.extend_from_slice(&u32::MAX.to_le_bytes());
+    cache.extend_from_slice(&u32::MAX.to_le_bytes());
+    cache.extend_from_slice(&[0; 8]);
+    if family == AF_INET {
+        message.attr(IFA_ADDRESS as u32, address);
+        message.attr(IFA_LOCAL as u32, address);
+        if let Some(broadcast) = broadcast {
+            message.attr(IFA_BROADCAST as u32, &broadcast);
+        }
+        message.text(IFA_LABEL as u32, label.unwrap_or(""));
+        message.u32(IFA_FLAGS as u32, IFA_F_PERMANENT);
+        message.attr(IFA_CACHEINFO as u32, &cache);
+    } else {
+        message.attr(IFA_ADDRESS as u32, address);
+        message.attr(IFA_CACHEINFO as u32, &cache);
+        message.u32(IFA_FLAGS as u32, IFA_F_PERMANENT);
+        message.u8(IFA_PROTO as u32, IFAPROT_KERNEL_LO as u8);
+    }
+    message.finish()
+}
+
+fn addresses(family: u32, index: Option<u32>, request: &[u8], portid: u32) -> Vec<Vec<u8>> {
+    let host = rt_scope_t::RT_SCOPE_HOST as u8;
+    let universe = rt_scope_t::RT_SCOPE_UNIVERSE as u8;
+    let lo = network::LOOPBACK_INDEX;
+    let eth = network::ETHERNET_INDEX;
+    let mut out = Vec::new();
+    let wanted = |kind: u32, at: u32| {
+        (family == AF_UNSPEC || family == kind) && index.is_none_or(|index| index == at)
+    };
+    if wanted(AF_INET, lo) {
+        out.push(address_message(
+            request,
+            portid,
+            AF_INET,
+            8,
+            host,
+            lo,
+            &[127, 0, 0, 1],
+            None,
+            Some(network::LOOPBACK_NAME),
+        ));
+    }
+    if wanted(AF_INET, eth) {
+        out.push(address_message(
+            request,
+            portid,
+            AF_INET,
+            network::PREFIX,
+            universe,
+            eth,
+            &network::ADDRESS,
+            Some(network::BROADCAST),
+            Some(network::ETHERNET_NAME),
+        ));
+    }
+    if wanted(AF_INET6, lo) {
+        let mut loopback = [0u8; 16];
+        loopback[15] = 1;
+        out.push(address_message(
+            request, portid, AF_INET6, 128, host, lo, &loopback, None, None,
+        ));
+    }
+    out
+}
+
+/// One route (`fib_dump_info`, `rt6_fill_node`).
+struct Route {
+    family: u32,
+    destination: [u8; 16],
+    prefix: u8,
+    table: u8,
+    protocol: u8,
+    scope: u8,
+    kind: u8,
+    gateway: Option<[u8; 4]>,
+    source: Option<[u8; 4]>,
+    interface: u32,
+}
+
+fn routes(family: u32, request: &[u8], portid: u32) -> Vec<Vec<u8>> {
+    let main = rt_class_t::RT_TABLE_MAIN as u8;
+    let local = rt_class_t::RT_TABLE_LOCAL as u8;
+    let kernel_protocol = RTPROT_KERNEL as u8;
+    let boot = RTPROT_BOOT as u8;
+    let (host, link, universe) = (
+        rt_scope_t::RT_SCOPE_HOST as u8,
+        rt_scope_t::RT_SCOPE_LINK as u8,
+        rt_scope_t::RT_SCOPE_UNIVERSE as u8,
+    );
+    let (unicast, local_kind, broadcast) =
+        (RTN_UNICAST as u8, RTN_LOCAL as u8, RTN_BROADCAST as u8);
+    let v4 = |address: [u8; 4]| {
+        let mut out = [0u8; 16];
+        out[..4].copy_from_slice(&address);
+        out
+    };
+    let a = network::ADDRESS;
+    let subnet = [a[0], a[1], 0, 0];
+    let (lo, eth) = (network::LOOPBACK_INDEX, network::ETHERNET_INDEX);
+    let loopback = [127, 0, 0, 1];
+    let route =
+        |destination: [u8; 4], prefix, table, protocol, scope, kind, gateway, source, interface| {
+            Route {
+                family: AF_INET,
+                destination: v4(destination),
+                prefix,
+                table,
+                protocol,
+                scope,
+                kind,
+                gateway,
+                source,
+                interface,
+            }
+        };
+    let mut table = alloc::vec![
+        route(
+            [0; 4],
+            0,
+            main,
+            boot,
+            universe,
+            unicast,
+            Some(network::GATEWAY),
+            None,
+            eth
+        ),
+        route(
+            subnet,
+            network::PREFIX,
+            main,
+            kernel_protocol,
+            link,
+            unicast,
+            None,
+            Some(a),
+            eth
+        ),
+        route(
+            [127, 0, 0, 0],
+            8,
+            local,
+            kernel_protocol,
+            host,
+            local_kind,
+            None,
+            Some(loopback),
+            lo
+        ),
+        route(
+            loopback,
+            32,
+            local,
+            kernel_protocol,
+            host,
+            local_kind,
+            None,
+            Some(loopback),
+            lo
+        ),
+        route(
+            [127, 255, 255, 255],
+            32,
+            local,
+            kernel_protocol,
+            link,
+            broadcast,
+            None,
+            Some(loopback),
+            lo
+        ),
+        route(
+            a,
+            32,
+            local,
+            kernel_protocol,
+            host,
+            local_kind,
+            None,
+            Some(a),
+            eth
+        ),
+        route(
+            network::BROADCAST,
+            32,
+            local,
+            kernel_protocol,
+            link,
+            broadcast,
+            None,
+            Some(a),
+            eth
+        ),
+    ];
+    let mut six = [0u8; 16];
+    six[15] = 1;
+    table.push(Route {
+        family: AF_INET6,
+        destination: six,
+        prefix: 128,
+        table: local,
+        protocol: kernel_protocol,
+        scope: universe,
+        kind: local_kind,
+        gateway: None,
+        source: None,
+        interface: lo,
+    });
+    table
+        .iter()
+        .filter(|route| family == AF_UNSPEC || family == route.family)
+        .map(|route| route_message(route, request, portid))
+        .collect()
+}
+
+fn route_message(route: &Route, request: &[u8], portid: u32) -> Vec<u8> {
+    let mut message = Message::new(RTM_NEWROUTE as u16, NLM_F_MULTI as u16, request, portid);
+    let head = [
+        route.family as u8,
+        route.prefix,
+        0,
+        0,
+        route.table,
+        route.protocol,
+        route.scope,
+        route.kind,
+        0,
+        0,
+        0,
+        0,
+    ];
+    message.push(&head);
+    message.u32(RTA_TABLE as u32, u32::from(route.table));
+    if route.family == AF_INET {
+        if route.prefix > 0 {
+            message.attr(RTA_DST as u32, &route.destination[..4]);
+        }
+        if let Some(source) = route.source {
+            message.attr(RTA_PREFSRC as u32, &source);
+        }
+        if let Some(gateway) = route.gateway {
+            message.attr(RTA_GATEWAY as u32, &gateway);
+        }
+        message.u32(RTA_OIF as u32, route.interface);
+    } else {
+        message.attr(RTA_DST as u32, &route.destination);
+        message.u32(RTA_PRIORITY as u32, 0);
+        message.u32(RTA_OIF as u32, route.interface);
+        message.attr(RTA_CACHEINFO as u32, &[0; 32]);
+        message.u8(RTA_PREF as u32, 0);
+    }
+    message.finish()
+}
+
+/// `netlink_recvmsg`: one message buffer, the kernel as its sender.
+pub(super) fn receive(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    parts: &[(u64, u64)],
+    flags: u32,
+    nonblocking: bool,
+) -> Result<(u64, Received), Errno> {
+    let size: u64 = parts.iter().map(|(_, length)| length).sum();
+    if socket.borrow().queue.is_empty() {
+        let timeout = socket.borrow().receive_timeout;
+        return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
+    }
+    let data = socket
+        .borrow()
+        .queue
+        .front()
+        .expect("a message")
+        .data
+        .clone();
+    let copied = (data.len() as u64).min(size);
+    scatter(kernel, cx, tid, parts, &data[..copied as usize])?;
+    let mut received = Received {
+        address: Some(address(0, 0)),
+        ..Received::default()
+    };
+    if data.len() as u64 > size {
+        received.flags |= MSG_TRUNC;
+    }
+    if flags & MSG_TRUNC != 0 {
+        received.reported = Some(data.len() as u64);
+    }
+    if flags & MSG_PEEK == 0 {
+        socket.borrow_mut().queue.pop_front();
+    }
+    Ok((copied, received))
+}
+
+/// setsockopt at SOL_NETLINK (`netlink_setsockopt`): the flag options are kept; joining and
+/// leaving groups changes which groups it is in.
+pub(super) fn set_option(
+    socket: &SocketRef,
+    level: u32,
+    name: u32,
+    bytes: &[u8],
+) -> Option<Result<u64, Errno>> {
+    if level != SOL_NETLINK {
+        return None;
+    }
+    if bytes.len() < 4 {
+        return Some(Err(Errno::EINVAL));
+    }
+    let value = u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"));
+    let mut netlink = part(socket);
+    match name {
+        NETLINK_ADD_MEMBERSHIP | NETLINK_DROP_MEMBERSHIP => {
+            if value == 0 || value > 32 {
+                return Some(Err(Errno::EINVAL));
+            }
+            let bit = 1 << (value - 1);
+            if name == NETLINK_ADD_MEMBERSHIP {
+                netlink.groups |= bit;
+            } else {
+                netlink.groups &= !bit;
+            }
+        }
+        NETLINK_PKTINFO
+        | NETLINK_BROADCAST_ERROR
+        | NETLINK_NO_ENOBUFS
+        | NETLINK_LISTEN_ALL_NSID
+        | NETLINK_CAP_ACK
+        | NETLINK_EXT_ACK
+        | NETLINK_GET_STRICT_CHK => {
+            if value != 0 {
+                netlink.flags |= 1 << name;
+            } else {
+                netlink.flags &= !(1 << name);
+            }
+        }
+        _ => return Some(Err(Errno::ENOPROTOOPT)),
+    }
+    Some(Ok(0))
+}
+
+pub(super) fn get_option(
+    socket: &SocketRef,
+    level: u32,
+    name: u32,
+) -> Option<Result<Vec<u8>, Errno>> {
+    if level != SOL_NETLINK {
+        return None;
+    }
+    let netlink = part(socket);
+    Some(match name {
+        NETLINK_PKTINFO
+        | NETLINK_BROADCAST_ERROR
+        | NETLINK_NO_ENOBUFS
+        | NETLINK_LISTEN_ALL_NSID
+        | NETLINK_CAP_ACK
+        | NETLINK_EXT_ACK
+        | NETLINK_GET_STRICT_CHK => Ok(u32::from(netlink.flags & (1 << name) != 0)
+            .to_le_bytes()
+            .to_vec()),
+        NETLINK_LIST_MEMBERSHIPS => Ok(netlink.groups.to_le_bytes().to_vec()),
+        _ => Err(Errno::ENOPROTOOPT),
+    })
+}

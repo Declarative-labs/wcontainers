@@ -5,6 +5,7 @@
 //! [`inet`].
 
 mod inet;
+mod netlink;
 
 pub(crate) use inet::Ports;
 
@@ -18,9 +19,9 @@ use crate::file::{FileRef, OpenFile};
 use crate::fs::{Content, Node};
 use crate::linux::general::*;
 use crate::linux::net::{
-    AF_INET, AF_INET6, AF_UNIX, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT, MSG_NOSIGNAL, MSG_OOB,
-    MSG_PEEK, MSG_TRUNC, MSG_WAITALL, SCM_CREDENTIALS, SCM_RIGHTS, SHUT_RDWR, SOCK_DGRAM, SOCK_RAW,
-    SOCK_SEQPACKET, SOCK_STREAM, SOL_SOCKET,
+    AF_INET, AF_INET6, AF_NETLINK, AF_UNIX, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT,
+    MSG_NOSIGNAL, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL, SCM_CREDENTIALS, SCM_RIGHTS,
+    SHUT_RDWR, SOCK_DGRAM, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, SOL_SOCKET,
 };
 use crate::process::{Channel, Pid, Tid};
 use crate::{Context, Errno, Kernel};
@@ -120,6 +121,8 @@ pub(crate) struct Socket {
     owner_uid: u32,
     /// An internet socket's own part.
     inet: Option<alloc::boxed::Box<inet::Inet>>,
+    /// A netlink socket's own part.
+    netlink: Option<alloc::boxed::Box<netlink::Netlink>>,
 }
 
 impl Socket {
@@ -153,6 +156,7 @@ impl Socket {
             send_timeout: 0,
             owner_uid: 0,
             inet: None,
+            netlink: None,
         }
     }
 
@@ -169,6 +173,30 @@ pub(crate) struct Names {
     paths: BTreeMap<(u64, u64), Weak<RefCell<Socket>>>,
     /// The ports internet sockets hold.
     inet: Ports,
+    /// The port numbers netlink sockets hold.
+    netlink: BTreeMap<u32, Weak<RefCell<Socket>>>,
+}
+
+impl Names {
+    fn portid_taken(&self, portid: u32) -> bool {
+        self.netlink
+            .get(&portid)
+            .is_some_and(|socket| socket.upgrade().is_some_and(|socket| !socket.borrow().dead))
+    }
+
+    fn hold_portid(&mut self, portid: u32, socket: &SocketRef) {
+        self.netlink.insert(portid, Rc::downgrade(socket));
+    }
+
+    fn let_go_portid(&mut self, portid: u32, socket: &SocketRef) {
+        if self
+            .netlink
+            .get(&portid)
+            .is_some_and(|held| core::ptr::eq(held.as_ptr(), Rc::as_ptr(socket)))
+        {
+            self.netlink.remove(&portid);
+        }
+    }
 }
 
 /// The address waits and epoll use for a socket.
@@ -288,6 +316,7 @@ fn create(
     match family {
         AF_UNIX => Ok(Socket::new(family, unix_kind(kind, protocol as u32)?, 0)),
         AF_INET | AF_INET6 => inet::create(kernel, cx, family, kind, protocol as u32),
+        AF_NETLINK => netlink::create(kernel, cx, kind, protocol as u32),
         _ => Err(kernel.counters.refuse(
             cx.host,
             crate::reason::FAMILY_NOT_BUILT,
@@ -423,6 +452,10 @@ pub(super) fn bind(
     if socket.borrow().inet.is_some() {
         let bytes = address_argument(kernel, cx, tid, address, length)?;
         return inet::bind(kernel, cx, tid, &socket, &bytes);
+    }
+    if socket.borrow().netlink.is_some() {
+        let bytes = address_argument(kernel, cx, tid, address, length)?;
+        return netlink::bind(kernel, tid, &socket, &bytes);
     }
     // `unix_bind`: the address is checked before the socket's state.
     let length_ok = (length as i32) >= PATH_OFFSET as i32;
@@ -596,6 +629,9 @@ pub(super) fn listen(
     if socket.borrow().inet.is_some() {
         return inet::listen(kernel, cx, tid, &socket, backlog);
     }
+    if socket.borrow().netlink.is_some() {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let cred = peer_cred(kernel, tid);
     let mut listener = socket.borrow_mut();
     if !listener.connection() {
@@ -621,6 +657,10 @@ pub(super) fn connect(
     if socket.borrow().inet.is_some() {
         let bytes = address_argument(kernel, cx, tid, address, length)?;
         return inet::connect(kernel, cx, tid, &file, &socket, &bytes);
+    }
+    if socket.borrow().netlink.is_some() {
+        let bytes = address_argument(kernel, cx, tid, address, length)?;
+        return netlink::connect(kernel, cx, tid, &socket, &bytes);
     }
     if (length as i32) < PATH_OFFSET as i32 {
         return Err(Errno::EINVAL);
@@ -801,6 +841,8 @@ pub(super) fn getsockname(
     let (_, socket) = socket_of(kernel, tid, fd)?;
     let bytes = if socket.borrow().inet.is_some() {
         inet::name(&socket, false)?
+    } else if socket.borrow().netlink.is_some() {
+        netlink::name(&socket, false)
     } else {
         address_bytes(socket.borrow().name.as_deref())
     };
@@ -815,8 +857,12 @@ pub(super) fn getpeername(
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
-    if socket.borrow().inet.is_some() {
-        let bytes = inet::name(&socket, true)?;
+    if socket.borrow().inet.is_some() || socket.borrow().netlink.is_some() {
+        let bytes = if socket.borrow().inet.is_some() {
+            inet::name(&socket, true)?
+        } else {
+            netlink::name(&socket, true)
+        };
         put_address(kernel, cx, tid, address, length, &bytes)?;
         return Ok(0);
     }
@@ -841,6 +887,9 @@ pub(super) fn shutdown(
     let mode = (how + 1) as u8;
     if socket.borrow().inet.is_some() {
         return inet::shutdown(kernel, &socket, mode);
+    }
+    if socket.borrow().netlink.is_some() {
+        return Err(Errno::EOPNOTSUPP);
     }
     let peer = {
         let mut own = socket.borrow_mut();
@@ -868,6 +917,9 @@ pub(super) fn shutdown(
 pub(super) fn poll(socket: &SocketRef) -> u16 {
     if socket.borrow().inet.is_some() {
         return inet::poll(socket);
+    }
+    if socket.borrow().netlink.is_some() {
+        return netlink::poll(socket);
     }
     let own = socket.borrow();
     let mut mask = 0u32;
@@ -914,6 +966,9 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
 pub(crate) fn released(kernel: &mut Kernel, socket: &SocketRef) {
     if socket.borrow().inet.is_some() {
         return inet::released(kernel, socket);
+    }
+    if socket.borrow().netlink.is_some() {
+        return netlink::released(kernel, socket);
     }
     let (peer, backlog, queue, unread, connection) = {
         let mut own = socket.borrow_mut();
@@ -1048,6 +1103,10 @@ fn send(
     }
     let kind = socket.borrow().kind;
     let is_inet = socket.borrow().inet.is_some();
+    if socket.borrow().netlink.is_some() {
+        let to = message.address.as_deref();
+        return netlink::send(kernel, cx, tid, socket, &message.parts, to, total);
+    }
     let result = match kind {
         _ if is_inet => inet::send(kernel, cx, tid, socket, &message, total, nonblocking),
         SOCK_STREAM => {
@@ -1337,6 +1396,9 @@ fn receive(
     let kind = socket.borrow().kind;
     if socket.borrow().inet.is_some() {
         return inet::receive(kernel, cx, tid, socket, parts, flags, nonblocking);
+    }
+    if socket.borrow().netlink.is_some() {
+        return netlink::receive(kernel, cx, tid, socket, parts, flags, nonblocking);
     }
     if flags & MSG_OOB != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -1658,7 +1720,7 @@ pub(super) fn sendto(
     if !crate::user::access_ok(buffer, length) {
         return Err(Errno::EFAULT);
     }
-    let is_inet = socket.borrow().inet.is_some();
+    let is_inet = socket.borrow().inet.is_some() || socket.borrow().netlink.is_some();
     let (name, address) = if address == 0 {
         (None, None)
     } else if is_inet {
@@ -1831,7 +1893,7 @@ pub(super) fn sendmsg(
 ) -> Result<u64, Errno> {
     let (file, socket) = socket_of(kernel, tid, fd)?;
     let header = read_header(kernel, cx, tid, header)?;
-    let is_inet = socket.borrow().inet.is_some();
+    let is_inet = socket.borrow().inet.is_some() || socket.borrow().netlink.is_some();
     let address = if is_inet && header.name != 0 && header.name_length != 0 {
         let length = header.name_length.min(128) as u64;
         Some(address_argument(kernel, cx, tid, header.name, length)?)
@@ -1892,7 +1954,7 @@ pub(super) fn recvmsg(
     // Control messages: credentials when asked for, then descriptors.
     let mut control = Vec::new();
     let room = header.control_length as usize;
-    let passcred = socket.borrow().passcred && socket.borrow().inet.is_none();
+    let passcred = socket.borrow().passcred && socket.borrow().family == AF_UNIX;
     if passcred {
         let cred = received.cred.unwrap_or(Cred {
             pid: 0,
@@ -1979,6 +2041,10 @@ pub(super) fn setsockopt(
         if let Some(answer) = inet::set_option(kernel, cx, &socket, level, name, &bytes) {
             return answer;
         }
+    } else if socket.borrow().netlink.is_some() && level != SOL_SOCKET {
+        let bytes = guest(kernel, cx, tid).read(value, (length as u64).min(64))?;
+        return netlink::set_option(&socket, level, name, &bytes)
+            .unwrap_or(Err(Errno::ENOPROTOOPT));
     } else if level != SOL_SOCKET {
         return Err(Errno::EOPNOTSUPP);
     }
@@ -2100,6 +2166,14 @@ pub(super) fn getsockopt(
             guest(kernel, cx, tid).write_value(length, &(copied as i32))?;
             return Ok(0);
         }
+    } else if socket.borrow().netlink.is_some() && level != SOL_SOCKET {
+        let bytes = netlink::get_option(&socket, level, name).unwrap_or(Err(Errno::ENOPROTOOPT))?;
+        if room < 4 {
+            return Err(Errno::EINVAL);
+        }
+        guest(kernel, cx, tid).write(value, &bytes)?;
+        guest(kernel, cx, tid).write_value(length, &(bytes.len() as i32))?;
+        return Ok(0);
     } else if level != SOL_SOCKET {
         return Err(Errno::EOPNOTSUPP);
     }
@@ -2183,5 +2257,241 @@ pub(super) fn getsockopt(
     let copied = (room as usize).min(bytes.len());
     guest(kernel, cx, tid).write(value, &bytes[..copied])?;
     guest(kernel, cx, tid).write_value(length, &(copied as i32))?;
+    Ok(0)
+}
+
+/// `sock_ioctl` and the families' `ioctl`: the bytes waiting and unsent, the owner, and the
+/// questions about interfaces (`dev_ioctl`, `devinet_ioctl`).
+pub(super) fn ioctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    socket: &SocketRef,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux::ioctl::*;
+    let put_int = |kernel: &mut Kernel, cx: &mut Context<'_>, value: i32| {
+        guest(kernel, cx, tid)
+            .write_value(argument, &value)
+            .map(|()| 0)
+    };
+    let (family, kind, listening) = {
+        let own = socket.borrow();
+        (own.family, own.kind, own.state == State::Listening)
+    };
+    match request {
+        FIOSETOWN | SIOCSPGRP => {
+            let who: i32 = guest(kernel, cx, tid).read_value(argument)?;
+            return super::io::set_owner_number(kernel, tid, file, who);
+        }
+        FIOGETOWN | SIOCGPGRP => {
+            let owner = super::io::get_owner(kernel, file);
+            return put_int(kernel, cx, owner);
+        }
+        SIOCGIFCONF => return interface_list(kernel, cx, tid, argument),
+        _ => {}
+    }
+    if family == AF_UNIX || family == AF_INET || family == AF_INET6 {
+        match request {
+            FIONREAD | TIOCOUTQ if listening => return Err(Errno::EINVAL),
+            FIONREAD => {
+                let own = socket.borrow();
+                let amount = if kind == SOCK_DGRAM {
+                    own.queue.front().map_or(0, |packet| packet.data.len())
+                } else {
+                    own.queue
+                        .iter()
+                        .map(|packet| packet.data.len() - packet.consumed)
+                        .sum()
+                };
+                drop(own);
+                return put_int(kernel, cx, amount as i32);
+            }
+            TIOCOUTQ => {
+                let own = socket.borrow();
+                let amount = match &own.inet {
+                    Some(_) if kind == SOCK_STREAM => {
+                        let window = own.peer.as_ref().map_or(0, |peer| peer.borrow().rcvbuf);
+                        own.written.saturating_sub(window)
+                    }
+                    Some(_) => 0,
+                    None => own.written,
+                };
+                drop(own);
+                return put_int(kernel, cx, amount as i32);
+            }
+            SIOCATMARK => return put_int(kernel, cx, 0),
+            _ => {}
+        }
+    }
+    if family == AF_INET || family == AF_INET6 {
+        match request {
+            SIOCGSTAMP
+            | crate::linux::net::SIOCGSTAMPNS_OLD
+            | SIOCGSTAMP_NEW
+            | SIOCGSTAMPNS_NEW => {
+                return Err(kernel.counters.refuse(
+                    cx.host,
+                    crate::reason::IOCTL_NOT_BUILT,
+                    request.into(),
+                    Errno::ENOENT,
+                ));
+            }
+            SIOCGIFADDR | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFDSTADDR if family == AF_INET => {
+                return interface_address(kernel, cx, tid, request, argument);
+            }
+            SIOCGIFPFLAGS if family == AF_INET => return Err(Errno::EINVAL),
+            _ => {}
+        }
+    }
+    match request {
+        SIOCGIFNAME | SIOCGIFFLAGS | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR | SIOCGIFSLAVE
+        | SIOCGIFMAP | SIOCGIFINDEX | SIOCGIFTXQLEN => {
+            interface_question(kernel, cx, tid, request, argument)
+        }
+        // Requests that change the network need CAP_NET_ADMIN, which Docker does not give.
+        SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU | SIOCSIFNAME | SIOCSIFHWADDR | SIOCSIFSLAVE
+        | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST | SIOCSIFMAP | SIOCSIFTXQLEN
+        | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFPFLAGS
+        | SIOCADDRT | SIOCDELRT | SIOCDARP | SIOCSARP | SIOCSIFLINK | SIOCDIFADDR
+            if !kernel.credentials(tid).has(CAP_NET_ADMIN) =>
+        {
+            Err(Errno::EPERM)
+        }
+        SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU | SIOCSIFNAME | SIOCSIFHWADDR | SIOCSIFSLAVE
+        | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST | SIOCSIFMAP | SIOCSIFTXQLEN
+        | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFPFLAGS
+        | SIOCADDRT | SIOCDELRT | SIOCDARP | SIOCSARP | SIOCSIFLINK | SIOCDIFADDR => {
+            Err(kernel.counters.refuse(
+                cx.host,
+                crate::reason::IOCTL_NOT_BUILT,
+                request.into(),
+                Errno::EOPNOTSUPP,
+            ))
+        }
+        _ => Err(Errno::ENOTTY),
+    }
+}
+
+/// The interface an `ifreq` names, by name with any `:label` cut off.
+fn named_interface(request: &[u8]) -> Option<&'static netlink::Interface> {
+    let mut name = &request[..15];
+    if let Some(end) = name.iter().position(|&byte| byte == 0 || byte == b':') {
+        name = &name[..end];
+    }
+    netlink::INTERFACES
+        .iter()
+        .find(|interface| interface.name.as_bytes() == name)
+}
+
+/// `dev_ioctl`'s questions about one interface, answered in the caller's `ifreq`.
+fn interface_question(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux::ioctl::*;
+    use crate::linux::net::net_device_flags::*;
+    let mut ifreq = guest(kernel, cx, tid).read(argument, 40)?;
+    let int = |ifreq: &mut Vec<u8>, value: i32| ifreq[16..20].copy_from_slice(&value.to_le_bytes());
+    if request == SIOCGIFNAME {
+        let index = i32::from_le_bytes(ifreq[16..20].try_into().expect("4 bytes"));
+        let interface = netlink::INTERFACES
+            .iter()
+            .find(|interface| interface.index as i32 == index)
+            .ok_or(Errno::ENODEV)?;
+        ifreq[..16].fill(0);
+        ifreq[..interface.name.len()].copy_from_slice(interface.name.as_bytes());
+        guest(kernel, cx, tid).write(argument, &ifreq)?;
+        return Ok(0);
+    }
+    let interface = named_interface(&ifreq).ok_or(Errno::ENODEV)?;
+    match request {
+        SIOCGIFFLAGS => {
+            let hidden = IFF_PROMISC as u32 | IFF_ALLMULTI as u32 | IFF_LOWER_UP as u32;
+            let flags = (interface.flags & !hidden) as u16;
+            ifreq[16..18].copy_from_slice(&flags.to_le_bytes());
+        }
+        SIOCGIFMETRIC => int(&mut ifreq, 0),
+        SIOCGIFMTU => int(&mut ifreq, interface.mtu as i32),
+        SIOCGIFINDEX => int(&mut ifreq, interface.index as i32),
+        SIOCGIFTXQLEN => int(&mut ifreq, interface.queue_length as i32),
+        SIOCGIFHWADDR => {
+            ifreq[16..32].fill(0);
+            ifreq[16..18].copy_from_slice(&(interface.kind as u16).to_le_bytes());
+            ifreq[18..24].copy_from_slice(&interface.hardware);
+        }
+        SIOCGIFMAP => ifreq[16..40].fill(0),
+        _ => return Err(Errno::EINVAL),
+    }
+    guest(kernel, cx, tid).write(argument, &ifreq)?;
+    Ok(0)
+}
+
+/// A `sockaddr_in` of an IPv4 address, in an `ifreq` from offset 16.
+fn put_v4(ifreq: &mut [u8], address: [u8; 4]) {
+    ifreq[16..32].fill(0);
+    ifreq[16..18].copy_from_slice(&(AF_INET as u16).to_le_bytes());
+    ifreq[20..24].copy_from_slice(&address);
+}
+
+/// `devinet_ioctl`'s questions about an interface's IPv4 address.
+fn interface_address(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux::ioctl::*;
+    let mut ifreq = guest(kernel, cx, tid).read(argument, 40)?;
+    let interface = named_interface(&ifreq).ok_or(Errno::ENODEV)?;
+    // An alias label names an address the interface does not have.
+    if ifreq[..16].contains(&b':') {
+        return Err(Errno::EADDRNOTAVAIL);
+    }
+    let (address, prefix, broadcast) = interface.v4;
+    let mask = (u32::MAX << (32 - u32::from(prefix))).to_be_bytes();
+    let value = match request {
+        SIOCGIFADDR | SIOCGIFDSTADDR => address,
+        SIOCGIFBRDADDR => broadcast,
+        _ => mask,
+    };
+    put_v4(&mut ifreq, value);
+    guest(kernel, cx, tid).write(argument, &ifreq)?;
+    Ok(0)
+}
+
+/// `dev_ifconf`: an `ifreq` for each interface's IPv4 address, as many whole ones as fit, or with
+/// no buffer the room they need.
+fn interface_list(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    argument: u64,
+) -> Result<u64, Errno> {
+    let header = guest(kernel, cx, tid).read(argument, 16)?;
+    let room = i32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
+    let buffer = u64::from_le_bytes(header[8..16].try_into().expect("8 bytes"));
+    let mut list = Vec::new();
+    for interface in &netlink::INTERFACES {
+        let mut ifreq = alloc::vec![0u8; 40];
+        ifreq[..interface.name.len()].copy_from_slice(interface.name.as_bytes());
+        put_v4(&mut ifreq, interface.v4.0);
+        list.push(ifreq);
+    }
+    let used = if buffer == 0 {
+        list.len() * 40
+    } else {
+        let fits = (room.max(0) as usize / 40).min(list.len());
+        let bytes: Vec<u8> = list[..fits].concat();
+        guest(kernel, cx, tid).write(buffer, &bytes)?;
+        bytes.len()
+    };
+    guest(kernel, cx, tid).write_value(argument, &(used as i32))?;
     Ok(0)
 }

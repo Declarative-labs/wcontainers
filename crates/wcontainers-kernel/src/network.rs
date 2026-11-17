@@ -12,7 +12,7 @@ pub const GATEWAY: [u8; 4] = [172, 17, 0, 1];
 pub const NAME_SERVER: [u8; 4] = [127, 0, 0, 11];
 /// The Ethernet interface's hardware address and largest packet.
 pub const HARDWARE: [u8; 6] = [0x02, 0x42, 0xac, 0x11, 0x00, 0x02];
-pub const MTU: u32 = 1500;
+pub const MTU: u32 = 65535;
 /// The loopback interface's largest packet.
 pub const LOOPBACK_MTU: u32 = 65536;
 /// The interfaces' names and numbers.

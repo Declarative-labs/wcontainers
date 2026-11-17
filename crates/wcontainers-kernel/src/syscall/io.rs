@@ -2581,27 +2581,8 @@ fn fcntl_other(
         }
         // No lease can be taken, so a file never holds one.
         F_GETLEASE if !path_only => Ok(u64::from(F_UNLCK)),
-        F_GETOWN if !path_only => {
-            let owner = descriptor.file.borrow().owner;
-            Ok(owner.map_or(0, |owner| match owner_lives(kernel, &owner) {
-                true if owner.kind == OwnerKind::Group => -owner.pid,
-                true => owner.pid,
-                false => 0,
-            }) as i64 as u64)
-        }
-        F_SETOWN if !path_only => {
-            // `f_setown`: below zero names a group.
-            let who = argument as i32;
-            if who == i32::MIN {
-                return Err(Errno::EINVAL);
-            }
-            let kind = if who < 0 {
-                OwnerKind::Group
-            } else {
-                OwnerKind::Process
-            };
-            set_owner(kernel, tid, &descriptor.file, who.abs(), kind)
-        }
+        F_GETOWN if !path_only => Ok(get_owner(kernel, &descriptor.file) as i64 as u64),
+        F_SETOWN if !path_only => set_owner_number(kernel, tid, &descriptor.file, argument as i32),
         F_GETOWN_EX if !path_only => {
             let owner = descriptor.file.borrow().owner.unwrap_or_default();
             let pid = if owner_lives(kernel, &owner) {
@@ -2708,6 +2689,34 @@ fn fcntl_other(
         )),
         _ => Err(Errno::EINVAL),
     }
+}
+
+/// `f_getown`: the owner's number, below zero for a group, 0 for none or one that is gone.
+pub(super) fn get_owner(kernel: &Kernel, file: &FileRef) -> i32 {
+    let owner = file.borrow().owner;
+    owner.map_or(0, |owner| match owner_lives(kernel, &owner) {
+        true if owner.kind == OwnerKind::Group => -owner.pid,
+        true => owner.pid,
+        false => 0,
+    })
+}
+
+/// `f_setown`: below zero names a group.
+pub(super) fn set_owner_number(
+    kernel: &Kernel,
+    tid: Tid,
+    file: &FileRef,
+    who: i32,
+) -> Result<u64, Errno> {
+    if who == i32::MIN {
+        return Err(Errno::EINVAL);
+    }
+    let kind = if who < 0 {
+        OwnerKind::Group
+    } else {
+        OwnerKind::Process
+    };
+    set_owner(kernel, tid, file, who.abs(), kind)
 }
 
 /// Whether a number is in use by a thread, process, group or session (Linux's `find_vpid`).

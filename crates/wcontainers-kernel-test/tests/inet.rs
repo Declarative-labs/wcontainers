@@ -9,3 +9,9 @@ fn internet_sockets_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "inet", &[]);
 }
+
+#[test]
+fn interfaces_and_routes_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "netroute", &[]);
+}

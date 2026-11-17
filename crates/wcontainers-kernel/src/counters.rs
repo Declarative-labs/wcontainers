@@ -89,6 +89,12 @@ pub mod reason {
     /// MPTCP, UDP-Lite (plan section 15). Answered as Linux without the power or the protocol.
     /// Detail: the family times 2^32, plus the kind times 2^16, plus the protocol.
     pub const PROTOCOL_NOT_BUILT: &str = "socket protocol not built";
+    /// A netlink request Linux answers that is not built: answered EOPNOTSUPP, as Linux does
+    /// for a request with no handler. Detail: the message type, plus 2^16 for a dump.
+    pub const NETLINK_REQUEST_NOT_BUILT: &str = "netlink request not built";
+    /// A netlink answer about an interface carried its traffic counters, which are not kept here
+    /// and read zero. Detail: none.
+    pub const INTERFACE_COUNTERS_NOT_KEPT: &str = "interface counters not kept";
     /// A TCP send found no room: how much a connection holds is a fixed model here (the sender's
     /// SO_SNDBUF of unread bytes), where Linux's depends on timing (window and buffer growth).
     /// Detail: none.
@@ -132,6 +138,7 @@ pub mod reason {
         FAMILY_NOT_BUILT,
         OPTION_NOT_BUILT,
         PROTOCOL_NOT_BUILT,
+        NETLINK_REQUEST_NOT_BUILT,
     ];
 }
 
