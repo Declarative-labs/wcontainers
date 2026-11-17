@@ -1,8 +1,9 @@
 # wcontainers, phase two: one guest CPU interface, and x86-64
 
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
-ARM64 assumptions, and revised after each of the nine independent checks of X0 (2026-11-17). Nothing of it
-is built yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
+ARM64 assumptions, and revised after each of the nine independent checks of X0 (2026-11-17). The research and the two experiments
+of milestone X0 are done; what they found is in section 2. Milestone X1 (the interface of section 3, with
+ARM64 on it) is built; docs/status-x86.md says where the rest stands.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
 - **guest CPU**: the kind of processor whose machine code is translated: ARM64 today, x86-64 next, RV64GC
@@ -493,8 +494,25 @@ the effects are the same for every host, so its own switch-table habits record w
 Comments say what each item is for; section 3.4 gives the reason for each choice.
 
 ```rust
-/// Everything the translator needs that is true of one guest CPU only.
-pub trait Guest: Sized + 'static {
+/// The core, `no_std`: what the kernel and the runners need of a CPU without translating anything. At X10
+/// it gains the rest of the kernel's personality (section 6).
+pub trait Personality: Sized + Send + Sync + 'static {
+    /// The saved register block the kernel sees (`wcontainers_abi::RegisterBlock` on ARM64).
+    type Block: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::Immutable + Copy;
+    /// Where pc sits in the block, and the i32 stop flag after it.
+    const PC_OFFSET: usize;
+    const STOP_FLAG_OFFSET: usize;
+    /// Bytes of the block and its stop flag, a multiple of 16.
+    const BLOCK_SIZE: usize;
+    /// Bytes after those that only the CPU side uses (ARM64: FPSR tracking and the exclusive monitor).
+    const PRIVATE_BYTES: usize;
+    /// The registers a thread starts with at `pc` with stack pointer `sp` (x86: MXCSR 0x1F80, FCW 0x037F,
+    /// rflags 0x202).
+    fn initial_block(pc: u64, sp: u64) -> Self::Block;
+}
+
+/// Everything the translator needs that is true of one guest CPU only (behind `translate`).
+pub trait Guest: Personality {
     // --- identity ---
     /// Names the guest in the description section and the cache key.
     const ID: GuestId; // Arm64 = 1, X86_64 = 2, Rv64 = 3
@@ -575,24 +593,14 @@ pub trait Guest: Sized + 'static {
     /// address can have. ARM64 1; x86 1 << 62; 0 for a CPU without flags.
     const FLAGS_WANTED: i64;
 
-    // --- the thread block and controls ---
-    /// The saved register block the kernel sees (`wcontainers_abi::RegisterBlock` on ARM64).
-    type Block: zerocopy::FromBytes + zerocopy::IntoBytes + zerocopy::Immutable + Copy;
-    /// Where pc and the flags word sit in the block, and the stop flag after it.
-    const PC_OFFSET: usize;
+    // --- the flags word and controls ---
+    /// Where the i32 flags word sits in the block.
     const FLAGS_WORD_OFFSET: usize;
-    const STOP_FLAG_OFFSET: usize;
-    const BLOCK_SIZE: usize;
-    /// Bytes after the block that only the CPU side uses (ARM64: FPSR tracking and the exclusive monitor).
-    const PRIVATE_BYTES: usize;
     /// A register kept only in the thread's state, never in a local.
     type Control: Copy + Eq + core::fmt::Debug;
     fn control_ty(c: Self::Control) -> ValType;
     /// Byte offset from the start of the block (into the block or the private bytes).
     fn control_offset(c: Self::Control) -> usize;
-    /// The registers a thread starts with when made for a flat blob (x86: MXCSR 0x1F80, FCW 0x037F,
-    /// rflags 0x202).
-    fn initial_block(pc: u64, sp: u64) -> Self::Block;
 
     // --- floating point modes ---
     /// Push an i32 not zero when floating point must take the exact path now.
@@ -602,9 +610,10 @@ pub trait Guest: Sized + 'static {
 
     // --- hooks the meanings call ---
     type Hook: Copy + Eq + core::fmt::Debug;
-    /// Name, parameter and result types, and the register bits the hook reads or writes in the thread
-    /// block (written back before the call and loaded after). Function indices follow the translator's
-    /// own hooks, in this order.
+    /// Name, parameter and result types, the register bits the hook reads or writes in the thread block
+    /// (written back before the call and loaded after), the bytes of the thread's state a `Cpu` hook's
+    /// work reads and writes, and who does the work. Function indices follow the translator's own hooks,
+    /// in this order.
     const HOOKS: &'static [HookType];
     fn hook_index(h: Self::Hook) -> usize;
 
@@ -613,15 +622,16 @@ pub trait Guest: Sized + 'static {
     /// The generic stop a trap is, where its detail comes from, and where it leaves pc: `TrapPc::At` the
     /// instruction (a fault; every ARM64 trap) or `TrapPc::After` it (x86 `int3`, `int 3`, `int1`, `int 4`).
     fn trap_kind(t: Self::Trap) -> (TrapKind, TrapDetail, TrapPc);
-    /// Slow paths of this CPU's own, numbered after the translator's (from 64), with fixed names.
+    /// Slow paths of this CPU's own, numbered from `GUEST_REASONS` (64) in this order, with fixed names.
     type Reason: Copy + Eq + core::fmt::Debug;
     const REASONS: &'static [(Self::Reason, &'static str)];
 
     // --- what the host's engine does where WebAssembly leaves it open ---
     type Host: Copy + Eq + core::hash::Hash + core::fmt::Debug;
+    /// A module whose `probe` export, an i32 function, gives the answer `host_from_probe` reads.
     fn probe_module() -> Vec<u8>;
     fn host_from_probe(answer: i32) -> Self::Host;
-    /// Bytes of the host answer for the cache key.
+    /// The host answer as a number, for the cache key.
     fn host_key(host: Self::Host) -> u32;
 
     // --- what the container offers beyond the default claims ---
@@ -633,7 +643,8 @@ pub trait Guest: Sized + 'static {
 
     // --- the host side of this CPU's own hooks ---
     /// What the runner does when a piece calls a hook whose `HookType::body` is `Cpu`: the work, on the
-    /// thread's state (`BLOCK_SIZE + PRIVATE_BYTES` bytes from the block), with the hook's arguments.
+    /// bytes of the thread's state its `HookType::state` names (`state[0]` is the byte at `state.at`), with
+    /// the hook's arguments. The runner copies only those bytes, so the hook costs no more than the work.
     /// ARM64's float hook is `exact::run` behind it; x86's float and x87 hooks likewise. Every runner (the
     /// host runner, the browser's cdylib) calls this and nothing CPU-named. Hooks are a runner's job,
     /// never the kernel's: the runner owns the WebAssembly instance whose imports they are.
@@ -645,11 +656,14 @@ pub trait Guest: Sized + 'static {
     /// start of `code`, with the thread's registers exact in `block`: the fault the CPU gives for it.
     /// ARM64 and RV64GC always `Page`; x86, when the access that faulted reaches a non-canonical
     /// address, `Stack` if that access goes through the stack segment and `GeneralProtection` otherwise
-    /// (section 5.4). The runner calls this before it tells the kernel about the fault, so the kernel
-    /// needs no CPU crate.
+    /// (section 5.4). The runner calls this before it tells the kernel about the fault, so the kernel is
+    /// told the fault itself.
     fn memory_fault(address: u64, code: &[u8], block: &Self::Block) -> MemoryFault;
 
     // --- single stepping by a trap flag the program sets ---
+    /// Whether a program can turn single stepping on (x86's TF); when false the runners never call `step`
+    /// and copy nothing for it.
+    const STEPS: bool = false;
     /// What the stop hook does about single stepping (x86's TF, section 5.1), worked out on the thread's
     /// state (`BLOCK_SIZE + PRIVATE_BYTES` bytes from the block). The runner asks it first at every stop
     /// hook call, with `StepAt::Stop(pc)`, and with `StepAt::Kernel` whenever the kernel has had the thread
@@ -737,9 +751,6 @@ pub trait Guest: Sized + 'static {
     /// loads and the largest value it leaves there (the analyses work with register bits, so they compare
     /// its bit with their own).
     fn loaded_max(i: &Self::Instruction) -> Option<(Self::Reg, i64)>;
-    /// How a write narrower than 64 bits leaves the rest of the register, per width in bytes (1, 2, 4);
-    /// `None` where the CPU has no register write of that width.
-    const NARROW_WRITE: [Option<NarrowWrite>; 3];
 }
 ```
 
@@ -752,7 +763,10 @@ pub struct Registers(pub u128);
 /// One register bit: its number in `Registers` (0 to 127), what it is, and its offset in the thread block.
 pub struct Bit { pub bit: u32, pub class: Class, pub ty: Ty, pub offset: u16 }
 pub enum Class { General, Flag, Vector, Segment }
-pub enum Ty { I64, V128 }
+/// I32 for a flag (ARM64's N, Z, C, V), I64, V128.
+pub enum Ty { I32, I64, V128 }
+/// Which guest CPU, in the description section and the cache key.
+pub enum GuestId { Arm64 = 1, X86_64 = 2, Rv64 = 3 }
 /// The locals of a shape (`Guest::locals_of`): the first `len` of `at`. Nine is x86's largest shape, a
 /// shift by a run-time count: value, count, result and the six old flags, one local each (section 5.1).
 pub struct Locals { pub len: u8, pub at: [u32; 9] }
@@ -834,8 +848,6 @@ pub struct Induction<R> { pub reg: R, pub bits: u8, pub step: Value<R>, pub nega
 pub struct Comparison<R> { pub left: R, pub right: Value<R>, pub relation: Relation, pub signed: bool,
     pub bits: u8, pub at: u64 }
 pub enum Relation { Eq, Ne, Below { inclusive: bool }, Above { inclusive: bool } }
-/// What a register write narrower than 64 bits does to the rest of the register.
-pub enum NarrowWrite { Zero, Sign, Merge }
 /// The fault a memory fault is: a page fault at the address, general protection (address 0), or a
 /// stack fault (x86 #SS, address 0: a non-canonical access through the stack segment).
 pub enum MemoryFault { Page, GeneralProtection, Stack }
@@ -854,7 +866,10 @@ pub enum TrapDetail { Instruction, Local(u32), Const(i64) }
 /// Where a trap leaves pc: at the instruction, or after it (`Guest::trap_kind`).
 pub enum TrapPc { At, After }
 pub struct HookType { pub name: &'static str, pub params: &'static [ValType],
-    pub results: &'static [ValType], pub registers: Registers, pub body: HookBody }
+    pub results: &'static [ValType], pub registers: Registers, pub state: StateBytes, pub body: HookBody }
+/// `len` bytes of a thread's state from `at`, an offset from the start of the block (`NONE` for a hook
+/// whose work is not the CPU's).
+pub struct StateBytes { pub at: u16, pub len: u16 }
 /// Who does a hook's work on the host side.
 pub enum HookBody {
     Clock,        // the runner's clock, in nanoseconds
@@ -866,25 +881,40 @@ pub enum HookBody {
 pub struct HookDone { pub results: [i64; 2], pub reason: Option<u32> }
 ```
 
-Built in stages. X1 builds the items above that the translator, its analyses and the runners use for
-ARM64, with the signatures as given; it also moves the runtime's `Reason` list into the interface (the
-contract re-exports it), so a CPU's `run_hook` names the slow path it was by the same numbers. The items
-only another CPU uses arrive with the milestone that first uses them, each as written here, so nothing is
-built that nothing exercises: `ID`, `MAX_LENGTH`, `bit_reg`, `initial_block`, `host_key`, `offer_key`,
-`probe_module` and `host_from_probe` (X2, X3: the harness and the description section), `Reason` and
-`REASONS` of a CPU's own and the x86 `TrapKind`s (X3), `Emitter::check`'s `which` and `check_range` (X3,
-X5), `RETURN_ADDRESS`, `RED_ZONE`, `NARROW_WRITE` and the `before` walks of `built_address` and
-`jump_table` (X4), `CODE_CHANGES`, `step`, `StepAt`, `Step` and `Emitter::raise_stop` (X6),
-`HookType::registers` (X7), and the variants of `Index` and `AccessBytes` other than `Register` and `Fixed`
-(X5, X8). Until a CPU passes different registers in and out, the translator checks at compile time that
-`PASSED_IN` equals `PASSED_OUT` (x86's tuning at X5 lifts it). An instruction with two accesses, or with
-one the analyses do not reason about (`MemoryAccess::plain`), already gets no check plan, so it is checked
-by its own meaning each time.
+Built whole at X1, before any x86 code: every item above, and the translator's side of each, so that what
+x86-64 and RV64GC need of the translator lands while ARM64's byte-for-byte proof guards it. The translator
+passes `PASSED_IN` as parameters and gives `PASSED_OUT` back as results (a register passed out but not in
+is read from, and also kept in, the thread block); keys check plans by (offset, which access) and groups
+accesses by (segment, base, write), forgetting a segment's groups when its base register is written;
+checks frames down to `RED_ZONE` below the stack pointer; moves the stack pointer up past a `Stack` return
+address in `ret`, and after a `call` expects it `bytes` above its value at the call (the frame analysis
+likewise); writes back and reloads a hook's `registers` around it; emits `check_range`, `warn` (counted
+by the CPU's reason number) and `raise_stop` (with a stop check before the next instruction in the full
+emitter); gives `built_address` and `jump_table` the walk back over the function's instructions found so
+far; and the effects recorder counts a hook's `registers` and a `Stack` return's stack pointer. The
+runners count a CPU's own reasons by number and name them from `REASONS`, give a CPU's hook only its
+`state` bytes, ask `memory_fault` (the browser through a `cpu_memory_fault` export over the `cpu_state`
+buffer, with the instruction's bytes after the state), and stop with the faults the abi does not name yet
+(divide error, general protection, float exception, overflow, stack fault) as the test crate's own
+`Stopped::Fault`. ARM64 fills in each item so that its output does not change. Three uses of these items
+change ARM64's output and so come with the milestone whose x86 code needs them, each as a commit of its
+own compared byte for byte on both sides with the difference shown to be only that: the description
+section's guest and offer bytes (X3), and the stop and memory fault hooks returning the unwind payload,
+which is what the runners' `step` and code-change handling need (X6). One refinement waits for x86 to be
+measured: the first frame check of a function also covering a `Stack` return address slot, so `ret`'s read
+needs no check of its own (X4; it is gated on `ReturnAddress::Stack`, so ARM64's output cannot change).
+
+No item says what a write narrower than 64 bits does to the rest of the register (an earlier draft had
+`NARROW_WRITE`): the proofs never need it. `induction` reports only 32- and 64-bit steps that write all
+64 bits, a 32-bit step is used only through a 32-bit read of the register (`Domain::U32` or `S32`), where
+zero and sign extension of the write agree, and a 32-bit comparison bounds all 64 bits only after a load
+`loaded_max` says zero-extends. x86's 8- and 16-bit writes, which merge, are never inductions.
 
 `TrapKind` moves from the translator's contract into the interface (the contract re-exports it) and gains
 the kinds x86 needs, numbered after ARM64's four so ARM64's numbers do not change: `DivideError` (4),
-`GeneralProtection` (5) and `FloatException` (6, detail the `si_code`). Each comes with the signal Linux
-sends (section 6). A single step is not a `TrapKind`: no meaning raises one; the runner stops the thread
+`GeneralProtection` (5), `FloatException` (6, detail the `si_code`) and `Overflow` (7, x86 `int 4`: a trap
+the kernel must tell from general protection, section 5.2). Each comes with the signal Linux sends (section
+6). A single step is not a `TrapKind`: no meaning raises one; the runner stops the thread
 with it when `Guest::step` answers `Step::Trap` (section 5.1), and the abi's `Exit` and the tests' `Stop`
 carry it. Nor is a stack fault a `TrapKind`, for the same reason. It comes only from the memory fault hook, classified by `memory_fault` as `MemoryFault::Stack`, because every check a
 meaning makes before its access (alignment, a canonical branch target) gives general protection on the
@@ -1100,14 +1130,18 @@ the thread's state bytes, so no runner names a CPU function. Today the host runn
 browser's cdylib (browser/src/lib.rs:126) call `wcontainers_arm64::exact::run` by name and work out FPSR and
 the reason themselves; at X1 that code moves into ARM64's `run_hook`, unchanged in what it computes. The
 browser's cdylib then exports one function, `cpu_hook(hook, a, b, c, d)`, over a buffer of the cdylib's own
-into which the JavaScript runner copies the thread's state before the call and from which it copies it back
-after, with `cpu_hook_result(i)` and `cpu_hook_reason()` for the results and the reason; the hook is a counted
-slow path, so the copy costs nothing on the fast path. The buffer is found as `input` and `output` are today:
-an export `cpu_state() -> *mut u8` returns its address, a buffer of the contract's `threadStateSize` bytes
-that the cdylib allocates once on the first call and never frees or moves, so runner.js reads the address once
-after instantiating the cdylib (and, as for `output`, makes its byte view of the cdylib's memory afresh after
-the memory grows). Per hook call runner.js copies `threadStateSize` bytes from the thread's state memory at
-its block to that address, calls `cpu_hook` with the hook's index (from the contract's `hooks`) and its
+into which the JavaScript runner copies the hook's `state` bytes of the thread's state before the call and
+from which it copies them back after, with `cpu_hook_result(i)` and `cpu_hook_reason()` for the results and
+the reason. The hook is a slow path, but a program that sets a rounding mode takes it on every floating point
+operation, so it must cost no more than its work: each runner copies only the bytes `HookType::state` names
+(ARM64's float hook: FPSR and FPCR through FPSR tracking, 36 bytes), and the host runner registers the hook
+with wasmtime's raw-value form (`func_new_unchecked`) with the arguments in a fixed array, so nothing is
+allocated per call. The buffer is found as `input` and `output` are today: an export `cpu_state() -> *mut
+u8` returns its address, a buffer of the contract's `threadStateSize` bytes and `maxLength` more that the
+cdylib allocates once on the first call and never frees or moves, so runner.js reads the address once after
+instantiating the cdylib (and, as for `output`, makes its byte view of the cdylib's memory afresh after the
+memory grows). Per hook call runner.js copies the hook's `stateLength` bytes from the thread's state memory
+at its block plus `stateAt` to that address, calls `cpu_hook` with the hook's index (from the contract's `hooks`) and its
 arguments (unused ones 0), reads `cpu_hook_result(i)` for each of the hook's results and `cpu_hook_reason()`
 (a `Reason` number, or -1 for none), and copies the bytes back. `Guest::step` reaches the browser the same
 way from X6: an export `cpu_step(kind, pc) -> i32` (kind 0 for `StepAt::Stop`, 1 for `StepAt::Kernel`; the
@@ -1122,7 +1156,9 @@ links with it, and without it fails on a duplicate `panic_impl`, because astro-f
 brings std).
 
 Memory faults (from section 5.4). The memory fault hook reports an address and a direction; whether that
-is a page fault or something else is the CPU's (x86: for an access reaching a non-canonical address, a
+is a page fault or something else is the CPU's (the browser asks through an export `cpu_memory_fault(address,
+length) -> i32`, the answer's place in the contract's `memoryFaults`, after copying the thread's state and
+the faulting instruction's bytes, `length` of them, to `cpu_state`) (x86: for an access reaching a non-canonical address, a
 stack fault when it goes through the stack segment and general protection otherwise; two answers the
 reference gives with different signals, `SIGBUS` and `SIGSEGV`). `Guest::memory_fault(address, code,
 block)` answers it from the faulting
@@ -1140,7 +1176,9 @@ output stays the same.
 Stack moves and frames (T29 to T31). `stack_move(i)` replaces the match on ARM64 forms. `RED_ZONE`: the
 frame a function checks when the stack pointer moves down is `[sp - RED_ZONE, top)` instead of `[sp, top)`,
 so leaf functions using the red zone, and the 8 bytes an x86 call pushes, are inside a checked frame; what
-is below `sp - RED_ZONE` is no frame. With `Stack` return addresses, the first frame check of a function
+is below `sp - RED_ZONE` is no frame. A call whose return address is on the stack moves the frame down by its
+push and, once the callee has returned, back up by `bytes`, where the emitter checks the stack pointer is.
+From X4 (section 3.2, "Built whole at X1"), with `Stack` return addresses, the first frame check of a function
 also covers the return address slot `[entry sp, entry sp + bytes)`, so the `ret` that reads it needs no
 check of its own when the stack pointer is back at its entry value. `SP_ALIGNMENT_CHECKED` is false on x86
 and RISC-V, where the "aligned after" analysis is never run.
@@ -1178,10 +1216,9 @@ from which the translator makes both the counting exit (negating the relation, `
 block); and `loaded_max` ("a load into r zero-extends to at most m"). How an index is read comes with the
 access (the `Extend` of `Index::Register`), so it needs no function of its own. Comparisons at widths other
 than 32 and 64 bits give no proof (the proof module's `Domain` has only those two), which costs only
-speed. `NARROW_WRITE` says what a narrow write does to the rest of the register: ARM64 `[None, None,
-Some(Zero)]` (only 32-bit writes exist); RISC-V `[None, None, Some(Sign)]` (the `*W` instructions); x86
-`[Some(Merge), Some(Merge), Some(Zero)]`. The proof module's `Domain` reasoning takes these instead of
-ARM64's "a 32-bit result clears the top half". The generic parts (`Domain`, `Region`, `Counter`, the
+speed. What a narrow write does to the rest of the register needs no item (section 3.2, after the
+plain types): RISC-V's sign-extending `*W` steps and x86's zero-extending 32-bit ones are read only at
+32 bits, and x86's merging 8- and 16-bit writes are never inductions. The generic parts (`Domain`, `Region`, `Counter`, the
 steps and turns arithmetic) stay in the translator's proof module.
 
 Identity (T37). `ID` names the guest. To keep X1's proof exact, the description section's format and the
@@ -1209,8 +1246,7 @@ ARM64 (`wcontainers_arm64::Arm64`, everything as today):
   lib.rs moved into the CPU crate), Clock `() -> i64`, CodeChanged `(i64)`.
 - RETURN_ADDRESS `Register(30)`; RED_ZONE 0; SP_ALIGNMENT_CHECKED true; data_address and branch_target
   untag (bit 55 rule), as the branch meanings already do; UNREACHABLE_RETURN i64::MIN; Offer `()`; SYSCALL
-  x8, x0 to x5, x0; CODE_CHANGES Announced; memory_fault always `Page`; NARROW_WRITE [None, None,
-  Some(Zero)] (only 32-bit writes exist).
+  x8, x0 to x5, x0; CODE_CHANGES Announced; memory_fault always `Page`.
 
 x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
 - ALIGN 1, MAX_LENGTH 15; `decode` is `iced_x86::Decoder` in 64-bit mode over the bytes up to the end of the
@@ -1235,8 +1271,7 @@ x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
   no `fs:` or `gs:`, else `GeneralProtection`, and `Page` otherwise (section 5.4); branch_target, and the
   meanings of every branch through a register or memory, stop with a general protection fault when the target
   is not canonical (a call after its push); UNREACHABLE_RETURN i64::MIN; Offer `{ avx: bool }`; SYSCALL rax,
-  (rdi, rsi, rdx, r10, r8, r9), rax; CODE_CHANGES Detected; NARROW_WRITE [Some(Merge), Some(Merge),
-  Some(Zero)].
+  (rdi, rsi, rdx, r10, r8, r9), rax; CODE_CHANGES Detected.
 
 RV64GC (`wcontainers_riscv::Rv64`, paper only, the check that nothing assumes flags, a link register that
 is special, 4-byte instructions or a special stack pointer):
@@ -1252,8 +1287,7 @@ is special, 4-byte instructions or a special stack pointer):
 - RETURN_ADDRESS `Register(1)` (ra, by convention; `jalr` may link to any register, and a call is
   recognised by `FlowKind`, not by the register); RED_ZONE 0; SP_ALIGNMENT_CHECKED false; no untag;
   UNREACHABLE_RETURN 1 (no `jalr` target has bit 0 set); Offer `()`; SYSCALL a7, a0 to a5, a0;
-  CODE_CHANGES Announced; memory_fault always `Page`; NARROW_WRITE [None, None, Some(Sign)] (the `*W`
-  instructions). Its branches compare two registers, so `branch_comparison` reads them at the branch.
+  CODE_CHANGES Announced; memory_fault always `Page`. Its branches compare two registers, so `branch_comparison` reads them at the branch.
 
 ## 4. Design decisions for the translator and the tests
 
@@ -1504,7 +1538,8 @@ Tests (section 7 gives the detail):
   CR4.PCE clear, as Linux leaves it, the reference gives general protection (check 10, `0f33`).
   `int 4` (`CD 04`) is a trap, not a fault: vector 4 is a user-callable gate, so the reference gives SIGSEGV
   `SI_KERNEL` address 0 with rip after the instruction and no RF in the frame (check 10); its meaning
-  traps with general protection and `TrapPc::After`. `int 5` and `int 0x81` fault at the instruction.
+  traps with `TrapKind::Overflow` (vector 4, #OF) and `TrapPc::After`, a kind of its own so the kernel can
+  tell it from general protection: its frame has trap number 4 and no RF, general protection's 13 and RF. `int 5` and `int 0x81` fault at the instruction.
 - VMX instructions (`vmcall`, `vmlaunch`, `vmread`, `vmwrite`, `vmptrst`, `vmclear`, `vmxon`, `invept` and
   the rest; feature VMX, never claimed) give illegal instruction, as on a CPU without VMX, which is what we
   present. The reference's own answer depends on its KVM setting, not on the CPU: with `kvm_intel` loaded
@@ -2192,13 +2227,14 @@ crate it is built for, both with the `translate` feature off. It contains:
   and the faults and their signals (section 3.2's trap kinds: divide error SIGFPE `FPE_INTDIV`, general
   protection SIGSEGV `SI_KERNEL` with address 0, float exceptions SIGFPE, single step SIGTRAP
   `TRAP_TRACE`, `int3` and `int 3` SIGTRAP `SI_KERNEL`, `int1` SIGTRAP `TRAP_BRKPT`, each breakpoint
-  with rip after it; general protection also for `int 0x80` and `sysenter`, and `int 4`'s general
-  protection with rip after it and no RF, section 5.2; where a trap leaves pc comes from `TrapPc`), and the stack
+  with rip after it; general protection also for `int 0x80` and `sysenter`; `int 4` is `TrapKind::Overflow`,
+  SIGSEGV `SI_KERNEL` like general protection but a trap, with trap number 4, rip after it and no RF,
+  section 5.2; where a trap leaves pc is already in the block's pc when the trap hook is called), and the stack
   fault from a memory fault, SIGBUS `SI_KERNEL` with address 0 (Linux's
   #SS handler; section 2, run 6). The abi's `Exit` grows these kinds. A memory fault reaches the kernel
   already classified by the runner through `Guest::memory_fault` (a page fault with its address, general
-  protection, or a stack fault), so the kernel stays `no_std`, CPU-free and without a CPU crate; hooks
-  never reach it.
+  protection, or a stack fault), so the kernel, written against `Personality` alone, never decodes an
+  instruction; hooks never reach it.
 - **The machine description**: ELF machine 62, `uname` "x86_64", `/proc/cpuinfo` in x86's format with the
   claimed flags, seccomp's `AUDIT_ARCH_X86_64`, and an x86-64 vDSO (`clock_gettime`, `gettimeofday`,
   `time`, `getcpu`). The legacy vsyscall page is not provided: a call into it faults, as on a kernel booted
@@ -2640,8 +2676,9 @@ Measured throughout, recorded with machine and load: translation speed, output s
   single-step questions answered from their sources; a static x86-64 program built on the Mac run on the
   x86 machine over SSH; one arbitrary instruction run from given registers and stopped right after it, with
   the registers read back. Pass bar: an agent can build X1 from this document without asking anything.
-- **X1, the interface, with ARM64 on it.** `wcontainers-guest-cpu` with section 3's traits and types as
-  section 3.2 stages them, its core `no_std` and the rest behind `translate`; `wcontainers-arm64` implements
+- **X1, the interface, with ARM64 on it.** `wcontainers-guest-cpu` with all of section 3's traits and
+  types, and the translator's and runners' side of each (section 3.2, "Built whole at X1"), its core
+  `no_std` and the rest behind `translate`; `wcontainers-arm64` implements
   them, layered the same way (section 3.1); `wcontainers-translator` is generic over `Guest` and depends on
   no CPU crate: `cargo tree -p wcontainers-translator` shows none, also among its dev-dependencies, since
   its validity test (`tests/valid.rs`, which draws ARM64's forms) moves to the test crate, and a test in
@@ -2649,18 +2686,24 @@ Measured throughout, recorded with machine and load: translation speed, output s
   browser crate name `Arm64` where they call the translator; the float hook's host side moves into
   `Arm64::run_hook`, and the host runner and the browser's cdylib call it instead of `exact::run` (the
   browser's `cpu_hook` export and runner.js's copy of the state come with it, section 3.4 Hooks); the
-  effects recorder and `Registers` move into the interface crate (section 3.1); the runners ask
+  effects recorder and `Registers` move into the interface crate (section 3.1); both runners ask
   `G::memory_fault` before they report a memory fault (ARM64 always `Page`, so nothing they report
   changes). Pass bar: the WebAssembly output is byte for byte the same as before the move for the
   benchmark set (the whole program and each workload) and all nine real binaries of M5, in both settings,
-  at full and at bounded look-ahead, and the thread module too, by one command kept in the repository:
+  at every look-ahead (none, bounded 1, 17, 64, 256 and 4096, full; a binary also from each kind of start
+  alone at full and bounded 256), and the thread module too, by one command kept in the repository:
   `crates/wcontainers-translator-test/same-output.sh <commit>`, which builds the earlier commit from its own
   copy and has `tests/output.rs` on both sides write every module's length and BLAKE3 hash, then compares
-  the lists with `cmp` (added as its own commit before any interface change, so the "before" exists); the
-  whole test suite of the interface, ARM64, translator and test crates passes, and the browser crate builds
-  and lints; the cores of the interface and of `wcontainers-arm64` build for `wasm32v1-none`, a target
-  without the standard library, with `translate` off; the benchmarks in wasmtime are unchanged within noise
-  (old and new alternating, best of 5 each, load recorded). The move is done on this branch's copy of the
+  the lists with `cmp` (added as its own commit before any interface change, so the "before" exists; both
+  sides run the current tree's `tests/output.rs`); the whole test suite of the interface, ARM64, translator
+  and test crates passes, and the browser crate builds and lints; the cores of the interface and of
+  `wcontainers-arm64` build for `wasm32v1-none`, a target without the standard library, with `translate`
+  off, checked by a test; a test guest in the translator's tests fills in the interface the way x86-64 does
+  (byte-aligned variable-length instructions, a return address on the stack, a red zone, different
+  registers passed in and out, partial flag setters, a trap that leaves pc after it, its own slow path and
+  hook registers) and its translations at every look-ahead validate; the benchmarks in wasmtime are
+  unchanged within noise (old and new alternating, best of 5 each, load recorded), and so is a program that
+  takes the float hook on every operation. The move is done on this branch's copy of the
   translator; fixes the translator track makes later come in by a merge the orchestrator names, and are
   moved onto the interface then, with the proof run again.
 - **X2, the shared test harness.** `GuestTest` and the ARM64 implementation; the harness, runners, browser
@@ -2891,7 +2934,8 @@ Translator area (seam map entry, then section):
 - T33 check() once per instruction: 3.3 `check(.., which)`; 3.4 Memory accesses.
 - T34 programs announce code changes: 3.2 `CODE_CHANGES`; 4 decision 6; 5.7.
 - T35 thread pointer as a system register: 3.4 Thread pointer; 4 decision 10; 5.5.
-- T36 ARM64 loop idioms in the proofs: 3.2 loop proofs, `NARROW_WRITE`; 3.4 Loop proofs.
+- T36 ARM64 loop idioms in the proofs: 3.2 loop proofs and the paragraph on narrow writes after the plain
+  types; 3.4 Loop proofs.
 - T37 no guest identity in description or cache key: 3.2 `ID`; 3.4 Identity; X3.
 - T38 vectors exactly 128 bits: 3.2 `Bit::ty`; 4 decision 8; 5.10 (ymm halves).
 - T39 every float fits 64 bits, the float hook's signature: 3.5 x86 hooks; 5.8 (x87 hook).
@@ -2974,8 +3018,8 @@ Translator (24 items, in the seam map's order):
 2. `emit` against a generic emitter: 3.2 `emit`; 3.3.
 3. The emitter's parameter types: 3.2 `Reg`, `Vector`, `Cond`, `Flag`, `Flags`, `Control`, `Hook`, `Host`,
    `Offer`, `Trap`; 3.3.
-4. The register set: 3.2 `BITS`, `Bit`, `reg_bit`, `vector_bit`, `bit_reg`, `SP_BIT`, `NARROW_WRITE`,
-   `NarrowWrite`; 3.4 Registers.
+4. The register set: 3.2 `BITS`, `Bit`, `reg_bit`, `vector_bit`, `bit_reg`, `SP_BIT` (narrow writes:
+   the paragraph after 3.2's plain types); 3.4 Registers.
 5. Effects found by recording the meaning, extended (memory, hooks, controls): 3.1 (the generic
    recorder and `Effects<G>` live in the interface crate); 3.3 (the recorder is an emitter); 3.2 `plain`
    and 3.4 Flags ("plain computation" is the CPU's, not derived from the effects, to keep ARM64's output).

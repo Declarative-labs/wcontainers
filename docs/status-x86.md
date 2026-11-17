@@ -9,8 +9,52 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   check's findings fixed in run 2, the second check's in run 3, the third's in run 4, the fourth's in
   run 5, the fifth's in run 6, the sixth's in run 7, the seventh's in run 8, the eighth's in run 9 and
   the ninth's in run 10, the same day (below).
-- X1 (the interface, with ARM64 moved onto it), run 1, 2026-11-17: built; see "X1, run 1" for what is done
-  and what is left.
+- X1 (the interface, with ARM64 moved onto it): run 1 moved ARM64 and the translator onto the interface;
+  run 2 (2026-11-17) fixed what the independent check of X1 found, above all building the whole of section
+  3 with the translator's side of every item. See "X1, run 2" for where it stands.
+
+## X1, run 2 (2026-11-17)
+
+The check's findings and what was done about each:
+- Blocking, interface built in part: every item of plan section 3 now exists (`ID`, `MAX_LENGTH`,
+  `bit_reg`, `initial_block` in `Personality`, `probe_module`, `host_from_probe`, `host_key`, `offer_key`,
+  a CPU's `Reason`/`REASONS` from 64, `TrapKind` 4 to 7, `check`'s `which`, `check_range`, `warn`,
+  `raise_stop`, `RETURN_ADDRESS`, `RED_ZONE`, `CODE_CHANGES`, `STEPS`/`step`/`StepAt`/`Step`,
+  `HookType::registers`, `Index::BitOffset`/`Lanes`, `AccessBytes::Counted`/`Masked`, `Class::Segment`,
+  the `before` walks), and the translator does its side of each: `PASSED_IN` and `PASSED_OUT` may differ
+  (the compile-time equality check is gone), check plans per (offset, access), groups keyed by segment
+  too, red-zone frames, a `Stack` return address moved past in `ret` and expected back after `call`
+  (emitter and frame analysis), hook registers written back and reloaded, `check_range`, `warn` with
+  sites by number, `raise_stop` with a stop check before the next instruction, and the walk back for
+  `built_address` and `jump_table`. The runners count a CPU's reasons by number, probe through
+  `Guest::probe_module`, start blob threads from `initial_block`, and stop with x86's faults as
+  `Stopped::Fault`. `tests/test_guest.rs` in the translator is a guest made for the test, shaped like
+  x86-64 where ARM64 differs (1 to 3 byte instructions, return address on the stack, red zone 128,
+  passed in [r7, r6, sp] and out [r0, sp], an `inc` keeping C, an FS base, a trap with pc after it, two
+  accesses in one instruction, a range check, its own slow path, a hook on registers, a raised stop, a
+  jump into the middle of an instruction, a switch found by walking back); its translations at none,
+  bounded 1, 5, 256 and full, both settings, both offers, and its thread module validate.
+- Blocking, the float hook 1.5 times slower: `HookType::state` names the bytes a `Cpu` hook works on
+  (ARM64's float hook: 36 bytes, FPSR through FPSR tracking); the host runner registers the hook with
+  `func_new_unchecked`, arguments in a fixed array, only those bytes copied; the browser copies only those
+  bytes too. Timed with `tests/float_hook.rs` (below).
+- Blocking, the browser did not ask `memory_fault`: the cdylib exports `cpu_memory_fault(address,
+  length)`; runner.js copies the state and the instruction's bytes to `cpu_state` and stops with the
+  answer (page fault, general protection or stack fault).
+- `guest_free.rs` now allows only `wcontainers_abi::PAGE_SIZE` and `wcontainers_abi::Permissions`, by full
+  path; a second test shows the check catches `RegisterBlock`, a `use` group and a bare `use`.
+- `int 4` gets `TrapKind::Overflow` (7), so the kernel tells it from general protection (trap number 4,
+  no RF); plan 3.2, 5.2, 6.
+- The plan's contradictions fixed (header, 3.2's code block with `Personality`, the kernel's wording,
+  `Class` and `Ty`), and this file's "X0, run 1" heading restored.
+- `flags_needed_after` finds its place by binary search (a block's offsets are in order).
+- The comparison command covers every look-ahead (none, bounded 1, 17, 64, 256, 4096, full), and for a
+  binary each kind of start alone at full and bounded; both sides run the current `tests/output.rs` (for
+  a commit before the interface its calls are spelled the old way by sed in the script).
+- The move in one commit: history is not rewritten; run 2's work is in separate commits.
+- zerocopy's licence recorded below.
+- `TrapPc::After` and the `no_std` cores: the test guest's break leaves pc after it; `tests/no_std.rs` in the
+  test crate builds both cores for `wasm32v1-none` with `translate` off.
 
 ## X1, run 1 (2026-11-17)
 
@@ -69,8 +113,11 @@ Proof so far (machine: the Mac, Apple M5; load 18 to 42 while it ran):
   be made generic piece by piece and still build, so the steps were checked in the working tree (byte for
   byte on bench, busybox and musl as soon as it built) rather than committed one by one.
 
-Left for X1: nothing of the pass bar. Not done, from the plan's X1 text: Chrome timings (the task asked for
-wasmtime only). Next: X2, the shared test harness (plan section 9).
+Left for X1 after run 1: nothing of the pass bar as it then stood. The independent check of X1 then found
+the interface built only in part, a slower float hook and the browser not asking `memory_fault`; run 2
+below.
+
+## X0, run 1 (2026-11-17)
 
 Done:
 - Wrote the plan from the brief and the seam map. Appendix A maps every kind b and c place of the seam
@@ -430,13 +477,19 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 - X1's byte-for-byte proof: `WC_OUTPUT_ROOT=<scratch>/x1/same nix develop -c
   crates/wcontainers-translator-test/same-output.sh 2274314 bench,busybox,musl,python,rg,git,java,go`, then
   the same with `node` and with `bun`, each alone (many GB). The earlier commit's lists are kept under
-  `<root>/lists/<commit>`, so later runs only translate the current tree. The binaries come from
-  `target/binaries` (copied from the translator worktree's M5 files).
+  `<root>/lists/<commit>`, so later runs only translate the current tree; delete them when
+  `tests/output.rs` changes. `WC_OUTPUT_LOOK_AHEADS=full,bounded` (labels of `LOOK_AHEADS`) limits the
+  look-aheads. The binaries come from `target/binaries` (copied from the translator worktree's M5 files).
+- The float hook's time: `nix develop -c cargo test --release -p wcontainers-translator-test --test
+  float_hook -- --ignored --nocapture` (knobs `WC_FLOAT_STEPS`, `WC_FLOAT_RUNS`); old against new by
+  running the same file in a copy of the earlier commit (`<root>/trees/<commit>` of the comparison).
+- The test guest: `nix develop -c cargo test -p wcontainers-translator --test test_guest`.
 - The suite of what this track owns: `nix develop -c cargo test -p wcontainers-guest-cpu -p wcontainers-arm64
   -p wcontainers-translator -p wcontainers-translator-test` (Chrome and Docker needed), and the browser
   crate's lint as in docs/status-translator.md.
-- The no-std check: `nix develop -c cargo build -p wcontainers-guest-cpu -p wcontainers-arm64
-  --no-default-features --target wasm32v1-none --target-dir <scratch>/x1/nostd-target`.
+- The no-std check is `tests/no_std.rs` of the test crate (part of the suite); by hand: `nix develop -c
+  cargo build -p wcontainers-guest-cpu -p wcontainers-arm64 --no-default-features --target wasm32v1-none
+  --target-dir <scratch>/x1/nostd-target`.
 
 - Run 10's experiments: `nix develop -c zig cc -target x86_64-linux-musl -static -O1 -fno-stack-protector
   -o <scratch>/run10/tf <scratch>/run10/tf.c` (and `rf` likewise), copy both to
@@ -528,8 +581,11 @@ All in the "X0, run 1" to "run 10" sections above (runs 9 and 10 timed nothing).
 ## Licences of what this track uses
 
 - Added at X1, all already in the workspace: `blake3` (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH
-  LLVM-exception) as a dev-dependency of the test crate; `wasm-encoder` (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) as a
-  dependency of the test crate and of the interface crate.
+  LLVM-exception) as a dev-dependency of the test crate; `wasm-encoder` (Apache-2.0 WITH LLVM-exception OR
+  Apache-2.0 OR MIT) as a dependency of the test crate and of the interface crate; `zerocopy` 0.8
+  (BSD-2-Clause OR Apache-2.0 OR MIT) as a dependency of the interface crate and of the browser crate;
+  `wasmparser` 0.263 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) as a dev-dependency of the
+  translator (the test guest's validity test).
 
 - iced-x86 1.22.0: MIT. Not yet a dependency of anything in the repository (X3 adds it, and as a
   build-dependency with `instr_info`).
@@ -557,9 +613,23 @@ X1 (each also written into the plan's text in the same commit):
   (wasmtime, Docker and SSH transport, dynasm, iced's assembler) that a shipped CPU crate must not carry,
   and it is used only by the tests. The CPU crate still supplies everything the translator, runners and
   kernel use.
-- Interface items only another CPU uses are added with the milestone that first uses them (list in plan
-  3.2, "Built in stages"), so nothing is built that nothing exercises. `PASSED_IN` must equal `PASSED_OUT`
-  until then (a compile-time check in the translator).
+- Run 1 built only the interface items ARM64 uses and put the rest off; run 2 built them all (plan 3.2,
+  "Built whole at X1"), as the plan reviewed before X1 had it. Three uses that change ARM64's output stay
+  with the milestone whose x86 code needs them, each its own commit with its own byte-for-byte comparison:
+  the description section's guest and offer bytes (X3) and the stop and memory fault hooks returning the
+  unwind payload (X6, which the runners' `step` and code-change handling need). The first frame check also
+  covering a `Stack` return slot waits for X4, where it is measured (gated on `ReturnAddress::Stack`).
+- No `NARROW_WRITE` item: nothing would read it. The proofs use a 32-bit induction only through a 32-bit
+  read, where zero and sign extension agree, and x86's merging writes are never inductions (plan 3.2).
+- `HookType` gains `state: StateBytes`, the bytes of the thread state a `Cpu` hook works on, and
+  `run_hook` gets only those, so a hook costs its work and not a copy of the whole state (plan 3.2, 3.4).
+- `Guest::STEPS` (default false) beside `step`, so runners copy nothing for a CPU that cannot step.
+- `TrapKind::Overflow` (7) for x86 `int 4` (plan 3.2, 5.2, 6).
+- `initial_block` is in `Personality`, not `Guest`: the kernel makes threads too.
+- A CPU's own slow paths are numbered from `GUEST_REASONS` (64); the translator's `Sites` has room for
+  16 of them; `Reason::name_of::<G>` names any number.
+- The runners' stops for faults the abi does not name yet are the test crate's `Stopped::Fault`; the
+  abi's `Exit` grows them at X10 (the abi is not this track's until then).
 - Signatures changed while building, to keep ARM64's bytes: `trap_kind` returns `TrapPc` too;
   `temporaries(flags)` added (logic takes no temporaries today); `run_hook` takes the hook's index;
   `data_address` and `branch_target` push rather than work in place; `branch_comparison` gets each path
@@ -573,6 +643,8 @@ X1 (each also written into the plan's text in the same commit):
   translator has no dependency on a CPU crate at all, dev-dependencies included (X0 finding).
 - Run times: wasmtime only, old and new alternating, best of 5 (the orchestrator's X1 task), not wasmtime
   and Chrome best of 3 as the plan had.
+- The X1 pass bar gains a test guest (`tests/test_guest.rs`), the `no_std` build as a test, the float hook
+  timing and the wider comparison (plan 9).
 - No intentional change of ARM64's output at X1: the stop check's raised branch changes at X6 (plan 5.1),
   so the whole move is compared byte for byte against one "before".
 
