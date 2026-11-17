@@ -8,17 +8,16 @@ use core::fmt::Write;
 
 use super::Error;
 use super::ToWgslIfImplemented as _;
+use crate::{back::wgsl::polyfill::InversePolyfill, common::wgsl::TypeContext};
 use crate::{
-    Handle, Module, ShaderStage, TypeInner,
     back::{self, Baked},
     common::{
         self,
-        wgsl::{ToWgsl, TryToWgsl, address_space_str},
+        wgsl::{address_space_str, ToWgsl, TryToWgsl},
     },
     proc::{self, NameKey},
-    valid,
+    valid, Handle, Module, ShaderStage, TypeInner,
 };
-use crate::{back::wgsl::polyfill::InversePolyfill, common::wgsl::TypeContext};
 
 /// Shorthand result used internally by the backend
 type BackendResult = Result<(), Error>;
@@ -1962,7 +1961,26 @@ impl<W: Write> Writer<W> {
                 let fun_name = match fun {
                     Rf::All => "all",
                     Rf::Any => "any",
-                    _ => return Err(Error::UnsupportedRelationalFunction(fun)),
+                    Rf::IsNan | Rf::IsInf => {
+                        // WGSL has neither: a test of an f32's bits, exact whatever the
+                        // compiler's rules for NaN.
+                        let unsigned = match *func_ctx.resolve_type(argument, &module.types) {
+                            TypeInner::Scalar(crate::Scalar::F32) => String::from("u32"),
+                            TypeInner::Vector {
+                                size,
+                                scalar: crate::Scalar::F32,
+                            } => format!("vec{}<u32>", common::vector_size_str(size)),
+                            _ => return Err(Error::UnsupportedRelationalFunction(fun)),
+                        };
+                        let compare = if fun == Rf::IsNan { ">" } else { "==" };
+                        write!(self.out, "((bitcast<{unsigned}>(")?;
+                        self.write_expr(module, argument, func_ctx)?;
+                        write!(
+                            self.out,
+                            ") & {unsigned}(0x7fffffffu)) {compare} {unsigned}(0x7f800000u))"
+                        )?;
+                        return Ok(());
+                    }
                 };
                 write!(self.out, "{fun_name}(")?;
 
