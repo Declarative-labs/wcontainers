@@ -333,7 +333,6 @@ impl WebGpu {
         };
         t.raw.replace(fresh);
         t.generation.set(t.generation.get() + 1);
-        t.used_in.set(0);
         self.texture_pool.retire(self.serial, old);
         self.bind_epoch += 1;
         self.counters.texture_renames += 1;
@@ -562,7 +561,8 @@ impl WebGpu {
                 .iter()
                 .any(|a| Rc::ptr_eq(&a.0, &region.texture.0))
         });
-        if mode == WriteMode::Discard && self.pending(t.used_in.get()) && !attached {
+        let renamed = mode == WriteMode::Discard && self.pending(t.used_in.get()) && !attached;
+        if renamed {
             self.rename_texture(t);
         }
         let raw = t.raw();
@@ -574,7 +574,7 @@ impl WebGpu {
             region.origin,
             region.stencil,
         );
-        if !self.pending(t.used_in.get()) || mode == WriteMode::NoOverwrite {
+        if renamed || !self.pending(t.used_in.get()) || mode == WriteMode::NoOverwrite {
             self.queue.write_texture(
                 copy,
                 data,

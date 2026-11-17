@@ -409,15 +409,18 @@ fn group_textures_copy_into_part_of_depth_exactly() {
     }
 }
 
-/// What 32-bit float depth copied in holds, the loss plan 4.12 lists: a draw writes it, so values in
-/// 0 to 1 (and -0) keep their bits, values outside are clamped, denormals and NaN become zero.
-/// Direct3D's `CopyResource` keeps every bit.
-fn drawable(word: u32) -> u32 {
+/// Whether 32-bit float depth copied in holds what the loss plan 4.12 lists: a draw writes it, so
+/// values in 0 to 1 keep their bits, values outside are clamped and NaN becomes zero; denormals and
+/// -0 are kept or become zero (the RTX 3080 keeps -0 and flushes denormals, Metal on Apple M5 the
+/// opposite). Direct3D's `CopyResource` keeps every bit.
+fn drawable(word: u32, got: u32) -> bool {
     let v = f32::from_bits(word);
-    if v.is_nan() || v.is_subnormal() {
-        0
+    if v.is_nan() {
+        got == 0
+    } else if v.is_subnormal() || v == 0.0 {
+        got == word || got == 0
     } else {
-        v.clamp(0.0, 1.0).to_bits() | (word & 0x8000_0000) * u32::from(v == 0.0)
+        got == v.clamp(0.0, 1.0).to_bits()
     }
 }
 
@@ -480,7 +483,6 @@ fn float_depth_copies_keep_what_a_draw_can_write() {
         &region(&from_buffer, 0, 0),
         extent(W, H),
     );
-    let want: Vec<u32> = words.iter().map(|w| drawable(*w)).collect();
     for (name, t) in [
         ("from a texture", &from_texture),
         ("from a buffer", &from_buffer),
@@ -490,7 +492,11 @@ fn float_depth_copies_keep_what_a_draw_can_write() {
             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
             .collect();
         eprintln!("{name}: {:08x?}", &got[..8]);
-        assert_eq!(got, want, "{name}");
+        let wrong: Vec<_> = (0..words.len())
+            .filter(|i| !drawable(words[*i], got[*i]))
+            .map(|i| (i, words[i], got[i]))
+            .collect();
+        assert!(wrong.is_empty(), "{name}: {wrong:x?}");
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

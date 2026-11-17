@@ -592,7 +592,14 @@ fn copies_within_one_buffer_are_exact_and_counted() {
         b.copy_buffer(&buf, from as u64, &buf, to as u64, len as u64);
         model.copy_within(from..from + len, to);
     }
-    let arena = |b: &mut WebGpu| buffer(b, 16, BufferUsage::UNIFORM, MapIntent::Often);
+    let arena = |b: &mut WebGpu| {
+        b.create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::UNIFORM,
+            intent: MapIntent::Often,
+        })
+        .unwrap()
+    };
     let (a, c) = (arena(&mut b), arena(&mut b));
     b.write_buffer(&a, 0, &words(7), WriteMode::Ordered);
     b.copy_buffer(&a, 0, &c, 0, 16);
