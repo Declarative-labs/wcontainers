@@ -157,7 +157,16 @@ K5 built (all four runs):
     before their control messages are read, descriptors refused with EINVAL on sockets that
     are not local (`__scm_send`), a local datagram socket's end read giving no credentials or
     process descriptor (and SCM_PIDFD wanting a sender before it looks for room), and sendfile
-    from a socket into a pipe reading the socket (`sock_splice_read`; EAGAIN when empty).
+    from a socket into a pipe reading the socket (`sock_splice_read`; EAGAIN when empty),
+    netlink's shutdown EOPNOTSUPP before the mode is checked, local datagram and sequenced
+    packet peeks starting at SO_PEEK_OFF past whole messages (the offset moving on with peeks
+    and back with reads), and UDP corking.
+  - UDP corking (`up->pending`): MSG_MORE or UDP_CORK hold a datagram; later sends add to it
+    whatever destination they name (over UDP's largest is EMSGSIZE, a fault part way EFAULT,
+    and both drop it), and the first send without MSG_MORE, or UDP_CORK turned off, sends it.
+    UDP_NO_CHECK6_TX and UDP_NO_CHECK6_RX are kept (no wire, no checksums); UDP_SEGMENT,
+    UDP_GRO and UDP_ENCAP are counted "socket option not built" (ENOPROTOOPT, as a Linux
+    without them).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -1346,7 +1355,9 @@ each sequence the runner puts back what a sequence can change outside its direct
   (334 s, load 59 to 34), 5050433 and 5050434 found netlink's empty sendmsg with control
   messages; on 60d3703 5050436 and 5050438 passed (332 s and 331 s, load 23 to 39), 5050437
   found the credentials at a sequenced packet socket's end; on 77abb06 5050439 and 5050441
-  passed (337 s and 340 s, load 39 to 18), 5050440 found sendfile from a datagram socket.
+  passed (337 s and 340 s, load 39 to 18), 5050440 found sendfile from a datagram socket; on
+  c1bf7c3 5050442 found netlink's shutdown, 5050443 UDP's MSG_MORE and 5050444 local datagram
+  peeks at SO_PEEK_OFF (71 to 282 s, load 38 to 53).
 - K5, fifth run: whole suite at 60d3703 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
   -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy with its own build, beside
   three layer 1 runs): 178 passed, 0 failed, 5 ignored, 10 min 34 s with the build, load 27.7 at
@@ -2007,7 +2018,8 @@ K5, in this order (what the five runs built is under Where things stand):
 2. Not built, counted "socket option not built": TCP_INFO (Linux 7.0 gives 280 bytes, measured;
    about half its fields are timings and rates of real segments this TCP does not have, so a
    model needs a decision on what to give for them), TCP_ZEROCOPY_RECEIVE, SO_TIMESTAMPING (old
-   and new), and the internet send control messages listed under Where things stand. Urgent
+   and new), UDP_SEGMENT, UDP_GRO, UDP_ENCAP, and the internet send control messages listed
+   under Where things stand. Urgent
    data to the outside (a send with MSG_OOB and bytes on an outside connection is refused,
    counted).
 3. Local sockets left: a socket's `/proc/<pid>/fdinfo` (fdinfo is not built at all). A SCM_PIDFD
@@ -2045,6 +2057,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050444 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050447 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
