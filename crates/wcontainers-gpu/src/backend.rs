@@ -475,7 +475,8 @@ pub trait Backend: Sized {
 
     /// Clears rectangles of one view outside a pass (Direct3D 11.1's ClearView, Direct3D 12's clears
     /// with rectangles). `view` is one mip level and one layer; rectangles are clipped to it. The
-    /// default draws a full-screen triangle per rectangle, scissored to it, with a built-in program
+    /// default draws a full-screen triangle per rectangle, scissored to it (the scissor clipped as
+    /// [`DrawCall::scissors`] says), with a built-in program
     /// writing the value. WebGL 2 overrides it with scissored clears.
     fn clear_rects(
         &mut self,

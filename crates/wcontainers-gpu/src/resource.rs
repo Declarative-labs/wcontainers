@@ -311,9 +311,13 @@ pub struct BindingLayoutKey {
 /// One slot of a binding set: which program binding it fills, and with what.
 #[derive(Debug)]
 pub struct BindingEntry<'a, B: Backend> {
-    /// The binding number the shader converter gave this slot (see the plan, section 6).
+    /// The binding number the shader converter gave this slot (see the plan, section 6). A texture the
+    /// program pairs with a sampler lies in [`crate::SlotKind::Texture`]'s range, 32 to 159, so that
+    /// [`BindingLayoutKey`] has its bit; the other kinds' ranges are the fronts' numbering, which no
+    /// back end relies on (the helper set's own bindings lie outside them).
     pub binding: u32,
-    /// Stages that read it; back ends that bind per stage use this.
+    /// Every stage whose program reads it, and perhaps more; back ends that bind per stage, and the
+    /// limits per stage, count by this.
     pub stages: StageSet,
     pub resource: BindingResource<'a, B>,
 }

@@ -268,9 +268,10 @@ Fast paths, all in the crate with their defaults:
   default; WebGL 2 overrides it with `clearBuffer*` on each attachment, which skips the pass
   bookkeeping.
 - `clear_rects(&view, format, ClearValue, &[ScissorRect])`: Direct3D 11.1 `ClearView` and Direct3D 12
-  clears with rectangles, outside a pass; rectangles are clipped to the view (the default's scissors
-  and WebGL 2's scissored clears clip them). Default: one pass, a full-screen triangle per rectangle
-  scissored to it, with a built-in program writing the value (float, unsigned or signed output by format;
+  clears with rectangles, outside a pass; rectangles are clipped to the view (the default's scissors are
+  clipped as every draw's is, 4.4, and WebGL 2's scissored clears clip). Default: one pass, a
+  full-screen triangle per rectangle scissored to it, with a built-in program writing the value (float,
+  unsigned or signed output by format;
   depth through the fragment depth; stencil by `Replace` with the value as reference). WebGL 2 overrides
   it with scissored `clearBuffer*`.
 - `generate_mips(&texture, &TextureDesc, values, mips, layers)`. `values` is the format whose values the
@@ -357,7 +358,8 @@ would add a fast path then, not before.
 A draw names (`DrawCall`): a program, a blend block, a depth-stencil block, a raster block, a vertex
 layout block, up to four binding sets, the vertex streams and index buffer (buffer plus offset, plain data),
 the topology, whether strips restart, one viewport and at most one scissor (one where the raster block
-scissors; several viewports are split into one draw each, `MultiViewportSplit`, 4.12), blend constant,
+scissors, clipped to the pass's attachments, which a back end whose API refuses a scissor past them
+cuts; several viewports are split into one draw each, `MultiViewportSplit`, 4.12), blend constant,
 stencil reference, small immediate constants, and the range (direct, indexed, or indirect from a
 buffer). In every back end the
 program's `vertex_index` and `instance_index` include the range's first or base vertex and first
@@ -427,7 +429,9 @@ its first draw is built then and the frame pauses (`PipelineMiss`), never skippi
 
 ### 4.5 Bindings
 
-A binding set is a block: a list of `BindingEntry` (binding number, stages that read it, and a resource:
+A binding set is a block: a list of `BindingEntry` (binding number, stages that read it, naming every
+stage whose program reads it, since back ends binding per stage and the limits per stage count by it,
+and a resource:
 uniform buffer range, storage buffer range, texture view, storage texture view, sampler, typed texel
 buffer, or a resource table). `create_binding_set` may return a set equal to one the back end already
 holds, so fronts call it when their slots changed and otherwise pass the handle they have.
@@ -435,7 +439,9 @@ holds, so fronts call it when their slots changed and otherwise pass the handle 
 Binding numbers come from the shaders crate's rule (section 6.4), the same for every front: one number
 space per set, binding = range start + the API's slot number, with uniform buffers from 0 (16 slots),
 samplers from 16 (16), sampled textures and typed buffers from 32 (128), storage buffers and textures
-from 160 (64) (`SlotKind` in the crate). Which set a slot lands in is the API's rule of 6.4; set 3
+from 160 (64) (`SlotKind` in the crate). Back ends rely on one part of this numbering only, the range
+of textures paired with samplers (below); the helper set's bindings lie outside the kinds' ranges.
+Which set a slot lands in is the API's rule of 6.4; set 3
 always holds the program's helper constants (`HELPER_SET`). A draw's sets are WebGPU's bind groups 0
 to 3.
 
@@ -448,8 +454,8 @@ and access, and whether a sampler compares. One thing a program does not say, an
 whether a float texture can be filtered on this back end (`FormatCaps` `FILTER`: `r32float` only with
 `float32-filterable`, depth formats never), which picks `"float"` or `"unfilterable-float"`. A texture
 the program only loads from, never pairing it with a sampler, is `"unfilterable-float"` whatever is
-bound (every float view binds to that), so only paired textures need to be told apart; these all lie
-in the API's sampled-texture range from binding 32, while the helper set's load-only textures below 32
+bound (every float view binds to that), so only paired textures need to be told apart; these must all
+lie in the API's sampled-texture range, 32 to 159, while the helper set's load-only textures below 32
 (the target copies of `BlendInShader` and `LogicOpInShader`, the early-test depth) need no bit. So each
 binding set has a layout key (`BindingLayoutKey`, from `binding_layout_key`): one bit per texture binding
 whose view cannot be filtered. Samplers need no bit: by WebGPU's rules a `"filtering"` sampler layout
