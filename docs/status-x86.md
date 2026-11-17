@@ -6,8 +6,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 ## Where things stand
 
 - X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the first independent
-  check's findings fixed in run 2, the second check's in run 3, the third's in run 4 and the fourth's in
-  run 5, the same day (below).
+  check's findings fixed in run 2, the second check's in run 3, the third's in run 4, the fourth's in
+  run 5 and the fifth's in run 6, the same day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -203,13 +203,46 @@ Each was first repeated or widened on the reference (x86 load 3.6 to 5.4 from an
   0.48 s (Mac 28.2); the fourth check saw 0.24 to 0.40 s at Mac load 34.
 - This file's list of what is on the x86 machine is corrected (the cases outputs are only on the Mac).
 
+## X0, run 6 (2026-11-17): the fifth independent check's findings, all fixed in the plan
+
+Each was first repeated and widened on the reference (`cases9.sh`, `cases10.sh`, x86 load 0.00 to 0.12,
+nothing timed):
+- Blocking, the stack fault: a non-canonical access through the stack segment is #SS, which Linux sends
+  as `SIGBUS` `SI_KERNEL` address 0, not general protection. Widened: only base rsp or rbp counts (r12
+  and r13 give general protection), `fs:` and `gs:` make it general protection, `cs:`, `ds:`, `es:` and
+  `ss:` change nothing, every implicit stack access (push, pop's read, call, ret, pushfq, push fs, enter,
+  leave) counts, `pop [rbx]` gives either by which address is bad, and an alignment check comes first
+  (a misaligned non-canonical `movaps [rsp]` is general protection). Plan: `MemoryFault` gains `Stack`;
+  x86 `memory_fault` picks it by one test on the faulting access (no segment, base rsp or rbp); `Stop`
+  gains `StackFault`; section 6's signal list, 7.3's mapping, 5.3's call and ret steps, 4 decision 16,
+  layer 1's operand drawing and the X2 and X3 pass bars carry it. `TrapKind` does not grow: no meaning
+  raises a stack fault (the reason is in plan 3.2).
+- Found while fixing it: `Base::Segment` could not express `fs:[rdx + rax * 4]` (a segment base with a
+  base register). `MemoryAccess` now has its own `segment: Option<R>` and `Base` is `Register` or `Pc`;
+  the check analysis keys on (segment, base), which for ARM64 (segment always `None`) is today's key.
+- MMX writes set the x87 register's sign and exponent to 0xFFFF (seen for four writes; reads leave
+  them). Plan 5.8: eight i32 controls `X87High(n)` over bytes 8 to 11 of each slot, written with one
+  `set_control` by every MMX meaning that writes mmN.
+- The longest valid rest after the dropped prefixes is 15 bytes, not 14 (plan 5.2).
+- iced's sizes are now given as totals, with the 257 / 232 / 178-byte base subtracted for what it adds
+  (plan 2; the two stripped files measured again).
+- `SHAPES` for ARM64 is today's ten shapes in `shapes()` order, and the flags-word functions keep the
+  generic "flags in locals" one first at `F_FLAGS_WORD` (plan 3.4, 3.5).
+- Cross-references fixed (RISC-V is 3.5, the reasons are 3.4) and section 13 lists all five checks'
+  folders on the x86 machine.
+
 ## How to run
+
+- Run 6's experiments: copy `stepper4`, `cases9.sh`, `cases10.sh` from scratch `reference-proof/` to
+  `~/wcontainers-x86/proof/` and run each there (`ssh tom@192.168.2.240 'cd ~/wcontainers-x86/proof &&
+  ./cases9.sh'`).
 
 - Run 5's experiments: copy `stepper4`, `cases7.sh`, `cases8.sh`, `sweep15.sh` from scratch
   `reference-proof/` to `~/wcontainers-x86/proof/` and run each there. `sweep15.iced` adds to each line
   of `sweep15.out` iced's decoding of the opcode followed by eight `cc` bytes (scratch `dis` tool);
   `sweep15.classes` keeps the `INVALID` ones, as "more" where the boundary gives general protection and
-  the opcode alone does not, else "none". `brk.c`: `nix develop -c zig cc -target aarch64-linux-musl -static -O2 -o brk brk.c`, then
+  the opcode alone does not, else "none". `brk.c`: `nix develop -c zig cc -target aarch64-linux-musl
+  -static -O2 -o brk brk.c`, then
   `docker run --rm --name wc-x86-brk -v <scratch>/reference-proof:/p:ro alpine:3.22 /p/brk`.
 - Run 4's experiments: `python3 -I <scratch>/scripts/make_stepper4.py <scratch>/reference-proof/stepper3.c
   <scratch>/reference-proof/stepper4.c`, build it as below, copy `stepper4`, `cases4.sh`, `cases5.sh` to
@@ -234,10 +267,10 @@ Each was first repeated or widened on the reference (x86 load 3.6 to 5.4 from an
 - Installed on it by this track: nothing. Already there before this track and not used by it: Rust
   (`~/.rustup` dated 2026-11-14, rustc 1.100.0). Files of this track: `~/wcontainers-x86/proof/` (hello,
   stepper, stepper3, stepper4, the scripts cases.sh, cases2.sh, cases4.sh, cases5.sh, cases7.sh,
-  cases8.sh, sweep15.sh, and approx, approx_dump, approx_formula, approx_mxcsr with approx.out,
-  approx_formula.out and approx_mxcsr.out). The cases scripts' outputs are kept only in the Mac's scratch
-  `reference-proof/`. The independent checks' files are in `~/wcontainers-x86/check`, `check2`, `check3`
-  and `check4`. Installed in runs 2 to 5: nothing.
+  cases8.sh, sweep15.sh, cases9.sh, cases10.sh, and approx, approx_dump, approx_formula, approx_mxcsr
+  with approx.out, approx_formula.out and approx_mxcsr.out). The cases scripts' outputs are kept only in
+  the Mac's scratch `reference-proof/`. The independent checks' files are in `~/wcontainers-x86/check`,
+  `check2`, `check3`, `check4` and `check5`. Installed in runs 2 to 6: nothing.
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -248,11 +281,12 @@ Each was first repeated or widened on the reference (x86 load 3.6 to 5.4 from an
   (hand-written, no seed); in run 3 also every one of the 2^32 inputs of `rcpss` and of `rsqrtss`, three
   times (analysis, formula in MXCSR 0x1F80, formula in 0xFFC0); in run 4, 21 more hand-written cases; in
   run 5, 21 hand-written cases (`cases7.sh`, `cases8.sh`) and the 1,024-opcode sweep twice over (each
-  opcode at the boundary and alone, 2,048 runs), plus one ARM64 `brk` in Docker.
+  opcode at the boundary and alone, 2,048 runs), plus one ARM64 `brk` in Docker; in run 6, 46 hand-written
+  cases (`cases9.sh` 38, `cases10.sh` 8).
 
 ## Measurements
 
-All in the "X0, run 1" to "run 5" sections above.
+All in the "X0, run 1" to "run 6" sections above.
 
 ## Licences of what this track uses
 
@@ -295,7 +329,8 @@ None yet (no milestone of the plan has been built).
   It is about four operations each.
 - astro-float adds about 41 KB brotli to the x86 browser build (scratch measurement).
 - `TrapKind` (and later the abi's `Exit`) grow divide error, general protection, float exception and single
-  step.
+  step; the abi's `Exit` and the runners' memory faults also gain x86's stack fault (SIGBUS), which the
+  i7-8750H gives for a non-canonical access through rsp or rbp.
 - Alignment checking (rflags AC) is not provided: `popf` leaves AC clear, as on a CPU without it, counted
   and warned. A real x86 Linux would fault misaligned accesses while AC is set.
 - A far transfer to Linux's 32-bit code segment (selector 0x23) gives general protection, counted, until

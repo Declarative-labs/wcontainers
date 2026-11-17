@@ -1,7 +1,7 @@
 # wcontainers, phase two: one guest CPU interface, and x86-64
 
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
-ARM64 assumptions, and revised after each of the four independent checks of X0 (2026-11-17). Nothing of it
+ARM64 assumptions, and revised after each of the five independent checks of X0 (2026-11-17). Nothing of it
 is built yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
@@ -38,7 +38,7 @@ Every figure below says whether it was measured or is only expected.
    own milestones.
 
 Out of phase two: 32-bit x86 (deferred with Direct3D 9), AVX-512, memory ordering between guest threads
-running in parallel (section 8), and building RISC-V (it is designed on paper only, section 4).
+running in parallel (section 8), and building RISC-V (it is designed on paper only, section 3.5).
 
 Done means: every milestone of section 9 has met its pass bar, and the long runs at the end of the track
 (layer 1 at 10,000 cases a form, layer 2 at one million programs, layer 3 at 100,000) have zero mismatches
@@ -58,10 +58,14 @@ for x86-64, with ARM64's own long runs still passing.
   with `default-features = false, features = ["no_std", "decoder", "instr_info", "encoder",
   "op_code_info"]`: it builds. So it builds without the standard library.
 - What it adds to a wasm32 release build, measured on 2026-11-17 (Mac load 15 to 21) with a small cdylib
-  that decodes a buffer and uses the decoded fields, after `wasm-tools strip`, against the same cdylib
-  without it:
+  that decodes a buffer and uses the decoded fields, after `wasm-tools strip`. The cdylib's total sizes
+  with iced:
   - `no_std` + `decoder`: 227,228 bytes raw, 60,705 gzip -9, 47,058 brotli -q 11.
   - `no_std` + `decoder` + `instr_info`: 353,374 raw, 82,721 gzip, 64,947 brotli.
+  The same cdylib without iced is 257 bytes raw, 232 gzip and 178 brotli, so what iced adds is these
+  totals less that: 226,971 / 60,473 / 46,880 for the decoder alone and 353,117 / 82,489 / 64,769 with
+  `instr_info` (the fifth independent check rebuilt the base and the decoder build and got the same
+  bytes; run 6 measured both stripped files again).
   - For scale, today's browser translator (`wcontainers-browser`, ARM64, release, stripped) is 2,170,386
     bytes raw, 412,059 gzip and 312,302 brotli (measured the same day, load 21 to 28). So the decoder alone
     adds about 15% to the compressed download, before anything ARM64-only leaves the x86 build.
@@ -243,6 +247,30 @@ are static binaries copied to `~/wcontainers-x86/proof`.
      `prefetchnta [rax]` (`0f 18 00`) with nothing mapped runs.
    - An ARM64 `brk #0x123` under Linux gives `SIGTRAP` with `TRAP_BRKPT` (1).
 
+   Run 6 (2026-11-17, x86 load 0.00 to 0.12, nothing timed), after the fifth independent check, with
+   `stepper4`, `cases9.sh`, `cases10.sh` and their outputs:
+   - A non-canonical access through the stack segment is a stack fault (#SS), which Linux sends as
+     `SIGBUS` with `SI_KERNEL` (128) and address 0, rip at the instruction; every other non-canonical
+     access is general protection (`SIGSEGV`, `SI_KERNEL`, address 0). An access goes through the stack
+     segment when its base register is rsp or rbp, or when it is an implicit stack access. Seen as stack
+     faults: `push rax` with rsp 0x800000000010 and with 0x800000000004 (the 8 bytes cross 2^47), `ret`,
+     `pushfq` and `push fs` with rsp 2^63, `mov rax, [rbp]` and `[rsp]` with 2^63, an 8-byte load from
+     `[rbp]` at 0x7ffffffffffc, `[rsp + rbx]` (also with rsp canonical and the sum 2^47) and `[rsp + rbp]`,
+     `push [rbp]`, `call [rbp]`, `pop [rbx]` with rsp 2^63, `movaps xmm0, [rsp]` and `cmpxchg16b [rsp]`
+     with rsp 2^63; the fifth check also saw `enter` and `leave`. Seen as general protection: base rbx,
+     r12 or r13 (so only rsp and rbp count, not the registers sharing their low three encoding bits), base
+     rax with index rbp, `[rbp * 2]` with no base, a `moffs` address, `rep stosb` and `movsq`, `pop [rbx]`
+     with rbx 2^63 (its write), and an `fs:` or `gs:` prefix on an rbp base. The `cs:`, `ds:`, `es:` and
+     `ss:` prefixes change nothing (64-bit mode ignores them): `ss:` and `cs:` on an rbx base are general
+     protection, `cs:`, `ds:` and `es:` on an rbp base a stack fault.
+   - Alignment comes first: `movaps xmm0, [rsp]` and `cmpxchg16b [rsp]` misaligned and non-canonical, or
+     misaligned and crossing 2^47, give general protection, not the stack fault. A canonical unmapped
+     `push` or `[rbp]` load is a page fault (`SEGV_MAPERR`, the address) as always.
+   - An MMX write sets bits 64 to 79 of the x87 register it writes (sign and exponent) to 0xFFFF, as
+     Intel's manual (volume 1, 9.5.1) says: `movq mm0, rax`, `movd mm0, eax`, `pxor mm0, mm0` and `movq
+     mm0, [rdi]` each leave R0 as `ffff:` and the 64 bits written, TOP 0 and every register valid. An MMX
+     read (`movq rax, mm0`, `movq [rdi], mm0`) leaves R0's top 16 bits as they were.
+
    What this teaches the reference runner (section 7.3): write every vector register and the whole x87
    component (FCW, FSW, the abridged tag byte, FOP and the last-instruction pointers as zero, the eight
    slots in stack order) (else the runner's own values leak in), set the x87, SSE and AVX bits of the
@@ -294,7 +322,7 @@ recording emitter (today's crates/wcontainers-arm64/src/effects.rs, moved and ma
 
 ### 3.2 The trait
 
-Comments say what each item is for; section 3.3 gives the reason for each choice.
+Comments say what each item is for; section 3.4 gives the reason for each choice.
 
 ```rust
 /// Everything the translator needs that is true of one guest CPU only.
@@ -440,9 +468,10 @@ pub trait Guest: Sized + 'static {
     // --- what a memory fault is on this CPU ---
     /// The memory fault hook reported `address` (the first byte not allowed) for the instruction at the
     /// start of `code`, with the thread's registers exact in `block`: the fault the CPU gives for it.
-    /// ARM64 and RV64GC always `Page`; x86 `GeneralProtection` when the access that faulted reaches a
-    /// non-canonical address (section 5.4). The runner calls this before it tells the kernel about the
-    /// fault, so the kernel needs no CPU crate.
+    /// ARM64 and RV64GC always `Page`; x86, when the access that faulted reaches a non-canonical
+    /// address, `Stack` if that access goes through the stack segment and `GeneralProtection` otherwise
+    /// (section 5.4). The runner calls this before it tells the kernel about the fault, so the kernel
+    /// needs no CPU crate.
     fn memory_fault(address: u64, code: &[u8], block: &Self::Block) -> MemoryFault;
 
     // --- meanings ---
@@ -561,6 +590,9 @@ pub enum FlowKind<R> {
 pub enum Through<R> { Register(R), Memory }
 
 pub struct MemoryAccess<R> {
+    /// A segment base added to the address: x86 `fs:` or `gs:` (a register of class `Segment`), whatever
+    /// the base and index are (`fs:[rdx + rax * 4]`); `None` on ARM64 and RISC-V.
+    pub segment: Option<R>,
     pub base: Option<Base<R>>,
     /// The index register, its shift, and how it is read (ARM64 `uxtw`, `sxtw`; x86 and RISC-V all 64
     /// bits, `Extend { from_bits: 64, signed: false }`).
@@ -573,7 +605,7 @@ pub struct MemoryAccess<R> {
     pub bytes: AccessBytes,        // Fixed(n) or Counted (a rep string instruction: rcx elements)
     pub kind: AccessKind,          // Read, Write, ReadWrite
 }
-pub enum Base<R> { Register(R), Pc, Segment(Segment) }  // Segment::Fs, Segment::Gs: base plus a segment base
+pub enum Base<R> { Register(R), Pc }
 /// How a register is read as an index: its low `from_bits` (32 or 64), zero- or sign-extended (today's
 /// `wcontainers_arm64::Extend`, moved).
 pub struct Extend { pub from_bits: u8, pub signed: bool }
@@ -590,8 +622,9 @@ pub struct Comparison<R> { pub left: R, pub right: Value<R>, pub relation: Relat
 pub enum Relation { Eq, Ne, Below { inclusive: bool }, Above { inclusive: bool } }
 /// What a register write narrower than 64 bits does to the rest of the register.
 pub enum NarrowWrite { Zero, Sign, Merge }
-/// The fault a memory fault is: a page fault at the address, or general protection (address 0).
-pub enum MemoryFault { Page, GeneralProtection }
+/// The fault a memory fault is: a page fault at the address, general protection (address 0), or a
+/// stack fault (x86 #SS, address 0: a non-canonical access through the stack segment).
+pub enum MemoryFault { Page, GeneralProtection, Stack }
 pub enum StackMove { None, By { delta: i64, before_access: bool }, Unknown }
 pub enum ReturnAddress { Register(u32 /* bit */), Stack { bytes: u8 } }
 pub struct SyscallRegisters<R> { pub number: R, pub args: [R; 6], pub result: R }
@@ -613,7 +646,12 @@ pub struct HookDone { pub results: [i64; 2], pub reason: Option<u32> }
 `TrapKind` moves from the translator's contract into the interface (the contract re-exports it) and gains
 the kinds x86 needs, numbered after ARM64's four so ARM64's numbers do not change: `DivideError` (4),
 `GeneralProtection` (5), `FloatException` (6, detail the `si_code`), `SingleStep` (7). Each comes with the
-signal Linux sends (section 6).
+signal Linux sends (section 6). A stack fault is not a `TrapKind`: no meaning raises one. It comes only
+from the memory fault hook, classified by `memory_fault` as `MemoryFault::Stack`, because every check a
+meaning makes before its access (alignment, a canonical branch target) gives general protection on the
+reference even where the access is through the stack segment (section 2, run 6: a misaligned
+non-canonical `movaps xmm0, [rsp]` is general protection). The runner turns `MemoryFault::Stack` into the
+stack fault exit (section 6) and the tests into `Stop::StackFault` (section 7.2).
 
 ### 3.3 The Emitter
 
@@ -673,10 +711,10 @@ a tuning number, measured at milestone X5 (section 11). `tracked()`, `register()
 and set and `reload(live, passed_from)` go through the lists.
 
 Flags (T22 to T25). The translator keeps its machinery: a current shape, a local per completed flag, the
-out-of-line flags-word functions (one per entry of `SHAPES`, which replaces `shapes()` over [W32, X64] and
-`FLAGS_WORDS = 11`), the liveness that leaves out flag work nothing reads, and the choice "direct condition
-if the shape is known, else from the flags". What it knew about ARM64 moves into the CPU: the shapes, their
-locals and types, completing them, each flag's value and the conditions. Two things are new, both for x86:
+out-of-line flags-word functions, the liveness that leaves out flag work nothing reads, and the choice "direct
+condition if the shape is known, else from the flags". What it knew about ARM64 moves into the CPU: the
+shapes, their locals and types, completing them, each flag's value and the conditions. Two things are new,
+both for x86:
 - **Partial setters.** `sets(flags)` says which flags a shape sets. Setting a shape that does not set every
   flag first completes the other flags of the old shape into their locals, only where they are live. x86
   `inc` and `dec` keep CF; `mul` sets CF and OF and leaves the rest as the reference CPU leaves them
@@ -684,6 +722,12 @@ locals and types, completing them, each flag's value and the conditions. Two thi
 - **Flags kept only sometimes** (x86 shift by a run-time count of 0 changes no flag). The meaning reads the
   old flags it may keep through `flag()` into locals and names them in the shape; `flag_value` selects.
   This is rare (shifts by cl) and needs nothing new in the emitter.
+The flags-word functions keep today's layout: first, at `F_FLAGS_WORD`, the one that builds the word from
+flags held in locals (generic: one i32 parameter per entry of `FLAGS`, each shifted to its bit in the
+word and or-ed in `FLAGS` order, as `push_word` does today over N, Z, C, V), then one per entry of
+`SHAPES` in its order, at `F_FLAGS_WORD + 1 + i`. `FLAGS_WORDS` (11 today) becomes `1 + SHAPES.len()`, and
+`shapes()` goes. ARM64's `SHAPES` is today's ten shapes in today's order (section 3.5), so the function
+indices and bodies stay byte for byte the same.
 `flags_needed_after` (T25) stops listing ARM64 variants and becomes a test per flag. It starts with the
 set of flags still to be set again, `pending`, equal to the `FLAGS` mask, and walks the rest of the block:
 an instruction that is not `G::plain`, that reads a flag in `pending`, or that writes the stack pointer
@@ -815,8 +859,10 @@ on (checked in scratch `x87-nostd`: a `no_std` cdylib with its own panic handler
 without it fails on a duplicate `panic_impl`, because astro-float-num's `lazy_static` then brings std).
 
 Memory faults (from section 5.4). The memory fault hook reports an address and a direction; whether that
-is a page fault or something else is the CPU's (x86: general protection for an access reaching a
-non-canonical address). `Guest::memory_fault(address, code, block)` answers it from the faulting
+is a page fault or something else is the CPU's (x86: for an access reaching a non-canonical address, a
+stack fault when it goes through the stack segment and general protection otherwise; two answers the
+reference gives with different signals, `SIGBUS` and `SIGSEGV`). `Guest::memory_fault(address, code,
+block)` answers it from the faulting
 instruction's bytes and the exact registers, called by the runner before it tells the kernel, so the
 hook's signature and ARM64's output do not change.
 
@@ -836,20 +882,21 @@ also covers the return address slot `[entry sp, entry sp + bytes)`, so the `ret`
 check of its own when the stack pointer is back at its entry value. `SP_ALIGNMENT_CHECKED` is false on x86
 and RISC-V, where the "aligned after" analysis is never run.
 
-Memory accesses (T32, T33). `accesses(i)` replaces "the one memory access": up to two, each with base
-(register, pc or a segment base), index with scale and extension, displacement, write-back, size or
-"counted" (rep), and read, write or both. Check plans are keyed by (offset, which). An access that reads and
-writes the same place (x86 `add [m], r`) is one access of kind `ReadWrite`, checked once for writing before
-anything changes. The base key of the check analysis becomes "register or segment", so all `fs:[...]`
-accesses of a function group under the FS base, which no instruction in the function changes unless it
-writes FS (`wrfsbase`).
+Memory accesses (T32, T33). `accesses(i)` replaces "the one memory access": up to two, each with an
+optional segment base (x86 `fs:` and `gs:`), base (register or pc), index with scale and extension,
+displacement, write-back, size or "counted" (rep), and read, write or both. Check plans are keyed by
+(offset, which). An access that reads and writes the same place (x86 `add [m], r`) is one access of kind
+`ReadWrite`, checked once for writing before anything changes. The base key of the check analysis becomes
+the pair (segment, base), so all `fs:[...]` accesses of a function with the same base group under the FS
+base, which no instruction in the function changes unless it writes FS (`wrfsbase`). ARM64's segment is
+always `None`, so its keys, and its output, stay as today.
 
 Code changes (T34). `CodeChanges::Announced` (ARM64 `ic ivau`, RISC-V `fence.i` and the flush system call)
 or `Detected` (x86): section 5.7.
 
 Thread pointer (T35). Nothing generic: it is whatever the CPU says. ARM64 a control (`tpidr_el0`), x86 two
-register bits of class `Segment` (FS and GS bases, i64, in the block) that accesses use through
-`Base::Segment`, RISC-V general register x4.
+register bits of class `Segment` (FS and GS bases, i64, in the block) that accesses add through
+`MemoryAccess::segment`, RISC-V general register x4.
 
 Loop proofs (T36). The recognisers become CPU functions returning plain descriptions (section 3.2's types):
 `induction` ("adds step s to r at width w", today's match on `AddSub` and write-back addresses);
@@ -880,8 +927,10 @@ ARM64 (`wcontainers_arm64::Arm64`, everything as today):
   detail the word.
 - Bits: x0 to x30 at 0 to 30, sp at 31, N Z C V at 32 to 35, v0 to v31 (v128) at 64 to 95. `Reg::Zero` has
   no bit. SP_BIT 31. Passed in and out: x0, x1, sp.
-- Flags: N Z C V at bits 31 to 28 of the flags word; shapes Add and Logic at 32 and 64 bits, Constant,
-  Packed (today's `Flags`); `sets` is always all four. FLAGS_WANTED 1.
+- Flags: N Z C V at bits 31 to 28 of the flags word; `Flags` is today's `Flags` (Add and Logic at 32
+  and 64 bits, Constant, Packed); `Shape` is today's `Shape`, and `SHAPES` is exactly today's ten in the
+  order `shapes()` gives them: for W32 and then X64, `Add` with carry 0, 1 and 2, then `Add` with carry 1
+  subtracting, then `Logic`. `sets` is always all four. FLAGS_WANTED 1.
 - Block: `wcontainers_abi::RegisterBlock`; controls `tpidr_el0`, FPCR, FPSR, FloatTracking, Exclusive*;
   private bytes 32.
 - Hooks: Float `(i32, i64, i64, i64) -> i64` (body `Cpu`: `run_hook` reads FPCR and FPSR from the state,
@@ -897,21 +946,24 @@ x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
   code range (an instruction that would run past it is `None`); trap detail the first 8 bytes.
 - Bits: rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8 to r15 at 0 to 15 (hardware order); CF PF AF ZF SF OF
   at 16 to 21; FS base 22, GS base 23 (class Segment); mm0 to mm7 at 32 to 39 (i64, the mantissas of x87
-  registers R0 to R7); xmm0 to xmm15 at 64 to 79 (v128); the upper halves of ymm0 to ymm15 at 80 to 95
-  (v128). There is no zero register. SP_BIT 4.
+  registers R0 to R7; their sign and exponent fields stay in the block's x87 area, section 5.8); xmm0
+  to xmm15 at 64 to 79 (v128); the upper halves of ymm0 to ymm15 at 80 to 95 (v128). There is no zero
+  register. SP_BIT 4.
 - Flags: the six arithmetic flags at their rflags positions (CF 0, PF 2, AF 4, ZF 6, SF 7, OF 11); shapes
   in section 5.1. FLAGS_WANTED 1 << 62.
-- Block: `X86Block` (section 5.9). Controls: `Rflags` (DF and ID, section 5.1), MXCSR, MXCSR tracking, the x87
-  control, status (with TOP) and tag words, the x87 last-instruction pointers.
+- Block: `X86Block` (section 5.9). Controls: `Rflags` (DF and ID, section 5.1), MXCSR, MXCSR tracking, the
+  x87 control, status (with TOP) and tag words, the x87 last-instruction pointers, and `X87High(0..8)`,
+  the sign and exponent of R0 to R7 (section 5.8, MMX).
 - Hooks: Float (SSE exact path, with MXCSR), X87 `(op: i32, low: i64, high: i64) -> (i64, i64)` reading and
   writing the x87 area and the MMX bits (both body `Cpu`, run by `run_hook` on the state), Clock.
 - RETURN_ADDRESS `Stack { bytes: 8 }`; RED_ZONE 128; SP_ALIGNMENT_CHECKED false; data_address nothing (a
-  non-canonical data address is past the permission table and faults); memory_fault `GeneralProtection`
-  when the faulting access reaches a non-canonical address (section 5.4), else `Page`; branch_target, and
-  the meanings of every branch through a register or memory, stop with a general protection fault when
-  the target is not canonical (a call after its push); UNREACHABLE_RETURN i64::MIN; Offer `{ avx: bool }`;
-  SYSCALL rax, (rdi, rsi, rdx, r10, r8, r9), rax; CODE_CHANGES Detected; NARROW_WRITE [Some(Merge),
-  Some(Merge), Some(Zero)].
+  non-canonical data address is past the permission table and faults); memory_fault, when the faulting access
+  reaches a non-canonical address, `Stack` if its base is rsp or rbp (also every implicit stack access) with
+  no `fs:` or `gs:`, else `GeneralProtection`, and `Page` otherwise (section 5.4); branch_target, and the
+  meanings of every branch through a register or memory, stop with a general protection fault when the target
+  is not canonical (a call after its push); UNREACHABLE_RETURN i64::MIN; Offer `{ avx: bool }`; SYSCALL rax,
+  (rdi, rsi, rdx, r10, r8, r9), rax; CODE_CHANGES Detected; NARROW_WRITE [Some(Merge), Some(Merge),
+  Some(Zero)].
 
 RV64GC (`wcontainers_riscv::Rv64`, paper only, the check that nothing assumes flags, a link register that
 is special, 4-byte instructions or a special stack pointer):
@@ -969,7 +1021,8 @@ Tests (section 7 gives the detail):
     and the bits that are compared; instructions are length-prefixed.
 16. **Bits allowed to differ, and outcomes.** Per instance, from the CPU's test support. x86's undefined
     flags are not masked: they must match the reference CPU, as the brief says. New outcomes: divide error
-    (SIGFPE), general protection (SIGSEGV, SI_KERNEL, address 0), float exception, single step.
+    (SIGFPE), general protection (SIGSEGV, SI_KERNEL, address 0), stack fault (SIGBUS, SI_KERNEL,
+    address 0), float exception, single step.
 17. **Unannounced code writes in the runners.** The runners hold a stand-in of the write protection of
     section 5.7, and a program writes code with no announcement and runs it.
 18. **Layer 2 generator.** A shared program model with a per-CPU emitter.
@@ -1048,8 +1101,11 @@ Tests (section 7 gives the detail):
   the rest means (a lock that made it invalid, say) but not how long it is: `66` and `67` are the only
   prefixes that change a length (Intel's "length-changing prefixes"), and the last of `F2` and `F3` stays
   because it picks among mandatory-prefix forms, whose lengths iced may count differently when invalid.
-  The longest rest (`F3 66 67` and REX before `0F 3A`, ModRM, SIB, a 32-bit displacement and an
-  immediate) is 14 bytes, so iced's limit never cuts the rest short. When the rest is an instruction,
+  The longest valid rest is 15 bytes: the four kept prefixes and a one-byte opcode with ModRM, SIB, a
+  32-bit displacement and a 32-bit immediate (`F3 66 67 48 C7 84 24`, then 4 and 4 bytes; REX.W wins over
+  `66`, so the immediate stays 4 bytes). iced decodes it as a 15-byte `mov`, the reference runs it, and
+  with a segment prefix before it, 16 bytes, gives general protection (seen by the fifth independent
+  check). So iced's limit never cuts a valid rest short. When the rest is an instruction,
   its length is iced's and the sum is the CPU's length. When the rest is itself `INVALID`, iced's count
   of the bytes after its opcode is iced's own choice, not the CPU's: the CPU's length decoder counts
   bytes by its own tables even for opcodes that do not exist in 64-bit mode (section 2, run 5: `0F 38
@@ -1122,8 +1178,9 @@ Tests (section 7 gives the detail):
   as on ARM64. Its meaning does what the reference CPU does, in the reference's order (section 2, run 3):
   1. `call [m]` reads its target (access 0); a fault there stops first, nothing changed.
   2. It writes the real return address (this instruction's address plus its length) at rsp - 8 (the push:
-     access 1 for `call [m]`, else 0); a fault there stops next, nothing changed. The write is inside the
-     frame checked when rsp last moved down, so it usually needs no check of its own (below).
+     access 1 for `call [m]`, else 0); a fault there stops next, nothing changed: a page fault, or the
+     stack fault when rsp - 8 is not canonical or the 8 bytes cross 2^47 (section 5.4). The write is
+     inside the frame checked when rsp last moved down, so it usually needs no check of its own (below).
   3. It checks the target is canonical; if not, it stops with general protection at the instruction, with
      the return address already written at rsp - 8 and rsp unchanged. That is what the i7-8750H does for
      `call rax` with 0x8000000000001000 or 0x800000000000, `call r8`, `call [rdi]`, and a direct `call
@@ -1132,12 +1189,13 @@ Tests (section 7 gives the detail):
      protection; `call [rdi]` with rdi 0x3000 and rsp 0x1008 faults at 0x3000, so the read comes first.
   4. It sets rsp to rsp - 8 and calls the emitter's `call`, which makes the WebAssembly call.
   Intel's manual's pseudo-code checks the target before the push; the CPU does not, and the CPU decides.
-- `ret` reads [rsp] and checks the value is canonical, else it stops with general protection, rsp not
-  moved, as on the CPU (section 3.4, T14: this check comes before the compare, so a popped value can never
-  match the bottom loop's marker). If the value is the address the caller expects, rsp moves up by 8 and
-  the piece returns directly. If not, rsp moves and the thread leaves to the bottom loop through "go to
-  address". `ret imm16` also adds its immediate. `jmp` through a register or memory makes the same
-  canonical check first, before anything changes; `call` makes it after its push (above).
+- `ret` reads [rsp] (a stack fault when rsp is not canonical, section 5.4) and checks the value is canonical,
+  else it stops with general protection, rsp not moved, as on the CPU (section 3.4, T14: this check comes
+  before the compare, so a popped value can never match the bottom loop's marker). If the value is the address
+  the caller expects, rsp moves up by 8 and the piece returns directly. If not, rsp moves and the thread
+  leaves to the bottom loop through "go to address". `ret imm16` also adds its immediate. `jmp` through a
+  register or memory makes the same canonical check first, before anything changes; `call` makes it after its
+  push (above).
 - **Far transfers** (`call far m16:64`, `jmp far m16:64`, `retf` and `retf imm16` in their 16, 32 and
   64-bit operand sizes, `iretq`; valid in 64-bit user mode, so in layer 1's forms list). Their meanings
   read the selector with the offset and act on it as the CPU does in user mode on Linux. Seen on the
@@ -1180,11 +1238,27 @@ Tests (section 7 gives the detail):
   non-canonical target comes after its push, section 5.3). `pop [m]` computes m with rsp already moved, as
   the manual says.
 - **Non-canonical data addresses** stop the thread at the permission table (they are above every page it
-  covers). The CPU gives general protection (SIGSEGV, SI_KERNEL, address 0) for any access that reaches a
-  non-canonical address, also one that starts at a canonical one: on the reference an 8-byte load at
-  0x7ffffffffffc and a 4-byte load at 0x7ffffffffffe give general protection, while an 8-byte load at
-  0x7ffffffff000 and a 1-byte load at 0x7fffffffffff give a page fault (`SEGV_MAPERR`) at their address
-  (section 2, run 3). So the CPU's check of canonical addresses comes before the page check. The meanings
+  covers). The CPU faults on any access that reaches a non-canonical address, also one that starts at a
+  canonical one: on the reference an 8-byte load at 0x7ffffffffffc and a 4-byte load at 0x7ffffffffffe
+  through rdi fault so, while an 8-byte load at 0x7ffffffff000 and a 1-byte load at 0x7fffffffffff give a
+  page fault (`SEGV_MAPERR`) at their address (section 2, run 3). So the CPU's check of canonical
+  addresses comes before the page check. Which fault it is depends on the segment the access goes
+  through (section 2, run 6):
+  - **the stack segment** gives a stack fault (#SS), which Linux sends as `SIGBUS` with `SI_KERNEL` and
+    address 0. An access goes through it when its base register is rsp or rbp (r12 and r13 do not
+    count) and it has no `fs:` or `gs:` prefix, and for every implicit stack access: the pushes and pops
+    of `push`, `pop` (its read), `call`, `ret`, `enter`, `leave`, `pushf`, `popf`, the far transfers and
+    `iretq`. The `ds:`, `es:`, `cs:` and `ss:` prefixes change nothing in 64-bit mode. x86's `accesses`
+    names rsp as the base of every implicit stack access (rbp for the read of `leave`), so the rule is
+    one test on the access: segment `None` and base `Register(rsp)` or `Register(rbp)`.
+  - **every other access** (another base, no base, an index only, rip-relative, `moffs`, the string
+    instructions' rsi and rdi, anything with `fs:` or `gs:`) gives general protection (`SIGSEGV`,
+    `SI_KERNEL`, address 0).
+  One instruction can have one of each: `pop [rbx]` gives the stack fault when rsp is not canonical and
+  general protection when rbx is not. The meanings' own checks (the alignment of `movaps`, `cmpxchg16b`
+  and the like, a branch's canonical target) give general protection whatever the segment. An alignment
+  check comes before the access's own fault: a misaligned non-canonical `movaps xmm0, [rsp]` is general
+  protection on the reference. A call's canonical check comes after its push (section 5.3). The meanings
   add nothing for this (no cost on any access): the permission table already stops every such access,
   since the last page below 2^47 is never mapped: Linux's x86-64 user space ends at 0x7ffffffff000
   (`TASK_SIZE_MAX`), and the x86 personality gives our kernel that same limit (section 6), so no mapping
@@ -1194,12 +1268,16 @@ Tests (section 7 gives the detail):
   their sizes: an element for `rep` and gather forms). The two accesses of one instruction may differ in
   size (`call far [m]` reads 10 bytes and pushes 16), so it takes the access that faulted: the first, in
   the instruction's order (the order the CPU and the meaning check them), whose range holds the reported
-  address (the first byte not allowed). General protection when that range is not wholly canonical (its
-  start is not canonical, or its last byte is above 0x7fffffffffff); otherwise a page fault at the
-  address. No access is longer than a page (the largest offered, `xsave` with x87, SSE and AVX state, is
-  832 bytes in the manual's layout), so no access reaching 2^47 starts below the last page. Layer 1
-  places a share of its memory operands' bases, and of its stack pointers, in the last 64 bytes below
-  2^47 so that both answers are compared with the reference.
+  address (the first byte not allowed). When that range is not wholly canonical (its start is not
+  canonical, or its last byte is above 0x7fffffffffff), `Stack` if the access goes through the stack
+  segment by the rule above, else `GeneralProtection`; otherwise a page fault at the address. No access
+  is longer than a page (the largest offered, `xsave` with x87, SSE and AVX state, is 832 bytes in the
+  manual's layout), so no access reaching 2^47 starts below the last page. Layer 1 places a share of its
+  memory operands' bases (rsp and rbp among them), of its stack pointers, and of the other base
+  registers, in the last 64 bytes below 2^47 and at non-canonical values, so that all three answers are
+  compared with the reference.
+- **Addresses through a segment** (`fs:`, `gs:`): `MemoryAccess::segment` names the segment base added,
+  whatever base and index the operand has (`fs:[rdx + rax * 4]`, a thread-local array).
 - **Alignment**: x86 allows unaligned access except for a few instructions (`movaps`, `movdqa` and the
   other aligned SSE forms, `cmpxchg16b`, `fxsave`): those meanings test the address and stop with general
   protection, as the reference does (section 2).
@@ -1406,8 +1484,14 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   Only the x86 browser build carries it.
 - **MMX** (baseline in every x86-64 CPU, so offered): mm0 to mm7 are register bits of type i64, whose
   block slots are the mantissas of R0 to R7. An MMX instruction also sets TOP to 0 and marks every x87
-  register valid; `emms` marks them empty. The x87 hook declares the MMX bits in its `registers`, so the
-  emitter writes them back before an x87 instruction and loads them after.
+  register valid; `emms` marks them empty. An MMX instruction that writes mmN also sets the sign and
+  exponent of RN (bits 64 to 79) to 0xFFFF, as the reference does (section 2, run 6); one that only
+  reads leaves them. Those fields are eight i32 controls, `X87High(0)` to `X87High(7)`, each over bytes 8
+  to 11 of its register's 16-byte slot (the sign and exponent, then two bytes that are always zero, the
+  FXSAVE layout's reserved bytes), so the meaning writes 0xFFFF with one `set_control`, a single store
+  into the block, and the x87 hook, the kernel's signal frame and layer 1 read the full 80 bits. The x87
+  hook declares the MMX bits in its `registers`, so the emitter writes them back before an x87
+  instruction and loads them after.
 
 ### 5.9 The register block
 
@@ -1528,9 +1612,11 @@ resolved at compile time like the translator (the kernel generic over a personal
   and the faults and their signals (section 3.2's trap kinds: divide error SIGFPE `FPE_INTDIV`, general
   protection SIGSEGV `SI_KERNEL` with address 0, float exceptions SIGFPE, single step SIGTRAP
   `TRAP_TRACE`, `int3` and `int 3` SIGTRAP `SI_KERNEL`, `int1` SIGTRAP `TRAP_BRKPT`, each breakpoint
-  with rip after it). The abi's `Exit` grows these kinds. A memory fault reaches the kernel already
-  classified by the runner through `Guest::memory_fault` (a page fault with its address, or general
-  protection), so the kernel stays `no_std`, CPU-free and without a CPU crate; hooks never reach it.
+  with rip after it), and the stack fault from a memory fault, SIGBUS `SI_KERNEL` with address 0 (Linux's
+  #SS handler; section 2, run 6). The abi's `Exit` grows these kinds. A memory fault reaches the kernel
+  already classified by the runner through `Guest::memory_fault` (a page fault with its address, general
+  protection, or a stack fault), so the kernel stays `no_std`, CPU-free and without a CPU crate; hooks
+  never reach it.
 - **The machine description**: ELF machine 62, `uname` "x86_64", `/proc/cpuinfo` in x86's format with the
   claimed flags, seccomp's `AUDIT_ARCH_X86_64`, and an x86-64 vDSO (`clock_gettime`, `gettimeofday`,
   `time`, `getcpu`). The legacy vsyscall page is not provided: a call into it faults, as on a kernel booted
@@ -1632,8 +1718,9 @@ pub trait GuestTest: Guest {
     /// unknown (ARM64), x87's last-instruction pointers. Never an undefined flag.
     fn may_differ(case: &Case, reference: &Outcome, translated: &Outcome) -> State;
     /// A reference signal as a generic stop, given the instruction's length: section 7.3's list (x86's
-    /// held-back trap, general protection as `SI_KERNEL` with address 0, a breakpoint as
-    /// `Breakpoint(si_code)`); ARM64 today's `reference_outcome`, with a `SIGTRAP` as
+    /// held-back trap, general protection as `SIGSEGV` `SI_KERNEL` with address 0, the stack fault as
+    /// `SIGBUS` `SI_KERNEL` with address 0, a breakpoint as `Breakpoint(si_code)`); ARM64 today's
+    /// `reference_outcome`, with a `SIGTRAP` as
     /// `Breakpoint(si_code)`.
     fn reference_stop(signal: Signal, length: u8) -> Stop;
     /// The `si_code` Linux gives the breakpoint trap whose detail is `detail`, for the translated side's
@@ -1683,8 +1770,9 @@ pub struct Case { pub code: Encoded, pub state: State, pub tracking: bool, pub s
 pub struct Signal { pub number: u32, pub code: u32, pub address: u64, pub pc: u64 }
 /// Where control went or why the thread stopped, in terms both sides share (today's `Stop`, grown).
 /// `Breakpoint` holds the `si_code` (so `int1` and `int3` are told apart); `FloatException` likewise.
+/// `StackFault` is x86's #SS (`MemoryFault::Stack` on the translated side).
 pub enum Stop { Landed(u64), Illegal, Breakpoint(u32), SingleStep, Syscall, MemoryFault(u64),
-    Alignment(u64), GeneralProtection, DivideError, FloatException(u32), Other(u32, u64) }
+    Alignment(u64), GeneralProtection, StackFault, DivideError, FloatException(u32), Other(u32, u64) }
 pub struct Outcome { pub stop: Stop, pub state: State, pub changed: Vec<(u32, u8)> }
 pub struct Designed { pub code: Encoded, pub start: State, pub end: State, pub stop: Stop }
 pub struct StandIn { pub write: u64, pub writev: u64, pub exit: u64, pub exit_group: u64, pub brk: u64 }
@@ -1694,7 +1782,8 @@ pub struct Snippet { pub name: &'static str, pub code: Vec<u8>, pub expect: Expe
 `Expect` is today's expectation of each corpus (the smoke output, the checks' counts, the changes' stops),
 unchanged. A translator trap maps to a `Stop` and to an exit status generically, from `TrapKind` and the
 signal section 6 gives it (128 + 8 for SIGFPE); a breakpoint's `si_code` comes from `breakpoint_code` and
-its detail.
+its detail. A memory fault maps through `G::memory_fault`: `Page` to `MemoryFault(address)`,
+`GeneralProtection` to `GeneralProtection` (128 + 11) and `Stack` to `StackFault` (128 + 7, SIGBUS).
 
 The reference runner (crates/wcontainers-translator-test/reference) is one program built for
 `G::RUST_TARGET`; its per-CPU part is a module chosen by `cfg(target_arch)` (`reference/src/aarch64.rs`,
@@ -1789,8 +1878,9 @@ so; it is never skipped silently.
     (the filler changes nothing but rip). Any other `SI_KERNEL` stop is a breakpoint of the instruction
     itself (`int3`, `int 3`), rip after it: `Breakpoint(128)`.
   - `SIGTRAP` with `TRAP_BRKPT` (1): `int1`, rip after it: `Breakpoint(1)`.
-  - `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE`: faults with their codes (`SI_KERNEL` with address 0 is general
-    protection).
+  - `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE`: faults with their codes. `SIGSEGV` with `SI_KERNEL` and
+    address 0 is `GeneralProtection`; `SIGBUS` with `SI_KERNEL` and address 0 is `StackFault`; `SIGBUS`
+    with `BUS_ADRALN` is `Alignment(address)`.
   - `SIGSYS`, from a seccomp filter on the instruction window `[CODE, CODE + 16)`: a system call, for
     `syscall` and for `int 0x80` (seen by seccomp as an i386 call), which never runs.
   Anything else (a stop elsewhere, a signal not listed) is reported as such and fails the case; nothing is
@@ -1816,7 +1906,11 @@ when the translator stops with the fault the reference CPU gives (section 5.2). 
 third list, whose cases must stop with illegal instruction. Its name (the `Code` name) is the seed key; its
 group is its mnemonic and encoding. A case is a random `Instruction` for the `Code`, with operands from
 `op_kind(i)` (registers, immediates weighted toward edges, memory operands whose base and index point into
-DATA), encoded by iced's `Encoder`, which gives the bytes and length. Random registers, flags, vector, x87 and
+DATA), encoded by iced's `Encoder`, which gives the bytes and length. A share of the cases instead puts a
+memory operand's base, or rsp for the implicit stack accesses, in the last 64 bytes below 2^47 or at a
+non-canonical value (section 5.4), with every base register drawn, rsp and rbp and r12 and r13 among
+them and `fs:` and `gs:` prefixes among the operands, so that the page fault, general protection and
+the stack fault are each compared with the reference. Random registers, flags, vector, x87 and
 MXCSR values are weighted toward edge values; MXCSR is the default in half the cases. The reference runs it by
 the trap flag; the translator runs it at look-ahead none; every register, every flag (including undefined
 ones), the touched memory and the stop are compared. Random byte strings that iced decodes as `INVALID` are
@@ -1900,8 +1994,10 @@ Measured throughout, recorded with machine and load: translation speed, output s
   programs byte for byte the same per seed); the x86 reference answers a hand list of at least 30
   instructions with what the Intel manual says, each checked by hand in the test, among them every stop
   of section 7.3's list (`mov ss` with its held-back trap, `int3`, `int 3`, `int1`, `syscall` and `int
-  0x80` as `SIGSYS`, a `ret` to a non-canonical address), x87 instructions whose state is written and read
-  back (section 2, run 4) and a `call far` with selector 0x33. The trait of section 7.2 is the one built;
+  0x80` as `SIGSYS`, a `ret` to a non-canonical address, general protection from `mov rax, [rbx]` and the
+  stack fault from `mov rax, [rbp]` and from `push rax`, each with a non-canonical address), x87
+  instructions whose state is written and read back (section 2, run 4) and a `call far` with selector
+  0x33. The trait of section 7.2 is the one built;
   where building it shows a signature must change, the change is recorded in the status file.
 - **X3, x86 at look-ahead none, integers.** `wcontainers-x86` with the decoder, the block, the base integer
   instructions (moves, arithmetic and logic at every width, lea, push and pop, call and ret, jmp and jcc, cmov
@@ -1909,13 +2005,14 @@ Measured throughout, recorded with machine and load: translation speed, output s
   the build-time claim table from iced's tables (section 2) with its test, the canonical check on branches
   through a register or memory (a call's after its push), `X86_64::memory_fault`, the 128-by-64 division
   (section 5.2), the 15-byte limit with its table of invalid opcodes' lengths and the sweep it comes from
-  (section 5.2), the description section's guest and offer bytes (format 4; ARM64's output then
-  differs in those bytes and the format byte only). Pass bar: layer 1 for those forms against the real CPU
-  with zero mismatches at 1,000 cases a form, including bases in the last 64 bytes below 2^47 and
-  dividends whose rdx is not rax's extension, and 10,000 no-form cases, half of them prefix runs near 15
-  bytes, with zero mismatches; a C hello world built as a flat x86-64 blob prints and exits in
-  wasmtime and Chrome; what the decoder adds to the browser build measured; the long division's cost
-  against native measured.
+  (section 5.2), the description section's guest and offer bytes (format 4; ARM64's output then differs in
+  those bytes and the format byte only). Pass bar: layer 1 for those forms against the real CPU with zero
+  mismatches at 1,000 cases a form, including bases (rsp and rbp among them) and stack pointers in the last 64
+  bytes below 2^47 and at non-canonical values, so that page faults, general protection and stack faults are
+  all compared, and dividends whose rdx is not rax's extension, and 10,000 no-form cases, half of them prefix
+  runs near 15 bytes, with zero mismatches; a C hello world built as a flat x86-64 blob prints and exits in
+  wasmtime and Chrome; what the decoder adds to the browser build measured; the long division's cost against
+  native measured.
 - **X4, x86 at full look-ahead.** Functions, registers in locals, flags liveness, direct conditions, calls
   and returns as WebAssembly calls with the pushed return address, the red zone frames, switch recognition
   for both x86 compiler styles, loop proofs, the stop and permission checks; the x86 layer 2 emitter. Pass
@@ -2013,10 +2110,12 @@ independent check's seccomp stepper is `check2/exp/stepper_sc.c`. Run 4 added to
 outputs, and `cases6.out`. Run 5 added `cases7.sh`, `cases8.sh` and `sweep15.sh` with their outputs
 (the 15-byte limit, `clflush`, invalid opcodes' lengths; `sweep15.iced` and `sweep15.classes` set the
 sweep beside iced's decoding) and `brk.c` (ARM64's breakpoint `si_code`); the fourth independent check's
-cases are in `check4`. The x86
-machine holds copies in
-`~/wcontainers-x86/proof` (with `approx.out`, `approx_formula.out`, `approx_mxcsr.out`) and
-`~/wcontainers-x86/check2`.
+cases are in `check4`. Run 6 added `cases9.sh` and `cases10.sh` with their outputs (the stack fault
+against general protection, alignment first, MMX writes and the x87 registers); the fifth independent
+check's cases are in `check5`. The x86 machine holds copies of the programs and scripts in
+`~/wcontainers-x86/proof` (with `approx.out`, `approx_formula.out`, `approx_mxcsr.out`; the cases
+scripts' outputs are kept only on the Mac), and the independent checks' own files in
+`~/wcontainers-x86/check`, `check2`, `check3`, `check4` and `check5`.
 
 ## Appendix A. Every kind b and c place of the seam map, and where it is covered
 
@@ -2188,7 +2287,8 @@ Tests (25 items, in the seam map's order):
 10. Value strategies: 7.2.
 11. Masks of bits allowed to differ: 7.2; section 4 decision 16.
 12. Signal and trap mapping: 7.2; 7.3 One instruction; section 6; 3.2 `memory_fault` and `MemoryFault`
-    (general protection for accesses reaching a non-canonical address, 5.4).
+    (general protection or, through the stack segment, the stack fault for accesses reaching a
+    non-canonical address, 5.4); 7.2 `Stop::StackFault`.
 13. The reference runner's per-CPU part: 7.3; section 2.
 14. Initial state and auxiliary vector entries: 3.2 `initial_block`; 7.2.
 15. The stand-in's system call numbers: 7.2.
