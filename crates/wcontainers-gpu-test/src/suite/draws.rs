@@ -724,3 +724,80 @@ pub fn indexed_strips_restart_and_add_the_base_vertex<H: Host>() {
     }
     ok(&mut b);
 }
+
+/// Fragment programs write storage buffers, where the back end declares
+/// [`Features::FRAGMENT_STORAGE_WRITE`]: each pixel's fragment writes a value made from its position
+/// into its own element, read back exactly.
+pub fn fragments_write_storage_buffers<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::FRAGMENT_STORAGE_WRITE) {
+        return;
+    }
+    const N: u32 = 4;
+    const STORAGE: &str = "
+    @group(0) @binding(160) var<storage, read_write> out: array<u32>;
+    @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+        return vec4<f32>(p, 0.5, 1.0);
+    }
+    @fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+        let x = u32(p.x);
+        let y = u32(p.y);
+        out[y * 4u + x] = x * 16u + y + 1u;
+        return vec4<f32>(1.0);
+    }
+    ";
+    let (_t, v) = rgba8_target(&mut b, N);
+    let vb = vertex_buffer(&mut b, &QUAD);
+    let out = buffer(
+        &mut b,
+        u64::from(N * N * 4),
+        BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&out, 0, &vec![0; (N * N * 4) as usize], WriteMode::Discard);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &out,
+                    offset: 0,
+                    size: u64::from(N * N * 4),
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    let p = program(&mut b, STORAGE, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    let got = read_buffer(&mut b, &out, 0, u64::from(N * N * 4));
+    let expected: Vec<u8> = (0..N * N)
+        .flat_map(|i| ((i % N) * 16 + i / N + 1).to_le_bytes())
+        .collect();
+    assert_eq!(got, expected);
+    ok(&mut b);
+}
