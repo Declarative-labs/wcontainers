@@ -44,6 +44,8 @@ const MAP_FAILED: u8 = 2;
 
 /// The WebGPU back end. One thread owns it.
 pub struct WebGpu {
+    /// Asked which formats a window takes.
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     caps: Caps,
@@ -286,6 +288,8 @@ struct SurfaceObj {
     /// Drawn into while the window shows nothing (occluded, or no texture in time); kept at the
     /// configured size.
     unshown: RefCell<Option<wgpu::Texture>>,
+    /// Where frames are drawn when the window lacks the configured format (`PresentConverted`).
+    stand_in: RefCell<Option<wgpu::Texture>>,
 }
 
 /// This frame's texture: the window's, or the unshown one when the window has none to give.
@@ -371,6 +375,7 @@ impl WebGpu {
         // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
         let float_clears = adapter.get_info().backend == wgpu::Backend::Dx12;
         WebGpu {
+            adapter: adapter.clone(),
             device,
             queue,
             caps,
@@ -1437,6 +1442,7 @@ impl Backend for WebGpu {
             format: Cell::new(Format::Rgba8Unorm),
             config: RefCell::new(None),
             unshown: RefCell::new(None),
+            stand_in: RefCell::new(None),
         })))
     }
 
@@ -1452,9 +1458,44 @@ impl Backend for WebGpu {
             return Err(GpuError::Invalid("surface format without PRESENT"));
         }
         let raw = convert::texture_format(format).ok_or(GpuError::Invalid("surface format"))?;
+        // A window lacking the format (a Metal layer has no `rgba8unorm`) takes the same channels in
+        // the other byte order, and frames are drawn into a stand-in of the format.
+        let taken = surface.0.raw.get_capabilities(&self.adapter).formats;
+        let shown = if taken.contains(&raw) {
+            raw
+        } else {
+            use wgpu::TextureFormat as T;
+            let Some(other) = (match raw {
+                T::Rgba8Unorm => Some(T::Bgra8Unorm),
+                T::Bgra8Unorm => Some(T::Rgba8Unorm),
+                _ => None,
+            })
+            .filter(|f| taken.contains(f)) else {
+                self.fail("the window takes neither this surface format nor its other byte order");
+                return Err(GpuError::DeviceLost);
+            };
+            other
+        };
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
+        *surface.0.stand_in.borrow_mut() = (shown != raw).then(|| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: raw,
+                usage: usage | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        });
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
-            format: raw,
+            usage,
+            format: shown,
             width,
             height,
             present_mode: if vsync {
@@ -1487,7 +1528,10 @@ impl Backend for WebGpu {
         }
         let (texture, width, height) = match got {
             C::Success(t) | C::Suboptimal(t) => {
-                let view = t.texture.create_view(&Default::default());
+                let view = match &*surface.0.stand_in.borrow() {
+                    Some(s) => s.create_view(&Default::default()),
+                    None => t.texture.create_view(&Default::default()),
+                };
                 let size = (t.texture.width(), t.texture.height());
                 *surface.0.current.borrow_mut() = Some(Frame::Shown(t));
                 (view, size.0, size.1)
@@ -1511,7 +1555,8 @@ impl Backend for WebGpu {
                             mip_level_count: 1,
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
-                            format: config.format,
+                            format: convert::texture_format(surface.0.format.get())
+                                .expect("configured"),
                             usage: config.usage,
                             view_formats: &[],
                         })
@@ -1543,13 +1588,16 @@ impl Backend for WebGpu {
     }
 
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
-        self.submit();
         let frame = surface
             .0
             .current
             .borrow_mut()
             .take()
             .ok_or(GpuError::Invalid("present without current_texture"))?;
+        if let (Frame::Shown(t), Some(s)) = (&frame, &*surface.0.stand_in.borrow()) {
+            self.present_by_draw(s, &t.texture);
+        }
+        self.submit();
         if let Frame::Shown(texture) = frame {
             self.queue.present(texture);
         }

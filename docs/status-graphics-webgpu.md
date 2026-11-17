@@ -5,9 +5,43 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 (the whole milestone, section 12) is in progress: G2 runs 1 to 3 are below as "Run 5" to
-"Run 7". The pass bar items still open are listed under "Next (G2)". Earlier runs (G2a, the first
+G2 (the whole milestone, section 12) is in progress: G2 runs 1 to 4 are below as "Run 5" to
+"Run 8". The pass bar items still open are listed under "Next (G2)". Earlier runs (G2a, the first
 slice, runs 1 to 4) follow them.
+
+Run 8 = G2 run 4, 2026-11-17:
+- Merged origin/phase-2-graphics (at 41816d5) and origin/phase-2-graphics-direct3d-11. The
+  interface changes they brought (doc sentences, recording back end checks) needed nothing here.
+  The first desktop build after them failed to link a stale `wcontainers-gpu-test` library
+  (unresolved symbols); `cargo clean -p wcontainers-gpu-test` fixed it. Recorded runs now clean
+  both crates.
+- Presenting a format the window lacks: a Metal layer takes no `rgba8unorm`, which every back end
+  presents (plan 4.9), so the device lost it there ("Validation Error" from wgpu). Now
+  `configure_surface` asks the window's formats (the back end keeps its adapter for this); a
+  window lacking the format is configured in the other byte order (`bgra8unorm`), frames are drawn
+  into a stand-in texture of the asked format, and `present` draws it into the window's texture
+  (`PresentConverted`, interface change below; src/fill.rs `present_by_draw`). Not yet run on a
+  shown window (see the present test below); on Windows and in Chrome the window takes the format
+  and nothing changes.
+- The suite's present test on macOS: AppKit makes windows only on the main thread and the standard
+  test harness runs every test on a thread of its own, so tests/present.rs runs
+  `present_shows_the_frame` with libtest-mimic on the main thread (on Windows it has no tests:
+  tests/suite.rs runs present there). The host (tests/host/mod.rs, shared by both files) opens a
+  borderless 4 by 4 pixel floating window whose content view's own layer is the surface, and reads
+  it through ScreenCaptureKit (one window, `SCScreenshotManager`) in sRGB, which undoes the
+  display's colour matching exactly: a Swift probe of the same steps read 256 of 256 colours
+  exactly through an external monitor's ICC profile (`CGWindowListCreateImage` gave the display's
+  values, and converting them back to sRGB missed 193 of 260). The screen recording permission is
+  held by the session the tests run from here (`CGPreflightScreenCaptureAccess` true).
+- That test still fails here, as a known failure with its reason: macOS reports every new window
+  of this session as not visible (`occlusionState` 0x2000, also for a plain Swift window, at any
+  place and level), and wgpu's Metal surface hands out no texture to an occluded window, so the
+  frame is drawn unshown, as the back end does for an occluded window. Why this session's windows
+  are occluded is not known (display not asleep, session not locked). The test now says so instead
+  of comparing the window's grey.
+- The suite's list for hosts that run present apart (the browser page and macOS) is one macro,
+  examples/scenes/names.rs; web/check runs the page against the whole native list on Windows, so a
+  test the shared crate adds and the list lacks fails there.
 
 Run 7 = G2 run 3, 2026-11-17:
 - Merged origin/phase-2-graphics (at f107eb5), then origin/phase-2-graphics-direct3d-12 and
@@ -369,10 +403,12 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wcontainers-gpu-webgpu --no-fail-fast -- --test-threads 1"`. Keep `--no-fail-fast`, so one
   failing file does not hide the others, and `--locked`, so a stale lock file fails instead of
   being rewritten (which makes the tree differ and gpu-job refuse it).
-- When a result is recorded, start the build command with `cargo clean -p wcontainers-gpu-webgpu &&`
-  (incremental builds on the desktop once kept a stale library), and before `web/check` run
-  `tools/graphics-rig/remote "cargo clean -p wcontainers-gpu-webgpu & cargo clean -p
-  wcontainers-gpu-webgpu --target wasm32-unknown-unknown"`.
+- When a result is recorded, start the build command with `cargo clean -p wcontainers-gpu-webgpu
+  -p wcontainers-gpu-test &&` (incremental builds on the desktop have kept stale libraries of path
+  crates changed by a merge), and before `web/check` run `tools/graphics-rig/remote "cargo clean -p
+  wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p wcontainers-gpu-test --target
+  wasm32-unknown-unknown & cargo clean -p wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p
+  wcontainers-gpu-test"`.
 - The BC comparison with Direct3D and WARP with other blocks: `set WEBGPU_SEED=<n>&& set
   WEBGPU_CASES=<textures per format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test
   direct3d bc_ -- --nocapture` as the job's command (prints each format's distances).
@@ -380,6 +416,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wcontainers-gpu-webgpu --no-run" -- "set WEBGPU_API=dx12&& cargo test --locked -j 3 -p
   wcontainers-gpu-webgpu --test prepare -- --nocapture"` (`WEBGPU_PROGRAMS=<n>` programs per half,
   default 16).
+- The suite's present test on this Mac: `--test present` in the command below (the window shows
+  for a moment in the middle of the main screen).
 - On this Mac's GPU, one job only (never a build loop): copy the committed tree to scratch with
   `git archive HEAD | tar -x -C <scratch>/mac-src`, and there `nix develop <checkout> -c env
   CARGO_TARGET_DIR=<scratch>/mac-target WEBGPU_API=metal cargo test --locked -j 2 -p
@@ -408,6 +446,26 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 8 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
+load not sampled; Mac load average 21 to 79):
+- All tests after the merges and a clean build of this crate and `wcontainers-gpu-test`, at
+  8f7db1b's code plus the present change (the macOS host's later edits do not build on Windows):
+  Vulkan 64 of 64 and Direct3D 12 64 of 64, one ignored on each (the old BC one-step comparison):
+  bindings 10, blocks 2, copies 4, depth 2, direct3d 4, fitted 1, prepare 1, raster 1, scenes 4,
+  suite 24 (present among them, so windows that take `rgba8unorm` are unchanged), writes 11;
+  tests/present.rs has no tests there. Clippy with warnings denied passes natively on Windows and
+  macOS and for WebAssembly.
+- `web/check` at 4feccfa (after cleaning this crate, naga, `wcontainers-gpu` and
+  `wcontainers-gpu-test` on both targets: a stale naga library failed the WebAssembly link before):
+  all twelve pictures equal Direct3D 11's at tolerance 0, the twists differ as before, the
+  viewports as before, the suite in Chrome 24 of 24 (present among them), Chrome's adapter the RTX
+  3080 (D3D12, discrete, not a fallback). `prepare` in Chrome: unprepared frame of 16 first draws
+  220.5 ms, 16 pipelines built while drawing; after 0.5 ms of `prepare` calls and 207.7 ms waiting
+  for the compiles, the frame 3.8 ms with none built. Job 2 min 11 s.
+- This Mac (Apple M5 Max, Metal), single jobs: the suite's other 23 tests pass under the new host;
+  present fails as the known failure (window occluded, state 0x2000). The ScreenCaptureKit probe:
+  256 of 256 colours read exactly (about 0.25 s a capture).
 
 Run 7 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
 load not sampled; Mac load average 18 to 64):
@@ -587,9 +645,9 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
   packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them.
 - Declared absent until built or measured: `TIMESTAMPS`.
-- On macOS the suite's `present_shows_the_frame` fails as a known failure: the test cannot read
-  what a window shows there without the screen recording permission (ScreenCaptureKit), which an
-  unattended test does not have, so the host (tests/suite.rs) opens windows only on Windows.
+- On macOS the suite's `present_shows_the_frame` (tests/present.rs) fails as a known failure:
+  macOS reports the test's window as occluded in the session the tests run from (Run 8), so no
+  frame is shown. `PresentConverted` is built but has not drawn into a shown window yet.
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
   programs.
@@ -598,8 +656,9 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 ## Next (G2)
 
 Every pass bar item has been run; what is left:
-- Present on this Mac (known failure above): only with the owner granting the test the screen
-  recording permission, or a way to read a CAMetalLayer's shown frame without it.
+- Present on this Mac (known failure above): run `--test present` while the Mac's display shows
+  the session's windows (ask the owner when), which also runs `PresentConverted` for the first
+  time.
 - The rest of "Not carried out yet", vertex formats WebGPU lacks first. The plan's route (a compute
   pass widening the streams into a shadow buffer, cached until the buffer is written) has to run
   before the pass that draws, so a draw needing it inside an open pass splits the pass as an
@@ -609,7 +668,8 @@ Every pass bar item has been run; what is left:
 ## Departures from the plan
 
 - The shared suite's present test is not checked on macOS (see "Not carried out yet"); the suite's
-  other 23 tests pass there.
+  other 23 tests pass there. On macOS present runs in its own test file with a harness of its own
+  (main thread), and tests/suite.rs there runs the list of examples/scenes/names.rs.
 - The plan asks BC textures decoded to be compared with Direct3D "within the stated tolerance".
   The tolerance stated is WARP's distance from the GPU plus one step of the decoded storage
   format, since no fixed one-step tolerance is met by Direct3D's own WARP on these blocks.
@@ -663,6 +723,9 @@ Every pass bar item has been run; what is left:
 
 ## Interface changes
 
+- 8f7db1b `interface: named the slow path of a surface format the window lacks converted by a draw
+  at present`: `SlowPath::PresentConverted`, and the plan's 4.9 sentence on surface formats.
+
 - 3f5519a `interface: named the slow path of stencil written by a draw per bit`:
   `SlowPath::StencilWrittenByDraw`, and the plan's 4.2 sentences on depth and stencil copies WebGPU
   makes only whole (written by draws, read by `DepthReadByDraw`). `StencilCopiedByDraw` names a
@@ -697,6 +760,11 @@ MIT OR Apache-2.0 (its Cargo.toml; already in the lock file through the rig) and
 in the lock file); wcontainers-gpu-test (ours); png 0.18.1, anyhow 1.0.104, wasm-bindgen 0.2.130,
 js-sys 0.3.107 MIT OR Apache-2.0 (wasm-bindgen-futures is no longer used); pollster 1.0.1 Apache-2.0/MIT;
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
+
+New in run 8, test-only: libtest-mimic 0.8.2 MIT/Apache-2.0 (its Cargo.toml); on macOS only,
+block2 0.6.2 MIT, objc2 0.6.5 MIT, objc2-foundation 0.3.2 MIT, and objc2-app-kit,
+objc2-core-foundation, objc2-core-graphics, objc2-quartz-core and objc2-screen-capture-kit 0.3.2,
+each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock file through wgpu).
 
 ## Installed on the desktop
 
