@@ -2297,7 +2297,7 @@ impl<B: Backend> Replay<B> {
             })
         });
         let index = match (&range, &self.index) {
-            (DrawRange::Indexed { .. }, Some(v)) => {
+            (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, Some(v)) => {
                 let (id, offset) = d
                     .addresses
                     .find(v.address)
@@ -2309,7 +2309,7 @@ impl<B: Backend> Replay<B> {
                 };
                 Some((d.buffer(id)?.0.clone(), offset, format))
             }
-            (DrawRange::Indexed { .. }, None) => {
+            (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, None) => {
                 return Err(Error::Invalid("an indexed draw with no index buffer"));
             }
             _ => None,

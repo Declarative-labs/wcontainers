@@ -190,6 +190,15 @@ impl CommandSignature {
         self.arguments.len() == 1
     }
 
+    /// Whether `max` commands from `offset` fit in an argument buffer of `width` bytes, whole
+    /// strides included, as `ExecuteIndirect` asks.
+    pub fn fits(&self, max: u32, offset: u64, width: u64) -> bool {
+        offset.is_multiple_of(4)
+            && offset
+                .checked_add(u64::from(max) * u64::from(self.stride))
+                .is_some_and(|end| end <= width)
+    }
+
     pub fn dispatches(&self) -> bool {
         self.arguments.last() == Some(&IndirectArgument::Dispatch)
     }

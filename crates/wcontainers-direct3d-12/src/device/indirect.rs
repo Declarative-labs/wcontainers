@@ -24,6 +24,14 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 ";
 
 impl<B: Backend> Device<B> {
+    /// Writes the upload buffer at a GPU virtual address to the GPU, for vertex and index buffers
+    /// that only arguments read back name.
+    fn upload_at(&mut self, address: u64) {
+        if let Some((id, _)) = self.addresses.find(address) {
+            self.upload(id);
+        }
+    }
+
     /// `size` bytes at `offset` of buffer `id`, as they are once the work recorded so far is done:
     /// an upload buffer's from its memory, others read back now.
     fn read_now(&mut self, id: ResourceId, offset: u64, size: u64) -> Result<Vec<u8>, Error> {
@@ -72,14 +80,15 @@ impl<B: Backend> Replay<B> {
                 .map(|r| r.desc.width)
                 .ok_or(Error::Invalid("no such resource"))
         };
+        if !s.fits(max, args_offset, width(d, args)?) {
+            return Err(Error::Invalid("indirect arguments past their buffer's end"));
+        }
+        // The bytes the commands read: the last one's arguments, not its whole stride.
         let size: u32 = s.arguments.iter().map(|a| a.size()).sum();
         let span = match max {
             0 => 0,
             n => u64::from(n - 1) * u64::from(s.stride) + u64::from(size),
         };
-        if !args_offset.is_multiple_of(4) || args_offset + span > width(d, args)? {
-            return Err(Error::Invalid("indirect arguments past their buffer's end"));
-        }
         if let Some((c, offset)) = count
             && (!offset.is_multiple_of(4) || offset + 4 > width(d, c)?)
         {
@@ -222,25 +231,31 @@ impl<B: Backend> Replay<B> {
                         None,
                     )?,
                     IndirectArgument::Dispatch => self.dispatch(d, [w(0), w(1), w(2)], None)?,
-                    IndirectArgument::VertexBuffer { slot } => self.run(
-                        d,
-                        &Command::VertexBuffers {
-                            start: slot,
-                            views: vec![VertexBufferView {
+                    IndirectArgument::VertexBuffer { slot } => {
+                        d.upload_at(address());
+                        self.run(
+                            d,
+                            &Command::VertexBuffers {
+                                start: slot,
+                                views: vec![VertexBufferView {
+                                    address: address(),
+                                    size: w(2),
+                                    stride: w(3),
+                                }],
+                            },
+                        )?
+                    }
+                    IndirectArgument::IndexBuffer => {
+                        d.upload_at(address());
+                        self.run(
+                            d,
+                            &Command::IndexBuffer(Some(IndexBufferView {
                                 address: address(),
                                 size: w(2),
-                                stride: w(3),
-                            }],
-                        },
-                    )?,
-                    IndirectArgument::IndexBuffer => self.run(
-                        d,
-                        &Command::IndexBuffer(Some(IndexBufferView {
-                            address: address(),
-                            size: w(2),
-                            format: w(3),
-                        })),
-                    )?,
+                                format: w(3),
+                            })),
+                        )?
+                    }
                     IndirectArgument::Constants {
                         root,
                         offset,

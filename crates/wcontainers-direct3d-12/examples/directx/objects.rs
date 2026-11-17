@@ -2127,13 +2127,27 @@ impl List {
         count: Ref<ID3D12Resource>,
         count_offset: u64,
     ) {
-        let (Some(signature), Some(args)) = (signature.as_ref(), id(&args)) else {
+        let args_ref = args;
+        let (Some(signature), Some(args)) = (signature.as_ref(), id(&args_ref)) else {
             return self.rec.lock().unwrap().fail(Error::Invalid(
                 "ExecuteIndirect with no signature or arguments",
             ));
         };
         // SAFETY: command signatures come from this library.
         let signature = unsafe { signature.as_impl() }.0.clone();
+        let width = |r: &Ref<ID3D12Resource>| {
+            // SAFETY: resources come from this library.
+            r.as_ref().map_or(0, |r| unsafe { r.as_impl() }.desc.Width)
+        };
+        let (args_width, count_width) = (width(&args_ref), width(&count));
+        if !signature.fits(max, args_offset, args_width)
+            || (count.is_some()
+                && (!count_offset.is_multiple_of(4) || count_offset + 4 > count_width))
+        {
+            return self.rec.lock().unwrap().fail(Error::Invalid(
+                "ExecuteIndirect's arguments or count past their buffer's end",
+            ));
+        }
         self.record(Command::ExecuteIndirect {
             signature,
             max,
