@@ -50,7 +50,7 @@ void cs_append(uint3 id : SV_DispatchThreadID) {
 
 ConsumeStructuredBuffer<uint> consumed : register(u0);
 RWByteAddressBuffer total : register(u1);
-[numthreads(16, 1, 1)]
+[numthreads(2, 1, 1)]
 void cs_consume(uint3 id : SV_DispatchThreadID) {
     uint v = consumed.Consume();
     uint old;

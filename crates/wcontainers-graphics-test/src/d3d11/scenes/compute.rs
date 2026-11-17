@@ -1,6 +1,6 @@
 //! Compute shaders and unordered access: a typed texture written by an indirect dispatch,
 //! structured and raw buffers, group-shared reduction, atomics, append and consume buffers with
-//! CopyStructureCount, a hidden counter, and a pixel shader counting overlaps through a texture.
+//! CopyStructureCount (all appended values consumed again), a hidden counter, and a pixel shader counting overlaps through a texture.
 //! Results whose order the GPU chooses (appends, counters) are sorted before they are recorded.
 
 use std::fmt::Write;
@@ -209,7 +209,8 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         ],
         &[u32::MAX, u32::MAX],
     )?;
-    unsafe { c.Dispatch(2, 1, 1) };
+    // All 86 are consumed, so the total does not depend on the order they were appended in.
+    unsafe { c.Dispatch(counted / 2, 1, 1) };
     unbind(gpu);
     unsafe { c.CopyStructureCount(&count, 8, &append_view) };
     writeln!(

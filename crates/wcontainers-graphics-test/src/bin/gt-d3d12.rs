@@ -6,11 +6,11 @@
 fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     {
-        use wcontainers_graphics_test::output::Output;
+        use anyhow::Context;
         use wcontainers_graphics_test::{Driver, d3d12};
         let mut args: Vec<String> = std::env::args().skip(1).collect();
         if args == ["list"] {
-            for name in d3d12::SCENES {
+            for (name, _) in d3d12::scenes::SCENES {
                 println!("{name}");
             }
             return Ok(());
@@ -22,20 +22,25 @@ fn main() -> anyhow::Result<()> {
         let out = std::path::PathBuf::from(args.pop().unwrap());
         let driver = Driver::parse(&args.pop().unwrap())?;
         let names: Vec<&str> = if args == ["all"] {
-            d3d12::SCENES.to_vec()
+            d3d12::scenes::SCENES.iter().map(|(n, _)| *n).collect()
         } else {
             args.iter().map(String::as_str).collect()
         };
-        for name in names {
-            anyhow::ensure!(name == "triangle", "no scene {name}; see gt-d3d12 list");
-            let picture = d3d12::render_triangle(driver, debug)?;
-            println!("adapter {}", picture.adapter);
-            println!("{}", Output::picture("", picture.image).save(name, &out)?);
-        }
+        let gpu = d3d12::create(driver, debug)?;
+        println!("adapter {}", gpu.adapter);
         println!(
             "{}",
             wcontainers_graphics_test::library_paths(&["d3d12.dll", "dxgi.dll"])
         );
+        for name in names {
+            let scene = d3d12::scenes::find(name)
+                .with_context(|| format!("no scene {name}; see gt-d3d12 list"))?;
+            let outputs = scene(&gpu).with_context(|| format!("scene {name}"))?;
+            gpu.check_debug().with_context(|| format!("scene {name}"))?;
+            for output in outputs {
+                println!("{}", output.save(name, &out)?);
+            }
+        }
         Ok(())
     }
     #[cfg(not(windows))]
