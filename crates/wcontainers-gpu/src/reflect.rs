@@ -305,6 +305,9 @@ pub enum HelperValue {
     /// the draw's arguments in the buffer at [`DRAW_ARGUMENTS_BINDING`], whether they are indexed (u32,
     /// zero or one) and the draw number (u32).
     DrawArguments,
+    /// The viewport's depth range (two f32, near then far), which [`VariantFlags::DEPTH_CLAMP`] clamps
+    /// the fragment's depth to.
+    DepthRange,
 }
 
 /// Where one helper value sits in the helper constants.
@@ -368,6 +371,17 @@ bitflags! {
         /// The pixel shader's target 0 alpha multiplied by the line coverage the stage helper's
         /// rectangle passes in ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
         const LINE_COVERAGE = 1 << 10;
+        /// Clip distances made ordinary values between the stages (each divided by w, interpolated
+        /// linearly), and the fragment stage discards where one is negative, or on multisampled targets
+        /// clears the samples where one is ([`crate::SlowPath::ClipDistanceInShader`]).
+        const CLIP_DISTANCE = 1 << 11;
+        /// Depth clamped instead of clipped: the last vertex stage keeps clip z inside the clip volume
+        /// and passes z over w, and the fragment stage writes that depth, biased as the raster block
+        /// says and clamped to [`HelperValue::DepthRange`] ([`crate::SlowPath::DepthClampInShader`]).
+        const DEPTH_CLAMP = 1 << 12;
+        /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes,
+        /// not from the built-in ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
+        const PRIMITIVE_ID_FROM_STAGE = 1 << 13;
     }
 }
 

@@ -31,15 +31,19 @@ bitflags! {
         const PROVOKING_VERTEX_LAST = 1 << 8;
         /// The first vertex of a primitive may be the provoking one.
         const PROVOKING_VERTEX_FIRST = 1 << 9;
-        /// Depth may be clamped instead of clipped ([`crate::RasterDesc::depth_clip`] false).
+        /// Depth may be clamped instead of clipped ([`crate::RasterDesc::depth_clip`] false). Without it
+        /// fronts clamp in the program ([`crate::SlowPath::DepthClampInShader`]).
         const DEPTH_CLAMP = 1 << 10;
         /// Clip space depth from minus one to one, as OpenGL defines it, without rewriting shaders.
         const CLIP_DEPTH_MINUS_ONE = 1 << 11;
-        /// User clip distances out of the last vertex stage.
+        /// User clip distances out of the last vertex stage. Without it fronts apply them in the program
+        /// ([`crate::SlowPath::ClipDistanceInShader`]).
         const CLIP_DISTANCE = 1 << 12;
-        /// User cull distances out of the last vertex stage.
+        /// User cull distances out of the last vertex stage. Without it fronts hand the draw to the stage
+        /// helper ([`crate::SlowPath::CullDistanceAsGeometry`]).
         const CULL_DISTANCE = 1 << 13;
-        /// Two fragment outputs feeding one blend (dual-source blending).
+        /// Two fragment outputs feeding one blend (dual-source blending). Without it fronts blend in the
+        /// program ([`crate::SlowPath::BlendInShader`]).
         const DUAL_SOURCE_BLEND = 1 << 14;
         /// A different blend and write mask per color target. Without it a front whose targets differ
         /// draws once per group of targets that agree (slow path [`crate::SlowPath::TargetsSplit`]).
@@ -66,7 +70,8 @@ bitflags! {
         const TIMESTAMPS = 1 << 22;
         /// Draw and dispatch arguments read from a buffer.
         const INDIRECT = 1 << 23;
-        /// Indirect draws honour a non-zero first instance.
+        /// Indirect draws honour a non-zero first instance. Without it fronts read the arguments of
+        /// indirect draws back and draw them directly ([`crate::SlowPath::IndirectReadBack`]).
         const INDIRECT_FIRST_INSTANCE = 1 << 24;
         /// Direct draws honour a non-zero base vertex and first instance.
         const BASE_VERTEX_INSTANCE = 1 << 25;
@@ -84,7 +89,8 @@ bitflags! {
         const SHADER_F16 = 1 << 31;
         /// Subgroup (wave) operations in programs.
         const SUBGROUPS = 1 << 32;
-        /// The primitive index as a fragment input.
+        /// The primitive index as a fragment input. Without it fronts hand the draw to the stage helper
+        /// ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
         const PRIMITIVE_INDEX = 1 << 33;
         /// 64-bit integers in programs.
         const SHADER_I64 = 1 << 34;
