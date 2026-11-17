@@ -41,7 +41,6 @@ wgpu = { version = "30.0.2", default-features = false, features = ["dx12"] }
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 # The WebGPU back end on the browser's WebGPU, for the per-draw cost measured against it.
-wasm-bindgen-futures = "0.4.80"
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
 wgpu = { version = "30.0.2", default-features = false, features = ["webgpu"] }
 
