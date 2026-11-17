@@ -1919,6 +1919,124 @@ impl IDXGIObject_Impl for Adapter_Impl {
     }
 }
 
+impl IDXGIOutput_Impl for Output_Impl {
+    fn GetDesc(&self) -> windows::core::Result<DXGI_OUTPUT_DESC> {
+        let _lock = lock();
+        self.get_desc()
+    }
+    fn GetDisplayModeList(
+        &self,
+        enumformat: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        flags: DXGI_ENUM_MODES,
+        pnummodes: *mut u32,
+        pdesc: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_DESC,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_display_mode_list(enumformat, flags, pnummodes, pdesc)
+    }
+    fn FindClosestMatchingMode(
+        &self,
+        pmodetomatch: *const windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_DESC,
+        pclosestmatch: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_DESC,
+        pconcerneddevice: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.find_closest_matching_mode(pmodetomatch, pclosestmatch, pconcerneddevice)
+    }
+    fn WaitForVBlank(&self) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::WaitForVBlank"))
+    }
+    fn TakeOwnership(
+        &self,
+        pdevice: windows::core::Ref<windows::core::IUnknown>,
+        exclusive: windows::core::BOOL,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::TakeOwnership"))
+    }
+    fn ReleaseOwnership(&self) {
+        let _lock = lock();
+        missing_void("IDXGIOutput::ReleaseOwnership")
+    }
+    fn GetGammaControlCapabilities(
+        &self,
+        pgammacaps: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_GAMMA_CONTROL_CAPABILITIES,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetGammaControlCapabilities"))
+    }
+    fn SetGammaControl(
+        &self,
+        parray: *const windows::Win32::Graphics::Dxgi::Common::DXGI_GAMMA_CONTROL,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::SetGammaControl"))
+    }
+    fn GetGammaControl(
+        &self,
+        parray: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_GAMMA_CONTROL,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetGammaControl"))
+    }
+    fn SetDisplaySurface(
+        &self,
+        pscanoutsurface: windows::core::Ref<IDXGISurface>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::SetDisplaySurface"))
+    }
+    fn GetDisplaySurfaceData(
+        &self,
+        pdestination: windows::core::Ref<IDXGISurface>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetDisplaySurfaceData"))
+    }
+    fn GetFrameStatistics(&self, pstats: *mut DXGI_FRAME_STATISTICS) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetFrameStatistics"))
+    }
+}
+
+impl IDXGIObject_Impl for Output_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_parent(riid, ppparent)
+    }
+}
+
 impl IDXGIFactory2_Impl for Factory_Impl {
     fn IsWindowedStereoEnabled(&self) -> windows::core::BOOL {
         let _lock = lock();

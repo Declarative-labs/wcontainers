@@ -64,14 +64,18 @@ impl Adapter {
             AdapterLuid: d.AdapterLuid,
         })
     }
-
-    /// No outputs yet (the shared DXGI of What comes next).
-    pub(super) fn enum_outputs(&self, _output: u32) -> Result<IDXGIOutput> {
-        Err(DXGI_ERROR_NOT_FOUND.into())
-    }
 }
 
 impl Adapter_Impl {
+    /// The host's monitors, the primary first.
+    pub(super) fn enum_outputs(&self, index: u32) -> Result<IDXGIOutput> {
+        let (desc, monitor) = super::output::monitors()
+            .into_iter()
+            .nth(index as usize)
+            .ok_or(DXGI_ERROR_NOT_FOUND)?;
+        Ok(super::output::Output::new(desc, monitor, self.to_interface()).into())
+    }
+
     /// A factory enumerating this adapter, which makes swap chains of its devices.
     pub(super) fn get_parent(&self, riid: *const GUID, parent: *mut *mut c_void) -> Result<()> {
         let factory: IDXGIFactory2 = Factory::new(self.to_interface()).into();

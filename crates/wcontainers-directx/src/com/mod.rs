@@ -10,6 +10,7 @@ mod dxgi;
 mod factory;
 mod generated;
 mod objects;
+mod output;
 mod swapchain;
 
 use std::cell::RefCell;
@@ -39,6 +40,7 @@ pub use objects::*;
 use context::Context_Impl;
 use device::Device_Impl;
 use dxgi::Adapter_Impl;
+use output::Output_Impl;
 use swapchain::{Factory, Factory_Impl, SwapChain_Impl};
 
 /// The back end the library draws through.

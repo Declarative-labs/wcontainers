@@ -59,10 +59,21 @@ fn query_interface_follows_identity_and_parents() {
     let adapter: IDXGIAdapter1 = unsafe { dxgi.GetAdapter() }.unwrap().cast().unwrap();
     let desc = unsafe { adapter.GetDesc1() }.unwrap();
     assert_eq!(desc.Flags, 0);
-    assert_eq!(
-        unsafe { adapter.EnumOutputs(0) }.err().map(|e| e.code()),
-        Some(DXGI_ERROR_NOT_FOUND)
-    );
+    // The host's monitors, each on a monitor and a child of the adapter, then none.
+    let mut index = 0;
+    let past = loop {
+        match unsafe { adapter.EnumOutputs(index) } {
+            Ok(output) => {
+                let d = unsafe { output.GetDesc() }.unwrap();
+                assert!(!d.Monitor.is_invalid());
+                let parent: IDXGIAdapter1 = unsafe { output.GetParent() }.unwrap();
+                assert_eq!(parent.as_raw(), adapter.as_raw());
+                index += 1;
+            }
+            Err(e) => break e.code(),
+        }
+    };
+    assert_eq!(past, DXGI_ERROR_NOT_FOUND);
     let b = buffer(&device);
     let _: ID3D11Resource = b.cast().unwrap();
     let _: ID3D11DeviceChild = b.cast().unwrap();

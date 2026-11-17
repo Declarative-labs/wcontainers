@@ -26,6 +26,7 @@ structs = {
     "Context": ["ID3D11DeviceContext1", "ID3D11DeviceContext"] + CHILD
     + ["ID3D11Multithread", "ID3DUserDefinedAnnotation"],
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
+    "Output": ["IDXGIOutput", "IDXGIObject"],
     "Factory": ["IDXGIFactory2", "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
     "SwapChain": ["IDXGISwapChain1", "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
     "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE,
@@ -63,6 +64,7 @@ hand = {
     "IDXGIDevice": "GetAdapter",
     "IDXGIAdapter": "GetDesc EnumOutputs",
     "IDXGIAdapter1": "GetDesc1",
+    "IDXGIOutput": "GetDesc GetDisplayModeList FindClosestMatchingMode",
     "IDXGIFactory": "EnumAdapters MakeWindowAssociation GetWindowAssociation CreateSwapChain",
     "IDXGIFactory1": "EnumAdapters1 IsCurrent",
     "IDXGIFactory2": "IsWindowedStereoEnabled CreateSwapChainForHwnd",
