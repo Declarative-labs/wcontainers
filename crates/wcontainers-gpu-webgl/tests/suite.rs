@@ -255,3 +255,13 @@ fn srgb_views_of_block_compressed_textures() {
 fn bgra_textures_keep_their_byte_order() {
     checks::bgra_textures_keep_their_byte_order::<Angle>();
 }
+
+#[test]
+fn sampled_views_are_whole_textures_of_one_mip_range() {
+    checks::sampled_views_are_whole_textures_of_one_mip_range::<Angle>();
+}
+
+#[test]
+fn generate_mipmap_equals_the_draws() {
+    checks::generate_mipmap_equals_the_draws::<Angle>();
+}

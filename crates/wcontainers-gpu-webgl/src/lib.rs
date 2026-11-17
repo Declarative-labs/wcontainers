@@ -21,6 +21,7 @@ use shader::{ProgramObj, ShaderObj, Slot};
 use state::GlValues;
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
+use std::ops::Range;
 use std::rc::Rc;
 use wcontainers_gpu::*;
 
@@ -2079,13 +2080,20 @@ impl WebGl {
             }
             self.applied.units[unit] = ids;
         }
-        // The stencil mode is the texture's: one draw cannot fetch both aspects of one texture.
+        // The stencil mode and the mip range are the texture's: one draw cannot fetch both aspects of
+        // one texture, or read it through two mip ranges.
         for (texture, _) in &linked.units {
-            if let Some(Bound::Texture(v)) = find(*texture)
-                && v.texture.desc.format.is_depth_stencil()
-                && v.texture.stencil_mode.get() != v.desc.stencil
-            {
-                return Err(Unbindable::BothAspects);
+            if let Some(Bound::Texture(v)) = find(*texture) {
+                if v.texture.desc.format.is_depth_stencil()
+                    && v.texture.stencil_mode.get() != v.desc.stencil
+                {
+                    return Err(Unbindable::BothAspects);
+                }
+                if v.texture.levels.get()
+                    != (v.desc.base_mip, v.desc.base_mip + v.desc.mip_count - 1)
+                {
+                    return Err(Unbindable::TwoMipRanges(*texture));
+                }
             }
         }
         if self.applied.blocks.len() < linked.blocks.len() {
@@ -2218,6 +2226,8 @@ enum Unbindable {
     NoSampler,
     /// A multisampled texture, which programs cannot read here (`MULTISAMPLE_READ` is absent).
     Multisampled(Slot),
+    /// A texture also read through another mip range, which needs the absent `TEXTURE_VIEWS`.
+    TwoMipRanges(Slot),
 }
 
 /// Where texels written into a texture come from.
@@ -2251,10 +2261,18 @@ impl WebGl {
             } => (i64::from(base_vertex), first_instance, instances),
             DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
                 // INDIRECT is absent: the front reads the arguments back first.
-                self.fail(LossReason::Error);
+                self.invalid("an indirect draw without INDIRECT".into());
                 return;
             }
         };
+        if call.immediates.len() > self.caps.limits.immediate_bytes as usize {
+            self.invalid(format!(
+                "{} bytes of immediates past the limit of {}",
+                call.immediates.len(),
+                self.caps.limits.immediate_bytes
+            ));
+            return;
+        }
         let program = call.program;
         let Some(linked) = self.linked(program) else {
             return;
@@ -2363,6 +2381,13 @@ impl WebGl {
                 self.invalid(format!(
                     "the draw's program reads the multisampled texture at set {set} binding \
                      {binding}, which needs the absent MULTISAMPLE_READ"
+                ));
+                return;
+            }
+            Err(Unbindable::TwoMipRanges((set, binding))) => {
+                self.invalid(format!(
+                    "the draw reads the texture at set {set} binding {binding} through two mip \
+                     ranges, which needs the absent TEXTURE_VIEWS"
                 ));
                 return;
             }
@@ -2859,7 +2884,22 @@ impl Backend for WebGl {
                 BindingResource::UniformBuffer(r) => {
                     Bound::Uniform(r.buffer.clone(), r.offset, r.size)
                 }
-                BindingResource::Texture(v) => Bound::Texture((*v).clone()),
+                BindingResource::Texture(v) => {
+                    // A GL texture is sampled whole in its own target: views to draw into of one
+                    // layer, or of a cube's face, cannot be sampled.
+                    let t = &v.texture.desc;
+                    let layers = match t.dimension {
+                        TextureDimension::D3 => 1,
+                        _ => t.depth_or_layers,
+                    };
+                    if v.desc.dimension != t.own_view()
+                        || v.desc.base_layer != 0
+                        || v.desc.layer_count != layers
+                    {
+                        return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
+                    }
+                    Bound::Texture((*v).clone())
+                }
                 BindingResource::Sampler(s) => Bound::Sampler((*s).clone()),
                 BindingResource::StorageBuffer { .. } | BindingResource::StorageTexture { .. } => {
                     return Err(GpuError::Absent(
@@ -4072,6 +4112,145 @@ impl Backend for WebGl {
                 .ok_or_else(|| self.read_failed())
             }
         }
+    }
+
+    /// Clears each rectangle by `clearBuffer*` under the scissor, in one pass that loads the view.
+    fn clear_rects(
+        &mut self,
+        view: &TextureView,
+        format: Format,
+        value: ClearValue,
+        rects: &[ScissorRect],
+    ) -> Result<(), GpuError> {
+        if rects.is_empty() {
+            return Ok(());
+        }
+        fn keep<V>(has: bool) -> Option<AspectOps<V>> {
+            has.then_some(AspectOps {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                read_only: false,
+            })
+        }
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
+        let kind = format.kind();
+        let (depth, stencil) = match value {
+            ClearValue::Color(_) => {
+                pass.colors[0] = Some(ColorAttachment {
+                    view,
+                    depth_slice: 0,
+                    resolve: None,
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                });
+                (None, None)
+            }
+            ClearValue::DepthStencil { depth, stencil } => {
+                let has_depth = matches!(kind, FormatKind::Depth | FormatKind::DepthStencil);
+                let has_stencil = matches!(kind, FormatKind::Stencil | FormatKind::DepthStencil);
+                let (depth, stencil) =
+                    (depth.filter(|_| has_depth), stencil.filter(|_| has_stencil));
+                if depth.is_none() && stencil.is_none() {
+                    return Ok(());
+                }
+                pass.depth = Some(DepthAttachment {
+                    view,
+                    depth: keep(has_depth),
+                    stencil: keep(has_stencil),
+                });
+                (depth, stencil)
+            }
+        };
+        self.begin_pass(&pass);
+        if self.pass.is_none() {
+            return Err(GpuError::DeviceLost);
+        }
+        // Clears obey the scissor and the write masks.
+        self.open_writes();
+        let (gl, v) = (&self.gl, &mut self.values);
+        // SAFETY: plain GL calls on the pass's framebuffer.
+        unsafe {
+            gl.enable(glow::SCISSOR_TEST);
+            v.scissor_test = true;
+            for r in rects {
+                let rect = [r.x as i32, r.y as i32, r.width as i32, r.height as i32];
+                if v.scissor != rect {
+                    gl.scissor(rect[0], rect[1], rect[2], rect[3]);
+                    v.scissor = rect;
+                }
+                match (value, kind) {
+                    (ClearValue::Color(c), FormatKind::Uint) => {
+                        gl.clear_buffer_u32_slice(glow::COLOR, 0, &c)
+                    }
+                    (ClearValue::Color(c), FormatKind::Sint) => {
+                        gl.clear_buffer_i32_slice(glow::COLOR, 0, &c.map(|x| x as i32))
+                    }
+                    (ClearValue::Color(c), _) => {
+                        gl.clear_buffer_f32_slice(glow::COLOR, 0, &c.map(f))
+                    }
+                    (ClearValue::DepthStencil { .. }, _) => match (depth, stencil) {
+                        (Some(d), Some(s)) => {
+                            gl.clear_buffer_depth_stencil(glow::DEPTH_STENCIL, 0, f(d), s.into())
+                        }
+                        (Some(d), None) => gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[f(d)]),
+                        (None, Some(s)) => {
+                            gl.clear_buffer_i32_slice(glow::STENCIL, 0, &[i32::from(s)])
+                        }
+                        (None, None) => {}
+                    },
+                }
+            }
+        }
+        self.end_pass();
+        Ok(())
+    }
+
+    /// Fills the levels by `generateMipmap` where GLES allows it (a format that renders and filters,
+    /// every layer, the texels' values in the texture's own format), else by the interface's draws.
+    fn generate_mips(
+        &mut self,
+        texture: &Texture,
+        desc: &TextureDesc,
+        values: Format,
+        mips: Range<u32>,
+        layers: Range<u32>,
+    ) -> Result<(), GpuError> {
+        let levels = mips.start.max(1)..mips.end.min(desc.mip_levels);
+        let three_d = desc.dimension == TextureDimension::D3;
+        let every_layer = three_d || (layers.start == 0 && layers.end >= desc.depth_or_layers);
+        let native = FormatUse::RENDER | FormatUse::FILTER;
+        let raw = texture.tex();
+        let Some(raw) = raw.filter(|_| {
+            values == desc.format
+                && every_layer
+                && texture.host.is_none()
+                && self.caps.formats.get(values).contains(native)
+        }) else {
+            return generate_mips_by_draws(self, texture, desc, values, mips, layers);
+        };
+        if levels.is_empty() {
+            return Ok(());
+        }
+        self.fresh(texture);
+        self.bind_scratch(texture.target, raw);
+        let range = (levels.start - 1, levels.end - 1);
+        let gl = &self.gl;
+        // SAFETY: plain GL calls on the bound texture.
+        unsafe {
+            if texture.levels.get() != range {
+                gl.tex_parameter_i32(texture.target, glow::TEXTURE_BASE_LEVEL, range.0 as i32);
+                gl.tex_parameter_i32(texture.target, glow::TEXTURE_MAX_LEVEL, range.1 as i32);
+                texture.levels.set(range);
+            }
+            gl.generate_mipmap(texture.target);
+        }
+        self.written(texture);
+        Ok(())
     }
 
     /// Draws `TRIANGLE_FAN` and `LINE_LOOP` as they are. GL's tables give the vertex the raster block's
