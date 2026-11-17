@@ -242,12 +242,12 @@ pub enum SlowPath {
     /// Stencil copied into a texture whose stencil the API copies only whole (part of it, or from a
     /// buffer through an `r8uint` texture), by one draw per bit writing that bit.
     StencilWrittenByDraw,
-    /// A captured draw the API's transform feedback cannot take (strips, fans, loops, indices) captured
-    /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
-    CaptureExpanded,
     /// A surface format the window lacks (`rgba8unorm` on a Metal layer) drawn into a texture of
     /// that format, then into the window's own format by one draw at each present.
     PresentConverted,
+    /// A captured draw the API's transform feedback cannot take (strips, fans, loops, indices) captured
+    /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
+    CaptureExpanded,
 }
 
 impl SlowPath {
@@ -350,8 +350,8 @@ impl SlowPath {
         SlowPath::ConstantBufferGrown,
         SlowPath::IntegerClearByDraw,
         SlowPath::StencilWrittenByDraw,
-        SlowPath::CaptureExpanded,
         SlowPath::PresentConverted,
+        SlowPath::CaptureExpanded,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -466,8 +466,8 @@ impl SlowPath {
             SlowPath::ConstantBufferGrown => "constant buffer grown to its shader's size",
             SlowPath::IntegerClearByDraw => "integer colour clear made by a draw",
             SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
-            SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
             SlowPath::PresentConverted => "surface format converted by a draw at present",
+            SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
         }
     }
 }
