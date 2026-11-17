@@ -10,6 +10,11 @@
 //! replacement's name from anywhere but `<out-dir>\bin`, and a scene name no program has, notes a
 //! replacement no scene loaded (other libraries given are only copied), and reports whether the stored shader corpus matches this build.
 //!
+//! `gt-run frames <reference-dir> <run-dir>` checks a real program's frames (frame-<n>.png) against
+//! its references within their allowances; `gt-run frames --record <reference-dir> <run-dir>...`
+//! stores the first run's frames as the references, with allowances from the other runs (see
+//! `Allowance::from_repeats`).
+//!
 //! `gt-run record <out-dir>` runs every scene with the debug layer on the GPU twice (the two runs
 //! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances to
 //! `<out-dir>\references\<api>` and this build's compiled shaders to `<out-dir>\shaders`, to be
@@ -52,8 +57,11 @@ struct Options {
 
 fn run() -> Result<bool> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--dll <name>=<path>]... [<scene>...] | gt-run record <out-dir>";
+    let usage = "usage: gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--dll <name>=<path>]... [<scene>...] | gt-run record <out-dir> | gt-run frames [--record] <reference-dir> <run-dir>...";
     let (mode, rest) = args.split_first().context(usage)?;
+    if mode == "frames" {
+        return frames(rest);
+    }
     let (out, rest) = rest.split_first().context(usage)?;
     let mut options = Options {
         out: PathBuf::from(out),
@@ -293,6 +301,57 @@ fn check_mode(options: &Options) -> Result<bool> {
     }
     println!("{passed} passed, {failed} failed");
     Ok(failed == 0)
+}
+
+fn frames(args: &[String]) -> Result<bool> {
+    let usage = "usage: gt-run frames <reference-dir> <run-dir> | gt-run frames --record <reference-dir> <run-dir>...";
+    match args {
+        [record, reference, runs @ ..] if record == "--record" && !runs.is_empty() => {
+            let reference = Path::new(reference);
+            std::fs::create_dir_all(reference)?;
+            let mut names: Vec<String> = std::fs::read_dir(&runs[0])?
+                .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
+                .collect::<Result<_>>()?;
+            names.retain(|n| n.starts_with("frame-") && n.ends_with(".png"));
+            names.sort();
+            anyhow::ensure!(!names.is_empty(), "no frames in {}", runs[0]);
+            let mut tolerances = String::from(
+                "# <frame> <channel tolerance> <pixels allowed beyond it> warp 0 0 [tiles <tile>:<pixels>,...], from repeated runs\n",
+            );
+            for name in &names {
+                let first = load(&Path::new(&runs[0]).join(name))?;
+                let others = runs[1..]
+                    .iter()
+                    .map(|r| load(&Path::new(r).join(name)))
+                    .collect::<Result<Vec<_>>>()?;
+                let allowance = Allowance::from_repeats(&first, &others)?;
+                let none = compare::compare(&first, &first, 0.0)?;
+                println!(
+                    "{name}: {} of {} tiles drew differently from run to run",
+                    allowance.tiles.len(),
+                    none.tiles.len()
+                );
+                tolerances.push_str(&check::tolerance_line(name, &allowance, &none));
+                std::fs::copy(Path::new(&runs[0]).join(name), reference.join(name))?;
+            }
+            std::fs::write(reference.join(TOLERANCES), tolerances)?;
+            Ok(true)
+        }
+        [reference, run] => {
+            let mut ok = true;
+            for v in check::check_dir(Path::new(reference), Path::new(run))? {
+                println!(
+                    "{} {}: {}",
+                    if v.pass { "pass" } else { "FAIL" },
+                    v.file,
+                    v.detail
+                );
+                ok &= v.pass;
+            }
+            Ok(ok)
+        }
+        _ => bail!("{usage}"),
+    }
 }
 
 /// The compiled shaders that differ between this build and the stored corpus, either way.

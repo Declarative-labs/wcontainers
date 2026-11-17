@@ -4,21 +4,24 @@
 # their sources, pinned commits or hashes and how each runs.
 #   tools/graphics-rig/programs build
 #       fetches and builds them all into C:\wc\programs; not a GPU job
-#   tools/graphics-rig/programs run [--census] [--capture <frames>] [--dll <name>=<path>]... [<program>...]
+#   tools/graphics-rig/programs run [--census] [--record] [--capture <frames>] [--dll <name>=<path>]... [<program>...]
 #       one GPU job on the hidden desktop running each program (all by default) until its last
 #       captured frame (default frames 10,60,120), Direct3D 11 ones through the forwarding
-#       d3d11.dll, Direct3D 12 ones saving their own frames, with
-#       replacement libraries if given (paths on the desktop, relative to its checkout); prints
-#       pass or FAIL for each (pass: it presented the last frame and every frame was saved) and
-#       exits 1 on any FAIL. The frames and census files are copied to
+#       d3d11.dll (on a clock that moves by frames), Direct3D 12 ones saving their own frames,
+#       with replacement libraries if given (paths on the desktop, relative to its checkout), and
+#       comparing each frame with the program's references; prints pass or FAIL for each program
+#       and frame and exits 1 on any FAIL. The frames and census files are copied to
 #       pyro-parked/wcontainers-scratch/graphics-rig/programs/<program>. --census runs real
-#       Direct3D only and also copies each census.txt (Direct3D 11 programs) into tools/graphics-rig/census/<program>.txt,
-#       to be committed.
+#       Direct3D only and also copies each census.txt (Direct3D 11 programs) into
+#       tools/graphics-rig/census/<program>.txt, to be committed. --record runs real Direct3D only,
+#       three times, keeps the first run's frames as the references on the desktop
+#       (C:\wc\programs\reference\<program>) and copies their allowances and SHA-256 into
+#       tools/graphics-rig/program-references/<program>, to be committed.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
 . "$here/common.sh"
-usage="usage: programs build | run [--census] [--capture <frames>] [--dll <name>=<path>]... [<program>...]"
+usage="usage: programs build | run [--census] [--record] [--capture <frames>] [--dll <name>=<path>]... [<program>...]"
 [ $# -gt 0 ] || { echo "$usage" >&2; exit 2; }
 script='powershell -NoProfile -ExecutionPolicy Bypass -File tools\graphics-rig\desktop\programs.ps1'
 case $1 in
@@ -27,30 +30,39 @@ case $1 in
     *) echo "$usage" >&2; exit 2 ;;
 esac
 census=
+record=
 options=
 dlls=()
 programs=()
 while [ $# -gt 0 ]; do
     case $1 in
         --census) census=1; shift ;;
+        --record) record=1; options+=" -Record"; shift ;;
         --capture) options+=" -Capture $2"; shift 2 ;;
         --dll) dlls+=("$2"); shift 2 ;;
         *) programs+=("$1"); shift ;;
     esac
 done
-[ -z "$census" ] || [ ${#dlls[@]} -eq 0 ] || { echo "programs: --census runs real Direct3D only" >&2; exit 2; }
+[ -z "$census$record" ] || [ ${#dlls[@]} -eq 0 ] || { echo "programs: --census and --record run real Direct3D only" >&2; exit 2; }
 [ ${#programs[@]} -eq 0 ] || options+=" -Programs $(IFS=,; echo "${programs[*]}")"
 [ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
 out="C:\\wc\\out\\$name\\programs"
 set +e
-"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test-forward" -- \
-    "$script -Mode run -Out $out -Forward %CARGO_TARGET_DIR%\\debug\\wcontainers_graphics_test_forward.dll$options"
+"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward" -- \
+    "$script -Mode run -Out $out -Forward %CARGO_TARGET_DIR%\\debug\\wcontainers_graphics_test_forward.dll -Check %CARGO_TARGET_DIR%\\debug\\gt-run.exe -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options"
 code=$?
 set -e
 scratch=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/programs
 mkdir -p "$scratch"
 rig_scp -r "$host:C:/wc/out/$name/programs/*" "$scratch/" 2>/dev/null || true
-rm -rf "$scratch"/*/bin
+rm -rf "$scratch"/*/bin "$scratch/references"
+if [ -n "$record" ]; then
+    mkdir -p "$here/program-references" "$scratch/../program-references"
+    rig_scp -r "$host:C:/wc/out/$name/programs/references/*" "$here/program-references/" 2>/dev/null || true
+    # The frames themselves stay out of the repository; a copy is kept in the scratch directory.
+    rig_scp -r "$host:C:/wc/programs/reference/*" "$scratch/../program-references/" 2>/dev/null || true
+    echo "programs: allowances and SHA-256 of the references copied into $here/program-references"
+fi
 if [ -n "$census" ]; then
     mkdir -p "$here/census"
     for dir in "$scratch"/*/; do

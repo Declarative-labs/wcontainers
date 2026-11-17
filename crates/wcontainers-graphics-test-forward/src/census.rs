@@ -4,8 +4,9 @@
 //! swap chains and factories have their method tables patched with counting thunks the first time
 //! an object using one is created through this library. Contexts are handed to the program wrapped
 //! instead, since Direct3D 11 rewrites entries of a context's table as it runs: each wrapper method
-//! counts and jumps through the context's own table as it is at that moment. WC_CAPTURE lists frame numbers (comma separated): the back buffer is
-//! saved as <WC_OUT>\frame-<n>.png before those presents, and the process ends after the last.
+//! counts and jumps through the context's own table as it is at that moment. WC_CAPTURE lists frame
+//! numbers (comma separated): the back buffer is saved as <WC_OUT>\frame-<n>.png before those
+//! presents, the process ends after the last, and the program runs on the clock of clock.rs.
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -155,7 +156,7 @@ fn methods(interface: &str) -> &'static [&'static str] {
         .1
 }
 
-fn note(text: String) {
+pub fn note(text: String) {
     NOTES.lock().unwrap().push(text);
 }
 
@@ -534,6 +535,7 @@ pub unsafe fn created(device: *mut c_void, context: *mut *mut c_void, chain: *mu
 /// Counts a present and saves or ends at the frames WC_CAPTURE names.
 fn frame(chain: *mut c_void) {
     let frame = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    crate::clock::frame();
     let Some(config) = config() else { return };
     if config.capture.binary_search(&frame).is_err() {
         return;

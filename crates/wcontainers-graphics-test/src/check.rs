@@ -5,7 +5,8 @@
 //! the channel tolerance is `largest` capped at 8 steps of an 8-bit channel (2056 of a 16-bit one,
 //! 1/128 of a float one), and the pixels allowed beyond it are those WARP has beyond it, counted in
 //! each 16 by 16 tile on its own, so that WARP's freedom in one part of a picture allows nothing in
-//! another. Texts must match exactly.
+//! another. Texts must match exactly. A real program's frames have no WARP picture; their allowance
+//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`).
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -33,12 +34,7 @@ impl Allowance {
         warp: &image::DynamicImage,
     ) -> anyhow::Result<(Allowance, Difference)> {
         let exact = compare::compare(gpu, warp, 0.0)?;
-        let cap = match exact.depth {
-            Depth::Eight => 8.0,
-            Depth::Sixteen => 8.0 * 257.0,
-            Depth::Float => 1.0 / 128.0,
-        };
-        let tolerance = exact.largest.min(cap);
+        let tolerance = exact.largest.min(cap(exact.depth));
         let beyond = compare::compare(gpu, warp, tolerance)?;
         let tiles = beyond
             .tiles
@@ -55,6 +51,41 @@ impl Allowance {
             },
             exact,
         ))
+    }
+
+    /// The allowance of a program's frame recorded on several runs of real Direct3D: the channel
+    /// tolerance is the cap, and a tile where any other run differs from the first beyond it is not
+    /// compared (as the program draws it differently each time, a clock or a GPU timing on screen).
+    pub fn from_repeats(
+        first: &image::DynamicImage,
+        others: &[image::DynamicImage],
+    ) -> anyhow::Result<Allowance> {
+        let tolerance = cap(compare::Depth::of(first)?);
+        let mut tiles = BTreeMap::new();
+        for other in others {
+            let d = compare::compare(first, other, tolerance)?;
+            let columns = Difference::tile_columns(first.width()) as usize;
+            for (i, _) in d.tiles.iter().enumerate().filter(|(_, n)| **n > 0) {
+                let (x, y) = ((i % columns) as u32 * TILE, (i / columns) as u32 * TILE);
+                let pixels = TILE.min(first.width() - x) * TILE.min(first.height() - y);
+                tiles.insert(i, pixels);
+            }
+        }
+        Ok(Allowance {
+            tolerance,
+            pixels: tiles.values().map(|&n| u64::from(n)).sum(),
+            tiles,
+        })
+    }
+}
+
+/// The largest channel tolerance an allowance has: 8 steps of an 8-bit channel, 2056 of a 16-bit
+/// one, 1/128 of a float one.
+fn cap(depth: Depth) -> f64 {
+    match depth {
+        Depth::Eight => 8.0,
+        Depth::Sixteen => 8.0 * 257.0,
+        Depth::Float => 1.0 / 128.0,
     }
 }
 
@@ -246,6 +277,19 @@ mod tests {
                 tiles: BTreeMap::from([(0, 1)]),
             }
         );
+    }
+
+    #[test]
+    fn repeats_leave_out_changing_tiles() {
+        let first = RgbaImage::from_pixel(40, 16, Rgba([100, 100, 100, 255]));
+        let mut second = first.clone();
+        second.put_pixel(35, 2, Rgba([200, 100, 100, 255]));
+        second.put_pixel(3, 2, Rgba([105, 100, 100, 255]));
+        let allowance =
+            Allowance::from_repeats(&first.into(), &[DynamicImage::from(second)]).unwrap();
+        assert_eq!(allowance.tolerance, 8.0);
+        assert_eq!(allowance.tiles, BTreeMap::from([(2, 8 * 16)]));
+        assert_eq!(allowance.pixels, 128);
     }
 
     #[test]
