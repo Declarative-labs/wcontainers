@@ -4,6 +4,7 @@
 
 use std::cell::RefCell;
 
+use wcontainers_gpu::{Backend, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 thread_local! {
@@ -43,7 +44,13 @@ impl wcontainers_gpu_test::Host for Native {
         WINDOW
     }
 
-    fn shown(_: &mut WebGpu, _: u32) -> Vec<u8> {
+    fn shown(b: &mut WebGpu, _: u32) -> Vec<u8> {
+        let converted = b.slow_paths().count(SlowPath::PresentConverted);
+        eprintln!("frames converted at present (PresentConverted): {converted}");
+        // A Metal layer takes no `rgba8unorm`, so there every frame is drawn into the window's format.
+        if cfg!(target_os = "macos") {
+            assert!(converted > 0);
+        }
         window::shown()
     }
 }
@@ -182,11 +189,12 @@ mod window {
     use objc2::rc::Retained;
     use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSFloatingWindowLevel,
-        NSScreen, NSView, NSWindow, NSWindowOcclusionState, NSWindowStyleMask,
+        NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask,
+        NSFloatingWindowLevel, NSScreen, NSView, NSWindow, NSWindowOcclusionState,
+        NSWindowStyleMask,
     };
     use objc2_core_graphics::{CGDataProvider, CGImage, kCGColorSpaceSRGB};
-    use objc2_foundation::{NSDate, NSError, NSPoint, NSRect, NSRunLoop, NSSize};
+    use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSError, NSPoint, NSRect, NSSize};
     use objc2_quartz_core::CAMetalLayer;
     use objc2_screen_capture_kit::{
         SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
@@ -207,6 +215,8 @@ mod window {
         let mtm = MainThreadMarker::new().expect("windows are made on the main thread");
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        // Connects the process to the window server, whose events tell windows they are visible.
+        app.finishLaunching();
         let screen = NSScreen::mainScreen(mtm).expect("a screen");
         let side = SIDE as f64 / screen.backingScaleFactor();
         // In the middle of the screen, clear of the Dock and menu bar.
@@ -254,7 +264,7 @@ mod window {
         }
         assert!(
             visible(),
-            "known failure: macOS reports the test's window as not visible (occlusion state \
+            "macOS reports the test's window as not visible (occlusion state \
              {:#x}), so it shows no frame",
             window.occlusionState().0
         );
@@ -264,9 +274,20 @@ mod window {
         target
     }
 
-    /// Runs the main thread's run loop for `seconds`.
+    /// Handles the application's events for `seconds`; windows learn they are visible from them.
     fn run(seconds: f64) {
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(seconds));
+        let app = NSApplication::sharedApplication(MainThreadMarker::new().expect("main thread"));
+        let until = NSDate::dateWithTimeIntervalSinceNow(seconds);
+        // SAFETY: the default mode is a static string.
+        let mode = unsafe { NSDefaultRunLoopMode };
+        while let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+            NSEventMask::Any,
+            Some(&until),
+            mode,
+            true,
+        ) {
+            app.sendEvent(&event);
+        }
     }
 
     fn error(e: *mut NSError) -> String {

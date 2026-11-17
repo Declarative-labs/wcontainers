@@ -5,9 +5,37 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 (the whole milestone, section 12) is in progress: G2 runs 1 to 4 are below as "Run 5" to
-"Run 8". The pass bar items still open are listed under "Next (G2)". Earlier runs (G2a, the first
-slice, runs 1 to 4) follow them.
+G2 (the whole milestone, section 12): every pass bar item has now been run and passes, the
+shared suite included natively on this Mac (present too), on the RTX 3080 (Direct3D 12 and
+Vulkan) and in Chrome there. G2 runs 1 to 5 are below as "Run 5" to "Run 9". What 5.7 gives the
+back end beyond the pass bar and is not built yet is under "Not carried out yet". Earlier runs
+(G2a, the first slice, runs 1 to 4) follow them.
+
+Run 9 = G2 run 5, 2026-11-17:
+- Merged origin/phase-2-graphics (at 385604f). The lock file conflicted (our libtest-mimic and
+  objc2 test crates against the shared line's new ones): took the shared line's and let cargo add
+  ours back offline (additions only). The interface brought `INSTANCE_STEP_RATE` and
+  `TEXEL_BUFFERS`; the back end has neither, so step rates other than one and typed buffer
+  bindings are now `Absent` of those bits (were `Invalid`), tested in bindings.rs
+  `step_rates_and_texel_buffers_are_reported_absent`.
+- The present test on this Mac passes. The window was never seen as visible because the test host
+  ran the run loop without handling the application's events, which is how AppKit learns a window
+  is on screen (a Swift probe: occlusion state 0x2000 with the run loop alone, 0x2002, visible,
+  when the events are handled). The host now calls `finishLaunching` and handles events while it
+  waits. The frame is drawn through `PresentConverted` (a Metal layer takes no `rgba8unorm`),
+  which the host now prints and on macOS requires; the window shows the frame's colour exactly.
+- Vertex formats WebGPU lacks are built (src/vertex.rs, `VertexFormatConverted`, plan 5.7). A
+  vertex layout with one gets a plan when made: each stream holding one is read from a shadow
+  stream laying every attribute of that stream out again, the lacking ones widened (three 8-bit
+  or 16-bit components to four, the fourth set to what a three-component format reads, one or its
+  integer; `Float16x3` to `Float16x4`; `Uint10_10_10_2` to `Uint16x4`; `Float11_11_10` to
+  `Float16x4`, exact, since both have a 5-bit exponent), the others copied as they are. The
+  pipeline takes the shadow's layout. At a draw, a shadow kept for that buffer, offset, layout and
+  stream is used while the buffer's write count is unchanged; otherwise a compute program makes it
+  from every whole element from the offset to the buffer's end, splitting the open pass (counted
+  once as `VertexFormatConverted`; `split_pass` now counts the slow path that needs it). Every
+  buffer write, copy or clear into a buffer, query resolve and storage binding of it moves the
+  buffer's write count. Destroying a buffer drops its shadows.
 
 Run 8 = G2 run 4, 2026-11-17:
 - Merged origin/phase-2-graphics (at 41816d5) and origin/phase-2-graphics-direct3d-11. The
@@ -394,7 +422,8 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 All from the checkout root on the Mac; nothing is built or run on the Mac but formatting and
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, copies.rs, depth.rs, direct3d.rs (Windows
-  only), fitted.rs, prepare.rs, raster.rs, scenes.rs, writes.rs and suite.rs, the shared suite; they need a GPU, and the suite's present test a desktop, so
+  only), fitted.rs, prepare.rs, raster.rs, scenes.rs, vertices.rs, writes.rs and suite.rs, the
+  shared suite; they need a GPU, and the suite's present test a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
   `tools/graphics-rig/gpu-job --desktop --build "cargo test --locked -j 3 -p wcontainers-gpu-webgpu
@@ -417,7 +446,10 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wcontainers-gpu-webgpu --test prepare -- --nocapture"` (`WEBGPU_PROGRAMS=<n>` programs per half,
   default 16).
 - The suite's present test on this Mac: `--test present` in the command below (the window shows
-  for a moment in the middle of the main screen).
+  for a moment in the middle of the main screen; the session needs the screen recording
+  permission, which this one has).
+- The vertex conversion with other bytes: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<vertices per
+  format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test vertices -- --nocapture`.
 - On this Mac's GPU, one job only (never a build loop): copy the committed tree to scratch with
   `git archive HEAD | tar -x -C <scratch>/mac-src`, and there `nix develop <checkout> -c env
   CARGO_TARGET_DIR=<scratch>/mac-target WEBGPU_API=metal cargo test --locked -j 2 -p
@@ -446,6 +478,35 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 9 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
+load not sampled; Mac load average 29 to 75):
+- All tests after the merge and a clean build of this crate and `wcontainers-gpu-test` (before
+  the vertex work): Vulkan 65 of 65 and Direct3D 12 65 of 65, one ignored on each (the old BC
+  one-step comparison): bindings 11, blocks 2, copies 4, depth 2, direct3d 4, fitted 1, prepare 1,
+  raster 1, scenes 4, suite 24, writes 11.
+- Last full run, at cf2f03c after a clean build of this crate and `wcontainers-gpu-test`: Vulkan
+  66 of 66 and Direct3D 12 66 of 66, one ignored on each (as above, plus vertices 1). tests/vertices.rs: seed 188 at 64 vertices per format (both APIs), seed 7 at 1000
+  (Vulkan) and seed 99 at 1000 (Direct3D 12), every one of the 11 formats, three frames each:
+  every component as the format means (integers and 16-bit or smaller floats exact, normalised
+  within 1e-6), the float beside it exact, one shadow made at the first frame, none at the second,
+  one after the write.
+- Clippy with warnings denied passes natively on Windows and macOS and for WebAssembly.
+- `web/check` at e5be2a5 (after cleaning this crate, naga, `wcontainers-gpu` and
+  `wcontainers-gpu-test` on both targets): all twelve pictures equal Direct3D 11's at tolerance 0,
+  the twists differ as before (16384 pixels by up to 92; 25016 by up to 204), the viewports as
+  before (equal; whole pixels 2540 differ by up to 229), the suite in Chrome 24 of 24, Chrome's
+  adapter the RTX 3080 (D3D12, discrete, not a fallback). `prepare` in Chrome: unprepared frame of
+  16 first draws 250.8 ms with 16 pipelines built while drawing; after 1.0 ms of `prepare` calls
+  and 228.3 ms waiting for the compiles, the frame 1.5 ms with none built.
+- This Mac (Apple M5 Max, Metal), single jobs from the committed tree (e5be2a5; build at `-j 2`
+  with load average 35 to 71): every test passes, 62 of 62 with the one ignored: bindings 11, blocks
+  2, copies 4, depth 2, fitted 1, prepare 1, present 1, raster 1, scenes 4, suite 23 (present runs
+  apart), vertices 1, writes 11. The present test drew through `PresentConverted` (2 frames) and
+  the window showed [51, 102, 153, 255] in all 16 pixels, as the suite asks. The earlier Mac run of this session (before the vertex
+  work, the same pass list) printed the scene differences from the RTX 3080's Direct3D
+  references: triangle 1952 pixels by 1, quads 2455 by 1 on every depth format, the eight
+  viewports 662 by 1, all within the rig's allowance.
 
 Run 8 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
 load not sampled; Mac load average 21 to 79):
@@ -634,42 +695,39 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 - Multisampled depth or stencil copies that WebGPU cannot make (between formats); part of a
   16-bit depth level written from a buffer.
-- Vertex formats WebGPU lacks (`VertexFormatConverted`): three-component 8 and 16-bit formats,
-  `Float16x3`, `Uint10_10_10_2`, `Float11_11_10`. `create_vertex_layout` marks the device lost.
-  The plan's route: widen the streams that use them into a shadow buffer by a compute pass at draw
-  time, cached until the buffer is written.
 - A surface wgpu reports lost (the window's surface must be made again from the instance, which
   the back end does not hold).
 - Immediates: `immediate_bytes` is 0, so fronts spill them.
-- An ordered write that splits a pass with a running occlusion query.
+- Splitting a pass with a running occlusion query: an ordered write, or a vertex stream whose
+  shadow must be made, there.
+- A converted vertex stream reaching past the largest storage binding (128 MiB by default) or
+  more than 2^22 workgroups.
 - Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
   packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them.
 - Declared absent until built or measured: `TIMESTAMPS`.
-- On macOS the suite's `present_shows_the_frame` (tests/present.rs) fails as a known failure:
-  macOS reports the test's window as occluded in the session the tests run from (Run 8), so no
-  frame is shown. `PresentConverted` is built but has not drawn into a shown window yet.
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
-  programs.
+  programs (and the shadow plans of vertex layouts no longer held).
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
 ## Next (G2)
 
-Every pass bar item has been run; what is left:
-- Present on this Mac (known failure above): run `--test present` while the Mac's display shows
-  the session's windows (ask the owner when), which also runs `PresentConverted` for the first
-  time.
-- The rest of "Not carried out yet", vertex formats WebGPU lacks first. The plan's route (a compute
-  pass widening the streams into a shadow buffer, cached until the buffer is written) has to run
-  before the pass that draws, so a draw needing it inside an open pass splits the pass as an
-  ordered write does; the cache needs a written-epoch on each buffer that every write, copy,
-  clear and storage binding moves.
+Every pass bar item passes (Run 9). What is left is what 5.7 gives the back end beyond the pass
+bar, in "Not carried out yet", most useful first: texture formats WebGPU lacks (`FormatConverted`:
+B5G6R5 and the other 16-bit packed formats, A8) and the packed-pair formats (`BlockDecoded`);
+immediates; splitting a pass with a running occlusion query; making a lost surface again; the
+staging ring and texture renaming of 4.6; `TIMESTAMPS`. The vertex conversion has not run in
+Chrome (no page draws it yet).
 
 ## Departures from the plan
 
-- The shared suite's present test is not checked on macOS (see "Not carried out yet"); the suite's
-  other 23 tests pass there. On macOS present runs in its own test file with a harness of its own
-  (main thread), and tests/suite.rs there runs the list of examples/scenes/names.rs.
+- Plan 5.7 says formats WebGPU lacks are "converted on upload". For vertex formats that cannot
+  be done: a buffer's bytes are written before any layout says how they are read, the same bytes
+  may be read through several layouts and offsets, and GPU commands write buffers too. So a
+  shadow stream is made by a compute program at the first draw that reads the buffer through the
+  layout, and kept until the buffer is written (Run 9).
+- On macOS the suite's present test runs in its own test file with a harness of its own (main
+  thread), and tests/suite.rs there runs the list of examples/scenes/names.rs.
 - The plan asks BC textures decoded to be compared with Direct3D "within the stated tolerance".
   The tolerance stated is WARP's distance from the GPU plus one step of the decoded storage
   format, since no fixed one-step tolerance is met by Direct3D's own WARP on these blocks.
@@ -735,9 +793,8 @@ Every pass bar item has been run; what is left:
   colour targets through f32, which cannot hold integers past 2^24.
 
 Gaps found for the interface track (not changed here): no capability tells a front which vertex
-formats a back end converts itself or that instance step rates other than one are refused
-(`StepMode::Instance(n != 1)` is `Invalid` here, as the interface's doc has the program fetch
-them, `InstanceRateInShader`).
+formats a back end converts itself. (Instance step rates now have `INSTANCE_STEP_RATE`, from the
+shared line.)
 
 - db9e0d8 `interface: made no-overwrite writes promise that no unfinished command or ordered write
   touches their bytes`: the doc of `WriteMode::NoOverwrite` and the plan's 4.6 entry. The promise
