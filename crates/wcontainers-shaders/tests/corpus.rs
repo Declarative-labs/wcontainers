@@ -136,6 +136,12 @@ fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
     let out = std::env::var_os("WCONTAINERS_SHADERS_OUT").map(|o| PathBuf::from(o).join(label));
     if let Some(out) = &out {
         std::fs::create_dir_all(out).unwrap();
+        // Compared between builds: the content key's part that names the converter.
+        std::fs::write(
+            out.join("converter-version.txt"),
+            wcontainers_shaders::CONVERTER_VERSION,
+        )
+        .unwrap();
     }
     let glslang = out.is_some() && std::env::var_os("GLSLANG").is_some();
     let expected_file = Path::new(env!("CARGO_MANIFEST_DIR"))

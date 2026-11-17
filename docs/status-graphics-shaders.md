@@ -4,10 +4,10 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 
 ## Where things stand
 
-Milestone G6a (first slice): done in run 3; runs 4, 5 and 6 fixed what the independent checks of runs
-3, 4 and 5 found (listed under "Run 4", "Run 5" and "Run 6" below); run 7 drew run 6's fixes on the
-GPU (below). Run 7 merged origin/phase-2-graphics and every origin/phase-2-graphics-* branch again
-(no conflicts; the only interface change was a new `SlowPath`, which this crate does not use).
+Milestone G6a (first slice): done in run 3; runs 4, 5, 6 and 8 fixed what the independent checks of
+runs 3, 4, 5 and 7 found (listed under "Run 4" to "Run 8" below); run 7 drew run 6's fixes on the
+GPU. Run 8 merged origin/phase-2-graphics and every origin/phase-2-graphics-* branch again (no
+conflicts; the interface changes in them touch no shader type).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -198,6 +198,38 @@ Run 7 (run 6's fixes drawn):
   of that back end with the reason (Known gaps); the WebGPU picture is equal.
 - Fuzz re-run with the new own files (Measurements): 9 DXIL cases ended the process, no DXBC case.
 
+Run 8 (the independent check of run 7, each finding fixed or recorded):
+- Loops whose `continuing` block reads values the body made (dxc's loops that carry values): naga's
+  GLSL and HLSL writers write `continuing` ahead of the body (`if (!loop_init) { .. }`) and wrote
+  those values out again there, from variables the body had already changed, so the check's DXIL
+  vertex shader drew nothing on WebGL 2 and natively. The carried writers now declare each such
+  value before the loop and assign it where the body makes it (`compact::values_for_continuing`
+  finds them). Tests in `tests/glsl_writer.rs`; `vs_carry` (both builds) draws equal (below). naga's
+  MSL writer has the same shape and is not changed (no back end of ours writes MSL).
+- DXIL float to integer conversions: naga's `i32(x)`/`u32(x)` is not Direct3D's (NaN gives 0, the
+  limits at and past them). Every f32 to i32 or u32 conversion of a DXIL module now calls a function
+  that gives Direct3D's answer (`direct3d_float_to_int` in `src/dxil.rs`; the DXBC route already had
+  it from dxbc-spirv). f16 or f64 sources are `Unsupported("FloatToIntWidth")`. `ps_ftoi` draws
+  equal by both routes.
+- Fine derivatives on WebGL 2: GLSL ES 3.00 has none, and naga's GLSL writer wrote `dFdx` for them
+  (coarse on ANGLE here). The carried writer now refuses them with `MissingFeatures(DERIVATIVE_CONTROL)`
+  where the language lacks them (ES, desktop below 4.50); coarse and plain ones are still the plain
+  functions, which GLSL allows to be either. So a pixel shader using `ddx_fine`/`ddy_fine` is not
+  created on WebGL 2 (Direct3D's feature levels below 11 have no fine derivatives either). Corpus
+  `106_ps_code_ddy_fine` is now not written as GLSL ES.
+- DXBC immediate constant buffers holding NaN or infinities (`NonFiniteConstantVector` before): the
+  table is kept as u32 bits that loads reinterpret; vector constants holding them are read from a
+  variable as scalars were. Arrays of them used as whole values stay `Unsupported("NonFiniteConstantArray")`.
+  `ps_table` (fxc) draws equal.
+- `CONVERTER_VERSION` no longer hashes `WASI_SDK_PATH` (the objects' stamp still does): the native
+  and WebAssembly builds now give the same version (measured below). The corpus test writes it to
+  `converter-version.txt` beside its outputs.
+- The DXIL paragraph of "How the fronts call" now says that DXIL values keep their own widths.
+- Found on the way, both on the DXIL route only, refused by name instead of failing validation
+  (Known gaps): dxc's constants that are NaN or infinite (`Unsupported("NonFiniteConstant")`; dxc's
+  build of `ps_table`), and a constant buffer component picked at run time, which dxil-spirv reads
+  through a second, scalar view of the buffer (`Unsupported("ConstantComponentIndexing")`).
+
 Next (G6b and on, in order):
 - DXIL inputs and outputs as the DXBC route lays them out: one four-component value per register
   (now each value keeps its own width, so a Direct3D 12 vertex shader writing a float4 that a pixel
@@ -206,6 +238,9 @@ Next (G6b and on, in order):
   location; refused as `PackedStageValues` until then). Both fit one wrapper, the one `draw_bases`
   already makes.
 - DXIL binding numbers by root signature (6.4, `VariantKey::layout`); today Direct3D 11's rule.
+- DXIL's `NonFiniteConstant` and `ConstantComponentIndexing`: both need new expressions placed
+  before existing ones in a function's arena (naga requires operands to precede their users), so a
+  small arena rebuild with handle remapping (the compact module has the remapping) comes first.
 - Send the carried naga changes upstream (below).
 - naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
   images without a format, `OpIsHelperInvocationEXT` (`IsHelperLane()`, wave operations), the sample mask kept as
@@ -258,10 +293,20 @@ let reflection = &converted.reflection;
   numbered as for Direct3D 11 for now (stage set, kind range + register; `space` kept in the
   reflection), not yet by root signature. `draw_base` `None` (bases read as zero) and `Helpers` (the
   vertex helper block as for DXBC above) are taken; `Arguments` is
-  `Unsupported("DrawBaseFromArguments")` on both routes. Inputs and outputs are filled as for DXBC
-  (semantic names from the container's signatures, location = register); a pixel shader's unread
-  `SV_Position` may be listed where the DXBC route leaves it out. Sampled pairs are listed as for
-  DXBC, by register (a pair's register spaces are not in the pair).
+  `Unsupported("DrawBaseFromArguments")` on both routes. Inputs and outputs are listed as for DXBC
+  (semantic names from the container's signatures, location = register), but unlike DXBC each value
+  keeps its own width and type (`vs_transform.dxil` writes `@location(1) vec2<f32>`), so a
+  Direct3D 12 vertex shader writing a float4 that the pixel shader reads as float2 fails WebGPU's
+  pipeline check: until that is fixed (first under Next), the front must link only stages whose
+  shared locations have the same width and type, comparing `reflection.outputs` with the pixel
+  shader's `reflection.inputs` (mask and type), and answer a mismatch as the API's refusal. A
+  pixel shader's unread `SV_Position` may be listed where the DXBC route leaves it out. Sampled
+  pairs are listed as for DXBC, by register (a pair's register spaces are not in the pair).
+- DXIL-only refusals: `NonFiniteConstant`, `ConstantComponentIndexing`, `FloatToIntWidth`,
+  `PackedStageValues`, `PrimitiveId`, `VertexWithoutPosition`, `Texture1DArray`, and `Reader(..)`.
+- On WebGL 2, the back end's GLSL writing refuses programs using fine derivatives
+  (`MissingFeatures(DERIVATIVE_CONTROL)`), as GLSL ES 3.00 has none; a front on WebGL 2 reports a
+  feature level without them.
 - Constant buffers are declared with the size the bytecode gives them, on both routes (DXIL's
   dynamically indexed ones since run 6), so binding the program's own buffer (or any range at least
   that long) satisfies WebGPU.
@@ -279,6 +324,39 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 8, 2026-11-17, counts only:
+- Laptop (i7-8750H, load average 0.2 to 4.2), the suite with the corpus: corpus 127 convert and 64
+  named (unchanged), of which 87 compile as GLSL ES in glslang, 15 do not and 25 are not written (one
+  more unwritten: `106_ps_code_ddy_fine`, fine derivatives); rig DXBC 56 of 79 and rig DXIL 49 of 72
+  (unchanged); own DXBC 25 of 26, own DXIL 12 of 16 (`ps_table` `NonFiniteConstant`, `ps_spaces`
+  `RegisterSpace`, `vs_pack`/`ps_pack` `PackedStageValues`).
+- `tests/draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job): equal to Direct3D 11
+  texel for texel on WebGPU in 20 of 20 by the DXBC route and 11 of 11 by the DXIL route, on WebGL 2
+  in 15 of 16 drawn by the DXBC route (`ps_size` the known failure, 2591 of 4096 texels, largest 111)
+  and 10 of 10 by the DXIL route; not drawn on WebGL 2: bitfield operations 3, `noperspective` 1,
+  fine derivatives 2 (`ps_deriv`, both builds). New and equal everywhere they are drawn: `vs_carry`
+  (both builds, the check's loop case), `ps_ftoi` (both builds; NaN, both infinities and 2^31 from
+  the constant buffer, finite values past the limits), `ps_table` (fxc's table holding NaN and
+  infinities), `ps_deriv` (WebGPU), `ps_coarse`. The rig's triangle from DXIL and DXBC equal to
+  Direct3D 12's picture on both. Log in scratch `graphics-shaders/run8/draw1.log`.
+- Chrome 157 (`web/check`, one GPU job, about 2 s): WGSL corpus 127 of 127, rig DXBC 56 of 56, rig
+  DXIL 49 of 49, own 25 of 25, own DXIL 12 of 12; GLSL ES corpus 89 of 102, rig DXBC 47 of 53, rig
+  DXIL 46 of 48, own 20 of 23, own DXIL 11 of 11. Every GLSL ES failure is a bitfield operation,
+  `textureGather` or `sampler2DMS`. Verdicts in scratch `graphics-shaders/run8/out`.
+- WebAssembly (`wasm-run5.sh`, laptop): `wasm_imports` (release) 4,959,946 bytes, the same WASI
+  imports; the corpus test under wasmtime 38.0.4 passes, and every written file equals the native
+  build's (corpus, rig, rig DXIL, own, own DXIL: 0 differ), `converter-version.txt` included: both
+  builds give `0.1.0+7e003573...` for the same sources (they differed before by the SDK's path).
+- Clippy with warnings denied passes on the laptop for the crate; the carried naga's changed files
+  give no new clippy warnings with the GLSL, HLSL, WGSL writers and SPIR-V reader built.
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000` under `ulimit -v 4000000` (new own
+  files, so new cases; laptop load below 2): 7 cases ended the process, all DXIL in dxil-spirv (4
+  segmentation faults: 1604, 1843, 2040, 2597; 3 `std::terminate`: 240, 309, 2637); no DXBC case.
+  Our own checks refused 11: `malformed` 5 (`unknown stage` 3, `no instruction 0` 2), `invalid` 6
+  (a constant index past an array's end 3, a compute workgroup size out of range 2, `VertexIndex` in
+  a pixel shader 1). Log `~/wcontainers-graphics/fuzz-run8-seed7.log`, refusals `fuzz-ours-7.txt`.
+  The check of run 7 (seed 4242, 8000 cases) found 39 DXIL cases that ended the process, none DXBC.
 
 Run 7, 2026-11-17, counts only:
 - `tests/draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job): WebGPU equal to Direct3D
@@ -473,6 +551,11 @@ the tree as published"), plus these changes, each a later commit touching only `
   neither).
 - SPIR-V reader (run 6), `OpDemoteToHelperInvocation` read as `Statement::Kill` (WGSL's `discard`
   demotes too), its extension and capability accepted.
+- GLSL and HLSL writers (run 8), a loop's `continuing` block reads the values its body made in that
+  iteration from variables declared before the loop (`compact::values_for_continuing`), instead of
+  writing their expressions again where the body's variables have changed.
+- GLSL writer (run 8), fine derivatives need `Features::DERIVATIVE_CONTROL` (GLSL 4.50, not ES)
+  instead of being written as the plain functions.
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
 not have. Each change is its own commit touching only `third_party/naga`, so each can be sent as it
 stands (`git diff d380816 HEAD -- third_party/naga`).
@@ -487,7 +570,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `crates/wcontainers-shaders/web/check <dir>`: one GPU job on the desktop, `chrome.txt` comes back
   into each corpus directory, exit 1 if any file fails.
 - When the desktop refuses new SSH connections (reset after the key exchange; run 6 lost an hour to
-  it, run 7 half an hour), already open shared connections keep working. Run 7 pointed this
+  it, run 7 half an hour, and it did so all through run 8), already open shared connections keep working. Run 7 pointed this
   checkout's rig socket (`~/.ssh/wc-rig-<hash of the git dir>`, see `tools/graphics-rig/common.sh`)
   at another checkout's live one with a symbolic link, and removed the link afterwards. The rig also
   notes the desktop's clock once went back 8 hours, so cargo may keep stale objects: run 7's first
@@ -524,7 +607,8 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `~/wcontainers-graphics/wasm-run5.sh`), run through `tools/graphics-rig/linux bash -c
   '$HOME/wcontainers-graphics/wasm-run5.sh'` after a native corpus run has filled
   `~/wcontainers-graphics/out`: builds `wasm_imports` and the corpus test, runs the test under wasmtime
-  and counts the written files that differ from the native ones.
+  and counts the written files that differ from the native ones (`converter-version.txt` among them
+  since run 8, so a differing converter version shows as a differing file).
 - WebAssembly: add `WASI_SDK_PATH=$HOME/wcontainers-graphics/tools/wasi-sdk` and `--target
   wasm32-wasip1`; run a test with `~/wcontainers-graphics/tools/wasmtime/wasmtime run --dir $S::$S
   --dir corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm --include-ignored`,
@@ -610,7 +694,7 @@ were already there.
 ## Known gaps found so far
 
 - Signed but malformed DXIL can end the process natively: dxil-spirv's bitcode reader faults or calls
-  `std::terminate` (`bc/cast.hpp`) on it (9 of 3000 fuzz cases in run 7, 10 in run 5, 15 in run 4,
+  `std::terminate` (`bc/cast.hpp`) on it (7 of 3000 fuzz cases in run 8, 9 in run 7, 10 in run 5, 15 in run 4,
   Measurements); malformed DXBC exhausted memory in 3 of 3000 in run 5 (1 in run 4, none in run 7), and the check of run 5
   found one DXIL case too (seed 31337, case 4995). The exhaustion is inside the converters: with the
   address space capped (`ulimit -v 3000000`) the DXBC cases end as `Rejected`, the C++ `bad_alloc`
@@ -621,7 +705,16 @@ were already there.
 - Mutated but signed bytecode that dxbc-spirv accepts can give IR our lowering refuses (`Malformed`)
   or a module naga's validation refuses (`Invalid`, for example a constant index past an array's
   end, which Direct3D would read as zero): refused, not converted (Measurements).
-- GLSL ES 3.00 has no `noperspective`: a pixel shader reading one is not written for WebGL 2.
+- GLSL ES 3.00 has no `noperspective`: a pixel shader reading one is not written for WebGL 2, nor
+  one using fine derivatives (run 8).
+- DXIL constants that are NaN or infinite are refused (`NonFiniteConstant`): naga's IR takes no such
+  literal, and making them at run time needs new expressions ahead of their users. The DXBC route
+  reads them from variables.
+- A DXIL constant buffer component picked at run time (`cb[i]` of a float4's components) is refused
+  (`ConstantComponentIndexing`): dxil-spirv reads it through a second view of the buffer as scalars
+  4 bytes apart, which WebGPU's uniform layout and WGSL's one variable per binding refuse.
+- naga's MSL writer writes loops as the GLSL and HLSL writers did before run 8 (a `continuing` that
+  reads the body's values reads them again); not used by any back end of ours.
 - The WebGL 2 back end's fragment depth (z arrived as (z+1)/2) is fixed there: `ps_depth` draws equal
   through it since run 7.
 - The WebGL 2 back end's `textureSize` (for the WebGL track): since its commit 3ea9af6 it rewrites

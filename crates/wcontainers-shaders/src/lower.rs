@@ -1680,6 +1680,48 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 }
                 self.add(b, Expression::Literal(l))
             }
+            Some(m) if non_finite(&op.ty, &op.lits) => {
+                // As for scalars: the bits, from a variable, reinterpreted.
+                let ty = Ty {
+                    dims: Vec::new(),
+                    members: vec![Basic {
+                        scalar: scalar::U32,
+                        size: m.size,
+                    }],
+                };
+                let naga_ty = self.l.ir_ty(&ty)?;
+                let init = self.l.const_expr(&ty, &op.lits)?;
+                let c = self.l.module.constants.append(
+                    naga::Constant {
+                        name: None,
+                        ty: naga_ty,
+                        init,
+                    },
+                    Span::UNDEFINED,
+                );
+                let bits = self
+                    .f
+                    .expressions
+                    .append(Expression::Constant(c), Span::UNDEFINED);
+                let var = self.f.local_variables.append(
+                    LocalVariable {
+                        name: Some(format!("bits{id}")),
+                        ty: naga_ty,
+                        init: Some(bits),
+                    },
+                    Span::UNDEFINED,
+                );
+                let pointer = self.add(b, Expression::LocalVariable(var));
+                let bits = self.add(b, Expression::Load { pointer });
+                return Ok(self.add(
+                    b,
+                    Expression::As {
+                        expr: bits,
+                        kind: ScalarKind::Float,
+                        convert: None,
+                    },
+                ));
+            }
             _ => {
                 let c = self.l.global_constant(id)?;
                 self.add(b, Expression::Constant(c))
@@ -2325,8 +2367,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn memory_var(&mut self, opcode: u16, dcl: u32) -> Result<(Handle<GlobalVariable>, Ty)> {
         let ir = self.l.ir;
         if opcode == code::CONSTANT_LOAD {
-            let var = self.l.constant_array(dcl)?;
-            return Ok((var, ir.op(dcl)?.ty.clone()));
+            return self.l.constant_array(dcl);
         }
         if let Some(&i) = self.l.io_index.get(&dcl) {
             let io = &self.l.io[i].1;
@@ -3190,7 +3231,7 @@ impl Lowering<'_> {
             let mut comps = Vec::new();
             for &l in chunk {
                 if s == Scalar::F32 && !f32::from_bits(l as u32).is_finite() {
-                    return Err(unsupported("NonFiniteConstantVector"));
+                    return Err(unsupported("NonFiniteConstantArray"));
                 }
                 comps.push(
                     self.module
@@ -3249,14 +3290,22 @@ impl Lowering<'_> {
         ))
     }
 
-    /// A private variable initialised with the constant array `id`, for indexing at run time.
-    fn constant_array(&mut self, id: u32) -> Result<Handle<GlobalVariable>> {
-        if let Some(&v) = self.memory.get(&id) {
-            return Ok(v);
-        }
+    /// A private variable initialised with the constant array `id`, for indexing at run time, and
+    /// its type. A table of f32 holding an infinity or NaN, which no constant expression may hold, is
+    /// kept as u32 bits, which loads reinterpret.
+    fn constant_array(&mut self, id: u32) -> Result<(Handle<GlobalVariable>, Ty)> {
         let op = self.ir.op(id)?;
-        let ty = self.ir_ty(&op.ty)?;
-        let init = self.const_expr(&op.ty, &op.lits)?;
+        let mut kept = op.ty.clone();
+        if non_finite(&op.ty, &op.lits) {
+            for m in &mut kept.members {
+                m.scalar = scalar::U32;
+            }
+        }
+        if let Some(&v) = self.memory.get(&id) {
+            return Ok((v, kept));
+        }
+        let ty = self.ir_ty(&kept)?;
+        let init = self.const_expr(&kept, &op.lits)?;
         let var = self.global(
             format!("icb{id}"),
             AddressSpace::Private,
@@ -3265,6 +3314,12 @@ impl Lowering<'_> {
             Some(init),
         );
         self.memory.insert(id, var);
-        Ok(var)
+        Ok((var, kept))
     }
+}
+
+/// Whether a constant of f32 holds an infinity or NaN.
+fn non_finite(ty: &Ty, lits: &[u64]) -> bool {
+    ty.members.iter().all(|m| m.scalar == scalar::F32)
+        && lits.iter().any(|&l| !f32::from_bits(l as u32).is_finite())
 }
