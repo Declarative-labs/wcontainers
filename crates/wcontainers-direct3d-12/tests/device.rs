@@ -8,28 +8,11 @@ mod record;
 mod triangle;
 
 use record::Recorder;
-use triangle::{PS, RGBA8, VS};
+use triangle::{RGBA8, VS};
 use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
-use wcontainers_direct3d_12::{Device, Error, stand_in};
+use wcontainers_direct3d_12::{Device, Error};
 use wcontainers_gpu::Backend;
-
-#[test]
-fn stand_ins_are_the_rig_corpus_shaders() {
-    for (dxil, stage) in [
-        (VS, wcontainers_gpu::ShaderStage::Vertex),
-        (PS, wcontainers_gpu::ShaderStage::Fragment),
-    ] {
-        let found = stand_in::find(dxil);
-        let hash = blake3::hash(dxil);
-        assert_eq!(
-            found.map(|s| s.stage),
-            Some(stage),
-            "no stand-in for {hash}"
-        );
-    }
-    assert!(stand_in::find(&VS[1..]).is_none());
-}
 
 #[test]
 fn footprints_follow_the_pitch_and_placement_rules() {
@@ -62,26 +45,19 @@ fn footprints_follow_the_pitch_and_placement_rules() {
 }
 
 #[test]
-fn unknown_dxil_is_refused() {
+fn bytecode_that_is_not_dxil_is_refused() {
     let mut device = Device::new(Recorder::new());
-    let mut other = VS.to_vec();
-    other[100] ^= 1;
     assert!(matches!(
-        triangle::pipeline(&mut device, &other),
-        Err(Error::NotImplemented(_))
+        triangle::pipeline(&mut device, &VS[..64]),
+        Err(Error::Invalid(_))
     ));
+    assert!(!device.take_warnings().is_empty());
 }
 
 #[test]
 fn the_triangle_scene_replays() {
     let mut device = Device::new(Recorder::new());
     triangle::pipeline(&mut device, VS).unwrap();
-    assert_eq!(device.stand_ins_used(), 2);
-    assert!(
-        device
-            .take_warnings()
-            .contains(&"DXIL drawn through a hand-written WGSL stand-in")
-    );
     let prepared = device.backend().calls.len();
     assert!(
         device.backend().calls[..prepared]
@@ -190,4 +166,73 @@ fn a_rectangle_clear_comes_after_a_whole_clear_before_it() {
         .collect();
     assert_eq!(passes.len(), 2, "{passes:#?}");
     assert!(passes[0].contains("Clear(") && passes[1].contains("Load"));
+}
+
+#[test]
+fn fence_events_are_set_without_waiting() {
+    let mut device = Device::new(Recorder::new());
+    let fence = device.create_fence(0);
+    device.add_waiter(fence, 1, 7);
+    device.queue_signal(fence, 1).unwrap();
+    // The recorder's GPU has not finished the work, and nothing waits for it.
+    assert!(device.reached_events().is_empty() && device.has_waiters());
+    device.backend().finish();
+    assert_eq!(device.reached_events(), [7]);
+    assert!(!device.has_waiters());
+    assert!(device.backend().named("wait_fence").is_empty());
+    // A CPU signal reaches its waiters at the next look.
+    device.add_waiter(fence, 5, 8);
+    device.cpu_signal(fence, 5);
+    assert_eq!(device.reached_events(), [8]);
+}
+
+#[test]
+fn back_buffers_are_resources_and_present_follows_the_work() {
+    use wcontainers_directx_graphics_infrastructure::{Model, SwapChainDesc};
+    let mut device = Device::new(Recorder::new());
+    let chain = device
+        .create_swap_chain(
+            1,
+            &SwapChainDesc {
+                width: 64,
+                height: 32,
+                format: RGBA8,
+                buffers: 2,
+                model: Model::FlipDiscard,
+                usage: wcontainers_gpu::TextureUsage::empty(),
+            },
+        )
+        .unwrap();
+    let back = device.chain_buffer(chain, 0).unwrap();
+    assert!(device.chain_buffer(chain, 1).is_some() && device.chain_buffer(chain, 2).is_none());
+    assert_eq!(device.resource_desc(back).unwrap().width, 64);
+    let mut list = CommandList::new();
+    list.record(Command::ClearTarget {
+        view: Descriptor::RenderTarget(TargetView {
+            resource: back,
+            format: RGBA8,
+            mip: 0,
+            first_layer: 0,
+            layers: 1,
+        }),
+        color: [0.25; 4],
+        rects: vec![],
+    });
+    list.close().unwrap();
+    let start = device.backend().calls.len();
+    device.execute(&[list.commands().unwrap().clone()]).unwrap();
+    device.present(chain, 1).unwrap();
+    let calls = &device.backend().calls[start..];
+    let at = |k: &str| calls.iter().position(|c| c.starts_with(k)).unwrap();
+    assert!(at("begin_pass") < at("submit") && at("submit") < at("draw"));
+    assert!(at("draw") < at("present "));
+    assert_eq!(device.chain(chain).unwrap().current_index(), 1);
+    device.resize_swap_chain(chain, 0, 16, 8, 0).unwrap();
+    let back = device.chain_buffer(chain, 0).unwrap();
+    assert_eq!(device.resource_desc(back).unwrap().height, 8);
+    // The swap chain owns the textures: releasing its resources leaves them to it.
+    let textures = |d: &mut Device<Recorder>| d.backend().named("destroy Texture(").len();
+    let before = textures(&mut device);
+    device.destroy_swap_chain(chain);
+    assert_eq!(textures(&mut device), before + 2);
 }

@@ -2202,11 +2202,12 @@ Direct3D 11:
 Direct3D 12:
 - **WebGPU: feature level 11_0** under the same conditions as Direct3D 11 (sizes and
   depth32float-stencil8; otherwise
-  `D3D12CreateDevice` fails as on hardware below 11_0), resource binding tier 1 (`RESOURCE_TABLES` absent; 11_1 requires tier
-  3 in the Direct3D 12 table), shader model 6.0 (6.6 needs tier 3), wave operations where `SUBGROUPS`.
+  `D3D12CreateDevice` fails as on hardware below 11_0), resource binding tier 1 (`RESOURCE_TABLES` absent;
+  11_1 is not reported: Direct3D 12's table asks logic operations and target-independent
+  rasterisation of it), shader model 6.0 (6.6 needs tier 3), wave operations where `SUBGROUPS`.
   Absent: ray tracing, mesh shaders, variable rate shading, sampler feedback, 64-bit integers, tiled
   resources, depth bounds, rasterizer ordered views, conservative rasterisation. Multisampling as for
-  Direct3D 11. When a browser offers resource tables, the front reports tier 3 and 11_1.
+  Direct3D 11. When a browser offers resource tables, the front reports tier 3.
 - **WebGL 2:** not offered; `D3D12CreateDevice` fails as on hardware below 11_0.
 
 ## 10. One source, two builds

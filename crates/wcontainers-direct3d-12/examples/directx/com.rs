@@ -1,6 +1,6 @@
-//! The methods of each object's interfaces that the front does not do yet, made from the `windows`
-//! crate's interface traits: each reports itself as not implemented (a command list's also fails
-//! its `Close`), and the methods objects.rs does are passed to it.
+//! The methods of each object's interfaces that the front does not do yet, made by com.py from the
+//! `windows` crate's interface traits: each reports itself as not implemented (a command list's also
+//! fails its `Close`), and the methods objects.rs and present.rs do are passed to them.
 
 #![allow(clippy::too_many_arguments, unused_variables)]
 
@@ -9,15 +9,16 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
 
 use crate::objects::*;
+use crate::present::*;
 
 impl IDXGIFactory4_Impl for Factory_Impl {
     fn EnumAdapterByLuid(
         &self,
-        _adapterluid: &windows::Win32::Foundation::LUID,
-        _riid: *const windows_core::GUID,
-        _ppvadapter: *mut *mut core::ffi::c_void,
+        adapterluid: &windows::Win32::Foundation::LUID,
+        riid: *const windows_core::GUID,
+        ppvadapter: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("EnumAdapterByLuid"))
+        Factory::EnumAdapterByLuid(self, adapterluid, riid, ppvadapter)
     }
     fn EnumWarpAdapter(
         &self,
@@ -30,25 +31,30 @@ impl IDXGIFactory4_Impl for Factory_Impl {
 
 impl IDXGIFactory3_Impl for Factory_Impl {
     fn GetCreationFlags(&self) -> DXGI_CREATE_FACTORY_FLAGS {
-        self.unsupported("GetCreationFlags");
-        Default::default()
+        Factory::GetCreationFlags(self)
     }
 }
 
 impl IDXGIFactory2_Impl for Factory_Impl {
     fn IsWindowedStereoEnabled(&self) -> windows_core::BOOL {
-        self.unsupported("IsWindowedStereoEnabled");
-        Default::default()
+        Factory::IsWindowedStereoEnabled(self)
     }
     fn CreateSwapChainForHwnd(
         &self,
-        _pdevice: windows_core::Ref<windows_core::IUnknown>,
-        _hwnd: windows::Win32::Foundation::HWND,
-        _pdesc: *const DXGI_SWAP_CHAIN_DESC1,
-        _pfullscreendesc: *const DXGI_SWAP_CHAIN_FULLSCREEN_DESC,
-        _prestricttooutput: windows_core::Ref<IDXGIOutput>,
+        pdevice: windows_core::Ref<windows_core::IUnknown>,
+        hwnd: windows::Win32::Foundation::HWND,
+        pdesc: *const DXGI_SWAP_CHAIN_DESC1,
+        pfullscreendesc: *const DXGI_SWAP_CHAIN_FULLSCREEN_DESC,
+        prestricttooutput: windows_core::Ref<IDXGIOutput>,
     ) -> windows_core::Result<IDXGISwapChain1> {
-        Err(self.unsupported("CreateSwapChainForHwnd"))
+        Factory::CreateSwapChainForHwnd(
+            self,
+            pdevice,
+            hwnd,
+            pdesc,
+            pfullscreendesc,
+            prestricttooutput,
+        )
     }
     fn CreateSwapChainForCoreWindow(
         &self,
@@ -112,8 +118,7 @@ impl IDXGIFactory1_Impl for Factory_Impl {
         Factory::EnumAdapters1(self, adapter)
     }
     fn IsCurrent(&self) -> windows_core::BOOL {
-        self.unsupported("IsCurrent");
-        Default::default()
+        Factory::IsCurrent(self)
     }
 }
 
@@ -133,11 +138,11 @@ impl IDXGIFactory_Impl for Factory_Impl {
     }
     fn CreateSwapChain(
         &self,
-        _pdevice: windows_core::Ref<windows_core::IUnknown>,
-        _pdesc: *const DXGI_SWAP_CHAIN_DESC,
-        _ppswapchain: windows_core::OutRef<IDXGISwapChain>,
+        pdevice: windows_core::Ref<windows_core::IUnknown>,
+        pdesc: *const DXGI_SWAP_CHAIN_DESC,
+        ppswapchain: windows_core::OutRef<IDXGISwapChain>,
     ) -> windows_core::HRESULT {
-        self.unsupported("CreateSwapChain").code()
+        Factory::CreateSwapChain(self, pdevice, pdesc, ppswapchain)
     }
     fn CreateSoftwareAdapter(
         &self,
@@ -187,8 +192,8 @@ impl IDXGIAdapter1_Impl for Adapter_Impl {
 }
 
 impl IDXGIAdapter_Impl for Adapter_Impl {
-    fn EnumOutputs(&self, _output: u32) -> windows_core::Result<IDXGIOutput> {
-        Err(self.unsupported("EnumOutputs"))
+    fn EnumOutputs(&self, output: u32) -> windows_core::Result<IDXGIOutput> {
+        Adapter::EnumOutputs(self, output)
     }
     fn GetDesc(&self) -> windows_core::Result<DXGI_ADAPTER_DESC> {
         Adapter::GetDesc(self)
@@ -202,6 +207,397 @@ impl IDXGIAdapter_Impl for Adapter_Impl {
 }
 
 impl IDXGIObject_Impl for Adapter_Impl {
+    fn SetPrivateData(
+        &self,
+        _name: *const windows_core::GUID,
+        _datasize: u32,
+        _pdata: *const core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetPrivateData"))
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        _name: *const windows_core::GUID,
+        _punknown: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetPrivateDataInterface"))
+    }
+    fn GetPrivateData(
+        &self,
+        _name: *const windows_core::GUID,
+        _pdatasize: *mut u32,
+        _pdata: *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetPrivateData"))
+    }
+    fn GetParent(
+        &self,
+        _riid: *const windows_core::GUID,
+        _ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetParent"))
+    }
+}
+
+impl IDXGIOutput6_Impl for Output_Impl {
+    fn GetDesc1(&self) -> windows_core::Result<DXGI_OUTPUT_DESC1> {
+        Output::GetDesc1(self)
+    }
+    fn CheckHardwareCompositionSupport(&self) -> windows_core::Result<u32> {
+        Output::CheckHardwareCompositionSupport(self)
+    }
+}
+
+impl IDXGIOutput5_Impl for Output_Impl {
+    fn DuplicateOutput1(
+        &self,
+        _pdevice: windows_core::Ref<windows_core::IUnknown>,
+        _flags: u32,
+        _supportedformatscount: u32,
+        _psupportedformats: *const Common::DXGI_FORMAT,
+    ) -> windows_core::Result<IDXGIOutputDuplication> {
+        Err(self.unsupported("DuplicateOutput1"))
+    }
+}
+
+impl IDXGIOutput4_Impl for Output_Impl {
+    fn CheckOverlayColorSpaceSupport(
+        &self,
+        _format: Common::DXGI_FORMAT,
+        _colorspace: Common::DXGI_COLOR_SPACE_TYPE,
+        _pconcerneddevice: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<u32> {
+        Err(self.unsupported("CheckOverlayColorSpaceSupport"))
+    }
+}
+
+impl IDXGIOutput3_Impl for Output_Impl {
+    fn CheckOverlaySupport(
+        &self,
+        _enumformat: Common::DXGI_FORMAT,
+        _pconcerneddevice: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<u32> {
+        Err(self.unsupported("CheckOverlaySupport"))
+    }
+}
+
+impl IDXGIOutput2_Impl for Output_Impl {
+    fn SupportsOverlays(&self) -> windows_core::BOOL {
+        Output::SupportsOverlays(self)
+    }
+}
+
+impl IDXGIOutput1_Impl for Output_Impl {
+    fn GetDisplayModeList1(
+        &self,
+        enumformat: Common::DXGI_FORMAT,
+        flags: DXGI_ENUM_MODES,
+        pnummodes: *mut u32,
+        pdesc: *mut DXGI_MODE_DESC1,
+    ) -> windows_core::Result<()> {
+        Output::GetDisplayModeList1(self, enumformat, flags, pnummodes, pdesc)
+    }
+    fn FindClosestMatchingMode1(
+        &self,
+        pmodetomatch: *const DXGI_MODE_DESC1,
+        pclosestmatch: *mut DXGI_MODE_DESC1,
+        pconcerneddevice: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        Output::FindClosestMatchingMode1(self, pmodetomatch, pclosestmatch, pconcerneddevice)
+    }
+    fn GetDisplaySurfaceData1(
+        &self,
+        _pdestination: windows_core::Ref<IDXGIResource>,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetDisplaySurfaceData1"))
+    }
+    fn DuplicateOutput(
+        &self,
+        _pdevice: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<IDXGIOutputDuplication> {
+        Err(self.unsupported("DuplicateOutput"))
+    }
+}
+
+impl IDXGIOutput_Impl for Output_Impl {
+    fn GetDesc(&self) -> windows_core::Result<DXGI_OUTPUT_DESC> {
+        Output::GetDesc(self)
+    }
+    fn GetDisplayModeList(
+        &self,
+        enumformat: Common::DXGI_FORMAT,
+        flags: DXGI_ENUM_MODES,
+        pnummodes: *mut u32,
+        pdesc: *mut Common::DXGI_MODE_DESC,
+    ) -> windows_core::Result<()> {
+        Output::GetDisplayModeList(self, enumformat, flags, pnummodes, pdesc)
+    }
+    fn FindClosestMatchingMode(
+        &self,
+        pmodetomatch: *const Common::DXGI_MODE_DESC,
+        pclosestmatch: *mut Common::DXGI_MODE_DESC,
+        pconcerneddevice: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        Output::FindClosestMatchingMode(self, pmodetomatch, pclosestmatch, pconcerneddevice)
+    }
+    fn WaitForVBlank(&self) -> windows_core::Result<()> {
+        Err(self.unsupported("WaitForVBlank"))
+    }
+    fn TakeOwnership(
+        &self,
+        _pdevice: windows_core::Ref<windows_core::IUnknown>,
+        _exclusive: windows_core::BOOL,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("TakeOwnership"))
+    }
+    fn ReleaseOwnership(&self) {
+        self.unsupported("ReleaseOwnership");
+    }
+    fn GetGammaControlCapabilities(
+        &self,
+        _pgammacaps: *mut Common::DXGI_GAMMA_CONTROL_CAPABILITIES,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetGammaControlCapabilities"))
+    }
+    fn SetGammaControl(
+        &self,
+        _parray: *const Common::DXGI_GAMMA_CONTROL,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetGammaControl"))
+    }
+    fn GetGammaControl(
+        &self,
+        _parray: *mut Common::DXGI_GAMMA_CONTROL,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetGammaControl"))
+    }
+    fn SetDisplaySurface(
+        &self,
+        _pscanoutsurface: windows_core::Ref<IDXGISurface>,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetDisplaySurface"))
+    }
+    fn GetDisplaySurfaceData(
+        &self,
+        _pdestination: windows_core::Ref<IDXGISurface>,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetDisplaySurfaceData"))
+    }
+    fn GetFrameStatistics(&self, _pstats: *mut DXGI_FRAME_STATISTICS) -> windows_core::Result<()> {
+        Err(self.unsupported("GetFrameStatistics"))
+    }
+}
+
+impl IDXGIObject_Impl for Output_Impl {
+    fn SetPrivateData(
+        &self,
+        _name: *const windows_core::GUID,
+        _datasize: u32,
+        _pdata: *const core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetPrivateData"))
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        _name: *const windows_core::GUID,
+        _punknown: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetPrivateDataInterface"))
+    }
+    fn GetPrivateData(
+        &self,
+        _name: *const windows_core::GUID,
+        _pdatasize: *mut u32,
+        _pdata: *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetPrivateData"))
+    }
+    fn GetParent(
+        &self,
+        _riid: *const windows_core::GUID,
+        _ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetParent"))
+    }
+}
+
+impl IDXGISwapChain4_Impl for SwapChain_Impl {
+    fn SetHDRMetaData(
+        &self,
+        r#type: DXGI_HDR_METADATA_TYPE,
+        _size: u32,
+        _pmetadata: *const core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetHDRMetaData"))
+    }
+}
+
+impl IDXGISwapChain3_Impl for SwapChain_Impl {
+    fn GetCurrentBackBufferIndex(&self) -> u32 {
+        SwapChain::GetCurrentBackBufferIndex(self)
+    }
+    fn CheckColorSpaceSupport(
+        &self,
+        colorspace: Common::DXGI_COLOR_SPACE_TYPE,
+    ) -> windows_core::Result<u32> {
+        SwapChain::CheckColorSpaceSupport(self, colorspace)
+    }
+    fn SetColorSpace1(
+        &self,
+        colorspace: Common::DXGI_COLOR_SPACE_TYPE,
+    ) -> windows_core::Result<()> {
+        SwapChain::SetColorSpace1(self, colorspace)
+    }
+    fn ResizeBuffers1(
+        &self,
+        _buffercount: u32,
+        _width: u32,
+        _height: u32,
+        _format: Common::DXGI_FORMAT,
+        _swapchainflags: &DXGI_SWAP_CHAIN_FLAG,
+        _pcreationnodemask: *const u32,
+        _pppresentqueue: *const Option<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("ResizeBuffers1"))
+    }
+}
+
+impl IDXGISwapChain2_Impl for SwapChain_Impl {
+    fn SetSourceSize(&self, _width: u32, _height: u32) -> windows_core::Result<()> {
+        Err(self.unsupported("SetSourceSize"))
+    }
+    fn GetSourceSize(&self, _pwidth: *mut u32, _pheight: *mut u32) -> windows_core::Result<()> {
+        Err(self.unsupported("GetSourceSize"))
+    }
+    fn SetMaximumFrameLatency(&self, maxlatency: u32) -> windows_core::Result<()> {
+        SwapChain::SetMaximumFrameLatency(self, maxlatency)
+    }
+    fn GetMaximumFrameLatency(&self) -> windows_core::Result<u32> {
+        SwapChain::GetMaximumFrameLatency(self)
+    }
+    fn GetFrameLatencyWaitableObject(&self) -> windows::Win32::Foundation::HANDLE {
+        SwapChain::GetFrameLatencyWaitableObject(self)
+    }
+    fn SetMatrixTransform(&self, _pmatrix: *const DXGI_MATRIX_3X2_F) -> windows_core::Result<()> {
+        Err(self.unsupported("SetMatrixTransform"))
+    }
+    fn GetMatrixTransform(&self, _pmatrix: *mut DXGI_MATRIX_3X2_F) -> windows_core::Result<()> {
+        Err(self.unsupported("GetMatrixTransform"))
+    }
+}
+
+impl IDXGISwapChain1_Impl for SwapChain_Impl {
+    fn GetDesc1(&self) -> windows_core::Result<DXGI_SWAP_CHAIN_DESC1> {
+        SwapChain::GetDesc1(self)
+    }
+    fn GetFullscreenDesc(&self) -> windows_core::Result<DXGI_SWAP_CHAIN_FULLSCREEN_DESC> {
+        Err(self.unsupported("GetFullscreenDesc"))
+    }
+    fn GetHwnd(&self) -> windows_core::Result<windows::Win32::Foundation::HWND> {
+        SwapChain::GetHwnd(self)
+    }
+    fn GetCoreWindow(
+        &self,
+        _refiid: *const windows_core::GUID,
+        _ppunk: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetCoreWindow"))
+    }
+    fn Present1(
+        &self,
+        syncinterval: u32,
+        presentflags: DXGI_PRESENT,
+        ppresentparameters: *const DXGI_PRESENT_PARAMETERS,
+    ) -> windows_core::HRESULT {
+        SwapChain::Present1(self, syncinterval, presentflags, ppresentparameters)
+    }
+    fn IsTemporaryMonoSupported(&self) -> windows_core::BOOL {
+        SwapChain::IsTemporaryMonoSupported(self)
+    }
+    fn GetRestrictToOutput(&self) -> windows_core::Result<IDXGIOutput> {
+        Err(self.unsupported("GetRestrictToOutput"))
+    }
+    fn SetBackgroundColor(&self, _pcolor: *const DXGI_RGBA) -> windows_core::Result<()> {
+        Err(self.unsupported("SetBackgroundColor"))
+    }
+    fn GetBackgroundColor(&self) -> windows_core::Result<DXGI_RGBA> {
+        Err(self.unsupported("GetBackgroundColor"))
+    }
+    fn SetRotation(&self, _rotation: Common::DXGI_MODE_ROTATION) -> windows_core::Result<()> {
+        Err(self.unsupported("SetRotation"))
+    }
+    fn GetRotation(&self) -> windows_core::Result<Common::DXGI_MODE_ROTATION> {
+        Err(self.unsupported("GetRotation"))
+    }
+}
+
+impl IDXGISwapChain_Impl for SwapChain_Impl {
+    fn Present(&self, syncinterval: u32, flags: DXGI_PRESENT) -> windows_core::HRESULT {
+        SwapChain::Present(self, syncinterval, flags)
+    }
+    fn GetBuffer(
+        &self,
+        buffer: u32,
+        riid: *const windows_core::GUID,
+        ppsurface: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        SwapChain::GetBuffer(self, buffer, riid, ppsurface)
+    }
+    fn SetFullscreenState(
+        &self,
+        fullscreen: windows_core::BOOL,
+        ptarget: windows_core::Ref<IDXGIOutput>,
+    ) -> windows_core::Result<()> {
+        SwapChain::SetFullscreenState(self, fullscreen, ptarget)
+    }
+    fn GetFullscreenState(
+        &self,
+        pfullscreen: *mut windows_core::BOOL,
+        pptarget: windows_core::OutRef<IDXGIOutput>,
+    ) -> windows_core::Result<()> {
+        SwapChain::GetFullscreenState(self, pfullscreen, pptarget)
+    }
+    fn GetDesc(&self) -> windows_core::Result<DXGI_SWAP_CHAIN_DESC> {
+        SwapChain::GetDesc(self)
+    }
+    fn ResizeBuffers(
+        &self,
+        buffercount: u32,
+        width: u32,
+        height: u32,
+        newformat: Common::DXGI_FORMAT,
+        swapchainflags: &DXGI_SWAP_CHAIN_FLAG,
+    ) -> windows_core::Result<()> {
+        SwapChain::ResizeBuffers(self, buffercount, width, height, newformat, swapchainflags)
+    }
+    fn ResizeTarget(
+        &self,
+        _pnewtargetparameters: *const Common::DXGI_MODE_DESC,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("ResizeTarget"))
+    }
+    fn GetContainingOutput(&self) -> windows_core::Result<IDXGIOutput> {
+        Err(self.unsupported("GetContainingOutput"))
+    }
+    fn GetFrameStatistics(&self, _pstats: *mut DXGI_FRAME_STATISTICS) -> windows_core::Result<()> {
+        Err(self.unsupported("GetFrameStatistics"))
+    }
+    fn GetLastPresentCount(&self) -> windows_core::Result<u32> {
+        SwapChain::GetLastPresentCount(self)
+    }
+}
+
+impl IDXGIDeviceSubObject_Impl for SwapChain_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows_core::GUID,
+        ppdevice: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        SwapChain::GetDevice(self, riid, ppdevice)
+    }
+}
+
+impl IDXGIObject_Impl for SwapChain_Impl {
     fn SetPrivateData(
         &self,
         _name: *const windows_core::GUID,
@@ -398,20 +794,18 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn GetResourceAllocationInfo(
         &self,
-        _visiblemask: u32,
-        _numresourcedescs: u32,
-        _presourcedescs: *const D3D12_RESOURCE_DESC,
+        visiblemask: u32,
+        numresourcedescs: u32,
+        presourcedescs: *const D3D12_RESOURCE_DESC,
     ) -> D3D12_RESOURCE_ALLOCATION_INFO {
-        self.unsupported("GetResourceAllocationInfo");
-        Default::default()
+        Device::GetResourceAllocationInfo(self, visiblemask, numresourcedescs, presourcedescs)
     }
     fn GetCustomHeapProperties(
         &self,
-        _nodemask: u32,
-        _heaptype: D3D12_HEAP_TYPE,
+        nodemask: u32,
+        heaptype: D3D12_HEAP_TYPE,
     ) -> D3D12_HEAP_PROPERTIES {
-        self.unsupported("GetCustomHeapProperties");
-        Default::default()
+        Device::GetCustomHeapProperties(self, nodemask, heaptype)
     }
     fn CreateCommittedResource(
         &self,
@@ -570,8 +964,7 @@ impl ID3D12Device_Impl for Device_Impl {
         self.unsupported("GetResourceTiling");
     }
     fn GetAdapterLuid(&self) -> windows::Win32::Foundation::LUID {
-        self.unsupported("GetAdapterLuid");
-        Default::default()
+        Device::GetAdapterLuid(self)
     }
 }
 
