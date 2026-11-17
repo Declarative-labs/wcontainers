@@ -743,11 +743,20 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rgba8UnormSrgb, Format::Rgba8Uint),
         (Format::Bgra8Unorm, Format::Bgra8UnormSrgb),
         (Format::Bgra8UnormSrgb, Format::Bgra8Unorm),
+        (Format::Rgba16Unorm, Format::Rgba16Uint),
+        (Format::Rgba16Uint, Format::Rgba16Unorm),
+        (Format::R16Unorm, Format::R16Uint),
+        (Format::Rg16Sint, Format::Rg16Unorm),
+        (Format::Rg16Unorm, Format::Rg16Sint),
     ];
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
         let caps = &b.caps().formats;
-        if caps.get(from).is_empty() || !caps.get(to).contains(FormatUse::COPY_OUT) {
+        // A source that does not read back here (signed normalised without EXT_render_snorm) is not
+        // copied either.
+        if !caps.get(from).contains(FormatUse::COPY_OUT)
+            || !caps.get(to).contains(FormatUse::COPY_OUT)
+        {
             continue;
         }
         let texel = from.block().2 as usize;
@@ -967,6 +976,550 @@ pub fn fractional_viewports_are_refused<H: Host>() {
     ));
     b.end_pass();
     assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error));
+}
+
+/// Loads texel (0, 0) of level 0 of two views and adds them.
+const TWO_LOADS: &str = "
+@group(0) @binding(32) var a: texture_2d<u32>;
+@group(0) @binding(33) var c: texture_2d<u32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<u32> {
+    return textureLoad(a, vec2<i32>(0), 0) + textureLoad(c, vec2<i32>(0), 0);
+}
+";
+
+/// Without `TEXTURE_VIEWS` (WebGL 2 samples a GL texture whole, its mip range set on the texture):
+/// binding a view of one layer of an array, or of one face of a cube, is `Absent(TEXTURE_VIEWS)`; a
+/// draw reading one texture through two mip ranges breaks the interface's rule and loses the device;
+/// through one range twice, it draws.
+pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    assert!(!b.caps().has(Features::TEXTURE_VIEWS));
+    let f = Format::Rgba8Uint;
+    let usage = TextureUsage::SAMPLE | TextureUsage::RENDER | TextureUsage::COPY_DST;
+    let array = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 3], 1, usage, false);
+    let cube = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 6], 1, usage, true);
+    let part = |dimension, layer, layers| TextureViewDesc {
+        format: f,
+        dimension,
+        base_mip: 0,
+        mip_count: 1,
+        base_layer: layer,
+        layer_count: layers,
+        stencil: false,
+    };
+    for (texture, desc, what) in [
+        (
+            &array,
+            part(ViewDimension::D2, 1, 1),
+            "one layer of an array",
+        ),
+        (&cube, part(ViewDimension::D2, 2, 1), "one face of a cube"),
+        (
+            &array,
+            part(ViewDimension::D2Array, 0, 2),
+            "two of three layers",
+        ),
+        (
+            &cube,
+            part(ViewDimension::D2Array, 0, 6),
+            "a cube as an array",
+        ),
+    ] {
+        // Refused when the view is made, or when it is bound.
+        let got = b.create_view(texture, &desc).and_then(|view| {
+            b.create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .map(drop)
+        });
+        assert!(
+            matches!(got, Err(GpuError::Absent(f)) if f == Features::TEXTURE_VIEWS),
+            "{what}: {got:?}"
+        );
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, TWO_LOADS, "vs", "fs");
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 1], 2, usage, false);
+    for mip in 0..2u32 {
+        let n = 2 >> mip;
+        b.write_texture(
+            &TextureRegion {
+                texture: &t,
+                mip,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: n,
+                height: n,
+                depth_or_layers: 1,
+            },
+            &vec![10 + mip as u8; (n * n * 4) as usize],
+            n * 4,
+            n,
+            WriteMode::Ordered,
+        );
+    }
+    let out_usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [1, 1, 1],
+        1,
+        out_usage,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, f, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    let level = |b: &mut H::Backend, mip| kit::view(b, &t, f, ViewDimension::D2, mip, 1, 0, 1);
+    let (level0, level0_again, level1) = (level(&mut b, 0), level(&mut b, 0), level(&mut b, 1));
+    for (second, sum, lost) in [(&level0_again, 20, false), (&level1, 0, true)] {
+        let set = b
+            .create_binding_set(&[
+                BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&level0),
+                },
+                BindingEntry {
+                    binding: 33,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(second),
+                },
+            ])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &vp,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        if lost {
+            assert_eq!(
+                b.status(),
+                DeviceStatus::Lost(LossReason::Error),
+                "two mip ranges"
+            );
+        } else {
+            let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+            assert_eq!(got, vec![sum; 4], "one mip range twice");
+        }
+    }
+}
+
+/// A `bgra8unorm` surface presents its frame: cleared to two colours in turn, the window shows each
+/// (the hosts read the window's bytes, which are RGBA).
+pub fn bgra_surfaces_present<H: Host>() {
+    let mut b = H::make();
+    assert!(
+        b.caps()
+            .formats
+            .get(Format::Bgra8Unorm)
+            .contains(FormatUse::PRESENT)
+    );
+    let window = H::window(&mut b);
+    let surface = b.create_surface(window).expect("create_surface");
+    b.configure_surface(&surface, Format::Bgra8Unorm, 4, 4, true)
+        .expect("configure_surface");
+    for (value, texel) in [
+        ([0.2f32, 0.4, 0.6, 1.0], [51u8, 102, 153, 255]),
+        ([1.0, 0.0, 0.2, 1.0], [255, 0, 51, 255]),
+    ] {
+        let v = b.current_texture(&surface).expect("current_texture");
+        b.begin_pass(&PassDesc {
+            colors: core::array::from_fn(|i| {
+                (i == 0).then_some(ColorAttachment {
+                    view: &v,
+                    depth_slice: 0,
+                    load: LoadOp::Clear(value.map(f32::to_bits)),
+                    store: StoreOp::Store,
+                    resolve: None,
+                })
+            }),
+            depth: None,
+            occlusion: None,
+            empty: None,
+        });
+        b.end_pass();
+        b.present(&surface).expect("present");
+        assert_eq!(H::shown(&mut b, window), texel.repeat(16), "{value:?}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Loads texel (0, 0) of a float texture into an `rgba32float` target.
+const LOAD_CORNER_FLOAT: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return textureLoad(t, vec2<i32>(0, 0), 0);
+}
+";
+
+/// The signed normalised formats follow EXT_render_snorm: with it they render and blend, and a
+/// clear to -1, 0, 1 and 64 steps loads back as those values; with or without it they sample and
+/// filter, and never copy out (`readPixels` returns -128 as -127).
+pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let has = b
+        .caps()
+        .formats
+        .get(F::Rgba8Snorm)
+        .contains(FormatUse::RENDER);
+    let mut formats = vec![F::R8Snorm, F::Rg8Snorm, F::Rgba8Snorm];
+    if b.caps().formats.get(F::Rgba16Snorm) != FormatUse::empty() {
+        formats.extend([F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm]);
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_CORNER_FLOAT, "vs", "fs");
+    let out_usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let f32x4 = F::Rgba32Float;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f32x4,
+        [1, 1, 1],
+        1,
+        out_usage,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, f32x4, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    let usage = TextureUsage::SAMPLE | TextureUsage::RENDER;
+    for format in formats {
+        let uses = b.caps().formats.get(format);
+        assert!(
+            uses.contains(FormatUse::SAMPLE | FormatUse::FILTER)
+                && !uses.contains(FormatUse::COPY_OUT),
+            "{format:?}: {uses:?}"
+        );
+        if !has {
+            assert_eq!(uses, FormatUse::SAMPLE | FormatUse::FILTER, "{format:?}");
+            continue;
+        }
+        assert!(
+            uses.contains(FormatUse::RENDER | FormatUse::BLEND),
+            "{format:?}: {uses:?}"
+        );
+        let max = match format {
+            F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm => 32767.0,
+            _ => 127.0,
+        };
+        let value = [-1.0f32, 0.0, 1.0, 64.0 / max];
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [2, 2, 1],
+            1,
+            usage,
+            false,
+        );
+        let v = kit::target(&mut b, &t, format, 0, 0);
+        b.begin_pass(&PassDesc {
+            colors: core::array::from_fn(|i| {
+                (i == 0).then_some(ColorAttachment {
+                    view: &v,
+                    depth_slice: 0,
+                    load: LoadOp::Clear(value.map(f32::to_bits)),
+                    store: StoreOp::Store,
+                    resolve: None,
+                })
+            }),
+            depth: None,
+            occlusion: None,
+            empty: None,
+        });
+        b.end_pass();
+        let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &vp,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 16, false);
+        let got: Vec<f32> = got
+            .chunks(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        // Channels the format lacks load as 0, 0 and 1.
+        let n = (format.block().2 as usize) / if max > 200.0 { 2 } else { 1 };
+        let mut want = [0.0, 0.0, 0.0, 1.0];
+        want[..n].copy_from_slice(&value[..n]);
+        assert_eq!(got, want, "{format:?}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// The 16-bit normalised formats follow EXT_texture_norm16: with it, the unsigned ones sample,
+/// filter, render, blend and read back, as stored, now and later, and the signed ones sample and
+/// filter; without it, none has a use and making one is refused.
+pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
+    use crate::kit;
+    use Format as F;
+    let mut b = H::make();
+    let has = b.caps().formats.get(F::Rgba16Unorm) != FormatUse::empty();
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    for format in [F::R16Unorm, F::Rg16Unorm, F::Rgba16Unorm] {
+        let uses = b.caps().formats.get(format);
+        if !has {
+            assert_eq!(uses, FormatUse::empty(), "{format:?}");
+            continue;
+        }
+        let want = FormatUse::SAMPLE
+            | FormatUse::FILTER
+            | FormatUse::RENDER
+            | FormatUse::BLEND
+            | FormatUse::COPY_OUT;
+        assert!(uses.contains(want), "{format:?}: {uses:?}");
+        let texel = format.block().2 as usize;
+        let bytes = pattern(12 * texel, 0x51ed_270b);
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 3, 1],
+            1,
+            usage,
+            false,
+        );
+        let region = TextureRegion {
+            texture: &t,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let extent = Extent {
+            width: 4,
+            height: 3,
+            depth_or_layers: 1,
+        };
+        b.write_texture(
+            &region,
+            extent,
+            &bytes,
+            4 * texel as u32,
+            3,
+            WriteMode::Ordered,
+        );
+        assert_eq!(
+            kit::read(&mut b, &t, 0, 0, [4, 3, 1], texel, false),
+            bytes,
+            "{format:?} now"
+        );
+        let rb = b
+            .read_back(&ReadSource::Texture { region, extent })
+            .expect("read_back");
+        b.submit();
+        b.wait_read(&rb);
+        let mut later = vec![0; bytes.len()];
+        b.finish_read(rb, &mut later);
+        assert_eq!(later, bytes, "{format:?} later");
+    }
+    for format in [F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm] {
+        let uses = b.caps().formats.get(format);
+        if has {
+            // Rendering them too needs EXT_render_snorm.
+            assert!(
+                uses.contains(FormatUse::SAMPLE | FormatUse::FILTER),
+                "{format:?}: {uses:?}"
+            );
+        } else {
+            assert_eq!(uses, FormatUse::empty(), "{format:?}");
+            let made = b.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: 4,
+                height: 4,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::SAMPLE,
+                cube: false,
+                reinterpret: false,
+            });
+            assert!(matches!(made, Err(GpuError::Invalid(_))), "{format:?}");
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// `generate_mips` of formats that render and filter, which this back end fills by
+/// `generateMipmap`, equals the interface's draws (`generate_mips_by_draws`) on a texture with the
+/// same texels: 2D, 2D array of odd size, cube and 3D textures, every level and only the last two
+/// (the levels above written with texels of their own), in every such format that reads back.
+pub fn generate_mipmap_equals_the_draws<H: Host>() {
+    use crate::kit;
+    use Format as F;
+    let mut b = H::make();
+    let usage = TextureUsage::SAMPLE
+        | TextureUsage::RENDER
+        | TextureUsage::COPY_SRC
+        | TextureUsage::COPY_DST;
+    let shapes = [
+        (TextureDimension::D2, [16, 16, 1], false),
+        (TextureDimension::D2, [13, 7, 2], false),
+        (TextureDimension::D2, [8, 8, 6], true),
+        (TextureDimension::D3, [8, 8, 4], false),
+    ];
+    let mut tested = 0;
+    let mut failures = Vec::new();
+    for format in [
+        F::Rgba8Unorm,
+        F::Rgba8UnormSrgb,
+        F::Bgra8Unorm,
+        F::R32Float,
+        F::Rgba16Unorm,
+        F::R16Unorm,
+    ] {
+        let need = FormatUse::RENDER | FormatUse::FILTER | FormatUse::COPY_OUT;
+        if !b.caps().formats.get(format).contains(need) {
+            continue;
+        }
+        let texel = format.block().2 as usize;
+        for (seed, &(dimension, size, cube)) in shapes.iter().enumerate() {
+            let levels = 4;
+            let made =
+                |b: &mut H::Backend| kit::texture(b, dimension, format, size, levels, usage, cube);
+            for first in [1, 2] {
+                let (native, drawn) = (made(&mut b), made(&mut b));
+                let layers = if dimension == TextureDimension::D3 {
+                    1
+                } else {
+                    size[2]
+                };
+                let shape = |mip: u32| {
+                    let n = |s: u32| (s >> mip).max(1);
+                    let depth = if dimension == TextureDimension::D3 {
+                        n(size[2])
+                    } else {
+                        size[2]
+                    };
+                    [n(size[0]), n(size[1]), depth]
+                };
+                let mut written = Vec::new();
+                for mip in 0..first {
+                    let s = shape(mip);
+                    let count = (s[0] * s[1] * s[2]) as usize;
+                    let mut bytes = pattern(count * texel, 7 + seed as u32 * 31 + mip * 5);
+                    if format == F::R32Float {
+                        // Values in [0, 1): no NaNs or infinities, which the filters need not agree on.
+                        for v in bytes.chunks_mut(4) {
+                            let x = u32::from_le_bytes([v[0], v[1], v[2], v[3]]) >> 9;
+                            v.copy_from_slice(&(x as f32 / (1 << 23) as f32).to_le_bytes());
+                        }
+                    }
+                    for t in [&native, &drawn] {
+                        b.write_texture(
+                            &TextureRegion {
+                                texture: t,
+                                mip,
+                                layer: 0,
+                                origin: Origin::default(),
+                                stencil: false,
+                            },
+                            Extent {
+                                width: s[0],
+                                height: s[1],
+                                depth_or_layers: s[2],
+                            },
+                            &bytes,
+                            s[0] * texel as u32,
+                            s[1],
+                            WriteMode::Ordered,
+                        );
+                    }
+                    written.push(bytes);
+                }
+                let desc = TextureDesc {
+                    dimension,
+                    format,
+                    width: size[0],
+                    height: size[1],
+                    depth_or_layers: size[2],
+                    mip_levels: levels,
+                    samples: 1,
+                    usage,
+                    cube,
+                    reinterpret: false,
+                };
+                let before = b.slow_paths().count(SlowPath::FilterInShader);
+                b.generate_mips(&native, &desc, format, first..levels, 0..layers)
+                    .expect("generate_mips");
+                generate_mips_by_draws(&mut b, &drawn, &desc, format, first..levels, 0..layers)
+                    .expect("generate_mips_by_draws");
+                assert_eq!(b.slow_paths().count(SlowPath::FilterInShader), before);
+                let what =
+                    format!("{format:?} {dimension:?} {size:?} cube {cube}, from level {first}");
+                for mip in 0..levels {
+                    let s = shape(mip);
+                    let want = kit::read(&mut b, &drawn, mip, 0, s, texel, false);
+                    let got = kit::read(&mut b, &native, mip, 0, s, texel, false);
+                    if let Some(bytes) = written.get(mip as usize) {
+                        if &got != bytes {
+                            failures.push(format!("{what}: generateMipmap changed level {mip}"));
+                        }
+                        if &want != bytes {
+                            failures.push(format!("{what}: the draws changed level {mip}"));
+                        }
+                    }
+                    // Differing texels per layer (per slice in 3D).
+                    let layer = (s[0] * s[1]) as usize * texel;
+                    let differ: Vec<usize> = got
+                        .chunks(layer)
+                        .zip(want.chunks(layer))
+                        .map(|(g, w)| {
+                            g.chunks(texel)
+                                .zip(w.chunks(texel))
+                                .filter(|(a, b)| a != b)
+                                .count()
+                        })
+                        .collect();
+                    if differ.iter().any(|&n| n > 0) {
+                        failures.push(format!(
+                            "{what}: level {mip} differs in {differ:?} of {} texels per layer",
+                            s[0] * s[1]
+                        ));
+                    }
+                }
+                b.destroy(Object::Texture(native));
+                b.destroy(Object::Texture(drawn));
+                tested += 1;
+            }
+        }
+    }
+    assert!(tested > 0, "no format renders, filters and reads back");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
 /// With `TIMESTAMPS`, two timestamps around a draw read back in order (unless the GPU reports a
@@ -2514,6 +3067,39 @@ pub fn absent_features_are_refused<H: Host>() {
         "exact occlusion counts",
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
+    // Draws asking for what is absent break the interface's rules: each loses its device.
+    for what in ["an indirect draw", "immediates past the limit"] {
+        let mut b = H::make();
+        let k = kit::Kit::new(&mut b);
+        let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
+        let f = Format::R32Uint;
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            f,
+            [4, 4, 1],
+            1,
+            TextureUsage::RENDER,
+            false,
+        );
+        let v = kit::target(&mut b, &t, f, 0, 0);
+        let args = self::buffer(&mut b, BufferUsage::INDIRECT, &words(&[3, 1, 0, 0]));
+        let vp = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+        let immediates = vec![0u8; b.caps().limits.immediate_bytes as usize + 4];
+        let mut call = kit::call(&k, &program, None, &vp, Topology::TriangleList, 3);
+        if what == "an indirect draw" {
+            call.range = DrawRange::Indirect {
+                args: &args,
+                offset: 0,
+            };
+        } else {
+            call.immediates = &immediates;
+        }
+        b.begin_pass(&kit::pass(&v, [0; 4], None));
+        b.draw(&call);
+        b.end_pass();
+        assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error), "{what}");
+    }
 }
 
 /// Copies into and out of textures kept on the host (RGB9E5 and block-compressed ones): between two

@@ -153,6 +153,11 @@ suite!(
     copies_into_and_out_of_host_kept_textures,
     srgb_views_of_block_compressed_textures,
     bgra_textures_keep_their_byte_order,
+    sampled_views_are_whole_textures_of_one_mip_range,
+    generate_mipmap_equals_the_draws,
+    sixteen_bit_normalised_formats_follow_their_extension,
+    bgra_surfaces_present,
+    signed_normalised_formats_follow_their_extension,
 );
 
 thread_local! {
