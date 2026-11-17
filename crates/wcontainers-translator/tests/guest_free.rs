@@ -98,6 +98,48 @@ fn the_translator_names_no_guest_cpu_crate() {
     assert!(found.is_empty(), "the translator names {found:?}");
 }
 
+/// The resolved graph, so that a crate brought in under another name or through another crate is found too.
+#[test]
+fn the_translator_depends_on_no_guest_cpu_crate() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = std::process::Command::new(cargo)
+        .current_dir(root)
+        .args([
+            "tree",
+            "--offline",
+            "--all-features",
+            "-p",
+            env!("CARGO_PKG_NAME"),
+            "-e",
+            "normal,build",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let tree = String::from_utf8(out.stdout).unwrap();
+    let mut found: Vec<&str> = tree
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| {
+            name.starts_with("wcontainers-")
+                && *name != env!("CARGO_PKG_NAME")
+                && !ALLOWED.contains(&name.replace('-', "_").as_str())
+        })
+        .collect();
+    found.dedup();
+    assert!(tree.contains("wcontainers-guest-cpu"), "the graph was read");
+    assert!(found.is_empty(), "the translator depends on {found:?}");
+}
+
 #[test]
 fn the_check_finds_a_cpu_crate() {
     assert_eq!(
