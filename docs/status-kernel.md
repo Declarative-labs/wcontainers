@@ -1461,6 +1461,12 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K5, seventh run: whole suite at 187f214 (the run's last code; same command, clean copy, own
+  build): 184 passed, 1 failed, 5 ignored, 21 min 51 s with the build (ten of them a hung
+  reference), load 24.8 at the start and 29.4 at the end. The failure is terminal's
+  `job_control`: the reference container hung (Known issues) and was removed; two reruns alone
+  passed.
+
 - K5, seventh run, end of the milestone's layer 1 bar: at 8e896aa seeds 5050454 and 5050455
   passed 20000 each (325 s each) and 5050453 found RWF_NOWAIT on a named pipe (181 s), three
   side by side, load 27 at the start and 35 to 61 at the end. With that fixed (187f214's
@@ -2099,6 +2105,13 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K5, seventh run: terminal's `job_control` (guest/jobs.c) hung in the reference once in the
+  whole suite at 187f214 (load about 30): after ten minutes one of its processes was stopped
+  (`do_signal_stop`) and the others waited on it and on a pipe. Ours does not hang; two reruns
+  alone passed. Likely the same family as the K4 entry below (the reference's job control
+  timing on several CPUs); not looked into further. A test that hangs in the reference waits
+  for ever, as the reference runner has no time limit.
 
 - K5, seventh run: threads `clone_tables_match_reference` (guest/clonetables.c) failed once in
   the whole suite at 8e896aa (load about 30, beside three layer 1 runs): the reference showed a
