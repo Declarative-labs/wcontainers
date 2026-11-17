@@ -8,6 +8,7 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
 
+use crate::base::HasBase;
 use crate::objects::*;
 use crate::present::*;
 
@@ -232,10 +233,10 @@ impl IDXGIObject_Impl for Adapter_Impl {
     }
     fn GetParent(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppparent: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetParent"))
+        Adapter::GetParent(self, riid, ppparent)
     }
 }
 
@@ -414,10 +415,10 @@ impl IDXGIObject_Impl for Output_Impl {
     }
     fn GetParent(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppparent: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetParent"))
+        Output::GetParent(self, riid, ppparent)
     }
 }
 
@@ -577,7 +578,7 @@ impl IDXGISwapChain_Impl for SwapChain_Impl {
         Err(self.unsupported("ResizeTarget"))
     }
     fn GetContainingOutput(&self) -> windows_core::Result<IDXGIOutput> {
-        Err(self.unsupported("GetContainingOutput"))
+        SwapChain::GetContainingOutput(self)
     }
     fn GetFrameStatistics(&self, _pstats: *mut DXGI_FRAME_STATISTICS) -> windows_core::Result<()> {
         Err(self.unsupported("GetFrameStatistics"))
@@ -623,10 +624,10 @@ impl IDXGIObject_Impl for SwapChain_Impl {
     }
     fn GetParent(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppparent: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetParent"))
+        SwapChain::GetParent(self, riid, ppparent)
     }
 }
 
@@ -758,11 +759,11 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateDepthStencilView(
         &self,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _pdesc: *const D3D12_DEPTH_STENCIL_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        pdesc: *const D3D12_DEPTH_STENCIL_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateDepthStencilView");
+        Device::CreateDepthStencilView(self, presource, pdesc, destdescriptor)
     }
     fn CreateSampler(
         &self,
@@ -971,29 +972,29 @@ impl ID3D12Device_Impl for Device_Impl {
 impl ID3D12Object_Impl for Device_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1074,39 +1075,39 @@ impl ID3D12Pageable_Impl for Queue_Impl {}
 impl ID3D12DeviceChild_Impl for Queue_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Queue_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1121,39 +1122,39 @@ impl ID3D12Pageable_Impl for Allocator_Impl {}
 impl ID3D12DeviceChild_Impl for Allocator_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Allocator_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1397,14 +1398,22 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn ClearDepthStencilView(
         &self,
-        _depthstencilview: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _clearflags: D3D12_CLEAR_FLAGS,
-        _depth: f32,
-        _stencil: u8,
-        _numrects: u32,
-        _prects: *const windows::Win32::Foundation::RECT,
+        depthstencilview: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        clearflags: D3D12_CLEAR_FLAGS,
+        depth: f32,
+        stencil: u8,
+        numrects: u32,
+        prects: *const windows::Win32::Foundation::RECT,
     ) {
-        self.unsupported("ClearDepthStencilView");
+        List::ClearDepthStencilView(
+            self,
+            depthstencilview,
+            clearflags,
+            depth,
+            stencil,
+            numrects,
+            prects,
+        )
     }
     fn ClearRenderTargetView(
         &self,
@@ -1510,39 +1519,39 @@ impl ID3D12CommandList_Impl for List_Impl {
 impl ID3D12DeviceChild_Impl for List_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for List_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1567,39 +1576,39 @@ impl ID3D12Pageable_Impl for Fence_Impl {}
 impl ID3D12DeviceChild_Impl for Fence_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Fence_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1655,39 +1664,39 @@ impl ID3D12Pageable_Impl for Resource_Impl {}
 impl ID3D12DeviceChild_Impl for Resource_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Resource_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1696,39 +1705,39 @@ impl ID3D12RootSignature_Impl for RootSignature_Impl {}
 impl ID3D12DeviceChild_Impl for RootSignature_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for RootSignature_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1743,39 +1752,39 @@ impl ID3D12Pageable_Impl for PipelineState_Impl {}
 impl ID3D12DeviceChild_Impl for PipelineState_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for PipelineState_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1796,39 +1805,39 @@ impl ID3D12Pageable_Impl for DescriptorHeap_Impl {}
 impl ID3D12DeviceChild_Impl for DescriptorHeap_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for DescriptorHeap_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 

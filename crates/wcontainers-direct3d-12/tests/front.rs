@@ -166,3 +166,23 @@ fn no_device_without_compute_11_0_sizes_or_d32_s8_targets() {
     caps.formats.uses[Format::Depth32FloatStencil8.index()] = FormatUse::empty();
     assert_eq!(feature_level(&caps), None);
 }
+
+#[test]
+fn signatures_convert_between_versions_as_the_deserializer_does() {
+    let old = signature(1);
+    let new = old.at_version(2);
+    assert_eq!(new.version, 2);
+    let RootParameterKind::Descriptor { flags, .. } = new.parameters[1].kind else {
+        unreachable!()
+    };
+    // Root descriptors of 1.0 are data volatile; ranges are descriptors and data volatile.
+    assert_eq!(flags, 2);
+    let RootParameterKind::Table(ranges) = &new.parameters[2].kind else {
+        unreachable!()
+    };
+    assert!(ranges.iter().all(|r| r.flags == 3));
+    let back = new.at_version(1);
+    assert_eq!(back, old);
+    // A signature at its own version is itself.
+    assert_eq!(signature(2).at_version(2), signature(2));
+}

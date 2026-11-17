@@ -8,15 +8,18 @@
 #![cfg(windows)]
 #![allow(non_snake_case)]
 
+mod abi;
+mod base;
 mod com;
 mod gpu;
 mod objects;
 mod present;
+mod rootsig;
 
-const EXPORTS: &str = " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature ";
+const EXPORTS: &str = " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice,@101 /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface,@102 /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature,@116 /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature,@117 /EXPORT:D3D12CreateRootSignatureDeserializer=wc_D3D12CreateRootSignatureDeserializer,@107 /EXPORT:D3D12CreateVersionedRootSignatureDeserializer=wc_D3D12CreateVersionedRootSignatureDeserializer,@108 ";
 
 /// Linker directives the linker reads from this section of the object file: Direct3D 12's exports
-/// under their own names.
+/// under their own names and the system library's ordinals.
 #[used]
 #[unsafe(link_section = ".drectve")]
 static DIRECTIVES: [u8; EXPORTS.len()] = {
@@ -157,7 +160,12 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
     if out.is_null() {
         return S_FALSE;
     }
-    let device: ID3D12Device = Device.into();
+    // One device per adapter: while it lives, it is handed out again.
+    let device = base::live_device().unwrap_or_else(|| {
+        let device: ID3D12Device = abi::fixed(Device::default().into());
+        base::set_live_device(&device);
+        device
+    });
     // SAFETY: as the caller passed them.
     unsafe { hand_out(&device.cast().unwrap(), riid, out) }
 }
@@ -380,4 +388,58 @@ pub unsafe extern "system" fn wc_D3D12SerializeRootSignature(
     };
     // SAFETY: the caller's pointers, passed on.
     unsafe { wc_D3D12SerializeVersionedRootSignature(&versioned, blob, errors) }
+}
+
+/// The root signature serialized in the caller's `length` bytes at `data`, read.
+///
+/// # Safety
+/// `data` points to `length` bytes, as the API requires.
+unsafe fn read_root(data: *const c_void, length: usize) -> Result<RootSignatureDesc, HRESULT> {
+    if data.is_null() || length == 0 {
+        return Err(E_INVALIDARG);
+    }
+    // SAFETY: as the caller promises.
+    let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
+    wcontainers_direct3d_12::root::deserialize(bytes).map_err(|_| E_INVALIDARG)
+}
+
+/// # Safety
+/// The pointers are the caller's, as the API defines them.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn wc_D3D12CreateRootSignatureDeserializer(
+    data: *const c_void,
+    length: usize,
+    riid: *const GUID,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    // SAFETY: the caller's bytes.
+    match unsafe { read_root(data, length) } {
+        Ok(desc) => {
+            let d: ID3D12RootSignatureDeserializer = rootsig::Deserializer::new(&desc).into();
+            // SAFETY: the caller's pointers.
+            unsafe { hand_out(&d.cast().unwrap(), riid, out) }
+        }
+        Err(e) => e,
+    }
+}
+
+/// # Safety
+/// The pointers are the caller's, as the API defines them.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn wc_D3D12CreateVersionedRootSignatureDeserializer(
+    data: *const c_void,
+    length: usize,
+    riid: *const GUID,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    // SAFETY: the caller's bytes.
+    match unsafe { read_root(data, length) } {
+        Ok(desc) => {
+            let d: ID3D12VersionedRootSignatureDeserializer =
+                rootsig::VersionedDeserializer::new(&desc).into();
+            // SAFETY: the caller's pointers.
+            unsafe { hand_out(&d.cast().unwrap(), riid, out) }
+        }
+        Err(e) => e,
+    }
 }

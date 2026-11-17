@@ -44,13 +44,13 @@ def args(sig):
 
 OBJECTS = [
     'Factory:IDXGIFactory4:EnumAdapters1,EnumAdapters,EnumAdapterByLuid,IsCurrent,GetCreationFlags,IsWindowedStereoEnabled,CreateSwapChainForHwnd,CreateSwapChain',
-    'Adapter:IDXGIAdapter1:GetDesc1,GetDesc,EnumOutputs',
-    'Output:IDXGIOutput6:GetDesc,GetDesc1,GetDisplayModeList,GetDisplayModeList1,FindClosestMatchingMode,FindClosestMatchingMode1,CheckHardwareCompositionSupport,SupportsOverlays',
-    'SwapChain:IDXGISwapChain4:Present,Present1,GetBuffer,ResizeBuffers,GetDesc1,GetDesc,GetHwnd,GetDevice,GetCurrentBackBufferIndex,GetLastPresentCount,SetMaximumFrameLatency,GetMaximumFrameLatency,GetFrameLatencyWaitableObject,GetFullscreenState,SetFullscreenState,IsTemporaryMonoSupported,CheckColorSpaceSupport,SetColorSpace1',
-    'Device:ID3D12Device:GetNodeCount,CreateCommandQueue,CreateCommandAllocator,CreateGraphicsPipelineState,CreateCommandList,CheckFeatureSupport,CreateDescriptorHeap,GetDescriptorHandleIncrementSize,CreateRootSignature,CreateRenderTargetView,CreateCommittedResource,CreateFence,GetDeviceRemovedReason,GetCopyableFootprints,GetAdapterLuid,GetResourceAllocationInfo,GetCustomHeapProperties',
+    'Adapter:IDXGIAdapter1:GetDesc1,GetDesc,EnumOutputs,GetParent',
+    'Output:IDXGIOutput6:GetParent,GetDesc,GetDesc1,GetDisplayModeList,GetDisplayModeList1,FindClosestMatchingMode,FindClosestMatchingMode1,CheckHardwareCompositionSupport,SupportsOverlays',
+    'SwapChain:IDXGISwapChain4:GetParent,GetContainingOutput,Present,Present1,GetBuffer,ResizeBuffers,GetDesc1,GetDesc,GetHwnd,GetDevice,GetCurrentBackBufferIndex,GetLastPresentCount,SetMaximumFrameLatency,GetMaximumFrameLatency,GetFrameLatencyWaitableObject,GetFullscreenState,SetFullscreenState,IsTemporaryMonoSupported,CheckColorSpaceSupport,SetColorSpace1',
+    'Device:ID3D12Device:GetNodeCount,CreateCommandQueue,CreateCommandAllocator,CreateGraphicsPipelineState,CreateCommandList,CheckFeatureSupport,CreateDescriptorHeap,GetDescriptorHandleIncrementSize,CreateRootSignature,CreateRenderTargetView,CreateDepthStencilView,CreateCommittedResource,CreateFence,GetDeviceRemovedReason,GetCopyableFootprints,GetAdapterLuid,GetResourceAllocationInfo,GetCustomHeapProperties',
     'Queue:ID3D12CommandQueue:ExecuteCommandLists,Signal,GetDesc',
     'Allocator:ID3D12CommandAllocator:Reset',
-    'List:ID3D12GraphicsCommandList:Close,Reset,DrawInstanced,DrawIndexedInstanced,CopyBufferRegion,CopyTextureRegion,IASetPrimitiveTopology,RSSetViewports,RSSetScissorRects,OMSetBlendFactor,OMSetStencilRef,SetPipelineState,ResourceBarrier,SetGraphicsRootSignature,IASetIndexBuffer,IASetVertexBuffers,OMSetRenderTargets,ClearRenderTargetView,GetType',
+    'List:ID3D12GraphicsCommandList:Close,Reset,DrawInstanced,DrawIndexedInstanced,CopyBufferRegion,CopyTextureRegion,IASetPrimitiveTopology,RSSetViewports,RSSetScissorRects,OMSetBlendFactor,OMSetStencilRef,SetPipelineState,ResourceBarrier,SetGraphicsRootSignature,IASetIndexBuffer,IASetVertexBuffers,OMSetRenderTargets,ClearRenderTargetView,ClearDepthStencilView,GetType',
     'Fence:ID3D12Fence:GetCompletedValue,SetEventOnCompletion,Signal',
     'Resource:ID3D12Resource:Map,Unmap,GetDesc,GetGPUVirtualAddress',
     'RootSignature:ID3D12RootSignature:',
@@ -58,6 +58,10 @@ OBJECTS = [
     'DescriptorHeap:ID3D12DescriptorHeap:GetDesc,GetCPUDescriptorHandleForHeapStart,GetGPUDescriptorHandleForHeapStart',
     'Blob:ID3DBlob:GetBufferPointer,GetBufferSize',
 ]
+
+# Objects with a `Base` (base.rs), which answers these methods.
+BASED = {'Device', 'Queue', 'Allocator', 'List', 'Fence', 'Resource', 'RootSignature', 'PipelineState', 'DescriptorHeap'}
+BASE_METHODS = {'GetDevice', 'GetPrivateData', 'SetPrivateData', 'SetPrivateDataInterface', 'SetName'}
 
 HEADER = '''//! The methods of each object's interfaces that the front does not do yet, made by com.py from the
 //! `windows` crate's interface traits: each reports itself as not implemented (a command list's also
@@ -69,6 +73,7 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
 
+use crate::base::HasBase;
 use crate::objects::*;
 use crate::present::*;
 '''
@@ -88,7 +93,9 @@ for spec in OBJECTS:
         for sig in methods:
             sig = qualify(sig.rstrip(';'), mod)
             m = re.match(r'fn (\w+)', sig).group(1)
-            if m in hand:
+            if ty in BASED and m in BASE_METHODS:
+                out.append('    %s {\n        self.base().%s(%s)\n    }' % (sig, m, args(sig)))
+            elif m in hand:
                 out.append('    %s {\n        %s::%s(self, %s)\n    }' % (sig, ty, m, args(sig)))
                 hand.discard(m)
             else:

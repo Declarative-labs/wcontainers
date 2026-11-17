@@ -65,6 +65,42 @@ pub struct RootSignatureDesc {
     pub flags: u32,
 }
 
+/// `D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE`.
+const DESCRIPTORS_VOLATILE: u32 = 1;
+/// `D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE` and `D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE`.
+const DATA_VOLATILE: u32 = 2;
+
+impl RootSignatureDesc {
+    /// This signature at `version` (1 for 1.0, 2 for 1.1), as the versioned deserializer converts:
+    /// to 1.0 the flags go; to 1.1 each range and root descriptor of a 1.0 signature gets the flags
+    /// that say 1.0's behaviour (descriptors and data volatile; sampler ranges descriptors only).
+    pub fn at_version(&self, version: u32) -> RootSignatureDesc {
+        let mut out = self.clone();
+        if version == self.version {
+            return out;
+        }
+        out.version = version;
+        for p in &mut out.parameters {
+            match &mut p.kind {
+                RootParameterKind::Table(ranges) => {
+                    for r in ranges {
+                        r.flags = match (version, r.kind) {
+                            (1, _) => 0,
+                            (_, 3) => DESCRIPTORS_VOLATILE,
+                            _ => DESCRIPTORS_VOLATILE | DATA_VOLATILE,
+                        };
+                    }
+                }
+                RootParameterKind::Descriptor { flags, .. } => {
+                    *flags = if version == 1 { 0 } else { DATA_VOLATILE };
+                }
+                RootParameterKind::Constants { .. } => {}
+            }
+        }
+        out
+    }
+}
+
 const RTS0: [u8; 4] = *b"RTS0";
 
 /// Reads a serialized root signature. `Err` says why it is malformed (`E_INVALIDARG`).
