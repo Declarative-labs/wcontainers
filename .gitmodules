@@ -1,3 +1,6 @@
 [submodule "crates/wcontainers-shaders/dxbc-spirv"]
 	path = crates/wcontainers-shaders/dxbc-spirv
 	url = https://github.com/doitsujin/dxbc-spirv.git
+[submodule "crates/wcontainers-shaders/dxil-spirv"]
+	path = crates/wcontainers-shaders/dxil-spirv
+	url = https://github.com/HansKristian-Work/dxil-spirv.git
