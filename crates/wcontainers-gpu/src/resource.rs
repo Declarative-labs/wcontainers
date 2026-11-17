@@ -262,8 +262,11 @@ pub enum BindingResource<'a, B: Backend> {
 /// What a pipeline must know of a binding set beyond its program: which sampled textures (bit = binding
 /// number minus 32) cannot be filtered on this back end. The zero key means every texture can be.
 ///
-/// WebGPU builds layouts from it with the program (plan section 4.5): such a texture is
-/// `"unfilterable-float"`, and a sampler is `"comparison"` where the program compares with it,
+/// WebGPU builds layouts from it with the program (plan section 4.5): a float texture the program only
+/// loads from, never pairing it with a sampler, is `"unfilterable-float"` whatever its view (which
+/// every float view binds to, so such textures need no bit, wherever their binding number lies); a
+/// texture whose bit is set is `"unfilterable-float"`, and a sampler is `"comparison"` where the program
+/// compares with it,
 /// `"non-filtering"` where the program pairs it with such a texture, and `"filtering"` otherwise (which
 /// takes every sampler that does not compare). Back ends without layouts give zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -314,7 +317,9 @@ pub struct TextureRegion<'a, B: Backend> {
 pub struct CopyBufferTexture<'a, B: Backend> {
     pub buffer: &'a B::Buffer,
     pub offset: u64,
-    /// Bytes from one row of blocks to the next.
+    /// Bytes from one row of blocks to the next, any multiple of the block size. A back end whose API
+    /// needs larger pitches (WebGPU: multiples of 256) copies the rows through a buffer at its own pitch
+    /// ([`crate::SlowPath::RowsRepacked`]).
     pub row_pitch: u32,
     /// Rows of blocks from one layer or slice to the next.
     pub rows_per_layer: u32,
