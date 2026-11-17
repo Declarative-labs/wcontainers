@@ -698,6 +698,17 @@ fn tracked<G: Guest>() -> Registers {
 /// Where the flags are known to be at a point: a set of flag state bits, one bit when it is known which:
 /// [`FLAGS_IN_LOCALS`], [`FLAGS_IN_BLOCK`], then one for each shape a function uses (at most 126).
 type FlagStates = u128;
+
+/// The states in a set of flag states, lowest first.
+fn state_ids(mut states: FlagStates) -> Vec<u32> {
+    let mut ids = Vec::with_capacity(states.count_ones() as usize);
+    while states != 0 {
+        ids.push(states.trailing_zeros());
+        states &= states - 1;
+    }
+    ids
+}
+
 /// The flags are in the piece's flag locals.
 const FLAGS_IN_LOCALS: u32 = 0;
 /// The flags are in the thread block, which is up to date.
@@ -1978,9 +1989,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         let block = self.fixed(G_THREAD_BLOCK);
         block.push(&mut self.sink());
-        let ids: Vec<u32> = (0..FlagStates::BITS)
-            .filter(|i| states >> i & 1 == 1)
-            .collect();
+        let ids = state_ids(states);
         for (k, &id) in ids.iter().enumerate() {
             if k + 1 < ids.len() {
                 let state = self.flag_state;
@@ -2273,9 +2282,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             return;
         }
         // Known only at run time: choose by the state local.
-        let ids: Vec<u32> = (0..FlagStates::BITS)
-            .filter(|i| states >> i & 1 == 1)
-            .collect();
+        let ids = state_ids(states);
         for (k, &id) in ids.iter().enumerate() {
             if k + 1 < ids.len() {
                 let state = self.flag_state;
