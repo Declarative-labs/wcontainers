@@ -72,6 +72,13 @@ built, linked, run or tested on Windows. What it did:
     Tests changed with it (not yet run): `own_refused` now expects ours to answer as real
     Direct3D does for the structured view and 4 samples (0, one level, 0), and com.rs's capability
     test makes a 4-sample texture for every format claiming a level, where it asserted none.
+  - A new example, `own_deferred` (tests/programs.rs
+    `deferred_contexts_states_and_resolves_answer_as_direct3d_does`, compared line by line with
+    real Direct3D; never run yet): what a deferred context refuses (`Map` kinds, `GetData`, a flag
+    at creation), a command list that clears, maps a dynamic buffer twice (discard, then no
+    overwrite) and copies it, run keeping and clearing the immediate context's state, a list
+    finished keeping the deferred state, `FinishCommandList` on the immediate context, context
+    state objects swapped in and back (and on a deferred context), and a 4-sample clear resolved.
 
 G4 run 3 merged origin/phase-2-graphics, -webgpu, -webgl, -direct3d-12 and -shaders, cleanly. The
 WebGPU back end now copies both aspects of depth with stencil (interface change c8a7be9), so the
