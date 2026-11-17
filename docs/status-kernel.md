@@ -2348,6 +2348,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K4, third run: none.
 - K4, second run: none.
 - K4, first run: none. (`Host::backend_send`, `Event::BackendReply` and `Event::BackendNotice` are
   used as they were.)
