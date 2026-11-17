@@ -2302,8 +2302,9 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
         ],
         // Futexes: words of `VALUES`, misaligned and bad ones; every wait has a timeout (of the
-        // sleeps), so nothing waits for ever. The priority inheriting operations are left to
-        // layer 2: they write the caller's thread number, which differs between the runners.
+        // sleeps), so nothing waits for ever. The priority inheriting operations that can take a
+        // lock write the caller's thread number, which differs between the runners, so they get
+        // only misaligned and bad addresses; the requeue ones never find a waiter and write nothing.
         linux::__NR_futex => {
             let word = |w: u64| match w % 6 {
                 0 => ARENA + VALUES + 2,
@@ -2322,9 +2323,31 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                     linux::FUTEX_WAKE_BITSET as u64,
                     linux::FUTEX_FD as u64,
                     14,
+                    linux::FUTEX_LOCK_PI as u64,
+                    linux::FUTEX_UNLOCK_PI as u64,
+                    linux::FUTEX_TRYLOCK_PI as u64,
+                    linux::FUTEX_LOCK_PI2 as u64,
+                    linux::FUTEX_WAIT_REQUEUE_PI as u64,
+                    linux::FUTEX_CMP_REQUEUE_PI as u64,
                 ],
                 b,
             );
+            let locks = [
+                linux::FUTEX_LOCK_PI as u64,
+                linux::FUTEX_UNLOCK_PI as u64,
+                linux::FUTEX_TRYLOCK_PI as u64,
+                linux::FUTEX_LOCK_PI2 as u64,
+            ]
+            .contains(&command);
+            // An unlock reads the word before it looks at the address, so it gets no misaligned
+            // one, whose bytes could name either runner's thread.
+            let first = if command == linux::FUTEX_UNLOCK_PI as u64 {
+                pick(&[0, u64::MAX - 4095], a)
+            } else if locks {
+                pick(&[ARENA + VALUES + 2, 0, u64::MAX - 4095], a)
+            } else {
+                word(a)
+            };
             let flags = pick(
                 &[
                     0,
@@ -2333,8 +2356,14 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 ],
                 b >> 8,
             );
-            let waits =
-                command == linux::FUTEX_WAIT as u64 || command == linux::FUTEX_WAIT_BITSET as u64;
+            let waits = [
+                linux::FUTEX_WAIT as u64,
+                linux::FUTEX_WAIT_BITSET as u64,
+                linux::FUTEX_LOCK_PI as u64,
+                linux::FUTEX_LOCK_PI2 as u64,
+                linux::FUTEX_WAIT_REQUEUE_PI as u64,
+            ]
+            .contains(&command);
             let fourth = if waits {
                 ARENA + VALUES + 56 * 8 + (d % 4) * 16
             } else {
@@ -2346,7 +2375,7 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
                 (op << 28) | (compare << 24) | (((w >> 6) & 0xfff) << 12) | ((w >> 18) & 0xfff)
             };
             [
-                word(a),
+                first,
                 command | flags,
                 pick(&[0, 1, u64::from(u32::MAX), (c >> 8) % 3], c),
                 fourth,

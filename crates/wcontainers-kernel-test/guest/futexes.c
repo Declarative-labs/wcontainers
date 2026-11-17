@@ -75,6 +75,16 @@ static void *pi_holder(void *arg) {
 
 static void handler(int signal) { (void)signal; }
 
+static volatile int vector_waiting;
+
+// Wakes as many waiters of `word` as it is given, once the vector wait has begun.
+static void *vector_waker(void *arg) {
+    while (!vector_waiting)
+        usleep(1000);
+    usleep(50000);
+    return (void *)fx(&word, FUTEX_WAKE_PRIVATE, (uint32_t)(uintptr_t)arg, NULL, NULL, 0);
+}
+
 static uint32_t tid_word;
 
 static int clear_me(void *arg) {
@@ -269,6 +279,25 @@ int main(void) {
     p("futex_requeue moves", syscall(SYS_futex_requeue, vector, 0, 0, 1));
     p("futex_wake second", syscall(SYS_futex_wake, &word2, 0xffffffffUL, 1, FUTEX2_SIZE_U32 | FUTEX2_PRIVATE));
     pthread_join(threads[0], NULL);
+
+    // A vector naming one futex twice: a wake takes its entries in order, and the call answers the
+    // highest one taken.
+    struct waitv twice[3] = {
+        {.val = 0, .uaddr = (uintptr_t)&word, .flags = FUTEX2_SIZE_U32 | FUTEX2_PRIVATE},
+        {.val = 0, .uaddr = (uintptr_t)&word, .flags = FUTEX2_SIZE_U32 | FUTEX2_PRIVATE},
+        {.val = 0, .uaddr = (uintptr_t)&word2, .flags = FUTEX2_SIZE_U32 | FUTEX2_PRIVATE},
+    };
+    for (uintptr_t count = 1; count <= 2; count++) {
+        vector_waiting = 0;
+        pthread_create(&threads[0], NULL, vector_waker, (void *)count);
+        clock_gettime(CLOCK_MONOTONIC, &until);
+        until.tv_sec += 5;
+        vector_waiting = 1;
+        p("waitv one futex twice", syscall(SYS_futex_waitv, twice, 3, 0, &until, CLOCK_MONOTONIC));
+        void *woken;
+        pthread_join(threads[0], &woken);
+        printf("its waker woke %ld\n", (long)woken);
+    }
 
     // A thread's end clears and wakes its thread id address.
     char *stack = mmap(NULL, 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

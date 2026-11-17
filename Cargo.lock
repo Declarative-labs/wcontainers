@@ -1850,6 +1850,7 @@ version = "0.1.0"
 dependencies = [
  "object 0.41.0",
  "siphasher",
+ "smallvec",
  "wcontainers-abi",
  "zerocopy",
 ]

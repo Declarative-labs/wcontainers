@@ -121,7 +121,7 @@ impl Mapping {
     }
 
     /// What the page at `address` allows the program (before copy on write).
-    fn page_permissions(&self, address: u64) -> Permissions {
+    pub fn page_permissions(&self, address: u64) -> Permissions {
         match &self.backing {
             Backing::File { file_end, .. } if address >= *file_end => Permissions::empty(),
             _ => cpu_permissions(self.permissions),

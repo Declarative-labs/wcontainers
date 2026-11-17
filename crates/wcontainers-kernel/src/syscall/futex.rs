@@ -8,6 +8,9 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
+use smallvec::SmallVec;
+use wcontainers_abi::Permissions;
+
 use super::{Args, Outcome, guest};
 use crate::linux::general::*;
 use crate::memory::Backing;
@@ -26,6 +29,8 @@ pub(crate) enum Key {
 #[derive(Clone, Copy, Debug)]
 struct Waiter {
     tid: Tid,
+    /// Which of its call's futexes this is (a vector wait has several).
+    index: u8,
     /// The address it waits at, in its own memory.
     address: u64,
     bitset: u32,
@@ -42,75 +47,118 @@ pub(crate) struct Futexes {
     /// Each futex's waiters, the first to be woken first (all threads here have the same
     /// priority, so Linux's priority list keeps them in the order they came).
     queues: BTreeMap<Key, VecDeque<Waiter>>,
-    /// The futexes each waiting thread queued itself on, in its call's order.
-    waiting: BTreeMap<Tid, Vec<Key>>,
     /// The owner the kernel knows of each priority inheriting futex with waiters (`pi_state`).
     pi_owners: BTreeMap<Key, Tid>,
 }
 
-impl Futexes {
-    fn queue(&mut self, key: Key, waiter: Waiter) {
-        self.queues.entry(key).or_default().push_back(waiter);
-        self.waiting.entry(waiter.tid).or_default().push(key);
-    }
+/// A thread's futex wait, kept in its entry (Linux's `futex_q`s): the futex each of its call's
+/// entries is queued on, and which of them a wake, requeue or hand-over took off its queue.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct Wait {
+    keys: SmallVec<[Key; 1]>,
+    /// One bit per entry (a vector has at most `FUTEX_WAITV_MAX`, 128).
+    woken: u128,
+}
 
-    fn queued(&self, tid: Tid, key: Key) -> bool {
-        self.queues
-            .get(&key)
-            .is_some_and(|queue| queue.iter().any(|waiter| waiter.tid == tid))
+impl Wait {
+    /// The highest entry taken off its queue, as `futex_unqueue_multiple` answers.
+    fn last_woken(&self) -> Option<usize> {
+        (self.woken != 0).then(|| 127 - self.woken.leading_zeros() as usize)
     }
+}
 
-    /// Takes a thread off one queue; returns whether it was on it.
-    fn unqueue(&mut self, tid: Tid, key: Key) -> bool {
-        let Some(queue) = self.queues.get_mut(&key) else {
-            return false;
-        };
-        let Some(index) = queue.iter().position(|waiter| waiter.tid == tid) else {
-            return false;
-        };
-        queue.remove(index);
-        if queue.is_empty() {
-            self.queues.remove(&key);
-            self.pi_owners.remove(&key);
+/// Queues a thread's next entry on a futex.
+fn queue(kernel: &mut Kernel, key: Key, mut waiter: Waiter) {
+    let wait = &mut kernel.thread_mut(waiter.tid).futex;
+    waiter.index = wait.keys.len() as u8;
+    wait.keys.push(key);
+    kernel
+        .futexes
+        .queues
+        .entry(key)
+        .or_default()
+        .push_back(waiter);
+}
+
+/// Takes a waiter out of a futex's queue by its place in it.
+fn remove(kernel: &mut Kernel, key: Key, position: usize) -> Option<Waiter> {
+    let queue = kernel.futexes.queues.get_mut(&key)?;
+    let waiter = queue.remove(position)?;
+    if queue.is_empty() {
+        kernel.futexes.queues.remove(&key);
+        kernel.futexes.pi_owners.remove(&key);
+    }
+    Some(waiter)
+}
+
+/// Takes a waiter off a futex's queue as woken (`__futex_unqueue`), which its call sees when it
+/// runs again.
+fn take(kernel: &mut Kernel, key: Key, position: usize) -> Option<Waiter> {
+    let waiter = remove(kernel, key, position)?;
+    if let Some(thread) = kernel.threads.get_mut(&waiter.tid) {
+        thread.futex.woken |= 1 << waiter.index;
+    }
+    Some(waiter)
+}
+
+/// Moves a waiter to the end of another futex's queue (`requeue_futex`), as `waiter` now is.
+fn move_waiter(kernel: &mut Kernel, key: Key, position: usize, to: Key, waiter: Waiter) {
+    remove(kernel, key, position);
+    if let Some(thread) = kernel.threads.get_mut(&waiter.tid) {
+        thread.futex.keys[usize::from(waiter.index)] = to;
+    }
+    kernel
+        .futexes
+        .queues
+        .entry(to)
+        .or_default()
+        .push_back(waiter);
+}
+
+/// Ends a thread's futex wait: its entries still queued are taken off. Returns the highest entry
+/// that had been taken off by a wake, if any was.
+fn finish(kernel: &mut Kernel, tid: Tid) -> Option<usize> {
+    let wait = core::mem::take(&mut kernel.thread_mut(tid).futex);
+    for (index, key) in wait.keys.iter().enumerate() {
+        if wait.woken & (1 << index) != 0 {
+            continue;
         }
-        true
-    }
-
-    /// Ends a thread's waits: off every queue it is on. Returns the futexes it had queued on.
-    fn finish(&mut self, tid: Tid) -> Vec<Key> {
-        let keys = self.waiting.remove(&tid).unwrap_or_default();
-        for key in &keys {
-            self.unqueue(tid, *key);
-        }
-        keys
-    }
-
-    /// Moves a waiter to another futex's queue, keeping its place in its call's list.
-    fn move_waiter(&mut self, waiter: Waiter, from: Key, to: Key) {
-        self.unqueue(waiter.tid, from);
-        self.queues.entry(to).or_default().push_back(waiter);
-        if let Some(keys) = self.waiting.get_mut(&waiter.tid)
-            && let Some(slot) = keys.iter_mut().find(|key| **key == from)
-        {
-            *slot = to;
+        let position = kernel.futexes.queues.get(key).and_then(|queue| {
+            queue
+                .iter()
+                .position(|waiter| waiter.tid == tid && usize::from(waiter.index) == index)
+        });
+        if let Some(position) = position {
+            remove(kernel, *key, position);
         }
     }
+    wait.last_woken()
+}
 
-    fn top(&self, key: Key) -> Option<Waiter> {
-        self.queues
-            .get(&key)
-            .and_then(|queue| queue.front().copied())
-    }
+/// The first waiter of a futex.
+fn top(kernel: &Kernel, key: Key) -> Option<Waiter> {
+    kernel
+        .futexes
+        .queues
+        .get(&key)
+        .and_then(|queue| queue.front().copied())
 }
 
 /// Takes a thread's waits away, as its end does.
 pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
-    kernel.futexes.finish(tid);
+    finish(kernel, tid);
 }
 
 /// `get_futex_key`: the address must be aligned and in user space; a shared futex's page must be
-/// mapped, and one in a shared mapping is known by its file.
-fn key_of(kernel: &Kernel, tid: Tid, address: u64, shared: bool) -> Result<Key, Errno> {
+/// mapped and readable, or writable for the calls that change the word (`FUTEX_WRITE`), and one in
+/// a shared mapping is known by its file.
+fn key_of(
+    kernel: &Kernel,
+    tid: Tid,
+    address: u64,
+    shared: bool,
+    write: bool,
+) -> Result<Key, Errno> {
     if !address.is_multiple_of(4) {
         return Err(Errno::EINVAL);
     }
@@ -123,6 +171,10 @@ fn key_of(kernel: &Kernel, tid: Tid, address: u64, shared: bool) -> Result<Key, 
     }
     let map = process.map.borrow();
     let mapping = map.find(address).ok_or(Errno::EFAULT)?;
+    let allows = mapping.page_permissions(address);
+    if !allows.contains(Permissions::READ) || (write && !allows.contains(Permissions::WRITE)) {
+        return Err(Errno::EFAULT);
+    }
     match &mapping.backing {
         Backing::File { node, offset, .. } if mapping.shared => Ok(Key::Shared(
             alloc::rc::Rc::as_ptr(node) as *const () as usize,
@@ -370,7 +422,7 @@ fn wait(
     if bitset == 0 {
         return Err(Errno::EINVAL).into();
     }
-    let key = match key_of(kernel, tid, address, shared) {
+    let key = match key_of(kernel, tid, address, shared, false) {
         Ok(key) => key,
         Err(error) => return Err(error).into(),
     };
@@ -380,10 +432,12 @@ fn wait(
         Err(error) => return Err(error).into(),
     }
     let until = deadline(cx, timeout, slack);
-    kernel.futexes.queue(
+    queue(
+        kernel,
         key,
         Waiter {
             tid,
+            index: 0,
             address,
             bitset,
             pi: false,
@@ -406,23 +460,17 @@ fn wait(
 
 /// A queued wait's next look: woken if it is off its queue, else its deadline, a signal, or park.
 fn wait_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
-    let keys = kernel
-        .futexes
-        .waiting
-        .get(&tid)
-        .cloned()
-        .unwrap_or_default();
-    if keys.iter().any(|key| !kernel.futexes.queued(tid, *key)) {
-        kernel.futexes.finish(tid);
+    if kernel.threads[&tid].futex.woken != 0 {
+        finish(kernel, tid);
         return Outcome::Return(0);
     }
     let call = kernel.threads[&tid].call;
     if call.deadline.is_some_and(|at| at <= cx.monotonic()) {
-        kernel.futexes.finish(tid);
+        finish(kernel, tid);
         return Err(Errno::ETIMEDOUT).into();
     }
     if kernel.signal_pending(tid) {
-        kernel.futexes.finish(tid);
+        finish(kernel, tid);
         // With a timeout, the wait goes on from `restart_syscall` until the same time.
         if matches!(kernel.threads[&tid].restart, Some(Restart::Futex { .. })) {
             return Err(Errno::ERESTART_RESTARTBLOCK).into();
@@ -491,7 +539,7 @@ pub(crate) fn wake(
     if bitset == 0 {
         return Err(Errno::EINVAL);
     }
-    let key = key_of(kernel, tid, address, shared)?;
+    let key = key_of(kernel, tid, address, shared, false)?;
     if strict && count == 0 {
         return Ok(0);
     }
@@ -499,29 +547,30 @@ pub(crate) fn wake(
 }
 
 fn wake_key(kernel: &mut Kernel, key: Key, count: i32, bitset: u32) -> Result<u64, Errno> {
-    let mut woken = Vec::new();
-    let mut result = Ok(());
-    if let Some(queue) = kernel.futexes.queues.get(&key) {
-        for waiter in queue {
-            // A priority inheriting waiter is not for a plain wake.
-            if waiter.pi || waiter.requeue_pi.is_some() {
-                result = Err(Errno::EINVAL);
-                break;
-            }
-            if waiter.bitset & bitset == 0 {
-                continue;
-            }
-            woken.push(waiter.tid);
-            if woken.len() as i64 >= i64::from(count) {
-                break;
-            }
+    let mut woken = 0i64;
+    let mut position = 0;
+    while let Some(waiter) = kernel
+        .futexes
+        .queues
+        .get(&key)
+        .and_then(|queue| queue.get(position).copied())
+    {
+        // A priority inheriting waiter is not for a plain wake; those found before it are woken.
+        if waiter.pi || waiter.requeue_pi.is_some() {
+            return Err(Errno::EINVAL);
+        }
+        if waiter.bitset & bitset == 0 {
+            position += 1;
+            continue;
+        }
+        take(kernel, key, position);
+        wake_waiter(kernel, waiter.tid);
+        woken += 1;
+        if woken >= i64::from(count) {
+            break;
         }
     }
-    for tid in &woken {
-        kernel.futexes.unqueue(*tid, key);
-        wake_waiter(kernel, *tid);
-    }
-    result.map(|()| woken.len() as u64)
+    Ok(woken as u64)
 }
 
 /// `futex_requeue`: wakes up to `wake` waiters of the first futex and moves up to `requeue` more
@@ -543,12 +592,12 @@ fn requeue(
     if wake < 0 || requeue < 0 {
         return Err(Errno::EINVAL);
     }
-    // Only the one waiter that takes the lock may be woken.
-    if pi && wake != 1 {
+    // Two distinct futexes, and only the one waiter that takes the lock may be woken.
+    if pi && (address == address2 || wake != 1) {
         return Err(Errno::EINVAL);
     }
-    let key = key_of(kernel, tid, address, shared)?;
-    let key2 = key_of(kernel, tid, address2, shared)?;
+    let key = key_of(kernel, tid, address, shared, false)?;
+    let key2 = key_of(kernel, tid, address2, shared, pi)?;
     if pi && key == key2 {
         return Err(Errno::EINVAL);
     }
@@ -571,14 +620,15 @@ fn requeue_plain(
     wake: i32,
     requeue: i32,
 ) -> Result<u64, Errno> {
-    let waiters: Vec<Waiter> = kernel
+    let mut count = 0i64;
+    // Waiters requeued onto their own futex keep their places.
+    let mut position = 0;
+    while let Some(waiter) = kernel
         .futexes
         .queues
         .get(&key)
-        .map(|queue| queue.iter().copied().collect())
-        .unwrap_or_default();
-    let mut count = 0i64;
-    for waiter in waiters {
+        .and_then(|queue| queue.get(position).copied())
+    {
         if count - i64::from(wake) >= i64::from(requeue) {
             break;
         }
@@ -587,10 +637,12 @@ fn requeue_plain(
         }
         count += 1;
         if count <= i64::from(wake) {
-            kernel.futexes.unqueue(waiter.tid, key);
+            take(kernel, key, position);
             wake_waiter(kernel, waiter.tid);
+        } else if key == key2 {
+            position += 1;
         } else {
-            kernel.futexes.move_waiter(waiter, key, key2);
+            move_waiter(kernel, key, position, key2, waiter);
         }
     }
     Ok(count as u64)
@@ -654,8 +706,8 @@ fn wake_op(
     wake2: i32,
     op: u32,
 ) -> Result<u64, Errno> {
-    let key = key_of(kernel, tid, address, shared)?;
-    let key2 = key_of(kernel, tid, address2, shared)?;
+    let key = key_of(kernel, tid, address, shared, false)?;
+    let key2 = key_of(kernel, tid, address2, shared, true)?;
     let held = atomic_op(kernel, cx, tid, address2, op)?;
     let mut woken = wake_key(kernel, key, wake, FUTEX_BITSET_MATCH_ANY)?;
     if held {
@@ -678,7 +730,7 @@ fn lock_pi_atomic(
     if value & FUTEX_TID_MASK == tid as u32 {
         return Err(Errno::EDEADLK);
     }
-    if kernel.futexes.top(key).is_some() {
+    if top(kernel, key).is_some() {
         // `attach_to_pi_state`: the word must agree with the owner the kernel knows.
         let owner = kernel.futexes.pi_owners.get(&key).copied();
         let named = (value & FUTEX_TID_MASK) as Tid;
@@ -720,7 +772,7 @@ fn lock_pi(
     timeout: Timeout,
     trylock: bool,
 ) -> Outcome {
-    let key = match key_of(kernel, tid, address, shared) {
+    let key = match key_of(kernel, tid, address, shared, true) {
         Ok(key) => key,
         Err(error) => return Err(error).into(),
     };
@@ -730,16 +782,18 @@ fn lock_pi(
         Err(error) => return Err(error).into(),
     }
     if trylock {
-        if kernel.futexes.top(key).is_none() {
+        if top(kernel, key).is_none() {
             kernel.futexes.pi_owners.remove(&key);
         }
         return Err(Errno::EAGAIN).into();
     }
     let until = deadline(cx, timeout, 0);
-    kernel.futexes.queue(
+    queue(
+        kernel,
         key,
         Waiter {
             tid,
+            index: 0,
             address,
             bitset: FUTEX_BITSET_MATCH_ANY,
             pi: true,
@@ -755,17 +809,8 @@ fn lock_pi(
 /// A queued lock's next look: handed the lock if it is off its queue, else its deadline, a signal
 /// (the call starts again, `ERESTARTNOINTR`), or park.
 fn lock_pi_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
-    let keys = kernel
-        .futexes
-        .waiting
-        .get(&tid)
-        .cloned()
-        .unwrap_or_default();
-    let Some(&key) = keys.first() else {
-        return Outcome::Return(0);
-    };
-    if !kernel.futexes.queued(tid, key) {
-        kernel.futexes.finish(tid);
+    if kernel.threads[&tid].futex.woken != 0 {
+        finish(kernel, tid);
         return Outcome::Return(0);
     }
     if kernel.threads[&tid]
@@ -773,11 +818,11 @@ fn lock_pi_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome
         .deadline
         .is_some_and(|at| at <= cx.monotonic())
     {
-        kernel.futexes.finish(tid);
+        finish(kernel, tid);
         return Err(Errno::ETIMEDOUT).into();
     }
     if kernel.signal_pending(tid) {
-        kernel.futexes.finish(tid);
+        finish(kernel, tid);
         return Err(Errno::ERESTARTNOINTR).into();
     }
     kernel.park(tid, Channel::Futex);
@@ -787,13 +832,13 @@ fn lock_pi_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome
 /// Hands a priority inheriting lock to its first waiter (`wake_futex_pi`): the word names it, with
 /// the waiters bit always kept and an owner's death kept if `keep` holds it.
 fn hand_over(kernel: &mut Kernel, cx: &mut Context<'_>, key: Key, keep: u32) -> Result<(), Errno> {
-    let Some(next) = kernel.futexes.top(key) else {
+    let Some(next) = top(kernel, key) else {
         return Ok(());
     };
     let word = keep | FUTEX_WAITERS | next.tid as u32;
     write_word(kernel, cx, next.tid, next.address, word)?;
-    kernel.futexes.unqueue(next.tid, key);
-    if kernel.futexes.top(key).is_some() {
+    take(kernel, key, 0);
+    if top(kernel, key).is_some() {
         kernel.futexes.pi_owners.insert(key, next.tid);
     }
     wake_waiter(kernel, next.tid);
@@ -813,8 +858,8 @@ fn unlock_pi(
     if value & FUTEX_TID_MASK != tid as u32 {
         return Err(Errno::EPERM);
     }
-    let key = key_of(kernel, tid, address, shared)?;
-    if let Some(top) = kernel.futexes.top(key) {
+    let key = key_of(kernel, tid, address, shared, true)?;
+    if let Some(top) = top(kernel, key) {
         if !top.pi || kernel.futexes.pi_owners.get(&key) != Some(&tid) {
             return Err(Errno::EINVAL);
         }
@@ -841,26 +886,28 @@ fn wait_requeue_pi(
     if address == address2 {
         return Err(Errno::EINVAL).into();
     }
-    let (key, key2) = match (
-        key_of(kernel, tid, address, shared),
-        key_of(kernel, tid, address2, shared),
-    ) {
-        (Ok(key), Ok(key2)) => (key, key2),
-        (Err(error), _) | (_, Err(error)) => return Err(error).into(),
+    // The lock's key, then the condition's and its value, then whether they are one futex.
+    let (key2, key) = match key_of(kernel, tid, address2, shared, true)
+        .and_then(|key2| Ok((key2, key_of(kernel, tid, address, shared, false)?)))
+    {
+        Ok(keys) => keys,
+        Err(error) => return Err(error).into(),
     };
-    if key == key2 {
-        return Err(Errno::EINVAL).into();
-    }
     match read_word(kernel, cx, tid, address) {
         Ok(found) if found == value => {}
         Ok(_) => return Err(Errno::EAGAIN).into(),
         Err(error) => return Err(error).into(),
     }
+    if key == key2 {
+        return Err(Errno::EINVAL).into();
+    }
     let until = deadline(cx, timeout, kernel.threads[&tid].timer_slack);
-    kernel.futexes.queue(
+    queue(
+        kernel,
         key,
         Waiter {
             tid,
+            index: 0,
             address,
             bitset: FUTEX_BITSET_MATCH_ANY,
             pi: false,
@@ -883,27 +930,18 @@ fn wait_requeue_pi_again(
     address2: u64,
     shared: bool,
 ) -> Outcome {
-    let keys = kernel
-        .futexes
-        .waiting
-        .get(&tid)
-        .cloned()
-        .unwrap_or_default();
-    let Some(&last) = keys.last() else {
-        return Outcome::Return(0);
-    };
-    let lock = key_of(kernel, tid, address2, shared).ok();
-    let on_lock = Some(last) == lock;
-    if !kernel.futexes.queued(tid, last) {
-        kernel.futexes.finish(tid);
+    let wait = &kernel.threads[&tid].futex;
+    if wait.woken != 0 {
+        finish(kernel, tid);
         return Outcome::Return(0);
     }
+    let on_lock = wait.keys.first().copied() == key_of(kernel, tid, address2, shared, true).ok();
     let timed_out = kernel.threads[&tid]
         .call
         .deadline
         .is_some_and(|at| at <= cx.monotonic());
     if timed_out || kernel.signal_pending(tid) {
-        kernel.futexes.finish(tid);
+        finish(kernel, tid);
         return Err(match (timed_out, on_lock) {
             (true, _) => Errno::ETIMEDOUT,
             // Still on the condition: the wait ends as a plain one does.
@@ -928,15 +966,10 @@ fn requeue_pi(
     address2: u64,
     requeue: i32,
 ) -> Result<u64, Errno> {
-    let waiters: Vec<Waiter> = kernel
-        .futexes
-        .queues
-        .get(&key)
-        .map(|queue| queue.iter().copied().collect())
-        .unwrap_or_default();
     let mut count = 0i64;
     let mut first = true;
-    for waiter in waiters {
+    // Each waiter is taken or moved, so the next is always the first.
+    while let Some(waiter) = top(kernel, key) {
         if count > i64::from(requeue) {
             break;
         }
@@ -947,13 +980,13 @@ fn requeue_pi(
             first = false;
             // `futex_proxy_trylock_atomic`: the top waiter takes the lock if it is free.
             let value = read_word(kernel, cx, tid, address2)?;
-            if value & FUTEX_TID_MASK == 0 && kernel.futexes.top(key2).is_none() {
+            if value & FUTEX_TID_MASK == 0 && top(kernel, key2).is_none() {
                 let more = kernel.futexes.queues[&key].len() > 1;
                 let new = (value & FUTEX_OWNER_DIED)
                     | waiter.tid as u32
                     | if more { FUTEX_WAITERS } else { 0 };
                 write_word(kernel, cx, tid, address2, new)?;
-                kernel.futexes.unqueue(waiter.tid, key);
+                take(kernel, key, 0);
                 kernel.futexes.pi_owners.insert(key2, waiter.tid);
                 wake_waiter(kernel, waiter.tid);
                 count += 1;
@@ -970,15 +1003,17 @@ fn requeue_pi(
             kernel.futexes.pi_owners.insert(key2, owner);
         }
         write_word(kernel, cx, tid, address2, value | FUTEX_WAITERS)?;
-        kernel.futexes.move_waiter(
+        move_waiter(
+            kernel,
+            key,
+            0,
+            key2,
             Waiter {
                 address: address2,
                 pi: true,
                 requeue_pi: None,
                 ..waiter
             },
-            key,
-            key2,
         );
         count += 1;
     }
@@ -987,7 +1022,8 @@ fn requeue_pi(
 
 /// A thread's end as `futex_exit_release` and `mm_release` see it: the locks on its robust list
 /// marked as their owner's death and a waiter woken, the priority inheriting locks it holds handed
-/// on, and its thread id address cleared and woken while others still use the memory.
+/// on marked the same, and its thread id address cleared and woken while others still use the
+/// memory.
 pub(crate) fn thread_end(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -1011,12 +1047,8 @@ pub(crate) fn thread_end(
         .collect();
     for key in held {
         kernel.futexes.pi_owners.remove(&key);
-        let Some(next) = kernel.futexes.top(key) else {
-            continue;
-        };
-        if let Ok(value) = read_word(kernel, cx, next.tid, next.address) {
-            let _ = hand_over(kernel, cx, key, value & FUTEX_OWNER_DIED);
-        }
+        // The next owner finds no owner to take over from (`__fixup_pi_state_owner`).
+        let _ = hand_over(kernel, cx, key, FUTEX_OWNER_DIED);
     }
     if clear != 0 && others_use_memory && guest(kernel, cx, tid).write_value(clear, &0u32).is_ok() {
         let _ = wake(kernel, tid, clear, true, 1, FUTEX_BITSET_MATCH_ANY, false);
@@ -1250,7 +1282,7 @@ pub(super) fn futex_waitv(
         // `futex_wait_multiple_setup`: every key, then every value, before any is queued.
         let mut keys = Vec::new();
         for (address, _, shared) in &entries {
-            keys.push(key_of(kernel, tid, *address, *shared)?);
+            keys.push(key_of(kernel, tid, *address, *shared, false)?);
         }
         for (address, value, _) in &entries {
             if read_word(kernel, cx, tid, *address)? != *value {
@@ -1264,10 +1296,12 @@ pub(super) fn futex_waitv(
         Err(error) => return Err(error).into(),
     };
     for (key, (address, ..)) in keys.into_iter().zip(entries) {
-        kernel.futexes.queue(
+        queue(
+            kernel,
             key,
             Waiter {
                 tid,
+                index: 0,
                 address,
                 bitset: FUTEX_BITSET_MATCH_ANY,
                 pi: false,
@@ -1284,17 +1318,8 @@ pub(super) fn futex_waitv(
 
 /// A vector wait's next look: the last of its futexes found woken, its deadline, a signal, or park.
 fn waitv_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
-    let keys = kernel
-        .futexes
-        .waiting
-        .get(&tid)
-        .cloned()
-        .unwrap_or_default();
-    let woken = keys
-        .iter()
-        .rposition(|key| !kernel.futexes.queued(tid, *key));
-    if let Some(index) = woken {
-        kernel.futexes.finish(tid);
+    if kernel.threads[&tid].futex.woken != 0 {
+        let index = finish(kernel, tid).unwrap_or(0);
         return Outcome::Return(index as u64);
     }
     if kernel.threads[&tid]
@@ -1302,11 +1327,11 @@ fn waitv_again(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) -> Outcome {
         .deadline
         .is_some_and(|at| at <= cx.monotonic())
     {
-        kernel.futexes.finish(tid);
+        finish(kernel, tid);
         return Err(Errno::ETIMEDOUT).into();
     }
     if kernel.signal_pending(tid) {
-        kernel.futexes.finish(tid);
+        finish(kernel, tid);
         return Err(Errno::ERESTARTSYS).into();
     }
     kernel.park(tid, Channel::Futex);
@@ -1339,8 +1364,8 @@ pub(super) fn futex_requeue(
     if wake < 0 || requeue_count < 0 {
         return Err(Errno::EINVAL);
     }
-    let key = key_of(kernel, tid, address, shared)?;
-    let key2 = key_of(kernel, tid, address2, shared2)?;
+    let key = key_of(kernel, tid, address, shared, false)?;
+    let key2 = key_of(kernel, tid, address2, shared2, false)?;
     if read_word(kernel, cx, tid, address)? != value {
         return Err(Errno::EAGAIN);
     }

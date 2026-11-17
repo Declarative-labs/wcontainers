@@ -286,6 +286,8 @@ pub(crate) struct Thread {
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is in, while it has not finished: what it waits for and how far it got.
     pub call: Call,
+    /// The futexes the call waits on, while it is a futex wait.
+    pub futex: crate::syscall::futex::Wait,
     /// What `restart_syscall` continues, for a call interrupted by a handler.
     pub restart: Option<Restart>,
     /// The CPU time the thread has used, and its scheduler time weighted by its priority.
@@ -445,6 +447,7 @@ impl Thread {
             pending: Pending::default(),
             alternate_stack: (0, 0, 0),
             call: Call::default(),
+            futex: Default::default(),
             restart: None,
             runtime: 0,
             vruntime: 0,
