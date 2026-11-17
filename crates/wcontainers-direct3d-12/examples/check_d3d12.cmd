@@ -14,6 +14,7 @@ for %%w in (real ours) do (
   check_d3d12 features features.txt
   check_d3d12 outputs outputs.txt
   check_d3d12 answers answers.txt
+  check_d3d12 cases cases.txt
   echo fence-wait %%w:
   check_d3d12 fence-wait 2000
   popd
@@ -26,3 +27,5 @@ echo outputs:
 %C%\real\check_d3d12 compare-features %C%\real\outputs.txt %C%\ours\outputs.txt all
 echo answers:
 %C%\real\check_d3d12 compare-features %C%\real\answers.txt %C%\ours\answers.txt all
+echo cases:
+%C%\real\check_d3d12 compare-cases %C%\real\cases.txt %C%\ours\cases.txt

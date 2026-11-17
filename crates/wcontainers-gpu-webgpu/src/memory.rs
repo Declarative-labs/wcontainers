@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use wcontainers_gpu::{
-    Backend, CopyBufferTexture, Extent, Format, GpuError, Origin, QueryKind, ReadSource, SlowPath,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, WriteMode,
+    Backend, CopyBufferTexture, Extent, Format, FormatKind, GpuError, Origin, QueryKind,
+    ReadSource, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage, WriteMode,
 };
 
-use crate::fill::DepthSource;
+use crate::fill::{AspectRead, DepthSource};
 use crate::{
     Buffer, BufferObj, MAP_PENDING, MAP_READY, QuerySet, Readback, ReadbackObj, Stream, Texture,
     WebGpu, convert, row_bytes,
@@ -124,15 +124,17 @@ fn filled_by_draw(format: Format) -> bool {
     )
 }
 
-/// The format a region's texels are in: the stencil aspect is 8-bit, depth its own.
+/// The format a region's texels are in when copied to or from a buffer: the stencil aspect is
+/// 8-bit, a combined format's depth aspect that depth format.
 fn region_format<B>(texture: &crate::TextureObj, region: &TextureRegion<'_, B>) -> Format
 where
     B: wcontainers_gpu::Backend,
 {
-    if region.stencil {
-        Format::Stencil8
-    } else {
-        texture.held
+    match (region.stencil, texture.held) {
+        (true, _) => Format::Stencil8,
+        (false, Format::Depth24PlusStencil8) => Format::Depth24Plus,
+        (false, Format::Depth32FloatStencil8) => Format::Depth32Float,
+        (false, held) => held,
     }
 }
 
@@ -519,36 +521,48 @@ impl WebGpu {
         let (s, d) = (&src.texture.0, &dst.texture.0);
         s.used_in.set(self.serial);
         d.used_in.set(self.serial);
-        let (sf, df) = (region_format(s, src), region_format(d, dst));
-        let whole = {
+        let (sf, df) = (s.held, d.held);
+        let covers = |t: &crate::TextureObj, r: &TextureRegion<'_, Self>| {
             let (w, h) = (
-                (d.desc.width >> dst.mip).max(1),
-                (d.desc.height >> dst.mip).max(1),
+                (t.desc.width >> r.mip).max(1),
+                (t.desc.height >> r.mip).max(1),
             );
-            dst.origin.x == 0 && dst.origin.y == 0 && extent.width == w && extent.height == h
+            r.origin.x == 0 && r.origin.y == 0 && extent.width == w && extent.height == h
         };
-        // WebGPU copies depth and stencil only between equal formats and only whole.
-        if df.is_depth_stencil() && (sf != df || !whole) {
-            if dst.stencil || df == Format::Stencil8 {
-                self.fail("stencil copies by draws (StencilCopiedByDraw) are not built yet");
-                return;
-            }
-            let how = DepthSource::of(sf, df);
-            let Some(how) = how else {
-                self.fail("a copy into depth from a format outside its typeless group");
-                return;
-            };
-            self.depth_copy(
-                (&s.raw, sf, how),
-                (src.mip, src.layer, [src.origin.x, src.origin.y]),
-                dst,
-                extent,
-                Stream::Main,
-            );
+        let whole = covers(d, dst) && covers(s, src);
+        // A combined format is copied with both aspects.
+        let combined =
+            sf.kind() == FormatKind::DepthStencil || df.kind() == FormatKind::DepthStencil;
+        if combined && sf != df {
+            self.fail("a copy between a combined depth-stencil format and another format");
             return;
         }
-        let from = texel_copy(s, src.mip, src.layer, src.origin, src.stencil);
-        let to = texel_copy(d, dst.mip, dst.layer, dst.origin, dst.stencil);
+        // WebGPU copies depth and stencil only between equal formats and only whole; the rest
+        // are draws writing each aspect.
+        if df.is_depth_stencil() && (sf != df || !whole) {
+            let at = (src.mip, src.layer, [src.origin.x, src.origin.y]);
+            if df.kind() != FormatKind::Stencil {
+                let Some(how) = DepthSource::of(sf, df) else {
+                    self.fail("a copy into depth from a format outside its typeless group");
+                    return;
+                };
+                self.depth_copy((&s.raw, sf, how), at, dst, extent, Stream::Main);
+            }
+            if df.kind() != FormatKind::Depth {
+                if sf != df {
+                    self.fail("a copy into stencil from another format");
+                    return;
+                }
+                self.stencil_copy((&s.raw, wgpu::TextureAspect::StencilOnly), at, dst, extent);
+            }
+            return;
+        }
+        let mut from = texel_copy(s, src.mip, src.layer, src.origin, src.stencil);
+        let mut to = texel_copy(d, dst.mip, dst.layer, dst.origin, dst.stencil);
+        if combined {
+            from.aspect = wgpu::TextureAspect::All;
+            to.aspect = wgpu::TextureAspect::All;
+        }
         if sf.linear() == df.linear() {
             self.encoder
                 .get_or_insert_with(|| {
@@ -630,6 +644,94 @@ impl WebGpu {
         );
     }
 
+    /// Writes the stencil of `dst` from the `u32` texels of `src` in its aspect by draws, after
+    /// checking what the draws need.
+    fn stencil_copy(
+        &mut self,
+        src: (&wgpu::Texture, wgpu::TextureAspect),
+        src_at: (u32, u32, [u32; 2]),
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let d = &dst.texture.0;
+        if src.0.sample_count() > 1 || d.desc.samples > 1 {
+            self.fail("multisampled stencil copies by a draw are not built yet");
+            return;
+        }
+        if !src.0.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+            || !d
+                .raw
+                .usage()
+                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        {
+            self.fail(
+                "a stencil copy by a draw needs the source sampled and the destination rendered",
+            );
+            return;
+        }
+        self.stencil_by_draw(
+            Stream::Main,
+            src,
+            src_at,
+            &d.raw,
+            (dst.mip, dst.layer, [dst.origin.x, dst.origin.y]),
+            [extent.width, extent.height],
+            extent.depth_or_layers,
+        );
+    }
+
+    /// The texels of a depth or stencil region WebGPU cannot copy out (24-bit depth, or part of a
+    /// level), drawn into a colour texture of the extent's size whose texels are the bytes a copy
+    /// of that aspect holds (`DepthReadByDraw`). `Ok(None)` where WebGPU copies the region itself.
+    fn aspect_as_colour(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) -> Result<Option<Texture>, ()> {
+        let t = &region.texture.0;
+        let format = t.desc.format;
+        let stencil = region.stencil || format.kind() == FormatKind::Stencil;
+        let Some((read, colour)) = AspectRead::of(format, stencil) else {
+            return Ok(None);
+        };
+        let whole = region.origin.x == 0
+            && region.origin.y == 0
+            && extent.width == (t.desc.width >> region.mip).max(1)
+            && extent.height == (t.desc.height >> region.mip).max(1);
+        if whole && read != AspectRead::Unorm24 {
+            return Ok(None);
+        }
+        if t.desc.samples > 1 || !t.raw.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+            self.fail("a depth or stencil read by a draw needs a single-sampled bound source");
+            return Err(());
+        }
+        let Ok(drawn) = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: colour,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        }) else {
+            self.fail("the texture a depth or stencil read is drawn into could not be made");
+            return Err(());
+        };
+        t.used_in.set(self.serial);
+        let raw = t.raw.clone();
+        self.aspect_by_draw(
+            (&raw, read),
+            (region.mip, region.layer, [region.origin.x, region.origin.y]),
+            &drawn.0.raw,
+            [extent.width, extent.height],
+            extent.depth_or_layers,
+        );
+        Ok(Some(drawn))
+    }
+
     /// A single-sampled texture holding a buffer's texels for a depth draw into `format`, which
     /// WebGPU cannot fill from a buffer: `r32float` for 32-bit float depth, `r32uint` for 24-bit.
     fn depth_staging(
@@ -677,40 +779,72 @@ impl WebGpu {
             return;
         }
         let t = &region.texture.0;
-        if !region.stencil && filled_by_draw(t.desc.format) {
-            if !to_texture {
-                if matches!(
-                    t.desc.format,
-                    Format::Depth24Plus | Format::Depth24PlusStencil8
-                ) {
-                    self.fail(
-                        "copies of 24-bit depth into a buffer (DepthReadByDraw) are not built yet",
-                    );
+        let at_origin = |texture| TextureRegion {
+            texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let stencil = region.stencil || t.desc.format.kind() == FormatKind::Stencil;
+        let whole = region.origin.x == 0
+            && region.origin.y == 0
+            && extent.width == (t.desc.width >> region.mip).max(1)
+            && extent.height == (t.desc.height >> region.mip).max(1);
+        if !to_texture {
+            match self.aspect_as_colour(region, extent) {
+                Err(()) => return,
+                Ok(Some(drawn)) => {
+                    self.copy_buffer_texture(buffer, &at_origin(&drawn), extent, false);
                     return;
                 }
-            } else {
-                let Some((staged, sf, how)) = self.depth_staging(t.desc.format, extent) else {
-                    self.fail("the texture a depth copy is drawn from could not be made");
-                    return;
-                };
-                let at = TextureRegion {
-                    texture: &staged,
-                    mip: 0,
-                    layer: 0,
-                    origin: Origin::default(),
-                    stencil: false,
-                };
-                self.copy_buffer_texture(buffer, &at, extent, true);
-                t.used_in.set(self.serial);
-                self.depth_copy(
-                    (&staged.0.raw, sf, how),
-                    (0, 0, [0, 0]),
-                    region,
-                    extent,
-                    Stream::Main,
-                );
-                return;
+                Ok(None) => {}
             }
+        } else if stencil && !whole {
+            let Ok(staged) = self.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format: Format::R8Uint,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: extent.depth_or_layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::COPY_DST | TextureUsage::SAMPLE,
+                cube: false,
+                reinterpret: false,
+            }) else {
+                self.fail("the texture a stencil copy is drawn from could not be made");
+                return;
+            };
+            self.copy_buffer_texture(buffer, &at_origin(&staged), extent, true);
+            t.used_in.set(self.serial);
+            let raw = staged.0.raw.clone();
+            self.stencil_copy(
+                (&raw, wgpu::TextureAspect::All),
+                (0, 0, [0, 0]),
+                region,
+                extent,
+            );
+            return;
+        } else if t.desc.format == Format::Depth16Unorm && !whole {
+            self.fail("part of a 16-bit depth level written from a buffer");
+            return;
+        }
+        if to_texture && !region.stencil && filled_by_draw(t.desc.format) {
+            let Some((staged, sf, how)) = self.depth_staging(t.desc.format, extent) else {
+                self.fail("the texture a depth copy is drawn from could not be made");
+                return;
+            };
+            self.copy_buffer_texture(buffer, &at_origin(&staged), extent, true);
+            t.used_in.set(self.serial);
+            self.depth_copy(
+                (&staged.0.raw, sf, how),
+                (0, 0, [0, 0]),
+                region,
+                extent,
+                Stream::Main,
+            );
+            return;
         }
         t.used_in.set(self.serial);
         buffer.buffer.0.used_in.set(self.serial);
@@ -907,6 +1041,24 @@ impl WebGpu {
                         "a read back outside the texture's blocks",
                     ));
                 }
+                let drawn = match self.aspect_as_colour(region, *extent) {
+                    Err(()) => return Err(GpuError::DeviceLost),
+                    Ok(drawn) => drawn,
+                };
+                let at;
+                let region = match &drawn {
+                    Some(texture) => {
+                        at = TextureRegion {
+                            texture,
+                            mip: 0,
+                            layer: 0,
+                            origin: Origin::default(),
+                            stencil: false,
+                        };
+                        &at
+                    }
+                    None => region,
+                };
                 let t = &region.texture.0;
                 t.used_in.set(self.serial);
                 let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
@@ -999,7 +1151,11 @@ impl WebGpu {
             return;
         }
         if (dst.len() as u64) < o.row * o.rows {
-            self.fail("finish_read into fewer bytes than the read back holds");
+            self.fail(&format!(
+                "finish_read into {} bytes, fewer than the read back's {}",
+                dst.len(),
+                o.row * o.rows
+            ));
             return;
         }
         let Some(buffer) = &o.buffer else {

@@ -85,6 +85,7 @@ pub const SUPPORTED_CAPABILITIES: &[spirv::Capability] = &[
     spirv::Capability::RuntimeDescriptorArray,
     spirv::Capability::StorageImageMultisample,
     spirv::Capability::FragmentBarycentricKHR,
+    spirv::Capability::DemoteToHelperInvocation,
     // tricky ones
     spirv::Capability::UniformBufferArrayDynamicIndexing,
     spirv::Capability::StorageBufferArrayDynamicIndexing,
@@ -98,6 +99,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "SPV_KHR_16bit_storage",
     "SPV_KHR_non_semantic_info",
     "SPV_KHR_fragment_shader_barycentric",
+    "SPV_EXT_demote_to_helper_invocation",
 ];
 
 #[derive(Copy, Clone, Debug)]

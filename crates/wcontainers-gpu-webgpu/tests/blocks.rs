@@ -252,10 +252,11 @@ fn bc_textures_read_back_as_written_and_bc6h_and_bc7_sample_exactly() {
 
 /// Known failure: on the RTX 3080 (wgpu on Direct3D 12 and Vulkan), the GPU's own BC1 to BC5
 /// decoder differs from bcdec's exact interpolation by up to 5 / 255 (BC3, BC4) and 5 / 127 (BC4
-/// and BC5 signed), beyond these tolerances; not yet compared with Direct3D 11's sampling of the
-/// same blocks and the tolerance Direct3D allows.
+/// and BC5 signed), beyond these one-step tolerances. Direct3D's WARP differs from the same GPU by
+/// more (up to 13 / 255), so no decoder meets them; tests/direct3d.rs holds the decoded texels to
+/// WARP's distance from the GPU instead, and they meet it.
 #[test]
-#[ignore = "known failure: BC1 to BC5 decoded differ from the RTX 3080's decoder beyond the tolerance"]
+#[ignore = "known failure: BC1 to BC5 decoded differ from the RTX 3080's decoder beyond one step, as WARP's do"]
 fn bc1_to_bc5_sample_alike_natively_and_decoded() {
     sample_and_read_back(|f| !exact(f));
 }

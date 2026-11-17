@@ -16,7 +16,7 @@ for api in ("Direct3D11", "Dxgi"):
         traits[m.group(1)] = [l.strip() for l in m.group(2).splitlines() if l.strip().startswith("fn ")]
 
 CHILD = ["ID3D11DeviceChild"]
-for empty in ("ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader"):
+for empty in ("ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
     "Device": ["ID3D11Device", "IDXGIDevice", "IDXGIObject"],
@@ -25,7 +25,9 @@ structs = {
     "Factory": ["IDXGIFactory2", "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
     "SwapChain": ["IDXGISwapChain1", "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
     "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD,
+    "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD,
     "Texture2D": ["ID3D11Texture2D", "ID3D11Resource"] + CHILD,
+    "Texture3D": ["ID3D11Texture3D", "ID3D11Resource"] + CHILD,
     "RenderTargetView": ["ID3D11RenderTargetView", "ID3D11View"] + CHILD,
     "DepthStencilView": ["ID3D11DepthStencilView", "ID3D11View"] + CHILD,
     "ShaderResourceView": ["ID3D11ShaderResourceView", "ID3D11View"] + CHILD,
@@ -34,12 +36,14 @@ structs = {
     "DepthStencilState": ["ID3D11DepthStencilState"] + CHILD,
     "RasterizerState": ["ID3D11RasterizerState"] + CHILD,
     "InputLayout": ["ID3D11InputLayout"] + CHILD,
+    "Query": ["ID3D11Query", "ID3D11Asynchronous"] + CHILD,
+    "Predicate": ["ID3D11Predicate", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
     "VertexShader": ["ID3D11VertexShader"] + CHILD,
     "PixelShader": ["ID3D11PixelShader"] + CHILD,
 }
 
 hand = {
-    "ID3D11Device": "CreateBuffer CreateTexture2D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
+    "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
     "IDXGIObject": "GetParent",
     "IDXGIDevice": "GetAdapter",
     "IDXGIAdapter": "GetDesc EnumOutputs",
@@ -50,11 +54,13 @@ hand = {
     "IDXGIDeviceSubObject": "GetDevice",
     "IDXGISwapChain": "Present GetBuffer SetFullscreenState GetFullscreenState GetDesc ResizeBuffers GetLastPresentCount",
     "IDXGISwapChain1": "GetDesc1 GetHwnd Present1",
-    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects",
+    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects",
     "ID3D11Resource": "GetType SetEvictionPriority GetEvictionPriority",
     "ID3D11View": "GetResource",
+    "ID3D11Asynchronous": "GetDataSize",
+    "ID3D11Query": "GetDesc",
 }
-for t in ["ID3D11Buffer", "ID3D11Texture2D", "ID3D11RenderTargetView", "ID3D11DepthStencilView", "ID3D11ShaderResourceView", "ID3D11SamplerState", "ID3D11BlendState", "ID3D11DepthStencilState", "ID3D11RasterizerState"]:
+for t in ["ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture3D", "ID3D11RenderTargetView", "ID3D11DepthStencilView", "ID3D11ShaderResourceView", "ID3D11SamplerState", "ID3D11BlendState", "ID3D11DepthStencilState", "ID3D11RasterizerState"]:
     hand[t] = "GetDesc"
 private = {"GetPrivateData", "SetPrivateData", "SetPrivateDataInterface"}
 # Structs whose unserved void calls remove the device (the context, and the device itself).

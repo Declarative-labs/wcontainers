@@ -15,7 +15,7 @@ use windows::core::{
     implement,
 };
 
-use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData};
+use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData, TextureDesc};
 use wcontainers_direct3d_11::format;
 use wcontainers_gpu::SourceStage;
 
@@ -167,17 +167,70 @@ impl Device_Impl {
         out: OutRef<ID3D11Buffer>,
     ) -> Result<()> {
         let d = convert::buffer(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
-        let bytes = unsafe { init.as_ref() }
-            .filter(|i| !i.pSysMem.is_null())
-            .map(|i| unsafe {
+        // Initial data without bytes is invalid, as Direct3D answers.
+        let bytes = match unsafe { init.as_ref() } {
+            Some(i) if i.pSysMem.is_null() => return Err(E_INVALIDARG.into()),
+            Some(i) => Some(unsafe {
                 std::slice::from_raw_parts(i.pSysMem.cast::<u8>(), d.byte_width as usize)
-            });
+            }),
+            None => None,
+        };
         let front = self
             .front
             .borrow_mut()
             .create_buffer(&d, bytes)
             .map_err(hresult)?;
         give(out, Buffer::new(front, self.me()).into())
+    }
+
+    /// The front texture of a description and the program's initial data.
+    fn texture(
+        &self,
+        d: TextureDesc,
+        init: *const D3D11_SUBRESOURCE_DATA,
+    ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
+        let mut data = Vec::new();
+        if !init.is_null() {
+            // The description is checked before the program's array of initial data is read by it.
+            let (fmt, mips) = self
+                .front
+                .borrow()
+                .check_texture(&d, true)
+                .map_err(hresult)?;
+            for i in 0..mips * d.array_size {
+                let s = unsafe { &*init.add(i as usize) };
+                let mip = i % mips;
+                let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
+                let slices = (d.depth >> mip).max(1);
+                let (row, rows) = format::row_bytes(fmt, w, h);
+                let len = s.SysMemSlicePitch * (slices - 1) + s.SysMemPitch * (rows - 1) + row;
+                if s.pSysMem.is_null() {
+                    return Err(E_INVALIDARG.into());
+                }
+                data.push(SubresourceData {
+                    bytes: unsafe {
+                        std::slice::from_raw_parts(s.pSysMem.cast::<u8>(), len as usize)
+                    },
+                    row_pitch: s.SysMemPitch,
+                    slice_pitch: s.SysMemSlicePitch,
+                });
+            }
+        }
+        self.front
+            .borrow_mut()
+            .create_texture(&d, &data)
+            .map_err(hresult)
+    }
+
+    pub(super) fn create_texture1_d(
+        &self,
+        desc: *const D3D11_TEXTURE1D_DESC,
+        init: *const D3D11_SUBRESOURCE_DATA,
+        out: OutRef<ID3D11Texture1D>,
+    ) -> Result<()> {
+        let d = convert::texture1d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
+        let front = self.texture(d, init)?;
+        give(out, Texture1D::new(front, self.me()).into())
     }
 
     pub(super) fn create_texture2_d(
@@ -187,44 +240,27 @@ impl Device_Impl {
         out: OutRef<ID3D11Texture2D>,
     ) -> Result<()> {
         let d = convert::texture2d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
-        let mut data = Vec::new();
-        if !init.is_null() {
-            // The description is checked before the program's array of initial data is read by it.
-            let (fmt, mips) = self
-                .front
-                .borrow()
-                .check_texture_2d(&d, true)
-                .map_err(hresult)?;
-            for i in 0..mips * d.array_size {
-                let s = unsafe { &*init.add(i as usize) };
-                let mip = i % mips;
-                let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
-                let (row, rows) = format::row_bytes(fmt, w, h);
-                let len = (s.SysMemPitch * (rows - 1) + row) as usize;
-                if s.pSysMem.is_null() {
-                    return Err(E_INVALIDARG.into());
-                }
-                data.push(SubresourceData {
-                    bytes: unsafe { std::slice::from_raw_parts(s.pSysMem.cast::<u8>(), len) },
-                    row_pitch: s.SysMemPitch,
-                    slice_pitch: s.SysMemSlicePitch,
-                });
-            }
-        }
-        let front = self
-            .front
-            .borrow_mut()
-            .create_texture_2d(&d, &data)
-            .map_err(hresult)?;
+        let front = self.texture(d, init)?;
         give(out, Texture2D::new(front, self.me()).into())
+    }
+
+    pub(super) fn create_texture3_d(
+        &self,
+        desc: *const D3D11_TEXTURE3D_DESC,
+        init: *const D3D11_SUBRESOURCE_DATA,
+        out: OutRef<ID3D11Texture3D>,
+    ) -> Result<()> {
+        let d = convert::texture3d(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
+        let front = self.texture(d, init)?;
+        give(out, Texture3D::new(front, self.me()).into())
     }
 
     /// The front texture behind a resource, refusing buffers (no buffer views yet) and foreign objects.
     fn texture_of(
         resource: &Ref<ID3D11Resource>,
-    ) -> Result<Rc<wcontainers_direct3d_11::object::Texture2D<Chosen>>> {
+    ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
         match resource.as_ref().and_then(resource_of) {
-            Some(wcontainers_direct3d_11::object::Resource::Texture2D(t)) => Ok(t),
+            Some(wcontainers_direct3d_11::object::Resource::Texture(t)) => Ok(t),
             Some(_) => Err(missing("buffer views")),
             None => Err(E_INVALIDARG.into()),
         }
@@ -375,7 +411,7 @@ impl Device_Impl {
         desc: *const D3D11_BLEND_DESC,
         out: OutRef<ID3D11BlendState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::blend_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<BlendState, _>(&self.states.blend, blend_key(d), out, || {
             let state = self
                 .front
@@ -391,7 +427,7 @@ impl Device_Impl {
         desc: *const D3D11_DEPTH_STENCIL_DESC,
         out: OutRef<ID3D11DepthStencilState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::depth_stencil_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<DepthStencilState, _>(
             &self.states.depth_stencil,
             depth_stencil_key(d),
@@ -428,7 +464,7 @@ impl Device_Impl {
         desc: *const D3D11_SAMPLER_DESC,
         out: OutRef<ID3D11SamplerState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::sampler_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<SamplerState, _>(&self.states.sampler, words(d), out, || {
             let state = self
                 .front
@@ -437,6 +473,49 @@ impl Device_Impl {
                 .map_err(hresult)?;
             Ok(SamplerState::new(state, *d, self.me()).into())
         })
+    }
+
+    pub(super) fn create_query(
+        &self,
+        desc: *const D3D11_QUERY_DESC,
+        out: OutRef<ID3D11Query>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let front = self
+            .front
+            .borrow_mut()
+            .create_query(d.Query.0 as u32, d.MiscFlags)
+            .map_err(hresult)?;
+        // Predicates are queries too; `QueryInterface` gives them as `ID3D11Predicate`.
+        if matches!(
+            d.Query,
+            D3D11_QUERY_OCCLUSION_PREDICATE | D3D11_QUERY_SO_OVERFLOW_PREDICATE
+        ) {
+            let p: ID3D11Predicate = Predicate::new(front, self.me()).into();
+            return give(out, p.cast()?);
+        }
+        give(out, Query::new(front, self.me()).into())
+    }
+
+    pub(super) fn create_predicate(
+        &self,
+        desc: *const D3D11_QUERY_DESC,
+        out: OutRef<ID3D11Predicate>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let predicate = d.Query == D3D11_QUERY_OCCLUSION_PREDICATE
+            || (D3D11_QUERY_SO_OVERFLOW_PREDICATE.0..=D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3.0)
+                .contains(&d.Query.0)
+                && (d.Query.0 - D3D11_QUERY_SO_OVERFLOW_PREDICATE.0) % 2 == 0;
+        if !predicate {
+            return Err(E_INVALIDARG.into());
+        }
+        let front = self
+            .front
+            .borrow_mut()
+            .create_query(d.Query.0 as u32, d.MiscFlags)
+            .map_err(hresult)?;
+        give(out, Predicate::new(front, self.me()).into())
     }
 
     pub(super) fn check_format_support(&self, format: DXGI_FORMAT) -> Result<u32> {

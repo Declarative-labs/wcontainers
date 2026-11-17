@@ -348,9 +348,9 @@ impl<B: Backend> OcclusionCounter<B> {
     }
 
     /// Counts `draws`, drawn on `targets` (on the depth copy where `copied`), by drawing them into a
-    /// counting target and summing it; where a sample reached the counting format's exact bound,
-    /// counts the two halves of the draws (or of the one draw's instances or primitives) one after
-    /// the other, from the depth the whole began with, and adds them.
+    /// counting target and summing it; where a pixel's sum over its samples reached the counting
+    /// format's exact bound, counts the two halves of the draws (or of the one draw's instances or
+    /// primitives) one after the other, from the depth the whole began with, and adds them.
     fn count(
         &mut self,
         b: &mut B,
@@ -421,9 +421,11 @@ impl<B: Backend> OcclusionCounter<B> {
             load: LoadOp::Clear([0; 4]),
             store: StoreOp::Store,
         });
-        // Where the draws could pass the bound at a sample and write depth, the copy is kept as it
+        // Where the draws could reach the bound at a pixel and write depth, the copy is kept as it
         // is, to count the halves from.
-        let saving = copied && targets.depth.is_some() && primitives(draws) >= bound as u64;
+        let saving = copied
+            && targets.depth.is_some()
+            && primitives(draws).saturating_mul(u64::from(size.2)) >= bound as u64;
         if saving {
             let copy = self
                 .depth_copy
@@ -584,7 +586,8 @@ impl<B: Backend> OcclusionCounter<B> {
             } else {
                 f64::from(half::f16::from_le_bytes([c[0], c[1]]).to_f32())
             };
-            // A resolved value is the average of the samples.
+            // A resolved value is the average of the samples. A pixel is full once the sum over its
+            // samples reaches the bound: below it, the average keeps every count exact.
             let v = v * f64::from(size.2);
             full |= v >= bound;
             sum += v;
@@ -593,7 +596,7 @@ impl<B: Backend> OcclusionCounter<B> {
             return Ok(sum as u64);
         }
         let [a, c] = halves(draws).ok_or(GpuError::Invalid(
-            "a draw past the counting format's bound at a sample that cannot be split: a fan, a strip with restart or an indirect draw",
+            "a draw reaching the counting format's bound at a pixel that cannot be split: a fan, a strip with restart or an indirect draw",
         ))?;
         if saving {
             let (copy, saved) = (

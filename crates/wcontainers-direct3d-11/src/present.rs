@@ -7,14 +7,14 @@ use std::rc::Rc;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{Backend, GpuError};
 
-use crate::desc::{Texture2DDesc, bind};
-use crate::object::{Kept, Texture2D};
+use crate::desc::{TexDim, TextureDesc, bind};
+use crate::object::{Kept, Texture};
 use crate::{Device, Error, Result};
 
 /// A swap chain and the textures standing for its back buffers.
 pub struct Chain<B: Backend> {
     chain: SwapChain<B>,
-    buffers: Vec<Rc<Texture2D<B>>>,
+    buffers: Vec<Rc<Texture<B>>>,
     /// Bind flags of the back buffers (render target, and shader resource or unordered access as
     /// the swap chain's usage asks).
     bind: u32,
@@ -26,7 +26,7 @@ impl<B: Backend> Chain<B> {
     }
 
     /// Back buffer `index` (`GetBuffer`): any of a flip model's, buffer 0 of a blit model's.
-    pub fn buffer(&self, index: u32) -> Option<&Rc<Texture2D<B>>> {
+    pub fn buffer(&self, index: u32) -> Option<&Rc<Texture<B>>> {
         self.buffers.get(index as usize)
     }
 
@@ -79,10 +79,12 @@ impl<B: Backend> Device<B> {
         let mut index = 0;
         while let Some(texture) = c.chain.buffer(index) {
             let id = self.id();
-            c.buffers.push(Rc::new(Texture2D {
-                desc: Texture2DDesc {
+            c.buffers.push(Rc::new(Texture {
+                desc: TextureDesc {
+                    dimension: TexDim::D2,
                     width: d.width,
                     height: d.height,
+                    depth: 1,
                     mip_levels: 1,
                     array_size: 1,
                     format: d.format,

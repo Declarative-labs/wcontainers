@@ -1,7 +1,9 @@
 //! The Direct3D 12 device on one back end: its objects, the one queue order every guest queue shares,
 //! the replay of command lists, and fences.
 
+use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use slab::Slab;
@@ -56,7 +58,9 @@ id!(
     MemoryId
 );
 
+mod alias;
 mod bind;
+mod indirect;
 mod query;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
@@ -81,11 +85,44 @@ const UPLOAD_BUFFER: BufferUsage = BufferUsage::VERTEX
 /// Readback buffers are only written by copies and read back.
 const READBACK_BUFFER: BufferUsage = BufferUsage::COPY_DST.union(BufferUsage::READ_BACK);
 
+/// Guest-visible memory of an upload or readback heap, shared by the buffers placed in it.
+type HostMemory = Rc<UnsafeCell<Box<[u8]>>>;
+
+/// The bytes `Map` hands out for an upload or readback buffer: its own memory, or its part of its
+/// heap's, which overlapping placed buffers share as the memory they alias.
+struct Host {
+    memory: HostMemory,
+    offset: usize,
+    len: usize,
+}
+
+impl Host {
+    fn new(len: usize) -> Self {
+        Host {
+            memory: Rc::new(UnsafeCell::new(vec![0; len].into_boxed_slice())),
+            offset: 0,
+            len,
+        }
+    }
+
+    fn ptr(&self) -> *mut u8 {
+        // SAFETY: `offset` lies inside the memory, as `create_placed` checked.
+        unsafe { (*self.memory.get()).as_mut_ptr().add(self.offset) }
+    }
+
+    /// The bytes. The program writes them through `Map`'s pointer, never while work reading them is
+    /// being submitted, and no other reference to them lives across a call of the device.
+    fn bytes(&mut self) -> &mut [u8] {
+        // SAFETY: as above; `len` bytes from `offset` lie inside the memory.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr(), self.len) }
+    }
+}
+
 enum Storage<B: Backend> {
     Buffer {
         buffer: B::Buffer,
         /// The bytes `Map` hands out, for upload and readback heaps.
-        host: Option<Box<[u8]>>,
+        host: Option<Host>,
     },
     Texture {
         texture: B::Texture,
@@ -102,16 +139,24 @@ struct Resource<B: Backend> {
     heap: HeapType,
     storage: Storage<B>,
     address: u64,
-    /// The heap a placed resource lies in.
-    placed: Option<MemoryId>,
+    /// The heap a placed resource lies in, and its offset there.
+    placed: Option<(MemoryId, u64)>,
+    /// The placed resources whose bytes this one inherits where they overlap (`alias.rs`).
+    inherits: Vec<ResourceId>,
+    /// The stamp of the last GPU write recorded into it, and the stamp when it was last written or
+    /// brought up to date.
+    written: u64,
+    synced: u64,
 }
 
-/// A heap of `CreateHeap`: each placed resource has storage of its own (plan 5.2), so the heap
-/// keeps only where they lie: offset, end and resource.
+/// A heap of `CreateHeap`. Each placed resource in a default heap has storage of its own (plan
+/// 5.2), so the heap keeps where they lie: offset, end and resource. Upload and readback heaps
+/// have guest memory their buffers share.
 struct Memory {
     size: u64,
     heap: HeapType,
     placed: Vec<(u64, u64, ResourceId)>,
+    host: Option<HostMemory>,
 }
 
 /// What a pipeline state object holds.
@@ -211,6 +256,12 @@ pub struct Device<B: Backend> {
     calls: u64,
     query_heaps: Slab<query::QueryHeap<B>>,
     memory: Slab<Memory>,
+    /// How many resources inherit bytes from others; while none do, uses are not noted.
+    aliased: usize,
+    /// The resources the command being replayed uses, and whether it writes each, while `aliased`.
+    touched: Vec<(ResourceId, bool)>,
+    /// The last write stamp given.
+    stamp: u64,
     programs: query::Programs<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
@@ -244,6 +295,9 @@ impl<B: Backend> Device<B> {
             calls: 0,
             query_heaps: Slab::new(),
             memory: Slab::new(),
+            aliased: 0,
+            touched: Vec::new(),
+            stamp: 0,
             programs: query::Programs::default(),
             messages: Vec::new(),
             removed: None,
@@ -288,11 +342,25 @@ impl<B: Backend> Device<B> {
         heap: HeapType,
         desc: &ResourceDesc,
     ) -> Result<ResourceId, Error> {
+        self.create(heap, desc, None)
+    }
+
+    /// A resource with storage of its own; an upload or readback buffer maps `host`, or memory of
+    /// its own without.
+    fn create(
+        &mut self,
+        heap: HeapType,
+        desc: &ResourceDesc,
+        host: Option<Host>,
+    ) -> Result<ResourceId, Error> {
         self.live()?;
         let id = ResourceId(self.resources.vacant_key() as u32);
         let (storage, address) = if desc.dimension == resource::DIMENSION_BUFFER {
             if desc.width == 0 {
                 return Err(Error::Invalid("a buffer of zero bytes"));
+            }
+            if desc.width > self.backend.caps().limits.max_buffer_size {
+                return Err(Error::OutOfMemory);
             }
             let usage = match heap {
                 HeapType::Default => DEFAULT_BUFFER,
@@ -309,7 +377,7 @@ impl<B: Backend> Device<B> {
                 },
             })?;
             let host = (heap != HeapType::Default)
-                .then(|| vec![0u8; desc.width as usize].into_boxed_slice());
+                .then(|| host.unwrap_or_else(|| Host::new(desc.width as usize)));
             let address = self.addresses.insert(desc.width, id);
             (Storage::Buffer { buffer, host }, address)
         } else {
@@ -371,6 +439,9 @@ impl<B: Backend> Device<B> {
             storage,
             address,
             placed: None,
+            inherits: Vec::new(),
+            written: 0,
+            synced: 0,
         });
         Ok(id)
     }
@@ -387,10 +458,13 @@ impl<B: Backend> Device<B> {
         if size == 0 {
             return Err(Error::Invalid("a heap of zero bytes"));
         }
+        let host = (heap != HeapType::Default)
+            .then(|| Host::new(usize::try_from(size).unwrap_or(usize::MAX)).memory);
         Ok(MemoryId(self.memory.insert(Memory {
             size,
             heap,
             placed: Vec::new(),
+            host,
         }) as u32))
     }
 
@@ -399,9 +473,9 @@ impl<B: Backend> Device<B> {
         self.memory.try_remove(id.0 as usize);
     }
 
-    /// `CreatePlacedResource`. Placed resources that overlap a live one would share its bytes as
-    /// Direct3D 12's aliasing rules say, which needs the copies of plan 5.2 (`AliasCopied`), not
-    /// made yet; so overlaps are refused, and the others are resources like committed ones.
+    /// `CreatePlacedResource`. A placed resource in a default heap has storage of its own and
+    /// inherits the bytes of the live ones it overlaps by copies (`alias.rs`); a buffer in an upload
+    /// or readback heap maps its part of the heap's memory.
     pub fn create_placed(
         &mut self,
         memory: MemoryId,
@@ -426,15 +500,26 @@ impl<B: Backend> Device<B> {
             ));
         }
         let end = offset + size;
-        if m.placed.iter().any(|&(o, e, _)| o < end && offset < e) {
-            return Err(Error::NotImplemented("placed resources that overlap"));
-        }
         let heap = m.heap;
-        let id = self.create_committed(heap, desc)?;
-        self.resources[id.0 as usize].placed = Some(memory);
+        let host = m.host.clone().map(|memory| Host {
+            memory,
+            offset: offset as usize,
+            len: desc.width as usize,
+        });
+        let overlaps: Vec<ResourceId> = m
+            .placed
+            .iter()
+            .filter(|&&(o, e, _)| o < end && offset < e)
+            .map(|p| p.2)
+            .collect();
+        let id = self.create(heap, desc, host)?;
+        self.resources[id.0 as usize].placed = Some((memory, offset));
         self.memory[memory.0 as usize]
             .placed
             .push((offset, end, id));
+        if heap == HeapType::Default {
+            self.inherit(id, &overlaps);
+        }
         Ok(id)
     }
 
@@ -459,7 +544,7 @@ impl<B: Backend> Device<B> {
         {
             Some(Storage::Buffer {
                 host: Some(host), ..
-            }) => Ok(host.as_mut_ptr()),
+            }) => Ok(host.ptr()),
             Some(_) => Err(Error::Invalid("only upload and readback buffers map")),
             None => Err(Error::Invalid("no such resource")),
         }
@@ -473,9 +558,13 @@ impl<B: Backend> Device<B> {
         if r.address != 0 {
             self.addresses.remove(r.address);
         }
-        if let Some(m) = r.placed.and_then(|m| self.memory.get_mut(m.0 as usize)) {
+        if let Some(m) = r
+            .placed
+            .and_then(|(m, _)| self.memory.get_mut(m.0 as usize))
+        {
             m.placed.retain(|p| p.2 != id);
         }
+        self.disinherit(id, &r.inherits);
         self.reads.retain(|p| p.resource != id);
         match r.storage {
             Storage::Buffer { buffer, .. } => self.backend.destroy(Object::Buffer(buffer)),
@@ -1037,7 +1126,7 @@ impl<B: Backend> Device<B> {
             }) = self.resources.get_mut(r.resource.0 as usize)
             {
                 self.backend
-                    .finish_read(r.readback, &mut host[r.offset..r.offset + r.size]);
+                    .finish_read(r.readback, &mut host.bytes()[r.offset..r.offset + r.size]);
             }
         }
     }
@@ -1395,6 +1484,9 @@ fn adopt_buffers<B: Backend>(
             },
             address: 0,
             placed: None,
+            inherits: Vec::new(),
+            written: 0,
+            synced: 0,
         });
         out.push(ResourceId(id as u32));
         i += 1;
@@ -1477,6 +1569,8 @@ struct Replay<B: Backend> {
     colors: Vec<Descriptor>,
     depth: Option<Descriptor>,
     pass_open: bool,
+    /// The open pass has no targets.
+    empty_pass: bool,
     graphics: bind::RootState,
     compute: bind::RootState,
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
@@ -1519,6 +1613,7 @@ impl<B: Backend> Replay<B> {
             colors: Vec::new(),
             depth: None,
             pass_open: false,
+            empty_pass: false,
             graphics: bind::RootState::default(),
             compute: bind::RootState::default(),
             clears: Vec::new(),
@@ -1536,6 +1631,7 @@ impl<B: Backend> Replay<B> {
             }
             d.backend.end_pass();
             self.pass_open = false;
+            self.empty_pass = false;
             self.pass_heap = None;
         }
     }
@@ -1586,6 +1682,9 @@ impl<B: Backend> Replay<B> {
             d.drop_predicate(p);
         }
         if let Some((resource, offset, op)) = predicate {
+            d.touched.clear();
+            d.note(resource, false);
+            d.alias_settle()?;
             let end = rest
                 .iter()
                 .position(|c| matches!(c, Command::Predication(_)))
@@ -1611,6 +1710,10 @@ impl<B: Backend> Replay<B> {
     }
 
     fn run(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
+        d.touched.clear();
+        if d.aliased != 0 {
+            self.copies_due(d, c)?;
+        }
         match c {
             Command::Pipeline(p) => self.pipeline = Some(*p),
             Command::RootSignature { compute, root } => {
@@ -1656,6 +1759,10 @@ impl<B: Backend> Replay<B> {
             }
             Command::IndexBuffer(v) => self.index = *v,
             Command::Viewports(v) => {
+                // A pass with no targets is as large as the viewports it began with.
+                if self.empty_pass {
+                    self.end_pass(d);
+                }
                 let fractional = d.backend.caps().has(Features::FRACTIONAL_VIEWPORT);
                 self.viewports = v
                     .iter()
@@ -1826,6 +1933,13 @@ impl<B: Backend> Replay<B> {
             Command::Predication(_) => {
                 return Err(Error::Invalid("a predicate outside a list's replay"));
             }
+            Command::ExecuteIndirect {
+                signature,
+                max,
+                args,
+                args_offset,
+                count,
+            } => self.execute_indirect(d, signature, *max, *args, *args_offset, *count)?,
             Command::ClearStorage {
                 view,
                 values,
@@ -1837,6 +1951,65 @@ impl<B: Backend> Replay<B> {
             }
         }
         Ok(())
+    }
+
+    /// Notes what copies, clears and resolves use, and copies inherited bytes into them first.
+    fn copies_due(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
+        let location = |l: &CopyLocation| match l {
+            CopyLocation::Subresource { resource, .. }
+            | CopyLocation::Footprint { resource, .. } => *resource,
+        };
+        match c {
+            Command::CopyBuffer { dst, src, .. } => {
+                d.note(*src, false);
+                d.note(*dst, true);
+            }
+            Command::CopyTexture { dst, src, .. } => {
+                d.note(location(src), false);
+                d.note(location(dst), true);
+            }
+            Command::ClearTarget {
+                view: Descriptor::RenderTarget(v),
+                ..
+            }
+            | Command::ClearDepth {
+                view: Descriptor::DepthStencil { view: v, .. },
+                ..
+            } => d.note(v.resource, true),
+            Command::ClearStorage { view, .. } => d.note(view.resource, true),
+            Command::ResolveQueries { dst, .. } => d.note(*dst, true),
+            Command::ExecuteIndirect { args, count, .. } => {
+                d.note(*args, false);
+                if let Some((c, _)) = count {
+                    d.note(*c, false);
+                }
+            }
+            _ => return Ok(()),
+        }
+        if d.alias_due() {
+            self.settle(d)?;
+        }
+        d.alias_settle()
+    }
+
+    /// Notes what a draw uses besides its bindings: its targets, vertex and index buffers.
+    fn note_draw(&self, d: &mut Device<B>, indexed: bool) {
+        for c in &self.colors {
+            if let Descriptor::RenderTarget(v) = c {
+                d.note(v.resource, true);
+            }
+        }
+        if let Some(Descriptor::DepthStencil { view, read_only }) = self.depth {
+            d.note(view.resource, read_only != 3);
+        }
+        for v in self.vertex_buffers.iter().filter(|v| v.size > 0) {
+            if let Some((id, _)) = d.addresses.find(v.address) {
+                d.note(id, false);
+            }
+        }
+        if indexed && let Some((id, _)) = self.index.and_then(|v| d.addresses.find(v.address)) {
+            d.note(id, false);
+        }
     }
 
     fn state(&mut self, compute: bool) -> &mut bind::RootState {
@@ -1932,6 +2105,7 @@ impl<B: Backend> Replay<B> {
         }
         self.settle(d)?;
         let sets = d.binding_sets(&self.compute, pid)?;
+        d.alias_settle()?;
         let call = DispatchCall {
             program: &d.pipelines[pid.0 as usize].program,
             bindings: sets.each_ref().map(Option::as_ref),
@@ -2001,6 +2175,20 @@ impl<B: Backend> Replay<B> {
             },
             (None, range) => range,
         };
+        let sets = d.binding_sets(&self.graphics, pid)?;
+        if d.aliased != 0 {
+            self.note_draw(
+                d,
+                matches!(
+                    range,
+                    DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }
+                ),
+            );
+            if d.alias_due() {
+                self.end_pass(d);
+            }
+            d.alias_settle()?;
+        }
         if let Some((heap, _, QueryState::Ended)) = self.query
             && !self.pass_open
             && self.pass_heap != Some(heap)
@@ -2081,7 +2269,24 @@ impl<B: Backend> Replay<B> {
                 });
             }
             if views.is_empty() && depth.is_none() {
-                return Err(Error::NotImplemented("drawing with no render target"));
+                // No targets: the pass covers the viewports, at the pipeline's sample count.
+                let end = |at: u32, size: u32| (f32::from_bits(at) + f32::from_bits(size)).ceil();
+                let (width, height) = self.viewports.iter().fold((1, 1), |(w, h), v| {
+                    (
+                        w.max(end(v.x, v.width) as u32),
+                        h.max(end(v.y, v.height) as u32),
+                    )
+                });
+                let samples = d.pipelines[pid.0 as usize]
+                    .render
+                    .as_ref()
+                    .map_or(1, |r| r.targets.samples);
+                pass.empty = Some(wcontainers_gpu::EmptyPass {
+                    width,
+                    height,
+                    samples,
+                });
+                self.empty_pass = true;
             }
             d.backend.begin_pass(&pass);
             self.pass_open = true;
@@ -2120,7 +2325,7 @@ impl<B: Backend> Replay<B> {
             })
         });
         let index = match (&range, &self.index) {
-            (DrawRange::Indexed { .. }, Some(v)) => {
+            (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, Some(v)) => {
                 let (id, offset) = d
                     .addresses
                     .find(v.address)
@@ -2132,7 +2337,7 @@ impl<B: Backend> Replay<B> {
                 };
                 Some((d.buffer(id)?.0.clone(), offset, format))
             }
-            (DrawRange::Indexed { .. }, None) => {
+            (DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }, None) => {
                 return Err(Error::Invalid("an indexed draw with no index buffer"));
             }
             _ => None,
@@ -2159,7 +2364,6 @@ impl<B: Backend> Replay<B> {
             ));
         }
         let restart = p.strip_cut != 0;
-        let sets = d.binding_sets(&self.graphics, pid)?;
         let p = &d.pipelines[pid.0 as usize];
         let r = p.render.as_ref().expect("a graphics pipeline");
         let call = DrawCall {
@@ -2342,11 +2546,21 @@ fn copy_texture<B: Backend>(
     src: &CopyLocation,
     area: Option<[u32; 6]>,
 ) -> Result<(), Error> {
+    // A subresource's texture, mip, layer and origin, the resource's description, and whether it is
+    // in the stencil plane.
     let region = |d: &Device<B>, id: ResourceId, index: u32, origin: Origin| {
         let r = &d.resources[id.0 as usize];
-        let mips = r.desc.mips();
+        let (mips, layers) = (r.desc.mips(), r.desc.layers());
         let (texture, _) = d.texture(id)?;
-        Ok::<_, Error>((texture.clone(), index % mips, index / mips, origin, r.desc))
+        let stencil = index / (mips * layers) == 1;
+        Ok::<_, Error>((
+            texture.clone(),
+            index % mips,
+            index / mips % layers,
+            origin,
+            r.desc,
+            stencil,
+        ))
     };
     let origin = |v: [u32; 3]| Origin {
         x: v[0],
@@ -2379,7 +2593,7 @@ fn copy_texture<B: Backend>(
             },
             CopyLocation::Subresource { resource: s, index },
         ) => {
-            let (texture, mip, layer, o, _) = region(d, *s, *index, origin(src_origin))?;
+            let (texture, mip, layer, o, _, stencil) = region(d, *s, *index, origin(src_origin))?;
             let (format, _) = crate::resource::ResourceDesc {
                 format: footprint.format,
                 ..Default::default()
@@ -2405,7 +2619,7 @@ fn copy_texture<B: Backend>(
                     mip,
                     layer,
                     origin: o,
-                    stencil: false,
+                    stencil,
                 },
                 &CopyBufferTexture {
                     buffer: &buffer,
@@ -2430,7 +2644,7 @@ fn copy_texture<B: Backend>(
                 footprint,
             },
         ) => {
-            let (texture, mip, layer, o, _) = region(d, *t, *index, origin(at))?;
+            let (texture, mip, layer, o, _, stencil) = region(d, *t, *index, origin(at))?;
             let (format, _) = crate::resource::ResourceDesc {
                 format: footprint.format,
                 ..Default::default()
@@ -2462,7 +2676,7 @@ fn copy_texture<B: Backend>(
                     mip,
                     layer,
                     origin: o,
-                    stencil: false,
+                    stencil,
                 },
                 extent,
             );
@@ -2477,8 +2691,9 @@ fn copy_texture<B: Backend>(
                 index: si,
             },
         ) => {
-            let (st, smip, slayer, so, sdesc) = region(d, *s, *si, origin(src_origin))?;
-            let (tt, tmip, tlayer, to, _) = region(d, *t, *ti, origin(at))?;
+            // A copy between textures moves both planes of a depth-stencil format at once.
+            let (st, smip, slayer, so, sdesc, _) = region(d, *s, *si, origin(src_origin))?;
+            let (tt, tmip, tlayer, to, _, _) = region(d, *t, *ti, origin(at))?;
             let extent = extent_of(size_of_mip(&sdesc, smip));
             d.backend.copy_texture(
                 &TextureRegion {

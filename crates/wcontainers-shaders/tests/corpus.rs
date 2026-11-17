@@ -369,19 +369,61 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
     assert!(compared >= 18 && sampling >= 4, "{compared} {sampling}");
 }
 
-/// A dynamically indexed constant buffer is declared with the size the bytecode gives it (the rig's
-/// instanced vertex shader indexes 33 vectors by instance), not dxbc-spirv's 4096, so a program
-/// binding just its buffer satisfies WebGPU's minimum binding size.
+/// The size in bytes of each constant buffer a rig shader declares once converted, by register.
+fn constant_sizes(dir: &str, name: &str) -> BTreeMap<u32, u32> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wcontainers-graphics-test/shaders")
+        .join(dir)
+        .join(name);
+    let bytes = std::fs::read(path).unwrap();
+    let source = if dir == "dxil" {
+        Source::Dxil(&bytes)
+    } else {
+        Source::Dxbc(&bytes)
+    };
+    let c = convert(source, &VariantKey::default(), None).unwrap();
+    let m = &c.modules[0].module;
+    let sizes: BTreeMap<u32, u32> = m
+        .global_variables
+        .iter()
+        .filter(|(_, v)| v.space == naga::AddressSpace::Uniform)
+        .map(|(_, v)| {
+            let b = v.binding.unwrap();
+            let r = c
+                .reflection
+                .bindings
+                .iter()
+                .find(|r| (r.set, r.binding) == (b.group, b.binding))
+                .unwrap();
+            (r.register, m.types[v.ty].inner.size(m.to_ctx()))
+        })
+        .collect();
+    // No replaced 64 KiB type is left for a writer to declare.
+    let largest = sizes.values().copied().max().unwrap_or(0);
+    assert!(
+        m.types
+            .iter()
+            .all(|(_, t)| t.inner.size(m.to_ctx()) <= largest),
+        "{name}: a type larger than every constant buffer"
+    );
+    sizes
+}
+
+/// A dynamically indexed constant buffer is declared with the size the bytecode gives it, not the
+/// converters' 64 KiB, on both routes, so a program binding just its buffer satisfies WebGPU's
+/// minimum binding size.
 #[test]
 fn dynamically_indexed_constants_keep_their_declared_size() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../wcontainers-graphics-test/shaders/dxbc/instanced.vs.dxbc");
-    let bytes = std::fs::read(path).unwrap();
-    let c = convert(Source::Dxbc(&bytes), &VariantKey::default(), None).unwrap();
-    let m = &c.modules[0];
-    let wgsl =
-        naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())
-            .unwrap();
-    assert!(wgsl.contains("array<vec4<f32>, 33>"), "{wgsl}");
-    assert!(!wgsl.contains("4096"), "{wgsl}");
+    // Instanced: 33 vectors indexed by instance.
+    assert_eq!(constant_sizes("dxbc", "instanced.vs.dxbc")[&0], 33 * 16);
+    for (dir, ext) in [("dxbc", "dxbc"), ("dxil", "dxil")] {
+        let slots = constant_sizes(dir, &format!("constants.ps_slots.{ext}"));
+        assert_eq!(
+            (slots[&1], slots[&2], slots[&3]),
+            (16 * 16, 256 * 16, 4096 * 16),
+            "{dir}"
+        );
+        let window = constant_sizes(dir, &format!("constants.ps_window.{ext}"));
+        assert_eq!(window[&0], 64 * 16, "{dir}");
+    }
 }
