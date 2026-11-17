@@ -2764,6 +2764,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.3",
  "half",
+ "image",
  "js-sys",
  "naga",
  "png",
