@@ -748,6 +748,7 @@ impl Device {
             Some(r) => {
                 // SAFETY: resources come from this library.
                 let r = unsafe { r.as_impl() };
+                let layers = u32::from(r.desc.DepthOrArraySize);
                 // SAFETY: an optional description, as the API allows.
                 match unsafe { pdesc.as_ref() } {
                     None => Some(TargetView {
@@ -776,7 +777,27 @@ impl Device {
                             format: v.Format.0 as u32,
                             mip: t.MipSlice,
                             first_layer: t.FirstArraySlice,
-                            layers: t.ArraySize,
+                            layers: t.ArraySize.min(layers.saturating_sub(t.FirstArraySlice)),
+                        })
+                    }
+                    Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2DMS => {
+                        Some(TargetView {
+                            resource: r.id,
+                            format: v.Format.0 as u32,
+                            mip: 0,
+                            first_layer: 0,
+                            layers: 1,
+                        })
+                    }
+                    Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY => {
+                        // SAFETY: the member the dimension names.
+                        let t = unsafe { v.Anonymous.Texture2DMSArray };
+                        Some(TargetView {
+                            resource: r.id,
+                            format: v.Format.0 as u32,
+                            mip: 0,
+                            first_layer: t.FirstArraySlice,
+                            layers: t.ArraySize.min(layers.saturating_sub(t.FirstArraySlice)),
                         })
                     }
                     Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE3D => {
@@ -800,14 +821,24 @@ impl Device {
             }
             None => None,
         };
-        let own = resource
-            .as_ref()
-            .map_or(0, |r| unsafe { r.as_impl() }.desc.Format.0 as u32);
-        let descriptor = descriptor.map_or(Descriptor::Empty, |v| {
-            // A view of format UNKNOWN reads the resource's own format.
-            let format = if v.format == 0 { own } else { v.format };
-            Descriptor::RenderTarget(TargetView { format, ..v })
-        });
+        let descriptor = match (descriptor, resource.as_ref()) {
+            (Some(v), Some(r)) => {
+                // SAFETY: resources come from this library.
+                let r = unsafe { r.as_impl() };
+                // A view of format UNKNOWN reads the resource's own format.
+                let format = if v.format == 0 {
+                    r.desc.Format.0 as u32
+                } else {
+                    v.format
+                };
+                Descriptor::RenderTarget(TargetView {
+                    format,
+                    resource: holder(r, format),
+                    ..v
+                })
+            }
+            _ => Descriptor::Empty,
+        };
         // SAFETY: CPU descriptor handles point into a heap of this library.
         unsafe { *(dest.ptr as *mut Descriptor) = descriptor };
     }
@@ -888,7 +919,12 @@ impl Device {
         let descriptor = resource.as_ref().and_then(|r| {
             // SAFETY: resources come from this library; an optional description.
             let (r, d) = unsafe { (r.as_impl(), pdesc.as_ref()) };
-            shader_resource_view(r, d).map(Descriptor::ShaderResource)
+            shader_resource_view(r, d).map(|v| {
+                Descriptor::ShaderResource(ResourceView {
+                    resource: holder(r, v.format),
+                    ..v
+                })
+            })
         });
         // SAFETY: CPU descriptor handles point into a heap of this library.
         unsafe { *(dest.ptr as *mut Descriptor) = descriptor.unwrap_or_default() };
@@ -904,7 +940,12 @@ impl Device {
         let descriptor = resource.as_ref().and_then(|r| {
             // SAFETY: resources come from this library; an optional description.
             let (r, d) = unsafe { (r.as_impl(), pdesc.as_ref()) };
-            unordered_access_view(r, d).map(Descriptor::UnorderedAccess)
+            unordered_access_view(r, d).map(|v| {
+                Descriptor::UnorderedAccess(ResourceView {
+                    resource: holder(r, v.format),
+                    ..v
+                })
+            })
         });
         // SAFETY: CPU descriptor handles point into a heap of this library.
         unsafe { *(dest.ptr as *mut Descriptor) = descriptor.unwrap_or_default() };
@@ -1487,6 +1528,21 @@ impl Queue {
         }
     }
 
+    /// Answers E_FAIL as for a queue without timestamps, which is what the back ends here have.
+    pub fn GetClockCalibration(&self, _gpu: *mut u64, _cpu: *mut u64) -> Result<()> {
+        if gpu::call(|d| {
+            d.backend()
+                .caps()
+                .has(wcontainers_gpu::Features::TIMESTAMPS)
+        }) {
+            return Err(windows::core::Error::new(
+                E_NOTIMPL,
+                "GetClockCalibration with timestamps",
+            ));
+        }
+        Err(E_FAIL.into())
+    }
+
     pub fn Wait(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
         // SAFETY: fences come from this library.
         let fence = unsafe { fence.ok()?.as_impl() };
@@ -1810,6 +1866,25 @@ impl Drop for List {
 unsafe fn descriptor(h: D3D12_CPU_DESCRIPTOR_HANDLE) -> Descriptor {
     // SAFETY: as the caller promises.
     unsafe { *(h.ptr as *const Descriptor) }
+}
+
+/// The resource a view of `r` in DXGI format `format` names: `r`'s own, or, for a typeless
+/// texture viewed in a format the back end cannot reinterpret its bits as, its twin in that format
+/// (`Device::view_holder`).
+fn holder(r: &Resource, format: u32) -> ResourceId {
+    use wcontainers_directx_graphics_infrastructure::dxgi_format;
+    let reinterprets = match (dxgi_format(r.desc.Format.0 as u32), dxgi_format(format)) {
+        (Some((stored, true)), Some((view, _))) => stored.linear() != view.linear(),
+        _ => false,
+    };
+    let id = r.id;
+    if !reinterprets {
+        return id;
+    }
+    gpu::call(move |d| d.view_holder(id, format)).unwrap_or_else(|e| {
+        eprintln!("wcontainers: a view of a typeless texture: {e:?}");
+        id
+    })
 }
 
 /// The resource behind an interface pointer of this library.

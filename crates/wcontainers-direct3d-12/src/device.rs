@@ -147,6 +147,11 @@ struct Resource<B: Backend> {
     /// brought up to date.
     written: u64,
     synced: u64,
+    /// Textures holding this typeless texture's bits in formats the back end cannot view them as,
+    /// which inherit from it and from each other (`alias.rs`, `ReinterpretCopy`).
+    twins: Vec<ResourceId>,
+    /// Whether this is such a twin.
+    twin: bool,
 }
 
 /// A heap of `CreateHeap`. Each placed resource in a default heap has storage of its own (plan
@@ -273,6 +278,8 @@ pub struct Device<B: Backend> {
 struct Chain<B: Backend> {
     chain: SwapChain<B>,
     buffers: Vec<ResourceId>,
+    /// The token of the frame latency waitable object, and the retired frames it was released for.
+    waitable: Option<(u64, u64)>,
 }
 
 impl<B: Backend> Device<B> {
@@ -396,7 +403,10 @@ impl<B: Backend> Device<B> {
             if desc.flags & resource::FLAG_DENY_SHADER_RESOURCE == 0 {
                 usage |= TextureUsage::SAMPLE;
             }
-            if desc.flags & (resource::FLAG_RENDER_TARGET | resource::FLAG_DEPTH_STENCIL) != 0 {
+            // Multisampled textures are made to draw into whatever their flags say (WebGPU's rule).
+            if desc.flags & (resource::FLAG_RENDER_TARGET | resource::FLAG_DEPTH_STENCIL) != 0
+                || desc.sample_count > 1
+            {
                 usage |= TextureUsage::RENDER;
             }
             if desc.flags & resource::FLAG_UNORDERED_ACCESS != 0 {
@@ -449,6 +459,8 @@ impl<B: Backend> Device<B> {
             inherits: Vec::new(),
             written: 0,
             synced: 0,
+            twins: Vec::new(),
+            twin: false,
         });
         Ok(id)
     }
@@ -572,6 +584,9 @@ impl<B: Backend> Device<B> {
             m.placed.retain(|p| p.2 != id);
         }
         self.disinherit(id, &r.inherits);
+        for t in r.twins {
+            self.destroy_resource(t);
+        }
         self.reads.retain(|p| p.resource != id);
         match r.storage {
             Storage::Buffer { buffer, .. } => self.backend.destroy(Object::Buffer(buffer)),
@@ -932,6 +947,35 @@ impl<B: Backend> Device<B> {
 
     pub fn has_waiters(&self) -> bool {
         !self.waiters.is_empty()
+            || self
+                .chains
+                .iter()
+                .any(|(_, c)| c.waitable.is_some() && c.chain.frames_in_flight())
+    }
+
+    /// Gives swap chain `id` a frame latency waitable object, `token`, released once for each frame
+    /// that finishes from now on.
+    pub fn set_waitable(&mut self, id: ChainId, token: u64) {
+        if let Some(c) = self.chains.get_mut(id.0 as usize) {
+            let retired = c.chain.frames_retired(&mut self.backend);
+            c.waitable = Some((token, retired));
+        }
+    }
+
+    /// The waitable objects of swap chains whose frames finished since the last call, and how many
+    /// frames finished for each.
+    pub fn frames_finished(&mut self) -> Vec<(u64, u32)> {
+        let mut out = Vec::new();
+        for (_, c) in &mut self.chains {
+            if let Some((token, released)) = &mut c.waitable {
+                let retired = c.chain.frames_retired(&mut self.backend);
+                if retired > *released {
+                    out.push((*token, (retired - *released) as u32));
+                    *released = retired;
+                }
+            }
+        }
+        out
     }
 
     /// The tokens of events whose fence has reached its value, asking the back end without waiting.
@@ -1152,7 +1196,11 @@ impl<B: Backend> Device<B> {
         self.live().map_err(|_| GpuError::DeviceLost)?;
         let chain = SwapChain::new(&mut self.backend, window, desc)?;
         let buffers = adopt_buffers(&mut self.resources, &chain);
-        Ok(ChainId(self.chains.insert(Chain { chain, buffers }) as u32))
+        Ok(ChainId(self.chains.insert(Chain {
+            chain,
+            buffers,
+            waitable: None,
+        }) as u32))
     }
 
     /// The resource standing for back buffer `index` (`GetBuffer`).
@@ -1400,7 +1448,13 @@ impl<B: Backend> Device<B> {
         desc: TextureViewDesc,
     ) -> Result<B::TextureView, Error> {
         let Some(Resource {
-            storage: Storage::Texture { texture, views, .. },
+            storage:
+                Storage::Texture {
+                    texture,
+                    views,
+                    desc: tdesc,
+                    ..
+                },
             ..
         }) = self.resources.get_mut(resource.0 as usize)
         else {
@@ -1408,6 +1462,15 @@ impl<B: Backend> Device<B> {
         };
         if let Some((_, view)) = views.iter().find(|(k, _)| *k == desc) {
             return Ok(view.clone());
+        }
+        let stored = tdesc.format;
+        if stored.linear() != desc.format.linear()
+            && !stored.is_depth_stencil()
+            && !self.backend.caps().has(Features::FORMAT_REINTERPRET)
+        {
+            return Err(Error::NotImplemented(
+                "a view reinterpreting a texture's bits without its twin",
+            ));
         }
         let view = self.backend.create_view(texture, &desc)?;
         views.push((desc, view.clone()));
@@ -1544,6 +1607,8 @@ fn adopt_buffers<B: Backend>(
             inherits: Vec::new(),
             written: 0,
             synced: 0,
+            twins: Vec::new(),
+            twin: false,
         });
         out.push(ResourceId(id as u32));
         i += 1;
@@ -1772,7 +1837,14 @@ impl<B: Backend> Replay<B> {
             self.copies_due(d, c)?;
         }
         match c {
-            Command::Pipeline(p) => self.pipeline = Some(*p),
+            Command::Pipeline(p) => {
+                if !d.pipelines.contains(p.0 as usize) {
+                    return Err(Error::Invalid(
+                        "a pipeline state released before its list ran",
+                    ));
+                }
+                self.pipeline = Some(*p);
+            }
             Command::RootSignature { compute, root } => {
                 let signature = root.and_then(|r| d.roots.get(r.0 as usize).cloned());
                 if root.is_some() && signature.is_none() {
@@ -2648,6 +2720,10 @@ fn copy_texture<B: Backend>(
             1
         },
     };
+    // An empty box copies nothing.
+    if area.is_some_and(|a| a[3] <= a[0] || a[4] <= a[1] || a[5] <= a[2]) {
+        return Ok(());
+    }
     let src_origin = area.map_or([0; 3], |a| [a[0], a[1], a[2]]);
     let extent_of = |full: Extent| match area {
         Some(a) => Extent {

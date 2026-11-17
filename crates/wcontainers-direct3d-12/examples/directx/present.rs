@@ -318,9 +318,11 @@ fn client_size(hwnd: isize) -> (u32, u32) {
 /// `DXGI_USAGE_SHADER_INPUT` and `DXGI_USAGE_UNORDERED_ACCESS`.
 const USAGE_SHADER_INPUT: u32 = 0x10;
 const USAGE_UNORDERED_ACCESS: u32 = 0x400;
-/// Swap chain flags the swap chain honours: none changes what it does here
-/// (`ALLOW_MODE_SWITCH`, `ALLOW_TEARING`).
-const FLAGS_TAKEN: u32 = 0x2 | 0x800;
+/// `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`.
+const FLAG_WAITABLE: u32 = 0x40;
+/// Swap chain flags the swap chain honours: the frame latency waitable object, and two that change
+/// nothing here (`ALLOW_MODE_SWITCH`, `ALLOW_TEARING`).
+const FLAGS_TAKEN: u32 = 0x2 | FLAG_WAITABLE | 0x800;
 
 /// `CreateSwapChainForHwnd` (and `CreateSwapChain`) on a Direct3D 12 queue of this library.
 pub fn create(
@@ -399,6 +401,23 @@ pub fn create(
         s.front.create_swap_chain(window, &front)
     })
     .map_err(chain_error)?;
+    // The waitable object is a semaphore released once per finished frame, starting at the one
+    // frame of latency such swap chains have.
+    let waitable = if desc.Flags & FLAG_WAITABLE != 0 {
+        use windows::Win32::System::Threading::CreateSemaphoreW;
+        // SAFETY: plain object creation; closed when the swap chain goes.
+        let semaphore = unsafe { CreateSemaphoreW(None, 1, 16, PCWSTR::null())? };
+        let token = semaphore.0 as usize as u64;
+        gpu::call(move |d| {
+            if let Some(c) = d.chain_mut(id) {
+                let _ = c.set_max_latency(1);
+            }
+            d.set_waitable(id, token);
+        });
+        Some(semaphore.0 as usize)
+    } else {
+        None
+    };
     let mut d = *desc;
     d.Width = width;
     d.Height = height;
@@ -406,6 +425,7 @@ pub fn create(
         id,
         hwnd,
         queue,
+        waitable,
         state: Mutex::new(ChainState {
             desc: d,
             buffers: Vec::new(),
@@ -425,6 +445,8 @@ pub struct SwapChain {
     id: ChainId,
     hwnd: isize,
     queue: ID3D12CommandQueue,
+    /// The frame latency waitable object's semaphore, for swap chains made with it.
+    waitable: Option<usize>,
     state: Mutex<ChainState>,
 }
 
@@ -642,13 +664,30 @@ impl SwapChain {
         }))
     }
 
+    /// A higher latency releases the waitable object for the frames it adds.
     pub fn SetMaximumFrameLatency(&self, frames: u32) -> Result<()> {
         let id = self.id;
-        gpu::call(move |d| match d.chain_mut(id) {
-            Some(c) => c.set_max_latency(frames),
+        let old = gpu::call(move |d| match d.chain_mut(id) {
+            Some(c) => {
+                let old = c.max_latency();
+                c.set_max_latency(frames).map(|()| old)
+            }
             None => Err(SwapChainError::InvalidCall("no such swap chain")),
         })
-        .map_err(chain_error)
+        .map_err(chain_error)?;
+        if let Some(w) = self.waitable
+            && frames > old
+        {
+            // SAFETY: the swap chain's own semaphore.
+            unsafe {
+                windows::Win32::System::Threading::ReleaseSemaphore(
+                    HANDLE(w as *mut _),
+                    (frames - old) as i32,
+                    None,
+                )?
+            };
+        }
+        Ok(())
     }
 
     pub fn GetMaximumFrameLatency(&self) -> Result<u32> {
@@ -658,9 +697,27 @@ impl SwapChain {
         }))
     }
 
-    /// Null: swap chains are made without `FRAME_LATENCY_WAITABLE_OBJECT`, as DXGI answers then.
+    /// A handle of the waitable object's own, which the program closes; null for swap chains made
+    /// without `FRAME_LATENCY_WAITABLE_OBJECT`, as DXGI answers.
     pub fn GetFrameLatencyWaitableObject(&self) -> HANDLE {
-        HANDLE::default()
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let Some(w) = self.waitable else {
+            return HANDLE::default();
+        };
+        let mut out = HANDLE::default();
+        // SAFETY: duplicates the swap chain's own semaphore within this process.
+        let made = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                HANDLE(w as *mut _),
+                GetCurrentProcess(),
+                &mut out,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if made.is_ok() { out } else { HANDLE::default() }
     }
 
     /// Windowed only: fullscreen is the host's to give.
@@ -714,5 +771,9 @@ impl Drop for SwapChain {
         self.state.get_mut().unwrap().buffers.clear();
         let id = self.id;
         gpu::call_windowed(move |s| s.front.destroy_swap_chain(id));
+        if let Some(w) = self.waitable {
+            // SAFETY: the swap chain's own semaphore, no longer released by the device thread.
+            let _ = unsafe { CloseHandle(HANDLE(w as *mut _)) };
+        }
     }
 }

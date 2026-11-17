@@ -1080,10 +1080,10 @@ impl ID3D12CommandQueue_Impl for Queue_Impl {
     }
     fn GetClockCalibration(
         &self,
-        _pgputimestamp: *mut u64,
-        _pcputimestamp: *mut u64,
+        pgputimestamp: *mut u64,
+        pcputimestamp: *mut u64,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetClockCalibration"))
+        Queue::GetClockCalibration(self, pgputimestamp, pcputimestamp)
     }
     fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
         Queue::GetDesc(self)

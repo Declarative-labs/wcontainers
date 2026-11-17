@@ -540,11 +540,13 @@ impl<B: Backend> Device<B> {
         } else {
             v.count
         };
+        // Array sizes past the texture's layers (such as -1) take the layers left.
+        let left = texture_desc.depth_or_layers.saturating_sub(v.first_layer);
         let layer_count = match dimension {
             ViewDimension::D3 => 1,
             ViewDimension::Cube => 6,
-            ViewDimension::CubeArray => v.layers * 6,
-            _ if arrayed => v.layers,
+            ViewDimension::CubeArray => v.layers.min(left / 6) * 6,
+            _ if arrayed => v.layers.min(left),
             _ => 1,
         };
         self.note(v.resource, false);
