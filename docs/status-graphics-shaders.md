@@ -4,7 +4,8 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 
 ## Where things stand
 
-Milestone G6a (first slice), run 1, in progress.
+Milestone G6a (first slice), run 2, in progress. Run 2 merged origin/phase-2-graphics and every
+origin/phase-2-graphics-* branch (rig, webgpu, webgl, direct3d-11, direct3d-12).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -15,27 +16,51 @@ Done:
   (`src/ir.rs`) and lowered straight into naga (`src/lower.rs`). Vertex, pixel and compute shaders.
   Every corpus shader converts or fails with a named reason; the WGSL is read back and validated by
   naga with WebGPU's core capabilities, the GLSL ES 3.00 compiled by glslangValidator.
+- Chrome's own compile of every written file (run 2): `crates/wcontainers-shaders/web/check <out-dir>`
+  compiles each WGSL file with Chrome's WebGPU and each GLSL file with its WebGL 2 on the desktop's
+  RTX 3080 (one GPU job, counts below). Every converted shader's WGSL compiles in Chrome (corpus 127,
+  rig DXBC 56, rig DXIL 11, own 5). The GLSL is written with the WebGL 2 back end's options
+  (`FORCE_POINT_SIZE`, Embedded 300 for WebGL, no y flip as on a context with EXT_clip_control).
+- Fixed on the way (run 2): constants that are infinite or NaN are now read from a local variable
+  (Tint refused `bitcast<f32>(4290772992u)` as a constant expression); naga's WGSL writer writes f32
+  literals whose shortest digits exceed f32::MAX with their exact digits (Tint refused
+  `340282350000000000000000000000000000000f`); naga's GLSL writer writes the sample mask as
+  `gl_SampleMask[0] = int(..)`, reads `uint(gl_SampleMaskIn[0])` and enables
+  GL_OES_sample_variables for it.
 - The module is the same on every run and host: the corpus test converts each shader twice and
-  compares, and the WebAssembly build's output files equal the native build's byte for byte.
+  compares, and the WebAssembly build's output files equal the native build's byte for byte (run 1;
+  not re-run after run 2's changes).
 - dxil-spirv built in too (submodule, pinned), and `convert` for DXIL: dxil-spirv's SPIR-V, read by
   naga's SPIR-V reader (`src/dxil.rs`), then given 6.4's binding rule. 11 of the rig's 14 DXIL shaders
-  convert, WGSL valid and GLSL ES compiled by glslang; the other 3 stop at the reader's known gaps
+  convert, WGSL and GLSL ES both compile in Chrome; the other 3 stop at the reader's known gaps
   (6.2): typed buffers ("unsupported image dimension", twice) and a storage image without a format.
+- DXIL, run 2: `draw_base: Helpers` reads the bases from the vertex helper block exactly as the DXBC
+  route lays it out (the entry point becomes a function, called by a new entry point that passes
+  the bases, or zeros for `draw_base: None`). Inputs and outputs are in the reflection, named from
+  the container's `ISG1` and `OSG1` signatures; test `dxil_reflection_matches_dxbc` checks that the
+  rig's five shaders compiled both by fxc and dxc give the same semantics, locations, types and
+  interpolation by both routes.
+- Independent check (run 1): five shaders of our own (`tests/own/own.hlsl`), compiled by fxc
+  10.0.26100.0 on the desktop (`tests/own/compile.cmd` through `tools/graphics-rig/remote`). All five
+  give WGSL that compiles in Chrome; three compile as GLSL ES in Chrome, two use bitfield operations
+  GLSL ES 3.00 lacks. Meaning checked by reading two of them, not by drawing yet.
 
-- Independent check, part done: five shaders of our own (`tests/own/own.hlsl`: a constant-buffer
-  transform, a tinted texture with `clip`, integer shifts and a switch, a loop with a break and
-  carried values, a full-screen triangle from `SV_VertexID`), compiled by fxc 10.0.26100.0 on the
-  desktop (`tests/own/compile.cmd` through `tools/graphics-rig/remote`), the DXBC committed. All five
-  convert to valid WGSL (test `own_shaders_convert`); three compile as GLSL ES in glslang, two use
-  bitfield operations GLSL ES 3.00 lacks (the WebGL 2 back end's lowering, 6.5). Meaning checked by
-  reading `vs_fullscreen`'s and `ps_integer`'s WGSL against the HLSL (the same arithmetic; dxbc-spirv
-  folds `firstbithigh`'s zero case into a select), not by running them. Both C++ projects are
-  submodules from their upstream repositories at upstream's heads of 2026-11-17, licences below. The
-  corpus re-run at the end of the run gave the counts below unchanged.
-
-Not done in this milestone yet (in order): the own shaders' meaning checked by drawing; Chrome's own compile of the written WGSL and GLSL (the plan's final verdict; so
-far naga and glslang only); the rig's shaders drawn through a back end (no back end branch is on the
-remote yet: only phase-2-graphics and phase-2-graphics-rig); the DXIL draw bases from the helpers.
+Not done in this milestone yet (in order):
+- Draw through a back end and compare with the references. The direct3d-11 track drew the rig's
+  triangle, quads and topology scenes through its d3d11.dll with `convert` (its commits b65186d and
+  2436685, equal to Direct3D 11 on the RTX 3080). Our own run (`tools/graphics-rig/scenes --dll
+  d3d11.dll=...wcontainers_directx.dll --api d3d11`, build command below) could not build in this
+  merged tree: wcontainers-direct3d-11's recorder and wcontainers-gpu-webgl still implement the
+  interface's `resolve` without its new format argument, and the webgl back end's `Caps` lacks
+  `adapter` (the interface track's merges settle this, not this track). Next: draw the five own
+  shaders and the rig's DXIL shaders through the WebGPU back end (and the WebGL 2 one) and compare
+  with real Direct3D, which also checks their meaning by drawing.
+- DXIL: sampled pairs in the reflection, binding numbers by root signature (`VariantKey::layout`),
+  packed signature elements (two values in one register take one location each; WGSL has no
+  component qualifier).
+- GLSL ES 3.00 lacks bitfield operations, `textureGather` and multisampled samplers: what Chrome's
+  WebGL 2 refuses (corpus 13, rig 6, own 2) is only these. 6.5 gives the first two to the WebGL 2
+  back end's writing; multisampled reads are absent there.
 
 ## How the Direct3D fronts call `convert`
 
@@ -64,15 +89,30 @@ let reflection = &converted.reflection;
   `reflection.extras` for pixel shaders: early tests, side effects (UAV writes), discards, per sample.
 - DXIL: `convert(Source::Dxil(bytecode), &variant_key, None)`, same result shape. Bindings are
   numbered as for Direct3D 11 for now (stage set, kind range + register; `space` kept in the
-  reflection), not yet by root signature. Only `draw_base: None` is taken (the bases read as zero);
-  anything else is `Unsupported("DxilDrawBase")`. The reflection has bindings and extras; inputs,
-  outputs and sampled pairs are still empty for DXIL.
+  reflection), not yet by root signature. `draw_base` `None` (bases read as zero) and `Helpers` (the
+  vertex helper block as for DXBC above) are taken; `Arguments` is
+  `Unsupported("DrawBaseFromArguments")` on both routes. Inputs and outputs are filled as for DXBC
+  (semantic names from the container's signatures, location = register); a pixel shader's unread
+  `SV_Position` may be listed where the DXBC route leaves it out. Sampled pairs are still empty for
+  DXIL.
 - Errors: `Rejected` (dxbc-spirv or dxil-spirv refused the bytecode, with its message),
   `Unsupported(name)` (a named feature not provided yet, for example `GeometryShader`, `StorageImage`,
   `TypedBuffer`, `Atomics`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL only), `Malformed`
   and `Invalid` (our bugs: the corpus test fails on any of these).
 
 ## Measurements
+
+Chrome, run 2, 2026-11-17: Chrome 157.0.8103.78 (the rig's pinned build), headless, on the desktop
+(RTX 3080, WebGPU on D3D12, WebGL 2 on ANGLE D3D11), every adapter feature requested and every WebGL
+extension enabled. Verdicts per file in `chrome.txt` beside the written files. After run 2's fixes:
+- corpus: WGSL 127 of 127 compile; GLSL ES 87 of 100 (13 fail: bitfield operations 8, gather 4,
+  `sampler2DMS` 1). Before the fixes WGSL was 125 (the NaN constant and the f32::MAX literal) and
+  GLSL 86 (the sample mask).
+- rig DXBC: WGSL 56 of 56; GLSL ES 47 of 53 (bitfield insert 3 and extract 1, gather 1,
+  `sampler2DMS` 1).
+- rig DXIL: WGSL 11 of 11, GLSL ES 11 of 11 (measured before run 2's DXIL entry point wrapper; the
+  re-run after it was started at the end of run 2 and its result not read). Own: WGSL 5 of 5, GLSL ES 3 of 5 (bitfield operations).
+- Each run of the 196 files' compile took about 2 s of GPU job time.
 
 All on the Linux laptop (i7-8750H, Ubuntu 20.04), load average below 4 during the runs, 2026-11-17.
 Counts only, no timings.
@@ -118,6 +158,10 @@ the tree as published"), plus these changes, each a later commit touching only `
   changes (desktop GL's `gl_VertexID` already includes the base vertex).
 - GLSL writer, `BuiltIn::SampleIndex` is written `uint(gl_SampleID)` (it is a `u32` in naga and an
   `int` in GLSL; 6.3's corpus had one shader failing on it).
+- GLSL writer, `BuiltIn::SampleMask`: written `gl_SampleMask[0] = int(...)` and read
+  `uint(gl_SampleMaskIn[0])` (GLSL's are `int` arrays), requesting GL_OES_sample_variables on ES.
+- WGSL writer, an f32 literal whose shortest digits name a number past f32::MAX (f32::MAX itself) is
+  written with the f64 digits of its exact value, which WGSL compilers accept.
 Not yet sent upstream.
 
 ## How to run
@@ -125,6 +169,14 @@ Not yet sent upstream.
 - Linux laptop (no GPU), one command from the Mac: `tools/graphics-rig/linux <command>`. It copies the
   working tree (submodules included) to `~/wcontainers-graphics/src/<branch>` and builds into
   `~/wcontainers-graphics/target/<branch>`, with 5 cargo jobs (2 when the laptop's load is 8 or more).
+- Chrome's compile of the written files: copy `~/wcontainers-graphics/out` from the laptop to a
+  directory here (`rsync -a tom@192.168.2.240:wcontainers-graphics/out/ <dir>/`), then
+  `crates/wcontainers-shaders/web/check <dir>`: one GPU job on the desktop, `chrome.txt` comes back
+  into each corpus directory, exit 1 if any file fails.
+- Building on the desktop: the rig's `remote` does not fetch submodules, so a build command that
+  needs this crate starts with `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
+  crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule
+  update --init third_party/spirv-headers && cargo build ...` (they stay checked out afterwards).
 - Unit and corpus tests: `tools/graphics-rig/linux 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
   WCONTAINERS_SHADERS_OUT=$HOME/wcontainers-graphics/out GLSLANG=glslangValidator cargo test -p
   wcontainers-shaders -- --nocapture'`. Prints the verdict counts; the written WGSL and GLSL and
@@ -181,6 +233,8 @@ were already there.
 - The content key is BLAKE3 over the source, `CONVERTER_VERSION` and the variant key's debug text, until
   the cache (section 8) gives the variant key a serialised form.
 - The WebAssembly build imports ten WASI functions, not two (above).
+- The corpus test writes GLSL with the WebGL 2 back end's options copied (its `write_glsl` is private
+  to that crate); if that back end changes them, the test follows by hand.
 - dxil-spirv's converter library is not free of dxbc-spirv as 6.2 says: its bitcode module
   (`bc/module_dxbc_ir.cpp`) reads dxbc-spirv's IR. It is built against our one copy of dxbc-spirv
   (newer than the commit dxil-spirv pins; it compiles), and all of dxil-spirv is built as C++17, as
