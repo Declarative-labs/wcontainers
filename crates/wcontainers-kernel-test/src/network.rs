@@ -6,7 +6,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket,
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+    UdpSocket,
 };
 use std::os::fd::AsRawFd;
 use std::time::Duration;
@@ -23,6 +24,8 @@ const ETIMEDOUT: i32 = 110;
 const ENETUNREACH: i32 = 101;
 const EHOSTUNREACH: i32 = 113;
 const ENOENT: i32 = 2;
+const EADDRINUSE: i32 = 98;
+const ECONNABORTED: i32 = 103;
 
 enum Socket {
     Stream(TcpStream),
@@ -72,10 +75,25 @@ impl Owed {
     }
 }
 
+/// A container port this machine accepts connections for.
+struct Listener {
+    socket: TcpListener,
+    /// The container's port.
+    port: u16,
+    /// An accept answered "would block", so the next connection is told.
+    armed: bool,
+}
+
 #[derive(Default)]
 pub struct Network {
     connections: BTreeMap<u32, Connection>,
+    listeners: BTreeMap<u32, Listener>,
     owed: VecDeque<Owed>,
+    /// Ports of this machine's loopback that reach the container's ports, by the container's
+    /// port, as `docker run -p 127.0.0.1:outer:inner` gives.
+    pub published: BTreeMap<u16, u16>,
+    /// Listening sockets of published ports an earlier host held, taken again by a listen.
+    kept: BTreeMap<u16, TcpListener>,
 }
 
 /// The address a guest names as this machine sees it.
@@ -108,6 +126,61 @@ fn errno(error: &std::io::Error) -> i32 {
 }
 
 impl Network {
+    /// The network a host brought back from a save starts with: the same published ports, still
+    /// held, and no connections.
+    pub fn moved(&mut self) -> Network {
+        let mut kept = std::mem::take(&mut self.kept);
+        for listener in std::mem::take(&mut self.listeners).into_values() {
+            kept.insert(listener.port, listener.socket);
+        }
+        Network {
+            published: self.published.clone(),
+            kept,
+            ..Default::default()
+        }
+    }
+
+    /// Accepts connections to a published port; nothing reaches a port not published.
+    pub fn listen(&mut self, id: u32, port: u16) -> Result<(), HostError> {
+        let Some(&outer) = self.published.get(&port) else {
+            return Ok(());
+        };
+        let socket = match self.kept.remove(&port) {
+            Some(socket) => socket,
+            None => TcpListener::bind((Ipv4Addr::LOCALHOST, outer))
+                .map_err(|_| HostError::Errno(EADDRINUSE))?,
+        };
+        socket.set_nonblocking(true).expect("nonblocking");
+        let listener = Listener {
+            socket,
+            port,
+            armed: true,
+        };
+        self.listeners.insert(id, listener);
+        Ok(())
+    }
+
+    pub fn accept(&mut self, listener: u32, id: u32) -> Result<(), HostError> {
+        let listener = self.listeners.get_mut(&listener).ok_or(HostError::Closed)?;
+        match listener.socket.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(true).expect("nonblocking");
+                let connection = Connection {
+                    socket: Socket::Stream(stream),
+                    read_armed: true,
+                    write_armed: false,
+                };
+                self.connections.insert(id, connection);
+                Ok(())
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                listener.armed = true;
+                Err(HostError::WouldBlock)
+            }
+            Err(_) => Err(HostError::Errno(ECONNABORTED)),
+        }
+    }
+
     pub fn connect(
         &mut self,
         id: u32,
@@ -193,6 +266,7 @@ impl Network {
 
     pub fn close(&mut self, id: u32) {
         self.connections.remove(&id);
+        self.listeners.remove(&id);
     }
 
     pub fn look_up(&mut self, request: u64, name: &str) {
@@ -221,18 +295,20 @@ impl Network {
         self.owed.push_back(owed);
     }
 
-    /// Whether anything may still come: an event owed or a connection waiting for a change.
+    /// Whether anything may still come: an event owed, or a connection or listener waiting for a
+    /// change.
     pub fn waiting(&self) -> bool {
         !self.owed.is_empty()
             || self
                 .connections
                 .values()
                 .any(|connection| connection.read_armed || connection.write_armed)
+            || self.listeners.values().any(|listener| listener.armed)
     }
 
     /// The events owed, after waiting up to `timeout` for a connection to change when none is.
     pub fn take(&mut self, timeout: Duration) -> Vec<Owed> {
-        let armed: Vec<(u32, i32, i16)> = self
+        let mut armed: Vec<(u32, i32, i16)> = self
             .connections
             .iter()
             .filter(|(_, connection)| connection.read_armed || connection.write_armed)
@@ -247,6 +323,12 @@ impl Network {
                 (id, connection.socket.fd(), events)
             })
             .collect();
+        armed.extend(
+            self.listeners
+                .iter()
+                .filter(|(_, listener)| listener.armed)
+                .map(|(&id, listener)| (id, listener.socket.as_raw_fd(), libc::POLLIN)),
+        );
         let mut fds: Vec<libc::pollfd> = armed
             .iter()
             .map(|&(_, fd, events)| libc::pollfd {
@@ -266,6 +348,11 @@ impl Network {
         }
         for (&(id, _, _), fd) in armed.iter().zip(&fds) {
             if fd.revents == 0 {
+                continue;
+            }
+            if let Some(listener) = self.listeners.get_mut(&id) {
+                listener.armed = false;
+                self.owed.push_back(Owed::Ready(id));
                 continue;
             }
             let connection = self.connections.get_mut(&id).expect("an armed connection");

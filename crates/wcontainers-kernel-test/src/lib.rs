@@ -79,10 +79,30 @@ pub fn run_ours_injected(
     seed: u64,
     injections: driver::Injections,
 ) -> driver::Run {
-    run_ours_on(directory, path, arguments, seed, injections, None)
+    run_ours_on(directory, path, arguments, seed, injections, None, &[])
 }
 
-/// As [`run_ours_injected`], with the root file system on the backend (`Some("/")`) or in memory.
+/// As [`run_ours_saving`], with ports of this machine's loopback reaching the container's as
+/// (container port, outside port), as `docker run -p` publishes them.
+pub fn run_ours_published(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    saves: usize,
+    published: &[(u16, u16)],
+) -> driver::Run {
+    let injections = driver::Injections {
+        saves,
+        ..Default::default()
+    };
+    run_ours_on(
+        directory, path, arguments, seed, injections, None, published,
+    )
+}
+
+/// As [`run_ours_injected`], with the root file system on the backend (`Some("/")`) or in memory,
+/// and the ports published.
 fn run_ours_on(
     directory: &Path,
     path: &str,
@@ -90,6 +110,7 @@ fn run_ours_on(
     seed: u64,
     injections: driver::Injections,
     backend: Option<&str>,
+    published: &[(u16, u16)],
 ) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, "wc"));
@@ -101,6 +122,7 @@ fn run_ours_on(
         working_directory: "/",
         backend,
         cached: false,
+        published,
     };
     driver::run_injected(&container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
@@ -193,7 +215,7 @@ fn same_output_seeded(
             saves,
             ..Default::default()
         };
-        let ours = run_ours_on(directory, &path, &all, seed, injections, backend);
+        let ours = run_ours_on(directory, &path, &all, seed, injections, backend, &[]);
         let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
         let differences: Vec<String> = ours_text

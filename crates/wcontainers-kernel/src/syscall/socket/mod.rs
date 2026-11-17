@@ -804,7 +804,7 @@ pub(super) fn accept4(
     kernel.wake_poll(channel(&socket), EPOLLOUT | EPOLLWRNORM);
     let is_inet = socket.borrow().inet.is_some();
     if is_inet {
-        inet::accepted(kernel, &socket);
+        inet::accepted(kernel, cx, &socket);
     }
     let new = make_file(kernel, cx, tid, embryo.clone(), flags)?;
     if address != 0 {

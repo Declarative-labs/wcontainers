@@ -605,7 +605,6 @@ impl Kernel {
         f(&walk, &context)
     }
 
-    /// The time now on the wall clock.
     /// The memory in use, in bytes, and how much of it tmpfs holds: every mapped page and every
     /// tmpfs page, counted as present, since which pages a program has touched is not known.
     pub(crate) fn memory_in_use(&self) -> (u64, u64) {
@@ -635,6 +634,7 @@ impl Kernel {
         ((tmpfs + mapped).min(self.machine.memory_bytes), tmpfs)
     }
 
+    /// The time now on the wall clock.
     pub(crate) fn now(&self, cx: &mut Context<'_>) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }

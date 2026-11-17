@@ -130,10 +130,13 @@ pub trait Host {
     fn close(&mut self, connection: ConnectionId);
     /// Start looking up a name. The result arrives as [`Event::LookedUp`] with the same request number.
     fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError>;
-    /// Start accepting connections from outside on a port. Each arrives as [`Event::ConnectionReady`] on
-    /// `listener`, and is then taken with [`Host::accept`].
+    /// Start accepting TCP connections from outside to the container's port `port`. While some
+    /// wait, [`Event::ConnectionReady`] comes on `listener` (once after this call, and again after
+    /// [`Host::accept`] answered [`HostError::WouldBlock`]); each is taken with [`Host::accept`].
+    /// [`Host::close`] on `listener` stops it.
     fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError>;
-    /// Take one waiting connection from a listener and give it the number `connection`.
+    /// Take one waiting connection from a listener and give it the number `connection`, used then
+    /// as one made by [`Host::connect`]. [`HostError::WouldBlock`] when none waits.
     fn accept(&mut self, listener: ConnectionId, connection: ConnectionId)
     -> Result<(), HostError>;
 }

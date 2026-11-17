@@ -12,10 +12,10 @@ use core::cell::RefCell;
 
 use wcontainers_abi::{ConnectionId, HostError};
 
-use super::inet::{Endpoint, Protocol, v4_of};
+use super::inet::{Endpoint, Protocol, mapped, v4_of};
 use super::{Packet, RCV_SHUTDOWN, SHUTDOWN_MASK, Socket, SocketRef, State, channel};
 use crate::linux::general::*;
-use crate::{Context, Errno, Kernel};
+use crate::{Context, Errno, Kernel, network};
 
 /// The most bytes pulled from the host at once.
 const PIECE: usize = 65536;
@@ -26,6 +26,8 @@ pub(crate) struct Outside {
     last: u32,
     /// Each connection's socket, and for UDP the destination it carries.
     connections: BTreeMap<u32, (Weak<RefCell<Socket>>, Option<Endpoint>)>,
+    /// Listeners the host accepts connections for from outside.
+    listeners: BTreeMap<u32, Weak<RefCell<Socket>>>,
     last_lookup: u64,
     lookups: BTreeMap<u64, Lookup>,
     /// Connections let go where no host was at hand, closed at the next flush.
@@ -65,6 +67,12 @@ fn refusal(kernel: &mut Kernel, cx: &mut Context<'_>, error: HostError) -> Errno
     }
 }
 
+/// A number for a new host connection or listener.
+fn next_id(outside: &mut Outside) -> u32 {
+    outside.last = outside.last.wrapping_add(1).max(1);
+    outside.last
+}
+
 /// Starts a host connection for `socket` to `to`; its number.
 pub(super) fn open(
     kernel: &mut Kernel,
@@ -73,9 +81,7 @@ pub(super) fn open(
     to: Endpoint,
     stream: bool,
 ) -> Result<u32, Errno> {
-    let outside = &mut kernel.sockets.inet.outside;
-    outside.last = outside.last.wrapping_add(1).max(1);
-    let id = outside.last;
+    let id = next_id(&mut kernel.sockets.inet.outside);
     let address = host_address(&to);
     if let Err(error) = cx.host.connect(ConnectionId(id), &address, to.port, stream) {
         return Err(refusal(kernel, cx, error));
@@ -104,6 +110,113 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
     for id in ids {
         kernel.sockets.inet.outside.connections.remove(&id);
         kernel.sockets.inet.outside.closing.push(id);
+    }
+    stop_listening(kernel, socket);
+}
+
+/// Asks the host to accept connections from outside for a listener on its port. A host that
+/// cannot (or whose port is taken) leaves it listening inside the container alone, counted.
+pub(super) fn listen(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    let id = next_id(&mut kernel.sockets.inet.outside);
+    if ask_listen(kernel, cx, socket, id) {
+        let outside = &mut kernel.sockets.inet.outside;
+        outside.listeners.insert(id, Rc::downgrade(socket));
+    }
+}
+
+/// The host's `listen` for a listener's port; whether it took it.
+fn ask_listen(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, id: u32) -> bool {
+    let port = socket
+        .borrow()
+        .inet
+        .as_deref()
+        .map_or(0, |inet| inet.local.port);
+    match cx.host.listen(ConnectionId(id), port) {
+        Ok(()) => true,
+        Err(_) => {
+            kernel.counters.count(
+                cx.host,
+                crate::reason::OUTSIDE_LISTEN_FAILED,
+                u64::from(port),
+            );
+            false
+        }
+    }
+}
+
+/// A listener stopped listening: the host stops accepting for it.
+pub(super) fn stop_listening(kernel: &mut Kernel, socket: &SocketRef) {
+    let outside = &mut kernel.sockets.inet.outside;
+    let ids: Vec<u32> = outside
+        .listeners
+        .iter()
+        .filter(|(_, owner)| core::ptr::eq(owner.as_ptr(), Rc::as_ptr(socket)))
+        .map(|(&id, _)| id)
+        .collect();
+    for id in ids {
+        outside.listeners.remove(&id);
+        outside.closing.push(id);
+    }
+}
+
+/// Takes the connections waiting at the host for a listener into its backlog while it has room.
+/// Each is the listener's end of a connection from the gateway (as Docker's published ports show
+/// it), at eth0's address.
+pub(super) fn take(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+    let Some(listener_id) = kernel
+        .sockets
+        .inet
+        .outside
+        .listeners
+        .iter()
+        .find(|(_, owner)| core::ptr::eq(owner.as_ptr(), Rc::as_ptr(listener)))
+        .map(|(&id, _)| id)
+    else {
+        return;
+    };
+    while !super::inet::backlog_full(&listener.borrow()) {
+        let id = next_id(&mut kernel.sockets.inet.outside);
+        match cx.host.accept(ConnectionId(listener_id), ConnectionId(id)) {
+            Ok(()) => {}
+            Err(HostError::WouldBlock) => return,
+            Err(_) => {
+                let port = listener
+                    .borrow()
+                    .inet
+                    .as_deref()
+                    .map_or(0, |inet| inet.local.port);
+                kernel.counters.count(
+                    cx.host,
+                    crate::reason::OUTSIDE_LISTEN_FAILED,
+                    u64::from(port),
+                );
+                return;
+            }
+        }
+        let mut port = [0u8; 2];
+        cx.host.random(&mut port);
+        let (low, high) = (
+            *super::inet::EPHEMERAL.start(),
+            *super::inet::EPHEMERAL.end(),
+        );
+        let remote = Endpoint {
+            address: mapped(network::GATEWAY),
+            port: low + u16::from_le_bytes(port) % (high - low + 1),
+        };
+        let embryo = super::inet::embryo(kernel, listener, mapped(network::ADDRESS), remote);
+        if let Some(inet) = embryo.borrow_mut().inet.as_deref_mut() {
+            inet.outside = Some(id);
+            inet.room = true;
+        }
+        kernel
+            .sockets
+            .inet
+            .outside
+            .connections
+            .insert(id, (Rc::downgrade(&embryo), None));
+        pull(kernel, cx, &embryo, id);
+        listener.borrow_mut().backlog.push_back(embryo);
+        kernel.wake_poll(channel(listener), EPOLLIN | EPOLLRDNORM);
     }
 }
 
@@ -353,6 +466,17 @@ pub(crate) fn event(
             true
         }
         Event::ConnectionReady { connection } => {
+            let listener = kernel
+                .sockets
+                .inet
+                .outside
+                .listeners
+                .get(&connection.0)
+                .and_then(Weak::upgrade);
+            if let Some(listener) = listener {
+                take(kernel, cx, &listener);
+                return true;
+            }
             let Some(socket) = owner(kernel, connection.0) else {
                 return false;
             };
@@ -463,8 +587,21 @@ pub(super) fn query(
 }
 
 /// After a restore on a new host: connections to the outside are reported closed (plan section
-/// 12), and lookups under way are asked again.
+/// 12), listeners listen again, and lookups under way are asked again.
 pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
+    let listeners = core::mem::take(&mut kernel.sockets.inet.outside.listeners);
+    for (id, socket) in listeners {
+        if let Some(socket) = socket.upgrade().filter(|socket| !socket.borrow().dead)
+            && ask_listen(kernel, cx, &socket, id)
+        {
+            kernel
+                .sockets
+                .inet
+                .outside
+                .listeners
+                .insert(id, Rc::downgrade(&socket));
+        }
+    }
     let connections = core::mem::take(&mut kernel.sockets.inet.outside.connections);
     kernel.sockets.inet.outside.closing.clear();
     for (id, (socket, flow)) in connections {

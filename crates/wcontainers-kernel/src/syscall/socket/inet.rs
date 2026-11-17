@@ -90,7 +90,7 @@ fn source_for(to: &[u8; 16]) -> [u8; 16] {
 }
 
 /// The ports used by TCP and UDP: `ip_local_port_range` (measured).
-const EPHEMERAL: core::ops::RangeInclusive<u16> = 32768..=60999;
+pub(super) const EPHEMERAL: core::ops::RangeInclusive<u16> = 32768..=60999;
 /// How long a closed connection holds its ports (`TCP_TIMEWAIT_LEN`).
 const TIME_WAIT: u64 = 60_000_000_000;
 
@@ -619,9 +619,15 @@ pub(super) fn listen(
             autobind(kernel, cx, tid, socket, false)?;
         }
     }
-    let mut own = socket.borrow_mut();
-    own.max_backlog = backlog as u32;
-    own.state = State::Listening;
+    let outside = {
+        let mut own = socket.borrow_mut();
+        own.max_backlog = backlog as u32;
+        own.state = State::Listening;
+        state != State::Listening && reached_from_outside(&own)
+    };
+    if outside {
+        super::outside::listen(kernel, cx, socket);
+    }
     Ok(0)
 }
 
@@ -715,6 +721,7 @@ fn disconnect_tcp(kernel: &mut Kernel, socket: &SocketRef) {
     let state = socket.borrow().state;
     match state {
         State::Listening => {
+            super::outside::stop_listening(kernel, socket);
             let backlog = core::mem::take(&mut socket.borrow_mut().backlog);
             for embryo in backlog {
                 super::released(kernel, &embryo);
@@ -841,7 +848,7 @@ fn tcp_connect(
         own.shutdown = 0;
         return Err(Errno::ECONNREFUSED);
     };
-    if listener.borrow().backlog.len() > listener.borrow().max_backlog as usize {
+    if backlog_full(&listener.borrow()) {
         kernel
             .counters
             .count(cx.host, crate::reason::TCP_BACKLOG_WAIT, 0);
@@ -1008,47 +1015,12 @@ fn find_listener(kernel: &Kernel, to: &Endpoint) -> Option<SocketRef> {
 /// Joins a connecting socket to a new socket in the listener's backlog, the listener's end of
 /// the connection, which takes the listener's options (`tcp_create_openreq_child`).
 fn join(kernel: &mut Kernel, socket: &SocketRef, listener: &SocketRef) {
-    let (family, local, remote) = {
+    let (local, remote) = {
         let own = inet_ref(socket);
-        (
-            listener.borrow().family,
-            own.local,
-            own.remote.expect("a destination"),
-        )
+        (own.local, own.remote.expect("a destination"))
     };
-    let embryo = {
-        let them = listener.borrow();
-        let listening = them.inet.as_deref().unwrap();
-        let mut new = Socket::new(family, SOCK_STREAM, TCP);
-        new.state = State::Connected;
-        new.peer = Some(socket.clone());
-        new.options = them.options.clone();
-        new.owner_uid = them.owner_uid;
-        new.receive_timeout = them.receive_timeout;
-        new.send_timeout = them.send_timeout;
-        new.sndbuf = if listening.sndbuf_set {
-            them.sndbuf
-        } else {
-            TCP_CONNECTED_SNDBUF
-        };
-        new.rcvbuf = them.rcvbuf;
-        let mut inet = Inet::new(Protocol::Tcp);
-        inet.local = Endpoint {
-            address: remote.address,
-            port: listening.local.port,
-        };
-        inet.address_chosen = true;
-        inet.port_chosen = true;
-        inet.held = true;
-        inet.remote = Some(local);
-        inet.v6only = listening.v6only;
-        inet.sndbuf_set = listening.sndbuf_set;
-        inet.rcvbuf_set = listening.rcvbuf_set;
-        new.inet = Some(alloc::boxed::Box::new(inet));
-        Rc::new(RefCell::new(new))
-    };
-    let port = inet_ref(listener).local.port;
-    kernel.sockets.inet.hold(Protocol::Tcp, port, &embryo);
+    let embryo = embryo(kernel, listener, remote.address, local);
+    embryo.borrow_mut().peer = Some(socket.clone());
     {
         let mut client = socket.borrow_mut();
         client.state = State::Connected;
@@ -1063,13 +1035,73 @@ fn join(kernel: &mut Kernel, socket: &SocketRef, listener: &SocketRef) {
     kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM);
 }
 
-/// After an accept made room in a listener's backlog: the first connect waiting for it joins.
-pub(super) fn accepted(kernel: &mut Kernel, listener: &SocketRef) {
+/// The listener's end of a new connection to `address` on its port from `remote`, holding the
+/// port and taking the listener's options (`tcp_create_openreq_child`).
+pub(super) fn embryo(
+    kernel: &mut Kernel,
+    listener: &SocketRef,
+    address: [u8; 16],
+    remote: Endpoint,
+) -> SocketRef {
+    let embryo = {
+        let them = listener.borrow();
+        let listening = them.inet.as_deref().unwrap();
+        let mut new = Socket::new(them.family, SOCK_STREAM, TCP);
+        new.state = State::Connected;
+        new.options = them.options.clone();
+        new.owner_uid = them.owner_uid;
+        new.receive_timeout = them.receive_timeout;
+        new.send_timeout = them.send_timeout;
+        new.sndbuf = if listening.sndbuf_set {
+            them.sndbuf
+        } else {
+            TCP_CONNECTED_SNDBUF
+        };
+        new.rcvbuf = them.rcvbuf;
+        let mut inet = Inet::new(Protocol::Tcp);
+        inet.local = Endpoint {
+            address,
+            port: listening.local.port,
+        };
+        inet.address_chosen = true;
+        inet.port_chosen = true;
+        inet.held = true;
+        inet.remote = Some(remote);
+        inet.v6only = listening.v6only;
+        inet.sndbuf_set = listening.sndbuf_set;
+        inet.rcvbuf_set = listening.rcvbuf_set;
+        new.inet = Some(alloc::boxed::Box::new(inet));
+        Rc::new(RefCell::new(new))
+    };
+    let port = inet_ref(listener).local.port;
+    kernel.sockets.inet.hold(Protocol::Tcp, port, &embryo);
+    embryo
+}
+
+/// Whether connections from outside reach a listener: one bound to eth0's address, or to the
+/// any address taking IPv4 (outside connections arrive through the gateway over IPv4).
+fn reached_from_outside(own: &Socket) -> bool {
+    let inet = own.inet.as_deref().unwrap();
+    let address = inet.local.address;
+    address == mapped(network::ADDRESS)
+        || address == ANY4
+        || (address == ANY6 && (own.family == AF_INET || !inet.v6only))
+}
+
+/// Whether a listener's backlog is full (`sk_acceptq_is_full`).
+pub(super) fn backlog_full(listener: &Socket) -> bool {
+    listener.backlog.len() > listener.max_backlog as usize
+}
+
+/// After an accept made room in a listener's backlog: the first connect waiting for it joins,
+/// then connections waiting outside.
+pub(super) fn accepted(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
     loop {
-        if listener.borrow().backlog.len() > listener.borrow().max_backlog as usize {
+        if backlog_full(&listener.borrow()) {
             return;
         }
         let Some(waiting) = inet(listener).waiting.pop_front() else {
+            super::outside::take(kernel, cx, listener);
             return;
         };
         let Some(socket) = waiting.upgrade() else {

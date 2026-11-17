@@ -147,8 +147,8 @@ impl TestHost {
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             // The backend and the answers it owes go on with the copy.
             backend: self.backend.take(),
-            // A new host has none of the old one's connections.
-            network: Default::default(),
+            // A new host has none of the old one's connections; its published ports go on.
+            network: self.network.moved(),
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -246,12 +246,16 @@ impl Host for TestHost {
         Ok(())
     }
 
-    fn listen(&mut self, _: ConnectionId, _: u16) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        self.network.listen(listener.0, port)
     }
 
-    fn accept(&mut self, _: ConnectionId, _: ConnectionId) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn accept(
+        &mut self,
+        listener: ConnectionId,
+        connection: ConnectionId,
+    ) -> Result<(), HostError> {
+        self.network.accept(listener.0, connection.0)
     }
 }
 
@@ -277,6 +281,9 @@ pub struct Container<'a> {
     pub backend: Option<&'a str>,
     /// Whether the backend opens files for the page cache rather than for direct reads and writes.
     pub cached: bool,
+    /// Ports of this machine's loopback that reach the container's ports, as (container port,
+    /// outside port), as `docker run -p` publishes them.
+    pub published: &'a [(u16, u16)],
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -340,6 +347,7 @@ pub fn run_injected(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
+    host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
         let image = root_on_backend.then_some(container.files);
@@ -451,6 +459,8 @@ pub fn run_injected(
                             }
                             copy => {
                                 libc::close(ends[1]);
+                                // The copy alone holds the network from here on.
+                                drop(std::mem::take(&mut host.network));
                                 return Ok(finish(copied_run(copy, ends[0]), report));
                             }
                         }

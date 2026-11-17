@@ -35,6 +35,7 @@ fn same_on(name: &str, injections: driver::Injections, cached: bool) -> Vec<driv
             working_directory: AT,
             backend: Some(AT),
             cached,
+            published: &[],
         };
         let ours =
             driver::run_injected(&container, seed, injections).expect("an outcome on our kernel");
@@ -322,6 +323,7 @@ fn messages_per_call() {
             working_directory: AT,
             backend: Some(AT),
             cached: false,
+            published: &[],
         };
         let run = driver::run(&container, 1).expect("an outcome on our kernel");
         assert_eq!(run.outcome.stdout, format!("{kind} done\n").into_bytes());

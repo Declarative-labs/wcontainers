@@ -110,6 +110,11 @@ pub mod reason {
     /// accept makes some, where Linux drops the handshake and retries after 1, 3, 7 seconds and so
     /// on. Detail: none.
     pub const TCP_BACKLOG_WAIT: &str = "tcp connect waits for backlog room";
+    /// A listener the outside could reach (bound to the any address or eth0's) was refused by the
+    /// host's listen, or an accept from it failed: the host cannot accept from outside (plan
+    /// section 9) or its port is taken there. It goes on listening inside the container. Detail:
+    /// the port.
+    pub const OUTSIDE_LISTEN_FAILED: &str = "listening outside failed";
     /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
     /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
     /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the
