@@ -1,17 +1,17 @@
 //! The device: object creation, each preceded by the checks Direct3D 11 makes at creation.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
     BufferDesc as GpuBuffer, BufferUsage, ColorWrites, CompareFn, CullMode,
-    DepthStencilDesc as GpuDepthStencil, Extent, Features, FillMode, Filter, Format, FormatKind,
-    FormatUse, FrontFace, MAX_COLOR_TARGETS, MapIntent, Object, Origin, ProvokingVertex,
-    RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, StageValue, StencilFace, StencilOp,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
-    WriteMode,
+    DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
+    FormatKind, FormatUse, FrontFace, LossReason, MAX_COLOR_TARGETS, MapIntent, Object, Origin,
+    ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
+    StageValue, StencilFace, StencilOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    TextureViewDesc, ViewDimension, WriteMode,
 };
 
 use crate::context::ContextState;
@@ -35,8 +35,17 @@ pub struct Device<B: Backend> {
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
     vertex_inputs: HashMap<[u8; 32], Vec<StageValue>>,
-    /// Set once the device is lost; later work is dropped and the API reports the removal.
-    pub removed: bool,
+    /// Set once the device is removed; later work is dropped and the API reports the removal.
+    pub removed: Option<Removal>,
+}
+
+/// Why the device was removed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Removal {
+    /// The program asked for something the front cannot serve and that has no result to refuse it by.
+    Unserved,
+    /// The back end lost its device.
+    Lost(LossReason),
 }
 
 /// The blocks a `None` state stands for.
@@ -110,12 +119,49 @@ impl<B: Backend> Device<B> {
             programs: HashMap::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
-            removed: false,
+            removed: None,
         })
     }
 
     pub fn feature_level(&self) -> u32 {
         self.level
+    }
+
+    /// Why the device is removed, if it is, polling the back end first (plan section 4.10).
+    pub fn poll_removed(&mut self) -> Option<Removal> {
+        if self.removed.is_none()
+            && let DeviceStatus::Lost(reason) = self.backend.status()
+        {
+            eprintln!("wcontainers direct3d 11: device removed: the back end lost it ({reason:?})");
+            self.removed = Some(Removal::Lost(reason));
+        }
+        self.removed
+    }
+
+    /// `DeviceRemoved` once the device is removed.
+    pub(crate) fn live(&mut self) -> Result<()> {
+        match self.poll_removed() {
+            Some(_) => Err(Error::DeviceRemoved),
+            None => Ok(()),
+        }
+    }
+
+    /// Removes the device because of `e`: a request it cannot serve, or the back end's loss.
+    pub fn lose(&mut self, e: Error) {
+        if self.poll_removed().is_none() {
+            eprintln!("wcontainers direct3d 11: device removed: {e:?}");
+            self.removed = Some(Removal::Unserved);
+        }
+    }
+
+    /// The warnings not yet shown: each slow path the first time it is taken.
+    pub fn take_warnings(&mut self) -> Vec<&'static str> {
+        self.backend
+            .slow_paths()
+            .take_warnings()
+            .into_iter()
+            .map(SlowPath::reason)
+            .collect()
     }
 
     pub(crate) fn id(&mut self) -> u64 {
@@ -149,8 +195,13 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// A format the back end lacks altogether is not served; one it holds without these uses is
+    /// refused as a driver without them refuses it.
     fn check_format(&self, format: Format, needs: FormatUse) -> Result<()> {
-        if self.backend.caps().formats.get(format).contains(needs) {
+        let has = self.backend.caps().formats.get(format);
+        if has.is_empty() {
+            not_implemented("a format the back end lacks")
+        } else if has.contains(needs) {
             Ok(())
         } else {
             Err(Error::InvalidArg(
@@ -164,36 +215,13 @@ impl<B: Backend> Device<B> {
         if d.misc_flags != 0 {
             return not_implemented("buffers with misc flags (structured, raw, indirect, shared)");
         }
+        self.live()?;
         self.bury();
-        let mut usage = BufferUsage::COPY_SRC | BufferUsage::COPY_DST;
-        for (flag, u) in [
-            (bind::VERTEX_BUFFER, BufferUsage::VERTEX),
-            (bind::INDEX_BUFFER, BufferUsage::INDEX),
-            (bind::CONSTANT_BUFFER, BufferUsage::UNIFORM),
-            (bind::SHADER_RESOURCE, BufferUsage::STORAGE),
-            (bind::UNORDERED_ACCESS, BufferUsage::STORAGE),
-        ] {
-            if d.bind_flags & flag != 0 {
-                usage |= u;
-            }
-        }
-        if d.usage == usage::STAGING {
-            usage |= BufferUsage::READ_BACK;
-        }
-        let intent = if d.usage == usage::DYNAMIC {
-            MapIntent::Often
-        } else {
-            MapIntent::Rarely
-        };
         // The buffer is made whole granules of the back end's copies long, so writing the initial data
         // (padded with zeros past the program's bytes) never needs an edge merge.
         let granule = u64::from(self.backend.caps().limits.buffer_copy_alignment.max(1));
         let size = u64::from(d.byte_width).div_ceil(granule) * granule;
-        let gpu = self.backend.create_buffer(&GpuBuffer {
-            size,
-            usage,
-            intent,
-        })?;
+        let gpu = self.backend.create_buffer(&gpu_buffer(d, size))?;
         if let Some(bytes) = init {
             let bytes = &bytes[..d.byte_width as usize];
             if bytes.len() as u64 == size {
@@ -218,16 +246,16 @@ impl<B: Backend> Device<B> {
         let id = self.id();
         Ok(Rc::new(Buffer {
             desc: *d,
-            gpu: Kept::new(gpu, id, Object::Buffer, &self.graveyard),
+            gpu: RefCell::new(Kept::new(gpu, id, Object::Buffer, &self.graveyard)),
+            size: Cell::new(size),
+            grown: Cell::new(false),
             shadow: RefCell::new(shadow),
         }))
     }
 
-    pub fn create_texture_2d(
-        &mut self,
-        d: &Texture2DDesc,
-        init: &[SubresourceData<'_>],
-    ) -> Result<Rc<Texture2D<B>>> {
+    /// The checks of `CreateTexture2D` before its initial data is read: the format and the number of
+    /// mip levels, or why the description is refused.
+    pub fn check_texture_2d(&self, d: &Texture2DDesc, has_init: bool) -> Result<(Format, u32)> {
         let limits = &self.backend.caps().limits;
         if d.width == 0 || d.height == 0 || d.array_size == 0 {
             return Err(Error::InvalidArg("a texture needs a size"));
@@ -249,7 +277,7 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
-        let format = format::texture_format(d.format).ok_or(Error::InvalidArg("unknown format"))?;
+        let format = format::texture_format_of(d.format)?;
         if d.sample_count != 1 || d.sample_quality != 0 {
             return not_implemented("multisampled textures");
         }
@@ -263,7 +291,7 @@ impl<B: Backend> Device<B> {
             ));
         }
         match d.usage {
-            usage::IMMUTABLE if init.is_empty() => {
+            usage::IMMUTABLE if !has_init => {
                 return Err(Error::InvalidArg("an immutable texture needs initial data"));
             }
             usage::STAGING if d.bind_flags != 0 || d.cpu_access_flags == 0 => {
@@ -280,19 +308,15 @@ impl<B: Backend> Device<B> {
                 "only staging textures here have CPU access",
             ));
         }
-        let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
         let mut needs = FormatUse::empty();
-        if d.bind_flags & bind::SHADER_RESOURCE != 0 {
-            usage |= TextureUsage::SAMPLE;
-            needs |= FormatUse::SAMPLE;
-        }
-        if d.bind_flags & bind::RENDER_TARGET != 0 {
-            usage |= TextureUsage::RENDER;
-            needs |= FormatUse::RENDER;
-        }
-        if d.bind_flags & bind::DEPTH_STENCIL != 0 {
-            usage |= TextureUsage::RENDER;
-            needs |= FormatUse::DEPTH_STENCIL;
+        for (flag, n) in [
+            (bind::SHADER_RESOURCE, FormatUse::SAMPLE),
+            (bind::RENDER_TARGET, FormatUse::RENDER),
+            (bind::DEPTH_STENCIL, FormatUse::DEPTH_STENCIL),
+        ] {
+            if d.bind_flags & flag != 0 {
+                needs |= n;
+            }
         }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0 {
             return not_implemented("textures with unordered access");
@@ -302,10 +326,31 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("bind flags a texture cannot have"));
         }
         self.check_format(format, needs)?;
+        Ok((format, mips))
+    }
+
+    pub fn create_texture_2d(
+        &mut self,
+        d: &Texture2DDesc,
+        init: &[SubresourceData<'_>],
+    ) -> Result<Rc<Texture2D<B>>> {
+        let (format, mips) = self.check_texture_2d(d, !init.is_empty())?;
+        let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
+        let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+        for (flag, u) in [
+            (bind::SHADER_RESOURCE, TextureUsage::SAMPLE),
+            (bind::RENDER_TARGET, TextureUsage::RENDER),
+            (bind::DEPTH_STENCIL, TextureUsage::RENDER),
+        ] {
+            if d.bind_flags & flag != 0 {
+                usage |= u;
+            }
+        }
         let subresources = (mips * d.array_size) as usize;
         if !init.is_empty() && init.len() < subresources {
             return Err(Error::InvalidArg("initial data for every subresource"));
         }
+        self.live()?;
         self.bury();
         let gpu_desc = TextureDesc {
             dimension: TextureDimension::D2,
@@ -421,7 +466,7 @@ impl<B: Backend> Device<B> {
         {
             return Err(Error::InvalidArg("the view reaches past the resource"));
         }
-        let format = format::texture_format(v.format).ok_or(Error::InvalidArg("unknown format"))?;
+        let format = format::texture_format_of(v.format)?;
         if format != texture.format {
             return not_implemented("views in another format of the typeless group");
         }
@@ -437,6 +482,7 @@ impl<B: Backend> Device<B> {
                 ViewDimension::Cube
             }
         };
+        self.live()?;
         self.bury();
         let gpu = self.backend.create_view(
             &texture.gpu.handle,
@@ -502,6 +548,7 @@ impl<B: Backend> Device<B> {
             [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
             c => BorderColor::Custom(c.map(f32::to_bits)),
         };
+        self.live()?;
         self.bury();
         let gpu = self.backend.create_sampler(&GpuSampler {
             min: if anisotropic {
@@ -555,6 +602,7 @@ impl<B: Backend> Device<B> {
         if !block.same_for_all && !self.backend.caps().has(Features::INDEPENDENT_BLEND) {
             return not_implemented("targets blended differently (TargetsSplit)");
         }
+        self.live()?;
         self.bury();
         let gpu = self.backend.create_blend(&block)?;
         let id = self.id();
@@ -578,6 +626,7 @@ impl<B: Backend> Device<B> {
             }
         }
         let block = depth_stencil_block(d);
+        self.live()?;
         self.bury();
         let gpu = self.backend.create_depth_stencil(&block)?;
         let id = self.id();
@@ -601,6 +650,7 @@ impl<B: Backend> Device<B> {
         if !d.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
             return not_implemented("depth clamping without the back end's depth clamp");
         }
+        self.live()?;
         self.bury();
         let gpu = self.backend.create_raster(&raster_block(d))?;
         let id = self.id();
@@ -618,6 +668,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<Rc<Shader<B>>> {
         let mut converted = shader::convert(bytecode, stage)?;
         let module = converted.modules.pop().expect("one module");
+        self.live()?;
         self.bury();
         let gpu = self.backend.create_shader(&module)?;
         if stage == wcontainers_gpu::SourceStage::Vertex {
@@ -626,10 +677,12 @@ impl<B: Backend> Device<B> {
                 converted.reflection.inputs.clone(),
             );
         }
+        let constant_sizes = constant_sizes(&module.module);
         let id = self.id();
         Ok(Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             reflection: converted.reflection,
+            constant_sizes,
         }))
     }
 
@@ -703,6 +756,48 @@ impl<B: Backend> Device<B> {
             instance_steps,
         }))
     }
+}
+
+/// The back end's description of a buffer of `size` bytes for `d`.
+pub(crate) fn gpu_buffer(d: &BufferDesc, size: u64) -> GpuBuffer {
+    let mut usage = BufferUsage::COPY_SRC | BufferUsage::COPY_DST;
+    for (flag, u) in [
+        (bind::VERTEX_BUFFER, BufferUsage::VERTEX),
+        (bind::INDEX_BUFFER, BufferUsage::INDEX),
+        (bind::CONSTANT_BUFFER, BufferUsage::UNIFORM),
+        (bind::SHADER_RESOURCE, BufferUsage::STORAGE),
+        (bind::UNORDERED_ACCESS, BufferUsage::STORAGE),
+    ] {
+        if d.bind_flags & flag != 0 {
+            usage |= u;
+        }
+    }
+    if d.usage == usage::STAGING {
+        usage |= BufferUsage::READ_BACK;
+    }
+    let intent = if d.usage == usage::DYNAMIC {
+        MapIntent::Often
+    } else {
+        MapIntent::Rarely
+    };
+    GpuBuffer {
+        size,
+        usage,
+        intent,
+    }
+}
+
+/// The declared bytes of each uniform buffer `module` reads, by binding number.
+fn constant_sizes(module: &naga::Module) -> Vec<(u32, u64)> {
+    module
+        .global_variables
+        .iter()
+        .filter(|(_, v)| v.space == naga::AddressSpace::Uniform)
+        .filter_map(|(_, v)| {
+            let size = module.types[v.ty].inner.size(module.to_ctx());
+            v.binding.as_ref().map(|b| (b.binding, u64::from(size)))
+        })
+        .collect()
 }
 
 fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {

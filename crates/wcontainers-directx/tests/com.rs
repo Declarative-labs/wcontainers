@@ -2,6 +2,11 @@
 //! and views, the immediate context, private data and descriptions, as Microsoft documents them.
 #![cfg(windows)]
 
+mod common;
+
+use windows::Win32::Graphics::Direct3D::{
+    D3D_PRIMITIVE_TOPOLOGY, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_NOT_FOUND, IDXGIAdapter1, IDXGIDevice, IDXGIObject,
@@ -195,10 +200,9 @@ fn unserved_shaders_are_refused_not_faked() {
 fn the_forwarding_d3d11_reaches_the_library() {
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     use windows::core::{HSTRING, s};
-    // The test runs from <profile>/deps; the libraries are in <profile>.
-    let exe = std::env::current_exe().unwrap();
-    let profile = exe.parent().unwrap().parent().unwrap();
-    let load = |name: &str| unsafe { LoadLibraryW(&HSTRING::from(profile.join(name).as_os_str())) };
+    let dir = common::fresh("forwarder");
+    common::place_libraries(&dir);
+    let load = |name: &str| unsafe { LoadLibraryW(&HSTRING::from(dir.join(name).as_os_str())) };
     let library = load("wcontainers_directx.dll").unwrap();
     let forwarder = load("d3d11.dll").unwrap();
     assert_ne!(library, forwarder);
@@ -232,4 +236,133 @@ fn device_calls_from_several_threads_reach_the_front_one_at_a_time() {
         t.join().unwrap();
     }
     assert_eq!(refs(&device), before);
+}
+
+#[test]
+fn equal_state_descriptions_give_the_live_object() {
+    let (device, _context) = device();
+    let target = D3D11_RENDER_TARGET_BLEND_DESC {
+        SrcBlend: D3D11_BLEND_ONE,
+        DestBlend: D3D11_BLEND_ZERO,
+        BlendOp: D3D11_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D11_BLEND_ONE,
+        DestBlendAlpha: D3D11_BLEND_ZERO,
+        BlendOpAlpha: D3D11_BLEND_OP_ADD,
+        RenderTargetWriteMask: 0xf,
+        ..Default::default()
+    };
+    let blend = |enable: bool| {
+        let desc = D3D11_BLEND_DESC {
+            RenderTarget: [D3D11_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: enable.into(),
+                ..target
+            }; 8],
+            ..Default::default()
+        };
+        let mut out = None;
+        unsafe { device.CreateBlendState(&desc, Some(&mut out)) }.unwrap();
+        out.unwrap()
+    };
+    let (a, b) = (blend(false), blend(false));
+    assert_eq!(a.as_raw(), b.as_raw());
+    assert_eq!(refs(&a), 2);
+    assert_ne!(blend(true).as_raw(), a.as_raw());
+    drop((a, b));
+    // Once every reference went, an equal description makes an object of its own.
+    assert_eq!(refs(&blend(false)), 1);
+
+    let sampler = |filter| {
+        let desc = D3D11_SAMPLER_DESC {
+            Filter: filter,
+            AddressU: D3D11_TEXTURE_ADDRESS_WRAP,
+            AddressV: D3D11_TEXTURE_ADDRESS_WRAP,
+            AddressW: D3D11_TEXTURE_ADDRESS_WRAP,
+            MaxAnisotropy: 1,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            MaxLOD: f32::MAX,
+            ..Default::default()
+        };
+        let mut out = None;
+        unsafe { device.CreateSamplerState(&desc, Some(&mut out)) }.unwrap();
+        out.unwrap()
+    };
+    let (a, b) = (
+        sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR),
+        sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR),
+    );
+    assert_eq!(a.as_raw(), b.as_raw());
+    assert_ne!(sampler(D3D11_FILTER_MIN_MAG_MIP_POINT).as_raw(), a.as_raw());
+}
+
+#[test]
+fn the_context_hands_back_what_is_bound() {
+    let (device, context) = device();
+    let b = buffer(&device);
+    unsafe {
+        context.IASetVertexBuffers(2, 1, Some(&Some(b.clone())), Some(&16), Some(&4));
+        let mut buffers: [Option<ID3D11Buffer>; 3] = Default::default();
+        let (mut strides, mut offsets) = ([9u32; 3], [9u32; 3]);
+        context.IAGetVertexBuffers(
+            1,
+            3,
+            Some(buffers.as_mut_ptr()),
+            Some(strides.as_mut_ptr()),
+            Some(offsets.as_mut_ptr()),
+        );
+        assert!(buffers[0].is_none() && buffers[2].is_none());
+        assert_eq!(buffers[1].as_ref().map(Interface::as_raw), Some(b.as_raw()));
+        assert_eq!((strides, offsets), ([0, 16, 0], [0, 4, 0]));
+        // The context holds a reference on what is bound, and the getter hands out one more.
+        assert_eq!(refs(&b), 3);
+        drop(buffers);
+        context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        assert_eq!(
+            context.IAGetPrimitiveTopology(),
+            D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP
+        );
+        let mut targets: [Option<ID3D11RenderTargetView>; 2] = Default::default();
+        let mut depth = None;
+        context.OMGetRenderTargets(Some(&mut targets), Some(&mut depth));
+        assert!(targets.iter().all(Option::is_none) && depth.is_none());
+        let (mut state, mut factor, mut mask) = (None, [0.0; 4], 0);
+        context.OMGetBlendState(Some(&mut state), Some(&mut factor), Some(&mut mask));
+        assert!(state.is_none());
+        assert_eq!((factor, mask), ([1.0; 4], u32::MAX));
+        let viewport = D3D11_VIEWPORT {
+            Width: 8.0,
+            Height: 4.0,
+            MaxDepth: 1.0,
+            ..Default::default()
+        };
+        context.RSSetViewports(Some(&[viewport]));
+        let mut n = 0;
+        context.RSGetViewports(&mut n, None);
+        assert_eq!(n, 1);
+        let mut got = [D3D11_VIEWPORT::default(); 2];
+        n = 2;
+        context.RSGetViewports(&mut n, Some(got.as_mut_ptr()));
+        assert_eq!(got, [viewport, D3D11_VIEWPORT::default()]);
+        context.ClearState();
+        assert_eq!(refs(&b), 1);
+        assert_eq!(context.IAGetPrimitiveTopology(), D3D_PRIMITIVE_TOPOLOGY(0));
+    }
+}
+
+#[test]
+fn stages_the_front_lacks_take_unbinding_and_report_nothing_bound() {
+    let (device, context) = device();
+    unsafe {
+        context.GSSetShader(None, None);
+        context.HSSetShader(None, None);
+        context.DSSetShader(None, None);
+        context.CSSetShader(None, None);
+        context.GSSetConstantBuffers(0, Some(&[None, None]));
+        let mut shader: Option<ID3D11GeometryShader> = None;
+        context.GSGetShader(&mut shader, None, None);
+        assert!(shader.is_none());
+        let mut buffers: [Option<ID3D11Buffer>; 2] = Default::default();
+        context.CSGetConstantBuffers(0, Some(&mut buffers));
+        assert!(buffers.iter().all(Option::is_none));
+        assert!(device.GetDeviceRemovedReason().is_ok());
+    }
 }

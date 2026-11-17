@@ -3,14 +3,12 @@
 //! beside them, and what each printed compared.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The profile's output directory: the tests run from its `deps`.
-fn profile() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    exe.parent().unwrap().parent().unwrap().to_path_buf()
-}
+use common::{fresh, place_libraries, profile};
 
 /// Runs example `name` from `dir` (copying it there), returning its exit code and output.
 fn run(name: &str, dir: &Path) -> (i32, String) {
@@ -28,13 +26,9 @@ fn run(name: &str, dir: &Path) -> (i32, String) {
 
 /// A directory with nothing but what `name` needs: with ours, the forwarder and the library.
 fn place(label: &str, ours: bool) -> PathBuf {
-    let dir = profile().join("own-programs").join(label);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = fresh(label);
     if ours {
-        for file in ["d3d11.dll", "wcontainers_directx.dll"] {
-            std::fs::copy(profile().join(file), dir.join(file)).unwrap();
-        }
+        place_libraries(&dir);
     }
     dir
 }

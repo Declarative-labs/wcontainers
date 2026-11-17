@@ -2,10 +2,26 @@
 
 use wcontainers_gpu::{Format, IndexFormat, VertexFormat};
 
+use crate::error::{Error, Result, not_implemented};
+
 /// `DXGI_FORMAT_UNKNOWN`.
 pub const UNKNOWN: u32 = 0;
 pub const R16_UINT: u32 = 57;
 pub const R32_UINT: u32 = 42;
+
+/// The interface format of a DXGI format a texture or view names: `InvalidArg` for a number that is
+/// no DXGI format, `NotImplemented` for a DXGI format this front does not serve (typeless formats,
+/// among others).
+pub fn texture_format_of(dxgi: u32) -> Result<Format> {
+    match texture_format(dxgi) {
+        Some(f) => Ok(f),
+        // Defined DXGI formats: 1 to 132, the sampler feedback formats 189 and 190, and 191.
+        None if matches!(dxgi, 1..=132 | 189..=191) => {
+            not_implemented("a DXGI format this front does not serve (typeless formats among them)")
+        }
+        None => Err(Error::InvalidArg("unknown format")),
+    }
+}
 
 /// The interface format a DXGI format is stored as, for the formats this front serves. Typeless
 /// formats are not served yet.

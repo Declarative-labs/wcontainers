@@ -15,7 +15,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pinitialdata: *const D3D11_SUBRESOURCE_DATA,
         ppbuffer: windows::core::OutRef<ID3D11Buffer>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_buffer(pdesc, pinitialdata, ppbuffer)
     }
     fn CreateTexture1D(
@@ -24,7 +24,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pinitialdata: *const D3D11_SUBRESOURCE_DATA,
         pptexture1d: windows::core::OutRef<ID3D11Texture1D>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateTexture1D"))
     }
     fn CreateTexture2D(
@@ -33,7 +33,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pinitialdata: *const D3D11_SUBRESOURCE_DATA,
         pptexture2d: windows::core::OutRef<ID3D11Texture2D>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_texture2_d(pdesc, pinitialdata, pptexture2d)
     }
     fn CreateTexture3D(
@@ -42,7 +42,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pinitialdata: *const D3D11_SUBRESOURCE_DATA,
         pptexture3d: windows::core::OutRef<ID3D11Texture3D>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateTexture3D"))
     }
     fn CreateShaderResourceView(
@@ -51,7 +51,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pdesc: *const D3D11_SHADER_RESOURCE_VIEW_DESC,
         ppsrview: windows::core::OutRef<ID3D11ShaderResourceView>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_shader_resource_view(presource, pdesc, ppsrview)
     }
     fn CreateUnorderedAccessView(
@@ -60,7 +60,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pdesc: *const D3D11_UNORDERED_ACCESS_VIEW_DESC,
         ppuaview: windows::core::OutRef<ID3D11UnorderedAccessView>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateUnorderedAccessView"))
     }
     fn CreateRenderTargetView(
@@ -69,7 +69,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pdesc: *const D3D11_RENDER_TARGET_VIEW_DESC,
         pprtview: windows::core::OutRef<ID3D11RenderTargetView>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_render_target_view(presource, pdesc, pprtview)
     }
     fn CreateDepthStencilView(
@@ -78,7 +78,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pdesc: *const D3D11_DEPTH_STENCIL_VIEW_DESC,
         ppdepthstencilview: windows::core::OutRef<ID3D11DepthStencilView>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_depth_stencil_view(presource, pdesc, ppdepthstencilview)
     }
     fn CreateInputLayout(
@@ -89,7 +89,7 @@ impl ID3D11Device_Impl for Device_Impl {
         bytecodelength: usize,
         ppinputlayout: windows::core::OutRef<ID3D11InputLayout>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_input_layout(
             pinputelementdescs,
             numelements,
@@ -105,7 +105,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pclasslinkage: windows::core::Ref<ID3D11ClassLinkage>,
         ppvertexshader: windows::core::OutRef<ID3D11VertexShader>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_vertex_shader(
             pshaderbytecode,
             bytecodelength,
@@ -120,7 +120,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pclasslinkage: windows::core::Ref<ID3D11ClassLinkage>,
         ppgeometryshader: windows::core::OutRef<ID3D11GeometryShader>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateGeometryShader"))
     }
     fn CreateGeometryShaderWithStreamOutput(
@@ -135,7 +135,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pclasslinkage: windows::core::Ref<ID3D11ClassLinkage>,
         ppgeometryshader: windows::core::OutRef<ID3D11GeometryShader>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing(
             "ID3D11Device::CreateGeometryShaderWithStreamOutput",
         ))
@@ -147,7 +147,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pclasslinkage: windows::core::Ref<ID3D11ClassLinkage>,
         pppixelshader: windows::core::OutRef<ID3D11PixelShader>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_pixel_shader(
             pshaderbytecode,
             bytecodelength,
@@ -162,7 +162,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pclasslinkage: windows::core::Ref<ID3D11ClassLinkage>,
         pphullshader: windows::core::OutRef<ID3D11HullShader>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateHullShader"))
     }
     fn CreateDomainShader(
@@ -172,7 +172,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pclasslinkage: windows::core::Ref<ID3D11ClassLinkage>,
         ppdomainshader: windows::core::OutRef<ID3D11DomainShader>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateDomainShader"))
     }
     fn CreateComputeShader(
@@ -182,11 +182,11 @@ impl ID3D11Device_Impl for Device_Impl {
         pclasslinkage: windows::core::Ref<ID3D11ClassLinkage>,
         ppcomputeshader: windows::core::OutRef<ID3D11ComputeShader>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateComputeShader"))
     }
     fn CreateClassLinkage(&self) -> windows::core::Result<ID3D11ClassLinkage> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateClassLinkage"))
     }
     fn CreateBlendState(
@@ -194,7 +194,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pblendstatedesc: *const D3D11_BLEND_DESC,
         ppblendstate: windows::core::OutRef<ID3D11BlendState>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_blend_state(pblendstatedesc, ppblendstate)
     }
     fn CreateDepthStencilState(
@@ -202,7 +202,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pdepthstencildesc: *const D3D11_DEPTH_STENCIL_DESC,
         ppdepthstencilstate: windows::core::OutRef<ID3D11DepthStencilState>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_depth_stencil_state(pdepthstencildesc, ppdepthstencilstate)
     }
     fn CreateRasterizerState(
@@ -210,7 +210,7 @@ impl ID3D11Device_Impl for Device_Impl {
         prasterizerdesc: *const D3D11_RASTERIZER_DESC,
         pprasterizerstate: windows::core::OutRef<ID3D11RasterizerState>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_rasterizer_state(prasterizerdesc, pprasterizerstate)
     }
     fn CreateSamplerState(
@@ -218,7 +218,7 @@ impl ID3D11Device_Impl for Device_Impl {
         psamplerdesc: *const D3D11_SAMPLER_DESC,
         ppsamplerstate: windows::core::OutRef<ID3D11SamplerState>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.create_sampler_state(psamplerdesc, ppsamplerstate)
     }
     fn CreateQuery(
@@ -226,7 +226,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pquerydesc: *const D3D11_QUERY_DESC,
         ppquery: windows::core::OutRef<ID3D11Query>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateQuery"))
     }
     fn CreatePredicate(
@@ -234,7 +234,7 @@ impl ID3D11Device_Impl for Device_Impl {
         ppredicatedesc: *const D3D11_QUERY_DESC,
         pppredicate: windows::core::OutRef<ID3D11Predicate>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreatePredicate"))
     }
     fn CreateCounter(
@@ -242,7 +242,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pcounterdesc: *const D3D11_COUNTER_DESC,
         ppcounter: windows::core::OutRef<ID3D11Counter>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateCounter"))
     }
     fn CreateDeferredContext(
@@ -250,7 +250,7 @@ impl ID3D11Device_Impl for Device_Impl {
         contextflags: u32,
         ppdeferredcontext: windows::core::OutRef<ID3D11DeviceContext>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CreateDeferredContext"))
     }
     fn OpenSharedResource(
@@ -259,14 +259,14 @@ impl ID3D11Device_Impl for Device_Impl {
         returnedinterface: *const windows::core::GUID,
         ppresource: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::OpenSharedResource"))
     }
     fn CheckFormatSupport(
         &self,
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
     ) -> windows::core::Result<u32> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CheckFormatSupport"))
     }
     fn CheckMultisampleQualityLevels(
@@ -274,11 +274,11 @@ impl ID3D11Device_Impl for Device_Impl {
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
         samplecount: u32,
     ) -> windows::core::Result<u32> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CheckMultisampleQualityLevels"))
     }
     fn CheckCounterInfo(&self, pcounterinfo: *mut D3D11_COUNTER_INFO) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11Device::CheckCounterInfo")
     }
     fn CheckCounter(
@@ -293,7 +293,7 @@ impl ID3D11Device_Impl for Device_Impl {
         szdescription: windows::core::PSTR,
         pdescriptionlength: *mut u32,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CheckCounter"))
     }
     fn CheckFeatureSupport(
@@ -302,7 +302,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pfeaturesupportdata: *mut core::ffi::c_void,
         featuresupportdatasize: u32,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11Device::CheckFeatureSupport"))
     }
     fn GetPrivateData(
@@ -311,7 +311,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pdatasize: *mut u32,
         pdata: *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.private.get_private_data(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
@@ -320,7 +320,7 @@ impl ID3D11Device_Impl for Device_Impl {
         datasize: u32,
         pdata: *const core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.private.set_private_data(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
@@ -328,38 +328,38 @@ impl ID3D11Device_Impl for Device_Impl {
         guid: *const windows::core::GUID,
         pdata: windows::core::Ref<windows::core::IUnknown>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.private.set_private_data_interface(guid, pdata)
     }
     fn GetFeatureLevel(&self) -> windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL {
-        let _lock = lock();
+        let _call = self.call();
         self.get_feature_level()
     }
     fn GetCreationFlags(&self) -> u32 {
-        let _lock = lock();
+        let _call = self.call();
         self.get_creation_flags()
     }
     fn GetDeviceRemovedReason(&self) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.get_device_removed_reason()
     }
     fn GetImmediateContext(&self, ppimmediatecontext: windows::core::OutRef<ID3D11DeviceContext>) {
-        let _lock = lock();
+        let _call = self.call();
         self.get_immediate_context(ppimmediatecontext)
     }
     fn SetExceptionMode(&self, raiseflags: u32) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.set_exception_mode(raiseflags)
     }
     fn GetExceptionMode(&self) -> u32 {
-        let _lock = lock();
+        let _call = self.call();
         self.get_exception_mode()
     }
 }
 
 impl IDXGIDevice_Impl for Device_Impl {
     fn GetAdapter(&self) -> windows::core::Result<IDXGIAdapter> {
-        let _lock = lock();
+        let _call = self.call();
         self.get_adapter()
     }
     fn CreateSurface(
@@ -370,7 +370,7 @@ impl IDXGIDevice_Impl for Device_Impl {
         psharedresource: *const DXGI_SHARED_RESOURCE,
         ppsurface: *mut Option<IDXGISurface>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("IDXGIDevice::CreateSurface"))
     }
     fn QueryResourceResidency(
@@ -379,15 +379,15 @@ impl IDXGIDevice_Impl for Device_Impl {
         presidencystatus: *mut DXGI_RESIDENCY,
         numresources: u32,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("IDXGIDevice::QueryResourceResidency"))
     }
     fn SetGPUThreadPriority(&self, priority: i32) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("IDXGIDevice::SetGPUThreadPriority"))
     }
     fn GetGPUThreadPriority(&self) -> windows::core::Result<i32> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("IDXGIDevice::GetGPUThreadPriority"))
     }
 }
@@ -399,7 +399,7 @@ impl IDXGIObject_Impl for Device_Impl {
         datasize: u32,
         pdata: *const core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.private.set_private_data(name, datasize, pdata)
     }
     fn SetPrivateDataInterface(
@@ -407,7 +407,7 @@ impl IDXGIObject_Impl for Device_Impl {
         name: *const windows::core::GUID,
         punknown: windows::core::Ref<windows::core::IUnknown>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.private.set_private_data_interface(name, punknown)
     }
     fn GetPrivateData(
@@ -416,7 +416,7 @@ impl IDXGIObject_Impl for Device_Impl {
         pdatasize: *mut u32,
         pdata: *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.private.get_private_data(name, pdatasize, pdata)
     }
     fn GetParent(
@@ -424,7 +424,7 @@ impl IDXGIObject_Impl for Device_Impl {
         riid: *const windows::core::GUID,
         ppparent: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.get_parent(riid, ppparent)
     }
 }
@@ -436,7 +436,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.vs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn PSSetShaderResources(
@@ -445,7 +445,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.ps_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn PSSetShader(
@@ -454,7 +454,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: *const Option<ID3D11ClassInstance>,
         numclassinstances: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.ps_set_shader(ppixelshader, ppclassinstances, numclassinstances)
     }
     fn PSSetSamplers(
@@ -463,7 +463,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.ps_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn VSSetShader(
@@ -472,15 +472,15 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: *const Option<ID3D11ClassInstance>,
         numclassinstances: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.vs_set_shader(pvertexshader, ppclassinstances, numclassinstances)
     }
     fn DrawIndexed(&self, indexcount: u32, startindexlocation: u32, basevertexlocation: i32) {
-        let _lock = lock();
+        let _call = self.call();
         self.draw_indexed(indexcount, startindexlocation, basevertexlocation)
     }
     fn Draw(&self, vertexcount: u32, startvertexlocation: u32) {
-        let _lock = lock();
+        let _call = self.call();
         self.draw(vertexcount, startvertexlocation)
     }
     fn Map(
@@ -491,11 +491,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         mapflags: u32,
         pmappedresource: *mut D3D11_MAPPED_SUBRESOURCE,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.map(presource, subresource, maptype, mapflags, pmappedresource)
     }
     fn Unmap(&self, presource: windows::core::Ref<ID3D11Resource>, subresource: u32) {
-        let _lock = lock();
+        let _call = self.call();
         self.unmap(presource, subresource)
     }
     fn PSSetConstantBuffers(
@@ -504,11 +504,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.ps_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn IASetInputLayout(&self, pinputlayout: windows::core::Ref<ID3D11InputLayout>) {
-        let _lock = lock();
+        let _call = self.call();
         self.ia_set_input_layout(pinputlayout)
     }
     fn IASetVertexBuffers(
@@ -519,7 +519,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pstrides: *const u32,
         poffsets: *const u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.ia_set_vertex_buffers(startslot, numbuffers, ppvertexbuffers, pstrides, poffsets)
     }
     fn IASetIndexBuffer(
@@ -528,7 +528,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
         offset: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.ia_set_index_buffer(pindexbuffer, format, offset)
     }
     fn DrawIndexedInstanced(
@@ -539,7 +539,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         basevertexlocation: i32,
         startinstancelocation: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.draw_indexed_instanced(
             indexcountperinstance,
             instancecount,
@@ -555,7 +555,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         startvertexlocation: u32,
         startinstancelocation: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.draw_instanced(
             vertexcountperinstance,
             instancecount,
@@ -569,8 +569,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSSetConstantBuffers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::GSSetConstantBuffers",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
     }
     fn GSSetShader(
         &self,
@@ -578,14 +581,14 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: *const Option<ID3D11ClassInstance>,
         numclassinstances: u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSSetShader")
+        let _call = self.call();
+        self.only_unbinding("ID3D11DeviceContext::GSSetShader", !pshader.is_null())
     }
     fn IASetPrimitiveTopology(
         &self,
         topology: windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.ia_set_primitive_topology(topology)
     }
     fn VSSetShaderResources(
@@ -594,7 +597,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.vs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn VSSetSamplers(
@@ -603,15 +606,15 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.vs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn Begin(&self, pasync: windows::core::Ref<ID3D11Asynchronous>) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::Begin")
     }
     fn End(&self, pasync: windows::core::Ref<ID3D11Asynchronous>) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::End")
     }
     fn GetData(
@@ -621,7 +624,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         datasize: u32,
         getdataflags: u32,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11DeviceContext::GetData"))
     }
     fn SetPredication(
@@ -629,8 +632,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppredicate: windows::core::Ref<ID3D11Predicate>,
         predicatevalue: windows::core::BOOL,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::SetPredication")
+        let _call = self.call();
+        self.only_unbinding("ID3D11DeviceContext::SetPredication", !ppredicate.is_null())
     }
     fn GSSetShaderResources(
         &self,
@@ -638,8 +641,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSSetShaderResources")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::GSSetShaderResources",
+            super::context::binds(ppshaderresourceviews, numviews),
+        )
     }
     fn GSSetSamplers(
         &self,
@@ -647,8 +653,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSSetSamplers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::GSSetSamplers",
+            super::context::binds(ppsamplers, numsamplers),
+        )
     }
     fn OMSetRenderTargets(
         &self,
@@ -656,7 +665,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pprendertargetviews: *const Option<ID3D11RenderTargetView>,
         pdepthstencilview: windows::core::Ref<ID3D11DepthStencilView>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.om_set_render_targets(numviews, pprendertargetviews, pdepthstencilview)
     }
     fn OMSetRenderTargetsAndUnorderedAccessViews(
@@ -669,7 +678,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppunorderedaccessviews: *const Option<ID3D11UnorderedAccessView>,
         puavinitialcounts: *const u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews")
     }
     fn OMSetBlendState(
@@ -678,7 +687,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         blendfactor: *const f32,
         samplemask: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.om_set_blend_state(pblendstate, blendfactor, samplemask)
     }
     fn OMSetDepthStencilState(
@@ -686,7 +695,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pdepthstencilstate: windows::core::Ref<ID3D11DepthStencilState>,
         stencilref: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.om_set_depth_stencil_state(pdepthstencilstate, stencilref)
     }
     fn SOSetTargets(
@@ -695,11 +704,14 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsotargets: *const Option<ID3D11Buffer>,
         poffsets: *const u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::SOSetTargets")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::SOSetTargets",
+            super::context::binds(ppsotargets, numbuffers),
+        )
     }
     fn DrawAuto(&self) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::DrawAuto")
     }
     fn DrawIndexedInstancedIndirect(
@@ -707,7 +719,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pbufferforargs: windows::core::Ref<ID3D11Buffer>,
         alignedbyteoffsetforargs: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::DrawIndexedInstancedIndirect")
     }
     fn DrawInstancedIndirect(
@@ -715,11 +727,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pbufferforargs: windows::core::Ref<ID3D11Buffer>,
         alignedbyteoffsetforargs: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::DrawInstancedIndirect")
     }
     fn Dispatch(&self, threadgroupcountx: u32, threadgroupcounty: u32, threadgroupcountz: u32) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::Dispatch")
     }
     fn DispatchIndirect(
@@ -727,19 +739,19 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pbufferforargs: windows::core::Ref<ID3D11Buffer>,
         alignedbyteoffsetforargs: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::DispatchIndirect")
     }
     fn RSSetState(&self, prasterizerstate: windows::core::Ref<ID3D11RasterizerState>) {
-        let _lock = lock();
+        let _call = self.call();
         self.rs_set_state(prasterizerstate)
     }
     fn RSSetViewports(&self, numviewports: u32, pviewports: *const D3D11_VIEWPORT) {
-        let _lock = lock();
+        let _call = self.call();
         self.rs_set_viewports(numviewports, pviewports)
     }
     fn RSSetScissorRects(&self, numrects: u32, prects: *const windows::Win32::Foundation::RECT) {
-        let _lock = lock();
+        let _call = self.call();
         self.rs_set_scissor_rects(numrects, prects)
     }
     fn CopySubresourceRegion(
@@ -753,7 +765,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         srcsubresource: u32,
         psrcbox: *const D3D11_BOX,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.copy_subresource_region(
             pdstresource,
             dstsubresource,
@@ -770,7 +782,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pdstresource: windows::core::Ref<ID3D11Resource>,
         psrcresource: windows::core::Ref<ID3D11Resource>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.copy_resource(pdstresource, psrcresource)
     }
     fn UpdateSubresource(
@@ -782,7 +794,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         srcrowpitch: u32,
         srcdepthpitch: u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.update_subresource(
             pdstresource,
             dstsubresource,
@@ -798,7 +810,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         dstalignedbyteoffset: u32,
         psrcview: windows::core::Ref<ID3D11UnorderedAccessView>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::CopyStructureCount")
     }
     fn ClearRenderTargetView(
@@ -806,7 +818,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         prendertargetview: windows::core::Ref<ID3D11RenderTargetView>,
         colorrgba: *const f32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.clear_render_target_view(prendertargetview, colorrgba)
     }
     fn ClearUnorderedAccessViewUint(
@@ -814,7 +826,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         punorderedaccessview: windows::core::Ref<ID3D11UnorderedAccessView>,
         values: *const u32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::ClearUnorderedAccessViewUint")
     }
     fn ClearUnorderedAccessViewFloat(
@@ -822,7 +834,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         punorderedaccessview: windows::core::Ref<ID3D11UnorderedAccessView>,
         values: *const f32,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::ClearUnorderedAccessViewFloat")
     }
     fn ClearDepthStencilView(
@@ -832,19 +844,19 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         depth: f32,
         stencil: u8,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.clear_depth_stencil_view(pdepthstencilview, clearflags, depth, stencil)
     }
     fn GenerateMips(&self, pshaderresourceview: windows::core::Ref<ID3D11ShaderResourceView>) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::GenerateMips")
     }
     fn SetResourceMinLOD(&self, presource: windows::core::Ref<ID3D11Resource>, minlod: f32) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::SetResourceMinLOD")
     }
     fn GetResourceMinLOD(&self, presource: windows::core::Ref<ID3D11Resource>) -> f32 {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::GetResourceMinLOD");
         Default::default()
     }
@@ -856,7 +868,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         srcsubresource: u32,
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::ResolveSubresource")
     }
     fn ExecuteCommandList(
@@ -864,7 +876,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pcommandlist: windows::core::Ref<ID3D11CommandList>,
         restorecontextstate: windows::core::BOOL,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::ExecuteCommandList")
     }
     fn HSSetShaderResources(
@@ -873,8 +885,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSSetShaderResources")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::HSSetShaderResources",
+            super::context::binds(ppshaderresourceviews, numviews),
+        )
     }
     fn HSSetShader(
         &self,
@@ -882,8 +897,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: *const Option<ID3D11ClassInstance>,
         numclassinstances: u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSSetShader")
+        let _call = self.call();
+        self.only_unbinding("ID3D11DeviceContext::HSSetShader", !phullshader.is_null())
     }
     fn HSSetSamplers(
         &self,
@@ -891,8 +906,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSSetSamplers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::HSSetSamplers",
+            super::context::binds(ppsamplers, numsamplers),
+        )
     }
     fn HSSetConstantBuffers(
         &self,
@@ -900,8 +918,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSSetConstantBuffers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::HSSetConstantBuffers",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
     }
     fn DSSetShaderResources(
         &self,
@@ -909,8 +930,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSSetShaderResources")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::DSSetShaderResources",
+            super::context::binds(ppshaderresourceviews, numviews),
+        )
     }
     fn DSSetShader(
         &self,
@@ -918,8 +942,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: *const Option<ID3D11ClassInstance>,
         numclassinstances: u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSSetShader")
+        let _call = self.call();
+        self.only_unbinding("ID3D11DeviceContext::DSSetShader", !pdomainshader.is_null())
     }
     fn DSSetSamplers(
         &self,
@@ -927,8 +951,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSSetSamplers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::DSSetSamplers",
+            super::context::binds(ppsamplers, numsamplers),
+        )
     }
     fn DSSetConstantBuffers(
         &self,
@@ -936,8 +963,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSSetConstantBuffers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::DSSetConstantBuffers",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
     }
     fn CSSetShaderResources(
         &self,
@@ -945,8 +975,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSSetShaderResources")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::CSSetShaderResources",
+            super::context::binds(ppshaderresourceviews, numviews),
+        )
     }
     fn CSSetUnorderedAccessViews(
         &self,
@@ -955,8 +988,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppunorderedaccessviews: *const Option<ID3D11UnorderedAccessView>,
         puavinitialcounts: *const u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSSetUnorderedAccessViews")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::CSSetUnorderedAccessViews",
+            super::context::binds(ppunorderedaccessviews, numuavs),
+        )
     }
     fn CSSetShader(
         &self,
@@ -964,8 +1000,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: *const Option<ID3D11ClassInstance>,
         numclassinstances: u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSSetShader")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::CSSetShader",
+            !pcomputeshader.is_null(),
+        )
     }
     fn CSSetSamplers(
         &self,
@@ -973,8 +1012,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSSetSamplers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::CSSetSamplers",
+            super::context::binds(ppsamplers, numsamplers),
+        )
     }
     fn CSSetConstantBuffers(
         &self,
@@ -982,8 +1024,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSSetConstantBuffers")
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext::CSSetConstantBuffers",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
     }
     fn VSGetConstantBuffers(
         &self,
@@ -991,8 +1036,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::VSGetConstantBuffers")
+        let _call = self.call();
+        self.vs_get_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn PSGetShaderResources(
         &self,
@@ -1000,8 +1045,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::PSGetShaderResources")
+        let _call = self.call();
+        self.ps_get_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn PSGetShader(
         &self,
@@ -1009,8 +1054,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: windows::core::OutRef<ID3D11ClassInstance>,
         pnumclassinstances: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::PSGetShader")
+        let _call = self.call();
+        self.ps_get_shader(pppixelshader, ppclassinstances, pnumclassinstances)
     }
     fn PSGetSamplers(
         &self,
@@ -1018,8 +1063,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::PSGetSamplers")
+        let _call = self.call();
+        self.ps_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn VSGetShader(
         &self,
@@ -1027,8 +1072,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: windows::core::OutRef<ID3D11ClassInstance>,
         pnumclassinstances: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::VSGetShader")
+        let _call = self.call();
+        self.vs_get_shader(ppvertexshader, ppclassinstances, pnumclassinstances)
     }
     fn PSGetConstantBuffers(
         &self,
@@ -1036,12 +1081,12 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::PSGetConstantBuffers")
+        let _call = self.call();
+        self.ps_get_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn IAGetInputLayout(&self, ppinputlayout: windows::core::OutRef<ID3D11InputLayout>) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::IAGetInputLayout")
+        let _call = self.call();
+        self.ia_get_input_layout(ppinputlayout)
     }
     fn IAGetVertexBuffers(
         &self,
@@ -1051,8 +1096,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pstrides: *mut u32,
         poffsets: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::IAGetVertexBuffers")
+        let _call = self.call();
+        self.ia_get_vertex_buffers(startslot, numbuffers, ppvertexbuffers, pstrides, poffsets)
     }
     fn IAGetIndexBuffer(
         &self,
@@ -1060,8 +1105,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         format: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
         offset: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::IAGetIndexBuffer")
+        let _call = self.call();
+        self.ia_get_index_buffer(pindexbuffer, format, offset)
     }
     fn GSGetConstantBuffers(
         &self,
@@ -1069,8 +1114,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSGetConstantBuffers")
+        let _call = self.call();
+        super::context::nothing_bound(ppconstantbuffers, numbuffers)
     }
     fn GSGetShader(
         &self,
@@ -1078,15 +1123,16 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: windows::core::OutRef<ID3D11ClassInstance>,
         pnumclassinstances: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSGetShader")
+        let _call = self.call();
+        super::context::no_instances(pnumclassinstances);
+        let _ = ppgeometryshader.write(None);
     }
     fn IAGetPrimitiveTopology(
         &self,
         ptopology: *mut windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::IAGetPrimitiveTopology")
+        let _call = self.call();
+        self.ia_get_primitive_topology(ptopology)
     }
     fn VSGetShaderResources(
         &self,
@@ -1094,8 +1140,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::VSGetShaderResources")
+        let _call = self.call();
+        self.vs_get_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn VSGetSamplers(
         &self,
@@ -1103,16 +1149,19 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::VSGetSamplers")
+        let _call = self.call();
+        self.vs_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn GetPredication(
         &self,
         pppredicate: windows::core::OutRef<ID3D11Predicate>,
         ppredicatevalue: *mut windows::core::BOOL,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GetPredication")
+        let _call = self.call();
+        let _ = pppredicate.write(None);
+        if let Some(v) = unsafe { ppredicatevalue.as_mut() } {
+            *v = false.into();
+        }
     }
     fn GSGetShaderResources(
         &self,
@@ -1120,8 +1169,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSGetShaderResources")
+        let _call = self.call();
+        super::context::nothing_bound(ppshaderresourceviews, numviews)
     }
     fn GSGetSamplers(
         &self,
@@ -1129,8 +1178,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::GSGetSamplers")
+        let _call = self.call();
+        super::context::nothing_bound(ppsamplers, numsamplers)
     }
     fn OMGetRenderTargets(
         &self,
@@ -1138,8 +1187,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pprendertargetviews: *mut Option<ID3D11RenderTargetView>,
         ppdepthstencilview: windows::core::OutRef<ID3D11DepthStencilView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::OMGetRenderTargets")
+        let _call = self.call();
+        self.om_get_render_targets(numviews, pprendertargetviews, ppdepthstencilview)
     }
     fn OMGetRenderTargetsAndUnorderedAccessViews(
         &self,
@@ -1150,7 +1199,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numuavs: u32,
         ppunorderedaccessviews: *mut Option<ID3D11UnorderedAccessView>,
     ) {
-        let _lock = lock();
+        let _call = self.call();
         self.unserved("ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews")
     }
     fn OMGetBlendState(
@@ -1159,36 +1208,36 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         blendfactor: *mut f32,
         psamplemask: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::OMGetBlendState")
+        let _call = self.call();
+        self.om_get_blend_state(ppblendstate, blendfactor, psamplemask)
     }
     fn OMGetDepthStencilState(
         &self,
         ppdepthstencilstate: windows::core::OutRef<ID3D11DepthStencilState>,
         pstencilref: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::OMGetDepthStencilState")
+        let _call = self.call();
+        self.om_get_depth_stencil_state(ppdepthstencilstate, pstencilref)
     }
     fn SOGetTargets(&self, numbuffers: u32, ppsotargets: *mut Option<ID3D11Buffer>) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::SOGetTargets")
+        let _call = self.call();
+        super::context::nothing_bound(ppsotargets, numbuffers)
     }
     fn RSGetState(&self, pprasterizerstate: windows::core::OutRef<ID3D11RasterizerState>) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::RSGetState")
+        let _call = self.call();
+        self.rs_get_state(pprasterizerstate)
     }
     fn RSGetViewports(&self, pnumviewports: *mut u32, pviewports: *mut D3D11_VIEWPORT) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::RSGetViewports")
+        let _call = self.call();
+        self.rs_get_viewports(pnumviewports, pviewports)
     }
     fn RSGetScissorRects(
         &self,
         pnumrects: *mut u32,
         prects: *mut windows::Win32::Foundation::RECT,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::RSGetScissorRects")
+        let _call = self.call();
+        self.rs_get_scissor_rects(pnumrects, prects)
     }
     fn HSGetShaderResources(
         &self,
@@ -1196,8 +1245,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSGetShaderResources")
+        let _call = self.call();
+        super::context::nothing_bound(ppshaderresourceviews, numviews)
     }
     fn HSGetShader(
         &self,
@@ -1205,8 +1254,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: windows::core::OutRef<ID3D11ClassInstance>,
         pnumclassinstances: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSGetShader")
+        let _call = self.call();
+        super::context::no_instances(pnumclassinstances);
+        let _ = pphullshader.write(None);
     }
     fn HSGetSamplers(
         &self,
@@ -1214,8 +1264,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSGetSamplers")
+        let _call = self.call();
+        super::context::nothing_bound(ppsamplers, numsamplers)
     }
     fn HSGetConstantBuffers(
         &self,
@@ -1223,8 +1273,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::HSGetConstantBuffers")
+        let _call = self.call();
+        super::context::nothing_bound(ppconstantbuffers, numbuffers)
     }
     fn DSGetShaderResources(
         &self,
@@ -1232,8 +1282,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSGetShaderResources")
+        let _call = self.call();
+        super::context::nothing_bound(ppshaderresourceviews, numviews)
     }
     fn DSGetShader(
         &self,
@@ -1241,8 +1291,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: windows::core::OutRef<ID3D11ClassInstance>,
         pnumclassinstances: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSGetShader")
+        let _call = self.call();
+        super::context::no_instances(pnumclassinstances);
+        let _ = ppdomainshader.write(None);
     }
     fn DSGetSamplers(
         &self,
@@ -1250,8 +1301,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSGetSamplers")
+        let _call = self.call();
+        super::context::nothing_bound(ppsamplers, numsamplers)
     }
     fn DSGetConstantBuffers(
         &self,
@@ -1259,8 +1310,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::DSGetConstantBuffers")
+        let _call = self.call();
+        super::context::nothing_bound(ppconstantbuffers, numbuffers)
     }
     fn CSGetShaderResources(
         &self,
@@ -1268,8 +1319,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numviews: u32,
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSGetShaderResources")
+        let _call = self.call();
+        super::context::nothing_bound(ppshaderresourceviews, numviews)
     }
     fn CSGetUnorderedAccessViews(
         &self,
@@ -1277,8 +1328,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numuavs: u32,
         ppunorderedaccessviews: *mut Option<ID3D11UnorderedAccessView>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSGetUnorderedAccessViews")
+        let _call = self.call();
+        super::context::nothing_bound(ppunorderedaccessviews, numuavs)
     }
     fn CSGetShader(
         &self,
@@ -1286,8 +1337,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppclassinstances: windows::core::OutRef<ID3D11ClassInstance>,
         pnumclassinstances: *mut u32,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSGetShader")
+        let _call = self.call();
+        super::context::no_instances(pnumclassinstances);
+        let _ = ppcomputeshader.write(None);
     }
     fn CSGetSamplers(
         &self,
@@ -1295,8 +1347,8 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numsamplers: u32,
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSGetSamplers")
+        let _call = self.call();
+        super::context::nothing_bound(ppsamplers, numsamplers)
     }
     fn CSGetConstantBuffers(
         &self,
@@ -1304,23 +1356,23 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numbuffers: u32,
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
-        let _lock = lock();
-        self.unserved("ID3D11DeviceContext::CSGetConstantBuffers")
+        let _call = self.call();
+        super::context::nothing_bound(ppconstantbuffers, numbuffers)
     }
     fn ClearState(&self) {
-        let _lock = lock();
+        let _call = self.call();
         self.clear_state()
     }
     fn Flush(&self) {
-        let _lock = lock();
+        let _call = self.call();
         self.flush()
     }
     fn GetType(&self) -> D3D11_DEVICE_CONTEXT_TYPE {
-        let _lock = lock();
+        let _call = self.call();
         self.get_type()
     }
     fn GetContextFlags(&self) -> u32 {
-        let _lock = lock();
+        let _call = self.call();
         self.get_context_flags()
     }
     fn FinishCommandList(
@@ -1328,14 +1380,14 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         restoredeferredcontextstate: windows::core::BOOL,
         ppcommandlist: windows::core::OutRef<ID3D11CommandList>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         Err(missing("ID3D11DeviceContext::FinishCommandList"))
     }
 }
 
 impl ID3D11DeviceChild_Impl for Context_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
-        let _lock = lock();
+        let _call = self.call();
         self.child.get_device(ppdevice)
     }
     fn GetPrivateData(
@@ -1344,7 +1396,7 @@ impl ID3D11DeviceChild_Impl for Context_Impl {
         pdatasize: *mut u32,
         pdata: *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.child.get_private_data(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
@@ -1353,7 +1405,7 @@ impl ID3D11DeviceChild_Impl for Context_Impl {
         datasize: u32,
         pdata: *const core::ffi::c_void,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.child.set_private_data(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
@@ -1361,7 +1413,7 @@ impl ID3D11DeviceChild_Impl for Context_Impl {
         guid: *const windows::core::GUID,
         pdata: windows::core::Ref<windows::core::IUnknown>,
     ) -> windows::core::Result<()> {
-        let _lock = lock();
+        let _call = self.call();
         self.child.set_private_data_interface(guid, pdata)
     }
 }

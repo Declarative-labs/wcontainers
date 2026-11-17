@@ -7,8 +7,8 @@ use std::rc::Rc;
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, Texture2D, View};
 use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{Device, Error, PIXEL, VERTEX, shader};
-use wcontainers_gpu::{Backend, SlowPath, SourceStage};
+use wcontainers_direct3d_11::{Device, Error, PIXEL, Removal, VERTEX, shader};
+use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
 
@@ -480,7 +480,7 @@ fn topology_scene() {
 fn released_objects_are_destroyed_at_the_next_call() {
     let mut dev = device();
     let buffer = immutable(&mut dev, &[1; 16], bind::VERTEX_BUFFER);
-    let id = buffer.gpu.handle;
+    let id = buffer.handle();
     dev.ia_set_vertex_buffers(0, &[Some((buffer.clone(), 16, 0))])
         .unwrap();
     drop(buffer);
@@ -615,7 +615,7 @@ fn a_draw_the_front_cannot_serve_removes_the_device() {
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
     // The pixel shader samples texture slot 0, which nothing is bound to.
     dev.draw(3, 0);
-    assert!(dev.removed);
+    assert!(dev.removed.is_some());
     assert!(!dev.backend.log.iter().any(|l| l.starts_with("draw ")));
 }
 
@@ -633,7 +633,7 @@ fn vertex_ids_with_a_start_location_are_not_served() {
     dev.vs_set_shader(Some(vs));
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
     dev.draw(3, 0);
-    assert!(!dev.removed);
+    assert!(dev.removed.is_none());
     assert_eq!(
         dev.backend
             .log
@@ -644,7 +644,7 @@ fn vertex_ids_with_a_start_location_are_not_served() {
     );
     // SV_VertexID leaves the start location out; the front cannot take it off yet.
     dev.draw(3, 3);
-    assert!(dev.removed);
+    assert!(dev.removed.is_some());
     assert_eq!(
         dev.backend
             .log
@@ -686,10 +686,10 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
         // Triangles are drawn as usual; lines are not.
         dev.ia_set_primitive_topology(topology::TRIANGLELIST);
         dev.draw(3, 0);
-        assert!(!dev.removed);
+        assert!(dev.removed.is_none());
         dev.ia_set_primitive_topology(topology::LINELIST);
         dev.draw(2, 0);
-        assert!(dev.removed);
+        assert!(dev.removed.is_some());
         assert_eq!(
             dev.backend
                 .log
@@ -699,4 +699,168 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
             1
         );
     }
+}
+
+/// A target, cleared and bound, with a program of the corpus and a vertex buffer of `stride` bytes.
+fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u32) {
+    let target = dev
+        .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(dev, &rtv, None, 16.0);
+    program(dev, vs, ps, elements);
+    let vertices = immutable(dev, &vec![0; stride as usize * 3], bind::VERTEX_BUFFER);
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, stride, 0))])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+}
+
+#[test]
+fn a_back_end_loss_reaches_the_program_where_it_waits() {
+    let mut dev = device();
+    let desc = BufferDesc {
+        byte_width: 16,
+        usage: usage::STAGING,
+        cpu_access_flags: cpu::READ,
+        ..Default::default()
+    };
+    let staging = Resource::Buffer(dev.create_buffer(&desc, None).unwrap());
+    assert!(dev.map(&staging, 0, map::READ, 0).is_ok());
+    dev.unmap(&staging, 0);
+    assert_eq!(dev.poll_removed(), None);
+    dev.backend.lost = Some(LossReason::Error);
+    assert!(matches!(
+        dev.map(&staging, 0, map::READ, 0),
+        Err(Error::DeviceRemoved)
+    ));
+    assert_eq!(dev.removed, Some(Removal::Lost(LossReason::Error)));
+    assert!(matches!(
+        dev.create_buffer(&desc, None),
+        Err(Error::DeviceRemoved)
+    ));
+}
+
+#[test]
+fn slow_path_warnings_are_handed_out_once() {
+    let mut dev = device();
+    let desc = BufferDesc {
+        byte_width: 64,
+        usage: usage::DYNAMIC,
+        bind_flags: bind::CONSTANT_BUFFER,
+        cpu_access_flags: cpu::WRITE,
+        ..Default::default()
+    };
+    let b = Resource::Buffer(dev.create_buffer(&desc, None).unwrap());
+    for _ in 0..2 {
+        dev.map(&b, 0, map::WRITE_DISCARD, 0).unwrap();
+        dev.unmap(&b, 0);
+    }
+    assert_eq!(dev.take_warnings(), [SlowPath::MappedUploadWhole.reason()]);
+    dev.map(&b, 0, map::WRITE_DISCARD, 0).unwrap();
+    dev.unmap(&b, 0);
+    assert!(dev.take_warnings().is_empty());
+}
+
+#[test]
+fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
+    let mut dev = device();
+    // The instanced scene's vertex shader indexes its constants by instance: the whole buffer is declared.
+    ready(
+        &mut dev,
+        "instanced.vs",
+        "instanced.ps",
+        &[element("POSITION", RG32F, 0)],
+        8,
+    );
+    let vs = dev
+        .create_shader(&corpus("instanced.vs"), SourceStage::Vertex)
+        .unwrap();
+    let declared = vs.constant_sizes[0].1;
+    assert!(declared > 528, "{declared}");
+    let desc = BufferDesc {
+        byte_width: 528,
+        usage: usage::DYNAMIC,
+        bind_flags: bind::CONSTANT_BUFFER,
+        cpu_access_flags: cpu::WRITE,
+        ..Default::default()
+    };
+    let cb = dev.create_buffer(&desc, None).unwrap();
+    dev.set_constant_buffers(VERTEX, 0, &[Some(cb.clone())])
+        .unwrap();
+    let from = dev.backend.log.len();
+    dev.draw_instanced(3, 4, 0, 0);
+    dev.draw_instanced(3, 4, 0, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let made = find(&log, "create_buffer ");
+    assert!(
+        log[made].contains(&format!(" size {declared} ")),
+        "{log:#?}"
+    );
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("create_binding_set") && l.contains(&format!(":{declared}"))),
+        "{log:#?}"
+    );
+    assert_eq!(log.iter().filter(|l| l.starts_with("draw ")).count(), 2);
+    assert_eq!(
+        dev.backend
+            .slow_paths()
+            .count(SlowPath::ConstantBufferGrown),
+        1
+    );
+    // Its whole writes cover the grown bytes, so those past the program's stay zero.
+    let r = Resource::Buffer(cb);
+    dev.map(&r, 0, map::WRITE_DISCARD, 0).unwrap();
+    dev.unmap(&r, 0);
+    assert!(
+        dev.backend
+            .log
+            .last()
+            .unwrap()
+            .ends_with(&format!("at 0 {declared} bytes Discard"))
+    );
+}
+
+#[test]
+fn formats_direct3d_defines_but_the_front_does_not_serve_are_not_implemented() {
+    let mut dev = device();
+    // R8G8B8A8_TYPELESS, R24G8_TYPELESS and R32_TYPELESS are valid; 0 and 500 are no format.
+    for typeless in [27, 44, 39] {
+        assert!(matches!(
+            dev.create_texture_2d(&tex2d(4, 4, typeless, bind::SHADER_RESOURCE), &[]),
+            Err(Error::NotImplemented(_))
+        ));
+    }
+    for bad in [0, 500] {
+        assert!(matches!(
+            dev.create_texture_2d(&tex2d(4, 4, bad, bind::SHADER_RESOURCE), &[]),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+}
+
+#[test]
+fn dual_source_blending_is_not_served() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let mut blend = BlendDesc::default_state();
+    blend.targets[0].enable = true;
+    // D3D11_BLEND_SRC1_COLOR.
+    blend.targets[0].src = 16;
+    let blend = dev.create_blend_state(&blend).unwrap();
+    dev.om_set_blend_state(Some(blend), None, u32::MAX);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_some());
+    assert!(!dev.backend.log.iter().any(|l| l.starts_with("draw ")));
 }
