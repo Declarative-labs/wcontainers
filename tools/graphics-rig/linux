@@ -1,0 +1,25 @@
+#!/bin/bash
+# Builds and tests on the Linux laptop, used as a CPU only: sends this checkout's working tree there
+# (ignored files left out) and runs the command in it, with the build directory outside the tree and
+# cargo's jobs capped (5, or 2 when the laptop's load average is above 8, since another track has
+# priority there).
+#   tools/graphics-rig/linux cargo test -p wcontainers-gpu -p wcontainers-gpu-test
+set -euo pipefail
+[ $# -gt 0 ] || { echo "usage: $0 <command...>" >&2; exit 2; }
+host=tom@192.168.2.240
+root=$(git rev-parse --show-toplevel)
+name=$(git symbolic-ref --short HEAD | tr -c 'A-Za-z0-9._-' '-')
+src=wcontainers-graphics/src/$name
+target=wcontainers-graphics/target/$name
+ssh_options=(-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30)
+ssh "${ssh_options[@]}" "$host" mkdir -p "$src" "$target"
+rsync -a --delete -e "ssh ${ssh_options[*]}" --exclude /.git --exclude /target \
+    --filter=':- .gitignore' "$root/" "$host:$src/"
+command=$(printf '%q ' "$@")
+# shellcheck disable=SC2029
+exec ssh "${ssh_options[@]}" "$host" "cd $src &&
+    load=\$(cut -d' ' -f1 /proc/loadavg) &&
+    jobs=\$(awk -v l=\"\$load\" 'BEGIN { print (l > 8) ? 2 : 5 }') &&
+    export PATH=\$HOME/.cargo/bin:\$PATH CARGO_TARGET_DIR=\$HOME/$target CARGO_BUILD_JOBS=\$jobs &&
+    echo \"linux: load \$load, \$jobs jobs\" >&2 &&
+    nice -n 10 $command"
