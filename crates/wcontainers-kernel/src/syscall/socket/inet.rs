@@ -151,6 +151,12 @@ pub(crate) struct Inet {
     pub flows: alloc::collections::BTreeMap<Endpoint, u32>,
     /// Whether the host takes more bytes of an outside connection now.
     pub room: bool,
+    /// Bytes have come on the connection, and it has sent after they came: what
+    /// `/proc/net/tcp` shows of its delayed acknowledgements (a model: Linux's depend on timing).
+    pub received: bool,
+    pub pingpong: bool,
+    /// The program has read the end its FIN marks.
+    pub fin_read: bool,
 }
 
 impl Inet {
@@ -173,17 +179,30 @@ impl Inet {
             outside: None,
             flows: alloc::collections::BTreeMap::new(),
             room: false,
+            received: false,
+            pingpong: false,
+            fin_read: false,
         }
     }
+}
+
+/// A closed TCP connection holding its port a while.
+pub(super) struct TimeWait {
+    pub family: u32,
+    pub local: Endpoint,
+    pub remote: Endpoint,
+    /// Whether it had SO_REUSEADDR.
+    pub reuse: bool,
+    /// Until when, on the monotonic clock.
+    pub until: u64,
 }
 
 /// The ports in use: every socket holding one, and closed connections still holding theirs.
 #[derive(Default)]
 pub(crate) struct Ports {
-    bound: alloc::collections::BTreeMap<(Protocol, u16), Vec<Weak<RefCell<Socket>>>>,
-    /// Closed TCP connections in TIME_WAIT: their local end, whether they had SO_REUSEADDR, and
-    /// until when.
-    time_wait: Vec<(Endpoint, bool, u64)>,
+    pub(super) bound: alloc::collections::BTreeMap<(Protocol, u16), Vec<Weak<RefCell<Socket>>>>,
+    /// Closed TCP connections in TIME_WAIT.
+    pub(super) time_wait: Vec<TimeWait>,
     /// Connections to the outside and name lookups under way.
     pub outside: super::outside::Outside,
 }
@@ -432,13 +451,14 @@ fn conflicts(
     if protocol == Protocol::Tcp {
         let now = kernel.entry_now;
         let ports = &mut kernel.sockets.inet;
-        ports.time_wait.retain(|(_, _, until)| *until > now);
+        ports.time_wait.retain(|held| held.until > now);
         let family = own.family;
         let v6only = own.inet.as_deref().unwrap().v6only;
         let (own4, own6) = cover(family, v6only, address);
-        return ports.time_wait.iter().any(|(end, held_reuse, _)| {
+        return ports.time_wait.iter().any(|held| {
+            let end = &held.local;
             let (end4, end6) = cover(AF_INET6, false, &end.address);
-            !(reuse && *held_reuse) && end.port == port && (meet(own4, end4) || meet(own6, end6))
+            !(reuse && held.reuse) && end.port == port && (meet(own4, end4) || meet(own6, end6))
         });
     }
     false
@@ -1251,10 +1271,18 @@ fn send_fin(kernel: &mut Kernel, socket: &SocketRef) {
 
 /// A connection's end that closed first holds its port for TIME_WAIT.
 fn hold_time_wait(kernel: &mut Kernel, socket: &SocketRef) {
-    let local = inet_ref(socket).local;
-    let reuse = flag(&socket.borrow(), SOL_SOCKET, SO_REUSEADDR);
-    let until = kernel.entry_now + TIME_WAIT;
-    kernel.sockets.inet.time_wait.push((local, reuse, until));
+    let (local, remote) = {
+        let inet = inet_ref(socket);
+        (inet.local, inet.remote.unwrap_or_default())
+    };
+    let held = TimeWait {
+        family: socket.borrow().family,
+        local,
+        remote,
+        reuse: flag(&socket.borrow(), SOL_SOCKET, SO_REUSEADDR),
+        until: kernel.entry_now + TIME_WAIT,
+    };
+    kernel.sockets.inet.time_wait.push(held);
 }
 
 /// `tcp_poll` and `udp_poll`.
@@ -1465,7 +1493,7 @@ fn tcp_send(
                 return Err(error);
             }
             let size = (total - sent).min(TCP_PIECE);
-            let data = gather(kernel, cx, tid, &message.parts, sent, size)?;
+            let data = gather(kernel, cx, tid, message.data, sent, size)?;
             match super::outside::send(kernel, cx, socket, id, &data) {
                 Ok(count) => sent += count as u64,
                 Err(_) if sent > 0 => return Ok(sent),
@@ -1506,7 +1534,7 @@ fn tcp_send(
             return Err(error);
         }
         let size = (total - sent).min(sndbuf - written).min(TCP_PIECE);
-        let data = gather(kernel, cx, tid, &message.parts, sent, size)?;
+        let data = gather(kernel, cx, tid, message.data, sent, size)?;
         let packet = Packet {
             data,
             consumed: 0,
@@ -1517,16 +1545,37 @@ fn tcp_send(
             source: None,
         };
         socket.borrow_mut().written += size;
+        {
+            let mut own = inet(socket);
+            own.pingpong |= own.received;
+        }
+        inet(&peer).received = true;
         peer.borrow_mut().queue.push_back(packet);
         kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
         sent += size;
     }
 }
 
-/// The true size Linux charges a receiver for a datagram of `size` bytes on loopback, near
-/// enough: its buffer with the IP and UDP headers and the link's room.
-fn datagram_truesize(size: u64) -> u64 {
-    super::truesize(size + 28 + 31, 0)
+/// The true size Linux charges a receiver for a datagram of `size` bytes (measured): its buffer
+/// with the IP and UDP headers and the link's room (`ip_append_data`), the head from the small
+/// head cache when it fits (`kmalloc_reserve`), and past `SKB_MAX_ALLOC` the payload in pages,
+/// counted exactly.
+pub(super) fn datagram_truesize(size: u64) -> u64 {
+    const SHARED_INFO: u64 = 320;
+    const SK_BUFF: u64 = 256;
+    const SMALL_HEAD: u64 = 640;
+    const MAX_ALLOC: u64 = (4096 << 2) - SHARED_INFO;
+    let head = size + 28 + 31;
+    if head >= MAX_ALLOC {
+        return SMALL_HEAD + SK_BUFF + size;
+    }
+    let wanted = head.next_multiple_of(64) + SHARED_INFO;
+    let allocated = if wanted <= SMALL_HEAD {
+        SMALL_HEAD
+    } else {
+        wanted.next_power_of_two()
+    };
+    allocated + SK_BUFF
 }
 
 fn udp_send(
@@ -1619,7 +1668,7 @@ fn udp_send(
     if family == AF_INET6 && v4_of(&to.address).is_none() && v4_of(&from.address).is_some() {
         from.address = LOOPBACK6;
     }
-    let data = gather(kernel, cx, tid, &message.parts, 0, total)?;
+    let data = gather(kernel, cx, tid, message.data, 0, total)?;
     if !is_own(&to.address) {
         if !unicast(&to.address) {
             return Ok(total);
@@ -1717,11 +1766,11 @@ pub(super) fn receive(
     cx: &mut Context<'_>,
     tid: Tid,
     socket: &SocketRef,
-    parts: &[(u64, u64)],
+    parts: super::Data<'_>,
     flags: u32,
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
-    let size: u64 = parts.iter().map(|(_, length)| length).sum();
+    let size = parts.size();
     if inet_ref(socket).protocol == Protocol::Udp {
         return udp_receive(kernel, cx, tid, socket, parts, size, flags, nonblocking);
     }
@@ -1760,6 +1809,10 @@ pub(super) fn receive(
         super::outside::pull(kernel, cx, socket, id);
     }
     let (copied, mut received) = result?;
+    // A read of the end moves past the FIN (`tcp_recvmsg`'s `++*seq`).
+    if copied == 0 && size > 0 && flags & MSG_PEEK == 0 && inet_ref(socket).done {
+        inet(socket).fin_read = true;
+    }
     received.name = None;
     received.cred = None;
     Ok((copied, received))
@@ -1774,7 +1827,7 @@ fn udp_receive(
     cx: &mut Context<'_>,
     tid: Tid,
     socket: &SocketRef,
-    parts: &[(u64, u64)],
+    parts: super::Data<'_>,
     size: u64,
     flags: u32,
     nonblocking: bool,

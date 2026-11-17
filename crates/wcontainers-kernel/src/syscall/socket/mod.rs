@@ -7,6 +7,7 @@
 mod inet;
 mod netlink;
 mod outside;
+mod procnet;
 mod resolver;
 
 pub(crate) use inet::Ports;
@@ -121,6 +122,9 @@ pub(crate) struct Socket {
     send_timeout: u64,
     /// The effective user that bound it, for SO_REUSEPORT.
     owner_uid: u32,
+    /// Its inode's number and owner, once it has a file (`sock_i_ino`, `sock_i_uid`).
+    ino: u64,
+    uid: u32,
     /// An internet socket's own part.
     inet: Option<alloc::boxed::Box<inet::Inet>>,
     /// A netlink socket's own part.
@@ -157,6 +161,8 @@ impl Socket {
             receive_timeout: 0,
             send_timeout: 0,
             owner_uid: 0,
+            ino: 0,
+            uid: 0,
             inet: None,
             netlink: None,
         }
@@ -191,6 +197,15 @@ pub(crate) fn outside_event(
     event: &wcontainers_abi::Event<'_>,
 ) -> bool {
     outside::event(kernel, cx, event)
+}
+
+/// The bytes of a file of `/proc/net`.
+pub(crate) fn proc_net(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    file: crate::fs::proc::NetFile,
+) -> Vec<u8> {
+    procnet::contents(kernel, cx, file)
 }
 
 /// After a restore: connections to the outside read as closed.
@@ -268,6 +283,11 @@ fn make_file(
     let ino = kernel.files.numbers.ino();
     let credentials = kernel.credentials(tid);
     let (uid, gid) = (credentials.fsuid, credentials.fsgid);
+    {
+        let mut own = socket.borrow_mut();
+        own.ino = ino;
+        own.uid = uid;
+    }
     let node = crate::fs::new_inode(
         fs,
         ino,
@@ -1070,17 +1090,7 @@ fn drop_packet(kernel: &mut Kernel, packet: Packet) {
 fn truesize(head: u64, pages: u64) -> u64 {
     const SHARED_INFO: u64 = 320;
     const SK_BUFF: u64 = 256;
-    let wanted = head.next_multiple_of(64) + SHARED_INFO;
-    let allocated = if wanted <= 8192 {
-        match wanted {
-            0..=96 => 96,
-            97..=128 => 128,
-            129..=192 => 192,
-            _ => wanted.next_power_of_two(),
-        }
-    } else {
-        wanted.next_power_of_two()
-    };
+    let allocated = (head.next_multiple_of(64) + SHARED_INFO).next_power_of_two();
     allocated + SK_BUFF + pages.next_multiple_of(4096)
 }
 
@@ -1098,9 +1108,25 @@ fn stream_piece(size: u64, sndbuf: u64) -> (u64, u64) {
     (size, pages)
 }
 
-/// A message to send: its bytes' places, its destination, what it carries and its flags.
-struct Outgoing {
-    parts: Vec<(u64, u64)>,
+/// Where a call's bytes are: the caller's buffers, or the kernel's own (a splice or sendfile).
+#[derive(Clone, Copy)]
+pub(crate) enum Data<'a> {
+    Guest(&'a [(u64, u64)]),
+    Kernel(&'a RefCell<Vec<u8>>),
+}
+
+impl Data<'_> {
+    fn size(&self) -> u64 {
+        match self {
+            Data::Guest(parts) => parts.iter().map(|(_, length)| length).sum(),
+            Data::Kernel(bytes) => bytes.borrow().len() as u64,
+        }
+    }
+}
+
+/// A message to send: its bytes, its destination, what it carries and its flags.
+struct Outgoing<'a> {
+    data: Data<'a>,
     name: Option<Name>,
     /// An internet socket's destination as the program gave it.
     address: Option<Vec<u8>>,
@@ -1119,7 +1145,7 @@ fn send(
     socket: &SocketRef,
     message: Outgoing,
 ) -> Result<u64, Errno> {
-    let total: u64 = message.parts.iter().map(|(_, length)| length).sum();
+    let total = message.data.size();
     let nonblocking = message.flags & MSG_DONTWAIT != 0 || file.borrow().flags & O_NONBLOCK != 0;
     if message.flags & MSG_OOB != 0
         && socket.borrow().kind != SOCK_STREAM
@@ -1131,7 +1157,7 @@ fn send(
     let is_inet = socket.borrow().inet.is_some();
     if socket.borrow().netlink.is_some() {
         let to = message.address.as_deref();
-        return netlink::send(kernel, cx, tid, socket, &message.parts, to, total);
+        return netlink::send(kernel, cx, tid, socket, message.data, to, total);
     }
     let result = match kind {
         _ if is_inet => inet::send(kernel, cx, tid, socket, &message, total, nonblocking),
@@ -1253,7 +1279,7 @@ fn send_stream(
             return Err(error);
         }
         let (size, pages) = stream_piece(total - sent, sndbuf);
-        let data = gather(kernel, cx, tid, &message.parts, sent, size)?;
+        let data = gather(kernel, cx, tid, message.data, sent, size)?;
         let packet = Packet {
             consumed: 0,
             files: if files_sent {
@@ -1279,15 +1305,24 @@ fn send_stream(
     Ok(sent)
 }
 
-/// The bytes of `parts` from `offset`, `length` of them.
+/// The bytes of `data` from `offset`, `length` of them.
 fn gather(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    parts: &[(u64, u64)],
+    data: Data<'_>,
     offset: u64,
     length: u64,
 ) -> Result<Vec<u8>, Errno> {
+    let parts = match data {
+        Data::Guest(parts) => parts,
+        Data::Kernel(bytes) => {
+            let bytes = bytes.borrow();
+            let start = (offset as usize).min(bytes.len());
+            let end = (start + length as usize).min(bytes.len());
+            return Ok(bytes[start..end].to_vec());
+        }
+    };
     let mut out = Vec::with_capacity(length as usize);
     let mut skip = offset;
     let mut guest = guest(kernel, cx, tid);
@@ -1372,7 +1407,7 @@ fn send_packet(
         let waits_on = if full { &target } else { socket };
         return Err(wait_room(kernel, tid, waits_on, nonblocking, timeout));
     }
-    let data = gather(kernel, cx, tid, &message.parts, 0, total)?;
+    let data = gather(kernel, cx, tid, message.data, 0, total)?;
     const MAX_ALLOC: u64 = 16384 - 320;
     let pages = if total > MAX_ALLOC {
         (total - MAX_ALLOC).min(17 * 4096).next_multiple_of(4096)
@@ -1415,7 +1450,7 @@ fn receive(
     tid: Tid,
     file: &FileRef,
     socket: &SocketRef,
-    parts: &[(u64, u64)],
+    parts: Data<'_>,
     flags: u32,
 ) -> Result<(u64, Received), Errno> {
     let nonblocking = flags & MSG_DONTWAIT != 0 || file.borrow().flags & O_NONBLOCK != 0;
@@ -1429,7 +1464,7 @@ fn receive(
     if flags & MSG_OOB != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    let size: u64 = parts.iter().map(|(_, length)| length).sum();
+    let size = parts.size();
     if kind == SOCK_STREAM {
         if socket.borrow().state != State::Connected && socket.borrow().queue.is_empty() {
             return Err(Errno::EINVAL);
@@ -1511,7 +1546,7 @@ fn receive_stream(
     cx: &mut Context<'_>,
     tid: Tid,
     socket: &SocketRef,
-    parts: &[(u64, u64)],
+    parts: Data<'_>,
     size: u64,
     flags: u32,
     nonblocking: bool,
@@ -1679,7 +1714,7 @@ fn scatter(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    parts: &[(u64, u64)],
+    parts: Data<'_>,
     bytes: &[u8],
 ) -> Result<(), Errno> {
     scatter_at(kernel, cx, tid, parts, 0, bytes)
@@ -1690,14 +1725,22 @@ fn scatter_at(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
-    parts: &[(u64, u64)],
+    parts: Data<'_>,
     offset: u64,
     bytes: &[u8],
 ) -> Result<(), Errno> {
     if bytes.is_empty() {
         return Ok(());
     }
-    super::signalfd::store(kernel, cx, tid, parts, offset, bytes)
+    match parts {
+        Data::Guest(parts) => super::signalfd::store(kernel, cx, tid, parts, offset, bytes),
+        Data::Kernel(into) => {
+            let mut into = into.borrow_mut();
+            let start = offset as usize;
+            into[start..start + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        }
+    }
 }
 
 /// read and readv on a socket: a receive with no flags.
@@ -1709,10 +1752,51 @@ pub(super) fn read(
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
     let socket = of(file).expect("a socket");
-    let (copied, received) = receive(kernel, cx, tid, file, &socket, parts, 0)?;
+    let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Guest(parts), 0)?;
     // Descriptors that came with the bytes are let go (`scm_destroy`).
     kernel.released.extend(received.files);
     Ok(copied)
+}
+
+/// Sends bytes the kernel holds on a socket with `flags` and no address, as a splice or
+/// sendfile into it does (`splice_to_socket`).
+pub(crate) fn send_bytes(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    bytes: &RefCell<Vec<u8>>,
+    flags: u32,
+) -> Result<u64, Errno> {
+    let socket = of(file).expect("a socket");
+    let message = Outgoing {
+        data: Data::Kernel(bytes),
+        name: None,
+        address: None,
+        files: Vec::new(),
+        cred: None,
+        flags,
+    };
+    send(kernel, cx, tid, file, &socket, message)
+}
+
+/// Receives up to `size` bytes from a socket into the kernel, as a splice from it does
+/// (`sock_splice_read`); descriptors that came with them are let go.
+pub(crate) fn receive_bytes(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    size: u64,
+    flags: u32,
+) -> Result<Vec<u8>, Errno> {
+    let socket = of(file).expect("a socket");
+    let into = RefCell::new(alloc::vec![0; size as usize]);
+    let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Kernel(&into), flags)?;
+    kernel.released.extend(received.files);
+    let mut bytes = into.into_inner();
+    bytes.truncate(copied as usize);
+    Ok(bytes)
 }
 
 /// write and writev on a socket: a send with no flags.
@@ -1725,7 +1809,7 @@ pub(super) fn write(
 ) -> Result<u64, Errno> {
     let socket = of(file).expect("a socket");
     let message = Outgoing {
-        parts: parts.to_vec(),
+        data: Data::Guest(parts),
         name: None,
         address: None,
         files: Vec::new(),
@@ -1758,8 +1842,9 @@ pub(super) fn sendto(
             None,
         )
     };
+    let buffers = [(buffer, length)];
     let message = Outgoing {
-        parts: alloc::vec![(buffer, length)],
+        data: Data::Guest(&buffers),
         name,
         address,
         files: Vec::new(),
@@ -1781,7 +1866,15 @@ pub(super) fn recvfrom(
         return Err(Errno::EFAULT);
     }
     let flags = flags as u32;
-    let (copied, received) = receive(kernel, cx, tid, &file, &socket, &[(buffer, length)], flags)?;
+    let (copied, received) = receive(
+        kernel,
+        cx,
+        tid,
+        &file,
+        &socket,
+        Data::Guest(&[(buffer, length)]),
+        flags,
+    )?;
     kernel.released.extend(received.files);
     if address != 0 {
         // A sender with no name gives a length of 0 (`unix_copy_addr`).
@@ -1939,7 +2032,7 @@ pub(super) fn sendmsg(
     };
     let (files, cred) = read_control(kernel, cx, tid, &header)?;
     let message = Outgoing {
-        parts: header.parts,
+        data: Data::Guest(&header.parts),
         name,
         address,
         files,
@@ -1958,7 +2051,15 @@ pub(super) fn recvmsg(
     let (file, socket) = socket_of(kernel, tid, fd)?;
     let header = read_header(kernel, cx, tid, address)?;
     let flags = flags as u32;
-    let (copied, received) = receive(kernel, cx, tid, &file, &socket, &header.parts, flags)?;
+    let (copied, received) = receive(
+        kernel,
+        cx,
+        tid,
+        &file,
+        &socket,
+        Data::Guest(&header.parts),
+        flags,
+    )?;
     // `____sys_recvmsg` starts the flags given back from MSG_CMSG_CLOEXEC.
     let mut out_flags = received.flags | (flags & MSG_CMSG_CLOEXEC);
     // The sender's name.

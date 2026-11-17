@@ -270,7 +270,7 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                 let truesize = if stream {
                     count as u64
                 } else {
-                    super::truesize(count as u64 + 59, 0)
+                    super::inet::datagram_truesize(count as u64)
                 };
                 if !stream && held > room {
                     continue;
@@ -288,7 +288,12 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                     truesize,
                     source: flow,
                 };
-                socket.borrow_mut().queue.push_back(packet);
+                let mut own = socket.borrow_mut();
+                if let Some(inet) = own.inet.as_deref_mut() {
+                    inet.received = true;
+                }
+                own.queue.push_back(packet);
+                drop(own);
                 kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);
             }
             Err(HostError::WouldBlock) | Err(HostError::NotSupported) => return,
@@ -516,7 +521,7 @@ fn inet_protocol(socket: &SocketRef) -> Option<Protocol> {
 
 /// A datagram from `from` into a UDP socket's queue, if its buffer has room.
 pub(super) fn deliver(kernel: &mut Kernel, socket: &SocketRef, from: Endpoint, data: Vec<u8>) {
-    let truesize = super::truesize(data.len() as u64 + 59, 0);
+    let truesize = super::inet::datagram_truesize(data.len() as u64);
     let held: u64 = socket
         .borrow()
         .queue

@@ -201,7 +201,7 @@ pub(super) fn send(
     cx: &mut Context<'_>,
     tid: Tid,
     socket: &SocketRef,
-    parts: &[(u64, u64)],
+    parts: super::Data<'_>,
     to: Option<&[u8]>,
     total: u64,
 ) -> Result<u64, Errno> {
@@ -855,11 +855,11 @@ pub(super) fn receive(
     cx: &mut Context<'_>,
     tid: Tid,
     socket: &SocketRef,
-    parts: &[(u64, u64)],
+    parts: super::Data<'_>,
     flags: u32,
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
-    let size: u64 = parts.iter().map(|(_, length)| length).sum();
+    let size = parts.size();
     if socket.borrow().queue.is_empty() {
         let timeout = socket.borrow().receive_timeout;
         return Err(wait_room(kernel, tid, socket, nonblocking, timeout));

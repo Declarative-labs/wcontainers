@@ -15,3 +15,15 @@ fn interfaces_and_routes_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "netroute", &[]);
 }
+
+#[test]
+fn proc_net_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "procnet", &[]);
+}
+
+#[test]
+fn transfers_with_sockets_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "sockxfer", &[]);
+}

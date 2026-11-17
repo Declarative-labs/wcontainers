@@ -239,7 +239,17 @@ fn queue(
 
 /// Tells the watches of `node` of an event about it, `name` empty, or about the child `name`
 /// it holds. A one-shot watch goes after its event.
-fn tell(kernel: &mut Kernel, node: &Node, mask: u32, cookie: u32, name: &[u8], directory: bool) {
+/// An event about an open file whose name was removed (`unlinked`) skips the watches with
+/// IN_EXCL_UNLINK (`fsnotify_handle_inode_event`'s `d_unlinked` check).
+fn tell(
+    kernel: &mut Kernel,
+    node: &Node,
+    mask: u32,
+    cookie: u32,
+    name: &[u8],
+    directory: bool,
+    unlinked: bool,
+) {
     if node.borrow().watches.is_empty() {
         return;
     }
@@ -249,6 +259,7 @@ fn tell(kernel: &mut Kernel, node: &Node, mask: u32, cookie: u32, name: &[u8], d
         .watches
         .iter()
         .filter(|mark| mark.mask & mask != 0)
+        .filter(|mark| !(unlinked && mark.mask & IN_EXCL_UNLINK != 0))
         .map(|mark| (mark.instance.clone(), mark.wd, mark.mask))
         .collect();
     for (instance, wd, wanted) in marks {
@@ -275,16 +286,27 @@ fn forget(kernel: &mut Kernel, node: &Node, instance: &Rc<RefCell<Instance>>, wd
 /// the name it was made with or moved to while that still names it (`fsnotify` with
 /// `fsnotify_parent`).
 pub(crate) fn changed(kernel: &mut Kernel, node: &Node, at: Option<(&Node, &[u8])>, mask: u32) {
+    reported(kernel, node, at, mask, false);
+}
+
+/// As [`changed`], for an event through a path that was `unlinked`.
+fn reported(
+    kernel: &mut Kernel,
+    node: &Node,
+    at: Option<(&Node, &[u8])>,
+    mask: u32,
+    unlinked: bool,
+) {
     let directory = node.borrow().is_directory();
     match at {
-        Some((parent, name)) => tell(kernel, parent, mask, 0, name, directory),
+        Some((parent, name)) => tell(kernel, parent, mask, 0, name, directory, unlinked),
         None => {
             if let Some((parent, name)) = place_of(node) {
-                tell(kernel, &parent, mask, 0, &name, directory);
+                tell(kernel, &parent, mask, 0, &name, directory, unlinked);
             }
         }
     }
-    tell(kernel, node, mask, 0, &[], directory);
+    tell(kernel, node, mask, 0, &[], directory, unlinked);
 }
 
 /// The directory and name an inode was made with or last moved to, if they still name it.
@@ -310,16 +332,28 @@ pub(crate) fn file_changed(kernel: &mut Kernel, file: &FileRef, mask: u32) {
         (file.node.clone(), file.dentry.clone())
     };
     let parent = dentry.and_then(|(parent, name)| parent.upgrade().map(|parent| (parent, name)));
+    // The name it was opened by is gone, and it was not moved to another (`d_unlinked`).
+    let names_it = parent.as_ref().is_some_and(|(parent, name)| {
+        parent
+            .borrow()
+            .directory()
+            .and_then(|entries| entries.get(name))
+            .is_some_and(|current| Rc::ptr_eq(&current, &node))
+    });
+    let unlinked = node.borrow().nlink == 0 || (!names_it && place_of(&node).is_none());
+    // A file moved since it was opened is told of under its new name, as its dentry moved.
     match &parent {
-        Some((parent, name)) => changed(kernel, &node, Some((parent, name)), mask),
-        None => changed(kernel, &node, None, mask),
+        Some((parent, name)) if names_it || unlinked => {
+            reported(kernel, &node, Some((parent, name)), mask, unlinked)
+        }
+        _ => reported(kernel, &node, None, mask, unlinked),
     }
 }
 
 /// An event on the inode alone, not its directory (`fsnotify_inode`).
 pub(crate) fn inode_changed(kernel: &mut Kernel, node: &Node, mask: u32) {
     let directory = node.borrow().is_directory();
-    tell(kernel, node, mask, 0, &[], directory);
+    tell(kernel, node, mask, 0, &[], directory, false);
 }
 
 /// Whether an open file other than `except` is of `node`: an inode with no name left lives on
@@ -348,7 +382,7 @@ pub(crate) fn closed(kernel: &mut Kernel, file: &FileRef) {
 /// A name was made in a directory (`fsnotify_create`, `fsnotify_mkdir`, `fsnotify_link`).
 pub(crate) fn created(kernel: &mut Kernel, directory: &Node, name: &[u8], node: &Node) {
     let is_directory = node.borrow().is_directory();
-    tell(kernel, directory, IN_CREATE, 0, name, is_directory);
+    tell(kernel, directory, IN_CREATE, 0, name, is_directory, false);
 }
 
 /// A name was removed from a directory (`vfs_unlink`, `vfs_rmdir`): the inode's change of links,
@@ -362,12 +396,12 @@ pub(crate) fn removed(kernel: &mut Kernel, directory: &Node, name: &[u8], node: 
         )
     };
     if !is_directory {
-        tell(kernel, node, IN_ATTRIB, 0, &[], false);
+        tell(kernel, node, IN_ATTRIB, 0, &[], false, false);
     }
     if gone && !open_anywhere(kernel, node, None) {
         ended(kernel, node);
     }
-    tell(kernel, directory, IN_DELETE, 0, name, is_directory);
+    tell(kernel, directory, IN_DELETE, 0, name, is_directory, false);
 }
 
 /// An inode with no name left (`fsnotify_inoderemove`): IN_DELETE_SELF, and every watch on it
@@ -376,8 +410,7 @@ pub(crate) fn ended(kernel: &mut Kernel, node: &Node) {
     if node.borrow().watches.is_empty() {
         return;
     }
-    let directory = node.borrow().is_directory();
-    tell(kernel, node, IN_DELETE_SELF, 0, &[], directory);
+    tell(kernel, node, IN_DELETE_SELF, 0, &[], false, false);
     let marks = core::mem::take(&mut node.borrow_mut().watches);
     for mark in marks {
         if let Some(instance) = mark.instance.upgrade() {
@@ -387,15 +420,59 @@ pub(crate) fn ended(kernel: &mut Kernel, node: &Node) {
     }
 }
 
-/// A rename (`fsnotify_move`): the two directories' events with one cookie, and the moved
-/// inode's.
-pub(crate) fn moved(kernel: &mut Kernel, from: (&Node, &[u8]), to: (&Node, &[u8]), node: &Node) {
+/// A rename (`fsnotify_move`): the two directories' events with one cookie, the replaced
+/// target's change of links, and the moved inode's.
+fn moved(
+    kernel: &mut Kernel,
+    from: (&Node, &[u8]),
+    to: (&Node, &[u8]),
+    node: &Node,
+    replaced: Option<&Node>,
+) {
     let directory = node.borrow().is_directory();
     kernel.move_cookie = kernel.move_cookie.wrapping_add(1);
     let cookie = kernel.move_cookie;
-    tell(kernel, from.0, IN_MOVED_FROM, cookie, from.1, directory);
-    tell(kernel, to.0, IN_MOVED_TO, cookie, to.1, directory);
-    tell(kernel, node, IN_MOVE_SELF, 0, &[], directory);
+    tell(
+        kernel,
+        from.0,
+        IN_MOVED_FROM,
+        cookie,
+        from.1,
+        directory,
+        false,
+    );
+    tell(kernel, to.0, IN_MOVED_TO, cookie, to.1, directory, false);
+    if let Some(target) = replaced {
+        let target_directory = target.borrow().is_directory();
+        tell(kernel, target, IN_ATTRIB, 0, &[], target_directory, false);
+    }
+    // The inode's own move and end carry no IN_ISDIR (measured).
+    tell(kernel, node, IN_MOVE_SELF, 0, &[], false, false);
+}
+
+/// `vfs_rename`'s events: the source's move; for an exchange the target's move back, else a
+/// replaced target's end if it has no name left.
+pub(crate) fn renamed(
+    kernel: &mut Kernel,
+    from: (&Node, &[u8]),
+    to: (&Node, &[u8]),
+    source: &Node,
+    target: Option<&Node>,
+    exchange: bool,
+) {
+    match target {
+        Some(target) if exchange => {
+            moved(kernel, from, to, source, None);
+            moved(kernel, to, from, target, None);
+        }
+        Some(target) => {
+            moved(kernel, from, to, source, Some(target));
+            if target.borrow().nlink == 0 && !open_anywhere(kernel, target, None) {
+                ended(kernel, target);
+            }
+        }
+        None => moved(kernel, from, to, source, None),
+    }
 }
 
 /// `inotify_poll`.

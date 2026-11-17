@@ -9,7 +9,9 @@
 #include <string.h>
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
+#include <linux/fs.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static void result(const char *what, long r) {
@@ -42,6 +44,66 @@ static void events(int fd, const char *after) {
         printf("\n");
         p += sizeof *e + e->len;
     }
+}
+
+// Events of an open file after its name is removed: watches with IN_EXCL_UNLINK hear none, on
+// the directory or on the file; others still do.
+static void unlinked_files(void) {
+    int fd = inotify_init1(IN_NONBLOCK);
+    mkdir("/tmp/x", 0755);
+    int f = open("/tmp/x/a", O_CREAT | O_RDWR, 0644);
+    int g = open("/tmp/x/b", O_CREAT | O_RDWR, 0644);
+    link("/tmp/x/b", "/tmp/x/b2");
+    printf("excluding dir %d\n", inotify_add_watch(fd, "/tmp/x", IN_ALL_EVENTS | IN_EXCL_UNLINK));
+    printf("excluding file %d\n", inotify_add_watch(fd, "/tmp/x/a", IN_ALL_EVENTS | IN_EXCL_UNLINK));
+    int other = inotify_init1(IN_NONBLOCK);
+    printf("plain dir %d\n", inotify_add_watch(other, "/tmp/x", IN_ALL_EVENTS));
+    unlink("/tmp/x/a");
+    unlink("/tmp/x/b");
+    events(fd, "unlinking, excluded");
+    events(other, "unlinking, plain");
+    write(f, "x", 1);
+    write(g, "y", 1);
+    close(f);
+    close(g);
+    events(fd, "writes after unlink, excluded");
+    events(other, "writes after unlink, plain");
+    // A file moved away while open is not unlinked.
+    f = open("/tmp/x/c", O_CREAT | O_RDWR, 0644);
+    rename("/tmp/x/c", "/tmp/x/d");
+    events(fd, "moving c");
+    events(other, "moving c, plain");
+    write(f, "z", 1);
+    close(f);
+    events(fd, "writing moved c");
+    events(other, "writing moved c, plain");
+    unlink("/tmp/x/d");
+    unlink("/tmp/x/b2");
+    rmdir("/tmp/x");
+    events(fd, "removing all");
+    close(fd);
+    close(other);
+}
+
+// An exchange of two names moves each, each with its own cookie.
+static void exchanges(void) {
+    int fd = inotify_init1(IN_NONBLOCK);
+    mkdir("/tmp/y", 0755);
+    mkdir("/tmp/z", 0755);
+    close(open("/tmp/y/one", O_CREAT | O_WRONLY, 0644));
+    mkdir("/tmp/z/two", 0755);
+    inotify_add_watch(fd, "/tmp/y", IN_ALL_EVENTS);
+    inotify_add_watch(fd, "/tmp/z", IN_ALL_EVENTS);
+    inotify_add_watch(fd, "/tmp/y/one", IN_ALL_EVENTS);
+    inotify_add_watch(fd, "/tmp/z/two", IN_ALL_EVENTS);
+    result("exchange", syscall(SYS_renameat2, AT_FDCWD, "/tmp/y/one", AT_FDCWD, "/tmp/z/two", RENAME_EXCHANGE));
+    events(fd, "exchange");
+    // A rename over a file with no other name ends it.
+    close(open("/tmp/y/three", O_CREAT | O_WRONLY, 0644));
+    inotify_add_watch(fd, "/tmp/y/three", IN_ALL_EVENTS);
+    result("replace", rename("/tmp/z/two", "/tmp/y/three"));
+    events(fd, "replacing three");
+    close(fd);
 }
 
 int main(void) {
@@ -122,5 +184,7 @@ int main(void) {
     unlink("/tmp/w/g");
     rmdir("/tmp/w");
     close(fd);
+    unlinked_files();
+    exchanges();
     return 0;
 }

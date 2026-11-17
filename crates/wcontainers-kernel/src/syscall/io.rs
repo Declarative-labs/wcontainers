@@ -1701,6 +1701,23 @@ fn send(
             Err(Errno::EINVAL)
         } else if super::tty::end(&output).is_some() {
             super::tty::put(kernel, cx, tid, &output, &bytes)
+        } else if super::socket::of(&output).is_some() {
+            // A send that waits keeps what it sent in the call's progress; the call's rerun goes
+            // on after all that was moved.
+            let flags = if output.borrow().flags & O_NONBLOCK != 0 {
+                crate::linux::net::MSG_DONTWAIT
+            } else {
+                0
+            };
+            kernel.thread_mut(tid).call.progress = 0;
+            let held = core::cell::RefCell::new(core::mem::take(&mut bytes));
+            let sent = super::socket::send_bytes(kernel, cx, tid, &output, &held, flags);
+            if sent == Err(Errno::PARKED) {
+                let progress = kernel.threads[&tid].call.progress;
+                kernel.thread_mut(tid).call.progress = moved + progress;
+                return Err(Errno::PARKED);
+            }
+            sent
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
             write_limit(kernel, cx, tid, &output, at, bytes.len() as u64).and_then(|allowed| {

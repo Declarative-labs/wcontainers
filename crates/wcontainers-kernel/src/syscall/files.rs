@@ -801,6 +801,9 @@ pub(super) fn proc_contents(
     entry: &proc::Entry,
 ) -> Result<Vec<u8>, Errno> {
     use proc::ProcessFile;
+    if let proc::Entry::NetFile(_, file) = entry {
+        return Ok(super::socket::proc_net(kernel, cx, *file));
+    }
     // Fields not tracked show 0, and the mount table leaves out Docker's masks of `/proc` and the
     // mounts not built.
     let untracked = match entry {
@@ -1430,10 +1433,10 @@ fn rename(
         crate::fs::backend::rename(&from.directory, &from.name, &to.directory, &to.name, flags)?;
         let place = |node: &Node, directory: &Node, name: &[u8]| {
             let mut inode = node.borrow_mut();
+            inode.place.parent = Some(Rc::downgrade(directory));
+            inode.place.name = name.to_vec();
             if inode.is_directory() {
-                inode.place.parent = Some(Rc::downgrade(directory));
                 inode.place.held_parent = Some(directory.clone());
-                inode.place.name = name.to_vec();
             }
         };
         place(&source, &to.directory, &to.name);
@@ -1449,15 +1452,21 @@ fn rename(
                 };
             }
         }
+        super::inotify::renamed(
+            kernel,
+            (&from.directory, &from.name),
+            (&to.directory, &to.name),
+            &source,
+            target.as_ref(),
+            flags & RENAME_EXCHANGE != 0,
+        );
         return Ok(0);
     }
     let now = kernel.now(cx);
     let set_place = |node: &Node, directory: &Node, name: &[u8]| {
         let mut inode = node.borrow_mut();
-        if inode.is_directory() {
-            inode.place.parent = Some(Rc::downgrade(directory));
-            inode.place.name = name.to_vec();
-        }
+        inode.place.parent = Some(Rc::downgrade(directory));
+        inode.place.name = name.to_vec();
         inode.ctime = now;
     };
     let entries = |directory: &Node| {
@@ -1532,18 +1541,14 @@ fn rename(
     }
     touch_directory(&from.directory, now);
     touch_directory(&to.directory, now);
-    super::inotify::moved(
+    super::inotify::renamed(
         kernel,
         (&from.directory, &from.name),
         (&to.directory, &to.name),
         &source,
+        target.as_ref(),
+        flags & RENAME_EXCHANGE != 0,
     );
-    if let Some(target) = &target {
-        let gone = target.borrow().nlink == 0;
-        if gone {
-            super::inotify::ended(kernel, target);
-        }
-    }
     Ok(0)
 }
 
