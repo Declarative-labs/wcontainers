@@ -330,6 +330,20 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     }) {
         return Err(ConvertError::Unsupported("Texture1DArray"));
     }
+    // WGSL has no multisampled array textures (the DXBC route refuses them by the same name).
+    if module.global_variables.iter().any(|(_, v)| {
+        matches!(
+            module.types[v.ty].inner,
+            TypeInner::Image {
+                arrayed: true,
+                class: naga::ImageClass::Sampled { multi: true, .. }
+                    | naga::ImageClass::Depth { multi: true },
+                ..
+            }
+        )
+    }) {
+        return Err(ConvertError::Unsupported("MultisampledArrayTexture"));
+    }
     // Every built-in the entry point reads or writes, with its type, and every location it reads
     // (`false`) or writes (`true`).
     let mut builtins = Vec::new();
