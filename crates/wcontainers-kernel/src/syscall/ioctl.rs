@@ -27,7 +27,7 @@ pub(super) fn ioctl(
     [fd, request, argument, ..]: Args,
 ) -> Result<u64, Errno> {
     let fd = fd as i32;
-    let file = kernel.process_of(tid).files.file(fd)?;
+    let file = kernel.files(tid).file(fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -58,16 +58,12 @@ fn every_file(
             (inode.fs.kind == Kind::Tmpfs).then(|| uuid(kernel, inode.fs.device)),
         )
     };
-    let has = |kernel: &Kernel, power: u32| kernel.process_of(tid).credentials.has(power);
+    let has = |kernel: &Kernel, power: u32| kernel.credentials(tid).has(power);
     Some(match request {
-        FIOCLEX | FIONCLEX => kernel
-            .process_of_mut(tid)
-            .files
-            .get_mut(fd)
-            .map(|descriptor| {
-                descriptor.close_on_exec = request == FIOCLEX;
-                0
-            }),
+        FIOCLEX | FIONCLEX => kernel.files_mut(tid).get_mut(fd).map(|descriptor| {
+            descriptor.close_on_exec = request == FIOCLEX;
+            0
+        }),
         FIONBIO => guest(kernel, cx, tid)
             .read_value::<i32>(argument)
             .map(|value| {
@@ -273,7 +269,7 @@ fn clone_range(
     destination: &FileRef,
     source: i32,
 ) -> Result<u64, Errno> {
-    let source = kernel.process_of(tid).files.file(source)?;
+    let source = kernel.files(tid).file(source)?;
     if source.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -382,6 +378,15 @@ fn own(
     if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
         return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
     }
+    // `timerfd_ioctl`.
+    if super::timer::of(&file.borrow()).is_some() {
+        return match request {
+            crate::linux::ioctl::TFD_IOC_SET_TICKS => {
+                super::timer::set_ticks(kernel, cx, tid, file, argument)
+            }
+            _ => Err(Errno::ENOTTY),
+        };
+    }
     let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -429,7 +434,7 @@ fn random(
     request: u32,
     argument: u64,
 ) -> Result<u64, Errno> {
-    let capable = kernel.process_of(tid).credentials.has(CAP_SYS_ADMIN);
+    let capable = kernel.credentials(tid).has(CAP_SYS_ADMIN);
     let mut guest = guest(kernel, cx, tid);
     match request {
         RNDGETENTCNT => guest.put(argument, &256i32.to_le_bytes()).map(|()| 0),
@@ -546,7 +551,7 @@ fn set_attributes(
         return None;
     }
     let now = kernel.now(cx);
-    let credentials: &Credentials = &kernel.process_of(tid).credentials;
+    let credentials: &Credentials = kernel.credentials(tid);
     let mut inode = node.borrow_mut();
     if !credentials.owns_or_capable(inode.uid) {
         return Some(Err(Errno::EPERM));

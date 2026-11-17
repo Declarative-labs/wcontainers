@@ -119,7 +119,7 @@ enum Target {
 
 impl Kernel {
     fn handler(&self, pid: Pid, signal: u32) -> u64 {
-        self.processes[&pid].actions[signal as usize - 1].sa_handler_kernel
+        self.processes[&pid].actions.borrow()[signal as usize - 1].sa_handler_kernel
     }
 
     /// Whether `pid` drops a signal at once (`sig_task_ignored`): ignored, or one the container's
@@ -167,7 +167,7 @@ impl Kernel {
             SIGXFSZ,
             SI_USER as i32,
             process.pid,
-            process.credentials.uid,
+            self.credentials(tid).uid,
         );
         self.send_to_thread(cx, tid, SIGXFSZ, info);
     }
@@ -181,6 +181,29 @@ impl Kernel {
         info: [u8; 128],
     ) {
         let _ = self.send(cx, Target::Process(pid), signal, info);
+    }
+
+    /// A POSIX timer's signal, to one thread or (with none) the process: it goes in the timer's own
+    /// place in the user's count, taken when the timer was made, so it always fits.
+    pub(crate) fn send_from_timer(
+        &mut self,
+        cx: &mut Context<'_>,
+        thread: Option<Tid>,
+        pid: Pid,
+        signal: u32,
+        info: [u8; 128],
+    ) {
+        let target = thread.map_or(Target::Process(pid), Target::Thread);
+        let _ = self.send_queued(cx, target, signal, info, true);
+    }
+
+    /// Linux's `posixtimer_init_sigqueue`: a place in the calling user's count for a new timer's
+    /// signal, or none (EAGAIN) when the count is at the caller's RLIMIT_SIGPENDING.
+    pub(crate) fn timer_charge(&mut self, tid: Tid) -> Option<crate::process::Charge> {
+        let uid = self.credentials(tid).uid;
+        let limit = self.process_of(tid).limits[RLIMIT_SIGPENDING as usize].current;
+        let count = self.signal_users.entry(uid).or_default().clone();
+        (count.get() < limit).then(|| crate::process::Charge::new(&count))
     }
 
     /// As [`Self::send_to_process`], telling the sender as [`Self::queue_to_thread`] does.
@@ -236,7 +259,7 @@ impl Kernel {
                 .collect(),
         };
         for (target, pid) in targets {
-            let credentials = &self.processes[&pid].credentials;
+            let credentials = self.task_credentials(pid);
             let allowed = owner.euid == 0
                 || [owner.euid, owner.uid]
                     .iter()
@@ -303,6 +326,18 @@ impl Kernel {
         signal: u32,
         info: [u8; 128],
     ) -> Result<(), crate::Errno> {
+        self.send_queued(cx, target, signal, info, false)
+    }
+
+    /// As `send`; a timer's signal (`timer`) is queued in the timer's place, not charged again.
+    fn send_queued(
+        &mut self,
+        cx: &mut Context<'_>,
+        target: Target,
+        signal: u32,
+        info: [u8; 128],
+        timer: bool,
+    ) -> Result<(), crate::Errno> {
         if signal == 0 {
             return Ok(());
         }
@@ -333,17 +368,23 @@ impl Kernel {
         if signal < SIGRTMIN && pending.set & bit(signal) != 0 {
             return Ok(());
         }
-        let charge = self.charge_signal(pid, signal, &info)?;
+        let (queued, charge) = if timer {
+            (true, None)
+        } else {
+            let charge = self.charge_signal(pid, signal, &info)?;
+            (charge.is_some(), charge)
+        };
         let pending = match target {
             Target::Thread(tid) => &mut self.thread_mut(tid).pending,
             Target::Process(pid) => &mut self.processes.get_mut(&pid).expect("process").pending,
         };
         pending.set |= bit(signal);
-        if charge.is_some() {
+        if queued {
             pending.queue.push_back(Queued {
                 signal,
                 info,
                 charge,
+                timer,
             });
         }
         self.wake_readiness_of(pid);
@@ -362,13 +403,10 @@ impl Kernel {
         signal: u32,
         info: &[u8; 128],
     ) -> Result<Option<crate::process::Charge>, crate::Errno> {
+        let uid = self.task_credentials(pid).uid;
         let process = &self.processes[&pid];
         let limit = process.limits[RLIMIT_SIGPENDING as usize].current;
-        let count = self
-            .signal_users
-            .entry(process.credentials.uid)
-            .or_default()
-            .clone();
+        let count = self.signal_users.entry(uid).or_default().clone();
         let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
         let special = code == SI_KERNEL as i32;
         let overrides = signal < SIGRTMIN && (special || code >= 0);
@@ -450,15 +488,22 @@ impl Kernel {
             };
             Some(first.trailing_zeros() + 1)
         };
-        if let Some(signal) = choose(self.threads[&tid].pending.set) {
-            return self.thread_mut(tid).pending.take(signal);
+        loop {
+            let mut queued = if let Some(signal) = choose(self.threads[&tid].pending.set) {
+                self.thread_mut(tid).pending.take(signal)
+            } else {
+                let signal = choose(self.processes[&pid].pending.set)?;
+                self.processes
+                    .get_mut(&pid)
+                    .expect("process")
+                    .pending
+                    .take(signal)
+            }?;
+            // A stale timer's signal is dropped and the next one taken.
+            if crate::syscall::timer::taken(self, pid, &mut queued) {
+                return Some(queued);
+            }
         }
-        let signal = choose(self.processes[&pid].pending.set)?;
-        self.processes
-            .get_mut(&pid)
-            .expect("process")
-            .pending
-            .take(signal)
     }
 
     /// On a thread's way back to the guest, after a call (`resume` carries its answer), a stop or a
@@ -484,7 +529,7 @@ impl Kernel {
             };
             let signal = queued.signal;
             let pid = self.threads[&tid].process;
-            let action = self.processes[&pid].actions[signal as usize - 1];
+            let action = self.processes[&pid].actions.borrow()[signal as usize - 1];
             let handler = action.sa_handler_kernel;
             if handler == SIG_IGN {
                 continue;
@@ -534,7 +579,7 @@ impl Kernel {
                 // A frame that cannot be written is SIGSEGV (`force_sigsegv`).
                 let pid = self.threads[&tid].process;
                 if signal == SIGSEGV {
-                    self.processes.get_mut(&pid).expect("process").actions[SIGSEGV as usize - 1]
+                    self.processes[&pid].actions.borrow_mut()[SIGSEGV as usize - 1]
                         .sa_handler_kernel = SIG_DFL;
                 }
                 self.die_of(cx, pid, SIGSEGV);
@@ -559,6 +604,28 @@ impl Kernel {
             self.thread_mut(tid).signal_mask = saved;
         }
         Some(resume)
+    }
+
+    /// A thread taken off the CPU while it ran its own code (`rseq_sched_switch_event`): inside its
+    /// restartable sequence it continues at the abort handler. Returns how it continues, or none if
+    /// a bad area killed its process.
+    pub(crate) fn rseq_preempted(&mut self, cx: &mut Context<'_>, tid: Tid) -> Option<Resume> {
+        if self.threads[&tid].rseq.is_none() {
+            return Some(Resume::Continue);
+        }
+        let mut registers = RegisterBlock::ZERO;
+        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        let before = registers.pc;
+        if self.rseq_fixup(cx, tid, &mut registers).is_err() {
+            let pid = self.threads[&tid].process;
+            self.die_of(cx, pid, SIGSEGV);
+            return None;
+        }
+        if registers.pc == before {
+            return Some(Resume::Continue);
+        }
+        cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
+        Some(Resume::FromRegisters)
     }
 
     /// Linux's `rseq_ip_fixup` before a handler runs: a thread inside its registered restartable
@@ -617,27 +684,62 @@ impl Kernel {
     /// Stops a process for job control (`do_signal_stop`): its threads stop where they are and its
     /// parent is told.
     fn stop_process(&mut self, cx: &mut Context<'_>, pid: Pid, signal: u32) {
+        // Threads in line or on the CPU wait aside; parked ones stay parked, and any that finish
+        // their call meanwhile wait aside too.
         for tid in self.processes[&pid].threads.clone() {
-            self.unschedule(tid);
+            self.take_out_of_line(tid);
+            if self.current == Some(tid) {
+                self.current = None;
+            }
+            self.signalled.retain(|other| *other != tid);
         }
-        self.processes.get_mut(&pid).expect("process").stopped = true;
+        let process = self.processes.get_mut(&pid).expect("process");
+        process.stopped = true;
+        process.continued_unsent = false;
         self.report_to_parent(cx, pid, Report::Stopped(signal));
     }
 
     /// Continues a stopped process (SIGCONT's `prepare_signal`): its threads go back to acting on
-    /// their signals and running, and its parent is told.
+    /// their signals and running; a wait sees it at once and the parent is sent SIGCHLD when one of
+    /// its threads next comes back from running (`get_signal`), or now if every one is parked.
     fn continue_process(&mut self, cx: &mut Context<'_>, pid: Pid) {
         let process = self.processes.get_mut(&pid).expect("process");
         if !process.stopped {
             return;
         }
         process.stopped = false;
+        process.report = Some(Report::Continued);
+        let mut runs = false;
         for tid in process.threads.clone() {
-            if self.threads[&tid].call.wait.is_none() && !self.signalled.contains(&tid) {
-                self.signalled.push_back(tid);
+            if self.threads[&tid].call.wait.is_none() {
+                runs = true;
+                if !self.signalled.contains(&tid) {
+                    self.signalled.push_back(tid);
+                }
             }
         }
-        self.report_to_parent(cx, pid, Report::Continued);
+        if runs {
+            self.processes
+                .get_mut(&pid)
+                .expect("process")
+                .continued_unsent = true;
+        } else {
+            self.tell_parent(cx, pid, Report::Continued);
+        }
+    }
+
+    /// A thread back from running tells its parent of its process's continuing, if it has not been.
+    pub(crate) fn tell_continued(&mut self, cx: &mut Context<'_>, tid: Tid) {
+        let pid = self.threads[&tid].process;
+        if core::mem::take(
+            &mut self
+                .processes
+                .get_mut(&pid)
+                .expect("process")
+                .continued_unsent,
+        ) {
+            self.tell_parent(cx, pid, Report::Continued);
+        }
     }
 
     /// Writes a handler's frame below the thread's stack (or on its alternate stack) and points the
@@ -754,9 +856,8 @@ impl Kernel {
         thread.signal_mask |= blocked & !UNBLOCKABLE;
         if flags & u64::from(SA_RESETHAND) != 0 {
             let pid = thread.process;
-            let action =
-                &mut self.processes.get_mut(&pid).expect("process").actions[signal as usize - 1];
-            action.sa_handler_kernel = SIG_DFL;
+            self.processes[&pid].actions.borrow_mut()[signal as usize - 1].sa_handler_kernel =
+                SIG_DFL;
         }
         Ok(())
     }
@@ -898,10 +999,11 @@ impl Kernel {
             thread.signal_mask &= !bit(signal);
         }
         thread.forced |= bit(signal);
-        let action =
-            &mut self.processes.get_mut(&pid).expect("process").actions[signal as usize - 1];
-        if blocked || action.sa_handler_kernel == SIG_IGN {
-            action.sa_handler_kernel = SIG_DFL;
+        {
+            let action = &mut self.processes[&pid].actions.borrow_mut()[signal as usize - 1];
+            if blocked || action.sa_handler_kernel == SIG_IGN {
+                action.sa_handler_kernel = SIG_DFL;
+            }
         }
         if self.threads[&tid].pending.set & bit(signal) == 0 {
             // A fault's information is the kernel's own and always fits.
@@ -912,6 +1014,7 @@ impl Kernel {
                 signal,
                 info,
                 charge,
+                timer: false,
             });
         }
     }
@@ -955,7 +1058,7 @@ impl Kernel {
 
     /// SIGSEGV at an address, as `arm64_notify_segfault` sends it for a bad frame.
     fn segfault_at(&mut self, tid: Tid, address: u64) {
-        let mapped = self.process_of(tid).map.find(address).is_some();
+        let mapped = self.process_of(tid).map.borrow().find(address).is_some();
         let code = if mapped { SEGV_ACCERR } else { SEGV_MAPERR };
         self.force_signal(tid, fault_info(SIGSEGV, code as i32, address), (0, 0));
     }
@@ -971,8 +1074,9 @@ impl Kernel {
         access: Access,
     ) {
         let pid = self.threads[&tid].process;
+        let may_lock_any = self.credentials(tid).has(CAP_IPC_LOCK);
         let process = self.processes.get_mut(&pid).expect("process exists");
-        let mapping = process.map.find(address).cloned();
+        let mapping = process.map.borrow().find(address).cloned();
         // A first write to a private file page: it becomes the process's own copy.
         if access == Access::Write
             && mapping
@@ -980,6 +1084,7 @@ impl Kernel {
                 .is_some_and(|mapping| mapping.copies_on_write(address))
             && process
                 .map
+                .borrow_mut()
                 .copy_on_write(cx.cpu, process.memory, address, address + 1)
                 .is_ok()
         {
@@ -999,12 +1104,13 @@ impl Kernel {
             None => {
                 if process
                     .map
+                    .borrow_mut()
                     .grow_stack(
                         cx.cpu,
                         process.memory,
                         address,
                         &process.limits,
-                        process.credentials.has(CAP_IPC_LOCK),
+                        may_lock_any,
                     )
                     .unwrap_or(false)
                 {
@@ -1055,7 +1161,7 @@ impl Kernel {
         let process = &self.processes[&pid];
         if default_action(signal) == Default::Core
             && process.limits[RLIMIT_CORE as usize].current > 0
-            && process.dumpable
+            && process.map.borrow().dumpable
         {
             self.counters
                 .count(cx.host, reason::CORE_DUMP_NOT_WRITTEN, signal.into());

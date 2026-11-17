@@ -3,6 +3,7 @@
 use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use wcontainers_abi::{MemoryId, Resume, ThreadId};
 
@@ -61,28 +62,23 @@ pub(crate) struct StartingStack {
 pub(crate) struct Process {
     pub pid: Pid,
     pub parent: Pid,
+    /// The parent's thread it belongs to (Linux's `real_parent`): the one that made it, or the
+    /// thread that took it on when that one ended. A wait with __WNOTHREAD sees only its own.
+    pub parent_thread: Tid,
     pub group: Pid,
     pub session: Pid,
     pub memory: MemoryId,
-    pub map: AddressMap,
+    /// The address map, shared by the processes made with CLONE_VM (Linux's `mm_struct`).
+    pub map: Map,
     pub threads: Vec<Tid>,
-    pub files: FdTable,
-    pub root: Node,
-    pub cwd: Node,
-    pub umask: u32,
-    pub credentials: Credentials,
     pub limits: [Limit; LIMITS],
-    /// The name `comm` shows, at most 15 bytes.
-    pub name: Vec<u8>,
     /// The program file and the path it was started by.
     pub executable: (Node, Vec<u8>),
     pub starting_stack: StartingStack,
-    /// `personality`'s value; kept across `execve`.
-    pub personality: u32,
-    /// `PR_SET_DUMPABLE`; cleared when the process's ids change.
-    pub dumpable: bool,
-    /// Signal handlers as `rt_sigaction` set them, by signal number less one.
-    pub actions: [kernel_sigaction; SIGNALS],
+    /// Signal handlers as `rt_sigaction` set them, shared by the processes made with CLONE_SIGHAND.
+    pub actions: Handlers,
+    /// The number the next POSIX timer it makes gets.
+    pub next_timer: i32,
     /// `PR_SET_CHILD_SUBREAPER`: orphaned descendants come to this process.
     pub child_subreaper: bool,
     /// `PR_SET_THP_DISABLE`'s value as `PR_GET_THP_DISABLE` reports it; kept across `execve`.
@@ -97,12 +93,12 @@ pub(crate) struct Process {
     pub ended_leader: Leader,
     /// The inode its process descriptors share, once one is made.
     pub pidfd: Option<Node>,
-    /// A `vfork` child: the parent's thread that waits until the child lets go of the memory it
-    /// borrows by starting a program or ending.
-    pub vfork_parent: Option<Tid>,
     /// Job control: whether the process is stopped, and what a parent's wait has yet to see.
     pub stopped: bool,
     pub report: Option<Report>,
+    /// Continued and the parent not yet sent its SIGCHLD, which the process sends when it next runs
+    /// (`SIGNAL_CLD_CONTINUED`).
+    pub continued_unsent: bool,
     /// CPU time of threads that have ended, and of reaped children with their own reaped children
     /// (`cutime`), in nanoseconds.
     pub ended_time: u64,
@@ -145,10 +141,14 @@ pub(crate) struct Queued {
     /// a signal whose information was lost to a full queue.
     #[allow(dead_code, reason = "held for what its drop does")]
     pub charge: Option<Charge>,
+    /// Sent by a POSIX timer (Linux's preallocated `sigqueue` of the timer), which decides at
+    /// delivery whether it still counts.
+    pub timer: bool,
 }
 
 /// One queued signal in a user's count (Linux's `UCOUNT_RLIMIT_SIGPENDING`), which
 /// RLIMIT_SIGPENDING bounds: the count goes up when one is made or copied and down when it goes.
+#[derive(Debug)]
 pub(crate) struct Charge(Rc<core::cell::Cell<u64>>);
 
 impl Charge {
@@ -198,6 +198,7 @@ impl Pending {
                     0,
                 ),
                 charge: None,
+                timer: false,
             });
         };
         let queued = self.queue.remove(index);
@@ -218,13 +219,14 @@ impl Pending {
 /// Linux's `TASK_COMM_LEN` less the terminating zero.
 const NAME_LENGTH: usize = 15;
 
-impl Process {
+impl Thread {
     /// Sets the `comm` name from a path's last part, as `execve` does.
     pub fn set_name(&mut self, name: &[u8]) {
         let name = name.rsplit(|byte| *byte == b'/').next().unwrap_or(name);
         self.name = name[..name.len().min(NAME_LENGTH)].to_vec();
     }
 
+    /// Sets the `comm` name to the bytes up to the first zero, as `PR_SET_NAME` does.
     pub fn set_name_exact(&mut self, name: &[u8]) {
         let end = name
             .iter()
@@ -234,12 +236,45 @@ impl Process {
     }
 }
 
+/// An address map, shared by the processes made with CLONE_VM.
+pub(crate) type Map = Rc<RefCell<AddressMap>>;
+
+/// Signal handlers by signal number less one, shared by the threads and processes made with
+/// CLONE_SIGHAND (Linux's `sighand_struct`).
+pub(crate) type Handlers = Rc<RefCell<[kernel_sigaction; SIGNALS]>>;
+
+/// A descriptor table, shared by the threads and processes made with CLONE_FILES (Linux's
+/// `files_struct`).
+pub(crate) type Files = Rc<RefCell<FdTable>>;
+
+/// The root, working directory and umask, shared by the threads and processes made with CLONE_FS
+/// (Linux's `fs_struct`).
+#[derive(Clone)]
+pub(crate) struct FsContext {
+    pub root: Node,
+    pub cwd: Node,
+    pub umask: u32,
+}
+
+pub(crate) type Fs = Rc<RefCell<FsContext>>;
+
 #[derive(Clone)]
 pub(crate) struct Thread {
     pub process: Pid,
     pub cpu: ThreadId,
+    pub files: Files,
+    pub fs: Fs,
+    /// The thread's credentials (Linux's `cred`, which each thread holds).
+    pub credentials: Credentials,
+    /// `personality`'s value; kept across `execve`.
+    pub personality: u32,
+    /// The name `comm` shows, at most 15 bytes.
+    pub name: Vec<u8>,
     /// How the thread continues the next time it runs.
     pub resume: Resume,
+    /// Made with CLONE_VFORK: the thread that made it, which waits until this one starts a program
+    /// or ends (`vfork_done`).
+    pub vfork_parent: Option<Tid>,
     /// `set_tid_address`: where to clear and wake when the thread ends.
     pub clear_child_tid: u64,
     /// `set_robust_list`: the head and its length.
@@ -255,6 +290,8 @@ pub(crate) struct Thread {
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is in, while it has not finished: what it waits for and how far it got.
     pub call: Call,
+    /// The futexes the call waits on, while it is a futex wait.
+    pub futex: crate::syscall::futex::Wait,
     /// What `restart_syscall` continues, for a call interrupted by a handler.
     pub restart: Option<Restart>,
     /// The CPU time the thread has used, and its scheduler time weighted by its priority.
@@ -280,19 +317,39 @@ pub(crate) struct Thread {
     /// An open of a named pipe waiting for the other end: the file it makes, already counted as an
     /// end (Linux's `wait_for_partner`).
     pub opening: Option<crate::file::FileRef>,
+    /// The inode a thread other than its process's first gives its process descriptors.
+    pub pidfd: Option<Node>,
 }
 
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
 pub(crate) const TIMER_SLACK: u64 = 50_000;
 
-/// What an ended process's first thread keeps for `/proc` and the scheduling calls until it is
-/// reaped: its scheduling values (its I/O priority is gone with its I/O context), its blocked signals
-/// and how many seccomp filters it installed.
-#[derive(Clone, Copy, Debug, Default)]
+/// What a process's first thread keeps for `/proc`, the scheduling calls and permission checks once
+/// it has ended, until the process is reaped: its name, credentials, scheduling values (its I/O
+/// priority is gone with its I/O context), its blocked signals and how many seccomp filters it
+/// installed.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Leader {
+    pub name: Vec<u8>,
+    pub credentials: Credentials,
     pub schedule: Schedule,
     pub signal_mask: u64,
     pub filters: usize,
+}
+
+impl Leader {
+    pub fn of(thread: &Thread) -> Self {
+        Self {
+            name: thread.name.clone(),
+            credentials: thread.credentials.clone(),
+            schedule: Schedule {
+                io_priority: 0,
+                ..thread.schedule
+            },
+            signal_mask: thread.signal_mask,
+            filters: thread.filters.len(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -320,11 +377,17 @@ pub(crate) struct Call {
     pub deadline: Option<u64>,
     /// Whether the call has run before (so its deadline and progress are its own).
     pub started: bool,
+    /// Whether its deadline is a time on the wall clock (`HRTIMER_BASE_REALTIME`), moved when the
+    /// wall clock is set.
+    pub wall: bool,
     /// How much of the call is done, such as bytes of a large write.
     pub progress: u64,
     /// For F_SETLKW's wait: the descriptor table asking, and the table holding the lock in the way
     /// (none for an open file's lock), as Linux's `blocked_hash` finds them.
     pub lock_wait: Option<(u64, Option<u64>)>,
+    /// The pipe (its channel's address) whose lock the call holds while it waits, as
+    /// `splice_file_to_pipe` holds it around a terminal's read.
+    pub holds: Option<usize>,
 }
 
 /// What a parked call waits for, besides its deadline and a signal.
@@ -342,8 +405,10 @@ pub(crate) enum Channel {
     Signals,
     /// A record lock or `flock` lock let go anywhere.
     Locks,
-    /// A `vfork` child letting go of the memory.
-    Vfork(Pid),
+    /// A thread made with CLONE_VFORK starting a program or ending.
+    Vfork(Tid),
+    /// A futex wake, requeue or lock handed over (the futexes know which).
+    Futex,
 }
 
 /// What `restart_syscall` runs again.
@@ -351,16 +416,39 @@ pub(crate) enum Channel {
 pub(crate) enum Restart {
     /// A sleep until this time on the monotonic clock, writing what is left to this address.
     Sleep { until: u64, left: u64 },
-    /// A sleep on a clock that never ends by time (a CPU clock that does not move).
-    Forever,
+    /// A sleep until a CPU clock (its id) reaches a time, writing what is left to this address.
+    CpuSleep { clock: i32, until: u64, left: u64 },
+    /// A futex wait with a timeout: the futex, the value it must hold, the bits it waits for, and
+    /// when it ends on the monotonic clock.
+    Futex {
+        address: u64,
+        value: u32,
+        bitset: u32,
+        shared: bool,
+        until: u64,
+        /// Whether `until` is a time on the wall clock.
+        wall: bool,
+    },
 }
 
 impl Thread {
-    pub fn new(process: Pid, cpu: ThreadId) -> Self {
+    pub fn new(
+        process: Pid,
+        cpu: ThreadId,
+        files: Files,
+        fs: Fs,
+        credentials: Credentials,
+    ) -> Self {
         Self {
             process,
             cpu,
+            files,
+            fs,
+            credentials,
+            personality: 0,
+            name: Vec::new(),
             resume: Resume::FromRegisters,
+            vfork_parent: None,
             clear_child_tid: 0,
             robust_list: (0, 0),
             signal_mask: 0,
@@ -368,6 +456,7 @@ impl Thread {
             pending: Pending::default(),
             alternate_stack: (0, 0, 0),
             call: Call::default(),
+            futex: Default::default(),
             restart: None,
             runtime: 0,
             vruntime: 0,
@@ -380,6 +469,7 @@ impl Thread {
             parent_death_signal: 0,
             timer_slack: TIMER_SLACK,
             opening: None,
+            pidfd: None,
         }
     }
 }

@@ -5,6 +5,7 @@
 
 mod clone;
 mod files;
+pub(crate) mod futex;
 mod handle;
 mod io;
 mod ioctl;
@@ -24,6 +25,7 @@ mod signals;
 mod splice;
 mod system;
 mod time;
+pub(crate) mod timer;
 pub(crate) mod tty;
 mod xattr;
 
@@ -258,6 +260,11 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_rt_sigreturn, F(signals::rt_sigreturn)),
         (__NR_restart_syscall, F(time::restart_syscall)),
         (__NR_clone, F(clone::clone)),
+        (__NR_futex, F(futex::futex)),
+        (__NR_futex_waitv, F(futex::futex_waitv)),
+        (__NR_futex_wake, S(futex::futex_wake)),
+        (__NR_futex_wait, F(futex::futex_wait)),
+        (__NR_futex_requeue, S(futex::futex_requeue)),
         (__NR_wait4, F(clone::wait4)),
         (__NR_waitid, F(clone::waitid)),
         (__NR_prlimit64, S(process::prlimit64)),
@@ -281,6 +288,16 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_nanosleep, F(time::nanosleep)),
         (__NR_clock_nanosleep, F(time::clock_nanosleep)),
         (__NR_times, S(time::times)),
+        (__NR_getitimer, S(timer::getitimer)),
+        (__NR_setitimer, S(timer::setitimer)),
+        (__NR_timer_create, S(timer::timer_create)),
+        (__NR_timer_settime, S(timer::timer_settime)),
+        (__NR_timer_gettime, S(timer::timer_gettime)),
+        (__NR_timer_getoverrun, S(timer::timer_getoverrun)),
+        (__NR_timer_delete, S(timer::timer_delete)),
+        (__NR_timerfd_create, S(timer::timerfd_create)),
+        (__NR_timerfd_settime, S(timer::timerfd_settime)),
+        (__NR_timerfd_gettime, S(timer::timerfd_gettime)),
         // The machine.
         (__NR_uname, S(system::uname)),
         (__NR_sethostname, S(system::sethostname)),
@@ -398,13 +415,16 @@ pub(crate) fn dispatch(
 
 /// The calling thread's process memory, for copying to and from it.
 pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Tid) -> Guest<'a> {
-    let process = kernel.process_of_mut(tid);
+    let may_lock_any = kernel
+        .credentials(tid)
+        .has(crate::linux::general::CAP_IPC_LOCK);
+    let process = kernel.process_of(tid);
     Guest {
         cpu: cx.cpu,
         memory: process.memory,
-        map: &mut process.map,
+        map: &process.map,
         limits: &process.limits,
-        may_lock_any: process.credentials.has(crate::linux::general::CAP_IPC_LOCK),
+        may_lock_any,
     }
 }
 

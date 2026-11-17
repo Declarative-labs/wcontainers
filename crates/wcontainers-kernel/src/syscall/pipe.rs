@@ -40,8 +40,7 @@ pub(super) fn pipe2(
             .refuse_flag(cx.host, __NR_pipe2, O_EXCL.into(), Errno::EINVAL));
     }
     let now = kernel.now(cx);
-    let process = kernel.process_of(tid);
-    let (uid, gid) = (process.credentials.fsuid, process.credentials.fsgid);
+    let (uid, gid) = (kernel.credentials(tid).fsuid, kernel.credentials(tid).fsgid);
     let ino = kernel.files.numbers.ino();
     let node = fs::new_inode(
         kernel.files.pipe_fs.clone(),
@@ -58,7 +57,7 @@ pub(super) fn pipe2(
         },
     )?;
     // Only the writing end takes packet mode (`create_pipe_files`).
-    let opener = kernel.process_of(tid).credentials.serial;
+    let opener = kernel.credentials(tid).serial;
     let reader = OpenFile::new(
         node.clone(),
         O_RDONLY | (flags & O_NONBLOCK),
@@ -75,23 +74,27 @@ pub(super) fn pipe2(
     attach(&node, &writer);
     let close_on_exec = flags & O_CLOEXEC != 0;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
-    let files = &mut kernel.process_of_mut(tid).files;
+    let pid = kernel.threads[&tid].process;
+    let mut files = kernel.files_mut(tid);
     let read_fd = files.add(reader, close_on_exec, 0, limit)?;
     let write_fd = match files.add(writer, close_on_exec, 0, limit) {
         Ok(fd) => fd,
         Err(error) => {
-            let _ = files.remove(read_fd);
+            let _ = files.remove(read_fd, pid);
+            drop(files);
             kernel.files_released(cx);
             return Err(error);
         }
     };
+    drop(files);
     let mut bytes = [0u8; 8];
     bytes[..4].copy_from_slice(&read_fd.to_le_bytes());
     bytes[4..].copy_from_slice(&write_fd.to_le_bytes());
     if let Err(error) = guest(kernel, cx, tid).write(fds, &bytes) {
-        let files = &mut kernel.process_of_mut(tid).files;
-        let _ = files.remove(read_fd);
-        let _ = files.remove(write_fd);
+        let mut files = kernel.files_mut(tid);
+        let _ = files.remove(read_fd, pid);
+        let _ = files.remove(write_fd, pid);
+        drop(files);
         kernel.files_released(cx);
         return Err(error);
     }
@@ -230,6 +233,38 @@ pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, files: Vec<Fil
     }
 }
 
+/// `pipe_lock`: waits, without a signal ending the wait, while another thread's call holds the
+/// pipe's lock, parked or woken and not yet run again.
+pub(super) fn lock(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), Errno> {
+    let node = file.borrow().node.clone();
+    let Channel::Object(address) = channel(&node) else {
+        unreachable!("a pipe's channel is its object");
+    };
+    let holder = with_pipe(file, |pipe| pipe.held_by);
+    let held = holder.is_some_and(|holder| {
+        holder != tid
+            && kernel
+                .threads
+                .get(&holder)
+                .is_some_and(|thread| thread.call.holds == Some(address))
+    });
+    if held {
+        kernel.park(tid, Channel::Object(address));
+        return Err(Errno::PARKED);
+    }
+    Ok(())
+}
+
+/// Holds the pipe's lock while the call waits (it parked).
+pub(super) fn hold(kernel: &mut Kernel, tid: Tid, file: &FileRef) {
+    let node = file.borrow().node.clone();
+    let Channel::Object(address) = channel(&node) else {
+        unreachable!("a pipe's channel is its object");
+    };
+    with_pipe(file, |pipe| pipe.held_by = Some(tid));
+    kernel.thread_mut(tid).call.holds = Some(address);
+}
+
 pub(super) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
@@ -251,9 +286,8 @@ pub(super) fn read(
     if total == 0 {
         return Ok(0);
     }
+    lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
-    // Empty pages a faulted write left are passed over.
-    with_pipe(file, |pipe| pipe.drop_empty());
     if with_pipe(file, |pipe| pipe.is_empty()) {
         let (writers, nonblocking) = (
             with_pipe(file, |pipe| pipe.writers()),
@@ -321,6 +355,7 @@ pub(super) fn write(
     if total == 0 {
         return Ok(0);
     }
+    lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
     let host = with_pipe(file, |pipe| pipe.host);
     let first_run = !kernel.threads[&tid].call.started;
@@ -359,7 +394,7 @@ pub(super) fn write(
                 SIGPIPE,
                 SI_USER as i32,
                 process.pid,
-                process.credentials.uid,
+                kernel.credentials(tid).uid,
             );
             kernel.send_to_thread(cx, tid, SIGPIPE, info);
             break Err(Errno::EPIPE);
@@ -392,11 +427,11 @@ pub(super) fn write(
                 continue;
             }
         }
-        // A new page; one the buffer cannot fill takes its slot empty and ends the write.
+        // A new page; one the buffer cannot fill ends the write and gives its slot back (measured:
+        // the reader sees nothing and the pipe keeps all its room).
         if !with_pipe(file, |pipe| pipe.is_full()) {
             let (bytes, faulted) = next(kernel, cx, done, PAGE_SIZE);
             if faulted {
-                with_pipe(file, |pipe| pipe.push(Vec::new(), packet));
                 break Err(Errno::EFAULT);
             }
             done += bytes.len() as u64;

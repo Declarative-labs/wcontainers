@@ -21,7 +21,7 @@ fn may_signal(kernel: &Kernel, tid: Tid, target: Pid, signal: u32) -> Result<(),
         return Ok(());
     }
     let process = &kernel.processes[&target];
-    let (mine, theirs) = (&sender.credentials, &process.credentials);
+    let (mine, theirs) = (kernel.credentials(tid), kernel.task_credentials(target));
     let same_ids = mine.euid == theirs.suid
         || mine.euid == theirs.uid
         || mine.uid == theirs.suid
@@ -48,7 +48,12 @@ pub(super) fn signal_process(
 /// What `kill` sends: SI_USER from the caller.
 fn kill_info(kernel: &Kernel, tid: Tid, signal: u32) -> [u8; 128] {
     let process = kernel.process_of(tid);
-    sender_info(signal, SI_USER as i32, process.pid, process.credentials.uid)
+    sender_info(
+        signal,
+        SI_USER as i32,
+        process.pid,
+        kernel.credentials(tid).uid,
+    )
 }
 
 /// Linux's `kill_something_info`.
@@ -178,7 +183,7 @@ pub(super) fn signal_thread(
     }
     let info = info.unwrap_or_else(|| {
         let sender = kernel.process_of(tid);
-        sender_info(signal, SI_TKILL, sender.pid, sender.credentials.uid)
+        sender_info(signal, SI_TKILL, sender.pid, kernel.credentials(tid).uid)
     });
     kernel.queue_to_thread(cx, target, signal, info)?;
     Ok(0)

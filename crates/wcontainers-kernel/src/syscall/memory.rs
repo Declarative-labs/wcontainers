@@ -40,8 +40,9 @@ pub(super) fn brk(
     tid: Tid,
     [address, ..]: Args,
 ) -> Result<u64, Errno> {
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     let old = map.brk;
     if address < map.brk_start {
         return Ok(old);
@@ -83,7 +84,7 @@ pub(super) fn brk(
         &process.limits,
         map.future_lock,
         (new_end - old_end) / PAGE_SIZE,
-        process.credentials.has(CAP_IPC_LOCK),
+        may_lock_any,
     ) {
         return Ok(old);
     }
@@ -120,7 +121,7 @@ pub(super) fn mmap(
     let file = if flags & MAP_ANONYMOUS != 0 {
         None
     } else {
-        let file = kernel.process_of(tid).files.file(fd)?;
+        let file = kernel.files(tid).file(fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }
@@ -168,7 +169,7 @@ pub(super) fn do_mmap(
     {
         return Err(Errno::EOVERFLOW);
     }
-    let map = &kernel.process_of(tid).map;
+    let map = kernel.process_of(tid).map.borrow();
     let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
     let start = if fixed {
         if length > map.end || address > map.end - length {
@@ -205,15 +206,16 @@ pub(super) fn do_mmap(
     } else {
         map.future_lock
     };
+    drop(map);
     if flags & MAP_LOCKED != 0 && !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }
     let process = kernel.process_of(tid);
-    if !process.map.may_lock(
+    if !process.map.borrow().may_lock(
         &process.limits,
         locked,
         length / PAGE_SIZE,
-        process.credentials.has(CAP_IPC_LOCK),
+        kernel.credentials(tid).has(CAP_IPC_LOCK),
     ) {
         return Err(Errno::EAGAIN);
     }
@@ -334,8 +336,9 @@ pub(super) fn do_mmap(
             }
         }
     };
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     let mut mapping = Mapping {
         start,
         end: start + length,
@@ -363,18 +366,14 @@ pub(super) fn do_mmap(
         if !shared {
             return Err(Errno::EINVAL);
         }
-        if !map.may_lock(
-            &process.limits,
-            Lock::Now,
-            length / PAGE_SIZE,
-            process.credentials.has(CAP_IPC_LOCK),
-        ) {
+        if !map.may_lock(&process.limits, Lock::Now, length / PAGE_SIZE, may_lock_any) {
             return Err(Errno::EAGAIN);
         }
         mapping.locked = Lock::Now;
     }
     let memory = process.memory;
     map.insert(cx.cpu, memory, mapping.clone())?;
+    drop(map);
     crate::shared::show(kernel, cx, memory, &mapping)?;
     // `do_mmap`'s populate: a locked mapping, or one asked to be filled at once, is faulted in, and
     // writing a private one copies its file pages.
@@ -400,7 +399,7 @@ fn populate(
     let process = kernel.process_of_mut(tid);
     let mut at = start;
     while at < end {
-        let Some(mapping) = process.map.next_after(at).cloned() else {
+        let Some(mapping) = process.map.borrow().next_after(at).cloned() else {
             return;
         };
         if mapping.start >= end {
@@ -422,6 +421,7 @@ fn populate(
         if mapping.permissions.contains(Permissions::WRITE)
             && process
                 .map
+                .borrow_mut()
                 .copy_on_write(cx.cpu, process.memory, from, reach)
                 .is_err()
         {
@@ -470,7 +470,13 @@ pub(super) fn munmap(
 ) -> Result<u64, Errno> {
     let address = crate::user::untagged(address);
     let process = kernel.process_of_mut(tid);
-    unmap(&mut process.map, cx, process.memory, address, length)?;
+    unmap(
+        &mut process.map.borrow_mut(),
+        cx,
+        process.memory,
+        address,
+        length,
+    )?;
     crate::shared::release(kernel, cx);
     Ok(0)
 }
@@ -547,13 +553,15 @@ fn protect(
         .ok_or(Errno::ENOMEM)?;
     let permissions = permissions(prot, true)?;
     let process = kernel.process_of_mut(tid);
-    if key != -1 && !key_allocated(&process.map, key) {
+    if key != -1 && !key_allocated(&process.map.borrow(), key) {
         return Err(Errno::EINVAL);
     }
     let first = process
         .map
+        .borrow()
         .next_after(address)
         .filter(|mapping| mapping.start < end)
+        .cloned()
         .ok_or(Errno::ENOMEM)?;
     let address = if grows == u64::from(PROT_GROWSDOWN) {
         if !first.grows_down {
@@ -574,6 +582,7 @@ fn protect(
     while at < end {
         let Some((stop, allowed, becomes_data)) = process
             .map
+            .borrow()
             .iter()
             .find(|mapping| mapping.start <= at && mapping.end > at)
             .map(|mapping| {
@@ -595,12 +604,14 @@ fn protect(
         if becomes_data
             && !process
                 .map
+                .borrow()
                 .may_expand(&process.limits, true, pages, (pages, 0))
         {
             return Err(Errno::ENOMEM);
         }
         process
             .map
+            .borrow_mut()
             .protect(cx.cpu, process.memory, at, stop, permissions)?;
         at = stop;
     }
@@ -678,7 +689,7 @@ pub(super) fn madvise(
     // anonymous memory. Linux's `madvise_remove`, mapping by mapping.
     if advice == MADV_REMOVE {
         let mut at = address;
-        while let Some(mapping) = process.map.next_after(at).cloned() {
+        while let Some(mapping) = process.map.borrow().next_after(at).cloned() {
             if mapping.start >= end {
                 break;
             }
@@ -717,7 +728,7 @@ pub(super) fn madvise(
             }
             at = mapping.end;
         }
-        if !process.map.fully_mapped(address, end) {
+        if !process.map.borrow().fully_mapped(address, end) {
             return Err(Errno::ENOMEM);
         }
         return Ok(0);
@@ -726,6 +737,7 @@ pub(super) fn madvise(
     if advice == MADV_FREE
         && process
             .map
+            .borrow_mut()
             .iter()
             .filter(|mapping| mapping.start < end && mapping.end > address)
             .any(|mapping| mapping.shared || matches!(mapping.backing, Backing::File { .. }))
@@ -735,7 +747,7 @@ pub(super) fn madvise(
     // Locked memory is neither dropped nor aged (`madvise_dontneed_free_valid_vma`,
     // `can_madv_lru_vma`), whatever gaps the range has.
     if matches!(advice, MADV_DONTNEED | MADV_FREE | MADV_COLD | MADV_PAGEOUT)
-        && process.map.iter().any(|mapping| {
+        && process.map.borrow().iter().any(|mapping| {
             mapping.start < end && mapping.end > address && mapping.locked != Lock::None
         })
     {
@@ -746,7 +758,7 @@ pub(super) fn madvise(
         // bytes in what they share.
         let mut at = address;
         while at < end {
-            let Some(mapping) = process.map.next_after(at).cloned() else {
+            let Some(mapping) = process.map.borrow().next_after(at).cloned() else {
                 break;
             };
             if mapping.start >= end {
@@ -754,7 +766,14 @@ pub(super) fn madvise(
             }
             let from = mapping.start.max(at);
             let to = mapping.end.min(end);
-            drop_pages(cx, process.memory, &mut process.map, &mapping, from, to)?;
+            drop_pages(
+                cx,
+                process.memory,
+                &mut process.map.borrow_mut(),
+                &mapping,
+                from,
+                to,
+            )?;
             at = to;
         }
     }
@@ -770,7 +789,7 @@ pub(super) fn madvise(
         // faults with SIGBUS, which is EFAULT here.
         let mut at = address;
         while at < end {
-            let Some(mapping) = process.map.find(at).cloned() else {
+            let Some(mapping) = process.map.borrow().find(at).cloned() else {
                 return Err(Errno::ENOMEM);
             };
             if !mapping.permissions.contains(wanted) {
@@ -784,6 +803,7 @@ pub(super) fn madvise(
             if advice == MADV_POPULATE_WRITE {
                 process
                     .map
+                    .borrow_mut()
                     .copy_on_write(cx.cpu, process.memory, at, reach)?;
             }
             if reach < to {
@@ -805,6 +825,7 @@ pub(super) fn madvise(
     };
     let mapped: Vec<(u64, u64, bool)> = process
         .map
+        .borrow_mut()
         .iter()
         .filter(|mapping| mapping.start < end && mapping.end > address)
         .map(|mapping| {
@@ -824,10 +845,10 @@ pub(super) fn madvise(
             return Err(Errno::EINVAL);
         }
         if let Some(change) = change {
-            process.map.set_on_fork(from, to, change);
+            process.map.borrow_mut().set_on_fork(from, to, change);
         }
     }
-    if !process.map.fully_mapped(address, end) {
+    if !process.map.borrow().fully_mapped(address, end) {
         return Err(Errno::ENOMEM);
     }
     Ok(0)
@@ -878,6 +899,7 @@ pub(super) fn mremap(
     let mapping = kernel
         .process_of(tid)
         .map
+        .borrow()
         .find(old)
         .cloned()
         .ok_or(Errno::EFAULT)?;
@@ -925,16 +947,17 @@ fn prepare(kernel: &Kernel, tid: Tid, mapping: &Mapping, request: &Remap) -> Res
     }
     let process = kernel.process_of(tid);
     let growth = (new_length - old_length) / PAGE_SIZE;
-    if !process.map.may_lock(
+    if !process.map.borrow().may_lock(
         &process.limits,
         mapping.locked,
         growth,
-        process.credentials.has(CAP_IPC_LOCK),
+        kernel.credentials(tid).has(CAP_IPC_LOCK),
     ) {
         return Err(Errno::EAGAIN);
     }
     if !process
         .map
+        .borrow()
         .may_expand(&process.limits, mapping.is_data(), growth, (0, 0))
     {
         return Err(Errno::ENOMEM);
@@ -958,12 +981,18 @@ fn remap_at(
     } = request;
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     if new_length == old_length {
         return Ok(old);
     }
     if new_length < old_length {
-        unmap(map, cx, memory, old + new_length, old_length - new_length)?;
+        unmap(
+            &mut map,
+            cx,
+            memory,
+            old + new_length,
+            old_length - new_length,
+        )?;
         return Ok(old);
     }
     // Grow in place when the range is the end of its mapping and the space after is free.
@@ -975,6 +1004,7 @@ fn remap_at(
             *file_end = (*file_end).min(grown_end).max(old_end);
         }
         map.insert(cx.cpu, memory, extra.clone())?;
+        drop(map);
         crate::shared::show(kernel, cx, memory, &extra)?;
         return Ok(old);
     }
@@ -982,6 +1012,7 @@ fn remap_at(
         return Err(Errno::ENOMEM);
     }
     let destination = map.find_free(new_length).ok_or(Errno::ENOMEM)?;
+    drop(map);
     move_range(cx, kernel, tid, mapping, request, destination)
 }
 
@@ -995,7 +1026,7 @@ fn remap_to(
 ) -> Result<u64, Errno> {
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     if request.flags & MREMAP_FIXED != 0 {
         let end = (request.new_address + request.new_length).min(map.end);
         if request.new_address < end {
@@ -1004,7 +1035,7 @@ fn remap_to(
     }
     if request.new_length < request.old_length {
         unmap(
-            map,
+            &mut map,
             cx,
             memory,
             request.old + request.new_length,
@@ -1040,6 +1071,7 @@ fn remap_to(
             map.find_free(request.new_length).ok_or(Errno::ENOMEM)?
         }
     };
+    drop(map);
     move_range(cx, kernel, tid, mapping, request, destination)
 }
 
@@ -1058,7 +1090,7 @@ fn move_ranges(
     let mut last_end = None;
     let mut at = start;
     while at < end {
-        let Some(mapping) = kernel.process_of(tid).map.next_after(at).cloned() else {
+        let Some(mapping) = kernel.process_of(tid).map.borrow().next_after(at).cloned() else {
             break;
         };
         if mapping.start >= end {
@@ -1109,7 +1141,7 @@ fn move_range(
     } = request;
     let process = kernel.process_of_mut(tid);
     let memory = process.memory;
-    let map = &mut process.map;
+    let mut map = process.map.borrow_mut();
     let old_end = old + old_length;
     // A file mapping shows its file wherever it goes; its own pages, and anything else, take their
     // bytes along.
@@ -1130,7 +1162,7 @@ fn move_range(
         *file_end = shift((*file_end).clamp(old, old + new_length));
     }
     if request.flags & MREMAP_DONTUNMAP != 0 {
-        drop_pages(cx, memory, map, mapping, old, old_end)?;
+        drop_pages(cx, memory, &mut map, mapping, old, old_end)?;
     } else {
         map.unmap(cx.cpu, memory, old, old_end)?;
     }
@@ -1145,6 +1177,7 @@ fn move_range(
                 .map_err(errno::from_cpu)?;
         }
     }
+    drop(map);
     crate::shared::show(kernel, cx, memory, &moved)?;
     crate::shared::release(kernel, cx);
     Ok(destination)
@@ -1189,7 +1222,7 @@ pub(super) fn msync(
     let end = address
         .checked_add(page_align(length))
         .ok_or(Errno::ENOMEM)?;
-    let map = &kernel.process_of(tid).map;
+    let map = kernel.process_of(tid).map.borrow();
     if flags & MS_INVALIDATE != 0
         && map.iter().any(|mapping| {
             mapping.start < end && mapping.end > address && mapping.locked != Lock::None
@@ -1206,7 +1239,8 @@ pub(super) fn msync(
 /// Whether the caller may lock memory at all (Linux's `can_do_mlock`).
 fn can_lock(kernel: &Kernel, tid: Tid) -> bool {
     let process = kernel.process_of(tid);
-    process.limits[RLIMIT_MEMLOCK as usize].current != 0 || process.credentials.has(CAP_IPC_LOCK)
+    process.limits[RLIMIT_MEMLOCK as usize].current != 0
+        || kernel.credentials(tid).has(CAP_IPC_LOCK)
 }
 
 /// Linux's `do_mlock` and `apply_vma_lock_flags`: the whole range must be mapped and fit the limit on
@@ -1225,13 +1259,15 @@ fn lock_range(
     }
     let length = page_align(length.wrapping_add(address % PAGE_SIZE));
     let start = page_down(address);
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
     if lock != Lock::None {
         let (locked, within) = process
             .map
+            .borrow()
             .locked_pages(start, start.saturating_add(length));
         let limit = process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE;
-        if locked + length / PAGE_SIZE - within > limit && !process.credentials.has(CAP_IPC_LOCK) {
+        if locked + length / PAGE_SIZE - within > limit && !may_lock_any {
             return Err(Errno::ENOMEM);
         }
     }
@@ -1239,14 +1275,15 @@ fn lock_range(
     if end == start {
         return Ok(0);
     }
-    if !process.map.fully_mapped(start, end) {
+    if !process.map.borrow().fully_mapped(start, end) {
         return Err(Errno::ENOMEM);
     }
-    process.map.set_lock(start, end, lock);
+    process.map.borrow_mut().set_lock(start, end, lock);
     // Linux's `__mm_populate`: bringing the pages in fails at one that cannot be read (no access, or
     // wholly past its file's end), and the call is ENOMEM though the range stays locked.
     let unreadable = process
         .map
+        .borrow_mut()
         .iter()
         .filter(|mapping| mapping.start < end && mapping.end > start)
         .any(|mapping| {
@@ -1254,7 +1291,7 @@ fn lock_range(
                 || matches!(mapping.backing, Backing::File { file_end, .. } if file_end < end.min(mapping.end))
         });
     // Droppable memory that allows nothing is ENOMEM to either kind of lock (measured).
-    let droppable_closed = process.map.iter().any(|mapping| {
+    let droppable_closed = process.map.borrow().iter().any(|mapping| {
         mapping.start < end
             && mapping.end > start
             && matches!(mapping.backing, Backing::Droppable)
@@ -1323,6 +1360,7 @@ pub(super) fn mlockall(
     if !can_lock(kernel, tid) {
         return Err(Errno::EPERM);
     }
+    let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
     let lock = if flags & MCL_ONFAULT != 0 {
         Lock::OnFault
@@ -1330,15 +1368,13 @@ pub(super) fn mlockall(
         Lock::Now
     };
     if flags & MCL_CURRENT != 0 {
-        let total = process.map.pages_in(0, u64::MAX).0;
-        if total > process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE
-            && !process.credentials.has(CAP_IPC_LOCK)
-        {
+        let total = process.map.borrow().pages_in(0, u64::MAX).0;
+        if total > process.limits[RLIMIT_MEMLOCK as usize].current / PAGE_SIZE && !may_lock_any {
             return Err(Errno::ENOMEM);
         }
-        process.map.set_lock_all(lock);
+        process.map.borrow_mut().set_lock_all(lock);
     }
-    process.map.future_lock = if flags & MCL_FUTURE != 0 {
+    process.map.borrow_mut().future_lock = if flags & MCL_FUTURE != 0 {
         lock
     } else {
         Lock::None
@@ -1355,7 +1391,7 @@ pub(super) fn munlockall(
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
-    let map = &mut kernel.process_of_mut(tid).map;
+    let mut map = kernel.process_of(tid).map.borrow_mut();
     map.set_lock_all(Lock::None);
     map.future_lock = Lock::None;
     Ok(0)
@@ -1386,7 +1422,7 @@ pub(super) fn mincore(
     let mut at = address;
     let mut written = 0;
     while at < end {
-        let Some(mapping) = kernel.process_of(tid).map.find(at) else {
+        let Some(mapping) = kernel.process_of(tid).map.borrow().find(at).cloned() else {
             return Err(Errno::ENOMEM);
         };
         let to = mapping.end.min(end);
@@ -1428,8 +1464,8 @@ pub(super) fn pkey_free(
     [key, ..]: Args,
 ) -> Result<u64, Errno> {
     let key = key as i32;
-    let map = &mut kernel.process_of_mut(tid).map;
-    if !key_allocated(map, key) {
+    let mut map = kernel.process_of(tid).map.borrow_mut();
+    if !key_allocated(&map, key) {
         return Err(Errno::EINVAL);
     }
     map.protection_keys &= !(1 << key);
@@ -1530,7 +1566,7 @@ fn process_vm(
             continue;
         }
         let wanted = length.min(remaining);
-        let reach = guest.map.pinnable(base, wanted, write);
+        let reach = guest.map.borrow().pinnable(base, wanted, write);
         // Linux copies a page of the other side at a time, into as many local segments as it takes.
         let mut at = base;
         while at < base + reach {

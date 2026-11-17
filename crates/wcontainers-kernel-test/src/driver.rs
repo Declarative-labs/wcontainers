@@ -64,6 +64,9 @@ pub struct TestHost {
     /// A clock that moves only when the driver says, so a run repeats exactly; none for the wall
     /// clock (layer 1, where the reference runs beside it).
     virtual_now: Option<u64>,
+    /// With a clock that moves only when the driver says, the wall clock's reading when the
+    /// monotonic clock read 0: the wall clock moves with it.
+    wall_base: u64,
     /// What a run's choices come from: how long each turn on the CPU side lasts.
     schedule: StdRng,
 }
@@ -79,36 +82,53 @@ impl TestHost {
             stderr: Vec::new(),
             warnings: Vec::new(),
             virtual_now: None,
+            wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
         }
     }
 
-    /// A host whose clock moves only with the work run and the waits skipped, both from the seed,
+    /// A host whose clocks move only with the work run and the waits skipped, both from the seed,
     /// so the kernel's choices repeat exactly for a seed.
     pub fn repeatable(seed: u64) -> Self {
-        Self {
+        let mut host = Self {
             virtual_now: Some(1_000_000_000),
             ..Self::new(seed)
-        }
+        };
+        host.wall_base = wall_clock() - 1_000_000_000;
+        host
     }
 
-    /// Advances a repeatable clock by the time one turn on the CPU side took: a nanosecond for each
-    /// instruction it ran, and between 0.5 and 1.5 microseconds more, drawn from the seed.
+    /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
+    /// nanoseconds for each instruction it ran (a CPU's speed varies with its caches and its load),
+    /// and between 0.5 and 1.5 microseconds more, both drawn from the seed. The speed moves the
+    /// points where the scheduler switches threads, so seeds give different interleavings.
     fn ran(&mut self, instructions: u64) {
-        let step = instructions + self.schedule.random_range(500..1500);
+        let picoseconds = self.schedule.random_range(500..1500);
+        let step =
+            instructions.saturating_mul(picoseconds) / 1000 + self.schedule.random_range(500..1500);
         if let Some(now) = &mut self.virtual_now {
             *now += step;
         }
     }
 }
 
+/// The machine's wall clock, in nanoseconds since 1970.
+fn wall_clock() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after 1970")
+        .as_nanos() as u64
+}
+
 impl TestHost {
     /// The host a saved container is brought back on. What the container wrote has already left;
     /// the monotonic clock reads from an earlier start than this one's (a kernel that did not carry
-    /// its clock over would see it go back) and the wall clock goes on; randomness and the length of
+    /// its clock over would see it go back) and the wall clock goes on from the save (a repeatable
+    /// one without the time the save took, moved on by `wall_step`); randomness and the length of
     /// turns come from `seed`.
-    fn moved(&self, seed: u64) -> Self {
-        Self {
+    fn moved(&mut self, seed: u64, wall_step: u64) -> Self {
+        let wall = self.realtime_nanoseconds();
+        let mut host = Self {
             started: Instant::now(),
             skipped: self.skipped,
             random: StdRng::seed_from_u64(seed),
@@ -116,8 +136,11 @@ impl TestHost {
             stderr: self.stderr.clone(),
             warnings: self.warnings.clone(),
             virtual_now: self.virtual_now.map(|_| 0),
+            wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
-        }
+        };
+        host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
+        host
     }
 
     /// Moves the clocks forward to a time on the monotonic clock, as if the host had waited.
@@ -136,11 +159,10 @@ impl Host for TestHost {
     }
 
     fn realtime_nanoseconds(&mut self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("the clock is after 1970")
-            .as_nanos() as u64
-            + self.skipped
+        match self.virtual_now {
+            Some(_) => self.wall_base + self.monotonic_nanoseconds(),
+            None => wall_clock() + self.skipped,
+        }
     }
 
     fn random(&mut self, into: &mut [u8]) {
@@ -224,7 +246,7 @@ pub struct Container<'a> {
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
 pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
-    run_saving(container, seed, 0)
+    run_saving(container, seed, 0, 0)
 }
 
 /// As [`run`], saving the container up to `saves` times at moments drawn from the seed (each 1 to
@@ -232,8 +254,14 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
 /// process holding a copy of this one's memory, as a host that saves copies the kernel's memory
 /// and every guest memory: the copy goes on with a new CPU side made from the saved memories and
 /// registers and a new host whose clock reads differently, while this process only waits for the
-/// copy's run.
-pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<Run, Failure> {
+/// copy's run. Each time the host's wall clock has moved on `wall_step` nanoseconds more than its
+/// monotonic clock, as on a host whose wall clock was set while the container was saved.
+pub fn run_saving(
+    container: &Container<'_>,
+    seed: u64,
+    saves: usize,
+    wall_step: u64,
+) -> Result<Run, Failure> {
     let mut moments = StdRng::seed_from_u64(seed ^ 0x5a7e);
     let mut last = 0;
     let mut at: Vec<u64> = (0..saves)
@@ -279,6 +307,10 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
                 resume,
                 slice_nanoseconds,
             } => {
+                // The seed chooses where in its slice each turn ends, so a run repeats for a seed
+                // and threads interleave differently under different seeds.
+                let slice_nanoseconds =
+                    slice_nanoseconds.map(|slice| host.schedule.random_range(1..=slice.max(1)));
                 let exit = match cpu.run(thread, resume, slice_nanoseconds) {
                     Ok(exit) => exit,
                     // A copy cannot hand a failure back; it says what it was and ends.
@@ -317,7 +349,7 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
                         }
                     }
                     cpu = cpu.restored();
-                    host = host.moved(seed ^ ((saved as u64) << 32));
+                    host = host.moved(seed ^ ((saved as u64) << 32), wall_step);
                     kernel.restore(&mut cpu, &mut host);
                 }
             }

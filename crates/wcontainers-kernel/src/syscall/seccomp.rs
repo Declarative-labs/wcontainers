@@ -128,7 +128,7 @@ fn set_filter(
     if length == 0 || length > BPF_MAXINSNS as usize {
         return Err(Errno::EINVAL);
     }
-    let credentials = &kernel.process_of(tid).credentials;
+    let credentials = kernel.credentials(tid);
     if !credentials.no_new_privileges && !credentials.has(CAP_SYS_ADMIN) {
         return Err(Errno::EACCES);
     }

@@ -46,7 +46,7 @@ const fn bits(capabilities: &[u32]) -> u64 {
     set
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Credentials {
     pub uid: u32,
     pub euid: u32,

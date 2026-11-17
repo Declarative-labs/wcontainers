@@ -8,6 +8,7 @@ use core::cell::RefCell;
 use crate::Errno;
 use crate::fs::Node;
 use crate::linux::general::*;
+use crate::process::Pid;
 
 /// One open file description: what `open` makes, shared by `dup` and kept across `exec`.
 pub(crate) struct OpenFile {
@@ -47,6 +48,8 @@ pub(crate) struct OpenFile {
 pub(crate) enum Anon {
     /// A signal descriptor and the signals it reads.
     Signals(u64),
+    /// A timer descriptor and its timer.
+    Timer(u64),
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
@@ -123,11 +126,15 @@ pub(crate) struct FdTable {
     slots: BTreeMap<i32, Descriptor>,
     /// The highest descriptor ever used, which sets how large Linux's table has grown.
     highest: i32,
+    /// Every descriptor below it is in use (Linux's `next_fd`), where a search for a free one starts.
+    next_fd: i32,
     /// Who the record locks taken through this table belong to (Linux's `files_struct` as a lock's
     /// owner).
     lock_owner: u64,
     /// The files whose descriptors were closed, in order, for the kernel to finish releasing.
     released: Vec<FileRef>,
+    /// Whether a close let go of record locks, whose waiters try again.
+    let_go_locks: bool,
 }
 
 impl FdTable {
@@ -160,8 +167,8 @@ impl FdTable {
 
     /// The lowest free descriptor at or above `minimum`, below `limit`.
     pub fn lowest_free(&self, minimum: i32, limit: u64) -> Result<i32, Errno> {
-        let mut fd = minimum;
-        for (&used, _) in self.slots.range(minimum..) {
+        let mut fd = minimum.max(self.next_fd);
+        for (&used, _) in self.slots.range(fd..) {
             if used != fd {
                 break;
             }
@@ -183,6 +190,9 @@ impl FdTable {
     ) -> Result<i32, Errno> {
         let fd = self.lowest_free(minimum, limit)?;
         self.highest = self.highest.max(fd);
+        if minimum <= self.next_fd {
+            self.next_fd = fd + 1;
+        }
         self.slots.insert(
             fd,
             Descriptor {
@@ -193,16 +203,19 @@ impl FdTable {
         Ok(fd)
     }
 
-    /// Puts a file at a given descriptor, closing what was there; whether something was.
-    pub fn set(&mut self, fd: i32, descriptor: Descriptor) -> bool {
+    /// Puts a file at a given descriptor, closing what was there for process `closer`; whether
+    /// something was.
+    pub fn set(&mut self, fd: i32, descriptor: Descriptor, closer: Pid) -> bool {
         self.highest = self.highest.max(fd);
         let old = self.slots.insert(fd, descriptor);
-        old.map(|old| self.closed(old)).is_some()
+        old.map(|old| self.closed(old, closer)).is_some()
     }
 
-    pub fn remove(&mut self, fd: i32) -> Result<(), Errno> {
+    /// Closes a descriptor for process `closer`.
+    pub fn remove(&mut self, fd: i32, closer: Pid) -> Result<(), Errno> {
         let old = self.slots.remove(&fd).ok_or(Errno::EBADF)?;
-        self.closed(old);
+        self.next_fd = self.next_fd.min(fd);
+        self.closed(old, closer);
         Ok(())
     }
 
@@ -216,38 +229,46 @@ impl FdTable {
         core::mem::take(&mut self.released)
     }
 
+    /// Whether record locks were let go since the last call.
+    pub fn take_let_go_locks(&mut self) -> bool {
+        core::mem::take(&mut self.let_go_locks)
+    }
+
     pub fn lock_owner(&self) -> u64 {
         self.lock_owner
     }
 
-    /// Closes every descriptor, as a process's end does.
     /// A copy for a child process: the same open files, its own record locks (`dup_fd`).
     pub fn duplicate(&self, lock_owner: u64) -> Self {
         Self {
             lock_owner,
             released: Vec::new(),
+            let_go_locks: false,
             ..self.clone()
         }
     }
 
-    pub fn close_all(&mut self) {
+    /// Closes every descriptor for process `closer`, as the end of a table's last holder does.
+    pub fn close_all(&mut self, closer: Pid) {
+        self.next_fd = 0;
         for (_, old) in core::mem::take(&mut self.slots) {
-            self.closed(old);
+            self.closed(old, closer);
         }
     }
 
-    /// A descriptor was closed: the table's record locks on the file go (`filp_flush`), unless it
-    /// was opened only for its path.
-    fn closed(&mut self, descriptor: Descriptor) {
+    /// A descriptor was closed by process `closer`: the table's record locks on the file go
+    /// (`filp_flush`), unless it was opened only for its path.
+    fn closed(&mut self, descriptor: Descriptor, closer: Pid) {
         {
             let file = descriptor.file.borrow();
             if !file.is_path() {
                 let mut node = file.node.borrow_mut();
-                crate::locks::release_table(&mut node.record_locks, self.lock_owner);
-                // A queue's request to be told goes with a close by its process, whose number the
-                // table's lock owner is (`mqueue_flush_file`).
+                self.let_go_locks |=
+                    crate::locks::release_table(&mut node.record_locks, self.lock_owner);
+                // A queue's request to be told goes with a close by its process
+                // (`mqueue_flush_file`).
                 if let crate::fs::Content::Mqueue(queue) = &mut node.content {
-                    queue.flush(self.lock_owner as crate::process::Pid);
+                    queue.flush(closer);
                 }
             }
         }
@@ -258,8 +279,8 @@ impl FdTable {
         self.slots.iter().map(|(fd, descriptor)| (*fd, descriptor))
     }
 
-    /// Closes every descriptor marked close-on-exec, as `execve` does.
-    pub fn close_on_exec(&mut self) {
+    /// Closes every descriptor marked close-on-exec, as `execve` does in process `closer`.
+    pub fn close_on_exec(&mut self, closer: Pid) {
         let closing: Vec<i32> = self
             .slots
             .iter()
@@ -267,7 +288,7 @@ impl FdTable {
             .map(|(fd, _)| *fd)
             .collect();
         for fd in closing {
-            let _ = self.remove(fd);
+            let _ = self.remove(fd, closer);
         }
     }
 }

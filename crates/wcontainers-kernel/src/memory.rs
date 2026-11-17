@@ -121,7 +121,7 @@ impl Mapping {
     }
 
     /// What the page at `address` allows the program (before copy on write).
-    fn page_permissions(&self, address: u64) -> Permissions {
+    pub fn page_permissions(&self, address: u64) -> Permissions {
         match &self.backing {
             Backing::File { file_end, .. } if address >= *file_end => Permissions::empty(),
             _ => cpu_permissions(self.permissions),
@@ -238,6 +238,9 @@ pub(crate) struct AddressMap {
     pub membarrier: u32,
     /// Protection keys allocated, one bit each; key 0 from the start.
     pub protection_keys: u32,
+    /// `PR_SET_DUMPABLE`, kept with the memory as Linux keeps it in `mm->flags`; cleared when a
+    /// user's ids change.
+    pub dumpable: bool,
 }
 
 impl AddressMap {
@@ -254,6 +257,7 @@ impl AddressMap {
             future_lock: Lock::None,
             membarrier: 0,
             protection_keys: 1,
+            dumpable: true,
         }
     }
 

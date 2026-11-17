@@ -12,6 +12,7 @@ wcontainers-abi.workspace = true
 zerocopy.workspace = true
 object = { version = "0.41", default-features = false, features = ["read_core", "elf", "unaligned"] }
 siphasher = { version = "1.0.1", default-features = false }
+smallvec = { version = "1.13", default-features = false }
 
 [lints]
 workspace = true

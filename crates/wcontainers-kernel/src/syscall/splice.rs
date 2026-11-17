@@ -34,7 +34,7 @@ fn sigpipe(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
         SIGPIPE,
         SI_USER as i32,
         process.pid,
-        process.credentials.uid,
+        kernel.credentials(tid).uid,
     );
     kernel.send_to_thread(cx, tid, SIGPIPE, info);
 }
@@ -155,6 +155,11 @@ pub(super) fn splice(
     }
     let nonblock = flags & SPLICE_F_NONBLOCK != 0;
     let file_nonblock = |file: &FileRef| file.borrow().flags & O_NONBLOCK != 0;
+    for (pipe, file) in [(in_pipe, &input), (out_pipe, &output)] {
+        if pipe {
+            super::pipe::lock(kernel, tid, file)?;
+        }
+    }
     let (moved, written_back) = match (in_pipe, out_pipe) {
         (true, true) => {
             if same_pipe(&input, &output) {
@@ -320,7 +325,12 @@ pub(super) fn file_to_pipe(
         return Err(Errno::EINVAL);
     }
     let bytes = if super::tty::end(input).is_some() {
-        super::tty::take(kernel, cx, tid, input, length)?
+        // The terminal's read waits holding the pipe's lock.
+        let taken = super::tty::take(kernel, cx, tid, input, length);
+        if taken == Err(Errno::PARKED) {
+            super::pipe::hold(kernel, tid, output);
+        }
+        taken?
     } else {
         refresh_proc(kernel, cx, tid, input, *at)?;
         file_bytes(cx, input, length, *at)?
@@ -361,11 +371,17 @@ fn pipe_to_file(
             Content::Special => Device::from_number(inode.rdev),
             _ => None,
         };
+        // Only files with `splice_write` take a splice (`do_splice_from`): tmpfs files other than
+        // secret memory, and the devices other than `/dev/full`; not `/proc` files, process,
+        // event, timer and signal descriptors or message queues.
+        let splice_write = match inode.content {
+            Content::Regular(_) => !inode.is_secret(),
+            Content::Special => device != Some(Device::Full),
+            _ => false,
+        };
         (
             matches!(inode.content, Content::Regular(_)),
-            !inode.is_secret()
-                && !matches!(inode.content, Content::Proc(_))
-                && device != Some(Device::Full),
+            splice_write,
             !matches!(device, Some(Device::Null | Device::Zero)),
         )
     };
@@ -383,7 +399,6 @@ fn pipe_to_file(
         if kernel.signal_pending(tid) {
             break Err(Errno::ERESTARTSYS);
         }
-        with_pipe(input, |pipe| pipe.drop_empty());
         if with_pipe(input, |pipe| pipe.is_empty()) {
             if with_pipe(input, |pipe| pipe.writers()) == 0 || done > 0 {
                 break Ok(());
@@ -627,7 +642,6 @@ fn vmsplice_to_user(
         if kernel.signal_pending(tid) {
             break Err(Errno::ERESTARTSYS);
         }
-        with_pipe(pipe, |pipe| pipe.drop_empty());
         if with_pipe(pipe, |pipe| pipe.is_empty()) {
             if with_pipe(pipe, |pipe| pipe.writers()) == 0 || done > 0 {
                 break Ok(());

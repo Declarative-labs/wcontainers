@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -141,6 +142,17 @@ int main(void) {
     show("set leave idle early", set(56, SCHED_BATCH, 0, 19, 0, 0, 0, 0, 0, 0));
     show("set reset on fork", set(56, SCHED_IDLE, 1, 19, 0, 0, 0, 0, 0, 0));
     get("after reset on fork", 56);
+    // A child of a reset-on-fork parent keeps a policy that is not real-time, without the custom
+    // slice or the flag.
+    show("set batch reset on fork", set(56, SCHED_BATCH, 1, 19, 0, 5000000, 0, 0, 0, 0));
+    fflush(stdout);
+    pid_t child = fork();
+    if (child == 0) {
+        get("child of reset batch", 56);
+        fflush(stdout);
+        _exit(0);
+    }
+    waitpid(child, NULL, 0);
     show("set clear reset", set(56, SCHED_BATCH, 0, 19, 0, 0, 0, 0, 0, 0));
     show("set keep policy", set(56, SCHED_FIFO, 8, 19, 0, 0, 0, 0, 0, 0));
     show("set keep params", set(56, SCHED_IDLE, 0x10, 0, 0, 0, 0, 0, 0, 0));

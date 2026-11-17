@@ -30,7 +30,7 @@ pub(super) const MAX_SEGMENTS: u64 = 1024;
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
 
 pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
-    kernel.process_of(tid).files.file(fd as i32)
+    kernel.files(tid).file(fd as i32)
 }
 
 /// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
@@ -238,12 +238,13 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files, memory files and terminals do not take reads or writes that may not wait
-    // (`FMODE_NOWAIT` unset: memory files are not opened by `do_dentry_open`; measured).
+    // `/proc`'s files, tmpfs's regular files and terminals do not take reads or writes that may
+    // not wait (`FMODE_NOWAIT` unset; measured: devices and pipes take them).
     let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
-        matches!(inode.content, Content::Proc(_)) || inode.fs.device == kernel.files.memfd_fs.device
+        matches!(inode.content, Content::Proc(_))
+            || inode.fs.kind == crate::fs::Kind::Tmpfs && inode.file_type() == S_IFREG
     };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -712,6 +713,9 @@ fn vectored(
     if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, parts);
     }
+    if writing.is_none() && super::timer::of(&file.borrow()).is_some() {
+        return super::timer::read(kernel, cx, tid, file, parts);
+    }
     verify_area(offset.unwrap_or(file.borrow().offset), total)?;
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
@@ -932,6 +936,9 @@ pub(super) fn read_at(
     if super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
+    if super::timer::of(&file.borrow()).is_some() {
+        return super::timer::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
     // more is cleared (`read_iter_zero`).
@@ -1062,24 +1069,20 @@ fn write_proc(
     count: u64,
 ) -> Result<u64, Errno> {
     match entry.writing() {
-        // `comm_write`: the first 15 bytes name the process, up to a zero, and the whole count is
-        // taken; only a process's own threads may name it.
+        // `comm_write`: the first 15 bytes name the file's thread, up to a zero, and the whole count
+        // is taken; only threads of the same process may name it.
         Writing::Comm => {
             let bytes = guest(kernel, cx, tid).read(buffer, count.min(15))?;
-            let crate::fs::proc::Entry::ProcessFile(pid, _) = entry else {
+            let crate::fs::proc::Entry::ProcessFile(task, _) = entry else {
                 return Err(Errno::EINVAL);
             };
-            if !kernel.processes.contains_key(&pid) {
+            if !kernel.threads.contains_key(&task.tid) {
                 return Err(Errno::ESRCH);
             }
-            if pid != kernel.threads[&tid].process {
+            if task.pid != kernel.threads[&tid].process {
                 return Err(Errno::EINVAL);
             }
-            let end = bytes
-                .iter()
-                .position(|byte| *byte == 0)
-                .unwrap_or(bytes.len());
-            kernel.process_of_mut(tid).set_name_exact(&bytes[..end]);
+            kernel.thread_mut(task.tid).set_name_exact(&bytes);
             Ok(count)
         }
         Writing::Io => Err(Errno::EIO),
@@ -1104,10 +1107,7 @@ pub(super) fn write_bytes(
 ) -> Result<u64, Errno> {
     let node = file.borrow().node.clone();
     let now = kernel.now(cx);
-    let may_keep_privileges = kernel
-        .process_of(tid)
-        .credentials
-        .has(crate::credentials::CAP_FSETID);
+    let may_keep_privileges = kernel.credentials(tid).has(crate::credentials::CAP_FSETID);
     let mut inode = node.borrow_mut();
     let rdev = inode.rdev;
     let regular = match &mut inode.content {
@@ -1262,20 +1262,30 @@ fn send(
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe or a terminal as input cannot seek (`FMODE_LSEEK`); secret memory, process and
-        // signal descriptors cannot be read at all, even for nothing (measured; into a pipe nothing
-        // is moved without asking it).
-        if matches!(input_node.borrow().content, Content::Pipe(_))
-            || super::tty::end(&input).is_some()
+        // A pipe, a terminal, secret memory and a process descriptor as input cannot seek
+        // (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
+        // `splice_read`, so only nothing is moved from them (measured; into a pipe nothing is
+        // moved without asking it).
+        if matches!(
+            input_node.borrow().content,
+            Content::Pipe(_) | Content::Pidfd(..)
+        ) || super::tty::end(&input).is_some()
             || input_node.borrow().is_secret()
-            || input_node.borrow().is_anonymous()
         {
             return Err(Errno::EINVAL);
+        }
+        if input_node.borrow().is_anonymous() {
+            return if count == 0 {
+                Ok(0)
+            } else {
+                Err(Errno::EINVAL)
+            };
         }
     }
     // Into a pipe: `splice_file_to_pipe`, which waits for room unless the pipe's descriptor is
     // nonblocking.
     if to_pipe {
+        super::pipe::lock(kernel, tid, &output)?;
         let nonblock = output.borrow().flags & O_NONBLOCK != 0;
         let mut pos = position as u64;
         let moved = super::splice::file_to_pipe(
@@ -1715,25 +1725,29 @@ pub(super) fn getdents64(
                 drop(inode);
                 // Each entry has Linux's position. What follows an entry (its `d_off`) is the position
                 // after its own, except where Linux moves to the next entry's before listing it:
-                // descriptors (`proc_readfd_common`, which ends at the table's size plus 2) and
-                // processes in `/proc` (`proc_pid_readdir`, which ends past the largest number).
+                // descriptors (`proc_readfd_common`, which ends at the table's size plus 2), and
+                // `thread-self` and processes in `/proc` (`proc_pid_readdir`, which ends past the
+                // largest number).
                 use crate::fs::proc::Entry;
-                let pid = kernel.threads[&tid].process;
-                let (listed, end) = kernel.with_walk(pid, |walk, _| {
+                let (listed, end) = kernel.with_walk(tid, |walk, _| {
                     let mut out = Vec::new();
                     for (name, child, position) in crate::fs::proc::list(walk.proc, &entry) {
-                        let jumps = matches!(child, Entry::Fd(..) | Entry::Process(_));
+                        let jumps = match child {
+                            Entry::Fd(..) | Entry::ThreadSelfLink => true,
+                            Entry::Process(task) => !task.own,
+                            _ => false,
+                        };
                         let child_node = crate::fs::proc::node(walk.proc, None, &name, child);
                         let child_inode = child_node.borrow();
                         let kind = child_inode.dirent_type();
                         out.push((name, child_inode.ino, kind, position, jumps));
                     }
                     let end = match entry {
-                        Entry::Fds(pid) => walk
+                        Entry::Fds(task) => walk
                             .proc
-                            .processes
-                            .get(&pid)
-                            .map_or(2, |process| u64::from(process.files.capacity()) + 2),
+                            .threads
+                            .get(&task.tid)
+                            .map_or(2, |thread| u64::from(thread.files.borrow().capacity()) + 2),
                         _ => crate::fs::proc::PROCESSES_END,
                     };
                     Ok((out, end))
@@ -1872,7 +1886,8 @@ pub(super) fn close(
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    kernel.process_of_mut(tid).files.remove(fd as i32)?;
+    let pid = kernel.threads[&tid].process;
+    kernel.files_mut(tid).remove(fd as i32, pid)?;
     kernel.files_released(cx);
     Ok(0)
 }
@@ -1892,8 +1907,12 @@ pub(super) fn close_range(
     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 || first > last {
         return Err(Errno::EINVAL);
     }
-    // The table is never shared between processes yet, so unsharing it changes nothing.
-    let files = &mut kernel.process_of_mut(tid).files;
+    // A shared table is copied first, and the copy closes (`__close_range`).
+    if flags & CLOSE_RANGE_UNSHARE != 0 {
+        kernel.unshare_files(tid);
+    }
+    let pid = kernel.threads[&tid].process;
+    let mut files = kernel.files_mut(tid);
     let fds: Vec<i32> = files
         .iter()
         .map(|(fd, _)| fd)
@@ -1904,9 +1923,10 @@ pub(super) fn close_range(
         if flags & CLOSE_RANGE_CLOEXEC != 0 {
             files.get_mut(fd)?.close_on_exec = true;
         } else {
-            files.remove(fd)?;
+            files.remove(fd, pid)?;
         }
     }
+    drop(files);
     if closes {
         kernel.files_released(cx);
     }
@@ -1920,7 +1940,7 @@ pub(super) fn dup(
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     let limit = nofile_limit(kernel, tid);
-    let files = &mut kernel.process_of_mut(tid).files;
+    let mut files = kernel.files_mut(tid);
     let file = files.file(fd as i32)?;
     Ok(files.add(file, false, 0, limit)? as u64)
 }
@@ -1942,7 +1962,8 @@ pub(super) fn dup3(
     if new < 0 || new as u64 >= limit {
         return Err(Errno::EBADF);
     }
-    let files = &mut kernel.process_of_mut(tid).files;
+    let pid = kernel.threads[&tid].process;
+    let mut files = kernel.files_mut(tid);
     let file = files.file(old)?;
     let replaced = files.set(
         new,
@@ -1950,7 +1971,9 @@ pub(super) fn dup3(
             file,
             close_on_exec: flags & O_CLOEXEC != 0,
         },
+        pid,
     );
+    drop(files);
     if replaced {
         kernel.files_released(cx);
     }
@@ -1993,7 +2016,7 @@ fn fcntl_typed(
         command,
         F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW
     ) {
-        let file = kernel.process_of(tid).files.file(fd)?;
+        let file = kernel.files(tid).file(fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }
@@ -2088,7 +2111,7 @@ fn record_lock(
         owner: if private {
             LockOwner::File(alloc::rc::Rc::downgrade(file))
         } else {
-            LockOwner::Table(kernel.processes[&pid].files.lock_owner())
+            LockOwner::Table(kernel.files(tid).lock_owner())
         },
         pid,
         write,
@@ -2130,9 +2153,11 @@ fn record_lock(
     };
     let result = crate::locks::set(&mut node.borrow_mut().record_locks, request, unlock);
     match result {
-        Ok(()) => {
+        Ok(changed) => {
             // Waiters blocked on a lock this changed try again (`locks_wake_up_blocks`).
-            kernel.wake(crate::process::Channel::Locks);
+            if changed {
+                kernel.wake(crate::process::Channel::Locks);
+            }
             Ok(Some(0))
         }
         Err(held) if matches!(command, F_SETLKW | F_OFD_SETLKW) => {
@@ -2194,8 +2219,8 @@ fn fcntl_other(
     argument: u64,
 ) -> Result<u64, Errno> {
     let limit = nofile_limit(kernel, tid);
-    let files = &mut kernel.process_of_mut(tid).files;
-    let descriptor = files.get(fd)?.clone();
+    let files = kernel.threads[&tid].files.clone();
+    let descriptor = files.borrow().get(fd)?.clone();
     let path_only = descriptor.file.borrow().is_path();
     match command {
         F_DUPFD | F_DUPFD_CLOEXEC => {
@@ -2204,11 +2229,13 @@ fn fcntl_other(
                 return Err(Errno::EINVAL);
             }
             let close_on_exec = command == F_DUPFD_CLOEXEC;
-            Ok(files.add(descriptor.file, close_on_exec, minimum, limit)? as u64)
+            Ok(files
+                .borrow_mut()
+                .add(descriptor.file, close_on_exec, minimum, limit)? as u64)
         }
         F_GETFD => Ok(u64::from(descriptor.close_on_exec)),
         F_SETFD => {
-            files.get_mut(fd)?.close_on_exec = argument & u64::from(FD_CLOEXEC) != 0;
+            files.borrow_mut().get_mut(fd)?.close_on_exec = argument & u64::from(FD_CLOEXEC) != 0;
             Ok(0)
         }
         F_GETFL => Ok(u64::from(descriptor.file.borrow().flags)),
@@ -2220,7 +2247,7 @@ fn fcntl_other(
             // mode).
             {
                 let inode = file.node.borrow();
-                let credentials = &kernel.processes[&kernel.threads[&tid].process].credentials;
+                let credentials = kernel.credentials(tid);
                 if wanted & O_NOATIME != 0
                     && file.flags & O_NOATIME == 0
                     && !credentials.owns_or_capable(inode.uid)
@@ -2249,7 +2276,7 @@ fn fcntl_other(
         }
         F_CREATED_QUERY => Ok(u64::from(descriptor.file.borrow().created)),
         F_DUPFD_QUERY => {
-            let other = files.file(argument as i32)?;
+            let other = files.borrow().file(argument as i32)?;
             Ok(u64::from(alloc::rc::Rc::ptr_eq(&other, &descriptor.file)))
         }
         // No lease can be taken, so a file never holds one.
@@ -2321,7 +2348,7 @@ fn fcntl_other(
         // Only pipes have a size (`pipe_fcntl`).
         F_GETPIPE_SZ | F_SETPIPE_SZ if !path_only => {
             let node = descriptor.file.borrow().node.clone();
-            let may_exceed = kernel.process_of(tid).credentials.has(CAP_SYS_RESOURCE);
+            let may_exceed = kernel.credentials(tid).has(CAP_SYS_RESOURCE);
             let mut inode = node.borrow_mut();
             let Content::Pipe(pipe) = &mut inode.content else {
                 return Err(Errno::EBADF);
@@ -2351,7 +2378,7 @@ fn fcntl_other(
         }
         F_SET_RW_HINT if !path_only => {
             let node = descriptor.file.borrow().node.clone();
-            let credentials = &kernel.process_of(tid).credentials;
+            let credentials = kernel.credentials(tid);
             if !credentials.owns_or_capable(node.borrow().uid) {
                 return Err(Errno::EPERM);
             }
@@ -2422,7 +2449,7 @@ fn set_owner(
 
 /// Linux's `f_modown`: the owner, with the caller's users when it names one.
 pub(super) fn set_owner_of(kernel: &Kernel, tid: Tid, file: &FileRef, pid: i32, kind: OwnerKind) {
-    let credentials = &kernel.process_of(tid).credentials;
+    let credentials = kernel.credentials(tid);
     let mut file = file.borrow_mut();
     let owner = file.owner.get_or_insert_default();
     owner.pid = pid;
@@ -2503,9 +2530,10 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             super::pidfd::poll(kernel, &file)
         }
         Content::Mqueue(queue) => queue.poll(),
-        Content::Anon => match super::signalfd::mask_of(&file) {
-            Some(mask) => super::signalfd::poll(kernel, tid, mask),
-            None => 0,
+        Content::Anon => match (super::signalfd::mask_of(&file), super::timer::of(&file)) {
+            (Some(mask), _) => super::signalfd::poll(kernel, tid, mask),
+            (_, Some(timer)) => super::timer::poll(kernel, timer),
+            _ => 0,
         },
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
@@ -2575,11 +2603,13 @@ fn start_wait(
 }
 
 /// After a run of `ppoll` or `pselect6` found nothing ready: it ends with none when its time is up,
-/// is interrupted by a signal, or parks until a file's readiness changes.
+/// is interrupted by a signal, or parks until a file's readiness changes. A call watching no file
+/// (musl's `pause`) parks until its time or a signal only, as no wait queue holds it in Linux.
 fn nothing_ready(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
+    watching: bool,
 ) -> Option<Result<u64, Errno>> {
     let call = kernel.threads[&tid].call;
     if call
@@ -2591,7 +2621,12 @@ fn nothing_ready(
     if kernel.signal_pending(tid) {
         return Some(Err(Errno::ERESTARTNOHAND));
     }
-    kernel.park(tid, crate::process::Channel::Readiness);
+    let channel = if watching {
+        crate::process::Channel::Readiness
+    } else {
+        crate::process::Channel::Nothing
+    };
+    kernel.park(tid, channel);
     None
 }
 
@@ -2643,8 +2678,8 @@ pub(super) fn ppoll(
         }
     }
     let result = match ppoll_typed(kernel, cx, tid, fds, count) {
-        Ok(0) => nothing_ready(kernel, cx, tid),
-        result => Some(result),
+        Ok((0, watching)) => nothing_ready(kernel, cx, tid, watching),
+        result => Some(result.map(|(ready, _)| ready)),
     };
     finish_wait(kernel, cx, tid, timeout, result)
 }
@@ -2677,17 +2712,15 @@ pub(super) fn pselect6(
         }
     }
     let result = match select_typed(kernel, cx, tid, count, [read, write, except]) {
-        Ok(None) => nothing_ready(kernel, cx, tid).map(|result| {
+        Ok((None, watching)) => nothing_ready(kernel, cx, tid, watching).map(|result| {
             // A timeout writes back the sets, empty.
             if result == Ok(0) {
-                select_typed(kernel, cx, tid, count, [read, write, except])
-                    .map(|ready| ready.unwrap_or(0))
-                    .and(Ok(0))
+                select_typed(kernel, cx, tid, count, [read, write, except]).and(Ok(0))
             } else {
                 result
             }
         }),
-        Ok(Some(ready)) => Some(Ok(ready)),
+        Ok((Some(ready), _)) => Some(Ok(ready)),
         Err(error) => Some(Err(error)),
     };
     finish_wait(kernel, cx, tid, timeout, result)
@@ -2695,20 +2728,19 @@ pub(super) fn pselect6(
 
 /// One look at `pselect6`'s sets, as Linux's `core_sys_select`: Some(count) and the sets written
 /// back when something is ready, None when nothing is (the sets are then written back empty only
-/// when the call returns).
+/// when the call returns); and whether any descriptor is asked about.
 fn select_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     count: u64,
     sets: [u64; 3],
-) -> Result<Option<u64>, Errno> {
+) -> Result<(Option<u64>, bool), Errno> {
     let count = count as i32;
     if count < 0 {
         return Err(Errno::EINVAL);
     }
-    let files = &kernel.process_of(tid).files;
-    let count = (count as u32).min(files.capacity()) as u64;
+    let count = (count as u32).min(kernel.files(tid).capacity()) as u64;
     let bytes = count.div_ceil(64) * 8;
     let mut wanted = [const { Vec::new() }; 3];
     for (index, address) in sets.iter().enumerate() {
@@ -2719,10 +2751,14 @@ fn select_typed(
         };
     }
     let asked = |set: &[u8], fd: u64| set[(fd / 8) as usize] & (1 << (fd % 8)) != 0;
-    let files = &kernel.process_of(tid).files;
+    let files = kernel.files(tid);
+    let mut watching = false;
     for fd in 0..count {
-        if wanted.iter().any(|set| asked(set, fd)) && files.get(fd as i32).is_err() {
-            return Err(Errno::EBADF);
+        if wanted.iter().any(|set| asked(set, fd)) {
+            if files.get(fd as i32).is_err() {
+                return Err(Errno::EBADF);
+            }
+            watching = true;
         }
     }
     // Linux's `POLLIN_SET`, `POLLOUT_SET` and `POLLEX_SET`.
@@ -2749,11 +2785,12 @@ fn select_typed(
         }
         results[index] = result;
     }
+    drop(files);
     if ready == 0 {
         let call = kernel.threads[&tid].call;
         let over = call.deadline.is_some() && call.progress <= cx.monotonic();
         if !over {
-            return Ok(None);
+            return Ok((None, watching));
         }
     }
     for (address, result) in sets.iter().zip(&results) {
@@ -2761,29 +2798,32 @@ fn select_typed(
             guest(kernel, cx, tid).write(*address, result)?;
         }
     }
-    Ok(Some(ready))
+    Ok((Some(ready), watching))
 }
 
-/// One look at `ppoll`'s descriptors: how many are ready, each one's events written back.
+/// One look at `ppoll`'s descriptors: how many are ready, each one's events written back; and
+/// whether any descriptor is watched (a negative one is not).
 fn ppoll_typed(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     fds: u64,
     count: u64,
-) -> Result<u64, Errno> {
+) -> Result<(u64, bool), Errno> {
     if count > nofile_limit(kernel, tid) {
         return Err(Errno::EINVAL);
     }
     let mut entries = guest(kernel, cx, tid).read(fds, count * 8)?;
     let mut ready = 0;
+    let mut watching = false;
     for entry in entries.as_chunks_mut::<8>().0 {
         let fd = i32::from_le_bytes(entry[..4].try_into().expect("4 bytes"));
+        watching |= fd >= 0;
         let events = u16::from_le_bytes([entry[4], entry[5]]);
         let revents = if fd < 0 {
             0
         } else {
-            match kernel.process_of(tid).files.file(fd) {
+            match kernel.files(tid).file(fd) {
                 Ok(file) => {
                     poll_mask(kernel, tid, &file) & (events | (POLLERR | POLLHUP | POLLNVAL) as u16)
                 }
@@ -2806,7 +2846,7 @@ fn ppoll_typed(
     if guest(kernel, cx, tid).put_each(fds, &stores) < stores.len() {
         return Err(Errno::EFAULT);
     }
-    Ok(ready)
+    Ok((ready, watching))
 }
 
 /// `cachestat`: how many of a file's pages are in memory. Only tmpfs files hold pages here (as in
@@ -2827,7 +2867,7 @@ pub(super) fn cachestat(
     // Linux's `can_do_cachestat`: opened for writing, the owner, or allowed to write.
     let node = file.borrow().node.clone();
     let allowed = file.borrow().writable() || {
-        let credentials = &kernel.process_of(tid).credentials;
+        let credentials = kernel.credentials(tid);
         let inode = node.borrow();
         credentials.owns_or_capable(inode.uid)
             || !inode.fs.read_only() && inode.permits(credentials, W_OK, true)

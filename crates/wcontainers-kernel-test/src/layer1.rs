@@ -56,6 +56,13 @@ const MOUNT_NUMBER: u64 = 0x1a00;
 /// input taking a byte at a time, and one made from generated words.
 const TERMIOS: u64 = 0x1b00;
 const TERMIOS_COUNT: u64 = 3;
+/// `struct futex_waitv` entries for the futex2 calls, 24 bytes apart: words of `VALUES`, one shared,
+/// one 64 bit (refused) and one misaligned.
+const FUTEX_VECTORS: u64 = 0x1990;
+/// Timer values, 32 bytes apart, each read as an `itimerspec` and as an `itimerval`: none, a
+/// one-shot and a periodic one that never come within a sequence on any clock (2^33 seconds, which
+/// is also an absolute time far ahead), and an invalid one.
+const ITIMERS: u64 = 0x1a40;
 /// `struct flock` requests for fcntl's record locks, 32 bytes apart.
 const FLOCKS: u64 = 0x1c00;
 const FLOCK_COUNT: u64 = 8;
@@ -481,6 +488,41 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         arena[at..at + 8].copy_from_slice(&value.to_le_bytes());
         arena[at + 8..at + 12].copy_from_slice(&signal.to_le_bytes());
         arena[at + 12..at + 16].copy_from_slice(&how.to_le_bytes());
+    }
+    // Futex vectors and timer values.
+    let vectors: [(u64, u64, u32); 4] = [
+        (
+            0,
+            ARENA + VALUES,
+            linux::FUTEX2_SIZE_U32 | linux::FUTEX2_PRIVATE,
+        ),
+        (1, ARENA + VALUES + 8, linux::FUTEX2_SIZE_U32),
+        (0, ARENA + VALUES + 16, linux::FUTEX2_SIZE_U64),
+        (
+            0,
+            ARENA + VALUES + 2,
+            linux::FUTEX2_SIZE_U32 | linux::FUTEX2_PRIVATE,
+        ),
+    ];
+    for (index, (value, address, flags)) in vectors.iter().enumerate() {
+        let at = (FUTEX_VECTORS + index as u64 * 24) as usize;
+        arena[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        arena[at + 8..at + 16].copy_from_slice(&address.to_le_bytes());
+        arena[at + 16..at + 20].copy_from_slice(&flags.to_le_bytes());
+        arena[at + 20..at + 24].fill(0);
+    }
+    let far: i64 = 1 << 33;
+    let timers: [[i64; 4]; 4] = [
+        [0, 0, 0, 0],
+        [0, 0, far, 0],
+        [1000, 0, far, 0],
+        [0, 0, 0, 1_000_000_000],
+    ];
+    for (index, words) in timers.iter().enumerate() {
+        let at = (ITIMERS + index as u64 * 32) as usize;
+        for (offset, word) in words.iter().enumerate() {
+            arena[at + offset * 8..at + offset * 8 + 8].copy_from_slice(&word.to_le_bytes());
+        }
     }
     // Record lock requests: each kind, origin, start and length, and sometimes a process number
     // (which open file locks refuse).
@@ -1450,6 +1492,24 @@ pub const CALLS: &[u32] = &[
     linux::__NR_mq_timedreceive,
     linux::__NR_mq_notify,
     linux::__NR_mq_getsetattr,
+    linux::__NR_futex,
+    linux::__NR_futex,
+    linux::__NR_futex_waitv,
+    linux::__NR_futex_wake,
+    linux::__NR_futex_wait,
+    linux::__NR_futex_requeue,
+    linux::__NR_getitimer,
+    linux::__NR_setitimer,
+    linux::__NR_timer_create,
+    linux::__NR_timer_create,
+    linux::__NR_timer_settime,
+    linux::__NR_timer_gettime,
+    linux::__NR_timer_getoverrun,
+    linux::__NR_timer_delete,
+    linux::__NR_timerfd_create,
+    linux::__NR_timerfd_create,
+    linux::__NR_timerfd_settime,
+    linux::__NR_timerfd_gettime,
 ];
 
 /// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
@@ -2241,6 +2301,241 @@ fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
             0,
             0,
         ],
+        // Futexes: words of `VALUES`, misaligned and bad ones; every wait has a timeout (of the
+        // sleeps), so nothing waits for ever. The priority inheriting operations that can take a
+        // lock write the caller's thread number, which differs between the runners, so they get
+        // only misaligned and bad addresses; the requeue ones never find a waiter and write nothing.
+        linux::__NR_futex => {
+            let word = |w: u64| match w % 6 {
+                0 => ARENA + VALUES + 2,
+                1 => 0,
+                2 => buffer(w >> 3),
+                _ => ARENA + VALUES + (w >> 3) % 52 * 8,
+            };
+            let command = pick(
+                &[
+                    linux::FUTEX_WAIT as u64,
+                    linux::FUTEX_WAKE as u64,
+                    linux::FUTEX_REQUEUE as u64,
+                    linux::FUTEX_CMP_REQUEUE as u64,
+                    linux::FUTEX_WAKE_OP as u64,
+                    linux::FUTEX_WAIT_BITSET as u64,
+                    linux::FUTEX_WAKE_BITSET as u64,
+                    linux::FUTEX_FD as u64,
+                    14,
+                    linux::FUTEX_LOCK_PI as u64,
+                    linux::FUTEX_UNLOCK_PI as u64,
+                    linux::FUTEX_TRYLOCK_PI as u64,
+                    linux::FUTEX_LOCK_PI2 as u64,
+                    linux::FUTEX_WAIT_REQUEUE_PI as u64,
+                    linux::FUTEX_CMP_REQUEUE_PI as u64,
+                ],
+                b,
+            );
+            let locks = [
+                linux::FUTEX_LOCK_PI as u64,
+                linux::FUTEX_UNLOCK_PI as u64,
+                linux::FUTEX_TRYLOCK_PI as u64,
+                linux::FUTEX_LOCK_PI2 as u64,
+            ]
+            .contains(&command);
+            // An unlock reads the word before it looks at the address, so it gets no misaligned
+            // one, whose bytes could name either runner's thread.
+            let first = if command == linux::FUTEX_UNLOCK_PI as u64 {
+                pick(&[0, u64::MAX - 4095], a)
+            } else if locks {
+                pick(&[ARENA + VALUES + 2, 0, u64::MAX - 4095], a)
+            } else {
+                word(a)
+            };
+            let flags = pick(
+                &[
+                    0,
+                    linux::FUTEX_PRIVATE_FLAG as u64,
+                    linux::FUTEX_CLOCK_REALTIME as u64,
+                ],
+                b >> 8,
+            );
+            let waits = [
+                linux::FUTEX_WAIT as u64,
+                linux::FUTEX_WAIT_BITSET as u64,
+                linux::FUTEX_LOCK_PI as u64,
+                linux::FUTEX_LOCK_PI2 as u64,
+                linux::FUTEX_WAIT_REQUEUE_PI as u64,
+            ]
+            .contains(&command);
+            let fourth = if waits {
+                ARENA + VALUES + 56 * 8 + (d % 4) * 16
+            } else {
+                pick(&[0, 1, 2, u64::MAX], d)
+            };
+            let operation = |w: u64| {
+                let op = pick(&[0, 1, 2, 3, 4, 7, 8, 9], w);
+                let compare = pick(&[0, 1, 2, 3, 4, 5, 6], w >> 3);
+                (op << 28) | (compare << 24) | (((w >> 6) & 0xfff) << 12) | ((w >> 18) & 0xfff)
+            };
+            [
+                first,
+                command | flags,
+                pick(&[0, 1, u64::from(u32::MAX), (c >> 8) % 3], c),
+                fourth,
+                word(e),
+                if command == linux::FUTEX_WAKE_OP as u64 {
+                    operation(f)
+                } else {
+                    pick(&[0, 1, u64::from(u32::MAX), 0x55], f)
+                },
+            ]
+        }
+        linux::__NR_futex_waitv => [
+            pick(
+                &[ARENA + FUTEX_VECTORS, ARENA + FUTEX_VECTORS + 24, 0, 8],
+                a,
+            ) + (a >> 2) % 3 * 24 * u64::from(a % 4 == 0),
+            pick(&[1, 2, 0, 129], b),
+            pick(&[0, 0, 1], c),
+            ARENA + VALUES + 56 * 8 + (d % 4) * 16,
+            pick(
+                &[
+                    linux::CLOCK_MONOTONIC as u64,
+                    linux::CLOCK_REALTIME as u64,
+                    linux::CLOCK_BOOTTIME as u64,
+                ],
+                e,
+            ),
+            0,
+        ],
+        linux::__NR_futex_wake => [
+            pick(
+                &[ARENA + VALUES, ARENA + VALUES + 2, 0, ARENA + VALUES + 8],
+                a,
+            ),
+            pick(&[u64::from(u32::MAX), 0, 1, 1 << 32], b),
+            pick(&[0, 1, 5, u64::MAX], c),
+            pick(
+                &[
+                    u64::from(linux::FUTEX2_SIZE_U32 | linux::FUTEX2_PRIVATE),
+                    u64::from(linux::FUTEX2_SIZE_U32),
+                    u64::from(linux::FUTEX2_SIZE_U8),
+                    0x100,
+                ],
+                d,
+            ),
+            0,
+            0,
+        ],
+        linux::__NR_futex_wait => [
+            pick(
+                &[ARENA + VALUES, ARENA + VALUES + 2, 0, ARENA + VALUES + 8],
+                a,
+            ),
+            pick(&[0, 1, 1 << 32], b),
+            pick(&[u64::from(u32::MAX), 0, 1], c),
+            pick(
+                &[
+                    u64::from(linux::FUTEX2_SIZE_U32 | linux::FUTEX2_PRIVATE),
+                    u64::from(linux::FUTEX2_SIZE_U32),
+                    u64::from(linux::FUTEX2_SIZE_U64),
+                ],
+                d,
+            ),
+            ARENA + VALUES + 56 * 8 + (e % 4) * 16,
+            pick(
+                &[
+                    linux::CLOCK_MONOTONIC as u64,
+                    linux::CLOCK_REALTIME as u64,
+                    7,
+                ],
+                f,
+            ),
+        ],
+        linux::__NR_futex_requeue => [
+            pick(&[ARENA + FUTEX_VECTORS, ARENA + FUTEX_VECTORS + 24, 0], a),
+            pick(&[0, 0, 1], b),
+            pick(&[0, 1, u64::MAX], c),
+            pick(&[0, 1, u64::MAX], d),
+            0,
+            0,
+        ],
+        // Timers whose times never come within a sequence (`ITIMERS`), so what they send never
+        // races the calls; timer descriptors are always nonblocking.
+        linux::__NR_getitimer => [pick(&[0, 1, 2, 3], a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_setitimer => [
+            pick(&[0, 1, 2, 3], a),
+            pick(&[ARENA + ITIMERS, 0, 8], b) + (b >> 2) % 4 * 32 * u64::from(b % 3 == 0),
+            pick(&[0, buffer(c)], c >> 3),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_timer_create => [
+            pick(
+                &[
+                    linux::CLOCK_MONOTONIC as u64,
+                    linux::CLOCK_REALTIME as u64,
+                    linux::CLOCK_PROCESS_CPUTIME_ID as u64,
+                    linux::CLOCK_THREAD_CPUTIME_ID as u64,
+                    linux::CLOCK_BOOTTIME as u64,
+                    linux::CLOCK_REALTIME_ALARM as u64,
+                    linux::CLOCK_MONOTONIC_RAW as u64,
+                    99,
+                    (-2i64) as u64,
+                    ((!99999i64) << 3 | 2) as u64,
+                ],
+                a,
+            ),
+            pick(&[0, ARENA + SIGEVENTS, 8], b) + (b >> 3) % 4 * 64 * u64::from(b % 3 == 1),
+            pick(&[buffer(c), 0, 8], c >> 3),
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_timer_settime => [
+            pick(&[0, 1, 2, 99999, u64::MAX], a),
+            pick(&[0, linux::TIMER_ABSTIME as u64, 2], b),
+            pick(&[ARENA + ITIMERS, 0, 8], c) + (c >> 2) % 4 * 32 * u64::from(c % 3 == 0),
+            pick(&[0, buffer(d)], d >> 3),
+            0,
+            0,
+        ],
+        linux::__NR_timer_gettime => [pick(&[0, 1, 2, 99999], a), buffer(b), 0, 0, 0, 0],
+        linux::__NR_timer_getoverrun | linux::__NR_timer_delete => {
+            [pick(&[0, 1, 2, 99999, u64::MAX], a), 0, 0, 0, 0, 0]
+        }
+        linux::__NR_timerfd_create => [
+            pick(
+                &[
+                    linux::CLOCK_MONOTONIC as u64,
+                    linux::CLOCK_REALTIME as u64,
+                    linux::CLOCK_BOOTTIME as u64,
+                    linux::CLOCK_BOOTTIME_ALARM as u64,
+                    linux::CLOCK_PROCESS_CPUTIME_ID as u64,
+                ],
+                a,
+            ),
+            u64::from(linux::TFD_NONBLOCK) | pick(&[0, u64::from(linux::TFD_CLOEXEC), 1], b),
+            0,
+            0,
+            0,
+            0,
+        ],
+        linux::__NR_timerfd_settime => [
+            fd(a),
+            pick(
+                &[
+                    0,
+                    u64::from(linux::TFD_TIMER_ABSTIME),
+                    u64::from(linux::TFD_TIMER_ABSTIME | linux::TFD_TIMER_CANCEL_ON_SET),
+                    4,
+                ],
+                b,
+            ),
+            pick(&[ARENA + ITIMERS, 0, 8], c) + (c >> 2) % 4 * 32 * u64::from(c % 3 == 0),
+            pick(&[0, buffer(d)], d >> 3),
+            0,
+            0,
+        ],
+        linux::__NR_timerfd_gettime => [fd(a), buffer(b), 0, 0, 0, 0],
         linux::__NR_mq_getsetattr => [
             fd(a),
             pick(&[0, ARENA + MQ_ATTRS, 8], b) + (b >> 3) % 4 * 64 * u64::from(b % 3 == 1),
@@ -3107,6 +3402,14 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
         linux::__NR_statfs | linux::__NR_fstatfs => vec![fixed(b + 40, 24)],
         linux::__NR_ioctl if b == FS_IOC_GETFSUUID => vec![fixed(c + 1, 16)],
         linux::__NR_clock_gettime => vec![fixed(b, 16)],
+        // What is left of a timer.
+        linux::__NR_timer_gettime | linux::__NR_timerfd_gettime | linux::__NR_getitimer => {
+            vec![fixed(b + 16, 16)]
+        }
+        linux::__NR_timer_settime | linux::__NR_timerfd_settime if d != 0 => {
+            vec![fixed(d + 16, 16)]
+        }
+        linux::__NR_setitimer if c != 0 => vec![fixed(c + 16, 16)],
         linux::__NR_times => vec![fixed(a, 32)],
         linux::__NR_sysinfo => vec![fixed(a, 112)],
         linux::__NR_getrusage => vec![fixed(b, 144)],
@@ -3117,6 +3420,13 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
         linux::__NR_sched_getattr if c >= 32 => vec![fixed(b + 24, 8)],
         linux::__NR_uname => vec![fixed(a + 130, 130)],
         linux::__NR_sched_getaffinity => vec![by_value(c, b)],
+        // The status calls' sequence numbers, times and processes (as in `volatile`).
+        linux::__NR_shmctl if matches!(b, 2 | 13 | 15) => vec![fixed(c + 24, 2), fixed(c + 56, 32)],
+        linux::__NR_shmctl if b == 14 => vec![fixed(c + 16, 8)],
+        linux::__NR_msgctl if matches!(b, 2 | 11 | 13) => {
+            vec![fixed(c + 24, 2), fixed(c + 48, 24), fixed(c + 96, 8)]
+        }
+        linux::__NR_semctl if matches!(c, 2 | 18 | 20) => vec![fixed(d + 24, 2), fixed(d + 48, 16)],
         _ => Vec::new(),
     };
     assert!(clears.len() <= CLEARS, "more clears than the runner takes");
@@ -3945,6 +4255,11 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
         linux::__NR_statfs | linux::__NR_fstatfs => out.push((b + 40, 24)),
         linux::__NR_ioctl if b == FS_IOC_GETFSUUID => out.push((c + 1, 16)),
         linux::__NR_clock_gettime => out.push((b, 16)),
+        linux::__NR_timer_gettime | linux::__NR_timerfd_gettime | linux::__NR_getitimer => {
+            out.push((b + 16, 16))
+        }
+        linux::__NR_timer_settime | linux::__NR_timerfd_settime if d != 0 => out.push((d + 16, 16)),
+        linux::__NR_setitimer if c != 0 => out.push((c + 16, 16)),
         linux::__NR_times => out.push((a, 32)),
         linux::__NR_sysinfo => out.push((a, 112)),
         linux::__NR_getrusage => out.push((b, 144)),

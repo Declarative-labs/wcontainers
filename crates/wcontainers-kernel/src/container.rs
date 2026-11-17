@@ -15,7 +15,7 @@ use crate::linux::general::*;
 use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RELATIME};
 use crate::loader::Image;
 use crate::process::{Pid, Process, SIGNALS, Thread, Tid, docker_limits};
-use crate::{Context, Errno, Kernel, errno};
+use crate::{Context, Errno, Kernel};
 
 /// The permission bits, owner and time of a file added before the container starts.
 #[derive(Clone, Copy, Debug)]
@@ -324,6 +324,7 @@ impl Kernel {
             processes: &self.processes,
             threads: &self.threads,
             caller: 0,
+            caller_thread: 0,
             fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
@@ -358,9 +359,12 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
-        self.boot = Time::from_nanoseconds(cx.host.realtime_nanoseconds());
+        let wall = cx.host.realtime_nanoseconds();
+        self.boot = Time::from_nanoseconds(wall);
         self.boot_monotonic = cx.monotonic();
+        self.wall_offset = wall.wrapping_sub(self.boot_monotonic);
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
@@ -373,22 +377,17 @@ impl Kernel {
         let process = Process {
             pid,
             parent: 0,
+            parent_thread: 0,
             group: pid,
             session: pid,
             memory: wcontainers_abi::MemoryId(0),
-            map: crate::memory::AddressMap::new(cx.cpu.address_space().end),
+            map: Rc::new(core::cell::RefCell::new(crate::memory::AddressMap::new(
+                cx.cpu.address_space().end,
+            ))),
             threads: vec![pid],
-            files: FdTable::new(pid as u64),
-            root: root.clone(),
-            cwd: root.clone(),
-            umask: 0o022,
-            credentials,
             limits: docker_limits(),
-            name: Vec::new(),
             executable: (root.clone(), Vec::new()),
             starting_stack: Default::default(),
-            dumpable: true,
-            personality: 0,
             child_subreaper: false,
             thp_disable: 0,
             pending: Default::default(),
@@ -397,9 +396,10 @@ impl Kernel {
             ended_leader: Default::default(),
             nproc_exceeded: false,
             pidfd: None,
-            vfork_parent: None,
             stopped: false,
             report: None,
+            continued_unsent: false,
+            next_timer: 0,
             ended_time: 0,
             children_time: 0,
             children_maxrss: 0,
@@ -410,17 +410,31 @@ impl Kernel {
             self_exec_id: 0,
             terminal: None,
             terminal_old_group: None,
-            actions: [kernel_sigaction {
-                sa_handler_kernel: crate::linux_extra::SIG_DFL,
-                sa_flags: 0,
-                sa_restorer: 0,
-                sa_mask: kernel_sigset_t { sig: [0] },
-            }; SIGNALS],
+            actions: Rc::new(core::cell::RefCell::new(
+                [kernel_sigaction {
+                    sa_handler_kernel: crate::linux_extra::SIG_DFL,
+                    sa_flags: 0,
+                    sa_restorer: 0,
+                    sa_mask: kernel_sigset_t { sig: [0] },
+                }; SIGNALS],
+            )),
         };
         self.processes.insert(pid, process);
+        // Its CPU side thread is made once its program is loaded.
+        let files = Rc::new(core::cell::RefCell::new(FdTable::new(pid as u64)));
+        let fs = Rc::new(core::cell::RefCell::new(crate::process::FsContext {
+            root: root.clone(),
+            cwd: root.clone(),
+            umask: 0o022,
+        }));
+        let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs, credentials);
+        self.threads.insert(pid, thread);
         let result = self.start_first(&mut cx, pid, start);
         if result.is_err() {
             self.processes.remove(&pid);
+            self.threads.remove(&pid);
+            // Counts what was refused on the way.
+            self.settle(&mut cx);
         }
         result
     }
@@ -463,22 +477,23 @@ impl Kernel {
             })
             .collect();
         let limit = u64::MAX;
-        let process = self.processes.get_mut(&pid).expect("process");
-        process.cwd = cwd;
-        process.files.add(
+        self.fs_mut(pid).cwd = cwd;
+        let mut files = self.files_mut(pid);
+        files.add(
             OpenFile::new(null, O_RDWR | O_LARGEFILE, b"/dev/null".to_vec(), 0),
             false,
             0,
             limit,
         )?;
         for pipe in pipes {
-            process.files.add(
+            files.add(
                 OpenFile::new(pipe, O_WRONLY, Vec::new(), 0),
                 false,
                 0,
                 limit,
             )?;
         }
+        drop(files);
         let program = crate::loader::open_program(self, cx.cpu, pid, start.path)?;
         // The strings in the order and room of Linux's `do_execveat_common`.
         let stack_limit = self.processes[&pid].limits[RLIMIT_STACK as usize].current;
@@ -517,14 +532,18 @@ impl Kernel {
             // Past the point of no return the first process dies of SIGSEGV before it runs.
             Err(crate::loader::Failed::Fatal) => {
                 self.processes.remove(&pid);
+                self.threads.remove(&pid);
                 self.init = Some(pid);
                 self.finished = Some(SIGSEGV as i32);
                 self.counters.flush(cx.host);
                 return Ok(());
             }
         };
-        let thread = cx.cpu.thread_new(image.memory).map_err(errno::from_cpu)?;
-        self.threads.insert(pid, Thread::new(pid, thread));
+        let thread = cx
+            .cpu
+            .thread_new(image.memory)
+            .map_err(|error| cx.cpu_error(error))?;
+        self.thread_mut(pid).cpu = thread;
         self.install_image(cx, pid, pid, image);
         self.init = Some(pid);
         self.entry_now = cx.monotonic();
@@ -535,38 +554,40 @@ impl Kernel {
 
     /// Replaces a process's program with a loaded image, as the last part of `execve` does.
     pub(crate) fn install_image(&mut self, cx: &mut Context<'_>, pid: Pid, tid: Tid, image: Image) {
+        let thread = self.threads.get_mut(&tid).expect("thread");
         let process = self.processes.get_mut(&pid).expect("process");
         let old_memory = core::mem::replace(&mut process.memory, image.memory);
-        process.map = image.map;
+        process.map = Rc::new(core::cell::RefCell::new(image.map));
         process.executable = image.executable;
         process.starting_stack = image.starting_stack;
         process.vdso = image.vdso;
         process.execed = true;
         process.self_exec_id += 1;
-        process.set_name(&image.name);
         // Dumpable unless a file could not be read or the ids differ, before or after (Linux's
         // `begin_new_exec` and `commit_creds`).
-        let old = &process.credentials;
+        let old = &thread.credentials;
         let new = &image.after.credentials;
         let lose_parent_death_signal = image.after.secure || new.loses_dumpable(old);
-        process.dumpable = image.readable
+        process.map.borrow_mut().dumpable = image.readable
             && old.euid == old.uid
             && old.egid == old.gid
             && !new.loses_dumpable(old);
         if image.after.gained {
-            process.personality &= !crate::linux_extra::PER_CLEAR_ON_SETID;
+            thread.personality &= !crate::linux_extra::PER_CLEAR_ON_SETID;
         }
         // A program in secure mode starts with at most Linux's default stack limit (`_STK_LIM`).
         let stack = &mut process.limits[RLIMIT_STACK as usize];
         if image.after.secure && stack.current > crate::memory::STACK_LIMIT {
             stack.current = crate::memory::STACK_LIMIT;
         }
-        process.credentials = image.after.credentials;
-        process.files.close_on_exec();
+        thread.credentials = image.after.credentials;
         // New credentials (`commit_creds` in `begin_new_exec`).
         self.last_credentials += 1;
-        process.credentials.serial = self.last_credentials;
-        for action in &mut process.actions {
+        thread.credentials.serial = self.last_credentials;
+        // Handlers shared with another process are copied first (`unshare_sighand`).
+        let actions = *process.actions.borrow();
+        process.actions = Rc::new(core::cell::RefCell::new(actions));
+        for action in process.actions.borrow_mut().iter_mut() {
             if action.sa_handler_kernel != crate::linux_extra::SIG_IGN {
                 action.sa_handler_kernel = crate::linux_extra::SIG_DFL;
             }
@@ -574,7 +595,11 @@ impl Kernel {
             action.sa_restorer = 0;
             action.sa_mask = kernel_sigset_t { sig: [0] };
         }
+        // The program's descriptor table is its own (`unshare_files`), less what closes on exec.
+        self.unshare_files(tid);
+        self.files_mut(tid).close_on_exec(pid);
         let thread = self.threads.get_mut(&tid).expect("thread");
+        thread.set_name(&image.name);
         // The new program has not registered its area. A program in secure mode, or one whose ids
         // change, cannot be signalled by its parent's end.
         thread.rseq = None;
@@ -594,12 +619,8 @@ impl Kernel {
         cx.cpu.set_registers(thread.cpu, &image.registers);
         thread.resume = Resume::FromRegisters;
         // A `vfork` child gives its parent's memory back; any other old memory goes.
-        self.release_vfork(pid);
-        let shown_elsewhere = self
-            .processes
-            .values()
-            .any(|other| other.pid != pid && other.ended.is_none() && other.memory == old_memory);
-        if old_memory.0 != 0 && !shown_elsewhere {
+        self.release_vfork(tid);
+        if old_memory.0 != 0 && !self.memory_in_use_elsewhere(pid, old_memory) {
             cx.cpu.memory_drop(old_memory);
         }
         self.files_released(cx);
@@ -755,6 +776,7 @@ impl Kernel {
             processes: &self.processes,
             threads: &self.threads,
             caller: 0,
+            caller_thread: 0,
             fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,

@@ -122,7 +122,6 @@ fn listings_are_a_subset_of_the_reference() {
 }
 
 #[test]
-#[ignore = "known failure: /proc/<pid>/task is not built yet (it comes with threads, K3)"]
 fn thread_listings_are_a_subset_of_the_reference() {
     compare(&["/proc/self/task", "/proc/self/task/1"]);
 }

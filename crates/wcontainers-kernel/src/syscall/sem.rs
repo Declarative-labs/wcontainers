@@ -84,7 +84,8 @@ pub(crate) struct Semaphores {
     /// Semaphores in every set (`used_sems`).
     used: u64,
     lists: BTreeMap<u64, UndoList>,
-    list_of: BTreeMap<Pid, u64>,
+    /// Each thread's undo list (Linux's `task->sysvsem.undo_list`).
+    list_of: BTreeMap<Tid, u64>,
     next_list: u64,
     /// How a waiting operation ended while it was parked (Linux's `queue.status`), taken when its
     /// call runs again.
@@ -105,7 +106,7 @@ pub(super) fn semget(
         return Err(Errno::EINVAL);
     }
     let count = count as usize;
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let sems = &mut kernel.ipc.sem;
     let existing = get(&sems.ids, &credentials, key, flags, |array| {
         if count > array.sems.len() {
@@ -224,11 +225,11 @@ fn operate(
         }
     }
     let pid = kernel.threads[&tid].process;
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let now = kernel.now(cx).seconds;
     let sems = &mut kernel.ipc.sem;
     let undo = if undos {
-        Some(sems.find_alloc_undo(pid, id)?)
+        Some(sems.find_alloc_undo(tid, id)?)
     } else {
         None
     };
@@ -320,8 +321,8 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
     }
 }
 
-/// `copy_semundo`: a child made with `CLONE_SYSVSEM` shares its parent's undo list.
-pub(crate) fn copy_undo(kernel: &mut Kernel, parent: Pid, child: Pid, share: bool) {
+/// `copy_semundo`: a thread or process made with `CLONE_SYSVSEM` shares its maker's undo list.
+pub(crate) fn copy_undo(kernel: &mut Kernel, parent: Tid, child: Tid, share: bool) {
     if share {
         let sems = &mut kernel.ipc.sem;
         let list = sems.undo_list(parent);
@@ -330,11 +331,20 @@ pub(crate) fn copy_undo(kernel: &mut Kernel, parent: Pid, child: Pid, share: boo
     }
 }
 
-/// `exit_sem`: when the last process using an undo list ends, each set's adjustments are added
-/// (the values held between 0 and `SEMVMX`) and waiting operations looked at again.
-pub(crate) fn exit_sem(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid) {
+/// A thread took another number (`de_thread`); its undo list goes with it.
+pub(crate) fn renumber(kernel: &mut Kernel, from: Tid, to: Tid) {
     let sems = &mut kernel.ipc.sem;
-    let Some(list) = sems.list_of.remove(&pid) else {
+    if let Some(list) = sems.list_of.remove(&from) {
+        sems.list_of.insert(to, list);
+    }
+}
+
+/// `exit_sem`: when the last thread using an undo list ends, each set's adjustments are added
+/// (the values held between 0 and `SEMVMX`) and waiting operations looked at again.
+pub(crate) fn exit_sem(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
+    let pid = kernel.threads[&tid].process;
+    let sems = &mut kernel.ipc.sem;
+    let Some(list) = sems.list_of.remove(&tid) else {
         return;
     };
     let users = &mut sems.lists.get_mut(&list).expect("listed").users;
@@ -373,9 +383,9 @@ impl Semaphores {
             .map(|(index, _)| *index)
     }
 
-    /// `get_undo_list`: the process's undo list, made when it has none.
-    fn undo_list(&mut self, pid: Pid) -> u64 {
-        if let Some(list) = self.list_of.get(&pid) {
+    /// `get_undo_list`: the thread's undo list, made when it has none.
+    fn undo_list(&mut self, tid: Tid) -> u64 {
+        if let Some(list) = self.list_of.get(&tid) {
             return *list;
         }
         let list = self.next_list;
@@ -387,14 +397,14 @@ impl Semaphores {
                 undos: Vec::new(),
             },
         );
-        self.list_of.insert(pid, list);
+        self.list_of.insert(tid, list);
         list
     }
 
     /// `find_alloc_undo`: the process's adjustments for set `id`, moved to the front of its list,
     /// or new ones there when the set exists.
-    fn find_alloc_undo(&mut self, pid: Pid, id: i32) -> Result<u64, Errno> {
-        let list = self.undo_list(pid);
+    fn find_alloc_undo(&mut self, tid: Tid, id: i32) -> Result<u64, Errno> {
+        let list = self.undo_list(tid);
         let undos = &mut self.lists.get_mut(&list).expect("made").undos;
         if let Some(position) = undos.iter().position(|undo| undo.id == id) {
             let undo = undos.remove(position);
@@ -777,7 +787,7 @@ pub(super) fn semctl(
     if id < 0 {
         return Err(Errno::EINVAL);
     }
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let caller = kernel.threads[&tid].process;
     let now = kernel.now(cx).seconds;
     let sems = &mut kernel.ipc.sem;

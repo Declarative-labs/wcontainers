@@ -110,7 +110,7 @@ pub(super) fn membarrier(
     if (command == rseq && flags != 0 && flags != cpu_flag) || (command != rseq && flags != 0) {
         return Err(Errno::EINVAL);
     }
-    let state = &mut kernel.process_of_mut(tid).map.membarrier;
+    let state = &mut kernel.process_of(tid).map.borrow_mut().membarrier;
     // The private barriers need their registration to be ready.
     let ready = |state: u32, needed: u32| {
         if state & needed == 0 {

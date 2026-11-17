@@ -63,3 +63,8 @@ fn job_control() {
 fn interactive_shell() {
     compare("shpty", &[]);
 }
+
+#[test]
+fn splice_holds_the_pipe() {
+    compare("ttylock", &[]);
+}

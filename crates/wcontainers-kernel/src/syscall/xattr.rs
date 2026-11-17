@@ -43,7 +43,7 @@ fn target(
             super::files::lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, follow)
         }
         Target::File(fd) => {
-            let file = kernel.process_of(tid).files.file(fd as i32)?;
+            let file = kernel.files(tid).file(fd as i32)?;
             if file.borrow().is_path() {
                 return Err(Errno::EBADF);
             }
@@ -288,7 +288,7 @@ fn set(
         may_write(&node.borrow())?;
         return Err(Errno::EOPNOTSUPP);
     }
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let caller = kernel.threads[&tid].process;
     let value = if !value.is_empty() && name == CAPABILITY {
         convert_capabilities(&credentials, &value)?
@@ -337,7 +337,7 @@ fn get(
         if name == ACL_ACCESS || name == ACL_DEFAULT {
             return Err(Errno::EOPNOTSUPP);
         }
-        let credentials = &kernel.process_of(tid).credentials;
+        let credentials = kernel.credentials(tid);
         permission(
             &inode,
             credentials,
@@ -378,7 +378,7 @@ fn list(
     let size = size.min(u64::from(XATTR_LIST_MAX)) as usize;
     let names = {
         let inode = node.borrow();
-        let trusted = kernel.process_of(tid).credentials.has(CAP_SYS_ADMIN);
+        let trusted = kernel.credentials(tid).has(CAP_SYS_ADMIN);
         let mut names = Vec::new();
         // tmpfs keeps names in a tree that lists them from the greatest down.
         for name in inode.xattrs.keys().rev() {
@@ -420,7 +420,7 @@ fn remove(
         may_write(&node.borrow())?;
         return Err(Errno::EOPNOTSUPP);
     }
-    let credentials = kernel.process_of(tid).credentials.clone();
+    let credentials = kernel.credentials(tid).clone();
     let caller = kernel.threads[&tid].process;
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();

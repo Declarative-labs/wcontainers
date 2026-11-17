@@ -168,7 +168,7 @@ pub(crate) fn new_queue(
     limits: Option<Limits>,
 ) -> Result<MessageQueue, Errno> {
     let process = kernel.process_of(tid);
-    let credentials = &process.credentials;
+    let credentials = kernel.credentials(tid);
     let usage = &kernel.ipc.mq_usage;
     let resource = credentials.has(CAP_SYS_RESOURCE);
     if usage.queues.get() >= MQ_QUEUES_MAX && !resource {
@@ -274,7 +274,7 @@ pub(super) fn mq_open(
     };
     let name = guest(kernel, cx, tid).read_path(name)?;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
-    kernel.process_of(tid).files.lowest_free(0, limit)?;
+    kernel.files(tid).lowest_free(0, limit)?;
     // `lookup_noperm`: one name in the file system's root.
     if name == b"." || name == b".." || name.contains(&b'/') {
         return Err(Errno::EACCES);
@@ -289,7 +289,7 @@ pub(super) fn mq_open(
             if flags & O_CREAT == 0 {
                 return Err(Errno::ENOENT);
             }
-            let umask = kernel.process_of(tid).umask;
+            let umask = kernel.fs(tid).umask;
             super::files::may_change(kernel, tid, &root)?;
             let queue = Content::Mqueue(alloc::boxed::Box::new(new_queue(kernel, tid, limits)?));
             super::files::create(
@@ -314,12 +314,7 @@ pub(super) fn mq_open(
                 _ => return Err(Errno::EINVAL),
             };
             let pid = kernel.threads[&tid].process;
-            crate::fs::permission(
-                &node.borrow(),
-                &kernel.process_of(tid).credentials,
-                mask,
-                pid,
-            )?;
+            crate::fs::permission(&node.borrow(), kernel.credentials(tid), mask, pid)?;
             node
         }
     };
@@ -333,10 +328,10 @@ pub(super) fn mq_open(
         node,
         flags & !(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC),
         path,
-        kernel.process_of(tid).credentials.serial,
+        kernel.credentials(tid).serial,
     );
     file.borrow_mut().internal_mount = true;
-    let fd = kernel.process_of_mut(tid).files.add(file, true, 0, limit)?;
+    let fd = kernel.files_mut(tid).add(file, true, 0, limit)?;
     Ok(fd as u64)
 }
 
@@ -415,7 +410,7 @@ pub(super) fn mq_timedsend(
         }
         None => {
             let sender_pid = kernel.threads[&tid].process;
-            let sender_uid = kernel.process_of(tid).credentials.uid;
+            let sender_uid = kernel.credentials(tid).uid;
             let notify = with_queue(&node, |queue| {
                 queue.insert((priority, text));
                 // `__do_notify`: the first message of an empty queue tells the process that asked,
@@ -471,6 +466,8 @@ fn park(kernel: &mut Kernel, tid: Tid, node: &Node, deadline: Option<u64>) -> Re
     let thread = kernel.thread_mut(tid);
     thread.call.started = true;
     thread.call.deadline = deadline;
+    // Its time is on the wall clock.
+    thread.call.wall = deadline.is_some();
     kernel.park(tid, Channel::Nothing);
     Err(Errno::PARKED)
 }

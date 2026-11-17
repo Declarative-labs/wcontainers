@@ -54,9 +54,20 @@ pub(crate) struct Context<'a> {
     /// What is added to the host's monotonic clock to give the kernel's (see
     /// [`Kernel::restore`]).
     monotonic_offset: u64,
+    /// Requests the CPU side answered it cannot do at all, counted when the kernel hands back control.
+    refused: u32,
 }
 
 impl Context<'_> {
+    /// What a refused request to make a memory, thread or shared block means to the guest; a host
+    /// that cannot do it at all is counted.
+    pub fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
+        if error == wcontainers_abi::CpuError::NotSupported {
+            self.refused += 1;
+        }
+        errno::from_cpu(error)
+    }
+
     /// The kernel's monotonic clock, which never goes backwards, also across a restore on another
     /// host.
     pub fn monotonic(&mut self) -> u64 {
@@ -116,13 +127,20 @@ pub struct Kernel {
     running: Option<Tid>,
     /// Parked threads by channel and deadline.
     parked: schedule::Parked,
-    /// Parked threads whose wait ended, whose calls are run again before anything else happens.
+    /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
+    /// releasing.
+    released: Vec<file::FileRef>,
+    /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
+    /// comes.
     woken: VecDeque<Tid>,
     /// Threads not running that were sent a signal, which they act on before they run.
     signalled: VecDeque<Tid>,
     /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
     /// host whose clock reads differently.
     monotonic_offset: u64,
+    /// The wall clock less the kernel's monotonic clock (`ktime_mono_to_real`), as at the start or
+    /// the last restore; a restore that finds it changed has seen the wall clock set.
+    wall_offset: u64,
     /// The monotonic clock when the kernel was last entered.
     entry_now: u64,
     /// The monotonic clock when the kernel last handed control back, which is when the thread it
@@ -145,6 +163,10 @@ pub struct Kernel {
     signal_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
     /// The container's System V IPC objects.
     ipc: syscall::ipc::Ipc,
+    /// Every futex with waiters.
+    futexes: syscall::futex::Futexes,
+    /// Every timer.
+    timers: syscall::timer::Timers,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -183,9 +205,11 @@ impl Kernel {
             resched: false,
             running: None,
             parked: schedule::Parked::default(),
+            released: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,
+            wall_offset: 0,
             entry_now: 0,
             last_now: 0,
             picked_runtime: 0,
@@ -195,6 +219,8 @@ impl Kernel {
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),
+            futexes: Default::default(),
+            timers: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,
@@ -255,11 +281,20 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
         self.account(&mut cx, tid);
         self.tick(tid);
         self.wake_due();
-        self.came_back(&mut cx, tid, exit);
+        syscall::timer::fire_due(self, &mut cx);
+        // A timer's signal or the CPU time limit may have killed the thread's process.
+        if self.threads.contains_key(&tid) {
+            syscall::timer::cpu_check(self, &mut cx, tid);
+        }
+        if self.threads.contains_key(&tid) {
+            self.tell_continued(&mut cx, tid);
+            self.came_back(&mut cx, tid, exit);
+        }
         self.settle(&mut cx);
     }
 
@@ -269,11 +304,13 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
         let detail = match event {
             Event::Timer => {
                 self.entry_now = cx.monotonic();
                 self.wake_due();
+                syscall::timer::fire_due(self, &mut cx);
                 self.settle(&mut cx);
                 return;
             }
@@ -302,10 +339,16 @@ impl Kernel {
             cpu,
             host,
             monotonic_offset: self.monotonic_offset,
+            refused: 0,
         };
         self.entry_now = cx.monotonic();
+        // The wall clock moved against the monotonic clock while saved, as across a suspend, which
+        // Linux's resume treats as a setting of the wall clock (`timerfd_resume`).
+        let wall_offset = cx.host.realtime_nanoseconds().wrapping_sub(self.entry_now);
+        let moved = wall_offset.wrapping_sub(self.wall_offset) as i64;
+        self.wall_offset = wall_offset;
         let tids: Vec<Tid> = self.threads.keys().copied().collect();
-        for tid in tids {
+        for &tid in &tids {
             let thread = self.threads.get_mut(&tid).expect("thread");
             // A parked thread's registers still hold its call; it gets its value when the call ends.
             if thread.call.wait.is_some() {
@@ -313,6 +356,11 @@ impl Kernel {
                 continue;
             }
             if let wcontainers_abi::Resume::Return(value) = thread.resume {
+                // A call a stop interrupted keeps its restart code: the signals acted on when the
+                // process is continued turn it into the call again or EINTR, and set the registers.
+                if errno::Errno::restart_of(value).is_some() {
+                    continue;
+                }
                 let mut registers = wcontainers_abi::RegisterBlock::ZERO;
                 cx.cpu.registers(thread.cpu, &mut registers);
                 registers.x[0] = value;
@@ -320,7 +368,30 @@ impl Kernel {
             }
             thread.resume = wcontainers_abi::Resume::FromRegisters;
         }
+        if moved != 0 {
+            self.clock_was_set(moved, &tids);
+        }
         self.settle(&mut cx);
+    }
+
+    /// `clock_was_set`: the wall clock moved by `delta` against the monotonic clock. Calls and
+    /// timers whose times are on it move with it, so those whose time has come end.
+    fn clock_was_set(&mut self, delta: i64, tids: &[Tid]) {
+        let shift =
+            |at: u64| (i128::from(at) - i128::from(delta)).clamp(0, i128::from(u64::MAX)) as u64;
+        for tid in tids {
+            let thread = self.thread_mut(*tid);
+            if thread.call.wall {
+                thread.call.deadline = thread.call.deadline.map(shift);
+            }
+            if let Some(process::Restart::Futex {
+                until, wall: true, ..
+            }) = &mut thread.restart
+            {
+                *until = shift(*until);
+            }
+        }
+        syscall::timer::clock_was_set(self, delta);
     }
 
     /// Every counter that has been bumped.
@@ -328,15 +399,22 @@ impl Kernel {
         self.counters.readings()
     }
 
-    /// Gives a process's credentials a new serial after a change Linux commits (`commit_creds`).
-    pub(crate) fn commit_credentials(&mut self, pid: Pid) {
+    /// Gives a thread's credentials a new serial after a change Linux commits (`commit_creds`).
+    pub(crate) fn commit_credentials(&mut self, tid: Tid) {
         self.last_credentials += 1;
         let serial = self.last_credentials;
-        self.processes
-            .get_mut(&pid)
-            .expect("process exists")
-            .credentials
-            .serial = serial;
+        self.thread_mut(tid).credentials.serial = serial;
+    }
+
+    /// Thread `tid`'s credentials (`current_cred` for the calling thread).
+    pub(crate) fn credentials(&self, tid: Tid) -> &credentials::Credentials {
+        &self.threads[&tid].credentials
+    }
+
+    /// The credentials of the task a number names (`__task_cred`): a live thread's, or what a
+    /// process's first thread kept at its end.
+    pub(crate) fn task_credentials(&self, pid: Pid) -> &credentials::Credentials {
+        fs::proc::task_credentials(&self.processes, &self.threads, pid)
     }
 
     /// The next free process and thread number, wrapping at `pid_max` past the low numbers
@@ -371,28 +449,72 @@ impl Kernel {
         self.processes.get_mut(&pid).expect("process exists")
     }
 
-    /// Runs `f` with a path walker from the point of view of process `pid`.
+    /// Thread `tid`'s descriptor table.
+    pub(crate) fn files(&self, tid: Tid) -> core::cell::Ref<'_, file::FdTable> {
+        self.threads[&tid].files.borrow()
+    }
+
+    pub(crate) fn files_mut(&self, tid: Tid) -> core::cell::RefMut<'_, file::FdTable> {
+        self.threads[&tid].files.borrow_mut()
+    }
+
+    /// Thread `tid`'s root, working directory and umask.
+    pub(crate) fn fs(&self, tid: Tid) -> core::cell::Ref<'_, process::FsContext> {
+        self.threads[&tid].fs.borrow()
+    }
+
+    pub(crate) fn fs_mut(&self, tid: Tid) -> core::cell::RefMut<'_, process::FsContext> {
+        self.threads[&tid].fs.borrow_mut()
+    }
+
+    /// Lets go of a thread's hold on a descriptor table; the last holder's going closes it, in its
+    /// process `closer` (`put_files_struct`).
+    pub(crate) fn put_files(&mut self, files: process::Files, closer: process::Pid) {
+        if let Some(table) = Rc::into_inner(files) {
+            let mut table = table.into_inner();
+            table.close_all(closer);
+            self.released.extend(table.take_released());
+            if table.take_let_go_locks() {
+                self.wake(process::Channel::Locks);
+            }
+        }
+    }
+
+    /// Gives thread `tid` a copy of its descriptor table if it shares it (`unshare_fd`); the copy's
+    /// record locks are its own.
+    pub(crate) fn unshare_files(&mut self, tid: Tid) {
+        let thread = self.thread_mut(tid);
+        if Rc::strong_count(&thread.files) > 1 {
+            let copy = thread.files.borrow().duplicate(tid as u64);
+            thread.files = Rc::new(core::cell::RefCell::new(copy));
+        }
+    }
+
+    /// Runs `f` with a path walker from the point of view of thread `tid`.
     pub(crate) fn with_walk<R>(
         &self,
-        pid: Pid,
-        f: impl FnOnce(&fs::Walk<'_>, &Process) -> Result<R, Errno>,
+        tid: Tid,
+        f: impl FnOnce(&fs::Walk<'_>, &process::FsContext) -> Result<R, Errno>,
     ) -> Result<R, Errno> {
-        let process = &self.processes[&pid];
+        let thread = &self.threads[&tid];
+        let pid = thread.process;
+        let context = thread.fs.borrow();
         let view = fs::proc::View {
             processes: &self.processes,
             threads: &self.threads,
             caller: pid,
+            caller_thread: tid,
             fs: self.files.proc_fs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,
         };
         let walk = fs::Walk {
-            root: &process.root,
-            credentials: &process.credentials,
+            root: &context.root,
+            credentials: &thread.credentials,
             proc: &view,
         };
-        f(&walk, process)
+        f(&walk, &context)
     }
 
     /// The time now on the wall clock.
@@ -405,13 +527,22 @@ impl Kernel {
             .iter()
             .map(|space| space.used_blocks() * wcontainers_abi::PAGE_SIZE)
             .sum();
-        // A `vfork` child shows its parent's memory, counted once.
-        let mapped: u64 = self
+        // A map shared by processes made with CLONE_VM counts once.
+        let mut maps: alloc::vec::Vec<&process::Map> = self
             .processes
             .values()
-            .filter(|process| process.vfork_parent.is_none())
-            .flat_map(|process| process.map.iter())
-            .map(|mapping| mapping.end - mapping.start)
+            .map(|process| &process.map)
+            .collect();
+        maps.sort_by_key(|map| Rc::as_ptr(map));
+        maps.dedup_by(|a, b| Rc::ptr_eq(a, b));
+        let mapped: u64 = maps
+            .iter()
+            .flat_map(|map| {
+                map.borrow()
+                    .iter()
+                    .map(|mapping| mapping.end - mapping.start)
+                    .collect::<alloc::vec::Vec<_>>()
+            })
             .sum();
         ((tmpfs + mapped).min(self.machine.memory_bytes), tmpfs)
     }

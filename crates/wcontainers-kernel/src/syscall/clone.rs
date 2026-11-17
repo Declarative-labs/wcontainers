@@ -6,15 +6,10 @@ use zerocopy::FromZeros;
 
 use super::{Args, Outcome, guest};
 use crate::linux::general::*;
+use crate::linux_extra::PIDFD_THREAD;
 use crate::memory::Lock;
 use crate::process::{Channel, Pid, Report, Tid};
 use crate::{Context, Errno, Kernel, errno};
-
-/// Linux's `CSIGNAL`: the low byte of clone's flags is the signal sent to the parent at the end.
-const CSIGNAL: u64 = 0xff;
-
-/// Flags whose sharing comes with threads, not built yet: each is refused, counted.
-const SHARING_NOT_BUILT: u32 = CLONE_THREAD | CLONE_FILES | CLONE_FS | CLONE_SIGHAND;
 
 /// `clone(flags, stack, parent_tid, tls, child_tid)`, arm64's argument order.
 pub(super) fn clone(
@@ -28,8 +23,9 @@ pub(super) fn clone(
         let child = kernel.threads[&tid].call.progress as Pid;
         return vfork_wait(kernel, tid, child);
     }
-    let exit_signal = flags & CSIGNAL;
-    let flags = (flags as u32) & !(CSIGNAL as u32);
+    // The low byte of clone's flags is the signal sent to the parent at the end.
+    let exit_signal = flags & u64::from(CSIGNAL);
+    let flags = (flags as u32) & !CSIGNAL;
     // Legacy clone gives the descriptor CLONE_PIDFD makes where the parent's thread id would go.
     if flags & CLONE_PIDFD != 0 && flags & CLONE_PARENT_SETTID != 0 {
         return Err(Errno::EINVAL).into();
@@ -62,12 +58,30 @@ pub(super) fn clone(
     }
 }
 
+/// `sched_fork` for a parent with SCHED_FLAG_RESET_ON_FORK: a real-time or deadline policy becomes
+/// SCHED_OTHER at nice 0, another keeps its policy with a negative nice raised to 0; the slice asked
+/// for and the flag go.
+fn reset_on_fork(schedule: &mut crate::process::Schedule) {
+    if !schedule.reset_on_fork {
+        return;
+    }
+    if matches!(schedule.policy, SCHED_FIFO | SCHED_RR | SCHED_DEADLINE) {
+        schedule.policy = SCHED_NORMAL;
+        schedule.priority = 0;
+        schedule.nice = 0;
+    } else {
+        schedule.nice = schedule.nice.max(0);
+    }
+    schedule.slice = 0;
+    schedule.reset_on_fork = false;
+}
+
 /// A `vfork` parent waits, not to be interrupted, until its child starts a program or ends.
-fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Pid) -> Outcome {
+fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
     let borrowing = kernel
-        .processes
+        .threads
         .get(&child)
-        .is_some_and(|process| process.vfork_parent == Some(tid));
+        .is_some_and(|thread| thread.vfork_parent == Some(tid));
     if borrowing {
         kernel.park(tid, Channel::Vfork(child));
         return Outcome::Parked;
@@ -96,24 +110,14 @@ fn make_child(
         || (flags & CLONE_SIGHAND != 0 && flags & CLONE_VM == 0)
         || (flags & CLONE_PARENT != 0 && kernel.init == Some(pid))
         || (flags & CLONE_PIDFD != 0 && flags & CLONE_DETACHED != 0)
+        || (flags & CLONE_THREAD != 0 && flags & (CLONE_NEWUSER | CLONE_NEWPID) != 0)
     {
         return Err(Errno::EINVAL);
     }
-    // Sharing a process's tables between processes, threads, and memory shared by two running
-    // processes are not built.
-    let shares_memory = flags & CLONE_VM != 0 && flags & CLONE_VFORK == 0;
-    if flags & SHARING_NOT_BUILT != 0 || shares_memory {
-        let unbuilt = flags & (SHARING_NOT_BUILT | CLONE_VM);
-        return Err(kernel.counters.refuse_flag(
-            cx.host,
-            __NR_clone,
-            unbuilt.into(),
-            Errno::ENOSYS,
-        ));
-    }
+    let thread = flags & CLONE_THREAD != 0;
     // RLIMIT_NPROC counts the child among its user's tasks; root and a caller with the powers to
     // pass it are not held (`copy_process`).
-    let credentials = &kernel.processes[&pid].credentials;
+    let credentials = kernel.task_credentials(pid);
     if kernel.over_process_limit(pid, credentials.uid, 1)
         && !credentials.has(CAP_SYS_RESOURCE)
         && !credentials.has(CAP_SYS_ADMIN)
@@ -128,8 +132,15 @@ fn make_child(
     // The parent's descriptor for the child: its number is written before the child exists, and
     // nothing is made if that faults.
     if flags & CLONE_PIDFD != 0 {
-        let fd = super::pidfd::next_descriptor(kernel, pid)?;
+        let fd = super::pidfd::next_descriptor(kernel, tid)?;
         guest(kernel, cx, tid).put(pidfd_out, &fd.to_le_bytes())?;
+    }
+    if thread {
+        let child = make_thread(kernel, cx, tid, flags, stack, tls, child_tid)?;
+        if flags & CLONE_PIDFD != 0 {
+            super::pidfd::give_child_descriptor(kernel, cx, tid, child, PIDFD_THREAD)?;
+        }
+        return Ok(child);
     }
     let child = kernel.allocate_id();
     let parent = &kernel.processes[&pid];
@@ -140,10 +151,12 @@ fn make_child(
     } else {
         cx.cpu
             .memory_duplicate(parent.memory)
-            .map_err(errno::from_cpu)?
+            .map_err(|error| cx.cpu_error(error))?
     };
-    let mut map = parent.map.clone();
-    if !borrow {
+    let map = if borrow {
+        parent.map.clone()
+    } else {
+        let mut map = parent.map.borrow().clone();
         // `dup_mmap`: what the child does not get goes, what it gets wiped is zeroed, and nothing
         // stays locked.
         let mappings: alloc::vec::Vec<_> = map.iter().cloned().collect();
@@ -172,18 +185,23 @@ fn make_child(
         }
         map.set_lock_all(Lock::None);
         map.future_lock = Lock::None;
-    }
+        alloc::rc::Rc::new(core::cell::RefCell::new(map))
+    };
     let mut process = parent.clone();
+    if flags & CLONE_SIGHAND == 0 {
+        let actions = *process.actions.borrow();
+        process.actions = alloc::rc::Rc::new(core::cell::RefCell::new(actions));
+    }
     process.pid = child;
     process.memory = memory;
     process.map = map;
     process.threads = alloc::vec![child];
-    process.files = parent.files.duplicate(child as u64);
     process.pending = Default::default();
     process.ended = None;
-    process.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     process.stopped = false;
     process.report = None;
+    process.continued_unsent = false;
+    process.next_timer = 0;
     process.ended_time = 0;
     process.children_time = 0;
     process.children_maxrss = 0;
@@ -195,12 +213,17 @@ fn make_child(
     process.pidfd = None;
     if flags & CLONE_PARENT != 0 {
         process.parent = parent.parent;
+        process.parent_thread = parent.parent_thread;
         process.exit_signal = parent.exit_signal;
     } else {
         process.parent = pid;
+        process.parent_thread = tid;
         process.exit_signal = exit_signal;
     }
-    let thread_cpu = cx.cpu.thread_new(memory).map_err(errno::from_cpu)?;
+    let thread_cpu = cx
+        .cpu
+        .thread_new(memory)
+        .map_err(|error| cx.cpu_error(error))?;
     let mut registers = RegisterBlock::ZERO;
     cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
@@ -212,7 +235,10 @@ fn make_child(
     }
     cx.cpu.set_registers(thread_cpu, &registers);
     let mut thread = kernel.threads[&tid].clone();
+    share_or_copy(&mut thread, flags, child);
+    thread.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
     thread.process = child;
+    thread.pidfd = None;
     thread.cpu = thread_cpu;
     thread.resume = Resume::FromRegisters;
     thread.pending = Default::default();
@@ -228,22 +254,106 @@ fn make_child(
     } else {
         0
     };
+    // A process on the caller's memory has no registered area, nor, unless the caller waits, its
+    // alternate stack (`copy_process`, `rseq_fork`).
     if borrow {
         thread.rseq = None;
+        if flags & CLONE_VFORK == 0 {
+            thread.alternate_stack = (0, 0, 0);
+        }
     }
-    if thread.schedule.reset_on_fork {
-        thread.schedule.policy = SCHED_NORMAL;
-        thread.schedule.priority = 0;
-        thread.schedule.nice = thread.schedule.nice.max(0);
-        thread.schedule.reset_on_fork = false;
-    }
+    reset_on_fork(&mut thread.schedule);
     kernel.processes.insert(child, process);
     kernel.threads.insert(child, thread);
-    super::sem::copy_undo(kernel, pid, child, flags & CLONE_SYSVSEM != 0);
+    super::sem::copy_undo(kernel, tid, child, flags & CLONE_SYSVSEM != 0);
     if flags & CLONE_PIDFD != 0 {
-        super::pidfd::give_child_descriptor(kernel, cx, tid, child)?;
+        super::pidfd::give_child_descriptor(kernel, cx, tid, child, 0)?;
     }
     // `schedule_tail`: the child writes its own number where it was asked to.
+    if flags & CLONE_CHILD_SETTID != 0 {
+        let _ = guest(kernel, cx, child).put(child_tid, &child.to_le_bytes());
+    }
+    kernel.start_new(child);
+    Ok(child)
+}
+
+/// `copy_files` and `copy_fs`: a new thread or process shares its maker's descriptor table and file
+/// system context when the flags say so, and otherwise has copies of its own.
+fn share_or_copy(thread: &mut crate::process::Thread, flags: u32, child: Tid) {
+    if flags & CLONE_FILES == 0 {
+        let copy = thread.files.borrow().duplicate(child as u64);
+        thread.files = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+    }
+    if flags & CLONE_FS == 0 {
+        let copy = thread.fs.borrow().clone();
+        thread.fs = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+    }
+}
+
+/// `copy_process` for a thread of the caller's process: it shares everything the process holds and
+/// starts on the same memory from the caller's registers, with its own stack and thread pointer if
+/// given.
+fn make_thread(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    flags: u32,
+    stack: u64,
+    tls: u64,
+    child_tid: u64,
+) -> Result<Pid, Errno> {
+    let pid = kernel.threads[&tid].process;
+    let memory = kernel.processes[&pid].memory;
+    let thread_cpu = cx
+        .cpu
+        .thread_new(memory)
+        .map_err(|error| cx.cpu_error(error))?;
+    let child = kernel.allocate_id();
+    let mut registers = RegisterBlock::ZERO;
+    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    registers.x[0] = 0;
+    if stack != 0 {
+        registers.sp = stack;
+    }
+    if flags & CLONE_SETTLS != 0 {
+        registers.tpidr_el0 = tls;
+    }
+    cx.cpu.set_registers(thread_cpu, &registers);
+    let mut thread = kernel.threads[&tid].clone();
+    share_or_copy(&mut thread, flags, child);
+    thread.vfork_parent = (flags & CLONE_VFORK != 0).then_some(tid);
+    thread.cpu = thread_cpu;
+    thread.resume = Resume::FromRegisters;
+    thread.pending = Default::default();
+    thread.saved_mask = None;
+    thread.call = Default::default();
+    thread.restart = None;
+    thread.runtime = 0;
+    thread.forced = 0;
+    thread.parent_death_signal = 0;
+    thread.robust_list = (0, 0);
+    thread.clear_child_tid = if flags & CLONE_CHILD_CLEARTID != 0 {
+        child_tid
+    } else {
+        0
+    };
+    // A thread on the same memory has no registered area of its own yet, nor, unless the caller
+    // waits, its alternate stack.
+    if flags & CLONE_VFORK == 0 {
+        thread.alternate_stack = (0, 0, 0);
+    }
+    thread.rseq = None;
+    thread.pidfd = None;
+    thread.opening = None;
+    reset_on_fork(&mut thread.schedule);
+    kernel.threads.insert(child, thread);
+    super::sem::copy_undo(kernel, tid, child, flags & CLONE_SYSVSEM != 0);
+    kernel
+        .processes
+        .get_mut(&pid)
+        .expect("process exists")
+        .threads
+        .push(child);
     if flags & CLONE_CHILD_SETTID != 0 {
         let _ = guest(kernel, cx, child).put(child_tid, &child.to_le_bytes());
     }
@@ -281,6 +391,7 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
         .processes
         .values()
         .filter(|process| process.parent == pid)
+        .filter(|process| options & __WNOTHREAD == 0 || process.parent_thread == tid)
         .filter(|process| match which {
             Which::Any => true,
             Which::Process(target) => process.pid == target,
@@ -297,7 +408,20 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
     if children.is_empty() {
         return Err(Errno::ECHILD);
     }
-    children.sort_by_key(|child| kernel.processes[child].started);
+    // `do_wait` looks at the caller's own children first, then each other thread's in turn.
+    let threads = &kernel.processes[&pid].threads;
+    let own = threads
+        .iter()
+        .position(|thread| *thread == tid)
+        .unwrap_or(0);
+    children.sort_by_key(|child| {
+        let process = &kernel.processes[child];
+        let turn = threads
+            .iter()
+            .position(|thread| *thread == process.parent_thread)
+            .map_or(usize::MAX, |at| (at + threads.len() - own) % threads.len());
+        (turn, process.started)
+    });
     let keep = options & WNOWAIT != 0;
     // `notask_error`: a child that has ended counts only for a wait that takes ends.
     let mut waitable = false;
@@ -522,7 +646,7 @@ fn find_for_waitid(
         }
         Found::Child { pid: child, .. } => {
             let usage = child_usage(kernel, child);
-            let uid = kernel.processes[&child].credentials.uid;
+            let uid = kernel.task_credentials(child).uid;
             let Found::Child { code, value, .. } =
                 find_child(kernel, tid, Which::Process(child), options)?
             else {
