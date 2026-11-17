@@ -182,4 +182,41 @@ impl Format {
             f => f,
         }
     }
+
+    /// What one sample of a colour target in this format counts toward
+    /// [`crate::Limits::color_bytes_per_sample`]: its byte cost and the alignment it starts at, as
+    /// WebGPU counts render targets (8 bytes for 8-bit normalised RGBA). Formats WebGPU does not
+    /// render count as their nearest one there: the packed and two-pixel 8-bit formats as
+    /// `rgba8unorm`, `A8Unorm` as `r8unorm`, `Rgb9e5Float` as `rg11b10ufloat`, three 32-bit channels
+    /// as four. None for depth, stencil and block-compressed formats.
+    pub fn target_bytes(self) -> Option<(u32, u32)> {
+        use Format::*;
+        Some(match self {
+            R8Unorm | R8Snorm | R8Uint | R8Sint | A8Unorm => (1, 1),
+            Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint => (2, 1),
+            R16Unorm | R16Snorm | R16Uint | R16Sint | R16Float => (2, 2),
+            Rgba8Uint | Rgba8Sint => (4, 1),
+            Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint | Rg16Float => (4, 2),
+            R32Uint | R32Sint | R32Float => (4, 4),
+            Rgba8Unorm | Rgba8UnormSrgb | Rgba8Snorm | Bgra8Unorm | Bgra8UnormSrgb | Bgrx8Unorm
+            | Bgrx8UnormSrgb | B5g6r5Unorm | Bgr5a1Unorm | Bgra4Unorm | Rgbg8Unorm | Grgb8Unorm => {
+                (8, 1)
+            }
+            Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint | Rgba16Float => (8, 2),
+            Rg32Uint | Rg32Sint | Rg32Float | Rgb10a2Unorm | Rgb10a2Uint | Rg11b10Float
+            | Rgb9e5Float => (8, 4),
+            Rgb32Uint | Rgb32Sint | Rgb32Float | Rgba32Uint | Rgba32Sint | Rgba32Float => (16, 4),
+            _ => return None,
+        })
+    }
+}
+
+/// The bytes one sample of colour targets in these formats holds, in attachment order, as
+/// [`crate::Limits::color_bytes_per_sample`] bounds it: each target starts at a multiple of its
+/// alignment and adds its cost ([`Format::target_bytes`]). None where one cannot be a colour target.
+pub fn color_target_bytes(formats: impl IntoIterator<Item = Format>) -> Option<u32> {
+    formats.into_iter().try_fold(0, |at: u32, f| {
+        let (cost, align) = f.target_bytes()?;
+        Some(at.next_multiple_of(align) + cost)
+    })
 }

@@ -274,8 +274,11 @@ pub enum VertexFormat {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StepMode {
     Vertex,
-    /// Advances once every `n` instances (Direct3D's step rate; zero means never). WebGPU steps by one
-    /// only: other rates are fetched in the vertex program from the instance index (slow path
+    /// Advances once every `n` instances (Direct3D's step rate; zero means never): the instance of
+    /// index `i` reads element `first_instance + (i - first_instance) / n`, or `first_instance` for
+    /// zero.
+    /// Rates other than one need [`crate::Features::INSTANCE_STEP_RATE`] (WebGPU steps by one only);
+    /// without it they are fetched in the vertex program from the instance index (slow path
     /// [`crate::SlowPath::InstanceRateInShader`]).
     Instance(u32),
 }
