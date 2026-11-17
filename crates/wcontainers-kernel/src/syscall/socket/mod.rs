@@ -205,6 +205,13 @@ impl Socket {
         self.inet.is_none() && self.netlink.is_none()
     }
 
+    /// A TCP socket, which `mmap` takes (`tcp_mmap`).
+    pub(crate) fn tcp(&self) -> bool {
+        self.inet
+            .as_deref()
+            .is_some_and(|inet| inet.protocol == inet::Protocol::Tcp)
+    }
+
     /// Its protocol's name, which its inode's dentry carries (`sk_prot_creator->name`).
     pub(crate) fn protocol_name(&self) -> &'static [u8] {
         match self.family {
@@ -241,17 +248,18 @@ impl Socket {
     }
 }
 
-/// What `sk_wake_async` is told: data or an end came (`SOCK_WAKE_WAITD`), or room came back
-/// (`SOCK_WAKE_SPACE`).
+/// What `sk_wake_async` is told: data or an end came (`SOCK_WAKE_WAITD`), room came back
+/// (`SOCK_WAKE_SPACE`), or a connection or error was reported (`SOCK_WAKE_IO`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Wake {
+pub(super) enum Wake {
     Data,
     Space,
+    Io,
 }
 
-/// `sk_wake_async`: the I/O signal of a local socket's file with `FASYNC` set, for `reason`. Data
-/// is not told while a reader waits for it, and room only after a send found none.
-fn wake_async(
+/// `sk_wake_async`: the I/O signal of a socket's file with `FASYNC` set, for `reason`. Data is
+/// not told while a reader waits for it, and room only after a send found none.
+pub(super) fn wake_async(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     socket: &SocketRef,
@@ -260,9 +268,6 @@ fn wake_async(
 ) {
     let file = {
         let mut own = socket.borrow_mut();
-        if own.inet.is_some() || own.netlink.is_some() {
-            return;
-        }
         match how {
             Wake::Data if own.waiting_data => return,
             Wake::Space if !core::mem::take(&mut own.no_space) => return,
@@ -275,17 +280,31 @@ fn wake_async(
     }
 }
 
-/// `sock_def_readable`: a local socket's waiters and its I/O signal hear of data.
-fn data_ready(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, key: u32) {
+/// `sock_def_readable`: a socket's waiters and its I/O signal hear of data.
+pub(super) fn data_ready(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, key: u32) {
     kernel.wake_poll(channel(socket), key);
     wake_async(kernel, cx, socket, Wake::Data, POLL_IN);
 }
 
-/// `unix_write_space`: room came back to a sender, which its waiters and, once it is writable
-/// and a send found none, its I/O signal hear of.
-fn write_space(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+/// `sock_def_error_report`: an error came, which its waiters and its I/O signal hear of.
+pub(super) fn error_report(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    kernel.wake_poll(channel(socket), EPOLLERR);
+    wake_async(kernel, cx, socket, Wake::Io, POLL_ERR);
+}
+
+/// `unix_write_space` and `sk_stream_write_space`: room came back to a sender, which its waiters
+/// and, once it is writable and a send found none, its I/O signal hear of (a stream's only while
+/// it may still send).
+pub(super) fn write_space(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
-    if socket.borrow().unix_writable() {
+    let tell = {
+        let own = socket.borrow();
+        match own.inet.as_deref() {
+            Some(_) => inet::space_to_tell(&own),
+            None => own.unix_writable(),
+        }
+    };
+    if tell {
         wake_async(kernel, cx, socket, Wake::Space, POLL_OUT);
     }
 }

@@ -234,16 +234,7 @@ pub(super) fn set_async(
                 Device::from_number(inode.rdev),
                 Some(Device::Random | Device::Urandom)
             ),
-            Content::Socket(socket) => {
-                let socket = socket.borrow();
-                if on && !socket.local() {
-                    kernel.counters.note(
-                        crate::reason::SOCKET_SIGNALS_NOT_BUILT,
-                        socket.family.into(),
-                    );
-                }
-                true
-            }
+            Content::Socket(_) => true,
             _ => false,
         }
     };

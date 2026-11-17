@@ -216,7 +216,7 @@ pub(super) fn take(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketR
             .insert(id, (Rc::downgrade(&embryo), None));
         pull(kernel, cx, &embryo, id);
         listener.borrow_mut().backlog.push_back(embryo);
-        kernel.wake_poll(channel(listener), EPOLLIN | EPOLLRDNORM);
+        super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
     }
 }
 
@@ -261,8 +261,13 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                 if let Some(inet) = own.inet.as_deref_mut() {
                     inet.done = true;
                 }
+                let ended = own.shutdown == SHUTDOWN_MASK;
                 drop(own);
                 kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM | EPOLLRDHUP);
+                // `tcp_fin` tells the end, then `tcp_data_ready` the data.
+                let reason = if ended { POLL_HUP } else { POLL_IN };
+                super::wake_async(kernel, cx, socket, super::Wake::Data, reason);
+                super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
                 return;
             }
             Ok(count) => {
@@ -297,7 +302,7 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                 }
                 own.queue.push_back(packet);
                 drop(own);
-                kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);
+                super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
             }
             Err(HostError::WouldBlock) | Err(HostError::NotSupported) => return,
             Err(HostError::Closed) | Err(HostError::Errno(_)) if !stream => {
@@ -308,19 +313,24 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                         .then(|| own.inet.as_deref().and_then(|inet| inet.remote))
                         .flatten()
                 };
-                if connected_to == flow {
+                let told = connected_to == flow;
+                if told {
                     socket.borrow_mut().error = Errno::ECONNREFUSED.0 as i32;
                 }
                 forget_flow(kernel, socket, id);
-                kernel.wake_poll(channel(socket), EPOLLERR);
+                if told {
+                    super::error_report(kernel, cx, socket);
+                } else {
+                    kernel.wake_poll(channel(socket), EPOLLERR);
+                }
                 return;
             }
             Err(HostError::Closed) => {
-                reset(kernel, socket, Errno::ECONNRESET);
+                reset(kernel, cx, socket, Errno::ECONNRESET);
                 return;
             }
             Err(HostError::Errno(number)) => {
-                reset(kernel, socket, Errno(number as u32));
+                reset(kernel, cx, socket, Errno(number as u32));
                 return;
             }
         }
@@ -337,7 +347,7 @@ fn forget_flow(kernel: &mut Kernel, socket: &SocketRef, id: u32) {
 }
 
 /// A TCP connection to the outside was reset or failed: closed, with the error to report.
-fn reset(kernel: &mut Kernel, socket: &SocketRef, error: Errno) {
+fn reset(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, error: Errno) {
     {
         let mut own = socket.borrow_mut();
         let close_wait = own.shutdown & RCV_SHUTDOWN != 0 && own.state == State::Connected;
@@ -354,6 +364,7 @@ fn reset(kernel: &mut Kernel, socket: &SocketRef, error: Errno) {
         }
     }
     kernel.wake(channel(socket));
+    super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_ERR);
 }
 
 /// Sends bytes of a TCP connection to the outside, as much as the host takes now.
@@ -380,7 +391,7 @@ pub(super) fn send(
             Ok(0)
         }
         Err(HostError::Closed) => {
-            reset(kernel, socket, Errno::ECONNRESET);
+            reset(kernel, cx, socket, Errno::ECONNRESET);
             Err(Errno::ECONNRESET)
         }
         Err(error) => Err(refusal(kernel, cx, error)),
@@ -444,11 +455,16 @@ pub(crate) fn event(
                 if error != 0 {
                     let flow = kernel.sockets.inet.outside.connections[&connection.0].1;
                     let connected_to = socket.borrow().inet.as_deref().and_then(|inet| inet.remote);
-                    if connected_to == flow && socket.borrow().state == State::Connected {
+                    let told = connected_to == flow && socket.borrow().state == State::Connected;
+                    if told {
                         socket.borrow_mut().error = error;
                     }
                     forget_flow(kernel, &socket, connection.0);
-                    kernel.wake_poll(channel(&socket), EPOLLERR);
+                    if told {
+                        super::error_report(kernel, cx, &socket);
+                    } else {
+                        kernel.wake_poll(channel(&socket), EPOLLERR);
+                    }
                 }
                 return true;
             }
@@ -461,6 +477,7 @@ pub(crate) fn event(
                 inet.room = true;
                 drop(own);
                 kernel.wake_poll(channel(&socket), EPOLLOUT | EPOLLWRNORM);
+                super::wake_async(kernel, cx, &socket, super::Wake::Io, POLL_OUT);
             } else {
                 kernel
                     .sockets
@@ -469,7 +486,7 @@ pub(crate) fn event(
                     .connections
                     .remove(&connection.0);
                 cx.host.close(connection);
-                super::inet::failed(kernel, &socket, Errno(error as u32));
+                super::inet::failed(kernel, cx, &socket, Errno(error as u32));
             }
             true
         }
@@ -492,7 +509,7 @@ pub(crate) fn event(
                 inet.room = true;
             }
             pull(kernel, cx, &socket, connection.0);
-            kernel.wake_poll(channel(&socket), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+            super::write_space(kernel, cx, &socket);
             true
         }
         Event::LookedUp {
@@ -505,7 +522,7 @@ pub(crate) fn event(
             };
             if let Some(socket) = lookup.socket.upgrade() {
                 let answer = super::resolver::answer(&lookup.query, addresses, error);
-                deliver(kernel, &socket, lookup.server, answer);
+                deliver(kernel, cx, &socket, lookup.server, answer);
             }
             true
         }
@@ -523,7 +540,13 @@ fn inet_protocol(socket: &SocketRef) -> Option<Protocol> {
 }
 
 /// A datagram from `from` into a UDP socket's queue, if its buffer has room.
-pub(super) fn deliver(kernel: &mut Kernel, socket: &SocketRef, from: Endpoint, data: Vec<u8>) {
+pub(super) fn deliver(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    from: Endpoint,
+    data: Vec<u8>,
+) {
     let truesize = super::inet::datagram_truesize(data.len() as u64);
     let held: u64 = socket
         .borrow()
@@ -556,7 +579,7 @@ pub(super) fn deliver(kernel: &mut Kernel, socket: &SocketRef, from: Endpoint, d
         urgent: false,
     };
     socket.borrow_mut().queue.push_back(packet);
-    kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);
+    super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
 }
 
 /// A name query sent to the container's name server: answered at once when it asks for nothing
@@ -569,14 +592,14 @@ pub(super) fn query(
     data: &[u8],
 ) {
     match super::resolver::question(data) {
-        super::resolver::Question::Answer(answer) => deliver(kernel, socket, server, answer),
+        super::resolver::Question::Answer(answer) => deliver(kernel, cx, socket, server, answer),
         super::resolver::Question::Unanswerable(answer, kind) => {
             kernel.counters.count(
                 cx.host,
                 crate::reason::NAME_QUERY_NOT_ANSWERED,
                 u64::from(kind),
             );
-            deliver(kernel, socket, server, answer);
+            deliver(kernel, cx, socket, server, answer);
         }
         super::resolver::Question::LookUp(name) => {
             let outside = &mut kernel.sockets.inet.outside;
@@ -595,7 +618,7 @@ pub(super) fn query(
                 kernel.sockets.inet.outside.lookups.remove(&request);
                 let errno = refusal(kernel, cx, error);
                 let answer = super::resolver::answer(data, &[], errno.0 as i32);
-                deliver(kernel, socket, server, answer);
+                deliver(kernel, cx, socket, server, answer);
             }
         }
         super::resolver::Question::Dropped => {}
@@ -636,9 +659,9 @@ pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
             .as_deref()
             .is_some_and(|inet| inet.connecting.is_some());
         if connecting {
-            super::inet::failed(kernel, &socket, Errno::ECONNREFUSED);
+            super::inet::failed(kernel, cx, &socket, Errno::ECONNREFUSED);
         } else {
-            reset(kernel, &socket, Errno::ECONNRESET);
+            reset(kernel, cx, &socket, Errno::ECONNRESET);
         }
     }
     let requests: Vec<(u64, String)> = kernel
@@ -655,7 +678,7 @@ pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
             && let Some(socket) = lookup.socket.upgrade()
         {
             let answer = super::resolver::answer(&lookup.query, &[], Errno::EAGAIN.0 as i32);
-            deliver(kernel, &socket, lookup.server, answer);
+            deliver(kernel, cx, &socket, lookup.server, answer);
         }
     }
 }

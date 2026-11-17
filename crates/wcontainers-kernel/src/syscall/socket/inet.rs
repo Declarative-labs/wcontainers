@@ -746,9 +746,9 @@ fn disconnect_tcp(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef)
             for embryo in backlog {
                 super::released(kernel, cx, &embryo);
             }
-            refuse_waiting(kernel, socket);
+            refuse_waiting(kernel, cx, socket);
         }
-        State::Connected => reset_peer(kernel, socket),
+        State::Connected => reset_peer(kernel, cx, socket),
         State::Closed => {}
     }
     let packets = {
@@ -771,7 +771,7 @@ fn disconnect_tcp(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef)
 
 /// Sends a reset to a connection's other end (`tcp_send_active_reset`): it sees ECONNRESET, or
 /// EPIPE if its own FIN had come, and is closed (`tcp_reset`, `tcp_done`).
-fn reset_peer(kernel: &mut Kernel, socket: &SocketRef) {
+fn reset_peer(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     let Some(peer) = socket.borrow().peer.clone() else {
         return;
     };
@@ -781,12 +781,12 @@ fn reset_peer(kernel: &mut Kernel, socket: &SocketRef) {
         .as_ref()
         .is_some_and(|back| Rc::ptr_eq(back, socket));
     if back {
-        reset(kernel, &peer);
+        reset(kernel, cx, &peer);
     }
 }
 
 /// `tcp_reset`: an RST came.
-fn reset(kernel: &mut Kernel, socket: &SocketRef) {
+fn reset(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     {
         let mut own = socket.borrow_mut();
         let close_wait = own.shutdown & RCV_SHUTDOWN != 0 && own.state == State::Connected;
@@ -799,6 +799,7 @@ fn reset(kernel: &mut Kernel, socket: &SocketRef) {
         own.shutdown = SHUTDOWN_MASK;
     }
     kernel.wake(channel(socket));
+    super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_ERR);
 }
 
 fn tcp_connect(
@@ -857,7 +858,7 @@ fn tcp_connect(
     }
     let Some(listener) = find_listener(kernel, &to) else {
         // The listener's reset comes at once (`tcp_reset` in SYN_SENT).
-        refused(kernel, socket);
+        refused(kernel, cx, socket);
         if nonblocking {
             inet(socket).in_progress = true;
             return Err(Errno::EINPROGRESS);
@@ -880,7 +881,7 @@ fn tcp_connect(
         }
         return wait_connect(kernel, tid, socket);
     }
-    join(kernel, socket, &listener);
+    join(kernel, cx, socket, &listener);
     if nonblocking {
         inet(socket).in_progress = true;
         return Err(Errno::EINPROGRESS);
@@ -900,7 +901,7 @@ fn connect_outside(
     let id = match super::outside::open(kernel, cx, socket, to, true) {
         Ok(id) => id,
         Err(error) => {
-            failed(kernel, socket, error);
+            failed(kernel, cx, socket, error);
             let mut own = socket.borrow_mut();
             own.error = 0;
             own.shutdown = 0;
@@ -966,12 +967,12 @@ fn finish_connect(socket: &SocketRef) -> Result<u64, Errno> {
 
 /// A connect was refused: the socket is closed with ECONNREFUSED to report, and lets go of the
 /// port it was given (`tcp_set_state(TCP_CLOSE)`).
-fn refused(kernel: &mut Kernel, socket: &SocketRef) {
-    failed(kernel, socket, Errno::ECONNREFUSED);
+fn refused(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    failed(kernel, cx, socket, Errno::ECONNREFUSED);
 }
 
 /// A connect failed with `error`, as [`refused`].
-pub(super) fn failed(kernel: &mut Kernel, socket: &SocketRef, error: Errno) {
+pub(super) fn failed(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, error: Errno) {
     let port = {
         let mut own = socket.borrow_mut();
         own.state = State::Closed;
@@ -999,6 +1000,7 @@ pub(super) fn failed(kernel: &mut Kernel, socket: &SocketRef, error: Errno) {
         inet(socket).local.address = any;
     }
     kernel.wake(channel(socket));
+    super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_ERR);
 }
 
 /// The listener for a destination: one bound to its address, else one bound to any address its
@@ -1034,7 +1036,7 @@ fn find_listener(kernel: &Kernel, to: &Endpoint) -> Option<SocketRef> {
 
 /// Joins a connecting socket to a new socket in the listener's backlog, the listener's end of
 /// the connection, which takes the listener's options (`tcp_create_openreq_child`).
-fn join(kernel: &mut Kernel, socket: &SocketRef, listener: &SocketRef) {
+fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener: &SocketRef) {
     let (local, remote) = {
         let own = inet_ref(socket);
         (own.local, own.remote.expect("a destination"))
@@ -1051,8 +1053,9 @@ fn join(kernel: &mut Kernel, socket: &SocketRef, listener: &SocketRef) {
         client.inet.as_deref_mut().unwrap().connecting = None;
     }
     listener.borrow_mut().backlog.push_back(embryo);
-    kernel.wake_poll(channel(listener), EPOLLIN | EPOLLRDNORM);
+    super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
     kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM);
+    super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_OUT);
 }
 
 /// The listener's end of a new connection to `address` on its port from `remote`, holding the
@@ -1130,16 +1133,16 @@ pub(super) fn accepted(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &Soc
         if socket.borrow().dead || inet_ref(&socket).connecting.is_none() {
             continue;
         }
-        join(kernel, &socket, listener);
+        join(kernel, cx, &socket, listener);
     }
 }
 
 /// The connects still waiting on a listener that stops listening are refused.
-fn refuse_waiting(kernel: &mut Kernel, listener: &SocketRef) {
+fn refuse_waiting(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
     let waiting = core::mem::take(&mut inet(listener).waiting);
     for socket in waiting.iter().filter_map(Weak::upgrade) {
         if inet_ref(&socket).connecting.is_some() {
-            refused(kernel, &socket);
+            refused(kernel, cx, &socket);
         }
     }
 }
@@ -1228,7 +1231,7 @@ pub(super) fn shutdown(
                 let outside = inet_ref(socket).outside;
                 match outside {
                     Some(id) => super::outside::finish(cx, id),
-                    None => send_fin(kernel, socket),
+                    None => send_fin(kernel, cx, socket),
                 }
             }
             kernel.wake(channel(socket));
@@ -1240,7 +1243,7 @@ pub(super) fn shutdown(
 /// A FIN to the other end of a connection: it reads the end after what was sent. Once both ends
 /// have sent theirs the connection is closed, and the end that sent first holds its ports for
 /// TIME_WAIT.
-fn send_fin(kernel: &mut Kernel, socket: &SocketRef) {
+fn send_fin(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     let Some(peer) = socket.borrow().peer.clone() else {
         return;
     };
@@ -1267,6 +1270,16 @@ fn send_fin(kernel: &mut Kernel, socket: &SocketRef) {
         hold_time_wait(kernel, first);
     }
     kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM | EPOLLRDHUP);
+    // `tcp_fin` tells the end, then `tcp_data_ready` the data.
+    if !peer.borrow().dead {
+        let ended = {
+            let other = peer.borrow();
+            other.shutdown == SHUTDOWN_MASK || other.state == State::Closed
+        };
+        let reason = if ended { POLL_HUP } else { POLL_IN };
+        super::wake_async(kernel, cx, &peer, super::Wake::Data, reason);
+        super::data_ready(kernel, cx, &peer, EPOLLIN | EPOLLRDNORM);
+    }
 }
 
 /// A connection's end that closed first holds its port for TIME_WAIT.
@@ -1346,6 +1359,15 @@ fn writable(own: &Socket) -> bool {
     own.sndbuf.saturating_sub(held) >= held / 2
 }
 
+/// Whether room that came back is told by an I/O signal: `sk_stream_write_space` for TCP (while
+/// it may still send), `sock_def_write_space` (`sock_writeable`) for UDP.
+pub(super) fn space_to_tell(own: &Socket) -> bool {
+    match own.inet.as_deref().unwrap().protocol {
+        Protocol::Tcp => writable(own) && own.shutdown & SEND_SHUTDOWN == 0,
+        Protocol::Udp => own.written << 1 < own.sndbuf,
+    }
+}
+
 /// The last descriptor went: a connection is reset if bytes were left unread (or SO_LINGER asks
 /// for no wait), else the other end gets a FIN; a listener's waiting connections are reset; the
 /// ports are let go.
@@ -1360,10 +1382,10 @@ pub(super) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &Socke
             State::Listening => {
                 let backlog = core::mem::take(&mut socket.borrow_mut().backlog);
                 for embryo in backlog {
-                    reset_peer(kernel, &embryo);
+                    reset_peer(kernel, cx, &embryo);
                     super::released(kernel, cx, &embryo);
                 }
-                refuse_waiting(kernel, socket);
+                refuse_waiting(kernel, cx, socket);
             }
             State::Connected if inet_ref(socket).outside.is_some() => {}
             State::Connected => {
@@ -1373,10 +1395,10 @@ pub(super) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &Socke
                     .get(&(SOL_SOCKET, SO_LINGER))
                     .is_some_and(|value| value[..4] != [0; 4] && value[4..8] == [0; 4]);
                 if !socket.borrow().queue.is_empty() || linger_zero {
-                    reset_peer(kernel, socket);
+                    reset_peer(kernel, cx, socket);
                 } else if socket.borrow().shutdown & SEND_SHUTDOWN == 0 {
                     socket.borrow_mut().shutdown |= SEND_SHUTDOWN;
-                    send_fin(kernel, socket);
+                    send_fin(kernel, cx, socket);
                 } else if !inet_ref(socket).done && inet_ref(socket).closed_first {
                     // Its FIN went and the other end's has not come: it holds its ports.
                     hold_time_wait(kernel, socket);
@@ -1487,6 +1509,7 @@ fn tcp_send(
                 return Err(Errno::EPIPE);
             }
             if !inet_ref(socket).room {
+                socket.borrow_mut().no_space = true;
                 if sent > 0 && (nonblocking || kernel.signal_pending(tid)) {
                     return Ok(sent);
                 }
@@ -1514,7 +1537,7 @@ fn tcp_send(
         }
         if peer.borrow().dead {
             // The other end is gone: what is sent draws its reset, which ends the connection.
-            reset(kernel, socket);
+            reset(kernel, cx, socket);
             let rest = total - sent;
             return Ok(sent + rest);
         }
@@ -1529,6 +1552,7 @@ fn tcp_send(
             kernel
                 .counters
                 .count(cx.host, crate::reason::TCP_ROOM_MODELLED, 0);
+            socket.borrow_mut().no_space = true;
             if sent > 0 && (nonblocking || kernel.signal_pending(tid)) {
                 return Ok(sent);
             }
@@ -1562,8 +1586,19 @@ fn tcp_send(
             time: super::stamp(kernel, cx, &peer),
             ..packet
         };
+        // Bytes past the receiver's buffer are still on their way under Linux's window, so only
+        // a send that finds room there is told to the receiver's I/O signal.
+        let arrives = {
+            let other = peer.borrow();
+            let held: u64 = other.queue.iter().map(|packet| packet.truesize).sum();
+            held < other.rcvbuf
+        };
         peer.borrow_mut().queue.push_back(packet);
-        kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
+        if arrives {
+            super::data_ready(kernel, cx, &peer, EPOLLIN | EPOLLRDNORM);
+        } else {
+            kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
+        }
         sent += size;
     }
 }
@@ -1838,7 +1873,7 @@ fn udp_send(
                     urgent: false,
                 };
                 receiver.borrow_mut().queue.push_back(packet);
-                kernel.wake_poll(channel(&receiver), EPOLLIN | EPOLLRDNORM);
+                super::data_ready(kernel, cx, &receiver, EPOLLIN | EPOLLRDNORM);
             }
         }
         None if unicast(&to.address) => {
@@ -1851,7 +1886,7 @@ fn udp_send(
             };
             if connected_to == Some(to) {
                 socket.borrow_mut().error = Errno::ECONNREFUSED.0 as i32;
-                kernel.wake_poll(channel(socket), EPOLLERR);
+                super::error_report(kernel, cx, socket);
             }
         }
         None => {}
@@ -1938,7 +1973,12 @@ pub(super) fn receive(
     if let Some(id) = outside {
         super::outside::pull(kernel, cx, socket, id);
     }
+    // `sk_wait_data` keeps a waiting reader's data from sending its I/O signal.
+    socket.borrow_mut().waiting_data = false;
     let result = super::receive_stream(kernel, cx, tid, socket, parts, size, flags, nonblocking);
+    if result.as_ref().err() == Some(&Errno::PARKED) {
+        socket.borrow_mut().waiting_data = true;
+    }
     if let Some(id) = outside {
         super::outside::pull(kernel, cx, socket, id);
     }

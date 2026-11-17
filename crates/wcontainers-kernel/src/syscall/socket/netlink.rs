@@ -3,9 +3,10 @@
 //! the made-up network in [`crate::network`]. Nothing in that network changes, so no notices are
 //! ever sent to the groups a socket joins.
 
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use super::{Packet, Received, Socket, SocketRef, channel, gather, scatter, wait_room};
+use super::{Packet, Received, Socket, SocketRef, gather, scatter, wait_room};
 use crate::linux::general::*;
 use crate::linux::if_arp::{ARPHRD_ETHER, ARPHRD_LOOPBACK};
 use crate::linux::net::net_device_flags::{
@@ -37,6 +38,9 @@ pub(crate) struct Netlink {
     pub groups: u32,
     /// Options at SOL_NETLINK, by number.
     pub flags: u32,
+    /// The parts of a running dump not yet queued (`cb_running`): each comes once a read leaves
+    /// room (`netlink_dump`).
+    pub dump: VecDeque<Vec<u8>>,
 }
 
 /// `netlink_create`: NETLINK_ROUTE only.
@@ -66,6 +70,7 @@ pub(super) fn create(
         portid: 0,
         groups: 0,
         flags: 0,
+        dump: VecDeque::new(),
     }));
     Ok(socket)
 }
@@ -239,8 +244,14 @@ pub(super) fn send(
         let mut error = 0;
         if request_flags & NLM_F_REQUEST != 0 && u32::from(kind) >= NLMSG_MIN_TYPE {
             match answer(kernel, cx, request, portid, flags) {
+                // `__netlink_dump_start`: one dump at a time; its first part comes at once.
+                Ok(Answer::Dump(_)) if !part(socket).dump.is_empty() => {
+                    error = -(Errno::EBUSY.0 as i32)
+                }
                 Ok(Answer::Dump(messages)) => {
-                    replies.extend(messages);
+                    let mut messages = VecDeque::from(messages);
+                    replies.extend(messages.pop_front());
+                    part(socket).dump = messages;
                     at += length.next_multiple_of(ALIGN);
                     continue;
                 }
@@ -255,22 +266,27 @@ pub(super) fn send(
         at += length.next_multiple_of(ALIGN);
     }
     for reply in replies {
-        let packet = Packet {
-            truesize: super::truesize(reply.len() as u64, 0),
-            data: reply,
-            consumed: 0,
-            files: Vec::new(),
-            cred: super::own_cred(kernel, tid),
-            sender: alloc::rc::Weak::new(),
-            source: None,
-            arrival: None,
-            time: None,
-            urgent: false,
-        };
-        socket.borrow_mut().queue.push_back(packet);
+        queue(kernel, cx, tid, socket, reply);
     }
-    kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);
     Ok(total)
+}
+
+/// `netlink_sendskb`: a message for the socket's reader, who hears of it.
+fn queue(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, socket: &SocketRef, reply: Vec<u8>) {
+    let packet = Packet {
+        truesize: super::truesize(reply.len() as u64, 0),
+        data: reply,
+        consumed: 0,
+        files: Vec::new(),
+        cred: super::own_cred(kernel, tid),
+        sender: alloc::rc::Weak::new(),
+        source: None,
+        arrival: None,
+        time: None,
+        urgent: false,
+    };
+    socket.borrow_mut().queue.push_back(packet);
+    super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
 }
 
 /// What a request gets: a dump (its parts, then NLMSG_DONE, each one read), one message, or
@@ -875,7 +891,22 @@ pub(super) fn receive(
         .data
         .clone();
     let copied = (data.len() as u64).min(size);
-    scatter(kernel, cx, tid, parts, &data[..copied as usize])?;
+    // `netlink_recvmsg` lets the message go even when copying it out faults, and goes on with a
+    // running dump once the queue holds at most half its room, a peek too.
+    let copy = scatter(kernel, cx, tid, parts, &data[..copied as usize]);
+    if flags & MSG_PEEK == 0 {
+        socket.borrow_mut().queue.pop_front();
+    }
+    let next = {
+        let own = socket.borrow();
+        let held: u64 = own.queue.iter().map(|packet| packet.truesize).sum();
+        held <= own.rcvbuf / 2 && !own.netlink.as_deref().unwrap().dump.is_empty()
+    };
+    if next {
+        let reply = part(socket).dump.pop_front().expect("a part");
+        queue(kernel, cx, tid, socket, reply);
+    }
+    copy?;
     let mut received = Received {
         address: Some(address(0, 0)),
         ..Received::default()
@@ -885,9 +916,6 @@ pub(super) fn receive(
     }
     if flags & MSG_TRUNC != 0 {
         received.reported = Some(data.len() as u64);
-    }
-    if flags & MSG_PEEK == 0 {
-        socket.borrow_mut().queue.pop_front();
     }
     Ok((copied, received))
 }

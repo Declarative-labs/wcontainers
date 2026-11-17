@@ -130,9 +130,6 @@ pub mod reason {
     /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
     /// later change to them shows in what is read. Detail: the call number.
     pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";
-    /// `FASYNC` was set on an internet or netlink socket, whose I/O signals are not sent here
-    /// (local sockets' are; SIGURG is not, as TCP's urgent data is not built). Detail: the family.
-    pub const SOCKET_SIGNALS_NOT_BUILT: &str = "socket i/o signals not built";
     /// An event arrived that no thread was waiting for.
     pub const EVENT_UNEXPECTED: &str = "event with no waiter";
     /// The CPU side answered that this host cannot make a memory, a thread or a block of shared

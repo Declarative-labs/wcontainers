@@ -288,8 +288,19 @@ pub(super) fn do_mmap(
             if grows_down {
                 return Err(Errno::EINVAL);
             }
+            // `tcp_mmap`: a TCP socket maps for reading only, and never later for more; its pages
+            // come only from TCP_ZEROCOPY_RECEIVE (not built), so touching one is SIGBUS. Every
+            // other protocol has `sock_no_mmap`.
             if socket {
-                return Err(Errno::ENODEV);
+                let tcp =
+                    matches!(&inode.content, Content::Socket(socket) if socket.borrow().tcp());
+                if !tcp {
+                    return Err(Errno::ENODEV);
+                }
+                if permissions.intersects(Permissions::WRITE | Permissions::EXECUTE) {
+                    return Err(Errno::EPERM);
+                }
+                allowed.remove(Permissions::WRITE | Permissions::EXECUTE);
             }
             // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
             if let Content::Regular(regular) = &inode.content
@@ -307,7 +318,7 @@ pub(super) fn do_mmap(
             } else {
                 drop(inode);
                 // `shmem_mmap` counts mapping as reading the file.
-                if backend.is_none() {
+                if backend.is_none() && !socket {
                     super::io::accessed(kernel, cx, &node, file.flags);
                 }
                 Some((node, file.path.clone()))
@@ -408,6 +419,10 @@ pub(super) fn do_mmap(
             return Err(Errno::EAGAIN);
         }
         mapping.locked = Lock::Now;
+    }
+    // `mmap_region` takes the lock off a `VM_SPECIAL` mapping.
+    if mapping.is_special() {
+        mapping.locked = Lock::None;
     }
     let memory = process.memory;
     map.insert(cx.cpu, memory, mapping.clone())?;
@@ -997,6 +1012,10 @@ fn prepare(kernel: &Kernel, tid: Tid, mapping: &Mapping, request: &Remap) -> Res
     if new_length <= old_length {
         return Ok(());
     }
+    // `VM_DONTEXPAND`: a socket's mapping never grows.
+    if mapping.is_special() {
+        return Err(Errno::EFAULT);
+    }
     let process = kernel.process_of(tid);
     let growth = (new_length - old_length) / PAGE_SIZE;
     if !process.map.borrow().may_lock(
@@ -1283,12 +1302,18 @@ pub(super) fn msync(
         return Err(Errno::EBUSY);
     }
     // `MS_SYNC` syncs each shared mapping of a backend file in the range (`vfs_fsync_range`):
-    // its pages written back, then FSYNC for the data, before a gap in the range is reported.
+    // its pages written back, then FSYNC for the data, before a gap in the range is reported. A
+    // socket's file has no fsync: EINVAL at its mapping.
     let fully = map.fully_mapped(address, end);
+    let mut refused = false;
     let synced: Vec<(crate::fs::Node, u64, u64)> = map
         .iter()
         .filter(|mapping| {
             flags & MS_SYNC != 0 && mapping.shared && mapping.start < end && mapping.end > address
+        })
+        .take_while(|mapping| {
+            refused = mapping.is_special();
+            !refused
         })
         .filter_map(|mapping| match &mapping.backing {
             Backing::File { node, offset, .. } if crate::fs::backend::remote(node).is_some() => {
@@ -1309,6 +1334,9 @@ pub(super) fn msync(
         if let Some(handle) = handle {
             crate::fs::backend::fsync(&handle, true)?;
         }
+    }
+    if refused {
+        return Err(Errno::EINVAL);
     }
     if !fully {
         return Err(Errno::ENOMEM);
@@ -1507,7 +1535,9 @@ pub(super) fn mincore(
         };
         let to = mapping.end.min(end);
         let count = (to - at) / PAGE_SIZE;
-        super::guest(kernel, cx, tid).write(vector + written, &vec![1u8; count as usize])?;
+        // A socket's mapping never holds a page here (none come without TCP_ZEROCOPY_RECEIVE).
+        let resident = u8::from(!mapping.is_special());
+        super::guest(kernel, cx, tid).write(vector + written, &vec![resident; count as usize])?;
         written += count;
         at = to;
     }
