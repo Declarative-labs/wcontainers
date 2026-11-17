@@ -1,6 +1,7 @@
 // Tessellation of triangle, quad and isoline patches with each partitioning, factors from a constant
 // buffer, and the domain shader bending the surface so the result shows every new vertex.
 // fxc: vs_5_0 vs, hs_5_0 hs_tri, ds_5_0 ds_tri, hs_5_0 hs_quad_odd, hs_5_0 hs_quad_even, hs_5_0 hs_quad_pow2, hs_5_0 hs_quad_integer, ds_5_0 ds_quad, hs_5_0 hs_line, ds_5_0 ds_line, ps_5_0 ps
+// dxc: vs_6_0 vs, hs_6_0 hs_tri, ds_6_0 ds_tri, hs_6_0 hs_quad_odd, hs_6_0 hs_quad_even, hs_6_0 hs_quad_pow2, hs_6_0 hs_quad_integer, ds_6_0 ds_quad, hs_6_0 hs_line, ds_6_0 ds_line, ps_6_0 ps
 cbuffer Factors : register(b0) { float4 edges; float4 inside; };
 struct Point { float3 pos : POSITION; float4 color : COLOR; };
 Point vs(Point p) { return p; }

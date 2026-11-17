@@ -9,7 +9,7 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::Interface;
 
-use super::{colored_program, depth_test, draw_colored, quad};
+use super::{Colored, colored_program, depth_test, draw_colored, quad};
 use crate::d3d11::{Gpu, cell, checker, data, solid, tex2d};
 use crate::dxbc;
 use crate::output::Output;
@@ -27,13 +27,50 @@ fn srv_2d(format: DXGI_FORMAT, first_mip: u32, mips: u32) -> D3D11_SHADER_RESOUR
     desc
 }
 
+/// Six mips of 32 by 32, each its own colour.
+pub fn mip_levels() -> Vec<Vec<u8>> {
+    (0..6).map(|m| checker(32 >> m, 32 >> m, m, 6)).collect()
+}
+
+/// Four layers of 16 by 16.
+pub fn layers() -> Vec<Vec<u8>> {
+    (0..4).map(|l| checker(16, 16, l, 4)).collect()
+}
+
+/// A 4 by 4 gradient of RGBA bytes.
+pub fn gradient() -> Vec<u8> {
+    (0..16u8)
+        .flat_map(|i| [i * 16, 255 - i * 16, (i % 4) * 80, 255])
+        .collect()
+}
+
+/// 16 by 16 floats, to be seen as their bits.
+pub fn floats() -> Vec<f32> {
+    (0..256).map(|i| i as f32 * 0.37 - 20.0).collect()
+}
+
+/// Five overlapping sloped quads drawn into the depth buffer, each adding to the stencil.
+pub fn steps() -> Vec<Colored> {
+    (0..5)
+        .flat_map(|k| {
+            let x = -1.0 + 0.3 * k as f32;
+            quad(x, -0.9, 0.9, 0.9 - 0.2 * k as f32, 0.1, 0.9, [1.0; 4])
+        })
+        .collect()
+}
+
+/// The quad drawn through each render target view.
+pub fn patch() -> [Colored; 6] {
+    quad(-0.7, -0.5, 0.6, 0.8, 0.5, 0.5, [0.9, 0.6, 0.2, 1.0])
+}
+
 pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let c = &gpu.context;
     let mut views: Vec<(ID3D11ShaderResourceView, &[u8])> = Vec::new();
     let rgba = DXGI_FORMAT_R8G8B8A8_UNORM;
 
     // Six mips, each its own colour: all of them, and from mip 2 on.
-    let levels: Vec<Vec<u8>> = (0..6).map(|m| checker(32 >> m, 32 >> m, m, 6)).collect();
+    let levels = mip_levels();
     let mut desc = tex2d(32, 32, rgba, D3D11_BIND_SHADER_RESOURCE);
     desc.MipLevels = 6;
     desc.Usage = D3D11_USAGE_IMMUTABLE;
@@ -50,7 +87,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     ));
 
     // Four layers, viewed from layer 1 for three.
-    let layers: Vec<Vec<u8>> = (0..4).map(|l| checker(16, 16, l, 4)).collect();
+    let layers = layers();
     let mut desc = tex2d(16, 16, rgba, D3D11_BIND_SHADER_RESOURCE);
     desc.ArraySize = 4;
     desc.Usage = D3D11_USAGE_IMMUTABLE;
@@ -73,9 +110,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     ));
 
     // A typeless 4 by 4 gradient read as unsigned normalised and as sRGB, linearly filtered.
-    let gradient: Vec<u8> = (0..16u8)
-        .flat_map(|i| [i * 16, 255 - i * 16, (i % 4) * 80, 255])
-        .collect();
+    let gradient = gradient();
     let mut desc = tex2d(
         4,
         4,
@@ -97,7 +132,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     ));
 
     // Floats viewed as their bits.
-    let floats: Vec<f32> = (0..256).map(|i| i as f32 * 0.37 - 20.0).collect();
+    let floats = floats();
     let mut desc = tex2d(16, 16, DXGI_FORMAT_R32_TYPELESS, D3D11_BIND_SHADER_RESOURCE);
     desc.Usage = D3D11_USAGE_IMMUTABLE;
     let bits = gpu.texture2d(&desc, &[data(bytemuck::cast_slice(&floats), 64, 0)])?;
@@ -134,13 +169,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     }
     gpu.viewport(32, 32);
     colored_program(gpu)?;
-    for k in 0..5 {
-        let x = -1.0 + 0.3 * k as f32;
-        draw_colored(
-            gpu,
-            &quad(x, -0.9, 0.9, 0.9 - 0.2 * k as f32, 0.1, 0.9, [1.0; 4]),
-        )?;
-    }
+    draw_colored(gpu, &steps())?;
     unsafe { c.OMSetRenderTargets(None, None) };
     views.push((
         gpu.srv(
@@ -210,10 +239,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     ] {
         let rtv = gpu.rtv(&texture.cast()?, Some(&view))?;
         gpu.begin(&rtv, None, 32, 32);
-        draw_colored(
-            gpu,
-            &quad(-0.7, -0.5, 0.6, 0.8, 0.5, 0.5, [0.9, 0.6, 0.2, 1.0]),
-        )?;
+        draw_colored(gpu, &patch())?;
         outputs.push(Output::picture(part, gpu.read(texture, mip, layer)?));
     }
     Ok(outputs)

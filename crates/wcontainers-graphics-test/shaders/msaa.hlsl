@@ -1,6 +1,7 @@
 // Multisampling: shading once per sample, writing the coverage mask, and reading single samples of
 // a multisampled texture.
 // fxc: ps_5_0 ps_sample, ps_5_0 ps_coverage, vs_5_0 vs_full, ps_5_0 ps_load
+// dxc: ps_6_0 ps_sample, ps_6_0 ps_coverage, ps_6_0 ps_load
 struct ColorOut { float4 pos : SV_Position; float4 color : COLOR; };
 float4 ps_sample(ColorOut i, uint sample : SV_SampleIndex) : SV_Target {
     return float4(i.color.rgb * (0.25 + 0.25 * sample), 1.0);

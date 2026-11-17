@@ -6,7 +6,7 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library) is nearly done. Its first run (2026-11-17) fixed R0's findings
+R1 (the Direct3D reference library) is done, waiting for the orchestrator's check. Its first run (2026-11-17) fixed R0's findings
 and built the scenes; its second run (2026-11-17) did this:
 - Jobs that present now run on a hidden desktop ("wc-rig") in the session of the user logged in
   at the console (`gpu-job --desktop`, see How to run): windows and swap chains work there and
@@ -14,7 +14,8 @@ and built the scenes; its second run (2026-11-17) did this:
 - Part 1, scenes: done. 27 Direct3D 11 scenes (130 outputs) and 9 Direct3D 12 scenes (21 outputs),
   now with swap chains (D3D11 flip and blit models, D3D12 flip model with resizing). Each ran on the
   RTX 3080 twice and on WARP with the debug layer; `scenes` checks them, through replacement
-  libraries if given. Still missing: Direct3D 12 versions of the pipeline-state scenes.
+  libraries if given. (The third and fourth runs added the Direct3D 12 twins of the Direct3D 11
+  scenes.)
 - Part 2, Wine's Direct3D tests: done. Each test of the d3d11, d3d10core, dxgi and d3d12 files runs
   in its own process, chosen by name; 19 tests that would change the owner's screen are never run
   (wine-excluded.txt). Baseline on the RTX 3080 and WARP in tools/graphics-rig/wine-baseline (see
@@ -33,9 +34,13 @@ and built the scenes; its second run (2026-11-17) did this:
   D3D12 scenes, 62 outputs; 27 Direct3D 11 scenes, 130 outputs), every picture equal to Direct3D
   11's but 202 pixels of mip filtering; and the milestone's check run from a fresh checkout (see
   Measurements).
-- Still missing for Part 1: a Direct3D 12 version of the texture-kind scene (1D, 3D, cube, arrays,
-  mip chains, BC1 to BC7) and of the rasterizer, multisampling and multiple-target scenes; Direct3D
-  12 reaches 2D textures, mips and every sampler so far.
+- Fourth run (2026-11-17): the textures, raster, msaa, targets, topology, geometry,
+  tessellation, streamout, draws, constants and views scenes drawn through Direct3D 12 as well
+  (now 25 D3D12 scenes, 104 outputs; Direct3D 11 still 27 scenes, 130 outputs). Every one of
+  their 42 Direct3D 12 outputs equals Direct3D 11's GPU output exactly (the stream output text
+  differs by design). So every Direct3D 11 scene of drawing ground now has a Direct3D 12 twin; the
+  ones without are listed under Departures. Then the milestone's check was run again from a fresh
+  clone (see Measurements). Part 1 is done.
 
 The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
 its sections 10 to 12 (one source two builds, testing, milestones G4 and G5) were read for this run.
@@ -113,15 +118,17 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   order, not disjoint; pixel shader invocations as "at least the covered pixels").
 - Scenes are listed by `gt-d3d11 list` and `gt-d3d12 list`; a scene alone, on the desktop:
   `gt-d3d11 <scene>... <hardware|warp> <dir> [--debug]` writes `<scene>[-<part>].<png|exr|txt>`.
-  The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs,
-  src/d3d12/scenes.rs and src/d3d12/states.rs; each file's first comment says what it covers.
-  states.rs draws Direct3D 11's blend, depth, stencil and formats scenes (the same cells, from the
-  same tables) through Direct3D 12, each state combination made into its own pipeline state object.
+  The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs and
+  src/d3d12/*.rs; each file's first comment says what it covers. src/d3d12/states.rs,
+  textures.rs, raster.rs and primitives.rs draw Direct3D 11's blend, depth, stencil, formats,
+  samplers, textures, raster, msaa, targets, topology, geometry, tessellation and streamout scenes
+  (the same cells, from the same tables) through Direct3D 12, each state combination made into its
+  own pipeline state object (states.rs's `Immediate`; streamout builds its two directly).
 - Shaders: crates/wcontainers-graphics-test/shaders/*.hlsl, each naming its entry points in header
   lines `// fxc: <target> <entry>, ...` (DXBC for Direct3D 11) and `// dxc: ...` (DXIL, shader model
   6.0, for Direct3D 12). build.rs compiles them with the newest Windows SDK's fxc.exe and dxc.exe
   (10.0.26100.0; dxc 1.9.2602.17) when building for Windows; the programs embed the bytecode. The
-  corpus for the shader track is shaders/dxbc (79 files) and shaders/dxil (14 files), written by
+  corpus for the shader track is shaders/dxbc (79 files) and shaders/dxil (72 files), written by
   `scenes --record`; `scenes` says when it no longer matches the build.
 - `tools/graphics-rig/wine-tests build`: fetches llvm-mingw 20261104 and the Direct3D test sources
   of Wine 11.22 (commit 9f8c4ae4d35c7ff4153267aba9618c026f5f5583, sparse: the four test
@@ -534,6 +541,43 @@ console, Mac load average 38 to 51):
 - End of the third run: `loop` passes (37 s with the build), the 6 unit tests pass through
   `remote`, clippy with warnings denied passes for both crates on the desktop, shellcheck passes.
 
+R1 fourth run (2026-11-17; desktop CPU load 1 to 5 % before each run, owner logged in at the
+console, Mac load average 17 to 25):
+- Direct3D 12 twins of 11 more Direct3D 11 scenes, drawn twice on the GPU with the debug layer
+  (identical, no error) and once on WARP. Against the Direct3D 11 references, with gt-compare at
+  tolerance 0, every one of their 42 Direct3D 12 outputs is identical, every pixel: textures (8,
+  BC1 to BC7 included), raster (4, geometry shader viewports included), msaa (8, alpha to coverage
+  included), targets (4), topology (strip cut values 0xFFFF and 0xFFFFFFFF in the pipeline),
+  geometry (7), tessellation, streamout's picture and buffer, draws (ExecuteIndirect for both
+  indirect draws), constants (2) and views (3: plane slices 0 and 1 of a depth buffer, typeless
+  formats, subranges). Streamout's text: "enough: 4 primitives written, 4 needed, 384 bytes
+  filled", "small: 1 primitives written, 4 needed, 96 bytes filled". The Direct3D 11 scenes whose
+  data moved into shared functions gave byte-identical outputs on recording.
+- WARP against the GPU on Direct3D 12: at most 2 steps for all of them but tessellation (1232 of
+  32768 pixels differ, by up to 228: WARP's isoline colours, see Known issues; on D3D11 768 by up
+  to 4), textures-bc (as D3D11) and msaa-alpha_to_coverage (as D3D11).
+- Traps found while writing them, worth knowing for the Direct3D 12 front: a stream output
+  buffer's filled size is 8 bytes (the debug layer refuses a 4-byte location), and Direct3D 12 has
+  no DrawAuto: the filled size is read back and drawn by count.
+- `scenes --record`: 56 s end to end (the job about 32 s); `loop`: 24 s end to end, 234 scene
+  outputs (130 D3D11, 104 D3D12), 3 through the forwarding library, 4 other renderers, all pass.
+- Check from a fresh clone of phase-2-graphics-rig at 4668458 (in the scratch directory):
+  `scenes --api d3d12 textures raster msaa targets topology geometry tessellation streamout draws
+  constants views` 42 passed (job 3.4 s); `scenes --api d3d11 triangle topology draws textures
+  views msaa` 22 passed; `wine-tests run d3d12` 10 tests run, 7 counted, 0 FAIL (the three known
+  swap chain failures as recorded), 5.6 s; `scenes --build "cargo build -q -p
+  wcontainers-graphics-test-forward" --dll d3d11.dll=<forwarding library> --api d3d11 views draws
+  textures` 12 passed; `programs run --dll d3d11.dll=<forwarding library> sdk-tutorial07` pass,
+  120 frames. With the D3D12 topology scene's 16-bit strip cut value set to disabled in that
+  clone, `scenes --api d3d12 topology` failed (345 pixels beyond 1, by up to 249), exit 1.
+  `cargo tree --workspace -e all --target all` (2841 lines) names no Wine, vkd3d, Godot, Doom or
+  Freedoom crate. No dependency or program was added in this run, so no new licence; the third
+  run read every licence at its source on 2026-11-17.
+- End of the fourth run: the 6 unit tests pass through `remote`, clippy with warnings denied
+  passes for both crates on the desktop, shellcheck passes for every Mac script.
+- SSH to the desktop refused new connections once more, for about 8 minutes (05:59 to 06:07
+  Mac time), cutting off a `scenes --record` (exit 255); run again after, it passed.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -614,8 +658,15 @@ There is no plan document in this checkout; these depart from the task or brief 
 - The Direct3D 12 scenes cover its own model (root signatures of every parameter kind and both
   versions, tables, static samplers, placed and aliased resources, upload and readback heaps,
   bundles, barriers of all three kinds, ExecuteIndirect, queries and predication, three queues with
-  fences, copies and resolves); the pipeline state each Direct3D 11 scene covers (blending, depth,
-  stencil, formats and so on) is not repeated for Direct3D 12 yet.
+  fences, copies and resolves), and repeat Direct3D 11's scenes of drawing state (blend, depth,
+  stencil, formats, samplers, textures, raster, msaa, targets, topology, geometry, tessellation,
+  streamout, draws, constants, views). Not repeated: the Direct3D 11 scenes of calls Direct3D 12
+  does not have (dynamic: Map with discard and no-overwrite and UpdateSubresource; mips:
+  GenerateMips; deferred: deferred contexts; levels: feature levels 9_1 to 10_1), and quads and
+  instanced, whose ground the draws scene covers.
+- Direct3D 12 has no DrawAuto and no stream output overflow predicate: its streamout scene reads
+  the buffer's filled size back and draws that many vertices, and its text gives the statistics
+  and the filled size instead of an overflow flag.
 - Wine's tests are built with llvm-mingw (clang and mingw-w64's headers and import libraries)
   rather than MSVC, each test file compiled alone in Wine's standalone test mode (STANDALONE,
   __WINESRC__), with Wine's include/wine headers, winecrt0's debug.c (the debug string helpers Wine's
@@ -663,6 +714,13 @@ There is no plan document in this checkout; these depart from the task or brief 
   (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
 
 ## Known issues
+
+- WARP's Direct3D 12 isolines take other colours than the GPU's (the isoline cell of the D3D12
+  tessellation picture); its Direct3D 11 ones do not, and the GPU's D3D12 picture equals its D3D11
+  one exactly, so it is WARP's DXIL path. As the allowance comes from WARP, the D3D12
+  tessellation picture allows 464 pixels beyond 8 steps (D3D11's: none beyond 4), loose enough
+  that a replacement could get the isoline colours wrong and still pass there. The D3D11 picture
+  still checks them tightly.
 
 - Jobs that present need someone logged in at the desktop's console (the owner normally is): the
   hidden desktop lives in that session. Without it, `gpu-job --desktop` fails after 30 s with a
@@ -748,10 +806,7 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R1 continues, in this order:
-1. A Direct3D 12 version of the texture-kind scene (1D, 3D, cube and their arrays, mip chains, BC1
-   to BC7), in src/d3d12/states.rs with the Immediate helper and fill_levels there, taking its
-   textures from the Direct3D 11 scene as blend, depth, stencil, formats and samplers do; then the
-   rasterizer, multisampling and multiple-target scenes the same way.
-2. Run the milestone's independent check again on what changed (the check of this run is in
-   Measurements).
+R1 is complete as far as this track can tell; its next step is the orchestrator's independent
+check. After that, R2 as the plan says. Open points left for later, none blocking: the D3D12
+tessellation picture's loose allowance (Known issues), and the 19 Wine tests that need a display
+nobody uses.
