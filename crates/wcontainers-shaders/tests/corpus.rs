@@ -220,3 +220,96 @@ fn own_shaders_convert() {
         .sum();
     assert_eq!(wgsl, 5, "{counts:?}");
 }
+
+/// The same HLSL compiled by fxc (DXBC) and by dxc (DXIL) gives the same values at the same locations,
+/// so a front can link stages and vertex layouts by either route's reflection alike.
+#[test]
+fn dxil_reflection_matches_dxbc() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders");
+    type Key = (
+        String,
+        u32,
+        Option<wcontainers_gpu::SystemValue>,
+        Option<u32>,
+        wcontainers_gpu::ScalarKind,
+        wcontainers_gpu::Interpolation,
+    );
+    let key = |v: &wcontainers_gpu::StageValue| -> Key {
+        let located = matches!(
+            v.system,
+            None | Some(wcontainers_gpu::SystemValue::Target(_))
+        );
+        (
+            v.semantic.clone(),
+            v.semantic_index,
+            v.system,
+            located.then_some(v.location),
+            v.scalar,
+            v.interpolation,
+        )
+    };
+    let keys = |values: &[wcontainers_gpu::StageValue]| {
+        let mut k: Vec<_> = values.iter().map(key).collect();
+        k.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        k
+    };
+    for name in [
+        "common.vs_color",
+        "common.ps_color",
+        "common.vs_full",
+        "triangle.vs",
+        "triangle.ps",
+    ] {
+        let read = |ext: &str| std::fs::read(dir.join(ext).join(format!("{name}.{ext}"))).unwrap();
+        let (dxbc, dxil) = (read("dxbc"), read("dxil"));
+        let dxbc = convert(Source::Dxbc(&dxbc), &VariantKey::default(), None).unwrap();
+        let dxil = convert(Source::Dxil(&dxil), &VariantKey::default(), None).unwrap();
+        let (a, b) = (&dxbc.reflection, &dxil.reflection);
+        assert!(!b.inputs.is_empty() || !b.outputs.is_empty(), "{name}");
+        // Values linked by location agree exactly; built-ins the DXBC route drops when unread
+        // (a pixel shader's unread position) may remain in the DXIL route's.
+        for (what, a, b) in [
+            ("inputs", keys(&a.inputs), keys(&b.inputs)),
+            ("outputs", keys(&a.outputs), keys(&b.outputs)),
+        ] {
+            let located = |k: &Vec<Key>| {
+                k.iter()
+                    .filter(|k| k.3.is_some())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(located(&a), located(&b), "{name} {what}");
+            assert!(
+                a.iter().all(|k| b.contains(k)),
+                "{name} {what}: {a:?} {b:?}"
+            );
+        }
+    }
+}
+
+/// A DXIL vertex shader reading `SV_VertexID` reads the draw's bases from its helper block when asked,
+/// as the DXBC route does.
+#[test]
+fn dxil_draw_bases_from_the_helpers() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wcontainers-graphics-test/shaders/dxil/common.vs_full.dxil");
+    let bytes = std::fs::read(path).unwrap();
+    let variant = VariantKey {
+        draw_base: wcontainers_gpu::DrawBaseSource::Helpers,
+        ..VariantKey::default()
+    };
+    let with = convert(Source::Dxil(&bytes), &variant, None).unwrap();
+    assert_eq!(with.reflection.helper_size, 16);
+    assert_eq!(
+        with.reflection.helpers[0].value,
+        wcontainers_gpu::HelperValue::DrawBase
+    );
+    let m = &with.modules[0];
+    let wgsl =
+        naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())
+            .unwrap();
+    assert!(wgsl.contains("helpers.base_vertex"), "{wgsl}");
+    assert!(wgsl.contains("@group(3) @binding(0)"), "{wgsl}");
+    let without = convert(Source::Dxil(&bytes), &VariantKey::default(), None).unwrap();
+    assert!(without.reflection.helpers.is_empty());
+}
