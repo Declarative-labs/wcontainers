@@ -465,7 +465,9 @@ the program, how typed buffers are read (`TexelBufferRoute`: native, storage on 
 WebGL 2), storage slots packed into one buffer, storage textures used with atomics read through a
 buffer, textures and targets stored as integers (`decoded`, `targets_in_shader`), blending or logic
 operations done in the program, the sample mask written by the program, clip depth, flipped depth
-ranges, depth bias, the counting variant) is a field of `VariantKey` in `wcontainers-gpu`; the front
+ranges, depth bias, the counting variant, the interpolation the pixel program reads the vertex
+program's outputs with, which WebGPU and GLSL ES require the two stages to agree on) is a field of
+`VariantKey` in `wcontainers-gpu`; the front
 computes the key from `Caps` and what it binds, asks the shaders crate for that variant (cached by
 key, section 8), and counts the slow path. `convert` (6.4) reads nothing but the source, the key and
 the root signature (whose hash is in the key), never `Caps`: so a key names one module on every back
