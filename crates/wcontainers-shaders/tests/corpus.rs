@@ -313,3 +313,46 @@ fn dxil_draw_bases_from_the_helpers() {
     let without = convert(Source::Dxil(&bytes), &VariantKey::default(), None).unwrap();
     assert!(without.reflection.helpers.is_empty());
 }
+
+/// Every rig shader compiled both by fxc (DXBC) and by dxc (DXIL) that converts by both routes gets the
+/// same bindings and the same sampled pairs from each.
+#[test]
+fn dxil_bindings_and_sampled_pairs_match_dxbc() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders");
+    let mut compared = 0;
+    let mut sampling = 0;
+    for dxil_path in shaders(&dir.join("dxil"), "dxil") {
+        let name = dxil_path
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let Ok(dxbc) = std::fs::read(dir.join("dxbc").join(format!("{name}.dxbc"))) else {
+            continue;
+        };
+        let dxil = std::fs::read(&dxil_path).unwrap();
+        let key = VariantKey::default();
+        let (Ok(a), Ok(b)) = (
+            convert(Source::Dxbc(&dxbc), &key, None),
+            convert(Source::Dxil(&dxil), &key, None),
+        ) else {
+            continue;
+        };
+        let bindings = |r: &wcontainers_gpu::Reflection| {
+            let mut v: Vec<_> = r
+                .bindings
+                .iter()
+                .map(|b| (b.set, b.binding, b.register, format!("{:?}", b.kind)))
+                .collect();
+            v.sort();
+            v
+        };
+        let (a, b) = (&a.reflection, &b.reflection);
+        assert_eq!(bindings(a), bindings(b), "{name} bindings");
+        assert_eq!(a.sampled_pairs, b.sampled_pairs, "{name} sampled pairs");
+        compared += 1;
+        sampling += usize::from(!a.sampled_pairs.is_empty());
+    }
+    eprintln!("compared {compared} shaders, {sampling} of them sampling");
+    assert!(compared >= 18 && sampling >= 4, "{compared} {sampling}");
+}
