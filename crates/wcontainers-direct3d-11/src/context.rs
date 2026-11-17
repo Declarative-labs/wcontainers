@@ -5,10 +5,10 @@ use std::rc::Rc;
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
     DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
-    FormatKind, IndexBinding, IndexFormat, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
-    Program, ReadSource, ReadState, ScissorRect, SlotKind, SlowPath, StageSet, StepMode, StoreOp,
-    SystemValue, TextureUsage, Topology, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, Viewport as GpuViewport, WriteMode,
+    FormatKind, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin,
+    PassDesc, Program, ReadSource, ReadState, ScissorRect, SlotKind, SlowPath, SourceStage,
+    StageSet, StepMode, StoreOp, SystemValue, TextureUsage, Topology, VariantKey, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
 };
 
 use crate::desc::{
@@ -724,8 +724,36 @@ impl<B: Backend> Device<B> {
         if let Some(p) = self.programs.get(&key) {
             return Ok(p.handle.clone());
         }
+        // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
+        // pixel shader alone chooses: the vertex shader is converted again to write its outputs so.
+        let mut interpolation: Vec<(u32, Interpolation)> = ps
+            .iter()
+            .flat_map(|p| &p.reflection.inputs)
+            .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
+            .map(|i| (i.location, i.interpolation))
+            .collect();
+        interpolation.sort_by_key(|i| i.0);
+        interpolation.dedup_by_key(|i| i.0);
+        if !interpolation.is_empty() && !self.interpolated.contains_key(&key) {
+            let variant = VariantKey {
+                output_interpolation: interpolation,
+                ..VariantKey::default()
+            };
+            let mut converted =
+                crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &variant)?;
+            let module = converted.modules.pop().expect("one module");
+            let shader = self.backend.create_shader(&module);
+            let shader = self.gpu(shader)?;
+            let id = self.id();
+            self.interpolated
+                .insert(key, Kept::new(shader, id, Object::Shader, &self.graveyard));
+        }
+        let vertex = self
+            .interpolated
+            .get(&key)
+            .map_or(&vs.gpu.handle, |s| &s.handle);
         let program = self.backend.create_program(&Program::Render {
-            vertex: &vs.gpu.handle,
+            vertex,
             fragment: ps.map(|p| &p.gpu.handle),
         });
         let program = self.gpu(program)?;

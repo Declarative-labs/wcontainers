@@ -284,6 +284,9 @@ pub struct Shader<B: Backend> {
     /// What stands in for an empty slot of each texture and sampler it reads, by binding number
     /// (`None` where nothing does yet).
     pub stand_ins: Vec<(u32, Option<StandIn>)>,
+    /// A vertex shader's bytecode, converted again for pixel shaders that interpolate its outputs
+    /// other than by perspective; empty for the other stages.
+    pub bytecode: Vec<u8>,
 }
 
 /// What a draw binds for an empty texture or sampler slot its shader reads.

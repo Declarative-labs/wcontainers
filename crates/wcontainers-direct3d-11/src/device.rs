@@ -32,6 +32,8 @@ pub struct Device<B: Backend> {
     pub(crate) queries: crate::query::Queries<B>,
     /// Programs by (vertex shader, pixel shader) id.
     pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
+    /// The vertex shaders converted for one pixel shader's interpolation, by the program's ids.
+    pub(crate) interpolated: HashMap<(u64, u64), Kept<B, B::Shader>>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
@@ -158,6 +160,7 @@ impl<B: Backend> Device<B> {
             ctx: ContextState::new(),
             queries: crate::query::Queries::new(),
             programs: HashMap::new(),
+            interpolated: HashMap::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
             zeros: Zeros {
@@ -423,6 +426,8 @@ impl<B: Backend> Device<B> {
             self.backend.destroy(object);
         }
         self.programs
+            .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
+        self.interpolated
             .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
         self.layouts.retain(|(l, _), _| !ids.contains(l));
         self.bury_built();
@@ -1242,11 +1247,17 @@ impl<B: Backend> Device<B> {
         let constant_sizes = constant_sizes(&module.module);
         let stand_ins = stand_ins(&module.module);
         let id = self.id();
+        let vertex = stage == wcontainers_gpu::SourceStage::Vertex;
         Ok(Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             reflection: converted.reflection,
             constant_sizes,
             stand_ins,
+            bytecode: if vertex {
+                bytecode.to_vec()
+            } else {
+                Vec::new()
+            },
         }))
     }
 

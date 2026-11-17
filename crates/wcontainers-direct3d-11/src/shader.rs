@@ -41,12 +41,21 @@ pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
 /// Converts a shader of `expected` stage. Bytecode the converter refuses is invalid to Direct3D too;
 /// what it cannot convert yet is not implemented.
 pub fn convert(bytecode: &[u8], expected: SourceStage) -> Result<Converted> {
+    convert_variant(bytecode, expected, &VariantKey::default())
+}
+
+/// Converts a shader of `expected` stage as the variant `key` asks.
+pub fn convert_variant(
+    bytecode: &[u8],
+    expected: SourceStage,
+    key: &VariantKey,
+) -> Result<Converted> {
     if stage(bytecode)? != expected {
         return Err(Error::InvalidArg(
             "the bytecode is a shader of another stage",
         ));
     }
-    match wcontainers_shaders::convert(Source::Dxbc(bytecode), &VariantKey::default(), None) {
+    match wcontainers_shaders::convert(Source::Dxbc(bytecode), key, None) {
         Ok(c) if c.modules.len() != 1 => {
             not_implemented("shaders converted into several program stages")
         }
