@@ -764,7 +764,8 @@ fn slow_path_warnings_are_handed_out_once() {
 #[test]
 fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
     let mut dev = device();
-    // The instanced scene's vertex shader indexes its constants by instance: the whole buffer is declared.
+    // The instanced scene's vertex shader indexes its constants by instance; the program binds a buffer of
+    // one register, which Direct3D reads as zeros past its end.
     ready(
         &mut dev,
         "instanced.vs",
@@ -776,9 +777,9 @@ fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
         .create_shader(&corpus("instanced.vs"), SourceStage::Vertex)
         .unwrap();
     let declared = vs.constant_sizes[0].1;
-    assert!(declared > 528, "{declared}");
+    assert!(declared > 16, "{declared}");
     let desc = BufferDesc {
-        byte_width: 528,
+        byte_width: 16,
         usage: usage::DYNAMIC,
         bind_flags: bind::CONSTANT_BUFFER,
         cpu_access_flags: cpu::WRITE,
