@@ -245,13 +245,15 @@ fn vectored2(
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files, tmpfs's regular files and terminals do not take reads or writes that may
-    // not wait (`FMODE_NOWAIT` unset; measured: devices and pipes take them).
+    // `/proc`'s files, tmpfs's regular files, named pipes and terminals do not take reads or
+    // writes that may not wait (`FMODE_NOWAIT` unset; measured: devices and the pipes `pipe2`
+    // makes take them, a named pipe opened by its path does not).
     let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_))
             || inode.fs.kind == crate::fs::Kind::Tmpfs && inode.file_type() == S_IFREG
+            || inode.file_type() == S_IFIFO && inode.fs.kind != crate::fs::Kind::Pipe
     };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
