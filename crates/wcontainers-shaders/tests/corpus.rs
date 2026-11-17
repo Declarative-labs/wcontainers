@@ -204,3 +204,17 @@ fn rig_dxil_shaders_convert_or_fail_with_a_named_reason() {
         "shaders failing without a named reason: {counts:?}"
     );
 }
+
+#[test]
+fn own_shaders_convert() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
+    let counts = run(&dir, "dxbc", "own");
+    // All five give valid WGSL; GLSL ES 3.00 lacks the bitfield operations two of them use, which
+    // the WebGL 2 back end lowers (plan 6.5).
+    let wgsl: usize = counts
+        .iter()
+        .filter(|(k, _)| k.starts_with("ok"))
+        .map(|(_, n)| n)
+        .sum();
+    assert_eq!(wgsl, 5, "{counts:?}");
+}

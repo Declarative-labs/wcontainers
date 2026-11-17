@@ -22,8 +22,18 @@ Done:
   convert, WGSL valid and GLSL ES compiled by glslang; the other 3 stop at the reader's known gaps
   (6.2): typed buffers ("unsupported image dimension", twice) and a storage image without a format.
 
-Not done in this milestone yet (in order): the five own HLSL shaders compiled on the desktop and
-checked for meaning; Chrome's own compile of the written WGSL and GLSL (the plan's final verdict; so
+- Independent check, part done: five shaders of our own (`tests/own/own.hlsl`: a constant-buffer
+  transform, a tinted texture with `clip`, integer shifts and a switch, a loop with a break and
+  carried values, a full-screen triangle from `SV_VertexID`), compiled by fxc 10.0.26100.0 on the
+  desktop (`tests/own/compile.cmd` through `tools/graphics-rig/remote`), the DXBC committed. All five
+  convert to valid WGSL (test `own_shaders_convert`); three compile as GLSL ES in glslang, two use
+  bitfield operations GLSL ES 3.00 lacks (the WebGL 2 back end's lowering, 6.5). Meaning checked by
+  reading `vs_fullscreen`'s and `ps_integer`'s WGSL against the HLSL (the same arithmetic; dxbc-spirv
+  folds `firstbithigh`'s zero case into a select), not by running them. Both C++ projects are
+  submodules from their upstream repositories at upstream's heads of 2026-11-17, licences below. The
+  corpus re-run at the end of the run gave the counts below unchanged.
+
+Not done in this milestone yet (in order): the own shaders' meaning checked by drawing; Chrome's own compile of the written WGSL and GLSL (the plan's final verdict; so
 far naga and glslang only); the rig's shaders drawn through a back end (no back end branch is on the
 remote yet: only phase-2-graphics and phase-2-graphics-rig); the DXIL draw bases from the helpers.
 
