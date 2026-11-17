@@ -326,6 +326,9 @@ R1 first run (2026-11-17; desktop CPU load 1 to 4 % before each run, Mac load av
   failed checks (hr 0x887a0022 creating a swap chain), then an access violation; d3d10core at
   d3d10core.c:1403 likewise; d3d12 at d3d12.c:635; dxgi at dxgi.c:6013 (output and swap chain
   checks). Each ran under 1.3 s. Not run on WARP yet; it would stop at the same calls.
+- End of the first R1 run: the 6 unit tests pass on the Mac and through `remote`, clippy with
+  warnings denied passes on both, shellcheck passes, `queue-check` passes all five rules (two runs),
+  and `loop` passes (141 scene outputs, 3 through the forwarding library, 4 other renderers).
 - `cargo tree --workspace -e all` lists no Wine crate or source: the tests live only in C:\wc\wine
   on the desktop, fetched by the script.
 - Swap chains in session 0 (the queue's session): CreateSwapChainForHwnd on a never-shown window with
