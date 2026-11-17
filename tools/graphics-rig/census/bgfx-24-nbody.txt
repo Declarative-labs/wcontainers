@@ -33,12 +33,12 @@ immediate-context UpdateSubresource 1659
 immediate-context IASetVertexBuffers 833
 immediate-context RSSetState 832
 immediate-context OMSetRenderTargetsAndUnorderedAccessViews 481
-immediate-context GetData 480
 immediate-context OMSetBlendState 477
 immediate-context OMSetDepthStencilState 477
 immediate-context DrawIndexed 474
 immediate-context RSSetScissorRects 474
 immediate-context End 369
+immediate-context GetData 369
 immediate-context IASetIndexBuffer 358
 immediate-context PSSetSamplers 358
 immediate-context PSSetShaderResources 358

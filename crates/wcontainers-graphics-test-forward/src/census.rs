@@ -272,8 +272,8 @@ fn get_data_slot() -> usize {
 }
 
 /// GetData of a wrapper: the context's own answer, except that while the frame clock runs a
-/// timestamp query reads that clock (in 100-nanosecond ticks, never disjoint), so timings a
-/// program shows are the same on every run.
+/// timestamp query is answered at once from that clock (in 100-nanosecond ticks, never disjoint),
+/// so the timings and query latency a program shows are the same on every run.
 unsafe extern "system" fn wrapper_get_data(
     this: *mut c_void,
     query: *mut c_void,
@@ -285,32 +285,47 @@ unsafe extern "system" fn wrapper_get_data(
     let index = usize::from(wrapper.vtable == wrapper_tables()[1].as_ptr());
     let k = get_data_slot();
     WRAPPED_COUNTS[index * CONTEXT_SLOTS + k].fetch_add(1, Ordering::Relaxed);
-    let own: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, u32, u32) -> HRESULT =
-        unsafe { std::mem::transmute(*(*(wrapper.context as *const *const usize)).add(k)) };
-    let result = unsafe { own(wrapper.context, query, data, size, flags) };
-    if result != windows::Win32::Foundation::S_OK || data.is_null() || !crate::clock::running() {
-        return result;
-    }
-    let Some(desc) = unsafe { IUnknown::from_raw_borrowed(&query) }
-        .and_then(|q| q.cast::<ID3D11Query>().ok())
-        .map(|q| unsafe { q.GetDesc() })
-    else {
-        return result;
+    let kind = if crate::clock::running() {
+        unsafe { IUnknown::from_raw_borrowed(&query) }
+            .and_then(|q| q.cast::<ID3D11Query>().ok())
+            .map(|q| unsafe { q.GetDesc() }.Query)
+    } else {
+        None
     };
-    if desc.Query == D3D11_QUERY_TIMESTAMP && size as usize >= size_of::<u64>() {
-        unsafe { *(data as *mut u64) = crate::clock::now() };
-    } else if desc.Query == D3D11_QUERY_TIMESTAMP_DISJOINT
-        && size as usize >= size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>()
-    {
-        unsafe {
-            *(data as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT) =
-                D3D11_QUERY_DATA_TIMESTAMP_DISJOINT {
-                    Frequency: crate::clock::FREQUENCY,
-                    Disjoint: false.into(),
-                }
-        };
+    match kind {
+        Some(D3D11_QUERY_TIMESTAMP) if data.is_null() || size as usize >= size_of::<u64>() => {
+            if !data.is_null() {
+                unsafe { *(data as *mut u64) = crate::clock::now() };
+            }
+            windows::Win32::Foundation::S_OK
+        }
+        Some(D3D11_QUERY_TIMESTAMP_DISJOINT)
+            if data.is_null()
+                || size as usize >= size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() =>
+        {
+            if !data.is_null() {
+                unsafe {
+                    *(data as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT) =
+                        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT {
+                            Frequency: crate::clock::FREQUENCY,
+                            Disjoint: false.into(),
+                        }
+                };
+            }
+            windows::Win32::Foundation::S_OK
+        }
+        _ => {
+            let own: unsafe extern "system" fn(
+                *mut c_void,
+                *mut c_void,
+                *mut c_void,
+                u32,
+                u32,
+            ) -> HRESULT =
+                unsafe { std::mem::transmute(*(*(wrapper.context as *const *const usize)).add(k)) };
+            unsafe { own(wrapper.context, query, data, size, flags) }
+        }
     }
-    result
 }
 
 fn install(table: Table, vtable: usize, interface: &'static str) {

@@ -28,7 +28,7 @@ device CreateDepthStencilState 2
 device CreateDepthStencilView 2
 device CreateTexture2D1 2
 device SetPrivateDataInterface 1
-immediate-context UpdateSubresource 4072
+immediate-context UpdateSubresource 4073
 immediate-context IASetVertexBuffers 3238
 immediate-context RSSetState 3238
 immediate-context OMSetBlendState 2880
@@ -49,9 +49,9 @@ immediate-context Draw 1080
 immediate-context IASetPrimitiveTopology 735
 immediate-context DrawIndexed 718
 immediate-context ClearRenderTargetView 611
-immediate-context GetData 493
 immediate-context RSSetScissorRects 478
 immediate-context End 372
+immediate-context GetData 372
 immediate-context IASetIndexBuffer 360
 immediate-context Map 360
 immediate-context Unmap 360
