@@ -43,7 +43,7 @@ mod slow;
 mod state;
 
 pub use backend::{Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc, RingKind};
-pub use caps::{Caps, Features, FormatCaps, FormatUse, Limits};
+pub use caps::{AdapterInfo, Caps, Features, FormatCaps, FormatUse, Limits};
 pub use draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups,
     DrawCall, DrawRange, EmptyPass, IndexBinding, LoadOp, PassDesc, ScissorRect, StoreOp,

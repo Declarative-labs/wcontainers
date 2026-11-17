@@ -3,6 +3,7 @@
 //! their own API's capability mechanism.
 
 use crate::format::Format;
+use alloc::string::String;
 use bitflags::bitflags;
 
 bitflags! {
@@ -249,9 +250,25 @@ impl FormatCaps {
     }
 }
 
+/// Which GPU a back end draws on, as its host names it, for the APIs' adapter descriptions
+/// (DXGI's `GetDesc`, Vulkan's device properties, OpenGL's `GL_RENDERER`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdapterInfo {
+    /// The host's name for it (WebGPU's `GPUAdapterInfo.description` or `device`, WebGL's unmasked
+    /// renderer, a native adapter's name).
+    pub name: String,
+    /// PCI vendor number, zero where the host does not say.
+    pub vendor: u32,
+    /// PCI device number, zero where the host does not say.
+    pub device: u32,
+    /// It draws on the CPU (WebGPU's fallback adapter, a software renderer).
+    pub software: bool,
+}
+
 /// Everything a back end declares about itself.
 #[derive(Clone, Debug)]
 pub struct Caps {
+    pub adapter: AdapterInfo,
     pub features: Features,
     pub limits: Limits,
     pub formats: FormatCaps,
