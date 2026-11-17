@@ -1,16 +1,18 @@
 #!/bin/bash
-# Real Direct3D 11 programs (DirectX SDK tutorials and bgfx examples), from the
-# Mac; desktop/programs.ps1 lists them with their sources, pinned commits and how each runs.
+# Real Direct3D programs (DirectX SDK tutorials, bgfx examples, Chocolate Doom playing a Freedoom
+# demo, Godot demo games on Direct3D 11 and 12), from the Mac; desktop/programs.ps1 lists them with
+# their sources, pinned commits or hashes and how each runs.
 #   tools/graphics-rig/programs build
 #       fetches and builds them all into C:\wc\programs; not a GPU job
 #   tools/graphics-rig/programs run [--census] [--capture <frames>] [--dll <name>=<path>]... [<program>...]
-#       one GPU job on the hidden desktop running each program (all by default) through the
-#       forwarding d3d11.dll until its last captured frame (default frames 10,60,120), with
+#       one GPU job on the hidden desktop running each program (all by default) until its last
+#       captured frame (default frames 10,60,120), Direct3D 11 ones through the forwarding
+#       d3d11.dll, Direct3D 12 ones saving their own frames, with
 #       replacement libraries if given (paths on the desktop, relative to its checkout); prints
 #       pass or FAIL for each (pass: it presented the last frame and every frame was saved) and
 #       exits 1 on any FAIL. The frames and census files are copied to
 #       pyro-parked/wcontainers-scratch/graphics-rig/programs/<program>. --census runs real
-#       Direct3D only and also copies each census.txt into tools/graphics-rig/census/<program>.txt,
+#       Direct3D only and also copies each census.txt (Direct3D 11 programs) into tools/graphics-rig/census/<program>.txt,
 #       to be committed.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)

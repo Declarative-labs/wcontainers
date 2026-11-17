@@ -558,11 +558,13 @@ fn save(chain: *mut c_void, frame: u64, config: &Config) -> anyhow::Result<()> {
     let back: ID3D11Texture2D = unsafe { chain.GetBuffer(0)? };
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { back.GetDesc(&mut desc) };
-    let bgra = match desc.Format {
-        DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => false,
+    // Every format saved has 4 bytes a texel; 10-bit colour is saved at 16 bits a channel.
+    let (bgra, wide) = match desc.Format {
+        DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => (false, false),
         DXGI_FORMAT_B8G8R8A8_UNORM
         | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
-        | DXGI_FORMAT_B8G8R8X8_UNORM => true,
+        | DXGI_FORMAT_B8G8R8X8_UNORM => (true, false),
+        DXGI_FORMAT_R10G10B10A2_UNORM => (false, true),
         other => anyhow::bail!("the back buffer's format {} is not one this saves", other.0),
     };
     anyhow::ensure!(
@@ -598,19 +600,41 @@ fn save(chain: *mut c_void, frame: u64, config: &Config) -> anyhow::Result<()> {
         }
         context.Unmap(&staging, 0);
     }
-    for texel in pixels.as_chunks_mut::<4>().0 {
-        if bgra {
-            texel.swap(0, 2);
+    let (pixels, depth) = if wide {
+        // Bits 0-9 red, 10-19 green, 20-29 blue, 30-31 alpha; widened by repeating the top bits.
+        let widen = |v: u32| ((v << 6) | (v >> 4)) as u16;
+        let wide: Vec<u8> = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|texel| {
+                let v = u32::from_le_bytes(*texel);
+                [
+                    widen(v & 0x3ff),
+                    widen((v >> 10) & 0x3ff),
+                    widen((v >> 20) & 0x3ff),
+                    (v >> 30) as u16 * 0x5555,
+                ]
+            })
+            .flat_map(u16::to_be_bytes)
+            .collect();
+        (wide, png::BitDepth::Sixteen)
+    } else {
+        for texel in pixels.as_chunks_mut::<4>().0 {
+            if bgra {
+                texel.swap(0, 2);
+            }
+            if desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM {
+                texel[3] = 255;
+            }
         }
-        if desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM {
-            texel[3] = 255;
-        }
-    }
+        (pixels, png::BitDepth::Eight)
+    };
     std::fs::create_dir_all(&config.out)?;
     let file = std::fs::File::create(config.out.join(format!("frame-{frame}.png")))?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), desc.Width, desc.Height);
     encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_depth(depth);
     encoder.write_header()?.write_image_data(&pixels)?;
     Ok(())
 }
