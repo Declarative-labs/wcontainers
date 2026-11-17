@@ -69,7 +69,11 @@ Progress (from the ledger):
   and 100 a form in Chrome (121,500); chunks 1, 2 and 4 on c38b4ad, 3 and 5 to 10 on 92b0866; 7,253 s of
   chunks (576 to 881 s each), load 10 to 30 for most of it, up to 189 (another job on the machine) in chunks
   9 and 10. Chunk 3 failed once on c38b4ad (failure 1 below) and passed on 92b0866.
-- Layer 2 started 18:11 (40 chunks).
+- Layer 2 done, 2026-11-16 18:11 to 2026-11-17 02:37: 40 of 40 chunks passed, 1,000,000 programs, 1,000 also
+  on the CPU and 200 in Chrome (at none, and full in both settings); chunks 1 to 21 and 23 on 92b0866, 22
+  and 24 to 40 on 445e3cf; 29,589 s of chunks (628 to 1,230 s each), load mostly 8 to 35, peaks of 111 and
+  64 from other jobs. Chunk 22 failed once on 92b0866 (failure 2 below) and passed on 445e3cf.
+- Layer 3 started 2026-11-17 02:37 (chunks of 500 until 100,000 compared).
 
 Failures found by the run, each with its cause and fix:
 1. Layer 1 chunk 3 (seed 100002, c38b4ad): `FSQRT_D_floatdp1`, the root of a denormal (0x19) rounding up
