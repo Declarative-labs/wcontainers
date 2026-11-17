@@ -5,31 +5,20 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 
 ## Where things stand
 
-R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done. The second
-and third runs fixed what the independent checks found (listed under "Second run" and "Third run").
-Everything below was run from this Mac against the desktop on 2026-11-17.
+R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
+R1 (the Direct3D reference library) is partly done; its first run (2026-11-17) did this:
+- Fixed the four findings of R0's check (see "R1 first run" under Measurements).
+- Part 1, scenes, is done but for swap chains: 26 Direct3D 11 scenes (125 outputs) and 8 Direct3D
+  12 scenes (16 outputs), each run on the RTX 3080 and on WARP with the debug layer on, the GPU's
+  outputs stored as references with an allowance derived from WARP, the HLSL kept beside its
+  compiled DXBC and DXIL. `tools/graphics-rig/scenes` checks every scene, through replacement
+  libraries if given, and prints what passes and what differs.
+- Part 2 (Wine's Direct3D tests) and part 3 (real programs and their call census) are not started.
+- Swap chains cannot be tested in the queue: jobs run in session 0, where DXGI refuses to create any
+  swap chain (see Known issues). This also blocks real programs, which present to windows.
 
-- The desktop has Git, Rust, the C++ build tools and Windows SDK, Node, Chrome for Testing, Windows'
-  Graphics Tools (the Direct3D debug layers) and pueue, all listed under "The desktop".
-- `remote` sends the working tree (committed or not) to the desktop and runs a command there.
-- A pueue job queue on the desktop shares the GPU: short jobs by priority, at most 4 at once,
-  timings alone. `gpu-job` submits (building first with `--build`), waits and returns standard
-  output, standard error and exit code. `queue-check` proves the rules.
-- crates/wcontainers-graphics-test draws three scenes (a coloured triangle; two textured,
-  depth-tested quads with blending; a 16-instance draw placed and coloured from a constant buffer)
-  with real Direct3D 11 on the RTX 3080 and on WARP, the triangle with Direct3D 12 on both, the
-  triangle through wgpu (Direct3D 12 and Vulkan back ends) and in Chrome through WebGPU and WebGL 2,
-  and compares pictures (`gt-compare`).
-- crates/wcontainers-graphics-test-forward builds a d3d11.dll that logs each call of its 51 exported
-  functions and forwards it to the system one (calls on the COM objects those return go through their
-  vtables straight to the system library and are not seen); a scene program placed beside it runs
-  through it and draws the same picture.
-- The three Direct3D 11 scenes as drawn on the RTX 3080 are stored in
-  crates/wcontainers-graphics-test/references, so a change to a scene is caught even when every
-  renderer changes alike.
-- `loop` does all of it in one command and fails if a picture leaves its tolerance, if the forwarding
-  run did not load the replacement d3d11.dll or create its device through it, or if a GPU renderer
-  (Direct3D 11 or 12 hardware, wgpu, Chrome) drew on a software adapter.
+The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
+its sections 10 to 12 (one source two builds, testing, milestones G4 and G5) were read for this run.
 
 ## How to run
 
@@ -62,36 +51,66 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   exactly as many as there are slots run at once, that a later priority-10 job starts before an
   earlier priority-0 one when every slot is taken, and that an alone job runs with nothing beside it.
   About 40 s.
-- `tools/graphics-rig/loop [picture-dir]`: one `gpu-job --build` that builds the rig on the desktop,
-  then (tools/graphics-rig/loop.cmd) draws every scene with every renderer into C:\wc\out\<branch>,
-  runs the forwarding test and compares: the GPU's Direct3D 11 pictures against the stored references
-  (reference-<scene>.png) at tolerance 0, other GPU pictures of the triangle against the GPU's
-  Direct3D 11 one at tolerance 0, GPU against WARP at tolerance 1. It also fails unless the
-  forwarding run printed "d3d11.dll from <its own directory>\d3d11.dll" and logged
-  "d3d11 forward: D3D11CreateDevice..." (the program's device creation went through the replacement),
-  and unless Chrome's WebGPU adapter is a GPU (type discrete or integrated, not a fallback) and its
-  WebGL 2 renderer names the same GPU. gt-d3d11 and gt-d3d12 fail when a hardware device lands on a
+- `tools/graphics-rig/loop [picture-dir]`: one `gpu-job --build` that builds the rig on the desktop
+  (and reinstalls the browser driver's packages when package-lock.json's hash changed), then
+  (tools/graphics-rig/loop.cmd) checks every scene as `scenes` does, checks triangle, quads and
+  topology again through the forwarding d3d11.dll (`--dll d3d11.dll=...forward.dll`), and draws the
+  triangle with wgpu (Direct3D 12, Vulkan) and Chrome (WebGPU, WebGL 2), each of which must equal
+  Direct3D 11's at tolerance 0. It fails unless the forwarding run loaded d3d11.dll from its own
+  directory and logged "d3d11 forward: D3D11CreateDevice" (the program's device creation went
+  through the replacement), and unless Chrome's WebGPU adapter is a GPU (type discrete or
+  integrated, not a fallback) and its WebGL 2 renderer names the same GPU. gt-d3d11 and gt-d3d12 fail when a hardware device lands on a
   software adapter (DXGI's software flag: WARP or the Microsoft Basic Render Driver), and gt-wgpu
   when its adapter is a CPU one. With a directory, the pictures are also copied there.
-- Changing a scene on purpose: `loop <dir>` fails at the reference comparison; check the new
-  pictures in <dir>, copy d3d11-hardware-<scene>.png over
-  crates/wcontainers-graphics-test/references/reference-<scene>.png and commit them with the change.
+- `tools/graphics-rig/scenes [--build <command>] [--dll <name>=<path>]... [--api d3d11|d3d12]
+  [--driver hardware|warp] [<scene>...]`: one GPU job that builds the rig, copies gt-d3d11.exe and
+  gt-d3d12.exe into C:\wc\out\<branch>\scenes\bin with each `--dll` beside them under its name
+  (paths on the desktop, relative to its checkout; `%CARGO_TARGET_DIR%` works), runs every scene (or
+  the named ones) in its own process with a 120 s limit, and checks every output against
+  crates/wcontainers-graphics-test/references/<api>. Prints `pass` or `FAIL` and the numbers for each
+  output, a FAIL for a scene that crashed, hung, has no references, or did not load a replacement
+  library from that directory, whether the stored shader corpus matches the build, and a count.
+  Exits 1 on any FAIL. Pointing it at our own Direct3D: `scenes --build "cargo build -p <crate>"
+  --dll d3d11.dll=%CARGO_TARGET_DIR%\debug\<its dll> --dll dxgi.dll=...`. The scene programs do not
+  ask for the debug layer when checking, so a replacement need not provide it.
+- `tools/graphics-rig/scenes --record`: runs every scene with the debug layer on the GPU twice and on
+  WARP; fails if the two GPU runs differ anywhere or the debug layer reports an error; then copies
+  the GPU's outputs and references/<api>/tolerances.txt (each picture's allowance and how far WARP
+  was) and the compiled shaders into this checkout, to be committed. Prints WARP's difference for
+  every output. Run it after changing or adding a scene, look at the new pictures, commit.
+- How a picture passes: it is compared at its own depth (8-bit, 16-bit or float) with the GPU's;
+  with L the largest channel difference WARP had from the GPU, the tolerance is L capped at 8 steps
+  of an 8-bit channel (2056 of a 16-bit one, 1/128 of a float one), and the pixels allowed beyond it
+  are as many as WARP had beyond it: a replacement passes when it is at least as close to the GPU as
+  WARP is. Texts (query counts, read-back bytes, answers to capability questions) must match exactly
+  and hold only facts every correct implementation shares (timestamps are recorded as facts: in
+  order, not disjoint; pixel shader invocations as "at least the covered pixels").
+- Scenes are listed by `gt-d3d11 list` and `gt-d3d12 list`; a scene alone, on the desktop:
+  `gt-d3d11 <scene>... <hardware|warp> <dir> [--debug]` writes `<scene>[-<part>].<png|exr|txt>`.
+  The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs and
+  src/d3d12/scenes.rs; each file's first comment says what it covers.
+- Shaders: crates/wcontainers-graphics-test/shaders/*.hlsl, each naming its entry points in header
+  lines `// fxc: <target> <entry>, ...` (DXBC for Direct3D 11) and `// dxc: ...` (DXIL, shader model
+  6.0, for Direct3D 12). build.rs compiles them with the newest Windows SDK's fxc.exe and dxc.exe
+  (10.0.26100.0; dxc 1.9.2602.17) when building for Windows; the programs embed the bytecode. The
+  corpus for the shader track is shaders/dxbc (79 files) and shaders/dxil (14 files), written by
+  `scenes --record`; `scenes` says when it no longer matches the build.
 - `tools/graphics-rig/inventory`: prints the desktop's installed programs, root scheduled tasks,
   services, Graphics Tools state, PATHs and C:\wc, to compare with "The desktop" below. The listing
   taken before anything was installed is in the scratch directory
   (pyro-parked/wcontainers-scratch/graphics-rig/baseline/programs-before.txt and state-before.txt),
   not in this public repository, as it lists the owner's software.
-- Single renderers, on the desktop (in a job): `gt-d3d11 <triangle|quads|instanced|all>
-  <hardware|warp> <dir>` (also prints which d3d11.dll and dxgi.dll it ran through),
-  `gt-d3d12 <hardware|warp> <dir>`, `gt-wgpu <dx12|vulkan|gl> <dir>`,
+- Other renderers of the triangle, on the desktop (in a job): `gt-wgpu <dx12|vulkan|gl> <dir>`,
   `gt-scene triangle > triangle.json` then `node tools\graphics-rig\browser\draw.mjs triangle.json
   <dir>` (the page takes the triangle's size, clear colour and vertices from scene.rs through
   gt-scene, and the shader from triangle.wgsl). `gt-wgpu metal <dir>` also runs on the Mac.
-- `gt-compare <a.png> <b.png> [tolerance]`: prints pixel count, how many differ in any channel by
-  more than the tolerance, the largest channel difference and the first differing pixel. Exit 0 when
+- `gt-compare <a> <b> [tolerance]`: compares two pictures at their own depth (PNG 8 or 16-bit,
+  OpenEXR float; pictures of different depths are refused); the tolerance is in the pictures' units
+  (steps of a channel, or a float value). Prints pixel count, how many differ in any channel by more
+  than the tolerance, the largest channel difference and the first differing pixel. Exit 0 when
   none differ beyond the tolerance, 1 when some do, 2 on error.
-- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (2 unit tests
-  of the comparison) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
+- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (6 unit tests:
+  comparison at each depth, NaN, the WARP allowance) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
   since most of the code is Windows-only; `shellcheck -x tools/graphics-rig/*` (minus the .cmd) for
   the Mac scripts.
 - The Mac scripts share tools/graphics-rig/common.sh: every ssh and scp to the desktop goes through one
@@ -154,7 +173,8 @@ versions it finds and writes them to C:\wc\setup\versions.txt; on 2026-11-17 (R1
 C:\wc holds, besides the tools above (bin, cargo, chrome, rustup, pueue): the installers in
 downloads (0.12 GB), the Graphics Tools task's log in setup, checkouts (C:\wc\src\<branch>, 0.02 GB),
 build output (C:\wc\target\<branch>, 2.13 GB), pictures (C:\wc\out\<branch>), the desktop scripts
-(C:\wc\rig), scripts in transit (C:\wc\incoming) and the branch locks (C:\wc\locks); 4.5 GB in all.
+(C:\wc\rig), scripts in transit (C:\wc\incoming) and the branch locks (C:\wc\locks); 4.5 GB in all
+when measured in R0. Since R1 also C:\wc\tmp (the rig's temporary files) and C:\wc\npm-cache.
 Leftovers of the earlier measurements and checks (C:\wc\target\abi-x and measure-abi, C:\wc\out\queue
 and s0, two export listings) were removed in the third run. Free space went from 521.7 GB before
 anything was installed to 508.8 GB now, a drop of 12.9 GB. The items sized here add up to about
@@ -257,6 +277,42 @@ Third run (desktop CPU 1 %, Mac load average 28 to 33, other tracks building):
 - The software-adapter checks were not seen to fire: making the GPU's adapter fall back would mean
   disabling its driver, which this machine's rules forbid.
 
+R1 first run (2026-11-17; desktop CPU load 1 to 4 % before each run, Mac load average 30 to 65):
+- Carried findings fixed. Pictures are compared at their own depth: a 16-bit picture with +100 in
+  one channel of one pixel now differs (unit test sixteen_bit_low_bits_count; 8-bit pictures as
+  before); float targets are saved as OpenEXR and compared as floats (NaN equal only to NaN).
+  The rig's npm cache, Node compile cache and temporary files now go under C:\wc (desktop/env.ps1);
+  after `setup-desktop` and a `loop`, C:\Users\tom\AppData\Local\npm-cache and
+  Temp\node-compile-cache are absent and C:\wc\npm-cache and C:\wc\tmp\node-compile-cache hold
+  them. rustup-init (1.29.3), the toolchain (1.99.0) and Chrome (157.0.8103.78) are pinned; the
+  Visual Studio bootstrapper is not, and its version is printed and kept (see The desktop). `loop`
+  reinstalls the page driver's packages when package-lock.json's SHA-256 differs from the one
+  stored in node_modules\.lock-hash.
+- Scenes: every scene drawn twice on the GPU by `scenes --record` gave identical outputs (all 141).
+  WARP against the GPU, per output, is in references/<api>/tolerances.txt. Most differ by at most 1
+  to 2 steps of an 8-bit channel (or float rounding of about 1e-7 for depth and stream output);
+  identical are, among others, instanced, the integer and float formats, copies, compute, the
+  texture gather, msaa-load and the stencil values. Where WARP differs by more (allowance above 0
+  pixels): GenerateMips at odd sizes (64 by 48: levels 5 and 6, by up to 33 steps; both answers
+  are allowed by Direct3D), alpha to coverage (9396 of 16384 pixels, up to 108; the dither pattern
+  is the implementation's), the sampler filter cells (29706 of 65536 pixels, up to 179;
+  anisotropic filtering is the implementation's), and the BC blocks (8645 of 16384 texels, up to
+  0.052; BC1 to BC3 interpolation precision is the implementation's). Texts identical on WARP but
+  for pixel shader invocations (GPU 416, WARP 456 for a 416-pixel rectangle), now recorded as a
+  lower bound.
+- `scenes --record`: 15 s for the GPU job (all scenes three times with the debug layer). `scenes`
+  (check only, all 34 scenes): about 10 s for the job. `loop`: 14.5 s end to end, 141 outputs plus
+  the forwarding run's 3 scenes and the four other renderers of the triangle, all passing.
+- A change is caught: with the blend constant's alpha set from 0.45 to 0.46, `scenes --api d3d11
+  blend` failed blend-alpha (206 pixels beyond the allowed 2, by up to 3) and passed the other three
+  blend pictures, which do not use that value.
+- Through a replacement library: `loop` runs triangle, quads and topology with the forwarding
+  d3d11.dll beside gt-d3d11 (all pass, and the program loaded d3d11.dll from its own directory).
+- Swap chains in session 0 (the queue's session): CreateSwapChainForHwnd on a never-shown window with
+  the flip model and with the blit model, and CreateSwapChainForComposition, all fail with
+  DXGI_ERROR_NOT_CURRENTLY_AVAILABLE (0x887A0022). The scene is kept out of the list (its source is
+  in the scratch directory, swapchain-scene.rs).
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -327,10 +383,27 @@ There is no plan document in this checkout; these depart from the task or brief 
 - The references are drawn with the Direct3D debug layer on, and any error it reports fails the run.
 - The reference pictures are kept in the repository (three PNGs, 41 KB) so the loop catches a change
   that affects every renderer alike.
-- Only the triangle is drawn by Direct3D 12, wgpu and Chrome, as the task asks; the other two scenes
-  are Direct3D 11 only so far.
+- Only the triangle is drawn by wgpu and Chrome, as R0 asked.
+- The allowance for a replacement's picture is derived from WARP (as close to the GPU as WARP is,
+  tolerance capped at 8 steps) rather than chosen per scene by hand, so every scene gets one rule;
+  the record keeps WARP's raw numbers beside it.
+- Shaders are compiled at build time by the Windows SDK's fxc.exe and dxc.exe rather than at run
+  time by d3dcompiler_47.dll, so the programs carry fixed bytecode and the corpus in the repository
+  is exactly what was tested. Direct3D 12 scenes use DXIL (shader model 6.0) only.
+- The Direct3D 12 scenes cover its own model (root signatures of every parameter kind and both
+  versions, tables, static samplers, placed and aliased resources, upload and readback heaps,
+  bundles, barriers of all three kinds, ExecuteIndirect, queries and predication, three queues with
+  fences, copies and resolves); the pipeline state each Direct3D 11 scene covers (blending, depth,
+  stencil, formats and so on) is not repeated for Direct3D 12 yet.
+- Texts hold only facts every correct implementation shares; values the implementation chooses
+  (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
 
 ## Known issues
+
+- No swap chain can be created in session 0, where the queue runs its jobs (see Measurements), so
+  presenting is untested and real programs, which present to a window, cannot run in the queue.
+  Running them needs a job in the owner's interactive session, where their windows would appear on
+  his screen; that needs his decision.
 
 - SSH to the desktop has refused new connections (reset right after key exchange) for about 9 to 10
   minutes at a time and then recovered by itself, with no reboot and nothing in the OpenSSH or System
@@ -364,7 +437,10 @@ There is no plan document in this checkout; these depart from the task or brief 
 ## Licences
 
 Added crates (all transitive dependencies are permissive: MIT, Apache-2.0, Zlib, ISC, BSD,
-Unlicense-or-MIT, Unicode-3.0): anyhow, bytemuck (Zlib OR Apache-2.0 OR MIT), image, pollster, wgpu,
+Unlicense-or-MIT, Unicode-3.0): in R1 image's exr feature (exr 1.74.2 BSD-3-Clause, with lebe
+BSD-3-Clause, bit_field Apache-2.0/MIT, half 2.7.1 MIT OR Apache-2.0 (also used directly), pulp and
+reborrow MIT, zune-inflate MIT OR Apache-2.0 OR Zlib), rand 0.9 and rand_chacha 0.9 (MIT OR
+Apache-2.0, already in the workspace's lock file); in R0 anyhow, bytemuck (Zlib OR Apache-2.0 OR MIT), image, pollster, wgpu,
 windows, windows-sys, object, serde_json 1.0.154 (already in the workspace's lock file), all MIT OR
 Apache-2.0 unless said. Node packages (tools only):
 playwright-core 1.65.1 and @puppeteer/browsers 3.2.7, Apache-2.0. Tools on the desktop, none shipped:
@@ -373,4 +449,18 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R0 is complete. The next milestone comes from the plan once it is merged here.
+R1 continues, in this order:
+1. Part 2, Wine's Direct3D tests: a script under tools/graphics-rig that fetches Wine at a pinned
+   commit into C:\wc (never into the workspace), builds dlls/d3d11/tests, d3d10core/tests,
+   dxgi/tests and vkd3d's d3d12 tests for 64-bit Windows (MSVC from the Build Tools, or llvm-mingw
+   if Wine's headers need it; record the choice), runs them on the RTX 3080 and WARP through the
+   queue, records the baseline (tests, checks, failures on real Direct3D with reasons, time), and
+   runs one file or one named test as one command; then a check that no workspace crate depends on
+   it (`cargo tree` shows no Wine).
+2. Part 3, real programs: needs the swap chain question settled (Known issues). Candidates to
+   check at their source: DirectX-Graphics-Samples (MIT), DirectXTK samples (MIT), and two or three
+   open-source games or demos with 64-bit Direct3D 11 renderers. For each: a fetch-or-build script
+   into C:\wc, a fixed number of frames run repeatably, saved pictures, and a call census through a
+   forwarding library that also sees the COM methods (R0's sees only the 51 exports).
+3. Direct3D 12 versions of the pipeline-state scenes (blending, depth and stencil, formats,
+   textures and samplers), and a swap chain scene once presenting can run.
