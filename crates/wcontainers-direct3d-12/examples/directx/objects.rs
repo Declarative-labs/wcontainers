@@ -14,8 +14,8 @@ use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
 use wcontainers_direct3d_12::{
-    Error, FenceId, GraphicsPipelineDesc, HeapId, PipelineId, QueryHeapId, QueueId, ResourceId,
-    RootId, features,
+    Error, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
+    ResourceId, RootId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, format_support, plane_count};
 use wcontainers_gpu::Backend;
@@ -75,6 +75,7 @@ not_implemented!(
     RootSignature,
     PipelineState,
     QueryHeap,
+    Heap,
     DescriptorHeap,
     Blob
 );
@@ -266,7 +267,7 @@ macro_rules! based {
 }
 based!(
     Device => base, Queue => 1, Allocator => 1, Fence => base, Resource => base,
-    RootSignature => 1, PipelineState => 1, QueryHeap => 1, DescriptorHeap => base, List => base
+    RootSignature => 1, PipelineState => 1, QueryHeap => 1, Heap => 2, DescriptorHeap => base, List => base
 );
 
 /// The front's description of a resource.
@@ -869,6 +870,73 @@ impl Device {
         }
     }
 
+    pub fn CreateHeap(
+        &self,
+        pdesc: *const D3D12_HEAP_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let kind = HeapType::from_d3d12(desc.Properties.Type.0 as u32).map_err(hr)?;
+        let (size, flags) = (desc.SizeInBytes, desc.Flags.0 as u32);
+        let id = gpu::call(move |d| d.create_heap(size, kind, flags)).map_err(hr)?;
+        give::<ID3D12Heap>(
+            crate::abi::fixed(Heap(desc, id, Base::child()).into()),
+            riid,
+            out,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn CreatePlacedResource(
+        &self,
+        heap: Ref<ID3D12Heap>,
+        offset: u64,
+        pdesc: *const D3D12_RESOURCE_DESC,
+        _state: D3D12_RESOURCE_STATES,
+        _clear: *const D3D12_CLEAR_VALUE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: heaps come from this library; the API requires a description.
+        let (heap, desc) = unsafe { (heap.ok()?.as_impl(), *pdesc.as_ref().ok_or(E_INVALIDARG)?) };
+        let (memory, heap_desc) = (heap.1, heap.0);
+        let kind = HeapType::from_d3d12(heap_desc.Properties.Type.0 as u32).map_err(hr)?;
+        let front = resource_desc(&desc);
+        let (id, address, host) = gpu::call(move |d| {
+            let id = d.create_placed(memory, offset, &front)?;
+            let host = if kind == HeapType::Default {
+                0
+            } else {
+                d.map(id)? as usize
+            };
+            Ok::<_, Error>((id, d.address(id), host))
+        })
+        .map_err(hr)?;
+        let mut desc = desc;
+        if desc.MipLevels == 0 {
+            desc.MipLevels = front.mips() as u16;
+        }
+        give::<ID3D12Resource>(
+            crate::abi::fixed(
+                Resource {
+                    id,
+                    desc,
+                    address,
+                    host,
+                    back_buffer: false,
+                    heap: heap_desc.Properties.Type,
+                    heap_flags: heap_desc.Flags,
+                    base: Base::child(),
+                }
+                .into(),
+            ),
+            riid,
+            out,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn CreateCommittedResource(
         &self,
@@ -1450,6 +1518,23 @@ impl Drop for RootSignature {
     fn drop(&mut self) {
         let id = self.0;
         gpu::call(move |d| d.destroy_root_signature(id));
+    }
+}
+
+/// A heap of `CreateHeap`: its description and the front's heap.
+#[implement(ID3D12Heap)]
+pub struct Heap(D3D12_HEAP_DESC, MemoryId, Base);
+
+impl Heap {
+    pub fn GetDesc(&self) -> D3D12_HEAP_DESC {
+        self.0
+    }
+}
+
+impl Drop for Heap {
+    fn drop(&mut self) {
+        let id = self.1;
+        gpu::call(move |d| d.destroy_heap(id));
     }
 }
 

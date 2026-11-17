@@ -51,7 +51,9 @@ id!(
     /// A command queue.
     QueueId,
     /// A query heap.
-    QueryHeapId
+    QueryHeapId,
+    /// A heap made by `CreateHeap`, holding placed resources.
+    MemoryId
 );
 
 mod bind;
@@ -100,6 +102,16 @@ struct Resource<B: Backend> {
     heap: HeapType,
     storage: Storage<B>,
     address: u64,
+    /// The heap a placed resource lies in.
+    placed: Option<MemoryId>,
+}
+
+/// A heap of `CreateHeap`: each placed resource has storage of its own (plan 5.2), so the heap
+/// keeps only where they lie: offset, end and resource.
+struct Memory {
+    size: u64,
+    heap: HeapType,
+    placed: Vec<(u64, u64, ResourceId)>,
 }
 
 /// What a pipeline state object holds.
@@ -198,6 +210,7 @@ pub struct Device<B: Backend> {
     queues: Slab<VecDeque<(u64, Work)>>,
     calls: u64,
     query_heaps: Slab<query::QueryHeap<B>>,
+    memory: Slab<Memory>,
     programs: query::Programs<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
@@ -230,6 +243,7 @@ impl<B: Backend> Device<B> {
             queues: Slab::new(),
             calls: 0,
             query_heaps: Slab::new(),
+            memory: Slab::new(),
             programs: query::Programs::default(),
             messages: Vec::new(),
             removed: None,
@@ -356,7 +370,65 @@ impl<B: Backend> Device<B> {
             heap,
             storage,
             address,
+            placed: None,
         });
+        Ok(id)
+    }
+
+    /// `CreateHeap`.
+    pub fn create_heap(
+        &mut self,
+        size: u64,
+        heap: HeapType,
+        flags: u32,
+    ) -> Result<MemoryId, Error> {
+        self.live()?;
+        resource::check_heap_flags(flags, false)?;
+        if size == 0 {
+            return Err(Error::Invalid("a heap of zero bytes"));
+        }
+        Ok(MemoryId(self.memory.insert(Memory {
+            size,
+            heap,
+            placed: Vec::new(),
+        }) as u32))
+    }
+
+    /// The heap's release; resources placed in it keep their own storage.
+    pub fn destroy_heap(&mut self, id: MemoryId) {
+        self.memory.try_remove(id.0 as usize);
+    }
+
+    /// `CreatePlacedResource`. Placed resources that overlap a live one would share its bytes as
+    /// Direct3D 12's aliasing rules say, which needs the copies of plan 5.2 (`AliasCopied`), not
+    /// made yet; so overlaps are refused, and the others are resources like committed ones.
+    pub fn create_placed(
+        &mut self,
+        memory: MemoryId,
+        offset: u64,
+        desc: &ResourceDesc,
+    ) -> Result<ResourceId, Error> {
+        self.live()?;
+        let (size, align) = desc.allocation()?;
+        let m = self
+            .memory
+            .get(memory.0 as usize)
+            .ok_or(Error::Invalid("no such heap"))?;
+        if !offset.is_multiple_of(align) || offset.checked_add(size).is_none_or(|e| e > m.size) {
+            return Err(Error::Invalid(
+                "a placed resource outside its heap or misaligned",
+            ));
+        }
+        let end = offset + size;
+        if m.placed.iter().any(|&(o, e, _)| o < end && offset < e) {
+            return Err(Error::NotImplemented("placed resources that overlap"));
+        }
+        let heap = m.heap;
+        let id = self.create_committed(heap, desc)?;
+        self.resources[id.0 as usize].placed = Some(memory);
+        self.memory[memory.0 as usize]
+            .placed
+            .push((offset, end, id));
         Ok(id)
     }
 
@@ -394,6 +466,9 @@ impl<B: Backend> Device<B> {
         };
         if r.address != 0 {
             self.addresses.remove(r.address);
+        }
+        if let Some(m) = r.placed.and_then(|m| self.memory.get_mut(m.0 as usize)) {
+            m.placed.retain(|p| p.2 != id);
         }
         self.reads.retain(|p| p.resource != id);
         match r.storage {
@@ -1313,6 +1388,7 @@ fn adopt_buffers<B: Backend>(
                 owned: false,
             },
             address: 0,
+            placed: None,
         });
         out.push(ResourceId(id as u32));
         i += 1;

@@ -47,7 +47,7 @@ OBJECTS = [
     'Adapter:IDXGIAdapter1:GetDesc1,GetDesc,EnumOutputs,GetParent',
     'Output:IDXGIOutput6:GetParent,GetDesc,GetDesc1,GetDisplayModeList,GetDisplayModeList1,FindClosestMatchingMode,FindClosestMatchingMode1,CheckHardwareCompositionSupport,SupportsOverlays',
     'SwapChain:IDXGISwapChain4:GetParent,GetContainingOutput,Present,Present1,GetBuffer,ResizeBuffers,GetDesc1,GetDesc,GetHwnd,GetDevice,GetCurrentBackBufferIndex,GetLastPresentCount,SetMaximumFrameLatency,GetMaximumFrameLatency,GetFrameLatencyWaitableObject,GetFullscreenState,SetFullscreenState,IsTemporaryMonoSupported,CheckColorSpaceSupport,SetColorSpace1',
-    'Device:ID3D12Device:GetNodeCount,CreateCommandQueue,CreateCommandAllocator,CreateGraphicsPipelineState,CreateCommandList,CreateQueryHeap,CreateComputePipelineState,CheckFeatureSupport,CreateDescriptorHeap,GetDescriptorHandleIncrementSize,CreateRootSignature,CreateRenderTargetView,CreateDepthStencilView,CreateConstantBufferView,CreateShaderResourceView,CreateUnorderedAccessView,CreateSampler,CopyDescriptorsSimple,CopyDescriptors,CreateCommittedResource,CreateFence,GetDeviceRemovedReason,GetCopyableFootprints,GetAdapterLuid,GetResourceAllocationInfo,GetCustomHeapProperties',
+    'Device:ID3D12Device:GetNodeCount,CreateCommandQueue,CreateCommandAllocator,CreateGraphicsPipelineState,CreateCommandList,CreateQueryHeap,CreateComputePipelineState,CheckFeatureSupport,CreateDescriptorHeap,GetDescriptorHandleIncrementSize,CreateRootSignature,CreateRenderTargetView,CreateDepthStencilView,CreateConstantBufferView,CreateShaderResourceView,CreateUnorderedAccessView,CreateSampler,CopyDescriptorsSimple,CopyDescriptors,CreateCommittedResource,CreateHeap,CreatePlacedResource,CreateFence,GetDeviceRemovedReason,GetCopyableFootprints,GetAdapterLuid,GetResourceAllocationInfo,GetCustomHeapProperties',
     'Queue:ID3D12CommandQueue:ExecuteCommandLists,Signal,Wait,GetTimestampFrequency,GetDesc',
     'Allocator:ID3D12CommandAllocator:Reset',
     'List:ID3D12GraphicsCommandList:Close,Reset,DrawInstanced,DrawIndexedInstanced,CopyResource,CopyBufferRegion,CopyTextureRegion,IASetPrimitiveTopology,RSSetViewports,RSSetScissorRects,OMSetBlendFactor,OMSetStencilRef,SetPipelineState,ResourceBarrier,SetGraphicsRootSignature,SetComputeRootSignature,SetDescriptorHeaps,SetGraphicsRootDescriptorTable,SetComputeRootDescriptorTable,SetGraphicsRootConstantBufferView,SetComputeRootConstantBufferView,SetGraphicsRootShaderResourceView,SetComputeRootShaderResourceView,SetGraphicsRootUnorderedAccessView,SetComputeRootUnorderedAccessView,SetGraphicsRoot32BitConstant,SetComputeRoot32BitConstant,SetGraphicsRoot32BitConstants,SetComputeRoot32BitConstants,IASetIndexBuffer,IASetVertexBuffers,OMSetRenderTargets,ClearRenderTargetView,ClearDepthStencilView,ClearUnorderedAccessViewUint,ClearUnorderedAccessViewFloat,Dispatch,BeginQuery,EndQuery,ResolveQueryData,SetPredication,GetType',
@@ -56,12 +56,13 @@ OBJECTS = [
     'RootSignature:ID3D12RootSignature:',
     'PipelineState:ID3D12PipelineState:',
     'QueryHeap:ID3D12QueryHeap:',
+    'Heap:ID3D12Heap:GetDesc',
     'DescriptorHeap:ID3D12DescriptorHeap:GetDesc,GetCPUDescriptorHandleForHeapStart,GetGPUDescriptorHandleForHeapStart',
     'Blob:ID3DBlob:GetBufferPointer,GetBufferSize',
 ]
 
 # Objects with a `Base` (base.rs), which answers these methods.
-BASED = {'Device', 'Queue', 'Allocator', 'List', 'Fence', 'Resource', 'RootSignature', 'PipelineState', 'QueryHeap', 'DescriptorHeap'}
+BASED = {'Device', 'Queue', 'Allocator', 'List', 'Fence', 'Resource', 'RootSignature', 'PipelineState', 'QueryHeap', 'Heap', 'DescriptorHeap'}
 BASE_METHODS = {'GetDevice', 'GetPrivateData', 'SetPrivateData', 'SetPrivateDataInterface', 'SetName'}
 
 HEADER = '''//! The methods of each object's interfaces that the front does not do yet, made by com.py from the

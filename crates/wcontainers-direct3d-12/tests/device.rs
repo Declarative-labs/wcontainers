@@ -275,3 +275,36 @@ fn queues_wait_for_fences_signalled_late() {
     device.execute(compute, &lists).unwrap();
     assert_eq!(submits(&mut device), before + 5);
 }
+
+#[test]
+fn placed_resources_lie_in_their_heap_and_overlaps_are_refused() {
+    let mut device = Device::new(Recorder::new());
+    let page = 64 << 10;
+    let heap = device.create_heap(4 * page, HeapType::Default, 0).unwrap();
+    let buffer = |width| ResourceDesc {
+        dimension: DIMENSION_BUFFER,
+        width,
+        height: 1,
+        depth_or_array_size: 1,
+        mip_levels: 1,
+        sample_count: 1,
+        ..Default::default()
+    };
+    let a = device.create_placed(heap, 0, &buffer(page)).unwrap();
+    let b = device.create_placed(heap, page, &buffer(2 * page)).unwrap();
+    assert_ne!(device.address(a), device.address(b));
+    assert!(matches!(
+        device.create_placed(heap, 2 * page, &buffer(page)),
+        Err(Error::NotImplemented(_))
+    ));
+    assert!(matches!(
+        device.create_placed(heap, 100, &buffer(page)),
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        device.create_placed(heap, 3 * page, &buffer(2 * page)),
+        Err(Error::Invalid(_))
+    ));
+    device.destroy_resource(b);
+    device.create_placed(heap, 2 * page, &buffer(page)).unwrap();
+}

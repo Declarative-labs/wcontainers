@@ -846,23 +846,32 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateHeap(
         &self,
-        _pdesc: *const D3D12_HEAP_DESC,
-        _riid: *const windows_core::GUID,
-        _ppvheap: *mut *mut core::ffi::c_void,
+        pdesc: *const D3D12_HEAP_DESC,
+        riid: *const windows_core::GUID,
+        ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("CreateHeap"))
+        Device::CreateHeap(self, pdesc, riid, ppvheap)
     }
     fn CreatePlacedResource(
         &self,
-        _pheap: windows_core::Ref<ID3D12Heap>,
-        _heapoffset: u64,
-        _pdesc: *const D3D12_RESOURCE_DESC,
-        _initialstate: D3D12_RESOURCE_STATES,
-        _poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
-        _riid: *const windows_core::GUID,
-        _ppvresource: *mut *mut core::ffi::c_void,
+        pheap: windows_core::Ref<ID3D12Heap>,
+        heapoffset: u64,
+        pdesc: *const D3D12_RESOURCE_DESC,
+        initialstate: D3D12_RESOURCE_STATES,
+        poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
+        riid: *const windows_core::GUID,
+        ppvresource: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("CreatePlacedResource"))
+        Device::CreatePlacedResource(
+            self,
+            pheap,
+            heapoffset,
+            pdesc,
+            initialstate,
+            poptimizedclearvalue,
+            riid,
+            ppvresource,
+        )
     }
     fn CreateReservedResource(
         &self,
@@ -1865,6 +1874,53 @@ impl ID3D12DeviceChild_Impl for QueryHeap_Impl {
 }
 
 impl ID3D12Object_Impl for QueryHeap_Impl {
+    fn GetPrivateData(
+        &self,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().GetPrivateData(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().SetPrivateData(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        self.base().SetPrivateDataInterface(guid, pdata)
+    }
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
+    }
+}
+
+impl ID3D12Heap_Impl for Heap_Impl {
+    fn GetDesc(&self) -> D3D12_HEAP_DESC {
+        Heap::GetDesc(self)
+    }
+}
+
+impl ID3D12Pageable_Impl for Heap_Impl {}
+
+impl ID3D12DeviceChild_Impl for Heap_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().GetDevice(riid, ppvdevice)
+    }
+}
+
+impl ID3D12Object_Impl for Heap_Impl {
     fn GetPrivateData(
         &self,
         guid: *const windows_core::GUID,
