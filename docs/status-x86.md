@@ -36,8 +36,20 @@ The check's findings and what was done about each:
   bounded 1, 5, 256 and full, both settings, both offers, and its thread module validate.
 - Blocking, the float hook 1.5 times slower: `HookType::state` names the bytes a `Cpu` hook works on
   (ARM64's float hook: 36 bytes, FPSR through FPSR tracking); the host runner registers the hook with
-  `func_new_unchecked`, arguments in a fixed array, only those bytes copied; the browser copies only those
-  bytes too. Timed with `tests/float_hook.rs` (below).
+  `func_new_unchecked`, arguments and state in fixed arrays sized by the largest hook, the state copied
+  with one `copy_nonoverlapping` each way; the browser copies only those bytes too. Timed with
+  `tests/float_hook.rs` (`programs/rounding.c`, 200,000 turns a mode, three modes, output equal to the
+  native run), in the 2274314 copy and the checkout alternating, one run each per round, on the Mac:
+  - first fix (36-byte copy, 1 KiB buffer zeroed per call), 3 rounds, load 27.8 to 28.6: best old none
+    0.6884 s, full 0.9012 s; new 0.7506 s, 0.9948 s (about 1.09 and 1.10).
+  - with the buffer sized to 36 bytes and the copy by `copy_nonoverlapping`, 3 rounds old first (load 23.1
+    to 23.9): old 0.7250 / 0.9355 s, new 0.7309 / 0.9577 s; 4 rounds new first (load 34.9 to 41.8): old
+    0.7505 / 0.9836 s, new 0.7812 / 1.0015 s. New over old 1.01 to 1.04 (none) and 1.02 (full), against
+    1.5 before the fix.
+  - an experiment registering the float hook with a typed `func_wrap` instead (not kept): old 0.7065 /
+    0.9610 s, new 0.7590 / 1.0030 s (load 33.9 to 34.7), no better, so the registration is not the rest.
+  What is left, about 8 ns of about 200 ns per hook call, is expected to be the generic hook path (36 bytes
+  copied each way where the old code moved 16, and the arguments read by type); not measured further.
 - Blocking, the browser did not ask `memory_fault`: the cdylib exports `cpu_memory_fault(address,
   length)`; runner.js copies the state and the instruction's bytes to `cpu_state` and stops with the
   answer (page fault, general protection or stack fault).
