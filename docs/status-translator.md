@@ -64,6 +64,13 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
 - Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
   load.
 
+Progress (from the ledger):
+- Layer 1 done, 2026-11-16 15:55 to 18:11: 10 of 10 chunks passed, 1,215 forms x 10,000 cases (12,150,000)
+  and 100 a form in Chrome (121,500); chunks 1, 2 and 4 on c38b4ad, 3 and 5 to 10 on 92b0866; 7,253 s of
+  chunks (576 to 881 s each), load 10 to 30 for most of it, up to 189 (another job on the machine) in chunks
+  9 and 10. Chunk 3 failed once on c38b4ad (failure 1 below) and passed on 92b0866.
+- Layer 2 started 18:11 (40 chunks).
+
 Failures found by the run, each with its cause and fix:
 1. Layer 1 chunk 3 (seed 100002, c38b4ad): `FSQRT_D_floatdp1`, the root of a denormal (0x19) rounding up
    (FPCR 0x2400000) gave one ulp too many and raised inexact; Linux gives the exact root 0x1e84000000000000.
