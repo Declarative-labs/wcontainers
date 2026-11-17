@@ -5,6 +5,8 @@
 
 #[path = "common/checks.rs"]
 mod checks;
+#[path = "common/kit.rs"]
+mod kit;
 #[path = "common/scenes.rs"]
 mod scenes;
 
@@ -131,6 +133,8 @@ suite!(
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
     depth_and_stencil_read_back,
+    stencil_sampled_and_read_back,
+    copies_within_a_typeless_group,
 );
 
 /// Runs the suite test `name` with `off` (extensions to treat as missing, separated by spaces). A

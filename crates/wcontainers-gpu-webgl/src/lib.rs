@@ -7,6 +7,7 @@
 //! negate y and the front face is swapped.
 
 mod caps;
+mod convert;
 mod depth;
 mod format;
 pub mod platform;
@@ -23,6 +24,10 @@ use wcontainers_gpu::*;
 
 /// Ids name objects in the state the back end last applied; they are never reused.
 type Id = u64;
+
+/// The sampler id a unit records when it holds the back end's nearest sampler, for textures read only
+/// by loads.
+const POINT_SAMPLER: Id = Id::MAX - 1;
 
 /// The instance divisor of a stream that reads one element for every vertex and instance.
 const NEVER_ADVANCES: u32 = 1 << 31;
@@ -68,6 +73,9 @@ pub struct TextureObj {
     twin: std::cell::OnceCell<Texture>,
     /// On a twin: the texture it is the twin of.
     own: Option<std::rc::Weak<TextureObj>>,
+    /// With WEBGL_stencil_texturing, whether programs fetching a depth-stencil texture get its stencil
+    /// (else its depth).
+    stencil_mode: Cell<bool>,
 }
 
 #[derive(Debug)]
@@ -175,6 +183,7 @@ type FramebufferKey = [Option<Attachment>; MAX_COLOR_TARGETS + 1];
 /// What a running pass must do when it ends.
 #[derive(Debug)]
 struct Pass {
+    framebuffer: glow::Framebuffer,
     discard: Points,
 }
 
@@ -265,11 +274,24 @@ pub struct WebGl {
     /// GL's last compile or link log, for tests and bug reports.
     last_log: String,
     surface: Option<SurfaceState>,
-    /// The depth and stencil read programs for 2D and 2D array sources (depth 2D, depth array,
-    /// stencil 2D, stencil array), made at their first use.
+    /// The depth and stencil read programs, by [`Fetch`], made at their first use.
     depth_read: [Option<depth::DepthRead>; 4],
+    /// The stencil bit draws' program, made at its first use.
+    bits_program: Option<glow::Program>,
+    /// The programs of copies by draws, by source format, destination format and source target, with
+    /// their uniform `at`.
+    copy_programs: HashMap<(Format, Format, u32), (glow::Program, glow::UniformLocation)>,
     /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
     point_sampler: Option<glow::Sampler>,
+}
+
+/// What the back end's own fetch draws read: depth or stencil, of a 2D or a 2D array texture.
+#[derive(Clone, Copy, Debug)]
+enum Fetch {
+    Depth2D,
+    DepthArray,
+    Stencil2D,
+    StencilArray,
 }
 
 impl WebGl {
@@ -302,7 +324,7 @@ impl WebGl {
             gl.compile_shader(s);
             s
         };
-        WebGl {
+        let mut b = WebGl {
             gl,
             platform,
             extensions,
@@ -324,7 +346,112 @@ impl WebGl {
             last_log: String::new(),
             surface: None,
             depth_read: [None, None, None, None],
+            bits_program: None,
+            copy_programs: HashMap::new(),
             point_sampler: None,
+        };
+        match b.probe_depth24() {
+            Ok(unorm) => b.caps.features.set(Features::DEPTH24_UNORM, unorm),
+            Err(log) => {
+                b.own_program_failed(format!("webgl: the 24-bit depth probe: {log}"));
+            }
+        }
+        b
+    }
+
+    /// The 24-bit depth probe (plan section 4.11): a triangle at depth 0.1 drawn into a 1 by 1
+    /// `depth24plus` texture without and with a constant bias of one unit, each depth then fetched as
+    /// float bits. One 24-bit step between them means 24-bit unsigned normalised storage, one float
+    /// step 32-bit float storage; anything else is a bug of the back end's.
+    fn probe_depth24(&mut self) -> Result<bool, String> {
+        let error = |e: GpuError| format!("{e:?}");
+        let (program, z) = depth::build_probe(&self.gl)?;
+        let texture = |b: &mut Self, format, usage| {
+            b.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: 1,
+                height: 1,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage,
+                cube: false,
+                reinterpret: false,
+            })
+        };
+        let depth = texture(self, Format::Depth24Plus, TextureUsage::RENDER).map_err(error)?;
+        let out = texture(self, Format::R32Uint, TextureUsage::RENDER).map_err(error)?;
+        let fb = self.texture_framebuffer(&depth, 0, 0);
+        let out_fb = self.texture_framebuffer(&out, 0, 0);
+        let mut bits = [0u32; 2];
+        for (units, bits) in [0.0f32, 1.0].into_iter().zip(&mut bits) {
+            // SAFETY: plain GL calls; the program and the framebuffer are alive.
+            unsafe {
+                self.gl.use_program(Some(program));
+                // Depth 0.1 in either clip depth convention.
+                let clip = if self.values.clip_depth == platform::ZERO_TO_ONE {
+                    0.1
+                } else {
+                    -0.8
+                };
+                self.gl.uniform_1_f32(Some(&z), clip);
+                self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
+                self.applied.draw_framebuffer = Some(fb);
+                self.open_writes();
+                self.gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
+            }
+            state::plain(&self.gl, &mut self.values, [0, 0, 1, 1]);
+            let (gl, v) = (&self.gl, &mut self.values);
+            // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
+            unsafe {
+                gl.enable(glow::DEPTH_TEST);
+                v.depth_test = true;
+                gl.depth_func(glow::ALWAYS);
+                v.depth_func = glow::ALWAYS;
+                gl.enable(glow::POLYGON_OFFSET_FILL);
+                gl.polygon_offset(0.0, units);
+                v.polygon_offset = Some((0.0, units));
+            }
+            self.own_draw();
+            self.applied.program = 0;
+            self.fetch(Fetch::Depth2D, &depth, 0, [0; 3], 0, out_fb, (1, 1))
+                .map_err(error)?;
+            let mut word = [0u8; 4];
+            self.read_texture_now(
+                &TextureRegion {
+                    texture: &out,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                Extent {
+                    width: 1,
+                    height: 1,
+                    depth_or_layers: 1,
+                },
+                &mut word,
+            )
+            .map_err(error)?;
+            *bits = u32::from_le_bytes(word);
+        }
+        self.destroy(Object::Texture(depth));
+        self.destroy(Object::Texture(out));
+        // SAFETY: a plain GL call; the program is no longer used.
+        unsafe { self.gl.delete_program(program) };
+        // A float near 0.1 holds a 24-bit step to an eighth, so a step shows as 8 float steps or so.
+        let steps = bits.map(|b| f64::from(f32::from_bits(b)) * 16_777_215.0);
+        if bits[1] == bits[0] + 1 {
+            Ok(false)
+        } else if (steps[1] - steps[0] - 1.0).abs() < 0.25 {
+            Ok(true)
+        } else {
+            Err(format!(
+                "depths {} and {} with and without the bias",
+                f32::from_bits(bits[1]),
+                f32::from_bits(bits[0])
+            ))
         }
     }
 
@@ -430,6 +557,46 @@ impl WebGl {
         Ok(twin)
     }
 
+    /// The stencil copy of `texture`, made at its first stencil view without WEBGL_stencil_texturing:
+    /// an `r8uint` texture of the same shape, which [`WebGl::fresh`] fills from the stencil by draws
+    /// whenever the stencil changed since.
+    fn stencil_copy_of(&mut self, texture: &Texture) -> Result<Texture, GpuError> {
+        if let Some(t) = texture.twin.get() {
+            return Ok(t.clone());
+        }
+        let mut copy = self.create_texture(&TextureDesc {
+            format: Format::R8Uint,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+            reinterpret: false,
+            ..texture.desc
+        })?;
+        let t = Rc::get_mut(&mut copy.0).expect("a texture just made has one handle");
+        t.newest = texture.newest.clone();
+        t.side = 2;
+        t.own = Some(Rc::downgrade(&texture.0));
+        texture.newest.set(1);
+        self.twins += 1;
+        let _ = texture.twin.set(copy.clone());
+        Ok(copy)
+    }
+
+    /// Fills every level and layer of `copy` with the stencil of `src`, counted by draws.
+    fn fill_stencil_copy(&mut self, src: &Texture, copy: &Texture) -> Result<(), GpuError> {
+        let d = src.desc;
+        for mip in 0..d.mip_levels {
+            let size = ((d.width >> mip).max(1), (d.height >> mip).max(1));
+            for layer in 0..d.depth_or_layers {
+                let counted = self.stencil_bits(src, mip, layer)?;
+                let fb = self.texture_framebuffer(copy, mip, layer);
+                let size = (size.0 as i32, size.1 as i32);
+                self.fetch(Fetch::Depth2D, &counted, 0, [0; 3], 255, fb, size)?;
+                self.destroy(Object::Texture(counted));
+            }
+        }
+        Ok(())
+    }
+
     /// Before `t` is read or written: copies its twin's texels into it when the twin holds newer ones.
     fn fresh(&mut self, t: &Texture) {
         let newest = t.newest.get();
@@ -441,7 +608,12 @@ impl WebGl {
             _ => t.own.as_ref().and_then(|own| own.upgrade()).map(Handle),
         };
         if let Some(other) = other {
-            self.copy_whole(&other, t);
+            if other.desc.format.is_depth_stencil() {
+                // A failure has lost the device.
+                let _ = self.fill_stencil_copy(&other, t);
+            } else {
+                self.copy_whole(&other, t);
+            }
         }
         t.newest.set(0);
     }
@@ -455,74 +627,207 @@ impl WebGl {
     }
 
     /// Copies every level and layer of `from` into `to`, a texture of the same shape whose texels have
-    /// the same bytes, through a pixel pack buffer ([`SlowPath::CopyThroughBuffer`]).
+    /// the same bytes.
     fn copy_whole(&mut self, from: &Texture, to: &Texture) {
-        self.slow.hit(SlowPath::CopyThroughBuffer);
-        let read = from
-            .read
-            .expect("twins are made only of formats read as stored");
-        let texel = read.texel_kept() as u32;
         let d = from.desc;
         for mip in 0..d.mip_levels {
-            let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
-            let layers = if d.dimension == TextureDimension::D3 {
-                (d.depth_or_layers >> mip).max(1)
-            } else {
-                d.depth_or_layers
-            };
-            let layer_bytes = w * h * texel;
-            // SAFETY: plain GL calls on the current context.
-            let pbo = unsafe {
-                let Ok(pbo) = self.gl.create_buffer() else {
-                    self.fail(LossReason::OutOfMemory);
-                    return;
-                };
-                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
-                self.gl.buffer_data_size(
-                    glow::PIXEL_PACK_BUFFER,
-                    (layer_bytes * layers) as i32,
-                    glow::STREAM_COPY,
-                );
-                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-                pbo
-            };
-            for layer in 0..layers {
-                self.read_framebuffer(from, mip, layer);
-                // SAFETY: the pack buffer holds every layer's rows.
-                unsafe {
-                    self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
-                    self.gl.read_pixels(
-                        0,
-                        0,
-                        w as i32,
-                        h as i32,
-                        read.format,
-                        read.ty,
-                        glow::PixelPackData::BufferOffset(layer * layer_bytes),
-                    );
-                    self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-                }
-            }
-            // SAFETY: a plain GL call; the buffer is unbound and deleted after the upload.
-            unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo)) };
-            let region = TextureRegion {
-                texture: to,
+            let region = |texture| TextureRegion {
+                texture,
                 mip,
                 layer: 0,
                 origin: Origin::default(),
                 stencil: false,
             };
             let extent = Extent {
-                width: w,
-                height: h,
-                depth_or_layers: layers,
+                width: (d.width >> mip).max(1),
+                height: (d.height >> mip).max(1),
+                depth_or_layers: if d.dimension == TextureDimension::D3 {
+                    (d.depth_or_layers >> mip).max(1)
+                } else {
+                    d.depth_or_layers
+                },
             };
-            self.upload(&region, extent, Texels::Offset(0), w * texel, h);
-            // SAFETY: plain GL calls; GL keeps the buffer for the upload already issued.
+            self.copy_through_pbo(&region(from), &region(to), extent);
+        }
+    }
+
+    /// Copies a region between textures whose texels have the same bytes, the source's read by
+    /// `readPixels` as stored: read into a pixel pack buffer, then written from it as the destination's
+    /// texels, all on the GPU ([`SlowPath::CopyThroughBuffer`]).
+    fn copy_through_pbo(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        self.slow.hit(SlowPath::CopyThroughBuffer);
+        let read = src
+            .texture
+            .read
+            .expect("the caller checked the source is read as stored");
+        let texel = read.texel_kept() as u32;
+        let layer_bytes = extent.width * extent.height * texel;
+        // SAFETY: plain GL calls on the current context.
+        let pbo = unsafe {
+            let Ok(pbo) = self.gl.create_buffer() else {
+                self.fail(LossReason::OutOfMemory);
+                return;
+            };
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
+            self.gl.buffer_data_size(
+                glow::PIXEL_PACK_BUFFER,
+                (layer_bytes * extent.depth_or_layers) as i32,
+                glow::STREAM_COPY,
+            );
+            pbo
+        };
+        for i in 0..extent.depth_or_layers {
+            let layer = self.read_layer(src, i);
+            self.read_framebuffer(src.texture, src.mip, layer);
+            // SAFETY: the pack buffer is bound and holds every layer's rows.
             unsafe {
-                self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
-                self.gl.delete_buffer(pbo);
+                self.gl.read_pixels(
+                    src.origin.x as i32,
+                    src.origin.y as i32,
+                    extent.width as i32,
+                    extent.height as i32,
+                    read.format,
+                    read.ty,
+                    glow::PixelPackData::BufferOffset(i * layer_bytes),
+                );
             }
+        }
+        // SAFETY: plain GL calls; the buffer moves from packing to unpacking.
+        unsafe {
+            self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
+        }
+        self.upload(
+            dst,
+            extent,
+            Texels::Offset(0),
+            extent.width * texel,
+            extent.height,
+        );
+        // SAFETY: plain GL calls; GL keeps the buffer for the upload already issued.
+        unsafe {
+            self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+            self.gl.delete_buffer(pbo);
+        }
+    }
+
+    /// Copies a region between colour formats of one typeless group by a draw per layer that fetches
+    /// each source texel and writes its bits as the destination's value ([`SlowPath::CopyThroughBuffer`],
+    /// convert.rs). False when no such draw carries the two formats, the source is a cube or the
+    /// destination cannot be drawn into.
+    fn copy_by_draw(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) -> bool {
+        let (from, to) = (src.texture.desc.format, dst.texture.desc.format);
+        let sampler = match src.texture.target {
+            glow::TEXTURE_2D => "2D",
+            glow::TEXTURE_2D_ARRAY => "2DArray",
+            glow::TEXTURE_3D => "3D",
+            _ => return false,
+        };
+        if !self.caps.formats.get(to).contains(FormatUse::RENDER) {
+            return false;
+        }
+        let key = (from, to, src.texture.target);
+        if !self.copy_programs.contains_key(&key) {
+            let Some(source) = convert::program(from, to, sampler) else {
+                return false;
+            };
+            let built = depth::link(&self.gl, &source).and_then(|p| {
+                // SAFETY: a plain query of a linked program.
+                unsafe { self.gl.get_uniform_location(p, "at") }
+                    .map(|at| (p, at))
+                    .ok_or_else(|| "the copy program has no uniform at".to_string())
+            });
+            match built {
+                Ok(p) => {
+                    self.copy_programs.insert(key, p);
+                }
+                Err(log) => {
+                    self.own_program_failed(log);
+                    return true;
+                }
+            }
+        }
+        self.slow.hit(SlowPath::CopyThroughBuffer);
+        if self.bind_source(src.texture, src.mip).is_err() {
+            self.fail(LossReason::OutOfMemory);
+            return true;
+        }
+        let rect = [
+            dst.origin.x as i32,
+            dst.origin.y as i32,
+            extent.width as i32,
+            extent.height as i32,
+        ];
+        for i in 0..extent.depth_or_layers {
+            let fb = self.texture_framebuffer(dst.texture, dst.mip, self.read_layer(dst, i));
+            let (program, at) = &self.copy_programs[&key];
+            // SAFETY: plain GL calls; the program is alive.
+            unsafe {
+                self.gl.use_program(Some(*program));
+                self.gl.uniform_3_i32(
+                    Some(at),
+                    src.origin.x as i32 - rect[0],
+                    src.origin.y as i32 - rect[1],
+                    self.read_layer(src, i) as i32,
+                );
+            }
+            self.own_draw_into(fb, rect);
+        }
+        true
+    }
+
+    /// Copies a region of a depth or depth-stencil texture into one of the same format by
+    /// `blitFramebuffer`, layer by layer.
+    fn blit_depth(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let mask = match src.texture.desc.format.kind() {
+            FormatKind::DepthStencil => glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT,
+            _ => glow::DEPTH_BUFFER_BIT,
+        };
+        self.open_writes();
+        let (sx, sy, dx, dy, w, h) = (
+            src.origin.x as i32,
+            src.origin.y as i32,
+            dst.origin.x as i32,
+            dst.origin.y as i32,
+            extent.width as i32,
+            extent.height as i32,
+        );
+        for i in 0..extent.depth_or_layers {
+            self.read_framebuffer(src.texture, src.mip, self.read_layer(src, i));
+            let fb = self.texture_framebuffer(dst.texture, dst.mip, self.read_layer(dst, i));
+            // SAFETY: plain GL calls; both framebuffers hold one level and layer of a texture of the
+            // same format.
+            unsafe {
+                self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
+                self.gl.blit_framebuffer(
+                    sx,
+                    sy,
+                    sx + w,
+                    sy + h,
+                    dx,
+                    dy,
+                    dx + w,
+                    dy + h,
+                    mask,
+                    glow::NEAREST,
+                );
+            }
+            self.applied.draw_framebuffer = Some(fb);
         }
     }
 
@@ -682,29 +987,39 @@ impl WebGl {
         mip: u32,
         layer: u32,
     ) -> glow::Framebuffer {
-        let view = Handle(Rc::new(ViewObj {
-            id: 0,
-            texture: texture.clone(),
-            desc: TextureViewDesc {
-                format: texture.desc.format,
-                dimension: ViewDimension::D2,
-                base_mip: mip,
-                mip_count: 1,
-                base_layer: layer,
-                layer_count: 1,
-                stencil: false,
-            },
-        }));
+        self.own_framebuffer(&[(texture, mip, layer)])
+    }
+
+    /// The framebuffer of the back end's own holding `parts` (each a texture, level and layer; colour
+    /// ones on targets 0, 1 and on, a depth or stencil one on its point), made if new; the draw binding
+    /// stays as it was.
+    fn own_framebuffer(&mut self, parts: &[(&Texture, u32, u32)]) -> glow::Framebuffer {
         let mut key: FramebufferKey = [None; MAX_COLOR_TARGETS + 1];
-        let mut views: [Option<&TextureView>; MAX_COLOR_TARGETS + 1] =
-            [None; MAX_COLOR_TARGETS + 1];
-        let slot = if texture.desc.format.is_depth_stencil() {
-            MAX_COLOR_TARGETS
-        } else {
-            0
-        };
-        key[slot] = Some((texture.id, mip, layer));
-        views[slot] = Some(&view);
+        let mut views: [Option<TextureView>; MAX_COLOR_TARGETS + 1] = Default::default();
+        let mut colour = 0;
+        for &(texture, mip, layer) in parts {
+            let slot = if texture.desc.format.is_depth_stencil() {
+                MAX_COLOR_TARGETS
+            } else {
+                colour += 1;
+                colour - 1
+            };
+            key[slot] = Some((texture.id, mip, layer));
+            views[slot] = Some(Handle(Rc::new(ViewObj {
+                id: 0,
+                texture: texture.clone(),
+                desc: TextureViewDesc {
+                    format: texture.desc.format,
+                    dimension: ViewDimension::D2,
+                    base_mip: mip,
+                    mip_count: 1,
+                    base_layer: layer,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            })));
+        }
+        let views = views.each_ref().map(Option::as_ref);
         let draw = self.applied.draw_framebuffer;
         let fb = self.framebuffer(key, &views);
         if self.applied.draw_framebuffer != draw {
@@ -728,23 +1043,24 @@ impl WebGl {
         let Some((scale, kept)) = depth::stored(src.desc.format) else {
             return Err(GpuError::Invalid("webgl: not a depth format"));
         };
-        let kept = if region.stencil { 1 } else { kept };
-        let array = match src.target {
-            glow::TEXTURE_2D => 0,
-            glow::TEXTURE_2D_ARRAY => 1,
+        let (kept, scale) = if region.stencil {
+            (1, 0)
+        } else {
+            (kept, scale)
+        };
+        let kind = match src.target {
+            glow::TEXTURE_2D => Fetch::Depth2D,
+            glow::TEXTURE_2D_ARRAY => Fetch::DepthArray,
             _ => return Err(self.unbuilt("depth read backs of cube textures")),
-        } + 2 * usize::from(region.stencil);
+        };
+        let bits = region.stencil && !self.extensions.contains("WEBGL_stencil_texturing");
+        let kind = match kind {
+            _ if bits => Fetch::Depth2D,
+            Fetch::Depth2D if region.stencil => Fetch::Stencil2D,
+            Fetch::DepthArray if region.stencil => Fetch::StencilArray,
+            k => k,
+        };
         self.slow.hit(SlowPath::DepthReadByDraw);
-        if self.depth_read[array].is_none() {
-            match depth::build(&self.gl, array % 2 == 1, region.stencil) {
-                Ok(p) => self.depth_read[array] = Some(p),
-                Err(log) => {
-                    self.last_log = log;
-                    self.fail(LossReason::Error);
-                    return Err(GpuError::DeviceLost);
-                }
-            }
-        }
         let mut scratch = self.create_texture(&TextureDesc {
             dimension: TextureDimension::D2,
             format: Format::R32Uint,
@@ -766,31 +1082,80 @@ impl WebGl {
             comp_kept: kept,
             n: 1,
         });
-        // The source on unit 0 at the region's level, fetched through a nearest sampler (GLES leaves
-        // a depth texture without comparison incomplete under linear filters).
-        self.bind_scratch(src.target, src.raw);
-        let mip = region.mip;
-        let sampler = match self.point_sampler {
-            Some(s) => s,
-            None => {
-                // SAFETY: plain GL calls on the current context.
-                let s = unsafe {
-                    let s = self
-                        .gl
-                        .create_sampler()
-                        .map_err(|_| GpuError::OutOfMemory)?;
-                    for p in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-                        self.gl.sampler_parameter_i32(s, p, glow::NEAREST as i32);
-                    }
-                    s
-                };
-                self.point_sampler = Some(s);
-                s
+        let at = [region.origin.x as i32, region.origin.y as i32];
+        for i in 0..extent.depth_or_layers {
+            let layer = region.layer + i;
+            let fb = self.texture_framebuffer(&scratch, 0, i);
+            let size = (extent.width as i32, extent.height as i32);
+            if bits {
+                let counted = self.stencil_bits(&src, region.mip, layer)?;
+                self.fetch(kind, &counted, 0, [at[0], at[1], 0], 255, fb, size)?;
+                self.destroy(Object::Texture(counted));
+            } else {
+                self.fetch(
+                    kind,
+                    &src,
+                    region.mip,
+                    [at[0], at[1], layer as i32],
+                    scale,
+                    fb,
+                    size,
+                )?;
             }
-        };
-        let program = self.depth_read[array].as_ref().expect("built above");
+        }
+        Ok(scratch)
+    }
+
+    /// Draws a full-screen triangle into `target` (`size` pixels) whose fragments fetch level `mip` of
+    /// `src` at their position moved by `at` (x, y, layer) and write the fetched value as an unsigned
+    /// integer: a depth times `scale` (0 keeps a float's bits), or a stencil value. Drawn with GL's own
+    /// lower-left origin, so rows match on both window-origin routes.
+    #[allow(clippy::too_many_arguments)]
+    fn fetch(
+        &mut self,
+        kind: Fetch,
+        src: &Texture,
+        mip: u32,
+        at: [i32; 3],
+        scale: u32,
+        target: glow::Framebuffer,
+        size: (i32, i32),
+    ) -> Result<(), GpuError> {
+        let k = kind as usize;
+        if self.depth_read[k].is_none() {
+            match depth::build(
+                &self.gl,
+                matches!(kind, Fetch::DepthArray | Fetch::StencilArray),
+                matches!(kind, Fetch::Stencil2D | Fetch::StencilArray),
+            ) {
+                Ok(p) => self.depth_read[k] = Some(p),
+                Err(log) => return Err(self.own_program_failed(log)),
+            }
+        }
+        self.bind_source(src, mip)?;
+        let stencil = matches!(kind, Fetch::Stencil2D | Fetch::StencilArray);
+        self.aspect(src, stencil);
+        let program = self.depth_read[k].as_ref().expect("built above");
+        // SAFETY: plain GL calls; the program is alive.
+        unsafe {
+            self.gl.use_program(Some(program.program));
+            if let Some(location) = &program.scale {
+                self.gl.uniform_1_u32(Some(location), scale);
+            }
+            self.gl
+                .uniform_3_i32(Some(&program.at), at[0], at[1], at[2]);
+        }
+        self.own_draw_into(target, [0, 0, size.0, size.1]);
+        Ok(())
+    }
+
+    /// Binds level `mip` of `src` alone on unit 0 for the back end's own fetches, through a nearest
+    /// sampler (GLES leaves a depth texture without comparison incomplete under linear filters).
+    fn bind_source(&mut self, src: &Texture, mip: u32) -> Result<(), GpuError> {
+        self.bind_scratch(src.target, src.raw);
+        let sampler = self.point_sampler()?;
         let gl = &self.gl;
-        // SAFETY: plain GL calls; the source and the program are alive.
+        // SAFETY: plain GL calls on the bound texture.
         unsafe {
             if src.levels.get() != (mip, mip) {
                 gl.tex_parameter_i32(src.target, glow::TEXTURE_BASE_LEVEL, mip as i32);
@@ -798,65 +1163,165 @@ impl WebGl {
                 src.levels.set((mip, mip));
             }
             gl.bind_sampler(0, Some(sampler));
-            gl.use_program(Some(program.program));
-            if let Some(location) = &program.scale {
-                gl.uniform_1_u32(Some(location), scale);
-            }
-            if region.stencil {
-                gl.tex_parameter_i32(
-                    src.target,
-                    depth::DEPTH_STENCIL_TEXTURE_MODE,
-                    depth::STENCIL_INDEX as i32,
-                );
-            }
-            if !self.flip_y {
-                self.platform
-                    .clip_control(gl, platform::LOWER_LEFT, self.values.clip_depth);
-            }
         }
-        // The next draw binds its own program, sampler and blocks again.
+        // The next draw binds its own sampler on unit 0 again.
         self.applied.units[0].1 = Id::MAX;
+        Ok(())
+    }
+
+    /// Draws the back end's full-screen triangle with the program in use into `target`, in the
+    /// viewport `rect` (GL's window coordinates, row 0 the texture's first), with no blending, tests or
+    /// culling; the next draw applies its own state.
+    fn own_draw_into(&mut self, target: glow::Framebuffer, rect: [i32; 4]) {
+        // SAFETY: a plain GL call; the framebuffer is alive.
+        unsafe {
+            self.gl
+                .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(target))
+        };
+        self.applied.draw_framebuffer = Some(target);
         self.applied.program = 0;
         self.open_writes();
-        state::plain(
-            &self.gl,
-            &mut self.values,
-            extent.width as i32,
-            extent.height as i32,
-        );
-        for i in 0..extent.depth_or_layers {
-            let fb = self.texture_framebuffer(&scratch, 0, i);
-            let program = self.depth_read[array].as_ref().expect("built above");
-            // SAFETY: plain GL calls; the scratch layer's framebuffer is complete.
-            unsafe {
-                self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
-                self.gl.uniform_4_i32(
-                    Some(&program.at),
-                    region.origin.x as i32,
-                    region.origin.y as i32,
-                    (region.layer + i) as i32,
-                    mip as i32,
-                );
-                self.gl.draw_arrays(glow::TRIANGLES, 0, 3);
-            }
-            self.applied.draw_framebuffer = Some(fb);
+        state::plain(&self.gl, &mut self.values, rect);
+        self.own_draw();
+    }
+
+    /// Draws the back end's full-screen triangle with GL's lower-left window origin.
+    fn own_draw(&mut self) {
+        if !self.flip_y {
+            self.platform
+                .clip_control(&self.gl, platform::LOWER_LEFT, self.values.clip_depth);
         }
+        // SAFETY: the caller bound the program, the target and the state.
+        unsafe { self.gl.draw_arrays(glow::TRIANGLES, 0, 3) };
         if !self.flip_y {
             self.platform
                 .clip_control(&self.gl, platform::UPPER_LEFT, self.values.clip_depth);
         }
-        if region.stencil {
-            // Sampled views read depth, so the mode goes back. Unit 0 still holds the source.
+    }
+
+    /// One of the back end's own programs failed to build: a bug of ours, so the device is lost with
+    /// GL's log.
+    fn own_program_failed(&mut self, log: String) -> GpuError {
+        self.last_log = log;
+        self.fail(LossReason::Error);
+        GpuError::DeviceLost
+    }
+
+    /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
+    fn point_sampler(&mut self) -> Result<glow::Sampler, GpuError> {
+        if let Some(s) = self.point_sampler {
+            return Ok(s);
+        }
+        // SAFETY: plain GL calls on the current context.
+        let s = unsafe {
+            let s = self
+                .gl
+                .create_sampler()
+                .map_err(|_| GpuError::OutOfMemory)?;
+            for p in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
+                self.gl.sampler_parameter_i32(s, p, glow::NEAREST as i32);
+            }
+            s
+        };
+        self.point_sampler = Some(s);
+        Ok(s)
+    }
+
+    /// Makes `texture`, bound on the active unit, give its stencil (`stencil`) or its depth to programs
+    /// (WEBGL_stencil_texturing's mode, which is the texture's, not a view's).
+    fn aspect(&mut self, texture: &TextureObj, stencil: bool) {
+        if texture.stencil_mode.get() != stencil {
+            let mode = if stencil {
+                depth::STENCIL_INDEX
+            } else {
+                depth::DEPTH_COMPONENT
+            };
             // SAFETY: a plain GL call on the bound texture.
             unsafe {
                 self.gl.tex_parameter_i32(
-                    src.target,
+                    texture.target,
                     depth::DEPTH_STENCIL_TEXTURE_MODE,
-                    depth::DEPTH_COMPONENT as i32,
+                    mode as i32,
                 )
             };
+            texture.stencil_mode.set(stencil);
         }
-        Ok(scratch)
+    }
+
+    /// Counts the stencil of level `mip` and layer `layer` of `src` into a new `r8unorm` texture of the
+    /// level's size, without WEBGL_stencil_texturing: eight full-screen draws, each passing the stencil
+    /// test only where its bit is set and adding the bit's weight by blending with the constant colour,
+    /// which unorm8 blending sums exactly ([`SlowPath::StencilCopiedByDraw`]).
+    fn stencil_bits(&mut self, src: &Texture, mip: u32, layer: u32) -> Result<Texture, GpuError> {
+        self.slow.hit(SlowPath::StencilCopiedByDraw);
+        if self.bits_program.is_none() {
+            match depth::build_bits(&self.gl) {
+                Ok(p) => self.bits_program = Some(p),
+                Err(log) => return Err(self.own_program_failed(log)),
+            }
+        }
+        let (w, h) = (
+            (src.desc.width >> mip).max(1),
+            (src.desc.height >> mip).max(1),
+        );
+        let counted = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::R8Unorm,
+            width: w,
+            height: h,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+            cube: false,
+            reinterpret: false,
+        })?;
+        let fb = self.own_framebuffer(&[(&counted, 0, 0), (src, mip, layer)]);
+        // SAFETY: plain GL calls; the framebuffer holds the counted texture and the source's stencil.
+        unsafe {
+            self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
+            self.gl.use_program(self.bits_program);
+        }
+        self.applied.draw_framebuffer = Some(fb);
+        self.applied.program = 0;
+        self.open_writes();
+        state::plain(&self.gl, &mut self.values, [0, 0, w as i32, h as i32]);
+        let (gl, v) = (&self.gl, &mut self.values);
+        let keep = [glow::KEEP; 3];
+        // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
+        unsafe {
+            gl.clear_buffer_f32_slice(glow::COLOR, 0, &[0.0; 4]);
+            gl.enable(glow::BLEND);
+            v.blend = true;
+            gl.blend_equation_separate(glow::FUNC_ADD, glow::FUNC_ADD);
+            v.blend_equation = [glow::FUNC_ADD; 2];
+            let func = [
+                glow::CONSTANT_COLOR,
+                glow::ONE,
+                glow::CONSTANT_COLOR,
+                glow::ONE,
+            ];
+            gl.blend_func_separate(func[0], func[1], func[2], func[3]);
+            v.blend_func = func;
+            gl.enable(glow::STENCIL_TEST);
+            v.stencil_test = true;
+            gl.stencil_op(keep[0], keep[1], keep[2]);
+            v.stencil_op = [keep; 2];
+        }
+        for bit in 0..8 {
+            let weight = f32::from(1u8 << bit) / 255.0;
+            let func = (glow::EQUAL, 1u8 << bit, 1u8 << bit);
+            // SAFETY: plain GL state calls.
+            unsafe {
+                self.gl
+                    .stencil_func(func.0, i32::from(func.1), u32::from(func.2));
+                self.gl.blend_color(weight, weight, weight, weight);
+            }
+            self.values.stencil_func = [func; 2];
+            self.values.blend_color = [weight; 4];
+            self.own_draw();
+        }
+        Ok(counted)
     }
 
     /// Binds a texture on unit 0 for an upload or a parameter change. The next draw walks its bindings
@@ -959,11 +1424,6 @@ impl WebGl {
         read: impl FnOnce(&mut Self, &TextureRegion<'_, Self>) -> Result<R, GpuError>,
     ) -> Option<Result<R, GpuError>> {
         depth::stored(region.texture.desc.format)?;
-        if region.stencil && !self.extensions.contains("WEBGL_stencil_texturing") {
-            return Some(Err(
-                self.unbuilt("stencil read backs without WEBGL_stencil_texturing")
-            ));
-        }
         Some(self.depth_by_draw(region, extent).and_then(|scratch| {
             let colour = TextureRegion {
                 texture: &scratch,
@@ -1135,14 +1595,14 @@ impl WebGl {
         }
     }
 
-    /// Binds what the program reads from the draw's sets. Err names a slot the program reads that the
-    /// sets do not hold with the right kind of resource; nothing of that draw may run then.
+    /// Binds what the program reads from the draw's sets. Err says why the draw cannot run; nothing of
+    /// it may run then.
     fn apply_bindings(
         &mut self,
         program: Id,
         linked: &shader::Linked,
         sets: &[Option<&BindingSet>; MAX_BINDING_SETS],
-    ) -> Result<(), Slot> {
+    ) -> Result<(), Unbindable> {
         let ids = sets.map(|s| s.map_or(0, |s| s.id));
         if self.applied.program == program && self.applied.sets == ids {
             return Ok(());
@@ -1160,28 +1620,45 @@ impl WebGl {
         if self.applied.units.len() < linked.units.len() {
             self.applied.units.resize(linked.units.len(), (0, 0));
         }
+        // Textures read only by loads get the nearest sampler: GLES leaves integer and depth textures
+        // incomplete under the texture's own default filters, and loads ignore filters.
+        let point = if linked.units.iter().any(|(_, s)| s.is_none()) {
+            match self.point_sampler() {
+                Ok(s) => Some(s),
+                Err(_) => return Err(Unbindable::NoSampler),
+            }
+        } else {
+            None
+        };
         for (unit, (texture, sampler)) in linked.units.iter().enumerate() {
             let Some(Bound::Texture(v)) = find(*texture) else {
-                return Err(*texture);
+                return Err(Unbindable::Missing(*texture));
             };
             // A texture read only by loads has no sampler.
             let sampler = match sampler {
                 None => None,
                 Some(slot) => match find(*slot) {
                     Some(Bound::Sampler(s)) => Some(s),
-                    _ => return Err(*slot),
+                    _ => return Err(Unbindable::Missing(*slot)),
                 },
             };
-            let ids = (v.id, sampler.map_or(0, |s| s.id));
-            let gl = &self.gl;
+            let ids = (v.id, sampler.map_or(POINT_SAMPLER, |s| s.id));
             let t = &v.texture;
             let levels = (v.desc.base_mip, v.desc.base_mip + v.desc.mip_count - 1);
+            let aspect = t.desc.format.is_depth_stencil() && t.stencil_mode.get() != v.desc.stencil;
+            if self.applied.units[unit] != ids || t.levels.get() != levels || aspect {
+                // SAFETY: plain GL calls; the texture is alive.
+                unsafe {
+                    self.gl.active_texture(glow::TEXTURE0 + unit as u32);
+                    self.gl.bind_texture(t.target, Some(t.raw));
+                }
+            }
+            if aspect {
+                self.aspect(t, v.desc.stencil);
+            }
+            let gl = &self.gl;
             // SAFETY: plain GL calls; the texture and sampler are alive.
             unsafe {
-                if self.applied.units[unit] != ids || t.levels.get() != levels {
-                    gl.active_texture(glow::TEXTURE0 + unit as u32);
-                    gl.bind_texture(t.target, Some(t.raw));
-                }
                 if t.levels.get() != levels {
                     gl.tex_parameter_i32(t.target, glow::TEXTURE_BASE_LEVEL, levels.0 as i32);
                     gl.tex_parameter_i32(t.target, glow::TEXTURE_MAX_LEVEL, levels.1 as i32);
@@ -1190,16 +1667,25 @@ impl WebGl {
             }
             if self.applied.units[unit].1 != ids.1 {
                 // SAFETY: a plain GL call; the sampler is alive.
-                unsafe { gl.bind_sampler(unit as u32, sampler.map(|s| s.raw)) };
+                unsafe { gl.bind_sampler(unit as u32, sampler.map(|s| s.raw).or(point)) };
             }
             self.applied.units[unit] = ids;
+        }
+        // The stencil mode is the texture's: one draw cannot fetch both aspects of one texture.
+        for (texture, _) in &linked.units {
+            if let Some(Bound::Texture(v)) = find(*texture)
+                && v.texture.desc.format.is_depth_stencil()
+                && v.texture.stencil_mode.get() != v.desc.stencil
+            {
+                return Err(Unbindable::BothAspects);
+            }
         }
         if self.applied.blocks.len() < linked.blocks.len() {
             self.applied.blocks.resize(linked.blocks.len(), (0, 0, 0));
         }
         for (point, slot) in linked.blocks.iter().enumerate() {
             let Some(Bound::Uniform(buffer, offset, size)) = find(*slot) else {
-                return Err(*slot);
+                return Err(Unbindable::Missing(*slot));
             };
             let key = (buffer.id, *offset, *size);
             if self.applied.blocks[point] != key {
@@ -1306,6 +1792,16 @@ impl WebGl {
         self.applied.layout = call.vertex_layout.0.0;
         Ok(())
     }
+}
+
+/// Why a draw's bindings cannot be bound.
+enum Unbindable {
+    /// The sets hold no fitting resource at a slot the program reads.
+    Missing(Slot),
+    /// Depth and stencil views of one texture, which WEBGL_stencil_texturing cannot give together.
+    BothAspects,
+    /// The nearest sampler for loads could not be made.
+    NoSampler,
 }
 
 /// Where texels written into a texture come from.
@@ -1452,6 +1948,7 @@ impl Backend for WebGl {
             side: 1,
             twin: std::cell::OnceCell::new(),
             own: None,
+            stencil_mode: Cell::new(false),
         })))
     }
 
@@ -1470,7 +1967,23 @@ impl Backend for WebGl {
             return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
         }
         if desc.stencil {
-            return Err(self.unbuilt("stencil views"));
+            if t.format.kind() != FormatKind::DepthStencil {
+                return Err(GpuError::Invalid(
+                    "webgl: a stencil view of a texture without stencil",
+                ));
+            }
+            // Natively the texture gives its stencil when a draw binds the view; else a copy in
+            // `r8uint` kept in step by draws.
+            let texture = if self.extensions.contains("WEBGL_stencil_texturing") {
+                texture.clone()
+            } else {
+                self.stencil_copy_of(texture)?
+            };
+            return Ok(Handle(Rc::new(ViewObj {
+                id: self.id(),
+                texture,
+                desc: *desc,
+            })));
         }
         let texture = if desc.format == t.format {
             texture.clone()
@@ -1962,6 +2475,7 @@ impl Backend for WebGl {
             }
         }
         self.pass = Some(Pass {
+            framebuffer: fb,
             discard: end_discard,
         });
     }
@@ -2011,6 +2525,17 @@ impl Backend for WebGl {
                         self.fresh(&v.texture);
                     }
                 }
+            }
+            // Filling a stencil copy draws into framebuffers of its own.
+            if let Some(pass) = &self.pass
+                && self.applied.draw_framebuffer != Some(pass.framebuffer)
+            {
+                // SAFETY: a plain GL call; the pass's framebuffer is alive.
+                unsafe {
+                    self.gl
+                        .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pass.framebuffer))
+                };
+                self.applied.draw_framebuffer = Some(pass.framebuffer);
             }
         }
         if self.applied.program != program.id {
@@ -2070,12 +2595,23 @@ impl Backend for WebGl {
                 v.blend_color = color;
             }
         }
-        if let Err((set, binding)) = self.apply_bindings(program.id, linked, &call.bindings) {
-            self.invalid(format!(
-                "the draw's binding sets hold no fitting resource at set {set} binding {binding}, \
-                 which its program reads"
-            ));
-            return;
+        match self.apply_bindings(program.id, linked, &call.bindings) {
+            Ok(()) => {}
+            Err(Unbindable::Missing((set, binding))) => {
+                self.invalid(format!(
+                    "the draw's binding sets hold no fitting resource at set {set} binding \
+                     {binding}, which its program reads"
+                ));
+                return;
+            }
+            Err(Unbindable::BothAspects) => {
+                self.unbuilt("depth and stencil views of one texture fetched by one draw");
+                return;
+            }
+            Err(Unbindable::NoSampler) => {
+                self.fail(LossReason::OutOfMemory);
+                return;
+            }
         }
         if base_vertex != 0 || first_instance != 0 {
             self.slow.hit(SlowPath::BaseVertexRebind);
@@ -2199,14 +2735,31 @@ impl Backend for WebGl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        let format = src.texture.desc.format;
-        if format.is_depth_stencil() || !self.caps.formats.get(format).contains(FormatUse::RENDER) {
-            self.unbuilt("copies of depth and of formats a framebuffer cannot read");
-            return;
-        }
+        let (from, to) = (src.texture.desc.format, dst.texture.desc.format);
         self.fresh(src.texture);
         self.fresh(dst.texture);
         self.written(dst.texture);
+        if from.is_depth_stencil() || to.is_depth_stencil() {
+            if from != to {
+                self.unbuilt("copies between depth and colour formats");
+            } else {
+                self.blit_depth(src, dst, extent);
+            }
+            return;
+        }
+        let renderable = |f| self.caps.formats.get(f).contains(FormatUse::RENDER);
+        if from != to || !renderable(from) {
+            let as_stored = src
+                .texture
+                .read
+                .is_some_and(|r| r.texel_read() == r.texel_kept());
+            if as_stored && from.block() == to.block() {
+                self.copy_through_pbo(src, dst, extent);
+            } else if !self.copy_by_draw(src, dst, extent) {
+                self.unbuilt("copies of these formats");
+            }
+            return;
+        }
         let d = dst.texture.clone();
         for i in 0..extent.depth_or_layers {
             let layer = self.read_layer(src, i);
