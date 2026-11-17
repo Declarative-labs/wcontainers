@@ -503,14 +503,10 @@ impl<B: Backend> Device<B> {
         );
     }
 
+    /// Draws; a draw this front cannot serve removes the device, the only answer Direct3D has for it.
     fn draw_any(&mut self, range: Range, first_instance: u32, instances: u32) {
         if let Err(e) = self.try_draw(range, first_instance, instances) {
-            match e {
-                Error::NotImplemented(what) => {
-                    eprintln!("wcontainers direct3d 11: draw not drawn: {what}")
-                }
-                e => self.lose(e),
-            }
+            self.lose(e);
         }
     }
 
@@ -653,8 +649,9 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         self.bury();
+        // Without a vertex shader Direct3D draws nothing.
         let Some(vs) = self.ctx.vs.clone() else {
-            return not_implemented("a draw without a vertex shader (Direct3D draws nothing)");
+            return Ok(());
         };
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());

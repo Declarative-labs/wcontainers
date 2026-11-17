@@ -568,3 +568,27 @@ fn dynamic_constants_upload_whole_on_unmap() {
     ));
     dev.set_constant_buffers(VERTEX, 0, &[None]).unwrap();
 }
+
+#[test]
+fn a_draw_the_front_cannot_serve_removes_the_device() {
+    let mut dev = device();
+    let target = dev
+        .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("TEXCOORD", RG32F, 12),
+        element("COLOR", RGBA32F, 20),
+    ];
+    program(&mut dev, "quads.vs", "quads.ps", &elements);
+    let vertices = immutable(&mut dev, &[0; 36 * 3], bind::VERTEX_BUFFER);
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 36, 0))])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    // The pixel shader samples texture slot 0, which nothing is bound to.
+    dev.draw(3, 0);
+    assert!(dev.removed);
+    assert!(!dev.backend.log.iter().any(|l| l.starts_with("draw ")));
+}
