@@ -72,8 +72,8 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     assert_eq!(code, 0, "{text}");
     assert_eq!(
         text,
-        "CreateGeometryShader 0x00000000\nCreateTexture2D(dynamic) 0x00000000\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
-         CreateBuffer(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
+        "CreateGeometryShader 0x00000000\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
+         CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
          CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
     );
     let (code, ours) = run("own_refused", &place("refused-ours", true));
@@ -83,8 +83,8 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     // removes the device (DXGI_ERROR_DRIVER_INTERNAL_ERROR).
     assert_eq!(
         ours,
-        "CreateGeometryShader 0x80004001\nCreateTexture2D(dynamic) 0x80004001\nCreateQuery(occlusion) 0x80004001\nCreateQuery(timestamp) 0x80004001\n\
-         CreateBuffer(structured) 0x80004001\nCheckMultisampleQualityLevels(4) 0x00000000 0\n\
+        "CreateGeometryShader 0x80004001\nCreateQuery(occlusion) 0x80004001\nCreateQuery(timestamp) 0x80004001\n\
+         CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x80004001\nCheckMultisampleQualityLevels(4) 0x00000000 0\n\
          CreateTexture2D(4 samples) 0x80070057\nGetDeviceRemovedReason 0x887a0020\n"
     );
 }

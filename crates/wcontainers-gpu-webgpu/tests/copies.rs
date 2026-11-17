@@ -15,8 +15,8 @@ mod draw;
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
     CopyBufferTexture, DepthAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format,
-    FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp,
-    TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
+    FormatKind, FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet,
+    StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -334,9 +334,8 @@ fn group_textures_copy_into_part_of_depth_exactly() {
         let words = source_words(format);
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let sources: &[Format] = match format {
-            Format::Depth32Float | Format::Depth32FloatStencil8 => {
-                &[Format::R32Float, Format::R32Uint, Format::Depth32Float]
-            }
+            Format::Depth32Float => &[Format::R32Float, Format::R32Uint, Format::Depth32Float],
+            // A combined format is copied with both aspects, only from itself.
             _ => &[format],
         };
         for &source in sources {
@@ -373,7 +372,10 @@ fn group_textures_copy_into_part_of_depth_exactly() {
             };
             let (dst, dst_view) = depth_texture(&mut b, format);
             clear_depth(&mut b, &dst_view, format, 0.5);
-            let before = b.slow_paths().count(SlowPath::DepthWrittenByDraw);
+            let before = (
+                b.slow_paths().count(SlowPath::DepthWrittenByDraw),
+                b.slow_paths().count(SlowPath::StencilWrittenByDraw),
+            );
             // Source texels (1..6, 1..3) to destination texels (2..7, 2..4).
             b.copy_texture(&region(&src, 1, 1), &region(&dst, 2, 2), extent(5, 2));
             let got = depth_values(&mut b, &dst_view);
@@ -394,9 +396,13 @@ fn group_textures_copy_into_part_of_depth_exactly() {
             }
             assert!(wrong.is_empty(), "{source:?} into {format:?}: {wrong:?}");
             assert_eq!(b.status(), DeviceStatus::Ok, "{source:?} into {format:?}");
+            let stencil = format.kind() == FormatKind::DepthStencil;
             assert_eq!(
-                b.slow_paths().count(SlowPath::DepthWrittenByDraw) - before,
-                1,
+                (
+                    b.slow_paths().count(SlowPath::DepthWrittenByDraw) - before.0,
+                    b.slow_paths().count(SlowPath::StencilWrittenByDraw) - before.1
+                ),
+                (1, u64::from(stencil)),
                 "{source:?} into {format:?}"
             );
         }
@@ -459,5 +465,222 @@ fn typeless_group_copies_keep_the_bits() {
             if through_buffer { 2 } else { 0 },
             "{from:?} to {to:?}"
         );
+    }
+}
+
+/// The bytes of `extent` texels of `region`, `texel` bytes each, read back.
+fn read_part(
+    b: &mut WebGpu,
+    region: TextureRegion<'_, WebGpu>,
+    extent: Extent,
+    texel: u32,
+) -> Vec<u8> {
+    let rb = b
+        .read_back(&ReadSource::Texture { region, extent })
+        .unwrap();
+    b.submit();
+    b.wait_read(&rb);
+    let mut out = vec![0; (extent.width * extent.height * texel) as usize];
+    b.finish_read(rb, &mut out);
+    out
+}
+
+fn stencil_of(texture: &Tex, x: u32, y: u32) -> TextureRegion<'_, WebGpu> {
+    TextureRegion {
+        stencil: true,
+        ..region(texture, x, y)
+    }
+}
+
+/// What WebGPU copies only whole, done by draws and exact: part of a stencil from a buffer at a
+/// 9-byte pitch (`StencilWrittenByDraw`), part of a combined texture copied from another (both
+/// aspects), part of each aspect and all of 24-bit depth read back (`DepthReadByDraw`), against
+/// the bytes written and against WebGPU's own whole copies; whole copies of a combined texture
+/// are native, both aspects.
+#[test]
+fn depth_and_stencil_parts_copy_and_read_back_exactly() {
+    let mut b = device();
+    let count = |b: &mut WebGpu| {
+        [
+            SlowPath::DepthWrittenByDraw,
+            SlowPath::StencilWrittenByDraw,
+            SlowPath::DepthReadByDraw,
+        ]
+        .map(|p| b.slow_paths().count(p))
+    };
+    let delta = |b: &mut WebGpu, before: [u64; 3]| {
+        let now = count(b);
+        [0, 1, 2].map(|i| now[i] - before[i])
+    };
+    for format in depth_formats(&b) {
+        let stencil = format.kind() == FormatKind::DepthStencil;
+        let unorm24 = matches!(format, Format::Depth24Plus | Format::Depth24PlusStencil8);
+        let (a, a_view) = depth_texture(&mut b, format);
+        clear_depth(&mut b, &a_view, format, 0.5);
+
+        // Depth, whole, from a buffer; read back whole and in part.
+        let words = source_words(format);
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let buffer = b
+            .create_buffer(&BufferDesc {
+                size: 4096,
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })
+            .unwrap();
+        b.write_buffer(&buffer, 0, &bytes, WriteMode::Ordered);
+        b.copy_buffer_to_texture(
+            &CopyBufferTexture {
+                buffer: &buffer,
+                offset: 0,
+                row_pitch: W * 4,
+                rows_per_layer: H,
+            },
+            &region(&a, 0, 0),
+            extent(W, H),
+        );
+        let drawn = depth_values(&mut b, &a_view);
+        let before = count(&mut b);
+        let whole: Vec<u32> = read_part(&mut b, region(&a, 0, 0), extent(W, H), 4)
+            .chunks(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            delta(&mut b, before),
+            [0, 0, u64::from(unorm24)],
+            "{format:?}"
+        );
+        // The words of the depth a program reads: what a read by a draw must give exactly.
+        let want: Vec<u32> = drawn
+            .iter()
+            .map(|d| {
+                if unorm24 {
+                    (f64::from(*d) * 16_777_215.0).round() as u32
+                } else {
+                    d.to_bits()
+                }
+            })
+            .collect();
+        // Where `depth24plus` is stored as a float, the word is the float's nearest 24-bit step,
+        // which the program's float arithmetic may miss by one at a near tie.
+        let stored_as_float = matches!(b.depth24(), wcontainers_gpu_webgpu::Depth24::Float(_));
+        if unorm24 && stored_as_float {
+            let off: Vec<_> = (0..want.len())
+                .filter(|i| want[*i].abs_diff(whole[*i]) > 1)
+                .collect();
+            assert!(off.is_empty(), "{format:?}: whole depth read back, {off:?}");
+        } else {
+            assert_eq!(whole, want, "{format:?}: whole depth read back");
+        }
+        if unorm24 {
+            let off: Vec<_> = (0..words.len())
+                .filter(|i| (words[*i] & 0xff_ffff).abs_diff(whole[*i]) > 1)
+                .collect();
+            assert!(
+                off.is_empty(),
+                "{format:?}: more than a step from the words"
+            );
+        } else {
+            assert_eq!(whole, words, "{format:?}: 32-bit depth as written");
+        }
+        let before = count(&mut b);
+        let part: Vec<u32> = read_part(&mut b, region(&a, 3, 1), extent(4, 2), 4)
+            .chunks(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(delta(&mut b, before), [0, 0, 1], "{format:?}");
+        let want_part: Vec<u32> = (1..3)
+            .flat_map(|y| (3..7).map(move |x| (y * W + x) as usize))
+            .map(|i| whole[i])
+            .collect();
+        assert_eq!(part, want_part, "{format:?}: part of the depth read back");
+        assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        if !stencil {
+            continue;
+        }
+
+        // Stencil: part from a buffer at a pitch of 9 bytes, read back whole natively and in part
+        // by a draw.
+        let pitch = W + 1;
+        let stencil_bytes: Vec<u8> = (0..pitch * H).map(|i| (i * 37 + 5) as u8).collect();
+        b.write_buffer(&buffer, 1024, &stencil_bytes, WriteMode::Ordered);
+        let before = count(&mut b);
+        b.copy_buffer_to_texture(
+            &CopyBufferTexture {
+                buffer: &buffer,
+                offset: 1024,
+                row_pitch: pitch,
+                rows_per_layer: H,
+            },
+            &stencil_of(&a, 2, 1),
+            extent(5, 2),
+        );
+        assert_eq!(delta(&mut b, before), [0, 1, 0], "{format:?}");
+        let mut want_stencil = vec![0u8; (W * H) as usize];
+        for y in 0..2 {
+            for x in 0..5 {
+                want_stencil[((y + 1) * W + x + 2) as usize] =
+                    stencil_bytes[(y * pitch + x) as usize];
+            }
+        }
+        let got = read_part(&mut b, stencil_of(&a, 0, 0), extent(W, H), 1);
+        assert_eq!(got, want_stencil, "{format:?}: stencil written in part");
+        let before = count(&mut b);
+        let got = read_part(&mut b, stencil_of(&a, 1, 1), extent(6, 3), 1);
+        assert_eq!(delta(&mut b, before), [0, 0, 1], "{format:?}");
+        let want_part: Vec<u8> = (1..4)
+            .flat_map(|y| (1..7).map(move |x| (y * W + x) as usize))
+            .map(|i| want_stencil[i])
+            .collect();
+        assert_eq!(got, want_part, "{format:?}: part of the stencil read back");
+
+        // The combined texture copied whole (native) and in part (by draws), both aspects.
+        let (c, c_view) = depth_texture(&mut b, format);
+        let before = count(&mut b);
+        b.copy_texture(&region(&a, 0, 0), &region(&c, 0, 0), extent(W, H));
+        assert_eq!(
+            delta(&mut b, before),
+            [0, 0, 0],
+            "{format:?}: a whole copy is native"
+        );
+        let got = read_part(&mut b, stencil_of(&c, 0, 0), extent(W, H), 1);
+        assert_eq!(got, want_stencil, "{format:?}: stencil copied whole");
+        assert_eq!(
+            depth_values(&mut b, &c_view),
+            drawn,
+            "{format:?}: depth copied whole"
+        );
+
+        let (d, d_view) = depth_texture(&mut b, format);
+        clear_depth(&mut b, &d_view, format, 0.25);
+        let before = count(&mut b);
+        // Texels (2..7, 1..3) of `a` to (1..6, 2..4).
+        b.copy_texture(&region(&a, 2, 1), &region(&d, 1, 2), extent(5, 2));
+        assert_eq!(delta(&mut b, before), [1, 1, 0], "{format:?}");
+        let got_stencil = read_part(&mut b, stencil_of(&d, 0, 0), extent(W, H), 1);
+        let got_depth = depth_values(&mut b, &d_view);
+        for y in 0..H {
+            for x in 0..W {
+                let i = (y * W + x) as usize;
+                let inside = (1..6).contains(&x) && (2..4).contains(&y);
+                let from = if inside {
+                    ((y - 1) * W + x + 1) as usize
+                } else {
+                    i
+                };
+                let (want_s, want_d) = if inside {
+                    (want_stencil[from], drawn[from])
+                } else {
+                    (0, 0.25)
+                };
+                assert_eq!(got_stencil[i], want_s, "{format:?}: stencil at {x}, {y}");
+                assert!(
+                    same_depth(format, got_depth[i], want_d),
+                    "{format:?}: depth at {x}, {y}: {} for {want_d}",
+                    got_depth[i]
+                );
+            }
+        }
+        assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
     }
 }

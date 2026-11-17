@@ -21,6 +21,9 @@ pub const FLAG_DENY_SHADER_RESOURCE: u32 = 8;
 pub const PITCH_ALIGNMENT: u64 = 256;
 /// Subresources in a buffer start at multiples of this (`D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`).
 pub const PLACEMENT_ALIGNMENT: u64 = 512;
+/// `DXGI_FORMAT_R32_TYPELESS` and `DXGI_FORMAT_R8_TYPELESS`: the depth and stencil planes' formats.
+const R32_TYPELESS: u32 = 39;
+const R8_TYPELESS: u32 = 60;
 
 /// `D3D12_RESOURCE_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -118,6 +121,19 @@ impl ResourceDesc {
     }
 
     /// Array layers (one for 3D textures and buffers).
+    /// Planes: two for formats with depth and stencil, whose subresources are each plane's in turn.
+    pub fn planes(&self) -> Result<u32, Error> {
+        let (format, _) = self.texture_format()?;
+        Ok(match format.kind() {
+            wcontainers_gpu::FormatKind::DepthStencil => 2,
+            _ => 1,
+        })
+    }
+
+    pub fn subresources(&self) -> Result<u32, Error> {
+        Ok(self.mips() * self.layers() * self.planes()?)
+    }
+
     pub fn layers(&self) -> u32 {
         match self.dimension {
             DIMENSION_TEXTURE1D | DIMENSION_TEXTURE2D => u32::from(self.depth_or_array_size).max(1),
@@ -145,8 +161,7 @@ impl ResourceDesc {
             self.width
         } else {
             self.texture_format()?;
-            self.footprints(0, self.mips() * self.layers(), 0)?.1
-                * u64::from(self.sample_count.max(1))
+            self.footprints(0, self.subresources()?, 0)?.1 * u64::from(self.sample_count.max(1))
         };
         Ok((bytes.next_multiple_of(align), align))
     }
@@ -159,9 +174,15 @@ impl ResourceDesc {
         count: u32,
         base_offset: u64,
     ) -> Result<(Vec<FootprintInfo>, u64), Error> {
+        if ![0, 4 << 10, 64 << 10, 4 << 20].contains(&self.alignment) {
+            return Err(Error::Invalid("a resource's alignment"));
+        }
         if self.dimension == DIMENSION_BUFFER {
             if first != 0 || count > 1 {
                 return Err(Error::Invalid("a buffer has one subresource"));
+            }
+            if self.height != 1 || self.depth_or_array_size != 1 || self.mip_levels != 1 {
+                return Err(Error::Invalid("a buffer is one row of one level"));
             }
             let info = FootprintInfo {
                 footprint: Footprint {
@@ -178,21 +199,41 @@ impl ResourceDesc {
             return Ok((vec![info; count as usize], self.width * u64::from(count)));
         }
         let (format, _) = self.texture_format()?;
-        if format.is_depth_stencil() && format.kind() == wcontainers_gpu::FormatKind::DepthStencil {
-            return Err(Error::NotImplemented(
-                "footprints of the planes of a depth-stencil format",
+        if self.dimension == DIMENSION_TEXTURE1D && self.height != 1 {
+            return Err(Error::Invalid("a one-dimensional texture is one row"));
+        }
+        // Block-compressed textures are whole blocks at level 0 (unaligned blocks are not reported).
+        let (bw, bh, _) = format.block();
+        if !self.width.is_multiple_of(u64::from(bw)) || !self.height.is_multiple_of(bh) {
+            return Err(Error::Invalid(
+                "a block-compressed texture of part of a block",
             ));
         }
-        let (bw, bh, bytes) = format.block();
+        let planar = self.planes()? == 2;
         let mips = self.mips();
-        if first + count > mips * self.layers() {
+        if first
+            .checked_add(count)
+            .is_none_or(|end| end > self.subresources().unwrap_or(0))
+        {
             return Err(Error::Invalid("subresource out of range"));
         }
-        let mut offset = base_offset;
+        // Offsets from the base, which the placement alignment applies to.
+        let mut offset = 0u64;
         let mut out = Vec::with_capacity(count as usize);
         let mut total = 0;
         for index in first..first + count {
             let mip = index % mips;
+            // Planar depth-stencil formats are copied as a 32-bit depth plane and an 8-bit stencil
+            // plane, with rows aligned twice as far, as Direct3D 12 lays them out on the desktop.
+            let (bw, bh, bytes, plane_format, pitch_alignment) =
+                match (planar, index / (mips * self.layers())) {
+                    (false, _) => {
+                        let (bw, bh, bytes) = format.block();
+                        (bw, bh, bytes, self.format, PITCH_ALIGNMENT)
+                    }
+                    (true, 0) => (1, 1, 4, R32_TYPELESS, 2 * PITCH_ALIGNMENT),
+                    (true, _) => (1, 1, 1, R8_TYPELESS, 2 * PITCH_ALIGNMENT),
+                };
             let size = |n: u64| (n >> mip).max(1);
             let width = size(self.width) as u32;
             let height = size(u64::from(self.height)) as u32;
@@ -203,12 +244,14 @@ impl ResourceDesc {
             };
             let rows = height.div_ceil(bh);
             let row_size = u64::from(width.div_ceil(bw)) * u64::from(bytes);
-            let row_pitch = row_size.next_multiple_of(PITCH_ALIGNMENT);
+            let row_pitch = row_size.next_multiple_of(pitch_alignment);
             offset = offset.next_multiple_of(PLACEMENT_ALIGNMENT);
+            // Offsets wrap as the API's unsigned arithmetic does.
+            let at = base_offset.wrapping_add(offset);
             out.push(FootprintInfo {
                 footprint: Footprint {
-                    offset,
-                    format: self.format,
+                    offset: at,
+                    format: plane_format,
                     width: width.next_multiple_of(bw),
                     height: height.next_multiple_of(bh),
                     depth,
@@ -220,7 +263,7 @@ impl ResourceDesc {
             let size = row_pitch * u64::from(rows) * u64::from(depth - 1)
                 + row_pitch * u64::from(rows - 1)
                 + row_size;
-            total = offset + size - base_offset;
+            total = offset + size;
             offset += row_pitch * u64::from(rows) * u64::from(depth);
         }
         Ok((out, total))

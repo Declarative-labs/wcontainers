@@ -52,7 +52,9 @@ branches into it at the start and end of every run.
   text of `TextureRegion::stencil` and plan 4.2, where the direct3d-11 track stated the same rule
   as run 3 (copies between textures move both aspects): kept one statement with both reasons. The
   mid-run merges (after the fixes were committed) brought all five in again; a conflict in the same
-  plan paragraph, where the direct3d-11 branch held run 3's older text, kept ours.
+  plan paragraph, where the direct3d-11 branch held run 3's older text, kept ours. The end merges
+  brought webgpu, direct3d-11 and direct3d-12 in without conflict (webgl, shaders and rig had
+  nothing new).
 
 ## G1's second check, and how each finding was settled (run 4)
 
@@ -182,7 +184,8 @@ branches into it at the start and end of every run.
   same draws in one pass: `a_pass_is_split_where_a_draw_reads_what_one_wrote_as_storage`.
 - 100,000 random sequences, seeded, recorded and replayed identically (same stream with every
   answer, same bytes in every buffer and texture, same frames, no rule broken): in run 3, on the
-  widened generator, seeds 0x5eed, 0xc0ffee and 0x7a11ed, 100,000 each (Measurements).
+  widened generator, seeds 0x5eed, 0xc0ffee and 0x7a11ed, 100,000 each; in run 4, on the recorder
+  with the new checks, 0x5eed, 0xc0ffee and 0x9e4a11 (new), 100,000 each (Measurements).
 
 ## G1a's second check, and how each finding was settled
 
@@ -272,6 +275,8 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     vertex stage's location outputs, packed 32-bit, interleaved into one target or one output per
     target) and `Limits::capture_buffers` what it bounds. Kept: it states the base primitive for
     every back end.
+  - From the webgpu track (3f5519a, merged at the end): `SlowPath::StencilWrittenByDraw`. Kept: a
+    named slow path.
 
 - G1 run 3:
   - c743db5 ("interface: stated the alignment and limits of buffer bindings and which aspect a copy
@@ -362,7 +367,8 @@ also checks every limit it declares that a call can pass. No format it
   breaking test: cube sampling, alpha to coverage, implicit level of detail over several levels.
   Two checks are unreachable through the interface and stay as guards: storage writes from vertex
   programs (refused when the binding set is made) and an attachment taken twice by a draw (refused
-  at `begin_pass`).
+  at `begin_pass`). The region check's block-grid parts are reached only once the recorder holds a
+  block-compressed format.
 - Taken away with `with_caps`, `TEXTURE_VIEWS` is checked for view shapes and bound views
   (`views_of_other_shapes_need_texture_views`) but not yet for its one mip range per texture per
   draw; a view in a format other than the texture's or its twin is refused as invalid rather than
@@ -406,6 +412,36 @@ also checks every limit it declares that a call can pass. No format it
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
+
+- G1 run 4, all on the Linux laptop (i7-8750H):
+  - Random sequences on the final recorder (after the mid-run merges, 8f19e19; scratch
+    `g1r4/sequences-100k.log`, `--release`), each 100,000 asked and run, recorded with no rule broken
+    and replayed identically: seed 0x5eed, 4,556,023 calls, 41.1 s; seed 0xc0ffee, 4,555,910 calls,
+    42.4 s; seed 0x9e4a11 (new), 4,561,411 calls, 20,137 multisampled passes, 28,288 depth-stencil
+    passes, 42,432 indexed draws, 28,464 queries, 37.4 s. Load 2.4 to 5.7 (the rule sweep ran
+    beside them). The generator did not change this run, so the first two seeds give run 3's counts.
+  - Rule sweep before the fixes (scratch `g1r4/sweep-before.log`, on the start-of-run tree): of
+    101 checks and parts, 50 caught, 47 survived, 4 match guards not turned off. After (scratch
+    `g1r4/sweep-after.log`, the final recorder and tests, a clean build directory): of 111, 101
+    caught, 4 match guards (each asserted by its message in `tests/rules.rs`), and 6 survived, each
+    with its reason: the two block-grid parts of the region check (no format the recorder holds has
+    blocks over one texel, so they cannot be reached), cube sampling and alpha to coverage (not
+    drawn by the recorder, refused naming it), and the two guards unreachable through the interface
+    (Next). About 8 to 40 s a check, load 2 to 7 (the other track's work beside it). An earlier
+    after-sweep shared a build directory with the first and ran against a stale `wcontainers-gpu`;
+    it was discarded and run again clean.
+  - Suite on the recording back end 24 of 24; rules 78 of 78; helpers 14 of 14; fast paths 11 of
+    11; `tests/recorder.rs` 30 of 30; `wcontainers-gpu` 32 of 32, with clippy clean, after the end
+    merges (394dfb6). The whole workspace checks after the mid-run and the end merges.
+  - The check's own 16 faults (its `g1-check2/mutate.py`) on the final tree: 15 fail a test, each
+    the one written for it (scratch `g1r4/check-mutations2.log`); `attached-twice` passes, as that
+    draw guard is unreachable now that `begin_pass` refuses the same subresource attached twice
+    (`a_subresource_is_attached_once`). That script copies the tree with its file times kept, so after
+    a fault in `wcontainers-gpu` cargo keeps the faulty build for the faults that follow; run here
+    with plain copies (`g1r4/check-mutations.log` shows the contaminated first attempt).
+  - The two new helper tests checked against the old code (scratch tree with the two fixes undone):
+    the four-sample halves count 0 instead of 9,616, and `prepared_use` gives (4, 3) instead of
+    (2, 5).
 
 - G1 run 3, all on the Linux laptop (i7-8750H), on the final code after the end merges (b9a51ce):
   - Random sequences (scratch `g1r3/sequences-100k-final.log`, `--release`), each 100,000 asked and

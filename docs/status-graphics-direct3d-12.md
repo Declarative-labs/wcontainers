@@ -14,8 +14,12 @@ line, the webgpu and the shaders branches (no conflicts), and added compute pipe
 structured buffer views), `ClearUnorderedAccessView*`, queue `Wait` with work held and released by
 fences in call order, query heaps with binary occlusion, `ResolveQueryData`, `SetPredication`
 (predicated draws and dispatches made indirect), root signatures carried in shaders, heaps and
-placed resources that do not overlap, and fence events set before a CPU `Signal` returns. G5 is not
-complete: see "Test files" and "Next".
+placed resources that do not overlap, and fence events set before a CPU `Signal` returns. Run 7
+(2026-11-17, third run of G5) merged the shared line, webgpu and shaders branches again (no
+conflicts) and added alias copies for overlapping placed resources, `CreateCommandSignature` and
+`ExecuteIndirect`, depth and stencil plane footprints and copies, draws with no render target, the
+own program's pass-bar cases against real Direct3D 12 (`check_d3d12 cases`), and a batch of
+validation answers vkd3d's tests check. G5 is not complete: see "Test files", "Gap list" and "Next".
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -65,18 +69,37 @@ complete: see "Test files" and "Next".
   get argument records, a compute program zeroes the counts the predicate skips, and they are drawn
   indirect (`PredicationIndirect`, nothing waits); clears and copies under a predicate read its
   value back once (`PredicationWait`).
-- Heaps (run 6): `CreateHeap`, `CreatePlacedResource` (offset alignment and bounds checked, as
-  Direct3D 12). Each placed resource has storage of its own, so overlapping placed resources are
-  refused (E_NOTIMPL, "placed resources that overlap") until the alias copies of plan 5.2 exist.
+- Heaps (runs 6, 7): `CreateHeap`, `CreatePlacedResource` (offset alignment and bounds checked, as
+  Direct3D 12). In default heaps each placed resource has storage of its own and inherits by copies
+  (`src/device/alias.rs`, plan 5.2): at placement it lists the live resources it inherits from
+  (overlapping buffers; identically described textures at the same offset), every recorded GPU
+  write stamps the resource, and before any use (copy, clear, draw target, vertex/index buffer,
+  binding, resolve, predicate, indirect arguments) the bytes of listed resources written since are
+  copied in, oldest first (`AliasCopied`; copies before a pass opens, ending it if needed). While no
+  resource has such a list nothing is noted. Upload and readback heaps have one guest memory their
+  placed buffers map (`Host`), so the CPU's bytes are shared directly.
+- `ExecuteIndirect` (run 7, `src/device/indirect.rs`): a signature of one draw, indexed draw or
+  dispatch becomes one indirect call per command at the stride; with a count buffer the commands
+  are copied and a compute program zeroes those past the count (`IndirectCountExpanded`). Other
+  signatures (vertex/index buffers, constants, root views), draws on back ends without
+  `INDIRECT_FIRST_INSTANCE`, and programs reading `SV_VertexID`/`SV_InstanceID` read the arguments
+  back and record ordinary calls (`IndirectReadBack`). Argument buffers shorter than
+  offset + max × stride fail `Close` with E_INVALIDARG, as real Direct3D 12 does (measured).
+- Depth-stencil planes (run 7): D24S8 and D32S8 have two planes of subresources; footprints give
+  plane 0 as `R32_TYPELESS` (4 bytes) and plane 1 as `R8_TYPELESS`, rows aligned to 512 (real
+  Direct3D 12 on this desktop does so for planar formats only; single-plane depth keeps 256), and
+  copies move the plane's aspect.
+- Draws with no render target (run 7) open an empty pass as large as the viewports, at the
+  pipeline's sample count; a viewport change ends it.
 - Refused with E_NOTIMPL and the reason printed (`wcontainers: <reason>: not implemented`): null
   descriptors, arrays of resources, component mappings other than identity, minimum level-of-detail
   clamps, level-of-detail bias, min/max filters, border colours and mirror-once without the back
   end's feature, alpha-antialiased lines, depth bias on lines and points, forced sample counts,
   conservative rasterisation, typed buffer views, UAV counters, counted occlusion queries,
   timestamps (the WebGPU back end lacks `TIMESTAMPS`; `GetTimestampFrequency` answers E_FAIL as for
-  a queue without them), pipeline and stream output statistics, overlapping placed resources,
-  bundles, `ExecuteIndirect`, stream output, `ResolveSubresource`, rectangles in UAV clears, an
-  occlusion query across passes.
+  a queue without them), pipeline and stream output statistics, bundles, stream output,
+  `ResolveSubresource`, rectangles in UAV clears, an occlusion query across passes, video command
+  lists, custom heaps.
 - The Windows library (`examples/directx`, `d3d12.dll`, with `dxgi.dll` forwarding to it): as in run
   4, plus (run 5) `D3D12CreateRootSignatureDeserializer` and `D3D12CreateVersionedRootSignatureDeserializer`,
   the system library's export ordinals (101 for `D3D12CreateDevice`, and so on), one device per
@@ -102,10 +125,60 @@ Today the refusals listed above answer E_NOTIMPL when used, so a program trustin
 fail at those calls.
 Nothing answers success without the work.
 
+## The pass bar's cases against real Direct3D 12 (own program, run 7)
+
+`check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
+compares the lines (`examples/check/cases.rs`). Run 7, RTX 3080, commit 7f5e0ed: 11 of 13 equal.
+- Equal: alias-copy (buffer written by a copy, read through an overlapping one), alias-storage
+  (written by a root UAV), alias-cpu (upload heap, CPU write through one buffer, copy from the
+  other), alias-texture (identical render targets at one offset, cleared through one), queues (copy
+  and compute queues waiting on each other and on a CPU signal made after everything is submitted,
+  with the upload written late; neither fence moved before the signal), predication (binary
+  occlusion of a visible and a degenerate draw resolved into a default buffer, copied to readback,
+  and four predicated draws and two predicated clears), indirect-draw, indirect-count,
+  indirect-dispatch (with counts 0 and 1), indirect-short (refused at Close), indirect-vertex-buffer
+  (read-back route).
+- Differ: indirect-vertex-id (indexed indirect draws with base vertex 3 of a shader reading
+  `SV_VertexID`): ours removes the device, "SV_VertexID or SV_InstanceID in a draw with a first
+  vertex or instance"; needs the converter's `DrawBaseFromArguments` (G6). depth-planes: footprints
+  equal, D32S8 and both stencil planes equal, the D24S8 depth plane copied into a buffer reads zeros
+  on ours: the WebGPU back end prints "copies of 24-bit depth into a buffer (DepthReadByDraw) are not
+  built yet" and writes nothing (G2's, and it reports success where it should fail).
+- Not in the cases: counted occlusion and timestamps (absent, see the gap list); the plan's bar
+  needs them resolved, copied and used by SetPredication against real Direct3D 12.
+- Resources without overlaps take no `AliasCopied`: the warnings show it only in the alias cases,
+  and the recorder test `placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes`
+  counts it.
+
 ## Test files (Wine's and vkd3d's, through our libraries, RTX 3080)
 
 How a file counts: the rig compares each test's verdict with real Direct3D 12's on this GPU
-(`wine-tests run`, below). "Real" counts tests that pass on real Direct3D 12.
+(`wine-tests run`, below). "Real" counts tests that pass on real Direct3D 12. The rig's baseline now
+counts 174 vkd3d-d3d12 tests passing on real Direct3D 12 (172 before).
+
+Run 7 (2026-11-17, commit 7f5e0ed, before the empty pass), tests passing on real Direct3D 12 that
+pass through ours:
+- d3d12 (Wine): 6 of 7 (test_swapchain_refcount).
+- vkd3d-d3d12: 80 of 174 (start of run 7: 71). Newly passing in run 7: create_device,
+  check_feature_support, create_command_allocator, create_command_list, create_command_queue,
+  create_descriptor_heap, object_interface, map_resource, get_copyable_footprints, and after the
+  empty pass (commit dc040d9, run alone) map_placed_resources.
+- vkd3d-d3d12_invalid_usage: 1 of 3; vkd3d-hlsl_d3d12: 8 of 9 (test_thread_id).
+- Rig scenes through ours: 20 outputs pass, all equal to real Direct3D 12 (run 6: 16): triangle,
+  swapchain (4 frames and results), targets (4), depth-bias, depth-clip (2), depth-funcs,
+  depth-shader (2), heaps (2), stencil (2; the run 6 panic was a buffer of `u64::MAX` bytes made
+  from a refused footprint, now E_OUTOFMEMORY, and the footprints now exist). The rest stop at:
+  the converter (roots, compute, queues: StorageImage and others), bundles, copies and msaa
+  (`ResolveSubresource`), queries (pipeline statistics), blend (dual-source), formats (E_FAIL),
+  samplers, textures, topology, constants, views (device removed at replay by a refusal), raster
+  (wireframe), geometry, tessellation, streamout (the stage helper), draws (instance step rates).
+Still failing vkd3d-d3d12 tests seen in run 7 and why: execute_indirect (2 checks: a triangle
+strip drawn from an upload argument buffer stays white; not found yet), reset_command_allocator
+(allocator Reset must answer E_FAIL while a list records from it), device_removed_reason
+(executing an open list must remove the device with DXGI_ERROR_INVALID_CALL), create_root_signature
+(equal blobs must give the same object), create_heap and create_committed_resource (custom heaps
+and refused heap flags), draw_uav_only (StorageImage), resource_allocation_info (25 checks) and
+64kb_texture_alignment (1), clear_render_target_view (16).
 
 Run 6 (2026-11-17, built at commit 1d5039a, before heaps), tests passing on real Direct3D 12 that
 pass through ours:
@@ -171,14 +244,14 @@ bundles, compute, queues, queries, copies (resolve) and msaa at calls not done; 
 tessellation and streamout at their stages (the stage helper, G6). Dual-source blending needs the
 converter to mark the second output (G6).
 
-Gap list (run 6: the absent feature behind failing vkd3d-d3d12 tests, from the logs, most common
-first). The converter (G6): "StorageImage" (11 shaders, DXBC typed UAV textures), "TypedBuffer" (6),
+Gap list (run 6, still current in run 7 less what run 7 added: the absent feature behind failing
+vkd3d-d3d12 tests, from the logs, most common first). The converter (G6): "StorageImage" (11 shaders, DXBC typed UAV textures), "TypedBuffer" (6),
 "Atomics" (4), "StorageCounter" (3), "RegisterSpace" (3, DXIL spaces other than 0), "DynamicOffset",
 "ClipDistance", "SampleCount", "RenderTargetArrayIndex", "MultisampledArrayTexture", "InterpolateAt".
 The front: geometry, hull and domain stages and stream output (12; the stage helper, G6),
-`CreateCommandSignature`/`ExecuteIndirect` (6), `ResolveSubresource` (6), counted occlusion queries
+`ResolveSubresource` (6), counted occlusion queries
 (the counting replay of 4.12, which needs the converter's counting variant), timestamps (the WebGPU
-back end lacks `TIMESTAMPS`), pipeline statistics, overlapping placed resources, bundles, null
+back end lacks `TIMESTAMPS`), pipeline statistics, bundles, null
 descriptors, custom heaps, `WriteToSubresource`/`ReadFromSubresource`, 1D and other render target
 view dimensions, dual-source blending (G6), logic operations without `LOGIC_OP`. Not yet the pass
 bar's final written list.
@@ -188,25 +261,21 @@ the pass bar's final written gap list: most of these gaps are work of this miles
 
 ## Next, in this order
 
-1. Run the four test files again with heaps in (`test_create_heap`, `test_create_placed_resource`,
-   `test_map_placed_resources`, `test_clear_unordered_access_view_buffer` need them) and the
-   rig's heaps, queries and queues scenes; find the stencil scene's overflow panic (build the
-   library with symbols the backtrace can read, or bisect the scene's calls).
-2. Alias copies for overlapping placed resources (plan 5.2: inherit lists, write stamps,
-   `AliasCopied`; copies must come before a pass opens), then remove the overlap refusal.
-3. `CreateCommandSignature`/`ExecuteIndirect` (draw, indexed draw, dispatch; count buffers by
-   `IndirectCountExpanded`; other arguments by `IndirectReadBack`); with SV_VertexID and a base vertex
-   it needs the converter's `DrawBaseFromArguments` (G6 refuses it today).
-4. Counted occlusion queries through the occlusion counter (needs G6's counting variant);
-   timestamps need G2's `TIMESTAMPS`. `ResolveSubresource`, bundles, null descriptors, typed buffer
-   views (G6's `TypedBuffer`), UAV counters (G6's `StorageCounter`).
-5. Each pass-bar case against real Direct3D 12 in the own program (`check_d3d12`): copy and compute
-   queues waiting on each other and on late CPU signals; binary occlusion resolved, copied to
-   readback and used by `SetPredication`; placed buffers aliasing. vkd3d's tests cover several
-   today (`test_queue_wait`, `test_query_occlusion` once counted occlusion exists).
-6. The real Direct3D 12 program (the rig's godot-platformer-*-d3d12), the frame latency waitable
+1. vkd3d-d3d12's cheap verdicts: allocator `Reset` E_FAIL while a list records from it; executing
+   an open list removes the device (DXGI_ERROR_INVALID_CALL); equal root signature blobs give the
+   same object; resource_allocation_info; clear_render_target_view; the execute_indirect strip.
+2. Counted occlusion queries through the occlusion counter (needs G6's counting variant, the
+   converter refuses every `VariantFlags` today); timestamps need G2's `TIMESTAMPS`. Then add
+   counted occlusion and timestamps to `check_d3d12 cases` (pass bar).
+3. `SV_VertexID` with a base vertex in `ExecuteIndirect` needs G6's `DrawBaseFromArguments`; the
+   case indirect-vertex-id is ready for it. The D24S8 depth plane copy needs G2's DepthReadByDraw.
+4. `ResolveSubresource`, bundles, null descriptors, custom heaps, typed buffer views (G6's
+   `TypedBuffer`), UAV counters (G6's `StorageCounter`); keep raising vkd3d-d3d12 from 81 of 174;
+   run vkd3d-shader_runner (302 files) through ours; test_swapchain_refcount, test_thread_id.
+5. The real Direct3D 12 program (the rig's godot-platformer-*-d3d12), the frame latency waitable
    object, recording without allocating per command, the call buffer of plan 4.8, and moving
    `examples/directx` into `crates/wcontainers-directx` with the Direct3D 11 track.
+6. The final written gap list for the pass bar.
 
 ## For the Direct3D 11 track: using the infrastructure crate
 
@@ -262,8 +331,8 @@ A working example of all of it is this track's Windows library: `examples/direct
   --api d3d12 triangle swapchain` (drop the names for every scene).
 - Own program: `tools/graphics-rig/gpu-job --desktop --build "cargo build -j 3 -p
   wcontainers-direct3d-12 --examples" -- "crates\wcontainers-direct3d-12\examples\check_d3d12.cmd"`.
-  It runs `draw`, `features`, `outputs` and `fence-wait 2000` beside real Direct3D 12 and beside our
-  libraries (in C:\wc\out\phase-2-graphics-direct3d-12\check), then compares. `--desktop`
+  It runs `draw`, `features`, `outputs`, `answers`, `cases` and `fence-wait 2000` beside real
+  Direct3D 12 and beside our libraries (in C:\wc\out\phase-2-graphics-direct3d-12\check), then compares. `--desktop`
   matters: in session 0 real DXGI refuses outputs and swap chains
   (`DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`).
 - Wine's and vkd3d's tests through our libraries (build first; about 8 minutes):
@@ -279,6 +348,10 @@ A working example of all of it is this track's Windows library: `examples/direct
 - `com.rs`: `python3 examples/directx/com.py > examples/directx/com.rs`, then `cargo fmt` (it finds
   the windows crate under `$CARGO_HOME`, default `~/.cargo`).
 - On the Mac only `nix develop -c cargo fmt` (the Mac is overloaded).
+- Seen in run 7: after `remote` sent edited sources, cargo on the desktop twice called the crate
+  `Fresh` and kept the old library (clippy then checked nothing new). When a result looks stale,
+  `tools/graphics-rig/remote "cargo clean -p wcontainers-direct3d-12 && ..."`.
+- One case of the own program: `check_d3d12 case <name>` (names in `examples/check/cases.rs`).
 
 ## Interface changes
 
@@ -290,6 +363,14 @@ A working example of all of it is this track's Windows library: `examples/direct
   it could call this (G1 owns helpers.rs, so this track did not change it).
 
 ## Measurements
+
+- Run 7 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken):
+  fence events, 2000 rounds: real mean 1 µs, 99th percentile 1 µs, largest 7 µs; ours mean 17 µs,
+  99th percentile 48 µs, largest 71 µs, first round 41 µs. Not timings: own program draw 0 of 4096
+  pixels beyond 1; features 355 of 872 differ, none beyond real (after the multisample fix below;
+  before it, 34 format answers promised MULTISAMPLE_RESOLVE on integer formats and MULTISAMPLE_LOAD
+  on formats that are no targets, from the WebGPU back end's adapter-specific format flags); outputs
+  22 of 110 and answers 7 of 25 differ, none beyond.
 
 - Run 5 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`): fence events, 2000
   rounds: real mean 1 µs, 99th percentile 2 µs; ours mean 35 µs, 99th percentile 60 µs, first round
@@ -373,8 +454,17 @@ A working example of all of it is this track's Windows library: `examples/direct
 - After the device is removed every fence reports `u64::MAX` reached, as Direct3D 12's do.
 - `GetParent` of an adapter or a swap chain gives a new factory, not the one that made it.
 - Descriptors are 64 bytes (`GetDescriptorHandleIncrementSize`); real NVIDIA's are 32.
-- Overlapping placed resources are refused (run 6) instead of inheriting each other's bytes by
-  copies (plan 5.2); placed resources that do not overlap work as committed ones.
+- The infrastructure crate answers `MULTISAMPLE_RESOLVE` only for float and normalised formats that
+  render multisampled, and `MULTISAMPLE_LOAD` only for formats that are targets, whatever the back
+  end's format flags say (run 7): Direct3D's own rules, which the WebGPU back end's adapter flags
+  exceeded.
+- Planar depth-stencil footprints align rows to 512 bytes, as real Direct3D 12 answers on this
+  desktop; the documented 256 holds for the others (run 7, measured by `check_d3d12 case
+  depth-planes`).
+- `CheckFeatureSupport(SHADER_MODEL)` refuses values naming no shader model (0x51 and 0x60 to 0x69
+  are taken), as real Direct3D 12 does for 0, 0x52 and 0x89.
+- `ExecuteIndirect` leaves the vertex, index and root state the last read-back command set, where
+  Direct3D 12 leaves it undefined.
 - `ResolveQueryData` always resolves into a buffer of the front's and copies to the destination
   (run 6), so binary answers can be made 0 or 1 by a storage write whatever heap the destination is
   in (readback buffers cannot be storage). One extra copy per resolve.

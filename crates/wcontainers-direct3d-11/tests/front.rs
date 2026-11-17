@@ -556,7 +556,11 @@ fn creation_checks_refuse_what_direct3d_refuses() {
     let mut blend = BlendDesc::default();
     blend.targets[0] = BlendDesc::default_state().targets[0];
     assert!(dev.create_blend_state(&blend).is_ok());
+    // Independent targets that do not blend may hold zero factors (Wine's test_independent_blend
+    // and test_color_mask, on real Direct3D); one that blends with them is refused.
     blend.independent = true;
+    assert!(dev.create_blend_state(&blend).is_ok());
+    blend.targets[1].enable = true;
     assert!(matches!(
         dev.create_blend_state(&blend),
         Err(Error::InvalidArg(_))

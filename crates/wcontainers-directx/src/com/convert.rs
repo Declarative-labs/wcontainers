@@ -455,6 +455,23 @@ pub fn srv_back(v: &ViewDesc) -> D3D11_SHADER_RESOURCE_VIEW_DESC {
     d
 }
 
+/// The description Direct3D keeps: no anisotropy unless the filter is anisotropic, `NEVER` unless
+/// it compares, and no border colour unless an address mode reads it.
+pub fn sampler_stored(d: &D3D11_SAMPLER_DESC) -> D3D11_SAMPLER_DESC {
+    let mut d = *d;
+    let filter = d.Filter.0 as u32;
+    if filter & 0x40 == 0 {
+        d.MaxAnisotropy = 0;
+    }
+    if (filter >> 7) & 3 != 1 {
+        d.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    }
+    if ![d.AddressU, d.AddressV, d.AddressW].contains(&D3D11_TEXTURE_ADDRESS_BORDER) {
+        d.BorderColor = [0.0; 4];
+    }
+    d
+}
+
 pub fn sampler(d: &D3D11_SAMPLER_DESC) -> SamplerDesc {
     SamplerDesc {
         filter: d.Filter.0 as u32,
@@ -470,6 +487,52 @@ pub fn sampler(d: &D3D11_SAMPLER_DESC) -> SamplerDesc {
         min_lod: d.MinLOD,
         max_lod: d.MaxLOD,
     }
+}
+
+/// The description Direct3D keeps: a target that does not blend holds the default factors and
+/// operations, and without independent blending every target is the first.
+pub fn blend_stored(d: &D3D11_BLEND_DESC) -> D3D11_BLEND_DESC {
+    let mut d = *d;
+    if !d.IndependentBlendEnable.as_bool() {
+        d.RenderTarget = [d.RenderTarget[0]; 8];
+    }
+    for t in &mut d.RenderTarget {
+        if !t.BlendEnable.as_bool() {
+            *t = D3D11_RENDER_TARGET_BLEND_DESC {
+                SrcBlend: D3D11_BLEND_ONE,
+                DestBlend: D3D11_BLEND_ZERO,
+                BlendOp: D3D11_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D11_BLEND_ONE,
+                DestBlendAlpha: D3D11_BLEND_ZERO,
+                BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                ..*t
+            };
+        }
+    }
+    d
+}
+
+/// The description Direct3D keeps: with depth off its depth fields are the defaults, and with
+/// stencil off its stencil fields.
+pub fn depth_stencil_stored(d: &D3D11_DEPTH_STENCIL_DESC) -> D3D11_DEPTH_STENCIL_DESC {
+    let mut d = *d;
+    if !d.DepthEnable.as_bool() {
+        d.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+        d.DepthFunc = D3D11_COMPARISON_LESS;
+    }
+    if !d.StencilEnable.as_bool() {
+        let face = D3D11_DEPTH_STENCILOP_DESC {
+            StencilFailOp: D3D11_STENCIL_OP_KEEP,
+            StencilDepthFailOp: D3D11_STENCIL_OP_KEEP,
+            StencilPassOp: D3D11_STENCIL_OP_KEEP,
+            StencilFunc: D3D11_COMPARISON_ALWAYS,
+        };
+        d.StencilReadMask = 0xff;
+        d.StencilWriteMask = 0xff;
+        d.FrontFace = face;
+        d.BackFace = face;
+    }
+    d
 }
 
 pub fn blend(d: &D3D11_BLEND_DESC) -> BlendDesc {

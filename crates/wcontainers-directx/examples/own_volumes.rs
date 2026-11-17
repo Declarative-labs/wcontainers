@@ -1,7 +1,8 @@
 //! A small Direct3D 11 program on 1D and 3D textures: initial data at slice pitches that are and are
 //! not a whole number of rows, `UpdateSubresource` and `CopySubresourceRegion` with 3D boxes, staging
 //! 3D maps, a clear of two slices of a 3D render target, a copy between levels and layers of 1D
-//! arrays, and the descriptions of views made without one. Prints bytes as hex rows and HRESULTs, for
+//! arrays, the descriptions of views made without one, and a dynamic texture written twice by
+//! `Map(WRITE_DISCARD)`. Prints bytes as hex rows and HRESULTs, for
 //! comparing with real Direct3D line by line.
 
 #[cfg(windows)]
@@ -309,6 +310,68 @@ fn main() -> windows::core::Result<()> {
     let mut view = None;
     let r = unsafe { device.CreateShaderResourceView(&plane.unwrap(), Some(&d), Some(&mut view)) };
     println!("3D view of a 2D texture {:#010x}", code(r));
+
+    // A dynamic texture: written twice through WRITE_DISCARD, each copied out; the usages and maps
+    // Direct3D refuses.
+    let dynamic = |bind: u32, access: u32| -> windows::core::Result<ID3D11Texture2D> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_DYNAMIC,
+            BindFlags: bind,
+            CPUAccessFlags: access,
+            ..flat
+        };
+        let mut out = None;
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut out))? };
+        Ok(out.unwrap())
+    };
+    let srv_bind = D3D11_BIND_SHADER_RESOURCE.0 as u32;
+    let write = D3D11_CPU_ACCESS_WRITE.0 as u32;
+    let written = dynamic(srv_bind, write)?;
+    let mut flat_staging = None;
+    let staging_desc = D3D11_TEXTURE2D_DESC {
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: rw,
+        ..flat
+    };
+    unsafe { device.CreateTexture2D(&staging_desc, None, Some(&mut flat_staging))? };
+    let flat_staging: ID3D11Resource = flat_staging.unwrap().cast()?;
+    for round in 0..2 {
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        let r = unsafe { context.Map(&written, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut m)) };
+        println!("dynamic {round} Map {:#010x}", code(r));
+        let bytes = pattern(64, 20 + round);
+        for y in 0..4 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes[y * 16..].as_ptr(),
+                    m.pData.cast::<u8>().add(y * m.RowPitch as usize),
+                    16,
+                )
+            };
+        }
+        unsafe {
+            context.Unmap(&written, 0);
+            context.CopyResource(&flat_staging, &written);
+        }
+        print(&format!("dynamic {round}"), &flat_staging, 0, 4, 4, 1);
+    }
+    let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+    let r = unsafe { context.Map(&written, 0, D3D11_MAP_WRITE, 0, Some(&mut m)) };
+    println!("dynamic Map(WRITE) {:#010x}", code(r));
+    let bind_rt = (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32;
+    println!(
+        "dynamic target {:#010x}",
+        code(dynamic(bind_rt, write).map(|_| ()))
+    );
+    println!(
+        "dynamic read {:#010x}",
+        code(dynamic(srv_bind, rw).map(|_| ()))
+    );
+    println!(
+        "dynamic unbound {:#010x}",
+        code(dynamic(0, write).map(|_| ()))
+    );
 
     let r = unsafe { device.GetDeviceRemovedReason() };
     println!("GetDeviceRemovedReason {:#010x}", code(r));

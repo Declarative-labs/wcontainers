@@ -359,6 +359,9 @@ impl<B: Backend> Device<B> {
             if desc.width == 0 {
                 return Err(Error::Invalid("a buffer of zero bytes"));
             }
+            if desc.width > self.backend.caps().limits.max_buffer_size {
+                return Err(Error::OutOfMemory);
+            }
             let usage = match heap {
                 HeapType::Default => DEFAULT_BUFFER,
                 HeapType::Upload => UPLOAD_BUFFER,
@@ -1566,6 +1569,8 @@ struct Replay<B: Backend> {
     colors: Vec<Descriptor>,
     depth: Option<Descriptor>,
     pass_open: bool,
+    /// The open pass has no targets.
+    empty_pass: bool,
     graphics: bind::RootState,
     compute: bind::RootState,
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
@@ -1608,6 +1613,7 @@ impl<B: Backend> Replay<B> {
             colors: Vec::new(),
             depth: None,
             pass_open: false,
+            empty_pass: false,
             graphics: bind::RootState::default(),
             compute: bind::RootState::default(),
             clears: Vec::new(),
@@ -1625,6 +1631,7 @@ impl<B: Backend> Replay<B> {
             }
             d.backend.end_pass();
             self.pass_open = false;
+            self.empty_pass = false;
             self.pass_heap = None;
         }
     }
@@ -1752,6 +1759,10 @@ impl<B: Backend> Replay<B> {
             }
             Command::IndexBuffer(v) => self.index = *v,
             Command::Viewports(v) => {
+                // A pass with no targets is as large as the viewports it began with.
+                if self.empty_pass {
+                    self.end_pass(d);
+                }
                 let fractional = d.backend.caps().has(Features::FRACTIONAL_VIEWPORT);
                 self.viewports = v
                     .iter()
@@ -2258,7 +2269,24 @@ impl<B: Backend> Replay<B> {
                 });
             }
             if views.is_empty() && depth.is_none() {
-                return Err(Error::NotImplemented("drawing with no render target"));
+                // No targets: the pass covers the viewports, at the pipeline's sample count.
+                let end = |at: u32, size: u32| (f32::from_bits(at) + f32::from_bits(size)).ceil();
+                let (width, height) = self.viewports.iter().fold((1, 1), |(w, h), v| {
+                    (
+                        w.max(end(v.x, v.width) as u32),
+                        h.max(end(v.y, v.height) as u32),
+                    )
+                });
+                let samples = d.pipelines[pid.0 as usize]
+                    .render
+                    .as_ref()
+                    .map_or(1, |r| r.targets.samples);
+                pass.empty = Some(wcontainers_gpu::EmptyPass {
+                    width,
+                    height,
+                    samples,
+                });
+                self.empty_pass = true;
             }
             d.backend.begin_pass(&pass);
             self.pass_open = true;
@@ -2518,11 +2546,21 @@ fn copy_texture<B: Backend>(
     src: &CopyLocation,
     area: Option<[u32; 6]>,
 ) -> Result<(), Error> {
+    // A subresource's texture, mip, layer and origin, the resource's description, and whether it is
+    // in the stencil plane.
     let region = |d: &Device<B>, id: ResourceId, index: u32, origin: Origin| {
         let r = &d.resources[id.0 as usize];
-        let mips = r.desc.mips();
+        let (mips, layers) = (r.desc.mips(), r.desc.layers());
         let (texture, _) = d.texture(id)?;
-        Ok::<_, Error>((texture.clone(), index % mips, index / mips, origin, r.desc))
+        let stencil = index / (mips * layers) == 1;
+        Ok::<_, Error>((
+            texture.clone(),
+            index % mips,
+            index / mips % layers,
+            origin,
+            r.desc,
+            stencil,
+        ))
     };
     let origin = |v: [u32; 3]| Origin {
         x: v[0],
@@ -2555,7 +2593,7 @@ fn copy_texture<B: Backend>(
             },
             CopyLocation::Subresource { resource: s, index },
         ) => {
-            let (texture, mip, layer, o, _) = region(d, *s, *index, origin(src_origin))?;
+            let (texture, mip, layer, o, _, stencil) = region(d, *s, *index, origin(src_origin))?;
             let (format, _) = crate::resource::ResourceDesc {
                 format: footprint.format,
                 ..Default::default()
@@ -2581,7 +2619,7 @@ fn copy_texture<B: Backend>(
                     mip,
                     layer,
                     origin: o,
-                    stencil: false,
+                    stencil,
                 },
                 &CopyBufferTexture {
                     buffer: &buffer,
@@ -2606,7 +2644,7 @@ fn copy_texture<B: Backend>(
                 footprint,
             },
         ) => {
-            let (texture, mip, layer, o, _) = region(d, *t, *index, origin(at))?;
+            let (texture, mip, layer, o, _, stencil) = region(d, *t, *index, origin(at))?;
             let (format, _) = crate::resource::ResourceDesc {
                 format: footprint.format,
                 ..Default::default()
@@ -2638,7 +2676,7 @@ fn copy_texture<B: Backend>(
                     mip,
                     layer,
                     origin: o,
-                    stencil: false,
+                    stencil,
                 },
                 extent,
             );
@@ -2653,8 +2691,9 @@ fn copy_texture<B: Backend>(
                 index: si,
             },
         ) => {
-            let (st, smip, slayer, so, sdesc) = region(d, *s, *si, origin(src_origin))?;
-            let (tt, tmip, tlayer, to, _) = region(d, *t, *ti, origin(at))?;
+            // A copy between textures moves both planes of a depth-stencil format at once.
+            let (st, smip, slayer, so, sdesc, _) = region(d, *s, *si, origin(src_origin))?;
+            let (tt, tmip, tlayer, to, _, _) = region(d, *t, *ti, origin(at))?;
             let extent = extent_of(size_of_mip(&sdesc, smip));
             d.backend.copy_texture(
                 &TextureRegion {

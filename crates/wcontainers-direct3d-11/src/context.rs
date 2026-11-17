@@ -1143,7 +1143,11 @@ impl<B: Backend> Device<B> {
         match (dst, src) {
             (Resource::Buffer(d), Resource::Buffer(s)) => {
                 let (from, to) = src_box.map_or((0, s.desc.byte_width), |b| (b.left, b.right));
-                if to <= from || to > s.desc.byte_width || at[0] + (to - from) > d.desc.byte_width {
+                if to <= from
+                    || to > s.desc.byte_width
+                    || at[0] + (to - from) > d.desc.byte_width
+                    || src_box.is_some_and(Box3::empty)
+                {
                     return Ok(());
                 }
                 self.settle();
@@ -1163,11 +1167,6 @@ impl<B: Backend> Device<B> {
                 else {
                     return Err(Error::InvalidArg("subresource past the resource"));
                 };
-                if s.desc.dimension != d.desc.dimension {
-                    return Err(Error::InvalidArg(
-                        "a copy between textures of two dimensions",
-                    ));
-                }
                 let se = s.mip_extent(src_mip);
                 let b = src_box.copied().unwrap_or(Box3 {
                     left: 0,
@@ -1243,7 +1242,7 @@ impl<B: Backend> Device<B> {
                     return Err(Error::InvalidArg("UpdateSubresource needs default usage"));
                 }
                 let (from, to) = dst_box.map_or((0, b.desc.byte_width), |x| (x.left, x.right));
-                if to <= from || to > b.desc.byte_width {
+                if to <= from || to > b.desc.byte_width || dst_box.is_some_and(Box3::empty) {
                     return Ok(());
                 }
                 let bytes = &bytes[..(to - from) as usize];
@@ -1379,10 +1378,15 @@ impl<B: Backend> Device<B> {
             }
             Resource::Texture(t) => {
                 let d = &t.desc;
-                let ok = d.usage == usage::STAGING
-                    && (!reads || d.cpu_access_flags & desc::cpu::READ != 0)
-                    && (!writes || d.cpu_access_flags & desc::cpu::WRITE != 0)
-                    && matches!(kind, map::READ | map::WRITE | map::READ_WRITE);
+                let ok = match d.usage {
+                    usage::STAGING => {
+                        (!reads || d.cpu_access_flags & desc::cpu::READ != 0)
+                            && (!writes || d.cpu_access_flags & desc::cpu::WRITE != 0)
+                            && matches!(kind, map::READ | map::WRITE | map::READ_WRITE)
+                    }
+                    usage::DYNAMIC => kind == map::WRITE_DISCARD,
+                    _ => false,
+                };
                 let whole = t.whole(sub).filter(|_| ok);
                 let Some((region, extent)) = whole else {
                     return Err(Error::InvalidArg("the resource cannot be mapped this way"));
@@ -1392,7 +1396,10 @@ impl<B: Backend> Device<B> {
                 let mut shadow = t.shadow.borrow_mut();
                 let mut staged = t.staged.borrow_mut();
                 let s = sub as usize;
-                self.refresh(&mut staged[s], &src, &mut shadow[s], reads, wait)?;
+                // A dynamic texture's shadow is the program's to fill; nothing is read back.
+                if d.usage == usage::STAGING {
+                    self.refresh(&mut staged[s], &src, &mut shadow[s], reads, wait)?;
+                }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
                     data: shadow[sub as usize].as_mut_ptr(),

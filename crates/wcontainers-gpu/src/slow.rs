@@ -239,11 +239,14 @@ pub enum SlowPath {
     /// An integer colour clear made by a draw writing the value, where the API clears colour targets
     /// through a float that cannot hold it.
     IntegerClearByDraw,
+    /// Stencil copied into a texture whose stencil the API copies only whole (part of it, or from a
+    /// buffer through an `r8uint` texture), by one draw per bit writing that bit.
+    StencilWrittenByDraw,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 96] = [
+    pub const ALL: [SlowPath; 97] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -340,6 +343,7 @@ impl SlowPath {
         SlowPath::PatternClearCopied,
         SlowPath::ConstantBufferGrown,
         SlowPath::IntegerClearByDraw,
+        SlowPath::StencilWrittenByDraw,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -453,6 +457,7 @@ impl SlowPath {
             SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
             SlowPath::ConstantBufferGrown => "constant buffer grown to its shader's size",
             SlowPath::IntegerClearByDraw => "integer colour clear made by a draw",
+            SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
         }
     }
 }

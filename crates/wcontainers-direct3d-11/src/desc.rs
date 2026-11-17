@@ -107,6 +107,10 @@ pub struct TextureDesc {
     pub misc_flags: u32,
 }
 
+/// `D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS`, `_BUFFER_ALLOW_RAW_VIEWS` and `_BUFFER_STRUCTURED`.
+pub const MISC_DRAWINDIRECT_ARGS: u32 = 0x10;
+pub const MISC_ALLOW_RAW_VIEWS: u32 = 0x20;
+pub const MISC_STRUCTURED: u32 = 0x40;
 /// `D3D11_RESOURCE_MISC_GENERATE_MIPS`.
 pub const MISC_GENERATE_MIPS: u32 = 0x1;
 /// `D3D11_RESOURCE_MISC_TEXTURECUBE`.
@@ -331,6 +335,13 @@ pub struct Box3 {
     pub right: u32,
     pub bottom: u32,
     pub back: u32,
+}
+
+impl Box3 {
+    /// Whether the box holds nothing in some dimension, which makes Direct3D drop the call.
+    pub fn empty(&self) -> bool {
+        self.right <= self.left || self.bottom <= self.top || self.back <= self.front
+    }
 }
 
 /// `D3D11_PRIMITIVE_TOPOLOGY`.
