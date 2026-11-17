@@ -6,7 +6,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 ## Where things stand
 
 - X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the first independent
-  check's findings fixed in run 2 and the second check's in run 3, the same day (below).
+  check's findings fixed in run 2, the second check's in run 3 and the third check's in run 4, the same
+  day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -134,8 +135,53 @@ Measured in run 3:
 - Exhaustive runs on the x86 machine: `approx` 24 s, `approx_formula` 73 s (x86 load 0.02),
   `approx_mxcsr` 145 s (load 0.66).
 
+## X0, run 4 (2026-11-17): the third independent check's findings, all fixed in the plan
+
+- Blocking, code written without announcement missed two write paths: the kernel's own writes into
+  guest memory (`Cpu::write`, `zero`, `shared_write`, which ignore permissions) and writes through another
+  mapping of a shared page (memfd or shm mapped twice, .NET's W^X double mapping, another process). The
+  plan now keeps code marks per backing page in the CPU side (which owns memories, permissions and shared
+  blocks), protects every alias of a shared page, and has those three `Cpu` methods take the same
+  drop-and-unprotect step before writing. No kernel change: the kernel stays CPU-free. Built at X10 with
+  three tests; until then x86 runs only under the stand-in, which maps nothing twice (plan 5.7, 6, 9, 12).
+- Blocking, DF among the lazily tracked flags made the per-shape liveness test never true. DF (and ID)
+  now live in a control `Rflags`; `FLAGS` is the six arithmetic flags; `flags_needed_after` becomes a
+  test per flag (`pending` set), which on ARM64 gives exactly today's answers because every ARM64 setter
+  sets all four. "Plain computation" is a CPU function `Guest::plain` (ARM64 today's list), not derived
+  from effects, because a derived rule would let ARM64 look past `crc32` and change its output (plan
+  3.2, 3.4, 3.5, 5.1, 5.9).
+- Blocking, `GuestTest` had no Rust shape. Section 7.2 now gives the trait in full (names, forms, `cases`
+  as one strategy per CPU so ARM64's seeds give the same cases, `presented`, `excluded`, `no_form`,
+  `offered`/`told`, `designed`, `FIELDS`, `to_state`/`from_state`, `may_differ`, `reference_stop`,
+  `auxiliary`, `STAND_IN`, `PROGRAMS`, the corpora, layer 2's `MODEL_REGISTERS`, `Extra` and `assemble`),
+  its plain types, the reference runner's per-CPU `Machine` trait, the wire format, the transport
+  (`Reference::<G>`, Docker or SSH, same records) and the browser contract's per-CPU numbers.
+- Address limit: the x86 personality now has `TASK_SIZE_MAX` 0x7ffffffff000 (plan 5.4, 6, X10).
+- Interface gaps: `locals_of` (inverse of `with_locals`) and `complete`; `Bit` has its bit number;
+  `Target`, `Access`, `Locals` defined; the flags word holds only the tracked flags, so bits 1 and 9 need
+  no interface item; `jump_table` takes the jump's offset and a `before` walk, and ARM64 keeps reading its
+  window from the blob exactly as today.
+- Far transfers designed (plan 5.3) from new reference runs; `memory_fault` now takes the block and picks
+  the faulting access by the reported address, since one instruction's two accesses may differ in size.
+- x87 `fsqrt`: rustc_apfloat 0.2.3 has no sqrt (its lib.rs "Future work"), ieee-apsqrt 0.1.1 only
+  32/64/128-bit IEEE; now astro-float's sqrt at 128 bits toward zero, exactness by squaring at 256 bits,
+  round to odd at 66 bits, then once to 24/53/64 (plan 5.8).
+- The reference runner now writes the x87 component too (`xstate_bv` bit 0), proven by `stepper4`.
+- Found while checking, added to the plan: with AC set Linux gives `SIGBUS BUS_ADRALN` on a misaligned
+  user access. The plan does not provide alignment checking: `popf` and `iretq` leave AC clear (the 386
+  test reads it as absent), counted and warned (plan 5.1).
+
+Checked on the reference in run 4 (x86 load 0.00 to 0.09; 36.5 from another job during the AC cases,
+nothing timed):
+- `cases4.sh` (8 x87 cases with `stepper4`), `cases5.sh` (9 far-transfer cases), and 4 AC and `pushfq`
+  cases (`cases6.out`, run as `./stepper3 488b07 rdi=0x20000101 rflags=0x40202` and so on), all as
+  recorded in plan section 2, run 4.
+
 ## How to run
 
+- Run 4's experiments: `python3 -I <scratch>/scripts/make_stepper4.py <scratch>/reference-proof/stepper3.c
+  <scratch>/reference-proof/stepper4.c`, build it as below, copy `stepper4`, `cases4.sh`, `cases5.sh` to
+  `~/wcontainers-x86/proof/` and run the two scripts there.
 - Run 3's experiments: build `stepper3.c`, `approx.c`, `approx_dump.c`, `approx_formula.c`,
   `approx_mxcsr.c` the same way (without `-fno-stack-protector` for the approx ones), copy to
   `~/wcontainers-x86/proof/`, run each (`CODE_BASE=0x7fffffff0000 ./stepper3 e8fb7f0000` for the direct
@@ -155,9 +201,9 @@ Measured in run 3:
   mainline Linux 7.3.4 kernel; reached as `ssh -o BatchMode=yes tom@192.168.2.240`.
 - Installed on it by this track: nothing. Already there before this track and not used by it: Rust
   (`~/.rustup` dated 2026-11-14, rustc 1.100.0). Files of this track: `~/wcontainers-x86/proof/` (hello,
-  stepper, stepper3, cases.sh, cases2.sh, approx, approx_dump, approx_formula, approx_mxcsr and their
-  .out files); the independent checks' files are in `~/wcontainers-x86/check` and `check2`. Installed in
-  run 3: nothing.
+  stepper, stepper3, stepper4, cases.sh, cases2.sh, cases4.sh, cases5.sh, approx, approx_dump,
+  approx_formula, approx_mxcsr and their .out files); the independent checks' files are in
+  `~/wcontainers-x86/check`, `check2` and `check3`. Installed in runs 3 and 4: nothing.
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -166,7 +212,7 @@ Measured in run 3:
 
 - X0: 22 single-instruction cases on the reference CPU in run 1, 6 more in run 2, 21 more in run 3
   (hand-written, no seed); in run 3 also every one of the 2^32 inputs of `rcpss` and of `rsqrtss`, three
-  times (analysis, formula in MXCSR 0x1F80, formula in 0xFFC0).
+  times (analysis, formula in MXCSR 0x1F80, formula in 0xFFC0); in run 4, 21 more hand-written cases.
 
 ## Measurements
 
@@ -214,3 +260,7 @@ None yet (no milestone of the plan has been built).
 - astro-float adds about 41 KB brotli to the x86 browser build (scratch measurement).
 - `TrapKind` (and later the abi's `Exit`) grow divide error, general protection, float exception and single
   step.
+- Alignment checking (rflags AC) is not provided: `popf` leaves AC clear, as on a CPU without it, counted
+  and warned. A real x86 Linux would fault misaligned accesses while AC is set.
+- A far transfer to Linux's 32-bit code segment (selector 0x23) gives general protection, counted, until
+  32-bit mode is built.

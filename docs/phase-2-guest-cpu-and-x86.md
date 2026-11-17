@@ -199,9 +199,33 @@ are static binaries copied to `~/wcontainers-x86/proof`.
      every lane, and the closed formula of section 5.8 gives every one of the 2^32 results of each, in MXCSR
      0x1F80 and in 0xFFC0 (24 s for the analysis, 73 s and 145 s for the two formula checks).
 
-   What this teaches the reference runner (section 7.3): write every vector register (else the runner's own
-   values leak in), set the SSE and AVX bits of the frame's XSAVE header (`xstate_bv` bits 1 and 2) or the
-   kernel loads their first state, read a component as zero when its `xstate_bv` bit is clear, find the
+   Run 4 (2026-11-17, x86 load 0.00 to 0.07, except 36.5 from another job during the AC cases, which time
+   nothing), after the third independent check, with `stepper4.c` (`stepper3.c` that also writes and reads
+   the x87 component of the frame; made by `scripts/make_stepper4.py`), `cases4.sh`, `cases5.sh` and
+   their outputs, and `cases6.out`:
+   - The x87 component written into the frame (FCW, FSW with TOP, the abridged tag byte, the eight
+     register slots, `xstate_bv` bit 0) is what the CPU runs from, and it reads back: `fadd st0, st1` with
+     1 and 2 gives 3; `fdiv` 1 / 3 gives 0x3ffd:aaaaaaaaaaaaaaab at precision 64 and
+     0x3ffd:aaaaab0000000000 with FCW 0x007F (precision 24), FSW 0x220 (precision exception, C1); `fsqrt`
+     of 2 gives 0x3fff:b504f333f9de6484 and, at precision 24, 0x3fff:b504f30000000000; `fld1` on an empty
+     stack leaves TOP 7 and tag byte 0x80, and from TOP 3 leaves TOP 2, tag 0x0c and the old ST0 in slot 1,
+     so the frame's slots are in stack order and its tag byte in physical order; a `nop` with every slot,
+     FCW 0x0C7F and FSW 0x3800 set gives them all back.
+   - Far transfers: `call far [rdi]` with selector 0x33 pushes 16 bytes (return address, then 0x33) and
+     lands; selectors 0, 0x2b (data) give general protection with nothing pushed; 0x23 lands, in 32-bit
+     mode; a non-canonical offset with 0x33 gives general protection after the 16-byte push. `jmp far`
+     with 0x33 lands, with 0x2b faults. `retfq` with 0x33 lands with rsp up 16, with 0x2b faults with rsp
+     unchanged. `iretq` with rip, CS 0x33, rflags 0x8C3, rsp, SS 0x2b lands with rsp loaded and rflags
+     0xAC3 (IF kept); with SS 0x33 it faults.
+   - With AC (rflags bit 18) set, an 8-byte load at an odd address gives `SIGBUS`, `BUS_ADRALN`, rip at
+     the instruction, and the same load at an aligned address runs: Linux enables alignment checking in
+     user mode.
+
+   What this teaches the reference runner (section 7.3): write every vector register and the whole x87
+   component (FCW, FSW, the abridged tag byte, FOP and the last-instruction pointers as zero, the eight
+   slots in stack order) (else the runner's own values leak in), set the x87, SSE and AVX bits of the
+   frame's XSAVE header (`xstate_bv` bits 0, 1 and 2) or the kernel loads their first state, read a
+   component as its first state when its `xstate_bv` bit is clear, find the
    upper ymm halves at the offset CPUID leaf 0xD sub-leaf 2 gives, mask `TF`, `RF` (bit 16) and `IF` out of
    the comparison of rflags, and mask `TF` out of every copy of rflags an instruction makes (the word
    `pushf` stores, r11 after `syscall`).
@@ -274,7 +298,7 @@ pub trait Guest: Sized + 'static {
     type Reg: Copy + Eq + core::fmt::Debug;
     /// A register of the second file (SIMD and floating point, MMX, ymm upper halves).
     type Vector: Copy + Eq + core::fmt::Debug;
-    /// One entry per register bit used, in bit order; see `Bit`.
+    /// One entry per register bit used, sorted by `Bit::bit`; bits not listed are unused (ARM64 36 to 63).
     const BITS: &'static [Bit];
     /// The register's bit; `None` for a hard zero register (ARM64 xzr, RISC-V x0).
     fn reg_bit(r: Self::Reg) -> Option<u32>;
@@ -289,7 +313,9 @@ pub trait Guest: Sized + 'static {
 
     // --- flags (all empty on a CPU without flags, which compiles the flag machinery away) ---
     type Flag: Copy + Eq + core::fmt::Debug;
-    /// Each flag with its bit in the saved flags word and its register bit.
+    /// The flags the translator tracks lazily, each with its bit in the saved flags word and its register
+    /// bit, in the order the flags word is put together. The flags word holds these and nothing else
+    /// (x86's DF and the bits rflags always has are not in it, section 5.1).
     const FLAGS: &'static [(Self::Flag, u32, u32)];
     /// How flags were last set: a shape with the locals holding its operands.
     type Flags: Copy + core::fmt::Debug;
@@ -301,6 +327,16 @@ pub trait Guest: Sized + 'static {
     /// The local types a shape keeps, and the shape rebuilt over fresh locals of those types.
     fn shape_locals(shape: Self::Shape) -> &'static [ValType];
     fn with_locals(shape: Self::Shape, locals: &[u32]) -> Self::Flags;
+    /// The inverse of `with_locals`: the locals holding a shape's operands, in `shape_locals` order. The
+    /// translator pushes them as the arguments of the shape's flags-word function, and copies them pair by
+    /// pair into the shape's canonical locals. ARM64: an addition gives `a`, then the value subtracted or
+    /// `b`, then the carry when it is a local; logic gives the result (today's full.rs:2176-2193 and
+    /// 2664-2690, which push and copy exactly these).
+    fn locals_of(flags: Self::Flags) -> Locals;
+    /// Work out into `temporaries` (two locals of the type of the shape's first local) what a shape keeps
+    /// only implicitly, and return the shape with every local filled in (ARM64: `b` when only the value
+    /// subtracted was kept, and the result; today's `completed`).
+    fn complete(sink: &mut InstructionSink<'_>, flags: Self::Flags, temporaries: [u32; 2]) -> Self::Flags;
     /// The flags a shape sets; the others keep their earlier value (x86 inc and dec keep CF).
     fn sets(flags: Self::Flags) -> Registers;
     /// Push one flag, as an i32 0 or 1, for flags set this way.
@@ -378,11 +414,12 @@ pub trait Guest: Sized + 'static {
     fn run_hook(hook: Self::Hook, args: &[i64], state: &mut [u8]) -> HookDone;
 
     // --- what a memory fault is on this CPU ---
-    /// The memory fault hook reported `address` for the instruction at the start of `code`: the fault the
-    /// CPU gives for it. ARM64 and RV64GC always `Page`; x86 `GeneralProtection` when the access that
-    /// faulted reaches a non-canonical address (section 5.4). The runner calls this before it tells the
-    /// kernel about the fault, so the kernel needs no CPU crate.
-    fn memory_fault(address: u64, code: &[u8]) -> MemoryFault;
+    /// The memory fault hook reported `address` (the first byte not allowed) for the instruction at the
+    /// start of `code`, with the thread's registers exact in `block`: the fault the CPU gives for it.
+    /// ARM64 and RV64GC always `Page`; x86 `GeneralProtection` when the access that faulted reaches a
+    /// non-canonical address (section 5.4). The runner calls this before it tells the kernel about the
+    /// fault, so the kernel needs no CPU crate.
+    fn memory_fault(address: u64, code: &[u8], block: &Self::Block) -> MemoryFault;
 
     // --- meanings ---
     fn emit<E: Emitter<Self>>(e: &mut E, i: &Self::Instruction);
@@ -396,11 +433,21 @@ pub trait Guest: Sized + 'static {
     /// before it on the path (adrp + add, lea [rip + d], auipc + addi).
     fn built_address(previous: Option<(u64, &Self::Instruction)>, at: u64, i: &Self::Instruction)
         -> Option<u64>;
-    /// The targets of a jump through `reg` made from a switch statement, as blob offsets, each once, in
-    /// table order, given the instructions on the path into it (oldest first, each with its blob offset)
-    /// and the blob. Today's `habits::jump_table`, which reads the blob through a closure, is this.
-    fn jump_table(path: &[(u64, Self::Instruction)], reg: Self::Reg, blob: &[u8], code: Range<u64>)
-        -> Option<Vec<u64>>;
+    /// The targets of the jump through `reg` at blob offset `at`, made from a switch statement, as blob
+    /// offsets, each once, in table order. The CPU gathers the instructions before the jump itself:
+    /// `before(o)` is the function's instruction that falls through into offset `o` (with its offset),
+    /// `None` at the start of a block that more than one edge enters. ARM64 does not use `before`: it
+    /// decodes the 64 words before `at` that lie in `code` from the blob, as today (full.rs:670-678 and
+    /// `habits::jump_table` move into the CPU crate unchanged), so its tables are found exactly as now.
+    /// x86 walks `before` back, at most 64 instructions, since x86 code cannot be decoded backwards.
+    fn jump_table(at: u64, reg: Self::Reg, blob: &[u8], code: Range<u64>,
+        before: impl Fn(u64) -> Option<(u64, Self::Instruction)>) -> Option<Vec<u64>>;
+    /// Plain computation, which the flags' liveness may look past: the instruction only computes
+    /// registers from registers (no memory, hook, control, trap or leaving). ARM64: exactly today's list
+    /// in `flags_needed_after` (`AddSub`, `AddSubCarry`, `Logical`, `MoveWide`, `Bitfield`, `Extract`,
+    /// `PcRelative`, `CondCompare`, `CondSelect`, `Unary`, `Binary`, `MulAdd`, `Nothing`); x86 the
+    /// register-only forms of the integer instructions.
+    fn plain(i: &Self::Instruction) -> bool;
 
     // --- calls, returns and the stack ---
     /// Where a call leaves the return address.
@@ -452,9 +499,22 @@ The plain types, also in the interface crate:
 /// A set of register bits (what `Registers` in wcontainers-arm64 is today).
 pub struct Registers(pub u128);
 
-pub struct Bit { pub class: Class, pub ty: Ty, pub offset: u16 }   // offset in the thread block
+/// One register bit: its number in `Registers` (0 to 127), what it is, and its offset in the thread block.
+pub struct Bit { pub bit: u32, pub class: Class, pub ty: Ty, pub offset: u16 }
 pub enum Class { General, Flag, Vector, Segment }
 pub enum Ty { I64, V128 }
+/// The locals of a shape (`Guest::locals_of`): the first `len` of `at`.
+pub struct Locals { pub len: u8, pub at: [u32; 6] }
+
+/// Where control goes (today's `wcontainers_arm64::Target`, moved).
+pub enum Target {
+    /// This many bytes from the current instruction.
+    Relative(i64),
+    /// The guest address in this i64 local.
+    Address(u32),
+}
+/// What an access does, as `Emitter::check` and `check_range` take it (today's `Access`, moved).
+pub enum Access { Read, Write }
 
 pub struct Flow<R> {
     pub falls_through: bool,
@@ -595,12 +655,24 @@ locals and types, completing them, each flag's value and the conditions. Two thi
 - **Flags kept only sometimes** (x86 shift by a run-time count of 0 changes no flag). The meaning reads the
   old flags it may keep through `flag()` into locals and names them in the shape; `flag_value` selects.
   This is rare (shifts by cl) and needs nothing new in the emitter.
-`flags_needed_after` (T25) stops listing ARM64 variants: "plain computation" comes from the recorded
-effects (an instruction that touches no memory, calls no hook, writes no control and does not leave), and
-"all flags set again" is `sets(..) == FLAGS mask`, which x86 `inc` does not meet. A CPU with no flags
-(RISC-V) has empty `FLAGS` and `SHAPES`, its meanings never call `set_flags`, `flag` or `condition`, its
-`Cond` is an empty enum, and `FLAGS_WANTED` is 0, so the flag locals, the flag state and the flags-word
-functions are never made. The flag locals are a fixed array of at most 8 (x86 has 7).
+`flags_needed_after` (T25) stops listing ARM64 variants and becomes a test per flag. It starts with the
+set of flags still to be set again, `pending`, equal to the `FLAGS` mask, and walks the rest of the block:
+an instruction that is not `G::plain`, that reads a flag in `pending`, or that writes the stack pointer
+means the flags are needed; otherwise `pending` loses the flags the instruction writes, and when it is
+empty they are not. So x86 `inc` (which keeps CF) leaves CF pending, and a later `add` empties the set.
+On ARM64 every flag setter writes all four flags, so `pending` is either the whole mask or empty, which
+is exactly today's "reads any flag" and "`defs ∩ FLAGS == FLAGS`": the answer, and so the output, does
+not change. `plain` is the CPU's (ARM64 today's list, section 3.2) rather than derived from the recorded
+effects, because a derived rule would also let ARM64 look past instructions today's list stops at (`crc32`
+among them) and change ARM64's output. x86's direction flag is not one of the `FLAGS` (section 5.1), so
+string instructions, which read it, do not count as flag readers, no shape has to complete it, and
+nothing in this test waits for an arithmetic instruction to set it. The flags-word functions take
+`shape_locals(shape)` as parameters, rebuild the shape with `with_locals`, fill it in with `complete` and
+put the word together from `flag_value` of each flag of `FLAGS`, shifted to its bit and or-ed in order
+(today's `push_word`); the calls to them push `locals_of(flags)`. A CPU with no flags (RISC-V) has empty
+`FLAGS` and `SHAPES`, its meanings never call `set_flags`, `flag` or `condition`, its `Cond` is an empty
+enum, and `FLAGS_WANTED` is 0, so the flag locals, the flag state and the flags-word functions are never
+made. The flag locals are a fixed array of at most 8 (x86 has 6).
 
 Flags wanted (T13). Bit 0 of the expected return address is free on ARM64 because returns are 4-aligned;
 on x86 returns can be odd. The CPU names the bit: ARM64 1 (unchanged), x86 bit 62 (no canonical user
@@ -645,18 +717,18 @@ Addresses the code builds (T8). `built_address(previous, at, i)` replaces "adr, 
 4-byte slot before". It finds x86 `lea r, [rip + d]` alone and RISC-V `auipc` plus `addi` or `jalr` (2 or
 4 bytes apart).
 
-Switches (T9, T10). `jump_table` gets the decoded instructions on the path into the jump, oldest first
-(the function's own instructions, never a window read backwards from the jump, which x86 cannot do), and
-the blob. The patterns stay in the CPU crate's `habits` module. The jump table the translator emits is
-indexed by the target address, as today, scaled by the alignment: `(target - lo) >> log2(ALIGN)`. Decision
-and reason: indexing by the address the guest computed is exact even when the guest changed its table in
-memory at run time (an unknown target leaves through the lookup), and it needs no second kind of table. On
-x86 a table then has one entry per byte of the span its targets cover, so spans reach the 65,520-entry
-limit sooner; a table over the limit falls back to the lookup with the existing counter "jump through a
-register not recognised". Tables whose entries are absolute addresses (non-PIE x86 code: `jmp
-[T + rax*8]`) need the load address the translator never sees, so they also go through the lookup, counted
-the same way. How often either happens is measured on the x86 real binaries at X9; only if it is common is
-indexing by case number brought back for a decision.
+Switches (T9, T10). `jump_table` gets the jump's offset, the blob and `before`, a way to walk the function's
+own instructions back from the jump. ARM64 reads its window backwards from the blob exactly as today (so its
+output stays the same); x86 cannot decode backwards and walks `before` instead. The patterns stay in the CPU
+crate's `habits` module. The jump table the translator emits is indexed by the target address, as today,
+scaled by the alignment: `(target - lo) >> log2(ALIGN)`. Decision and reason: indexing by the address the
+guest computed is exact even when the guest changed its table in memory at run time (an unknown target leaves
+through the lookup), and it needs no second kind of table. On x86 a table then has one entry per byte of the
+span its targets cover, so spans reach the 65,520-entry limit sooner; a table over the limit falls back to the
+lookup with the existing counter "jump through a register not recognised". Tables whose entries are absolute
+addresses (non-PIE x86 code: `jmp [T + rax*8]`) need the load address the translator never sees, so they also
+go through the lookup, counted the same way. How often either happens is measured on the x86 real binaries at
+X9; only if it is common is indexing by case number brought back for a decision.
 
 The lookup array (T11). One i32 slot per `ALIGN` bytes of guest code: ARM64 one per 4 bytes (as today), x86
 one per byte, RISC-V one per 2 bytes. The slot's byte index is `(pc - table_base) << (2 - log2(ALIGN))`, which
@@ -712,9 +784,9 @@ without it fails on a duplicate `panic_impl`, because astro-float-num's `lazy_st
 
 Memory faults (from section 5.4). The memory fault hook reports an address and a direction; whether that
 is a page fault or something else is the CPU's (x86: general protection for an access reaching a
-non-canonical address). `Guest::memory_fault(address, code)` answers it from the faulting instruction's
-bytes, called by the runner before it tells the kernel, so the hook's signature and ARM64's output do not
-change.
+non-canonical address). `Guest::memory_fault(address, code, block)` answers it from the faulting
+instruction's bytes and the exact registers, called by the runner before it tells the kernel, so the
+hook's signature and ARM64's output do not change.
 
 Host probe (T28). An associated type with its own probe module. It is part of the cache key.
 
@@ -791,14 +863,14 @@ ARM64 (`wcontainers_arm64::Arm64`, everything as today):
 x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
 - ALIGN 1, MAX_LENGTH 15; `decode` is `iced_x86::Decoder` in 64-bit mode over the bytes up to the end of the
   code range (an instruction that would run past it is `None`); trap detail the first 8 bytes.
-- Bits: rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8 to r15 at 0 to 15 (hardware order); CF PF AF ZF SF OF DF
-  at 16 to 22; FS base 23, GS base 24 (class Segment); mm0 to mm7 at 32 to 39 (i64, the mantissas of x87
+- Bits: rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8 to r15 at 0 to 15 (hardware order); CF PF AF ZF SF OF
+  at 16 to 21; FS base 22, GS base 23 (class Segment); mm0 to mm7 at 32 to 39 (i64, the mantissas of x87
   registers R0 to R7); xmm0 to xmm15 at 64 to 79 (v128); the upper halves of ymm0 to ymm15 at 80 to 95
   (v128). There is no zero register. SP_BIT 4.
-- Flags: the seven at their rflags positions (CF 0, PF 2, AF 4, ZF 6, SF 7, OF 11, DF 10); shapes in
-  section 5.1. FLAGS_WANTED 1 << 62.
-- Block: `X86Block` (section 5.9). Controls: MXCSR, MXCSR tracking, the x87 control, status (with TOP) and
-  tag words, the x87 last-instruction pointers.
+- Flags: the six arithmetic flags at their rflags positions (CF 0, PF 2, AF 4, ZF 6, SF 7, OF 11); shapes
+  in section 5.1. FLAGS_WANTED 1 << 62.
+- Block: `X86Block` (section 5.9). Controls: `Rflags` (DF and ID, section 5.1), MXCSR, MXCSR tracking, the x87
+  control, status (with TOP) and tag words, the x87 last-instruction pointers.
 - Hooks: Float (SSE exact path, with MXCSR), X87 `(op: i32, low: i64, high: i64) -> (i64, i64)` reading and
   writing the x87 area and the MMX bits (both body `Cpu`, run by `run_hook` on the state), Clock.
 - RETURN_ADDRESS `Stack { bytes: 8 }`; RED_ZONE 128; SP_ALIGNMENT_CHECKED false; data_address nothing (a
@@ -898,11 +970,29 @@ Tests (section 7 gives the detail):
 - **Conditions**: the 16 x86 conditions (O, NO, B, AE, E, NE, BE, A, S, NS, P, NP, L, GE, LE, G) as
   `Cond`. `condition_direct` turns cmp + jcc and test + jcc into one comparison of the operands, at every
   width.
-- **DF** is a flag only `std`, `cld` and `popf` set, which string instructions read.
-- **The flags word** in the block is rflags with bits 1 and 9 (IF) always set, as user code sees them.
-  `pushf` pushes it; `popf` writes the seven flags, ignores IOPL and IF as user mode does, and when it sets
-  TF the instruction after it runs and then stops with `SingleStep` (SIGTRAP, `TRAP_TRACE`), as on the CPU;
-  that path is a counted slow path ("trap flag set by the program").
+- **DF is a control, not one of the lazily tracked flags.** Only `std`, `cld`, `popf` and `iretq` write
+  it and only the string instructions read it, so it gains nothing from lazy tracking, and keeping it out
+  of `FLAGS` keeps the liveness test per flag exact (section 3.4): no arithmetic instruction sets DF, so
+  with DF among the flags no flag update could ever be found dead, and every string instruction would
+  count as a flag reader. It lives in `Control::Rflags`, an i64 in the block holding the bits of rflags
+  outside the flags word that user code changes and keeps, at their rflags positions: DF (bit 10) and ID
+  (bit 21, which programs toggle to see that CPUID exists). A string instruction reads it with one load
+  and a shift per pass.
+- **The flags word** in the block holds the six arithmetic flags at their rflags positions and nothing
+  else. The user-visible rflags is that word, or `Control::Rflags`, or bits 1 and 9 (IF), which user code
+  always sees set: `pushf` puts it together in its meaning; `popf` and `iretq` split it (the six flags as a
+  `Packed` shape, DF and ID into the control, IOPL, IF and the other system bits ignored as user mode
+  does); the kernel's personality does the same at signal frames and `ptrace` (section 6). So the
+  interface needs no item for bits a CPU always has. When `popf` sets TF the instruction after it runs and
+  then stops with `SingleStep` (SIGTRAP, `TRAP_TRACE`), as on the CPU; that path is a counted slow path
+  ("trap flag set by the program").
+- **AC** (bit 18, alignment checking, which Linux's CR0.AM makes work in user mode) is not provided:
+  testing every access's alignment would cost every access. It is reported as absent the way a program
+  tests for it, which is the 386 test: `popf` and `iretq` leave AC clear, so it reads back 0, as on a
+  CPU without alignment checking. Counted and warned, x86's own reason "alignment checking asked for, not
+  provided". This differs from the reference by design; layer 1's `popf` and `iretq` cases with AC set
+  in the popped value are compared with AC masked and the designed-answers test checks that it reads
+  back clear and that the counter fires.
 
 ### 5.2 What an instruction is
 
@@ -977,6 +1067,27 @@ Tests (section 7 gives the detail):
   the piece returns directly. If not, rsp moves and the thread leaves to the bottom loop through "go to
   address". `ret imm16` also adds its immediate. `jmp` through a register or memory makes the same
   canonical check first, before anything changes; `call` makes it after its push (above).
+- **Far transfers** (`call far m16:64`, `jmp far m16:64`, `retf` and `retf imm16` in their 16, 32 and
+  64-bit operand sizes, `iretq`; valid in 64-bit user mode, so in layer 1's forms list). Their meanings
+  read the selector with the offset and act on it as the CPU does in user mode on Linux. Seen on the
+  reference (section 2, run 4): with selector 0x33 (Linux's 64-bit user code segment, the one running)
+  `call far [rdi]` reads its 10 bytes, pushes 16 (the return address at rsp - 16, the old CS 0x33
+  zero-extended above it) and lands at the offset; `jmp far` lands with nothing written; `retfq` pops the
+  offset and the selector, rsp up by 16; `iretq` pops rip, CS, rflags, rsp and SS (40 bytes) and lands
+  with rsp and rflags loaded (IF kept set). A selector that names no code segment (0, 0x2b, which is data,
+  and SS 0x33 for `iretq`) gives general protection with nothing written and rsp unchanged, so for far
+  transfers the selector is checked before the push; a non-canonical offset with selector 0x33 gives
+  general protection after the 16-byte push, as a near `call` does. So the meanings: read (access 0,
+  checked first), test the selector, push (access 1, for `call far`), test the offset is canonical, then
+  move rsp and transfer. A far transfer with selector 0x33 is, for the translator, a jump or call through
+  memory (`FlowKind::JumpThrough` or `CallThrough(Memory)`, the return address 16 bytes up for `call
+  far`'s matching `retf`) and `retf` and `iretq` are returns that leave to the bottom loop when the target
+  is not the one expected; they are rare, so no more than that. Selector 0x23 (Linux's 32-bit user code
+  segment) switches the reference to 32-bit mode, which this phase does not have: it stops with general
+  protection at the instruction, nothing changed, the fault a CPU gives for a selector it cannot load;
+  counted and warned, x86's own reason "far transfer to 32-bit code, not provided", like `int 0x80`
+  (section 5.2). Layer 1
+  excludes selector 0x23 with that reason; the designed-answers test checks the fault.
 - After a WebAssembly call returns, the caller checks rsp is 8 above its value at the call (after the
   push); if not, it leaves to the next instruction through the bottom loop, as ARM64 does for a changed sp.
 - Deep recursion leaves to the bottom loop on the stack budget, as on ARM64.
@@ -1004,17 +1115,20 @@ Tests (section 7 gives the detail):
   0x7ffffffff000 and a 1-byte load at 0x7fffffffffff give a page fault (`SEGV_MAPERR`) at their address
   (section 2, run 3). So the CPU's check of canonical addresses comes before the page check. The meanings
   add nothing for this (no cost on any access): the permission table already stops every such access,
-  since Linux never maps the last page below 2^47 (its user space ends at 0x7ffffffff000), so an access
-  reaching 2^47 always faults, and the address the hook reports (the first byte not allowed, which is the
-  access's start when its first page is not allowed) is then the access's start, in that page or above
-  it. `X86_64::memory_fault(address, code)` then decides: general protection when the address is not
-  canonical, or when it is at or above 0x7ffffffff000 and address + size runs past 0x7fffffffffff, with
-  the size of the access from `accesses` of the instruction at `code` (an element for `rep` and gather
-  forms; an x86 instruction's two accesses always have the same size); otherwise a page fault at the
+  since the last page below 2^47 is never mapped: Linux's x86-64 user space ends at 0x7ffffffff000
+  (`TASK_SIZE_MAX`), and the x86 personality gives our kernel that same limit (section 6), so no mapping
+  reaches the last page and an access reaching 2^47 always faults. The registers are exact at the fault,
+  so `X86_64::memory_fault(address, code, block)` works out the instruction's accesses (`accesses` of
+  the instruction at `code`, with their start addresses from the block's registers and segment bases, and
+  their sizes: an element for `rep` and gather forms). The two accesses of one instruction may differ in
+  size (`call far [m]` reads 10 bytes and pushes 16), so it takes the access that faulted: the first, in
+  the instruction's order (the order the CPU and the meaning check them), whose range holds the reported
+  address (the first byte not allowed). General protection when that range is not wholly canonical (its
+  start is not canonical, or its last byte is above 0x7fffffffffff); otherwise a page fault at the
   address. No access is longer than a page (the largest offered, `xsave` with x87, SSE and AVX state, is
-  832 bytes in the manual's layout), so no access reaching
-  2^47 starts below the last page. Layer 1 places a share of its memory operands' bases in the last 64
-  bytes below 2^47 so that both answers are compared with the reference.
+  832 bytes in the manual's layout), so no access reaching 2^47 starts below the last page. Layer 1
+  places a share of its memory operands' bases, and of its stack pointers, in the last 64 bytes below
+  2^47 so that both answers are compared with the reference.
 - **Alignment**: x86 allows unaligned access except for a few instructions (`movaps`, `movdqa` and the
   other aligned SSE forms, `cmpxchg16b`, `fxsave`): those meanings test the address and stop with general
   protection, as the reference does (section 2).
@@ -1083,6 +1197,45 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   their return addresses, translated afresh ("continued after stack loss").
 - Setting the write bits back is a permission change too: the faulting thread is stopped in its hook,
   and with several threads the same rule (stop the others first) applies.
+- **Who keeps the marks.** The CPU side, which owns the memories, the permission table and the shared
+  blocks: today the host runner and the browser runner with their stand-in system calls, and at X10 the
+  implementation of `wcontainers_abi::Cpu` over translated code under the kernel. A mark is kept per backing
+  page, not per address: a private page by (memory, page), a page of a shared block by (block, page
+  offset). Beside each mark it keeps the permissions the kernel last asked for the page: a
+  `set_permissions` on a marked page records them and leaves the write bits clear while the mark stands
+  (they come back when the page is written); `memory_duplicate` (fork) copies the table as it is, marks
+  and all; mapping over, unmapping or zeroing a marked range drops its pieces and marks, as
+  `code_changed` does. Writing the bytes back is "the step": drop every piece translated from every
+  address that shows the page, in every memory, clear the mark, give every such address the write bits
+  the kernel asked for, counted "code written without announcement" with the page.
+- **Writes the permission table never sees.** Two other paths change bytes with no fault, and both take
+  the step:
+  - Writes the kernel makes into guest memory: the copy-out of `read`, `recv`, `pread`,
+    `process_vm_writev` and every other call, and the kernel's zeroing. All of them reach memory through
+    the CPU side's `Cpu::write`, `zero` or `shared_write`, which by the abi's contract ignore page
+    permissions (the kernel checks its own map, crates/wcontainers-kernel/src/user.rs). Those three
+    methods look up each page of the range in the marks first (one lookup per page written, against the
+    cost of the copy itself; measured at X10) and take the step for a marked page before they write. A
+    thread whose own pieces were dropped by its system call carries on from the bottom loop when the call
+    returns, as after any drop.
+  - Writes through another mapping of the same pages: a memfd or `shm` block mapped twice in one process
+    (.NET's W^X double mapping writes code through one address and runs it through the other), a
+    `MAP_SHARED` file, or another process writing shared memory. The CPU side knows every address of
+    every memory that shows a block's page, since `shared_map` and `shared_unmap` are its own
+    operations. Protecting a shared page for code clears the write bits at every address that shows it,
+    in every memory (a permission change for each of those processes, under the same rule), and a later
+    `shared_map` of a marked page maps it write-protected. A write through any alias then faults, and the
+    step drops the pieces of every alias. Writes the kernel makes to the block itself (`write` on a
+    memfd, through `shared_write`) take the step as above.
+  Threads of other processes whose pieces are dropped (stopped, by the rule above) give up their
+  WebAssembly frames when they next run, as in the frames case above.
+- **When each part is built.** X6 builds the fault path and the marks in both runners. Until X10 an x86
+  program runs only under the runners' stand-in system calls (`write`, `writev`, `exit`, `exit_group`,
+  `brk`), which map nothing twice and write guest memory only when `brk` zeroes pages, which takes the
+  step; so nothing writes code unseen before the kernel joins. X10, with the kernel's personality, builds
+  the step in `Cpu::write`, `zero`, `shared_write` and the shared mappings, with three tests against the
+  reference: a program that `read`s new code over code it has run and runs it again, a memfd mapped twice
+  (written through one address, run through the other), and two processes sharing a page of code.
 - ARM64 keeps `ic ivau`; `CODE_CHANGES` tells the runner which policy to use.
 - Expected and unmeasured: a JIT that keeps pages writable and executable while writing code next to
   running code would fault often. The counter shows it; a measurement on such a program comes at X6.
@@ -1127,7 +1280,8 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   fix-up, as for ARM64 guests on Intel hosts. The probe answer is in the cache key.
 - **x87** (80-bit) runs through software: the x87 hook does every arithmetic, conversion and comparison
   with `rustc_apfloat`'s `X87DoubleExtended` (already a dependency of the ARM64 crate; Apache-2.0 WITH
-  LLVM-exception), counted "x87 floating point in software". Its state lives only in the block: the eight
+  LLVM-exception), except the square root and the transcendental instructions (below), counted "x87
+  floating point in software". Its state lives only in the block: the eight
   registers R0 to R7 in physical order, the control word, the status word with TOP, the tag word and the
   last-instruction pointers. Instructions that name ST(i) work out R((TOP + i) mod 8) at run time inside
   the hook, so no register numbering depends on run-time state. Loads and stores of memory operands are
@@ -1135,22 +1289,38 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   results. Rounding control and the unmasked-exception rule (the exception is raised at the next x87
   instruction that waits) follow the manual.
 - **Precision control** (FCW bits 8 and 9: 24, 53 or 64 bits) affects only fadd, fsub, fsubr, fmul, fdiv,
-  fdivr (with their `p` and `i` forms) and fsqrt, as the manual says; the rest always round to 64 bits.
-  At 64 bits, the default Linux sets (FCW 0x037F), the operation is one `X87DoubleExtended` operation. At
+  fdivr (with their `p` and `i` forms) and fsqrt, as the manual says; the rest always round to 64 bits. At 64
+  bits, the default Linux sets (FCW 0x037F), an arithmetic operation is one `X87DoubleExtended` operation. At
   24 or 53 bits the result must be rounded once to that many bits while keeping the 15-bit exponent range,
   which `X87DoubleExtended` does not offer. Decision: two more semantics of rustc_apfloat's public
-  `ieee::Semantics` trait, defined in `wcontainers-x86` (15 exponent bits, precision 24 and 53), and a
-  wide one (15 exponent bits, precision 66). The operation is done in the wide semantics rounded toward
-  zero, the lowest bit is set when apfloat reports the result inexact (rounding to odd), and that is
-  converted once to 24 or 53 bits in the program's rounding mode, then widened exactly. Rounding to odd at
-  a precision at least two bits wider than the target and then rounding once gives the correctly rounded
-  result (Boldo and Melquiond, "Emulation of FMA and correctly rounded sums: proved algorithms using
-  rounding to odd", IEEE Transactions on Computers, 2008); 66 bits also holds every 64-bit operand exactly.
-  The status flags come from the two steps' statuses. Checked in a scratch program
+  `ieee::Semantics` trait, defined in `wcontainers-x86` (15 exponent bits, precision 24 and 53), and a wide
+  one (15 exponent bits, precision 66). The operation is done in the wide semantics rounded toward zero, the
+  lowest bit is set when apfloat reports the result inexact (rounding to odd), and that is converted once to
+  24 or 53 bits in the program's rounding mode, then widened exactly. Rounding to odd at a precision at least
+  two bits wider than the target and then rounding once gives the correctly rounded result (Boldo and
+  Melquiond, "Emulation of FMA and correctly rounded sums: proved algorithms using rounding to odd", IEEE
+  Transactions on Computers, 2008); 66 bits also holds every 64-bit operand exactly. The status flags come
+  from the two steps' statuses. Checked in a scratch program
   (`pyro-parked/wcontainers-scratch/x86/apfloat-pc`, rustc_apfloat 0.2.3): the custom semantics build
-  (precision 66 and 24, exponent range 16383 to -16382), 1 + 2^-30 + 2^-60 at 24 bits gives 1 + 2^-23
-  rounding up and 1 to nearest, and 2^-16000 stays non-zero at 24 bits. Layer 1 checks it against the
-  reference with the precision control field random.
+  (precision 66 and 24, exponent range 16383 to -16382), 1 + 2^-30 + 2^-60 at 24 bits gives 1 + 2^-23 rounding
+  up and 1 to nearest, and 2^-16000 stays non-zero at 24 bits. Layer 1 checks it against the reference with
+  the precision control field random.
+- **The square root** (`fsqrt`, at precision 24, 53 or 64 and in every rounding mode): rustc_apfloat 0.2.3
+  has no square root (its src/lib.rs lists `sqrt` under future work), and `ieee-apsqrt` 0.1.1, which the
+  ARM64 crate uses, works only on IEEE bit patterns of 32, 64 and 128 bits (its `IeeeBits` is implemented
+  for u32, u64 and u128, and only the first two for its exact `sqrt_accurate`), not on 80-bit values or
+  x87's reduced precisions. Decision: the root of a finite positive operand
+  is worked out with astro-float's `sqrt` (documented as correctly rounded) at 128 bits rounded toward
+  zero; it is exact when its square, by astro-float's `mul` at 256 bits (exact for two 128-bit
+  mantissas), equals the operand. Its top 66 bits, with the lowest set when any lower bit is set or the
+  root is inexact, are the round-to-odd value in the wide semantics above, which is then rounded once to
+  the precision control's 24, 53 or 64 bits in the program's rounding mode, as for the other operations
+  (the same Boldo and Melquiond result, 66 being at least 64 + 2). The status (precision exception, C1
+  for rounded up) comes from the two steps. The root of an 80-bit value is never outside the normal
+  range, so no step meets a denormal result. Zero, negative, infinite, NaN, denormal and unsupported
+  operands are answered from the manual's table for `fsqrt`. Seen on the reference (section 2, run 4):
+  the root of 2 is 0x3fff:b504f333f9de6484 at precision 64 and 0x3fff:b504f30000000000 at precision 24.
+  X7 compares it in layer 1 with the precision and rounding control random.
 - **The transcendental instructions** (fsin, fcos, fsincos, fptan, fpatan, f2xm1, fyl2x, fyl2xp1)
   are worked out with the `astro-float` crate (0.9.6, MIT; builds for wasm32-unknown-unknown with the
   standard library, which the browser's cdylib has; measured below), at 128 bits, then rounded once to
@@ -1171,7 +1341,8 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
 ### 5.9 The register block
 
 `X86Block`, defined in `wcontainers-x86` until the kernel milestone moves it next to ARM64's in the abi:
-16 general registers in hardware order, rip, rflags, FS base, GS base, a 512-byte area in the FXSAVE layout
+16 general registers in hardware order, rip, the flags word (the six arithmetic flags, section 5.1), the
+`Rflags` control (DF and ID at their rflags positions), FS base, GS base, a 512-byte area in the FXSAVE layout
 (x87 control, status and tag words, last-instruction pointers, MXCSR and its mask, eight 16-byte x87
 register slots, sixteen xmm registers) except that the x87 slots are in physical order R0 to R7, then the
 upper halves of the sixteen ymm registers. The stop flag follows, padded to a multiple of 16. The kernel
@@ -1250,7 +1421,19 @@ The kernel is CPU-free inside; at its edges it needs an **architecture personali
 resolved at compile time like the translator (the kernel generic over a personality type, replacing today's
 `&mut dyn Cpu`). It contains:
 - **The register block** type and its conversions (the abi's `Cpu` trait becomes generic over it). ARM64's
-  `RegisterBlock` stays; `X86Block` moves into the abi.
+  `RegisterBlock` stays; `X86Block` moves into the abi. The user-visible rflags (in `sigcontext`, for
+  `ptrace`) is put together from the flags word, the `Rflags` control (DF, ID) and bits 1 and 9, and split
+  back the same way at sigreturn, with Linux's `FIX_EFLAGS` mask and AC left clear (section 5.1).
+- **The address space**: the user address limit, `TASK_SIZE_MAX`, which is 0x7ffffffff000 on x86-64
+  (2^47 less one page) against ARM64's 2^48 (today's `user::ADDRESS_LIMIT`, used by `mmap`, `mremap`,
+  `brk` and the stack's placement), with no untagging on x86 (LAM is not offered). `mmap` with a hint or
+  `MAP_FIXED` at or above the limit is refused as Linux refuses it (`ENOMEM`, or the hint ignored). This
+  is what keeps the last page below 2^47 unmapped, on which section 5.4's general protection relies; the
+  designed-answers test of X10 maps the highest page Linux allows and checks an access that runs off it
+  is general protection.
+- **Code coherence**: nothing for the kernel to do on x86. Its writes into guest memory and the aliases of
+  shared pages are seen by the CPU side, which owns `Cpu::write`, `zero`, `shared_write` and the shared
+  mappings (section 5.7); the kernel keeps announcing mappings through `code_changed` as now.
 - **System call numbering and decode**: the number and argument registers, the result register, how a call
   is restarted (pc back by the system call instruction's length: 4 on ARM64, 2 for x86 `syscall`), and the
   dispatch table built from the guest's own generated Linux constants (x86-64's numbers, its 57 legacy
@@ -1297,33 +1480,194 @@ for".
 
 `wcontainers-translator-test` becomes generic over a test-side trait, `GuestTest: Guest`, implemented for
 each CPU in the test crate (`src/guest/arm64.rs`, `src/guest/x86.rs`), so test-only dependencies (proptest,
-dynasm, iced's encoder and assembler) never reach the CPU crates. It supplies:
-- names: Rust target of the reference (`aarch64-unknown-linux-musl`, `x86_64-unknown-linux-musl`), zig and
-  clang triple, ELF machine, Docker platform, musl loader name, the flags for "general registers only"
-  (x86: `-mgeneral-regs-only`);
-- the forms list (section 7.4), the offered features and the check they match what the guest is told
-  (ARM64 HWCAP; x86 the CPUID answers), random encodings in no form, per-form operand shaping (which
-  registers are memory bases or indexes, alignment the presented CPU needs, biases such as CPUID leaves),
-  per-instance exclusions with reasons, and the designed-answers table;
-- the comparable state: fields with names, widths and compared bits (x86: 16 general registers, rip,
-  rflags arithmetic bits and DF, FS and GS bases, MXCSR, x87 words, R0 to R7, xmm and ymm upper halves),
-  conversion to and from the block, value strategies (80-bit values, NaN-boxing for RISC-V);
-- per-case masks of bits allowed to differ (x86: MXCSR sticky flags and x87 status exception bits while not
-  kept; the trap flag the reference's own stepping sets, wherever an instruction copies rflags out: bit 8
-  of the word `pushf` stores, and bit 8 of r11 after `syscall`, which copies rflags into r11 (seen: r11
-  0x3C3 on the reference from rflags 0x2C3, section 2, run 3); never undefined flags);
-- the mapping of reference signals (signal, `si_code`, address, rip) and of translator traps to generic
-  stops and exit statuses (128 + 8 for SIGFPE);
-- the reference runner's per-CPU part, the initial blob state, the auxiliary vector entries, the
-  stand-in's five system call numbers (x86 write 1, writev 20, exit 60, exit_group 231, brk 12), the
-  code-change policy (the float and x87 hook bodies are not here: they ship, as `Guest::run_hook`), a
-  disassembler for messages (iced's formatter for x86);
-- per-CPU program support (system call stub, `_start`, context switch, assembly tests, the code-writing
-  program, the differences program, smoke and checks programs), the layer 2 emitter, relocation types of
-  real binaries (x86: `R_X86_64_RELATIVE`, `_64`, `GLOB_DAT`, `JUMP_SLOT`, `IRELATIVE`) and the images
-  to take binaries from (`--platform linux/amd64`);
-- where the reference is and how to reach it (section 7.3), and the reference CPU's vendor and model,
-  recorded with every result.
+dynasm, iced's encoder and assembler) never reach the CPU crates. Every test and the harness are written
+once over `G: GuestTest`. What is generic from `Guest` alone needs nothing here: instruction boundaries in
+a code range (mixed pieces' random starts, the real binaries' instruction counts) come from decoding
+forward with `G::decode`, slot granularity from `G::ALIGN`, traps from `G::trap_kind`, the float and x87
+hook bodies from `G::run_hook`, and the code-change policy from `G::CODE_CHANGES`.
+
+```rust
+/// What the harness needs of one guest beyond `Guest`.
+pub trait GuestTest: Guest {
+    // --- names ---
+    /// Rust target of the reference runner and native programs: `aarch64-unknown-linux-musl`,
+    /// `x86_64-unknown-linux-musl`.
+    const RUST_TARGET: &'static str;
+    /// zig's and clang's target: `aarch64-linux-musl`, `x86_64-linux-musl`.
+    const C_TARGET: &'static str;
+    /// Compiler flags for "general registers only": `-mgeneral-regs-only` on both.
+    const GENERAL_ONLY: &'static [&'static str];
+    /// ELF `e_machine`: 183, 62.
+    const ELF_MACHINE: u16;
+    /// Docker's platform for images (and for the reference when the host is this CPU): `linux/arm64`,
+    /// `linux/amd64`.
+    const DOCKER_PLATFORM: &'static str;
+    /// musl's loader inside images: `ld-musl-aarch64.so.1`, `ld-musl-x86_64.so.1`.
+    const MUSL_LOADER: &'static str;
+    /// The environment variable naming the reference's SSH host when the host is not this CPU:
+    /// `WC_REFERENCE_AARCH64`, `WC_REFERENCE_X86_64`.
+    const REFERENCE_HOST: &'static str;
+    /// What a dynamic relocation type of a real binary does (x86: `R_X86_64_RELATIVE` and `IRELATIVE`
+    /// relative; `_64`, `GLOB_DAT`, `JUMP_SLOT` absolute).
+    fn relocation(kind: u32) -> Relocation;
+    /// One instruction as text for failure messages (ARM64 yaxpeax-arm's, x86 iced's formatter).
+    fn disassemble(code: &[u8]) -> String;
+
+    // --- layer 1: the forms ---
+    type Form: Copy + Eq + core::fmt::Debug + 'static;
+    /// Every form in a fixed order: ARM64 the lines of a64-forms.txt; x86 one per iced `Code` (section 7.4).
+    fn forms() -> &'static [Self::Form];
+    /// The seed key, stable across runs, and the group the summary counts under.
+    fn form_name(form: Self::Form) -> &'static str;
+    fn form_group(form: Self::Form) -> &'static str;
+    /// The random cases of a form, whole: the instruction with its operands shaped (memory bases and
+    /// indexes into DATA, or for x86 a share in the last 64 bytes below 2^47; the alignment the presented
+    /// CPU needs; biases such as system registers or CPUID leaves) and the starting state from this CPU's
+    /// own value strategies (edge values, 80-bit values, NaN-boxing). One strategy per CPU, so ARM64's
+    /// strategy is today's `cases(form)` mapped onto `Case` and draws the same values for each seed.
+    fn cases(form: Self::Form, offer: Self::Offer) -> BoxedStrategy<Case>;
+    /// `Ok` when an instance must run as on the reference with `offer`; `Err(reason)` when it must stop
+    /// with illegal instruction (a feature not offered).
+    fn presented(code: &[u8], offer: Self::Offer) -> Result<(), &'static str>;
+    /// A reason to leave an instance out (a jump to itself, a designed answer, ARM64's unpredictable
+    /// encodings, x86 `int 0x80` and selector 0x23), else `None`.
+    fn excluded(code: &[u8]) -> Option<&'static str>;
+    /// Random bytes that are no instruction of any form (x86: what iced decodes as `INVALID`).
+    fn no_form() -> BoxedStrategy<Encoded>;
+    /// The features offered with `offer`, by name, and those the guest is told of (ARM64 the HWCAP bits
+    /// decoded; x86 the CPUID answers decoded): a test checks they are the same set.
+    fn offered(offer: Self::Offer) -> Vec<&'static str>;
+    fn told(offer: Self::Offer) -> Vec<&'static str>;
+    /// The designed answers (identity registers, CPUID leaves, rdtsc, xgetbv, AC reading back clear,
+    /// `int 0x80`): each an instruction, a starting state and the state and stop it must leave.
+    fn designed(offer: Self::Offer) -> Vec<Designed>;
+
+    // --- the comparable state ---
+    /// The fields compared, in wire order (x86: 16 general registers, rip, rflags, FS and GS bases, MXCSR,
+    /// FCW, FSW, FTW, R0 to R7, xmm0 to xmm15, the ymm upper halves).
+    const FIELDS: &'static [Field];
+    /// The thread state (`BLOCK_SIZE + PRIVATE_BYTES` bytes) as field values in `FIELDS` order, and back.
+    /// x86 puts rflags together from the flags word, `Rflags` and bits 1 and 9 (section 5.1).
+    fn to_state(thread: &[u8]) -> State;
+    fn from_state(state: &State, thread: &mut [u8]);
+    /// Per field, the bits allowed to differ in this case given both outcomes: sticky float
+    /// flags and x87 exception bits while not kept, TF in the copies of rflags an instruction makes
+    /// (`pushf`'s word, r11 after `syscall`), AC after `popf` (section 5.1), what a faulting access leaves
+    /// unknown (ARM64), x87's last-instruction pointers. Never an undefined flag.
+    fn may_differ(case: &Case, reference: &Outcome, translated: &Outcome) -> State;
+    /// A reference signal as a generic stop, given the instruction's length: section 7.3's list (x86's
+    /// held-back trap, general protection as `SI_KERNEL` with address 0, the breakpoints' `si_code`s);
+    /// ARM64 today's `reference_outcome`.
+    fn reference_stop(signal: Signal, length: u8) -> Stop;
+
+    // --- blobs, the stand-in and the programs ---
+    /// A flat blob's auxiliary vector entries (AT_HWCAP, AT_HWCAP2, AT_PLATFORM), in Linux's order.
+    fn auxiliary(offer: Self::Offer) -> Vec<(u64, u64)>;
+    /// The stand-in's system call numbers: ARM64 write 64, writev 66, exit 93, exit_group 94, brk 214;
+    /// x86 1, 20, 60, 231, 12.
+    const STAND_IN: StandIn;
+    /// The folder of per-CPU program sources, `programs/<this>/`: `start.S`, `syscall.h`, `switch.S`, the
+    /// assembly tests, `written_code.c` (on x86, writing code with no announcement) and `differences.c`.
+    /// The C bodies and `flat.ld` stay shared.
+    const PROGRAMS: &'static str;
+    /// The targeted corpora of smoke.rs, checks.rs and changes.rs, as named pieces of code with what each
+    /// must do; the test bodies stay generic.
+    fn smoke() -> Vec<Snippet>;
+    fn checks() -> Vec<Snippet>;
+    fn changes() -> Vec<Snippet>;
+
+    // --- layer 2 ---
+    /// The registers the shared program model may use (ARM64 today's 26, in today's order, so the same
+    /// draws pick the same registers).
+    const MODEL_REGISTERS: &'static [Self::Reg];
+    /// What this CPU adds to the model (x86: read-change-write operands, string instructions, push and
+    /// pop, calls through memory, inc and dec before a jcc on CF, red-zone use), drawn only when `Some`:
+    /// ARM64 gives `None`, so no extra value is drawn and its programs per seed stay the same.
+    type Extra: Clone + core::fmt::Debug;
+    fn extra() -> Option<BoxedStrategy<Self::Extra>>;
+    /// The program in this CPU's code: ARM64 dynasm (today's `assemble`), x86 iced's `CodeAssembler`.
+    fn assemble(program: &Program<Self::Extra>) -> Blob;
+}
+
+pub enum Relocation { Relative, Absolute, Other }
+/// An instruction's bytes: the first `length` of `bytes`.
+pub struct Encoded { pub bytes: [u8; 16], pub length: u8 }
+/// A compared field: its name, its width in bits (at most 128), and the bits compared.
+pub struct Field { pub name: &'static str, pub bits: u8, pub compared: u128 }
+/// One value per field of `G::FIELDS`.
+pub struct State(pub Vec<u128>);
+pub struct Case { pub code: Encoded, pub state: State, pub tracking: bool, pub seed: u64 }
+/// What the reference reported: the signal, its `si_code` and `si_addr`, and the pc in the frame.
+pub struct Signal { pub number: u32, pub code: u32, pub address: u64, pub pc: u64 }
+/// Where control went or why the thread stopped, in terms both sides share (today's `Stop`, grown).
+pub enum Stop { Landed(u64), Illegal, Breakpoint, SingleStep, Syscall, MemoryFault(u64),
+    Alignment(u64), GeneralProtection, DivideError, FloatException(u32), Other(u32, u64) }
+pub struct Outcome { pub stop: Stop, pub state: State, pub changed: Vec<(u32, u8)> }
+pub struct Designed { pub code: Encoded, pub start: State, pub end: State, pub stop: Stop }
+pub struct StandIn { pub write: u64, pub writev: u64, pub exit: u64, pub exit_group: u64, pub brk: u64 }
+pub struct Snippet { pub name: &'static str, pub code: Vec<u8>, pub expect: Expect }
+```
+
+`Expect` is today's expectation of each corpus (the smoke output, the checks' counts, the changes' stops),
+unchanged. A translator trap maps to a `Stop` and to an exit status generically, from `TrapKind` and the
+signal section 6 gives it (128 + 8 for SIGFPE).
+
+The reference runner (crates/wcontainers-translator-test/reference) is one program built for
+`G::RUST_TARGET`; its per-CPU part is a module chosen by `cfg(target_arch)` (`reference/src/aarch64.rs`,
+`reference/src/x86_64.rs`) implementing:
+
+```rust
+/// The reference runner's per-CPU part; the wire format, the seccomp filter, the forking and the blobs
+/// are shared.
+trait Machine {
+    /// The byte the code area is filled with: ARM64 0 (`udf #0`), x86 0xCC (`int3`).
+    const FILLER: u8;
+    /// Bytes after CODE that the seccomp filter treats as the case's own: ARM64 4, x86 16.
+    const WINDOW: u64;
+    /// The field names, sent first on every connection; the harness checks they are `G::FIELDS`' names.
+    const FIELDS: &'static [&'static str];
+    /// Write a case's state into the signal frame (x86: the general registers, rflags with TF set, the
+    /// x87, SSE and AVX components and `xstate_bv` bits 0 to 2), and set the thread pointers (ARM64
+    /// tpidr_el0, x86 `arch_prctl` FS and GS).
+    fn enter(context: &mut libc::ucontext_t, state: &[u128]);
+    /// Read the frame back into a state (a component whose `xstate_bv` bit is clear as its first state),
+    /// after giving the runner its own thread pointer back.
+    fn leave(context: &libc::ucontext_t, state: &mut [u128]);
+    /// Whether the stop is a repeated string instruction that has not finished (x86: `TRAP_TRACE` with
+    /// rip still at CODE), which the runner steps on.
+    fn unfinished(context: &libc::ucontext_t, signal: &libc::siginfo_t) -> bool;
+    /// Make written code visible to the CPU: ARM64 `dc cvau` and `ic ivau`, x86 nothing.
+    fn synchronise(code: &[u8]);
+    /// A blob's starting registers (x86: rflags 0x202, MXCSR 0x1F80, FCW 0x037F, rsp at argc, rdx 0).
+    fn blob_start(context: &mut libc::ucontext_t, entry: u64, stack: u64);
+}
+```
+
+The wire format is length-prefixed records in both directions. A case is the instruction's length and
+bytes, the seed of its data area, and the state as `FIELDS.len()` 16-byte little-endian values; its result
+is a status of its own (ran, or runner failed with a message), the signal, `si_code`, `si_addr`, the
+state after, and the changed data bytes as (offset, value) pairs. A blob is its bytes, its load address,
+its standard input and how many runs to time; its result is its output, its exit status and the best time.
+
+The transport is generic: `Reference::<G>::start()` runs the runner as a child process and talks to it
+over its stdin and stdout. When the host's CPU is the guest's (`std::env::consts::ARCH` against
+`RUST_TARGET`), the child is `docker run -i --platform G::DOCKER_PLATFORM`, as today; otherwise it is
+`ssh` with `ControlMaster` to the host in `G::REFERENCE_HOST`, after uploading the runner to
+`~/wcontainers-x86/reference/<content hash>` when it is not there. Both are the same records over the same
+pipes, so nothing else differs. `start` fails with a message naming the variable when it is unset; the
+test then fails, never skips. `cases(&[Case]) -> Vec<(Signal, State, Vec<(u32, u8)>)>`, `blob(..)` and
+`cpu_model()` (read once from `/proc/cpuinfo` on the reference, recorded with every result) are its
+methods.
+
+The browser's cdylib is built per guest (a cargo feature naming the guest, `arm64` or `x86_64`, chooses
+`type G`). Its `contract()` JSON gives what `runner.js` needs, all from `Guest`: `blockSize`,
+`privateBytes`, `threadStateSize`, `pcOffset`, `flagsWordOffset`, `stopFlagOffset`, `align` (one slot per
+`G::ALIGN` bytes), `syscall` (the block offsets of the number, the six arguments and the result, from
+`SYSCALL` and `BITS`), `codeChanges` (`announced` or `detected`), `traps` (each `TrapKind` with its number
+and signal), `hooks` (each of `HOOKS` with its index and body), and the probe module, beside today's
+translator numbers. ARM64's `registerFpsr`, `registerFpcr` and `floatTracking` go: the float hook's work is
+`cpu_hook` (section 3.4). The stand-in's five numbers come from `GuestTest::STAND_IN` through the page's
+settings, which the test crate's browser.rs writes.
 
 Each test file has one test per guest (`layer1_arm64`, `layer1_x86_64`, ...), so `cargo test` runs both.
 An x86 test that needs the reference machine and finds it not configured fails with a message that says
@@ -1348,7 +1692,10 @@ so; it is never skipped silently.
   batch is rerun one case per child.
 - **One instruction** (section 2): the code area is filled with `int3`; the instruction is placed at CODE;
   the handler (on an alternate stack, using no thread-local storage and only raw system calls) writes
-  every register into the frame including all vector registers and the XSAVE header bits, sets the FS and GS
+  every register into the frame including all vector registers, the whole x87 component (control, status
+  and abridged tag words, the eight slots in stack order, rotated from the case's physical R0 to R7 by
+  TOP, the last-instruction pointers zero) and the XSAVE header bits 0, 1 and 2 (section 2, run 4), sets
+  the FS and GS
   bases with `arch_prctl`, sets TF and returns. The next signal is read back, knowing the instruction's
   length L:
   - `SIGTRAP` with `TRAP_TRACE` (2): landed at rip.
@@ -1466,7 +1813,9 @@ Measured throughout, recorded with machine and load: translation speed, output s
   programs byte for byte the same per seed); the x86 reference answers a hand list of at least 30
   instructions with what the Intel manual says, each checked by hand in the test, among them every stop
   of section 7.3's list (`mov ss` with its held-back trap, `int3`, `int 3`, `int1`, `syscall` and `int
-  0x80` as `SIGSYS`, a `ret` to a non-canonical address).
+  0x80` as `SIGSYS`, a `ret` to a non-canonical address), x87 instructions whose state is written and read
+  back (section 2, run 4) and a `call far` with selector 0x33. The trait of section 7.2 is the one built;
+  where building it shows a signature must change, the change is recorded in the status file.
 - **X3, x86 at look-ahead none, integers.** `wcontainers-x86` with the decoder, the block, the base integer
   instructions (moves, arithmetic and logic at every width, lea, push and pop, call and ret, jmp and jcc, cmov
   and setcc, shifts and rotates, multiply and divide, string instructions without rep, syscall), lazy flags,
@@ -1495,7 +1844,8 @@ Measured throughout, recorded with machine and load: translation speed, output s
   protection of translated pages with the unwind, both runners' stand-ins of it, a test program that writes
   and runs code with no announcement; setjmp, C++ exception and Rust panic programs. Pass bar: those tests
   pass at every look-ahead, in wasmtime and Chrome.
-- **X7, x87 and MMX.** The x87 hook with `X87DoubleExtended`, precision control by rounding to odd, the
+- **X7, x87 and MMX.** The x87 hook with `X87DoubleExtended`, precision control by rounding to odd,
+  `fsqrt` by section 5.8's root, the
   transcendental instructions with `astro-float`, MMX registers, `fxsave` and `fxrstor`. Pass
   bar: layer 1 for every x87 and MMX form at 1,000 cases a form, zero mismatches except known failures
   recorded with their reasons; a C program using `long double` gives the native output.
@@ -1509,7 +1859,9 @@ Measured throughout, recorded with machine and load: translation speed, output s
   both engines. Recorded: sizes, translation time, engine memory, the lookup array's memory, how many
   switch tables were over the limit or had absolute entries.
 - **X10, the kernel's x86-64 personality** (after the kernel track's milestones): section 6, and the
-  kernel's tests for x86-64 against the x86 machine.
+  kernel's tests for x86-64 against the x86 machine; the CPU side's part of code written without
+  announcement for the kernel's writes and shared pages (section 5.7) with its three tests; the address
+  limit and its designed-answers test.
 
 The long runs to the pass bars of section 1 are started by the orchestrator at the end of the track, each
 one command recorded in the status file.
@@ -1543,6 +1895,8 @@ apply unchanged.
   browser build (40,947 bytes brotli in a scratch cdylib, section 5.8).
 - How often programs translate code from a live stack frame, and how often parallel threads must be
   stopped to protect code (section 5.7).
+- The cost of looking up the code marks on every kernel write into guest memory (one lookup per page
+  written, section 5.7), measured at X10.
 - Bulk against element-by-element string instructions on real programs.
 - How often code is written without announcement in real programs, and what JITs that write next to
   running code cost.
@@ -1562,7 +1916,9 @@ builds), `dis` (an iced-based disassembler used to check encodings), `reference-
 size in a wasm32 cdylib), `x87-nostd` (astro-float without the standard library), `apfloat-pc` (precision
 control by rounding to odd with rustc_apfloat); run 3 added to `reference-proof` `stepper3.c`, `approx.c`,
 `approx_dump.c` with its output `approx_tables.txt`, `approx_formula.c` and `approx_mxcsr.c`. The second
-independent check's seccomp stepper is `check2/exp/stepper_sc.c`. The x86 machine holds copies in
+independent check's seccomp stepper is `check2/exp/stepper_sc.c`. Run 4 added to `reference-proof`
+`stepper4.c` (made from `stepper3.c` by `scripts/make_stepper4.py`), `cases4.sh`, `cases5.sh` and their
+outputs, and `cases6.out`. The x86 machine holds copies in
 `~/wcontainers-x86/proof` (with `approx.out`, `approx_formula.out`, `approx_mxcsr.out`) and
 `~/wcontainers-x86/check2`.
 
@@ -1596,7 +1952,7 @@ Translator area (seam map entry, then section):
 - T22 four flags at NZCV: 3.2 `FLAGS`; 3.4 Flags.
 - T23 ARM64's lazy flag shapes in the translator: 3.2 shapes; 3.4 Flags; 5.1; 4 decision 3.
 - T24 ARM64 conditions: 3.2 `Cond`, `condition_direct`, `condition_from_flags`; 5.1.
-- T25 "plain" instruction variants, "all four flags set": 3.4 Flags.
+- T25 "plain" instruction variants, "all four flags set": 3.2 `plain`; 3.4 Flags (the per-flag test).
 - T26 FPCR/FPSR slow path: 3.2 `float_slow`, `FLOAT_CONTROLS`; 3.4; 5.8.
 - T27 three fixed hooks: 3.2 `HOOKS`, `HookType`; 3.4 Hooks.
 - T28 the Arm host probe: 3.2 `Host`, probe; 3.4; 5.8.
@@ -1623,55 +1979,54 @@ Tests area:
 - E3 system register bias: 7.2 per-form operand shaping (CPUID leaves for x86).
 - E4 of a feature not offered: 7.2 offered features; 7.4 (`cpuid_features()` against the offered set).
 - E5 exclusions: 7.2 per-instance exclusions; 7.4 (jump to itself, designed answers).
-- E6 `Case`: 7.2 comparable state; 4 decision 15.
+- E6 `Case`: 7.2 `FIELDS`; 4 decision 15.
 - E7 branch-target values 4-aligned: 7.2 (from `G::ALIGN`); 4 decision 13.
-- E8 vector and float value strategies: 7.2 value strategies.
-- E9 FPCR and FPSR bits: 7.2 comparable state (MXCSR, x87 words); 5.8.
-- E10 case shaping (sp, flags, bases into DATA, atomic alignment): 7.2 operand shaping; 7.4.
-- E11 signal to outcome mapping: 7.2 mapping of signals; 7.3; 4 decision 16.
-- E12 conversion to `RegisterBlock`: 7.2 conversion to and from the block.
+- E8 vector and float value strategies: 7.2 `cases` (the CPU's value strategies).
+- E9 FPCR and FPSR bits: 7.2 `FIELDS` (MXCSR, x87 words); 5.8.
+- E10 case shaping (sp, flags, bases into DATA, atomic alignment): 7.2 `cases` (operand shaping); 7.4.
+- E11 signal to outcome mapping: 7.2 `reference_stop`; 7.3; 4 decision 16.
+- E12 conversion to `RegisterBlock`: 7.2 `to_state` and `from_state`.
 - E13 one 4-byte slot and the case word: 3.4 lookup array (slots per `ALIGN`); 7.2; 7.4 (length from the
   encoder).
-- E14 unknown after a faulting access: 7.2 per-case masks (x86 is exact; rep stops exact, section 5.6).
-- E15 compare masks: 7.2 per-case masks; 4 decision 16.
-- E16 report names: 7.2 comparable state (field names).
-- E17 BLOB_HWCAP and the auxiliary vector: 7.2 auxiliary vector entries; 6.
+- E14 unknown after a faulting access: 7.2 `may_differ` (x86 is exact; rep stops exact, section 5.6).
+- E15 compare masks: 7.2 `may_differ`; 4 decision 16.
+- E16 report names: 7.2 `FIELDS` (field names).
+- E17 BLOB_HWCAP and the auxiliary vector: 7.2 `auxiliary`; 6.
 - E18 zero is `udf #0`: 2 and 7.3 (trap flag); 4 decision 14.
-- E19 request and result sizes: 7.2 comparable state; 7.3 (length-prefixed records); 4 decision 15.
+- E19 request and result sizes: 7.2 `FIELDS`; 7.3 (length-prefixed records); 4 decision 15.
 - E20 the reference over local Docker: 7.3; 4 decision 12.
 - E21 the reference's target and link base: 7.3 (x86_64-unknown-linux-musl, rust-lld; the toolchain file).
 - E22 frame access in the reference: 2 (experiment), 7.3.
 - E23 the seccomp instruction window: 7.3 (`[CODE, CODE + 16)`).
-- E24 making written code visible: 7.2 code-change policy (nothing on x86).
+- E24 making written code visible: 3.2 `CODE_CHANGES` (nothing on x86).
 - E25 placing the instruction: 7.3.
 - E26 blob start state: 3.2 `initial_block`; 7.2.
 - E27 the float hook body: 3.2 `run_hook`, `HookBody`, `HookDone`; 3.4 Hooks; 5.8.
 - E28 trap kinds in the runner: 3.2 `TrapKind` growth; 7.2 mapping to statuses.
-- E29 code changed by `ic ivau`: 5.7; 7.2 code-change policy; 4 decision 17.
+- E29 code changed by `ic ivau`: 5.7; 3.2 `CODE_CHANGES`; 4 decision 17.
 - E30 the runner's 4-byte slots: 3.4 The lookup array.
 - E31 the stand-in's system call numbers: 7.2.
-- E32 set_registers and float tracking: 7.2 conversion; 5.8.
+- E32 set_registers and float tracking: 7.2 `to_state` and `from_state`; 5.8.
 - E33 zig, rustc targets and general-registers-only flags: 7.2 names.
 - E34 slots and registers for a blob: 3.4; 3.2 `initial_block`.
 - E35 statuses and the disassembler in messages: 7.2.
 - E36 natives over local Docker and RUNNER_FAILED: 7.3 (in-band statuses, no Docker on the x86 machine).
-- E37 flat.ld: 7.2 per-CPU program support (x86 needs nothing new; RISC-V small data, section 3.5 is
-  paper only).
-- E38 inline `svc`, `_start`, context switch, assembly tests: 7.2 per-CPU program support; 4 decision 21.
+- E37 flat.ld: 7.2 `PROGRAMS` (flat.ld stays shared; x86 needs nothing new; RISC-V small data, section 3.5
+  is paper only).
+- E38 inline `svc`, `_start`, context switch, assembly tests: 7.2 `PROGRAMS`; 4 decision 21.
 - E39 the written-code program: 7.4 (code written without announcement); X6; 4 decision 17.
 - E40 the differences program: 7.2; 5.8 (x86's differences: integer indefinite, NaN rules, minps order,
   MXCSR modes, divide error, x87).
 - E41 layer 2 with dynasm aarch64: 7.4 layer 2; 4 decision 18.
 - E42 layer 3's gcc image, clang target, native runs: 7.4 layer 3.
-- E43 frames from `registers.sp`: 7.2 comparable state (the stack pointer from `SP_BIT`).
-- E44 the changes hand programs: 7.2 per-CPU program support (smoke, checks and changes programs).
+- E43 frames from `registers.sp`: 7.2 `FIELDS` (the stack pointer from `SP_BIT`).
+- E44 the changes hand programs: 7.2 `changes`.
 - E45 random starts at 4 * k: 4 decision 13.
-- E46 smoke tests: 7.2 per-CPU program support.
-- E47 checks programs: 7.2 per-CPU program support; X4 and X6 add x86's push, pop, rep and read-change-write
-  cases.
-- E48 offered features against HWCAP: 7.2 offered features and the check against CPUID answers.
+- E46 smoke tests: 7.2 `smoke`.
+- E47 checks programs: 7.2 `checks`; X4 and X6 add x86's push, pop, rep and read-change-write cases.
+- E48 offered features against HWCAP: 7.2 `offered` and `told`.
 - E49 targeted layer 1 cases, words in no form, designed answers: 7.2; 7.4.
-- E50 BLOB_HWCAP against the abi: 7.2 auxiliary vector entries.
+- E50 BLOB_HWCAP against the abi: 7.2 `auxiliary`.
 - E51 images and loader names: 7.2 names; X9.
 - E52 ELF e_machine and alignment of real binaries: 7.2 names; 3.2 `ALIGN`.
 - E53 relocation types: 7.2.
@@ -1694,8 +2049,8 @@ Translator (24 items, in the seam map's order):
 4. The register set: 3.2 `BITS`, `Bit`, `reg_bit`, `vector_bit`, `bit_reg`, `SP_BIT`, `NARROW_WRITE`,
    `NarrowWrite`; 3.4 Registers.
 5. Effects found by recording the meaning, extended (memory, hooks, controls): 3.1 (the generic
-   recorder and `Effects<G>` live in the interface crate); 3.3 (the recorder is an emitter); 3.4 Flags
-   ("plain computation" from the recorded effects).
+   recorder and `Effects<G>` live in the interface crate); 3.3 (the recorder is an emitter); 3.2 `plain`
+   and 3.4 Flags ("plain computation" is the CPU's, not derived from the effects, to keep ARM64's output).
 6. Control flow: 3.2 `flow`, `Flow`, `FlowKind`, `Through`, the length from `decode`; 3.4 Control flow.
 7. Addresses built into registers: 3.2 `built_address`; 3.4.
 8. Switch recognition: 3.2 `jump_table`; 3.4 Switches (indexed by target address, so no case-number
