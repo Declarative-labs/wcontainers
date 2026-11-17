@@ -722,6 +722,19 @@ impl<B: Backend> Device<B> {
                 (t, r, Some(ring))
             }
         };
+        // Direct3D draws lines by the quadrilateral rule when the state asks for multisampling and
+        // alpha-antialiased when it asks for antialiased lines; the back ends draw aliased lines.
+        let raster = &self
+            .ctx
+            .raster
+            .as_ref()
+            .unwrap_or(&self.defaults.raster)
+            .desc;
+        if matches!(topology, Topology::LineList | Topology::LineStrip)
+            && (raster.multisample || raster.antialiased_lines)
+        {
+            return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
+        }
         let nothing = matches!(
             gpu_range,
             DrawRange::Indexed { count: 0, .. } | DrawRange::Vertices { count: 0, .. }

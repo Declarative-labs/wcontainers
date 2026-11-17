@@ -654,3 +654,49 @@ fn vertex_ids_with_a_start_location_are_not_served() {
         1
     );
 }
+
+#[test]
+fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
+    for (multisample, antialiased_lines) in [(true, false), (false, true)] {
+        let mut dev = device();
+        let target = dev
+            .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+            .unwrap();
+        let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+        begin(&mut dev, &rtv, None, 16.0);
+        let elements = [
+            element("POSITION", RGB32F, 0),
+            element("COLOR", RGBA32F, 12),
+        ];
+        program(&mut dev, "common.vs_color", "common.ps_color", &elements);
+        let vertices = immutable(&mut dev, &[0; 28 * 4], bind::VERTEX_BUFFER);
+        dev.ia_set_vertex_buffers(0, &[Some((vertices, 28, 0))])
+            .unwrap();
+        let state = dev
+            .create_rasterizer_state(&RasterizerDesc {
+                fill: 3,
+                cull: 1,
+                depth_clip: true,
+                multisample,
+                antialiased_lines,
+                ..Default::default()
+            })
+            .unwrap();
+        dev.rs_set_state(Some(state));
+        // Triangles are drawn as usual; lines are not.
+        dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+        dev.draw(3, 0);
+        assert!(!dev.removed);
+        dev.ia_set_primitive_topology(topology::LINELIST);
+        dev.draw(2, 0);
+        assert!(dev.removed);
+        assert_eq!(
+            dev.backend
+                .log
+                .iter()
+                .filter(|l| l.starts_with("draw "))
+                .count(),
+            1
+        );
+    }
+}
