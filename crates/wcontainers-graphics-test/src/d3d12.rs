@@ -41,7 +41,7 @@ pub fn render_triangle(driver: Driver) -> Result<Picture> {
         debug::check(messages)?;
         Ok(Picture {
             adapter: adapter_name,
-            image: image?,
+            image: image?.into(),
         })
     }
 }

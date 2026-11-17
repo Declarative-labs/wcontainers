@@ -32,6 +32,7 @@ if ($state.groups.default.status -ne 'Running' -and $aloneTasks.Count -eq 0) {
 }
 
 # The job runs with this environment, which pueue records when the job is added.
+. $PSScriptRoot\env.ps1
 $env:CARGO_TARGET_DIR = "C:\wc\target\$Name"
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
 $label = "$Name`: $text"

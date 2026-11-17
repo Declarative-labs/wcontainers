@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 anyhow = "1.0.100"
 bytemuck = "1.25.2"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["exr", "png"] }
 pollster = "1.0.1"
 serde_json = "1.0.154"
 wgpu = "30.0.2"

@@ -104,11 +104,23 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 Windows 10 Home 19045, i9-9900K, 32 GB, RTX 3080 (driver 32.0.16.2101, NVIDIA 621.01). Everything
 of ours is under C:\wc, except what installers put in their usual places (listed here).
 
-Installed (by tools/graphics-rig/desktop/install-tools.ps1, direct installers):
+Installed (by tools/graphics-rig/desktop/install-tools.ps1, direct installers). Every version is
+pinned except the Visual Studio Build Tools: Microsoft's bootstrapper (aka.ms/vs/17/release) installs
+the current 17.x, and no fixed-version bootstrapper URL was found. install-tools.ps1 prints the
+versions it finds and writes them to C:\wc\setup\versions.txt; on 2026-11-17 (R1): git
+2.56.1.windows.1, node v26.13.1, Build Tools 17.14.45 with MSVC 14.44.35207 and Windows SDK
+10.0.26100.0, rustup 1.29.3 with default toolchain 1.99.0, pueue 4.0.4, Chrome for Testing
+157.0.8103.78.
 - Git for Windows 2.56.1 (C:\Program Files\Git, 0.40 GB). Only Git LFS among the optional parts: no
   shell menu entries, icons or file associations. Adds C:\Program Files\Git\cmd to the machine PATH.
 - Node.js 26.13.1 (C:\Program Files\nodejs, 0.10 GB). Adds itself to the machine PATH and
-  %APPDATA%\npm (which does not exist) to the user PATH.
+  %APPDATA%\npm (which does not exist) to the user PATH. Until R1, npm kept its cache in the
+  owner's profile (C:\Users\tom\AppData\Local\npm-cache, 3.4 MB) and Node its compile cache in
+  his Temp folder (node-compile-cache, 1.4 MB); both were removed in R1. Now every rig script on the
+  desktop (remote.ps1, submit.ps1 for jobs, install-tools.ps1, browser\install.ps1) dot-sources
+  desktop/env.ps1, which sets TEMP and TMP to C:\wc\tmp, npm's cache to C:\wc\npm-cache and Node's
+  compile cache to C:\wc\tmp\node-compile-cache, so what the rig runs (cargo, the linker, npm,
+  Chrome) writes its temporary files under C:\wc.
 - Visual Studio Build Tools 2022 17.14 (MSVC 14.44.35207, workload VCTools with its recommended
   parts) with Windows SDK 10.0.26100: 3.51 GB in C:\Program Files (x86)\Microsoft Visual Studio,
   1.69 GB in C:\Program Files (x86)\Windows Kits. It also installed the Visual Studio Installer, about
@@ -125,16 +137,18 @@ Installed (by tools/graphics-rig/desktop/install-tools.ps1, direct installers):
   Cache 0.46 GB (70 folders created on 2026-11-17), C:\ProgramData\Microsoft\VisualStudio\Packages
   0.04 GB, C:\Windows\Installer 0.08 GB, and files created that day in C:\Windows\WinSxS (0.14 GB),
   System32 (0.05 GB) and SysWOW64 (0.03 GB), from these installs and Graphics Tools.
-- rustup 1.29.3 with RUSTUP_HOME=C:\wc\rustup and CARGO_HOME=C:\wc\cargo (user variables);
-  C:\wc\cargo\bin is on the user PATH. Stable 1.100.0 is the default; the checkout's
-  rust-toolchain.toml brings 1.99.0 with its wasm32 and aarch64-musl targets. 1.75 GB.
+- rustup 1.29.3 (pinned, from rustup's archive) with RUSTUP_HOME=C:\wc\rustup and
+  CARGO_HOME=C:\wc\cargo (user variables); C:\wc\cargo\bin is on the user PATH. One toolchain,
+  1.99.0 (the workspace's rust-toolchain.toml channel), with its wasm32 and aarch64-musl targets, is
+  also the default; the stable 1.100.0 installed first was removed in R1.
 - Windows' optional feature Graphics Tools (Tools.Graphics.DirectX~~~~0.0.1.0): the Direct3D 11 and
   12 debug layers (d3d11_3SDKLayers.dll, d3d12SDKLayers.dll). A one-off scheduled task as SYSTEM
   added it (see Departures) and was removed after.
 - pueue 4.0.4 (pueue.exe, pueued.exe in C:\wc\bin), MIT. The scheduled task wc-gpu-queue starts
   `pueued -c C:\wc\pueue\pueue.yml` at boot as tom (logon type S4U, so in session 0, without a window,
   whether or not anyone is logged in). Queue state and logs are in C:\wc\pueue.
-- Chrome for Testing 157.0.8103.78 in C:\wc\chrome (0.43 GB), downloaded by @puppeteer/browsers.
+- Chrome for Testing 157.0.8103.78 in C:\wc\chrome (0.43 GB), pinned, downloaded by
+  @puppeteer/browsers; draw.mjs refuses to run if C:\wc\chrome holds any other build.
   Not installed into Windows: no updater, no services, no shortcuts. Never signed in.
 
 C:\wc holds, besides the tools above (bin, cargo, chrome, rustup, pueue): the installers in
@@ -145,8 +159,15 @@ Leftovers of the earlier measurements and checks (C:\wc\target\abi-x and measure
 and s0, two export listings) were removed in the third run. Free space went from 521.7 GB before
 anything was installed to 508.8 GB now, a drop of 12.9 GB. The items sized here add up to about
 11.0 GB (C:\wc 4.5, Visual Studio 3.51, Windows Kits 1.69, Git 0.40, Node 0.10, the caches and system
-files above 0.8, the user's Temp folder 0.07); the other 1.9 GB are not accounted for and may not be
-ours (the machine is in use, and C:\agent belongs to someone else).
+files above 0.8, our part of the user's Temp folder 0.08); the other 1.9 GB are not accounted for
+and may not be ours (the machine is in use, and C:\agent belongs to someone else).
+
+The owner's Temp folder (C:\Users\tom\AppData\Local\Temp), measured in R1: 0.347 GB in all, of
+which 0.083 GB were created from 2026-11-16 on, nearly all from our installs: the Visual Studio
+installer's dd_*.log files and its windowssdk folder (about 0.07 GB), a WinGet folder from the failed
+winget attempt (3.8 MB) and a 10 MB .tmp file created at 07:50 on the install day. The rest (two
+127 MB wct*.tmp files of 2026-11-09 and 2026-11-11, and older files) was there before. The logs are
+left in place.
 
 Not installed: CMake and Ninja (nothing needs them yet). Nothing touched partitions, boot settings,
 Windows Update settings, the GPU driver, games or the owner's files; no reboot. Seen between the

@@ -46,7 +46,10 @@ pub fn render(scene: Scene, driver: Driver) -> Result<Picture> {
     let gpu = Gpu { device, context };
     let image = unsafe { gpu.draw(scene)? };
     debug::check(unsafe { gpu.debug_messages()? })?;
-    Ok(Picture { adapter, image })
+    Ok(Picture {
+        adapter,
+        image: image.into(),
+    })
 }
 
 struct Gpu {

@@ -8,7 +8,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
 . "$here/common.sh"
 set +e
-"$here/gpu-job" --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && (if not exist tools\\graphics-rig\\browser\\node_modules\\playwright-core npm ci --prefix tools\\graphics-rig\\browser --no-fund --no-audit)" \
+"$here/gpu-job" --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1" \
     -- "tools\\graphics-rig\\loop.cmd $name"
 code=$?
 set -e
