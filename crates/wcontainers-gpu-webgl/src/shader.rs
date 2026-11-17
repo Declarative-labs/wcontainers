@@ -114,6 +114,115 @@ pub fn write_glsl(
     Ok((out, reflection))
 }
 
+/// A module rewritten by [`split_samplers`], and each copy's slot with the slot it stands for.
+type Split = (ShaderModule, Vec<(Slot, Slot)>);
+
+/// The binding of the first copy [`split_samplers`] makes, past every binding a front gives.
+const COPY_BINDINGS: u32 = 1 << 20;
+
+/// GLSL combines each texture with one sampler, and naga's writer refuses a texture sampled through
+/// two. Where a program does that, each texture read through a further sampler is read through a copy
+/// of its global variable, at a binding of its own; the copies and the slots they stand for are
+/// returned with the rewritten module (None where no texture has two samplers).
+fn split_samplers(module: &ShaderModule) -> Result<Option<Split>, &'static str> {
+    use naga::{Expression, GlobalVariable, Handle};
+    use std::collections::{BTreeMap, btree_map::Entry};
+    type Var = Handle<GlobalVariable>;
+    let m = &module.module;
+    // The sampler each texture keeps: its first by handle.
+    let mut kept: BTreeMap<Var, Var> = BTreeMap::new();
+    for (i, _) in m.entry_points.iter().enumerate() {
+        for s in module.info.get_entry_point(i).sampling_set.iter() {
+            let first = kept.entry(s.image).or_insert(s.sampler);
+            *first = (*first).min(s.sampler);
+        }
+    }
+    // Functions by handle, then entry points by index.
+    let functions = m.functions.iter().map(|(h, f)| (Ok(h), f));
+    let entries = m.entry_points.iter().enumerate();
+    let mut moves = Vec::new();
+    for (index, f) in functions.chain(entries.map(|(i, e)| (Err(i), &e.function))) {
+        // The sampler each expression naming a texture is sampled through.
+        let mut through: BTreeMap<Handle<Expression>, (Var, Var)> = BTreeMap::new();
+        for (_, e) in f.expressions.iter() {
+            let Expression::ImageSample { image, sampler, .. } = *e else {
+                continue;
+            };
+            let (Expression::GlobalVariable(t), Expression::GlobalVariable(s)) =
+                (&f.expressions[image], &f.expressions[sampler])
+            else {
+                continue;
+            };
+            match through.entry(image) {
+                Entry::Vacant(v) => {
+                    v.insert((*t, *s));
+                }
+                Entry::Occupied(o) if o.get().1 != *s => {
+                    return Err("webgl: one expression of a texture is sampled through two \
+                                samplers (not built)");
+                }
+                Entry::Occupied(_) => {}
+            }
+        }
+        for (expression, (t, s)) in through {
+            if kept.get(&t) != Some(&s) {
+                moves.push((index, expression, t, s));
+            }
+        }
+    }
+    if moves.is_empty() {
+        return Ok(None);
+    }
+    let mut out = m.clone();
+    let mut copies: BTreeMap<(Var, Var), Var> = BTreeMap::new();
+    let mut own = Vec::new();
+    for (index, expression, t, s) in moves {
+        let copy = match copies.get(&(t, s)) {
+            Some(c) => *c,
+            None => {
+                let original = &out.global_variables[t];
+                let Some(binding) = original.binding else {
+                    return Err("webgl: a sampled texture without a binding");
+                };
+                let at = naga::ResourceBinding {
+                    group: binding.group,
+                    binding: COPY_BINDINGS + own.len() as u32,
+                };
+                own.push(((at.group, at.binding), (binding.group, binding.binding)));
+                let var = GlobalVariable {
+                    name: original.name.as_ref().map(|n| format!("{n}_{}", own.len())),
+                    binding: Some(at),
+                    ..original.clone()
+                };
+                let c = out.global_variables.append(var, Default::default());
+                copies.insert((t, s), c);
+                c
+            }
+        };
+        let f = match index {
+            Ok(h) => &mut out.functions[h],
+            Err(i) => &mut out.entry_points[i].function,
+        };
+        f.expressions[expression] = Expression::GlobalVariable(copy);
+    }
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&out)
+    .map_err(|_| "webgl: a texture's copy for its second sampler does not validate")?;
+    Ok(Some((
+        ShaderModule {
+            module: out,
+            info,
+            entry_point: module.entry_point.clone(),
+            stage: module.stage,
+            key: module.key,
+        },
+        own,
+    )))
+}
+
 /// The slot a global variable of `module` is bound at.
 fn slot(module: &naga::Module, var: naga::Handle<naga::GlobalVariable>) -> Option<Slot> {
     module.global_variables[var]
@@ -129,8 +238,18 @@ pub fn compile(
     module: &ShaderModule,
     flip_y: bool,
 ) -> Result<ShaderObj, GpuError> {
+    let split = split_samplers(module).map_err(GpuError::Invalid)?;
+    let (module, own) = match &split {
+        Some((m, own)) => (m, &own[..]),
+        None => (module, &[][..]),
+    };
     let (source, reflection) = write_glsl(module, flip_y)
         .map_err(|_| GpuError::Invalid("webgl: naga could not write the shader as GLSL ES 3.00"))?;
+    // A copy's slot is its texture's.
+    let slot = |m: &naga::Module, var| {
+        let at = slot(m, var)?;
+        Some(own.iter().find(|(copy, _)| *copy == at).map_or(at, |o| o.1))
+    };
     let names: Vec<&str> = reflection
         .texture_mapping
         .keys()
