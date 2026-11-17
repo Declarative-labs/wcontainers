@@ -1,8 +1,11 @@
 ps_cases.dxil	ok
+ps_clip.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
+ps_rows.dxil	ok
 ps_signed.dxil	ok
 ps_spaces.dxil	unsupported RegisterSpace
 ps_special.dxil	ok
+ps_textured.dxil	ok
 vs_pack.dxil	unsupported PackedStageValues
 vs_transform.dxil	ok

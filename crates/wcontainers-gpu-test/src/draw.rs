@@ -720,6 +720,26 @@ impl Recorder {
         {
             return Err("bindings of one stage past a limit per stage".into());
         }
+        if !has.contains(Features::TEXTURE_VIEWS) {
+            // Each texture through one mip range (WebGL 2 sets the range on the texture itself).
+            let mut ranges = Vec::new();
+            for set in call.bindings.iter().flatten() {
+                if let Obj::BindingSet(entries, _) = self.obj(**set)? {
+                    for (_, bound) in entries {
+                        if let Bound::Texture(v) = bound {
+                            let v = self.view(*v)?;
+                            ranges.push((v.texture, v.desc.base_mip, v.desc.mip_count));
+                        }
+                    }
+                }
+            }
+            if ranges
+                .iter()
+                .any(|a| ranges.iter().any(|b| a.0 == b.0 && a != b))
+            {
+                return Err("one texture through two mip ranges without TEXTURE_VIEWS".into());
+            }
+        }
         Ok(())
     }
 

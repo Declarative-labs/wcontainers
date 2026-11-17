@@ -221,6 +221,8 @@ impl Recorder {
                     | Features::SAMPLE_MASK
                     | Features::MULTISAMPLE_READ
                     | Features::TEXTURE_VIEWS
+                    | Features::FORMAT_REINTERPRET
+                    | Features::SEPARATE_SAMPLERS
                     | Features::FRACTIONAL_VIEWPORT
                     | Features::FRACTIONAL_DEPTH_BIAS
                     | Features::DEPTH_BIAS_CLAMP
@@ -1187,10 +1189,21 @@ impl Backend for Recorder {
                 .texture(*texture)
                 .map_err(|_| GpuError::Invalid("view of an object that is not a live texture"))?;
             let twin = desc.format.linear() == t.desc.format.linear();
+            // Another colour format of the same block size, which draws read and write by the
+            // view's format.
+            let same_size = !desc.format.is_depth_stencil()
+                && !t.desc.format.is_depth_stencil()
+                && desc.format.block() == t.desc.format.block()
+                && !self.caps.formats.get(desc.format).is_empty();
             if desc.format != t.desc.format && !(twin && t.desc.reinterpret) {
-                return Err(GpuError::Invalid(
-                    "view format neither the texture's nor its twin",
-                ));
+                if !(same_size && t.desc.reinterpret) {
+                    return Err(GpuError::Invalid(
+                        "view format neither the texture's nor one of its size it may take",
+                    ));
+                }
+                if !self.caps.has(Features::FORMAT_REINTERPRET) {
+                    return Err(GpuError::Absent(Features::FORMAT_REINTERPRET));
+                }
             }
             if desc.base_mip + desc.mip_count > t.desc.mip_levels
                 || desc.base_layer + desc.layer_count > layers(&t.desc)
@@ -1248,6 +1261,21 @@ impl Backend for Recorder {
         self.nested += 1;
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
+            let stage = match module.stage {
+                ShaderStage::Vertex => naga::ShaderStage::Vertex,
+                ShaderStage::Fragment => naga::ShaderStage::Fragment,
+                ShaderStage::Compute => naga::ShaderStage::Compute,
+            };
+            if !module
+                .module
+                .entry_points
+                .iter()
+                .any(|e| e.name == module.entry_point && e.stage == stage)
+            {
+                return Err(GpuError::Invalid(
+                    "a shader naming an entry point of its stage its module lacks",
+                ));
+            }
             let id = self.add(Obj::Shader(Rc::new(module.clone())));
             Ok(id)
         })();
@@ -1273,6 +1301,14 @@ impl Backend for Recorder {
                 },
                 Program::Compute(_) => return Err(GpuError::Absent(Features::COMPUTE)),
             };
+            if obj.vertex.stage != ShaderStage::Vertex
+                || obj
+                    .fragment
+                    .as_ref()
+                    .is_some_and(|f| f.stage != ShaderStage::Fragment)
+            {
+                return Err(GpuError::Invalid("a program of shaders of other stages"));
+            }
             if varyings(&obj.vertex) > self.caps.limits.inter_stage_slots as usize {
                 return Err(GpuError::Invalid(
                     "vertex outputs past the inter-stage limit",

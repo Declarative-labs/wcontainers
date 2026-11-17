@@ -183,7 +183,8 @@ Recording:
 - `draw(&DrawCall)`: inside a pass. Section 4.4.
 - `begin_query(index)`, `end_query()`: occlusion, inside a pass.
 - `copy_buffer`, `copy_texture`, `copy_buffer_to_texture`, `copy_texture_to_buffer`, `clear_buffer`
-  (a pattern of 1 to 16 bytes repeated: zero, or an element's bits for Direct3D's storage view clears;
+  (a pattern of 1, 2, 4, 8 or 16 bytes repeated over a range of whole patterns: zero, or an element's
+  bits for Direct3D's storage view clears;
   WebGPU clears only to zero, so its back end fills with any other pattern by copies from a block of
   the pattern, `PatternClearCopied`), `resolve`: outside a pass. A buffer copy or read back of a format
   with depth and stencil moves the aspect its region names (the stencil byte, or depth in four bytes);
@@ -1175,7 +1176,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
 - **Clip depth from zero on WebGL 2 without EXT_clip_control** (6.8% of WebGL 2 browsers; a listed loss).
   The vertex program writes z as 2z - w (`ClipDepthRewrite`), which loses low bits of depth and the
   precision gain of reversed depth. Measured against the reference at G3.
-- Format reinterpretation through views is absent in both; fronts copy (`ReinterpretCopy`). Exact, slow.
+- Format reinterpretation through views (`FORMAT_REINTERPRET`: views of a texture made with
+  `reinterpret` in another colour format of the same block size; depth and stencil formats never) is
+  absent in both; fronts copy (`ReinterpretCopy`). Exact, slow.
 - **Predicated drawing.** Direct3D 11's `SetPredication` names a query. Direct3D 12's names a buffer and
   an offset holding a 64-bit value (usually written there by `ResolveQueryData`), and predicates draws,
   dispatches, `ExecuteIndirect`, clears, copies and resolves; Vulkan's conditional rendering also reads
