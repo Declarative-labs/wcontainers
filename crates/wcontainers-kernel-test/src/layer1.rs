@@ -41,7 +41,8 @@ const SOCKET_ADDRESS_AT: [(u64, u64); 5] = [(0, 6), (0x10, 16), (0x20, 28), (0x4
 const RECV_CONTROL: u64 = 0x1500;
 const RECV_CONTROL_SIZE: u64 = 128;
 /// Control messages sendmsg's headers carry, one after another: descriptors (one, two, one not
-/// open), credentials naming process 0, a header alone, and an IP_TTL for a datagram.
+/// open), credentials naming process 0, a header alone, an IP_TTL for a datagram, and IPv4 packet
+/// information naming a source.
 const SEND_CONTROLS: u64 = 0x1580;
 /// Where the starting socketpair puts its two descriptors.
 const SOCKET_PAIR: u64 = 0x1ac0;
@@ -404,8 +405,15 @@ const PLAY_RECORD: usize = PLAY_PAGES as usize * 4097;
 
 /// The control messages sendmsg's headers choose from: where each starts in `SEND_CONTROLS` and
 /// the length a header gives it.
-const SEND_CONTROL_AT: [(u64, u64); 6] =
-    [(0, 24), (24, 24), (48, 24), (72, 32), (104, 16), (120, 24)];
+const SEND_CONTROL_AT: [(u64, u64); 7] = [
+    (0, 24),
+    (24, 24),
+    (48, 24),
+    (72, 32),
+    (104, 16),
+    (120, 24),
+    (144, 32),
+];
 
 /// Lays out sendmsg's control messages and the message headers, each chosen from a value: a
 /// destination or none, one to three of the vectors, and a control message, none or one too long
@@ -445,6 +453,16 @@ fn message_areas(arena: &mut [u8], values: &[u64]) {
     put(SEND_CONTROLS + 104, &header(8, solsocket, rights));
     let ttl = header(20, net::IPPROTO_IP as u32, net::IP_TTL);
     put(SEND_CONTROLS + 120, &[ttl, ints(&[7])].concat());
+    // IPv4 packet information naming no interface and 127.0.0.5 as the source.
+    let information = header(28, net::IPPROTO_IP as u32, net::IP_PKTINFO);
+    put(
+        SEND_CONTROLS + 144,
+        &[
+            information,
+            ints(&[0, i32::from_le_bytes([127, 0, 0, 5]), 0]),
+        ]
+        .concat(),
+    );
     for index in 0..MSGHDR_COUNT {
         let word = values
             .get(index as usize)
@@ -460,7 +478,7 @@ fn message_areas(arena: &mut [u8], values: &[u64]) {
                     (ARENA + SOCKET_ADDRESSES + at, length)
                 }
             };
-            let (control, room) = match (word >> 16) % 9 {
+            let (control, room) = match (word >> 16) % 10 {
                 0 | 1 => (0, 0),
                 2 => (ARENA + SEND_CONTROLS, 0x8000_0000),
                 choice => {
@@ -3862,6 +3880,12 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
                     (net::SOL_SOCKET, net::SO_TIMESTAMP_OLD),
                     (net::SOL_SOCKET, net::SO_TIMESTAMPNS_NEW),
                     (net::SOL_SOCKET, net::SO_LINGER),
+                    (net::SOL_SOCKET, net::SO_MARK),
+                    (net::SOL_SOCKET, net::SO_PRIORITY),
+                    (net::SOL_SOCKET, net::SO_RCVMARK),
+                    (net::SOL_SOCKET, net::SO_RCVPRIORITY),
+                    (net::SOL_SOCKET, net::SO_TXTIME),
+                    (net::IPPROTO_IP as u32, net::IP_TOS),
                     (net::IPPROTO_TCP as u32, 1),
                     (net::IPPROTO_IP as u32, 2),
                     (net::IPPROTO_IP as u32, net::IP_PKTINFO),
