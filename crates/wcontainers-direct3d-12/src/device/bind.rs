@@ -367,6 +367,7 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Storage, Descriptor::UnorderedAccess(v)) => match b.form {
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
                             Form::Image { writable } => {
+                                self.note(v.resource, writable);
                                 Held::StorageTexture(self.storage_texture(&v)?, writable)
                             }
                             Form::Plain => return Err(Error::Invalid("a storage binding")),
@@ -404,6 +405,7 @@ impl<B: Backend> Device<B> {
             ));
         }
         self.upload(id);
+        self.note(id, false);
         Ok(Held::Uniform(self.buffer(id)?.0.clone(), offset, size))
     }
 
@@ -463,6 +465,7 @@ impl<B: Backend> Device<B> {
             return Err(Error::Invalid("a buffer view past its buffer's end"));
         }
         self.upload(id);
+        self.note(id, writable);
         Ok(Held::Storage {
             buffer: self.buffer(id)?.0.clone(),
             offset,
@@ -544,6 +547,7 @@ impl<B: Backend> Device<B> {
             _ if arrayed => v.layers,
             _ => 1,
         };
+        self.note(v.resource, false);
         let (format, stencil) = match v.format {
             // The stencil of a depth-stencil texture, read as integers.
             47 | 21 => (texture_desc.format, true),
@@ -587,11 +591,11 @@ impl<B: Backend> Device<B> {
                     host: Some(host),
                 },
             ..
-        }) = self.resources.get(id.0 as usize)
+        }) = self.resources.get_mut(id.0 as usize)
         {
             self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
             self.backend
-                .write_buffer(buffer, 0, host, WriteMode::NoOverwrite);
+                .write_buffer(buffer, 0, host.bytes(), WriteMode::NoOverwrite);
             self.uploaded.push(id);
         }
     }

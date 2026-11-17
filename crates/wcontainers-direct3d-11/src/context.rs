@@ -6,12 +6,13 @@ use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
     DepthAttachment, DrawCall, DrawRange, Extent, FormatKind, IndexBinding, IndexFormat, LoadOp,
     MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ReadState, ScissorRect,
-    SlotKind, SlowPath, StageSet, StepMode, StoreOp, SystemValue, TextureRegion, Topology,
-    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport,
-    WriteMode,
+    SlotKind, SlowPath, StageSet, StepMode, StoreOp, SystemValue, Topology, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
 };
 
-use crate::desc::{self, Box3, Viewport, map, topology, usage};
+use crate::desc::{
+    self, Box3, SubresourceData, TexDim, TextureDesc, Viewport, map, topology, usage,
+};
 use crate::device::{Device, gpu_buffer, integer_format};
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
@@ -463,9 +464,15 @@ impl<B: Backend> Device<B> {
 
     pub(crate) fn end_pass(&mut self) {
         if self.ctx.pass_open {
+            self.close_stretch(false);
             self.backend.end_pass();
             self.ctx.pass_open = false;
+            self.queries.pass_set = None;
         }
+    }
+
+    pub(crate) fn ctx_pass_open(&self) -> bool {
+        self.ctx.pass_open
     }
 
     /// Ends the pass and runs every pending clear, before work outside a pass.
@@ -498,9 +505,11 @@ impl<B: Backend> Device<B> {
         if self.ctx.pass_open {
             return;
         }
+        // A clear becomes a load only where the attachment is all the view sees.
         let bound = |v: &Rc<View<B>>, ctx: &ContextState<B>| {
-            ctx.targets.iter().flatten().any(|t| Rc::ptr_eq(t, v))
-                || ctx.depth.as_ref().is_some_and(|d| Rc::ptr_eq(d, v))
+            v.desc.layer_count == 1
+                && (ctx.targets.iter().flatten().any(|t| Rc::ptr_eq(t, v))
+                    || ctx.depth.as_ref().is_some_and(|d| Rc::ptr_eq(d, v)))
         };
         let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut self.ctx.clears)
             .into_iter()
@@ -516,7 +525,11 @@ impl<B: Backend> Device<B> {
         let colors = std::array::from_fn(|i| {
             targets[i].as_ref().map(|v| ColorAttachment {
                 view: &v.gpu.handle,
-                depth_slice: 0,
+                depth_slice: if v.texture.desc.dimension == TexDim::D3 {
+                    v.desc.first_layer
+                } else {
+                    0
+                },
                 resolve: None,
                 load: match clear_of(v) {
                     Some(ClearValue::Color(bits)) => LoadOp::Clear(bits),
@@ -545,11 +558,18 @@ impl<B: Backend> Device<B> {
                     .then(|| ops(s)),
             }
         });
+        let occlusion = match self.pass_occlusion() {
+            Ok(set) => set,
+            Err(e) => {
+                self.lose(e);
+                None
+            }
+        };
         self.backend.begin_pass(&PassDesc {
             colors,
             depth: depth_attachment,
             empty: None,
-            occlusion: None,
+            occlusion: occlusion.as_ref().map(|s| &s.handle),
         });
         self.ctx.pass_open = true;
     }
@@ -970,6 +990,12 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         self.open_pass();
+        if !self.open_stretch() {
+            // The pass's occlusion set has no slot left: the draw opens the next pass on another.
+            self.end_pass();
+            self.open_pass();
+            self.open_stretch();
+        }
 
         let ctx = &self.ctx;
         // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots and 16 viewports).
@@ -1076,12 +1102,19 @@ impl<B: Backend> Device<B> {
                 );
                 self.buffer_written(d)
             }
-            (Resource::Texture2D(d), Resource::Texture2D(s)) => {
+            (Resource::Texture(d), Resource::Texture(s)) => {
                 let (a, b) = (&d.desc, &s.desc);
-                if (a.width, a.height, a.mip_levels, a.array_size)
-                    != (b.width, b.height, b.mip_levels, b.array_size)
-                    || Rc::ptr_eq(d, s)
-                {
+                let shape = |t: &TextureDesc| {
+                    (
+                        t.dimension,
+                        t.width,
+                        t.height,
+                        t.depth,
+                        t.mip_levels,
+                        t.array_size,
+                    )
+                };
+                if shape(a) != shape(b) || Rc::ptr_eq(d, s) {
                     return Err(Error::InvalidArg(
                         "CopyResource needs two textures of one shape",
                     ));
@@ -1110,7 +1143,11 @@ impl<B: Backend> Device<B> {
         match (dst, src) {
             (Resource::Buffer(d), Resource::Buffer(s)) => {
                 let (from, to) = src_box.map_or((0, s.desc.byte_width), |b| (b.left, b.right));
-                if to <= from || to > s.desc.byte_width || at[0] + (to - from) > d.desc.byte_width {
+                if to <= from
+                    || to > s.desc.byte_width
+                    || at[0] + (to - from) > d.desc.byte_width
+                    || src_box.is_some_and(Box3::empty)
+                {
                     return Ok(());
                 }
                 self.settle();
@@ -1123,54 +1160,64 @@ impl<B: Backend> Device<B> {
                 );
                 self.buffer_written(d)
             }
-            (Resource::Texture2D(d), Resource::Texture2D(s)) => {
+            (Resource::Texture(d), Resource::Texture(s)) => {
                 copy_formats(d.desc.format, s.desc.format)?;
-                let (sm, dm) = (s.desc.mip_levels, d.desc.mip_levels);
-                if src_sub >= sm * s.desc.array_size || dst_sub >= dm * d.desc.array_size {
+                let (Some((src_mip, src_layer)), Some((dst_mip, dst_layer))) =
+                    (s.subresource(src_sub), d.subresource(dst_sub))
+                else {
                     return Err(Error::InvalidArg("subresource past the resource"));
-                }
-                let (src_mip, src_layer) = (src_sub % sm, src_sub / sm);
-                let (dst_mip, dst_layer) = (dst_sub % dm, dst_sub / dm);
-                let (w, h) = s.mip_size(src_mip);
+                };
+                let se = s.mip_extent(src_mip);
                 let b = src_box.copied().unwrap_or(Box3 {
                     left: 0,
                     top: 0,
                     front: 0,
-                    right: w,
-                    bottom: h,
-                    back: 1,
+                    right: se.width,
+                    bottom: se.height,
+                    back: se.depth_or_layers,
                 });
-                let (dw, dh) = d.mip_size(dst_mip);
-                if b.right <= b.left || b.bottom <= b.top || b.right > w || b.bottom > h {
+                let de = d.mip_extent(dst_mip);
+                if b.right <= b.left
+                    || b.bottom <= b.top
+                    || b.back <= b.front
+                    || b.right > se.width
+                    || b.bottom > se.height
+                    || b.back > se.depth_or_layers
+                {
                     return Ok(());
                 }
                 let extent = Extent {
                     width: b.right - b.left,
                     height: b.bottom - b.top,
-                    depth_or_layers: 1,
+                    depth_or_layers: b.back - b.front,
                 };
-                if at[0] + extent.width > dw || at[1] + extent.height > dh {
+                if at[0] + extent.width > de.width
+                    || at[1] + extent.height > de.height
+                    || at[2] + extent.depth_or_layers > de.depth_or_layers
+                {
                     return Ok(());
                 }
                 // Depth-stencil subresources are copied whole; Direct3D drops a part.
                 if s.format.kind() == FormatKind::DepthStencil
                     && (at != [0; 3]
-                        || (extent.width, extent.height) != (w, h)
-                        || (dw, dh) != (w, h))
+                        || (extent.width, extent.height) != (se.width, se.height)
+                        || (de.width, de.height) != (se.width, se.height))
                 {
                     return Ok(());
                 }
                 self.settle();
-                let region = |texture, mip, layer, x, y| TextureRegion {
-                    texture,
-                    mip,
-                    layer,
-                    origin: Origin { x, y, z: 0 },
-                    stencil: false,
-                };
+                let (x, y, z) = (b.left, b.top, b.front);
                 self.backend.copy_texture(
-                    &region(&s.gpu.handle, src_mip, src_layer, b.left, b.top),
-                    &region(&d.gpu.handle, dst_mip, dst_layer, at[0], at[1]),
+                    &s.region(src_mip, src_layer, Origin { x, y, z }),
+                    &d.region(
+                        dst_mip,
+                        dst_layer,
+                        Origin {
+                            x: at[0],
+                            y: at[1],
+                            z: at[2],
+                        },
+                    ),
                     extent,
                 );
                 self.texture_written(d, dst_sub)
@@ -1187,6 +1234,7 @@ impl<B: Backend> Device<B> {
         dst_box: Option<&Box3>,
         bytes: &[u8],
         row_pitch: u32,
+        slice_pitch: u32,
     ) -> Result<()> {
         match dst {
             Resource::Buffer(b) => {
@@ -1194,7 +1242,7 @@ impl<B: Backend> Device<B> {
                     return Err(Error::InvalidArg("UpdateSubresource needs default usage"));
                 }
                 let (from, to) = dst_box.map_or((0, b.desc.byte_width), |x| (x.left, x.right));
-                if to <= from || to > b.desc.byte_width {
+                if to <= from || to > b.desc.byte_width || dst_box.is_some_and(Box3::empty) {
                     return Ok(());
                 }
                 let bytes = &bytes[..(to - from) as usize];
@@ -1219,48 +1267,48 @@ impl<B: Backend> Device<B> {
                 }
                 Ok(())
             }
-            Resource::Texture2D(t) => {
+            Resource::Texture(t) => {
                 if t.desc.usage != usage::DEFAULT {
                     return Err(Error::InvalidArg("UpdateSubresource needs default usage"));
                 }
-                let mips = t.desc.mip_levels;
-                if sub >= mips * t.desc.array_size {
+                let Some((mip, layer)) = t.subresource(sub) else {
                     return Err(Error::InvalidArg("subresource past the resource"));
-                }
-                let (mip, layer) = (sub % mips, sub / mips);
-                let (w, h) = t.mip_size(mip);
+                };
+                let e = t.mip_extent(mip);
                 let b = dst_box.copied().unwrap_or(Box3 {
-                    right: w,
-                    bottom: h,
-                    back: 1,
+                    right: e.width,
+                    bottom: e.height,
+                    back: e.depth_or_layers,
                     ..Default::default()
                 });
-                if b.right <= b.left || b.bottom <= b.top || b.right > w || b.bottom > h {
+                if b.right <= b.left
+                    || b.bottom <= b.top
+                    || b.back <= b.front
+                    || b.right > e.width
+                    || b.bottom > e.height
+                    || b.back > e.depth_or_layers
+                {
                     return Ok(());
                 }
                 self.settle();
-                let (_, rows) = format::row_bytes(t.format, b.right - b.left, b.bottom - b.top);
-                self.backend.write_texture(
-                    &TextureRegion {
-                        texture: &t.gpu.handle,
-                        mip,
-                        layer,
-                        origin: Origin {
-                            x: b.left,
-                            y: b.top,
-                            z: 0,
-                        },
-                        stencil: false,
-                    },
+                let origin = Origin {
+                    x: b.left,
+                    y: b.top,
+                    z: b.front,
+                };
+                self.write_texels(
+                    t.format,
+                    &t.region(mip, layer, origin),
                     Extent {
                         width: b.right - b.left,
                         height: b.bottom - b.top,
-                        depth_or_layers: 1,
+                        depth_or_layers: b.back - b.front,
                     },
-                    bytes,
-                    row_pitch,
-                    rows,
-                    WriteMode::Ordered,
+                    &SubresourceData {
+                        bytes,
+                        row_pitch,
+                        slice_pitch,
+                    },
                 );
                 Ok(())
             }
@@ -1328,36 +1376,30 @@ impl<B: Backend> Device<B> {
                     depth_pitch: d.byte_width,
                 })
             }
-            Resource::Texture2D(t) => {
+            Resource::Texture(t) => {
                 let d = &t.desc;
-                let ok = d.usage == usage::STAGING
-                    && (!reads || d.cpu_access_flags & desc::cpu::READ != 0)
-                    && (!writes || d.cpu_access_flags & desc::cpu::WRITE != 0)
-                    && matches!(kind, map::READ | map::WRITE | map::READ_WRITE);
-                if !ok || sub >= d.mip_levels * d.array_size {
-                    return Err(Error::InvalidArg("the resource cannot be mapped this way"));
-                }
-                let (mip, layer) = (sub % d.mip_levels, sub / d.mip_levels);
-                let (w, h) = t.mip_size(mip);
-                let (row, rows) = format::row_bytes(t.format, w, h);
-                let src = ReadSource::Texture {
-                    region: TextureRegion {
-                        texture: &t.gpu.handle,
-                        mip,
-                        layer,
-                        origin: Origin { x: 0, y: 0, z: 0 },
-                        stencil: false,
-                    },
-                    extent: Extent {
-                        width: w,
-                        height: h,
-                        depth_or_layers: 1,
-                    },
+                let ok = match d.usage {
+                    usage::STAGING => {
+                        (!reads || d.cpu_access_flags & desc::cpu::READ != 0)
+                            && (!writes || d.cpu_access_flags & desc::cpu::WRITE != 0)
+                            && matches!(kind, map::READ | map::WRITE | map::READ_WRITE)
+                    }
+                    usage::DYNAMIC => kind == map::WRITE_DISCARD,
+                    _ => false,
                 };
+                let whole = t.whole(sub).filter(|_| ok);
+                let Some((region, extent)) = whole else {
+                    return Err(Error::InvalidArg("the resource cannot be mapped this way"));
+                };
+                let (row, rows, _) = t.packed(region.mip);
+                let src = ReadSource::Texture { region, extent };
                 let mut shadow = t.shadow.borrow_mut();
                 let mut staged = t.staged.borrow_mut();
                 let s = sub as usize;
-                self.refresh(&mut staged[s], &src, &mut shadow[s], reads, wait)?;
+                // A dynamic texture's shadow is the program's to fill; nothing is read back.
+                if d.usage == usage::STAGING {
+                    self.refresh(&mut staged[s], &src, &mut shadow[s], reads, wait)?;
+                }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
                     data: shadow[sub as usize].as_mut_ptr(),
@@ -1390,27 +1432,15 @@ impl<B: Backend> Device<B> {
     }
 
     /// After a copy into subresource `sub` of `t`, as [`Self::buffer_written`].
-    fn texture_written(&mut self, t: &Texture2D<B>, sub: u32) -> Result<()> {
+    fn texture_written(&mut self, t: &Texture<B>, sub: u32) -> Result<()> {
         if t.desc.usage != usage::STAGING {
             return Ok(());
         }
         let state = if t.desc.cpu_access_flags & desc::cpu::READ != 0 {
-            let (mip, layer) = (sub % t.desc.mip_levels, sub / t.desc.mip_levels);
-            let (w, h) = t.mip_size(mip);
-            let r = self.backend.read_back(&ReadSource::Texture {
-                region: TextureRegion {
-                    texture: &t.gpu.handle,
-                    mip,
-                    layer,
-                    origin: Origin { x: 0, y: 0, z: 0 },
-                    stencil: false,
-                },
-                extent: Extent {
-                    width: w,
-                    height: h,
-                    depth_or_layers: 1,
-                },
-            });
+            let (region, extent) = t.whole(sub).expect("a subresource the copy checked");
+            let r = self
+                .backend
+                .read_back(&ReadSource::Texture { region, extent });
             Staged::Reading(self.gpu(r)?)
         } else {
             Staged::Written
@@ -1459,7 +1489,7 @@ impl<B: Backend> Device<B> {
     pub fn unmap(&mut self, resource: &Resource<B>, sub: u32) {
         let address = match resource {
             Resource::Buffer(b) => Rc::as_ptr(b) as usize,
-            Resource::Texture2D(t) => Rc::as_ptr(t) as usize,
+            Resource::Texture(t) => Rc::as_ptr(t) as usize,
         };
         let Some(i) = self
             .ctx
@@ -1484,31 +1514,41 @@ impl<B: Backend> Device<B> {
                 self.backend
                     .write_buffer(&b.handle(), 0, &b.shadow.borrow(), mode);
             }
-            Resource::Texture2D(t) => {
-                let mips = t.desc.mip_levels;
-                let (mip, layer) = (sub % mips, sub / mips);
-                let (w, h) = t.mip_size(mip);
-                let (row, rows) = format::row_bytes(t.format, w, h);
+            Resource::Texture(t) => {
+                let (region, extent) = t.whole(sub).expect("a subresource the map checked");
+                let (row, rows, _) = t.packed(region.mip);
                 self.end_pass();
                 self.backend.write_texture(
-                    &TextureRegion {
-                        texture: &t.gpu.handle,
-                        mip,
-                        layer,
-                        origin: Origin { x: 0, y: 0, z: 0 },
-                        stencil: false,
-                    },
-                    Extent {
-                        width: w,
-                        height: h,
-                        depth_or_layers: 1,
-                    },
+                    &region,
+                    extent,
                     &t.shadow.borrow()[sub as usize],
                     row,
                     rows,
                     WriteMode::Ordered,
                 );
             }
+        }
+    }
+
+    /// `GenerateMips`: fills the view's levels below its first from the first, in its format. A
+    /// texture made without mip generation is left alone, as Direct3D leaves it.
+    pub fn generate_mips(&mut self, view: &View<B>) {
+        let t = &view.texture;
+        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 {
+            return;
+        }
+        let v = &view.desc;
+        let layers = v.first_layer..v.first_layer + v.layer_count;
+        self.settle();
+        let r = self.backend.generate_mips(
+            &t.gpu.handle,
+            &t.gpu_desc,
+            view.format,
+            v.first_mip + 1..v.first_mip + v.mip_count,
+            layers,
+        );
+        if let Err(e) = r {
+            let _ = self.gpu::<()>(Err(e));
         }
     }
 
@@ -1527,7 +1567,8 @@ impl<B: Backend> Device<B> {
     pub fn flush(&mut self) {
         self.settle();
         self.bury();
-        let _ = self.backend.submit();
+        let fence = self.backend.submit();
+        self.submitted(fence);
         self.poll_removed();
     }
 }

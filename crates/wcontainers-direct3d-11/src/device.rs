@@ -10,8 +10,8 @@ use wcontainers_gpu::{
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
     FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
     Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
-    StageValue, StencilFace, StencilOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, ViewDimension, WriteMode,
+    StageValue, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 
 use crate::context::ContextState;
@@ -29,6 +29,7 @@ pub struct Device<B: Backend> {
     level: u32,
     pub(crate) defaults: Defaults<B>,
     pub(crate) ctx: ContextState<B>,
+    pub(crate) queries: crate::query::Queries<B>,
     /// Programs by (vertex shader, pixel shader) id.
     pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
@@ -153,6 +154,7 @@ impl<B: Backend> Device<B> {
             level,
             defaults,
             ctx: ContextState::new(),
+            queries: crate::query::Queries::new(),
             programs: HashMap::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
@@ -315,7 +317,7 @@ impl<B: Backend> Device<B> {
             ViewDimension::Cube | ViewDimension::CubeArray => (TextureDimension::D2, 6),
             ViewDimension::D3 => (TextureDimension::D3, 1),
         };
-        let desc = TextureDesc {
+        let desc = GpuTexture {
             dimension: texture_dimension,
             format,
             width: 1,
@@ -437,8 +439,10 @@ impl<B: Backend> Device<B> {
 
     pub fn create_buffer(&mut self, d: &BufferDesc, init: Option<&[u8]>) -> Result<Rc<Buffer<B>>> {
         check_buffer(d, init.is_some())?;
-        if d.misc_flags != 0 {
-            return not_implemented("buffers with misc flags (structured, raw, indirect, shared)");
+        if d.misc_flags & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED) != 0 {
+            return not_implemented(
+                "buffers with misc flags other than structured, raw and indirect",
+            );
         }
         self.live()?;
         self.bury();
@@ -480,22 +484,23 @@ impl<B: Backend> Device<B> {
         }))
     }
 
-    /// The checks of `CreateTexture2D` before its initial data is read: the format and the number of
-    /// mip levels, or why the description is refused.
-    pub fn check_texture_2d(&self, d: &Texture2DDesc, has_init: bool) -> Result<(Format, u32)> {
+    /// The checks of `CreateTexture1D`, `2D` and `3D` before their initial data is read: the format
+    /// and the number of mip levels, or why the description is refused.
+    pub fn check_texture(&self, d: &TextureDesc, has_init: bool) -> Result<(Format, u32)> {
         let limits = &self.backend.caps().limits;
-        if d.width == 0 || d.height == 0 || d.array_size == 0 {
+        if d.width == 0 || d.height == 0 || d.depth == 0 || d.array_size == 0 {
             return Err(Error::InvalidArg("a texture needs a size"));
         }
-        if d.width > limits.max_texture_2d
-            || d.height > limits.max_texture_2d
-            || d.array_size > limits.max_texture_layers
-        {
+        let (most, layers) = match d.dimension {
+            TexDim::D3 => (limits.max_texture_3d, 1),
+            _ => (limits.max_texture_2d, limits.max_texture_layers),
+        };
+        if d.width > most || d.height > most || d.depth > most || d.array_size > layers {
             return Err(Error::InvalidArg(
                 "the texture is larger than the feature level allows",
             ));
         }
-        let full = 32 - d.width.max(d.height).leading_zeros();
+        let full = 32 - d.width.max(d.height).max(d.depth).leading_zeros();
         let mips = if d.mip_levels == 0 {
             full
         } else {
@@ -514,10 +519,20 @@ impl<B: Backend> Device<B> {
             ));
         }
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
-        if d.misc_flags & !MISC_TEXTURECUBE != 0 {
-            return not_implemented("textures with misc flags other than a cube");
+        if d.misc_flags & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS) != 0 {
+            return not_implemented(
+                "textures with misc flags other than a cube and mip generation",
+            );
         }
-        if cube && (!d.array_size.is_multiple_of(6) || d.width != d.height) {
+        let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
+        if d.misc_flags & MISC_GENERATE_MIPS != 0 && d.bind_flags & both != both {
+            return Err(Error::InvalidArg(
+                "mip generation needs shader resource and render target bindings",
+            ));
+        }
+        if cube
+            && (!d.array_size.is_multiple_of(6) || d.width != d.height || d.dimension != TexDim::D2)
+        {
             return Err(Error::InvalidArg(
                 "a cube texture needs square faces in sixes",
             ));
@@ -531,13 +546,20 @@ impl<B: Backend> Device<B> {
                     "a staging texture has CPU access and no bind flags",
                 ));
             }
-            usage::DYNAMIC => return not_implemented("dynamic textures"),
-            usage::DEFAULT | usage::IMMUTABLE | usage::STAGING => {}
+            // The CPU writes a dynamic texture and the GPU only samples it.
+            usage::DYNAMIC
+                if d.cpu_access_flags != cpu::WRITE || d.bind_flags != bind::SHADER_RESOURCE =>
+            {
+                return Err(Error::InvalidArg(
+                    "a dynamic texture is written by the CPU and only sampled",
+                ));
+            }
+            usage::DEFAULT | usage::IMMUTABLE | usage::STAGING | usage::DYNAMIC => {}
             _ => return Err(Error::InvalidArg("unknown usage")),
         }
-        if d.usage != usage::STAGING && d.cpu_access_flags != 0 {
+        if !matches!(d.usage, usage::STAGING | usage::DYNAMIC) && d.cpu_access_flags != 0 {
             return Err(Error::InvalidArg(
-                "only staging textures here have CPU access",
+                "only staging and dynamic textures have CPU access",
             ));
         }
         let mut needs = FormatUse::empty();
@@ -557,16 +579,19 @@ impl<B: Backend> Device<B> {
         {
             return Err(Error::InvalidArg("bind flags a texture cannot have"));
         }
+        if d.dimension == TexDim::D3 && d.bind_flags & bind::DEPTH_STENCIL != 0 {
+            return Err(Error::InvalidArg("a 3D texture cannot hold depth"));
+        }
         self.check_format(format, needs)?;
         Ok((format, mips))
     }
 
-    pub fn create_texture_2d(
+    pub fn create_texture(
         &mut self,
-        d: &Texture2DDesc,
+        d: &TextureDesc,
         init: &[SubresourceData<'_>],
-    ) -> Result<Rc<Texture2D<B>>> {
-        let (format, mips) = self.check_texture_2d(d, !init.is_empty())?;
+    ) -> Result<Rc<Texture<B>>> {
+        let (format, mips) = self.check_texture(d, !init.is_empty())?;
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
         let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
         for (flag, u) in [
@@ -584,12 +609,16 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let gpu_desc = TextureDesc {
-            dimension: TextureDimension::D2,
+        let (dimension, depth_or_layers) = match d.dimension {
+            TexDim::D3 => (TextureDimension::D3, d.depth),
+            TexDim::D1 | TexDim::D2 => (TextureDimension::D2, d.array_size),
+        };
+        let gpu_desc = GpuTexture {
+            dimension,
             format,
             width: d.width,
             height: d.height,
-            depth_or_layers: d.array_size,
+            depth_or_layers,
             mip_levels: mips,
             samples: 1,
             usage,
@@ -598,69 +627,101 @@ impl<B: Backend> Device<B> {
         };
         let gpu = self.backend.create_texture(&gpu_desc);
         let gpu = self.gpu(gpu)?;
-        let resolved = Texture2DDesc {
+        let resolved = TextureDesc {
             mip_levels: mips,
             ..*d
         };
-        for (i, data) in init.iter().take(subresources).enumerate() {
-            let (mip, layer) = (i as u32 % mips, i as u32 / mips);
-            let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
-            let (_, rows) = format::row_bytes(format, w, h);
-            self.backend.write_texture(
-                &TextureRegion {
-                    texture: &gpu,
-                    mip,
-                    layer,
-                    origin: Origin { x: 0, y: 0, z: 0 },
-                    stencil: false,
-                },
-                Extent {
-                    width: w,
-                    height: h,
-                    depth_or_layers: 1,
-                },
-                data.bytes,
-                data.row_pitch,
-                rows,
-                WriteMode::Ordered,
-            );
-        }
-        let shadow = if d.usage == usage::STAGING {
-            (0..subresources)
-                .map(|i| {
-                    let mip = i as u32 % mips;
-                    let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
-                    let (row, rows) = format::row_bytes(format, w, h);
-                    let mut shadow = vec![0; (row * rows) as usize];
-                    // The shadow starts as the initial data, tightly packed.
-                    if let Some(data) = init.get(i) {
-                        for (r, out) in shadow.chunks_exact_mut(row as usize).enumerate() {
-                            let at = r * data.row_pitch as usize;
-                            out.copy_from_slice(&data.bytes[at..at + row as usize]);
-                        }
-                    }
-                    shadow
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
         let id = self.id();
-        Ok(Rc::new(Texture2D {
+        let texture = Texture {
             desc: resolved,
             format,
             gpu_desc,
             gpu: Kept::new(gpu, id, Object::Texture, &self.graveyard),
-            staged: RefCell::new((0..shadow.len()).map(|_| Staged::Current).collect()),
-            shadow: RefCell::new(shadow),
-        }))
+            staged: RefCell::new(Vec::new()),
+            shadow: RefCell::new(Vec::new()),
+        };
+        for (i, data) in init.iter().take(subresources).enumerate() {
+            let (region, extent) = texture
+                .whole(i as u32)
+                .expect("a subresource of the texture");
+            self.write_texels(format, &region, extent, data);
+        }
+        if matches!(d.usage, usage::STAGING | usage::DYNAMIC) {
+            let shadow = (0..subresources)
+                .map(|i| {
+                    let (row, rows, slices) = texture.packed(i as u32 % mips);
+                    let mut shadow = vec![0; (row * rows * slices) as usize];
+                    // The shadow starts as the initial data, tightly packed.
+                    if let Some(data) = init.get(i) {
+                        let (row, slice) = (row as usize, (row * rows) as usize);
+                        for (r, out) in shadow.chunks_exact_mut(row).enumerate() {
+                            let (z, y) = (r / rows as usize, r % rows as usize);
+                            let at = z * data.slice_pitch as usize + y * data.row_pitch as usize;
+                            out.copy_from_slice(&data.bytes[at..at + row]);
+                        }
+                        debug_assert_eq!(shadow.len(), slice * slices as usize);
+                    }
+                    shadow
+                })
+                .collect::<Vec<_>>();
+            *texture.staged.borrow_mut() = shadow.iter().map(|_| Staged::Current).collect();
+            *texture.shadow.borrow_mut() = shadow;
+        }
+        Ok(Rc::new(texture))
+    }
+
+    /// Writes texels from the program's rows and slices at their own pitches: one write where the
+    /// slices lie row after row, otherwise one per slice.
+    pub(crate) fn write_texels(
+        &mut self,
+        format: Format,
+        region: &TextureRegion<'_, B>,
+        extent: Extent,
+        data: &SubresourceData<'_>,
+    ) {
+        let (row, rows) = format::row_bytes(format, extent.width, extent.height);
+        // Direct3D ignores the row pitch of a single row (a 1D texture).
+        let row_pitch = if rows == 1 { row } else { data.row_pitch };
+        let slice_pitch = data.slice_pitch;
+        if extent.depth_or_layers == 1 || slice_pitch == row_pitch * rows {
+            self.backend.write_texture(
+                region,
+                extent,
+                data.bytes,
+                row_pitch,
+                rows,
+                WriteMode::Ordered,
+            );
+            return;
+        }
+        for z in 0..extent.depth_or_layers {
+            let at = (z * slice_pitch) as usize;
+            let slice = TextureRegion {
+                origin: Origin {
+                    z: region.origin.z + z,
+                    ..region.origin
+                },
+                ..*region
+            };
+            self.backend.write_texture(
+                &slice,
+                Extent {
+                    depth_or_layers: 1,
+                    ..extent
+                },
+                &data.bytes[at..],
+                row_pitch,
+                rows,
+                WriteMode::Ordered,
+            );
+        }
     }
 
     /// A view of `texture`; `kind` is the bind flag the view needs (render target, depth stencil or
     /// shader resource), and `None` views the whole texture as Direct3D's defaults say.
     pub fn create_view(
         &mut self,
-        texture: &Rc<Texture2D<B>>,
+        texture: &Rc<Texture<B>>,
         desc: Option<&ViewDesc>,
         kind: u32,
     ) -> Result<Rc<View<B>>> {
@@ -670,12 +731,18 @@ impl<B: Backend> Device<B> {
                 "the resource lacks the bind flag the view needs",
             ));
         }
+        let arrayed = t.array_size > 1;
+        let cube = t.misc_flags & MISC_TEXTURECUBE != 0 && kind == bind::SHADER_RESOURCE;
         let whole = ViewDesc {
             format: t.format,
-            dimension: if t.array_size > 1 {
-                ViewDim::Texture2DArray
-            } else {
-                ViewDim::Texture2D
+            dimension: match (t.dimension, arrayed) {
+                (TexDim::D2, _) if cube && t.array_size == 6 => ViewDim::TextureCube,
+                (TexDim::D2, _) if cube => ViewDim::TextureCubeArray,
+                (TexDim::D1, false) => ViewDim::Texture1D,
+                (TexDim::D1, true) => ViewDim::Texture1DArray,
+                (TexDim::D2, false) => ViewDim::Texture2D,
+                (TexDim::D2, true) => ViewDim::Texture2DArray,
+                (TexDim::D3, _) => ViewDim::Texture3D,
             },
             first_mip: 0,
             mip_count: if kind == bind::SHADER_RESOURCE {
@@ -684,7 +751,7 @@ impl<B: Backend> Device<B> {
                 1
             },
             first_layer: 0,
-            layer_count: t.array_size,
+            layer_count: u32::MAX,
         };
         let mut v = desc.copied().unwrap_or(whole);
         if v.format == format::UNKNOWN {
@@ -693,16 +760,37 @@ impl<B: Backend> Device<B> {
         if v.mip_count == u32::MAX {
             v.mip_count = t.mip_levels - v.first_mip.min(t.mip_levels);
         }
-        if v.dimension == ViewDim::Texture2D {
+        let of = match v.dimension {
+            ViewDim::Texture1D | ViewDim::Texture1DArray => TexDim::D1,
+            ViewDim::Texture3D => TexDim::D3,
+            _ => TexDim::D2,
+        };
+        if of != t.dimension {
+            return Err(Error::InvalidArg(
+                "a view of a dimension the texture does not have",
+            ));
+        }
+        // Layers a view may see: a 3D view's are the depth slices of its first level.
+        let layers = match t.dimension {
+            TexDim::D3 => (t.depth >> v.first_mip.min(31)).max(1),
+            _ => t.array_size,
+        };
+        if matches!(v.dimension, ViewDim::Texture1D | ViewDim::Texture2D)
+            || (v.dimension == ViewDim::Texture3D && kind == bind::SHADER_RESOURCE)
+        {
             v.first_layer = 0;
-            v.layer_count = 1;
+            v.layer_count = if v.dimension == ViewDim::Texture3D {
+                layers
+            } else {
+                1
+            };
         }
         if v.layer_count == u32::MAX {
-            v.layer_count = t.array_size - v.first_layer.min(t.array_size);
+            v.layer_count = layers - v.first_layer.min(layers);
         }
         if v.first_mip + v.mip_count > t.mip_levels
             || v.mip_count == 0
-            || v.first_layer + v.layer_count > t.array_size
+            || v.first_layer + v.layer_count > layers
             || v.layer_count == 0
             || (kind != bind::SHADER_RESOURCE && v.mip_count != 1)
         {
@@ -716,16 +804,37 @@ impl<B: Backend> Device<B> {
                 "a view format the view's binding cannot take",
             ));
         }
-        let dimension = match v.dimension {
-            ViewDim::Texture2D => ViewDimension::D2,
-            ViewDim::Texture2DArray => ViewDimension::D2Array,
-            ViewDim::TextureCube => {
-                if !texture.gpu_desc.cube || v.layer_count != 6 {
-                    return Err(Error::InvalidArg(
-                        "a cube view needs six faces of a cube texture",
-                    ));
-                }
-                ViewDimension::Cube
+        let cube = matches!(
+            v.dimension,
+            ViewDim::TextureCube | ViewDim::TextureCubeArray
+        );
+        if cube
+            && (!texture.gpu_desc.cube
+                || !v.layer_count.is_multiple_of(6)
+                || (v.dimension == ViewDim::TextureCube && v.layer_count != 6))
+        {
+            return Err(Error::InvalidArg(
+                "a cube view needs faces in sixes of a cube texture",
+            ));
+        }
+        // A view drawn into is one layer (or one slice of a 3D level, chosen at the pass): with
+        // no shader choosing a layer, Direct3D draws into the first.
+        let (dimension, base_layer, layer_count) = if kind != bind::SHADER_RESOURCE {
+            match t.dimension {
+                TexDim::D3 => (ViewDimension::D3, 0, 1),
+                _ => (ViewDimension::D2, v.first_layer, 1),
+            }
+        } else {
+            let dimension = match v.dimension {
+                ViewDim::Texture1D | ViewDim::Texture2D => ViewDimension::D2,
+                ViewDim::Texture1DArray | ViewDim::Texture2DArray => ViewDimension::D2Array,
+                ViewDim::Texture3D => ViewDimension::D3,
+                ViewDim::TextureCube => ViewDimension::Cube,
+                ViewDim::TextureCubeArray => ViewDimension::CubeArray,
+            };
+            match dimension {
+                ViewDimension::D3 => (dimension, 0, 1),
+                _ => (dimension, v.first_layer, v.layer_count),
             }
         };
         self.live()?;
@@ -737,8 +846,8 @@ impl<B: Backend> Device<B> {
                 dimension,
                 base_mip: v.first_mip,
                 mip_count: v.mip_count,
-                base_layer: v.first_layer,
-                layer_count: v.layer_count,
+                base_layer,
+                layer_count,
                 stencil,
             },
         );
@@ -764,8 +873,9 @@ impl<B: Backend> Device<B> {
             return not_implemented("minimum and maximum filtering");
         }
         let anisotropic = d.filter & 0x40 != 0;
-        if anisotropic && !(1..=16).contains(&d.max_anisotropy) {
-            return Err(Error::InvalidArg("anisotropy must be 1 to 16"));
+        // Direct3D takes 0 as 1.
+        if anisotropic && d.max_anisotropy > 16 {
+            return Err(Error::InvalidArg("anisotropy above 16"));
         }
         if d.mip_lod_bias != 0.0 {
             return not_implemented("a level-of-detail bias (LodBiasInShader)");
@@ -819,7 +929,7 @@ impl<B: Backend> Device<B> {
                 d.max_lod.clamp(0.0, 32.0).to_bits(),
             ],
             anisotropy: if anisotropic {
-                d.max_anisotropy as u16
+                d.max_anisotropy.max(1) as u16
             } else {
                 1
             },
@@ -837,7 +947,7 @@ impl<B: Backend> Device<B> {
     pub fn create_blend_state(&mut self, d: &BlendDesc) -> Result<Rc<Blend<B>>> {
         // Targets past the first count only when they blend independently.
         let used = if d.independent { d.targets.len() } else { 1 };
-        for t in &d.targets[..used] {
+        for t in d.targets[..used].iter().filter(|t| t.enable) {
             check_blend_factor(t.src, false)?;
             check_blend_factor(t.dst, false)?;
             check_blend_factor(t.src_alpha, true)?;
@@ -1029,6 +1139,9 @@ pub(crate) fn gpu_buffer(d: &BufferDesc, size: u64) -> GpuBuffer {
             usage |= u;
         }
     }
+    if d.misc_flags & MISC_DRAWINDIRECT_ARGS != 0 {
+        usage |= BufferUsage::INDIRECT;
+    }
     if d.usage == usage::STAGING {
         usage |= BufferUsage::READ_BACK;
     }
@@ -1118,14 +1231,28 @@ fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
             ));
         }
     }
-    if d.bind_flags & (bind::RENDER_TARGET | bind::DEPTH_STENCIL) != 0 {
-        return Err(Error::InvalidArg("buffers cannot be targets"));
+    // Buffers bound for views, render targets and stream output are made; the views and the
+    // stream output binding are what is not served.
+    if d.bind_flags & bind::DEPTH_STENCIL != 0 {
+        return Err(Error::InvalidArg("buffers cannot hold depth"));
     }
-    if d.bind_flags & bind::STREAM_OUTPUT != 0 {
-        return not_implemented("stream output buffers");
+    let views = bind::SHADER_RESOURCE | bind::UNORDERED_ACCESS;
+    if d.misc_flags & MISC_STRUCTURED != 0 {
+        let s = d.structure_byte_stride;
+        if s == 0
+            || !s.is_multiple_of(4)
+            || s > 2048
+            || !d.byte_width.is_multiple_of(s)
+            || d.misc_flags & MISC_ALLOW_RAW_VIEWS != 0
+            || d.bind_flags & (bind::VERTEX_BUFFER | bind::INDEX_BUFFER) != 0
+        {
+            return Err(Error::InvalidArg(
+                "a structured buffer's stride and bindings",
+            ));
+        }
     }
-    if d.bind_flags & (bind::SHADER_RESOURCE | bind::UNORDERED_ACCESS) != 0 {
-        return not_implemented("buffer views");
+    if d.misc_flags & MISC_ALLOW_RAW_VIEWS != 0 && d.bind_flags & views == 0 {
+        return Err(Error::InvalidArg("a raw buffer is bound for views"));
     }
     match d.usage {
         usage::DEFAULT if d.cpu_access_flags == 0 => Ok(()),

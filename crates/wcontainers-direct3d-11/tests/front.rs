@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use wcontainers_direct3d_11::desc::*;
-use wcontainers_direct3d_11::object::{Buffer, Resource, Texture2D, View};
+use wcontainers_direct3d_11::object::{Buffer, Resource, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{Device, Error, PIXEL, Removal, VERTEX, shader};
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
@@ -34,10 +34,11 @@ fn find(log: &[String], prefix: &str) -> usize {
         .unwrap_or_else(|| panic!("no call starting {prefix:?} in {log:#?}"))
 }
 
-fn tex2d(width: u32, height: u32, format: u32, bind: u32) -> Texture2DDesc {
-    Texture2DDesc {
+fn tex2d(width: u32, height: u32, format: u32, bind: u32) -> TextureDesc {
+    TextureDesc {
         width,
         height,
+        depth: 1,
         mip_levels: 1,
         array_size: 1,
         format,
@@ -103,15 +104,15 @@ fn program(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement]) {
 }
 
 /// What the rig's `Gpu::read` does: copy into a staging texture and map it for reading.
-fn read(dev: &mut Dev, target: &Rc<Texture2D<Recorder>>) -> Vec<u8> {
+fn read(dev: &mut Dev, target: &Rc<Texture<Recorder>>) -> Vec<u8> {
     let mut desc = target.desc;
     desc.usage = usage::STAGING;
     desc.bind_flags = 0;
     desc.cpu_access_flags = cpu::READ;
-    let staging = dev.create_texture_2d(&desc, &[]).unwrap();
+    let staging = dev.create_texture(&desc, &[]).unwrap();
     let (dst, src) = (
-        Resource::Texture2D(staging),
-        Resource::Texture2D(target.clone()),
+        Resource::Texture(staging),
+        Resource::Texture(target.clone()),
     );
     dev.copy_subresource_region(&dst, 0, [0; 3], &src, 0, None)
         .unwrap();
@@ -186,7 +187,7 @@ fn feature_level_is_the_first_asked_for_that_is_served() {
 fn triangle_scene() {
     let mut dev = device();
     let target = dev
-        .create_texture_2d(&tex2d(256, 256, RGBA8, bind::RENDER_TARGET), &[])
+        .create_texture(&tex2d(256, 256, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     let start = dev.backend.log.len();
@@ -241,11 +242,11 @@ fn triangle_scene() {
 fn quads_scene() {
     let mut dev = device();
     let target = dev
-        .create_texture_2d(&tex2d(256, 256, RGBA8, bind::RENDER_TARGET), &[])
+        .create_texture(&tex2d(256, 256, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     let depth = dev
-        .create_texture_2d(&tex2d(256, 256, D32F, bind::DEPTH_STENCIL), &[])
+        .create_texture(&tex2d(256, 256, D32F, bind::DEPTH_STENCIL), &[])
         .unwrap();
     let dsv = dev.create_view(&depth, None, bind::DEPTH_STENCIL).unwrap();
     begin(&mut dev, &rtv, Some(&dsv), 256.0);
@@ -267,7 +268,7 @@ fn quads_scene() {
     let mut desc = tex2d(16, 16, RGBA8, bind::SHADER_RESOURCE);
     desc.usage = usage::IMMUTABLE;
     let texture = dev
-        .create_texture_2d(
+        .create_texture(
             &desc,
             &[SubresourceData {
                 bytes: &texels,
@@ -362,10 +363,9 @@ fn quads_scene() {
         d.usage = usage::STAGING;
         d.bind_flags = 0;
         d.cpu_access_flags = cpu::READ;
-        let s = dev.create_texture_2d(&d, &[]).unwrap();
-        let s = Resource::Texture2D(s);
-        dev.copy_resource(&s, &Resource::Texture2D(texture))
-            .unwrap();
+        let s = dev.create_texture(&d, &[]).unwrap();
+        let s = Resource::Texture(s);
+        dev.copy_resource(&s, &Resource::Texture(texture)).unwrap();
         let m = dev.map(&s, 0, map::READ, 0).unwrap();
         let bytes = unsafe { std::slice::from_raw_parts(m.data, 16 * 16 * 4) }.to_vec();
         dev.unmap(&s, 0);
@@ -378,7 +378,7 @@ fn quads_scene() {
 fn topology_scene() {
     let mut dev = device();
     let target = dev
-        .create_texture_2d(&tex2d(256, 256, RGBA8, bind::RENDER_TARGET), &[])
+        .create_texture(&tex2d(256, 256, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     begin(&mut dev, &rtv, None, 256.0);
@@ -523,7 +523,7 @@ fn creation_checks_refuse_what_direct3d_refuses() {
         Err(Error::InvalidArg(_))
     ));
     assert!(matches!(
-        dev.create_texture_2d(&tex2d(16385, 1, RGBA8, 0), &[]),
+        dev.create_texture(&tex2d(16385, 1, RGBA8, 0), &[]),
         Err(Error::InvalidArg(_))
     ));
     assert!(matches!(
@@ -546,7 +546,7 @@ fn creation_checks_refuse_what_direct3d_refuses() {
     let missing = dev.create_input_layout(&[element("POSITION", RG32F, 0)], &corpus("triangle.vs"));
     assert!(matches!(missing, Err(Error::InvalidArg(_))));
     let target = dev
-        .create_texture_2d(&tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE), &[])
+        .create_texture(&tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE), &[])
         .unwrap();
     assert!(matches!(
         dev.create_view(&target, None, bind::RENDER_TARGET),
@@ -556,7 +556,11 @@ fn creation_checks_refuse_what_direct3d_refuses() {
     let mut blend = BlendDesc::default();
     blend.targets[0] = BlendDesc::default_state().targets[0];
     assert!(dev.create_blend_state(&blend).is_ok());
+    // Independent targets that do not blend may hold zero factors (Wine's test_independent_blend
+    // and test_color_mask, on real Direct3D); one that blends with them is refused.
     blend.independent = true;
+    assert!(dev.create_blend_state(&blend).is_ok());
+    blend.targets[1].enable = true;
     assert!(matches!(
         dev.create_blend_state(&blend),
         Err(Error::InvalidArg(_))
@@ -608,7 +612,7 @@ fn made(log: &[String], prefix: &str) -> String {
 fn empty_slots_read_zeros_and_sample_with_the_default_state() {
     let mut dev = device();
     let target = dev
-        .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     begin(&mut dev, &rtv, None, 16.0);
@@ -662,15 +666,15 @@ fn empty_slots_read_zeros_and_sample_with_the_default_state() {
 #[test]
 fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
     let mut dev = device();
-    let source = Resource::Texture2D(
-        dev.create_texture_2d(&tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE), &[])
+    let source = Resource::Texture(
+        dev.create_texture(&tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE), &[])
             .unwrap(),
     );
     let staging = |dev: &mut Dev, format| {
         let mut d = tex2d(4, 4, format, 0);
         d.usage = usage::STAGING;
         d.cpu_access_flags = cpu::READ;
-        Resource::Texture2D(dev.create_texture_2d(&d, &[]).unwrap())
+        Resource::Texture(dev.create_texture(&d, &[]).unwrap())
     };
     // R8G8B8A8_UNORM_SRGB and _UINT share the group; R32_FLOAT does not; R32G32_UINT and BC1 are
     // Direct3D 10.1's conversion, not served.
@@ -689,8 +693,8 @@ fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
         dev.copy_subresource_region(&dst, 0, [0; 3], &source, 0, None),
         Err(Error::InvalidArg(_))
     ));
-    let wide = Resource::Texture2D(
-        dev.create_texture_2d(&tex2d(1, 1, 17, bind::SHADER_RESOURCE), &[])
+    let wide = Resource::Texture(
+        dev.create_texture(&tex2d(1, 1, 17, bind::SHADER_RESOURCE), &[])
             .unwrap(),
     );
     let bc1 = staging(&mut dev, 71);
@@ -705,8 +709,8 @@ fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
 fn depth_stencil_copies_are_whole_and_of_both_aspects() {
     let mut dev = device();
     let ds = |dev: &mut Dev| {
-        Resource::Texture2D(
-            dev.create_texture_2d(&tex2d(4, 4, 45, bind::DEPTH_STENCIL), &[])
+        Resource::Texture(
+            dev.create_texture(&tex2d(4, 4, 45, bind::DEPTH_STENCIL), &[])
                 .unwrap(),
         )
     };
@@ -741,7 +745,7 @@ fn depth_stencil_copies_are_whole_and_of_both_aspects() {
 fn vertex_ids_with_a_start_location_are_not_served() {
     let mut dev = device();
     let target = dev
-        .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     begin(&mut dev, &rtv, None, 16.0);
@@ -778,7 +782,7 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
     for (multisample, antialiased_lines) in [(true, false), (false, true)] {
         let mut dev = device();
         let target = dev
-            .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+            .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
             .unwrap();
         let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
         begin(&mut dev, &rtv, None, 16.0);
@@ -822,7 +826,7 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
 /// A target, cleared and bound, with a program of the corpus and a vertex buffer of `stride` bytes.
 fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u32) {
     let target = dev
-        .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     begin(dev, &rtv, None, 16.0);
@@ -947,13 +951,13 @@ fn formats_direct3d_defines_but_the_front_does_not_serve_are_not_implemented() {
     // R32G32B32_TYPELESS and _FLOAT are valid; 0 and 500 are no format.
     for typeless in [5, 6] {
         assert!(matches!(
-            dev.create_texture_2d(&tex2d(4, 4, typeless, bind::SHADER_RESOURCE), &[]),
+            dev.create_texture(&tex2d(4, 4, typeless, bind::SHADER_RESOURCE), &[]),
             Err(Error::NotImplemented(_))
         ));
     }
     for bad in [0, 500] {
         assert!(matches!(
-            dev.create_texture_2d(&tex2d(4, 4, bad, bind::SHADER_RESOURCE), &[]),
+            dev.create_texture(&tex2d(4, 4, bad, bind::SHADER_RESOURCE), &[]),
             Err(Error::InvalidArg(_))
         ));
     }
@@ -989,7 +993,7 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
     let mut dev = device();
     dev.backend.reads_need_submit = true;
     let source = dev
-        .create_texture_2d(
+        .create_texture(
             &tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE),
             &[SubresourceData {
                 bytes: &[7; 64],
@@ -1002,9 +1006,9 @@ fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
         let mut d = tex2d(4, 4, RGBA8, 0);
         d.usage = usage::STAGING;
         d.cpu_access_flags = access;
-        Resource::Texture2D(dev.create_texture_2d(&d, &[]).unwrap())
+        Resource::Texture(dev.create_texture(&d, &[]).unwrap())
     };
-    let src = Resource::Texture2D(source);
+    let src = Resource::Texture(source);
     let readable = staging(&mut dev, cpu::READ);
     let start = dev.backend.log.len();
     dev.copy_subresource_region(&readable, 0, [0; 3], &src, 0, None)
@@ -1105,7 +1109,7 @@ fn a_view_of_a_target_is_unbound_and_cannot_be_bound() {
     let mut dev = device();
     let mut d = tex2d(8, 8, RGBA8, bind::RENDER_TARGET | bind::SHADER_RESOURCE);
     d.mip_levels = 2;
-    let t = dev.create_texture_2d(&d, &[]).unwrap();
+    let t = dev.create_texture(&d, &[]).unwrap();
     let srv = dev.create_view(&t, None, bind::SHADER_RESOURCE).unwrap();
     let rtv = dev.create_view(&t, None, bind::RENDER_TARGET).unwrap();
     dev.set_shader_resources(PIXEL, 3, &[Some(srv.clone())])
@@ -1131,7 +1135,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
     // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
     // to read depth and stencil; a D format is for depth-stencil views only.
     let depth = dev
-        .create_texture_2d(
+        .create_texture(
             &tex2d(4, 4, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
             &[],
         )
@@ -1162,7 +1166,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
     }
     // R32_TYPELESS bound for depth is stored as depth and read as R32_FLOAT.
     let r32 = dev
-        .create_texture_2d(
+        .create_texture(
             &tex2d(4, 4, 39, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
             &[],
         )
@@ -1174,7 +1178,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         .unwrap();
     // R8G8B8A8_TYPELESS: UNORM and UNORM_SRGB views; UINT would reinterpret the bits.
     let colour = dev
-        .create_texture_2d(
+        .create_texture(
             &tex2d(4, 4, 27, bind::RENDER_TARGET | bind::SHADER_RESOURCE),
             &[],
         )

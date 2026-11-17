@@ -120,8 +120,11 @@ fn webgpu_reports_11_0_and_tier_1() {
     assert!(!o.double_precision_float_shader_ops && !o.output_merger_logic_op);
     let o1 = options1(&caps);
     assert!(!o1.wave_ops && !o1.int64_shader_ops);
-    assert_eq!(shader_model(0x66), SHADER_MODEL_6_0);
-    assert_eq!(shader_model(0x51), 0x51);
+    assert_eq!(shader_model(0x66), Ok(SHADER_MODEL_6_0));
+    assert_eq!(shader_model(0x51), Ok(0x51));
+    for named_nothing in [0, 0x52, 0x89] {
+        assert!(shader_model(named_nothing).is_err());
+    }
     assert!(!depth_bounds(&caps));
     assert_eq!(ABSENT_TIER, 0);
     // R8G8B8A8_UNORM, then A8_UNORM, which the recorder lacks.

@@ -11,7 +11,13 @@
 //!   compare-features)
 //!   check_d3d12 fence-wait [rounds]   (time from a queue's signal to its fence event, waited for)
 //!   check_d3d12 answers <out.txt>   (results of calls at the edges of the API, for compare-features)
+//!   check_d3d12 cases <out.txt>   (the pass bar's cases, each in a process of its own; check/cases.rs)
+//!   check_d3d12 compare-cases <real.txt> <ours.txt>
 //! It draws with the rig's triangle shaders.
+
+#[cfg(windows)]
+#[path = "check/cases.rs"]
+mod cases;
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -82,6 +88,45 @@ fn main() -> windows::core::Result<()> {
         }
         Some("outputs") => {
             std::fs::write(&args[2], outputs()?).expect("writing the answers");
+        }
+        Some("case") => match cases::run(&args[2]) {
+            Ok(line) => println!("{line}"),
+            Err(e) => println!("error {e}"),
+        },
+        Some("cases") => {
+            let mut out = String::new();
+            for name in cases::CASES {
+                let run =
+                    std::process::Command::new(std::env::current_exe().expect("this program"))
+                        .args(["case", name])
+                        .output()
+                        .expect("running a case");
+                for l in String::from_utf8_lossy(&run.stderr).lines() {
+                    eprintln!("{name}: {l}");
+                }
+                let line = String::from_utf8_lossy(&run.stdout);
+                let line = match line.lines().last() {
+                    Some(l) if run.status.success() => l.to_string(),
+                    _ => format!("failed: {}", run.status),
+                };
+                out.push_str(&format!("{name}: {line}\n"));
+            }
+            std::fs::write(&args[2], out).expect("writing the results");
+        }
+        Some("compare-cases") => {
+            let real = std::fs::read_to_string(&args[2]).expect("real Direct3D 12's results");
+            let ours = std::fs::read_to_string(&args[3]).expect("our results");
+            let mut differ = 0;
+            for (r, o) in real.lines().zip(ours.lines()) {
+                if r == o {
+                    println!("same     {r}");
+                } else {
+                    differ += 1;
+                    println!("DIFFERS  real {r}\n         ours {o}");
+                }
+            }
+            println!("{differ} of {} cases differ", real.lines().count());
+            std::process::exit(i32::from(differ > 0));
         }
         Some("answers") => {
             std::fs::write(&args[2], answers()?).expect("writing the answers");

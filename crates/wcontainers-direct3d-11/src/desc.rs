@@ -78,11 +78,24 @@ pub struct BufferDesc {
     pub structure_byte_stride: u32,
 }
 
-/// `D3D11_TEXTURE2D_DESC`.
+/// A texture's dimension, as `D3D11_RESOURCE_DIMENSION` names it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Texture2DDesc {
+pub enum TexDim {
+    D1,
+    #[default]
+    D2,
+    D3,
+}
+
+/// `D3D11_TEXTURE1D_DESC`, `D3D11_TEXTURE2D_DESC` and `D3D11_TEXTURE3D_DESC` as one: `height` is 1
+/// for 1D, `depth` 1 for 1D and 2D, `array_size` 1 for 3D, and the sample description 1 and 0 for
+/// 1D and 3D.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TextureDesc {
+    pub dimension: TexDim,
     pub width: u32,
     pub height: u32,
+    pub depth: u32,
     pub mip_levels: u32,
     pub array_size: u32,
     pub format: u32,
@@ -94,6 +107,12 @@ pub struct Texture2DDesc {
     pub misc_flags: u32,
 }
 
+/// `D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS`, `_BUFFER_ALLOW_RAW_VIEWS` and `_BUFFER_STRUCTURED`.
+pub const MISC_DRAWINDIRECT_ARGS: u32 = 0x10;
+pub const MISC_ALLOW_RAW_VIEWS: u32 = 0x20;
+pub const MISC_STRUCTURED: u32 = 0x40;
+/// `D3D11_RESOURCE_MISC_GENERATE_MIPS`.
+pub const MISC_GENERATE_MIPS: u32 = 0x1;
 /// `D3D11_RESOURCE_MISC_TEXTURECUBE`.
 pub const MISC_TEXTURECUBE: u32 = 0x4;
 
@@ -105,7 +124,9 @@ pub struct SubresourceData<'a> {
     pub slice_pitch: u32,
 }
 
-/// The part of a texture a view sees: `D3D11_*_VIEW_DESC` for the 2D dimensions.
+/// The part of a texture a view sees: `D3D11_*_VIEW_DESC` for the texture dimensions. Layers are
+/// a 3D view's depth slices (a render target's `FirstWSlice` and `WSize`), and a cube array's
+/// layers count faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewDesc {
     pub format: u32,
@@ -119,9 +140,13 @@ pub struct ViewDesc {
 /// The view dimensions this front serves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewDim {
+    Texture1D,
+    Texture1DArray,
     Texture2D,
     Texture2DArray,
+    Texture3D,
     TextureCube,
+    TextureCubeArray,
 }
 
 /// `D3D11_SAMPLER_DESC`.
@@ -310,6 +335,13 @@ pub struct Box3 {
     pub right: u32,
     pub bottom: u32,
     pub back: u32,
+}
+
+impl Box3 {
+    /// Whether the box holds nothing in some dimension, which makes Direct3D drop the call.
+    pub fn empty(&self) -> bool {
+        self.right <= self.left || self.bottom <= self.top || self.back <= self.front
+    }
 }
 
 /// `D3D11_PRIMITIVE_TOPOLOGY`.

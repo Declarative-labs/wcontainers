@@ -39,19 +39,18 @@ fn main() -> windows::core::Result<()> {
     let r = unsafe { device.CreateGeometryShader(GS, None, Some(&mut gs)) };
     println!("CreateGeometryShader {:#010x}", code(r));
 
-    let desc = D3D11_TEXTURE3D_DESC {
-        Width: 4,
-        Height: 4,
-        Depth: 4,
-        MipLevels: 1,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-        Usage: D3D11_USAGE_DEFAULT,
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-        ..Default::default()
-    };
-    let mut volume = None;
-    let r = unsafe { device.CreateTexture3D(&desc, None, Some(&mut volume)) };
-    println!("CreateTexture3D {:#010x}", code(r));
+    for (name, kind) in [
+        ("occlusion", D3D11_QUERY_OCCLUSION),
+        ("timestamp", D3D11_QUERY_TIMESTAMP),
+    ] {
+        let mut q = None;
+        let desc = D3D11_QUERY_DESC {
+            Query: kind,
+            MiscFlags: 0,
+        };
+        let r = unsafe { device.CreateQuery(&desc, Some(&mut q)) };
+        println!("CreateQuery({name}) {:#010x}", code(r));
+    }
 
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: 64,
@@ -64,6 +63,11 @@ fn main() -> windows::core::Result<()> {
     let mut structured = None;
     let r = unsafe { device.CreateBuffer(&desc, None, Some(&mut structured)) };
     println!("CreateBuffer(structured) {:#010x}", code(r));
+    let mut view = None;
+    let r = unsafe {
+        device.CreateShaderResourceView(structured.as_ref().unwrap(), None, Some(&mut view))
+    };
+    println!("CreateShaderResourceView(structured) {:#010x}", code(r));
 
     let r = unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, 4) };
     let levels = r.as_ref().map_or(0, |l| *l);
