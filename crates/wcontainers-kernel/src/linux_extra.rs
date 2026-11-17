@@ -652,3 +652,13 @@ pub(crate) const TCP_TIME_WAIT: u8 = 6;
 pub(crate) const TCP_CLOSE: u8 = 7;
 pub(crate) const TCP_CLOSE_WAIT: u8 = 8;
 pub(crate) const TCP_LISTEN: u8 = 10;
+
+/// Where a queued socket error came from (`linux/errqueue.h`, which linux-raw-sys does not
+/// generate).
+pub(crate) const SO_EE_ORIGIN_ICMP: u8 = 2;
+pub(crate) const SO_EE_ORIGIN_ICMP6: u8 = 3;
+/// The ICMP and ICMPv6 type and code of an unreachable port (`linux/icmp.h`, `linux/icmpv6.h`).
+pub(crate) const ICMP_DEST_UNREACH: u8 = 3;
+pub(crate) const ICMP_PORT_UNREACH: u8 = 3;
+pub(crate) const ICMPV6_DEST_UNREACH: u8 = 1;
+pub(crate) const ICMPV6_PORT_UNREACH: u8 = 4;

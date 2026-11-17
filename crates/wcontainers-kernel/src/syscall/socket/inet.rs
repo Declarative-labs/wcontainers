@@ -157,6 +157,20 @@ pub(crate) struct Inet {
     pub pingpong: bool,
     /// The program has read the end its FIN marks.
     pub fin_read: bool,
+    /// Errors queued under IP_RECVERR or IPV6_RECVERR, first first (`sk_error_queue`).
+    pub errors: VecDeque<QueuedError>,
+}
+
+/// A UDP datagram's port unreachable error, as `ip_icmp_error` and `ipv6_icmp_error` queue it.
+pub(crate) struct QueuedError {
+    /// The datagram's destination, which the read names and whose host sent the error.
+    to: Endpoint,
+    /// The datagram's source, where the error came.
+    from: [u8; 16],
+    /// What the error message carried of the datagram.
+    data: Vec<u8>,
+    truesize: u64,
+    time: Option<crate::fs::Time>,
 }
 
 impl Inet {
@@ -182,6 +196,7 @@ impl Inet {
             received: false,
             pingpong: false,
             fin_read: false,
+            errors: VecDeque::new(),
         }
     }
 }
@@ -1304,7 +1319,7 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
     let inet = own.inet.as_deref().unwrap();
     let mut mask = 0u32;
     if inet.protocol == Protocol::Udp {
-        if own.error != 0 {
+        if own.error != 0 || !inet.errors.is_empty() {
             mask |= EPOLLERR;
         }
         if own.shutdown & RCV_SHUTDOWN != 0 {
@@ -1868,7 +1883,7 @@ fn udp_send(
                     sender: Weak::new(),
                     truesize,
                     source: Some(from),
-                    arrival: Some(arrival_from(socket, &to, sent)),
+                    arrival: Some(prepared(&receiver, arrival_from(socket, &to, sent))),
                     time: super::stamp(kernel, cx, &receiver),
                     urgent: false,
                 };
@@ -1876,22 +1891,161 @@ fn udp_send(
                 super::data_ready(kernel, cx, &receiver, EPOLLIN | EPOLLRDNORM);
             }
         }
-        None if unicast(&to.address) => {
-            // Port unreachable: a connected sender hears of it (`__udp4_lib_err`).
-            let connected_to = {
-                let own = socket.borrow();
-                (own.state == State::Connected)
-                    .then(|| own.inet.as_deref().unwrap().remote)
-                    .flatten()
-            };
-            if connected_to == Some(to) {
-                socket.borrow_mut().error = Errno::ECONNREFUSED.0 as i32;
-                super::error_report(kernel, cx, socket);
-            }
-        }
+        None if unicast(&to.address) => port_unreachable(kernel, cx, socket, to, from, &data),
         None => {}
     }
     Ok(total)
+}
+
+/// `__udp4_lib_err` and `__udp6_lib_err` for a datagram to `to` no socket took: with the error
+/// option of the way it went its sender queues the error (`ip_icmp_error`, if its receive buffer
+/// has room) and hears of it; without, only a sender connected to `to` hears of it.
+fn port_unreachable(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    to: Endpoint,
+    from: Endpoint,
+    data: &[u8],
+) {
+    let v4 = v4_of(&to.address).is_some();
+    let recverr = {
+        let own = socket.borrow();
+        if v4 {
+            flag(&own, SOL_IP, IP_RECVERR)
+        } else {
+            flag(&own, SOL_IPV6, IPV6_RECVERR)
+        }
+    };
+    if !recverr {
+        let connected_to = {
+            let own = socket.borrow();
+            (own.state == State::Connected)
+                .then(|| own.inet.as_deref().unwrap().remote)
+                .flatten()
+        };
+        if connected_to == Some(to) {
+            socket.borrow_mut().error = Errno::ECONNREFUSED.0 as i32;
+            super::error_report(kernel, cx, socket);
+        }
+        return;
+    }
+    // ICMP quotes the packet up to 576 bytes in all, ICMPv6 up to IPv6's minimum MTU (measured:
+    // 520 and 1184 bytes of the datagram).
+    let (headers, room) = if v4 { (56, 576 - 56) } else { (96, 1280 - 96) };
+    let quoted = &data[..data.len().min(room)];
+    let truesize = datagram_truesize(quoted.len() as u64 + headers);
+    let time = super::stamp(kernel, cx, socket);
+    {
+        let mut own = socket.borrow_mut();
+        let held: u64 = own.queue.iter().map(|packet| packet.truesize).sum::<u64>()
+            + own
+                .inet
+                .as_deref()
+                .unwrap()
+                .errors
+                .iter()
+                .map(|error| error.truesize)
+                .sum::<u64>();
+        if held + truesize < own.rcvbuf {
+            own.inet
+                .as_deref_mut()
+                .unwrap()
+                .errors
+                .push_back(QueuedError {
+                    to,
+                    from: from.address,
+                    data: quoted.to_vec(),
+                    truesize,
+                    time,
+                });
+        }
+        own.error = Errno::ECONNREFUSED.0 as i32;
+    }
+    super::error_report(kernel, cx, socket);
+}
+
+/// `ip_recv_error` and `ipv6_recv_error`: the first queued error, taken even by a peek, named by
+/// its datagram's destination, with the error message's own control messages and then the
+/// error's; the socket's error becomes the next one's, or none (`sock_dequeue_err_skb`).
+fn read_error(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    parts: super::Data<'_>,
+) -> Result<(u64, Received), Errno> {
+    let Some(error) = inet(socket).errors.pop_front() else {
+        return Err(Errno::EAGAIN);
+    };
+    let next = !inet_ref(socket).errors.is_empty();
+    socket.borrow_mut().error = if next {
+        Errno::ECONNREFUSED.0 as i32
+    } else {
+        0
+    };
+    if next {
+        super::error_report(kernel, cx, socket);
+    }
+    let size = parts.size();
+    let copied = (error.data.len() as u64).min(size);
+    scatter(kernel, cx, tid, parts, &error.data[..copied as usize])?;
+    let family = socket.borrow().family;
+    let v4 = v4_of(&error.to.address).is_some();
+    // `struct sock_extended_err` and the offender, the host that sent the error.
+    let mut extended = Errno::ECONNREFUSED.0.to_le_bytes().to_vec();
+    use crate::linux_extra::{
+        ICMP_DEST_UNREACH, ICMP_PORT_UNREACH, ICMPV6_DEST_UNREACH, ICMPV6_PORT_UNREACH,
+        SO_EE_ORIGIN_ICMP, SO_EE_ORIGIN_ICMP6,
+    };
+    if v4 {
+        extended.extend_from_slice(&[SO_EE_ORIGIN_ICMP, ICMP_DEST_UNREACH, ICMP_PORT_UNREACH, 0]);
+    } else {
+        extended.extend_from_slice(&[
+            SO_EE_ORIGIN_ICMP6,
+            ICMPV6_DEST_UNREACH,
+            ICMPV6_PORT_UNREACH,
+            0,
+        ]);
+    }
+    extended.extend_from_slice(&[0; 8]);
+    let offender = Endpoint {
+        address: error.to.address,
+        port: 0,
+    };
+    extended.extend_from_slice(&address_bytes(family, &offender));
+    let level = if family == AF_INET { SOL_IP } else { SOL_IPV6 };
+    let kind = if family == AF_INET {
+        IP_RECVERR
+    } else {
+        IPV6_RECVERR
+    };
+    let index = if v4_of(&error.from) == Some(network::ADDRESS) {
+        network::ETHERNET_INDEX
+    } else {
+        network::LOOPBACK_INDEX
+    };
+    let mut received = Received {
+        address: Some(address_bytes(family, &error.to)),
+        flags: MSG_ERRQUEUE,
+        // The error message's header: ICMP's precedence is internetwork control.
+        arrival: Some(Arrival {
+            destination: error.from,
+            index,
+            ttl: 64,
+            tos: if v4 { 0xc0 } else { 0 },
+            known: true,
+            error: true,
+            prepared: true,
+        }),
+        error: Some((level, kind, extended)),
+        time: error.time,
+        ..Received::default()
+    };
+    if copied < error.data.len() as u64 {
+        received.flags |= MSG_TRUNC;
+    }
+    Ok((copied, received))
 }
 
 /// The UDP socket a datagram to `to` from `from` goes to: the most specific match, a connected
@@ -1939,9 +2093,8 @@ pub(super) fn receive(
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
     let size = parts.size();
-    // `ip_recv_error`: the error queue (extended errors under IP_RECVERR are not built) is empty.
     if flags & MSG_ERRQUEUE != 0 {
-        return Err(Errno::EAGAIN);
+        return read_error(kernel, cx, tid, socket, parts);
     }
     if inet_ref(socket).protocol == Protocol::Udp {
         return udp_receive(kernel, cx, tid, socket, parts, size, flags, nonblocking);
@@ -2130,6 +2283,8 @@ fn arrival_from(sender: &SocketRef, to: &Endpoint, sent: SentControl) -> Arrival
         ttl: ttl as u8,
         tos: tos as u8,
         known: true,
+        error: false,
+        prepared: true,
     }
 }
 
@@ -2141,6 +2296,8 @@ pub(super) fn arrival_outside() -> Arrival {
         ttl: 64,
         tos: 0,
         known: false,
+        error: false,
+        prepared: true,
     }
 }
 
@@ -2153,6 +2310,22 @@ pub(crate) struct Arrival {
     pub tos: u8,
     /// Whether the TTL and type of service are the sender's (else 64 and 0, made up).
     pub known: bool,
+    /// An error message's, whose IPv4 packet information names no local address.
+    pub error: bool,
+    /// Whether its receiver asked for packet information when it came (`ipv4_pktinfo_prepare`):
+    /// if not, an IPv4 datagram's names no interface or local address.
+    pub prepared: bool,
+}
+
+/// What `ipv4_pktinfo_prepare` keeps of a datagram as it is queued for `receiver`.
+pub(super) fn prepared(receiver: &SocketRef, arrival: Arrival) -> Arrival {
+    let own = receiver.borrow();
+    let asked = flag(&own, SOL_IP, IP_PKTINFO)
+        || (own.family == AF_INET6 && flag(&own, SOL_IPV6, IPV6_RECVPKTINFO));
+    Arrival {
+        prepared: asked,
+        ..arrival
+    }
 }
 
 /// The control messages of IP_PKTINFO, IP_RECVTTL, IP_RECVTOS and their IPv6 forms for a
@@ -2169,11 +2342,16 @@ pub(super) fn arrival_messages(
     let on = |level: u32, name: u32| flag(&own, level, name);
     let mut out = Vec::new();
     let v4 = v4_of(&arrival.destination);
+    let index = if arrival.prepared || v4.is_none() {
+        arrival.index
+    } else {
+        0
+    };
     let mut header_used = false;
     if own.family == AF_INET6 {
         if on(SOL_IPV6, IPV6_RECVPKTINFO) {
             let mut data = arrival.destination.to_vec();
-            data.extend_from_slice(&arrival.index.to_le_bytes());
+            data.extend_from_slice(&index.to_le_bytes());
             out.push((SOL_IPV6, IPV6_PKTINFO, data));
         }
         if v4.is_none() {
@@ -2197,8 +2375,9 @@ pub(super) fn arrival_messages(
     }
     if let Some(destination) = v4 {
         if on(SOL_IP, IP_PKTINFO) {
-            let mut data = arrival.index.to_le_bytes().to_vec();
-            data.extend_from_slice(&destination);
+            let mut data = index.to_le_bytes().to_vec();
+            let named = arrival.prepared && !arrival.error;
+            data.extend_from_slice(if named { &destination } else { &[0; 4] });
             data.extend_from_slice(&destination);
             out.push((SOL_IP, IP_PKTINFO, data));
         }
@@ -2399,8 +2578,14 @@ pub(super) fn set_option(
                     }
                     store(socket, value)
                 }
-                IP_RECVERR
-                | IP_FREEBIND
+                // Turning the error option off empties the error queue.
+                IP_RECVERR => {
+                    if value == 0 {
+                        inet(socket).errors.clear();
+                    }
+                    store(socket, i32::from(value != 0))
+                }
+                IP_FREEBIND
                 | IP_TRANSPARENT
                 | IP_BIND_ADDRESS_NO_PORT
                 | IP_MULTICAST_LOOP
@@ -2449,8 +2634,14 @@ pub(super) fn set_option(
                     }
                     store(socket, value)
                 }
-                IPV6_RECVERR | IPV6_MULTICAST_LOOP | IPV6_FREEBIND | IPV6_TRANSPARENT
-                | IPV6_DONTFRAG | IPV6_RECVPKTINFO | IPV6_RECVHOPLIMIT | IPV6_RECVTCLASS => {
+                IPV6_RECVERR => {
+                    if value == 0 {
+                        inet(socket).errors.clear();
+                    }
+                    store(socket, i32::from(value != 0))
+                }
+                IPV6_MULTICAST_LOOP | IPV6_FREEBIND | IPV6_TRANSPARENT | IPV6_DONTFRAG
+                | IPV6_RECVPKTINFO | IPV6_RECVHOPLIMIT | IPV6_RECVTCLASS => {
                     store(socket, i32::from(value != 0))
                 }
                 _ => not_built(kernel, cx),

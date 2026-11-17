@@ -57,3 +57,9 @@ fn socket_mappings_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "tcpmap", &[]);
 }
+
+#[test]
+fn error_queue_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "recverr", &[]);
+}

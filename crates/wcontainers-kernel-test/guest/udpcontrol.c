@@ -139,5 +139,20 @@ int main(void) {
     printf("v4 pktinfo on v6 %d\n", setsockopt(r6, IPPROTO_IP, IP_PKTINFO, &one, sizeof one));
     sendto(s, "eight", 5, 0, (void *)&to6, sizeof to6);
     show("ipv4 to ipv6 with ip options", r6, 512);
+    // Packet information is kept for a datagram only if it was asked for when the datagram came.
+    one = 0;
+    setsockopt(r4, IPPROTO_IP, IP_PKTINFO, &one, sizeof one);
+    setsockopt(r6, IPPROTO_IP, IP_PKTINFO, &one, sizeof one);
+    setsockopt(r6, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof one);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sendto(plain, "late", 4, 0, (void *)&a, sizeof a);
+    sendto(s, "late6", 5, 0, (void *)&to6, sizeof to6);
+    sendto(s6, "late66", 6, 0, (void *)&b, sizeof b);
+    one = 1;
+    setsockopt(r4, IPPROTO_IP, IP_PKTINFO, &one, sizeof one);
+    setsockopt(r6, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof one);
+    show("asked late", r4, 512);
+    show("asked late ipv4 to ipv6", r6, 512);
+    show("asked late ipv6", r6, 512);
     return 0;
 }

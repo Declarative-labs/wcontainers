@@ -1766,6 +1766,8 @@ struct Received {
     arrival: Option<inet::Arrival>,
     /// When the bytes came, for SO_TIMESTAMP and SO_TIMESTAMPNS.
     time: Option<crate::fs::Time>,
+    /// A queued error's control message (level, type, data), after the others.
+    error: Option<(u32, u32, Vec<u8>)>,
 }
 
 /// `unix_stream_read_generic` and `__unix_dgram_recvmsg`: bytes into `parts`, waiting for some
@@ -2630,6 +2632,9 @@ pub(super) fn recvmsg(
         for (level, kind, data) in inet::arrival_messages(kernel, cx, &socket, arrival) {
             put_control(&mut control, room, level, kind, &data, &mut out_flags);
         }
+    }
+    if let Some((level, kind, data)) = &received.error {
+        put_control(&mut control, room, *level, *kind, data, &mut out_flags);
     }
     let passcred = socket.borrow().passcred && socket.borrow().family == AF_UNIX;
     if passcred {

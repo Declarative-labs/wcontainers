@@ -13,8 +13,8 @@ use crate::linux::net::net_device_flags::{
     IFF_BROADCAST, IFF_LOOPBACK, IFF_LOWER_UP, IFF_MULTICAST, IFF_RUNNING, IFF_UP,
 };
 use crate::linux::net::{
-    AF_INET, AF_INET6, AF_NETLINK, AF_UNSPEC, IF_OPER_UNKNOWN, IF_OPER_UP, MSG_PEEK, MSG_TRUNC,
-    SOCK_DGRAM, SOCK_RAW, SOL_NETLINK,
+    AF_INET, AF_INET6, AF_NETLINK, AF_UNSPEC, IF_OPER_UNKNOWN, IF_OPER_UP, MSG_OOB, MSG_PEEK,
+    MSG_TRUNC, SOCK_DGRAM, SOCK_RAW, SOL_NETLINK,
 };
 use crate::linux::netlink::rtattr_type_t::*;
 use crate::linux::netlink::*;
@@ -878,6 +878,10 @@ pub(super) fn receive(
     flags: u32,
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
+    // `netlink_recvmsg` has no urgent data.
+    if flags & MSG_OOB != 0 {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let size = parts.size();
     if socket.borrow().queue.is_empty() {
         let timeout = socket.borrow().receive_timeout;

@@ -15,6 +15,7 @@ use wcontainers_abi::{ConnectionId, HostError};
 use super::inet::{Endpoint, Protocol, mapped, v4_of};
 use super::{Packet, RCV_SHUTDOWN, SHUTDOWN_MASK, Socket, SocketRef, State, channel};
 use crate::linux::general::*;
+use crate::linux::net::{IP_RECVERR, IPV6_RECVERR, SOL_IP, SOL_IPV6};
 use crate::{Context, Errno, Kernel, network};
 
 /// The most bytes pulled from the host at once.
@@ -292,7 +293,8 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                     sender: Weak::new(),
                     truesize,
                     source: flow,
-                    arrival: (!stream).then(super::inet::arrival_outside),
+                    arrival: (!stream)
+                        .then(|| super::inet::prepared(socket, super::inet::arrival_outside())),
                     time: super::stamp(kernel, cx, socket),
                     urgent: false,
                 };
@@ -313,7 +315,7 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                         .then(|| own.inet.as_deref().and_then(|inet| inet.remote))
                         .flatten()
                 };
-                let told = connected_to == flow;
+                let told = connected_to == flow || unqueued_error(kernel, cx, socket, flow);
                 if told {
                     socket.borrow_mut().error = Errno::ECONNREFUSED.0 as i32;
                 }
@@ -344,6 +346,34 @@ fn forget_flow(kernel: &mut Kernel, socket: &SocketRef, id: u32) {
     if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
         inet.flows.retain(|_, flow| *flow != id);
     }
+}
+
+/// Whether a socket that asked for queued errors (IP_RECVERR or IPV6_RECVERR for the way the
+/// datagram went) hears of an outside destination's refusal; the host does not say what the
+/// refused datagram held, so nothing is queued, which is counted.
+fn unqueued_error(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    flow: Option<Endpoint>,
+) -> bool {
+    let v4 = flow.is_some_and(|to| v4_of(&to.address).is_some());
+    let (level, name) = if v4 {
+        (SOL_IP, IP_RECVERR)
+    } else {
+        (SOL_IPV6, IPV6_RECVERR)
+    };
+    let asked = socket
+        .borrow()
+        .options
+        .get(&(level, name))
+        .is_some_and(|value| value.iter().any(|&byte| byte != 0));
+    if asked {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::OUTSIDE_ERROR_NOT_QUEUED, 0);
+    }
+    asked
 }
 
 /// A TCP connection to the outside was reset or failed: closed, with the error to report.
@@ -455,7 +485,8 @@ pub(crate) fn event(
                 if error != 0 {
                     let flow = kernel.sockets.inet.outside.connections[&connection.0].1;
                     let connected_to = socket.borrow().inet.as_deref().and_then(|inet| inet.remote);
-                    let told = connected_to == flow && socket.borrow().state == State::Connected;
+                    let told = (connected_to == flow && socket.borrow().state == State::Connected)
+                        || unqueued_error(kernel, cx, &socket, flow);
                     if told {
                         socket.borrow_mut().error = error;
                     }
@@ -570,11 +601,14 @@ pub(super) fn deliver(
         truesize,
         source: Some(from),
         // The container's name server answers on loopback; the host does not say how.
-        arrival: Some(super::inet::Arrival {
-            destination: super::inet::mapped([127, 0, 0, 1]),
-            index: network::LOOPBACK_INDEX,
-            ..super::inet::arrival_outside()
-        }),
+        arrival: Some(super::inet::prepared(
+            socket,
+            super::inet::Arrival {
+                destination: super::inet::mapped([127, 0, 0, 1]),
+                index: network::LOOPBACK_INDEX,
+                ..super::inet::arrival_outside()
+            },
+        )),
         time: None,
         urgent: false,
     };
