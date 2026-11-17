@@ -285,7 +285,9 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
     let mut device = Device::new(Recorder::new());
     let queue = device.create_queue().unwrap();
     let page = 64 << 10;
-    let heap = device.create_heap(4 * page, HeapType::Default, 0).unwrap();
+    let heap = device
+        .create_heap(4 * page, 0, HeapType::Default, 0)
+        .unwrap();
     let buffer = |width| ResourceDesc {
         dimension: DIMENSION_BUFFER,
         width,
@@ -361,7 +363,9 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
     )));
     assert_eq!(copied(&mut device), 2);
     // Buffers placed in an upload heap map the heap's one memory.
-    let shared = device.create_heap(2 * page, HeapType::Upload, 0).unwrap();
+    let shared = device
+        .create_heap(2 * page, 0, HeapType::Upload, 0)
+        .unwrap();
     let x = device.create_placed(shared, 0, &buffer(2 * page)).unwrap();
     let y = device.create_placed(shared, page, &buffer(page)).unwrap();
     let (px, py) = (device.map(x).unwrap(), device.map(y).unwrap());
