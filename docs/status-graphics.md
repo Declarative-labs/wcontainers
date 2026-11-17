@@ -73,6 +73,59 @@ branches into it at the start and end of every run.
   start merges brought direct3d-12 and rig in without conflict and without touching the interface
   (the others had nothing new); the end merge brought webgl in (the others had nothing new), again
   without conflict or interface change. The whole workspace checks after each.
+- G1, run 8 (2026-11-17): the six findings of G1's sixth independent check fixed (below), and two
+  more rules of the interface found unchecked by a reading of its docs, now checked. The other
+  branches had nothing new at the start; at the end direct3d-12, shaders and rig were merged without
+  conflict and without touching the interface, the suite or the plan. The whole workspace checks.
+
+## G1's sixth check, and how each finding was settled (run 8)
+
+- Texture write modes (blocking): the recording back end now keeps the bytes commands use per
+  texture subresource too, by whole texels (`Touched` in `recorder.rs`): texture regions of
+  `copy_texture` (both sides), both buffer-texture copies, texture read backs and `Ordered` texture
+  writes; whole subresources a draw binds as textures; the attachment's layer (or 3D slice) at
+  `begin_pass`; the destination of `resolve`. A `NoOverwrite` texture write over any of them not
+  waited for is refused; a `Discard` texture write drops the texture's uses and fills every level
+  and layer with 0xcd before writing the part, as for buffers. (The multisampled side of a resolve
+  or a whole copy is not kept: no texture write can reach a multisampled texture.) Tests:
+  `a_discard_texture_write_gives_the_texture_fresh_contents` (two levels; the copy recorded before
+  keeps the old texels; a no-overwrite write may follow over them) and
+  `a_no_overwrite_texture_write_keeps_off_texels_in_use` (an ordered write, each copy both ways, a
+  read back, a resolve, a draw sampling the texture, an attachment, and a 3D attachment slice beside
+  the slice written; beside the texels used is taken, over them refused, after a wait taken).
+- Row pitch of part of a block (blocking): both buffer-texture copies now refuse a row pitch, and a
+  buffer offset (the sixth finding), that is not a whole number of blocks of the aspect moved
+  (`blocks_whole`). Test: `buffer_texture_copies_take_offsets_and_pitches_of_whole_blocks`
+  (`rgba8unorm` pitch 9 and offset 2 refused; `depth24plus-stencil8` depth pitch 10 and offset 2
+  refused; stencil pitch 3 and offset 1 taken; both directions).
+- The pass bar's claim (blocking): the first pass bar item below now says what the sweep shows and
+  what it cannot. A sweep only turns off checks that exist. This run read the interface's docs for
+  stated rules (wording such as "must", "multiple of", "at most", "only", "inside") against the
+  recorder's checks and found two more rules without a check, now settled: `resolve_queries`' offset
+  a multiple of 8 (the default now refuses it, `GpuError::Invalid`, as the webgpu back end already
+  did; tested in `resolve_queries_reads_them_back_and_writes_them_in_order`), and `clear_rects`'
+  "rectangles lie inside the view", which no back end needs (the default's scissors and WebGL 2's
+  scissored clears clip), so the interface now says they are clipped (tested by a rectangle reaching
+  past the view in `clear_rects_draws_one_triangle_per_rectangle_in_one_pass`). The same wording
+  was then searched for in plan 4.1 to 4.11 (about 70 lines matched); every rule there a caller can
+  break was already checked (write_timestamp is reachable only through a timestamp set, absent on
+  the recording back end; how long guest memory is left alone, 4.6, is not a call's argument).
+- Resolve in the sRGB twin (minor): the new suite test `resolves_average_in_the_format_named`
+  resolves four covered samples in `rgba8unorm` (64, 128, 191) and in `rgba8unorm-srgb` (137, 188,
+  225 colour, alpha 64, 128, 191) into an `rgba8unorm` and an `rgba8unorm-srgb` destination; where
+  a back end counts `ResolveInStoredFormat` (the listed loss) the stored averages are what it must
+  give. The coverage draw of `multisampled_targets_cover_their_samples_and_resolve` is now a helper
+  both tests use (`cover_rows`). Suite 27.
+- The generator's texture writes (minor): `Step::WriteTexture` now takes a mode (ordered, discard,
+  no-overwrite) and pads its pitch by 0 to 2 texels. The generator keeps the texel rectangles
+  commands and ordered writes used since its last wait (`Area` in `sequence.rs`): a no-overwrite
+  texture write over one waits first, a discard drops the texture's. Buffer-texture copies now take
+  offsets of whole texels. The test prints how many discarding and unwaited no-overwrite texture
+  writes it made.
+- Buffer offsets of copies with textures (minor): the interface now states it (`CopyBufferTexture`
+  docs, plan 4.2): any multiple of the block size of the aspect moved, as Vulkan and WebGPU require;
+  WebGPU's multiple of 4 for depth and stencil goes the `RowsRepacked` way the webgpu back end
+  already takes for any offset not a multiple of 4. Checked and tested as above.
 
 ## G1's fifth check, and how each finding was settled (run 7)
 
@@ -309,11 +362,15 @@ branches into it at the start and end of every run.
 
 ## G1's pass bar, item by item
 
-- Every rule of section 4 checked by the recording back end, with a test that breaks it (the list
-  under "The rules and their tests"), shown by the sweep that turns each check off in turn: since
-  run 4 the `if` checks, since run 5 also the checks written as a helper call ending in `?`, since
-  run 6 also each top-level `||` operand of a condition and each slice range refused by `ok_or`
-  (Measurements); refusals of other forms are asserted by message (run 6's audit).
+- Every rule of section 4 the recording back end checks has a test that breaks it (the list under
+  "The rules and their tests"), shown by the sweep that turns each check off in turn: since run 4
+  the `if` checks, since run 5 also the checks written as a helper call ending in `?`, since run 6
+  also each top-level `||` operand of a condition and each slice range refused by `ok_or`
+  (Measurements); refusals of other forms are asserted by message (run 6's audit). A sweep cannot
+  find a rule with no check. Rules found without one were added by the checks of runs 3 to 8 and by
+  this file's audits (run 6: `ok_or` refusals; run 8: the interface's docs and plan 4.1 to 4.11
+  searched for rule wording). Those audits are by wording, not a reading of every sentence, so a
+  rule stated another way may still lack a check; each one found is a gap in this item.
 - Every fast-path default shown built from the base by a recorded stream: `tests/fast_paths.rs`, one
   test each for `read_back_now`, `prepare`, `clear_texture`, `clear_rects`, `generate_mips` (and
   its three routes by their averages), `draw_fan_or_loop` (fans drawn; loops by their stream, the
@@ -347,7 +404,9 @@ branches into it at the start and end of every run.
   with the new checks, 0x5eed, 0xc0ffee and 0x9e4a11 (new), 100,000 each; in run 5, with discards
   giving fresh contents and the new checks, 0x5eed, 0xc0ffee and 0xd15ca4d (new), 100,000 each;
   in run 6, 0x5eed, 0xc0ffee and 0x51de6 (new); in run 7, on the recorder with the program binding
-  checks, 0x5eed, 0xc0ffee and 0x5a3d7 (new), 100,000 each (Measurements).
+  checks, 0x5eed, 0xc0ffee and 0x5a3d7 (new), 100,000 each; in run 8, on the generator with texture
+  writes of every mode and padded pitch, 0x5eed, 0xc0ffee and 0x7e8a (new), 100,000 each
+  (Measurements).
 
 ## G1a's second check, and how each finding was settled
 
@@ -425,6 +484,10 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   buffer bindings at least the program's block, one viewport and at most one scissor a draw, empty
   passes of a size and sample count the back end takes, and buffer ranges past the largest offset
   refused, not wrapped (G1's fifth check, above);
+- since run 8: texture writes' modes by texel (a discard drops every level and layer and the
+  texture's uses; no-overwrite keeps off texels unfinished commands and ordered writes use),
+  buffer-texture copies' row pitches and offsets in whole blocks of the aspect moved, and query
+  results resolved to multiples of 8 bytes (G1's sixth check, above);
 - multisampled textures 2D, one level and layer, no storage
   (`a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage`); their bytes moved only by
   draws, resolves and whole copies between equal sample counts
@@ -435,6 +498,22 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   when its texture is multisampled (an error of the draw).
 
 ## Interface changes
+
+- G1 run 8:
+  - 6c89a04 ("interface: stated that texture writes take the write modes by texel ..."):
+    documentation only, of `WriteMode` (a texture write takes the same modes: the whole texture,
+    every level and layer, for the whole buffer; texels, both aspects, for bytes) and
+    `CopyBufferTexture` (`offset` a multiple of the block size of the aspect moved; a block of a
+    depth and stencil format's aspect is one byte of stencil or four of depth); plan 4.2 and 4.6.
+    For the other tracks: the webgpu back end already repacks any offset not a multiple of 4
+    (`RowsRepacked`), which covers WebGPU's rule for depth and stencil; its texture writes should
+    treat `Discard` as dropping every level and layer. Fronts hand over whole-block offsets
+    already (Direct3D 12's footprints are).
+  - 8c54531 ("interface: refused query results resolved to an offset off 8 bytes in the default,
+    ..."): the `resolve_queries` default returns `GpuError::Invalid` ("query results go to
+    multiples of 8 bytes", the webgpu back end's own words) for an offset not a multiple of 8,
+    before any call; `clear_rects` docs and plan 4.3 now say rectangles are clipped to the view (all
+    three routes clip) in place of "lie inside it", a rule nothing needed or checked.
 
 - G1 run 7:
   - 1362848 ("interface: stated the sampler a program's comparisons and filtered textures take,
@@ -558,9 +637,10 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   from vertex programs, pointers to a function's locals passed to another function.
   `texture_bytes` gives a texture's bytes as held (samples as planes), for tests on back ends that
   cannot read samples in programs.
-- Suite tests (26, `src/suite.rs` and `src/suite/draws.rs`; run 7 added
+- Suite tests (27, `src/suite.rs` and `src/suite/draws.rs`; run 7 added
   `a_stream_of_stride_zero_reads_its_first_element` and
-  `comparison_samplers_compare_with_the_stored_depth`): the 13 of G1a plus
+  `comparison_samplers_compare_with_the_stored_depth`, run 8
+  `resolves_average_in_the_format_named`): the 13 of G1a plus
   `values_are_interpolated_with_perspective`, `the_scissor_bounds_the_draw`,
   `stencil_operations_and_tests`, `near_clipping_and_the_viewport_depth_range`,
   `linear_filtering_and_address_modes`, `instances_start_at_the_first_instance`,
@@ -573,11 +653,14 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Next
 
-- The independent check of G1 (run 7's fixes).
-- The webgpu and webgl hosts run the whole suite through `suite!`, so they take the two new tests
-  (`a_stream_of_stride_zero_reads_its_first_element`,
-  `comparison_samplers_compare_with_the_stored_depth`) when they merge this branch; neither has been
-  run on a GPU by this track.
+- The independent check of G1 (run 8's fixes).
+- The webgpu and webgl hosts run the whole suite through `suite!`, so they take the three newest
+  tests (`a_stream_of_stride_zero_reads_its_first_element`,
+  `comparison_samplers_compare_with_the_stored_depth`, `resolves_average_in_the_format_named`)
+  when they merge this branch; none has been run on a GPU by this track. The last expects WebGL 2
+  either to resolve in linear light or to count `ResolveInStoredFormat` and give the stored
+  averages; an sRGB destination written by `blitFramebuffer` may be encoded again there, which
+  that test would show.
 - One more guard no call through the interface reaches: `sample_view`'s refusal of a comparison
   through a sampler without `compare` (the draw's binding check refuses it first).
 - Recording back end limitations, each refused with an error naming it and so left without a
@@ -627,6 +710,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     calls a check helper with `?`, gives each slice range refused by `ok_or` an empty slice, and
     runs `cargo test -p wcontainers-gpu-test`, printing CAUGHT, SURVIVED or BUILD FAILED (the
     match guards). About 20 to 40 s a site at 4 jobs.
+  - run 8's sweep of its new sites: `g1r8/sweep.py` (run 7's, with `blocks_whole` among the
+    helpers), run the same way; run 8's faults (texture write modes, every texel use, whole blocks,
+    the resolve's format, the generator): `g1r8/faults.py`. Started detached over ssh, these need
+    `export PATH=$HOME/.cargo/bin:$PATH` first (without it every fault reads as caught with no test
+    named: cargo was not found).
   - run 5's faults (the counter's instance split, the discard, the colour byte measure):
     `g1r5/faults.py`, run the same way (`python3 -I faults.py <tree> <target dir>`); run 7's (the
     sampler kind, the filter rule, unchecked ends, stride zero): `g1r7/faults.py`, `faults2.py`
@@ -638,6 +726,36 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
+
+- G1 run 8, all on the Linux laptop (i7-8750H):
+  - Random sequences on 178a87c (the recorder and generator as they end the run; scratch
+    `g1r8/sequences-100k.log`, `--release`, 3 jobs), each 100,000 asked and run, recorded with no
+    rule broken and replayed identically: seed 0x5eed, 4,587,884 calls, 18,804 discarding texture
+    writes, 11,249 no-overwrite texture writes without a wait, 35.4 s, load 2.3; seed 0xc0ffee,
+    4,565,181 calls, 18,821 and 11,052, 35.4 s, load 1.8; seed 0x7e8a (new), 4,563,970 calls,
+    20,019 multisampled passes, 28,030 depth-stencil passes, 42,483 indexed draws, 28,271 queries,
+    12,156 no-overwrite buffer writes without a wait, 18,690 and 11,333, 35.2 s, load 1.5. The
+    generator changed, so the counts differ from run 7's.
+  - Faults (scratch `g1r8/faults.log`, load about 1 to 2): 19 put in one at a time, 19 caught: a
+    texture discard keeping old texels, or keeping earlier uses; the no-overwrite texture check
+    off; each texel use not kept (ordered write, both sides of `copy_texture`, both buffer-texture
+    copies, texture read back, attachments, a 3D attachment's whole level in place of its slice,
+    the resolve's destination, sampled textures); row ranges one texel too long; the pitch and
+    offset block checks off; resolving in the stored format (caught only by the new suite test);
+    the generator never waiting before a no-overwrite texture write, or giving offsets of part of
+    a texel (both caught by the sequences test). Then the `resolve_queries` default's offset check
+    off: caught by `resolve_queries_reads_them_back_and_writes_them_in_order`
+    (`g1r8/end-check-1.log`).
+  - Sweep of the new sites (scratch `g1r8/sweep.log`, load about 3): the two block checks, both
+    `blocks_whole` calls, and both no-overwrite conditions (buffer, rewritten this run, and
+    texture): 6 of 6 caught.
+  - End check after the end merges (scratch `g1r8/end-check.log`, load 1.5): the whole workspace
+    checks; suite on the recording back end 27 of 27 (`tests/recorder.rs` 33 of 33); rules 100 of
+    100; helpers 15 of 15; fast paths 12 of 12; sequences 1 of 1 (1,000 at seed 0x5eed);
+    `wcontainers-gpu` 32 of 32; clippy and docs with warnings denied clean (before the merges). The
+    Direct3D 11 and 12 fronts' tests on the recording back end pass with the new checks (22; 2, 9,
+    8); the direct3d-12 track's `tests/gpu.rs` draws through WebGPU and fails on the laptop's broken
+    GPU ("device lost"), which no change here reaches.
 
 - G1 run 7, all on the Linux laptop (i7-8750H):
   - Random sequences on b329a34 (the recorder as it ends the run; scratch
@@ -779,6 +897,14 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     `tests/recorder.rs` rule tests 6 of 6; `wcontainers-gpu` 32 of 32.
   - The check's 13 faults: each fails the suite (`g1/breaks-run1.log`; load 0.3 to 1.6).
 - Earlier runs' measurements are in this file's history.
+
+## The laptop's disk
+
+- Run 8 found 1.7 GB free of 122 GB. It deleted its own build folder (`g1r8/target`), run 7's tree
+  copy (`g1r7/tree`, 1.2 GB) and our build folder's incremental cache
+  (`target/phase-2-graphics/debug/incremental`, 8.1 GB, rebuilt as needed): 11 GB free after.
+  Left alone: `target/phase-2-graphics-shaders` (19 GB, the shaders track's) and
+  `target/phase-2-graphics-` (4.2 GB, owner unknown).
 
 ## Dependencies added and their licences
 
