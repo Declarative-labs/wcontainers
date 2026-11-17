@@ -57,11 +57,31 @@ pub enum SlowPath {
     FormatConverted,
     /// A multisampled texture read in a program by first resolving or copying it.
     MultisampleReadCopy,
+    /// A typed buffer view read as a 2D texture (no storage buffers).
+    TexelBufferAsTexture,
+    /// Base vertex or first instance applied by binding vertex streams at an offset.
+    BaseVertexRebind,
+    /// Indirect draw arguments read back to the device thread before drawing.
+    IndirectReadBack,
+    /// A draw count read from a buffer turned into the largest count of draws, unused ones zeroed by compute.
+    IndirectCountExpanded,
+    /// A persistently mapped range uploaded whole because the written bytes were not known.
+    MappedUploadWhole,
+    /// Small constants beyond the back end's immediate bytes passed in a uniform buffer.
+    ImmediatesSpilled,
+    /// Each view of a multiview pass drawn as its own pass.
+    MultiviewSerial,
+    /// A draw to several viewports split into one draw per viewport.
+    MultiViewportSplit,
+    /// Points larger than one pixel drawn as quads.
+    PointsAsQuads,
+    /// 64-bit float arithmetic emulated with 32-bit operations.
+    F64Emulated,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 25] = [
+    pub const ALL: [SlowPath; 35] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -87,6 +107,16 @@ impl SlowPath {
         SlowPath::VertexFormatConverted,
         SlowPath::FormatConverted,
         SlowPath::MultisampleReadCopy,
+        SlowPath::TexelBufferAsTexture,
+        SlowPath::BaseVertexRebind,
+        SlowPath::IndirectReadBack,
+        SlowPath::IndirectCountExpanded,
+        SlowPath::MappedUploadWhole,
+        SlowPath::ImmediatesSpilled,
+        SlowPath::MultiviewSerial,
+        SlowPath::MultiViewportSplit,
+        SlowPath::PointsAsQuads,
+        SlowPath::F64Emulated,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -117,6 +147,16 @@ impl SlowPath {
             SlowPath::VertexFormatConverted => "vertex format converted",
             SlowPath::FormatConverted => "texture format stored in a wider one",
             SlowPath::MultisampleReadCopy => "multisampled texture copied to be read",
+            SlowPath::TexelBufferAsTexture => "typed buffer read as a texture",
+            SlowPath::BaseVertexRebind => "vertex streams rebound for base vertex or instance",
+            SlowPath::IndirectReadBack => "indirect arguments read back",
+            SlowPath::IndirectCountExpanded => "indirect draw count expanded",
+            SlowPath::MappedUploadWhole => "mapped range uploaded whole",
+            SlowPath::ImmediatesSpilled => "immediate constants spilled to a buffer",
+            SlowPath::MultiviewSerial => "multiview drawn one view at a time",
+            SlowPath::MultiViewportSplit => "draw split per viewport",
+            SlowPath::PointsAsQuads => "large points drawn as quads",
+            SlowPath::F64Emulated => "64-bit floats emulated",
         }
     }
 }
@@ -146,5 +186,21 @@ impl SlowPaths {
     /// Takes the warnings raised since the last call, for the host's warning hook.
     pub fn take_warnings(&mut self) -> Vec<SlowPath> {
         core::mem::take(&mut self.unwarned)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_lists_every_reason_in_order() {
+        for (i, p) in SlowPath::ALL.iter().enumerate() {
+            assert_eq!(*p as usize, i);
+        }
+        let mut names: Vec<_> = SlowPath::ALL.iter().map(|p| p.reason()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), SlowPath::ALL.len());
     }
 }
