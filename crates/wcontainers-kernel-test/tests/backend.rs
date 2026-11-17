@@ -69,9 +69,9 @@ fn attributes_and_allocation_match_reference() {
     }
 }
 
-/// File capabilities read back with getxattr on a backend file.
+/// File capabilities set and read back with getxattr on a backend file (the reference answers
+/// EINVAL to the reading).
 #[test]
-#[ignore = "known failure: the reference's getxattr of security.capability on its FUSE mount is EINVAL (cause not found: cap_inode_getsecurity reads it with two GETXATTR messages and the server stores a valid v2 value); ours gives the value"]
 fn file_capabilities_match_reference() {
     for run in same_on_backend("backendcaps", driver::Injections::default()) {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);

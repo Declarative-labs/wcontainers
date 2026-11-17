@@ -154,6 +154,41 @@ impl Backend {
         }
     }
 
+    /// Ends the connection as Linux does when it unmounts (DESTROY): the server lets go of every
+    /// node and handle, and a client may connect again with INIT. Answers owed are read first.
+    pub fn destroy(&mut self) {
+        use zerocopy::IntoBytes;
+        while self.waiting() {
+            self.receive();
+        }
+        let header = fuse_abi::linux::fuse_in_header {
+            len: size_of::<fuse_abi::linux::fuse_in_header>() as u32,
+            opcode: fuse_abi::linux::fuse_opcode::FUSE_DESTROY as u32,
+            unique: u64::MAX >> 1,
+            ..Default::default()
+        };
+        self.send(header.unique, header.as_bytes());
+        while self.waiting() {
+            self.receive();
+        }
+    }
+
+    /// Empties the served directory, owned by root with the mode Docker's tmpfs has, as the
+    /// reference's layer 1 runner empties its own after each sequence.
+    pub fn empty(&self) {
+        let script =
+            format!("find {SERVED} -mindepth 1 -delete; chown 0:0 {SERVED}; chmod 1777 {SERVED}");
+        let output = Command::new("docker")
+            .args(["exec", &self.name, "sh", "-c", &script])
+            .output()
+            .expect("running docker exec");
+        assert!(
+            output.status.success(),
+            "emptying the backend: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// The files of the served directory now, as a tar archive of it gives them.
     pub fn files(&self) -> Vec<crate::image::File> {
         let output = Command::new("docker")

@@ -79,9 +79,11 @@ fn mount(server: Arc<Server<Arc<PassthroughFs>>>, at: &Path, command: &[String])
     });
     let mut run = std::process::Command::new(&command[0]);
     run.args(&command[1..]).current_dir(at);
-    // SAFETY: only drops capabilities between fork and exec.
+    // SAFETY: only sets the umask and drops capabilities between fork and exec.
     unsafe {
         run.pre_exec(|| {
+            // The server works with no umask; the command starts with Docker's.
+            libc::umask(0o022);
             use caps::{CapSet, Capability};
             for set in [
                 CapSet::Bounding,

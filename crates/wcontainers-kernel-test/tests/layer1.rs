@@ -1,6 +1,7 @@
 //! Layer 1: random sequences of system calls against the reference, comparing every value and every byte
 //! written back. `LAYER1_CASES` sets how many sequences run (default 64) and `LAYER1_SEED` the seed
-//! (default 0); a failure is shrunk and printed with its seed.
+//! (default 0); a failure is shrunk and printed with its seed. On the file backend,
+//! `LAYER1_BACKEND_CASES` sets how many (default 32), with the same seed.
 
 use std::path::Path;
 
@@ -17,12 +18,23 @@ fn knob(name: &str, default: u64) -> u64 {
 
 #[test]
 fn sequences_match_reference() {
-    let cases = knob("LAYER1_CASES", 64) as u32;
+    sequences(knob("LAYER1_CASES", 64) as u32, false);
+}
+
+/// Sequences of file calls whose work directory is on the file backend, against the reference
+/// with the same server mounted through Linux's FUSE.
+#[test]
+fn sequences_on_backend_match_reference() {
+    sequences(knob("LAYER1_BACKEND_CASES", 32) as u32, true);
+}
+
+fn sequences(cases: u32, backend: bool) {
     let seed = knob("LAYER1_SEED", 0);
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let runner = layer1::runner(&out);
     let program = std::fs::read(&runner).expect("reading the runner");
-    let reference = std::cell::RefCell::new(layer1::Reference::start(&runner));
+    let reference = std::cell::RefCell::new(layer1::Reference::start(&runner, backend));
+    let server = std::cell::RefCell::new(None);
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let config = Config {
@@ -50,21 +62,26 @@ fn sequences_match_reference() {
     // And how many children were made.
     let children = std::cell::Cell::new(0u64);
     let result = runner.run(&strategy, |(values, raw)| {
-        let sequence = layer1::build(&values, &raw);
+        let sequence = if backend {
+            layer1::build_on_backend(&values, &raw)
+        } else {
+            layer1::build(&values, &raw)
+        };
         let theirs = reference.borrow_mut().run(&sequence);
         random.set(random.get() + theirs.calls.iter().filter(|call| call.random).count() as u64);
         named_pipe.set(named_pipe.get() + layer1::named_pipe_calls(&sequence, &theirs));
         terminal.set(terminal.get() + layer1::terminal_opens(&sequence, &theirs));
         children.set(children.get() + layer1::children_made(&sequence, &theirs));
-        let ours = layer1::run_ours(&sequence, &program, &theirs);
+        let ours = layer1::run_ours_with(&sequence, &program, &theirs, &mut server.borrow_mut());
         match layer1::difference(&sequence, &ours, &theirs) {
             None => Ok(()),
             Some(text) => Err(TestCaseError::fail(text)),
         }
     });
     eprintln!(
-        "layer 1: {cases} sequences, seed {seed}, {} calls with a random device's bytes, {} that \
+        "layer 1{}: {cases} sequences, seed {seed}, {} calls with a random device's bytes, {} that \
          made or opened the named pipe, {} that opened a pseudo-terminal, {} children made",
+        if backend { " on the backend" } else { "" },
         random.get(),
         named_pipe.get(),
         terminal.get(),

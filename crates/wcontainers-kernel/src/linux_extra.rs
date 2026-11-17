@@ -39,6 +39,10 @@ pub(crate) const ACL_GROUP_OBJ: u16 = 0x04;
 pub(crate) const ACL_GROUP: u16 = 0x08;
 pub(crate) const ACL_MASK: u16 = 0x10;
 pub(crate) const ACL_OTHER: u16 = 0x20;
+/// Access control list permission bits (`ACL_READ`, `ACL_WRITE`, `ACL_EXECUTE`).
+pub(crate) const ACL_PERMISSIONS: u16 = 0x04 | 0x02 | 0x01;
+/// The id of an entry that names no user or group (`ACL_UNDEFINED_ID`).
+pub(crate) const ACL_UNDEFINED_ID: u32 = u32::MAX;
 
 /// `personality` bits `execve` clears when a program gains privileges (`PER_CLEAR_ON_SETID`, from
 /// `linux/personality.h`'s `READ_IMPLIES_EXEC`, `ADDR_NO_RANDOMIZE`, `ADDR_COMPAT_LAYOUT` and

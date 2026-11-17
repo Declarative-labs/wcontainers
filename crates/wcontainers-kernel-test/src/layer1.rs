@@ -317,7 +317,13 @@ pub struct Call {
 pub struct Sequence {
     pub arena: Vec<u8>,
     pub calls: Vec<Call>,
+    /// Whether its work directory is on the file backend, mounted at [`BACKEND_ROOT`].
+    pub backend: bool,
 }
+
+/// Where the file backend is mounted for sequences on it: a name as long as `/dev/shm`, which it
+/// takes the place of in the path pool, so every path keeps its offset.
+pub const BACKEND_ROOT: &str = "/backend";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallResult {
@@ -400,7 +406,29 @@ pub type Raw = (u8, [u64; 6]);
 /// Builds a sequence from generated parts: the arena's random values and the calls. The first two calls
 /// always make and enter the work directory.
 pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
-    let (paths, path_at) = path_offsets();
+    build_on(values, raw, false)
+}
+
+/// As [`build`], for a work directory on the file backend: the calls are those of
+/// [`BACKEND_CALLS`] and the paths under `/dev/shm` are under [`BACKEND_ROOT`].
+pub fn build_on_backend(values: &[u64], raw: &[Raw]) -> Sequence {
+    build_on(values, raw, true)
+}
+
+fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
+    let (mut paths, path_at) = path_offsets();
+    if backend {
+        let (from, to) = (b"/dev/shm".as_slice(), BACKEND_ROOT.as_bytes());
+        let mut at = 0;
+        while let Some(found) = paths[at..]
+            .windows(from.len())
+            .position(|window| window == from)
+        {
+            paths[at + found..at + found + to.len()].copy_from_slice(to);
+            at += found + to.len();
+        }
+    }
+    let calls_made = if backend { BACKEND_CALLS } else { CALLS };
     let mut arena = vec![0u8; OUTPUT as usize];
     arena[..paths.len()].copy_from_slice(&paths);
     // Sixteen vectors for readv and writev, each pointing into the output area or somewhere bad.
@@ -764,7 +792,7 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
             ],
         });
     }
-    calls.extend(raw.iter().map(|raw| decode(raw, &path_at)));
+    calls.extend(raw.iter().map(|raw| decode(raw, &path_at, calls_made)));
     let terminal = opens_terminal(&calls);
     if terminal {
         keep_terminals_settled(&mut arena, &mut calls);
@@ -849,7 +877,11 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
         let at = (ACTIONS + index as u64 * 4) as usize;
         arena[at..at + 4].copy_from_slice(&action.to_le_bytes());
     }
-    Sequence { arena, calls }
+    Sequence {
+        arena,
+        calls,
+        backend,
+    }
 }
 
 /// Whether a call opens a pseudo-terminal's path.
@@ -1512,14 +1544,101 @@ pub const CALLS: &[u32] = &[
     linux::__NR_timerfd_gettime,
 ];
 
+/// The calls layer 1 makes on the backend: those of [`CALLS`] on files, memory and the identity
+/// file calls are checked against, and none that Docker's seccomp profile lets through only with
+/// CAP_SYS_ADMIN, which the reference's container has to mount its FUSE file system.
+pub const BACKEND_CALLS: &[u32] = &[
+    linux::__NR_openat,
+    linux::__NR_close,
+    linux::__NR_read,
+    linux::__NR_write,
+    linux::__NR_pread64,
+    linux::__NR_pwrite64,
+    linux::__NR_readv,
+    linux::__NR_writev,
+    linux::__NR_lseek,
+    linux::__NR_getdents64,
+    linux::__NR_dup,
+    linux::__NR_dup3,
+    linux::__NR_fcntl,
+    linux::__NR_ioctl,
+    linux::__NR_fsync,
+    linux::__NR_mkdirat,
+    linux::__NR_mknodat,
+    linux::__NR_symlinkat,
+    linux::__NR_linkat,
+    linux::__NR_unlinkat,
+    linux::__NR_renameat2,
+    linux::__NR_readlinkat,
+    linux::__NR_newfstatat,
+    linux::__NR_fstat,
+    linux::__NR_statx,
+    linux::__NR_faccessat2,
+    linux::__NR_fchmod,
+    linux::__NR_fchmodat,
+    linux::__NR_fchownat,
+    linux::__NR_utimensat,
+    linux::__NR_truncate,
+    linux::__NR_ftruncate,
+    linux::__NR_fallocate,
+    linux::__NR_getcwd,
+    linux::__NR_chdir,
+    linux::__NR_fchdir,
+    linux::__NR_umask,
+    linux::__NR_fstatfs,
+    linux::__NR_sendfile,
+    linux::__NR_mmap,
+    linux::__NR_munmap,
+    linux::__NR_mprotect,
+    linux::__NR_madvise,
+    linux::__NR_msync,
+    linux::__NR_mremap,
+    linux::__NR_setresuid,
+    linux::__NR_setresgid,
+    linux::__NR_setfsuid,
+    linux::__NR_setfsgid,
+    linux::__NR_setgroups,
+    linux::__NR_statfs,
+    linux::__NR_faccessat,
+    linux::__NR_fchmodat2,
+    linux::__NR_fchown,
+    linux::__NR_renameat,
+    linux::__NR_preadv,
+    linux::__NR_pwritev,
+    linux::__NR_fdatasync,
+    linux::__NR_syncfs,
+    linux::__NR_close_range,
+    linux::__NR_preadv2,
+    linux::__NR_pwritev2,
+    linux::__NR_copy_file_range,
+    linux::__NR_fadvise64,
+    linux::__NR_readahead,
+    linux::__NR_sync_file_range,
+    linux::__NR_flock,
+    linux::__NR_openat2,
+    linux::__NR_setxattr,
+    linux::__NR_lsetxattr,
+    linux::__NR_fsetxattr,
+    linux::__NR_getxattr,
+    linux::__NR_lgetxattr,
+    linux::__NR_fgetxattr,
+    linux::__NR_listxattr,
+    linux::__NR_llistxattr,
+    linux::__NR_flistxattr,
+    linux::__NR_removexattr,
+    linux::__NR_lremovexattr,
+    linux::__NR_fremovexattr,
+    linux::__NR_mincore,
+];
+
 /// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
 mod linux_extra_ipc {
     pub const IPC_NOWAIT: u32 = 0o4000;
 }
 
 /// Turns a generated call into real arguments.
-fn decode((kind, words): &Raw, path_at: &[u64]) -> Call {
-    let number = CALLS[*kind as usize % CALLS.len()];
+fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
+    let number = calls[*kind as usize % calls.len()];
     let [a, b, c, d, e, f] = *words;
     let (fifo, path_at) = path_at.split_last().expect("paths");
     let fifo = ARENA + fifo;
@@ -3442,14 +3561,22 @@ pub struct Reference {
 }
 
 impl Reference {
-    pub fn start(runner: &Path) -> Self {
-        let name = format!("wc-kernel-layer1-{}", std::process::id());
+    /// The runner in the reference; `backend` mounts the first file backend through Linux's FUSE
+    /// at [`BACKEND_ROOT`] and runs the runner there without the power to mount.
+    pub fn start(runner: &Path, backend: bool) -> Self {
+        let name = format!(
+            "wc-kernel-layer1-{}{}",
+            std::process::id(),
+            if backend { "-backend" } else { "" }
+        );
         let directory = runner
             .parent()
             .expect("runner has a directory")
             .canonicalize()
             .expect("directory exists");
-        let mut child = Command::new("docker")
+        let program = Path::new("/wc").join(runner.file_name().expect("runner has a name"));
+        let mut command = Command::new("docker");
+        command
             .args([
                 "run",
                 "-i",
@@ -3461,9 +3588,24 @@ impl Reference {
             ])
             .args(["--hostname", reference::HOSTNAME])
             .arg("--volume")
-            .arg(format!("{}:/wc:ro", directory.display()))
-            .arg(reference::IMAGE)
-            .arg(Path::new("/wc").join(runner.file_name().expect("runner has a name")))
+            .arg(format!("{}:/wc:ro", directory.display()));
+        if backend {
+            let server = crate::backend::server(&crate::backend::out());
+            let script = format!(
+                "mkdir -p {BACKEND_ROOT} && exec /wcb/wc-backend mount {} {BACKEND_ROOT} {} {BACKEND_ROOT}",
+                crate::backend::SERVED,
+                program.display()
+            );
+            command
+                .args(["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN"])
+                .args(["--tmpfs", crate::backend::SERVED])
+                .arg("--volume")
+                .arg(format!("{}:/wcb:ro", server.display()))
+                .args([reference::IMAGE, "sh", "-c", &script]);
+        } else {
+            command.arg(reference::IMAGE).arg(&program);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -3588,8 +3730,44 @@ const CHILD_STATUS: u64 = 7;
 /// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
 /// after a call (`theirs`), the same is done here, by the same calls.
 pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> SequenceResult {
-    let mut cpu = BufferCpu::new();
+    run_ours_with(sequence, runner, theirs, &mut None)
+}
+
+/// As [`run_ours`], with the file backend a sequence on it uses: one server for every sequence,
+/// started at the first, each kernel connecting afresh, and emptied after each as the reference's
+/// runner empties its own.
+pub fn run_ours_with(
+    sequence: &Sequence,
+    runner: &[u8],
+    theirs: &SequenceResult,
+    backend: &mut Option<crate::backend::Backend>,
+) -> SequenceResult {
     let mut host = TestHost::new(0);
+    if sequence.backend {
+        host.backend = Some(
+            backend
+                .take()
+                .unwrap_or_else(|| crate::backend::Backend::start(&crate::backend::out(), None)),
+        );
+    }
+    let (result, mut host) = run_ours_on(sequence, runner, theirs, host);
+    if let Some(mut server) = host.backend.take() {
+        // Unmounted, as the reference's runner's mount lets go of everything a sequence looked up.
+        server.destroy();
+        server.empty();
+        *backend = Some(server);
+    }
+    result
+}
+
+/// The run itself, on `host`, which it gives back.
+fn run_ours_on(
+    sequence: &Sequence,
+    runner: &[u8],
+    theirs: &SequenceResult,
+    mut host: TestHost,
+) -> (SequenceResult, TestHost) {
+    let mut cpu = BufferCpu::new();
     let mut kernel = Kernel::new();
     let files = [
         File {
@@ -3637,7 +3815,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         working_directory: b"/",
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
-        backend: None,
+        backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
     };
     kernel.start(&mut cpu, &mut host, &start);
     assert_eq!(kernel.start_failure(), None, "starting the runner");
@@ -3695,6 +3873,10 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                 } => return Ok(value as i64),
                 Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
                 Next::Finished { status } => return Err(status),
+                // An answer the backend owes comes before any time passes.
+                Next::Idle { .. } if host.backend.as_ref().is_some_and(|b| b.waiting()) => {
+                    crate::driver::deliver(kernel, cpu, host);
+                }
                 // Waiting for ever: the runner kills such a sequence at its deadline.
                 Next::Idle {
                     until_nanoseconds: None,
@@ -3937,11 +4119,14 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
                 }
             }
             Err(status) => {
-                return SequenceResult {
-                    calls: results,
-                    status,
-                    play: None,
-                };
+                return (
+                    SequenceResult {
+                        calls: results,
+                        status,
+                        play: None,
+                    },
+                    host,
+                );
             }
         }
     }
@@ -3962,11 +4147,14 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         let readable = match call(&mut kernel, &mut cpu, &mut host, read) {
             Ok(value) => value == 4096,
             Err(status) => {
-                return SequenceResult {
-                    calls: results,
-                    status,
-                    play: None,
-                };
+                return (
+                    SequenceResult {
+                        calls: results,
+                        status,
+                        play: None,
+                    },
+                    host,
+                );
             }
         };
         if readable {
@@ -3976,11 +4164,14 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         play.push(u8::from(readable));
         play.extend_from_slice(&contents);
     }
-    SequenceResult {
-        calls: results,
-        status: 0,
-        play: Some(play),
-    }
+    (
+        SequenceResult {
+            calls: results,
+            status: 0,
+            play: Some(play),
+        },
+        host,
+    )
 }
 
 /// What is compared for one call: its value and the whole arena after it, with the bytes that must

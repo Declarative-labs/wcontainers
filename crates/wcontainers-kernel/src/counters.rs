@@ -63,9 +63,10 @@ pub mod reason {
     /// The host could not hand a message to the backend; the call that asked gets ENOTCONN, as from
     /// a FUSE connection that is gone. Detail: the FUSE opcode.
     pub const BACKEND_UNREACHABLE: &str = "backend unreachable";
-    /// A call on a file of the backend that is not built for it yet: mappings answer ENODEV, as a
-    /// file system without `mmap` does; access control lists answer EOPNOTSUPP, as a FUSE file
-    /// system without them does. Detail: the call number, 0 for access control lists.
+    /// A call on a file of the backend that is not built for it yet: a shared mapping of a file the
+    /// backend opened for cached reads and writes answers ENODEV, as a file system without `mmap`
+    /// does; MADV_DONTNEED keeps a private mapping's pages where Linux reads the file again; mremap
+    /// growing a mapping of one answers ENOMEM. Detail: the call number.
     pub const BACKEND_CALL_NOT_BUILT: &str = "backend call not built";
     /// An answer or notice from the backend that the kernel could not read or does not handle.
     /// Detail: the request number, or the notice's code.

@@ -8,7 +8,8 @@ use crate::credentials::{CAP_SETFCAP, CAP_SYS_ADMIN, Credentials};
 use crate::fs::{Content, Inode, Kind, Node};
 use crate::linux::general::*;
 use crate::linux_extra::{
-    ACL_GROUP, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER, ACL_USER, ACL_USER_OBJ, POSIX_ACL_XATTR_VERSION,
+    ACL_GROUP, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER, ACL_PERMISSIONS, ACL_UNDEFINED_ID, ACL_USER,
+    ACL_USER_OBJ, POSIX_ACL_XATTR_VERSION,
 };
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
@@ -59,18 +60,80 @@ fn on_backend(node: &Node) -> bool {
     crate::fs::backend::remote(node).is_some()
 }
 
-/// Access control lists on the backend (`fuse_get_acl`, `fuse_set_acl`) are not built: counted,
-/// and refused as a file system without them refuses.
-fn acl_on_backend(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<(), Errno> {
-    if on_backend(node) {
-        return Err(kernel.counters.refuse(
-            cx.host,
-            crate::counters::reason::BACKEND_CALL_NOT_BUILT,
-            0,
-            Errno::EOPNOTSUPP,
-        ));
+/// Linux's `posix_acl_valid`: the entries in order, the owner's, users', the group's, groups',
+/// the mask (needed after any user or group) and the others', with known permission bits.
+fn acl_valid(value: &[u8]) -> Result<(), Errno> {
+    let mut state = ACL_USER_OBJ;
+    let mut needs_mask = false;
+    for entry in value[4..].chunks(8) {
+        let tag = u16::from_le_bytes([entry[0], entry[1]]);
+        let permissions = u16::from_le_bytes([entry[2], entry[3]]);
+        if permissions & !ACL_PERMISSIONS != 0 {
+            return Err(Errno::EINVAL);
+        }
+        state = match (tag, state) {
+            (ACL_USER_OBJ, ACL_USER_OBJ) => ACL_USER,
+            (ACL_USER, ACL_USER) | (ACL_GROUP, ACL_GROUP) => {
+                needs_mask = true;
+                state
+            }
+            (ACL_GROUP_OBJ, ACL_USER) => ACL_GROUP,
+            (ACL_MASK, ACL_GROUP) => ACL_OTHER,
+            (ACL_OTHER, ACL_OTHER) => 0,
+            (ACL_OTHER, ACL_GROUP) if !needs_mask => 0,
+            _ => return Err(Errno::EINVAL),
+        };
     }
-    Ok(())
+    if state == 0 {
+        Ok(())
+    } else {
+        Err(Errno::EINVAL)
+    }
+}
+
+/// An access control list as `posix_acl_to_xattr` writes it back: entries other than a user's or
+/// group's name no id.
+fn acl_normalized(value: &[u8]) -> Vec<u8> {
+    let mut out = value.to_vec();
+    for entry in out[4..].chunks_mut(8) {
+        let tag = u16::from_le_bytes([entry[0], entry[1]]);
+        if tag != ACL_USER && tag != ACL_GROUP {
+            entry[4..8].copy_from_slice(&ACL_UNDEFINED_ID.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// `vfs_set_acl` and `vfs_remove_acl` on the backend, past the checks of the value's layout:
+/// `set_posix_acl` (a FUSE mount takes lists, SB_POSIXACL) then `fuse_set_acl`, which hands the
+/// list to the backend as an attribute, or removes it, since INIT does not ask for FUSE_POSIX_ACL
+/// and the mount is the host's (`fuse_no_acl`). An empty value or a bare header removes it.
+fn set_backend_acl(
+    kernel: &Kernel,
+    tid: Tid,
+    node: &Node,
+    name: &[u8],
+    value: &[u8],
+) -> Result<u64, Errno> {
+    let list = value.len() > 4;
+    if list {
+        acl_valid(value)?;
+    }
+    {
+        let inode = node.borrow();
+        if name == ACL_DEFAULT && !inode.is_directory() {
+            return if list { Err(Errno::EACCES) } else { Ok(0) };
+        }
+        if !kernel.credentials(tid).owns_or_capable(inode.uid) {
+            return Err(Errno::EPERM);
+        }
+    }
+    if list {
+        crate::fs::backend::setxattr(node, name, &acl_normalized(value), 0)?;
+    } else {
+        crate::fs::backend::removexattr(node, name)?;
+    }
+    Ok(0)
 }
 
 /// An attribute name, as Linux's `import_xattr_name` copies it.
@@ -310,7 +373,9 @@ fn set(
     if name == ACL_ACCESS || name == ACL_DEFAULT {
         check_acl(&value)?;
         may_write(&node.borrow())?;
-        acl_on_backend(kernel, cx, &node)?;
+        if on_backend(&node) {
+            return set_backend_acl(kernel, tid, &node, &name, &value);
+        }
         return Err(Errno::EOPNOTSUPP);
     }
     let credentials = kernel.credentials(tid).clone();
@@ -364,7 +429,10 @@ fn get(
     let node = target(kernel, cx, tid, at)?;
     let size = size.min(u64::from(XATTR_SIZE_MAX)) as usize;
     if name == ACL_ACCESS || name == ACL_DEFAULT {
-        acl_on_backend(kernel, cx, &node)?;
+        // The backend's mount takes lists, but `fuse_get_acl` reads none without FUSE_POSIX_ACL.
+        if on_backend(&node) {
+            return Err(Errno::ENODATA);
+        }
         return Err(Errno::EOPNOTSUPP);
     }
     let found = {
@@ -465,7 +533,9 @@ fn remove(
     }
     if name == ACL_ACCESS || name == ACL_DEFAULT {
         may_write(&node.borrow())?;
-        acl_on_backend(kernel, cx, &node)?;
+        if on_backend(&node) {
+            return set_backend_acl(kernel, tid, &node, &name, &[]);
+        }
         return Err(Errno::EOPNOTSUPP);
     }
     let credentials = kernel.credentials(tid).clone();
@@ -489,19 +559,15 @@ fn remove(
     Ok(0)
 }
 
-/// An attribute's value from the backend, at most `size` bytes of it (`__vfs_getxattr`); file
-/// capabilities are read whole and given as a reader sees them (`cap_inode_getsecurity`, which
-/// reads them with `vfs_getxattr_alloc`: their length, then their bytes).
+/// An attribute's value from the backend, at most `size` bytes of it (`__vfs_getxattr`).
 fn backend_value(node: &Node, name: &[u8], size: usize) -> Result<Vec<u8>, Errno> {
     if name != CAPABILITY {
         return crate::fs::backend::getxattr(node, name, size as u32);
     }
-    let length = crate::fs::backend::getxattr(node, name, 0)?.len();
-    let value = read_capabilities(&crate::fs::backend::getxattr(node, name, length as u32)?)?;
-    if size != 0 && value.len() > size {
-        return Err(Errno::ERANGE);
-    }
-    Ok(value)
+    // Measured on the reference (7.0): reading file capabilities of a FUSE file is EINVAL, with
+    // them set or not and whatever the size; `cap_inode_getsecurity` answers so when it finds no
+    // dentry for the inode, the one EINVAL on its way (why it finds none is not known).
+    Err(Errno::EINVAL)
 }
 
 fn by_path(args: Args, follow: bool) -> Target {

@@ -421,7 +421,13 @@ static void remake_devices(void) {
     chmod("/dev/pts/ptmx", 0666);
 }
 
-int main(void) {
+// With an argument, the directory the file backend is mounted on, which sequences on it work in
+// and which is emptied after each as /dev/shm is.
+int main(int argc, char **argv) {
+    const char *backend = argc > 1 ? argv[1] : 0;
+    if (chdir("/") != 0) {
+        return 1;
+    }
     remake_devices();
     struct stat mqueue_root;
     if (stat("/dev/mqueue", &mqueue_root) != 0) {
@@ -593,6 +599,17 @@ int main(void) {
         }
         chown("/dev/shm", 0, 0);
         chmod("/dev/shm", 01777);
+        DIR *mounted = backend ? opendir(backend) : 0;
+        while (mounted && (entry = readdir(mounted))) {
+            if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+                remove_tree(dirfd(mounted), entry->d_name);
+            }
+        }
+        if (mounted) {
+            closedir(mounted);
+            chown(backend, 0, 0);
+            chmod(backend, 01777);
+        }
         // Every shared memory segment goes; the slots and sequence numbers carry over.
         static unsigned char segment_status[112];
         long highest = syscall(SYS_shmctl, 0, 3, segment_status);

@@ -71,7 +71,7 @@ pub struct TestHost {
     /// backend's answers arrive.
     schedule: StdRng,
     /// The file backend, for a container with a volume.
-    backend: Option<crate::backend::Backend>,
+    pub(crate) backend: Option<crate::backend::Backend>,
 }
 
 impl TestHost {
@@ -535,7 +535,11 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
 }
 
 /// Hands the kernel the backend's next answer or notice, waiting for it.
-fn deliver(kernel: &mut Kernel, cpu: &mut StandIn, host: &mut TestHost) {
+pub(crate) fn deliver(
+    kernel: &mut Kernel,
+    cpu: &mut dyn wcontainers_abi::Cpu,
+    host: &mut TestHost,
+) {
     let Some(message) = host.backend.as_mut().and_then(|backend| backend.receive()) else {
         return;
     };

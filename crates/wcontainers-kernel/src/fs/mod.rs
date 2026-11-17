@@ -890,8 +890,14 @@ impl Inode {
         self.nlink == 0 || self.is_secret()
     }
 
+    /// Whether opening it with O_DIRECT is allowed (`FMODE_CAN_ODIRECT`): tmpfs's regular files
+    /// and the backend's (`fuse_open`).
     pub fn takes_direct_io(&self) -> bool {
-        self.fs.kind == Kind::Tmpfs && matches!(self.content, Content::Regular(_))
+        match self.content {
+            Content::Regular(_) => self.fs.kind == Kind::Tmpfs,
+            Content::Backend(_) => self.file_type() == S_IFREG,
+            _ => false,
+        }
     }
 
     /// The `d_type` of a directory entry for this inode.
