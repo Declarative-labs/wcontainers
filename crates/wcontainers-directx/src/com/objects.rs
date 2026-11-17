@@ -434,3 +434,61 @@ impl PixelShader {
         }
     }
 }
+
+/// A query or predicate: its interface, and whether `QueryInterface` answers `ID3D11Predicate`.
+macro_rules! asynchronous {
+    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident) => {
+        pub struct $name {
+            pub front: Locked<Rc<wcontainers_direct3d_11::query::Query<Chosen>>>,
+            pub(super) child: Child,
+        }
+
+        counted!($name => $imp { main: $iface, $vtbl });
+
+        impl $name {
+            pub fn new(
+                front: Rc<wcontainers_direct3d_11::query::Query<Chosen>>,
+                device: ID3D11Device,
+            ) -> Self {
+                $name {
+                    front: Locked::new(front),
+                    child: Child::new(device),
+                }
+            }
+
+            pub(super) fn get_desc(&self, out: *mut D3D11_QUERY_DESC) {
+                if let Some(out) = unsafe { out.as_mut() } {
+                    *out = D3D11_QUERY_DESC {
+                        Query: D3D11_QUERY(self.front.kind as i32),
+                        MiscFlags: self.front.misc,
+                    };
+                }
+            }
+
+            pub(super) fn get_data_size(&self) -> u32 {
+                wcontainers_direct3d_11::query::data_size(self.front.kind).unwrap_or(0)
+            }
+        }
+    };
+}
+
+asynchronous!(Query, Query_Impl, ID3D11Query, ID3D11Query_Vtbl);
+asynchronous!(
+    Predicate,
+    Predicate_Impl,
+    ID3D11Predicate,
+    ID3D11Predicate_Vtbl
+);
+
+/// The front query behind a query or predicate of ours.
+pub fn query_of(
+    a: Option<&ID3D11Asynchronous>,
+) -> Option<Rc<wcontainers_direct3d_11::query::Query<Chosen>>> {
+    let a = a?;
+    if let Ok(q) = a.cast_object_ref::<Query>() {
+        return Some(q.front.clone());
+    }
+    a.cast_object_ref::<Predicate>()
+        .ok()
+        .map(|p| p.front.clone())
+}

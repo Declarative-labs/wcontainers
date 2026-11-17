@@ -39,24 +39,18 @@ fn main() -> windows::core::Result<()> {
     let r = unsafe { device.CreateGeometryShader(GS, None, Some(&mut gs)) };
     println!("CreateGeometryShader {:#010x}", code(r));
 
-    let desc = D3D11_TEXTURE2D_DESC {
-        Width: 4,
-        Height: 4,
-        MipLevels: 1,
-        ArraySize: 1,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Usage: D3D11_USAGE_DYNAMIC,
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-        CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
-        ..Default::default()
-    };
-    let mut dynamic = None;
-    let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut dynamic)) };
-    println!("CreateTexture2D(dynamic) {:#010x}", code(r));
+    for (name, kind) in [
+        ("occlusion", D3D11_QUERY_OCCLUSION),
+        ("timestamp", D3D11_QUERY_TIMESTAMP),
+    ] {
+        let mut q = None;
+        let desc = D3D11_QUERY_DESC {
+            Query: kind,
+            MiscFlags: 0,
+        };
+        let r = unsafe { device.CreateQuery(&desc, Some(&mut q)) };
+        println!("CreateQuery({name}) {:#010x}", code(r));
+    }
 
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: 64,
@@ -69,6 +63,11 @@ fn main() -> windows::core::Result<()> {
     let mut structured = None;
     let r = unsafe { device.CreateBuffer(&desc, None, Some(&mut structured)) };
     println!("CreateBuffer(structured) {:#010x}", code(r));
+    let mut view = None;
+    let r = unsafe {
+        device.CreateShaderResourceView(structured.as_ref().unwrap(), None, Some(&mut view))
+    };
+    println!("CreateShaderResourceView(structured) {:#010x}", code(r));
 
     let r = unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, 4) };
     let levels = r.as_ref().map_or(0, |l| *l);

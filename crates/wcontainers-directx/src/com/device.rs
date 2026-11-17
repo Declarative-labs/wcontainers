@@ -167,11 +167,14 @@ impl Device_Impl {
         out: OutRef<ID3D11Buffer>,
     ) -> Result<()> {
         let d = convert::buffer(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
-        let bytes = unsafe { init.as_ref() }
-            .filter(|i| !i.pSysMem.is_null())
-            .map(|i| unsafe {
+        // Initial data without bytes is invalid, as Direct3D answers.
+        let bytes = match unsafe { init.as_ref() } {
+            Some(i) if i.pSysMem.is_null() => return Err(E_INVALIDARG.into()),
+            Some(i) => Some(unsafe {
                 std::slice::from_raw_parts(i.pSysMem.cast::<u8>(), d.byte_width as usize)
-            });
+            }),
+            None => None,
+        };
         let front = self
             .front
             .borrow_mut()
@@ -408,7 +411,7 @@ impl Device_Impl {
         desc: *const D3D11_BLEND_DESC,
         out: OutRef<ID3D11BlendState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::blend_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<BlendState, _>(&self.states.blend, blend_key(d), out, || {
             let state = self
                 .front
@@ -424,7 +427,7 @@ impl Device_Impl {
         desc: *const D3D11_DEPTH_STENCIL_DESC,
         out: OutRef<ID3D11DepthStencilState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::depth_stencil_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<DepthStencilState, _>(
             &self.states.depth_stencil,
             depth_stencil_key(d),
@@ -461,7 +464,7 @@ impl Device_Impl {
         desc: *const D3D11_SAMPLER_DESC,
         out: OutRef<ID3D11SamplerState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::sampler_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<SamplerState, _>(&self.states.sampler, words(d), out, || {
             let state = self
                 .front
@@ -470,6 +473,49 @@ impl Device_Impl {
                 .map_err(hresult)?;
             Ok(SamplerState::new(state, *d, self.me()).into())
         })
+    }
+
+    pub(super) fn create_query(
+        &self,
+        desc: *const D3D11_QUERY_DESC,
+        out: OutRef<ID3D11Query>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let front = self
+            .front
+            .borrow_mut()
+            .create_query(d.Query.0 as u32, d.MiscFlags)
+            .map_err(hresult)?;
+        // Predicates are queries too; `QueryInterface` gives them as `ID3D11Predicate`.
+        if matches!(
+            d.Query,
+            D3D11_QUERY_OCCLUSION_PREDICATE | D3D11_QUERY_SO_OVERFLOW_PREDICATE
+        ) {
+            let p: ID3D11Predicate = Predicate::new(front, self.me()).into();
+            return give(out, p.cast()?);
+        }
+        give(out, Query::new(front, self.me()).into())
+    }
+
+    pub(super) fn create_predicate(
+        &self,
+        desc: *const D3D11_QUERY_DESC,
+        out: OutRef<ID3D11Predicate>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let predicate = d.Query == D3D11_QUERY_OCCLUSION_PREDICATE
+            || (D3D11_QUERY_SO_OVERFLOW_PREDICATE.0..=D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3.0)
+                .contains(&d.Query.0)
+                && (d.Query.0 - D3D11_QUERY_SO_OVERFLOW_PREDICATE.0) % 2 == 0;
+        if !predicate {
+            return Err(E_INVALIDARG.into());
+        }
+        let front = self
+            .front
+            .borrow_mut()
+            .create_query(d.Query.0 as u32, d.MiscFlags)
+            .map_err(hresult)?;
+        give(out, Predicate::new(front, self.me()).into())
     }
 
     pub(super) fn check_format_support(&self, format: DXGI_FORMAT) -> Result<u32> {
