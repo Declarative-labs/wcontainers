@@ -88,6 +88,11 @@ const CLAMPED_LOD_SUFFIX: &str = "_clamped_lod";
 pub(crate) const MODF_FUNCTION: &str = "naga_modf";
 pub(crate) const FREXP_FUNCTION: &str = "naga_frexp";
 
+/// The uniform added to `gl_VertexID` for `BuiltIn::VertexIndex` without
+/// [`WriterFlags::DRAW_PARAMETERS`], set by the caller to each indexed draw's
+/// base vertex on targets that draw without one (WebGL 2).
+pub const BASE_VERTEX_BINDING: &str = "naga_vs_base_vertex";
+
 #[cfg(feature = "deserialize")]
 #[derive(serde::Deserialize)]
 struct BindingMapSerialization {

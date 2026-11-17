@@ -59,6 +59,10 @@ bitflags::bitflags! {
         const SHADER_BARYCENTRICS = 1 << 26;
         /// Primitive index builtin
         const PRIMITIVE_INDEX = 1 << 27;
+        /// Vertex index
+        ///
+        /// Without draw parameters, a uniform adds the base vertex
+        const VERTEX_INDEX = 1 << 28;
     }
 }
 
@@ -639,6 +643,7 @@ impl<W> Writer<'_, W> {
                     crate::BuiltIn::InstanceIndex | crate::BuiltIn::DrawIndex => {
                         self.features.request(Features::INSTANCE_INDEX)
                     }
+                    crate::BuiltIn::VertexIndex => self.features.request(Features::VERTEX_INDEX),
                     crate::BuiltIn::Barycentric { .. } => {
                         self.features.request(Features::SHADER_BARYCENTRICS)
                     }

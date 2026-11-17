@@ -175,6 +175,17 @@ impl<'a, W: Write> Writer<'a, W> {
             writeln!(self.out)?;
         }
 
+        if self.entry_point.stage == ShaderStage::Vertex
+            && !self
+                .options
+                .writer_flags
+                .contains(WriterFlags::DRAW_PARAMETERS)
+            && self.features.contains(Features::VERTEX_INDEX)
+        {
+            writeln!(self.out, "uniform uint {BASE_VERTEX_BINDING};")?;
+            writeln!(self.out)?;
+        }
+
         // Enable early depth tests if needed
         if let Some(early_depth_test) = self.entry_point.early_depth_test {
             // If early depth test is supported for this version of GLSL

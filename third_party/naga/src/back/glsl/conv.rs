@@ -101,7 +101,14 @@ pub(in crate::back::glsl) const fn glsl_built_in(
             }
         }
         Bi::PointSize => "gl_PointSize",
-        Bi::VertexIndex => "uint(gl_VertexID)",
+        Bi::VertexIndex => {
+            if options.draw_parameters {
+                "uint(gl_VertexID)"
+            } else {
+                // Must match BASE_VERTEX_BINDING
+                "(uint(gl_VertexID) + naga_vs_base_vertex)"
+            }
+        }
         Bi::DrawIndex => "gl_DrawID",
         // fragment
         Bi::FragDepth => "gl_FragDepth",
@@ -110,7 +117,7 @@ pub(in crate::back::glsl) const fn glsl_built_in(
         Bi::PrimitiveIndex => "uint(gl_PrimitiveID)",
         Bi::Barycentric { perspective: true } => "gl_BaryCoordEXT",
         Bi::Barycentric { perspective: false } => "gl_BaryCoordNoPerspEXT",
-        Bi::SampleIndex => "gl_SampleID",
+        Bi::SampleIndex => "uint(gl_SampleID)",
         Bi::SampleMask => {
             if options.output {
                 "gl_SampleMask"
