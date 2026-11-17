@@ -4,12 +4,58 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K3 are done (their runs are in git history and below). K4 (files outside) is built in three
+K0 to K3 are done (their runs are in git history and below). K4 (files outside) is built in four
 runs: the first built the FUSE side with the backend as a volume; the second put the root file
 system on the backend, built extended attributes, access control lists and fallocate of backend
 files, FLUSH at every close, tests of backend notices and layer 1 on the backend; the third built
 mapped backend files as Linux's page cache holds them (shared and private mappings, programs) and
-layer 1 on a backend that opens files for the page cache. What is left is in Next.
+layer 1 on a backend that opens files for the page cache; the fourth fixed the independent check's
+findings (below). What is left is in Next.
+
+Built in K4's fourth run (the check's findings):
+- Locks a waiting call holds (`Kernel::take_lock`, `Call::holds`, `Channel::Held`): taken at a
+  call's start, kept while it parks, let go when it ends (or its thread does); another thread's
+  call parks until then, and no signal ends that wait (as `mutex_lock`). Used for an open file's
+  position (`io::lock_position`, Linux's `fdget_pos`/`f_pos_lock` for regular files and
+  directories: read, write, readv, writev, preadv2 and pwritev2 at -1, lseek, getdents64) and a
+  backend file's writes (`io::lock_backend_writes`, the `inode_lock` of FUSE writes without
+  FOPEN_PARALLEL_DIRECT_WRITES). The pipe lock uses the same slots. This was the blocking finding:
+  replies were handed to questions they were not sent for when a shared descriptor's position
+  moved while a call waited (lost writes, zero bytes, bytes read twice).
+- A parked call's earlier answers are taken only for the same question (`backend::Client::ask`
+  compares a hash of opcode, node and body): one asked in its place drops that answer and the
+  ones after it (giving back lookups and handles they held) and asks afresh, counted and warned
+  as "backend question asked again" (new reason). Not seen in any run since.
+- Attribute versions (`fc->attr_version`, `fi->attr_version`): an answer to a request sent before
+  the inode last changed (a write's new size, a truncation, INVAL_INODE, or the same answer
+  taken by an earlier run of the call) no longer overwrites what the inode holds.
+- readv, writev and the rest move a backend file's whole vector as one read or write
+  (`io::read_parts`, `io::write_parts`), as FUSE takes the iterator whole; before, the position
+  moved between segments of a parked call, so its next run asked at a moved offset.
+- READDIR asks for one page whatever the caller's buffer (`fuse_readdir_uncached`), and its
+  entries are read with fuse-abi's `fuse_dirent` (name length checked against FUSE_NAME_MAX, a
+  name with `/` is EIO, as `parse_dirfile`). A 64-byte getdents64 buffer listed nothing before.
+- Closing a backend directory sends no FLUSH (`fuse_dir_operations` has none).
+- open with O_CREAT through a link to a missing file on the backend creates the target (the
+  link's target is read with READLINK; ours sends one more READLINK and LOOKUP than Linux here).
+- A named pipe on the backend keeps its backend inode under its buffer (`Pipe::backend`): opening
+  it dropped the inode (FORGET was sent) and its attributes were then looked up locally
+  (getxattr through the open pipe was ENODATA, Linux's EINVAL).
+- getxattr of `security.capability` on the backend: traced at the reference's server, no
+  GETXATTR reaches it (the answer is EINVAL, set or not), while other `security.` names reach it;
+  ours sends none either. The reference's FUSE mount is `nosuid,nodev,noatime`, so exec there
+  reads no file capabilities; our volume is mounted the same way and sends none.
+- Backend files read whole when mapped or run are counted and warned ("backend file read whole
+  when mapped", new reason, detail the bytes read).
+- Notices are counted as handled ("backend notice", measured, per code). The notices test now
+  draws moments 1 to 10 turns apart, sends RETRIEVE too (the test host keeps the kernel's
+  NOTIFY_REPLY, as the backend that asked would), and asserts every kind was handled and every
+  RETRIEVE answered.
+- New tests: tests/backend.rs `shared_positions_match_reference` (guest/sharedpos.c: writes after
+  fork, two writer threads, two reader threads, two directory listers, two appending descriptors;
+  4 saves) and `special_files_match_reference` (guest/backendspecial.c: creating through dangling
+  links, attributes of a named pipe by path, descriptor and /proc). Both failed before the fixes
+  as the check reported.
 
 Built in K4's third run:
 - A mapped backend file's pages (`fs::backend::Pages`, held in `Remote::pages`; shared.rs): while
@@ -831,7 +877,8 @@ Everything a reviewer should know about what is not compared, in one place.
 
 Ignored tests (each attribute gives the reason):
 - busybox `root_file_system`: `ls -la /`, `ls -ln /etc`, `stat /etc`, `find /etc`, `du /etc/apk` show
-  the root file system's own kind (overlayfs over ext4 in the reference, tmpfs here until K4).
+  the root file system's own kind (overlayfs over ext4 in the reference; tmpfs here, in memory or
+  the backend server's directory).
 - align `unaligned_exclusive_matches_reference`: unicorn faults an exclusive load from an unaligned
   address, which the reference's hardware runs. A stand-in difference, not the kernel's.
 - align `misaligned_stack_pointer_matches_reference`: unicorn (QEMU) never checks stack pointer
@@ -1950,7 +1997,8 @@ each sequence the runner puts back what a sequence can change outside its direct
   - open and close: 2 LOOKUP, 1 GETATTR, 1 OPEN, 1 FLUSH, 1 RELEASE.
   - pread of 4 KiB: 1 READ. pwrite of 4 KiB: 1 WRITE.
   - opendir, readdir to the end, closedir of 12 entries: 1 LOOKUP, 1 GETATTR, 1 OPENDIR, 2 READDIR,
-    1 FLUSH, 1 RELEASEDIR.
+    1 FLUSH, 1 RELEASEDIR (no FLUSH since the fourth run, as Linux; measured again then, the other
+    kinds unchanged).
   - create, close and unlink: 4 LOOKUP, 2 GETATTR, 1 CREATE, 1 FLUSH, 1 RELEASE, 1 UNLINK, 2 FORGET.
   - mkdir and rmdir: 4 LOOKUP, 2 GETATTR, 1 MKDIR, 1 RMDIR, 2 FORGET.
   - rename: 4 LOOKUP, 1 GETATTR, 1 RENAME.
@@ -2125,11 +2173,19 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K4, fourth run: a backend file's writes hold its lock alone always; Linux shares it among
+  writes inside the file when the backend opened it with FOPEN_PARALLEL_DIRECT_WRITES (the first
+  backend does not). A shared file's position lock is taken whatever the file's count of holders
+  (Linux takes it only when shared); unshared, nothing else can wait for it, so nothing differs.
+- K4, fourth run: open with O_CREAT through a link to a missing file on the backend sends one
+  READLINK and one LOOKUP more than Linux (the link is read again and the target looked up again).
+
 - K4, second run: the image is unpacked into the backend's directory by the server's container
   (busybox tar) before the server starts, not as FUSE messages from the kernel; the plan's section 1
   says tests unpack an image into a directory.
 - K4, third run: a mapped backend file's pages are read whole at mmap (from the file's start to the
-  mapping's end), where Linux reads each page at its first fault; a change to the file through a
+  mapping's end), and a program on the backend whole at exec, where Linux reads each page at its
+  first fault (counted "backend file read whole when mapped" since the fourth run, with a warning); a change to the file through a
   direct-IO descriptor after the mmap and before a page is first touched shows on Linux and not
   here. Pages are written back whole, not only those written (counted). The plan's "keeps no
   cache" is kept apart from these pages, which correct mappings need. INIT does not ask for
@@ -2143,16 +2199,13 @@ All on this shared Mac; noisy, not benchmarks.
 - K4, second run: FLUSH for a descriptor closed by anything but `close` is sent with nothing
   waiting for it; Linux's `filp_close` waits for it (and ignores its error).
 
-- K4: the backend is mounted as a volume (`Start::volume`), not yet as the root (Next). The
-  reference for the backend runs the server as the container's first process and the program as
+- K4: the reference for the backend runs the server as the container's first process and the program as
   its child, in a container with /dev/fuse and CAP_SYS_ADMIN (dropped from the program's sets), so
   Docker's seccomp profile there is the one for CAP_SYS_ADMIN; the program is not the first
   process there.
 - K4: a call waiting for the backend is not interrupted (no FUSE_INTERRUPT); Linux sends INTERRUPT
   on a signal and goes on waiting. A fatal signal ends the process at once here, and the answer
   that comes later gives back what it handed out.
-- K4: FLUSH is sent by close only; descriptors closed by dup2, close_range, exec or exit send none
-  (Linux flushes at each). The passthrough server's FLUSH changes nothing visible.
 - K4: an open file's path for `/proc/<pid>/fd` on the backend is the name it was opened by, not a
   followed link's target (walking again would ask the backend again).
 - K4: requests the backend took before a save are answered after it by the host that goes on with
@@ -2174,9 +2227,10 @@ All on this shared Mac; noisy, not benchmarks.
   process_mrelease never finds a dying process with memory to free: a running process is EINVAL and an
   ended one ESRCH; Linux answers 0 in the window before the victim runs (a race in the reference).
 
-- The root file system is in memory (tmpfs) in K1: the file backend is K4. Tests fill it from
-  `docker export` of the reference image with `Kernel::add_file`. What shows the file system's own kind
-  differs from the reference's overlayfs; those cases are known failures, and layer 1 stays off it.
+- The root file system is in memory (tmpfs), or on the backend (K4, the server's tmpfs directory in
+  tests). Tests fill it from `docker export` of the reference image. What shows the file system's
+  own kind differs from the reference's overlayfs over ext4 (busybox `root_file_system`, ignored as
+  a known failure); layer 1 stays off it.
 - Docker's `/etc/hostname` is given the container's name; `/etc/hosts` and `/etc/resolv.conf` keep the
   image's empty placeholders (contents come with the network, K5) with Docker's mode 0644. The test
   programs' directory `/wc` is a plain directory here, a read-only bind mount in the reference. `/sys`
@@ -2348,6 +2402,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K4, fourth run: none.
 - K4, third run: none.
 - K4, second run: none.
 - K4, first run: none. (`Host::backend_send`, `Event::BackendReply` and `Event::BackendNotice` are
@@ -2393,11 +2448,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
   statx(AT_FDCWD, "", AT_EMPTY_PATH, mask 0): Linux's FUSE does not sync attributes for a mask with
   no basic field and shows what it held; ours asked the backend. Ours now takes the held
   attributes too; the seed passed 2000.
-- K4, second run: getxattr of `security.capability` on the reference's FUSE mount answers EINVAL
-  (with size 0 and with a buffer, set or not), though the server holds a valid v2 value (read on
-  the server's side). Ours answers the same, as measured; the cause is not found
-  (`cap_inode_getsecurity`'s only EINVAL before the value is read is `d_find_any_alias` finding no
-  dentry). Whether exec on the reference honours file capabilities of a FUSE file is unchecked.
+- K4, second run (narrowed in the fourth): getxattr of `security.capability` on the reference's
+  FUSE mount answers EINVAL (with size 0 and with a buffer, set or not). Traced with strace at the
+  server in the fourth run: no GETXATTR reaches it for this name, while `security.other` does and
+  answers ENODATA; files on tmpfs (nosuid or not) answer ENODATA. So the EINVAL comes from the
+  reference kernel before FUSE is asked; which line of 7.0.14 gives it is not found (scratch:
+  kernel/capcause). Ours answers EINVAL and sends nothing, the same. Exec: the reference's mount is
+  nosuid (`rw,nosuid,nodev,noatime`), so exec there asks for no capabilities (traced: none sent);
+  ours mounts the volume the same and sends none. On a backend root ours reads them at exec; there
+  is no FUSE root in the reference to compare.
 - K4, first run (from the K3 check): terminal's `job_control` (guest/jobs.c `leader_exit`) can fail
   from a race in the reference: Linux's `disassociate_ctty` sends SIGHUP to the foreground group
   before `session_clear_tty`, and on a loaded multi-CPU reference the job can open `/dev/tty` in that
@@ -2456,17 +2515,22 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K4's parts are built and its closing runs passed (Measurements). Left, none of it blocking:
-1. Notices about mapped files are not tested on purpose: the driver cannot send RETRIEVE (the
-   server never asked), and its STORE and INVAL_INODE reach mapped files only by chance.
+K4's parts are built and the check's findings are fixed (Built in K4's fourth run). Left, none of
+it blocking:
+1. Notices about mapped files are not tested with a program that sees them: STORE and INVAL_INODE
+   reach mapped files only by chance (node numbers 1 to 11), and a STORE that does changes what the
+   program reads, which the reference cannot be made to match. RETRIEVE is now sent and answered.
 2. splice, tee, cachestat, copy_file_range, sendfile and fadvise on backend files are reached
    only through layer 1 on the backend (both server kinds); no layer 2 program uses them there.
-3. Unchecked: whether exec on the reference honours file capabilities of a FUSE file, and why the
-   reference answers getxattr of security.capability over FUSE with EINVAL.
+3. Calls that move a position without Linux's `f_pos_lock` (sendfile, splice and copy_file_range
+   with no offset given) can still see it move while they wait for the backend, as on Linux; ours
+   then asks again (counted "backend question asked again") where Linux's would race.
+4. Other inode locks Linux holds across FUSE requests (truncate, fallocate, directory changes) are
+   not held across waits; only writes and positions are.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
-737, 3023 to 3034, 4040001, 4040201 to 4040204, and the checks' 91001 to 91003, 8181801 to
-8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend: 0, 4040101 to 4040105;
-on the caching backend: 0, 4040301 to 4040303. Plain seeds of the K4 third run: 4040205 to 4040207.
+737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, and the checks' 91001 to 91003,
+8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend: 0, 4040101 to 4040105,
+4040111; on the caching backend: 0, 4040301 to 4040303, 4040311, and the check's 7171002.
