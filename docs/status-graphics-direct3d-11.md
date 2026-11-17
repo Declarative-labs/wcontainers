@@ -453,8 +453,10 @@ buffer and unordered access views, geometry, stream output and compute), so they
 ## What comes next (G4b and on)
 
 After G4 run 4, first, once the desktop answers again:
-1. Build, lint and run every test of both crates on the desktop (How to run) from this tree, which
-   holds six commits never built on Windows (b1d136f to f2a7656). Fix what fails, then push.
+1. Build, lint and run every test of both crates on the desktop (How to run) from this tree, whose
+   commits from b1d136f on (code in b1d136f, bae1307, 4a36a17, d059356, 6fea7d4, f2a7656, bc0897e,
+   560f681, 3089613, eca7789) were never built on Windows and are not pushed. Fix what fails, then
+   push.
 2. The rig's compute scene and Wine's d3d11 file through ours; update the table of files.
 3. The real programs (scratch script run-programs.sh): with our d3d11.dll alone, then with our
    dxgi.dll as well (`--dll 'dxgi.dll=%CARGO_TARGET_DIR%\debug\dxgi.dll'` beside the d3d11 one).
