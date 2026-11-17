@@ -10,11 +10,15 @@ use std::process::Command;
 
 use common::{fresh, place_libraries, profile};
 
-/// Runs example `name` from `dir` (copying it there), returning its exit code and output.
-fn run(name: &str, dir: &Path) -> (i32, String) {
+/// Runs example `name` from `dir` (copying it there) with `args`, returning its exit code and output.
+fn run_with(name: &str, dir: &Path, args: &[&str]) -> (i32, String) {
     let exe = dir.join(format!("{name}.exe"));
     std::fs::copy(profile().join(format!("examples/{name}.exe")), &exe).unwrap();
-    let out = Command::new(&exe).current_dir(dir).output().unwrap();
+    let out = Command::new(&exe)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     eprintln!(
         "{name} in {}:\n{text}{}",
@@ -22,6 +26,10 @@ fn run(name: &str, dir: &Path) -> (i32, String) {
         String::from_utf8_lossy(&out.stderr)
     );
     (out.status.code().unwrap_or(-1), text)
+}
+
+fn run(name: &str, dir: &Path) -> (i32, String) {
+    run_with(name, dir, &[])
 }
 
 /// A directory with nothing but what `name` needs: with ours, the forwarder and the library.
@@ -73,4 +81,26 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
         "CreateGeometryShader 0x80004001\nCreateTexture3D 0x80004001\n\
          CreateBuffer(structured) 0x80004001\nGetDeviceRemovedReason 0x887a0020\n"
     );
+}
+
+/// `own_handled` with a depth-stencil view of `format`, beside the system's library and ours.
+fn handled_with_depth(format: &str) {
+    for ours in [false, true] {
+        let dir = place(&format!("handled-{format}-{ours}"), ours);
+        let (code, text) = run_with("own_handled", &dir, &[format]);
+        assert_eq!((code, text.lines().last()), (0, Some("pass")), "{text}");
+    }
+}
+
+#[test]
+fn own_handled_draws_the_same_through_ours_with_32_bit_depth() {
+    handled_with_depth("d32");
+}
+
+#[test]
+#[ignore = "known failure: the webgpu back end makes a depth-only view of a D24_UNORM_S8_UINT \
+            texture, which wgpu refuses as a pass's attachment (the interface says it holds both \
+            aspects); the device is removed"]
+fn own_handled_draws_the_same_through_ours_with_depth_and_stencil() {
+    handled_with_depth("d24s8");
 }
