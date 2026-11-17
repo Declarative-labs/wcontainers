@@ -254,9 +254,9 @@ impl ReadAs {
 
 /// How GLES 3.0's `readPixels` reads `format` back exactly (its always-supported pairs: normalised
 /// bytes as RGBA bytes, integers as RGBA 32-bit integers, and floats as RGBA floats with
-/// EXT_color_buffer_float; 16-bit normalised ones as RGBA shorts with EXT_texture_norm16, and signed
-/// ones as signed RGBA bytes or shorts with EXT_render_snorm), or None
-/// where it cannot: formats that are not colour-renderable, packed ones and 16-bit floats.
+/// EXT_color_buffer_float; 16-bit normalised ones as RGBA shorts with EXT_texture_norm16), or None
+/// where it cannot: formats that are not colour-renderable, packed ones, 16-bit floats, and signed
+/// normalised ones, whose -128 `readPixels` returns as -127 even with EXT_render_snorm.
 pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
     let gl = gl_format(format)?;
     let comp_kept = match gl.ty {
@@ -269,10 +269,6 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
         Class::Norm { render: true } if gl.ty == UNSIGNED_BYTE => (RGBA, UNSIGNED_BYTE, 1),
         Class::Norm { render: true } if gl.ty == UNSIGNED_SHORT && ext.norm16 => {
             (RGBA, UNSIGNED_SHORT, 2)
-        }
-        Class::Norm { render: false } if gl.ty == BYTE && ext.render_snorm => (RGBA, BYTE, 1),
-        Class::Norm { render: false } if gl.ty == SHORT && ext.render_snorm && ext.norm16 => {
-            (RGBA, SHORT, 2)
         }
         Class::Int { render: true } if matches!(gl.ty, BYTE | SHORT | INT) => {
             (RGBA_INTEGER, INT, 4)

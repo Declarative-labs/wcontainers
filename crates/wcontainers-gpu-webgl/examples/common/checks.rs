@@ -748,8 +748,6 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::R16Unorm, Format::R16Uint),
         (Format::Rg16Sint, Format::Rg16Unorm),
         (Format::Rg16Unorm, Format::Rg16Sint),
-        (Format::Rgba8Snorm, Format::Rgba8Uint),
-        (Format::Rgba16Snorm, Format::Rgba16Sint),
     ];
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
@@ -1004,21 +1002,42 @@ pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
     let usage = TextureUsage::SAMPLE | TextureUsage::RENDER | TextureUsage::COPY_DST;
     let array = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 3], 1, usage, false);
     let cube = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 6], 1, usage, true);
-    let one_layer = kit::target(&mut b, &array, f, 0, 1);
-    let face = kit::target(&mut b, &cube, f, 0, 2);
-    let first_two = kit::view(&mut b, &array, f, ViewDimension::D2Array, 0, 1, 0, 2);
-    let six_layers = kit::view(&mut b, &cube, f, ViewDimension::D2Array, 0, 1, 0, 6);
-    for (view, what) in [
-        (&one_layer, "one layer of an array"),
-        (&face, "one face of a cube"),
-        (&first_two, "two of three layers"),
-        (&six_layers, "a cube as an array"),
+    let part = |dimension, layer, layers| TextureViewDesc {
+        format: f,
+        dimension,
+        base_mip: 0,
+        mip_count: 1,
+        base_layer: layer,
+        layer_count: layers,
+        stencil: false,
+    };
+    for (texture, desc, what) in [
+        (
+            &array,
+            part(ViewDimension::D2, 1, 1),
+            "one layer of an array",
+        ),
+        (&cube, part(ViewDimension::D2, 2, 1), "one face of a cube"),
+        (
+            &array,
+            part(ViewDimension::D2Array, 0, 2),
+            "two of three layers",
+        ),
+        (
+            &cube,
+            part(ViewDimension::D2Array, 0, 6),
+            "a cube as an array",
+        ),
     ] {
-        let got = b.create_binding_set(&[BindingEntry {
-            binding: 32,
-            stages: StageSet::FRAGMENT,
-            resource: BindingResource::Texture(view),
-        }]);
+        // Refused when the view is made, or when it is bound.
+        let got = b.create_view(texture, &desc).and_then(|view| {
+            b.create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .map(drop)
+        });
         assert!(
             matches!(got, Err(GpuError::Absent(f)) if f == Features::TEXTURE_VIEWS),
             "{what}: {got:?}"
@@ -1140,11 +1159,22 @@ pub fn bgra_surfaces_present<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
-/// The signed normalised formats follow EXT_render_snorm: with it they render, blend and read back
-/// as stored (-128 included), and a clear writes their values; without it they only sample and
-/// filter.
+/// Loads texel (0, 0) of a float texture into an `rgba32float` target.
+const LOAD_CORNER_FLOAT: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return textureLoad(t, vec2<i32>(0, 0), 0);
+}
+";
+
+/// The signed normalised formats follow EXT_render_snorm: with it they render and blend, and a
+/// clear to -1, 0, 1 and 64 steps loads back as those values; with or without it they sample and
+/// filter, and never copy out (`readPixels` returns -128 as -127).
 pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
-    use crate::kit;
+    use crate::kit::{self, Kit};
     use Format as F;
     let mut b = H::make();
     let has = b
@@ -1152,76 +1182,55 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
         .formats
         .get(F::Rgba8Snorm)
         .contains(FormatUse::RENDER);
-    let usage = TextureUsage::SAMPLE
-        | TextureUsage::RENDER
-        | TextureUsage::COPY_SRC
-        | TextureUsage::COPY_DST;
     let mut formats = vec![F::R8Snorm, F::Rg8Snorm, F::Rgba8Snorm];
     if b.caps().formats.get(F::Rgba16Snorm) != FormatUse::empty() {
         formats.extend([F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm]);
     }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_CORNER_FLOAT, "vs", "fs");
+    let out_usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let f32x4 = F::Rgba32Float;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f32x4,
+        [1, 1, 1],
+        1,
+        out_usage,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, f32x4, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    let usage = TextureUsage::SAMPLE | TextureUsage::RENDER;
     for format in formats {
         let uses = b.caps().formats.get(format);
+        assert!(
+            uses.contains(FormatUse::SAMPLE | FormatUse::FILTER)
+                && !uses.contains(FormatUse::COPY_OUT),
+            "{format:?}: {uses:?}"
+        );
         if !has {
             assert_eq!(uses, FormatUse::SAMPLE | FormatUse::FILTER, "{format:?}");
             continue;
         }
-        let want = FormatUse::SAMPLE
-            | FormatUse::FILTER
-            | FormatUse::RENDER
-            | FormatUse::BLEND
-            | FormatUse::COPY_OUT;
-        assert!(uses.contains(want), "{format:?}: {uses:?}");
-        let texel = format.block().2 as usize;
-        let comp = if matches!(format, F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm) {
-            2
-        } else {
-            1
+        assert!(
+            uses.contains(FormatUse::RENDER | FormatUse::BLEND),
+            "{format:?}: {uses:?}"
+        );
+        let max = match format {
+            F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm => 32767.0,
+            _ => 127.0,
         };
-        // Every bit pattern of the first texels, then the most negative value in the last.
-        let mut bytes = pattern(8 * texel, 0x2545_f491);
-        let last = bytes.len() - texel;
-        for c in bytes[last..].chunks_mut(comp) {
-            c.fill(0);
-            c[comp - 1] = 0x80;
-        }
+        let value = [-1.0f32, 0.0, 1.0, 64.0 / max];
         let t = kit::texture(
             &mut b,
             TextureDimension::D2,
             format,
-            [4, 2, 1],
+            [2, 2, 1],
             1,
             usage,
             false,
         );
-        let region = TextureRegion {
-            texture: &t,
-            mip: 0,
-            layer: 0,
-            origin: Origin::default(),
-            stencil: false,
-        };
-        let extent = Extent {
-            width: 4,
-            height: 2,
-            depth_or_layers: 1,
-        };
-        b.write_texture(
-            &region,
-            extent,
-            &bytes,
-            4 * texel as u32,
-            2,
-            WriteMode::Ordered,
-        );
-        assert_eq!(
-            kit::read(&mut b, &t, 0, 0, [4, 2, 1], texel, false),
-            bytes,
-            "{format:?}"
-        );
-        // Cleared to -1, 0, 1 and 64 steps (a value each format holds exactly).
-        let max = if comp == 2 { 32767.0 } else { 127.0 };
-        let value = [-1.0f32, 0.0, 1.0, 64.0 / max];
         let v = kit::target(&mut b, &t, format, 0, 0);
         b.begin_pass(&PassDesc {
             colors: core::array::from_fn(|i| {
@@ -1238,20 +1247,34 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
             empty: None,
         });
         b.end_pass();
-        let steps = [-(max as i32), 0, max as i32, 64];
-        let n = texel / comp;
-        let texel_bytes: Vec<u8> = steps[..n]
-            .iter()
-            .flat_map(|s| {
-                let le = s.to_le_bytes();
-                le[..comp].to_vec()
-            })
+        let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &vp,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 16, false);
+        let got: Vec<f32> = got
+            .chunks(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        assert_eq!(
-            kit::read(&mut b, &t, 0, 0, [4, 2, 1], texel, false),
-            texel_bytes.repeat(8),
-            "{format:?} cleared"
-        );
+        // Channels the format lacks load as 0, 0 and 1.
+        let n = (format.block().2 as usize) / if max > 200.0 { 2 } else { 1 };
+        let mut want = [0.0, 0.0, 0.0, 1.0];
+        want[..n].copy_from_slice(&value[..n]);
+        assert_eq!(got, want, "{format:?}");
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -1325,7 +1348,11 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
     for format in [F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm] {
         let uses = b.caps().formats.get(format);
         if has {
-            assert_eq!(uses, FormatUse::SAMPLE | FormatUse::FILTER, "{format:?}");
+            // Rendering them too needs EXT_render_snorm.
+            assert!(
+                uses.contains(FormatUse::SAMPLE | FormatUse::FILTER),
+                "{format:?}: {uses:?}"
+            );
         } else {
             assert_eq!(uses, FormatUse::empty(), "{format:?}");
             let made = b.create_texture(&TextureDesc {
@@ -1398,6 +1425,7 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                     };
                     [n(size[0]), n(size[1]), depth]
                 };
+                let mut written = Vec::new();
                 for mip in 0..first {
                     let s = shape(mip);
                     let count = (s[0] * s[1] * s[2]) as usize;
@@ -1429,6 +1457,7 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                             WriteMode::Ordered,
                         );
                     }
+                    written.push(bytes);
                 }
                 let desc = TextureDesc {
                     dimension,
@@ -1452,6 +1481,11 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                     let s = shape(mip);
                     let want = kit::read(&mut b, &drawn, mip, 0, s, texel, false);
                     let got = kit::read(&mut b, &native, mip, 0, s, texel, false);
+                    if let Some(bytes) = written.get(mip as usize) {
+                        let what = format!("{format:?} {dimension:?} {size:?}, from level {first}");
+                        assert!(&got == bytes, "{what}: generateMipmap changed level {mip}");
+                        assert!(&want == bytes, "{what}: the draws changed level {mip}");
+                    }
                     let differ = got
                         .chunks(texel)
                         .zip(want.chunks(texel))
