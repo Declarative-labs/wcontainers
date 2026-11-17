@@ -93,7 +93,10 @@ pub struct RenderTargetBlend {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlendDesc {
     pub targets: [RenderTargetBlend; MAX_COLOR_TARGETS],
-    /// Whether every target uses `targets[0]`; with independent blend absent, fronts always set this.
+    /// Whether every target uses `targets[0]`. Back ends without [`crate::Features::INDEPENDENT_BLEND`]
+    /// are only given blocks with it set: a front whose targets differ in blend or write mask draws once
+    /// per group of targets that agree, each group in a block of its own (slow path
+    /// [`crate::SlowPath::TargetsSplit`]).
     pub same_for_all: bool,
     pub alpha_to_coverage: bool,
     /// Present only where [`crate::Features::LOGIC_OP`] is.
@@ -197,7 +200,11 @@ pub struct RasterDesc {
     /// respectively; otherwise the vertex program rewrites depth (slow path
     /// [`crate::SlowPath::ClipDepthRewrite`]).
     pub depth_minus_one: bool,
-    /// Bits of the sample mask, applied with the fragment's own coverage.
+    /// Bits of the sample mask, applied with the fragment's own coverage. Back ends without
+    /// [`crate::Features::SAMPLE_MASK`] are only given all ones: a front whose mask clears a sample of a
+    /// multisampled target binds the program variant that writes the mask instead (slow path
+    /// [`crate::SlowPath::SampleMaskInShader`]), and with single-sample targets drops a draw whose bit 0
+    /// is clear, since it writes nothing.
     pub sample_mask: u32,
 }
 

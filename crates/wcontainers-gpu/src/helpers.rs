@@ -21,6 +21,9 @@ struct Params { value: vec4<u32>, extra: vec4<u32> }
 @group(0) @binding(16) var samp: sampler;
 @group(0) @binding(32) var src2d: texture_2d<f32>;
 @group(0) @binding(33) var src3d: texture_3d<f32>;
+@group(0) @binding(34) var src2darray: texture_2d_array<f32>;
+@group(0) @binding(35) var srccube: texture_cube<f32>;
+@group(0) @binding(36) var srccubearray: texture_cube_array<f32>;
 
 struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
 
@@ -34,6 +37,30 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
 @fragment fn fs_mip3d(v: VsOut) -> @location(0) vec4<f32> {
     return textureSampleLevel(src3d, samp, vec3<f32>(v.uv, bitcast<f32>(params.extra.x)), 0.0);
 }
+@fragment fn fs_mip2darray(v: VsOut) -> @location(0) vec4<f32> {
+    return textureSampleLevel(src2darray, samp, v.uv, params.extra.z, 0.0);
+}
+// The direction through texel coordinate uv of cube face `face`, by the face table Direct3D, Vulkan,
+// OpenGL and WebGPU share.
+fn cube_dir(uv: vec2<f32>, face: u32) -> vec3<f32> {
+    let s = uv.x * 2.0 - 1.0;
+    let t = uv.y * 2.0 - 1.0;
+    switch face {
+        case 0u: { return vec3<f32>(1.0, -t, -s); }
+        case 1u: { return vec3<f32>(-1.0, -t, s); }
+        case 2u: { return vec3<f32>(s, 1.0, t); }
+        case 3u: { return vec3<f32>(s, -1.0, -t); }
+        case 4u: { return vec3<f32>(s, -t, 1.0); }
+        default: { return vec3<f32>(-s, -t, -1.0); }
+    }
+}
+@fragment fn fs_mipcube(v: VsOut) -> @location(0) vec4<f32> {
+    return textureSampleLevel(srccube, samp, cube_dir(v.uv, params.extra.z), 0.0);
+}
+@fragment fn fs_mipcubearray(v: VsOut) -> @location(0) vec4<f32> {
+    let layer = params.extra.z;
+    return textureSampleLevel(srccubearray, samp, cube_dir(v.uv, layer % 6u), layer / 6u, 0.0);
+}
 @fragment fn fs_clear_float() -> @location(0) vec4<f32> { return bitcast<vec4<f32>>(params.value); }
 @fragment fn fs_clear_uint() -> @location(0) vec4<u32> { return params.value; }
 @fragment fn fs_clear_sint() -> @location(0) vec4<i32> { return bitcast<vec4<i32>>(params.value); }
@@ -46,6 +73,9 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
 pub(crate) enum Builtin {
     Mip2d,
     Mip3d,
+    Mip2dArray,
+    MipCube,
+    MipCubeArray,
     ClearFloat,
     ClearUint,
     ClearSint,
@@ -54,9 +84,15 @@ pub(crate) enum Builtin {
     ClearStencil,
 }
 
-const FRAGMENTS: [Option<&str>; 7] = [
+/// How many built-in programs there are.
+const BUILTINS: usize = 10;
+
+const FRAGMENTS: [Option<&str>; BUILTINS] = [
     Some("fs_mip2d"),
     Some("fs_mip3d"),
+    Some("fs_mip2darray"),
+    Some("fs_mipcube"),
+    Some("fs_mipcubearray"),
     Some("fs_clear_float"),
     Some("fs_clear_uint"),
     Some("fs_clear_sint"),
@@ -70,7 +106,7 @@ pub(crate) const PARAMS_SIZE: usize = 32;
 /// Blocks and programs the defaults draw with, made once.
 #[derive(Debug)]
 pub(crate) struct Builtins<B: Backend> {
-    pub programs: [B::Program; 7],
+    pub programs: [B::Program; BUILTINS],
     pub blend: B::Blend,
     pub raster: B::Raster,
     pub vertex_layout: B::VertexLayout,
@@ -142,9 +178,10 @@ pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuEr
     }
     let module = naga::front::wgsl::parse_str(SOURCE)
         .map_err(|_| GpuError::Invalid("built-in shaders do not parse"))?;
+    // Cube arrays are read only by the cube-array mip program, which runs only where they exist.
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::empty(),
+        naga::valid::Capabilities::CUBE_ARRAY_TEXTURES,
     )
     .validate(&module)
     .map_err(|_| GpuError::Invalid("built-in shaders do not validate"))?;
@@ -162,20 +199,20 @@ pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuEr
         })
     };
     let vertex = shader("vs_full", ShaderStage::Vertex)?;
-    let mut fragments = [const { None }; 7];
+    let mut fragments = [const { None }; BUILTINS];
     for (slot, name) in fragments.iter_mut().zip(FRAGMENTS) {
         if let Some(name) = name {
             *slot = Some(shader(name, ShaderStage::Fragment)?);
         }
     }
-    let mut programs = alloc::vec::Vec::with_capacity(7);
+    let mut programs = alloc::vec::Vec::with_capacity(BUILTINS);
     for fragment in &fragments {
         programs.push(backend.create_program(&Program::Render {
             vertex: &vertex,
             fragment: fragment.as_ref(),
         })?);
     }
-    let Ok(programs) = <[B::Program; 7]>::try_from(programs) else {
+    let Ok(programs) = <[B::Program; BUILTINS]>::try_from(programs) else {
         unreachable!("one program per built-in")
     };
     let blend = backend.create_blend(&BlendDesc {

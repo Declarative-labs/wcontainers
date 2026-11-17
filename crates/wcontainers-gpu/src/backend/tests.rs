@@ -118,8 +118,8 @@ impl Backend for Recorder {
     fn create_view(&mut self, t: &Id, d: &TextureViewDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.log.push(format!(
-            "create_view {id} of {t} {:?} mip {} layer {}",
-            d.dimension, d.base_mip, d.base_layer
+            "create_view {id} of {t} {:?} mip {}+{} layer {}+{}",
+            d.dimension, d.base_mip, d.mip_count, d.base_layer, d.layer_count
         ));
         Ok(id)
     }
@@ -420,24 +420,103 @@ fn read_back_now_default_waits_and_counts() {
     assert_eq!(r.slow_paths().count(SlowPath::ReadBackWait), 1);
 }
 
+fn texture(dimension: TextureDimension, format: Format, layers: u32, mips: u32) -> TextureDesc {
+    TextureDesc {
+        dimension,
+        format,
+        width: 8,
+        height: 8,
+        depth_or_layers: layers,
+        mip_levels: mips,
+        samples: 1,
+        usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
+        reinterpret: false,
+        cube: false,
+    }
+}
+
+fn lines<'a>(r: &'a Recorder, start: &str) -> Vec<&'a str> {
+    r.log
+        .iter()
+        .filter(|l| l.starts_with(start))
+        .map(|l| l.as_str())
+        .collect()
+}
+
 #[test]
 fn clear_texture_default_is_a_clearing_pass() {
     let mut r = Recorder::new();
-    r.clear_texture(
-        &7,
-        Format::Depth24PlusStencil8,
-        ClearValue::DepthStencil {
-            depth: Some(0),
-            stencil: None,
-        },
-    );
+    let format = Format::Depth24PlusStencil8;
+    let desc = texture(TextureDimension::D2, format, 1, 1);
+    let value = ClearValue::DepthStencil {
+        depth: Some(0),
+        stencil: None,
+    };
+    r.clear_texture(&7, &desc, format, 0..1, 0..1, value)
+        .unwrap();
     assert_eq!(
         r.log,
         [
+            "create_view 1 of 7 D2 mip 0+1 layer 0+1",
             "begin_pass color None depth Some((Some(Clear(0)), Some(Load)))",
             "end_pass"
         ]
     );
+}
+
+#[test]
+fn clear_texture_of_a_volume_clears_every_slice_of_each_level() {
+    let mut r = Recorder::new();
+    let desc = texture(TextureDimension::D3, Format::Rgba8Unorm, 4, 2);
+    r.clear_texture(
+        &7,
+        &desc,
+        desc.format,
+        0..2,
+        0..4,
+        ClearValue::Color([0; 4]),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&r, "create_view"),
+        [
+            "create_view 1 of 7 D3 mip 0+1 layer 0+1",
+            "create_view 2 of 7 D3 mip 1+1 layer 0+1"
+        ]
+    );
+    let passes = lines(&r, "begin_pass");
+    assert_eq!(
+        passes.len(),
+        4 + 2,
+        "four slices at level 0, two at level 1"
+    );
+    for (pass, slice) in passes.iter().zip([0, 1, 2, 3, 0, 1]) {
+        assert!(pass.contains(&format!(", {slice}, Clear")), "{pass}");
+    }
+}
+
+#[test]
+fn clear_texture_of_layers_attaches_one_layer_per_pass() {
+    let mut r = Recorder::new();
+    let desc = texture(TextureDimension::D2, Format::Rgba8Unorm, 6, 1);
+    r.clear_texture(
+        &7,
+        &desc,
+        desc.format,
+        0..1,
+        1..4,
+        ClearValue::Color([0; 4]),
+    )
+    .unwrap();
+    assert_eq!(
+        lines(&r, "create_view"),
+        [
+            "create_view 1 of 7 D2 mip 0+1 layer 1+1",
+            "create_view 2 of 7 D2 mip 0+1 layer 2+1",
+            "create_view 3 of 7 D2 mip 0+1 layer 3+1"
+        ]
+    );
+    assert_eq!(lines(&r, "begin_pass").len(), 3);
 }
 
 #[test]
@@ -466,16 +545,15 @@ fn loop_with_restart_off_keeps_the_largest_index_as_a_vertex() {
 #[test]
 fn clear_of_a_stencil_format_names_no_depth_aspect() {
     let mut r = Recorder::new();
-    r.clear_texture(
-        &7,
-        Format::Stencil8,
-        ClearValue::DepthStencil {
-            depth: Some(0),
-            stencil: Some(3),
-        },
-    );
+    let desc = texture(TextureDimension::D2, Format::Stencil8, 1, 1);
+    let value = ClearValue::DepthStencil {
+        depth: Some(0),
+        stencil: Some(3),
+    };
+    r.clear_texture(&7, &desc, desc.format, 0..1, 0..1, value)
+        .unwrap();
     assert_eq!(
-        r.log[0],
+        r.log[1],
         "begin_pass color None depth Some((None, Some(Clear(3))))"
     );
 }
@@ -584,15 +662,22 @@ fn generate_mips_draws_each_level_and_layer_from_the_one_above() {
         cube: false,
     };
     r.generate_mips(&50, &desc, 1..3, 0..2).unwrap();
-    let views: Vec<_> = r
-        .log
+    let views: Vec<_> = lines(&r, "create_view")
         .iter()
-        .filter(|l| l.starts_with("create_view"))
+        .map(|l| l.split(" of ").nth(1).unwrap())
         .collect();
-    assert_eq!(views.len(), 8);
-    assert!(views[0].ends_with("of 50 D2 mip 0 layer 0"));
-    assert!(views[1].ends_with("of 50 D2 mip 1 layer 0"));
-    assert!(views[7].ends_with("of 50 D2 mip 2 layer 1"));
+    assert_eq!(
+        views,
+        [
+            "50 D2Array mip 0+1 layer 0+2",
+            "50 D2 mip 1+1 layer 0+1",
+            "50 D2 mip 1+1 layer 1+1",
+            "50 D2Array mip 1+1 layer 0+2",
+            "50 D2 mip 2+1 layer 0+1",
+            "50 D2 mip 2+1 layer 1+1",
+        ],
+        "the level above is read through a whole-array view, never a single-layer one"
+    );
     let scissors: Vec<_> = r
         .log
         .iter()
@@ -637,6 +722,27 @@ fn generate_mips_of_a_volume_draws_each_slice_at_its_centre() {
     let ring = r.helpers.ring.as_ref().unwrap().buffer;
     assert_eq!(read_f32(&r, ring, 16), 0.25);
     assert_eq!(read_f32(&r, ring, 256 + 16), 0.75);
+}
+
+#[test]
+fn generate_mips_of_a_cube_reads_whole_cube_views_and_names_the_face() {
+    let mut r = Recorder::new();
+    let mut desc = texture(TextureDimension::D2, Format::Rgba8Unorm, 6, 2);
+    desc.cube = true;
+    r.generate_mips(&50, &desc, 1..2, 0..6).unwrap();
+    let views: Vec<_> = lines(&r, "create_view")
+        .iter()
+        .map(|l| l.split(" of ").nth(1).unwrap())
+        .collect();
+    assert_eq!(views[0], "50 Cube mip 0+1 layer 0+6");
+    assert!(views[1..].iter().all(|v| v.starts_with("50 D2 mip 1+1")));
+    assert_eq!(views.len(), 7);
+    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    let face = |n: usize| {
+        let at = n * 256 + 24;
+        u32::from_le_bytes(r.buffers[ring as usize][at..at + 4].try_into().unwrap())
+    };
+    assert_eq!((0..6).map(face).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5]);
 }
 
 #[test]

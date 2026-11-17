@@ -21,6 +21,9 @@ pub enum SlotKind {
     Texture,
     /// Storage buffers and textures (Direct3D's unordered access views).
     Storage,
+    /// The hidden counter of a storage slot (Direct3D's append, consume and counter views): a storage
+    /// buffer range of one u32, numbered by the storage slot it belongs to.
+    Counter,
 }
 
 impl SlotKind {
@@ -31,6 +34,7 @@ impl SlotKind {
             SlotKind::Sampler => 16,
             SlotKind::Texture => 32,
             SlotKind::Storage => 160,
+            SlotKind::Counter => 224,
         }
     }
 
@@ -39,7 +43,7 @@ impl SlotKind {
         match self {
             SlotKind::Uniform | SlotKind::Sampler => 16,
             SlotKind::Texture => 128,
-            SlotKind::Storage => 64,
+            SlotKind::Storage | SlotKind::Counter => 64,
         }
     }
 
@@ -58,6 +62,9 @@ impl SlotKind {
 pub const HELPER_SET: u32 = 3;
 /// The binding of the helper constants' uniform buffer in [`HELPER_SET`].
 pub const HELPER_BINDING: u32 = 0;
+/// The binding in [`HELPER_SET`] of the copy of color target 0 a program reads to blend or apply a
+/// logic operation itself ([`TargetInShader::combine`]); target n is at this plus n.
+pub const TARGET_COPY_BINDING: u32 = 1;
 
 /// The API stage a shader was written for. Geometry, hull and domain shaders become compute and vertex
 /// programs in the shaders crate's stage helper; the others become one program stage each.
@@ -212,6 +219,17 @@ pub enum HelperValue {
     /// A vertex stream fetched in the program: byte offset of the first element, stride, and instance
     /// step rate (zero for per-vertex), three u32.
     PulledStream { stream: u32 },
+    /// The sample mask the program writes (u32).
+    SampleMask,
+    /// Where a packed storage slot's range starts in the packed buffer, in bytes (u32).
+    PackedStorage { slot: u32 },
+    /// The texel layout of a storage view read through a buffer: row pitch in texels and rows per
+    /// layer, two u32.
+    TexelLayout { slot: u32 },
+    /// How the program combines target n with its old value: color and alpha source and destination
+    /// factors and operations, the write mask and the logic operation as u32 codes (eight u32), then the
+    /// draw's blend constant (four f32).
+    TargetCombine { target: u8 },
 }
 
 /// Where one helper value sits in the helper constants.
@@ -252,11 +270,44 @@ bitflags! {
         const COUNTING = 1 << 4;
         /// The pixel shader's second output feeds dual-source blending.
         const DUAL_SOURCE = 1 << 5;
+        /// The fragment stage writes the sample mask from the helper constants
+        /// ([`crate::SlowPath::SampleMaskInShader`]).
+        const SAMPLE_MASK = 1 << 6;
     }
+}
+
+/// How a program reads typed buffers (Direct3D's `Buffer` and `RWBuffer`, OpenGL's texture buffers).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TexelBufferRoute {
+    /// As texel buffers, where the back end's language has them.
+    #[default]
+    Native,
+    /// From storage buffers, the format decoded in the program
+    /// ([`crate::SlowPath::TexelBufferAsStorage`]).
+    Storage,
+    /// From a 2D texture the front copies the buffer into ([`crate::SlowPath::TexelBufferAsTexture`]).
+    Texture,
+}
+
+/// A color target the program writes in a stored format other than the guest's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TargetInShader {
+    pub target: u8,
+    /// The guest's format, which the program encodes its output into
+    /// ([`crate::SlowPath::NormAsInteger`]).
+    pub format: Format,
+    /// The program combines its output with the target's old value, read from a copy at
+    /// [`TARGET_COPY_BINDING`], by [`HelperValue::TargetCombine`] ([`crate::SlowPath::BlendInShader`],
+    /// [`crate::SlowPath::LogicOpInShader`]).
+    pub combine: bool,
 }
 
 /// Which variant of a converted shader a front asks for. It is part of the converted shader's cache key.
 /// Each per-slot field has a bit per API slot of that kind.
+///
+/// Every rewrite that depends on what is bound or on the back end's abilities is a field here, and the
+/// conversion reads nothing else: a converted shader is a function of its source bytes, the converter's
+/// version and this key, so equal cache keys name equal modules on every back end.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct VariantKey {
     pub flags: VariantFlags,
@@ -278,6 +329,19 @@ pub struct VariantKey {
     pub pulled: Vec<(u32, VertexFormat)>,
     /// Formats of storage views the shader does not declare, by storage slot, from the bound view.
     pub storage_formats: Vec<(u32, Format)>,
+    /// How typed buffers are read.
+    pub texel_buffers: TexelBufferRoute,
+    /// Storage slots packed into one buffer, at offsets from the helper constants
+    /// ([`crate::SlowPath::StoragePacked`]).
+    pub storage_packed: u64,
+    /// Storage texture slots read and written through a buffer of their texels, for atomics
+    /// ([`crate::SlowPath::AtomicsThroughBuffer`]).
+    pub atomics_through_buffer: u64,
+    /// Texture slots bound to textures stored as the integer format of the same bits, with the guest's
+    /// format, which the program decodes and filters from loads ([`crate::SlowPath::NormAsInteger`]).
+    pub decoded: Vec<(u32, Format)>,
+    /// Color targets written in another stored format, or combined in the program.
+    pub targets_in_shader: Vec<TargetInShader>,
     /// The sample count of the targets, where the program depends on it.
     pub samples: u8,
     /// A hash of the binding layout that numbers the slots, for APIs whose layout the program does not
@@ -296,6 +360,7 @@ mod tests {
             SlotKind::Sampler,
             SlotKind::Texture,
             SlotKind::Storage,
+            SlotKind::Counter,
         ];
         for pair in kinds.windows(2) {
             assert_eq!(
@@ -306,5 +371,6 @@ mod tests {
         assert_eq!(SlotKind::Texture.binding(127), Some(159));
         assert_eq!(SlotKind::Texture.binding(128), None);
         assert_eq!(SlotKind::Storage.binding(63), Some(223));
+        assert_eq!(SlotKind::Counter.binding(0), Some(224));
     }
 }

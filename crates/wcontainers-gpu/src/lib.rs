@@ -55,7 +55,7 @@ pub use helpers::Helpers;
 pub use reflect::{
     HELPER_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding,
     Reflection, ScalarKind, SlotKind, SourceStage, StageExtras, StageValue, SystemValue,
-    VariantFlags, VariantKey,
+    TARGET_COPY_BINDING, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
 };
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{

@@ -146,7 +146,10 @@ pub struct TextureViewDesc {
     pub mip_count: u32,
     pub base_layer: u32,
     pub layer_count: u32,
-    /// Which of depth and stencil a depth-stencil view reads: true for stencil.
+    /// Which of depth and stencil a depth-stencil view reads: true for stencil, read as unsigned
+    /// integers. Every back end serves both aspects; one whose API cannot sample stencil fills an 8-bit
+    /// texture from the stencil by draws when the stencil changed (slow path
+    /// [`crate::SlowPath::StencilCopiedByDraw`]).
     pub stencil: bool,
 }
 

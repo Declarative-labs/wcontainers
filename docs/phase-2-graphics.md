@@ -645,7 +645,7 @@ the API's own mechanism, or (in two places, said so) listed as a loss.
   those blocks, taken when the read is recorded; a copy between two BC textures copies both forms; a copy
   from an uncompressed texture of the same block size (which Direct3D allows, for textures compressed on
   the GPU) reads the source back to the device thread, which waits, decodes it and writes both forms
-  (`BlockCopyReadBack`). Exact for BC6H and BC7, whose decoding Microsoft specifies to the bit; for BC1 to
+  (`HostCopyReadBack`). Exact for BC6H and BC7, whose decoding Microsoft specifies to the bit; for BC1 to
   BC5 within the interpolation tolerance Direct3D allows, compared with the reference at G2. WebGL 2
   cannot read compressed textures back at all (they cannot be framebuffer attachments), so its back end
   keeps the host blocks for every BC texture, native or not.
@@ -689,7 +689,7 @@ the API's own mechanism, or (in two places, said so) listed as a loss.
 - Logic operations: optional at Direct3D 11_0 and reported absent there. OpenGL's `glLogicOp` (core)
   runs in the program reading a copy of the target taken before the draw (`LogicOpInShader`); a draw
   whose primitives may overlap is drawn one primitive at a time with a copy between
-  (`LogicOpPerPrimitive`). Exact, very slow, and rare.
+  (`TargetReadPerPrimitive`). Exact, very slow, and rare.
 - Mirror-once addressing (required by Direct3D at every level): native where `MIRROR_ONCE`, otherwise
   the program samples the absolute coordinate with clamping and the original gradients
   (`MirrorOnceInShader`), which gives the same footprint and level of detail. Exact.
@@ -802,7 +802,7 @@ WebGL 2). Fans and loops use `draw_fan_or_loop`. Transform feedback (core since 
 (3.2) go through the stage helper. Provoking vertex: native last on WebGL 2; on WebGPU `ProvokingRewrite`.
 `glPrimitiveRestartIndex` with any index, or restart off: `RestartRewrite` (WebGPU and WebGL 2 restart only
 at the largest value, always). `glLogicOp`: `LogicOpInShader`, one primitive at a time where primitives
-may overlap (`LogicOpPerPrimitive`). `GL_SAMPLES_PASSED`: `OcclusionCountReplay`. `glPolygonMode`: native with
+may overlap (`TargetReadPerPrimitive`). `GL_SAMPLES_PASSED`: `OcclusionCountReplay`. `glPolygonMode`: native with
 WEBGL_polygon_mode, otherwise `FillModeConverted`. Clip depth from minus one: native on WebGL 2,
 `ClipDepthRewrite` on WebGPU. Multisample textures (3.2): WebGPU has them; WebGL 2 does not, so Mesa
 reports OpenGL 3.1 there (3.1 needs texture buffers: `TexelBufferAsTexture`). Wide lines report a range of
@@ -863,7 +863,7 @@ converted vertex shader.
   clears (`UnalignedBufferEdge`); passes without targets on its own attachment; formats WebGPU lacks
   (three-component 8 and 16-bit vertex formats, B5G6R5 and other 16-bit packed formats, A8) converted on
   upload (`VertexFormatConverted`, `FormatConverted`); BC textures decoded where `BLOCK_COMPRESSION` is
-  absent, with host blocks for copies and read backs (`BlockDecoded`, `BlockCopyReadBack`); copies
+  absent, with host blocks for copies and read backs (`BlockDecoded`, `HostCopyReadBack`); copies
   between a BC and an uncompressed texture of the same block size through a buffer.
 - What fronts do on WebGPU, from its `Caps` (all program variants of 4.5, made by the shaders crate):
   restart off or another index (`RestartRewrite`); provoking last (`ProvokingRewrite`); depth bias on
@@ -902,7 +902,7 @@ converted vertex shader.
   time; other view kinds from the front's second texture (`ReinterpretCopy`, 4.12). BC textures native
   with the extensions of 4.11, else decoded (`BlockDecoded`); either way their blocks are kept on the
   host for read backs and copies, since GLES cannot read compressed textures back; copies into them from
-  uncompressed textures read the source back (`BlockCopyReadBack`).
+  uncompressed textures read the source back (`HostCopyReadBack`).
 - What fronts do on WebGL 2, from its `Caps`: constant buffers beyond the blocks or the block size
   (`ConstantsAsTexture`); depth bias clamp without EXT_polygon_offset_clamp, and bias on lines and points
   (`DepthBiasInShader`); level-of-detail bias (`LodBiasInShader`); border colours (`BorderInShader`);

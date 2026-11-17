@@ -198,7 +198,10 @@ pub trait Backend: Sized {
     fn end_pass(&mut self);
     /// Draws lists, strips and points. Inside a pass.
     fn draw(&mut self, call: &DrawCall<'_, Self>);
-    /// Starts counting into query `index` of the pass's occlusion set. Inside a pass.
+    /// Starts counting into query `index` of the pass's occlusion set. Inside a pass, one query at a
+    /// time: a front whose API lets queries overlap ends the running query at every begin and end of
+    /// its own, starts the next, and adds each stretch's result to every guest query open during it
+    /// (slow path [`crate::SlowPath::QueriesSegmented`]).
     fn begin_query(&mut self, index: u32);
     fn end_query(&mut self);
     fn copy_buffer(
@@ -209,10 +212,14 @@ pub trait Backend: Sized {
         dst_offset: u64,
         size: u64,
     );
-    /// Copies texels between two regions whose formats are equal, sRGB twins, or (as Direct3D and Vulkan
-    /// allow) a block-compressed format and an uncompressed one of the same block size. A back end whose
-    /// API copies only equal formats copies the last kind through a buffer, or through its host copy of
-    /// the blocks where it stores them decoded ([`crate::SlowPath::BlockCopyReadBack`]).
+    /// Copies texels between two regions whose formats are equal, sRGB twins, two formats whose texels
+    /// are the same bits seen differently (Direct3D's typeless groups, such as `R8G8B8A8_UNORM` and
+    /// `R8G8B8A8_UINT`, or `R32_FLOAT` and `D32_FLOAT`), or (as Direct3D and Vulkan allow) a
+    /// block-compressed format and an uncompressed one of the same block size. A back end whose API
+    /// copies only equal formats copies the others through a buffer
+    /// ([`crate::SlowPath::CopyThroughBuffer`]); into a depth format its API cannot write by a copy, by a
+    /// draw writing depth ([`crate::SlowPath::DepthWrittenByDraw`]); and into a texture whose bytes it
+    /// keeps on the host, through that copy ([`crate::SlowPath::HostCopyReadBack`]).
     fn copy_texture(
         &mut self,
         src: &TextureRegion<'_, Self>,
@@ -264,7 +271,8 @@ pub trait Backend: Sized {
 
     /// Attaches to a host window, given by the number the host's graphics hook uses for it.
     fn create_surface(&mut self, window: u32) -> Result<Self::Surface, GpuError>;
-    /// Sets the size, format and whether presenting waits for the display.
+    /// Sets the size, format and whether presenting waits for the display. `format` is one with
+    /// [`crate::FormatUse::PRESENT`]; colors are shown as sRGB, values outside zero to one clipped.
     fn configure_surface(
         &mut self,
         surface: &Self::Surface,
@@ -352,44 +360,86 @@ pub trait Backend: Sized {
         let _ = desc;
     }
 
-    /// Clears a whole view outside a pass. The default opens a pass that clears it and closes it again.
+    /// Clears mip levels `mips` and layers `layers` of a texture made from `desc`, seen in `format` (its
+    /// own format or the sRGB twin), outside a pass. For a 3D texture `layers` are depth slices, cut to
+    /// each level's depth. The default opens one clearing pass per level and layer or slice, on a view to
+    /// draw into of one level and one layer (a whole level of a 3D texture), which every back end makes.
     /// WebGL 2 overrides it with its own clears.
-    fn clear_texture(&mut self, view: &Self::TextureView, format: Format, value: ClearValue) {
-        let mut pass = PassDesc {
-            colors: Default::default(),
-            depth: None,
-            empty: None,
-            occlusion: None,
-        };
-        match value {
-            ClearValue::Color(c) => {
-                pass.colors[0] = Some(ColorAttachment {
-                    view,
-                    depth_slice: 0,
-                    resolve: None,
-                    load: LoadOp::Clear(c),
-                    store: StoreOp::Store,
-                });
-            }
-            ClearValue::DepthStencil { depth, stencil } => {
-                let (has_depth, has_stencil) = aspects(format);
-                pass.depth = Some(DepthAttachment {
-                    view,
-                    depth: has_depth.then_some(AspectOps {
-                        load: depth.map_or(LoadOp::Load, LoadOp::Clear),
-                        store: StoreOp::Store,
-                        read_only: false,
-                    }),
-                    stencil: has_stencil.then_some(AspectOps {
-                        load: stencil.map_or(LoadOp::Load, LoadOp::Clear),
-                        store: StoreOp::Store,
-                        read_only: false,
-                    }),
-                });
+    fn clear_texture(
+        &mut self,
+        texture: &Self::Texture,
+        desc: &TextureDesc,
+        format: Format,
+        mips: Range<u32>,
+        layers: Range<u32>,
+        value: ClearValue,
+    ) -> Result<(), GpuError> {
+        let three_d = desc.dimension == TextureDimension::D3;
+        for mip in mips.start..mips.end.min(desc.mip_levels) {
+            let (views, slices) = if three_d {
+                let depth = (desc.depth_or_layers >> mip).max(1);
+                (0..1, layers.start..layers.end.min(depth))
+            } else {
+                (layers.start..layers.end.min(desc.depth_or_layers), 0..1)
+            };
+            for layer in views {
+                let view = self.create_view(
+                    texture,
+                    &TextureViewDesc {
+                        format,
+                        dimension: if three_d {
+                            ViewDimension::D3
+                        } else {
+                            ViewDimension::D2
+                        },
+                        base_mip: mip,
+                        mip_count: 1,
+                        base_layer: layer,
+                        layer_count: 1,
+                        stencil: false,
+                    },
+                )?;
+                for slice in slices.clone() {
+                    let mut pass = PassDesc {
+                        colors: Default::default(),
+                        depth: None,
+                        empty: None,
+                        occlusion: None,
+                    };
+                    match value {
+                        ClearValue::Color(c) => {
+                            pass.colors[0] = Some(ColorAttachment {
+                                view: &view,
+                                depth_slice: slice,
+                                resolve: None,
+                                load: LoadOp::Clear(c),
+                                store: StoreOp::Store,
+                            });
+                        }
+                        ClearValue::DepthStencil { depth, stencil } => {
+                            let (has_depth, has_stencil) = aspects(format);
+                            pass.depth = Some(DepthAttachment {
+                                view: &view,
+                                depth: has_depth.then_some(AspectOps {
+                                    load: depth.map_or(LoadOp::Load, LoadOp::Clear),
+                                    store: StoreOp::Store,
+                                    read_only: false,
+                                }),
+                                stencil: has_stencil.then_some(AspectOps {
+                                    load: stencil.map_or(LoadOp::Load, LoadOp::Clear),
+                                    store: StoreOp::Store,
+                                    read_only: false,
+                                }),
+                            });
+                        }
+                    }
+                    self.begin_pass(&pass);
+                    self.end_pass();
+                }
+                self.destroy(Object::TextureView(view));
             }
         }
-        self.begin_pass(&pass);
-        self.end_pass();
+        Ok(())
     }
 
     /// Clears rectangles of one view outside a pass (Direct3D 11.1's ClearView, Direct3D 12's clears
@@ -502,8 +552,11 @@ pub trait Backend: Sized {
 
     /// Fills mip levels `mips` (each from the level above) of `layers` of a texture made from `desc`,
     /// outside a pass (Direct3D's GenerateMips, OpenGL's glGenerateMipmap). The default draws each level
-    /// and layer, or each slice of a 3D level, with a built-in program sampling the level above through a
-    /// linear sampler. WebGL 2 overrides it with generateMipmap where the format allows.
+    /// and layer, or each slice of a 3D level, with a built-in program sampling the level above through
+    /// a linear sampler. It reads the level above through a view of all layers in the texture's own
+    /// dimension, the layer chosen in the program, and draws into a view of one level and one layer, so
+    /// it needs no [`Features::TEXTURE_VIEWS`]. WebGL 2 overrides it with generateMipmap where the
+    /// format allows and uses the default otherwise.
     fn generate_mips(
         &mut self,
         texture: &Self::Texture,
@@ -512,13 +565,20 @@ pub trait Backend: Sized {
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
         let b = helpers::builtins(self)?;
-        let three_d = desc.dimension == TextureDimension::D3;
-        let (dimension, program, binding) = if three_d {
-            (ViewDimension::D3, Builtin::Mip3d, 33)
-        } else {
-            (ViewDimension::D2, Builtin::Mip2d, 32)
+        let own = desc.own_view();
+        let (program, binding) = match own {
+            ViewDimension::D2 => (Builtin::Mip2d, 32),
+            ViewDimension::D3 => (Builtin::Mip3d, 33),
+            ViewDimension::D2Array => (Builtin::Mip2dArray, 34),
+            ViewDimension::Cube => (Builtin::MipCube, 35),
+            ViewDimension::CubeArray => (Builtin::MipCubeArray, 36),
         };
-        let layers = if three_d { 0..1 } else { layers };
+        let three_d = own == ViewDimension::D3;
+        let layers = if three_d {
+            0..1
+        } else {
+            layers.start..layers.end.min(desc.depth_or_layers)
+        };
         for mip in mips.start.max(1)..mips.end.min(desc.mip_levels) {
             let size = |n: u32| (n >> mip).max(1);
             let (width, height) = (size(desc.width), size(desc.height));
@@ -534,18 +594,35 @@ pub trait Backend: Sized {
                 width,
                 height,
             }];
-            for layer in layers.clone() {
-                let view = |base_mip| TextureViewDesc {
+            let src = self.create_view(
+                texture,
+                &TextureViewDesc {
                     format: desc.format,
-                    dimension,
-                    base_mip,
+                    dimension: own,
+                    base_mip: mip - 1,
                     mip_count: 1,
-                    base_layer: layer,
-                    layer_count: 1,
+                    base_layer: 0,
+                    layer_count: if three_d { 1 } else { desc.depth_or_layers },
                     stencil: false,
-                };
-                let src = self.create_view(texture, &view(mip - 1))?;
-                let dst = self.create_view(texture, &view(mip))?;
+                },
+            )?;
+            for layer in layers.clone() {
+                let dst = self.create_view(
+                    texture,
+                    &TextureViewDesc {
+                        format: desc.format,
+                        dimension: if three_d {
+                            ViewDimension::D3
+                        } else {
+                            ViewDimension::D2
+                        },
+                        base_mip: mip,
+                        mip_count: 1,
+                        base_layer: layer,
+                        layer_count: 1,
+                        stencil: false,
+                    },
+                )?;
                 for slice in 0..slices {
                     let ring;
                     let mut entries = alloc::vec![
@@ -560,10 +637,11 @@ pub trait Backend: Sized {
                             resource: BindingResource::Texture(&src),
                         },
                     ];
-                    if three_d {
+                    if program != Builtin::Mip2d {
                         let mut params = [0u8; PARAMS_SIZE];
                         let w = (slice as f32 + 0.5) / slices as f32;
                         params[16..20].copy_from_slice(&w.to_bits().to_le_bytes());
+                        params[24..28].copy_from_slice(&layer.to_le_bytes());
                         let align = self.caps().limits.min_uniform_offset_alignment;
                         let mut offset = [0];
                         ring = self.write_buffer_ring(&[&params], align, &mut offset)?;
@@ -600,9 +678,9 @@ pub trait Backend: Sized {
                     self.end_pass();
                     self.destroy(Object::BindingSet(set));
                 }
-                self.destroy(Object::TextureView(src));
                 self.destroy(Object::TextureView(dst));
             }
+            self.destroy(Object::TextureView(src));
         }
         Ok(())
     }

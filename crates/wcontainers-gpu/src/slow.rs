@@ -95,8 +95,8 @@ pub enum SlowPath {
     TimestampSplitPass,
     /// The unaligned edge bytes of a buffer write, copy or clear merged on the GPU by a small program.
     UnalignedBufferEdge,
-    /// A draw whose targets hold more bytes per sample than the back end allows, run once per group of
-    /// targets.
+    /// A draw run once per group of targets: its targets hold more bytes per sample than the back end
+    /// allows, or differ in blend or write mask where the back end has one blend for all.
     TargetsSplit,
     /// A texture the back end cannot filter, sampled with a filtering sampler, filtered in the program
     /// from loads.
@@ -104,9 +104,9 @@ pub enum SlowPath {
     /// Stream output with gaps or layouts transform feedback cannot write, captured whole and repacked
     /// by a second capture.
     StreamOutRepacked,
-    /// A logic operation in the program on a draw whose primitives may overlap, drawn one primitive at
-    /// a time.
-    LogicOpPerPrimitive,
+    /// A draw that reads a copy of its target in the program (logic operations, blending into a format
+    /// stored as integers), drawn one primitive at a time because its primitives may overlap.
+    TargetReadPerPrimitive,
     /// A layered draw (layer chosen per primitive) run once per layer used, into that layer.
     LayerSplit,
     /// The part of a draw past the end of a vertex buffer drawn with a zero buffer bound.
@@ -125,9 +125,9 @@ pub enum SlowPath {
     /// A block-compressed texture the back end cannot sample, stored decoded, with its blocks kept on the
     /// host for copies and read backs.
     BlockDecoded,
-    /// Blocks copied into a decoded block-compressed texture from an uncompressed one, read back to the
-    /// host to be decoded.
-    BlockCopyReadBack,
+    /// A copy into a texture whose bytes the back end keeps on the host (decoded block-compressed
+    /// textures, formats its API cannot read back) from one it does not, read back to the host first.
+    HostCopyReadBack,
     /// A sampler's level-of-detail bias added in the program.
     LodBiasInShader,
     /// A viewport whose near depth exceeds its far depth drawn swapped, with clip depth flipped in the
@@ -136,11 +136,32 @@ pub enum SlowPath {
     /// Refused, not slow: a program passes more values between stages than the back end has, after
     /// packing, so making it failed.
     VaryingsBeyondLimit,
+    /// A storage view used with atomics, on a format whose storage views have none, read and written in
+    /// the program through a buffer of its texels, copied from and to the texture around other uses.
+    AtomicsThroughBuffer,
+    /// A 16-bit normalised format, or a rendered 8-bit signed normalised one, the back end lacks, stored
+    /// as the integer format of the same bits: decoded and filtered in the program, encoded on writes.
+    NormAsInteger,
+    /// Blending into a target stored as integers done in the program, reading a copy of the target.
+    BlendInShader,
+    /// A sample mask other than all ones written by the fragment program.
+    SampleMaskInShader,
+    /// The stencil aspect sampled through an 8-bit texture filled from it by draws.
+    StencilCopiedByDraw,
+    /// A copy between two formats the API copies only through a buffer: two copies.
+    CopyThroughBuffer,
+    /// Depth copied into a texture whose depth cannot be written by a copy, by a draw writing depth.
+    DepthWrittenByDraw,
+    /// A texture whose format the back end cannot read back or copy on the GPU, kept on the host too.
+    HostCopyKept,
+    /// Overlapping guest queries split into one back-end query per stretch between their begins and
+    /// ends, the results added.
+    QueriesSegmented,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 57] = [
+    pub const ALL: [SlowPath; 66] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -186,7 +207,7 @@ impl SlowPath {
         SlowPath::TargetsSplit,
         SlowPath::FilterInShader,
         SlowPath::StreamOutRepacked,
-        SlowPath::LogicOpPerPrimitive,
+        SlowPath::TargetReadPerPrimitive,
         SlowPath::LayerSplit,
         SlowPath::VertexFetchZeroed,
         SlowPath::BindingsBeyondLimit,
@@ -194,10 +215,19 @@ impl SlowPath {
         SlowPath::ConstantsAsStorage,
         SlowPath::ConstantsAsTexture,
         SlowPath::BlockDecoded,
-        SlowPath::BlockCopyReadBack,
+        SlowPath::HostCopyReadBack,
         SlowPath::LodBiasInShader,
         SlowPath::ViewportDepthFlip,
         SlowPath::VaryingsBeyondLimit,
+        SlowPath::AtomicsThroughBuffer,
+        SlowPath::NormAsInteger,
+        SlowPath::BlendInShader,
+        SlowPath::SampleMaskInShader,
+        SlowPath::StencilCopiedByDraw,
+        SlowPath::CopyThroughBuffer,
+        SlowPath::DepthWrittenByDraw,
+        SlowPath::HostCopyKept,
+        SlowPath::QueriesSegmented,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -248,7 +278,9 @@ impl SlowPath {
             SlowPath::TargetsSplit => "draw run once per group of targets",
             SlowPath::FilterInShader => "texture filtered in the shader",
             SlowPath::StreamOutRepacked => "stream output repacked",
-            SlowPath::LogicOpPerPrimitive => "logic operation drawn one primitive at a time",
+            SlowPath::TargetReadPerPrimitive => {
+                "draw reading its target run one primitive at a time"
+            }
             SlowPath::LayerSplit => "layered draw split per layer",
             SlowPath::VertexFetchZeroed => "vertex fetch past the end zeroed",
             SlowPath::BindingsBeyondLimit => "program refused: more bindings than the back end has",
@@ -256,12 +288,21 @@ impl SlowPath {
             SlowPath::ConstantsAsStorage => "constant buffers read as storage buffers",
             SlowPath::ConstantsAsTexture => "constant buffers read through a texture",
             SlowPath::BlockDecoded => "block-compressed texture stored decoded",
-            SlowPath::BlockCopyReadBack => "blocks read back to be decoded",
+            SlowPath::HostCopyReadBack => "copy source read back to the host copy",
             SlowPath::LodBiasInShader => "sampler lod bias applied in the shader",
             SlowPath::ViewportDepthFlip => "viewport depth range flipped in the shader",
             SlowPath::VaryingsBeyondLimit => {
                 "program refused: more stage values than the back end has"
             }
+            SlowPath::AtomicsThroughBuffer => "storage texture atomics run through a buffer",
+            SlowPath::NormAsInteger => "normalised format stored as integers",
+            SlowPath::BlendInShader => "blending done in the shader",
+            SlowPath::SampleMaskInShader => "sample mask written by the shader",
+            SlowPath::StencilCopiedByDraw => "stencil copied by draws to be sampled",
+            SlowPath::CopyThroughBuffer => "texture copy made through a buffer",
+            SlowPath::DepthWrittenByDraw => "depth copy made by a draw",
+            SlowPath::HostCopyKept => "texture kept on the host as well",
+            SlowPath::QueriesSegmented => "overlapping queries segmented",
         }
     }
 }

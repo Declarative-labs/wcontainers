@@ -41,7 +41,8 @@ bitflags! {
         const CULL_DISTANCE = 1 << 13;
         /// Two fragment outputs feeding one blend (dual-source blending).
         const DUAL_SOURCE_BLEND = 1 << 14;
-        /// A different blend per color target.
+        /// A different blend and write mask per color target. Without it a front whose targets differ
+        /// draws once per group of targets that agree (slow path [`crate::SlowPath::TargetsSplit`]).
         const INDEPENDENT_BLEND = 1 << 15;
         /// Logic operations instead of blending.
         const LOGIC_OP = 1 << 16;
@@ -51,6 +52,11 @@ bitflags! {
         const POINT_SIZE = 1 << 18;
         /// Fragment programs run per sample, and read and write the sample mask.
         const SAMPLE_SHADING = 1 << 19;
+        /// [`crate::RasterDesc::sample_mask`] other than all ones on multisampled targets. Without it a
+        /// front with such a mask binds the program variant that writes the mask, which needs
+        /// [`Features::SAMPLE_SHADING`] (slow path [`crate::SlowPath::SampleMaskInShader`]); without
+        /// either, the front reports single-sample targets only.
+        const SAMPLE_MASK = 1 << 47;
         /// Multisampled textures can be read in programs.
         const MULTISAMPLE_READ = 1 << 20;
         /// Query sets of [`crate::QueryKind::Occlusion`]: exact sample counts. Every back end has
@@ -165,9 +171,13 @@ pub struct Limits {
 }
 
 bitflags! {
-    /// What a format can be used for on this back end.
+    /// What a format can be used for on this back end. A format the back end does not hold at all has
+    /// no bits; fronts then store it in another format (slow paths [`crate::SlowPath::FormatConverted`],
+    /// [`crate::SlowPath::NormAsInteger`], [`crate::SlowPath::BlockDecoded`]) or report it absent.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
     pub struct FormatUse: u16 {
+        /// Sampled and loaded in programs. For a format with depth and stencil, each aspect through its
+        /// own view ([`crate::TextureViewDesc::stencil`]); every back end serves both aspects.
         const SAMPLE = 1 << 0;
         const FILTER = 1 << 1;
         const RENDER = 1 << 2;
@@ -180,6 +190,13 @@ bitflags! {
         const DEPTH_STENCIL = 1 << 9;
         /// Copies into a buffer for read back.
         const COPY_OUT = 1 << 10;
+        /// Atomic operations on storage views (Direct3D requires them on `R32_UINT` and `R32_SINT`,
+        /// and exchange on `R32_FLOAT`, from 11_0). Without it a front reads and writes such a view
+        /// through a buffer holding its texels (slow path [`crate::SlowPath::AtomicsThroughBuffer`]).
+        const STORAGE_ATOMIC = 1 << 11;
+        /// Can be a surface's format in [`crate::Backend::configure_surface`]. Every back end takes
+        /// [`Format::Rgba8Unorm`].
+        const PRESENT = 1 << 12;
     }
 }
 
