@@ -1,8 +1,10 @@
-//! The pipeline-state scenes of Direct3D 11 (blending, depth and stencil) drawn through Direct3D
+//! The pipeline-state scenes of Direct3D 11 (blending, depth, stencil, render target formats) drawn
+//! through Direct3D
 //! 12: the same cells, each combination of state made into its own pipeline state object.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::mem::transmute_copy;
 
 use anyhow::Result;
@@ -16,6 +18,7 @@ use windows::core::s;
 use super::{Gpu, bytecode, element, tex2d_desc};
 use crate::d3d11::scenes::blend::{self, CONSTANT, no_blend};
 use crate::d3d11::scenes::depth::FUNCS;
+use crate::d3d11::scenes::formats::{FORMATS, Kind};
 use crate::d3d11::scenes::stencil::{op, stencil, triangle};
 use crate::d3d11::scenes::{Colored, depth_test, hue, quad};
 use crate::d3d11::{cell, solid};
@@ -589,4 +592,69 @@ pub fn stencil_scene(gpu: &Gpu) -> Result<Vec<Output>> {
         // Subresource 1 is the stencil plane.
         Output::picture("values", gpu.read(&depth, 1, DEPTH)?),
     ])
+}
+
+/// Direct3D 11's formats scene: a gradient drawn into each render target format (floats past 0 and
+/// 1, integers into integer formats), what the device says each supports, and blending in sRGB.
+pub fn formats(gpu: &Gpu) -> Result<Vec<Output>> {
+    const SIZE: u32 = 64;
+    let mut im = Immediate::new(gpu)?;
+    im.vs = dxil!("common.vs_full");
+    im.colored = false;
+    let mut outputs = Vec::new();
+    let mut support = String::new();
+    for (name, format, kind) in FORMATS {
+        let mut query = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+            Format: format,
+            ..Default::default()
+        };
+        unsafe {
+            gpu.device.CheckFeatureSupport(
+                D3D12_FEATURE_FORMAT_SUPPORT,
+                (&mut query as *mut D3D12_FEATURE_DATA_FORMAT_SUPPORT).cast(),
+                size_of_val(&query) as u32,
+            )?
+        };
+        let has = |flag: D3D12_FORMAT_SUPPORT1| u8::from(query.Support1.0 & flag.0 != 0);
+        writeln!(
+            support,
+            "{name} render target {} blendable {} multisample render target {} shader sample {}",
+            has(D3D12_FORMAT_SUPPORT1_RENDER_TARGET),
+            has(D3D12_FORMAT_SUPPORT1_BLENDABLE),
+            has(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET),
+            has(D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE),
+        )?;
+        let (texture, rtv) = gpu.target(SIZE, SIZE, format)?;
+        im.begin(Some(&rtv), None, DXGI_FORMAT_UNKNOWN, SIZE, SIZE);
+        im.target = format;
+        im.ps = match kind {
+            Kind::Float => dxil!("formats.ps_float"),
+            Kind::Uint => dxil!("formats.ps_uint"),
+            Kind::Sint => dxil!("formats.ps_sint"),
+        };
+        im.draw(3, [0.0; 4])?;
+        outputs.push(Output::picture(name, gpu.read(&texture, 0, RT)?));
+    }
+    outputs.push(Output::text("support", support));
+
+    let srgb = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    let (texture, rtv) = gpu.target(SIZE, SIZE, srgb)?;
+    im.begin(Some(&rtv), None, DXGI_FORMAT_UNKNOWN, SIZE, SIZE);
+    im.target = srgb;
+    im.ps = dxil!("formats.ps_float");
+    im.draw(3, [0.0; 4])?;
+    im.blend.RenderTarget[0] = blend::target(
+        D3D11_BLEND_SRC_ALPHA,
+        D3D11_BLEND_INV_SRC_ALPHA,
+        D3D11_BLEND_OP_ADD,
+        D3D11_BLEND_ONE,
+        D3D11_BLEND_ZERO,
+        D3D11_BLEND_OP_ADD,
+    );
+    im.vs = dxil!("common.vs_color");
+    im.ps = dxil!("common.ps_color");
+    im.colored = true;
+    im.draw_colored(&quad(-0.8, -0.8, 0.8, 0.8, 0.5, 0.5, [0.2, 0.9, 0.5, 0.5]))?;
+    outputs.push(Output::picture("srgb_blend", gpu.read(&texture, 0, RT)?));
+    Ok(outputs)
 }

@@ -17,6 +17,30 @@ depth-clip_depth.exr 0.0000002980232238769531 0 warp 4630 0.00000029802322387695
 depth-funcs.png 1 0 warp 21280 1
 depth-shader.png 0 0 warp 0 0
 depth-shader_depth.exr 0.00000011920928955078125 0 warp 1952 0.00000011920928955078125
+formats-b5g6r5_unorm.png 1 0 warp 698 1
+formats-bgra8_srgb.png 1 0 warp 611 1
+formats-bgra8_unorm.png 1 0 warp 186 1
+formats-bgrx8_unorm.png 1 0 warp 64 1
+formats-r16_unorm.png 0 0 warp 0 0
+formats-r32_float.exr 0 0 warp 0 0
+formats-r32_uint.exr 0 0 warp 0 0
+formats-r8_unorm.png 0 0 warp 0 0
+formats-rg11b10_float.exr 0 0 warp 0 0
+formats-rg16_float.exr 0 0 warp 0 0
+formats-rg8_unorm.png 0 0 warp 0 0
+formats-rgb10a2_unorm.png 1 0 warp 217 1
+formats-rgba16_float.exr 0 0 warp 0 0
+formats-rgba16_sint.png 0 0 warp 0 0
+formats-rgba16_snorm.png 1 0 warp 72 1
+formats-rgba16_unorm.png 1 0 warp 76 1
+formats-rgba32_float.exr 0 0 warp 0 0
+formats-rgba32_sint.exr 0 0 warp 0 0
+formats-rgba8_snorm.png 1 0 warp 263 1
+formats-rgba8_srgb.png 1 0 warp 611 1
+formats-rgba8_uint.png 0 0 warp 0 0
+formats-rgba8_unorm.png 1 0 warp 186 1
+formats-srgb_blend.png 1 0 warp 2890 1
+formats-support.txt exact warp same
 heaps-first.png 1 0 warp 1599 1
 heaps-second.png 1 0 warp 1365 1
 queries-results.txt exact warp same

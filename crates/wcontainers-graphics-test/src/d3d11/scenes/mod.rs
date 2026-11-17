@@ -9,7 +9,7 @@ mod deferred;
 pub(crate) mod depth;
 mod draws;
 mod dynamic;
-mod formats;
+pub(crate) mod formats;
 mod geometry;
 mod levels;
 mod mips;
