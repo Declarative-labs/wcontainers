@@ -49,9 +49,14 @@ Built in K4's second run:
   container needs it to mount FUSE). The reference runs the runner under `wc-backend mount`; ours
   keeps one server for every sequence, sends it DESTROY after each (as Linux's unmount) and empties
   its directory (`Backend::destroy`, `Backend::empty`), as the runner empties `/backend`
-  (guest/layer1.c takes the directory as its argument). Found and fixed on the way: the reference's
-  command ran with the server's umask 0 (now Docker's 022, set in `wc-backend mount`), O_DIRECT,
-  access control lists, file capability reads.
+  (guest/layer1.c takes the directory as its argument, which ours passes too). The reference's
+  container gets the FUSE device at `/wcdev/fuse`, linked from `/dev/fuse` until mounted
+  (`backend::FUSE_DEVICE`), so its `/dev` has a default container's inode count. Found and fixed on
+  the way: the reference's command ran with the server's umask 0 (now Docker's 022, set in
+  `wc-backend mount`); O_DIRECT opens; access control lists (read through `__fuse_get_acl`, which
+  asks the backend into a page); file capability reads; a read of a file the backend opened for
+  direct IO takes the buffer's pages first (`fuse_direct_io`: EFAULT before any message when none
+  can be written, else only as many bytes as can).
 - fallocate on backend files: FALLOCATE with keep-size, punch-hole and zero-range; other modes
   EOPNOTSUPP (`fuse_file_fallocate`), after the generic checks.
 - Mappings of backend files: a private mapping reads the mapped range at mmap (GETATTR with the
@@ -1860,6 +1865,13 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K4, second run: layer 1 on the backend (`sequences_on_backend_match_reference`): seed 0 passed
+  300 (18.1 s); seed 4040101 passed 2000 (113.7 s), 4040102 passed 2000 (118.1 s), load 11 to 15.
+  Seed 4040103 failed at 2000 on statx with an empty mask (Known issues). Fresh plain layer 1 seed
+  4040201 passed 20000 (333.4 s, load about 11 to 15) at head 49f67c3 (before the direct IO read and
+  ACL read fixes, which touch only backend files).
+- K4, second run: `messages_per_call` gave the same counts as the first run's (below) with FLUSH at
+  every close.
 - K4, first run: layer 1 seed 9393002 (the check's failing seed) passed 30000 with the SIGPIPE fix
   (478.4 s, load 13.5 at the start, 32.2 at the end). Fresh seed 4040001 passed 20000 at head
   52212a9 (312.1 s, load 18.7 at the start, 12.7 at the end).
@@ -2059,6 +2071,9 @@ All on this shared Mac; noisy, not benchmarks.
   before a page is first touched shows on Linux and not here. INIT does not ask for
   FUSE_DIRECT_IO_ALLOW_MMAP or FUSE_SETXATTR_EXT (flags2 is 0), which Linux asks for; the first
   backend grants neither, so the reference behaves the same.
+- K4, second run: Linux's FUSE keeps a file's attributes until the next jiffy even with an
+  attribute timeout of 0, and answers stat with an empty statx mask from them; the kernel keeps
+  none (plan section 8) and asks the backend each time (layer 1 seed 4040103 found it).
 - K4, second run: FLUSH for a descriptor closed by anything but `close` is sent with nothing
   waiting for it; Linux's `filp_close` waits for it (and ignores its error).
 
@@ -2306,6 +2321,12 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K4, second run: layer 1 on the backend seed 4040103 differs from the reference on
+  statx(AT_FDCWD, "", AT_EMPTY_PATH, mask 0) of the work directory after a mknod in it: the
+  reference shows the directory's size before the mknod. With an empty mask Linux's
+  `fuse_update_get_attr` uses attributes it got within the same jiffy even with a timeout of 0
+  (a cache, and a race on the clock); ours asks the backend every time, as phase one keeps nothing
+  (see Departures). Left failing.
 - K4, second run: getxattr of `security.capability` on the reference's FUSE mount answers EINVAL
   (with size 0 and with a buffer, set or not), though the server holds a valid v2 value (read on
   the server's side). Ours answers the same, as measured; the cause is not found
