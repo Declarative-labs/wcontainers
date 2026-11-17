@@ -22,6 +22,10 @@ use wcontainers_direct3d_11::{COMPUTE, PIXEL, UAV_SLOTS, VERTEX, format};
 use super::counted::{Counted, Held};
 use super::*;
 
+/// `D3D11_ERROR_DEFERRED_CONTEXT_MAP_WITHOUT_INITIAL_DISCARD`, which the windows crate lacks.
+const MAP_WITHOUT_INITIAL_DISCARD: windows::core::HRESULT =
+    windows::core::HRESULT(0x887C_0004_u32 as i32);
+
 /// A call a deferred context recorded, run on the device's front when its command list is
 /// executed (as often as it is executed).
 pub type Command = Box<dyn Fn(&mut Front)>;
@@ -1210,7 +1214,7 @@ impl Context {
             map::WRITE_NO_OVERWRITE => match staged.entry(key) {
                 std::collections::hash_map::Entry::Occupied(s) => s,
                 std::collections::hash_map::Entry::Vacant(_) => {
-                    return Err(E_INVALIDARG.into());
+                    return Err(MAP_WITHOUT_INITIAL_DISCARD.into());
                 }
             },
             _ => return Err(E_INVALIDARG.into()),
