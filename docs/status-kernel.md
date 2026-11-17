@@ -181,8 +181,9 @@ Built in K3's first run:
   only compute never took turns. The stand-in now drops its translated blocks when counting starts
   (`Memory::counting`). Found by guest/rseqpreempt.c.
 - Seeded schedules: the test driver ends each turn at a point in its slice drawn from the seed
-  (driver.rs), so a run repeats for a seed and threads interleave differently under different
-  seeds. `assert_same_output_seeded` runs ours under `SCHEDULE_SEEDS` seeds (3 if unset) from
+  (driver.rs), and its repeatable clock charges each turn 0.5 to 1.5 ns an instruction, drawn per
+  turn (K3's fifth run; before, 1 ns, so seeds moved switch points by about one stop's jitter), so a
+  run repeats for a seed and threads interleave differently under different seeds. `assert_same_output_seeded` runs ours under `SCHEDULE_SEEDS` seeds (3 if unset) from
   `SCHEDULE_SEED` (1 if unset), optionally with saves; tests/threads.rs `threads_survive_saving` saves
   and brings back 6 times per seed with threads waiting and running.
 
@@ -333,8 +334,8 @@ Built in K2's sixth run:
   holds them), a user's processes, ended ones not yet reaped with the nice value they had and no I/O
   priority, with `set_one_prio`'s and `set_task_ioprio`'s permission and limit checks.
   tests/priorities.rs. Seeds 516, 517 and 518 then passed 20000 each.
-- Process descriptors (src/syscall/pidfd.rs): pidfd_open (PIDFD_NONBLOCK, PIDFD_THREAD for a process's
-  first thread; another thread's is counted "call flag not built", EINVAL), pidfd_send_signal (the
+- Process descriptors (src/syscall/pidfd.rs): pidfd_open (PIDFD_NONBLOCK, PIDFD_THREAD; built for
+  threads other than the first in K3's third run), pidfd_send_signal (the
   caller's own numbers PIDFD_SELF_THREAD and PIDFD_SELF_THREAD_GROUP, the three scope flags, information
   checked as `do_pidfd_send_signal`), waitid's P_PIDFD (a nonblocking descriptor answers EAGAIN),
   clone's CLONE_PIDFD (its number written before the child exists), process_mrelease (a fatal signal
@@ -571,8 +572,6 @@ Ignored tests (each attribute gives the reason):
 - memfd `huge_page_memory_files`: hugetlbfs is not built (see Partial).
 - cachestat `mapped_file_pages`: the page a private mapping's read fault brings into a tmpfs file is
   counted by the reference and not known here (counted "page residency not tracked").
-- proclist `thread_listings_are_a_subset_of_the_reference`: `/proc/<pid>/task` is not built (threads,
-  K3).
 
 Comparisons that are subsets rather than equality, and why:
 - tests/proclist.rs `listings_are_a_subset_of_the_reference` compares listings of `/proc`,
@@ -672,7 +671,10 @@ What layer 1 does not generate, and why:
   brings job control signals that end the reference's caller and not ours. tests/terminal.rs covers
   them.
 - A child that runs calls of its own (the child of clone ends at once), threads and shared tables
-  (CLONE_THREAD with what it needs, CLONE_FILES, CLONE_FS: not built until K3), CLONE_PARENT (our
+  (CLONE_THREAD with what it needs, CLONE_FILES, CLONE_FS: a sequence is one thread's calls, and the
+  reference would run a thread on another CPU beside them; layer 2 compares them, tests/threads.rs and
+  libc-test), the priority inheriting futex calls that can take a lock (they write the caller's
+  thread number; tests/threads.rs compares them), CLONE_PARENT (our
   caller is the first process, which Linux refuses it to), CLONE_PARENT_SETTID
   (it writes a process number into the arena), waits without WNOHANG in sequences with a child.
 - Named pipes other than the one at `p` in the work directory, made at the start of a quarter of the
@@ -980,25 +982,16 @@ Partial (inside the list above), each with its reason:
 - ioprio_get, ioprio_set: kept per thread; nothing does I/O by it.
 - seccomp: no listener (counted, EINVAL as a kernel without listeners). TRAP sends SIGSYS with the
   call, its address and the filter's data.
-- rseq: a critical section is aborted when a handler runs (tests/rseqabort.rs); not yet when the
-  thread is preempted by another (Linux's `rseq_preempt`; K3, with threads, which use it). The time
-  slice extension flag is counted and refused with EINVAL; the reference takes it.
+- rseq: the time slice extension flag is counted and refused with EINVAL; the reference takes it.
 - process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
   `ptrace_may_access`, counted "call on another process not built", ENOSYS.
-- clone: fork, vfork and threads, with descriptor tables, file system contexts and semaphore undo
-  lists shared or copied as the flags say, and threads made with CLONE_VFORK. The process holds its
-  signal handlers and its memory, so a process sharing the caller's handlers (CLONE_SIGHAND without
-  CLONE_THREAD) or its memory while both run (CLONE_VM without CLONE_VFORK), and a thread with
-  CLONE_PIDFD (thread process descriptors are not built), are counted "call flag not built",
-  ENOSYS (Linux accepts them). Namespaces are refused by Docker's profile as in the reference.
+- clone: namespaces are refused by Docker's profile as in the reference.
 - futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL. A shared
   futex in a private file mapping is keyed by memory and address even before the page is copied
   (Linux keys an unwritten page by the file).
 - timer_create: the timer's preallocated signal is not counted against RLIMIT_SIGPENDING (Linux
-  refuses a timer with EAGAIN over it). clock_nanosleep on a process's CPU clock still never ends
-  while the caller sleeps, even when other threads run.
-- pidfd_open: PIDFD_THREAD for a thread other than a process's first is counted "call flag not built",
-  EINVAL (threads, K3). process_mrelease never frees anything: there is no dying process to free.
+  refuses a timer with EAGAIN over it).
+- process_mrelease never frees anything: there is no dying process to free.
 - pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
 - shmget: SHM_HUGETLB counted "call flag not built", ENOMEM (the reference, with no huge pages
