@@ -11,8 +11,9 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   the ninth's in run 10, the same day (below).
 - X1 (the interface, with ARM64 moved onto it): run 1 moved ARM64 and the translator onto the interface;
   run 2 (2026-11-17) fixed what the independent check of X1 found, above all building the whole of section
-  3 with the translator's side of every item. Every part of the pass bar holds (see "X1, run 2"). Next:
-  X2, the shared test harness (plan section 9).
+  3 with the translator's side of every item; run 3 (the same day) fixed what the second check found: a CPU
+  without flags, grouping through a segment base, a test guest that now runs, the browser's hook path.
+  Every part of the pass bar holds (see "X1, run 3"). Next: X2, the shared test harness (plan section 9).
 
 ## X1, run 3 (2026-11-17)
 
@@ -59,6 +60,25 @@ The second check of X1 found three blocking problems and five smaller ones. What
   Departures).
 - `dyn` in the translator: the plan's sentence now says nothing of a guest is reached through `dyn`, and
   names the loop-proof module's own `&dyn Fn` closures (translate time only).
+- Also: a compile-time check that a CPU tracks at most 8 flags (the flag locals' fixed array).
+
+Proof after run 3 (machine: the Mac, Apple M5; loads as given):
+- Byte for byte against 2274314 with `same-output.sh` (every look-ahead, each kind of start alone), at the
+  tree of e0adef3 (`x1/run3/same-final.log`): bench 127 modules, busybox 34, musl 30, python 34, rg 34, git
+  34, java 40, go 28 (2 minutes, load 22.7 to 27.9), node 62 (alone, 4 minutes), bun 74 (alone, 7 minutes,
+  load 24.6 to 25.6): all the same. Also bench, busybox, musl and python after the first two fixes alone
+  (`same1.log`): the same.
+- Suite: `cargo test -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p
+  wcontainers-translator-test` at the tree of e0adef3 (`x1/run3/suite.log`): 90 passed, 0 failed, 10 ignored
+  (the measuring ones), 29 result lines, Chrome and Docker included, 26.5 minutes (load 24.7 at start,
+  56.7 during, 32.4 at end). Clippy with `-D warnings` on the four crates (tests and bins) and on the browser
+  crate for wasm32, and `cargo fmt --check`: clean.
+- Benchmark run times: not timed again. The modules are the same bytes as before the move and the host
+  runner (`src/`) and the ARM64 crate are unchanged since run 2's timing, so run 2's figures stand.
+- The float hook in Chrome: old and new equal (above); in wasmtime it is run 2's figure (the host path is
+  unchanged).
+- origin/phase-1-translator had nothing new to merge (fetched at the end of the run; last commit there
+  05:34 the same day, already merged).
 
 ## X1, run 2 (2026-11-17)
 
@@ -560,7 +580,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 - The float hook's time: `nix develop -c cargo test --release -p wcontainers-translator-test --test
   float_hook -- --ignored --nocapture` (knobs `WC_FLOAT_STEPS`, `WC_FLOAT_RUNS`); old against new by
   running the same file in a copy of the earlier commit (`<root>/trees/<commit>` of the comparison).
-- The test guest: `nix develop -c cargo test -p wcontainers-translator --test test_guest`.
+- The test guest (both variants, validated and run): `nix develop -c cargo test -p wcontainers-translator-test
+  --test test_guest`.
+- The float hook in Chrome: `nix develop -c cargo test --release -p wcontainers-translator-test --test
+  float_hook -- --ignored --nocapture float_hook_time_in_chrome`; old against new alternating:
+  `<scratch>/x1/run3/chrome-alternate.sh <rounds>` (it copies nothing; put the same `tests/float_hook.rs`
+  into the earlier commit's copy first).
 - The suite of what this track owns: `nix develop -c cargo test -p wcontainers-guest-cpu -p wcontainers-arm64
   -p wcontainers-translator -p wcontainers-translator-test` (Chrome and Docker needed), and the browser
   crate's lint as in docs/status-translator.md.
