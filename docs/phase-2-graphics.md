@@ -232,7 +232,9 @@ Fast paths, all in the crate with their defaults:
   native back end would map the ring.
 
 The built-in programs are WGSL read once through naga's WGSL reader (`wcontainers-gpu/src/helpers.rs`),
-so every back end gets them in the common form like any other shader.
+so every back end gets them in the common form like any other shader. Each program is made when a
+default first draws with it, so a back end never builds one it cannot run (WebGL 2 never meets the
+cube-array mip program).
 
 Present or absent, with no cheap default:
 - `dispatch(&DispatchCall)`: compute (`COMPUTE`). WebGPU has it; WebGL 2 does not.

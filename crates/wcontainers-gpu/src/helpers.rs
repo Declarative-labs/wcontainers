@@ -1,5 +1,6 @@
-//! What the fast-path defaults keep between calls: built-in programs and blocks made at first use, and the
-//! ring for per-draw data. Each back end holds one [`Helpers`] and hands it out through
+//! What the fast-path defaults keep between calls: built-in programs and blocks made at first use (each
+//! program only when a default first draws with it, so a back end never builds one it cannot run), and
+//! the ring for per-draw data. Each back end holds one [`Helpers`] and hands it out through
 //! [`crate::Backend::helpers`]; a back end that overrides every fast path never fills it.
 
 use crate::backend::Backend;
@@ -103,10 +104,9 @@ const FRAGMENTS: [Option<&str>; BUILTINS] = [
 /// Bytes of the built-in shaders' uniform block.
 pub(crate) const PARAMS_SIZE: usize = 32;
 
-/// Blocks and programs the defaults draw with, made once.
+/// Blocks the defaults draw with, made once.
 #[derive(Debug)]
 pub(crate) struct Builtins<B: Backend> {
-    pub programs: [B::Program; BUILTINS],
     pub blend: B::Blend,
     pub raster: B::Raster,
     pub vertex_layout: B::VertexLayout,
@@ -119,7 +119,6 @@ pub(crate) struct Builtins<B: Backend> {
 impl<B: Backend> Clone for Builtins<B> {
     fn clone(&self) -> Self {
         Builtins {
-            programs: self.programs.clone(),
             blend: self.blend.clone(),
             raster: self.raster.clone(),
             vertex_layout: self.vertex_layout.clone(),
@@ -142,6 +141,9 @@ pub(crate) struct Ring<B: Backend> {
 #[derive(Debug)]
 pub struct Helpers<B: Backend> {
     pub(crate) builtins: Option<Builtins<B>>,
+    /// The built-in shaders in the common form, read at first use.
+    module: Option<(naga::Module, naga::valid::ModuleInfo)>,
+    programs: [Option<B::Program>; BUILTINS],
     pub(crate) ring: Option<Ring<B>>,
 }
 
@@ -149,6 +151,8 @@ impl<B: Backend> Default for Helpers<B> {
     fn default() -> Self {
         Helpers {
             builtins: None,
+            module: None,
+            programs: [const { None }; BUILTINS],
             ring: None,
         }
     }
@@ -171,50 +175,62 @@ pub(crate) const RASTER: RasterDesc = RasterDesc {
     sample_mask: !0,
 };
 
-/// Makes the built-in programs and blocks on `backend` the first time a default needs them.
-pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuError> {
-    if let Some(b) = &backend.helpers().builtins {
-        return Ok(b.clone());
+/// The built-in program `which` on `backend`, made the first time a default draws with it.
+pub(crate) fn program<B: Backend>(backend: &mut B, which: Builtin) -> Result<B::Program, GpuError> {
+    if let Some(p) = &backend.helpers().programs[which as usize] {
+        return Ok(p.clone());
     }
-    let module = naga::front::wgsl::parse_str(SOURCE)
-        .map_err(|_| GpuError::Invalid("built-in shaders do not parse"))?;
-    // Cube arrays are read only by the cube-array mip program, which runs only where they exist.
-    let info = naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::CUBE_ARRAY_TEXTURES,
-    )
-    .validate(&module)
-    .map_err(|_| GpuError::Invalid("built-in shaders do not validate"))?;
-    let mut shader = |entry: &str, stage: ShaderStage| {
+    if backend.helpers().module.is_none() {
+        let module = naga::front::wgsl::parse_str(SOURCE)
+            .map_err(|_| GpuError::Invalid("built-in shaders do not parse"))?;
+        // Cube arrays are read only by the cube-array mip program, which runs only where they exist.
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::CUBE_ARRAY_TEXTURES,
+        )
+        .validate(&module)
+        .map_err(|_| GpuError::Invalid("built-in shaders do not validate"))?;
+        backend.helpers().module = Some((module, info));
+    }
+    let shader = |backend: &mut B, entry: &str, stage: ShaderStage| {
+        let Some((module, info)) = &backend.helpers().module else {
+            unreachable!("the module was read above")
+        };
         let mut key = [0u8; 32];
         key[..9].copy_from_slice(b"builtin1:");
         let n = entry.len().min(23);
         key[9..9 + n].copy_from_slice(&entry.as_bytes()[..n]);
-        backend.create_shader(&ShaderModule {
+        let module = ShaderModule {
             module: module.clone(),
             info: info.clone(),
             entry_point: String::from(entry),
             stage,
             key,
-        })
+        };
+        backend.create_shader(&module)
     };
-    let vertex = shader("vs_full", ShaderStage::Vertex)?;
-    let mut fragments = [const { None }; BUILTINS];
-    for (slot, name) in fragments.iter_mut().zip(FRAGMENTS) {
-        if let Some(name) = name {
-            *slot = Some(shader(name, ShaderStage::Fragment)?);
-        }
-    }
-    let mut programs = alloc::vec::Vec::with_capacity(BUILTINS);
-    for fragment in &fragments {
-        programs.push(backend.create_program(&Program::Render {
-            vertex: &vertex,
-            fragment: fragment.as_ref(),
-        })?);
-    }
-    let Ok(programs) = <[B::Program; BUILTINS]>::try_from(programs) else {
-        unreachable!("one program per built-in")
+    let vertex = shader(backend, "vs_full", ShaderStage::Vertex)?;
+    let fragment = match FRAGMENTS[which as usize] {
+        Some(name) => Some(shader(backend, name, ShaderStage::Fragment)?),
+        None => None,
     };
+    let program = backend.create_program(&Program::Render {
+        vertex: &vertex,
+        fragment: fragment.as_ref(),
+    })?;
+    if let Some(fragment) = fragment {
+        backend.destroy(crate::Object::Shader(fragment));
+    }
+    backend.destroy(crate::Object::Shader(vertex));
+    backend.helpers().programs[which as usize] = Some(program.clone());
+    Ok(program)
+}
+
+/// Makes the built-in blocks on `backend` the first time a default needs them.
+pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuError> {
+    if let Some(b) = &backend.helpers().builtins {
+        return Ok(b.clone());
+    }
     let blend = backend.create_blend(&BlendDesc {
         targets: [RenderTargetBlend {
             blend: None,
@@ -245,12 +261,7 @@ pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuEr
         compare: None,
         border: BorderColor::TransparentBlack,
     })?;
-    for shader in fragments.into_iter().flatten() {
-        backend.destroy(crate::Object::Shader(shader));
-    }
-    backend.destroy(crate::Object::Shader(vertex));
     let b = Builtins {
-        programs,
         blend,
         raster,
         vertex_layout,

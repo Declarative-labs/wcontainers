@@ -471,7 +471,7 @@ pub trait Backend: Sized {
                 read_only,
             }
         }
-        let (program, depth_stencil, stencil_reference) = match value {
+        let (which, depth_stencil, stencil_reference) = match value {
             ClearValue::Color(c) => {
                 for (i, v) in c.iter().enumerate() {
                     params[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
@@ -514,7 +514,8 @@ pub trait Backend: Sized {
                 (program, &b.write_depth_stencil[which], stencil.unwrap_or(0))
             }
         };
-        let set = if program == Builtin::ClearStencil {
+        let program = helpers::program(self, which)?;
+        let set = if which == Builtin::ClearStencil {
             None
         } else {
             let align = self.caps().limits.min_uniform_offset_alignment;
@@ -540,7 +541,7 @@ pub trait Backend: Sized {
                 depth_stencil,
                 stencil_reference: [stencil_reference; 2],
                 scissors: core::slice::from_ref(rect),
-                ..builtin_draw(&b, program, &viewport)
+                ..builtin_draw(&b, &program, &viewport)
             });
         }
         self.end_pass();
@@ -566,13 +567,14 @@ pub trait Backend: Sized {
     ) -> Result<(), GpuError> {
         let b = helpers::builtins(self)?;
         let own = desc.own_view();
-        let (program, binding) = match own {
+        let (which, binding) = match own {
             ViewDimension::D2 => (Builtin::Mip2d, 32),
             ViewDimension::D3 => (Builtin::Mip3d, 33),
             ViewDimension::D2Array => (Builtin::Mip2dArray, 34),
             ViewDimension::Cube => (Builtin::MipCube, 35),
             ViewDimension::CubeArray => (Builtin::MipCubeArray, 36),
         };
+        let program = helpers::program(self, which)?;
         let three_d = own == ViewDimension::D3;
         let layers = if three_d {
             0..1
@@ -637,7 +639,7 @@ pub trait Backend: Sized {
                             resource: BindingResource::Texture(&src),
                         },
                     ];
-                    if program != Builtin::Mip2d {
+                    if which != Builtin::Mip2d {
                         let mut params = [0u8; PARAMS_SIZE];
                         let w = (slice as f32 + 0.5) / slices as f32;
                         params[16..20].copy_from_slice(&w.to_bits().to_le_bytes());
@@ -673,7 +675,7 @@ pub trait Backend: Sized {
                     self.draw(&DrawCall {
                         bindings: [Some(&set), None, None, None],
                         scissors: &scissor,
-                        ..builtin_draw(&b, program, &viewport)
+                        ..builtin_draw(&b, &program, &viewport)
                     });
                     self.end_pass();
                     self.destroy(Object::BindingSet(set));
@@ -831,11 +833,11 @@ fn full_viewport(width: u32, height: u32) -> Viewport {
 /// A draw of the built-in full-screen triangle with `program`, no bindings and no depth test.
 fn builtin_draw<'a, B: Backend>(
     b: &'a helpers::Builtins<B>,
-    program: Builtin,
+    program: &'a B::Program,
     viewports: &'a [Viewport],
 ) -> DrawCall<'a, B> {
     DrawCall {
-        program: &b.programs[program as usize],
+        program,
         blend: &b.blend,
         depth_stencil: &b.no_depth,
         raster: &b.raster,

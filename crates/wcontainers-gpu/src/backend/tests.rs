@@ -130,7 +130,9 @@ impl Backend for Recorder {
         Ok(self.id())
     }
     fn create_program(&mut self, _: &Program<'_, Self>) -> Result<Id, GpuError> {
-        Ok(self.id())
+        let id = self.id();
+        self.log.push(format!("create_program {id}"));
+        Ok(id)
     }
     fn create_blend(&mut self, _: &BlendDesc) -> Result<Id, GpuError> {
         Ok(self.id())
@@ -746,6 +748,19 @@ fn generate_mips_of_a_cube_reads_whole_cube_views_and_names_the_face() {
 }
 
 #[test]
+fn defaults_build_only_the_built_in_programs_they_draw_with() {
+    let mut r = Recorder::new();
+    let desc = texture(TextureDimension::D2, Format::Rgba8Unorm, 1, 3);
+    r.generate_mips(&50, &desc, 1..3, 0..1).unwrap();
+    r.generate_mips(&50, &desc, 1..3, 0..1).unwrap();
+    assert_eq!(
+        lines(&r, "create_program").len(),
+        1,
+        "the 2D mip program, once"
+    );
+}
+
+#[test]
 fn clear_rects_draws_one_scissored_triangle_per_rectangle() {
     let mut r = Recorder::new();
     let rects = [
@@ -769,7 +784,11 @@ fn clear_rects_draws_one_scissored_triangle_per_rectangle() {
         &rects,
     )
     .unwrap();
-    let passes: Vec<_> = r.log.iter().filter(|l| !l.contains("_buffer")).collect();
+    let passes: Vec<_> = r
+        .log
+        .iter()
+        .filter(|l| !l.contains("_buffer") && !l.starts_with("create_program"))
+        .collect();
     assert_eq!(passes[0], "begin_pass color Some((7, 0, Load)) depth None");
     assert!(passes[1].ends_with("scissor Some((1, 2, 3, 4)) stencil 0"));
     assert!(passes[2].ends_with("scissor Some((10, 0, 5, 5)) stencil 0"));
@@ -787,7 +806,11 @@ fn clear_rects_draws_one_scissored_triangle_per_rectangle() {
     };
     r.clear_rects(&8, Format::Depth24PlusStencil8, depth, &rects[..1])
         .unwrap();
-    let lines: Vec<_> = r.log.iter().filter(|l| !l.contains("_buffer")).collect();
+    let lines: Vec<_> = r
+        .log
+        .iter()
+        .filter(|l| !l.contains("_buffer") && !l.starts_with("create_program"))
+        .collect();
     assert_eq!(
         lines[0],
         "begin_pass color None depth Some((Some(Load), Some(Load)))"

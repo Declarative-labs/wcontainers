@@ -86,7 +86,9 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
     nothing else, so cache keys name one module everywhere (plan 4.5, 8).
   - `clear_texture` now takes the texture, levels and layers and clears every 3D slice and every layer
     in a pass of its own; `generate_mips` reads the level above through whole-array, cube or cube-array
-    views (new built-in programs) so it needs no `TEXTURE_VIEWS`. Tests for both.
+    views (new built-in programs) so it needs no `TEXTURE_VIEWS`. Tests for both. Built-in programs are
+    now made one at a time when a default first draws with each, so WebGL 2 never builds the cube-array
+    one.
   - Overlapping queries (`QueriesSegmented`, plan 4.7), append and counter views and
     `CopyStructureCount` (`SlotKind::Counter`, plan 5.1), copies within typeless groups
     (`CopyThroughBuffer`, `DepthWrittenByDraw`), WebGL 2 copies and read backs of formats it cannot
@@ -108,7 +110,7 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (19 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (20 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
