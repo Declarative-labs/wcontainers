@@ -496,7 +496,14 @@ fn caps(
         max_anisotropy: 16,
         capture_buffers: 0,
     };
+    let info = adapter.get_info();
     let caps = Caps {
+        adapter: wcontainers_gpu::AdapterInfo {
+            name: info.name,
+            vendor: info.vendor,
+            device: info.device,
+            software: info.device_type == wgpu::DeviceType::Cpu,
+        },
         features,
         limits,
         formats,
@@ -1065,8 +1072,13 @@ impl Backend for WebGpu {
         self.clear_buffer_impl(buffer, offset, size, pattern);
     }
 
-    fn resolve(&mut self, src: &TextureRegion<'_, Self>, dst: &TextureRegion<'_, Self>) {
-        self.resolve_impl(src, dst);
+    fn resolve(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        format: Format,
+    ) {
+        self.resolve_impl(src, dst, format);
     }
 
     fn submit(&mut self) -> Fence {

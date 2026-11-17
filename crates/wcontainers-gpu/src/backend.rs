@@ -241,6 +241,9 @@ pub trait Backend: Sized {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     );
+    /// Copies texels from a buffer into a texture region. Into a depth format the API cannot write from
+    /// a buffer, the back end copies into a float texture first and draws the depth
+    /// ([`crate::SlowPath::DepthWrittenByDraw`]); see [`CopyBufferTexture::row_pitch`] for pitches.
     fn copy_buffer_to_texture(
         &mut self,
         src: &CopyBufferTexture<'_, Self>,
@@ -256,8 +259,17 @@ pub trait Backend: Sized {
     /// Fills a range of a buffer with `pattern` repeated (1, 2, 4, 8 or 16 bytes; the range is a whole
     /// number of patterns): zero for most uses, an element's bits for Direct3D's storage view clears.
     fn clear_buffer(&mut self, buffer: &Self::Buffer, offset: u64, size: u64, pattern: &[u8]);
-    /// Resolves a whole multisampled subresource into a single-sampled one.
-    fn resolve(&mut self, src: &TextureRegion<'_, Self>, dst: &TextureRegion<'_, Self>);
+    /// Resolves a whole multisampled subresource into a single-sampled one, averaging the samples as
+    /// values of `format`: the source's stored format or its sRGB twin, so a texture made with
+    /// [`TextureDesc::reinterpret`] resolves in linear light when `format` is sRGB (Direct3D's
+    /// ResolveSubresource format). A back end that cannot read samples in the twin averages the stored
+    /// values ([`SlowPath::ResolveInStoredFormat`], a listed loss).
+    fn resolve(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        format: Format,
+    );
     /// Sends everything recorded so far to the GPU, and returns a fence for it.
     fn submit(&mut self) -> Self::Fence;
     /// Whether the GPU has finished the work before `fence`.
@@ -568,8 +580,9 @@ pub trait Backend: Sized {
 
     /// Fills mip levels `mips` (each from the level above) of `layers` of a texture made from `desc`,
     /// outside a pass (Direct3D's GenerateMips, OpenGL's glGenerateMipmap). `values` is the format whose
-    /// values the texels hold: `desc.format`, or the normalised format a front stores as its integer
-    /// twin ([`crate::SlowPath::NormAsInteger`]).
+    /// values the texels hold: `desc.format`, its sRGB twin (Direct3D's GenerateMips through an sRGB view
+    /// of a typeless texture, which filters in linear light), or the normalised format a front stores
+    /// as its integer twin ([`crate::SlowPath::NormAsInteger`]).
     ///
     /// The default draws each level and layer, or each slice of a 3D level, with a built-in program
     /// reading the level above: through the linear sampler where the format has
@@ -604,17 +617,17 @@ pub trait Backend: Sized {
         }
         let b = helpers::builtins(self)?;
         let decoded = norm_twin(values, desc.format)?;
+        // The views read and write the texels as their values: the sRGB twin is a view every back end
+        // makes, so filtering happens in linear light.
+        let seen = if decoded.is_some() {
+            desc.format
+        } else {
+            values
+        };
         let read = match decoded {
             Some((_, false)) => MipRead::Unorm,
             Some((_, true)) => MipRead::Snorm,
-            None if self
-                .caps()
-                .formats
-                .get(desc.format)
-                .contains(FormatUse::FILTER) =>
-            {
-                MipRead::Filtered
-            }
+            None if self.caps().formats.get(seen).contains(FormatUse::FILTER) => MipRead::Filtered,
             None => MipRead::Unfiltered,
         };
         let cube = matches!(own, ViewDimension::Cube | ViewDimension::CubeArray);
@@ -643,7 +656,7 @@ pub trait Backend: Sized {
             }];
             let all = if three_d { 1 } else { desc.depth_or_layers };
             let mut source_view = TextureViewDesc {
-                format: desc.format,
+                format: seen,
                 dimension: read_dim,
                 base_mip: mip - 1,
                 mip_count: 1,
@@ -690,7 +703,7 @@ pub trait Backend: Sized {
                 let dst = self.create_view(
                     texture,
                     &TextureViewDesc {
-                        format: desc.format,
+                        format: seen,
                         dimension: if three_d {
                             ViewDimension::D3
                         } else {
@@ -957,7 +970,7 @@ fn aspects(format: Format) -> (bool, bool) {
 fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuError> {
     use Format::*;
     Ok(match (values, stored) {
-        _ if values == stored => None,
+        _ if values.linear() == stored.linear() => None,
         (R16Unorm, R16Uint) | (Rg16Unorm, Rg16Uint) | (Rgba16Unorm, Rgba16Uint) => {
             Some((65535, false))
         }
@@ -967,7 +980,7 @@ fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuE
         (R8Snorm, R8Sint) | (Rg8Snorm, Rg8Sint) | (Rgba8Snorm, Rgba8Sint) => Some((127, true)),
         _ => {
             return Err(GpuError::Invalid(
-                "generate_mips: values differ from the stored format but are not its integer twin",
+                "generate_mips: values are neither the stored format, its srgb twin nor its integer twin",
             ));
         }
     })

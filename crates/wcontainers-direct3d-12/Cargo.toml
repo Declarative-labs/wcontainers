@@ -1,0 +1,24 @@
+[package]
+name = "wcontainers-direct3d-12"
+description = "The wcontainers Direct3D 12 front, written from Microsoft's documentation, on the wcontainers graphics interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-gpu = { path = "../wcontainers-gpu" }
+wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
+blake3 = { version = "1", default-features = false }
+naga = { workspace = true, features = ["wgsl-in"] }
+slab = "0.4"
+
+[dev-dependencies]
+wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir"] }
+pollster = "1.0.1"
+png = "0.18.1"
+
+[lints]
+workspace = true
