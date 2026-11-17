@@ -12,6 +12,8 @@ mod scene;
 #[path = "../examples/scenes/draw.rs"]
 mod draw;
 
+mod allowance;
+
 #[path = "../examples/scenes/viewports.rs"]
 mod viewports;
 
@@ -54,14 +56,14 @@ fn fractional_viewports_match_direct3d() {
         want.truncate(info.buffer_size());
         if rounded {
             // The same viewports moved to whole pixels must not match: the half pixel is seen.
-            let (tolerance, pixels) = draw::allowance("raster-viewports.png");
+            let (tolerance, pixels) = allowance::allowance("raster-viewports.png");
             assert!(
-                draw::beyond(&got, &want, tolerance).0 > pixels,
+                allowance::beyond(&got, &want, tolerance).0 > pixels,
                 "rounded viewports matched too"
             );
         } else {
             assert!(
-                draw::within(&got, &want, "raster-viewports.png"),
+                allowance::within(&got, &want, "raster-viewports.png"),
                 "the viewports differ from Direct3D's"
             );
         }
