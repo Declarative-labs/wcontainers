@@ -2958,6 +2958,14 @@ pub(super) fn getsockopt(
     if socket.borrow().inet.is_some() {
         inet::level_known(&socket, level)?;
     }
+    // IPv6, TCP and UDP options take the length as unsigned (`min_t(unsigned int, ...)`), so a
+    // negative one is as long as can be; the socket level and IPv4 refuse it.
+    let unsigned = socket.borrow().inet.is_some()
+        && matches!(
+            level,
+            crate::linux::net::SOL_IPV6 | crate::linux::net::SOL_TCP | crate::linux::net::SOL_UDP
+        );
+    let room = if room < 0 && unsigned { i32::MAX } else { room };
     if room < 0 {
         return Err(Errno::EINVAL);
     }

@@ -1423,7 +1423,7 @@ pub(super) fn send(
         Protocol::Tcp => {
             // `tcp_sendmsg_locked` reads only the socket-level messages, and any fault is EINVAL.
             if let Some(control) = &message.control {
-                sent_control(kernel, cx, socket, control, true).map_err(|_| Errno::EINVAL)?;
+                sent_control(kernel, cx, control, true, false).map_err(|_| Errno::EINVAL)?;
             }
             // Urgent bytes are refused only where they would go: an unconnected socket fails
             // first (`sk_stream_wait_connect`).
@@ -1600,15 +1600,15 @@ struct SentControl {
 /// The control messages of an internet send (`sock_cmsg_send` for TCP, `ip_cmsg_send` for UDP
 /// over IPv4): descriptors and credentials are passed over, what Linux does not know is EINVAL,
 /// and what it knows that is not built here (marks, priorities, transmit times and timestamping,
-/// IPv4 options and packet information, every IPv6 message) is refused and counted.
+/// IPv4 options and packet information, every IPv6 message) is refused and counted. `v4`: the
+/// datagram goes over IPv4, whose messages are read.
 fn sent_control(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
-    socket: &SocketRef,
     bytes: &[u8],
     socket_level_only: bool,
+    v4: bool,
 ) -> Result<SentControl, Errno> {
-    let v4 = socket.borrow().family == AF_INET;
     let mut out = SentControl::default();
     let mut at = 0usize;
     let mut refuse = |level: u32, kind: u32| {
@@ -1723,6 +1723,29 @@ fn udp_send(
                     }
                     Named::Unspecified => None,
                 },
+                // `udpv6_sendmsg` hands an IPv4 destination to `udp_sendmsg`.
+                AF_INET => {
+                    if inet_ref(socket).v6only {
+                        return Err(Errno::ENETUNREACH);
+                    }
+                    if total > 0xffff {
+                        return Err(Errno::EMSGSIZE);
+                    }
+                    if message.flags & MSG_OOB != 0 {
+                        return Err(Errno::EOPNOTSUPP);
+                    }
+                    if bytes.len() < 16 {
+                        return Err(Errno::EINVAL);
+                    }
+                    let endpoint = Endpoint {
+                        address: mapped([bytes[4], bytes[5], bytes[6], bytes[7]]),
+                        port: u16::from_be_bytes([bytes[2], bytes[3]]),
+                    };
+                    if endpoint.port == 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                    Some(endpoint)
+                }
                 AF_UNSPEC => None,
                 _ => return Err(Errno::EINVAL),
             }
@@ -1740,7 +1763,10 @@ fn udp_send(
         }
     };
     let sent = match &message.control {
-        Some(control) => sent_control(kernel, cx, socket, control, false)?,
+        Some(control) => {
+            let v4 = v4_of(&to.address).is_some();
+            sent_control(kernel, cx, control, false, v4)?
+        }
         None => SentControl::default(),
     };
     {
@@ -2043,7 +2069,10 @@ fn arrival_from(sender: &SocketRef, to: &Endpoint, sent: SentControl) -> Arrival
                 .map_or_else(|| option(SOL_IP, IP_TOS, 0), i32::from),
         )
     } else if v4_of(&to.address).is_some() {
-        (64, 0)
+        (
+            sent.ttl.map_or(64, i32::from),
+            sent.tos.map_or(0, i32::from),
+        )
     } else {
         (
             option(SOL_IPV6, IPV6_UNICAST_HOPS, 64),
