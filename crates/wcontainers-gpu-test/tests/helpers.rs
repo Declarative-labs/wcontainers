@@ -987,64 +987,81 @@ fn the_occlusion_counter_splits_instances_only_where_each_reads_the_same() {
                 fragment: Some(&f),
             })
             .unwrap();
+        // Its counting variant reads the shifts as it does.
+        let f = shader(&mut k.r, "counting", ShaderStage::Fragment);
+        let shifted_counting =
+            k.r.create_program(&Program::Render {
+                vertex: &v,
+                fragment: Some(&f),
+            })
+            .unwrap();
         let p = k.program("color");
 
-        // One draw: (program, layout, its streams, topology, vertices, instances, step by one).
-        type Draw<'a> = (&'a Id, &'a Id, &'a [&'a Id], Topology, u32, u32, bool);
-        let mut counted =
-            |k: &mut Kit, (program, layout, streams, topology, count, instances, by_one): Draw| {
-                counter.begin(&mut k.r, &mut passes).unwrap();
-                let viewport = [Viewport {
-                    x: 0f32.to_bits(),
-                    y: 0f32.to_bits(),
-                    width: 2f32.to_bits(),
-                    height: 2f32.to_bits(),
-                    min_depth: 0f32.to_bits(),
-                    max_depth: 1f32.to_bits(),
-                }];
-                let streams: Vec<_> = streams
-                    .iter()
-                    .map(|&buffer| Some(VertexBinding { buffer, offset: 0 }))
-                    .collect();
-                let call = DrawCall {
-                    program,
-                    blend: &k.blend,
-                    depth_stencil: &none,
-                    raster: &k.raster,
-                    vertex_layout: layout,
-                    bindings: [Some(&set), None, None, None],
-                    vertex_buffers: &streams,
-                    index: None,
-                    topology,
-                    restart: false,
-                    viewports: &viewport,
-                    scissors: &[],
-                    blend_constant: [0; 4],
-                    stencil_reference: [0; 2],
-                    immediates: &[],
-                    range: DrawRange::Vertices {
-                        first: 0,
-                        count,
-                        first_instance: 0,
-                        instances,
-                    },
-                };
-                let facts = CountedDraw {
-                    instances_step_by_one: by_one,
-                    ..facts(&counting, false)
-                };
-                counter.draw(&mut k.r, &mut passes, &call, &facts).unwrap();
-                passes.before_draw(&mut k.r, &[]).unwrap();
-                k.r.draw(&call);
-                let before = k.calls("draw");
-                let n = counter.end(&mut k.r, &mut passes);
-                (n, k.calls("draw") - before)
+        // One draw: (program and its counting variant, layout, its streams, topology, vertices,
+        // instances, step by one).
+        type Draw<'a> = ([&'a Id; 2], &'a Id, &'a [&'a Id], Topology, u32, u32, bool);
+        let mut counted = |k: &mut Kit,
+                           (
+            [program, counting],
+            layout,
+            streams,
+            topology,
+            count,
+            instances,
+            by_one,
+        ): Draw| {
+            counter.begin(&mut k.r, &mut passes).unwrap();
+            let viewport = [Viewport {
+                x: 0f32.to_bits(),
+                y: 0f32.to_bits(),
+                width: 2f32.to_bits(),
+                height: 2f32.to_bits(),
+                min_depth: 0f32.to_bits(),
+                max_depth: 1f32.to_bits(),
+            }];
+            let streams: Vec<_> = streams
+                .iter()
+                .map(|&buffer| Some(VertexBinding { buffer, offset: 0 }))
+                .collect();
+            let call = DrawCall {
+                program,
+                blend: &k.blend,
+                depth_stencil: &none,
+                raster: &k.raster,
+                vertex_layout: layout,
+                bindings: [Some(&set), None, None, None],
+                vertex_buffers: &streams,
+                index: None,
+                topology,
+                restart: false,
+                viewports: &viewport,
+                scissors: &[],
+                blend_constant: [0; 4],
+                stencil_reference: [0; 2],
+                immediates: &[],
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count,
+                    first_instance: 0,
+                    instances,
+                },
             };
+            let facts = CountedDraw {
+                instances_step_by_one: by_one,
+                ..facts(counting, false)
+            };
+            counter.draw(&mut k.r, &mut passes, &call, &facts).unwrap();
+            passes.before_draw(&mut k.r, &[]).unwrap();
+            k.r.draw(&call);
+            let before = k.calls("draw");
+            let n = counter.end(&mut k.r, &mut passes);
+            (n, k.calls("draw") - before)
+        };
         let list_streams = [&list, &shifts];
         // 1,000 triangles, 3 instances each, all in place: 3,000 a pixel, counted whole, then by
         // 500 triangles for all three instances twice.
         let stepped_list = (
-            &shifted,
+            [&shifted, &shifted_counting],
             &stepped,
             &list_streams[..],
             Topology::TriangleList,
@@ -1059,7 +1076,7 @@ fn the_occlusion_counter_splits_instances_only_where_each_reads_the_same() {
         );
         let (quad, layout) = (k.quad, k.layout);
         let plain_list = (
-            &p,
+            [&p, &counting],
             &layout,
             &list_streams[..1],
             Topology::TriangleList,
@@ -1075,7 +1092,7 @@ fn the_occlusion_counter_splits_instances_only_where_each_reads_the_same() {
         // The quad's two triangles 3,000 times: by instances where the first can be raised; one
         // triangle's 3,000 instances cannot be split otherwise.
         let quads = (
-            &p,
+            [&p, &counting],
             &layout,
             &[&quad][..],
             Topology::TriangleStrip,
