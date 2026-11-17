@@ -47,12 +47,12 @@ pub fn jobs() -> usize {
         .unwrap_or(4)
 }
 
-/// Runs `work` on every item with [`jobs`] items at a time, and returns the results in order.
-pub fn each<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+/// Runs `work` on every item with `jobs` items at a time, and returns the results in order.
+pub fn each<T: Sync, R: Send>(jobs: usize, items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let next = AtomicUsize::new(0);
     let results = Mutex::new((0..items.len()).map(|_| None).collect::<Vec<Option<R>>>());
     std::thread::scope(|scope| {
-        for _ in 0..jobs().min(items.len()).max(1) {
+        for _ in 0..jobs.min(items.len()).max(1) {
             scope.spawn(|| {
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
@@ -118,7 +118,7 @@ pub fn build(out: &Path, wanted: impl Fn(&str) -> bool) -> Vec<Test> {
         }
     }
     let common_sources = common_sources(&sources);
-    let objects: Vec<PathBuf> = each(&common_sources, |source| {
+    let objects: Vec<PathBuf> = each(jobs(), &common_sources, |source| {
         let object = common.join(format!(
             "{}.o",
             source.file_stem().expect("a name").to_string_lossy()
@@ -146,7 +146,7 @@ pub fn build(out: &Path, wanted: impl Fn(&str) -> bool) -> Vec<Test> {
         .arg(&runner)
         .args(&runner_objects)
         .args(&objects));
-    each(&tests, |(name, source)| {
+    each(jobs(), &tests, |(name, source)| {
         let directory = out.join(name);
         std::fs::create_dir_all(&directory).expect("creating the test's directory");
         let program = directory.join(name);

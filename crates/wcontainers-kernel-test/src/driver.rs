@@ -335,6 +335,36 @@ pub fn run_injected(
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
+    run_prepared(prepare(container), container, seed, injections)
+}
+
+/// A kernel holding a container's files before its first process starts, and the groups that
+/// process starts in.
+pub struct Prepared {
+    pub kernel: Kernel,
+    pub groups: Vec<u32>,
+}
+
+/// Puts a container's files in a new kernel's root, unless the root is on the backend.
+pub fn prepare(container: &Container<'_>) -> Prepared {
+    let mut kernel = Kernel::new();
+    if container.backend != Some("/") {
+        image::add_files(&mut kernel, container.files);
+    }
+    Prepared {
+        kernel,
+        groups: image::root_groups(container.files),
+    }
+}
+
+/// As [`run_injected`], on a kernel [`prepare`] made for the container.
+pub fn run_prepared(
+    prepared: Prepared,
+    container: &Container<'_>,
+    seed: u64,
+    injections: Injections,
+) -> Result<Run, Failure> {
+    let Prepared { mut kernel, groups } = prepared;
     let mut at = moments(seed ^ 0x5a7e, injections.saves);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
     let mut signal_at = moments(seed ^ 0x5197, signals);
@@ -357,10 +387,6 @@ pub fn run_injected(
             container.cached,
         ));
     }
-    let mut kernel = Kernel::new();
-    if !root_on_backend {
-        image::add_files(&mut kernel, container.files);
-    }
     let arguments: Vec<&[u8]> = container
         .arguments
         .iter()
@@ -371,7 +397,6 @@ pub fn run_injected(
         .iter()
         .map(|variable| variable.as_bytes())
         .collect();
-    let groups = image::root_groups(container.files);
     let start = Start {
         path: container.path.as_bytes(),
         arguments: &arguments,
