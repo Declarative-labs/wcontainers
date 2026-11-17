@@ -661,11 +661,11 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateComputePipelineState(
         &self,
-        _pdesc: *const D3D12_COMPUTE_PIPELINE_STATE_DESC,
-        _riid: *const windows_core::GUID,
-        _pppipelinestate: *mut *mut core::ffi::c_void,
+        pdesc: *const D3D12_COMPUTE_PIPELINE_STATE_DESC,
+        riid: *const windows_core::GUID,
+        pppipelinestate: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("CreateComputePipelineState"))
+        Device::CreateComputePipelineState(self, pdesc, riid, pppipelinestate)
     }
     fn CreateCommandList(
         &self,
@@ -1063,12 +1063,8 @@ impl ID3D12CommandQueue_Impl for Queue_Impl {
     ) -> windows_core::Result<()> {
         Queue::Signal(self, pfence, value)
     }
-    fn Wait(
-        &self,
-        _pfence: windows_core::Ref<ID3D12Fence>,
-        _value: u64,
-    ) -> windows_core::Result<()> {
-        Err(self.unsupported("Wait"))
+    fn Wait(&self, pfence: windows_core::Ref<ID3D12Fence>, value: u64) -> windows_core::Result<()> {
+        Queue::Wait(self, pfence, value)
     }
     fn GetTimestampFrequency(&self) -> windows_core::Result<u64> {
         Err(self.unsupported("GetTimestampFrequency"))
@@ -1219,8 +1215,13 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
             startinstancelocation,
         )
     }
-    fn Dispatch(&self, _threadgroupcountx: u32, _threadgroupcounty: u32, _threadgroupcountz: u32) {
-        self.unsupported("Dispatch");
+    fn Dispatch(&self, threadgroupcountx: u32, threadgroupcounty: u32, threadgroupcountz: u32) {
+        List::Dispatch(
+            self,
+            threadgroupcountx,
+            threadgroupcounty,
+            threadgroupcountz,
+        )
     }
     fn CopyBufferRegion(
         &self,
@@ -1463,25 +1464,41 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn ClearUnorderedAccessViewUint(
         &self,
-        _viewgpuhandleincurrentheap: &D3D12_GPU_DESCRIPTOR_HANDLE,
-        _viewcpuhandle: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _values: *const u32,
-        _numrects: u32,
-        _prects: *const windows::Win32::Foundation::RECT,
+        viewgpuhandleincurrentheap: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        viewcpuhandle: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        values: *const u32,
+        numrects: u32,
+        prects: *const windows::Win32::Foundation::RECT,
     ) {
-        self.unsupported("ClearUnorderedAccessViewUint");
+        List::ClearUnorderedAccessViewUint(
+            self,
+            viewgpuhandleincurrentheap,
+            viewcpuhandle,
+            presource,
+            values,
+            numrects,
+            prects,
+        )
     }
     fn ClearUnorderedAccessViewFloat(
         &self,
-        _viewgpuhandleincurrentheap: &D3D12_GPU_DESCRIPTOR_HANDLE,
-        _viewcpuhandle: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _values: *const f32,
-        _numrects: u32,
-        _prects: *const windows::Win32::Foundation::RECT,
+        viewgpuhandleincurrentheap: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        viewcpuhandle: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        values: *const f32,
+        numrects: u32,
+        prects: *const windows::Win32::Foundation::RECT,
     ) {
-        self.unsupported("ClearUnorderedAccessViewFloat");
+        List::ClearUnorderedAccessViewFloat(
+            self,
+            viewgpuhandleincurrentheap,
+            viewcpuhandle,
+            presource,
+            values,
+            numrects,
+            prects,
+        )
     }
     fn DiscardResource(
         &self,

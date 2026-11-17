@@ -212,6 +212,15 @@ pub enum Command {
         /// left, top, front, right, bottom, back.
         area: Option<[u32; 6]>,
     },
+    Dispatch([u32; 3]),
+    /// `ClearUnorderedAccessViewUint` (`float` false: the values are integers) or `...Float` (the
+    /// values are f32 bits).
+    ClearStorage {
+        view: ResourceView,
+        values: [u32; 4],
+        float: bool,
+        rects: Vec<Rect>,
+    },
 }
 
 /// A graphics command list being recorded, or closed and ready to execute.

@@ -14,7 +14,7 @@ use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
 use wcontainers_direct3d_12::{
-    Error, FenceId, GraphicsPipelineDesc, HeapId, PipelineId, ResourceId, RootId, features,
+    Error, FenceId, GraphicsPipelineDesc, HeapId, PipelineId, QueueId, ResourceId, RootId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, format_support, plane_count};
 use wcontainers_gpu::Backend;
@@ -368,8 +368,9 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let id = gpu::call(|d| d.create_queue());
         give::<ID3D12CommandQueue>(
-            crate::abi::fixed(Queue(*desc, Base::child()).into()),
+            crate::abi::fixed(Queue(*desc, Base::child(), id).into()),
             riid,
             out,
         )
@@ -578,6 +579,24 @@ impl Device {
             })
         })
         .map_err(hr)?;
+        give::<ID3D12PipelineState>(PipelineState(id, Base::child()).into(), riid, out)
+    }
+
+    pub fn CreateComputePipelineState(
+        &self,
+        pdesc: *const D3D12_COMPUTE_PIPELINE_STATE_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let root = d.pRootSignature.as_ref().map(|r| {
+            // SAFETY: root signatures come from this library.
+            unsafe { r.as_impl() }.0
+        });
+        // SAFETY: the API requires valid bytecode.
+        let cs = unsafe { code(&d.CS) };
+        let id = gpu::call(move |dev| dev.create_compute_pipeline(root, &cs)).map_err(hr)?;
         give::<ID3D12PipelineState>(PipelineState(id, Base::child()).into(), riid, out)
     }
 
@@ -1156,7 +1175,14 @@ impl Device {
 // ---- Queues, allocators, fences ----
 
 #[implement(ID3D12CommandQueue)]
-pub struct Queue(D3D12_COMMAND_QUEUE_DESC, Base);
+pub struct Queue(D3D12_COMMAND_QUEUE_DESC, Base, QueueId);
+
+impl Drop for Queue {
+    fn drop(&mut self) {
+        let id = self.2;
+        gpu::call(move |d| d.destroy_queue(id));
+    }
+}
 
 impl Queue {
     pub fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
@@ -1185,7 +1211,8 @@ impl Queue {
                 }
             }
         }
-        if let Err(e) = gpu::call(move |d| d.execute(&commands)) {
+        let queue = self.2;
+        if let Err(e) = gpu::call(move |d| d.execute(queue, &commands)) {
             eprintln!(
                 "wcontainers: the device was removed: {:?}",
                 gpu::call(|d| d.removed()).unwrap_or("?")
@@ -1197,8 +1224,15 @@ impl Queue {
     pub fn Signal(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
         // SAFETY: fences come from this library.
         let fence = unsafe { fence.ok()?.as_impl() };
-        let id = fence.id;
-        gpu::call(move |d| d.queue_signal(id, value)).map_err(hr)
+        let (queue, id) = (self.2, fence.id);
+        gpu::call(move |d| d.queue_signal(queue, id, value)).map_err(hr)
+    }
+
+    pub fn Wait(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
+        // SAFETY: fences come from this library.
+        let fence = unsafe { fence.ok()?.as_impl() };
+        let (queue, id) = (self.2, fence.id);
+        gpu::call(move |d| d.queue_wait(queue, id, value)).map_err(hr)
     }
 }
 
@@ -1772,6 +1806,65 @@ impl List {
                 .map(|r| [r.left, r.top, r.right, r.bottom])
                 .collect(),
         });
+    }
+
+    pub fn Dispatch(&self, x: u32, y: u32, z: u32) {
+        self.record(Command::Dispatch([x, y, z]));
+    }
+
+    /// A storage view clear; the view is read from its CPU handle when recorded.
+    fn clear_storage(
+        &self,
+        cpu: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        values: [u32; 4],
+        float: bool,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: a handle of this library's heaps and `count` rectangles.
+        let (view, rects) = unsafe { (descriptor(*cpu), many(rects, count)) };
+        let Descriptor::UnorderedAccess(view) = view else {
+            return self.rec.lock().unwrap().fail(Error::Invalid(
+                "clearing a descriptor that is no unordered access view",
+            ));
+        };
+        self.record(Command::ClearStorage {
+            view,
+            values,
+            float,
+            rects: rects
+                .iter()
+                .map(|r| [r.left, r.top, r.right, r.bottom])
+                .collect(),
+        });
+    }
+
+    pub fn ClearUnorderedAccessViewUint(
+        &self,
+        _gpu: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        cpu: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        _resource: Ref<ID3D12Resource>,
+        values: *const u32,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: the API passes four values.
+        let values = unsafe { *(values as *const [u32; 4]) };
+        self.clear_storage(cpu, values, false, count, rects);
+    }
+
+    pub fn ClearUnorderedAccessViewFloat(
+        &self,
+        _gpu: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        cpu: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        _resource: Ref<ID3D12Resource>,
+        values: *const f32,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: the API passes four values.
+        let values = unsafe { *(values as *const [f32; 4]) }.map(f32::to_bits);
+        self.clear_storage(cpu, values, true, count, rects);
     }
 
     pub fn DrawInstanced(
