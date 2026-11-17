@@ -6,8 +6,22 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library) is done, waiting for the orchestrator's check (fifth run,
-2026-11-17, fixed the findings of the fourth check; see "Fifth run" under Measurements). Its parts:
+R1 (the Direct3D reference library): the fifth run (2026-11-17) fixed the findings of the fourth
+check (see "Fifth run" under Measurements), but SSH to the desktop refused every connection from
+09:45 Pacific time to the end of the run (over two hours), so these are left, in this order:
+1. `tools/graphics-rig/remote "cargo clean -q -p wcontainers-graphics-test -p
+   wcontainers-graphics-test-forward"` (the desktop's clock jumped back, Known issues), then
+   `tools/graphics-rig/programs run --record bgfx-24-nbody` and commit: the nbody references in
+   the repository were recorded by a stale build, before the rule that a drifting program has
+   all its frames unrepeatable, so its frame 10 is still compared and failed 1 check of 4.
+2. `tools/graphics-rig/programs run` twice: all 16 should pass (with nbody "not compared").
+3. A replacement through gt-launch, never yet run with one: `programs run --dll
+   d3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll --dll
+   dxgi.dll=C:\Windows\System32\dxgi.dll sdk-tutorial07 chocolate-doom` and `wine-tests run
+   --dll dxgi.dll=C:\Windows\System32\dxgi.dll d3d11:test_device_interfaces` must pass and say
+   the replacement was loaded; a break of a program (Freedoom's demo2 in place of demo1 in
+   programs.ps1, not committed) must fail chocolate-doom's frames.
+Then R1 waits for the orchestrator's check. Its parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
