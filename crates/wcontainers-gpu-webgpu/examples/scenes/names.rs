@@ -25,6 +25,8 @@ macro_rules! suite_but_present {
             near_clipping_and_the_viewport_depth_range,
             linear_filtering_and_address_modes,
             instances_start_at_the_first_instance,
+            a_stream_of_stride_zero_reads_its_first_element,
+            comparison_samplers_compare_with_the_stored_depth,
             indexed_strips_restart_and_add_the_base_vertex,
             fragments_write_storage_buffers,
             multisampled_targets_cover_their_samples_and_resolve,
