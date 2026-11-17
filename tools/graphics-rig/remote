@@ -38,6 +38,6 @@ scp -q -o BatchMode=yes "${files[@]}" "$host:C:/wc/incoming/"
 command=$(printf %s "$*" | base64 | tr -d '\n')
 set +e
 ssh -o BatchMode=yes "$host" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-    -File "C:\\wc\\incoming\\$id.ps1" -Name "$name" -Commit "$commit" "${bundle_arg[@]}" -Command "$command" \
+    -File "C:\\wc\\incoming\\$id.ps1" -Name "$name" -Commit "$commit" ${bundle_arg[@]+"${bundle_arg[@]}"} -Command "$command" \
     2> >(tr -d '\r' >&2) | tr -d '\r'
 exit "${PIPESTATUS[0]}"

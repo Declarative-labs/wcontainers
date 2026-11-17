@@ -1,0 +1,27 @@
+#!/bin/bash
+# Runs a short GPU job on the desktop through its queue, in this branch's copy there (send it first
+# with `remote`), and returns the job's output and exit code once it has run. Higher priorities start
+# first; --alone waits until no other job runs and keeps the GPU to itself, for timings. The command
+# is cmd.exe syntax; cargo's build directory is C:\wc\target\<branch>.
+#   tools/graphics-rig/gpu-job [--priority N] [--alone] -- <command>
+set -euo pipefail
+host=tom@192.168.2.183
+priority=0
+alone=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --priority) priority=$2; shift 2 ;;
+        --alone) alone=(-Alone); shift ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+[ $# -gt 0 ] || { echo "usage: gpu-job [--priority N] [--alone] -- <command>" >&2; exit 2; }
+branch=$(git symbolic-ref --short HEAD)
+name=$(printf %s "$branch" | tr -c 'A-Za-z0-9._-' '-')
+command=$(printf %s "$*" | base64 | tr -d '\n')
+set +e
+ssh -o BatchMode=yes "$host" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'C:\wc\rig\submit.ps1' \
+    -Name "$name" -Priority "$priority" ${alone[@]+"${alone[@]}"} -Command "$command" \
+    2> >(tr -d '\r' >&2) | tr -d '\r'
+exit "${PIPESTATUS[0]}"

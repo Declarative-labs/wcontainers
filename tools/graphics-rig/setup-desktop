@@ -1,0 +1,11 @@
+#!/bin/bash
+# Puts this checkout's desktop scripts in C:\wc\rig on the GPU desktop and sets up the job queue
+# there (see desktop/install-queue.ps1). Safe to run again.
+set -euo pipefail
+host=tom@192.168.2.183
+here=$(cd "$(dirname "$0")" && pwd)
+ssh -o BatchMode=yes "$host" "if not exist C:\\wc\\rig mkdir C:\\wc\\rig"
+scp -q -o BatchMode=yes "$here"/desktop/* "$host:C:/wc/rig/"
+ssh -o BatchMode=yes "$host" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'C:\wc\rig\install-queue.ps1' \
+    2> >(tr -d '\r' >&2) | tr -d '\r'
+exit "${PIPESTATUS[0]}"
