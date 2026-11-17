@@ -64,9 +64,8 @@ pub mod reason {
     /// a FUSE connection that is gone. Detail: the FUSE opcode.
     pub const BACKEND_UNREACHABLE: &str = "backend unreachable";
     /// A call on a file of the backend that is not built for it yet: mappings answer ENODEV, as a
-    /// file system without `mmap` does; extended attributes and fallocate answer EOPNOTSUPP, as a
-    /// FUSE file system without them does. Detail: the call number, 0 for the extended attribute
-    /// calls.
+    /// file system without `mmap` does; access control lists answer EOPNOTSUPP, as a FUSE file
+    /// system without them does. Detail: the call number, 0 for access control lists.
     pub const BACKEND_CALL_NOT_BUILT: &str = "backend call not built";
     /// An answer or notice from the backend that the kernel could not read or does not handle.
     /// Detail: the request number, or the notice's code.
@@ -95,6 +94,7 @@ pub mod reason {
         PROC_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
+        BACKEND_CALL_NOT_BUILT,
     ];
 }
 

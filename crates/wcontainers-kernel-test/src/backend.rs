@@ -80,6 +80,8 @@ fn answered(opcode: u32) -> bool {
 /// One running server, reached over its container's standard streams.
 pub struct Backend {
     child: Child,
+    /// Its container's name.
+    name: String,
     input: ChildStdin,
     output: ChildStdout,
     /// Requests sent whose answers have not been read, in order: the server answers in order.
@@ -95,8 +97,8 @@ pub enum Message {
 }
 
 impl Backend {
-    /// Starts a server on an empty directory in memory.
-    pub fn start(out: &Path) -> Self {
+    /// Starts a server on a directory in memory, empty or with `image` unpacked into it first.
+    pub fn start(out: &Path, image: Option<&[crate::image::File]>) -> Self {
         static RUNS: AtomicU32 = AtomicU32::new(0);
         let server = server(out);
         let name = format!(
@@ -104,7 +106,8 @@ impl Backend {
             std::process::id(),
             RUNS.fetch_add(1, Ordering::Relaxed)
         );
-        let mut child = Command::new("docker")
+        let mut command = Command::new("docker");
+        command
             .args([
                 "run",
                 "--rm",
@@ -116,8 +119,25 @@ impl Backend {
             ])
             .args(["--tmpfs", SERVED])
             .arg("--volume")
-            .arg(format!("{}:/wcb:ro", server.display()))
-            .args([IMAGE, "/wcb/wc-backend", "pipe", SERVED])
+            .arg(format!("{}:/wcb:ro", server.display()));
+        let script = match image {
+            Some(files) => {
+                let images = out.join("wc-backend-images");
+                std::fs::create_dir_all(&images).expect("a directory for images");
+                let archive = images
+                    .canonicalize()
+                    .expect("the images' directory")
+                    .join(format!("{name}.tar"));
+                std::fs::write(&archive, crate::image::to_tar(files)).expect("writing the image");
+                command
+                    .arg("--volume")
+                    .arg(format!("{}:/wci/image.tar:ro", archive.display()));
+                format!("tar -xpf /wci/image.tar -C {SERVED} && exec /wcb/wc-backend pipe {SERVED}")
+            }
+            None => format!("exec /wcb/wc-backend pipe {SERVED}"),
+        };
+        let mut child = command
+            .args([IMAGE, "sh", "-c", &script])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -126,11 +146,26 @@ impl Backend {
         let output = child.stdout.take().expect("the server's output");
         Self {
             child,
+            name,
             input,
             output,
             outstanding: VecDeque::new(),
             sent: 0,
         }
+    }
+
+    /// The files of the served directory now, as a tar archive of it gives them.
+    pub fn files(&self) -> Vec<crate::image::File> {
+        let output = Command::new("docker")
+            .args(["exec", &self.name, "tar", "-cf", "-", "-C", SERVED, "."])
+            .output()
+            .expect("running docker exec");
+        assert!(
+            output.status.success(),
+            "reading the backend's files: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        crate::image::from_tar(&output.stdout)
     }
 
     /// Hands the server one request.

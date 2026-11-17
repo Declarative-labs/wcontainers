@@ -28,7 +28,7 @@ fn same_on_backend(name: &str, injections: driver::Injections) -> Vec<driver::Ru
             arguments: &[&path],
             environment: reference::ENVIRONMENT,
             working_directory: AT,
-            volume: Some(AT),
+            backend: Some(AT),
         };
         let ours =
             driver::run_injected(&container, seed, injections).expect("an outcome on our kernel");
@@ -58,6 +58,23 @@ fn file_calls_match_reference() {
             .map(|counter| counter.count)
             .sum();
         assert!(messages > 0, "no message reached the backend");
+    }
+}
+
+/// Extended attributes and fallocate on backend files.
+#[test]
+fn attributes_and_allocation_match_reference() {
+    for run in same_on_backend("backendattrs", driver::Injections::default()) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}
+
+/// File capabilities read back with getxattr on a backend file.
+#[test]
+#[ignore = "known failure: the reference's getxattr of security.capability on its FUSE mount is EINVAL (cause not found: cap_inode_getsecurity reads it with two GETXATTR messages and the server stores a valid v2 value); ours gives the value"]
+fn file_capabilities_match_reference() {
+    for run in same_on_backend("backendcaps", driver::Injections::default()) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
     }
 }
 
@@ -102,7 +119,7 @@ fn messages_per_call() {
             arguments: &["/wc/backendcosts", kind],
             environment: reference::ENVIRONMENT,
             working_directory: AT,
-            volume: Some(AT),
+            backend: Some(AT),
         };
         let run = driver::run(&container, 1).expect("an outcome on our kernel");
         assert_eq!(run.outcome.stdout, format!("{kind} done\n").into_bytes());

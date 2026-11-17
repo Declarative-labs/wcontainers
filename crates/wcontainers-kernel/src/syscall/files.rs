@@ -2357,14 +2357,6 @@ pub(super) fn fallocate(
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
-    if file.borrow().backend.is_some() {
-        return Err(kernel.counters.refuse(
-            cx.host,
-            reason::BACKEND_CALL_NOT_BUILT,
-            __NR_fallocate.into(),
-            Errno::EOPNOTSUPP,
-        ));
-    }
     let mode = mode as u32;
     if (offset as i64) < 0 || (length as i64) <= 0 {
         return Err(Errno::EINVAL);
@@ -2408,6 +2400,14 @@ pub(super) fn fallocate(
         .checked_add(length)
         .filter(|end| *end <= largest)
         .ok_or(Errno::EFBIG)?;
+    // `fuse_file_fallocate`: keeping the size, punching holes and zeroing ranges go to the backend.
+    if let Some(handle) = file.borrow().backend.clone() {
+        if mode & !(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE) != 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        crate::fs::backend::fallocate(&handle, mode, offset, length)?;
+        return Ok(0);
+    }
     if node.borrow().is_secret()
         || node.borrow().is_anonymous()
         || matches!(node.borrow().content, Content::Mqueue(_))

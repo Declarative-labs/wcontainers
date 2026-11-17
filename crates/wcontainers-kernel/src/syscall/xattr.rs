@@ -51,7 +51,18 @@ fn target(
             Ok(node)
         }
     }?;
-    if crate::fs::backend::remote(&node).is_some() {
+    Ok(node)
+}
+
+/// Whether an inode's attributes are the backend's.
+fn on_backend(node: &Node) -> bool {
+    crate::fs::backend::remote(node).is_some()
+}
+
+/// Access control lists on the backend (`fuse_get_acl`, `fuse_set_acl`) are not built: counted,
+/// and refused as a file system without them refuses.
+fn acl_on_backend(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<(), Errno> {
+    if on_backend(node) {
         return Err(kernel.counters.refuse(
             cx.host,
             crate::counters::reason::BACKEND_CALL_NOT_BUILT,
@@ -59,7 +70,7 @@ fn target(
             Errno::EOPNOTSUPP,
         ));
     }
-    Ok(node)
+    Ok(())
 }
 
 /// An attribute name, as Linux's `import_xattr_name` copies it.
@@ -77,16 +88,20 @@ fn import_name(
     }
 }
 
-/// Whether an inode keeps attributes at all (Linux's `IOP_XATTR`): only tmpfs's do.
+/// Whether an inode keeps attributes at all (Linux's `IOP_XATTR`): only tmpfs's and the
+/// backend's do.
 fn keeps_attributes(inode: &Inode) -> bool {
-    inode.fs.kind == Kind::Tmpfs
+    matches!(inode.fs.kind, Kind::Tmpfs | Kind::Fuse)
 }
 
 /// Linux's `xattr_resolve_name` over tmpfs's handlers: a name must have a known prefix and something
-/// after it.
+/// after it. The backend's one handler takes every name (`fuse_xattr_handler`).
 fn resolve_name(inode: &Inode, name: &[u8]) -> Result<(), Errno> {
     if !keeps_attributes(inode) {
         return Err(Errno::EOPNOTSUPP);
+    }
+    if inode.fs.kind == Kind::Fuse {
+        return Ok(());
     }
     for known in [
         XATTR_SECURITY_PREFIX.as_slice(),
@@ -295,6 +310,7 @@ fn set(
     if name == ACL_ACCESS || name == ACL_DEFAULT {
         check_acl(&value)?;
         may_write(&node.borrow())?;
+        acl_on_backend(kernel, cx, &node)?;
         return Err(Errno::EOPNOTSUPP);
     }
     let credentials = kernel.credentials(tid).clone();
@@ -305,6 +321,7 @@ fn set(
         value
     };
     let now = kernel.now(cx);
+    let backend = on_backend(&node);
     let mut inode = node.borrow_mut();
     permission(&inode, &credentials, caller, &name, true)?;
     // The security layer passes over private inodes (`IS_PRIVATE`): descriptors' inodes.
@@ -312,6 +329,11 @@ fn set(
         security_check(&credentials, &name, false)?;
     }
     resolve_name(&inode, &name)?;
+    if backend {
+        drop(inode);
+        crate::fs::backend::setxattr(&node, &name, &value, flags)?;
+        return Ok(0);
+    }
     // tmpfs takes the value's space before it looks for the name (`shmem_xattr_handler_set`).
     inode.reserve_xattr(&name, &value)?;
     let exists = inode.xattrs.contains_key(&name);
@@ -341,11 +363,12 @@ fn get(
     let name = import_name(kernel, cx, tid, name)?;
     let node = target(kernel, cx, tid, at)?;
     let size = size.min(u64::from(XATTR_SIZE_MAX)) as usize;
+    if name == ACL_ACCESS || name == ACL_DEFAULT {
+        acl_on_backend(kernel, cx, &node)?;
+        return Err(Errno::EOPNOTSUPP);
+    }
     let found = {
         let inode = node.borrow();
-        if name == ACL_ACCESS || name == ACL_DEFAULT {
-            return Err(Errno::EOPNOTSUPP);
-        }
         let credentials = kernel.credentials(tid);
         permission(
             &inode,
@@ -355,12 +378,21 @@ fn get(
             false,
         )?;
         resolve_name(&inode, &name)?;
-        let stored = inode.xattrs.get(&name).ok_or(Errno::ENODATA)?;
-        if name == CAPABILITY {
-            read_capabilities(stored)?
+        if on_backend(&node) {
+            drop(inode);
+            backend_value(&node, &name, size)
         } else {
-            stored.clone()
+            let stored = inode.xattrs.get(&name).ok_or(Errno::ENODATA)?;
+            if name == CAPABILITY {
+                read_capabilities(stored)
+            } else {
+                Ok(stored.clone())
+            }
         }
+    };
+    let found = match found {
+        Err(Errno::ERANGE) if size >= XATTR_SIZE_MAX as usize => return Err(Errno::E2BIG),
+        found => found?,
     };
     if size == 0 {
         return Ok(found.len() as u64);
@@ -385,7 +417,13 @@ fn list(
 ) -> Result<u64, Errno> {
     let node = target(kernel, cx, tid, at)?;
     let size = size.min(u64::from(XATTR_LIST_MAX)) as usize;
-    let names = {
+    let names = if on_backend(&node) {
+        // The backend lists every name, trusted or not (`fuse_listxattr`).
+        match crate::fs::backend::listxattr(&node, size as u32) {
+            Err(Errno::ERANGE) if size >= XATTR_LIST_MAX as usize => return Err(Errno::E2BIG),
+            names => names?,
+        }
+    } else {
         let inode = node.borrow();
         let trusted = kernel.credentials(tid).has(CAP_SYS_ADMIN);
         let mut names = Vec::new();
@@ -427,11 +465,13 @@ fn remove(
     }
     if name == ACL_ACCESS || name == ACL_DEFAULT {
         may_write(&node.borrow())?;
+        acl_on_backend(kernel, cx, &node)?;
         return Err(Errno::EOPNOTSUPP);
     }
     let credentials = kernel.credentials(tid).clone();
     let caller = kernel.threads[&tid].process;
     let now = kernel.now(cx);
+    let backend = on_backend(&node);
     let mut inode = node.borrow_mut();
     permission(&inode, &credentials, caller, &name, true)?;
     // The security layer passes over private inodes (`IS_PRIVATE`): descriptors' inodes.
@@ -439,9 +479,29 @@ fn remove(
         security_check(&credentials, &name, true)?;
     }
     resolve_name(&inode, &name)?;
+    if backend {
+        drop(inode);
+        crate::fs::backend::removexattr(&node, &name)?;
+        return Ok(0);
+    }
     inode.remove_xattr(&name).ok_or(Errno::ENODATA)?;
     inode.ctime = now;
     Ok(0)
+}
+
+/// An attribute's value from the backend, at most `size` bytes of it (`__vfs_getxattr`); file
+/// capabilities are read whole and given as a reader sees them (`cap_inode_getsecurity`, which
+/// reads them with `vfs_getxattr_alloc`: their length, then their bytes).
+fn backend_value(node: &Node, name: &[u8], size: usize) -> Result<Vec<u8>, Errno> {
+    if name != CAPABILITY {
+        return crate::fs::backend::getxattr(node, name, size as u32);
+    }
+    let length = crate::fs::backend::getxattr(node, name, 0)?.len();
+    let value = read_capabilities(&crate::fs::backend::getxattr(node, name, length as u32)?)?;
+    if size != 0 && value.len() > size {
+        return Err(Errno::ERANGE);
+    }
+    Ok(value)
 }
 
 fn by_path(args: Args, follow: bool) -> Target {

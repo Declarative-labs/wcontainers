@@ -250,8 +250,9 @@ pub struct Container<'a> {
     pub arguments: &'a [&'a str],
     pub environment: &'a [&'a str],
     pub working_directory: &'a str,
-    /// Where the file backend is mounted, when the container has it as a volume.
-    pub volume: Option<&'a str>,
+    /// Where the file backend is mounted: `/` makes it the root, with the files unpacked into
+    /// it; any other path is a volume, empty at the start. None keeps the root in memory.
+    pub backend: Option<&'a str>,
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -303,11 +304,18 @@ pub fn run_injected(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
-    if container.volume.is_some() {
-        host.backend = Some(crate::backend::Backend::start(&crate::backend::out()));
+    let root_on_backend = container.backend == Some("/");
+    if container.backend.is_some() {
+        let image = root_on_backend.then_some(container.files);
+        host.backend = Some(crate::backend::Backend::start(
+            &crate::backend::out(),
+            image,
+        ));
     }
     let mut kernel = Kernel::new();
-    image::add_files(&mut kernel, container.files);
+    if !root_on_backend {
+        image::add_files(&mut kernel, container.files);
+    }
     let arguments: Vec<&[u8]> = container
         .arguments
         .iter()
@@ -326,11 +334,9 @@ pub fn run_injected(
         working_directory: container.working_directory.as_bytes(),
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
-        volume: container.volume.map(str::as_bytes),
+        backend: container.backend.map(str::as_bytes),
     };
-    kernel
-        .start(&mut cpu, &mut host, &start)
-        .map_err(Failure::Start)?;
+    kernel.start(&mut cpu, &mut host, &start);
     let status = loop {
         match kernel.next() {
             Next::Run {
@@ -422,6 +428,14 @@ pub fn run_injected(
             Next::Finished { status } => break status,
         }
     };
+    if let Some(error) = kernel.start_failure() {
+        // Never in a copy: no save is made before the first program runs.
+        return Err(Failure::Start(error));
+    }
+    let files = match &host.backend {
+        Some(backend) if root_on_backend => image::records(&backend.files()),
+        _ => kernel.root_files(&mut cpu),
+    };
     let run = Run {
         outcome: Outcome {
             stdout: host.stdout,
@@ -430,7 +444,7 @@ pub fn run_injected(
         },
         warnings: host.warnings,
         counters: kernel.counters().collect(),
-        files: kernel.root_files(&mut cpu),
+        files,
         saved,
     };
     Ok(finish(run, report))

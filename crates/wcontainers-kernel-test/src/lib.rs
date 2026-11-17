@@ -78,6 +78,18 @@ pub fn run_ours_injected(
     seed: u64,
     injections: driver::Injections,
 ) -> driver::Run {
+    run_ours_on(directory, path, arguments, seed, injections, None)
+}
+
+/// As [`run_ours_injected`], with the root file system on the backend (`Some("/")`) or in memory.
+fn run_ours_on(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    injections: driver::Injections,
+    backend: Option<&str>,
+) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, "wc"));
     let container = driver::Container {
@@ -86,7 +98,7 @@ pub fn run_ours_injected(
         arguments,
         environment: reference::ENVIRONMENT,
         working_directory: "/",
-        volume: None,
+        backend,
     };
     driver::run_injected(&container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
@@ -132,7 +144,18 @@ pub fn assert_same_output_seeded(
     arguments: &[&str],
     saves: usize,
 ) -> Vec<driver::Run> {
-    same_output_seeded(out, name, arguments, saves, reference::run)
+    same_output_seeded(out, name, arguments, saves, reference::run, None)
+}
+
+/// As [`assert_same_output_seeded`], with ours on a root file system on the file backend, the
+/// image and the program unpacked into it.
+pub fn assert_same_output_on_backend_root_seeded(
+    out: &Path,
+    name: &str,
+    arguments: &[&str],
+    saves: usize,
+) -> Vec<driver::Run> {
+    same_output_seeded(out, name, arguments, saves, reference::run, Some("/"))
 }
 
 /// As [`assert_same_output_seeded`], with the reference on one CPU like the made-up machine.
@@ -142,7 +165,7 @@ pub fn assert_same_output_one_cpu_seeded(
     arguments: &[&str],
     saves: usize,
 ) -> Vec<driver::Run> {
-    same_output_seeded(out, name, arguments, saves, reference::run_one_cpu)
+    same_output_seeded(out, name, arguments, saves, reference::run_one_cpu, None)
 }
 
 fn same_output_seeded(
@@ -151,6 +174,7 @@ fn same_output_seeded(
     arguments: &[&str],
     saves: usize,
     reference: fn(&Path, &[&str]) -> driver::Outcome,
+    backend: Option<&str>,
 ) -> Vec<driver::Run> {
     let program = guest::build(name, &[], out);
     let theirs = reference(&program, arguments);
@@ -163,7 +187,11 @@ fn same_output_seeded(
     let directory = program.parent().expect("program has a directory");
     let mut runs = Vec::new();
     for seed in schedule_seeds() {
-        let ours = run_ours_saving(directory, &path, &all, seed, saves);
+        let injections = driver::Injections {
+            saves,
+            ..Default::default()
+        };
+        let ours = run_ours_on(directory, &path, &all, seed, injections, backend);
         let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
         let differences: Vec<String> = ours_text

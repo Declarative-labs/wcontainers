@@ -113,6 +113,8 @@ pub(crate) struct Files {
     pub terminals: BTreeMap<u32, Rc<core::cell::RefCell<tty::Pty>>>,
     /// The connection to the file backend, once one is mounted.
     pub backend: Option<Rc<fs::backend::Client>>,
+    /// The directories file systems are mounted on.
+    pub mount_points: Vec<Node>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -156,6 +158,10 @@ pub struct Kernel {
     init: Option<Pid>,
     /// The first process's wait status once it has ended.
     finished: Option<i32>,
+    /// The container's start while it waits for the backend.
+    starting: Option<alloc::boxed::Box<container::Starting>>,
+    /// Why the container's start failed.
+    start_failure: Option<Errno>,
     /// The last serial given to committed credentials; 0 is the credentials of whoever opened the
     /// container's first descriptors.
     last_credentials: u64,
@@ -218,6 +224,8 @@ impl Kernel {
             last_id: 0,
             init: None,
             finished: None,
+            starting: None,
+            start_failure: None,
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),
@@ -244,6 +252,7 @@ impl Kernel {
                 spaces,
                 terminals: BTreeMap::new(),
                 backend: None,
+                mount_points: Vec::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",

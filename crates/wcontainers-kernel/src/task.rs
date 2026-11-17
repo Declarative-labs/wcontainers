@@ -164,30 +164,9 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
-        let backend = self.files.backend.clone();
-        if let Some(client) = &backend {
-            let credentials = &self.threads[&tid].credentials;
-            client.begin(crate::fs::backend::Asker {
-                tid,
-                uid: credentials.fsuid,
-                gid: credentials.fsgid,
-                pid: self.threads[&tid].process as u32,
-            });
-        }
+        self.begin_asking(tid);
         let outcome = syscall::dispatch(self, cx, tid, call, again);
-        if let Some(client) = &backend {
-            let parked = matches!(outcome, syscall::Outcome::Parked);
-            let waits = parked && client.waits(tid);
-            client.end(tid, !parked);
-            if waits
-                && self
-                    .threads
-                    .get(&tid)
-                    .is_some_and(|t| t.call.wait.is_none())
-            {
-                self.park(tid, Channel::Backend);
-            }
-        }
+        self.end_asking(tid, matches!(outcome, syscall::Outcome::Parked));
         if let Some(thread) = self.threads.get(&tid) {
             syscall::ipc::settle(self, cx, thread.process);
         }
@@ -208,6 +187,37 @@ impl Kernel {
                 debug_assert!(self.threads[&tid].call.wait.is_some());
             }
             syscall::Outcome::Gone => {}
+        }
+    }
+
+    /// A run of `tid`'s call starts: the backend's questions are asked as from its thread.
+    pub(crate) fn begin_asking(&self, tid: Tid) {
+        if let Some(client) = &self.files.backend {
+            let thread = &self.threads[&tid];
+            client.begin(crate::fs::backend::Asker {
+                tid,
+                uid: thread.credentials.fsuid,
+                gid: thread.credentials.fsgid,
+                pid: thread.process as u32,
+            });
+        }
+    }
+
+    /// The run of `tid`'s call ended, `parked` or not: a parked call that waits for the backend
+    /// waits on it, and a call that ended forgets its answers.
+    pub(crate) fn end_asking(&mut self, tid: Tid, parked: bool) {
+        let Some(client) = self.files.backend.clone() else {
+            return;
+        };
+        let waits = parked && client.waits(tid);
+        client.end(tid, !parked);
+        if waits
+            && self
+                .threads
+                .get(&tid)
+                .is_some_and(|thread| thread.call.wait.is_none())
+        {
+            self.park(tid, Channel::Backend);
         }
     }
 
@@ -263,6 +273,11 @@ impl Kernel {
             {
                 self.woken.remove(index);
                 self.take_out_of_line(tid);
+                // The container's start has no registers: it runs on from where it got.
+                if self.is_starting(tid) {
+                    self.run_start(cx);
+                    continue;
+                }
                 let thread = &self.threads[&tid];
                 let mut registers = RegisterBlock::ZERO;
                 cx.cpu.registers(thread.cpu, &mut registers);

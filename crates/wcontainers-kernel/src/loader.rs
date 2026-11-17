@@ -536,19 +536,39 @@ fn place(
         && interpreter
             .as_ref()
             .is_none_or(|(program, ..)| program.readable);
+    let nosuid = program.node.borrow().fs.flags & crate::linux_extra::ST_NOSUID != 0;
+    // A program on the backend has its file capabilities read there (`get_vfs_caps_from_disk`,
+    // into a buffer of the larger form's size), unless its mount ignores them.
+    let backend_capabilities = if crate::fs::backend::remote(&program.node).is_some() && !nosuid {
+        match crate::fs::backend::getxattr(
+            &program.node,
+            crate::syscall::CAPABILITY,
+            size_of::<crate::linux::general::vfs_ns_cap_data>() as u32,
+        ) {
+            Ok(value) => Some(value),
+            Err(Errno::ENODATA | Errno::EOPNOTSUPP) => None,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        None
+    };
     let after = {
         let inode = program.node.borrow();
+        let capabilities = match &backend_capabilities {
+            Some(value) => Some(value.as_slice()),
+            None => inode
+                .xattrs
+                .get(crate::syscall::CAPABILITY)
+                .map(Vec::as_slice),
+        };
         kernel
             .credentials(tid)
             .for_program(&crate::credentials::ProgramFile {
                 mode: inode.mode,
                 uid: inode.uid,
                 gid: inode.gid,
-                nosuid: inode.fs.flags & crate::linux_extra::ST_NOSUID != 0,
-                capabilities: inode
-                    .xattrs
-                    .get(crate::syscall::CAPABILITY)
-                    .map(Vec::as_slice),
+                nosuid,
+                capabilities,
             })?
     };
     // The point of no return: from here a failure kills the process.

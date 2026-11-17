@@ -128,9 +128,132 @@ pub fn reference_image() -> &'static [File] {
 /// export gives them and never compared.
 pub const DOCKER_FILES: &[&str] = &["etc/hostname", "etc/hosts", "etc/resolv.conf", ".dockerenv"];
 
+/// An image's files as a container starts with them: the files Docker mounts over the image's
+/// placeholders have the mode of the host's files, and `/etc/hostname` the container's name.
+fn as_started(files: &[File]) -> impl Iterator<Item = File> + '_ {
+    files.iter().map(|file| {
+        let mut file = file.clone();
+        if DOCKER_FILES[..3].contains(&file.path.as_str()) {
+            file.mode = 0o644;
+        }
+        if file.path == "etc/hostname" {
+            file.kind = Kind::Regular(format!("{}\n", crate::reference::HOSTNAME).into_bytes());
+        }
+        file
+    })
+}
+
+/// A container's files as a tar archive, for unpacking into a backend's directory.
+pub fn to_tar(files: &[File]) -> Vec<u8> {
+    let mut archive = tar::Builder::new(Vec::new());
+    for file in as_started(files) {
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(file.mode);
+        header.set_uid(file.uid.into());
+        header.set_gid(file.gid.into());
+        header.set_mtime(file.mtime.max(0) as u64);
+        header.set_size(0);
+        let path = if file.path.is_empty() {
+            "./".to_string()
+        } else {
+            format!("./{}", file.path)
+        };
+        let contents: &[u8] = match &file.kind {
+            Kind::Regular(bytes) => {
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_size(bytes.len() as u64);
+                bytes
+            }
+            Kind::Directory => {
+                header.set_entry_type(tar::EntryType::Directory);
+                &[]
+            }
+            Kind::Symlink(target) => {
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_link_name_literal(target).expect("a link target");
+                &[]
+            }
+            Kind::HardLink(target) => {
+                header.set_entry_type(tar::EntryType::Link);
+                header
+                    .set_link_name_literal(format!("./{target}"))
+                    .expect("a link target");
+                &[]
+            }
+            Kind::CharacterDevice(major, minor) | Kind::BlockDevice(major, minor) => {
+                header.set_entry_type(if matches!(file.kind, Kind::CharacterDevice(..)) {
+                    tar::EntryType::Char
+                } else {
+                    tar::EntryType::Block
+                });
+                header.set_device_major(*major).expect("a device");
+                header.set_device_minor(*minor).expect("a device");
+                &[]
+            }
+            Kind::Fifo => {
+                header.set_entry_type(tar::EntryType::Fifo);
+                &[]
+            }
+        };
+        archive
+            .append_data(&mut header, path, contents)
+            .expect("an archive entry");
+    }
+    archive.into_inner().expect("the archive")
+}
+
+/// Files read back from a tar archive as the kernel's records of a root file system, with hard
+/// links given their target's contents.
+pub fn records(files: &[File]) -> Vec<wcontainers_kernel::FileRecord> {
+    let mut out: Vec<wcontainers_kernel::FileRecord> = Vec::new();
+    for file in files.iter().filter(|file| !file.path.is_empty()) {
+        let (kind, contents, rdev) = match &file.kind {
+            Kind::Directory => (0o040000, Vec::new(), 0),
+            Kind::Regular(bytes) => (0o100000, bytes.clone(), 0),
+            Kind::Symlink(target) => (0o120000, target.clone(), 0),
+            Kind::HardLink(target) => {
+                let path = format!("/{target}");
+                let target = out.iter().find(|record| record.path == path.as_bytes());
+                (
+                    0o100000,
+                    target
+                        .map(|record| record.contents.clone())
+                        .unwrap_or_default(),
+                    0,
+                )
+            }
+            Kind::CharacterDevice(major, minor) | Kind::BlockDevice(major, minor) => {
+                let kind = if matches!(file.kind, Kind::CharacterDevice(..)) {
+                    0o020000
+                } else {
+                    0o060000
+                };
+                let (major, minor) = (u64::from(*major), u64::from(*minor));
+                (
+                    kind,
+                    Vec::new(),
+                    (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12),
+                )
+            }
+            Kind::Fifo => (0o010000, Vec::new(), 0),
+        };
+        out.push(wcontainers_kernel::FileRecord {
+            path: format!("/{}", file.path).into_bytes(),
+            mode: kind | file.mode,
+            uid: file.uid,
+            gid: file.gid,
+            contents,
+            rdev,
+        });
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
 /// Adds image files to a kernel's root before it starts.
 pub fn add_files(kernel: &mut Kernel, files: &[File]) {
-    for file in files {
+    for file in as_started(files) {
+        let file = &file;
         let attributes = Attributes {
             mode: file.mode,
             uid: file.uid,
@@ -153,26 +276,6 @@ pub fn add_files(kernel: &mut Kernel, files: &[File]) {
             Kind::Fifo => NewFile::Fifo,
         };
         let path = format!("/{}", file.path);
-        // Docker mounts these over the image's empty placeholders, with the mode of the host's files.
-        let attributes = if DOCKER_FILES[..3].contains(&file.path.as_str()) {
-            Attributes {
-                mode: 0o644,
-                ..attributes
-            }
-        } else {
-            attributes
-        };
-        if file.path == "etc/hostname" {
-            let hostname = format!("{}\n", crate::reference::HOSTNAME);
-            kernel
-                .add_file(
-                    path.as_bytes(),
-                    attributes,
-                    NewFile::Regular(hostname.as_bytes()),
-                )
-                .unwrap_or_else(|error| panic!("adding {path}: {error:?}"));
-            continue;
-        }
         kernel
             .add_file(path.as_bytes(), attributes, new)
             .unwrap_or_else(|error| panic!("adding {path}: {error:?}"));

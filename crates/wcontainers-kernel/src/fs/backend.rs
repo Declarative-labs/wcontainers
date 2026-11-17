@@ -150,7 +150,18 @@ pub(crate) struct Handle {
     pub nodeid: u64,
     pub fh: u64,
     pub flags: u32,
+    /// The open reply's `FOPEN_*` flags.
+    pub open_flags: u32,
     pub directory: bool,
+}
+
+impl Handle {
+    /// Whether a shared mapping of the file may be made (`fuse_file_mmap`): not of a file the
+    /// backend opened for direct reads and writes, since INIT does not ask to map those
+    /// (FUSE_DIRECT_IO_ALLOW_MMAP).
+    pub fn may_map_shared(&self) -> bool {
+        self.open_flags & FOPEN_DIRECT_IO == 0
+    }
 }
 
 impl Drop for Handle {
@@ -452,6 +463,7 @@ impl Client {
                 nodeid,
                 fh: open.fh,
                 flags: 0,
+                open_flags: open.open_flags,
                 directory,
             });
         }
@@ -839,6 +851,7 @@ pub(crate) fn open(node: &Node, flags: u32) -> Result<Rc<Handle>, Errno> {
         nodeid,
         fh: out.fh,
         flags: input.flags,
+        open_flags: out.open_flags,
         directory,
     }))
 }
@@ -880,6 +893,7 @@ pub(crate) fn create(
         nodeid: first::<fuse_entry_out>(&body).map_or(0, |entry| entry.nodeid),
         fh: out.fh,
         flags: input.flags,
+        open_flags: out.open_flags,
         directory: false,
     });
     let node = entry_node(&client, &body, directory, name)?;
@@ -1178,6 +1192,121 @@ pub(crate) fn lseek(handle: &Handle, offset: i64, whence: u32) -> Result<u64, Er
         }
         Err(error) => Err(error),
     }
+}
+
+/// `fuse_file_fallocate`'s message; a backend without FALLOCATE cannot allocate (EOPNOTSUPP).
+pub(crate) fn fallocate(handle: &Handle, mode: u32, offset: u64, length: u64) -> Result<(), Errno> {
+    let input = fuse_fallocate_in {
+        fh: handle.fh,
+        offset,
+        length,
+        mode,
+        padding: 0,
+    };
+    match handle.client.ask(
+        fuse_opcode::FUSE_FALLOCATE,
+        handle.nodeid,
+        &[input.as_bytes()],
+    ) {
+        Ok(_) => Ok(()),
+        Err(Errno::ENOSYS) => Err(Errno::EOPNOTSUPP),
+        Err(error) => Err(error),
+    }
+}
+
+/// A backend without an attribute message has no attributes (`fc->no_getxattr` and the rest).
+fn no_attributes(error: Errno) -> Errno {
+    if error == Errno::ENOSYS {
+        Errno::EOPNOTSUPP
+    } else {
+        error
+    }
+}
+
+/// `fuse_getxattr`, and `fuse_listxattr` without a name: with `size` 0 the length the backend
+/// gives, else at most `size` bytes of it (ERANGE from the backend when they do not fit).
+fn ask_attributes(
+    node: &Node,
+    opcode: fuse_opcode,
+    name: Option<&[u8]>,
+    size: u32,
+    largest: u32,
+) -> Result<Vec<u8>, Errno> {
+    let (client, nodeid) = on_backend(node);
+    let input = fuse_getxattr_in { size, padding: 0 };
+    let name = name.map(name_part);
+    let mut parts: Vec<&[u8]> = alloc::vec![input.as_bytes()];
+    parts.extend(name.as_deref());
+    let body = client.ask(opcode, nodeid, &parts).map_err(no_attributes)?;
+    if size == 0 {
+        let out: fuse_getxattr_out = first(&body)?;
+        // Only the length is asked for: the answer stands for that many bytes.
+        return Ok(alloc::vec![0; out.size.min(largest) as usize]);
+    }
+    Ok(body[..body.len().min(size as usize)].to_vec())
+}
+
+/// `fuse_getxattr`: an attribute's value, or with `size` 0 a value of its length.
+pub(crate) fn getxattr(node: &Node, name: &[u8], size: u32) -> Result<Vec<u8>, Errno> {
+    use crate::linux::general::XATTR_SIZE_MAX;
+    ask_attributes(
+        node,
+        fuse_opcode::FUSE_GETXATTR,
+        Some(name),
+        size,
+        XATTR_SIZE_MAX,
+    )
+}
+
+/// `fuse_listxattr`: the names, each ending in a zero (EIO when the backend's are not), or with
+/// `size` 0 a list of their length.
+pub(crate) fn listxattr(node: &Node, size: u32) -> Result<Vec<u8>, Errno> {
+    use crate::linux::general::XATTR_LIST_MAX;
+    let list = ask_attributes(
+        node,
+        fuse_opcode::FUSE_LISTXATTR,
+        None,
+        size,
+        XATTR_LIST_MAX,
+    )?;
+    // `fuse_verify_xattr_list`.
+    if size != 0
+        && list
+            .split_inclusive(|byte| *byte == 0)
+            .any(|name| name.len() < 2 || name.last() != Some(&0))
+    {
+        return Err(Errno::EIO);
+    }
+    Ok(list)
+}
+
+/// `fuse_setxattr`, with the setxattr message of a backend not asked for its extended form.
+pub(crate) fn setxattr(node: &Node, name: &[u8], value: &[u8], flags: u32) -> Result<(), Errno> {
+    let (client, nodeid) = on_backend(node);
+    let input = fuse_setxattr_in {
+        size: value.len() as u32,
+        flags,
+        setxattr_flags: 0,
+        padding: 0,
+    };
+    let compat = &input.as_bytes()[..FUSE_COMPAT_SETXATTR_IN_SIZE as usize];
+    client
+        .ask(
+            fuse_opcode::FUSE_SETXATTR,
+            nodeid,
+            &[compat, &name_part(name), value],
+        )
+        .map_err(no_attributes)?;
+    Ok(())
+}
+
+/// `fuse_removexattr`.
+pub(crate) fn removexattr(node: &Node, name: &[u8]) -> Result<(), Errno> {
+    let (client, nodeid) = on_backend(node);
+    client
+        .ask(fuse_opcode::FUSE_REMOVEXATTR, nodeid, &[&name_part(name)])
+        .map_err(no_attributes)?;
+    Ok(())
 }
 
 impl crate::Kernel {
