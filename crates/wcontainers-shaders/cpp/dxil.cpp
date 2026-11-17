@@ -56,7 +56,8 @@ struct LogScope {
   ~LogScope() { dxil_spv_set_thread_log_callback(nullptr, nullptr); }
 };
 
-int convert(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, size_t* out_words,
+            char** error) {
   // dxbc-spirv's container reader reports into this, not to stderr.
   wcs::ErrorLog container;
   if (!signed_or_bypassed(data, size)) {
@@ -71,7 +72,15 @@ int convert(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
     *error = wcs::copy(first.empty() ? "not a DXIL container" : first);
     return 1;
   }
-  if (dxil_spv_create_converter(b.blob, &b.converter) != DXIL_SPV_SUCCESS ||
+  if (dxil_spv_create_converter(b.blob, &b.converter) != DXIL_SPV_SUCCESS) {
+    *error = wcs::copy(first.empty() ? "dxil-spirv could not convert the shader" : first);
+    return 2;
+  }
+  // The targets' sample count as a constant where the variant fixes it; otherwise dxil-spirv leaves a
+  // specialisation constant, which the caller refuses.
+  dxil_spv_option_rasterizer_sample_count count = { { DXIL_SPV_OPTION_RASTERIZER_SAMPLE_COUNT }, samples,
+                                                    DXIL_SPV_FALSE };
+  if ((samples != 0 && dxil_spv_converter_add_option(b.converter, &count.base) != DXIL_SPV_SUCCESS) ||
       dxil_spv_converter_run(b.converter) != DXIL_SPV_SUCCESS) {
     *error = wcs::copy(first.empty() ? "dxil-spirv could not convert the shader" : first);
     return 2;
@@ -141,9 +150,10 @@ extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_
 }
 
 // Returns 0 and the SPIR-V in `out` (free with wcs_free), or nonzero with the reason in `error`.
-extern "C" int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+extern "C" int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out,
+                                 size_t* out_words, char** error) {
   *out = nullptr;
   *out_words = 0;
   *error = nullptr;
-  return wcs::contained("dxil-spirv", error, [&] { return convert(data, size, out, out_words, error); });
+  return wcs::contained("dxil-spirv", error, [&] { return convert(data, size, samples, out, out_words, error); });
 }

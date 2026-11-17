@@ -8,13 +8,14 @@ mod dxbc;
 mod dxil;
 mod ir;
 mod lower;
+mod variant;
 
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
-use wcontainers_gpu::{Reflection, ShaderModule, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{Reflection, ShaderModule, TexelBufferRoute, VariantFlags, VariantKey};
 
 /// Shader bytecode in one of the forms the fronts hand over.
 #[derive(Clone, Copy, Debug)]
@@ -83,11 +84,15 @@ pub fn convert(
     root_signature: Option<&[u8]>,
 ) -> Result<Converted, ConvertError> {
     unbuilt(variant, root_signature)?;
-    let (module, reflection, stage) = match source {
-        Source::Dxbc(bytes) => contained(|| lower::lower(&dxbc::to_ir(bytes)?, variant))?,
-        Source::Dxil(bytes) => contained(|| dxil::lower(bytes, variant))?,
-        Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
-    };
+    let (module, reflection, stage) = contained(|| {
+        let (mut module, mut reflection, stage) = match source {
+            Source::Dxbc(bytes) => lower::lower(&dxbc::to_ir(bytes)?, variant)?,
+            Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
+            Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
+        };
+        variant::apply(&mut module, stage, variant, &mut reflection)?;
+        Ok((module, reflection, stage))
+    })?;
     let info = validate(&module)?;
     let key = cache::shader_key(source, variant);
     Ok(Converted {
@@ -126,8 +131,8 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         filter_in_shader,
         border_in_shader,
         mirror_once_in_shader,
-        lod_bias,
-        constants_as_storage,
+        lod_bias: _,
+        constants_as_storage: _,
         constants_as_texture,
         pulled,
         storage_formats,
@@ -139,16 +144,28 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         min_lod_clamped,
         draw_base: _,
         output_interpolation: _,
-        samples,
+        samples: _,
         layout,
     } = variant;
+    let unbuilt_flags = [
+        (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
+        (VariantFlags::DEPTH_BIAS, "DepthBiasInShader"),
+        (VariantFlags::EARLY_TESTS, "EarlyTestsInShader"),
+        (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
+        (VariantFlags::CLIP_DISTANCE, "ClipDistanceInShader"),
+        (VariantFlags::DEPTH_CLAMP, "DepthClampInShader"),
+        (
+            VariantFlags::PRIMITIVE_ID_FROM_STAGE,
+            "PrimitiveIdAsGeometry",
+        ),
+    ];
+    if let Some((_, name)) = unbuilt_flags.iter().find(|(f, _)| flags.contains(*f)) {
+        return Err(ConvertError::Unsupported(name));
+    }
     let asked = [
-        (!flags.is_empty(), "VariantFlags"),
         (*filter_in_shader != 0, "FilterInShader"),
         (*border_in_shader != 0, "BorderInShader"),
         (*mirror_once_in_shader != 0, "MirrorOnceInShader"),
-        (*lod_bias != 0, "LodBiasInShader"),
-        (*constants_as_storage != 0, "ConstantsAsStorage"),
         (*constants_as_texture != 0, "ConstantsAsTexture"),
         (!pulled.is_empty(), "VertexPulledInShader"),
         (!storage_formats.is_empty(), "StorageFormats"),
@@ -161,7 +178,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         (!decoded.is_empty(), "NormAsInteger"),
         (!targets_in_shader.is_empty(), "TargetsInShader"),
         (*min_lod_clamped != 0, "MinLodClamp"),
-        (*samples != 0, "SampleCount"),
         (
             *layout != [0; 32] || root_signature.is_some(),
             "RootSignatureLayout",
@@ -173,8 +189,34 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     }
 }
 
+/// Validates a module with WebGPU's core capabilities, and dual-source blending where the module
+/// writes it (`VariantFlags::DUAL_SOURCE`, which a front asks for only where the back end has it).
 fn validate(module: &naga::Module) -> Result<naga::valid::ModuleInfo, ConvertError> {
-    Validator::new(ValidationFlags::all(), WEBGPU_CAPABILITIES)
+    let dual = module.entry_points.iter().any(|ep| {
+        let blend_src = |b: &Option<naga::Binding>| {
+            matches!(
+                b,
+                Some(naga::Binding::Location {
+                    blend_src: Some(_),
+                    ..
+                })
+            )
+        };
+        ep.function.result.as_ref().is_some_and(|r| {
+            blend_src(&r.binding)
+                || match &module.types[r.ty].inner {
+                    naga::TypeInner::Struct { members, .. } => {
+                        members.iter().any(|m| blend_src(&m.binding))
+                    }
+                    _ => false,
+                }
+        })
+    });
+    let mut capabilities = WEBGPU_CAPABILITIES;
+    if dual {
+        capabilities |= Capabilities::DUAL_SOURCE_BLENDING;
+    }
+    Validator::new(ValidationFlags::all(), capabilities)
         .validate(module)
         .map_err(|e| {
             let mut s = format!("{}", e.as_inner());
