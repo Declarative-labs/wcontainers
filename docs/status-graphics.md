@@ -57,7 +57,10 @@ branches into it at the start and end of every run.
   nothing new).
 - G1, run 5 (2026-11-17): the eight findings of G1's third independent check fixed (below). The
   start merges brought webgpu, webgl, direct3d-11, direct3d-12 and shaders in without conflict (rig
-  had nothing new); none of them changed the interface.
+  had nothing new); none of them changed the interface. The end merges brought webgpu, webgl,
+  direct3d-11, rig and then shaders in without a textual conflict and without touching the
+  interface; the rig's and webgl's work together broke the build of a webgl example, fixed here
+  (Departures). The whole workspace checks after them.
 
 ## G1's third check, and how each finding was settled (run 5)
 
