@@ -699,7 +699,7 @@ impl From<FunctionTracer<'_>> for FunctionMap {
 /// before the loop and assign them where the body defines them, so `continuing` reads the values
 /// of the iteration that just ran instead of evaluating them again from changed variables.
 /// `written_before(handle)` tells whether a statement's result was written before the loop.
-#[cfg(any(glsl_out, hlsl_out))]
+#[cfg(any(glsl_out, hlsl_out, msl_out))]
 pub(crate) fn values_for_continuing(
     module: &crate::Module,
     function: &crate::Function,

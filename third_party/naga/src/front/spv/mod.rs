@@ -1083,26 +1083,36 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
             .scalar_kind()
             .unwrap();
 
+        // Negation is defined on signed integers only: an unsigned one is negated as signed.
+        let op_kind = match (op, kind) {
+            (crate::UnaryOperator::Negate, crate::ScalarKind::Uint) => crate::ScalarKind::Sint,
+            _ => kind,
+        };
+        let p1_kind = ctx.module.types[self.lookup_type.lookup(p1_lexp.type_id)?.handle]
+            .inner
+            .scalar_kind();
         let expr = crate::Expression::Unary {
             op,
-            expr: if p1_lexp.type_id == result_type_id {
+            expr: if p1_kind == Some(op_kind) {
                 left
             } else {
                 ctx.expressions.append(
                     crate::Expression::As {
                         expr: left,
-                        kind,
+                        kind: op_kind,
                         convert: None,
                     },
                     span,
                 )
             },
         };
+        let handle = ctx.expressions.append(expr, span);
+        let handle = Self::retype_int(ctx, handle, Some(op_kind), Some(kind), span);
 
         self.lookup_expression.insert(
             result_id,
             LookupExpression {
-                handle: ctx.expressions.append(expr, span),
+                handle,
                 type_id: result_type_id,
                 block_id,
             },
@@ -1627,8 +1637,10 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
     ) -> Arena<crate::Expression> {
         let mut expressions = Arena::new();
         assert!(self.lookup_expression.is_empty());
-        // register global variables
-        for (&id, var) in self.lookup_variable.iter() {
+        // register global variables, in id order so the arena is the same on every target
+        let mut variables: Vec<_> = self.lookup_variable.iter().collect();
+        variables.sort_unstable_by_key(|&(&id, _)| id);
+        for (&id, var) in variables {
             let span = globals.get_span(var.handle);
             let handle = expressions.append(crate::Expression::GlobalVariable(var.handle), span);
             self.lookup_expression.insert(
@@ -1643,8 +1655,10 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 },
             );
         }
-        // register constants
-        for (&id, con) in self.lookup_constant.iter() {
+        // register constants, in id order
+        let mut constants_by_id: Vec<_> = self.lookup_constant.iter().collect();
+        constants_by_id.sort_unstable_by_key(|&(&id, _)| id);
+        for (&id, con) in constants_by_id {
             let (expr, span) = match con.inner {
                 Constant::Constant(c) => (crate::Expression::Constant(c), constants.get_span(c)),
                 Constant::Override(o) => (crate::Expression::Override(o), overrides.get_span(o)),
