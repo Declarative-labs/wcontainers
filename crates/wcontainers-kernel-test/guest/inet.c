@@ -542,6 +542,49 @@ static void stream_v6(void) {
     close(b);
 }
 
+static void multiple(void) {
+    int r = socket(AF_INET, SOCK_DGRAM, 0), s = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in a = v4("127.0.0.1", 5060);
+    bind(r, (void *)&a, sizeof a);
+    connect(s, (void *)&a, sizeof a);
+    char *words[3] = {"one", "three", "seven"};
+    struct mmsghdr out[3];
+    struct iovec outv[3];
+    memset(out, 0, sizeof out);
+    for (int i = 0; i < 3; i++) {
+        outv[i] = (struct iovec){.iov_base = words[i], .iov_len = strlen(words[i])};
+        out[i].msg_hdr.msg_iov = &outv[i];
+        out[i].msg_hdr.msg_iovlen = 1;
+    }
+    result("sendmmsg", sendmmsg(s, out, 3, 0));
+    printf("lengths %u %u %u\n", out[0].msg_len, out[1].msg_len, out[2].msg_len);
+    char buf[3][16];
+    struct mmsghdr in[4];
+    struct iovec inv[4];
+    struct sockaddr_in from[4];
+    memset(in, 0, sizeof in);
+    for (int i = 0; i < 4; i++) {
+        inv[i] = (struct iovec){.iov_base = buf[i % 3], .iov_len = 4};
+        in[i].msg_hdr.msg_iov = &inv[i];
+        in[i].msg_hdr.msg_iovlen = 1;
+        in[i].msg_hdr.msg_name = &from[i];
+        in[i].msg_hdr.msg_namelen = sizeof from[i];
+    }
+    result("recvmmsg", recvmmsg(r, in, 4, MSG_DONTWAIT, NULL));
+    printf("got %u %u %u flags %#x %#x %#x names %u\n", in[0].msg_len, in[1].msg_len, in[2].msg_len,
+           in[0].msg_hdr.msg_flags, in[1].msg_hdr.msg_flags, in[2].msg_hdr.msg_flags,
+           in[0].msg_hdr.msg_namelen);
+    result("recvmmsg empty", recvmmsg(r, in, 4, MSG_DONTWAIT, NULL));
+    send(s, "x", 1, 0);
+    result("recvmmsg wait for one", recvmmsg(r, in, 4, MSG_WAITFORONE, NULL));
+    struct timespec bad = {.tv_nsec = -1};
+    result("recvmmsg bad timeout", recvmmsg(r, in, 4, 0, &bad));
+    result("sendmmsg none", sendmmsg(s, out, 0, 0));
+    result("sendmmsg not a socket", sendmmsg(0, out, 1, 0));
+    close(r);
+    close(s);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     creating();
@@ -552,5 +595,6 @@ int main(void) {
     filling();
     datagrams();
     stream_v6();
+    multiple();
     return 0;
 }

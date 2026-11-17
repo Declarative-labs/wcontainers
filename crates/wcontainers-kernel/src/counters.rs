@@ -89,6 +89,9 @@ pub mod reason {
     /// MPTCP, UDP-Lite (plan section 15). Answered as Linux without the power or the protocol.
     /// Detail: the family times 2^32, plus the kind times 2^16, plus the protocol.
     pub const PROTOCOL_NOT_BUILT: &str = "socket protocol not built";
+    /// A blocking recvmmsg without MSG_WAITFORONE found fewer messages than asked for after the
+    /// first and returned those, where Linux waits for the rest. Detail: none.
+    pub const RECVMMSG_EARLY: &str = "recvmmsg returned early";
     /// A netlink request Linux answers that is not built: answered EOPNOTSUPP, as Linux does
     /// for a request with no handler. Detail: the message type, plus 2^16 for a dump.
     pub const NETLINK_REQUEST_NOT_BUILT: &str = "netlink request not built";

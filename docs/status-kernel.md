@@ -4,8 +4,60 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K5 (sockets and network), first run: the check's findings on K4 are fixed first (below); then
-K5's parts as listed under "K5 progress". K5 is not complete; what is left is under Next.
+K5 (sockets and network), second run: the network inside the container, netlink, the interface
+ioctls and the hooks to the outside with name lookup are built (below). K5 is not complete; what
+is left is under Next.
+
+K5 progress (second run):
+- Internet sockets (syscall/socket/inet.rs, `net/ipv4`, `net/ipv6`): AF_INET and AF_INET6, TCP
+  and UDP. Between the container's own addresses (127.0.0.0/8, ::1, the made-up eth0 address)
+  everything stays in the kernel: a TCP connection is two `Socket`s joined as local streams are,
+  a datagram goes straight to the bound socket (`compute_score`'s most specific match, a
+  connected socket only from its peer). Ports as Linux holds them (`inet_csk_bind_conflict`,
+  `udp_lib_lport_inuse`: overlapping addresses including dual-stack `::`, SO_REUSEADDR and
+  SO_REUSEPORT, TIME_WAIT for 60 s at the end that closed first, kept with its SO_REUSEADDR);
+  ephemeral ports 32768 to 60999 from a random start, odd first for bind and listen, even
+  first for connect (measured). States: refused connects (blocking: ECONNREFUSED and the port let
+  go but still shown; nonblocking: EINPROGRESS, then POLLERR|POLLHUP and SO_ERROR), a later
+  connect after one in progress reports it (`SS_CONNECTING`), FIN and RST (unread bytes or
+  SO_LINGER 0 reset; a write to a closed end goes, then EPIPE), shutdown, listener close
+  resets its backlog. `tcp_poll` and `udp_poll` as Linux. Buffers: TCP 16384/131072 fresh,
+  2626560 send buffer once connected (measured); a TCP connection holds up to the sender's
+  SO_SNDBUF of unread bytes (a model: Linux's depends on timing; counted "tcp room modelled"
+  when a send finds no room); UDP 212992 with Linux's true sizes near enough, largest datagrams
+  65507 and 65527 (measured). Options at SOL_SOCKET, IPPROTO_TCP, IPPROTO_IP and IPPROTO_IPV6
+  with Linux's defaults and checks (measured), others counted "socket option not built". Raw,
+  ping, SCTP, MPTCP and UDP-Lite sockets are counted "socket protocol not built" and answered as
+  Linux without them. `wmem_max` and `rmem_max` are 4194304 (measured; the local sockets' cap
+  of 212992 was wrong and is fixed).
+- Netlink (syscall/socket/netlink.rs): NETLINK_ROUTE sockets with ports (`netlink_autobind`),
+  RTM_GETLINK (dump and one), RTM_GETADDR and RTM_GETROUTE dumps of lo and eth0 as the reference
+  shows them, NLMSG_DONE in its own read, acknowledgements and errors (`netlink_ack`,
+  NETLINK_CAP_ACK), EPERM for changes. Other requests are counted "netlink request not built"
+  (EOPNOTSUPP); other netlink protocols "socket protocol not built". Traffic counters read zero
+  (counted "interface counters not kept"). Interface ioctls on sockets (`dev_ioctl`,
+  `devinet_ioctl`, `dev_ifconf`), FIONREAD and SIOCOUTQ, FIOSETOWN and FIOGETOWN.
+- The made-up network (src/network.rs, public): lo, and eth0 at 172.17.0.2/16, gateway
+  172.17.0.1, MTU 65535 as the reference's, name server 127.0.0.11. The test host writes
+  `/etc/hosts` and `/etc/resolv.conf` from it as Docker does.
+- The outside (syscall/socket/outside.rs): a TCP connect elsewhere is a host connection
+  (`Host::connect`, `Event::Connected`); bytes are pulled into the socket's queue on
+  `Event::ConnectionReady` and at each read, so poll answers from the kernel; sends go to
+  `Host::send` while the host takes them; SHUT_WR is `Host::finish`. A UDP socket has one host
+  connection per outside destination. Name queries to 127.0.0.11:53 are read and answered with
+  `simple-dns` (new dependency, MIT, no_std) from `Host::look_up`; A and AAAA only, others answer
+  "not implemented" and are counted "name query not answered". After a restore every outside
+  TCP connection reads as reset (ECONNRESET, or ECONNREFUSED while connecting), UDP flows are
+  made again at the next send, and lookups under way are asked again.
+- The test host (kernel-test src/network.rs) gives real sockets of this machine and its
+  resolver; `host.docker.internal` (Docker Desktop's name for this machine) means its loopback,
+  so one server serves both runs.
+- Tests: tests/inet.rs `internet_sockets_match_reference` (guest/inet.c) and
+  `interfaces_and_routes_match_reference` (guest/netroute.c); tests/outside.rs
+  `clients_talk_to_a_server_outside_as_linux` (guest/outside.c: lookup, blocking and
+  nonblocking TCP, a refused port, UDP, a name that does not exist, against a server in the test
+  process) and `outside_connections_read_reset_after_a_restore` (guest/outsidesave.c);
+  tests/saving.rs now also saves guest/inet.c.
 
 K5 progress (first run):
 - Readiness keyed by event (`Kernel::wake_poll(channel, key)`, Linux's `wake_up_poll`): every
@@ -1896,13 +1948,27 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "proc entry not built": the `/proc` entries not built (detail: directory and name index).
 - "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
-- "socket family not built": socket and socketpair of a family other than AF_UNIX (detail: the
-  family; EAFNOSUPPORT) until K5 builds the network.
+- "socket family not built": socket and socketpair of a family other than AF_UNIX, AF_INET,
+  AF_INET6 and AF_NETLINK, such as AF_PACKET (detail: the family; EAFNOSUPPORT).
+- "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES), SCTP
+  (ESOCKTNOSUPPORT for SOCK_SEQPACKET, EPROTONOSUPPORT in a stream), MPTCP and UDP-Lite
+  (EPROTONOSUPPORT), netlink protocols other than NETLINK_ROUTE (EPROTONOSUPPORT), and netlink
+  messages to another socket's port (ECONNREFUSED); detail family times 2^32 plus kind times 2^16
+  plus protocol.
 - "socket option not built": socket options not built (detail: level times 2^32 plus option;
-  ENOPROTOOPT).
+  ENOPROTOOPT), among them TCP_INFO, IP_PKTINFO and the other IP and IPv6 options that add
+  control messages.
+- "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
+  RTM_GETROUTE dumps and RTM_GETLINK of one link (EOPNOTSUPP; detail the type plus 2^16 for a
+  dump), such as `ip route get`, neighbours, rules and queue disciplines.
+- "ioctl request not built" also covers SIOCGSTAMP and its forms on internet sockets (ENOENT),
+  and the requests that change interfaces for a caller with CAP_NET_ADMIN (Docker gives none,
+  so EPERM as in the reference).
 Notices the backend sends that Linux refuses are counted "backend notice refused" (not a
 refusal of the guest).
-Approximations that are not refusals have their own counters: "page residency not tracked", "proc
+Approximations that are not refusals have their own counters: "tcp room modelled", "tcp
+connect waits for backlog room", "interface counters not kept", "name query not answered",
+"page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
 written", "vmsplice pages copied", "backend pages written whole", "backend change not seen by
 mapped pages". "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
@@ -1910,6 +1976,14 @@ this" counts a CPU side that answered it cannot make a memory, thread or shared 
 guest).
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K5, second run (host.rs, which the kernel owns): added `Host::finish(connection)` (no more
+  bytes will be sent on a TCP connection; the program's SHUT_WR), a required method, so any
+  other `Host` implementor must add it. `Event::LookedUp`'s `addresses` are now 16 bytes each,
+  IPv4 ones mapped (the old mix of 4 and 16 byte addresses could not be split). Documented what
+  `error` means in `LookedUp` and `Connected`, when `ConnectionReady` comes, that a UDP connection
+  is usable at once with one datagram per send and receive, and that `receive`'s
+  `HostError::Closed` is a reset.
 
 - K5, first run: none. (The network hooks and `Event::Connected`, `ConnectionReady` and
   `LookedUp` exist from K0 and are not used yet.)

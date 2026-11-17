@@ -1173,7 +1173,8 @@ pub(super) fn shutdown(
             let already = socket.borrow().shutdown & SEND_SHUTDOWN != 0;
             socket.borrow_mut().shutdown |= mode;
             if protocol == Protocol::Tcp && mode & SEND_SHUTDOWN != 0 && !already {
-                match inet_ref(socket).outside {
+                let outside = inet_ref(socket).outside;
+                match outside {
                     Some(id) => super::outside::finish(cx, id),
                     None => send_fin(kernel, socket),
                 }

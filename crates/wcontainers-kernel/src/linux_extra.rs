@@ -627,3 +627,6 @@ pub(crate) const FUSE_NAME_MAX: usize = 1024;
 
 /// One more than the largest socket kind (`SOCK_PACKET` is 10).
 pub(crate) const SOCK_MAX: u32 = 11;
+
+/// `recvmmsg`'s flag to wait only for the first message (`linux/socket.h`, not in uapi).
+pub(crate) const MSG_WAITFORONE: u32 = 0x10000;

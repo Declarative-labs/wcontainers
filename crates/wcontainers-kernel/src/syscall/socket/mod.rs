@@ -2516,3 +2516,119 @@ fn interface_list(
     guest(kernel, cx, tid).write_value(argument, &(used as i32))?;
     Ok(0)
 }
+
+/// The size of a `struct mmsghdr`, and where its `msg_len` is.
+const MMSGHDR: u64 = 64;
+const MSG_LEN: u64 = 56;
+
+/// `__sys_sendmmsg`: each message sent as sendmsg sends it, its length stored after it. Messages
+/// after the first do not wait: a later one with no room ends the call with those sent.
+pub(super) fn sendmmsg(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fd, vector, count, flags, ..]: Args,
+) -> Result<u64, Errno> {
+    let count = (count as u32).min(UIO_MAXIOV) as u64;
+    socket_of(kernel, tid, fd)?;
+    let mut sent = 0;
+    while sent < count {
+        let header = vector + sent * MMSGHDR;
+        let flags = if sent > 0 {
+            flags | u64::from(MSG_DONTWAIT)
+        } else {
+            flags
+        };
+        match sendmsg(kernel, cx, tid, [fd, header, flags, 0, 0, 0]) {
+            Ok(length) => {
+                guest(kernel, cx, tid).write_value(header + MSG_LEN, &(length as u32))?;
+                sent += 1;
+            }
+            Err(error) if sent == 0 => return Err(error),
+            Err(_) => break,
+        }
+    }
+    Ok(sent)
+}
+
+/// `do_recvmmsg`: messages received as recvmsg receives them, their lengths stored after them.
+/// With MSG_WAITFORONE only the first waits; without it a message after the first that is not
+/// there yet ends the call too (counted "recvmmsg returned early"), where Linux waits for it. A
+/// timeout is checked after each message, as Linux checks it, and what is left of it is stored.
+pub(super) fn recvmmsg(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [fd, vector, count, flags, timeout, _]: Args,
+) -> Result<u64, Errno> {
+    let count = (count as u32).min(UIO_MAXIOV) as u64;
+    let (_, socket) = socket_of(kernel, tid, fd)?;
+    let flags = flags as u32;
+    let end = if timeout != 0 {
+        let value: __kernel_timespec = guest(kernel, cx, tid).read_value(timeout)?;
+        if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+            return Err(Errno::EINVAL);
+        }
+        let length = (value.tv_sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(value.tv_nsec as u64);
+        Some(kernel.settle_once(tid, kernel.entry_now.saturating_add(length)))
+    } else {
+        None
+    };
+    let mut received = 0;
+    while received < count {
+        let header = vector + received * MMSGHDR;
+        let wait_for_one = flags & crate::linux_extra::MSG_WAITFORONE != 0;
+        let call_flags = if received > 0 {
+            (flags & !crate::linux_extra::MSG_WAITFORONE) | MSG_DONTWAIT
+        } else {
+            flags & !crate::linux_extra::MSG_WAITFORONE
+        };
+        match recvmsg(
+            kernel,
+            cx,
+            tid,
+            [fd, header, u64::from(call_flags), 0, 0, 0],
+        ) {
+            Ok(length) => {
+                guest(kernel, cx, tid).write_value(header + MSG_LEN, &(length as u32))?;
+                received += 1;
+            }
+            Err(error) if received == 0 => return Err(error),
+            Err(Errno::EAGAIN) => {
+                let nonblocking =
+                    flags & MSG_DONTWAIT != 0 || socket_file_nonblocking(kernel, tid, fd);
+                if !wait_for_one && !nonblocking {
+                    kernel
+                        .counters
+                        .count(cx.host, crate::reason::RECVMMSG_EARLY, 0);
+                }
+                break;
+            }
+            Err(error) => {
+                // The error is kept for the next call (`do_recvmmsg`).
+                socket.borrow_mut().error = error.0 as i32;
+                break;
+            }
+        }
+        if let Some(end) = end
+            && kernel.entry_now >= end
+        {
+            break;
+        }
+    }
+    if let Some(end) = end {
+        let left = end.saturating_sub(kernel.entry_now);
+        let value = __kernel_timespec {
+            tv_sec: (left / 1_000_000_000) as i64,
+            tv_nsec: (left % 1_000_000_000) as i64,
+        };
+        guest(kernel, cx, tid).write_value(timeout, &value)?;
+    }
+    Ok(received)
+}
+
+fn socket_file_nonblocking(kernel: &Kernel, tid: Tid, fd: u64) -> bool {
+    super::io::file(kernel, tid, fd).is_ok_and(|file| file.borrow().flags & O_NONBLOCK != 0)
+}

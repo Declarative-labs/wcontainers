@@ -159,6 +159,8 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_eventfd2, S(eventfd::eventfd2)),
         (__NR_socket, S(socket::socket)),
         (__NR_socketpair, S(socket::socketpair)),
+        (__NR_sendmmsg, S(socket::sendmmsg)),
+        (__NR_recvmmsg, S(socket::recvmmsg)),
         (__NR_bind, S(socket::bind)),
         (__NR_listen, S(socket::listen)),
         (__NR_accept, S(socket::accept)),
