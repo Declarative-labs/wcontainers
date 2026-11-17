@@ -1,5 +1,6 @@
 //! Runs wcontainers-kernel on a stand-in CPU and compares it with real ARM64 Linux.
 
+pub mod backend;
 pub mod buffer;
 pub mod busybox;
 pub mod driver;
@@ -85,6 +86,7 @@ pub fn run_ours_injected(
         arguments,
         environment: reference::ENVIRONMENT,
         working_directory: "/",
+        volume: None,
     };
     driver::run_injected(&container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))

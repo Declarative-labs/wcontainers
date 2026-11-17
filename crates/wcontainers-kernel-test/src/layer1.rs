@@ -3637,6 +3637,7 @@ pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> 
         working_directory: b"/",
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
+        volume: None,
     };
     kernel
         .start(&mut cpu, &mut host, &start)

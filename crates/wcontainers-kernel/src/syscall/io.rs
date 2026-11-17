@@ -788,7 +788,15 @@ pub(super) fn file_bytes(
     };
     Ok(match &inode.content {
         Content::Directory(_) => return Err(Errno::EISDIR),
-        Content::Proc(_) if inode.is_directory() => return Err(Errno::EISDIR),
+        Content::Proc(_) | Content::Backend(_) if inode.is_directory() => {
+            return Err(Errno::EISDIR);
+        }
+        Content::Backend(_) => {
+            drop(inode);
+            let file = file.borrow();
+            let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
+            return crate::fs::backend::read(handle, offset, count);
+        }
         Content::Regular(regular) => regular.read(cx.cpu, offset, count),
         Content::Proc(_) => window(file.borrow().contents.as_deref().unwrap_or_default()),
         Content::Special => match Device::from_number(inode.rdev) {
@@ -1031,11 +1039,16 @@ pub(super) fn write_at(
     let (regular, device) = {
         let inode = node.borrow();
         (
-            matches!(inode.content, Content::Regular(_)),
+            matches!(inode.content, Content::Regular(_))
+                || matches!(inode.content, Content::Backend(_)) && !inode.is_directory(),
             Device::from_number(inode.rdev),
         )
     };
     if regular {
+        // A backend's file ends where the backend says now (`fuse_update_attributes`).
+        if append && let Some(handle) = &file.borrow().backend {
+            crate::fs::backend::getattr(&node, Some(handle.fh))?;
+        }
         let offset = if append {
             node.borrow().size()
         } else {
@@ -1112,6 +1125,32 @@ pub(super) fn write_bytes(
     let rdev = inode.rdev;
     let regular = match &mut inode.content {
         Content::Regular(regular) => regular,
+        Content::Backend(remote) => {
+            let offset = if append {
+                remote.size.get()
+            } else {
+                at.unwrap_or(file.borrow().offset)
+            };
+            drop(inode);
+            if offset
+                .checked_add(bytes.len() as u64)
+                .is_none_or(|end| end > i64::MAX as u64)
+            {
+                return Err(Errno::EFBIG);
+            }
+            let written = {
+                let file = file.borrow();
+                let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
+                crate::fs::backend::write(handle, offset, bytes)?
+            };
+            if written == 0 && wanted > 0 {
+                return Err(Errno::EFAULT);
+            }
+            if at.is_none() {
+                file.borrow_mut().offset = offset + written;
+            }
+            return Ok(written);
+        }
         Content::Pipe(_) => {
             drop(inode);
             return Ok(super::pipe::put(cx, kernel, file, bytes, 0));
@@ -1455,6 +1494,18 @@ pub(super) fn lseek(
             .checked_add(offset)
             .ok_or(Errno::EINVAL)
     };
+    if let Some(handle) = &file.backend {
+        // `fuse_file_llseek`: the backend finds data and holes; the end is where it says now.
+        match whence {
+            SEEK_END => crate::fs::backend::getattr(&file.node, Some(handle.fh))?,
+            SEEK_DATA | SEEK_HOLE if !handle.directory => {
+                let position = crate::fs::backend::lseek(handle, offset, whence)?;
+                file.offset = position;
+                return Ok(position);
+            }
+            _ => {}
+        }
+    }
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
@@ -1480,6 +1531,15 @@ pub(super) fn lseek(
             Some(Device::Null | Device::Zero | Device::Full) => 0,
             _ => file.offset as i64,
         },
+        Content::Backend(remote) => {
+            let size = remote.size.get() as i64;
+            match whence {
+                SEEK_SET => offset,
+                SEEK_CUR => current()?,
+                SEEK_END => size.checked_add(offset).ok_or(Errno::EINVAL)?,
+                _ => return Err(Errno::EINVAL),
+            }
+        }
         Content::Regular(regular) => {
             let size = regular.size() as i64;
             match whence {
@@ -1720,6 +1780,18 @@ pub(super) fn getdents64(
                     }
                 }
             }
+            // `fuse_readdir`: the backend's entries from the position, which it numbers.
+            Content::Backend(_) => {
+                drop(inode);
+                let file = file.borrow();
+                let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
+                let mut own = position;
+                let size = count.min(u64::from(u32::MAX)) as u32;
+                for entry in crate::fs::backend::readdir(handle, position, size)? {
+                    entries.push((entry.name, entry.ino, entry.kind, own, entry.next));
+                    own = entry.next;
+                }
+            }
             Content::Proc(entry) => {
                 let entry = *entry;
                 drop(inode);
@@ -1887,9 +1959,21 @@ pub(super) fn close(
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     let pid = kernel.threads[&tid].process;
+    // `filp_close`: a file on the backend is flushed there, and the descriptor goes whatever the
+    // flush answers.
+    let flushed = match kernel.files(tid).file(fd as i32) {
+        Ok(file) => match &file.borrow().backend {
+            Some(handle) => crate::fs::backend::flush(handle, 0),
+            None => Ok(()),
+        },
+        Err(_) => Ok(()),
+    };
+    if flushed == Err(Errno::PARKED) {
+        return Err(Errno::PARKED);
+    }
     kernel.files_mut(tid).remove(fd as i32, pid)?;
     kernel.files_released(cx);
-    Ok(0)
+    flushed.map(|()| 0)
 }
 
 fn nofile_limit(kernel: &Kernel, tid: Tid) -> u64 {
@@ -2468,9 +2552,27 @@ pub(super) fn fsync(
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
+    sync_file(kernel, tid, fd, false)
+}
+
+pub(super) fn fdatasync(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    [fd, ..]: Args,
+) -> Result<u64, Errno> {
+    sync_file(kernel, tid, fd, true)
+}
+
+/// `vfs_fsync`: a file on the backend is synced there; tmpfs has nothing to write.
+fn sync_file(kernel: &Kernel, tid: Tid, fd: u64, data_only: bool) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
+    }
+    if let Some(handle) = &file.borrow().backend {
+        crate::fs::backend::fsync(handle, data_only)?;
+        return Ok(0);
     }
     // Only tmpfs's files and directories have a sync operation; pipes, devices and the process
     // information tree have none.

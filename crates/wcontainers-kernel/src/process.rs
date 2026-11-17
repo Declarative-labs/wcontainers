@@ -409,6 +409,9 @@ pub(crate) enum Channel {
     Vfork(Tid),
     /// A futex wake, requeue or lock handed over (the futexes know which).
     Futex,
+    /// An answer from the file backend; no signal ends this wait, as Linux's FUSE waits once a
+    /// request is sent.
+    Backend,
 }
 
 /// What `restart_syscall` runs again.

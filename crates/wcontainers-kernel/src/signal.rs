@@ -457,9 +457,10 @@ impl Kernel {
             self.die_of(cx, pid, signal);
             return;
         }
-        if self.threads[&tid].call.wait.is_some() {
+        let wait = self.threads[&tid].call.wait;
+        if wait.is_some_and(|channel| channel != Channel::Backend) {
             self.wake_thread(tid);
-        } else if self.running != Some(tid) && !self.signalled.contains(&tid) {
+        } else if wait.is_none() && self.running != Some(tid) && !self.signalled.contains(&tid) {
             self.signalled.push_back(tid);
         }
     }

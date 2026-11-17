@@ -56,6 +56,9 @@ pub struct Start<'a> {
     pub hostname: &'a [u8],
     /// Supplementary groups of the first process.
     pub groups: &'a [u32],
+    /// Where the file backend is mounted, as a volume of `docker run -v`; none for a container
+    /// without one.
+    pub volume: Option<&'a [u8]>,
 }
 
 /// One file of the root file system as it is now, for comparing what a container left behind.
@@ -370,6 +373,9 @@ impl Kernel {
         self.machine.memory_bytes = cx.cpu.address_space().end;
         self.hostname = start.hostname.to_vec();
         self.make_mounts();
+        if let Some(path) = start.volume {
+            self.mount_backend(path);
+        }
 
         let pid = self.allocate_id();
         let root = self.files.root.clone();
@@ -430,6 +436,7 @@ impl Kernel {
         let thread = Thread::new(pid, wcontainers_abi::ThreadId(0), files, fs, credentials);
         self.threads.insert(pid, thread);
         let result = self.start_first(&mut cx, pid, start);
+        self.send_to_backend(&mut cx);
         if result.is_err() {
             self.processes.remove(&pid);
             self.threads.remove(&pid);
@@ -635,6 +642,21 @@ impl Kernel {
     }
 
     /// The mounts and device files `docker run` sets up.
+    /// Mounts the file backend at `path`, as Linux mounts a FUSE file system: no set-user bits,
+    /// devices or access times (the reference's mount options).
+    fn mount_backend(&mut self, path: &[u8]) {
+        use crate::linux_extra::{ST_NOATIME, ST_NODEV, ST_NOSUID};
+        let point = directory_at(self, path, self.boot);
+        let fs = self
+            .files
+            .numbers
+            .file_system(Kind::Fuse, ST_NOSUID | ST_NODEV | ST_NOATIME);
+        let client = crate::fs::backend::Client::new(fs);
+        let root = client.root();
+        fs::mount(&point, &root);
+        self.files.backend = Some(client);
+    }
+
     fn make_mounts(&mut self) {
         let now = self.boot;
         // tmpfs's default limits are half the machine's pages, in pages and in inodes

@@ -67,8 +67,11 @@ pub struct TestHost {
     /// With a clock that moves only when the driver says, the wall clock's reading when the
     /// monotonic clock read 0: the wall clock moves with it.
     wall_base: u64,
-    /// What a run's choices come from: how long each turn on the CPU side lasts.
+    /// What a run's choices come from: how long each turn on the CPU side lasts, and when the
+    /// backend's answers arrive.
     schedule: StdRng,
+    /// The file backend, for a container with a volume.
+    backend: Option<crate::backend::Backend>,
 }
 
 impl TestHost {
@@ -84,6 +87,7 @@ impl TestHost {
             virtual_now: None,
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            backend: None,
         }
     }
 
@@ -138,6 +142,8 @@ impl TestHost {
             virtual_now: self.virtual_now.map(|_| 0),
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            // The backend and the answers it owes go on with the copy.
+            backend: self.backend.take(),
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -187,8 +193,10 @@ impl Host for TestHost {
         });
     }
 
-    fn backend_send(&mut self, _: BackendRequestId, _: &[u8]) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        let backend = self.backend.as_mut().ok_or(HostError::NotSupported)?;
+        backend.send(request.0, message);
+        Ok(())
     }
 
     fn output(&mut self, stream: Stream, bytes: &[u8]) {
@@ -242,6 +250,8 @@ pub struct Container<'a> {
     pub arguments: &'a [&'a str],
     pub environment: &'a [&'a str],
     pub working_directory: &'a str,
+    /// Where the file backend is mounted, when the container has it as a volume.
+    pub volume: Option<&'a str>,
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -293,6 +303,9 @@ pub fn run_injected(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
+    if container.volume.is_some() {
+        host.backend = Some(crate::backend::Backend::start(&crate::backend::out()));
+    }
     let mut kernel = Kernel::new();
     image::add_files(&mut kernel, container.files);
     let arguments: Vec<&[u8]> = container
@@ -313,6 +326,7 @@ pub fn run_injected(
         working_directory: container.working_directory.as_bytes(),
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
+        volume: container.volume.map(str::as_bytes),
     };
     kernel
         .start(&mut cpu, &mut host, &start)
@@ -340,6 +354,15 @@ pub fn run_injected(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
+                // The backend's answers arrive at moments drawn from the seed, in its order.
+                while host
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.waiting())
+                    && host.schedule.random_bool(0.5)
+                {
+                    deliver(&mut kernel, &mut cpu, &mut host);
+                }
                 while signal_at.first() == Some(&turns) {
                     signal_at.remove(0);
                     kernel.kill(&mut cpu, &mut host, signal);
@@ -375,6 +398,15 @@ pub fn run_injected(
                 }
             }
             Next::Idle { until_nanoseconds } => {
+                // An answer owed comes before any time passes.
+                if host
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.waiting())
+                {
+                    deliver(&mut kernel, &mut cpu, &mut host);
+                    continue;
+                }
                 let Some(until) = until_nanoseconds else {
                     panic!(
                         "the kernel is idle with nothing to wake it, and this host has no events; \
@@ -402,6 +434,29 @@ pub fn run_injected(
         saved,
     };
     Ok(finish(run, report))
+}
+
+/// Hands the kernel the backend's next answer or notice, waiting for it.
+fn deliver(kernel: &mut Kernel, cpu: &mut StandIn, host: &mut TestHost) {
+    let Some(message) = host.backend.as_mut().and_then(|backend| backend.receive()) else {
+        return;
+    };
+    match message {
+        crate::backend::Message::Answer(unique, reply) => {
+            let request = BackendRequestId(unique);
+            kernel.event(
+                cpu,
+                host,
+                Event::BackendReply {
+                    request,
+                    reply: &reply,
+                },
+            );
+        }
+        crate::backend::Message::Notice(notice) => {
+            kernel.event(cpu, host, Event::BackendNotice { notice: &notice });
+        }
+    }
 }
 
 /// A run's end: returned, or in a copy made at a save reported to the process it was copied from,

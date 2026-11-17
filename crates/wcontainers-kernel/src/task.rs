@@ -164,7 +164,30 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
+        let backend = self.files.backend.clone();
+        if let Some(client) = &backend {
+            let credentials = &self.threads[&tid].credentials;
+            client.begin(crate::fs::backend::Asker {
+                tid,
+                uid: credentials.fsuid,
+                gid: credentials.fsgid,
+                pid: self.threads[&tid].process as u32,
+            });
+        }
         let outcome = syscall::dispatch(self, cx, tid, call, again);
+        if let Some(client) = &backend {
+            let parked = matches!(outcome, syscall::Outcome::Parked);
+            let waits = parked && client.waits(tid);
+            client.end(tid, !parked);
+            if waits
+                && self
+                    .threads
+                    .get(&tid)
+                    .is_some_and(|t| t.call.wait.is_none())
+            {
+                self.park(tid, Channel::Backend);
+            }
+        }
         if let Some(thread) = self.threads.get(&tid) {
             syscall::ipc::settle(self, cx, thread.process);
         }
@@ -255,6 +278,15 @@ impl Kernel {
                     self.give_way();
                     self.take_turn(tid);
                 }
+                continue;
+            }
+            if self
+                .files
+                .backend
+                .as_ref()
+                .is_some_and(|client| client.has_outgoing())
+            {
+                self.send_to_backend(cx);
                 continue;
             }
             if let Some(tid) = self.signalled.pop_front() {
@@ -462,6 +494,9 @@ impl Kernel {
     pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
         syscall::futex::thread_end(self, cx, tid, true);
         syscall::timer::thread_end(self, tid);
+        if let Some(client) = &self.files.backend {
+            client.drop_call(tid);
+        }
         self.unschedule(tid);
         self.release_vfork(tid);
         syscall::sem::forget(self, tid);

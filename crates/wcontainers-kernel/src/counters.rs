@@ -57,6 +57,15 @@ pub mod reason {
     pub const FAULT_SYNDROME_APPROXIMATED: &str = "fault syndrome approximated";
     /// The time between a thread being woken and it running, measured, not a slow path. Detail: none.
     pub const WAKE_TO_RUN: &str = "wake to run";
+    /// One message to the file backend and the time until its answer, measured: every file call on
+    /// the backend sends its messages, with no cache in phase one. Detail: the FUSE opcode.
+    pub const BACKEND_MESSAGE: &str = "backend message";
+    /// The host could not hand a message to the backend; the call that asked gets ENOTCONN, as from
+    /// a FUSE connection that is gone. Detail: the FUSE opcode.
+    pub const BACKEND_UNREACHABLE: &str = "backend unreachable";
+    /// An answer or notice from the backend that the kernel could not read or does not handle.
+    /// Detail: the request number, or the notice's code.
+    pub const BACKEND_UNEXPECTED: &str = "backend message unexpected";
     /// vmsplice copied the caller's pages into a pipe; Linux puts the pages themselves there, so a
     /// later change to them shows in what is read. Detail: the call number.
     pub const VMSPLICE_COPIED: &str = "vmsplice pages copied";

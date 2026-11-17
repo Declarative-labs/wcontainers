@@ -111,6 +111,8 @@ pub(crate) struct Files {
     pub spaces: Vec<Rc<fs::Space>>,
     /// Pseudo-terminal pairs by number, until both sides have closed.
     pub terminals: BTreeMap<u32, Rc<core::cell::RefCell<tty::Pty>>>,
+    /// The connection to the file backend, once one is mounted.
+    pub backend: Option<Rc<fs::backend::Client>>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -241,6 +243,7 @@ impl Kernel {
                 proc_kept: BTreeMap::new(),
                 spaces,
                 terminals: BTreeMap::new(),
+                backend: None,
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
@@ -314,8 +317,18 @@ impl Kernel {
                 self.settle(&mut cx);
                 return;
             }
-            Event::BackendReply { request, .. } => request.0,
-            Event::BackendNotice { .. } => 0,
+            Event::BackendReply { request, reply } => {
+                self.entry_now = cx.monotonic();
+                self.backend_answered(&mut cx, request.0, reply);
+                self.settle(&mut cx);
+                return;
+            }
+            Event::BackendNotice { notice } => {
+                self.entry_now = cx.monotonic();
+                self.backend_notice(&mut cx, notice);
+                self.settle(&mut cx);
+                return;
+            }
             Event::Connected { connection, .. } | Event::ConnectionReady { connection } => {
                 u64::from(connection.0)
             }

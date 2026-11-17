@@ -41,6 +41,8 @@ pub(crate) struct OpenFile {
     /// Whether it was opened through the kernel's own mount of its file system (mq_open's
     /// `mq_mnt`), which has no mount flags, rather than through a mount in the file tree.
     pub internal_mount: bool,
+    /// For a file on a backend, its handle there.
+    pub backend: Option<Rc<crate::fs::backend::Handle>>,
 }
 
 /// The state of a file on the shared anonymous inode.
@@ -99,6 +101,7 @@ impl OpenFile {
             direct_io,
             anon: None,
             internal_mount: false,
+            backend: None,
         }))
     }
 

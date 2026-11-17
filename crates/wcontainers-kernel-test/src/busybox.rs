@@ -139,6 +139,7 @@ pub fn run_ours_seeded(command: &[&str], seed: u64) -> driver::Run {
         arguments: command,
         environment: reference::ENVIRONMENT,
         working_directory: "/",
+        volume: None,
     };
     driver::run(&container, seed)
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))
@@ -172,6 +173,7 @@ pub fn compare(command: &[&str]) -> driver::Run {
         arguments: command,
         environment: reference::ENVIRONMENT,
         working_directory: "/",
+        volume: None,
     };
     let ours = driver::run(&container, 0)
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"));
