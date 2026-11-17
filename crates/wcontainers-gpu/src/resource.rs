@@ -327,7 +327,9 @@ pub struct TextureRegion<'a, B: Backend> {
     /// First layer for array textures, ignored for 3D (use `origin.z`).
     pub layer: u32,
     pub origin: Origin,
-    /// Depth or stencil, for combined depth-stencil textures.
+    /// Depth or stencil, for combined depth-stencil textures in copies to and from buffers. A copy
+    /// between two textures copies both aspects of a combined format, with `stencil` false on both
+    /// sides.
     pub stencil: bool,
 }
 
