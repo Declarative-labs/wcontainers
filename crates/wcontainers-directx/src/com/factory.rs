@@ -1,10 +1,10 @@
 //! DXGI's entry points (`CreateDXGIFactory`, `1` and `2`), which `dxgi.dll` forwards here. A
 //! program's own calls get our factory, whose adapter is the back end's. Calls from this library
-//! (wgpu under the back end) and from the system's libraries load DXGI by name, which in such a
-//! process finds this library, and go on to the system's.
+//! (wgpu under the back end), from the libraries the back end loads and from the system's libraries
+//! load DXGI by name, which in such a process finds this library, and go on to the system's; so do
+//! their calls of Direct3D 11's entry points.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, HMODULE};
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_UNSUPPORTED, IDXGIFactory2};
@@ -37,13 +37,6 @@ static DIRECTIVES: [u8; EXPORTS.len()] = {
     out
 };
 
-/// The back end's caps, from one made for them, for factories made before any device.
-fn probed_caps() -> Option<&'static wcontainers_gpu::Caps> {
-    static CAPS: OnceLock<Option<wcontainers_gpu::Caps>> = OnceLock::new();
-    CAPS.get_or_init(|| super::backend().map(|b| wcontainers_gpu::Backend::caps(&b).clone()))
-        .as_ref()
-}
-
 /// The module holding `address`.
 fn module_of(address: *const c_void) -> Option<HMODULE> {
     let mut module = HMODULE::default();
@@ -67,10 +60,10 @@ fn system_directory() -> String {
     String::from_utf16_lossy(&dir[..len.min(dir.len())]).to_lowercase() + "\\"
 }
 
-/// Whether the caller of the entry point that calls this is the program's code, not this library's
-/// or the system's.
+/// Whether the caller of the entry point that calls this is the program's code, not this library's,
+/// the back end's or the system's.
 #[inline(never)]
-fn called_by_program() -> bool {
+pub(super) fn called_by_program() -> bool {
     let mut frames = [std::ptr::null_mut(); 1];
     // Frame 0 is this function, 1 the entry point, 2 its caller.
     // SAFETY: writes at most one frame into the array.
@@ -91,14 +84,15 @@ fn called_by_program() -> bool {
     let len = unsafe { GetModuleFileNameW(Some(caller), &mut path) } as usize;
     let path = String::from_utf16_lossy(&path[..len.min(path.len())]).to_lowercase();
     !path.starts_with(&system_directory())
+        && !super::chosen::own_directory().is_some_and(|d| path.starts_with(d))
 }
 
-/// The system's own DXGI export `export`, loaded by its full path.
+/// The export `export` of the system's library `library`, loaded by its full path.
 ///
 /// # Safety
 /// `F` is the export's function type.
-unsafe fn system<F: Copy>(export: &std::ffi::CStr) -> Option<F> {
-    let path: Vec<u16> = (system_directory() + "dxgi.dll")
+pub(super) unsafe fn system<F: Copy>(library: &str, export: &std::ffi::CStr) -> Option<F> {
+    let path: Vec<u16> = (system_directory() + library)
         .encode_utf16()
         .chain([0])
         .collect();
@@ -121,7 +115,7 @@ unsafe fn ours(riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
     // SAFETY: the caller's out pointer.
     unsafe { *out = std::ptr::null_mut() };
     let _lock = super::lock();
-    let Some(caps) = probed_caps() else {
+    let Some(caps) = super::caps() else {
         return DXGI_ERROR_UNSUPPORTED;
     };
     let factory: IDXGIFactory2 = Factory::new(Adapter::new(caps).into()).into();
@@ -145,7 +139,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<WithFlags>(c"CreateDXGIFactory2") } {
+        return match unsafe { system::<WithFlags>("dxgi.dll", c"CreateDXGIFactory2") } {
             Some(f) => unsafe { f(flags, riid, out) },
             None => E_NOINTERFACE,
         };
@@ -165,7 +159,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory1(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<Plain>(c"CreateDXGIFactory1") } {
+        return match unsafe { system::<Plain>("dxgi.dll", c"CreateDXGIFactory1") } {
             Some(f) => unsafe { f(riid, out) },
             None => E_NOINTERFACE,
         };
@@ -185,7 +179,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
 ) -> HRESULT {
     if !called_by_program() {
         // SAFETY: the system's export of this name has this type.
-        return match unsafe { system::<Plain>(c"CreateDXGIFactory") } {
+        return match unsafe { system::<Plain>("dxgi.dll", c"CreateDXGIFactory") } {
             Some(f) => unsafe { f(riid, out) },
             None => E_NOINTERFACE,
         };

@@ -11,11 +11,16 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# The library drawing through the WebGL 2 back end on ANGLE in place of WebGPU (plan section 10).
+webgl = ["dep:wcontainers-gpu-webgl"]
+
 [dependencies]
 wcontainers-direct3d-11 = { path = "../wcontainers-direct3d-11" }
 wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wcontainers-gpu-webgl = { path = "../wcontainers-gpu-webgl", optional = true }
 wgpu = { version = "30.0.2", default-features = false }
 pollster = "1.0.1"
 
