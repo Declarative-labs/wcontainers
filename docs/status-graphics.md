@@ -55,6 +55,57 @@ branches into it at the start and end of every run.
   plan paragraph, where the direct3d-11 branch held run 3's older text, kept ours. The end merges
   brought webgpu, direct3d-11 and direct3d-12 in without conflict (webgl, shaders and rig had
   nothing new).
+- G1, run 5 (2026-11-17): the eight findings of G1's third independent check fixed (below). The
+  start merges brought webgpu, webgl, direct3d-11, direct3d-12 and shaders in without conflict (rig
+  had nothing new); none of them changed the interface.
+
+## G1's third check, and how each finding was settled (run 5)
+
+- Checks written as a helper call ending in `?` (blocking): the rule sweep now turns those off too
+  (scratch `g1r5/sweep.py`: each statement calling `outside_pass`, `buffer_for`, `texture_for`,
+  `copies_out`, `same`, `same_samples`, `draw_rules`, `usage_scope`, or the pass's `ok_or`, is
+  removed in turn). New tests break each of the 16 the check found unbroken:
+  `each_use_needs_its_usage_flag` (read backs, `copy_buffer` both sides, both buffer-texture copies
+  on both sides, `clear_buffer`, `write_texture`, `copy_texture` both sides, `resolve` both sides,
+  index bindings and indirect arguments, each with its exact message);
+  `texture_copies_and_buffer_clears_happen_outside_a_pass` now also refuses
+  `copy_buffer_to_texture`, `copy_texture_to_buffer` and `resolve` inside a pass; and
+  `resolves_and_copies_out_need_the_formats_uses` a read back of a format without `COPY_OUT`.
+  Indirect draws are absent on the recording back end, but its usage check comes first, so it is
+  reachable and tested.
+- The ring's wrap (blocking): a `Discard` write now gives the buffer fresh contents in the recording
+  back end, as `WriteMode::Discard` states: the ranges earlier commands and ordered writes touched
+  no longer bind a later `NoOverwrite`, and the bytes the discard did not write become undefined
+  (filled with 0xcd, so a caller relying on them is caught). Tests: `the_ring_wraps_with_a_discard`
+  (fills the 4 MiB ring, draws from it, wraps: modes Discard then NoOverwrite, no violation, the
+  draw before the wrap kept what it read, the one after draws the new part) and
+  `a_discard_write_gives_the_buffer_fresh_contents`. The random sequences' generator now treats a
+  discard the same way (it drops the buffer's pending ranges instead of marking it all pending).
+- Halves of instances without `BASE_VERTEX_INSTANCE`, and per-instance data (blocking and minor):
+  the counter now raises the first instance only where the back end has `BASE_VERTEX_INSTANCE` and
+  the front says every per-instance stream steps by one (`CountedDraw::instances_step_by_one`);
+  otherwise it splits the draw by its primitives, each half drawn for every instance, which keeps
+  every instance's reads. One primitive's instances past the bound where the first instance cannot
+  be raised is refused (`GpuError::Invalid`, Known failures). Test:
+  `the_occlusion_counter_splits_instances_only_where_each_reads_the_same` (with and without
+  `BASE_VERTEX_INSTANCE`: a list of 1,000 triangles three times with a stream of step rate zero,
+  12,000; the same with no per-instance stream, 12,000; the quad 3,000 times, 12,000 by instances
+  with bases, refused without). Both faults put back fail it (`g1r5/faults.log`).
+- A query index begun twice in a pass (minor): stated in `begin_query`'s docs and plan 4.7, refused
+  by the recording back end, and tested (`a_query_index_is_begun_once_in_a_pass`).
+- Step rates and typed texel buffers without a capability (minor): two new features,
+  `INSTANCE_STEP_RATE` and `TEXEL_BUFFERS`; a back end without one refuses the layout or binding
+  with `GpuError::Absent` of it, and fronts take `InstanceRateInShader` or `TexelBufferRoute::Storage`
+  or `Texture`. The recording back end declares the first (and checks it when taken away) and
+  refuses the second as absent (`step_rates_and_texel_buffers_need_their_features`).
+- Stale departure (minor): the bullet now says what the generator does.
+- The measure of `color_bytes_per_sample` (minor): stated. `Format::target_bytes` gives each format's
+  cost and alignment as WebGPU counts them (from wgpu-types 30.0.2's
+  `target_pixel_byte_cost`/`target_component_alignment`, which follow the WebGPU table; our formats
+  WebGPU lacks count as their nearest one), and `color_target_bytes` sums a pass's targets in order.
+  The recording back end counts by it (`passes_stay_within_the_colour_target_limits`: two
+  `rgba8unorm` targets need 16, `r8unorm` then `r32float` need 8). The webgpu back end passes
+  WebGPU's limit, which is in this measure already.
 
 ## G1's second check, and how each finding was settled (run 4)
 
@@ -154,12 +205,14 @@ branches into it at the start and end of every run.
 ## G1's pass bar, item by item
 
 - Every rule of section 4 checked by the recording back end, with a test that breaks it (the list
-  under "The rules and their tests"), shown since run 4 by the sweep that turns each check off in
-  turn (Measurements).
+  under "The rules and their tests"), shown by the sweep that turns each check off in turn: since
+  run 4 the `if` checks, since run 5 also the checks written as a helper call ending in `?`
+  (Measurements).
 - Every fast-path default shown built from the base by a recorded stream: `tests/fast_paths.rs`, one
   test each for `read_back_now`, `prepare`, `clear_texture`, `clear_rects`, `generate_mips` (and
   its three routes by their averages), `draw_fan_or_loop` (fans drawn; loops by their stream, the
-  recorder draws no lines), `write_buffer_ring` and `resolve_queries`; each asserts the calls
+  recorder draws no lines), `write_buffer_ring` (and its wrap, `the_ring_wraps_with_a_discard`)
+  and `resolve_queries`; each asserts the calls
   recorded, by name, and the answer.
 - The occlusion counter's exact counts on scripted draws with a counting program in WGSL:
   `the_occlusion_counter_counts_exactly` (draws that write depth counted against the depth copied at
@@ -185,7 +238,9 @@ branches into it at the start and end of every run.
 - 100,000 random sequences, seeded, recorded and replayed identically (same stream with every
   answer, same bytes in every buffer and texture, same frames, no rule broken): in run 3, on the
   widened generator, seeds 0x5eed, 0xc0ffee and 0x7a11ed, 100,000 each; in run 4, on the recorder
-  with the new checks, 0x5eed, 0xc0ffee and 0x9e4a11 (new), 100,000 each (Measurements).
+  with the new checks, 0x5eed, 0xc0ffee and 0x9e4a11 (new), 100,000 each; in run 5, with discards
+  giving fresh contents and the new checks, 0x5eed, 0xc0ffee and 0xd15ca4d (new), 100,000 each
+  (Measurements).
 
 ## G1a's second check, and how each finding was settled
 
@@ -247,6 +302,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   limit the back end declares that a call can pass (buffer and texture sizes, vertex streams,
   attributes and stride, anisotropy, inter-stage slots, colour targets and their bytes, bindings
   per stage, immediates, binding sizes and alignments);
+- since run 5: every usage flag and outside-a-pass check of every call
+  (`each_use_needs_its_usage_flag`, `texture_copies_and_buffer_clears_happen_outside_a_pass`), a
+  query index begun once in a pass, step rates other than one and texel buffers only with their
+  features, colour bytes a sample by `color_target_bytes`, and a discard giving fresh contents
+  (`a_discard_write_gives_the_buffer_fresh_contents`);
 - multisampled textures 2D, one level and layer, no storage
   (`a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage`); their bytes moved only by
   draws, resolves and whole copies between equal sample counts
@@ -257,6 +317,21 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   when its texture is multisampled (an error of the draw).
 
 ## Interface changes
+
+- G1 run 5:
+  - 48876d8 ("interface: added capabilities for instance step rates and typed texel buffers, ..."):
+    `Features::INSTANCE_STEP_RATE` and `Features::TEXEL_BUFFERS` (a back end without one refuses the
+    layout or binding with `GpuError::Absent` of it; docs of `StepMode::Instance`,
+    `BindingResource::TexelBuffer`, `TexelBufferRoute::Native`, plan 4.5 and 5); `Format::target_bytes`
+    and `color_target_bytes`, the measure of `Limits::color_bytes_per_sample` (WebGPU's, plan 5);
+    `begin_query`: each index at most once in a pass (plan 4.7). For the other tracks: the webgpu and
+    webgl back ends refuse step rates and texel buffers as `Invalid` today and should answer
+    `Absent` of the new bits; webgl may declare `INSTANCE_STEP_RATE` where its divisor serves; the
+    Direct3D 11 front should take `InstanceRateInShader` where the bit is absent.
+  - 2de3a6b (helpers, G1's own): `OcclusionCounter::draw` takes a `CountedDraw` (the counting program,
+    alpha to coverage, whether it writes depth or stencil, and whether every per-instance stream
+    steps by one) in place of three arguments; plan 4.12 step 4 says when instances are split. No
+    other track calls the counter yet.
 
 - G1 run 4:
   - c39aeac ("interface: kept the starting depth for halves ..."): helpers, G1's own, no public item
@@ -358,16 +433,13 @@ also checks every limit it declares that a call can pass. No format it
 
 ## Next
 
-- The independent check of G1 (run 4's fixes).
-- The measure of `color_bytes_per_sample` per format is not stated by the interface: WebGPU counts
-  each format by its own render-target byte cost and alignment (8 for `rgba8unorm`), and the webgpu
-  back end passes WebGPU's limit straight; the recording back end counts block bytes. To settle with
-  the webgpu and Direct3D tracks when `TargetsSplit` is built (no front draws it yet).
+- The independent check of G1 (run 5's fixes).
 - Recording back end limitations, each refused with an error naming it and so left without a
   breaking test: cube sampling, alpha to coverage, implicit level of detail over several levels.
   Two checks are unreachable through the interface and stay as guards: storage writes from vertex
   programs (refused when the binding set is made) and an attachment taken twice by a draw (refused
-  at `begin_pass`). The region check's block-grid parts are reached only once the recorder holds a
+  at `begin_pass`). Likewise a colour attachment of a format with no `target_bytes` (depth formats
+  are refused before it, block-compressed ones have no render use). The region check's block-grid parts are reached only once the recorder holds a
   block-compressed format.
 - Taken away with `with_caps`, `TEXTURE_VIEWS` is checked for view shapes and bound views
   (`views_of_other_shapes_need_texture_views`) but not yet for its one mip range per texture per
@@ -400,11 +472,14 @@ also checks every limit it declares that a call can pass. No format it
     `python3 -I breaks.py <tree> <work dir>` there (it copies the tree, changes one line, runs
     `tests/recorder.rs` and `tests/helpers.rs`); 18 faults, five of them added in run 2 for
     multisampling and the counter's halving.
-  - the rule sweep: copy `g1r4/sweep.py` from scratch to the laptop, copy the tree beside it, and
+  - the rule sweep: copy `g1r5/sweep.py` from scratch to the laptop, copy the tree beside it, and
     run `python3 -I sweep.py <tree> <target dir>` there (`list` instead of a target prints the
     checks); it turns each `if` that refuses something in `src/recorder.rs` and `src/draw.rs` off
-    (whole, and each line of a condition over several lines) and runs `cargo test -p
-    wcontainers-gpu-test`, printing CAUGHT or SURVIVED. About 40 s a check at 4 jobs.
+    (whole, and each line of a condition over several lines), removes each statement that calls a
+    check helper with `?`, and runs `cargo test -p wcontainers-gpu-test`, printing CAUGHT,
+    SURVIVED or BUILD FAILED (the four match guards). About 20 to 40 s a check at 4 jobs.
+  - run 5's faults (the counter's instance split, the discard, the colour byte measure):
+    `g1r5/faults.py`, run the same way (`python3 -I faults.py <tree> <target dir>`).
   - Rust there: rustup with the 1.99.0 toolchain the repository names, installed by another track;
     this run installed nothing.
 - A back end runs the suite with a test file holding a `Host` implementation and
@@ -501,8 +576,10 @@ also checks every limit it declares that a call can pass. No format it
   - The recording back end checks `NoOverwrite` writes against every range a command since the
     caller last waited read or wrote, and against ordered writes, which needs fence waits in the
     call stream (`FenceDone`, `WaitFence`).
-  - Random sequences: proptest, as the plan says, with a fixed ChaCha seed; the generator waits for
-    all work before each no-overwrite write, so it never breaks that promise.
+  - Random sequences: proptest, as the plan says, with a fixed ChaCha seed. Since run 3 the generator
+    waits for all work only before a no-overwrite write that would touch a range an unfinished
+    command or ordered write uses, and since run 5 a discard drops the buffer's ranges, so most
+    no-overwrite writes land without a wait and the promise is still kept.
 
 ## Known failures
 
@@ -511,3 +588,8 @@ also checks every limit it declares that a call can pass. No format it
   `r16float`, only on back ends without blendable `r32float`): 2048 fragments at the one sample of a
   single-sampled target, 512 a sample on average on four samples; no test, as no route exists. A counting program
   reading the primitive index sees it start again in the second half of a split draw.
+- Since run 5, the same refusal for one primitive drawn as many instances where the first instance
+  cannot be raised (no `BASE_VERTEX_INSTANCE`, as on WebGL 2, or a per-instance stream stepping
+  other than by one) and whose instances bring a pixel to the bound; tested
+  (`the_occlusion_counter_splits_instances_only_where_each_reads_the_same`, the quad 3,000 times
+  without bases). It needs `r16float` counting too.
