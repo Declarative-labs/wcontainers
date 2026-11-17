@@ -870,6 +870,19 @@ impl Backend for Recorder {
         if desc.logic_op.is_some() {
             return Err(GpuError::Absent(Features::LOGIC_OP));
         }
+        let second_source = |f: BlendFactor| {
+            use BlendFactor::*;
+            matches!(f, Src1 | OneMinusSrc1 | Src1Alpha | OneMinusSrc1Alpha)
+        };
+        if desc
+            .targets
+            .iter()
+            .filter_map(|t| t.blend)
+            .flat_map(|(c, a)| [c.src, c.dst, a.src, a.dst])
+            .any(second_source)
+        {
+            return Err(GpuError::Absent(Features::DUAL_SOURCE_BLEND));
+        }
         let id = self.add(Obj::Blend(Box::new(*desc)));
         self.log(format!("create_blend {} {desc:?}", id.0));
         Ok(id)
