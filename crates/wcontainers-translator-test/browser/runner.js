@@ -298,32 +298,44 @@ function run({
       return 1;
     },
     [contract.hookWarn]: (reasonIndex, detail) => slowPath(reasonIndex, BigInt.asUintN(64, detail), 0),
-    [contract.hookFloat]: (operation, a, b, c) => {
-      const block = new DataView(state.buffer, BLOCK_AT, contract.threadStateSize);
-      const fpcr = block.getUint32(contract.registerFpcr, true);
-      const tracking = block.getUint32(contract.floatTracking, true);
-      const value = translator.float(operation, a, b, c, fpcr, block.getUint32(contract.registerFpsr, true));
-      block.setUint32(contract.registerFpsr, translator.float_status(), true);
-      const fused = translator.float_reason(operation, fpcr, tracking) === 1;
-      // Registers are not saved here, so the detail is the operation, not the address.
-      slowPath(reason(fused ? "software fused multiply-add" : "exact floating point requested"), operation >>> 0, 0);
-      return value;
-    },
-    [contract.hookClock]: () => BigInt(Math.round((performance.now() - startedAt) * 1e6)),
-    // ic ivau: forget the pieces the lookup finds for the 64 byte line.
-    [contract.hookCodeChanged]: (address) => {
-      const line = BigInt.asUintN(64, address) & ~63n;
-      for (let at = line; at < line + 64n; at += 4n) {
-        setSlot(at, 0);
-        exactPieces.delete(at);
-      }
-    },
     [contract.hookTrap]: (kind, detail) => {
       const name = contract.trapKinds[kind];
       stop({ kind: name, detail: BigInt.asUintN(64, detail).toString() });
       if (name === "unsupported") slowPath(reason("unsupported instruction reached"), snapshot.pc, 0);
     },
   };
+  // The guest's own hooks, by who does their work.
+  const cpuState = translator.cpu_state();
+  contract.guestHooks.forEach(({ name, body }, index) => {
+    if (body === "clock") {
+      hooks[name] = () => BigInt(Math.round((performance.now() - startedAt) * 1e6));
+    } else if (body === "codeChanged") {
+      // Forget the pieces the lookup finds for the 64 byte line at the address.
+      hooks[name] = (address) => {
+        const line = BigInt.asUintN(64, address) & ~63n;
+        for (let at = line; at < line + 64n; at += BigInt(contract.align)) {
+          setSlot(at, 0);
+          exactPieces.delete(at);
+        }
+      };
+    } else {
+      // The work is the translator's `cpu_hook` on a copy of the thread's state; a counted slow path.
+      hooks[name] = (...args) => {
+        const size = contract.threadStateSize;
+        new Uint8Array(translator.memory.buffer, cpuState, size).set(new Uint8Array(state.buffer, BLOCK_AT, size));
+        const wide = [0, 1, 2, 3].map((i) => BigInt.asIntN(64, BigInt(args[i] ?? 0)));
+        translator.cpu_hook(index, ...wide);
+        new Uint8Array(state.buffer, BLOCK_AT, size).set(new Uint8Array(translator.memory.buffer, cpuState, size));
+        const why = translator.cpu_hook_reason();
+        // Registers are not saved here, so the detail is the first argument, not the address.
+        if (why >= 0) {
+          const first = args[0] ?? 0;
+          slowPath(why, typeof first === "bigint" ? BigInt.asUintN(64, first) : first >>> 0, 0);
+        }
+        return translator.cpu_hook_result(0);
+      };
+    }
+  });
 
   // Translate code `b` (its bytes, where they are, and where in them the code is, all of it when not said)
   // from `start` and instantiate it, as `instantiateModule` says.

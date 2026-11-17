@@ -1,6 +1,7 @@
 //! The meaning of atomics, exclusives, ordered accesses, cache maintenance and the AdvSIMD structure loads
 //! and stores.
 
+use crate::Arm64;
 use crate::instruction::*;
 use crate::meaning::{
     Access, Control, Emitter, Hook, Trap, address, get, load, memory, save, set, store, untag,
@@ -19,7 +20,7 @@ fn aligned(bytes: u8) -> MemArg {
 
 /// The address in `rn`, with the stack pointer's alignment checked when it is the base, untagged, checked to
 /// be a multiple of `align` (an alignment fault if not) and then checked for the access.
-fn exact_address<E: Emitter + ?Sized>(
+fn exact_address<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     rn: Reg,
     align: u32,
@@ -51,7 +52,7 @@ fn exact_address<E: Emitter + ?Sized>(
 }
 
 /// Push the low `bytes` of a register, as an i64.
-fn low<E: Emitter + ?Sized>(e: &mut E, r: Reg, bytes: u8) {
+fn low<E: Emitter<Arm64> + ?Sized>(e: &mut E, r: Reg, bytes: u8) {
     e.get(r);
     if bytes < 8 {
         e.sink().i64_const((1i64 << (8 * bytes)) - 1).i64_and();
@@ -59,7 +60,7 @@ fn low<E: Emitter + ?Sized>(e: &mut E, r: Reg, bytes: u8) {
 }
 
 /// Sign extend the low `bytes` of the i64 on the stack.
-fn sign_extend<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
+fn sign_extend<E: Emitter<Arm64> + ?Sized>(e: &mut E, bytes: u8) {
     let mut s = e.sink();
     match bytes {
         1 => s.i64_extend8_s(),
@@ -70,7 +71,7 @@ fn sign_extend<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
 }
 
 /// Atomic compare and exchange of `bytes` at `at`: expected and replacement pushed, the old value left.
-fn compare_exchange<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
+fn compare_exchange<E: Emitter<Arm64> + ?Sized>(e: &mut E, bytes: u8) {
     let m = aligned(bytes);
     let mut s = e.sink();
     match bytes {
@@ -81,7 +82,7 @@ fn compare_exchange<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
     };
 }
 
-fn atomic_load<E: Emitter + ?Sized>(e: &mut E, at: u32, bytes: u8) {
+fn atomic_load<E: Emitter<Arm64> + ?Sized>(e: &mut E, at: u32, bytes: u8) {
     let m = aligned(bytes);
     let mut s = e.sink();
     s.local_get(at);
@@ -93,7 +94,7 @@ fn atomic_load<E: Emitter + ?Sized>(e: &mut E, at: u32, bytes: u8) {
     };
 }
 
-fn atomic_store<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
+fn atomic_store<E: Emitter<Arm64> + ?Sized>(e: &mut E, bytes: u8) {
     let m = aligned(bytes);
     let mut s = e.sink();
     match bytes {
@@ -105,7 +106,7 @@ fn atomic_store<E: Emitter + ?Sized>(e: &mut E, bytes: u8) {
 }
 
 /// Write the meaning of a memory instruction this module covers.
-pub(crate) fn emit<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
+pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
     use Instruction as I;
     match *instruction {
         I::Atomic {
@@ -395,14 +396,14 @@ fn next(r: Reg) -> Reg {
 }
 
 /// Push two registers' low 32 bits as one i64, the first in the low half.
-fn pair32<E: Emitter + ?Sized>(e: &mut E, first: Reg, second: Reg) {
+fn pair32<E: Emitter<Arm64> + ?Sized>(e: &mut E, first: Reg, second: Reg) {
     low(e, first, 4);
     e.get(second);
     e.sink().i64_const(32).i64_shl().i64_or();
 }
 
 /// Remember an exclusive access: its address, size and the value loaded.
-fn remember<E: Emitter + ?Sized>(e: &mut E, at: u32, bytes: u32, first: u32, second: u32) {
+fn remember<E: Emitter<Arm64> + ?Sized>(e: &mut E, at: u32, bytes: u32, first: u32, second: u32) {
     e.sink().i32_const(bytes as i32);
     e.set_control(Control::ExclusiveBytes);
     e.sink().local_get(at);
@@ -414,7 +415,7 @@ fn remember<E: Emitter + ?Sized>(e: &mut E, at: u32, bytes: u32, first: u32, sec
 }
 
 /// ld1 to ld4 and st1 to st4.
-fn structures<E: Emitter + ?Sized>(e: &mut E, instruction: &Instruction) {
+fn structures<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
     let Instruction::SimdMemory {
         load,
         structure,

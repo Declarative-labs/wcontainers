@@ -9,10 +9,45 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   check's findings fixed in run 2, the second check's in run 3, the third's in run 4, the fourth's in
   run 5, the fifth's in run 6, the sixth's in run 7, the seventh's in run 8, the eighth's in run 9 and
   the ninth's in run 10, the same day (below).
-- Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
-  for byte the same (plan section 9). No code of this track exists yet.
+- X1 (the interface, with ARM64 moved onto it), run 1, 2026-11-17: built; see "X1, run 1" for what is done
+  and what is left.
 
-## X0, run 1 (2026-11-17)
+## X1, run 1 (2026-11-17)
+
+Done:
+- Merged origin/phase-1-translator (22 commits) first.
+- `crates/wcontainers-translator-test/same-output.sh <commit>` with `tests/output.rs`: one command that
+  builds the earlier commit from its own copy (scratch), writes every module's length and BLAKE3 hash on
+  both sides (benchmark set: whole program and the 8 workloads; the 9 M5 binaries; full and bounded
+  look-ahead 256; speed and size; the thread module) and compares the lists with `cmp`. Committed before
+  any interface change (2274314), which is the "before" of every comparison below.
+- The X0 review's open findings settled in the plan: `TrapPc` (a trap may leave pc after the instruction:
+  x86 `int3`, `int 3`, `int1`, `int 4`); the `no_std` core and `translate` feature layering of the
+  interface and of each CPU crate (plan 3.1, 6); rdpmc kernel only and VMX designed SIGILL and excluded from
+  layer 1 (5.2, 7.4); `int 4` a trap with rip after (5.2, 6); segment loads write the FS/GS base (5.5,
+  3.4); `sgdt`, `sidt`, `lsl 0x7b` designed answers and excluded (5.10, 7.4); the recorder runs with the
+  translation's host and offer (3.1, built so); X1's dependency check (valid.rs moved, 9).
+- `crates/wcontainers-guest-cpu`: core (`Personality`, `Registers`, `Bit`, `TrapKind`, `MemoryFault`)
+  `no_std`; `Guest`, `Emitter`, the plain types, `Reason` and the generic effects recorder behind the
+  `translate` feature (default on).
+- `wcontainers-arm64`: `Arm64` with its `Personality` in a `no_std` core; `Guest` in `src/guest.rs`
+  (shapes, completing, stack moves, switch tables, built addresses, loop-proof facts, `run_hook` for the
+  float hook); meanings bound on `Emitter<Arm64>`; FPSR tracking and exclusive-monitor offsets moved here
+  from the contract.
+- `wcontainers-translator`: generic over `G: Guest`, depends on the interface only; blocks keep their
+  instruction offsets (variable lengths), lookup and switch tables by `ALIGN`, hooks and type indices after
+  the guest's hooks, trap pc from `TrapPc`. `tests/guest_free.rs` fails if its manifest or sources name a
+  CPU crate.
+- Test crate and browser cdylib name `Arm64`. Host runner: guest hooks registered by `HookBody`, the float
+  hook through `Arm64::run_hook`; the memory fault hook asks `Arm64::memory_fault`. Browser: `cpu_state`,
+  `cpu_hook`, `cpu_hook_result`, `cpu_hook_reason` exports, runner.js copies the state around them; the
+  contract JSON lists the guest's hooks and `align`.
+- `rust-toolchain.toml` gains the target `wasm32v1-none` (no standard library). Both cores build for it with
+  `--no-default-features`; the control (interface with `translate`) fails on `can't find crate for std`.
+
+Proof so far (machine: the Mac, Apple M5; load 18 to 42 while it ran):
+- Byte for byte: `same-output.sh 2274314` gives "the same" for bench (37 modules), busybox, musl, python,
+  rg, git, java, go (4 modules each). Node and Bun: see below.
 
 Done:
 - Wrote the plan from the brief and the seam map. Appendix A maps every kind b and c place of the seam
@@ -369,6 +404,17 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- X1's byte-for-byte proof: `WC_OUTPUT_ROOT=<scratch>/x1/same nix develop -c
+  crates/wcontainers-translator-test/same-output.sh 2274314 bench,busybox,musl,python,rg,git,java,go`, then
+  the same with `node` and with `bun`, each alone (many GB). The earlier commit's lists are kept under
+  `<root>/lists/<commit>`, so later runs only translate the current tree. The binaries come from
+  `target/binaries` (copied from the translator worktree's M5 files).
+- The suite of what this track owns: `nix develop -c cargo test -p wcontainers-guest-cpu -p wcontainers-arm64
+  -p wcontainers-translator -p wcontainers-translator-test` (Chrome and Docker needed), and the browser
+  crate's lint as in docs/status-translator.md.
+- The no-std check: `nix develop -c cargo build -p wcontainers-guest-cpu -p wcontainers-arm64
+  --no-default-features --target wasm32v1-none --target-dir <scratch>/x1/nostd-target`.
+
 - Run 10's experiments: `nix develop -c zig cc -target x86_64-linux-musl -static -O1 -fno-stack-protector
   -o <scratch>/run10/tf <scratch>/run10/tf.c` (and `rf` likewise), copy both to
   `~/wcontainers-x86/proof10/` and run each there; `umip.out` and `branch-unmapped.out` are `stepper6` in
@@ -458,6 +504,10 @@ All in the "X0, run 1" to "run 10" sections above (runs 9 and 10 timed nothing).
 
 ## Licences of what this track uses
 
+- Added at X1, all already in the workspace: `blake3` (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH
+  LLVM-exception) as a dev-dependency of the test crate; `wasm-encoder` (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) as a
+  dependency of the test crate and of the interface crate.
+
 - iced-x86 1.22.0: MIT. Not yet a dependency of anything in the repository (X3 adds it, and as a
   build-dependency with `instr_info`).
 - astro-float 0.9.6: MIT, with astro-float-num 0.3.7 and astro-float-macro 0.4.6 (both MIT), lazy_static,
@@ -473,7 +523,35 @@ All in the "X0, run 1" to "run 10" sections above (runs 9 and 10 timed nothing).
 
 ## Departures from the plan
 
-None yet (no milestone of the plan has been built).
+X1 (each also written into the plan's text in the same commit):
+- The kernel's side: the plan had the interface crate need std and the kernel never depend on a CPU crate,
+  against the brief ("the kernel is written once against the interface"). As the orchestrator ruled, the
+  interface and each CPU crate now have a `no_std` core (`Personality`: register block and offsets now, the
+  rest of the personality at X10) and a translation half behind the default feature `translate`; the kernel
+  will depend on both with it off (plan 3.1, 6). `X86Block` lives in x86's core, not the abi.
+- Each CPU's test support (`GuestTest`, plan 7.2) lives in the test crate, not in the CPU crate, though the
+  brief says each CPU crate supplies everything specific to its CPU: it needs test-only dependencies
+  (wasmtime, Docker and SSH transport, dynasm, iced's assembler) that a shipped CPU crate must not carry,
+  and it is used only by the tests. The CPU crate still supplies everything the translator, runners and
+  kernel use.
+- Interface items only another CPU uses are added with the milestone that first uses them (list in plan
+  3.2, "Built in stages"), so nothing is built that nothing exercises. `PASSED_IN` must equal `PASSED_OUT`
+  until then (a compile-time check in the translator).
+- Signatures changed while building, to keep ARM64's bytes: `trap_kind` returns `TrapPc` too;
+  `temporaries(flags)` added (logic takes no temporaries today); `run_hook` takes the hook's index;
+  `data_address` and `branch_target` push rather than work in place; `branch_comparison` gets each path
+  instruction's effects and the branch's offset; `loaded_max(i)` returns the register and the bound;
+  `built_address` and `jump_table` get no `before` walk until x86 needs it (X4). The runtime's `Reason`
+  list moved into the interface (the contract re-exports it and `TrapKind`).
+- The comparison is one command (`same-output.sh`) writing lengths and BLAKE3 hashes of every module, not
+  the `WC_BENCH_DUMP` knob and stored files: Bun alone is about 4 GB a variant, and the lists cover full and
+  bounded look-ahead too. Equality of two 256-bit hashes is taken as byte for byte equality.
+- `tests/valid.rs` moved from the translator crate to the test crate (it draws ARM64's forms), so the
+  translator has no dependency on a CPU crate at all, dev-dependencies included (X0 finding).
+- Run times: wasmtime only, old and new alternating, best of 5 (the orchestrator's X1 task), not wasmtime
+  and Chrome best of 3 as the plan had.
+- No intentional change of ARM64's output at X1: the stop check's raised branch changes at X6 (plan 5.1),
+  so the whole move is compared byte for byte against one "before".
 
 ## Decisions taken in the plan that the owner may want to hear about
 

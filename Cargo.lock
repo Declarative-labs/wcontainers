@@ -1860,8 +1860,18 @@ version = "0.1.0"
 dependencies = [
  "rustc_apfloat",
  "wasm-encoder 0.263.0",
+ "wcontainers-abi",
+ "wcontainers-guest-cpu",
  "yaxpeax-arch",
  "yaxpeax-arm",
+]
+
+[[package]]
+name = "wcontainers-guest-cpu"
+version = "0.1.0"
+dependencies = [
+ "wasm-encoder 0.263.0",
+ "zerocopy",
 ]
 
 [[package]]
@@ -1898,13 +1908,11 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "petgraph",
- "proptest",
  "rayon",
  "rustc-hash",
  "wasm-encoder 0.263.0",
- "wasmparser 0.263.0",
  "wcontainers-abi",
- "wcontainers-arm64",
+ "wcontainers-guest-cpu",
 ]
 
 [[package]]
@@ -1919,10 +1927,12 @@ dependencies = [
  "proptest",
  "rayon",
  "serde_json",
+ "wasm-encoder 0.263.0",
  "wasmparser 0.263.0",
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-guest-cpu",
  "wcontainers-translator",
  "zerocopy",
 ]

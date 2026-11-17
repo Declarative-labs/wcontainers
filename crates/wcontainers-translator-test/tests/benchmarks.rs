@@ -91,13 +91,14 @@ fn size(blob: &Blob) {
     let mut best = (Duration::MAX, Duration::MAX, Vec::new());
     for _ in 0..5 {
         let start = Instant::now();
-        let mut translation = translate(
+        let mut translation = translate::<wcontainers_arm64::Arm64>(
             &blob.bytes,
             0..blob.code_bytes,
             &[0],
             LookAhead::Full,
             optimise(),
             wcontainers_translator_test::runner::probe(),
+            (),
         )
         .unwrap();
         let translating = start.elapsed();

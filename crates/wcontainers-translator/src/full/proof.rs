@@ -6,7 +6,7 @@
 //! the access, otherwise the loop runs as usual, so faults stay exact.
 
 use super::*;
-use wcontainers_arm64::Extend;
+use wcontainers_guest_cpu::{Comparison, Effects, Extend, Relation as Compared, Value as Operand};
 
 /// A value read at the loop's entry: a constant or a register that the loop does not write.
 #[derive(Clone, Copy, Debug)]
@@ -21,7 +21,8 @@ enum Value {
 struct Induction {
     at: u64,
     block: usize,
-    width: Width,
+    /// 32 or 64.
+    bits: u8,
     step: Value,
     negate: bool,
 }
@@ -105,7 +106,8 @@ struct Counter {
     bit: u32,
     induction: Induction,
     domain: Domain,
-    width: Width,
+    /// 32 or 64.
+    bits: u8,
     ahead: i64,
     bound: Value,
     relation: Relation,
@@ -121,9 +123,9 @@ pub(super) struct Versioned {
 }
 
 /// What [`versioned`] needs to know about the function.
-pub(super) struct LoopShape<'a> {
+pub(super) struct LoopShape<'a, G: Guest> {
     pub(super) function: &'a Function,
-    pub(super) decoded: &'a super::Decodes,
+    pub(super) decoded: &'a super::Decodes<G>,
     pub(super) checks: &'a FxHashMap<u64, CheckPlan>,
     pub(super) body: &'a [bool],
     /// Blocks of the body inside a loop within it.
@@ -135,26 +137,20 @@ pub(super) struct LoopShape<'a> {
 /// The copy without checks for a loop that makes no call and no system call, if it has a counting exit and
 /// accesses whose checks it can leave out. Only the loop's own blocks, run at most once a turn, are looked at
 /// for its changes, its exit and its accesses.
-pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
+pub(super) fn versioned<G: Guest>(shape: &LoopShape<'_, G>) -> Option<Versioned> {
     let function = shape.function;
     let blocks: Vec<usize> = (0..function.blocks.len())
         .filter(|&b| shape.body[b])
         .collect();
     let instructions = || {
-        blocks.iter().flat_map(|&b| {
-            (function.blocks[b].start..function.blocks[b].end)
-                .step_by(4)
-                .map(move |o| (b, o))
-        })
+        blocks
+            .iter()
+            .flat_map(|&b| function.instructions(b).iter().map(move |&o| (b, o)))
     };
+    let general = Registers::of_class(G::BITS, Some(wcontainers_guest_cpu::Class::General));
     let mut defs: FxHashMap<u32, Vec<(usize, u64)>> = FxHashMap::default();
     for (b, o) in instructions() {
-        for bit in shape.decoded[&o]
-            .effects
-            .defs
-            .bits()
-            .filter(|&bit| bit < 32)
-        {
+        for bit in shape.decoded[&o].effects.defs.intersect(general).bits() {
             defs.entry(bit).or_default().push((b, o));
         }
     }
@@ -166,42 +162,26 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
         if shape.nested[block] {
             return None;
         }
-        let instruction = shape.decoded[&at].instruction;
-        let (width, step, negate) = match instruction {
-            Instruction::AddSub {
-                width,
-                subtract,
-                rd,
-                rn,
-                operand,
-                ..
-            } if Registers::bit(rd) == Some(bit) && Registers::bit(rn) == Some(bit) => {
-                let step = match operand {
-                    Operand::Imm(k) => Value::Imm(k as i64),
-                    Operand::Shifted {
-                        rm: Reg::X(m),
-                        amount: 0,
-                        ..
-                    } if invariant(m.into()) => Value::Reg(m.into()),
-                    _ => return None,
-                };
-                (width, step, subtract)
-            }
-            _ => match instruction.memory_access()?.address {
-                Address::PreIndex { base, offset } | Address::PostIndex { base, offset }
-                    if Registers::bit(base) == Some(bit) =>
-                {
-                    (Width::X64, Value::Imm(offset), false)
+        let i = G::induction(&shape.decoded[&at].instruction)?;
+        if G::reg_bit(i.reg) != Some(bit) || !matches!(i.bits, 32 | 64) {
+            return None;
+        }
+        let step = match i.step {
+            Operand::Imm(k) => Value::Imm(k),
+            Operand::Reg(r) => {
+                let m = G::reg_bit(r)?;
+                if !invariant(m) {
+                    return None;
                 }
-                _ => return None,
-            },
+                Value::Reg(m)
+            }
         };
         Some(Induction {
             at,
             block,
-            width,
+            bits: i.bits,
             step,
-            negate,
+            negate: i.negate,
         })
     };
     // How many steps a register has moved, at most and at least, when it is read at `at` in `block`: one
@@ -226,36 +206,36 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
 
     let mut regions = Vec::new();
     for (b, o) in instructions().filter(|&(b, _)| !shape.nested[b]) {
-        let Some(access) = shape.decoded[&o].instruction.memory_access() else {
+        let Some(access) = only_access(&shape.decoded[&o]).filter(MemoryAccess::plain) else {
             continue;
         };
         let (from, len) = match shape.checks.get(&o) {
-            Some(CheckPlan::Exact) => (0, access.bytes),
+            Some(CheckPlan::Exact) => (0, access.fixed_bytes().expect("a plain access")),
             Some(&CheckPlan::Group { from, len }) => (from, len),
             _ => continue,
         };
-        let (base, index, offset) = match access.address {
-            Address::Offset { base, offset } | Address::PreIndex { base, offset } => {
-                (base, None, offset)
-            }
-            Address::PostIndex { base, .. } => (base, None, 0),
-            Address::Indexed {
-                base,
-                index,
-                extend,
-                shift,
-            } => {
+        let Some(Base::Register(base)) = access.base else {
+            continue;
+        };
+        // Added to the base before the access: the displacement, and a write back made first.
+        let offset = access.displacement
+            + match access.write_back {
+                WriteBack::Before(by) => by,
+                _ => 0,
+            };
+        let index = match access.index {
+            None => None,
+            Some(Index::Register { reg, shift, extend }) => {
                 let Some(domain) = Domain::of_extend(extend) else {
                     continue;
                 };
-                let Some(index) = Registers::bit(index) else {
+                let Some(index) = G::reg_bit(reg) else {
                     continue;
                 };
-                (base, Some((index, domain, shift)), 0)
+                Some((index, domain, shift))
             }
-            Address::Literal { .. } => continue,
         };
-        let Some(base) = Registers::bit(base) else {
+        let Some(base) = G::reg_bit(base) else {
             continue;
         };
         let moves = |bit: u32, domain: Domain| -> Option<Option<Moving>> {
@@ -264,7 +244,7 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
             }
             let i = induction(bit)?;
             // A 32 bit change read as 64 bits is not a fixed step from a value with high bits set.
-            if i.width == Width::W32 && matches!(domain, Domain::U64 | Domain::S64) {
+            if i.bits == 32 && matches!(domain, Domain::U64 | Domain::S64) {
                 return None;
             }
             let (first, short) = steps(&i, b, o);
@@ -305,7 +285,11 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
         }
         regions.push(Region {
             at: o,
-            this: if access.write { PAGE_WRITE } else { PAGE_READ },
+            this: if access.kind == AccessKind::Read {
+                PAGE_READ
+            } else {
+                PAGE_WRITE
+            },
             base,
             index,
             offset,
@@ -325,114 +309,93 @@ pub(super) fn versioned(shape: &LoopShape<'_>) -> Option<Versioned> {
     })
 }
 
+/// The instructions of block `b` before the one at `before`, oldest first, each with its offset and
+/// effects: what `Guest::branch_comparison` looks back over.
+fn path<G: Guest>(
+    shape: &LoopShape<'_, G>,
+    b: usize,
+    before: u64,
+) -> Vec<(u64, G::Instruction, Effects<G>)> {
+    shape
+        .function
+        .instructions(b)
+        .iter()
+        .take_while(|&&o| o != before)
+        .map(|&o| {
+            let d = &shape.decoded[&o];
+            (o, d.instruction, d.effects)
+        })
+        .collect()
+}
+
+/// The comparison block `b`'s last instruction makes, as it holds on the edge to `to`, which must be the
+/// edge it takes or the one it falls through to and not both.
+fn comparison_on_edge<G: Guest>(
+    shape: &LoopShape<'_, G>,
+    b: usize,
+    to: impl Fn(u64) -> bool,
+) -> Option<Comparison<G::Reg>> {
+    let function = shape.function;
+    let last = function.last(b);
+    let instruction = shape.decoded[&last].instruction;
+    let taken = last.wrapping_add_signed(G::flow(&instruction).target?);
+    let along = match (to(taken), to(function.blocks[b].end)) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => return None,
+    };
+    let c = G::branch_comparison(&path(shape, b, last), (last, &instruction))?;
+    Some(Comparison {
+        relation: if along {
+            c.relation
+        } else {
+            c.relation.negated()
+        },
+        ..c
+    })
+}
+
 /// The counting exit at the end of block `e`, if it has one.
-fn counting_exit(
-    shape: &LoopShape<'_>,
+fn counting_exit<G: Guest>(
+    shape: &LoopShape<'_, G>,
     e: usize,
     invariant: &dyn Fn(u32) -> bool,
     induction: &dyn Fn(u32) -> Option<Induction>,
     steps: &dyn Fn(&Induction, usize, u64) -> (i64, i64),
 ) -> Option<Counter> {
     let function = shape.function;
-    let block = &function.blocks[e];
-    let last = block.end - 4;
     let inside = |offset: u64| {
         function
             .at
             .get(&offset)
             .is_some_and(|&b| shape.body[b] && function.blocks[b].start == offset)
     };
-    let (taken, condition) = match shape.decoded[&last].instruction {
-        Instruction::BranchCond { cond, offset } if cond.0 < 14 => {
-            (last.wrapping_add_signed(offset), Ok(cond))
-        }
-        Instruction::CompareBranch {
-            width,
-            nonzero,
-            rt,
-            offset,
-        } => (last.wrapping_add_signed(offset), Err((width, nonzero, rt))),
+    // The comparison under which the loop goes on.
+    let c = comparison_on_edge(shape, e, inside)?;
+    let left = G::reg_bit(c.left)?;
+    let right = match c.right {
+        Operand::Imm(k) => Value::Imm(k),
+        Operand::Reg(r) => Value::Reg(G::reg_bit(r)?),
+    };
+    // Either the first operand moves and the second does not, or the other way round.
+    let (bit, bound, relation) = match right {
+        Value::Reg(m) if invariant(left) => (m, Value::Reg(left), c.relation.swapped()),
+        Value::Reg(m) if invariant(m) => (left, right, c.relation),
+        Value::Imm(_) => (left, right, c.relation),
         _ => return None,
     };
-    // The condition under which the loop goes on.
-    let stays = match (inside(taken), inside(block.end)) {
-        (true, false) => true,
-        (false, true) => false,
-        _ => return None,
+    let relation = match relation {
+        Compared::Ne => Relation::Ne,
+        Compared::Below { inclusive } => Relation::Below { inclusive },
+        Compared::Above { inclusive } => Relation::Above { inclusive },
+        Compared::Eq => return None,
     };
-    let (bit, width, bound, relation, read_at) = match condition {
-        Err((width, nonzero, rt)) => {
-            if nonzero != stays {
-                return None;
-            }
-            (
-                Registers::bit(rt)?,
-                width,
-                Value::Imm(0),
-                (Relation::Ne, false),
-                last,
-            )
-        }
-        Ok(cond) => {
-            let cond = if stays { cond } else { Cond(cond.0 ^ 1) };
-            // The last instruction before the branch that sets flags must be a comparison.
-            let setter = (block.start..last)
-                .step_by(4)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .find(|o| {
-                    shape.decoded[o].effects.defs.intersect(Registers::FLAGS) != Registers::NONE
-                })?;
-            let Instruction::AddSub {
-                width,
-                subtract: true,
-                set_flags: true,
-                rn,
-                operand,
-                ..
-            } = shape.decoded[&setter].instruction
-            else {
-                return None;
-            };
-            let other = match operand {
-                Operand::Imm(k) => Value::Imm(k as i64),
-                Operand::Shifted {
-                    rm: Reg::X(m),
-                    amount: 0,
-                    ..
-                } => Value::Reg(m.into()),
-                _ => return None,
-            };
-            let rn = Registers::bit(rn)?;
-            // Either the first operand moves and the second does not, or the other way round.
-            let (bit, bound, swapped) = match other {
-                Value::Reg(m) if invariant(rn) => (m, Value::Reg(rn), true),
-                Value::Reg(m) if invariant(m) => (rn, other, false),
-                Value::Imm(_) => (rn, other, false),
-                _ => return None,
-            };
-            let relation = match (cond.0, swapped) {
-                (1, _) => (Relation::Ne, false),
-                (3, false) | (8, true) => (Relation::Below { inclusive: false }, false),
-                (9, false) | (2, true) => (Relation::Below { inclusive: true }, false),
-                (8, false) | (3, true) => (Relation::Above { inclusive: false }, false),
-                (2, false) | (9, true) => (Relation::Above { inclusive: true }, false),
-                (11, false) | (12, true) => (Relation::Below { inclusive: false }, true),
-                (13, false) | (10, true) => (Relation::Below { inclusive: true }, true),
-                (12, false) | (11, true) => (Relation::Above { inclusive: false }, true),
-                (10, false) | (13, true) => (Relation::Above { inclusive: true }, true),
-                _ => return None,
-            };
-            (bit, width, bound, relation, setter)
-        }
-    };
-    let (relation, signed) = relation;
+    let signed = c.signed;
     let induction = induction(bit)?;
-    if induction.width == Width::W32 && width == Width::X64 {
+    if induction.bits == 32 && c.bits == 64 {
         return None;
     }
-    let ahead = match steps(&induction, e, read_at) {
+    let ahead = match steps(&induction, e, c.at) {
         (1, 0) => 1,
         // The change comes after the comparison, so it must come in every turn that goes on.
         (0, 1)
@@ -445,17 +408,18 @@ fn counting_exit(
         }
         _ => return None,
     };
-    let domain = match (width, signed) {
-        (Width::W32, false) => Domain::U32,
-        (Width::W32, true) => Domain::S32,
-        (Width::X64, false) => Domain::U64,
-        (Width::X64, true) => Domain::S64,
+    let domain = match (c.bits, signed) {
+        (32, false) => Domain::U32,
+        (32, true) => Domain::S32,
+        (64, false) => Domain::U64,
+        (64, true) => Domain::S64,
+        _ => return None,
     };
     Some(Counter {
         bit,
         induction,
         domain,
-        width,
+        bits: c.bits,
         ahead,
         bound,
         relation,
@@ -465,21 +429,27 @@ fn counting_exit(
 /// The largest value index register `bit` can hold where it is read as `domain` at `at` in block `b`: set
 /// earlier in the block by a load of at most 4 bytes that zero extends, or, when the block does not set it,
 /// bounded by an unsigned comparison with a constant on the only edge into the block (a switch's guard).
-fn index_bound(shape: &LoopShape<'_>, b: usize, at: u64, bit: u32, domain: Domain) -> Option<i64> {
+fn index_bound<G: Guest>(
+    shape: &LoopShape<'_, G>,
+    b: usize,
+    at: u64,
+    bit: u32,
+    domain: Domain,
+) -> Option<i64> {
     let function = shape.function;
-    let sets = |o: &u64| shape.decoded[o].effects.defs.bits().any(|d| d == bit);
+    let sets = |o: &u64| shape.decoded[o].effects.defs.has_bit(bit);
     // The largest value a zero extending load leaves in the register it loads (not a base it writes back).
-    let loaded = |o: u64| match shape.decoded[&o].instruction {
-        Instruction::Load {
-            bytes,
-            signed: None,
-            rt,
-            ..
-        } if bytes <= 4 && Registers::bit(rt) == Some(bit) => Some((1i64 << (8 * bytes)) - 1),
+    let loaded = |o: u64| match G::loaded_max(&shape.decoded[&o].instruction) {
+        Some((r, max)) if G::reg_bit(r) == Some(bit) => Some(max),
         _ => None,
     };
     let block = &function.blocks[b];
-    if let Some(o) = backwards(block.start, at).find(sets) {
+    let before = |b: usize, at: u64| {
+        let instructions = function.instructions(b);
+        let end = instructions.iter().position(|&o| o == at).unwrap();
+        instructions[..end].iter().rev().copied()
+    };
+    if let Some(o) = before(b, at).find(sets) {
         return loaded(o);
     }
     let preds: Vec<usize> = (0..function.blocks.len())
@@ -488,56 +458,36 @@ fn index_bound(shape: &LoopShape<'_>, b: usize, at: u64, bit: u32, domain: Domai
     let &[p] = preds.as_slice() else {
         return None;
     };
-    let pred = &function.blocks[p];
     if p == b || b == 0 {
         return None;
     }
-    let last = pred.end - 4;
-    let Instruction::BranchCond { cond, offset } = shape.decoded[&last].instruction else {
-        return None;
-    };
-    let taken = last.wrapping_add_signed(offset) == block.start;
-    if taken == (pred.end == block.start) || cond.0 >= 14 {
-        return None;
-    }
-    // The condition that holds on the edge into the block.
-    let cond = if taken { cond } else { Cond(cond.0 ^ 1) };
-    let setter = backwards(pred.start, last)
-        .find(|o| shape.decoded[o].effects.defs.intersect(Registers::FLAGS) != Registers::NONE)?;
-    let Instruction::AddSub {
-        width,
-        subtract: true,
-        set_flags: true,
-        rn,
-        operand: Operand::Imm(k),
-        ..
-    } = shape.decoded[&setter].instruction
-    else {
-        return None;
-    };
-    if Registers::bit(rn) != Some(bit) || (setter..last).step_by(4).any(|o| sets(&o)) {
-        return None;
-    }
-    let k = k as i64;
-    let max = match cond.0 {
-        3 => k - 1,
-        9 => k,
+    // The comparison that holds on the edge into the block.
+    let c = comparison_on_edge(shape, p, |o| o == block.start)?;
+    let max = match (c.relation, c.signed, c.right) {
+        (Compared::Below { inclusive: false }, false, Operand::Imm(k)) => k - 1,
+        (Compared::Below { inclusive: true }, false, Operand::Imm(k)) => k,
         _ => return None,
     };
+    let last = function.last(p);
+    let between: Vec<u64> = function
+        .instructions(p)
+        .iter()
+        .copied()
+        .skip_while(|&o| o != c.at)
+        .take_while(|&o| o != last)
+        .collect();
+    if G::reg_bit(c.left) != Some(bit) || between.iter().any(sets) {
+        return None;
+    }
     if !(0..1 << 31).contains(&max) {
         return None;
     }
     // A 32 bit comparison bounds all 64 bits only when what set the register cleared the top half.
-    if width == Width::W32 && matches!(domain, Domain::U64 | Domain::S64) {
-        let def = backwards(pred.start, setter).find(sets)?;
+    if c.bits == 32 && matches!(domain, Domain::U64 | Domain::S64) {
+        let def = before(p, c.at).find(sets)?;
         loaded(def)?;
     }
     Some(max)
-}
-
-/// The instructions from `from` up to `to`, last first.
-fn backwards(from: u64, to: u64) -> impl Iterator<Item = u64> {
-    (0..(to - from) / 4).rev().map(move |i| from + 4 * i)
 }
 
 /// The largest step proven loops allow, so that no product here overflows.
@@ -547,7 +497,7 @@ const MAX_TURNS: i64 = 1 << 32;
 /// Addresses at the loop's entry must lie within this far of zero.
 const MAX_ADDRESS: i64 = 1 << 61;
 
-impl FullEmitter<'_> {
+impl<G: Guest> FullEmitter<'_, G> {
     /// Push 1 when every page each region of the loop can reach allows its access, 0 otherwise.
     pub(super) fn proof(&mut self, v: &Versioned) {
         let mark = self.taken.len();
@@ -606,7 +556,7 @@ impl FullEmitter<'_> {
                     .i64_mul()
                     .i64_const(c.ahead)
                     .i64_sub();
-                if c.width == Width::W32 {
+                if c.bits == 32 {
                     s.i64_const(0xffff_ffff).i64_and();
                 }
                 s.local_tee(turns)
@@ -841,7 +791,7 @@ impl FullEmitter<'_> {
     /// Set i64 local `to` to an induction's step as `domain` reads its changes: sign extended from 32 bits
     /// when only the low 32 bits count.
     fn step_value(&mut self, i: &Induction, domain: Domain, to: u32) {
-        let narrow = i.width == Width::W32 || matches!(domain, Domain::U32 | Domain::S32);
+        let narrow = i.bits == 32 || matches!(domain, Domain::U32 | Domain::S32);
         self.read(i.step, if narrow { Domain::S32 } else { Domain::S64 }, to);
         let mut s = self.sink();
         if let Value::Imm(_) = i.step

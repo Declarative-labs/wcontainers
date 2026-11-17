@@ -183,13 +183,14 @@ fn cut_functions_and_split_translations_match_linux() {
         let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
         assert_eq!(none, theirs, "{} at none", blob.name);
         for module_bytes in [1 << 12, 1 << 16] {
-            let modules = wcontainers_translator::translate_in_modules(
+            let modules = wcontainers_translator::translate_in_modules::<wcontainers_arm64::Arm64>(
                 &blob.bytes,
                 0..blob.code_bytes,
                 &[0],
                 LookAhead::Full,
                 wcontainers_translator::Optimise::Speed,
                 wcontainers_translator_test::runner::probe(),
+                (),
                 module_bytes,
             )
             .unwrap()
@@ -442,13 +443,14 @@ fn measure() {
         let mut best = (Duration::MAX, Duration::MAX, Vec::new());
         for _ in 0..5 {
             let start = Instant::now();
-            let mut translation = translate(
+            let mut translation = translate::<wcontainers_arm64::Arm64>(
                 &blob.bytes,
                 0..blob.code_bytes,
                 &starts,
                 LookAhead::None,
                 wcontainers_translator::Optimise::Speed,
                 wcontainers_translator_test::runner::probe(),
+                (),
             )
             .unwrap();
             let translating = start.elapsed();

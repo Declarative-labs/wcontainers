@@ -5,6 +5,8 @@
 
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
+use wcontainers_arm64::Arm64;
+use wcontainers_guest_cpu::{Guest, HookBody, HookDone, Personality};
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate_in_modules, translate_omitting};
 
@@ -72,10 +74,28 @@ pub extern "C" fn translate(
     let host = wcontainers_arm64::Host::from_probe(probe);
     let code = code_start..code_end;
     let result = INPUT.with_borrow(|blob| match module_bytes {
-        0 => translate_omitting(blob, code, &[start], look_ahead, optimise, host, omit),
+        0 => translate_omitting::<Arm64>(
+            blob,
+            code,
+            &[start],
+            look_ahead,
+            optimise,
+            host,
+            (),
+            omit,
+        ),
         _ => {
             let module_bytes = module_bytes as usize;
-            translate_in_modules(blob, code, &[start], look_ahead, optimise, host, module_bytes)
+            translate_in_modules::<Arm64>(
+                blob,
+                code,
+                &[start],
+                look_ahead,
+                optimise,
+                host,
+                (),
+                module_bytes,
+            )
         }
     });
     match result {
@@ -115,37 +135,49 @@ pub extern "C" fn probe_module() -> i32 {
 }
 
 thread_local! {
-    static STATUS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// A copy of the thread's state for the guest's own hooks, allocated once and never moved.
+    static STATE: RefCell<Vec<u8>> = RefCell::new(vec![0; contract::thread_state_size::<Arm64>()]);
+    static DONE: std::cell::Cell<HookDone> = const {
+        std::cell::Cell::new(HookDone {
+            results: [0; 2],
+            reason: None,
+        })
+    };
 }
 
-/// The float hook's work: one operation in software under `fpcr`, from `fpsr`. Returns the result; the new
-/// FPSR is then read with [`float_status`].
+/// Where the runner copies the thread's state before [`cpu_hook`] and reads it back after.
 #[unsafe(no_mangle)]
-pub extern "C" fn float(operation: i32, a: u64, b: u64, c: u64, fpcr: u32, fpsr: u32) -> u64 {
-    let mut status = fpsr;
-    let result = wcontainers_arm64::exact::run(operation, a, b, c, fpcr, &mut status);
-    STATUS.set(status);
-    result
+pub extern "C" fn cpu_state() -> *mut u8 {
+    STATE.with_borrow_mut(|state| state.as_mut_ptr())
 }
 
-/// FPSR after the last [`float`].
+/// A hook of the guest's own (by its index in the guest's hooks): `Guest::run_hook` on the state at
+/// [`cpu_state`], with the hook's arguments first (the rest 0). Its results are then read with
+/// [`cpu_hook_result`] and the slow path it was with [`cpu_hook_reason`].
 #[unsafe(no_mangle)]
-pub extern "C" fn float_status() -> u32 {
-    STATUS.get()
+pub extern "C" fn cpu_hook(hook: u32, a: i64, b: i64, c: i64, d: i64) {
+    let args = [a, b, c, d];
+    let count = Arm64::HOOKS[hook as usize].params.len();
+    let done = STATE.with_borrow_mut(|state| Arm64::run_hook(hook as usize, &args[..count], state));
+    DONE.set(done);
 }
 
-/// Whether the last [`float`] was the fused multiply-add of a host that does not fuse (1), not exact floating
-/// point the program asked for (0), given FPCR and whether the flags are kept.
+/// Result `i` of the last [`cpu_hook`].
 #[unsafe(no_mangle)]
-pub extern "C" fn float_reason(operation: i32, fpcr: u32, tracking: u32) -> u32 {
-    let (kind, _) = wcontainers_arm64::exact::Operation::decode(operation);
-    u32::from(kind.fused() && fpcr == 0 && tracking == 0)
+pub extern "C" fn cpu_hook_result(i: u32) -> i64 {
+    DONE.get().results[i as usize]
+}
+
+/// The reason number of the slow path the last [`cpu_hook`] was, or -1.
+#[unsafe(no_mangle)]
+pub extern "C" fn cpu_hook_reason() -> i32 {
+    DONE.get().reason.map_or(-1, |r| r as i32)
 }
 
 /// The thread module. Returns its length.
 #[unsafe(no_mangle)]
 pub extern "C" fn thread_module() -> i32 {
-    answer(wcontainers_translator::thread_module())
+    answer(wcontainers_translator::thread_module::<Arm64>())
 }
 
 /// Everything the runner must agree on with the translator and the shared crate, as JSON. Returns its
@@ -161,6 +193,17 @@ pub extern "C" fn contract() -> i32 {
             TrapKind::Unsupported => "unsupported",
             TrapKind::Breakpoint => "breakpoint",
             TrapKind::Alignment => "alignment",
+        })
+        .collect();
+    let guest_hooks: Vec<serde_json::Value> = Arm64::HOOKS
+        .iter()
+        .map(|hook| {
+            let body = match hook.body {
+                HookBody::Clock => "clock",
+                HookBody::CodeChanged => "codeChanged",
+                HookBody::Cpu => "cpu",
+            };
+            serde_json::json!({ "name": hook.name, "body": body })
         })
         .collect();
     let description = serde_json::json!({
@@ -188,15 +231,11 @@ pub extern "C" fn contract() -> i32 {
         "hookLoadCode": HOOK_LOAD_CODE,
         "hookWarn": HOOK_WARN,
         "hookTrap": HOOK_TRAP,
-        "hookFloat": HOOK_FLOAT,
-        "hookClock": HOOK_CLOCK,
-        "hookCodeChanged": HOOK_CODE_CHANGED,
+        "guestHooks": guest_hooks,
+        "align": Arm64::ALIGN,
         "lookup": LOOKUP,
         "probe": wcontainers_arm64::host::PROBE,
-        "threadStateSize": THREAD_STATE_SIZE,
-        "floatTracking": FLOAT_TRACKING,
-        "registerFpsr": offset_of!(RegisterBlock, fpsr),
-        "registerFpcr": offset_of!(RegisterBlock, fpcr),
+        "threadStateSize": thread_state_size::<Arm64>(),
         "pageRead": PAGE_READ,
         "pageWrite": PAGE_WRITE,
         "nextPageRead": NEXT_PAGE_READ,
@@ -208,8 +247,8 @@ pub extern "C" fn contract() -> i32 {
         "warningThreshold": WARNING_THRESHOLD,
         "reasons": Reason::ALL.map(Reason::name),
         "trapKinds": trap_kinds,
-        "stopFlag": wcontainers_abi::STOP_FLAG_OFFSET,
-        "threadBlockSize": wcontainers_abi::THREAD_BLOCK_SIZE,
+        "stopFlag": Arm64::STOP_FLAG_OFFSET,
+        "threadBlockSize": Arm64::BLOCK_SIZE,
         "registerX": offset_of!(RegisterBlock, x),
         "registerSp": offset_of!(RegisterBlock, sp),
         "registerPc": offset_of!(RegisterBlock, pc),

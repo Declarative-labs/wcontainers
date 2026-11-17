@@ -1,18 +1,20 @@
 //! The thread module: one per guest thread. It owns the lookup table and the bottom loop.
 
 use crate::contract::*;
+use crate::layout::Layout;
 use crate::state::Slot;
 use wasm_encoder::{
     BlockType, Catch, CodeSection, EntityType, ExportKind, ExportSection, FunctionSection,
     GlobalType, HeapType, ImportSection, MemArg, MemArgTarget, Module, RefType, TableSection,
     TableType, TagKind, TagSection, TagType, TypeSection, ValType,
 };
+use wcontainers_guest_cpu::Guest;
 
 /// The piece signature: the passed registers and the expected return address in; the passed registers out.
-pub(crate) fn piece_type(types: &mut TypeSection) {
+pub(crate) fn piece_type<G: Guest>(types: &mut TypeSection) {
     types.ty().function(
-        [ValType::I64; crate::code::PARAMETERS as usize],
-        [ValType::I64; crate::PASSED as usize],
+        vec![ValType::I64; G::PARAMETERS as usize],
+        vec![ValType::I64; G::PASSED as usize],
     );
 }
 
@@ -44,9 +46,9 @@ pub(crate) fn memarg(memory: u32, offset: u64, align: u32) -> MemArg {
 
 /// Build the thread module. Its lookup table starts with [`EXACT_SLOT`] and the slot before it; the runner
 /// grows it for the pieces it adds.
-pub fn thread_module() -> Vec<u8> {
+pub fn thread_module<G: Guest>() -> Vec<u8> {
     let mut types = TypeSection::new();
-    piece_type(&mut types); // 0
+    piece_type::<G>(&mut types); // 0
     types
         .ty()
         .function([ValType::I64, ValType::I32], [ValType::I32]); // 1: load_code
@@ -116,7 +118,7 @@ pub fn thread_module() -> Vec<u8> {
     s.i32_const(EXACT_SLOT).table_get(0).local_set(piece);
     s.else_();
     s.global_get(BLOCK);
-    Slot::Pc.load_from(&mut s, STATE_M);
+    Slot::pc::<G>().load_from(&mut s, STATE_M);
     s.local_set(pc);
     let slots = Slots {
         memory: STATE_M,
@@ -124,10 +126,11 @@ pub fn thread_module() -> Vec<u8> {
         at: Value::Global(SLOTS_G),
         cover: Value::Global(SLOTS_COVER_G),
     };
-    lookup(&mut s, pc, slots, offset, piece);
+    lookup::<G>(&mut s, pc, slots, offset, piece);
     s.local_get(piece).ref_is_null().if_(BlockType::Empty);
-    misaligned_code(&mut s, pc, TRAP);
-    s.return_().end();
+    misaligned_code::<G>(&mut s, pc, TRAP, |s| {
+        s.return_();
+    });
     s.local_get(pc)
         .i32_const(0)
         .call(LOAD_CODE)
@@ -139,23 +142,23 @@ pub fn thread_module() -> Vec<u8> {
     s.br(4);
     s.end();
     s.end();
-    for slot in crate::code::passed_slots() {
+    for slot in crate::code::passed_slots::<G>() {
         s.global_get(BLOCK);
         slot.load_from(&mut s, STATE_M);
     }
-    s.i64_const(BOTTOM_RETURN | FLAGS_WANTED)
+    s.i64_const(G::UNREACHABLE_RETURN | G::FLAGS_WANTED)
         .i64_const(0)
         .local_get(piece)
         .ref_as_non_null()
         .call_ref(0);
     // The results, last first, go back to the block. `pc` is where the guest returned to.
-    for slot in crate::code::passed_slots().rev() {
+    for slot in crate::code::passed_slots::<G>().rev() {
         s.local_set(offset).global_get(BLOCK).local_get(offset);
         slot.store_to(&mut s, STATE_M);
     }
     s.i32_const(Reason::ContinuedAfterStackLoss as i32)
         .global_get(BLOCK);
-    Slot::Pc.load_from(&mut s, STATE_M);
+    Slot::pc::<G>().load_from(&mut s, STATE_M);
     s.call(WARN);
     s.br(2);
     s.end(); // try_table
@@ -168,7 +171,7 @@ pub fn thread_module() -> Vec<u8> {
         .return_()
         .end();
     s.global_get(BLOCK);
-    Slot::Pc.load_from(&mut s, STATE_M);
+    Slot::pc::<G>().load_from(&mut s, STATE_M);
     s.local_set(pc);
     s.i32_const(Reason::StackNearlyFull as i32)
         .i32_const(Reason::LeftToAddress as i32)
@@ -214,12 +217,20 @@ pub fn thread_module() -> Vec<u8> {
     module.finish()
 }
 
-/// Open an `if` that is entered, after the trap hook has been called with an alignment fault, when the
-/// i64 local `address` (where control is going, already in `pc`) is not a multiple of 4. The caller ends
-/// it by leaving.
-pub(crate) fn misaligned_code(s: &mut wasm_encoder::InstructionSink<'_>, address: u32, trap: u32) {
+/// Where the i64 local `address` (where control is going, already in `pc`) is not a multiple of the
+/// instruction alignment, call the trap hook with an alignment fault and then `leave`. Nothing is emitted
+/// for a guest whose instructions may start at any byte.
+pub(crate) fn misaligned_code<G: Guest>(
+    s: &mut wasm_encoder::InstructionSink<'_>,
+    address: u32,
+    trap: u32,
+    leave: impl FnOnce(&mut wasm_encoder::InstructionSink<'_>),
+) {
+    if G::ALIGN == 1 {
+        return;
+    }
     s.local_get(address)
-        .i64_const(3)
+        .i64_const(G::ALIGN as i64 - 1)
         .i64_and()
         .i64_const(0)
         .i64_ne()
@@ -227,6 +238,8 @@ pub(crate) fn misaligned_code(s: &mut wasm_encoder::InstructionSink<'_>, address
         .i32_const(TrapKind::Alignment as i32)
         .local_get(address)
         .call(trap);
+    leave(s);
+    s.end();
 }
 
 /// A global or a local.
@@ -257,7 +270,7 @@ pub(crate) struct Slots {
 
 /// Leave the piece for the guest address in i64 local `pc` in local `piece`, or null if there is none:
 /// the array of slots gives its slot in the lookup table. `offset` is an i64 scratch local.
-pub(crate) fn lookup(
+pub(crate) fn lookup<G: Guest>(
     s: &mut wasm_encoder::InstructionSink<'_>,
     pc: u32,
     slots: Slots,
@@ -267,18 +280,26 @@ pub(crate) fn lookup(
     s.ref_null(HeapType::Concrete(0)).local_set(piece);
     s.local_get(pc);
     slots.table_base.push(s);
-    s.i64_sub()
-        .local_tee(offset)
-        .i64_const(3)
-        .i64_and()
-        .i64_eqz()
-        .local_get(offset);
+    s.i64_sub().local_tee(offset);
+    // One i32 slot per `ALIGN` bytes, so the slot's byte index is the offset shifted by 2 - log2(ALIGN).
+    if G::ALIGN > 1 {
+        s.i64_const(G::ALIGN as i64 - 1)
+            .i64_and()
+            .i64_eqz()
+            .local_get(offset);
+    }
     slots.cover.push(s);
-    s.i64_lt_u().i32_and().if_(BlockType::Empty);
+    s.i64_lt_u();
+    if G::ALIGN > 1 {
+        s.i32_and();
+    }
+    s.if_(BlockType::Empty);
     slots.at.push(s);
-    s.local_get(offset)
-        .i32_wrap_i64()
-        .i32_add()
+    s.local_get(offset).i32_wrap_i64();
+    if G::ALIGN_SHIFT < 2 {
+        s.i32_const(2 - G::ALIGN_SHIFT as i32).i32_shl();
+    }
+    s.i32_add()
         .i32_load(memarg(slots.memory, 0, 2))
         .table_get(0)
         .local_set(piece)

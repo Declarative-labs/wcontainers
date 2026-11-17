@@ -13,6 +13,8 @@ use wcontainers_abi::{
     Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET, Syscall,
     Warning,
 };
+use wcontainers_arm64::Arm64;
+use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
 use wcontainers_translator::contract::{self, Reason};
 use wcontainers_translator::{
     LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
@@ -173,7 +175,8 @@ fn thread_module(engine: &Engine) -> Module {
     static MODULE: OnceLock<Module> = OnceLock::new();
     MODULE
         .get_or_init(|| {
-            Module::new(engine, wcontainers_translator::thread_module()).expect("thread module")
+            Module::new(engine, wcontainers_translator::thread_module::<Arm64>())
+                .expect("thread module")
         })
         .clone()
 }
@@ -442,13 +445,14 @@ impl Machine {
     ) {
         self.place(bytes, code.clone(), load_address);
         let host = self.store.data();
-        let translation = translate_in_modules(
+        let translation = translate_in_modules::<Arm64>(
             bytes,
             code,
             starts,
             LookAhead::Full,
             host.optimise,
             host.facts,
+            (),
             module_bytes,
         )
         .expect("translate");
@@ -537,7 +541,7 @@ impl Machine {
     pub fn track_float_flags(&mut self) {
         write_shared(
             &self.state,
-            BLOCK_AT as usize + contract::FLOAT_TRACKING,
+            BLOCK_AT as usize + wcontainers_arm64::FLOAT_TRACKING,
             &1u32.to_le_bytes(),
         );
     }
@@ -669,6 +673,53 @@ fn snapshot(store: &mut impl wasmtime::AsContextMut<Data = Host>) -> RegisterBlo
     RegisterBlock::read_from_bytes(&bytes).unwrap()
 }
 
+/// The WebAssembly type of a hook's parameter or result.
+fn val_type(ty: wasm_encoder::ValType) -> wasmtime::ValType {
+    match ty {
+        wasm_encoder::ValType::I32 => wasmtime::ValType::I32,
+        wasm_encoder::ValType::I64 => wasmtime::ValType::I64,
+        other => unreachable!("a hook takes and gives integers, not {other:?}"),
+    }
+}
+
+/// A hook of the guest's own: its work by `Guest::run_hook` on the thread's state, counted and warned as the
+/// slow path it says it was.
+fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, params: &[Val], results: &mut [Val]) {
+    let state = caller.data().state.clone().unwrap();
+    let mut bytes = vec![0; contract::thread_state_size::<Arm64>()];
+    read_shared(&state, BLOCK_AT as usize, &mut bytes);
+    let args: Vec<i64> = params
+        .iter()
+        .map(|p| p.i64().unwrap_or_else(|| i64::from(p.unwrap_i32())))
+        .collect();
+    let done = Arm64::run_hook(index, &args, &mut bytes);
+    write_shared(&state, BLOCK_AT as usize, &bytes);
+    for (result, value) in results.iter_mut().zip(done.results) {
+        *result = match result {
+            Val::I32(_) => Val::I32(value as i32),
+            _ => Val::I64(value),
+        };
+    }
+    if let Some(reason) = done.reason {
+        let reason = Reason::from_i32(reason as i32).expect("known reason");
+        // Registers are not saved here, so the detail is the hook's first argument, not the address.
+        slow_path(
+            caller.data_mut(),
+            reason,
+            args[0] as u32 as u64,
+            Duration::ZERO,
+        );
+    }
+}
+
+/// The guest's bytes from `pc`, as many as an instruction may take and the memory has.
+fn code_at(caller: &mut Caller<'_, Host>, pc: u64) -> Vec<u8> {
+    let memory = caller.data().memory.unwrap();
+    let data = memory.data(&*caller);
+    let at = (pc as usize).min(data.len());
+    data[at..(at + 16).min(data.len())].to_vec()
+}
+
 /// Count a slow path taken at an address (or for a number) and the time it took; warn once per address
 /// when its count there reaches the threshold.
 fn slow_path(host: &mut Host, reason: Reason, detail: u64, time: Duration) {
@@ -773,6 +824,14 @@ fn hooks(linker: &mut Linker<Host>) {
                     Reason::MemoryFault,
                     address as u64,
                     Duration::ZERO,
+                );
+                let registers = snapshot(&mut caller);
+                let code = code_at(&mut caller, registers.pc);
+                let fault = Arm64::memory_fault(address as u64, &code, &registers);
+                assert_eq!(
+                    fault,
+                    MemoryFault::Page,
+                    "the abi has a memory fault exit only"
                 );
                 let access = if access == 1 {
                     Access::Write
@@ -885,56 +944,37 @@ fn hooks(linker: &mut Linker<Host>) {
             },
         )
         .unwrap();
-    linker
-        .func_wrap(
-            HOOKS,
-            HOOK_FLOAT,
-            |mut caller: Caller<'_, Host>, operation: i32, a: i64, b: i64, c: i64| -> i64 {
-                let state = caller.data().state.clone().unwrap();
-                let word = |at: usize| {
-                    let mut bytes = [0u8; 4];
-                    read_shared(&state, BLOCK_AT as usize + at, &mut bytes);
-                    u32::from_le_bytes(bytes)
-                };
-                let fpsr_at = core::mem::offset_of!(RegisterBlock, fpsr);
-                let fpcr = word(core::mem::offset_of!(RegisterBlock, fpcr));
-                let mut fpsr = word(fpsr_at);
-                let tracking = word(contract::FLOAT_TRACKING);
-                let result = wcontainers_arm64::exact::run(
-                    operation, a as u64, b as u64, c as u64, fpcr, &mut fpsr,
+    for (index, hook) in Arm64::HOOKS.iter().enumerate() {
+        match hook.body {
+            HookBody::Clock => linker
+                .func_wrap(HOOKS, hook.name, |caller: Caller<'_, Host>| -> i64 {
+                    caller.data().started.elapsed().as_nanos() as i64
+                })
+                .unwrap(),
+            HookBody::CodeChanged => linker
+                .func_wrap(
+                    HOOKS,
+                    hook.name,
+                    |mut caller: Caller<'_, Host>, address: i64| {
+                        forget_code(&mut caller, address as u64);
+                    },
+                )
+                .unwrap(),
+            HookBody::Cpu => {
+                let ty = wasmtime::FuncType::new(
+                    linker.engine(),
+                    hook.params.iter().map(|&t| val_type(t)),
+                    hook.results.iter().map(|&t| val_type(t)),
                 );
-                write_shared(&state, BLOCK_AT as usize + fpsr_at, &fpsr.to_le_bytes());
-                let (kind, _) = wcontainers_arm64::exact::Operation::decode(operation);
-                let reason = if kind.fused() && fpcr == 0 && tracking == 0 {
-                    Reason::SoftwareFusedMultiplyAdd
-                } else {
-                    Reason::ExactFloatingPointRequested
-                };
-                // Registers are not saved here, so the detail is the operation, not the address.
-                slow_path(
-                    caller.data_mut(),
-                    reason,
-                    u64::from(operation as u32),
-                    Duration::ZERO,
-                );
-                result as i64
-            },
-        )
-        .unwrap();
-    linker
-        .func_wrap(HOOKS, HOOK_CLOCK, |caller: Caller<'_, Host>| -> i64 {
-            caller.data().started.elapsed().as_nanos() as i64
-        })
-        .unwrap();
-    linker
-        .func_wrap(
-            HOOKS,
-            HOOK_CODE_CHANGED,
-            |mut caller: Caller<'_, Host>, address: i64| {
-                forget_code(&mut caller, address as u64);
-            },
-        )
-        .unwrap();
+                linker
+                    .func_new(HOOKS, hook.name, ty, move |mut caller, params, results| {
+                        cpu_hook(&mut caller, index, params, results);
+                        Ok(())
+                    })
+                    .unwrap()
+            }
+        };
+    }
     linker
         .func_wrap(
             HOOKS,
@@ -1051,9 +1091,17 @@ fn translate_load(
     omit: Omit,
 ) -> Load {
     let host = store.as_context().data();
-    let translation =
-        translate_omitting(bytes, code, starts, look_ahead, optimise, host.facts, omit)
-            .expect("translate");
+    let translation = translate_omitting::<Arm64>(
+        bytes,
+        code,
+        starts,
+        look_ahead,
+        optimise,
+        host.facts,
+        (),
+        omit,
+    )
+    .expect("translate");
     compile(&host.engine, load_address, translation)
 }
 

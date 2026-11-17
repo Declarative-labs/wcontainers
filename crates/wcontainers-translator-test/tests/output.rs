@@ -6,6 +6,7 @@
 //! (sets: `bench`, which is the benchmark set and the thread module, and the names of the real binaries).
 
 use std::fmt::Write;
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::{BOUND, LookAhead, Optimise, Translation, translate};
 use wcontainers_translator_test::binaries::{Binary, SOURCES};
 use wcontainers_translator_test::programs::{Library, build_with};
@@ -30,7 +31,11 @@ fn lines(out: &mut String, name: &str, translation: &Translation) {
 /// The benchmark set: the whole program (as `measure_benchmarks` sizes it) and each workload alone, from
 /// address 0, and the thread module.
 fn bench(out: &mut String) {
-    line(out, "thread", &wcontainers_translator::thread_module());
+    line(
+        out,
+        "thread",
+        &wcontainers_translator::thread_module::<Arm64>(),
+    );
     let mut blobs = vec![build_with("bench", "-O2", Library::None, &["SCALE=1"])];
     for k in 1..=8 {
         let workload = format!("WORKLOAD={k}");
@@ -44,13 +49,14 @@ fn bench(out: &mut String) {
     for blob in &blobs {
         for (label, look_ahead) in LOOK_AHEADS {
             for optimise in SETTINGS {
-                let translation = translate(
+                let translation = translate::<Arm64>(
                     &blob.bytes,
                     0..blob.code_bytes,
                     &[0],
                     look_ahead,
                     optimise,
                     probe(),
+                    (),
                 )
                 .unwrap();
                 lines(
@@ -73,13 +79,14 @@ fn binary(out: &mut String, name: &str) {
     let starts = binary.starts.all();
     for (label, look_ahead) in LOOK_AHEADS {
         for optimise in SETTINGS {
-            let translation = translate(
+            let translation = translate::<Arm64>(
                 &binary.image,
                 binary.code.clone(),
                 &starts,
                 look_ahead,
                 optimise,
                 probe(),
+                (),
             )
             .unwrap();
             lines(out, &format!("{name}-{label}-{optimise:?}"), &translation);
