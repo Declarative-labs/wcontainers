@@ -52,7 +52,9 @@ branches into it at the start and end of every run.
   text of `TextureRegion::stencil` and plan 4.2, where the direct3d-11 track stated the same rule
   as run 3 (copies between textures move both aspects): kept one statement with both reasons. The
   mid-run merges (after the fixes were committed) brought all five in again; a conflict in the same
-  plan paragraph, where the direct3d-11 branch held run 3's older text, kept ours.
+  plan paragraph, where the direct3d-11 branch held run 3's older text, kept ours. The end merges
+  brought webgpu, direct3d-11 and direct3d-12 in without conflict (webgl, shaders and rig had
+  nothing new).
 
 ## G1's second check, and how each finding was settled (run 4)
 
@@ -273,6 +275,8 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     vertex stage's location outputs, packed 32-bit, interleaved into one target or one output per
     target) and `Limits::capture_buffers` what it bounds. Kept: it states the base primitive for
     every back end.
+  - From the webgpu track (3f5519a, merged at the end): `SlowPath::StencilWrittenByDraw`. Kept: a
+    named slow path.
 
 - G1 run 3:
   - c743db5 ("interface: stated the alignment and limits of buffer bindings and which aspect a copy
@@ -427,8 +431,14 @@ also checks every limit it declares that a call can pass. No format it
     after-sweep shared a build directory with the first and ran against a stale `wcontainers-gpu`;
     it was discarded and run again clean.
   - Suite on the recording back end 24 of 24; rules 78 of 78; helpers 14 of 14; fast paths 11 of
-    11; `tests/recorder.rs` 30 of 30; `wcontainers-gpu` 32 of 32. The whole workspace checks after
-    the mid-run merges.
+    11; `tests/recorder.rs` 30 of 30; `wcontainers-gpu` 32 of 32, with clippy clean, after the end
+    merges (394dfb6). The whole workspace checks after the mid-run and the end merges.
+  - The check's own 16 faults (its `g1-check2/mutate.py`) on the final tree: 15 fail a test, each
+    the one written for it (scratch `g1r4/check-mutations2.log`); `attached-twice` passes, as that
+    draw guard is unreachable now that `begin_pass` refuses the same subresource attached twice
+    (`a_subresource_is_attached_once`). That script copies the tree with its file times kept, so after
+    a fault in `wcontainers-gpu` cargo keeps the faulty build for the faults that follow; run here
+    with plain copies (`g1r4/check-mutations.log` shows the contaminated first attempt).
   - The two new helper tests checked against the old code (scratch tree with the two fixes undone):
     the four-sample halves count 0 instead of 9,616, and `prepared_use` gives (4, 3) instead of
     (2, 5).
