@@ -429,6 +429,16 @@ load not sampled; Mac load average 18 to 64):
   wait for the GPU) took 473.7 ms, each draw call under 0.1 ms; after `prepare`, the 16 `prepare`
   calls took 0.6 ms, waiting for a submit after them 441.3 ms (the compiles), and the frame
   4.4 ms with no miss.
+- This Mac (Apple M5 Max, wgpu on Metal), two single jobs from the committed tree (af2d885, then
+  65e7755 for copies and the suite; Mac load average 18 to 37; build 54 s at `-j 2`): bindings 10
+  of 10, blocks 2 of 2, copies 4 of 4 (after the one-step allowance for 24-bit depth stored as
+  float: the probe answers `Float(0.10000001)` here, and the read of one texel was one step off a
+  near tie), depth 2 of 2, fitted 1, prepare 1, raster 1, scenes 4 of 4, writes 11 of 11, suite
+  23 of 24 (present, the known failure below). Differences from the RTX 3080's Direct3D
+  references, all within the rig's allowance: triangle 1952 pixels by 1, quads 2455 pixels by 1 (on
+  every depth format), instanced 0, the eight viewports 662 pixels by 1. `prepare` there: 16
+  unprepared first draws median 0.12 ms, longest 0.42 ms, frame 4.1 ms; after 2.9 ms of prepares,
+  median 0.3 us, frame 0.89 ms.
 - `prepare` natively, alone in the GPU queue: Direct3D 12, unprepared draw median 9.53 ms, longest
   13.56 ms, frame 158.5 ms; after 150.4 ms of prepares, draw median 0.9 us, longest 4.4 us, frame
   1.15 ms. Vulkan: unprepared median 0.43 ms, longest 0.83 ms, frame 7.9 ms; after 6.7 ms of
@@ -573,8 +583,9 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
   packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them.
 - Declared absent until built or measured: `TIMESTAMPS`.
-- On macOS the suite's `present_shows_the_frame` fails: the test host (tests/suite.rs) opens
-  windows only on Windows.
+- On macOS the suite's `present_shows_the_frame` fails as a known failure: the test cannot read
+  what a window shows there without the screen recording permission (ScreenCaptureKit), which an
+  unattended test does not have, so the host (tests/suite.rs) opens windows only on Windows.
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
   programs.
@@ -582,13 +593,19 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2)
 
-The pass bar items still open, in the order to take them:
-- This Mac's GPU: a window for the suite's present test on macOS (tests/suite.rs opens windows
-  only on Windows). Run it only as single jobs.
-- The rest of "Not carried out yet", vertex formats WebGPU lacks first.
+Every pass bar item has been run; what is left:
+- Present on this Mac (known failure above): only with the owner granting the test the screen
+  recording permission, or a way to read a CAMetalLayer's shown frame without it.
+- The rest of "Not carried out yet", vertex formats WebGPU lacks first. The plan's route (a compute
+  pass widening the streams into a shadow buffer, cached until the buffer is written) has to run
+  before the pass that draws, so a draw needing it inside an open pass splits the pass as an
+  ordered write does; the cache needs a written-epoch on each buffer that every write, copy,
+  clear and storage binding moves.
 
 ## Departures from the plan
 
+- The shared suite's present test is not checked on macOS (see "Not carried out yet"); the suite's
+  other 23 tests pass there.
 - The plan asks BC textures decoded to be compared with Direct3D "within the stated tolerance".
   The tolerance stated is WARP's distance from the GPU plus one step of the decoded storage
   format, since no fixed one-step tolerance is met by Direct3D's own WARP on these blocks.
