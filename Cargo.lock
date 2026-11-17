@@ -305,6 +305,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex 2.0.1",
 ]
 
@@ -1120,6 +1122,16 @@ checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
 ]
 
 [[package]]
@@ -2638,6 +2650,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-direct3d-11"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "wcontainers-gpu",
+ "wcontainers-shaders",
+]
+
+[[package]]
 name = "wcontainers-direct3d-12"
 version = "0.1.0"
 dependencies = [
@@ -2650,6 +2671,21 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wgpu",
+]
+
+[[package]]
+name = "wcontainers-directx"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "parking_lot",
+ "pollster",
+ "wcontainers-direct3d-11",
+ "wcontainers-gpu",
+ "wcontainers-gpu-webgpu",
+ "wgpu",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
@@ -2771,6 +2807,8 @@ dependencies = [
 name = "wcontainers-shaders"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "cc",
  "naga",
  "wcontainers-gpu",
 ]

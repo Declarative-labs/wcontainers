@@ -1,0 +1,3135 @@
+//! Lowers dxbc-spirv's legalised IR (SSA, structured control flow) straight into a naga module.
+//!
+//! Inputs and outputs live in private variables that an entry point wrapper fills from its arguments and
+//! reads into its result, so the shader's own functions read and write them anywhere. Every user
+//! location is a four-component value, so stages converted apart always match. An SSA value used outside
+//! the block that makes it, and every phi, goes through a function variable; within a block, values are
+//! plain expressions.
+
+use crate::ConvertError;
+use crate::ir::{self, Basic, Ir, Op, Ty, builtin, code, construct, interp, kind, scalar};
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::num::NonZeroU32;
+use naga::{
+    AddressSpace, ArraySize, BinaryOperator, Block, Expression, Function, FunctionArgument,
+    FunctionResult, GlobalVariable, Handle, ImageClass, ImageDimension, ImageQuery, Literal,
+    LocalVariable, MathFunction, Module, ResourceBinding, SampleLevel, Scalar, ScalarKind, Span,
+    Statement, StructMember, SwitchCase, SwitchValue, SwizzleComponent, Type, TypeInner,
+    UnaryOperator, VectorSize,
+};
+use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
+use wcontainers_gpu::{
+    DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
+    ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage, StageExtras, StageValue,
+    SystemValue, VariantKey, helper_binding,
+};
+
+type Result<T> = core::result::Result<T, ConvertError>;
+
+fn unsupported(what: &'static str) -> ConvertError {
+    ConvertError::Unsupported(what)
+}
+
+fn malformed(what: String) -> ConvertError {
+    ConvertError::Malformed(what)
+}
+
+/// What a lowered SSA value is.
+#[derive(Clone)]
+enum Val {
+    Expr(Handle<Expression>),
+    /// The members of a struct value (image size queries, carries).
+    Tuple(Vec<Handle<Expression>>),
+}
+
+/// A resource's global and what the shader does with it.
+#[derive(Clone, Copy)]
+struct Resource {
+    var: Handle<GlobalVariable>,
+    /// The texture's dimension and arrayness, for images.
+    image: Option<(u64, bool)>,
+    /// The texture holds depth (it is compared against).
+    depth: bool,
+}
+
+/// One input or output declaration of the IR.
+struct Io {
+    var: Handle<GlobalVariable>,
+    ty: Ty,
+    location: Option<(u32, u32)>,
+    builtin: Option<u64>,
+    interpolation: u64,
+}
+
+struct Block2 {
+    label: u32,
+    /// Ids of the block's instructions after its label, terminator included.
+    first: u32,
+    last: u32,
+    phis: Vec<u32>,
+}
+
+/// Lowers a whole shader.
+pub(crate) fn lower(ir: &Ir, variant: &VariantKey) -> Result<(Module, Reflection, ShaderStage)> {
+    let mut l = Lowering::new(ir, variant)?;
+    l.declare()?;
+    l.functions()?;
+    l.entry_point()?;
+    let stage = match l.stage {
+        SourceStage::Vertex => ShaderStage::Vertex,
+        SourceStage::Pixel => ShaderStage::Fragment,
+        SourceStage::Compute => ShaderStage::Compute,
+        _ => unreachable!(),
+    };
+    Ok((l.module, l.reflection, stage))
+}
+
+struct Lowering<'a> {
+    ir: &'a Ir,
+    variant: &'a VariantKey,
+    module: Module,
+    stage: SourceStage,
+    set: u32,
+    reflection: Reflection,
+    resources: HashMap<u32, Resource>,
+    io: Vec<(u32, Io)>,
+    io_index: HashMap<u32, usize>,
+    /// Private, workgroup and constant-array variables by declaring id.
+    memory: HashMap<u32, Handle<GlobalVariable>>,
+    functions: HashMap<u32, Handle<Function>>,
+    main: u32,
+    helpers: Option<Handle<GlobalVariable>>,
+    early_tests: bool,
+    conservative: Option<naga::ConservativeDepth>,
+    workgroup: [u32; 3],
+    /// Images and samplers used in depth comparisons, by declaring id.
+    compared: HashSet<u32>,
+    semantics: HashMap<u32, (String, u32)>,
+    discards: bool,
+    side_effects: bool,
+}
+
+impl<'a> Lowering<'a> {
+    fn new(ir: &'a Ir, variant: &'a VariantKey) -> Result<Self> {
+        let entry = ir
+            .ops
+            .iter()
+            .position(|op| op.code == code::ENTRY_POINT)
+            .ok_or_else(|| malformed("no entry point".into()))?;
+        let entry = &ir.ops[entry];
+        let stage = match entry.lits.last().copied().unwrap_or(0) {
+            ir::stage::VERTEX => SourceStage::Vertex,
+            ir::stage::PIXEL => SourceStage::Pixel,
+            ir::stage::COMPUTE => SourceStage::Compute,
+            ir::stage::GEOMETRY => return Err(unsupported("GeometryShader")),
+            ir::stage::HULL => return Err(unsupported("HullShader")),
+            ir::stage::DOMAIN => return Err(unsupported("DomainShader")),
+            _ => return Err(malformed("unknown stage".into())),
+        };
+        let main = *entry
+            .refs
+            .first()
+            .ok_or_else(|| malformed("entry point without function".into()))?;
+        let set = match stage {
+            SourceStage::Pixel => 1,
+            _ => 0,
+        };
+        let mut module = Module::default();
+        let filter = module.diagnostic_filters.append(
+            naga::diagnostic_filter::DiagnosticFilterNode {
+                inner: naga::diagnostic_filter::DiagnosticFilter {
+                    new_severity: naga::diagnostic_filter::Severity::Off,
+                    triggering_rule: naga::diagnostic_filter::FilterableTriggeringRule::Standard(
+                        naga::diagnostic_filter::StandardFilterableTriggeringRule::DerivativeUniformity,
+                    ),
+                },
+                parent: None,
+            },
+            Span::UNDEFINED,
+        );
+        module.diagnostic_filter_leaf = Some(filter);
+        Ok(Lowering {
+            ir,
+            variant,
+            module,
+            stage,
+            set,
+            reflection: Reflection {
+                stage,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                bindings: Vec::new(),
+                helpers: Vec::new(),
+                helper_size: 0,
+                sampled_pairs: Vec::new(),
+                extras: StageExtras::None,
+            },
+            resources: HashMap::default(),
+            io: Vec::new(),
+            io_index: HashMap::default(),
+            memory: HashMap::default(),
+            functions: HashMap::default(),
+            main,
+            helpers: None,
+            early_tests: false,
+            conservative: None,
+            workgroup: [1; 3],
+            compared: HashSet::default(),
+            semantics: HashMap::default(),
+            discards: false,
+            side_effects: false,
+        })
+    }
+
+    // Types.
+
+    fn scalar(s: u8) -> Result<Scalar> {
+        Ok(match s {
+            scalar::BOOL => Scalar::BOOL,
+            scalar::I32 => Scalar::I32,
+            scalar::U32 | scalar::UNKNOWN => Scalar::U32,
+            scalar::F32 => Scalar::F32,
+            3 | 4 | 7 | 8 | 11 | 14..=17 => return Err(unsupported("Type16Bit")),
+            6 | 10 => return Err(unsupported("Type64BitInteger")),
+            13 => return Err(unsupported("Float64")),
+            _ => return Err(malformed(format!("scalar type {s}"))),
+        })
+    }
+
+    fn ty(&mut self, inner: TypeInner) -> Handle<Type> {
+        self.module
+            .types
+            .insert(Type { name: None, inner }, Span::UNDEFINED)
+    }
+
+    fn basic_inner(b: Basic) -> Result<TypeInner> {
+        let scalar = Self::scalar(b.scalar)?;
+        Ok(match b.size {
+            1 => TypeInner::Scalar(scalar),
+            n => TypeInner::Vector {
+                size: vector_size(n)?,
+                scalar,
+            },
+        })
+    }
+
+    fn basic(&mut self, b: Basic) -> Result<Handle<Type>> {
+        let inner = Self::basic_inner(b)?;
+        Ok(self.ty(inner))
+    }
+
+    fn scalar_ty(&mut self, s: Scalar) -> Handle<Type> {
+        self.ty(TypeInner::Scalar(s))
+    }
+
+    fn vec_ty(&mut self, n: u8, s: Scalar) -> Result<Handle<Type>> {
+        self.basic(Basic {
+            scalar: scalar_code(s),
+            size: n,
+        })
+    }
+
+    /// The naga type of an IR type with one member, arrays included.
+    fn ir_ty(&mut self, t: &Ty) -> Result<Handle<Type>> {
+        let [member] = t.members[..] else {
+            return Err(unsupported("StructType"));
+        };
+        let mut handle = self.basic(member)?;
+        let mut size = basic_size(member);
+        let mut align = basic_align(member);
+        for &count in &t.dims {
+            let stride = size.next_multiple_of(align);
+            handle = self.ty(TypeInner::Array {
+                base: handle,
+                size: match NonZeroU32::new(count) {
+                    Some(n) => ArraySize::Constant(n),
+                    None => ArraySize::Dynamic,
+                },
+                stride,
+            });
+            size = stride * count.max(1);
+            align = align.max(4);
+        }
+        Ok(handle)
+    }
+
+    fn global(
+        &mut self,
+        name: String,
+        space: AddressSpace,
+        binding: Option<ResourceBinding>,
+        ty: Handle<Type>,
+        init: Option<Handle<Expression>>,
+    ) -> Handle<GlobalVariable> {
+        self.module.global_variables.append(
+            GlobalVariable {
+                name: Some(name),
+                space,
+                binding,
+                ty,
+                init,
+                memory_decorations: Default::default(),
+            },
+            Span::UNDEFINED,
+        )
+    }
+
+    // Declarations.
+
+    fn declare(&mut self) -> Result<()> {
+        // Which images and samplers are compared against decides their types.
+        for op in &self.ir.ops {
+            let compare = match op.code {
+                code::IMAGE_SAMPLE => op.refs.get(10).copied().unwrap_or(0) != 0,
+                code::IMAGE_GATHER => op.refs.get(5).copied().unwrap_or(0) != 0,
+                _ => false,
+            };
+            if compare {
+                for &d in &op.refs[..2] {
+                    let dcl = self.ir.op(d).refs[0];
+                    self.compared.insert(dcl);
+                }
+            }
+        }
+        for id in 1..=self.ir.ops.len() as u32 {
+            let op = self.ir.op(id);
+            if op.code > code::LAST_DECLARATIVE {
+                break;
+            }
+            self.declare_op(id, op)?;
+        }
+        if let SourceStage::Vertex = self.stage
+            && self.variant.draw_base != DrawBaseSource::None
+            && self.io.iter().any(|(_, io)| {
+                matches!(io.builtin, Some(builtin::VERTEX_ID | builtin::INSTANCE_ID))
+            })
+        {
+            self.helper_block()?;
+        }
+        Ok(())
+    }
+
+    fn declare_op(&mut self, id: u32, op: &Op) -> Result<()> {
+        match op.code {
+            code::SEMANTIC => {
+                let index = op.lits.first().copied().unwrap_or(0) as u32;
+                let name = ir::literal_string(op.lits.get(1..).unwrap_or(&[]));
+                self.semantics.insert(op.refs[0], (name, index));
+            }
+            code::SET_CS_WORKGROUP_SIZE => {
+                for (w, &l) in self.workgroup.iter_mut().zip(&op.lits) {
+                    *w = l as u32;
+                }
+            }
+            code::SET_PS_EARLY_FRAGMENT_TEST => self.early_tests = true,
+            code::SET_PS_DEPTH_GREATER_EQUAL => {
+                self.conservative = Some(naga::ConservativeDepth::GreaterEqual)
+            }
+            code::SET_PS_DEPTH_LESS_EQUAL => {
+                self.conservative = Some(naga::ConservativeDepth::LessEqual)
+            }
+            code::DCL_INPUT
+            | code::DCL_INPUT_BUILT_IN
+            | code::DCL_OUTPUT
+            | code::DCL_OUTPUT_BUILT_IN => self.declare_io(id, op)?,
+            code::DCL_SAMPLER => {
+                let compare = self.compared.contains(&id);
+                let ty = self.ty(TypeInner::Sampler {
+                    comparison: compare,
+                });
+                self.resource(id, op, SlotKind::Sampler, ty, None, false)?;
+            }
+            code::DCL_CBV => {
+                if self.variant.constants_as_storage | self.variant.constants_as_texture != 0 {
+                    return Err(unsupported("ConstantsVariant"));
+                }
+                let ty = self.ir_ty(&op.ty)?;
+                self.resource(id, op, SlotKind::Uniform, ty, None, false)?;
+            }
+            code::DCL_SRV | code::DCL_UAV => {
+                let storage = op.code == code::DCL_UAV;
+                let k = op.lits[3];
+                let slot = if storage {
+                    SlotKind::Storage
+                } else {
+                    SlotKind::Texture
+                };
+                match k {
+                    kind::BUFFER_TYPED => return Err(unsupported("TypedBuffer")),
+                    kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
+                        let ty = self.ir_ty(&op.ty)?;
+                        let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
+                        let access = if read_only {
+                            naga::StorageAccess::LOAD
+                        } else {
+                            naga::StorageAccess::LOAD | naga::StorageAccess::STORE
+                        };
+                        let space = AddressSpace::Storage { access };
+                        self.resource_in(id, op, slot, ty, space, None, false)?;
+                    }
+                    _ => {
+                        if storage {
+                            return Err(unsupported("StorageImage"));
+                        }
+                        let (dim, arrayed, multi) = image_dim(k)?;
+                        let depth = self.compared.contains(&id);
+                        let member = op
+                            .ty
+                            .basic()
+                            .ok_or_else(|| malformed("image type".into()))?;
+                        let class = if depth {
+                            ImageClass::Depth { multi }
+                        } else {
+                            ImageClass::Sampled {
+                                kind: Self::scalar(member.scalar)?.kind,
+                                multi,
+                            }
+                        };
+                        let ty = self.ty(TypeInner::Image {
+                            dim,
+                            arrayed,
+                            class,
+                        });
+                        self.resource(id, op, slot, ty, Some((k, arrayed)), depth)?;
+                    }
+                }
+            }
+            code::DCL_UAV_COUNTER => return Err(unsupported("StorageCounter")),
+            code::DCL_LDS => {
+                let ty = self.ir_ty(&op.ty)?;
+                let var = self.global(format!("lds{id}"), AddressSpace::WorkGroup, None, ty, None);
+                self.memory.insert(id, var);
+            }
+            code::DCL_SCRATCH => {
+                let ty = self.ir_ty(&op.ty)?;
+                let var = self.global(
+                    format!("scratch{id}"),
+                    AddressSpace::Private,
+                    None,
+                    ty,
+                    None,
+                );
+                self.memory.insert(id, var);
+            }
+            code::DCL_TMP => return Err(malformed("temporary left after SSA".into())),
+            code::DCL_INPUT_TARGET => return Err(unsupported("InputTarget")),
+            36 | 37 => return Err(unsupported("PushData")),
+            47 => return Err(unsupported("StreamOutput")),
+            code::DCL_PARAM
+            | code::ENTRY_POINT
+            | code::DEBUG_NAME
+            | code::DEBUG_MEMBER_NAME
+            | code::CONSTANT
+            | code::UNDEF
+            | code::SET_FP_MODE => {}
+            17..=20 | 24..=26 => {}
+            _ => return Err(malformed(format!("declaration {}", op.code))),
+        }
+        Ok(())
+    }
+
+    fn resource(
+        &mut self,
+        id: u32,
+        op: &Op,
+        slot: SlotKind,
+        ty: Handle<Type>,
+        image: Option<(u64, bool)>,
+        depth: bool,
+    ) -> Result<()> {
+        let space = match slot {
+            SlotKind::Uniform => AddressSpace::Uniform,
+            _ => AddressSpace::Handle,
+        };
+        self.resource_in(id, op, slot, ty, space, image, depth)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resource_in(
+        &mut self,
+        id: u32,
+        op: &Op,
+        slot: SlotKind,
+        ty: Handle<Type>,
+        space: AddressSpace,
+        image: Option<(u64, bool)>,
+        depth: bool,
+    ) -> Result<()> {
+        let (space_index, register, count) =
+            (op.lits[0] as u32, op.lits[1] as u32, op.lits[2] as u32);
+        if count != 1 {
+            return Err(unsupported("ResourceArray"));
+        }
+        let binding = slot
+            .binding(register)
+            .ok_or(unsupported("BindingsBeyondLimit"))?;
+        let prefix = match slot {
+            SlotKind::Uniform => "cb",
+            SlotKind::Sampler => "s",
+            SlotKind::Texture => "t",
+            SlotKind::Storage => "u",
+            SlotKind::Counter => "c",
+        };
+        let var = self.global(
+            format!("{prefix}{register}"),
+            space,
+            Some(ResourceBinding {
+                group: self.set,
+                binding,
+            }),
+            ty,
+            None,
+        );
+        self.resources.insert(id, Resource { var, image, depth });
+        self.reflection.bindings.push(ReflectedBinding {
+            kind: slot,
+            space: space_index,
+            register,
+            count,
+            set: self.set,
+            binding,
+            added: None,
+        });
+        Ok(())
+    }
+
+    fn declare_io(&mut self, id: u32, op: &Op) -> Result<()> {
+        let input = matches!(op.code, code::DCL_INPUT | code::DCL_INPUT_BUILT_IN);
+        let (location, builtin, interpolation) = match op.code {
+            code::DCL_INPUT => (
+                Some((op.lits[0] as u32, op.lits[1] as u32)),
+                None,
+                op.lits.get(2).copied().unwrap_or(0),
+            ),
+            code::DCL_OUTPUT => (Some((op.lits[0] as u32, op.lits[1] as u32)), None, 0),
+            code::DCL_INPUT_BUILT_IN => {
+                (None, Some(op.lits[0]), op.lits.get(1).copied().unwrap_or(0))
+            }
+            _ => (None, Some(op.lits[0]), 0),
+        };
+        if let Some(b) = builtin {
+            self.check_builtin(b, input)?;
+        }
+        let ty = self.ir_ty(&op.ty)?;
+        let name = format!("{}{id}", if input { "in" } else { "out" });
+        let var = self.global(name, AddressSpace::Private, None, ty, None);
+        self.io_index.insert(id, self.io.len());
+        self.io.push((
+            id,
+            Io {
+                var,
+                ty: op.ty.clone(),
+                location,
+                builtin,
+                interpolation,
+            },
+        ));
+        Ok(())
+    }
+
+    fn check_builtin(&self, b: u64, input: bool) -> Result<()> {
+        let ok = match (self.stage, input, b) {
+            (_, false, builtin::POSITION) => self.stage == SourceStage::Vertex,
+            (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => {
+                self.variant.draw_base != DrawBaseSource::Arguments
+            }
+            (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
+            | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
+            | (SourceStage::Pixel, false, builtin::DEPTH | builtin::SAMPLE_MASK) => true,
+            (
+                SourceStage::Compute,
+                true,
+                builtin::WORKGROUP_ID
+                | builtin::GLOBAL_THREAD_ID
+                | builtin::LOCAL_THREAD_ID
+                | builtin::LOCAL_THREAD_INDEX,
+            ) => true,
+            _ => false,
+        };
+        if ok {
+            return Ok(());
+        }
+        Err(unsupported(match b {
+            builtin::CLIP_DISTANCE => "ClipDistance",
+            builtin::CULL_DISTANCE => "CullDistance",
+            builtin::PRIMITIVE_ID => "PrimitiveId",
+            builtin::LAYER_INDEX => "RenderTargetArrayIndex",
+            builtin::VIEWPORT_INDEX => "ViewportArrayIndex",
+            builtin::SAMPLE_COUNT => "SampleCount",
+            builtin::SAMPLE_POSITION => "SamplePosition",
+            builtin::STENCIL_REF => "StencilRef",
+            builtin::IS_FULLY_COVERED => "InnerCoverage",
+            builtin::VERTEX_ID | builtin::INSTANCE_ID => "DrawBaseFromArguments",
+            _ => "BuiltIn",
+        }))
+    }
+
+    /// The vertex stage's helper constants: the draw's bases at offset 0.
+    fn helper_block(&mut self) -> Result<()> {
+        if self.variant.draw_base == DrawBaseSource::Arguments {
+            return Err(unsupported("DrawBaseFromArguments"));
+        }
+        let i32_ty = self.scalar_ty(Scalar::I32);
+        let u32_ty = self.scalar_ty(Scalar::U32);
+        let members = vec![
+            member("base_vertex", i32_ty, 0),
+            member("first_instance", u32_ty, 4),
+            member("draw", u32_ty, 8),
+        ];
+        let ty = self.module.types.insert(
+            Type {
+                name: Some("Helpers".into()),
+                inner: TypeInner::Struct { members, span: 16 },
+            },
+            Span::UNDEFINED,
+        );
+        let var = self.global(
+            "helpers".into(),
+            AddressSpace::Uniform,
+            Some(ResourceBinding {
+                group: wcontainers_gpu::HELPER_SET,
+                binding: helper_binding(ShaderStage::Vertex),
+            }),
+            ty,
+            None,
+        );
+        self.helpers = Some(var);
+        self.reflection.helpers.push(HelperSlot {
+            value: HelperValue::DrawBase,
+            offset: 0,
+        });
+        self.reflection.helper_size = 16;
+        Ok(())
+    }
+
+    // Functions.
+
+    fn functions(&mut self) -> Result<()> {
+        let mut starts = Vec::new();
+        for (i, op) in self.ir.ops.iter().enumerate() {
+            if op.code == code::FUNCTION {
+                starts.push(i as u32 + 1);
+            }
+        }
+        // Callees come before callers in naga's arena: lower in reverse order of first call.
+        let mut order = Vec::new();
+        let mut seen = HashSet::default();
+        self.call_order(self.main, &mut order, &mut seen)?;
+        for f in order {
+            let handle = FunctionLowering::lower(self, f)?;
+            self.functions.insert(f, handle);
+        }
+        Ok(())
+    }
+
+    fn call_order(&self, f: u32, order: &mut Vec<u32>, seen: &mut HashSet<u32>) -> Result<()> {
+        if !seen.insert(f) {
+            return Ok(());
+        }
+        let mut id = f + 1;
+        loop {
+            let op = self.ir.op(id);
+            match op.code {
+                code::FUNCTION_END => break,
+                code::FUNCTION_CALL => self.call_order(op.refs[0], order, seen)?,
+                _ => {}
+            }
+            id += 1;
+        }
+        order.push(f);
+        Ok(())
+    }
+
+    // The entry point wrapper.
+
+    fn entry_point(&mut self) -> Result<()> {
+        let mut f = Function {
+            name: Some("main".into()),
+            ..Default::default()
+        };
+        let mut body = Block::new();
+        let mut e = Emit::new(&f);
+        let input = |c: u16| matches!(c, code::DCL_INPUT | code::DCL_INPUT_BUILT_IN);
+
+        // Inputs.
+        let mut locations: Vec<(u32, Scalar, u64, usize)> = Vec::new();
+        let io_count = self.io.len();
+        for i in 0..io_count {
+            let (id, ref io) = self.io[i];
+            if !input(self.ir.op(id).code) {
+                continue;
+            }
+            let (var, location, builtin, modes) =
+                (io.var, io.location, io.builtin, io.interpolation);
+            let member = io.ty.basic();
+            if let Some((loc, comp)) = location {
+                let member = member.ok_or(unsupported("InputArray"))?;
+                let s = Self::scalar(member.scalar)?;
+                let arg = match locations.iter().find(|l| l.0 == loc) {
+                    Some(l) => l.3,
+                    None => {
+                        let s = if s == Scalar::BOOL { Scalar::U32 } else { s };
+                        let vty = self.vec_ty(4, s)?;
+                        let flat = modes & interp::FLAT != 0 || s.kind != ScalarKind::Float;
+                        let binding = self.location_binding(loc, modes, flat, true);
+                        f.arguments.push(FunctionArgument {
+                            name: Some(format!("v{loc}")),
+                            ty: vty,
+                            binding: Some(binding),
+                        });
+                        let index = f.arguments.len() - 1;
+                        locations.push((loc, s, modes, index));
+                        index
+                    }
+                };
+                let arg_scalar = locations.iter().find(|l| l.0 == loc).unwrap().1;
+                let a = e.add(&mut f, &mut body, Expression::FunctionArgument(arg as u32));
+                let v = e.swizzle(&mut f, &mut body, a, comp, member.size)?;
+                let v = e.bitcast(&mut f, &mut body, v, arg_scalar, s);
+                let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
+                e.stmt(
+                    &f,
+                    &mut body,
+                    Statement::Store {
+                        pointer: p,
+                        value: v,
+                    },
+                );
+                self.reflect_value(id, true, Some(loc), comp, member, modes, None);
+            } else {
+                let b = builtin.unwrap();
+                let member = member.ok_or(unsupported("BuiltInArray"))?;
+                let v = self.builtin_input(&mut f, &mut body, &mut e, b, member)?;
+                let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
+                e.stmt(
+                    &f,
+                    &mut body,
+                    Statement::Store {
+                        pointer: p,
+                        value: v,
+                    },
+                );
+                let system = system_value(b);
+                self.reflect_value(id, true, None, 0, member, modes, system);
+            }
+        }
+
+        let main = self.functions[&self.main];
+        e.stmt(
+            &f,
+            &mut body,
+            Statement::Call {
+                function: main,
+                arguments: Vec::new(),
+                result: None,
+            },
+        );
+
+        // Outputs.
+        let mut members = Vec::new();
+        let mut values = Vec::new();
+        let mut out_locations: Vec<u32> = Vec::new();
+        for i in 0..io_count {
+            let (id, ref io) = self.io[i];
+            if input(self.ir.op(id).code) {
+                continue;
+            }
+            if let Some((loc, _)) = io.location {
+                if !out_locations.contains(&loc) {
+                    out_locations.push(loc);
+                }
+                continue;
+            }
+            let b = io.builtin.unwrap();
+            let member = io.ty.basic().ok_or(unsupported("BuiltInArray"))?;
+            let var = io.var;
+            let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
+            let v = e.add(&mut f, &mut body, Expression::Load { pointer: p });
+            let (bi, s, size) = match b {
+                builtin::POSITION => (naga::BuiltIn::Position { invariant: false }, Scalar::F32, 4),
+                builtin::DEPTH => (naga::BuiltIn::FragDepth, Scalar::F32, 1),
+                _ => (naga::BuiltIn::SampleMask, Scalar::U32, 1),
+            };
+            let v = e.bitcast(&mut f, &mut body, v, Self::scalar(member.scalar)?, s);
+            let ty = self.vec_ty(size, s)?;
+            members.push((format!("b{}", b), ty, naga::Binding::BuiltIn(bi)));
+            values.push(v);
+            self.reflect_value(id, false, None, 0, member, 0, system_value(b));
+        }
+        out_locations.sort_unstable();
+        for loc in out_locations {
+            let decls: Vec<usize> = (0..io_count)
+                .filter(|&i| {
+                    !input(self.ir.op(self.io[i].0).code)
+                        && self.io[i].1.location.is_some_and(|l| l.0 == loc)
+                })
+                .collect();
+            let first = self.io[decls[0]]
+                .1
+                .ty
+                .basic()
+                .ok_or(unsupported("OutputArray"))?;
+            let s = Self::scalar(first.scalar)?;
+            let s = if s == Scalar::BOOL { Scalar::U32 } else { s };
+            let mut comps = Vec::new();
+            for c in 0..4u32 {
+                let found = decls.iter().find(|&&i| {
+                    let io = &self.io[i].1;
+                    let (_, comp) = io.location.unwrap();
+                    let size = io.ty.basic().map_or(1, |b| b.size as u32);
+                    (comp..comp + size).contains(&c)
+                });
+                let v = match found {
+                    Some(&i) => {
+                        let io = &self.io[i].1;
+                        let (_, comp) = io.location.unwrap();
+                        let b = io.ty.basic().ok_or(unsupported("OutputArray"))?;
+                        let p = e.add(&mut f, &mut body, Expression::GlobalVariable(io.var));
+                        let v = e.add(&mut f, &mut body, Expression::Load { pointer: p });
+                        let v = if b.size > 1 {
+                            e.add(
+                                &mut f,
+                                &mut body,
+                                Expression::AccessIndex {
+                                    base: v,
+                                    index: c - comp,
+                                },
+                            )
+                        } else {
+                            v
+                        };
+                        e.bitcast(&mut f, &mut body, v, Self::scalar(b.scalar)?, s)
+                    }
+                    None => e.add(&mut f, &mut body, Expression::Literal(zero(s))),
+                };
+                comps.push(v);
+            }
+            let ty = self.vec_ty(4, s)?;
+            let v = e.add(
+                &mut f,
+                &mut body,
+                Expression::Compose {
+                    ty,
+                    components: comps,
+                },
+            );
+            let flat = s.kind != ScalarKind::Float;
+            let binding = self.location_binding(loc, 0, flat, false);
+            members.push((format!("v{loc}"), ty, binding));
+            values.push(v);
+            for &i in &decls {
+                let (id, ref io) = self.io[i];
+                let (loc, comp) = io.location.unwrap();
+                let b = io.ty.basic().unwrap();
+                self.reflect_value(id, false, Some(loc), comp, b, 0, None);
+            }
+        }
+        if self.stage == SourceStage::Vertex
+            && !self.io.iter().any(|(id, io)| {
+                io.builtin == Some(builtin::POSITION)
+                    && self.ir.op(*id).code == code::DCL_OUTPUT_BUILT_IN
+            })
+        {
+            return Err(unsupported("VertexWithoutPosition"));
+        }
+        if !members.is_empty() {
+            let mut offset = 0;
+            let mut struct_members = Vec::new();
+            for (name, ty, binding) in members {
+                struct_members.push(StructMember {
+                    name: Some(name),
+                    ty,
+                    binding: Some(binding),
+                    offset,
+                });
+                offset += 16;
+            }
+            let ty = self.module.types.insert(
+                Type {
+                    name: Some("Outputs".into()),
+                    inner: TypeInner::Struct {
+                        members: struct_members,
+                        span: offset,
+                    },
+                },
+                Span::UNDEFINED,
+            );
+            let v = e.add(
+                &mut f,
+                &mut body,
+                Expression::Compose {
+                    ty,
+                    components: values,
+                },
+            );
+            e.stmt(&f, &mut body, Statement::Return { value: Some(v) });
+            f.result = Some(FunctionResult { ty, binding: None });
+        }
+        e.flush(&f, &mut body);
+        f.body = body;
+
+        let stage = match self.stage {
+            SourceStage::Vertex => naga::ShaderStage::Vertex,
+            SourceStage::Pixel => naga::ShaderStage::Fragment,
+            _ => naga::ShaderStage::Compute,
+        };
+        // Early tests are the reflection's to report (WGSL cannot force them), and conservative depth is
+        // only a hint WGSL has no form for.
+        let early_depth_test = None;
+        let _ = self.conservative;
+        self.reflection.extras = match self.stage {
+            SourceStage::Pixel => StageExtras::Pixel {
+                early_tests: self.early_tests,
+                side_effects: self.side_effects,
+                discards: self.discards,
+                per_sample: self.io.iter().any(|(_, io)| {
+                    io.builtin == Some(builtin::SAMPLE_ID) || io.interpolation & interp::SAMPLE != 0
+                }),
+            },
+            SourceStage::Compute => StageExtras::Compute {
+                workgroup_size: self.workgroup,
+            },
+            _ => StageExtras::None,
+        };
+        self.module.entry_points.push(naga::EntryPoint {
+            name: "main".into(),
+            stage,
+            early_depth_test,
+            workgroup_size: if stage == naga::ShaderStage::Compute {
+                self.workgroup
+            } else {
+                [0; 3]
+            },
+            workgroup_size_overrides: None,
+            function: f,
+            mesh_info: None,
+            task_payload: None,
+            incoming_ray_payload: None,
+        });
+        Ok(())
+    }
+
+    fn location_binding(&self, loc: u32, modes: u64, flat: bool, input: bool) -> naga::Binding {
+        let between_stages = match self.stage {
+            SourceStage::Vertex => !input,
+            SourceStage::Pixel => input,
+            _ => false,
+        };
+        let (interpolation, sampling) = if !between_stages {
+            (None, None)
+        } else if flat {
+            (Some(naga::Interpolation::Flat), None)
+        } else {
+            let i = if modes & interp::NO_PERSPECTIVE != 0 {
+                naga::Interpolation::Linear
+            } else {
+                naga::Interpolation::Perspective
+            };
+            let s = if modes & interp::SAMPLE != 0 {
+                naga::Sampling::Sample
+            } else if modes & interp::CENTROID != 0 {
+                naga::Sampling::Centroid
+            } else {
+                naga::Sampling::Center
+            };
+            (Some(i), Some(s))
+        };
+        naga::Binding::Location {
+            location: loc,
+            interpolation,
+            sampling,
+            blend_src: None,
+            per_primitive: false,
+        }
+    }
+
+    fn builtin_input(
+        &mut self,
+        f: &mut Function,
+        body: &mut Block,
+        e: &mut Emit,
+        b: u64,
+        member: Basic,
+    ) -> Result<Handle<Expression>> {
+        let (bi, size, s) = match b {
+            builtin::POSITION => (naga::BuiltIn::Position { invariant: false }, 4, Scalar::F32),
+            builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),
+            builtin::INSTANCE_ID => (naga::BuiltIn::InstanceIndex, 1, Scalar::U32),
+            builtin::IS_FRONT_FACE => (naga::BuiltIn::FrontFacing, 1, Scalar::BOOL),
+            builtin::SAMPLE_ID => (naga::BuiltIn::SampleIndex, 1, Scalar::U32),
+            builtin::SAMPLE_MASK => (naga::BuiltIn::SampleMask, 1, Scalar::U32),
+            builtin::WORKGROUP_ID => (naga::BuiltIn::WorkGroupId, 3, Scalar::U32),
+            builtin::GLOBAL_THREAD_ID => (naga::BuiltIn::GlobalInvocationId, 3, Scalar::U32),
+            builtin::LOCAL_THREAD_ID => (naga::BuiltIn::LocalInvocationId, 3, Scalar::U32),
+            _ => (naga::BuiltIn::LocalInvocationIndex, 1, Scalar::U32),
+        };
+        let ty = self.vec_ty(size, s)?;
+        f.arguments.push(FunctionArgument {
+            name: Some(format!("b{b}")),
+            ty,
+            binding: Some(naga::Binding::BuiltIn(bi)),
+        });
+        let mut v = e.add(
+            f,
+            body,
+            Expression::FunctionArgument(f.arguments.len() as u32 - 1),
+        );
+        if let (Some(helpers), builtin::VERTEX_ID | builtin::INSTANCE_ID) = (self.helpers, b) {
+            let p = e.add(f, body, Expression::GlobalVariable(helpers));
+            let index = if b == builtin::VERTEX_ID { 0 } else { 1 };
+            let p = e.add(f, body, Expression::AccessIndex { base: p, index });
+            let base = e.add(f, body, Expression::Load { pointer: p });
+            let base = if b == builtin::VERTEX_ID {
+                e.bitcast(f, body, base, Scalar::I32, Scalar::U32)
+            } else {
+                base
+            };
+            v = e.add(
+                f,
+                body,
+                Expression::Binary {
+                    op: BinaryOperator::Subtract,
+                    left: v,
+                    right: base,
+                },
+            );
+        }
+        let want = Self::scalar(member.scalar)?;
+        if s == Scalar::BOOL && want != Scalar::BOOL {
+            let one = e.add(f, body, Expression::Literal(ones(want)));
+            let zero = e.add(f, body, Expression::Literal(zero(want)));
+            return Ok(e.add(
+                f,
+                body,
+                Expression::Select {
+                    condition: v,
+                    accept: one,
+                    reject: zero,
+                },
+            ));
+        }
+        let v = if member.size < size {
+            e.swizzle(f, body, v, 0, member.size)?
+        } else {
+            v
+        };
+        Ok(e.bitcast(f, body, v, s, want))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reflect_value(
+        &mut self,
+        id: u32,
+        input: bool,
+        location: Option<u32>,
+        component: u32,
+        member: Basic,
+        modes: u64,
+        system: Option<SystemValue>,
+    ) {
+        let (semantic, semantic_index) = self.semantics.get(&id).cloned().unwrap_or_default();
+        let s = Self::scalar(member.scalar).unwrap_or(Scalar::U32);
+        let scalar = match s.kind {
+            ScalarKind::Float => ValueKind::Float,
+            ScalarKind::Sint => ValueKind::Sint,
+            _ => ValueKind::Uint,
+        };
+        let interpolation = if modes & interp::FLAT != 0 || scalar != ValueKind::Float {
+            Interpolation::Flat
+        } else {
+            let linear = modes & interp::NO_PERSPECTIVE != 0;
+            match (
+                linear,
+                modes & interp::CENTROID != 0,
+                modes & interp::SAMPLE != 0,
+            ) {
+                (false, false, false) => Interpolation::Perspective,
+                (true, false, false) => Interpolation::Linear,
+                (false, true, _) => Interpolation::PerspectiveCentroid,
+                (true, true, _) => Interpolation::LinearCentroid,
+                (false, false, true) => Interpolation::PerspectiveSample,
+                (true, false, true) => Interpolation::LinearSample,
+            }
+        };
+        let system = system.or_else(|| {
+            (self.stage == SourceStage::Pixel && !input)
+                .then(|| SystemValue::Target(location.unwrap_or(0) as u8))
+        });
+        let value = StageValue {
+            semantic,
+            semantic_index,
+            register: location.unwrap_or(0),
+            mask: (((1u32 << member.size) - 1) << component) as u8,
+            scalar,
+            interpolation,
+            system,
+            location: location.unwrap_or(0),
+            component: component as u8,
+        };
+        if input {
+            self.reflection.inputs.push(value);
+        } else {
+            self.reflection.outputs.push(value);
+        }
+    }
+}
+
+fn system_value(b: u64) -> Option<SystemValue> {
+    Some(match b {
+        builtin::POSITION => SystemValue::Position,
+        builtin::VERTEX_ID => SystemValue::VertexId,
+        builtin::INSTANCE_ID => SystemValue::InstanceId,
+        builtin::IS_FRONT_FACE => SystemValue::FrontFacing,
+        builtin::SAMPLE_ID => SystemValue::SampleIndex,
+        builtin::SAMPLE_MASK => SystemValue::Coverage,
+        builtin::DEPTH => SystemValue::Depth,
+        _ => return None,
+    })
+}
+
+fn member(name: &str, ty: Handle<Type>, offset: u32) -> StructMember {
+    StructMember {
+        name: Some(name.into()),
+        ty,
+        binding: None,
+        offset,
+    }
+}
+
+fn vector_size(n: u8) -> Result<VectorSize> {
+    Ok(match n {
+        2 => VectorSize::Bi,
+        3 => VectorSize::Tri,
+        4 => VectorSize::Quad,
+        _ => return Err(malformed(format!("vector of {n}"))),
+    })
+}
+
+fn scalar_code(s: Scalar) -> u8 {
+    match s.kind {
+        ScalarKind::Bool => scalar::BOOL,
+        ScalarKind::Sint => scalar::I32,
+        ScalarKind::Float => scalar::F32,
+        _ => scalar::U32,
+    }
+}
+
+fn basic_size(b: Basic) -> u32 {
+    4 * b.size as u32
+}
+
+fn basic_align(b: Basic) -> u32 {
+    match b.size {
+        1 => 4,
+        2 => 8,
+        _ => 16,
+    }
+}
+
+fn zero(s: Scalar) -> Literal {
+    match s.kind {
+        ScalarKind::Float => Literal::F32(0.0),
+        ScalarKind::Sint => Literal::I32(0),
+        ScalarKind::Bool => Literal::Bool(false),
+        _ => Literal::U32(0),
+    }
+}
+
+fn ones(s: Scalar) -> Literal {
+    match s.kind {
+        ScalarKind::Sint => Literal::I32(-1),
+        ScalarKind::Bool => Literal::Bool(true),
+        _ => Literal::U32(u32::MAX),
+    }
+}
+
+fn image_dim(k: u64) -> Result<(ImageDimension, bool, bool)> {
+    Ok(match k {
+        kind::IMAGE_1D | kind::IMAGE_2D => (ImageDimension::D2, false, false),
+        kind::IMAGE_1D_ARRAY | kind::IMAGE_2D_ARRAY => (ImageDimension::D2, true, false),
+        kind::IMAGE_2D_MS => (ImageDimension::D2, false, true),
+        kind::IMAGE_2D_MS_ARRAY => return Err(unsupported("MultisampledArrayTexture")),
+        kind::IMAGE_CUBE => (ImageDimension::Cube, false, false),
+        kind::IMAGE_CUBE_ARRAY => (ImageDimension::Cube, true, false),
+        kind::IMAGE_3D => (ImageDimension::D3, false, false),
+        _ => return Err(malformed(format!("resource kind {k}"))),
+    })
+}
+
+/// Places expressions into `Emit` statements as naga requires: expressions that need no emitting
+/// (literals, variables, arguments, call results) close the running range.
+struct Emit {
+    start: usize,
+}
+
+impl Emit {
+    fn new(f: &Function) -> Emit {
+        Emit {
+            start: f.expressions.len(),
+        }
+    }
+
+    fn flush(&mut self, f: &Function, block: &mut Block) {
+        let len = f.expressions.len();
+        if len > self.start {
+            block.push(
+                Statement::Emit(f.expressions.range_from(self.start)),
+                Span::UNDEFINED,
+            );
+        }
+        self.start = len;
+    }
+
+    fn add(&mut self, f: &mut Function, block: &mut Block, expr: Expression) -> Handle<Expression> {
+        if expr.needs_pre_emit() || matches!(expr, Expression::CallResult(_)) {
+            self.flush(f, block);
+            let h = f.expressions.append(expr, Span::UNDEFINED);
+            self.start = f.expressions.len();
+            h
+        } else {
+            f.expressions.append(expr, Span::UNDEFINED)
+        }
+    }
+
+    fn stmt(&mut self, f: &Function, block: &mut Block, s: Statement) {
+        self.flush(f, block);
+        block.push(s, Span::UNDEFINED);
+    }
+
+    /// Components `first..first + n` of a vector.
+    fn swizzle(
+        &mut self,
+        f: &mut Function,
+        block: &mut Block,
+        v: Handle<Expression>,
+        first: u32,
+        n: u8,
+    ) -> Result<Handle<Expression>> {
+        if n == 1 {
+            return Ok(self.add(
+                f,
+                block,
+                Expression::AccessIndex {
+                    base: v,
+                    index: first,
+                },
+            ));
+        }
+        let mut pattern = [SwizzleComponent::X; 4];
+        for (i, p) in pattern.iter_mut().enumerate().take(n as usize) {
+            *p = SwizzleComponent::XYZW[(first as usize + i).min(3)];
+        }
+        Ok(self.add(
+            f,
+            block,
+            Expression::Swizzle {
+                size: vector_size(n)?,
+                vector: v,
+                pattern,
+            },
+        ))
+    }
+
+    /// Reinterprets the bits of `v` (of scalar `from`) as scalar `to`.
+    fn bitcast(
+        &mut self,
+        f: &mut Function,
+        block: &mut Block,
+        v: Handle<Expression>,
+        from: Scalar,
+        to: Scalar,
+    ) -> Handle<Expression> {
+        if from.kind == to.kind {
+            return v;
+        }
+        if to.kind == ScalarKind::Bool {
+            let z = self.add(f, block, Expression::Literal(zero(from)));
+            return self.add(
+                f,
+                block,
+                Expression::Binary {
+                    op: BinaryOperator::NotEqual,
+                    left: v,
+                    right: z,
+                },
+            );
+        }
+        if from.kind == ScalarKind::Bool {
+            let one = self.add(f, block, Expression::Literal(ones(to)));
+            let z = self.add(f, block, Expression::Literal(zero(to)));
+            return self.add(
+                f,
+                block,
+                Expression::Select {
+                    condition: v,
+                    accept: one,
+                    reject: z,
+                },
+            );
+        }
+        self.add(
+            f,
+            block,
+            Expression::As {
+                expr: v,
+                kind: to.kind,
+                convert: None,
+            },
+        )
+    }
+}
+
+/// An index on the way into a variable.
+#[derive(Clone, Copy)]
+enum Index {
+    Const(u32),
+    Dyn(Handle<Expression>),
+}
+
+/// Where an access leads.
+enum Place {
+    /// A pointer to an element, and the component to take if one is named.
+    Element(Handle<Expression>, Basic, Option<Index>),
+    /// A pointer to an array of scalars, and the index of the first of several consecutive ones.
+    Run(Handle<Expression>, Index, Basic),
+}
+
+/// Lowers one IR function.
+struct FunctionLowering<'l, 'a> {
+    l: &'l mut Lowering<'a>,
+    f: Function,
+    e: Emit,
+    vals: HashMap<u32, Val>,
+    consts: HashMap<u32, Handle<Expression>>,
+    spills: HashMap<u32, Handle<LocalVariable>>,
+    phis: HashMap<u32, Handle<LocalVariable>>,
+    blocks: HashMap<u32, Block2>,
+    block_of: HashMap<u32, u32>,
+    params: Vec<u32>,
+    cur: u32,
+}
+
+/// Where branches go inside a construct.
+#[derive(Clone, Copy, Default)]
+struct Targets {
+    brk: Option<u32>,
+    cont: Option<u32>,
+    header: Option<u32>,
+    in_switch: bool,
+}
+
+impl<'l, 'a> FunctionLowering<'l, 'a> {
+    fn lower(l: &'l mut Lowering<'a>, id: u32) -> Result<Handle<Function>> {
+        let ir = l.ir;
+        let fop = ir.op(id);
+        let mut f = Function {
+            name: Some(if id == l.main {
+                "shader".into()
+            } else {
+                format!("f{id}")
+            }),
+            ..Default::default()
+        };
+        for (i, &p) in fop.refs.iter().enumerate() {
+            let ty = l.ir_ty(&ir.op(p).ty)?;
+            f.arguments.push(FunctionArgument {
+                name: Some(format!("p{i}")),
+                ty,
+                binding: None,
+            });
+        }
+        if !fop.ty.is_void() {
+            let ty = l.ir_ty(&fop.ty)?;
+            f.result = Some(FunctionResult { ty, binding: None });
+        }
+        let e = Emit::new(&f);
+        let mut fl = FunctionLowering {
+            l,
+            f,
+            e,
+            vals: HashMap::default(),
+            consts: HashMap::default(),
+            spills: HashMap::default(),
+            phis: HashMap::default(),
+            blocks: HashMap::default(),
+            block_of: HashMap::default(),
+            params: fop.refs.clone(),
+            cur: 0,
+        };
+        let entry = fl.scan(id)?;
+        let mut body = Block::new();
+        fl.region(entry, None, Targets::default(), &mut body)?;
+        fl.e.flush(&fl.f, &mut body);
+        fl.f.body = body;
+        let f = fl.f;
+        Ok(fl.l.module.functions.append(f, Span::UNDEFINED))
+    }
+
+    /// Finds the blocks and which values need variables; returns the entry block's label.
+    fn scan(&mut self, fid: u32) -> Result<u32> {
+        let ir = self.l.ir;
+        let mut id = fid + 1;
+        let mut entry = 0;
+        let mut cur: Option<Block2> = None;
+        loop {
+            let op = ir.op(id);
+            match op.code {
+                code::FUNCTION_END => break,
+                code::LABEL => {
+                    if entry == 0 {
+                        entry = id;
+                    }
+                    cur = Some(Block2 {
+                        label: id,
+                        first: id + 1,
+                        last: id,
+                        phis: Vec::new(),
+                    });
+                }
+                _ => {
+                    let b = cur
+                        .as_mut()
+                        .ok_or_else(|| malformed("code outside a block".into()))?;
+                    self.block_of.insert(id, b.label);
+                    if op.code == code::PHI {
+                        b.phis.push(id);
+                    }
+                    if matches!(
+                        op.code,
+                        code::BRANCH
+                            | code::BRANCH_CONDITIONAL
+                            | code::SWITCH
+                            | code::RETURN
+                            | code::UNREACHABLE
+                    ) {
+                        b.last = id;
+                        let b = cur.take().unwrap();
+                        self.blocks.insert(b.label, b);
+                    }
+                }
+            }
+            id += 1;
+        }
+        // Values used outside their block, or by a phi from another block, get a variable.
+        let mut spill = Vec::new();
+        for (&id, &label) in &self.block_of {
+            let op = ir.op(id);
+            if op.code == code::PHI {
+                for pair in op.refs.chunks(2) {
+                    if let [from, v] = *pair
+                        && self.block_of.get(&v).is_some_and(|&b| b != from)
+                    {
+                        spill.push(v);
+                    }
+                }
+                continue;
+            }
+            for &r in &op.refs {
+                if self.block_of.get(&r).is_some_and(|&b| b != label) {
+                    spill.push(r);
+                }
+            }
+        }
+        // Variables are made in id order, so the module is the same on every run and every host.
+        spill.sort_unstable();
+        spill.dedup();
+        for v in spill {
+            let op = ir.op(v);
+            if self.spills.contains_key(&v)
+                || op.code == code::DESCRIPTOR_LOAD
+                || op.ty.members.len() != 1
+            {
+                continue;
+            }
+            let ty = self.l.ir_ty(&ir.op(v).ty)?;
+            let local = self.f.local_variables.append(
+                LocalVariable {
+                    name: Some(format!("x{v}")),
+                    ty,
+                    init: None,
+                },
+                Span::UNDEFINED,
+            );
+            self.spills.insert(v, local);
+        }
+        let mut phis: Vec<u32> = self.blocks.values().flat_map(|b| b.phis.clone()).collect();
+        phis.sort_unstable();
+        for p in phis {
+            let ty = self.l.ir_ty(&ir.op(p).ty)?;
+            let local = self.f.local_variables.append(
+                LocalVariable {
+                    name: Some(format!("phi{p}")),
+                    ty,
+                    init: None,
+                },
+                Span::UNDEFINED,
+            );
+            self.phis.insert(p, local);
+        }
+        Ok(entry)
+    }
+
+    // Expression helpers.
+
+    fn add(&mut self, b: &mut Block, expr: Expression) -> Handle<Expression> {
+        self.e.add(&mut self.f, b, expr)
+    }
+
+    fn stmt(&mut self, b: &mut Block, s: Statement) {
+        self.e.stmt(&self.f, b, s);
+    }
+
+    fn lit(&mut self, b: &mut Block, l: Literal) -> Handle<Expression> {
+        self.add(b, Expression::Literal(l))
+    }
+
+    fn bin(
+        &mut self,
+        b: &mut Block,
+        op: BinaryOperator,
+        left: Handle<Expression>,
+        right: Handle<Expression>,
+    ) -> Handle<Expression> {
+        self.add(b, Expression::Binary { op, left, right })
+    }
+
+    fn math(
+        &mut self,
+        b: &mut Block,
+        fun: MathFunction,
+        args: &[Handle<Expression>],
+    ) -> Handle<Expression> {
+        self.add(
+            b,
+            Expression::Math {
+                fun,
+                arg: args[0],
+                arg1: args.get(1).copied(),
+                arg2: args.get(2).copied(),
+                arg3: args.get(3).copied(),
+            },
+        )
+    }
+
+    fn basic_of(&self, id: u32) -> Result<Basic> {
+        self.l
+            .ir
+            .op(id)
+            .ty
+            .basic()
+            .ok_or_else(|| malformed(format!("value {id} is not a scalar or vector")))
+    }
+
+    fn scalar_of(&self, id: u32) -> Result<Scalar> {
+        Lowering::scalar(self.basic_of(id)?.scalar)
+    }
+
+    /// The expression for value `id` here.
+    fn get(&mut self, b: &mut Block, id: u32) -> Result<Handle<Expression>> {
+        match self.val(b, id)? {
+            Val::Expr(h) => Ok(h),
+            Val::Tuple(_) => Err(malformed(format!("struct value {id} used as a value"))),
+        }
+    }
+
+    /// Value `id` converted to scalar kind `to` by its bits.
+    fn get_as(&mut self, b: &mut Block, id: u32, to: Scalar) -> Result<Handle<Expression>> {
+        let v = self.get(b, id)?;
+        let from = self.scalar_of(id)?;
+        Ok(self.e.bitcast(&mut self.f, b, v, from, to))
+    }
+
+    fn val(&mut self, b: &mut Block, id: u32) -> Result<Val> {
+        let ir = self.l.ir;
+        let op = ir.op(id);
+        match op.code {
+            code::CONSTANT => return Ok(Val::Expr(self.constant(b, id)?)),
+            code::UNDEF => {
+                if let Some(&h) = self.consts.get(&id) {
+                    return Ok(Val::Expr(h));
+                }
+                let ty = self.l.ir_ty(&op.ty)?;
+                let h = self.add(b, Expression::ZeroValue(ty));
+                self.consts.insert(id, h);
+                return Ok(Val::Expr(h));
+            }
+            _ => {}
+        }
+        if let Some(&local) = self.spills.get(&id)
+            && self.block_of.get(&id) != Some(&self.cur)
+        {
+            let p = self.add(b, Expression::LocalVariable(local));
+            return Ok(Val::Expr(self.add(b, Expression::Load { pointer: p })));
+        }
+        self.vals
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| malformed(format!("value {id} used before it is made")))
+    }
+
+    fn constant(&mut self, b: &mut Block, id: u32) -> Result<Handle<Expression>> {
+        if let Some(&h) = self.consts.get(&id) {
+            return Ok(h);
+        }
+        let op = self.l.ir.op(id);
+        let basic = op.ty.basic();
+        let h = match basic {
+            Some(m) if m.size == 1 => {
+                let l = literal(Lowering::scalar(m.scalar)?, op.lits[0]);
+                if let Literal::F32(x) = l
+                    && !x.is_finite()
+                {
+                    // naga takes no infinite or NaN literals: the bits, reinterpreted, made where used.
+                    let bits = self.lit(b, Literal::U32(op.lits[0] as u32));
+                    return Ok(self.add(
+                        b,
+                        Expression::As {
+                            expr: bits,
+                            kind: ScalarKind::Float,
+                            convert: None,
+                        },
+                    ));
+                }
+                self.add(b, Expression::Literal(l))
+            }
+            _ => {
+                let c = self.l.global_constant(id)?;
+                self.add(b, Expression::Constant(c))
+            }
+        };
+        self.consts.insert(id, h);
+        Ok(h)
+    }
+
+    fn define(&mut self, b: &mut Block, id: u32, v: Val) {
+        if let (Some(&local), Val::Expr(h)) = (self.spills.get(&id), &v) {
+            let p = self.add(b, Expression::LocalVariable(local));
+            self.stmt(
+                b,
+                Statement::Store {
+                    pointer: p,
+                    value: *h,
+                },
+            );
+        }
+        self.vals.insert(id, v);
+    }
+
+    // Control flow.
+
+    /// Emits blocks from `label` on until reaching `stop`.
+    fn region(
+        &mut self,
+        mut label: u32,
+        stop: Option<u32>,
+        t: Targets,
+        out: &mut Block,
+    ) -> Result<()> {
+        loop {
+            if Some(label) == stop {
+                return Ok(());
+            }
+            let lop = self.l.ir.op(label);
+            if lop.lits.last() == Some(&construct::LOOP) && t.header != Some(label) {
+                let merge = lop.refs[0];
+                self.lower_loop(label, t, out)?;
+                label = merge;
+                continue;
+            }
+            match self.block(label, t, stop, out)? {
+                Some(next) => label = next,
+                None => return Ok(()),
+            }
+        }
+    }
+
+    fn lower_loop(&mut self, header: u32, outer: Targets, out: &mut Block) -> Result<()> {
+        let lop = self.l.ir.op(header);
+        let (merge, cont) = (lop.refs[0], lop.refs[1]);
+        let t = Targets {
+            brk: Some(merge),
+            cont: Some(cont),
+            header: Some(header),
+            in_switch: false,
+        };
+        let _ = outer;
+        self.e.flush(&self.f, out);
+        let mut body = Block::new();
+        let mut continuing = Block::new();
+        let break_if;
+        if cont == header {
+            break_if = self.latch(header, header, merge, &mut body)?;
+        } else {
+            self.region(header, Some(cont), t, &mut body)?;
+            self.e.flush(&self.f, &mut body);
+            // The continue construct runs from `cont` to the back edge.
+            let mut label = cont;
+            loop {
+                let b = &self.blocks[&label];
+                let term = self.l.ir.op(b.last);
+                let back = match term.code {
+                    code::BRANCH => term.refs[0] == header,
+                    code::BRANCH_CONDITIONAL => term.refs[1] == header || term.refs[2] == header,
+                    _ => false,
+                };
+                if back {
+                    break_if = self.latch(label, header, merge, &mut continuing)?;
+                    break;
+                }
+                let inner = Targets {
+                    header: Some(header),
+                    ..Targets::default()
+                };
+                match self.block(label, inner, None, &mut continuing)? {
+                    Some(next) => label = next,
+                    None => return Err(unsupported("ContinueConstruct")),
+                }
+            }
+        }
+        self.e.flush(&self.f, &mut continuing);
+        self.stmt(
+            out,
+            Statement::Loop {
+                body,
+                continuing,
+                break_if,
+            },
+        );
+        Ok(())
+    }
+
+    /// Emits the block holding a loop's back edge; returns the condition that leaves the loop.
+    fn latch(
+        &mut self,
+        label: u32,
+        header: u32,
+        merge: u32,
+        out: &mut Block,
+    ) -> Result<Option<Handle<Expression>>> {
+        self.contents(label, out)?;
+        let term = self.l.ir.op(self.blocks[&label].last);
+        match term.code {
+            code::BRANCH => {
+                self.store_phis(label, term.refs[0], out)?;
+                Ok(None)
+            }
+            code::BRANCH_CONDITIONAL => {
+                let (c, tr, fa) = (term.refs[0], term.refs[1], term.refs[2]);
+                self.store_phis(label, tr, out)?;
+                self.store_phis(label, fa, out)?;
+                let cond = self.get(out, c)?;
+                if fa == merge && tr == header {
+                    Ok(Some(self.add(
+                        out,
+                        Expression::Unary {
+                            op: UnaryOperator::LogicalNot,
+                            expr: cond,
+                        },
+                    )))
+                } else if tr == merge && fa == header {
+                    Ok(Some(cond))
+                } else {
+                    Err(unsupported("LoopLatch"))
+                }
+            }
+            _ => Err(unsupported("LoopLatch")),
+        }
+    }
+
+    /// Emits a block's instructions (phis loaded first).
+    fn contents(&mut self, label: u32, out: &mut Block) -> Result<()> {
+        self.cur = label;
+        let (first, last, phis) = {
+            let b = &self.blocks[&label];
+            (b.first, b.last, b.phis.clone())
+        };
+        for p in phis {
+            let local = self.phis[&p];
+            let ptr = self.add(out, Expression::LocalVariable(local));
+            let v = self.add(out, Expression::Load { pointer: ptr });
+            self.define(out, p, Val::Expr(v));
+        }
+        for id in first..last {
+            let op = self.l.ir.op(id);
+            if op.code == code::PHI {
+                continue;
+            }
+            self.instruction(id, out)?;
+        }
+        Ok(())
+    }
+
+    /// Emits one block and its branch; returns the block to continue with in the same region.
+    fn block(
+        &mut self,
+        label: u32,
+        t: Targets,
+        stop: Option<u32>,
+        out: &mut Block,
+    ) -> Result<Option<u32>> {
+        self.contents(label, out)?;
+        let lop = self.l.ir.op(label);
+        let selection = (lop.lits.last() == Some(&construct::SELECTION)).then(|| lop.refs[0]);
+        let term = self.l.ir.op(self.blocks[&label].last);
+        match term.code {
+            code::BRANCH => {
+                let target = term.refs[0];
+                self.store_phis(label, target, out)?;
+                if self.jump(target, t, stop, out)? {
+                    return Ok(None);
+                }
+                Ok(Some(target))
+            }
+            code::BRANCH_CONDITIONAL => {
+                let (c, tr, fa) = (term.refs[0], term.refs[1], term.refs[2]);
+                let condition = self.get(out, c)?;
+                self.e.flush(&self.f, out);
+                let merge = selection;
+                let mut accept = Block::new();
+                let mut reject = Block::new();
+                for (target, arm) in [(tr, &mut accept), (fa, &mut reject)] {
+                    self.cur = label;
+                    self.store_phis(label, target, arm)?;
+                    let end = merge.or(stop);
+                    if Some(target) != end && !self.jump(target, t, end, arm)? {
+                        self.region(target, end, t, arm)?;
+                    }
+                    self.e.flush(&self.f, arm);
+                }
+                self.stmt(
+                    out,
+                    Statement::If {
+                        condition,
+                        accept,
+                        reject,
+                    },
+                );
+                Ok(merge.filter(|&m| Some(m) != stop))
+            }
+            code::SWITCH => {
+                let merge = selection.ok_or(unsupported("SwitchWithoutMerge"))?;
+                self.switch(label, term, merge, t, out)?;
+                Ok((Some(merge) != stop).then_some(merge))
+            }
+            code::RETURN => {
+                let value = match term.refs.first() {
+                    Some(&v) if v != 0 => Some(self.get(out, v)?),
+                    _ => None,
+                };
+                self.stmt(out, Statement::Return { value });
+                Ok(None)
+            }
+            _ => {
+                // Unreachable: nothing runs past it.
+                Ok(None)
+            }
+        }
+    }
+
+    /// Emits a jump to `target` that leaves the current region, if it is one; returns whether it was.
+    fn jump(
+        &mut self,
+        target: u32,
+        t: Targets,
+        stop: Option<u32>,
+        out: &mut Block,
+    ) -> Result<bool> {
+        if Some(target) == stop {
+            return Ok(true);
+        }
+        if Some(target) == t.brk {
+            if t.in_switch {
+                return Err(unsupported("LoopBreakInSwitch"));
+            }
+            self.stmt(out, Statement::Break);
+            return Ok(true);
+        }
+        if Some(target) == t.cont || Some(target) == t.header {
+            self.stmt(out, Statement::Continue);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn switch(
+        &mut self,
+        label: u32,
+        term: &Op,
+        merge: u32,
+        t: Targets,
+        out: &mut Block,
+    ) -> Result<()> {
+        let selector_id = term.refs[0];
+        let s = self.scalar_of(selector_id)?;
+        let selector = self.get(out, selector_id)?;
+        self.e.flush(&self.f, out);
+        let default = term.refs[1];
+        let mut targets: Vec<(Vec<SwitchValue>, u32)> = Vec::new();
+        for pair in term.refs[2..].chunks(2) {
+            let [value, target] = *pair else {
+                return Err(malformed("switch case".into()));
+            };
+            let raw = self.l.ir.op(value).lits[0];
+            let v = if s.kind == ScalarKind::Sint {
+                SwitchValue::I32(raw as i32)
+            } else {
+                SwitchValue::U32(raw as u32)
+            };
+            match targets.iter_mut().find(|x| x.1 == target) {
+                Some(x) => x.0.push(v),
+                None => targets.push((vec![v], target)),
+            }
+        }
+        match targets.iter_mut().find(|x| x.1 == default) {
+            Some(x) => x.0.push(SwitchValue::Default),
+            None => targets.push((vec![SwitchValue::Default], default)),
+        }
+        // The case with the default goes last, so naga's rule that the last case does not fall through
+        // holds whatever order the cases came in.
+        let d = targets
+            .iter()
+            .position(|x| x.0.contains(&SwitchValue::Default))
+            .unwrap();
+        let last = targets.remove(d);
+        targets.push(last);
+        let inner = Targets {
+            brk: t.brk,
+            cont: t.cont,
+            header: t.header,
+            in_switch: true,
+        };
+        let mut cases = Vec::new();
+        for (values, target) in targets {
+            let mut body = Block::new();
+            self.cur = label;
+            self.store_phis(label, target, &mut body)?;
+            if target != merge {
+                let falls = self.falls_into_case(target, merge, term);
+                if falls {
+                    return Err(unsupported("SwitchFallthrough"));
+                }
+                if !self.jump(target, inner, Some(merge), &mut body)? {
+                    self.region(target, Some(merge), inner, &mut body)?;
+                }
+            }
+            self.e.flush(&self.f, &mut body);
+            let n = values.len();
+            for (i, value) in values.into_iter().enumerate() {
+                let last = i + 1 == n;
+                cases.push(SwitchCase {
+                    value,
+                    body: if last {
+                        core::mem::take(&mut body)
+                    } else {
+                        Block::new()
+                    },
+                    fall_through: !last,
+                });
+            }
+        }
+        self.stmt(out, Statement::Switch { selector, cases });
+        Ok(())
+    }
+
+    fn falls_into_case(&self, target: u32, merge: u32, term: &Op) -> bool {
+        // A case whose block branches straight into another case's block.
+        let b = &self.blocks[&target];
+        let end = self.l.ir.op(b.last);
+        end.code == code::BRANCH
+            && end.refs[0] != merge
+            && term.refs[1..].contains(&end.refs[0])
+            && self.l.ir.op(end.refs[0]).code == code::LABEL
+    }
+
+    /// Stores the values the phis of `to` take when coming from `from`.
+    fn store_phis(&mut self, from: u32, to: u32, out: &mut Block) -> Result<()> {
+        let Some(b) = self.blocks.get(&to) else {
+            return Ok(());
+        };
+        let phis = b.phis.clone();
+        let saved = self.cur;
+        self.cur = from;
+        let mut stores = Vec::new();
+        for p in phis {
+            let op = self.l.ir.op(p);
+            let v = op
+                .refs
+                .chunks(2)
+                .find(|pair| pair[0] == from)
+                .map(|pair| pair[1])
+                .ok_or_else(|| malformed(format!("phi {p} has no value from {from}")))?;
+            let h = self.get(out, v)?;
+            stores.push((self.phis[&p], h));
+        }
+        for (local, value) in stores {
+            let pointer = self.add(out, Expression::LocalVariable(local));
+            self.stmt(out, Statement::Store { pointer, value });
+        }
+        self.cur = saved;
+        Ok(())
+    }
+
+    // Instructions.
+
+    fn instruction(&mut self, id: u32, b: &mut Block) -> Result<()> {
+        use code as c;
+        let ir = self.l.ir;
+        let op = ir.op(id);
+        let r = &op.refs;
+        let v: Handle<Expression> = match op.code {
+            c::DEBUG_NAME | c::DEBUG_MEMBER_NAME | c::SEMANTIC => return Ok(()),
+            c::DESCRIPTOR_LOAD => {
+                if r.get(1).is_some_and(|&i| {
+                    let o = ir.op(i);
+                    !(o.code == c::CONSTANT && o.lits.first() == Some(&0))
+                }) {
+                    return Err(unsupported("ResourceArray"));
+                }
+                return Ok(());
+            }
+            c::PARAM_LOAD => {
+                let index = self
+                    .params
+                    .iter()
+                    .position(|&p| p == r[1])
+                    .ok_or_else(|| malformed("parameter".into()))?;
+                self.add(b, Expression::FunctionArgument(index as u32))
+            }
+            c::FUNCTION_CALL => {
+                let function = *self
+                    .l
+                    .functions
+                    .get(&r[0])
+                    .ok_or_else(|| malformed("call before callee".into()))?;
+                let params = ir.op(r[0]).refs.clone();
+                let mut arguments = Vec::new();
+                for (&a, &p) in r[1..].iter().zip(&params) {
+                    let s =
+                        Lowering::scalar(ir.op(p).ty.basic().map_or(scalar::U32, |m| m.scalar))?;
+                    arguments.push(self.get_as(b, a, s)?);
+                }
+                let result =
+                    (!op.ty.is_void()).then(|| self.add(b, Expression::CallResult(function)));
+                self.stmt(
+                    b,
+                    Statement::Call {
+                        function,
+                        arguments,
+                        result,
+                    },
+                );
+                match result {
+                    Some(h) => h,
+                    None => return Ok(()),
+                }
+            }
+            c::BARRIER => {
+                let (exec, mem) = (op.lits[0], op.lits[2]);
+                let mut flags = naga::Barrier::empty();
+                if mem & 1 != 0 {
+                    flags |= naga::Barrier::WORK_GROUP;
+                }
+                if mem & 2 != 0 {
+                    flags |= naga::Barrier::STORAGE | naga::Barrier::TEXTURE;
+                }
+                let s = if exec >= 3 {
+                    Statement::ControlBarrier(flags)
+                } else {
+                    Statement::MemoryBarrier(flags)
+                };
+                self.stmt(b, s);
+                return Ok(());
+            }
+            c::DEMOTE => {
+                self.l.discards = true;
+                self.stmt(b, Statement::Kill);
+                return Ok(());
+            }
+            c::COMPOSITE_CONSTRUCT => {
+                let mut parts = Vec::new();
+                for &m in r {
+                    parts.push(self.get(b, m)?);
+                }
+                if op.ty.members.len() > 1 {
+                    self.define(b, id, Val::Tuple(parts));
+                    return Ok(());
+                }
+                let ty = self.l.ir_ty(&op.ty)?;
+                self.add(
+                    b,
+                    Expression::Compose {
+                        ty,
+                        components: parts,
+                    },
+                )
+            }
+            c::COMPOSITE_EXTRACT => {
+                let addr = ir.op(r[1]);
+                if addr.code != c::CONSTANT {
+                    return Err(malformed("composite index is not a constant".into()));
+                }
+                let mut indices = addr.lits.iter().map(|&l| l as u32);
+                let mut v = match self.val(b, r[0])? {
+                    Val::Tuple(m) => {
+                        let first = indices.next().unwrap_or(0) as usize;
+                        *m.get(first)
+                            .ok_or_else(|| malformed("member index".into()))?
+                    }
+                    Val::Expr(h) => h,
+                };
+                for index in indices {
+                    v = self.add(b, Expression::AccessIndex { base: v, index });
+                }
+                v
+            }
+            c::INPUT_LOAD | c::OUTPUT_LOAD | c::SCRATCH_LOAD | c::LDS_LOAD | c::CONSTANT_LOAD => {
+                let (var, ty) = self.memory_var(op.code, r[0])?;
+                let addr = r.get(1).copied().unwrap_or(0);
+                self.load(b, var, &ty, addr, &op.ty)?
+            }
+            c::OUTPUT_STORE | c::SCRATCH_STORE | c::LDS_STORE => {
+                let (var, ty) = self.memory_var(op.code, r[0])?;
+                self.store(b, var, &ty, r[1], r[2])?;
+                return Ok(());
+            }
+            c::BUFFER_LOAD => {
+                let (res, ty) = self.buffer(r[0])?;
+                self.load(b, res.var, &ty, r[1], &op.ty)?
+            }
+            c::BUFFER_STORE => {
+                let (res, ty) = self.buffer(r[0])?;
+                self.l.side_effects = true;
+                self.store(b, res.var, &ty, r[1], r[2])?;
+                return Ok(());
+            }
+            c::BUFFER_QUERY_SIZE => {
+                let (res, _) = self.buffer(r[0])?;
+                let p = self.add(b, Expression::GlobalVariable(res.var));
+                self.add(b, Expression::ArrayLength(p))
+            }
+            c::IMAGE_SAMPLE | c::IMAGE_GATHER => self.sample(b, op)?,
+            c::IMAGE_LOAD => self.image_load(b, op)?,
+            c::IMAGE_QUERY_SIZE => {
+                let res = self.image(r[0])?;
+                let (k, arrayed) = res.image.unwrap();
+                let image = self.add(b, Expression::GlobalVariable(res.var));
+                let level = if k == kind::IMAGE_2D_MS || r[1] == 0 {
+                    None
+                } else {
+                    Some(self.get_as(b, r[1], Scalar::U32)?)
+                };
+                let size = self.add(
+                    b,
+                    Expression::ImageQuery {
+                        image,
+                        query: ImageQuery::Size { level },
+                    },
+                );
+                let size = if matches!(k, kind::IMAGE_1D | kind::IMAGE_1D_ARRAY) {
+                    self.add(
+                        b,
+                        Expression::AccessIndex {
+                            base: size,
+                            index: 0,
+                        },
+                    )
+                } else {
+                    size
+                };
+                let layers = if arrayed {
+                    self.add(
+                        b,
+                        Expression::ImageQuery {
+                            image,
+                            query: ImageQuery::NumLayers,
+                        },
+                    )
+                } else {
+                    self.lit(b, Literal::U32(1))
+                };
+                self.define(b, id, Val::Tuple(vec![size, layers]));
+                return Ok(());
+            }
+            c::IMAGE_QUERY_MIPS | c::IMAGE_QUERY_SAMPLES => {
+                let res = self.image(r[0])?;
+                let image = self.add(b, Expression::GlobalVariable(res.var));
+                let query = if op.code == c::IMAGE_QUERY_MIPS {
+                    ImageQuery::NumLevels
+                } else {
+                    ImageQuery::NumSamples
+                };
+                self.add(b, Expression::ImageQuery { image, query })
+            }
+            c::IMAGE_COMPUTE_LOD => return Err(unsupported("CalculateLevelOfDetail")),
+            c::IMAGE_STORE | c::IMAGE_ATOMIC => return Err(unsupported("StorageImage")),
+            c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::COUNTER_ATOMIC => {
+                return Err(unsupported("Atomics"));
+            }
+            c::INTERPOLATE_AT_CENTROID | c::INTERPOLATE_AT_SAMPLE | c::INTERPOLATE_AT_OFFSET => {
+                return Err(unsupported("InterpolateAt"));
+            }
+            c::DERIV_X | c::DERIV_Y => {
+                let expr = self.get(b, r[0])?;
+                let axis = if op.code == c::DERIV_X {
+                    naga::DerivativeAxis::X
+                } else {
+                    naga::DerivativeAxis::Y
+                };
+                let ctrl = match op.lits.first() {
+                    Some(1) => naga::DerivativeControl::Coarse,
+                    Some(2) => naga::DerivativeControl::Fine,
+                    _ => naga::DerivativeControl::None,
+                };
+                self.add(b, Expression::Derivative { axis, ctrl, expr })
+            }
+            _ => self.arithmetic(b, op)?,
+        };
+        self.define(b, id, Val::Expr(v));
+        Ok(())
+    }
+
+    fn memory_var(&mut self, opcode: u16, dcl: u32) -> Result<(Handle<GlobalVariable>, Ty)> {
+        let ir = self.l.ir;
+        if opcode == code::CONSTANT_LOAD {
+            let var = self.l.constant_array(dcl)?;
+            return Ok((var, ir.op(dcl).ty.clone()));
+        }
+        if let Some(&i) = self.l.io_index.get(&dcl) {
+            let io = &self.l.io[i].1;
+            return Ok((io.var, io.ty.clone()));
+        }
+        let var = *self
+            .l
+            .memory
+            .get(&dcl)
+            .ok_or_else(|| malformed(format!("memory {dcl}")))?;
+        Ok((var, ir.op(dcl).ty.clone()))
+    }
+
+    fn buffer(&self, desc: u32) -> Result<(Resource, Ty)> {
+        let dcl = self.l.ir.op(desc).refs[0];
+        let res = *self
+            .l
+            .resources
+            .get(&dcl)
+            .ok_or_else(|| malformed(format!("descriptor {desc}")))?;
+        Ok((res, self.l.ir.op(dcl).ty.clone()))
+    }
+
+    fn image(&self, desc: u32) -> Result<Resource> {
+        let (res, _) = self.buffer(desc)?;
+        if res.image.is_none() {
+            return Err(malformed("not an image".into()));
+        }
+        Ok(res)
+    }
+
+    /// The indices an address operand holds.
+    fn address(&mut self, b: &mut Block, addr: u32) -> Result<Vec<Index>> {
+        if addr == 0 {
+            return Ok(Vec::new());
+        }
+        let ir = self.l.ir;
+        let op = ir.op(addr);
+        let n = op.ty.basic().map_or(1, |m| m.size);
+        let mut out = Vec::new();
+        match op.code {
+            code::CONSTANT => out.extend(op.lits.iter().map(|&l| Index::Const(l as u32))),
+            code::COMPOSITE_CONSTRUCT => {
+                for &m in &op.refs {
+                    let mo = ir.op(m);
+                    if mo.code == code::CONSTANT {
+                        out.push(Index::Const(mo.lits[0] as u32));
+                    } else {
+                        out.push(Index::Dyn(self.get_as(b, m, Scalar::U32)?));
+                    }
+                }
+            }
+            _ if n == 1 => out.push(Index::Dyn(self.get_as(b, addr, Scalar::U32)?)),
+            _ => {
+                let v = self.get_as(b, addr, Scalar::U32)?;
+                for i in 0..n as u32 {
+                    out.push(Index::Dyn(
+                        self.add(b, Expression::AccessIndex { base: v, index: i }),
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Where an address leads in `var` (of IR type `ty`): a pointer, the element type there, and how
+    /// to reach the value: one component of a vector, or `n` consecutive scalars of an array.
+    fn walk(
+        &mut self,
+        b: &mut Block,
+        var: Handle<GlobalVariable>,
+        ty: &Ty,
+        addr: u32,
+        n: u8,
+    ) -> Result<Place> {
+        let indices = self.address(b, addr)?;
+        let element = *ty
+            .members
+            .first()
+            .ok_or_else(|| malformed("void memory".into()))?;
+        let dims = ty.dims.len();
+        if indices.len() > dims + 1 {
+            return Err(malformed("address too long".into()));
+        }
+        // Consecutive scalars: the innermost array index (zero when absent) is where they start.
+        let run = element.size == 1 && n > 1 && dims > 0;
+        let applied = if run {
+            indices.len().min(dims - 1)
+        } else {
+            indices.len().min(dims)
+        };
+        let mut p = self.add(b, Expression::GlobalVariable(var));
+        for &i in &indices[..applied] {
+            p = self.index(b, p, i);
+        }
+        if run {
+            let start = indices.get(dims - 1).copied().unwrap_or(Index::Const(0));
+            return Ok(Place::Run(p, start, element));
+        }
+        Ok(Place::Element(p, element, indices.get(dims).copied()))
+    }
+
+    fn index(&mut self, b: &mut Block, base: Handle<Expression>, i: Index) -> Handle<Expression> {
+        match i {
+            Index::Const(index) => self.add(b, Expression::AccessIndex { base, index }),
+            Index::Dyn(index) => self.add(b, Expression::Access { base, index }),
+        }
+    }
+
+    /// Index `start + k`.
+    fn offset_index(&mut self, b: &mut Block, start: Index, k: u32) -> Index {
+        match start {
+            Index::Const(c) => Index::Const(c + k),
+            Index::Dyn(_) if k == 0 => start,
+            Index::Dyn(h) => {
+                let kk = self.lit(b, Literal::U32(k));
+                Index::Dyn(self.bin(b, BinaryOperator::Add, h, kk))
+            }
+        }
+    }
+
+    fn load(
+        &mut self,
+        b: &mut Block,
+        var: Handle<GlobalVariable>,
+        ty: &Ty,
+        addr: u32,
+        result: &Ty,
+    ) -> Result<Handle<Expression>> {
+        let want = result
+            .basic()
+            .ok_or_else(|| malformed("load of an aggregate".into()))?;
+        let to = Lowering::scalar(want.scalar)?;
+        let (v, element) = match self.walk(b, var, ty, addr, want.size)? {
+            Place::Run(p, start, element) => {
+                let mut comps = Vec::new();
+                for k in 0..want.size as u32 {
+                    let i = self.offset_index(b, start, k);
+                    let q = self.index(b, p, i);
+                    comps.push(self.add(b, Expression::Load { pointer: q }));
+                }
+                let ty = self
+                    .l
+                    .vec_ty(want.size, Lowering::scalar(element.scalar)?)?;
+                (
+                    self.add(
+                        b,
+                        Expression::Compose {
+                            ty,
+                            components: comps,
+                        },
+                    ),
+                    element,
+                )
+            }
+            Place::Element(p, element, comp) => {
+                let v = match comp {
+                    None if element.size == want.size => {
+                        self.add(b, Expression::Load { pointer: p })
+                    }
+                    None if element.size > want.size => {
+                        let whole = self.add(b, Expression::Load { pointer: p });
+                        self.e.swizzle(&mut self.f, b, whole, 0, want.size)?
+                    }
+                    Some(Index::Const(c)) if c + want.size as u32 <= element.size as u32 => {
+                        let whole = self.add(b, Expression::Load { pointer: p });
+                        if element.size == 1 {
+                            whole
+                        } else {
+                            self.e.swizzle(&mut self.f, b, whole, c, want.size)?
+                        }
+                    }
+                    Some(Index::Dyn(i)) if want.size == 1 => {
+                        let q = self.add(b, Expression::Access { base: p, index: i });
+                        self.add(b, Expression::Load { pointer: q })
+                    }
+                    _ => return Err(unsupported("VectorLoadAcrossElements")),
+                };
+                (v, element)
+            }
+        };
+        let from = Lowering::scalar(element.scalar)?;
+        Ok(self.e.bitcast(&mut self.f, b, v, from, to))
+    }
+
+    fn store(
+        &mut self,
+        b: &mut Block,
+        var: Handle<GlobalVariable>,
+        ty: &Ty,
+        addr: u32,
+        value: u32,
+    ) -> Result<()> {
+        let have = self.basic_of(value)?;
+        let parts = |s: &mut Self, b: &mut Block, v: Handle<Expression>, i: u32| {
+            if have.size == 1 {
+                v
+            } else {
+                s.add(b, Expression::AccessIndex { base: v, index: i })
+            }
+        };
+        match self.walk(b, var, ty, addr, have.size)? {
+            Place::Run(p, start, element) => {
+                let v = self.get_as(b, value, Lowering::scalar(element.scalar)?)?;
+                for k in 0..have.size as u32 {
+                    let i = self.offset_index(b, start, k);
+                    let q = self.index(b, p, i);
+                    let x = parts(self, b, v, k);
+                    self.stmt(
+                        b,
+                        Statement::Store {
+                            pointer: q,
+                            value: x,
+                        },
+                    );
+                }
+            }
+            Place::Element(p, element, comp) => {
+                let v = self.get_as(b, value, Lowering::scalar(element.scalar)?)?;
+                match comp {
+                    None if element.size == have.size => {
+                        self.stmt(
+                            b,
+                            Statement::Store {
+                                pointer: p,
+                                value: v,
+                            },
+                        );
+                    }
+                    Some(Index::Const(c)) if c + have.size as u32 <= element.size as u32 => {
+                        if element.size == 1 {
+                            self.stmt(
+                                b,
+                                Statement::Store {
+                                    pointer: p,
+                                    value: v,
+                                },
+                            );
+                            return Ok(());
+                        }
+                        for i in 0..have.size as u32 {
+                            let q = self.add(
+                                b,
+                                Expression::AccessIndex {
+                                    base: p,
+                                    index: c + i,
+                                },
+                            );
+                            let x = parts(self, b, v, i);
+                            self.stmt(
+                                b,
+                                Statement::Store {
+                                    pointer: q,
+                                    value: x,
+                                },
+                            );
+                        }
+                    }
+                    Some(Index::Dyn(i)) if have.size == 1 => {
+                        let q = self.add(b, Expression::Access { base: p, index: i });
+                        self.stmt(
+                            b,
+                            Statement::Store {
+                                pointer: q,
+                                value: v,
+                            },
+                        );
+                    }
+                    _ => return Err(unsupported("VectorStoreAcrossElements")),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Texture coordinates as the common form takes them: 1D textures are 2D textures one texel high.
+    fn coords(
+        &mut self,
+        b: &mut Block,
+        k: u64,
+        id: u32,
+        float: bool,
+    ) -> Result<Handle<Expression>> {
+        let s = self.scalar_of(id)?;
+        let want = if float {
+            Scalar::F32
+        } else if s.kind == ScalarKind::Sint {
+            Scalar::I32
+        } else {
+            Scalar::U32
+        };
+        let v = self.get_as(b, id, want)?;
+        if matches!(k, kind::IMAGE_1D | kind::IMAGE_1D_ARRAY) {
+            let y = self.lit(b, if float { Literal::F32(0.5) } else { zero(want) });
+            let ty = self.l.vec_ty(2, want)?;
+            return Ok(self.add(
+                b,
+                Expression::Compose {
+                    ty,
+                    components: vec![v, y],
+                },
+            ));
+        }
+        Ok(v)
+    }
+
+    fn layer(&mut self, b: &mut Block, id: u32) -> Result<Option<Handle<Expression>>> {
+        if id == 0 {
+            return Ok(None);
+        }
+        let s = self.scalar_of(id)?;
+        let v = self.get(b, id)?;
+        if s.kind == ScalarKind::Float {
+            let rounded = self.math(b, MathFunction::Round, &[v]);
+            let z = self.lit(b, Literal::F32(0.0));
+            let rounded = self.math(b, MathFunction::Max, &[rounded, z]);
+            return Ok(Some(self.add(
+                b,
+                Expression::As {
+                    expr: rounded,
+                    kind: ScalarKind::Uint,
+                    convert: Some(4),
+                },
+            )));
+        }
+        Ok(Some(v))
+    }
+
+    fn sample(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
+        let r = &op.refs;
+        let gather = op.code == code::IMAGE_GATHER;
+        if op.flags & 8 != 0 {
+            return Err(unsupported("SparseFeedback"));
+        }
+        let res = self.image(r[0])?;
+        let (sampler_res, _) = self.buffer(r[1])?;
+        let (k, _) = res.image.unwrap();
+        let tex_slot = self.slot_of(r[0]);
+        let smp_slot = self.slot_of(r[1]);
+        if !self
+            .l
+            .reflection
+            .sampled_pairs
+            .contains(&(tex_slot, smp_slot))
+        {
+            self.l.reflection.sampled_pairs.push((tex_slot, smp_slot));
+        }
+        let image = self.add(b, Expression::GlobalVariable(res.var));
+        let sampler = self.add(b, Expression::GlobalVariable(sampler_res.var));
+        let array_index = self.layer(b, r[2])?;
+        let coordinate = self.coords(b, k, r[3], true)?;
+        let offset = if r[4] != 0 {
+            Some(self.offset_constant(b, k, r[4])?)
+        } else {
+            None
+        };
+        let depth_ref_id = if gather { r[5] } else { r[10] };
+        let depth_ref = if depth_ref_id != 0 {
+            Some(self.get_as(b, depth_ref_id, Scalar::F32)?)
+        } else {
+            None
+        };
+        let level = if gather {
+            SampleLevel::Zero
+        } else {
+            let (lod, bias, clamp, dx, dy) = (r[5], r[6], r[7], r[8], r[9]);
+            if clamp != 0 {
+                return Err(unsupported("SampleClamp"));
+            }
+            if lod != 0 {
+                let is_zero = {
+                    let o = self.l.ir.op(lod);
+                    o.code == code::CONSTANT && f32::from_bits(o.lits[0] as u32) == 0.0
+                };
+                if depth_ref.is_some() || is_zero {
+                    if !is_zero {
+                        return Err(unsupported("SampleCompareLevel"));
+                    }
+                    SampleLevel::Zero
+                } else {
+                    SampleLevel::Exact(self.get_as(b, lod, Scalar::F32)?)
+                }
+            } else if bias != 0 {
+                if depth_ref.is_some() {
+                    return Err(unsupported("SampleCompareBias"));
+                }
+                SampleLevel::Bias(self.get_as(b, bias, Scalar::F32)?)
+            } else if dx != 0 {
+                if depth_ref.is_some() {
+                    return Err(unsupported("SampleCompareGradient"));
+                }
+                let x = self.coords(b, k, dx, true)?;
+                let y = self.coords(b, k, dy, true)?;
+                SampleLevel::Gradient { x, y }
+            } else {
+                SampleLevel::Auto
+            }
+        };
+        let gather_component = if gather {
+            let c = op.lits.first().copied().unwrap_or(0) as usize;
+            Some(SwizzleComponent::XYZW[c.min(3)])
+        } else {
+            None
+        };
+        let v = self.add(
+            b,
+            Expression::ImageSample {
+                image,
+                sampler,
+                gather: gather_component,
+                coordinate,
+                array_index,
+                offset,
+                level,
+                depth_ref,
+                clamp_to_edge: false,
+            },
+        );
+        if res.depth && depth_ref.is_none() && !gather {
+            return self.depth_vec4(b, v, op);
+        }
+        Ok(v)
+    }
+
+    /// A depth texture read as a color one gives (depth, 0, 0, 1).
+    fn depth_vec4(
+        &mut self,
+        b: &mut Block,
+        v: Handle<Expression>,
+        op: &Op,
+    ) -> Result<Handle<Expression>> {
+        let want = op.ty.basic().map_or(4, |m| m.size);
+        if want == 1 {
+            return Ok(v);
+        }
+        let z = self.lit(b, Literal::F32(0.0));
+        let one = self.lit(b, Literal::F32(1.0));
+        let ty = self.l.vec_ty(4, Scalar::F32)?;
+        let v4 = self.add(
+            b,
+            Expression::Compose {
+                ty,
+                components: vec![v, z, z, one],
+            },
+        );
+        if want == 4 {
+            return Ok(v4);
+        }
+        self.e.swizzle(&mut self.f, b, v4, 0, want)
+    }
+
+    fn offset_constant(&mut self, b: &mut Block, k: u64, id: u32) -> Result<Handle<Expression>> {
+        let op = self.l.ir.op(id);
+        if op.code != code::CONSTANT {
+            return Err(unsupported("DynamicOffset"));
+        }
+        let mut comps: Vec<i32> = op.lits.iter().map(|&l| l as i32).collect();
+        if matches!(k, kind::IMAGE_1D | kind::IMAGE_1D_ARRAY) {
+            comps.push(0);
+        }
+        let c = self.l.ivec_constant(&comps)?;
+        Ok(self.add(b, Expression::Constant(c)))
+    }
+
+    fn slot_of(&self, desc: u32) -> u32 {
+        let dcl = self.l.ir.op(desc).refs[0];
+        self.l.ir.op(dcl).lits.get(1).copied().unwrap_or(0) as u32
+    }
+
+    fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
+        let r = &op.refs;
+        if op.flags & 8 != 0 {
+            return Err(unsupported("SparseFeedback"));
+        }
+        let res = self.image(r[0])?;
+        let (k, _) = res.image.unwrap();
+        let image = self.add(b, Expression::GlobalVariable(res.var));
+        let (mip, layer, coord, sample, offset) = (r[1], r[2], r[3], r[4], r[5]);
+        let array_index = self.layer(b, layer)?;
+        let mut coordinate = self.coords(b, k, coord, false)?;
+        if offset != 0 {
+            let o = self.l.ir.op(offset);
+            if o.code != code::CONSTANT {
+                return Err(unsupported("DynamicOffset"));
+            }
+            let s = self.scalar_of(coord)?;
+            let s = if s.kind == ScalarKind::Sint {
+                Scalar::I32
+            } else {
+                Scalar::U32
+            };
+            let mut comps = Vec::new();
+            for &l in &o.lits {
+                comps.push(self.lit(
+                    b,
+                    if s == Scalar::I32 {
+                        Literal::I32(l as i32)
+                    } else {
+                        Literal::U32(l as u32)
+                    },
+                ));
+            }
+            if matches!(k, kind::IMAGE_1D | kind::IMAGE_1D_ARRAY) {
+                comps.push(self.lit(b, zero(s)));
+            }
+            let off = if comps.len() == 1 {
+                comps[0]
+            } else {
+                let ty = self.l.vec_ty(comps.len() as u8, s)?;
+                self.add(
+                    b,
+                    Expression::Compose {
+                        ty,
+                        components: comps,
+                    },
+                )
+            };
+            coordinate = self.bin(b, BinaryOperator::Add, coordinate, off);
+        }
+        let (sample, level) = if k == kind::IMAGE_2D_MS {
+            (Some(self.get(b, sample)?), None)
+        } else if mip != 0 {
+            (None, Some(self.get(b, mip)?))
+        } else {
+            (None, Some(self.lit(b, Literal::U32(0))))
+        };
+        let v = self.add(
+            b,
+            Expression::ImageLoad {
+                image,
+                coordinate,
+                array_index,
+                sample,
+                level,
+            },
+        );
+        if res.depth {
+            return self.depth_vec4(b, v, op);
+        }
+        Ok(v)
+    }
+
+    fn arithmetic(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
+        use BinaryOperator as B;
+        use MathFunction as M;
+        use code as c;
+        let r = &op.refs;
+        let res = op
+            .ty
+            .basic()
+            .ok_or_else(|| malformed(format!("opcode {} result", op.code)))?;
+        let rs = Lowering::scalar(res.scalar)?;
+        let bin = |s: &mut Self, b: &mut Block, o: B, ty: Scalar| -> Result<Handle<Expression>> {
+            let x = s.get_as(b, r[0], ty)?;
+            let y = s.get_as(b, r[1], ty)?;
+            Ok(s.bin(b, o, x, y))
+        };
+        let math = |s: &mut Self, b: &mut Block, f: M, ty: Scalar| -> Result<Handle<Expression>> {
+            let mut args = Vec::new();
+            for &a in r.iter() {
+                args.push(s.get_as(b, a, ty)?);
+            }
+            Ok(s.math(b, f, &args))
+        };
+        let operand = |s: &Self| s.scalar_of(r[0]);
+        Ok(match op.code {
+            c::F_EQ => bin(self, b, B::Equal, Scalar::F32)?,
+            c::F_NE => bin(self, b, B::NotEqual, Scalar::F32)?,
+            c::F_LT => bin(self, b, B::Less, Scalar::F32)?,
+            c::F_LE => bin(self, b, B::LessEqual, Scalar::F32)?,
+            c::F_GT => bin(self, b, B::Greater, Scalar::F32)?,
+            c::F_GE => bin(self, b, B::GreaterEqual, Scalar::F32)?,
+            c::F_IS_NAN => {
+                // A bit test: WGSL has no isnan, and the result never depends on fast-math rules.
+                let x = self.get_as(b, r[0], Scalar::U32)?;
+                let m = self.lit(b, Literal::U32(0x7fff_ffff));
+                let x = self.bin(b, B::And, x, m);
+                let inf = self.lit(b, Literal::U32(0x7f80_0000));
+                self.bin(b, B::Greater, x, inf)
+            }
+            c::I_EQ => bin(self, b, B::Equal, operand(self)?)?,
+            c::I_NE => bin(self, b, B::NotEqual, operand(self)?)?,
+            c::S_LT => bin(self, b, B::Less, Scalar::I32)?,
+            c::S_LE => bin(self, b, B::LessEqual, Scalar::I32)?,
+            c::S_GT => bin(self, b, B::Greater, Scalar::I32)?,
+            c::S_GE => bin(self, b, B::GreaterEqual, Scalar::I32)?,
+            c::U_LT => bin(self, b, B::Less, Scalar::U32)?,
+            c::U_LE => bin(self, b, B::LessEqual, Scalar::U32)?,
+            c::U_GT => bin(self, b, B::Greater, Scalar::U32)?,
+            c::U_GE => bin(self, b, B::GreaterEqual, Scalar::U32)?,
+            c::B_AND => bin(self, b, B::LogicalAnd, Scalar::BOOL)?,
+            c::B_OR => bin(self, b, B::LogicalOr, Scalar::BOOL)?,
+            c::B_EQ => bin(self, b, B::Equal, Scalar::BOOL)?,
+            c::B_NE => bin(self, b, B::NotEqual, Scalar::BOOL)?,
+            c::B_NOT => {
+                let x = self.get_as(b, r[0], Scalar::BOOL)?;
+                self.add(
+                    b,
+                    Expression::Unary {
+                        op: UnaryOperator::LogicalNot,
+                        expr: x,
+                    },
+                )
+            }
+            c::SELECT => {
+                let condition = self.get_as(b, r[0], Scalar::BOOL)?;
+                let accept = self.get_as(b, r[1], rs)?;
+                let reject = self.get_as(b, r[2], rs)?;
+                self.add(
+                    b,
+                    Expression::Select {
+                        condition,
+                        accept,
+                        reject,
+                    },
+                )
+            }
+            c::F_ABS => math(self, b, M::Abs, rs)?,
+            c::F_NEG | c::I_NEG => {
+                let x = self.get_as(b, r[0], rs)?;
+                self.add(
+                    b,
+                    Expression::Unary {
+                        op: UnaryOperator::Negate,
+                        expr: x,
+                    },
+                )
+            }
+            c::F_ADD | c::I_ADD => bin(self, b, B::Add, rs)?,
+            c::F_SUB | c::I_SUB => bin(self, b, B::Subtract, rs)?,
+            c::F_MUL | c::I_MUL => bin(self, b, B::Multiply, rs)?,
+            c::F_DIV | c::U_DIV => bin(self, b, B::Divide, rs)?,
+            c::U_MOD => bin(self, b, B::Modulo, rs)?,
+            c::F_MAD => {
+                let x = self.get_as(b, r[0], rs)?;
+                let y = self.get_as(b, r[1], rs)?;
+                let z = self.get_as(b, r[2], rs)?;
+                let m = self.bin(b, B::Multiply, x, y);
+                self.bin(b, B::Add, m, z)
+            }
+            c::F_RCP => {
+                let x = self.get_as(b, r[0], rs)?;
+                let one = self.splat_lit(b, Literal::F32(1.0), res.size)?;
+                self.bin(b, B::Divide, one, x)
+            }
+            c::F_SQRT => math(self, b, M::Sqrt, rs)?,
+            c::F_RSQ => math(self, b, M::InverseSqrt, rs)?,
+            c::F_EXP2 => math(self, b, M::Exp2, rs)?,
+            c::F_LOG2 => math(self, b, M::Log2, rs)?,
+            c::F_FRACT => math(self, b, M::Fract, rs)?,
+            c::F_ROUND => {
+                let f = match op.lits.first() {
+                    Some(1) => M::Trunc,
+                    Some(4) => M::Floor,
+                    Some(8) => M::Ceil,
+                    _ => M::Round,
+                };
+                math(self, b, f, rs)?
+            }
+            c::F_MIN | c::S_MIN | c::U_MIN => math(self, b, M::Min, rs)?,
+            c::F_MAX | c::S_MAX | c::U_MAX => math(self, b, M::Max, rs)?,
+            c::F_CLAMP | c::S_CLAMP | c::U_CLAMP => math(self, b, M::Clamp, rs)?,
+            c::F_DOT => math(self, b, M::Dot, rs)?,
+            c::F_SIN => math(self, b, M::Sin, rs)?,
+            c::F_COS => math(self, b, M::Cos, rs)?,
+            c::F_POW => math(self, b, M::Pow, rs)?,
+            c::F_SGN => math(self, b, M::Sign, rs)?,
+            c::I_ABS => math(self, b, M::Abs, rs)?,
+            c::I_AND => bin(self, b, B::And, rs)?,
+            c::I_OR => bin(self, b, B::InclusiveOr, rs)?,
+            c::I_XOR => bin(self, b, B::ExclusiveOr, rs)?,
+            c::I_NOT => {
+                let x = self.get_as(b, r[0], rs)?;
+                self.add(
+                    b,
+                    Expression::Unary {
+                        op: UnaryOperator::BitwiseNot,
+                        expr: x,
+                    },
+                )
+            }
+            c::I_SHL | c::S_SHR | c::U_SHR => {
+                let ty = match op.code {
+                    c::S_SHR => Scalar::I32,
+                    c::U_SHR => Scalar::U32,
+                    _ => rs,
+                };
+                let x = self.get_as(b, r[0], ty)?;
+                let n = self.get_as(b, r[1], Scalar::U32)?;
+                let o = if op.code == c::I_SHL {
+                    B::ShiftLeft
+                } else {
+                    B::ShiftRight
+                };
+                let v = self.bin(b, o, x, n);
+                self.e.bitcast(&mut self.f, b, v, ty, rs)
+            }
+            c::I_BIT_INSERT => {
+                let base = self.get_as(b, r[0], rs)?;
+                let insert = self.get_as(b, r[1], rs)?;
+                let offset = self.get_as(b, r[2], Scalar::U32)?;
+                let count = self.get_as(b, r[3], Scalar::U32)?;
+                self.math(b, M::InsertBits, &[base, insert, offset, count])
+            }
+            c::U_BIT_EXTRACT | c::S_BIT_EXTRACT => {
+                let ty = if op.code == c::S_BIT_EXTRACT {
+                    Scalar::I32
+                } else {
+                    Scalar::U32
+                };
+                let v = self.get_as(b, r[0], ty)?;
+                let offset = self.get_as(b, r[1], Scalar::U32)?;
+                let count = self.get_as(b, r[2], Scalar::U32)?;
+                let x = self.math(b, M::ExtractBits, &[v, offset, count]);
+                self.e.bitcast(&mut self.f, b, x, ty, rs)
+            }
+            c::I_BIT_COUNT => {
+                let x = self.get(b, r[0])?;
+                let v = self.math(b, M::CountOneBits, &[x]);
+                let s = operand(self)?;
+                self.e.bitcast(&mut self.f, b, v, s, rs)
+            }
+            c::I_BIT_REVERSE => math(self, b, M::ReverseBits, rs)?,
+            c::I_FIND_LSB | c::S_FIND_MSB | c::U_FIND_MSB => {
+                let (f, ty) = match op.code {
+                    c::I_FIND_LSB => (M::FirstTrailingBit, operand(self)?),
+                    c::S_FIND_MSB => (M::FirstLeadingBit, Scalar::I32),
+                    _ => (M::FirstLeadingBit, Scalar::U32),
+                };
+                let x = self.get_as(b, r[0], ty)?;
+                let v = self.math(b, f, &[x]);
+                self.e.bitcast(&mut self.f, b, v, ty, rs)
+            }
+            c::I_ADD_CARRY | c::I_SUB_BORROW => {
+                let x = self.get_as(b, r[0], Scalar::U32)?;
+                let y = self.get_as(b, r[1], Scalar::U32)?;
+                let add = op.code == c::I_ADD_CARRY;
+                let lo = self.bin(b, if add { B::Add } else { B::Subtract }, x, y);
+                let flag = if add {
+                    self.bin(b, B::Less, lo, x)
+                } else {
+                    self.bin(b, B::Less, x, y)
+                };
+                let one = self.lit(b, Literal::U32(1));
+                let z = self.lit(b, Literal::U32(0));
+                let hi = self.add(
+                    b,
+                    Expression::Select {
+                        condition: flag,
+                        accept: one,
+                        reject: z,
+                    },
+                );
+                let ty = self.l.vec_ty(2, Scalar::U32)?;
+                self.add(
+                    b,
+                    Expression::Compose {
+                        ty,
+                        components: vec![lo, hi],
+                    },
+                )
+            }
+            c::S_MUL_EXTENDED | c::U_MUL_EXTENDED => return Err(unsupported("MulExtended")),
+            c::CONVERT_F_TO_I => {
+                let x = self.get_as(b, r[0], Scalar::F32)?;
+                self.add(
+                    b,
+                    Expression::As {
+                        expr: x,
+                        kind: rs.kind,
+                        convert: Some(4),
+                    },
+                )
+            }
+            c::CONVERT_I_TO_F => {
+                let x = self.get(b, r[0])?;
+                self.add(
+                    b,
+                    Expression::As {
+                        expr: x,
+                        kind: ScalarKind::Float,
+                        convert: Some(4),
+                    },
+                )
+            }
+            c::CONVERT_F_TO_F | c::CONVERT_I_TO_I | c::CAST => {
+                let from = operand(self)?;
+                let x = self.get(b, r[0])?;
+                if from.kind == rs.kind {
+                    x
+                } else if from.kind == ScalarKind::Bool || rs.kind == ScalarKind::Bool {
+                    self.e.bitcast(&mut self.f, b, x, from, rs)
+                } else {
+                    self.add(
+                        b,
+                        Expression::As {
+                            expr: x,
+                            kind: rs.kind,
+                            convert: None,
+                        },
+                    )
+                }
+            }
+            c::CONVERT_F32_TO_PACKED_F16 => math(self, b, M::Pack2x16float, Scalar::F32)?,
+            c::CONVERT_PACKED_F16_TO_F32 => math(self, b, M::Unpack2x16float, Scalar::U32)?,
+            other => return Err(malformed(format!("opcode {other}"))),
+        })
+    }
+
+    fn splat_lit(&mut self, b: &mut Block, l: Literal, n: u8) -> Result<Handle<Expression>> {
+        let v = self.lit(b, l);
+        if n == 1 {
+            return Ok(v);
+        }
+        Ok(self.add(
+            b,
+            Expression::Splat {
+                size: vector_size(n)?,
+                value: v,
+            },
+        ))
+    }
+}
+
+fn literal(s: Scalar, bits: u64) -> Literal {
+    match s.kind {
+        ScalarKind::Float => Literal::F32(f32::from_bits(bits as u32)),
+        ScalarKind::Sint => Literal::I32(bits as i32),
+        ScalarKind::Bool => Literal::Bool(bits != 0),
+        _ => Literal::U32(bits as u32),
+    }
+}
+
+impl Lowering<'_> {
+    /// A module constant holding the vector or array constant `id`.
+    fn global_constant(&mut self, id: u32) -> Result<Handle<naga::Constant>> {
+        let op = self.ir.op(id);
+        let ty = self.ir_ty(&op.ty)?;
+        let init = self.const_expr(&op.ty, &op.lits)?;
+        Ok(self.module.constants.append(
+            naga::Constant {
+                name: None,
+                ty,
+                init,
+            },
+            Span::UNDEFINED,
+        ))
+    }
+
+    fn const_expr(&mut self, t: &Ty, lits: &[u64]) -> Result<Handle<Expression>> {
+        let [m] = t.members[..] else {
+            return Err(unsupported("StructConstant"));
+        };
+        let s = Self::scalar(m.scalar)?;
+        let mut elements = Vec::new();
+        for chunk in lits.chunks(m.size as usize) {
+            let mut comps = Vec::new();
+            for &l in chunk {
+                if s == Scalar::F32 && !f32::from_bits(l as u32).is_finite() {
+                    return Err(unsupported("NonFiniteConstantVector"));
+                }
+                comps.push(
+                    self.module
+                        .global_expressions
+                        .append(Expression::Literal(literal(s, l)), Span::UNDEFINED),
+                );
+            }
+            let e = if m.size == 1 {
+                comps[0]
+            } else {
+                let ty = self.basic(m)?;
+                self.module.global_expressions.append(
+                    Expression::Compose {
+                        ty,
+                        components: comps,
+                    },
+                    Span::UNDEFINED,
+                )
+            };
+            elements.push(e);
+        }
+        if t.dims.is_empty() {
+            return Ok(elements[0]);
+        }
+        if t.dims.len() > 1 {
+            return Err(unsupported("NestedArrayConstant"));
+        }
+        let ty = self.ir_ty(t)?;
+        Ok(self.module.global_expressions.append(
+            Expression::Compose {
+                ty,
+                components: elements,
+            },
+            Span::UNDEFINED,
+        ))
+    }
+
+    fn ivec_constant(&mut self, comps: &[i32]) -> Result<Handle<naga::Constant>> {
+        let t = Ty {
+            dims: Vec::new(),
+            members: vec![Basic {
+                scalar: scalar::I32,
+                size: comps.len() as u8,
+            }],
+        };
+        let lits: Vec<u64> = comps.iter().map(|&c| c as u32 as u64).collect();
+        let ty = self.ir_ty(&t)?;
+        let init = self.const_expr(&t, &lits)?;
+        Ok(self.module.constants.append(
+            naga::Constant {
+                name: None,
+                ty,
+                init,
+            },
+            Span::UNDEFINED,
+        ))
+    }
+
+    /// A private variable initialised with the constant array `id`, for indexing at run time.
+    fn constant_array(&mut self, id: u32) -> Result<Handle<GlobalVariable>> {
+        if let Some(&v) = self.memory.get(&id) {
+            return Ok(v);
+        }
+        let op = self.ir.op(id);
+        let ty = self.ir_ty(&op.ty)?;
+        let init = self.const_expr(&op.ty, &op.lits)?;
+        let var = self.global(
+            format!("icb{id}"),
+            AddressSpace::Private,
+            None,
+            ty,
+            Some(init),
+        );
+        self.memory.insert(id, var);
+        Ok(var)
+    }
+}
