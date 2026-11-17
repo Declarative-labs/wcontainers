@@ -136,8 +136,10 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     let has = |u: FormatUse| uses.contains(u);
     let sample = has(FormatUse::SAMPLE);
     let filter = sample && has(FormatUse::FILTER);
+    // A multisampled texture exists only as a target, so only formats that are targets load samples.
+    let target = has(FormatUse::RENDER) || has(FormatUse::DEPTH_STENCIL);
     let multisample_load =
-        sample && caps.has(Features::MULTISAMPLE_READ) && multisampled(caps, format);
+        sample && target && caps.has(Features::MULTISAMPLE_READ) && multisampled(caps, format);
     let mut bit = |on: bool, b: u32| {
         if on {
             s.support1 |= b;
@@ -192,7 +194,14 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         render && multisampled(caps, format),
         MULTISAMPLE_RENDERTARGET,
     );
-    bit(has(FormatUse::RESOLVE), MULTISAMPLE_RESOLVE);
+    // Direct3D resolves multisampled targets of float and normalised formats only.
+    bit(
+        has(FormatUse::RESOLVE)
+            && render
+            && multisampled(caps, format)
+            && format.kind() == wcontainers_gpu::FormatKind::Float,
+        MULTISAMPLE_RESOLVE,
+    );
     bit(multisample_load, MULTISAMPLE_LOAD);
     bit(BACK_BUFFER_FORMATS.contains(&value), DISPLAY);
     // The swap chain's buffers take views as their sRGB twins.
