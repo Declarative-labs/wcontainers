@@ -211,14 +211,14 @@ fn rig_dxil_shaders_convert_or_fail_with_a_named_reason() {
 fn own_shaders_convert() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
     let counts = run(&dir, "dxbc", "own");
-    // All five give valid WGSL; GLSL ES 3.00 lacks the bitfield operations two of them use, which
-    // the WebGL 2 back end lowers (plan 6.5).
+    // All give valid WGSL; GLSL ES 3.00 lacks the bitfield operations two of them use, which the
+    // WebGL 2 back end lowers (plan 6.5).
     let wgsl: usize = counts
         .iter()
         .filter(|(k, _)| k.starts_with("ok"))
         .map(|(_, n)| n)
         .sum();
-    assert_eq!(wgsl, 5, "{counts:?}");
+    assert_eq!(wgsl, shaders(&dir, "dxbc").len(), "{counts:?}");
 }
 
 /// The same HLSL compiled by fxc (DXBC) and by dxc (DXIL) gives the same values at the same locations,
@@ -355,4 +355,21 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
     }
     eprintln!("compared {compared} shaders, {sampling} of them sampling");
     assert!(compared >= 18 && sampling >= 4, "{compared} {sampling}");
+}
+
+/// A dynamically indexed constant buffer is declared with the size the bytecode gives it (the rig's
+/// instanced vertex shader indexes 33 vectors by instance), not dxbc-spirv's 4096, so a program
+/// binding just its buffer satisfies WebGPU's minimum binding size.
+#[test]
+fn dynamically_indexed_constants_keep_their_declared_size() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wcontainers-graphics-test/shaders/dxbc/instanced.vs.dxbc");
+    let bytes = std::fs::read(path).unwrap();
+    let c = convert(Source::Dxbc(&bytes), &VariantKey::default(), None).unwrap();
+    let m = &c.modules[0];
+    let wgsl =
+        naga::back::wgsl::write_string(&m.module, &m.info, naga::back::wgsl::WriterFlags::empty())
+            .unwrap();
+    assert!(wgsl.contains("array<vec4<f32>, 33>"), "{wgsl}");
+    assert!(!wgsl.contains("4096"), "{wgsl}");
 }
