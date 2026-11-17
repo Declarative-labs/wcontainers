@@ -2,13 +2,16 @@
 //! calling thread straight into the front, one call at a time under the library's lock; the call
 //! buffer and device thread come with the channel.
 
+mod chosen;
 mod context;
 mod convert;
 pub mod counted;
 mod device;
 mod dxgi;
+mod factory;
 mod generated;
 mod objects;
+mod output;
 mod swapchain;
 
 use std::cell::RefCell;
@@ -26,6 +29,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_MORE_DATA, DXGI_ERROR_NOT_FOUND,
     DXGI_ERROR_SDK_COMPONENT_MISSING, DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAS_STILL_DRAWING,
+    DXGI_SWAP_CHAIN_DESC, IDXGIDevice, IDXGIFactory, IDXGISwapChain,
 };
 use windows::core::{Error, GUID, HRESULT, IUnknown, Interface, OutRef, Ref, Result};
 
@@ -34,40 +38,34 @@ pub use device::{Device, create_device};
 pub use dxgi::Adapter;
 pub use objects::*;
 
-use context::Context_Impl;
+use context::{Context_Impl, DeviceContextState_Impl};
 use device::Device_Impl;
 use dxgi::Adapter_Impl;
+use output::Output_Impl;
 use swapchain::{Factory, Factory_Impl, SwapChain_Impl};
 
-/// The back end the library draws through.
-pub type Chosen = wcontainers_gpu_webgpu::WebGpu;
+pub use chosen::Chosen;
 pub type Front = wcontainers_direct3d_11::Device<Chosen>;
 pub type Shared = Rc<RefCell<Front>>;
 
-/// The `wgpu` instance on Direct3D 12, made once: back ends and the program's windows' surfaces
-/// come from it.
-pub fn instance() -> Option<&'static wgpu::Instance> {
-    static INSTANCE: std::sync::OnceLock<wgpu::Instance> = std::sync::OnceLock::new();
-    Some(INSTANCE.get_or_init(|| {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = wgpu::Backends::DX12;
-        wgpu::Instance::new(desc)
-    }))
+/// Makes the back end, or none if there is no GPU to make it on.
+pub fn backend() -> Option<Chosen> {
+    let b = chosen::make()?;
+    let _ = CAPS.set(wcontainers_gpu::Backend::caps(&b).clone());
+    Some(b)
 }
 
-/// Makes the back end on the most capable GPU `wgpu` finds through Direct3D 12, or none if there is
-/// none. Direct3D 12 is what browsers' WebGPU draws through on Windows, and it rasterises aliased
-/// lines by Direct3D's rule, which `wgpu`'s Vulkan path does not.
-pub fn backend() -> Option<Chosen> {
-    let instance = instance()?;
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
-    .ok()?;
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&Chosen::device_descriptor(&adapter))).ok()?;
-    Some(Chosen::new(&adapter, device, queue))
+/// The caps of the first back end made.
+static CAPS: std::sync::OnceLock<wcontainers_gpu::Caps> = std::sync::OnceLock::new();
+
+/// The back end's caps, for factories made before any device: those of the first back end made, or
+/// of one made for them and dropped while no other exists (two native WebGL 2 back ends on a thread
+/// would share EGL's display and current context).
+pub fn caps() -> Option<&'static wcontainers_gpu::Caps> {
+    if CAPS.get().is_none() {
+        drop(backend()?);
+    }
+    CAPS.get()
 }
 
 /// Held through every COM method and every drop of what the objects share, so a program's threads
@@ -209,10 +207,10 @@ pub fn hresult(e: wcontainers_direct3d_11::Error) -> Error {
     }
 }
 
-/// One stored private datum: bytes, or an interface held with a reference.
+/// One stored private datum: bytes, or an interface held with a reference (or none).
 enum Datum {
     Bytes(Vec<u8>),
-    Interface(IUnknown),
+    Interface(Option<IUnknown>),
 }
 
 /// Private data of an object (`SetPrivateData` and friends).
@@ -239,7 +237,9 @@ impl Private {
         };
         let bytes: Vec<u8> = match datum {
             Datum::Bytes(b) => b.clone(),
-            Datum::Interface(i) => (i.as_raw() as usize).to_ne_bytes().to_vec(),
+            Datum::Interface(i) => (i.as_ref().map_or(0, |i| i.as_raw() as usize))
+                .to_ne_bytes()
+                .to_vec(),
         };
         let room = unsafe { *size } as usize;
         unsafe { *size = bytes.len() as u32 };
@@ -249,7 +249,7 @@ impl Private {
         if room < bytes.len() {
             return Err(DXGI_ERROR_MORE_DATA.into());
         }
-        if let Datum::Interface(i) = datum {
+        if let Datum::Interface(Some(i)) = datum {
             std::mem::forget(i.clone());
         }
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast(), bytes.len()) };
@@ -267,11 +267,17 @@ impl Private {
         }
         let guid = unsafe { *guid };
         let mut store = self.data.borrow_mut();
+        let had = store.len();
         store.retain(|(g, _)| *g != guid);
-        if !data.is_null() {
-            let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
-            store.push((guid, Datum::Bytes(bytes.to_vec())));
+        if data.is_null() {
+            // No data removes the entry; with none to remove Direct3D answers S_FALSE.
+            if store.len() == had {
+                return Err(windows::Win32::Foundation::S_FALSE.into());
+            }
+            return Ok(());
         }
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
+        store.push((guid, Datum::Bytes(bytes.to_vec())));
         Ok(())
     }
 
@@ -286,9 +292,8 @@ impl Private {
         let guid = unsafe { *guid };
         let mut store = self.data.borrow_mut();
         store.retain(|(g, _)| *g != guid);
-        if let Some(object) = object.as_ref() {
-            store.push((guid, Datum::Interface(object.clone())));
-        }
+        // A null interface is kept too, and read back as a null pointer.
+        store.push((guid, Datum::Interface(object.as_ref().cloned())));
         Ok(())
     }
 }
@@ -365,7 +370,36 @@ const CREATE_DEBUG: u32 = 0x2;
 const DRIVER_UNKNOWN: i32 = 0;
 const DRIVER_HARDWARE: i32 = 1;
 
-/// `D3D11CreateDevice`, as Microsoft documents it.
+type CreateDevice = unsafe extern "system" fn(
+    *mut c_void,
+    i32,
+    HMODULE,
+    u32,
+    *const D3D_FEATURE_LEVEL,
+    u32,
+    u32,
+    *mut *mut c_void,
+    *mut D3D_FEATURE_LEVEL,
+    *mut *mut c_void,
+) -> HRESULT;
+
+type CreateDeviceAndSwapChain = unsafe extern "system" fn(
+    *mut c_void,
+    i32,
+    HMODULE,
+    u32,
+    *const D3D_FEATURE_LEVEL,
+    u32,
+    u32,
+    *const c_void,
+    *mut *mut c_void,
+    *mut *mut c_void,
+    *mut D3D_FEATURE_LEVEL,
+    *mut *mut c_void,
+) -> HRESULT;
+
+/// `D3D11CreateDevice`, as Microsoft documents it. Calls from this library, the back end's
+/// libraries and the system's go on to the system's.
 ///
 /// # Safety
 /// The pointers are what the caller of `D3D11CreateDevice` passes.
@@ -377,7 +411,58 @@ pub unsafe extern "system" fn D3D11CreateDevice(
     flags: u32,
     levels: *const D3D_FEATURE_LEVEL,
     level_count: u32,
-    _sdk_version: u32,
+    sdk_version: u32,
+    device: *mut *mut c_void,
+    level: *mut D3D_FEATURE_LEVEL,
+    context: *mut *mut c_void,
+) -> HRESULT {
+    if !factory::called_by_program() {
+        // SAFETY: the system's export of this name has this type.
+        return match unsafe { factory::system::<CreateDevice>("d3d11.dll", c"D3D11CreateDevice") } {
+            Some(f) => unsafe {
+                f(
+                    adapter,
+                    driver_type,
+                    software,
+                    flags,
+                    levels,
+                    level_count,
+                    sdk_version,
+                    device,
+                    level,
+                    context,
+                )
+            },
+            None => DXGI_ERROR_UNSUPPORTED,
+        };
+    }
+    unsafe {
+        create_for_program(
+            adapter,
+            driver_type,
+            software,
+            flags,
+            levels,
+            level_count,
+            device,
+            level,
+            context,
+        )
+    }
+}
+
+/// `D3D11CreateDevice` for the program.
+///
+/// # Safety
+/// The pointers are what the caller of `D3D11CreateDevice` passes.
+#[allow(clippy::too_many_arguments)]
+unsafe fn create_for_program(
+    adapter: *mut c_void,
+    driver_type: i32,
+    software: HMODULE,
+    flags: u32,
+    levels: *const D3D_FEATURE_LEVEL,
+    level_count: u32,
     device: *mut *mut c_void,
     level: *mut D3D_FEATURE_LEVEL,
     context: *mut *mut c_void,
@@ -440,27 +525,94 @@ pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
     level: *mut D3D_FEATURE_LEVEL,
     context: *mut *mut c_void,
 ) -> HRESULT {
-    if !swap_chain.is_null() {
-        unsafe { *swap_chain = std::ptr::null_mut() };
-        if swap_chain_desc.is_null() {
-            return E_INVALIDARG;
-        }
-        return missing("D3D11CreateDeviceAndSwapChain with a swap chain").code();
+    if !factory::called_by_program() {
+        // SAFETY: the system's export of this name has this type.
+        return match unsafe {
+            factory::system::<CreateDeviceAndSwapChain>(
+                "d3d11.dll",
+                c"D3D11CreateDeviceAndSwapChain",
+            )
+        } {
+            Some(f) => unsafe {
+                f(
+                    adapter,
+                    driver_type,
+                    software,
+                    flags,
+                    levels,
+                    level_count,
+                    sdk_version,
+                    swap_chain_desc,
+                    swap_chain,
+                    device,
+                    level,
+                    context,
+                )
+            },
+            None => DXGI_ERROR_UNSUPPORTED,
+        };
     }
-    unsafe {
-        D3D11CreateDevice(
+    if swap_chain.is_null() {
+        return unsafe {
+            create_for_program(
+                adapter,
+                driver_type,
+                software,
+                flags,
+                levels,
+                level_count,
+                device,
+                level,
+                context,
+            )
+        };
+    }
+    unsafe { *swap_chain = std::ptr::null_mut() };
+    let Some(desc) = (unsafe { swap_chain_desc.cast::<DXGI_SWAP_CHAIN_DESC>().as_ref() }) else {
+        return E_INVALIDARG;
+    };
+    // The device, then its swap chain from the factory of the device's adapter, as DXGI makes it.
+    let mut made: *mut c_void = std::ptr::null_mut();
+    let hr = unsafe {
+        create_for_program(
             adapter,
             driver_type,
             software,
             flags,
             levels,
             level_count,
-            sdk_version,
-            device,
+            &mut made,
             level,
-            context,
+            std::ptr::null_mut(),
         )
+    };
+    if hr.is_err() {
+        return hr;
     }
+    // SAFETY: `D3D11CreateDevice` handed out this reference.
+    let d = unsafe { ID3D11Device::from_raw(made) };
+    let chain = (|| -> Result<IDXGISwapChain> {
+        let factory: IDXGIFactory = unsafe { d.cast::<IDXGIDevice>()?.GetAdapter()?.GetParent()? };
+        let mut chain = None;
+        unsafe { factory.CreateSwapChain(&d, desc, &mut chain) }.ok()?;
+        chain.ok_or_else(|| E_INVALIDARG.into())
+    })();
+    let chain = match chain {
+        Ok(c) => c,
+        Err(e) => return e.code(),
+    };
+    unsafe {
+        *swap_chain = chain.into_raw();
+        if !context.is_null() {
+            *context = d
+                .GetImmediateContext()
+                .map_or(std::ptr::null_mut(), Interface::into_raw);
+        }
+        if !device.is_null() {
+            *device = d.into_raw();
+        }
+    }
+    windows::Win32::Foundation::S_OK
 }
 
 /// `D3D11On12CreateDevice`: not served (no Direct3D 12 device of ours to layer on yet).

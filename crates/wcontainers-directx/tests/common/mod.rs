@@ -23,6 +23,17 @@ pub fn place_libraries(dir: &Path) {
     }
 }
 
+/// One directory holding the libraries this test run built, placed once in the process: Windows
+/// resolves the forwarder's import by the library's name to whichever copy was loaded first.
+pub fn libraries() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = fresh("libraries");
+        place_libraries(&dir);
+        dir
+    })
+}
+
 /// An empty directory `label` of the tests' own, made afresh.
 pub fn fresh(label: &str) -> PathBuf {
     let dir = profile().join("directx-tests").join(label);

@@ -3070,6 +3070,7 @@ dependencies = [
  "wcontainers-direct3d-11",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
+ "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",
  "wgpu",
  "windows",

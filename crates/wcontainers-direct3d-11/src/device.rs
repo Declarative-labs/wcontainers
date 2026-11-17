@@ -21,6 +21,10 @@ use crate::format;
 use crate::object::*;
 use crate::shader;
 
+/// Helper constants written into the back end's data ring: what they hold (base vertex, first
+/// instance, block size, offset of the bases) and the set binding them.
+pub(crate) type HelperBlock<B> = ([u32; 4], Kept<B, <B as Backend>::BindingSet>);
+
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
     pub backend: B,
@@ -32,6 +36,13 @@ pub struct Device<B: Backend> {
     pub(crate) queries: crate::query::Queries<B>,
     /// Programs by (vertex shader, pixel shader) id.
     pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
+    /// The vertex shaders converted for one pixel shader's interpolation, by the program's ids.
+    pub(crate) interpolated: HashMap<(u64, u64), Kept<B, B::Shader>>,
+    /// The vertex stage's helper constants as last written. The front is the only writer of the
+    /// back end's data ring, so the block stays as written until the front's next write.
+    pub(crate) draw_base: Option<HelperBlock<B>>,
+    /// Combinations drawn and built ahead.
+    pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
@@ -47,6 +58,8 @@ pub struct Device<B: Backend> {
 pub(crate) struct Zeros<B: Backend> {
     /// The largest constant buffer's bytes of zeros, also past any vertex element's offset.
     pub buffer: Option<Kept<B, B::Buffer>>,
+    /// The same bytes for empty structured and raw buffer slots.
+    pub storage: Option<Kept<B, B::Buffer>>,
     /// A texture of one zero texel per layer and its view, by view dimension and kind.
     pub textures: HashMap<(ViewDimension, FormatKind), ZeroView<B>>,
     pub sampler: Option<Rc<Sampler<B>>>,
@@ -156,10 +169,14 @@ impl<B: Backend> Device<B> {
             ctx: ContextState::new(),
             queries: crate::query::Queries::new(),
             programs: HashMap::new(),
+            interpolated: HashMap::new(),
+            draw_base: None,
+            ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
             zeros: Zeros {
                 buffer: None,
+                storage: None,
                 textures: HashMap::new(),
                 sampler: None,
             },
@@ -172,7 +189,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// What `CheckFormatSupport` answers for DXGI format `dxgi`: the uses this front serves on its
-    /// back end (multisampling, 1D and 3D textures and typed buffers are not served).
+    /// back end (1D and 3D textures and typed buffers are not reported).
     pub fn format_support(&self, dxgi: u32) -> u32 {
         use crate::desc::support::*;
         let mut bits = 0;
@@ -210,13 +227,37 @@ impl<B: Backend> Device<B> {
                 bits |= bit;
             }
         }
+        if [2, 4, 8, 16].iter().any(|&n| self.takes_samples(f, n)) {
+            bits |= MULTISAMPLE_RENDERTARGET;
+            if uses.contains(FormatUse::SAMPLE) {
+                bits |= MULTISAMPLE_LOAD;
+            }
+            if resolvable(f) {
+                bits |= MULTISAMPLE_RESOLVE;
+            }
+        }
         bits
     }
 
+    /// Whether textures of `format` drawn into or for depth take `samples` samples.
+    fn takes_samples(&self, format: Format, samples: u32) -> bool {
+        let uses = self.backend.caps().formats.get(format);
+        uses.intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL)
+            && self.backend.caps().formats.takes_samples(format, samples)
+    }
+
     /// What `CheckMultisampleQualityLevels` answers: one level for a single sample of a format
-    /// textures can have, none otherwise (multisampled textures are not served yet).
+    /// textures can have, and for a count the back end draws that format with; none otherwise.
     pub fn multisample_quality_levels(&self, dxgi: u32, samples: u32) -> u32 {
-        u32::from(samples == 1 && self.format_support(dxgi) & crate::desc::support::TEXTURE2D != 0)
+        if samples == 1 {
+            return u32::from(self.format_support(dxgi) & crate::desc::support::TEXTURE2D != 0);
+        }
+        let format = format::texture_format(dxgi).or_else(|| {
+            format::is_typeless(dxgi)
+                .then(|| format::storage_format(dxgi, false).ok())
+                .flatten()
+        });
+        u32::from(format.is_some_and(|f| self.takes_samples(f, samples)))
     }
 
     /// Why the device is removed, if it is, polling the back end first (plan section 4.10).
@@ -284,17 +325,35 @@ impl<B: Backend> Device<B> {
         if let Some(b) = &self.zeros.buffer {
             return Ok(b.handle.clone());
         }
+        let b = self.make_zeros(BufferUsage::VERTEX | BufferUsage::UNIFORM)?;
+        let handle = b.handle.clone();
+        self.zeros.buffer = Some(b);
+        Ok(handle)
+    }
+
+    /// The zero buffer read as a structured or raw buffer (storage usage, which back ends without
+    /// storage buffers lack, so apart from the other), made at its first use.
+    pub(crate) fn zero_storage(&mut self) -> Result<B::Buffer> {
+        if let Some(b) = &self.zeros.storage {
+            return Ok(b.handle.clone());
+        }
+        let b = self.make_zeros(BufferUsage::STORAGE)?;
+        let handle = b.handle.clone();
+        self.zeros.storage = Some(b);
+        Ok(handle)
+    }
+
+    fn make_zeros(&mut self, usage: BufferUsage) -> Result<Kept<B, B::Buffer>> {
         let desc = GpuBuffer {
             size: ZERO_BYTES,
-            usage: BufferUsage::VERTEX | BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            usage: usage | BufferUsage::COPY_DST,
             intent: MapIntent::Rarely,
         };
         let gpu = self.backend.create_buffer(&desc);
         let gpu = self.gpu(gpu)?;
         self.backend.clear_buffer(&gpu, 0, ZERO_BYTES, &[0]);
         let id = self.id();
-        self.zeros.buffer = Some(Kept::new(gpu.clone(), id, Object::Buffer, &self.graveyard));
-        Ok(gpu)
+        Ok(Kept::new(gpu, id, Object::Buffer, &self.graveyard))
     }
 
     /// A view of zeros of `kind` in `dimension`, made at its first use.
@@ -403,6 +462,8 @@ impl<B: Backend> Device<B> {
         }
         self.programs
             .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
+        self.interpolated
+            .retain(|(v, p), _| !ids.contains(v) && !ids.contains(p));
         self.layouts.retain(|(l, _), _| !ids.contains(l));
         self.bury_built();
     }
@@ -510,12 +571,20 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
-        // Multisampling is not served, so the device reports no quality level above one sample, and a
-        // count and quality it reports no level for is invalid, as in Direct3D.
+        // A count and quality the device reports no level for is invalid, as in Direct3D.
         if d.sample_quality >= self.multisample_quality_levels(d.format, d.sample_count) {
-            eprintln!("wcontainers direct3d 11: not served: multisampled textures");
             return Err(Error::InvalidArg(
                 "a sample count and quality the device reports no level for",
+            ));
+        }
+        if d.sample_count > 1
+            && (d.dimension != TexDim::D2
+                || mips != 1
+                || d.usage != usage::DEFAULT
+                || d.bind_flags & bind::UNORDERED_ACCESS != 0)
+        {
+            return Err(Error::InvalidArg(
+                "a multisampled texture is 2D, of one level and default usage",
             ));
         }
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
@@ -567,16 +636,22 @@ impl<B: Backend> Device<B> {
             (bind::SHADER_RESOURCE, FormatUse::SAMPLE),
             (bind::RENDER_TARGET, FormatUse::RENDER),
             (bind::DEPTH_STENCIL, FormatUse::DEPTH_STENCIL),
+            (bind::UNORDERED_ACCESS, FormatUse::STORAGE_WRITE),
         ] {
             if d.bind_flags & flag != 0 {
                 needs |= n;
             }
         }
-        if d.bind_flags & bind::UNORDERED_ACCESS != 0 {
-            return not_implemented("textures with unordered access");
+        if d.bind_flags & bind::UNORDERED_ACCESS != 0 && self.feature_level() < 0xb000 {
+            return Err(Error::InvalidArg(
+                "unordered access needs feature level 11_0",
+            ));
         }
-        if d.bind_flags & !(bind::SHADER_RESOURCE | bind::RENDER_TARGET | bind::DEPTH_STENCIL) != 0
-        {
+        let bindable = bind::SHADER_RESOURCE
+            | bind::RENDER_TARGET
+            | bind::DEPTH_STENCIL
+            | bind::UNORDERED_ACCESS;
+        if d.bind_flags & !bindable != 0 {
             return Err(Error::InvalidArg("bind flags a texture cannot have"));
         }
         if d.dimension == TexDim::D3 && d.bind_flags & bind::DEPTH_STENCIL != 0 {
@@ -598,10 +673,26 @@ impl<B: Backend> Device<B> {
             (bind::SHADER_RESOURCE, TextureUsage::SAMPLE),
             (bind::RENDER_TARGET, TextureUsage::RENDER),
             (bind::DEPTH_STENCIL, TextureUsage::RENDER),
+            (bind::UNORDERED_ACCESS, TextureUsage::STORAGE),
         ] {
             if d.bind_flags & flag != 0 {
                 usage |= u;
             }
+        }
+        // The back end multisamples only textures drawn into, which Direct3D does not require.
+        if d.sample_count > 1 {
+            usage |= TextureUsage::RENDER;
+        }
+        // Unordered access views are cleared by clearing passes where the format can be drawn into.
+        if d.bind_flags & bind::UNORDERED_ACCESS != 0
+            && self
+                .backend
+                .caps()
+                .formats
+                .get(format)
+                .contains(FormatUse::RENDER)
+        {
+            usage |= TextureUsage::RENDER;
         }
         let subresources = (mips * d.array_size) as usize;
         if !init.is_empty() && init.len() < subresources {
@@ -620,7 +711,7 @@ impl<B: Backend> Device<B> {
             height: d.height,
             depth_or_layers,
             mip_levels: mips,
-            samples: 1,
+            samples: d.sample_count.max(1),
             usage,
             cube,
             reinterpret: false,
@@ -683,7 +774,42 @@ impl<B: Backend> Device<B> {
         // Direct3D ignores the row pitch of a single row (a 1D texture).
         let row_pitch = if rows == 1 { row } else { data.row_pitch };
         let slice_pitch = data.slice_pitch;
-        if extent.depth_or_layers == 1 || slice_pitch == row_pitch * rows {
+        let depth = extent.depth_or_layers;
+        if format.kind() == FormatKind::DepthStencil {
+            // Each aspect apart, from the rows packed (depth-stencil textures are 2D: one slice).
+            let texel = format.block().2;
+            let mut packed = Vec::with_capacity((row * rows) as usize);
+            for y in 0..rows {
+                let at = (y * row_pitch) as usize;
+                packed.extend_from_slice(&data.bytes[at..at + row as usize]);
+            }
+            let (d, s) = crate::context::split_depth_stencil(texel, &packed);
+            let texels = row / texel;
+            let stencil = TextureRegion {
+                stencil: true,
+                ..*region
+            };
+            self.backend
+                .write_texture(region, extent, &d, texels * 4, rows, WriteMode::Ordered);
+            self.backend
+                .write_texture(&stencil, extent, &s, texels, rows, WriteMode::Ordered);
+            return;
+        }
+        if row_pitch < row || (depth > 1 && slice_pitch < row_pitch * rows) {
+            // Rows or slices laid over each other (a pitch of zero repeats one), packed apart.
+            self.backend.slow_paths().hit(SlowPath::RowsRepacked);
+            let mut packed = Vec::with_capacity((row * rows * depth) as usize);
+            for z in 0..depth {
+                for y in 0..rows {
+                    let at = (z * slice_pitch + y * row_pitch) as usize;
+                    packed.extend_from_slice(&data.bytes[at..at + row as usize]);
+                }
+            }
+            self.backend
+                .write_texture(region, extent, &packed, row, rows, WriteMode::Ordered);
+            return;
+        }
+        if depth == 1 || slice_pitch == row_pitch * rows {
             self.backend.write_texture(
                 region,
                 extent,
@@ -733,9 +859,14 @@ impl<B: Backend> Device<B> {
         }
         let arrayed = t.array_size > 1;
         let cube = t.misc_flags & MISC_TEXTURECUBE != 0 && kind == bind::SHADER_RESOURCE;
+        // Views drawn into are one layer at a pass; shader and unordered access views see theirs.
+        let drawn = kind & (bind::RENDER_TARGET | bind::DEPTH_STENCIL) != 0;
+        let multisampled = t.sample_count > 1;
         let whole = ViewDesc {
             format: t.format,
             dimension: match (t.dimension, arrayed) {
+                (TexDim::D2, false) if multisampled => ViewDim::Texture2DMS,
+                (TexDim::D2, true) if multisampled => ViewDim::Texture2DMSArray,
                 (TexDim::D2, _) if cube && t.array_size == 6 => ViewDim::TextureCube,
                 (TexDim::D2, _) if cube => ViewDim::TextureCubeArray,
                 (TexDim::D1, false) => ViewDim::Texture1D,
@@ -765,7 +896,11 @@ impl<B: Backend> Device<B> {
             ViewDim::Texture3D => TexDim::D3,
             _ => TexDim::D2,
         };
-        if of != t.dimension {
+        let ms_view = matches!(
+            v.dimension,
+            ViewDim::Texture2DMS | ViewDim::Texture2DMSArray
+        );
+        if of != t.dimension || ms_view != multisampled {
             return Err(Error::InvalidArg(
                 "a view of a dimension the texture does not have",
             ));
@@ -775,8 +910,15 @@ impl<B: Backend> Device<B> {
             TexDim::D3 => (t.depth >> v.first_mip.min(31)).max(1),
             _ => t.array_size,
         };
-        if matches!(v.dimension, ViewDim::Texture1D | ViewDim::Texture2D)
-            || (v.dimension == ViewDim::Texture3D && kind == bind::SHADER_RESOURCE)
+        if ms_view {
+            // One level, which the descriptions of these views do not name.
+            v.first_mip = 0;
+            v.mip_count = 1;
+        }
+        if matches!(
+            v.dimension,
+            ViewDim::Texture1D | ViewDim::Texture2D | ViewDim::Texture2DMS
+        ) || (v.dimension == ViewDim::Texture3D && kind == bind::SHADER_RESOURCE)
         {
             v.first_layer = 0;
             v.layer_count = if v.dimension == ViewDim::Texture3D {
@@ -819,15 +961,17 @@ impl<B: Backend> Device<B> {
         }
         // A view drawn into is one layer (or one slice of a 3D level, chosen at the pass): with
         // no shader choosing a layer, Direct3D draws into the first.
-        let (dimension, base_layer, layer_count) = if kind != bind::SHADER_RESOURCE {
+        let (dimension, base_layer, layer_count) = if drawn {
             match t.dimension {
                 TexDim::D3 => (ViewDimension::D3, 0, 1),
                 _ => (ViewDimension::D2, v.first_layer, 1),
             }
         } else {
             let dimension = match v.dimension {
-                ViewDim::Texture1D | ViewDim::Texture2D => ViewDimension::D2,
-                ViewDim::Texture1DArray | ViewDim::Texture2DArray => ViewDimension::D2Array,
+                ViewDim::Texture1D | ViewDim::Texture2D | ViewDim::Texture2DMS => ViewDimension::D2,
+                ViewDim::Texture1DArray | ViewDim::Texture2DArray | ViewDim::Texture2DMSArray => {
+                    ViewDimension::D2Array
+                }
                 ViewDim::Texture3D => ViewDimension::D3,
                 ViewDim::TextureCube => ViewDimension::Cube,
                 ViewDim::TextureCubeArray => ViewDimension::CubeArray,
@@ -859,6 +1003,150 @@ impl<B: Backend> Device<B> {
             format,
             gpu: Kept::new(gpu, id, Object::TextureView, &self.graveyard),
         }))
+    }
+
+    /// An unordered access view of one level of a texture.
+    pub fn create_texture_uav(
+        &mut self,
+        texture: &Rc<Texture<B>>,
+        desc: Option<&ViewDesc>,
+    ) -> Result<Rc<ShaderView<B>>> {
+        let v = self.create_view(texture, desc, bind::UNORDERED_ACCESS)?;
+        let t = &texture.desc;
+        if t.dimension == TexDim::D3
+            && (v.desc.first_layer != 0
+                || v.desc.layer_count != (t.depth >> v.desc.first_mip).max(1))
+        {
+            return not_implemented("an unordered access view of some slices of a 3D level");
+        }
+        self.check_format(v.format, FormatUse::STORAGE_WRITE)?;
+        Ok(Rc::new(ShaderView::Texture(v)))
+    }
+
+    /// An unordered access view of `count` elements of a buffer from `first`: raw (32-bit words of
+    /// format `R32_TYPELESS`) or structured, with a hidden counter for append and counter views
+    /// (`flags`: `D3D11_BUFFER_UAV_FLAG`).
+    pub fn create_buffer_uav(
+        &mut self,
+        buffer: &Rc<Buffer<B>>,
+        format: u32,
+        first: u32,
+        count: u32,
+        flags: u32,
+    ) -> Result<Rc<ShaderView<B>>> {
+        const RAW: u32 = 1;
+        const APPEND: u32 = 2;
+        const COUNTER: u32 = 4;
+        let raw = flags & RAW != 0;
+        let (offset, size) =
+            self.buffer_span(buffer, bind::UNORDERED_ACCESS, format, first, count, raw)?;
+        let structured = buffer.desc.misc_flags & MISC_STRUCTURED != 0;
+        let counted = flags & (APPEND | COUNTER);
+        if counted == APPEND | COUNTER || (counted != 0 && (!structured || raw)) {
+            return Err(Error::InvalidArg(
+                "append and counter views are structured, one or the other",
+            ));
+        }
+        self.live()?;
+        self.bury();
+        let counter = if counted != 0 {
+            let desc = BufferDesc {
+                byte_width: 4,
+                usage: usage::DEFAULT,
+                bind_flags: bind::UNORDERED_ACCESS,
+                cpu_access_flags: 0,
+                misc_flags: 0,
+                structure_byte_stride: 0,
+            };
+            let gpu = self.backend.create_buffer(&gpu_buffer(&desc, 4));
+            let gpu = self.gpu(gpu)?;
+            self.backend
+                .write_buffer(&gpu, 0, &[0; 4], WriteMode::Discard);
+            let id = self.id();
+            Some(Kept::new(gpu, id, Object::Buffer, &self.graveyard))
+        } else {
+            None
+        };
+        Ok(Rc::new(ShaderView::Buffer(BufferSpan {
+            buffer: buffer.clone(),
+            offset,
+            size,
+            counter,
+        })))
+    }
+
+    /// A shader resource view of `count` elements of a buffer from `first`: raw or structured.
+    pub fn create_buffer_srv(
+        &mut self,
+        buffer: &Rc<Buffer<B>>,
+        format: u32,
+        first: u32,
+        count: u32,
+        raw: bool,
+    ) -> Result<Rc<ShaderView<B>>> {
+        let (offset, size) =
+            self.buffer_span(buffer, bind::SHADER_RESOURCE, format, first, count, raw)?;
+        self.live()?;
+        Ok(Rc::new(ShaderView::Buffer(BufferSpan {
+            buffer: buffer.clone(),
+            offset,
+            size,
+            counter: None,
+        })))
+    }
+
+    /// The bytes (offset, size) that `count` elements from `first` of a buffer view cover: raw
+    /// (32-bit words, format `R32_TYPELESS`) or structured (the buffer's stride, no format). `needs`
+    /// is the bind flag the view's kind needs.
+    fn buffer_span(
+        &self,
+        buffer: &Buffer<B>,
+        needs: u32,
+        format: u32,
+        first: u32,
+        count: u32,
+        raw: bool,
+    ) -> Result<(u64, u64)> {
+        const R32_TYPELESS: u32 = 39;
+        let d = &buffer.desc;
+        if d.bind_flags & needs == 0 {
+            return Err(Error::InvalidArg(
+                "the resource lacks the bind flag the view needs",
+            ));
+        }
+        let stride = if raw {
+            if format != R32_TYPELESS || d.misc_flags & MISC_ALLOW_RAW_VIEWS == 0 {
+                return Err(Error::InvalidArg("a raw view of a buffer not made for one"));
+            }
+            4
+        } else if d.misc_flags & MISC_STRUCTURED != 0 {
+            if format != format::UNKNOWN {
+                return Err(Error::InvalidArg("a structured view with a format"));
+            }
+            d.structure_byte_stride
+        } else {
+            return not_implemented("typed buffer views (TypedBuffer)");
+        };
+        let (offset, size) = (
+            u64::from(first) * u64::from(stride),
+            u64::from(count) * u64::from(stride),
+        );
+        if count == 0 || offset + size > u64::from(d.byte_width) {
+            return Err(Error::InvalidArg("the view reaches past the resource"));
+        }
+        let align = u64::from(
+            self.backend
+                .caps()
+                .limits
+                .min_storage_offset_alignment
+                .max(1),
+        );
+        if !offset.is_multiple_of(align) {
+            return not_implemented(
+                "a buffer view at an offset the back end does not bind at (StorageOffset)",
+            );
+        }
+        Ok((offset, size))
     }
 
     pub fn create_sampler_state(&mut self, d: &SamplerDesc) -> Result<Rc<Sampler<B>>> {
@@ -907,7 +1195,7 @@ impl<B: Backend> Device<B> {
         };
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_sampler(&GpuSampler {
+        let made = GpuSampler {
             min: if anisotropic {
                 Filter::Linear
             } else {
@@ -935,12 +1223,15 @@ impl<B: Backend> Device<B> {
             },
             compare,
             border,
-        });
+        };
+        let gpu = self.backend.create_sampler(&made);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Sampler {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::Sampler, &self.graveyard),
+            made,
+            twin: RefCell::new(None),
         }))
     }
 
@@ -1004,8 +1295,8 @@ impl<B: Backend> Device<B> {
         if d.fill == 2 && !caps.has(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
-        if d.depth_bias != 0 || d.slope_scaled_depth_bias != 0.0 || d.depth_bias_clamp != 0.0 {
-            return not_implemented("depth bias");
+        if d.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
+            return not_implemented("a depth bias clamp without the back end's");
         }
         if !d.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
             return not_implemented("depth clamping without the back end's depth clamp");
@@ -1042,12 +1333,25 @@ impl<B: Backend> Device<B> {
         let constant_sizes = constant_sizes(&module.module);
         let stand_ins = stand_ins(&module.module);
         let id = self.id();
-        Ok(Rc::new(Shader {
+        let vertex = stage == wcontainers_gpu::SourceStage::Vertex;
+        let shader = Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             reflection: converted.reflection,
             constant_sizes,
             stand_ins,
-        }))
+            bytecode: if vertex {
+                bytecode.to_vec()
+            } else {
+                Vec::new()
+            },
+        });
+        if matches!(
+            stage,
+            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+        ) {
+            self.build_ahead(&shader, vertex);
+        }
+        Ok(shader)
     }
 
     pub fn create_input_layout(
@@ -1055,8 +1359,10 @@ impl<B: Backend> Device<B> {
         elements: &[InputElement],
         vs_bytecode: &[u8],
     ) -> Result<Rc<InputLayout>> {
-        if elements.is_empty() || elements.len() > 32 {
-            return Err(Error::InvalidArg("an input layout has 1 to 32 elements"));
+        // No elements is a layout for a vertex shader without inputs; one with inputs is refused
+        // below, as each of its inputs needs an element.
+        if elements.len() > 32 {
+            return Err(Error::InvalidArg("an input layout has at most 32 elements"));
         }
         let key = *blake3::hash(vs_bytecode).as_bytes();
         let inputs = match self.vertex_inputs.get(&key) {
@@ -1091,8 +1397,12 @@ impl<B: Backend> Device<B> {
             };
             next_offset[slot] = offset + format::vertex_size(vf);
             let step = e.per_instance.then_some(e.step_rate);
-            if step.is_some_and(|r| r != 1) {
-                return not_implemented("instance step rates other than one");
+            if step.is_some_and(|r| r != 1)
+                && !self.backend.caps().has(Features::INSTANCE_STEP_RATE)
+            {
+                return not_implemented(
+                    "instance step rates other than one without the back end's",
+                );
             }
             if resolved.iter().any(|r: &LayoutElement| r.slot == e.slot)
                 && instance_steps[slot] != step
@@ -1175,8 +1485,8 @@ fn constant_sizes(module: &naga::Module) -> Vec<(u32, u64)> {
         .collect()
 }
 
-/// What stands in for an empty slot of each texture and sampler `module` reads, by binding number;
-/// `None` for multisampled and depth textures and comparison samplers. Converted DXBC reads a
+/// What stands in for an empty slot of each texture, buffer view and sampler `module` reads, by
+/// binding number; `None` for multisampled and depth textures and comparison samplers. Converted DXBC reads a
 /// one-dimensional texture as a two-dimensional one, so the 1D arm is for modules that keep 1D.
 fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
     use naga::{ImageClass, ImageDimension, ScalarKind, TypeInner};
@@ -1194,7 +1504,14 @@ fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
                 TypeInner::Sampler { comparison } => {
                     return Some((binding, (!comparison).then_some(StandIn::DefaultSampler)));
                 }
-                _ => return None,
+                _ => match v.space {
+                    naga::AddressSpace::Storage { access }
+                        if !access.contains(naga::StorageAccess::STORE) =>
+                    {
+                        return Some((binding, Some(StandIn::ZeroBuffer)));
+                    }
+                    _ => return None,
+                },
             };
             let dimension = match (dim, arrayed) {
                 (ImageDimension::D2, false) => Some(ViewDimension::D2),
@@ -1218,6 +1535,14 @@ fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
             ))
         })
         .collect()
+}
+
+/// Whether multisampled textures of `format` resolve (averaging: not integer or depth).
+pub(crate) fn resolvable(format: Format) -> bool {
+    !matches!(
+        format.kind(),
+        FormatKind::Uint | FormatKind::Sint | FormatKind::DepthStencil
+    )
 }
 
 fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
@@ -1411,9 +1736,9 @@ pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
         } else {
             FrontFace::Clockwise
         },
-        depth_bias: 0,
-        depth_bias_slope: 0,
-        depth_bias_clamp: 0,
+        depth_bias: (d.depth_bias as f32).to_bits(),
+        depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
+        depth_bias_clamp: d.depth_bias_clamp.to_bits(),
         depth_clip: d.depth_clip,
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),

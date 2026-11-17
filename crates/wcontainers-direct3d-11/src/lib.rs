@@ -2,6 +2,7 @@
 //! Rust over the `wcontainers-gpu` interface, generic over the back end. The Windows library and the
 //! container module (crate `wcontainers-directx`) wrap it in COM objects.
 
+mod ahead;
 mod context;
 pub mod desc;
 mod device;
@@ -13,7 +14,7 @@ pub mod query;
 pub mod record;
 pub mod shader;
 
-pub use context::{Mapped, PIXEL, VERTEX};
+pub use context::{COMPUTE, Mapped, PIXEL, UAV_SLOTS, VERTEX};
 pub use device::{Device, Removal, top_level};
 pub use error::{Error, Result};
 pub use present::Chain;

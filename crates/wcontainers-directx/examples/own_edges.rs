@@ -1,8 +1,9 @@
 //! A small Direct3D 11 program at the edges of what Direct3D defines: copies between formats of one
-//! typeless group and of two groups, a draw whose input layout reads a slot with no vertex buffer,
-//! and draws whose shaders read empty texture, sampler and constant buffer slots (Direct3D reads zeros
-//! and samples with its default sampler state). Prints each case's bytes as hex rows, its HRESULTs,
-//! and the device's removal reason, for comparing with real Direct3D line by line.
+//! typeless group and of two groups, `Map(WRITE)` on a staging texture after a copy into it, shaders
+//! refused at creation, a draw whose input layout reads a slot with no vertex buffer, and draws whose
+//! shaders read empty texture, sampler and constant buffer slots (Direct3D reads zeros and samples
+//! with its default sampler state). Prints each case's bytes as hex rows, its HRESULTs, and the
+//! device's removal reason, for comparing with real Direct3D line by line.
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -141,6 +142,45 @@ fn main() -> windows::core::Result<()> {
         }
         print(name, &staging, 4);
     }
+
+    // Map(WRITE) on a staging texture after a copy into it: the map holds the copied texels, and
+    // what is written over some of them joins them.
+    let staging = texture(
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        4,
+        D3D11_USAGE_STAGING,
+        D3D11_BIND_FLAG(0),
+        Some(&old),
+    )?;
+    unsafe { context.CopyResource(&staging, &source) };
+    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+    let r = code(unsafe { context.Map(&staging, 0, D3D11_MAP_WRITE, 0, Some(&mut mapped)) });
+    println!("map_write_after_copy Map(WRITE) {r:#010x}");
+    if r == 0 {
+        unsafe {
+            std::ptr::write_bytes(
+                mapped.pData.cast::<u8>().add(mapped.RowPitch as usize + 4),
+                0xff,
+                8,
+            );
+            context.Unmap(&staging, 0);
+        }
+    }
+    print("map_write_after_copy", &staging, 4);
+
+    // Shaders refused at creation: bytes that are no shader, and a vertex shader made as a pixel
+    // shader.
+    let mut refused = None;
+    let r = code(unsafe { device.CreatePixelShader(&[0x5a; 64], None, Some(&mut refused)) });
+    println!(
+        "CreatePixelShader not_a_shader {r:#010x} {}",
+        refused.is_some()
+    );
+    let r = code(unsafe { device.CreatePixelShader(VS_FULL, None, Some(&mut refused)) });
+    println!(
+        "CreatePixelShader vertex_shader {r:#010x} {}",
+        refused.is_some()
+    );
 
     // Draws into a target cleared to a colour that is not zero.
     let target = texture(

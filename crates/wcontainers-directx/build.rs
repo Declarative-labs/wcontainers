@@ -5,14 +5,24 @@
 use std::path::PathBuf;
 
 /// Each forwarding library and the entry points the library exports for it.
-const FORWARDERS: &[(&str, &[&str])] = &[(
-    "d3d11",
-    &[
-        "D3D11CreateDevice",
-        "D3D11CreateDeviceAndSwapChain",
-        "D3D11On12CreateDevice",
-    ],
-)];
+const FORWARDERS: &[(&str, &[&str])] = &[
+    (
+        "d3d11",
+        &[
+            "D3D11CreateDevice",
+            "D3D11CreateDeviceAndSwapChain",
+            "D3D11On12CreateDevice",
+        ],
+    ),
+    (
+        "dxgi",
+        &[
+            "CreateDXGIFactory",
+            "CreateDXGIFactory1",
+            "CreateDXGIFactory2",
+        ],
+    ),
+];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

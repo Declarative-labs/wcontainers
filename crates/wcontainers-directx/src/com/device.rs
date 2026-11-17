@@ -147,6 +147,13 @@ fn give<I: windows::core::Type<I, Default = Option<I>>>(out: OutRef<I>, object: 
     out.write(Some(object))
 }
 
+/// The interface identifiers of `ID3D10Device` and `ID3D10Device1`, as Direct3D 10's headers give
+/// them.
+const ID3D10_DEVICE: windows::core::GUID =
+    windows::core::GUID::from_u128(0x9b7e4c0f_342c_4106_a19f_4f2704f689f0);
+const ID3D10_DEVICE1: windows::core::GUID =
+    windows::core::GUID::from_u128(0x9b7e4c8f_342c_4106_a19f_4f2704f689f0);
+
 impl Device_Impl {
     fn me(&self) -> ID3D11Device {
         self.to_interface::<ID3D11Device1>().into()
@@ -258,13 +265,14 @@ impl Device_Impl {
         give(out, Texture3D::new(front, self.me()).into())
     }
 
-    /// The front texture behind a resource, refusing buffers (no buffer views yet) and foreign objects.
+    /// The front texture behind a resource a target view names, refusing buffers (render target
+    /// views of buffers are not served) and foreign objects.
     fn texture_of(
         resource: &Ref<ID3D11Resource>,
     ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
         match resource.as_ref().and_then(resource_of) {
             Some(wcontainers_direct3d_11::object::Resource::Texture(t)) => Ok(t),
-            Some(_) => Err(missing("buffer views")),
+            Some(_) => Err(missing("target views of buffers")),
             None => Err(E_INVALIDARG.into()),
         }
     }
@@ -275,18 +283,68 @@ impl Device_Impl {
         desc: *const D3D11_SHADER_RESOURCE_VIEW_DESC,
         out: OutRef<ID3D11ShaderResourceView>,
     ) -> Result<()> {
-        let texture = Self::texture_of(&resource)?;
-        let d = unsafe { desc.as_ref() }.map(convert::srv).transpose()?;
-        let view = self
-            .front
-            .borrow_mut()
-            .create_view(&texture, d.as_ref(), desc::bind::SHADER_RESOURCE)
-            .map_err(hresult)?;
+        use windows::Win32::Graphics::Direct3D::{
+            D3D11_SRV_DIMENSION_BUFFER, D3D11_SRV_DIMENSION_BUFFEREX,
+        };
         let r = resource
             .as_ref()
             .and_then(HeldResource::of)
             .ok_or(E_INVALIDARG)?;
-        give(out, ShaderResourceView::new(view, r, self.me()).into())
+        let given = unsafe { desc.as_ref() };
+        let (view, d) = match r.front() {
+            wcontainers_direct3d_11::object::Resource::Buffer(b) => {
+                let d = match given {
+                    Some(d)
+                        if d.ViewDimension == D3D11_SRV_DIMENSION_BUFFER
+                            || d.ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX =>
+                    {
+                        *d
+                    }
+                    // Without a description a structured buffer is viewed whole.
+                    None if b.desc.misc_flags & desc::MISC_STRUCTURED != 0 => {
+                        let mut d = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                            ViewDimension: D3D11_SRV_DIMENSION_BUFFER,
+                            ..Default::default()
+                        };
+                        d.Anonymous.Buffer.Anonymous2.NumElements =
+                            b.desc.byte_width / b.desc.structure_byte_stride.max(1);
+                        d
+                    }
+                    _ => return Err(E_INVALIDARG.into()),
+                };
+                // BUFFER and BUFFEREX lay out their first element and count alike; only BUFFEREX
+                // has flags (raw).
+                let (first, count, raw) = unsafe {
+                    if d.ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX {
+                        let e = d.Anonymous.BufferEx;
+                        (e.FirstElement, e.NumElements, e.Flags & 1 != 0)
+                    } else {
+                        let e = d.Anonymous.Buffer;
+                        (e.Anonymous1.FirstElement, e.Anonymous2.NumElements, false)
+                    }
+                };
+                let view = self
+                    .front
+                    .borrow_mut()
+                    .create_buffer_srv(&b, d.Format.0 as u32, first, count, raw)
+                    .map_err(hresult)?;
+                (view, d)
+            }
+            wcontainers_direct3d_11::object::Resource::Texture(t) => {
+                let v = given.map(convert::srv).transpose()?;
+                let view = self
+                    .front
+                    .borrow_mut()
+                    .create_view(&t, v.as_ref(), desc::bind::SHADER_RESOURCE)
+                    .map_err(hresult)?;
+                let d = convert::srv_back(&view.desc);
+                (
+                    Rc::new(wcontainers_direct3d_11::object::ShaderView::Texture(view)),
+                    d,
+                )
+            }
+        };
+        give(out, ShaderResourceView::new(view, d, r, self.me()).into())
     }
 
     pub(super) fn create_render_target_view(
@@ -307,6 +365,67 @@ impl Device_Impl {
             .and_then(HeldResource::of)
             .ok_or(E_INVALIDARG)?;
         give(out, RenderTargetView::new(view, r, self.me()).into())
+    }
+
+    pub(super) fn create_unordered_access_view(
+        &self,
+        resource: Ref<ID3D11Resource>,
+        desc: *const D3D11_UNORDERED_ACCESS_VIEW_DESC,
+        out: OutRef<ID3D11UnorderedAccessView>,
+    ) -> Result<()> {
+        let r = resource
+            .as_ref()
+            .and_then(HeldResource::of)
+            .ok_or(E_INVALIDARG)?;
+        let given = unsafe { desc.as_ref() };
+        let (view, d) = match r.front() {
+            wcontainers_direct3d_11::object::Resource::Buffer(b) => {
+                let structured = b.desc.misc_flags & desc::MISC_STRUCTURED != 0;
+                let d = match given {
+                    Some(d) if d.ViewDimension == D3D11_UAV_DIMENSION_BUFFER => *d,
+                    // Without a description a structured buffer is viewed whole.
+                    None if structured => {
+                        let mut d = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+                            ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
+                            ..Default::default()
+                        };
+                        d.Anonymous.Buffer.NumElements =
+                            b.desc.byte_width / b.desc.structure_byte_stride.max(1);
+                        d
+                    }
+                    _ => return Err(E_INVALIDARG.into()),
+                };
+                let e = unsafe { d.Anonymous.Buffer };
+                let view = self
+                    .front
+                    .borrow_mut()
+                    .create_buffer_uav(
+                        &b,
+                        d.Format.0 as u32,
+                        e.FirstElement,
+                        e.NumElements,
+                        e.Flags,
+                    )
+                    .map_err(hresult)?;
+                (view, d)
+            }
+            wcontainers_direct3d_11::object::Resource::Texture(t) => {
+                let v = given.map(convert::uav).transpose()?;
+                let view = self
+                    .front
+                    .borrow_mut()
+                    .create_texture_uav(&t, v.as_ref())
+                    .map_err(hresult)?;
+                let d = match &*view {
+                    wcontainers_direct3d_11::object::ShaderView::Texture(v) => {
+                        convert::uav_back(&v.desc)
+                    }
+                    wcontainers_direct3d_11::object::ShaderView::Buffer(_) => unreachable!(),
+                };
+                (view, d)
+            }
+        };
+        give(out, UnorderedAccessView::new(view, d, r, self.me()).into())
     }
 
     pub(super) fn create_depth_stencil_view(
@@ -384,6 +503,32 @@ impl Device_Impl {
             .create_shader(code, SourceStage::Vertex)
             .map_err(hresult)?;
         give(out, VertexShader::new(shader, self.me()).into())
+    }
+
+    pub(super) fn create_compute_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11ComputeShader>,
+    ) -> Result<()> {
+        if bytecode.is_null() || !linkage.is_null() {
+            return Err(if bytecode.is_null() {
+                E_INVALIDARG.into()
+            } else {
+                missing("class linkage")
+            });
+        }
+        if self.front.borrow().feature_level() < 0xb000 {
+            return Err(missing("compute shaders below feature level 11_0"));
+        }
+        let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
+        let shader = self
+            .front
+            .borrow_mut()
+            .create_shader(code, SourceStage::Compute)
+            .map_err(hresult)?;
+        give(out, ComputeShader::new(shader, self.me()).into())
     }
 
     pub(super) fn create_pixel_shader(
@@ -683,6 +828,77 @@ impl Device_Impl {
 
     pub(super) fn get_immediate_context1(&self, out: OutRef<ID3D11DeviceContext1>) {
         let _ = out.write(Some(self.immediate()));
+    }
+
+    /// `CreateDeferredContext`: a context recording command lists; it takes no flags.
+    pub(super) fn create_deferred_context(
+        &self,
+        flags: u32,
+        out: OutRef<ID3D11DeviceContext>,
+    ) -> Result<()> {
+        if flags != 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        let c: ID3D11DeviceContext1 = Context::deferred(self.front.clone(), self.me()).into();
+        out.write(Some(c.into()))
+    }
+
+    pub(super) fn create_deferred_context1(
+        &self,
+        flags: u32,
+        out: OutRef<ID3D11DeviceContext1>,
+    ) -> Result<()> {
+        if flags != 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        out.write(Some(
+            Context::deferred(self.front.clone(), self.me()).into(),
+        ))
+    }
+
+    /// `CreateDeviceContextState`: a state object for this device's own interface, at the first
+    /// of `levels` the device has. Direct3D 10's interfaces (a device emulating Direct3D 10) are
+    /// not served.
+    #[allow(clippy::too_many_arguments, reason = "the COM method's own arguments")]
+    pub(super) fn create_device_context_state(
+        &self,
+        _flags: u32,
+        levels: *const D3D_FEATURE_LEVEL,
+        count: u32,
+        _sdk_version: u32,
+        emulated: *const windows::core::GUID,
+        chosen: *mut D3D_FEATURE_LEVEL,
+        out: OutRef<ID3DDeviceContextState>,
+    ) -> Result<()> {
+        let chosen = unsafe { chosen.as_mut() };
+        let level = (!levels.is_null() && count > 0)
+            .then(|| unsafe { std::slice::from_raw_parts(levels, count as usize) })
+            .and_then(|l| {
+                let top = self.front.borrow().feature_level();
+                l.iter()
+                    .copied()
+                    .find(|l| (0xa000..=top).contains(&(l.0 as u32)))
+            });
+        let Some(level) = level else {
+            if let Some(c) = chosen {
+                *c = D3D_FEATURE_LEVEL(0);
+            }
+            return Err(E_INVALIDARG.into());
+        };
+        let emulated = unsafe { emulated.as_ref() }.ok_or(E_INVALIDARG)?;
+        if [ID3D10_DEVICE, ID3D10_DEVICE1].contains(emulated) {
+            return Err(missing("context states emulating Direct3D 10"));
+        }
+        if ![ID3D11Device::IID, ID3D11Device1::IID].contains(emulated) {
+            return Err(E_INVALIDARG.into());
+        }
+        if let Some(c) = chosen {
+            *c = level;
+        }
+        give(
+            out,
+            super::context::DeviceContextState::new(self.me()).into(),
+        )
     }
 
     /// The immediate context, made at the first call.
