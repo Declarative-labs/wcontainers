@@ -12,6 +12,8 @@ static void result(const char *what, long r) {
     printf("%s: %ld %s\n", what, r, r < 0 ? strerror(errno) : "");
 }
 
+static char buf_for_none[1];
+
 int main(void) {
     void *bad = (void *)0xfffffffffffff000UL;
     int n = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE);
@@ -23,6 +25,20 @@ int main(void) {
     result("set netlink level bad value", setsockopt(n, SOL_NETLINK, 1, bad, 4));
     result("write nothing", write(n, "", 0));
     result("send nothing oob", send(n, "", 0, MSG_OOB));
+    // Before the control messages are read: a closed descriptor among them is not seen.
+    char space[CMSG_SPACE(sizeof(int))] = {0};
+    struct iovec none = {.iov_base = buf_for_none, .iov_len = 0};
+    struct msghdr msg = {.msg_iov = &none, .msg_iovlen = 1, .msg_control = space,
+                         .msg_controllen = sizeof space};
+    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(sizeof(int));
+    int closed = 99;
+    memcpy(CMSG_DATA(c), &closed, sizeof closed);
+    result("sendmsg nothing with a closed descriptor", sendmsg(n, &msg, 0));
+    none.iov_len = 1;
+    result("sendmsg a byte with a closed descriptor", sendmsg(n, &msg, 0));
     int u = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     result("udp shutdown unconnected", shutdown(u, SHUT_RDWR));
     char buf[8];

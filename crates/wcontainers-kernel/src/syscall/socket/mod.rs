@@ -2636,12 +2636,14 @@ fn read_header(
     })
 }
 
-/// The control messages of a send (`__scm_send`): descriptors and credentials.
+/// The control messages of a send (`__scm_send`): descriptors (only on local sockets) and
+/// credentials.
 fn read_control(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     header: &Header,
+    local: bool,
 ) -> Result<(Vec<FileRef>, Option<Cred>), Errno> {
     let mut files = Vec::new();
     let mut cred = None;
@@ -2664,6 +2666,9 @@ fn read_control(
         if level == SOL_SOCKET {
             match kind {
                 SCM_RIGHTS => {
+                    if !local {
+                        return Err(Errno::EINVAL);
+                    }
                     let count = data.len() / 4;
                     if count == 0 || files.len() + count > MAX_FDS {
                         return Err(Errno::EINVAL);
@@ -2735,6 +2740,17 @@ pub(super) fn sendmsg(
     {
         return Err(Errno::ENOTCONN);
     }
+    // `netlink_sendmsg` refuses urgent and empty messages before it reads the control messages
+    // `____sys_sendmsg` took in.
+    if socket.borrow().netlink.is_some() {
+        guest(kernel, cx, tid).read(header.control, header.control_length)?;
+        if flags as u32 & MSG_OOB != 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        if header.parts.iter().all(|&(_, length)| length == 0) {
+            return Err(Errno::ENODATA);
+        }
+    }
     let (files, cred, control) = if socket.borrow().inet.is_some() {
         let bytes = guest(kernel, cx, tid).read(header.control, header.control_length)?;
         (
@@ -2743,7 +2759,8 @@ pub(super) fn sendmsg(
             Some(bytes).filter(|bytes| !bytes.is_empty()),
         )
     } else {
-        let (files, cred) = read_control(kernel, cx, tid, &header)?;
+        let local = socket.borrow().local();
+        let (files, cred) = read_control(kernel, cx, tid, &header, local)?;
         (files, cred, None)
     };
     let message = Outgoing {
