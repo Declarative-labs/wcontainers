@@ -84,6 +84,76 @@ impl<B: Backend> Draw for B {
     }
 }
 
+/// A triangle inside its viewport, coloured by values interpolated across it. `place` maps clip
+/// position `c` to where the drawing's viewport puts it: `c` itself under the viewport, or the
+/// in-program viewport adjustment of `ViewportInShader` under a whole-target one.
+fn fraction_program(place: &str) -> String {
+    format!(
+        "
+struct V {{
+    @builtin(position) p: vec4<f32>,
+    @location(0) c: vec4<f32>,
+}}
+@vertex fn vs(@builtin(vertex_index) i: u32) -> V {{
+    var p = array<vec2<f32>, 3>(vec2(-0.8, -0.7), vec2(0.9, -0.3), vec2(-0.2, 0.85));
+    var c = array<vec4<f32>, 3>(vec4(1.0, 0.0, 0.2, 1.0), vec4(0.0, 1.0, 0.4, 1.0), vec4(0.1, 0.3, 1.0, 1.0));
+    let c4 = vec4<f32>(p[i], 0.5, 1.0);
+    return V({place}, c[i]);
+}}
+@fragment fn fs(v: V) -> @location(0) vec4<f32> {{
+    return v.c;
+}}
+"
+    )
+}
+
+/// A viewport at x 2.5, y 1.25, 11 by 12.5 pixels of a 16 by 16 target: natively where the back end
+/// has `FRACTIONAL_VIEWPORT`, otherwise through the program variant over the whole target
+/// (`ViewportInShader`, the adjustment G6's variant makes).
+fn fraction<B: Backend>(b: &mut B) -> Parts {
+    let k = Kit::new(b);
+    let (x, y, w, h) = (2.5f32, 1.25f32, 11.0f32, 12.5f32);
+    let n = 16.0f32;
+    let native = b.caps().has(Features::FRACTIONAL_VIEWPORT);
+    let (program, vp) = if native {
+        (fraction_program("c4"), kit::viewport(x, y, w, h))
+    } else {
+        b.slow_paths().hit(SlowPath::ViewportInShader);
+        // Window x = x + (cx + 1) / 2 * w, written as a clip x over the whole target; y likewise
+        // from the top.
+        let place = format!(
+            "vec4<f32>(c4.x * {sx:.9} + c4.w * {ox:.9}, c4.y * {sy:.9} + c4.w * {oy:.9}, c4.z, c4.w)",
+            sx = w / n,
+            ox = (2.0 * x + w) / n - 1.0,
+            sy = h / n,
+            oy = 1.0 - (2.0 * y + h) / n,
+        );
+        (fraction_program(&place), kit::viewport(0.0, 0.0, n, n))
+    };
+    let program = kit::program(b, &program, "vs", "fs");
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let f = Format::Rgba8Unorm;
+    let t = kit::texture(b, TextureDimension::D2, f, RGBA8, 1, usage, false);
+    let v = kit::target(b, &t, f, 0, 0);
+    let vps = [vp];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &vps,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    let parts = vec![(
+        format!("native {native}"),
+        kit::read(b, &t, 0, 0, RGBA8, 4, false),
+    )];
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    parts
+}
+
 const ORIGIN: &str = "
 struct V {
     @builtin(position) p: vec4<f32>,
@@ -332,6 +402,27 @@ fn mips<B: Backend>(b: &mut B, format: Format, values: Format, bytes: &[u8]) -> 
 #[test]
 fn both_window_origins_equal_webgpu() {
     on_all("origin", |b| b.origin());
+}
+
+/// WebGPU's native fractional viewport against `ViewportInShader` on this back end.
+#[test]
+fn a_fractional_viewport_in_the_program_equals_webgpu_native() {
+    assert!(webgpu().caps().has(Features::FRACTIONAL_VIEWPORT));
+    let reference = fraction(&mut webgpu());
+    for (route, off) in [
+        ("with EXT_clip_control", &[][..]),
+        ("without EXT_clip_control", &["EXT_clip_control"][..]),
+    ] {
+        let mut gl = webgl(off);
+        assert!(!gl.caps().has(Features::FRACTIONAL_VIEWPORT));
+        let got = fraction(&mut gl);
+        let same = |p: &Parts| p.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            same(&reference),
+            same(&got),
+            "WebGL {route} with the variant against WebGPU's native viewport"
+        );
+    }
 }
 
 #[test]

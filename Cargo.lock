@@ -2736,6 +2736,7 @@ dependencies = [
  "naga",
  "pollster",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wcontainers-gpu",
  "wcontainers-gpu-test",
  "wcontainers-gpu-webgpu",

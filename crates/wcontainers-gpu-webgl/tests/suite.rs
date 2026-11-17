@@ -82,3 +82,23 @@ fn loads_count_levels_from_the_view() {
 fn fractional_viewports_are_refused() {
     checks::fractional_viewports_are_refused::<Angle>();
 }
+
+#[test]
+fn timestamps_and_their_disjoint_flag() {
+    checks::timestamps_and_their_disjoint_flag::<Angle>();
+}
+
+#[test]
+fn multisampled_copies_resolve_as_their_source() {
+    checks::multisampled_copies_resolve_as_their_source::<Angle>();
+}
+
+#[test]
+fn fractional_depth_bias() {
+    checks::fractional_depth_bias::<Angle>();
+}
+
+#[test]
+fn constant_alpha_blends() {
+    checks::constant_alpha_blends::<Angle>();
+}
