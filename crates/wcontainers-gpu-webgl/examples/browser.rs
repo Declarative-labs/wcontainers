@@ -152,6 +152,7 @@ suite!(
     absent_features_are_refused,
     copies_into_and_out_of_host_kept_textures,
     srgb_views_of_block_compressed_textures,
+    bgra_textures_keep_their_byte_order,
 );
 
 thread_local! {
