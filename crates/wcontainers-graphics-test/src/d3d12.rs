@@ -30,10 +30,7 @@ pub fn render_triangle(driver: Driver) -> Result<Picture> {
             Driver::Hardware => factory.EnumAdapters1(0)?,
             Driver::Warp => factory.EnumWarpAdapter()?,
         };
-        let desc = adapter.GetDesc1()?;
-        let adapter_name = String::from_utf16_lossy(&desc.Description)
-            .trim_end_matches('\0')
-            .to_owned();
+        let adapter_name = crate::adapter_name(driver, &adapter.GetDesc1()?)?;
         let mut device: Option<ID3D12Device> = None;
         D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)
             .context("D3D12CreateDevice")?;

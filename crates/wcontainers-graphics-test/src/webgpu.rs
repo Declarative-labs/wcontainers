@@ -10,7 +10,7 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const PITCH: u32 = WIDTH * 4;
 const _: () = assert!(PITCH.is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
 
-/// Draws the triangle on the first adapter of `backends`.
+/// Draws the triangle on the first adapter of `backends`, which must be a GPU.
 pub fn render_triangle(backends: wgpu::Backends) -> Result<Picture> {
     let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
     instance_desc.backends = backends;
@@ -21,6 +21,11 @@ pub fn render_triangle(backends: wgpu::Backends) -> Result<Picture> {
     }))
     .context("no adapter")?;
     let info = adapter.get_info();
+    anyhow::ensure!(
+        info.device_type != wgpu::DeviceType::Cpu,
+        "the adapter is the software {}, not a GPU",
+        info.name
+    );
     let adapter_name = format!(
         "{} ({:?}, {} {})",
         info.name, info.backend, info.driver, info.driver_info

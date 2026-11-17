@@ -66,7 +66,7 @@ job alone --alone -- "$(sleeper 3)"
 sleep 2
 job after -- "$(sleeper 1)"
 wait
-alone_from=$(sed -n 's/^job: alone from \([0-9:.]*\).*/\1/p' "$dir/alone.out" | awk '{ split($1, t, ":"); print t[1] * 3600 + t[2] * 60 + t[3] }')
+alone_from=$(sed -n 's/^job: alone from \([0-9:.]*\).*/\1/p' "$dir/alone.err" | awk '{ split($1, t, ":"); print t[1] * 3600 + t[2] * 60 + t[3] }')
 check "an alone job's command started after the running jobs ended" 'alone0 >= b1 && alone0 >= c1' \
     -v alone0="$alone_from" -v b1="$(seconds before1 end)" -v c1="$(seconds before2 end)"
 check "a job submitted during an alone job started after it ended" 'after0 >= alone1' \

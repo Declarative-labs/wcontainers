@@ -27,11 +27,11 @@ connect() {
 rig_ssh() { ssh "${ssh_options[@]}" "$host" "$@"; }
 rig_scp() { scp -q "${ssh_options[@]}" "$@"; }
 
-# Runs a desktop PowerShell script with arguments, its output and error with carriage returns removed;
-# returns its exit code.
+# Runs a desktop PowerShell script with arguments, its output and error with carriage returns removed
+# and passed on line by line as they come; returns its exit code.
 rig_powershell() {
     rig_ssh powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$@" \
-        2> >(tr -d '\r' >&2) | tr -d '\r'
+        2> >(LC_ALL=C sed -u $'s/\r//g' >&2) | LC_ALL=C sed -u $'s/\r//g'
     return "${PIPESTATUS[0]}"
 }
 

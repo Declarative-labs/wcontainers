@@ -47,6 +47,9 @@ if (-not $known) {
 }
 Run git "checkout -q --force --detach $Commit" $checkout
 Run git 'clean -q -fd' $checkout
+# Says which tree the build directory was last built from, for `gpu-job --build`; any command may
+# change the build directory, so only that build writes it back.
+Remove-Item -ErrorAction SilentlyContinue "C:\wc\target\$Name\built-tree"
 
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
 $code = Run cmd.exe "/d /s /c `"$text`"" $checkout -Passthru

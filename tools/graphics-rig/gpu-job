@@ -1,23 +1,27 @@
 #!/bin/bash
 # Runs a short GPU job on the desktop through its queue, in this branch's copy there, and returns
-# the job's output and exit code once it has run. The copy must hold this working tree as it is now
-# (send it with `remote`); the job checks that and keeps `remote` from changing the copy while it
-# runs. Higher priorities start first (any integer); --alone waits until no other job runs and keeps
-# the GPU to itself, for timings. The command is cmd.exe syntax; cargo's build directory is
-# C:\wc\target\<branch>.
-#   tools/graphics-rig/gpu-job [--priority N] [--alone] -- <command>
+# the job's standard output, standard error and exit code once it has run. The copy must hold this
+# working tree as it is now; the job checks that and keeps `remote` from changing the copy while it
+# runs. With --build, the working tree is sent and the build command run in the copy first, as by
+# `remote`, and the job also checks that no other `remote` ran since, so the programs it runs were
+# built from this tree; without it, the job runs whatever the build directory holds. Higher
+# priorities start first (any integer); --alone waits until no other job runs and keeps the GPU to
+# itself, for timings. Commands are cmd.exe syntax; cargo's build directory is C:\wc\target\<branch>.
+#   tools/graphics-rig/gpu-job [--priority N] [--alone] [--build <command>] -- <command>
 set -euo pipefail
 priority=0
 alone=()
+build=
 while [ $# -gt 0 ]; do
     case $1 in
         --priority) priority=$2; shift 2 ;;
         --alone) alone=(-Alone); shift ;;
+        --build) build=$2; shift 2 ;;
         --) shift; break ;;
         *) break ;;
     esac
 done
-[ $# -gt 0 ] || { echo "usage: gpu-job [--priority N] [--alone] -- <command>" >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: gpu-job [--priority N] [--alone] [--build <command>] -- <command>" >&2; exit 2; }
 [[ $priority =~ ^-?[0-9]+$ ]] || { echo "gpu-job: the priority must be an integer" >&2; exit 2; }
 root=$(git rev-parse --show-toplevel)
 # shellcheck source=tools/graphics-rig/common.sh
@@ -26,7 +30,13 @@ index=$(git rev-parse --absolute-git-dir)/gpu-job.$$.index
 trap 'rm -f "$index"' EXIT
 tree=$(cd "$root" && working_tree "$index")
 command=$(printf %s "$*" | base64 | tr -d '\n')
+built=()
+if [ -n "$build" ]; then
+    # `remote` removes the stamp before its command; this one writes it once the build has succeeded.
+    "$(dirname "$0")/remote" "($build) && git rev-parse HEAD: > %CARGO_TARGET_DIR%\\built-tree" || exit
+    built=(-Built)
+fi
 connect || exit 125
 set +e
 rig_powershell 'C:\wc\rig\submit.ps1' -Name "$name" -Tree "$tree" "-Priority:$priority" \
-    ${alone[@]+"${alone[@]}"} -Command "$command"
+    ${built[@]+"${built[@]}"} ${alone[@]+"${alone[@]}"} -Command "$command"

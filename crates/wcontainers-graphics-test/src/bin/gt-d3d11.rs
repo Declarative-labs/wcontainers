@@ -25,6 +25,10 @@ fn main() -> anyhow::Result<()> {
                 path.display()
             );
         }
+        println!(
+            "{}",
+            wcontainers_graphics_test::library_paths(&["d3d11.dll", "dxgi.dll"])
+        );
         Ok(())
     }
     #[cfg(not(windows))]

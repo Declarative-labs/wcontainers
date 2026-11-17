@@ -5,7 +5,7 @@ use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
+use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice};
 use windows::core::{Interface, PCSTR, s};
 
 use crate::scene::{self, HEIGHT, Scene, WIDTH};
@@ -34,10 +34,14 @@ pub fn render(scene: Scene, driver: Driver) -> Result<Picture> {
     .context("D3D11CreateDevice (the debug layer needs the Graphics Tools feature)")?;
     let (device, context): (ID3D11Device, ID3D11DeviceContext) =
         (device.unwrap(), context.unwrap());
-    let adapter = unsafe { device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()? };
-    let adapter = String::from_utf16_lossy(&adapter.Description)
-        .trim_end_matches('\0')
-        .to_owned();
+    let adapter = unsafe {
+        device
+            .cast::<IDXGIDevice>()?
+            .GetAdapter()?
+            .cast::<IDXGIAdapter1>()?
+            .GetDesc1()?
+    };
+    let adapter = crate::adapter_name(driver, &adapter)?;
 
     let gpu = Gpu { device, context };
     let image = unsafe { gpu.draw(scene)? };
