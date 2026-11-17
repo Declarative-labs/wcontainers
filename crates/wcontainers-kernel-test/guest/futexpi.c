@@ -21,6 +21,16 @@ static long fx(uint32_t *a, int op, uint32_t v, const void *t, uint32_t *a2, uin
 
 static void p(const char *what, long r) { printf("%s = %ld errno %d\n", what, r, r < 0 ? errno : 0); }
 
+// A call's answer kept to print once the threads it wakes have printed theirs.
+struct answer {
+    long r;
+    int error;
+};
+
+static struct answer keep(long r) { return (struct answer){r, r < 0 ? errno : 0}; }
+
+static void show(const char *what, struct answer a) { printf("%s = %ld errno %d\n", what, a.r, a.error); }
+
 static void *waiter(void *arg) {
     long id = (long)arg;
     __atomic_add_fetch(&started, 1, __ATOMIC_SEQ_CST);
@@ -89,9 +99,10 @@ int main(void) {
     printf("lock waiters bit %d mine %d\n", (lock & FUTEX_WAITERS) != 0, (lock & FUTEX_TID_MASK) == (uint32_t)gettid());
     p("plain wake on lock", fx(&lock, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0));
     usleep(30000);
-    p("unlock pi main", fx(&lock, FUTEX_UNLOCK_PI_PRIVATE, 0, NULL, NULL, 0));
+    struct answer unlocked = keep(fx(&lock, FUTEX_UNLOCK_PI_PRIVATE, 0, NULL, NULL, 0));
     for (int i = 0; i < 3; i++)
         pthread_join(t[i], NULL);
+    show("unlock pi main", unlocked);
     printf("lock at end %u\n", lock);
 
     // Free lock: the first waiter takes it straight from the requeue.
@@ -101,8 +112,9 @@ int main(void) {
     while (started != 1)
         usleep(1000);
     usleep(30000);
-    p("cmp rq pi free", fx(&cond, FUTEX_CMP_REQUEUE_PI_PRIVATE, 1, (void *)0L, &lock, 0));
+    struct answer requeued = keep(fx(&cond, FUTEX_CMP_REQUEUE_PI_PRIVATE, 1, (void *)0L, &lock, 0));
     pthread_join(t[0], NULL);
+    show("cmp rq pi free", requeued);
     printf("lock at end %u\n", lock);
 
     // The owner ends holding the lock: it goes to the waiter.
