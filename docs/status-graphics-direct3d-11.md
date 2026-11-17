@@ -1,9 +1,83 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 6 of G4 as a whole (2026-11-17).
+Runs so far: six on G4a, the first slice; then runs 1 to 7 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 7 (2026-11-17, 12:36 to about 14:30 Pacific). New ssh sign-ins to the desktop were still
+refused (the same reset after the key exchange), so the run borrowed the -webgl checkout's open
+shared connection: a symlink at this checkout's control socket path,
+~/.ssh/wc-rig-e19aa0a6dd82bae2, pointing to ~/.ssh/wc-rig-a5d08f1a1e4f1d28, as the -direct3d-12
+track did in its run 9. Nothing in that checkout was touched. The link is removed at the end of the
+run. If new sign-ins still fail next time, check `ssh -S <socket> -O check tom@192.168.2.183` on the
+sockets in ~/.ssh and link one that answers in the same way.
+- Merged origin/phase-2-graphics-direct3d-12 and -shaders cleanly. Then built, linted and tested
+  everything committed since b1d136f on the desktop for the first time, fixed what failed, and
+  pushed (the branch had been 129 commits ahead of origin). Lint of both builds passes with
+  warnings denied, front tests pass (31), library tests pass (com 14, programs 12).
+- Fixed what that first run found:
+  - 0f3c209: two front tests expected one binding set where the vertex program's helper block
+    makes a second, and a pass list without the pending clear's own pass.
+  - 6db5e2b: com.rs's device creation test called the exported entry points inside the test
+    binary, which links the library in. They now pass calls from their own module on to the
+    system's d3d11.dll (run 6), so the system's library got our adapter and crashed. The test now
+    loads the built library and calls its exports, as a program does. The com tests place the
+    libraries once a process (`common::libraries`), since Windows resolves the forwarder's import
+    by name to whichever copy was loaded first.
+  - d330d62: `Map(WRITE_NO_OVERWRITE)` on a deferred context before any discard answers
+    `D3D11_ERROR_DEFERRED_CONTEXT_MAP_WITHOUT_INITIAL_DISCARD` (0x887C0004), as real Direct3D
+    does (own_deferred showed it). Before, `E_INVALIDARG`.
+  - 4d7a467: a multisampled texture need not be drawn into (own_deferred: real Direct3D makes a
+    4-sample shader resource texture). The back end gets render usage for every multisampled
+    texture.
+- New this run, each checked against real Direct3D:
+  - c583728: `D3D11_STANDARD_MULTISAMPLE_PATTERN` as the sample quality is taken for every count
+    the device reports a level for (the back end's patterns are the standard ones);
+    `D3D11_CENTER_MULTISAMPLE_PATTERN` is `E_NOTIMPL`, named. Multisampled view dimensions of a
+    single-sampled texture are taken, as Direct3D takes them (its first level).
+  - e4e0ca8: a sample mask leaving out samples of multisampled targets draws through a twin of the
+    raster block made with that mask, kept on the rasterizer state (`Rasterizer::masked`), where
+    the back end has `SAMPLE_MASK`; before, the draw was refused. A resolve's destination (default
+    usage, 2D, a format that multisamples and resolves) gets render usage, since the back end
+    resolves only into textures drawn into. Front test
+    `a_sample_mask_draws_through_a_raster_block_made_with_it_once`.
+  - df6e86e: `IDXGISwapChain1::SetRotation` with `DXGI_MODE_ROTATION_IDENTITY` and
+    `GetRotation` (other rotations `E_NOTIMPL`, named). SDL's renderer stopped at it.
+- The rig's Direct3D 11 scenes through ours (RTX 3080, through the queue, not alone; desktop CPU
+  load 25 % at 14:08, Mac load average 22): 54 of 147 outputs matched before this run's fixes,
+  with the largest difference 0 in every match. After them the msaa scene's 8 outputs match too
+  (2, 4 and 8 samples, alpha to coverage, per-sample shading, sample mask, coverage; largest
+  difference 0), so 62. Why the others stop, by scene: formats (a format the back end lacks:
+  B5G6R5, B8G8R8X8 and the 16-bit normalised ones, `E_FAIL` from `CheckFormatSupport`, as
+  Direct3D answers for a format a device lacks), samplers (`LodBiasInShader`), copies (10.1's
+  copy conversions), raster (wireframe: the back end has no polygon mode), compute (storage
+  images in the shaders crate), blend (dual-source blending), views (reinterpreting views),
+  queries (counted occlusion: needs the pass tracker), levels (devices at 9_1 to 9_3 are not
+  made), constants (a constant buffer window shorter than its shader's block), draws (instance
+  step rates on WebGPU), geometry, streamout and tessellation (the shaders crate).
+- Wine's d3d11 file: see the table below (68 of the 162 that pass on real Direct3D, up from 64 at
+  the start of the run and 62 at run 3 by the rig's stricter rule).
+- Real programs (frames compared by the rig's `programs run` with the references real Direct3D
+  drew; RTX 3080, queue, not alone): the DirectX SDK tutorials 02, 04, 05, 06 and 07 match at
+  frames 10, 60 and 120 with largest difference 0, through our d3d11.dll alone. chocolate-doom
+  (SDL's Direct3D 11 renderer) matches at frames 10, 60 and 120 with largest difference 0 through
+  our forwarding d3d11.dll and dxgi.dll beside wcontainers_directx.dll (it takes its factory from
+  dxgi.dll). Two engine families of the three. Not yet:
+  - bgfx (all six examples): creates counted occlusion queries at start, which are `E_NOTIMPL`
+    (they need the pass tracker's occlusion counter), and then crashes. It also calls NVIDIA's
+    nvapi64.dll (Reflex, Aftermath) with our device on this machine; whether that also crashes is
+    not known until the queries are served.
+  - Godot's Direct3D 11 games (through ANGLE): ANGLE's `eglInitialize` fails on our device
+    ("Can't initialize an EGL display") without calling anything we warn about, then Godot
+    crashes. Not found yet which answer ANGLE rejects.
+  - Placement: the single library copied in as d3d11.dll and our dxgi.dll forwarder together load
+    two copies of the library (the forwarder imports wcontainers_directx.dll), so a factory from
+    one gets a device from the other. Programs that use dxgi.dll must get the forwarding
+    d3d11.dll, dxgi.dll and wcontainers_directx.dll (How to run).
+- The WebGL 2 build built on the desktop and ran (What comes next, item 5).
+- Asked of nobody new. Installed nothing on the desktop except C:\wc\d3d11-tools\imports.ps1
+  (1 KB; lists a program's DXGI and Direct3D 11 imports with dumpbin).
 
 G4 run 6: the desktop refused every SSH sign-in again (12:13 onward, the same reset after the key
 exchange; the rig track reports the same since 09:45). Nothing was built, run or tested on
@@ -416,7 +490,31 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
-- G4 run 4: not run (the desktop refused sign-ins all run). The counts below are run 3's.
+- d3d11: not passing. G4 run 7 (2026-11-17, commit e4e0ca8, our library copied in as
+  d3d11.dll, RTX 3080 through the queue, not alone; 227 s): 68 of the 162 tests that pass on real
+  Direct3D pass, 94 fail (59 crash, 20 fail a check, 15 run fewer checks than real Direct3D,
+  which the rig now counts as failing). At the start of the run, commit 4d7a467: 64. New passes:
+  test_create_depthstencil_view, test_multisample_resolve, test_sample_mask,
+  test_standard_pattern. The first gap of each failing test is in scratch
+  logs/g4r7-wine-gaps.txt (the first "not implemented" or "not served" line of its log, else its
+  first skip, else its first failed check); logs/g4r7k-wine.log has every verdict. Counted by
+  first gap: software, reference and WARP drivers 7 (one of them test_device_interfaces, whose
+  debug devices are not made either), typed buffer views 6, geometry shaders and
+  stream output 7 (and their queries 2, `GSSetConstantBuffers` 1), Direct3D 10 interfaces on
+  Direct3D 11 objects 6 (tests skip what `QueryInterface` for `ID3D10Buffer` and the like does not
+  give), storage images 4, atomics 3, storage counters 2, counted occlusion 3, timestamps 1,
+  pipeline statistics 1, instance step rates 3, conversions the shaders crate names
+  (VertexWithoutPosition 3, DynamicOffset 2, ClipDistance 2, TypedBuffer 2, StructType 1,
+  SampleCount 1), 10.1's copy conversions 2, reinterpreting views 2, one each of dual-source
+  blending, border addressing, LOD bias, read-only depth views, `GetDC`, target views of buffers,
+  a float clear of a buffer view, an empty multisampled or depth slot, a format the back end
+  lacks, a format this front does not serve, misc flags; skipped for absent features the device
+  reports (NV12, min/max filtering, logic ops, B8G8R8X8) 4; 9 fail a check first and 3 crash
+  with nothing named first (to read next).
+- test_check_multisample_quality_levels (one of the 9): Direct3D answers `E_INVALIDARG` for a
+  null out pointer and `E_FAIL` with the count zeroed for 0 or more than 32 samples. The windows
+  crate's `implement` writes the result through the out pointer without a null check and cannot
+  give an error with a value, so this needs the method's vtable entry written by hand.
 - d3d11: not passing. G4 run 3 (2026-11-17, commit 8d07989, our library copied in as d3d11.dll,
   RTX 3080 through the queue, not alone; 4 min 27 s): 73 of 166 pass, 91 of the 162 that pass on
   real Direct3D fail. New passes: test_create_texture1d, test_device_interfaces,
@@ -529,34 +627,28 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
   in logs/g4r1-wine-d3d11.log and wine-logs/g4r1 in the scratch directory.
 - d3d10core, dxgi: not run through ours yet.
 
-The gap list (a test failing through ours only because of a named absent feature): a draft from
-run 3's first-gap file (logs/g4r3-wine-gaps.txt), to be confirmed against the next run of the file;
-not final. Candidates that are absent on this stack rather than work left:
+The gap list (a test failing through ours only because of a named absent feature): not final.
+Run 7's first gaps (scratch logs/g4r7-wine-gaps.txt) confirm the draft of run 6 below for the
+absences real on this stack; a test is listed only after its log shows it fails at that request
+and nowhere earlier. Candidates absent on this stack rather than work left:
 - Software, reference, WARP and null drivers (the library has only the GPU's): test_create_shader,
   test_format_support, test_resource_access, test_shared_resource, test_state_refcounting,
-  test_swapchain_formats. Each must be checked to fail only at that request.
+  test_swapchain_formats, test_device_interfaces (also asks for debug devices).
 - Shared handles and keyed mutexes between devices or processes: test_keyed_mutex.
 - Pipeline statistics queries (WebGPU has none): test_pipeline_statistics_query.
 - Video decoding interfaces: test_video_support.
 - Feature levels 10_0 and 10_1's negative fractional viewport corner (the WebGPU viewport floors
   it as 11_0 does): test_negative_viewports.
-Absent today but work, not gaps (each needs a back end or shaders feature first): timestamps and
-counted occlusion (WebGPU back end's `TIMESTAMPS`, `OCCLUSION_COUNT`): test_timestamp_query,
-test_create_query, test_occlusion_query; instance step rates other than one on WebGPU
-(`InstanceRateInShader`): test_il_append_aligned, test_instanced_draw; geometry shaders, stream
-output and their queries, tessellation (shaders crate): test_geometry_shader,
-test_multiple_viewports, test_layered_rendering, test_fl10_stream_output_desc,
-test_index_buffer_offset, test_quad_tessellation, test_stream_output, test_stream_output_resume,
-test_stream_output_components, test_stream_output_vs, test_so_statistics_query, test_vertex_id;
-conversions the shaders crate names (ClipDistance, DynamicOffset, SampleCount, StructType,
-TypedBuffer, LodBiasInShader, BorderInShader); reinterpreting views; 10.1's copy conversions;
-dual-source blending; `GetDC`; read-only depth-stencil views; an empty multisampled or depth slot.
-Served since run 3, so their tests must be run again before anything is listed: deferred contexts
-(8 tests), compute and unordered access views (13), structured and raw buffer views (5 stopped
-at buffer views), multisampled textures (5), depth bias on triangles (test_depth_bias),
-`CreateDeviceContextState` (test_device_context_state also needs geometry, hull and domain
-context states), empty input layouts (test_create_input_layout), staging depth with stencil
-(test_clear_depth_stencil_view).
+Absent today but work, not gaps: Direct3D 10 interfaces on Direct3D 11 objects (this front's own
+work: test_create_buffer, test_texture1d/2d/3d_interfaces, test_depthstencil_view_interfaces,
+test_create_blend_state skip without them); counted occlusion and the pass tracker (this front);
+timestamps (the WebGPU back end's `TIMESTAMPS`); instance step rates on WebGPU
+(`InstanceRateInShader`); geometry shaders, stream output, tessellation, storage images, atomics,
+typed buffers and the other conversions the shaders crate names; reinterpreting views; 10.1's copy
+conversions; dual-source blending; `GetDC`; read-only depth-stencil views; target views of
+buffers; float clears of buffer views; an empty multisampled or depth slot; formats the back end
+lacks (B5G6R5, B8G8R8X8, 16-bit normalised: the back end's `FormatConverted` and the shaders
+crate's `NormAsInteger`).
 
 ## Known failures
 
@@ -569,6 +661,41 @@ context states), empty input layouts (test_create_input_layout), staging depth w
   follows interface change c8a7be9 (a copy between textures of a combined format names no aspect).
 
 ## What comes next (G4b and on)
+
+After G4 run 7, in order (the branch is pushed and everything on it built and passed on the
+desktop):
+1. The third engine family. Either bgfx: serve counted occlusion queries through the interface's
+   occlusion counter, which means moving the context onto the pass tracker (the sketch below);
+   then see whether bgfx's NVAPI calls with our device crash (if so, a nvapi64.dll of ours that
+   offers nothing, as on a machine without NVIDIA's driver, is the likely answer). Or Godot
+   through ANGLE: find which of our answers makes ANGLE's `eglInitialize` fail (run Godot with
+   ANGLE's own logging, or a small program of ours that starts ANGLE's Direct3D 11 renderer on
+   our device). The pass tracker is needed anyway (overlapping queries, a depth buffer larger
+   than its target, `UsageScopeSplit`), so start there.
+2. Direct3D 10 interfaces on Direct3D 11 objects (`ID3D10Device`, `ID3D10Buffer`, textures,
+   views and states): six Wine d3d11 tests skip their checks without them, and Wine's d3d10core
+   file needs them. Plan section 10 has Direct3D 10 served by this front.
+3. The 9 Wine tests failing a check with nothing named first, and the 3 crashing likewise
+   (logs/g4r7-wine-gaps.txt); test_check_multisample_quality_levels needs its vtable entry by
+   hand (see the table).
+4. Devices at feature levels 9_1 to 9_3 (the rig's levels scene, test_fl9_draw's checks).
+5. The WebGL 2 build. Run 7 built it and ran every scene through it: ANGLE started in the process
+   holding our d3d11.dll (its Renderer11 logged falling back from a debug device to the release
+   runtime, so its own Direct3D 11 calls reached the system's), and all 159 scene outputs stopped
+   at `D3D11CreateDevice` with `DXGI_ERROR_UNSUPPORTED`, as designed: every rig scene asks for
+   11_0 alone and the WebGL 2 build offers 10_0. So the WebGL 2 cases need programs that ask for
+   10_0 (examples of ours, or a level option in the rig's scenes, asked of the rig track). Then
+   the two WebGL 2 listed cases. Per-target blends without OES_draw_buffers_indexed are still
+   refused at `CreateBlendState` (`TargetsSplit` is not built: a draw once per group of targets,
+   each from a saved copy of depth and stencil). `resinfo` on WebGL 2 waits on the shaders crate's
+   `VariantFlags::TEXTURE_INFO` (it does not build it yet), after which the front writes
+   `TextureLevels` from the bound views (`TextureInfoInHelpers`).
+6. Constant buffer windows shorter than their shader's block (the rig's constants scene): copy the
+   window into a buffer of the block's size whose bytes past it are zero, refreshed when the
+   source is written.
+7. The building-ahead hit counts on real programs: the SDK tutorials and Doom print them at the
+   end ("built ahead N combinations ..."), in their output.log under the rig's scratch
+   programs/<program>; record them. The module size still needs the WebAssembly build planned.
 
 After G4 run 6, first, once the desktop answers again: `resume.sh g4r7` from this tree (lint of
 both builds, front tests, library tests, every Direct3D 11 scene, Wine's d3d11 file, every scene
@@ -722,6 +849,17 @@ library, Wine's d3d11 file and every scene through the WebGL 2 build, in that or
 front lib scenes wine webgl`, default all), each step's output in scratch
 logs/<label>-<step>.log, printing each exit code and last lines. The steps are the commands below.
 
+- Real programs (G4 run 7), frames compared with real Direct3D's references by the rig:
+  `tools/graphics-rig/programs run --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\d3d11.dll' --dll
+  'dxgi.dll=%CARGO_TARGET_DIR%\debug\dxgi.dll' --dll
+  'wcontainers_directx.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' <program>...`
+  after `tools/graphics-rig/remote "cargo build -q -j 3 -p wcontainers-directx"`. Always give the
+  three together for programs using dxgi.dll: the library copied in as d3d11.dll beside our
+  dxgi.dll loads the library twice. Each program's output.log and frames land in
+  pyro-parked/wcontainers-scratch/graphics-rig/programs/<program>.
+- Do not send the tree (remote, gpu-job, scenes) while another of this checkout's jobs waits in
+  the queue: the job checks the desktop still holds the tree it sent and stops otherwise
+  ("holds tree ..., not the sent ...").
 - The WebGL 2 build (G4 run 6): `cargo build -p wcontainers-directx --features webgl
   --target-dir %CARGO_TARGET_DIR%\webgl` on the desktop (its own target directory, so the two
   builds' wcontainers_directx.dll do not replace each other), then the scenes with `--dll
@@ -749,10 +887,10 @@ caught by it, so it does see that code.
 
 From the checkout root on the Mac (the desktop does all building and testing). The desktop's
 checkout needs the shaders crate's submodules, so commands start with `git submodule update --init --recursive -q`.
-- Front tests (recording back end, no GPU), 30 tests:
+- Front tests (recording back end, no GPU), 31 tests:
   `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-direct3d-11"`.
 - Library tests (COM behaviour, the forwarder, threads, our programs; they make real devices and a
-  window, so a GPU job on the hidden desktop), 22 tests:
+  window, so a GPU job on the hidden desktop), 26 tests (com 14, programs 12):
   `tools/graphics-rig/gpu-job --desktop --build "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-directx --no-run" -- "cargo test -q -j 3 -p wcontainers-directx -- --test-threads 1"`
   (add `--nocapture` to see what the programs print).
   The random lifetimes comparison takes `WC_LIFETIMES=<first seed>,<seeds>,<steps>` (default 1,8,300);
@@ -888,6 +1026,12 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   clean.
 
 ## Departures from the plan
+
+- Run 7: every default-usage 2D texture of a format that multisamples and resolves gets render
+  usage on the back end, since it may be a resolve's destination, which Direct3D does not ask to be
+  bound as a target and the back end resolves only into attachments. The alternative, resolving
+  into a temporary target and copying, costs a copy per resolve; the cost of the render usage is not
+  measured.
 
 - An indirect draw whose vertex program reads `SV_VertexID` or `SV_InstanceID` has its arguments
   read back and is drawn directly (`IndirectReadBack`, which pauses for the GPU), not read from the
