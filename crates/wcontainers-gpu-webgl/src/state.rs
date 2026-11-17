@@ -4,8 +4,8 @@
 
 use glow::HasContext;
 use wcontainers_gpu::{
-    BlendDesc, BlendFactor, BlendOp, CompareFn, CullMode, DepthStencilDesc, FrontFace, RasterDesc,
-    StencilOp, Topology, VertexFormat,
+    BlendDesc, BlendFactor, BlendOp, CompareFn, CullMode, DepthStencilDesc, FrontFace,
+    ProvokingVertex, RasterDesc, StencilOp, Topology, VertexFormat,
 };
 
 /// What GL holds now, for the values blocks and draws set.
@@ -34,6 +34,7 @@ pub struct GlValues {
     pub scissor: [i32; 4],
     pub blend_color: [f32; 4],
     pub clip_depth: u32,
+    pub provoking: u32,
 }
 
 impl GlValues {
@@ -61,6 +62,7 @@ impl GlValues {
             scissor: [i32::MIN; 4],
             blend_color: [0.0; 4],
             clip_depth,
+            provoking: crate::platform::LAST_VERTEX,
         }
     }
 }
@@ -165,13 +167,13 @@ pub fn depth_stencil(gl: &glow::Context, v: &mut GlValues, d: &DepthStencilDesc,
 }
 
 /// The raster block. `flipped` says the program negates y (no EXT_clip_control), which reverses every
-/// triangle's winding in window space.
+/// triangle's winding in window space. `create_raster` refused what the context lacks.
 pub fn raster(
     gl: &glow::Context,
     v: &mut GlValues,
     d: &RasterDesc,
     flipped: bool,
-    clip_control: impl Fn(u32),
+    platform: &crate::platform::Platform,
 ) {
     let cull = match d.cull {
         CullMode::None => None,
@@ -216,8 +218,18 @@ pub fn raster(
         } else {
             crate::platform::ZERO_TO_ONE
         };
-        set_if!(v.clip_depth, depth, clip_control);
+        set_if!(v.clip_depth, depth, |depth| platform.clip_control(
+            gl,
+            crate::platform::UPPER_LEFT,
+            depth
+        ));
     }
+    let provoking = match d.provoking {
+        ProvokingVertex::First => crate::platform::FIRST_VERTEX,
+        ProvokingVertex::Last => crate::platform::LAST_VERTEX,
+    };
+    set_if!(v.provoking, provoking, |mode| platform
+        .provoking_vertex(gl, mode));
 }
 
 pub fn mode(t: Topology) -> u32 {
