@@ -1048,19 +1048,20 @@ fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
             ["a resolve from a single-sampled texture or into a multisampled one"]
         );
     }
-    // `resolve` into level 1 of a 4 by 4 texture of two layers fits; past its levels or layers, or
-    // from a region other than the source's one level and layer, it does not.
+    // `resolve` into level 1 of a 4 by 4 texture of two layers and two levels fits; past its levels
+    // (level 2 of an 8 by 8 one, whose size would fit) or layers, or from a region other than the
+    // source's one level and layer, it does not.
     let at = [
-        ([0, 0, 1, 1], true),
-        ([0, 0, 2, 0], false),
-        ([0, 0, 1, 2], false),
-        ([1, 0, 1, 0], false),
-        ([0, 1, 1, 0], false),
+        ([0, 0, 1, 1], 4, true),
+        ([0, 0, 2, 0], 8, false),
+        ([0, 0, 1, 2], 4, false),
+        ([1, 0, 1, 0], 4, false),
+        ([0, 1, 1, 0], 4, false),
     ];
-    for ([src_mip, src_layer, mip, layer], fits) in at {
+    for ([src_mip, src_layer, mip, layer], size, fits) in at {
         let mut r = Recorder::new();
         let a = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
-        let b = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
+        let b = shaped(&mut r, TextureDimension::D2, size, 2, 2);
         let src = TextureRegion {
             mip: src_mip,
             layer: src_layer,
