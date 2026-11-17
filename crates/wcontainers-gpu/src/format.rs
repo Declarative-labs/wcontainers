@@ -42,6 +42,13 @@ pub enum Format {
     B5g6r5Unorm,
     Bgr5a1Unorm,
     Bgra4Unorm,
+    /// Two pixels in four bytes, R, G0, B, G1: pixel 0 is (R, G0, B), pixel 1 is (R, G1, B)
+    /// (Direct3D's R8G8_B8G8_UNORM). No browser has it: back ends store it decoded
+    /// ([`crate::SlowPath::BlockDecoded`]).
+    Rgbg8Unorm,
+    /// Two pixels in four bytes, G0, R, G1, B (Direct3D's G8R8_G8B8_UNORM), stored as
+    /// [`Format::Rgbg8Unorm`] is.
+    Grgb8Unorm,
     Rg32Uint,
     Rg32Sint,
     Rg32Float,
@@ -122,6 +129,7 @@ impl Format {
             | Rgb10a2Uint | Rg11b10Float | Rgb9e5Float | Depth24Plus | Depth24PlusStencil8
             | Depth32Float => (1, 1, 4),
             Depth32FloatStencil8 => (1, 1, 8),
+            Rgbg8Unorm | Grgb8Unorm => (2, 1, 4),
             Rg32Uint | Rg32Sint | Rg32Float | Rgba16Unorm | Rgba16Snorm | Rgba16Uint
             | Rgba16Sint | Rgba16Float => (1, 1, 8),
             Rgb32Uint | Rgb32Sint | Rgb32Float => (1, 1, 12),

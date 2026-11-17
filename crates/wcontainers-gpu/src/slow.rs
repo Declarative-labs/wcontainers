@@ -191,11 +191,27 @@ pub enum SlowPath {
     AdjacencyDropped,
     /// Texture level and sample counts passed to the program in the helper constants.
     TextureInfoInHelpers,
+    /// A program reading the API's vertex or instance number, or the draw's bases, given the draw's
+    /// base vertex, first instance and draw number in the helper constants.
+    DrawBaseInHelpers,
+    /// As [`SlowPath::DrawBaseInHelpers`] for an indirect draw: the program reads the bases from the
+    /// argument buffer, bound as read-only storage.
+    DrawBaseFromArguments,
+    /// A storage view of a format the back end cannot store into, read and written in the program
+    /// through a buffer of its texels, copied from and to the texture around other uses.
+    StorageFormatThroughBuffer,
+    /// A copy between multisampled textures the back end cannot copy, made by drawing the source's
+    /// resolved value into every sample of the destination (a listed loss).
+    MultisampleCopyResolved,
+    /// Bytes a placed resource shares with another one written since, copied into it before its use.
+    AliasCopied,
+    /// Alpha-antialiased lines drawn as rectangles whose coverage the program multiplies into alpha.
+    AntialiasedLinesAsQuads,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 79] = [
+    pub const ALL: [SlowPath; 85] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -275,6 +291,12 @@ impl SlowPath {
         SlowPath::IndexWidened,
         SlowPath::AdjacencyDropped,
         SlowPath::TextureInfoInHelpers,
+        SlowPath::DrawBaseInHelpers,
+        SlowPath::DrawBaseFromArguments,
+        SlowPath::StorageFormatThroughBuffer,
+        SlowPath::MultisampleCopyResolved,
+        SlowPath::AliasCopied,
+        SlowPath::AntialiasedLinesAsQuads,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -369,6 +391,14 @@ impl SlowPath {
             SlowPath::IndexWidened => "8-bit indices widened",
             SlowPath::AdjacencyDropped => "adjacent vertices dropped from a draw",
             SlowPath::TextureInfoInHelpers => "texture level counts passed in helper constants",
+            SlowPath::DrawBaseInHelpers => "draw bases passed in helper constants",
+            SlowPath::DrawBaseFromArguments => "draw bases read from indirect arguments",
+            SlowPath::StorageFormatThroughBuffer => {
+                "storage texture of an unstorable format run through a buffer"
+            }
+            SlowPath::MultisampleCopyResolved => "multisampled copy made from the resolved source",
+            SlowPath::AliasCopied => "aliased resource bytes copied before use",
+            SlowPath::AntialiasedLinesAsQuads => "antialiased lines drawn as covered rectangles",
         }
     }
 }

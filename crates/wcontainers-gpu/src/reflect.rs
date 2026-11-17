@@ -74,6 +74,9 @@ pub const EARLY_STENCIL_BINDING: u32 = 10;
 /// [`Reflection::sampled_pairs`], when its texture slot is in [`VariantKey::min_lod_clamped`], samples
 /// through the sampler at this plus n.
 pub const CLAMPED_SAMPLER_BINDING: u32 = 16;
+/// The binding in [`HELPER_SET`] of an indirect draw's argument buffer, bound read-only so the program
+/// reads the draw's bases from it ([`DrawBaseSource::Arguments`]).
+pub const DRAW_ARGUMENTS_BINDING: u32 = 11;
 
 /// The API stage a shader was written for. Geometry, hull and domain shaders become compute and vertex
 /// programs in the shaders crate's stage helper; the others become one program stage each.
@@ -106,8 +109,19 @@ pub struct ReflectedBinding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SystemValue {
     Position,
+    /// The API's vertex number. Direct3D's `SV_VertexID` leaves out the draw's first or base vertex;
+    /// OpenGL's and Vulkan's include it, as the common form's `vertex_index` does.
     VertexId,
+    /// The API's instance number. Direct3D's `SV_InstanceID` and OpenGL's `gl_InstanceID` leave out
+    /// the first instance; Vulkan's `InstanceIndex` includes it, as the common form's
+    /// `instance_index` does.
     InstanceId,
+    /// The draw's first or base vertex (OpenGL's `gl_BaseVertex`, Vulkan's `BaseVertex`).
+    BaseVertex,
+    /// The draw's first instance (OpenGL's `gl_BaseInstance`, Vulkan's `BaseInstance`).
+    BaseInstance,
+    /// The draw's number within a multi-draw (OpenGL's `gl_DrawID`, Vulkan's `DrawIndex`).
+    DrawIndex,
     PrimitiveId,
     FrontFacing,
     SampleIndex,
@@ -254,6 +268,14 @@ pub enum HelperValue {
     /// The fractional viewport within the whole-pixel one the back end draws with: scale and offset of
     /// clip x and y (four f32), applied to the last vertex stage's position.
     ViewportAdjust,
+    /// The draw's bases as the API counts them, for [`DrawBaseSource::Helpers`]: base vertex (i32: the
+    /// first vertex of a draw without indices, the base vertex of an indexed one), first instance (u32)
+    /// and draw number (u32).
+    DrawBase,
+    /// Where an indirect draw's arguments are, for [`DrawBaseSource::Arguments`]: the word offset of
+    /// the draw's arguments in the buffer at [`DRAW_ARGUMENTS_BINDING`], whether they are indexed (u32,
+    /// zero or one) and the draw number (u32).
+    DrawArguments,
 }
 
 /// Where one helper value sits in the helper constants.
@@ -312,7 +334,28 @@ bitflags! {
         /// writes from the bound views, instead of asked of the texture: for back ends without
         /// [`crate::Features::TEXTURE_LEVEL_QUERY`] ([`crate::SlowPath::TextureInfoInHelpers`]).
         const TEXTURE_INFO = 1 << 9;
+        /// The pixel shader's target 0 alpha multiplied by the line coverage the stage helper's
+        /// rectangle passes in ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
+        const LINE_COVERAGE = 1 << 10;
     }
+}
+
+/// Where a program that needs the draw's bases reads them. The common form's `vertex_index` and
+/// `instance_index` include the bases (as WebGPU's and Vulkan's do; [`crate::DrawRange`]); an API value
+/// that leaves them out ([`SystemValue::VertexId`], [`SystemValue::InstanceId`]) or names them
+/// ([`SystemValue::BaseVertex`], [`SystemValue::BaseInstance`], [`SystemValue::DrawIndex`]) is made from
+/// them by the shaders crate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DrawBaseSource {
+    /// The program reads no base.
+    #[default]
+    None,
+    /// From [`HelperValue::DrawBase`], which the front writes for each direct draw whose bases differ
+    /// from the last ([`crate::SlowPath::DrawBaseInHelpers`]).
+    Helpers,
+    /// From the indirect arguments at [`DRAW_ARGUMENTS_BINDING`], located by
+    /// [`HelperValue::DrawArguments`] ([`crate::SlowPath::DrawBaseFromArguments`]).
+    Arguments,
 }
 
 /// How a program reads typed buffers (Direct3D's `Buffer` and `RWBuffer`, OpenGL's texture buffers).
@@ -374,9 +417,13 @@ pub struct VariantKey {
     /// Storage slots packed into one buffer, at offsets from the helper constants
     /// ([`crate::SlowPath::StoragePacked`]).
     pub storage_packed: u64,
-    /// Storage texture slots read and written through a buffer of their texels, for atomics
-    /// ([`crate::SlowPath::AtomicsThroughBuffer`]).
-    pub atomics_through_buffer: u64,
+    /// Storage texture slots read and written through a buffer of their texels, in the layout
+    /// [`HelperValue::TexelLayout`] gives and the bound view's format from `storage_formats`, encoded
+    /// and decoded in the program; texels narrower than 32 bits are written by compare-exchange on their
+    /// word, so neighbours written at the same time are kept. For atomics
+    /// ([`crate::SlowPath::AtomicsThroughBuffer`]) and for formats the back end cannot store into
+    /// ([`crate::SlowPath::StorageFormatThroughBuffer`]).
+    pub texels_through_buffer: u64,
     /// Texture slots bound to textures stored as the integer format of the same bits, with the guest's
     /// format, which the program decodes and filters from loads ([`crate::SlowPath::NormAsInteger`]).
     pub decoded: Vec<(u32, Format)>,
@@ -386,6 +433,8 @@ pub struct VariantKey {
     /// [`CLAMPED_SAMPLER_BINDING`], loaded and gathered by [`HelperValue::MinLod`]
     /// ([`crate::SlowPath::MinLodClamp`]).
     pub min_lod_clamped: u128,
+    /// Where the program reads the draw's bases.
+    pub draw_base: DrawBaseSource,
     /// The sample count of the targets, where the program depends on it.
     pub samples: u8,
     /// A hash of the binding layout that numbers the slots, for APIs whose layout the program does not

@@ -1058,6 +1058,29 @@ fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
         made(&r),
         [Builtin::Mip(ViewDimension::D2, MipRead::Filtered)]
     );
+
+    // Two layers drawn in the program: counted once per draw.
+    let mut r = Recorder::new();
+    r.caps.as_mut().unwrap().formats.0[Format::R32Float.index()] = filter;
+    let desc = texture(TextureDimension::D2, Format::R32Float, 2, 2);
+    generate(&mut r, &desc, desc.format);
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 2);
+}
+
+#[test]
+fn generate_mips_with_nothing_to_draw_builds_and_counts_nothing() {
+    let mut r = Recorder::new();
+    let filter = FormatUse::all() - FormatUse::FILTER;
+    r.caps.as_mut().unwrap().formats.0[Format::R32Float.index()] = filter;
+    let one_level = texture(TextureDimension::D2, Format::R32Float, 1, 1);
+    r.generate_mips(&50, &one_level, one_level.format, 0..1, 0..1)
+        .unwrap();
+    let two_levels = texture(TextureDimension::D2, Format::R32Float, 1, 2);
+    r.generate_mips(&50, &two_levels, two_levels.format, 1..2, 1..1)
+        .unwrap();
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert!(made(&r).is_empty());
+    assert!(r.log.is_empty());
 }
 
 #[test]

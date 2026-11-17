@@ -216,7 +216,8 @@ pub trait Backend: Sized {
     fn begin_query(&mut self, index: u32);
     fn end_query(&mut self);
     /// Copies bytes between buffers. Source and destination may be the same buffer when the ranges do
-    /// not overlap (OpenGL and Vulkan allow it; Direct3D never asks): a back end whose API forbids that
+    /// not overlap (OpenGL, Vulkan and Direct3D 12's `CopyBufferRegion` allow it): a back end whose API
+    /// forbids that
     /// copies through a temporary buffer ([`crate::SlowPath::CopyWithinBuffer`]).
     fn copy_buffer(
         &mut self,
@@ -574,7 +575,8 @@ pub trait Backend: Sized {
     /// reading the level above: through the linear sampler where the format has
     /// [`crate::FormatUse::FILTER`]; otherwise filtered in the program with the same weights, from
     /// samples at texel centres through the nearest sampler (float formats) or from integer loads
-    /// decoded and encoded again (integer twins), counted [`SlowPath::FilterInShader`]. It reads the
+    /// decoded and encoded again (integer twins), each such draw counted [`SlowPath::FilterInShader`].
+    /// When the ranges hold no level to draw, nothing is built or counted. It reads the
     /// level above through a view of all layers in the texture's own dimension, the layer chosen in the
     /// program, and draws into a view of one level and one layer, so it needs no
     /// [`Features::TEXTURE_VIEWS`]; the one exception is a cube read by integer loads, which no
@@ -589,8 +591,18 @@ pub trait Backend: Sized {
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
-        let b = helpers::builtins(self)?;
         let own = desc.own_view();
+        let three_d = own == ViewDimension::D3;
+        let layers = if three_d {
+            0..1
+        } else {
+            layers.start..layers.end.min(desc.depth_or_layers)
+        };
+        let mips = mips.start.max(1)..mips.end.min(desc.mip_levels);
+        if mips.is_empty() || layers.is_empty() {
+            return Ok(());
+        }
+        let b = helpers::builtins(self)?;
         let decoded = norm_twin(values, desc.format)?;
         let read = match decoded {
             Some((_, false)) => MipRead::Unorm,
@@ -614,16 +626,7 @@ pub trait Backend: Sized {
         let copied = read_dim != own && !self.caps().has(Features::TEXTURE_VIEWS);
         let which = Builtin::Mip(read_dim, read);
         let program = helpers::program(self, which)?;
-        if read != MipRead::Filtered {
-            self.slow_paths().hit(SlowPath::FilterInShader);
-        }
-        let three_d = own == ViewDimension::D3;
-        let layers = if three_d {
-            0..1
-        } else {
-            layers.start..layers.end.min(desc.depth_or_layers)
-        };
-        for mip in mips.start.max(1)..mips.end.min(desc.mip_levels) {
+        for mip in mips {
             let size = |n: u32| (n >> mip).max(1);
             let (width, height) = (size(desc.width), size(desc.height));
             let slices = if three_d {
@@ -701,6 +704,9 @@ pub trait Backend: Sized {
                     },
                 )?;
                 for slice in 0..slices {
+                    if read != MipRead::Filtered {
+                        self.slow_paths().hit(SlowPath::FilterInShader);
+                    }
                     let ring;
                     let mut entries = alloc::vec![BindingEntry {
                         binding: 32,
@@ -1022,7 +1028,14 @@ fn fan_or_loop_indices(
     provoking: ProvokingVertex,
     out: &mut Vec<u8>,
 ) -> i32 {
-    let mut walk = |values: &mut dyn Iterator<Item = u32>, restart_value: Option<u32>| {
+    // Generic over the index width, so each width gets its own loop with no call per index.
+    fn walk(
+        kind: FanOrLoop,
+        provoking: ProvokingVertex,
+        values: impl Iterator<Item = u32>,
+        restart_value: Option<u32>,
+        out: &mut Vec<u8>,
+    ) {
         let mut push = |v: [u32; 3], n: usize| {
             for i in &v[..n] {
                 out.extend_from_slice(&i.to_le_bytes());
@@ -1055,10 +1068,16 @@ fn fan_or_loop_indices(
         if closes(n) {
             push([prev, first, 0], 2);
         }
-    };
+    }
     match source {
         IndexSource::Sequential { first, count } => {
-            walk(&mut (first..first.saturating_add(count)), None);
+            walk(
+                kind,
+                provoking,
+                first..first.saturating_add(count),
+                None,
+                out,
+            );
             0
         }
         IndexSource::Guest {
@@ -1068,22 +1087,34 @@ fn fan_or_loop_indices(
         } => {
             let restart_value = restart.then(|| format.restart_value());
             match format {
-                IndexFormat::U8 => walk(&mut indices.iter().map(|&b| u32::from(b)), restart_value),
+                IndexFormat::U8 => walk(
+                    kind,
+                    provoking,
+                    indices.iter().map(|&b| u32::from(b)),
+                    restart_value,
+                    out,
+                ),
                 IndexFormat::U16 => walk(
-                    &mut indices
+                    kind,
+                    provoking,
+                    indices
                         .as_chunks::<2>()
                         .0
                         .iter()
                         .map(|b| u32::from(u16::from_le_bytes(*b))),
                     restart_value,
+                    out,
                 ),
                 IndexFormat::U32 => walk(
-                    &mut indices
+                    kind,
+                    provoking,
+                    indices
                         .as_chunks::<4>()
                         .0
                         .iter()
                         .map(|b| u32::from_le_bytes(*b)),
                     restart_value,
+                    out,
                 ),
             }
             base_vertex

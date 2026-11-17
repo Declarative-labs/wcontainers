@@ -54,7 +54,9 @@ pub enum WriteMode {
     /// it inside a pass.
     Ordered,
     /// The whole buffer's old contents are dropped; commands recorded earlier still see the old bytes.
-    /// A back end may give the buffer fresh storage (renaming), so nothing waits.
+    /// A back end may give the buffer fresh storage (renaming), so nothing waits. The write may cover
+    /// only part of the buffer: the buffer keeps its size and the bytes outside the part are undefined
+    /// until written (WebGL 2 orphans with `bufferData(size, null)`, then writes the part).
     Discard,
     /// The caller promises no command recorded earlier and not yet finished reads the bytes written.
     /// A back end may write in place at once.

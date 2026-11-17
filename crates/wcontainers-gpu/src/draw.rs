@@ -129,7 +129,12 @@ pub struct IndexBinding<'a, B: Backend> {
     pub format: IndexFormat,
 }
 
-/// Which vertices a draw covers.
+/// Which vertices a draw covers. Every back end gives the program's `vertex_index` and `instance_index`
+/// as WebGPU and Vulkan count them: `first` plus the vertex's place for a draw without indices, the
+/// index plus `base_vertex` for an indexed one, and `first_instance` plus the instance's place. A front
+/// whose API counts otherwise binds a program variant that takes the bases out
+/// ([`crate::DrawBaseSource`]); the bases it writes are those of the API's draw, also when a route
+/// splits the draw into several.
 #[derive(Debug)]
 pub enum DrawRange<'a, B: Backend> {
     Vertices {
