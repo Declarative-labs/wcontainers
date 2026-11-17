@@ -1,7 +1,8 @@
 #!/bin/bash
 # Sets up the GPU desktop: puts this checkout's desktop scripts in C:\wc\rig, installs the tools
-# (desktop/install-tools.ps1) and sets up the job queue (desktop/install-queue.ps1). Each step is
-# skipped when already done, so it is safe to run again.
+# (desktop/install-tools.ps1), sets up the job queue (desktop/install-queue.ps1), and builds
+# gt-desktop from this checkout for the jobs that present (desktop/install-desktop.ps1). Each step
+# is skipped when already done, so it is safe to run again.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
@@ -12,3 +13,4 @@ rig_scp "$here"/desktop/* "$host:C:/wc/rig/"
 for script in install-tools install-queue; do
     rig_powershell "C:\\wc\\rig\\$script.ps1" || exit 1
 done
+"$here/remote" "cargo build -q -p wcontainers-graphics-test --bin gt-desktop && powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\wc\\rig\\install-desktop.ps1 -Launcher %CARGO_TARGET_DIR%\\debug\\gt-desktop.exe"

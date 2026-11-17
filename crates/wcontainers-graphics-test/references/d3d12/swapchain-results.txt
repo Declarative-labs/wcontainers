@@ -1,0 +1,5 @@
+frame 0: back buffer 0, present succeeded
+frame 1: back buffer 1, present succeeded
+frame 2: back buffer 2, present succeeded
+resized: 64 by 80, 3 buffers
+frame 3: back buffer 0, present succeeded
