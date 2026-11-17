@@ -779,6 +779,9 @@ pub struct Writer<'a, W> {
     /// [`AccessIndex`]: crate::Expression::AccessIndex
     temp_access_chain: Vec<storage::SubAccess>,
     need_bake_expressions: back::NeedBakeExpressions,
+    /// Values a loop's `continuing` block reads that its body has yet to define, with the
+    /// variables declared before the loop that the body assigns them to.
+    continuing_values: crate::FastHashMap<Handle<crate::Expression>, String>,
 
     function_task_payload_var:
         crate::FastHashMap<Handle<crate::Function>, Handle<crate::GlobalVariable>>,

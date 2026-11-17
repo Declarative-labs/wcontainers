@@ -196,6 +196,32 @@ impl FunctionCtx<'_> {
         self.info[handle].ty.inner_with(types)
     }
 
+    /// The values a loop's `continuing` block reads that its body defines; see
+    /// [`crate::compact::values_for_continuing`].
+    #[cfg(any(glsl_out, hlsl_out))]
+    pub(super) fn values_for_continuing(
+        &self,
+        module: &crate::Module,
+        body: &[crate::Statement],
+        continuing: &[crate::Statement],
+        break_if: Option<crate::Handle<crate::Expression>>,
+        written_before: impl Fn(crate::Handle<crate::Expression>) -> bool,
+    ) -> alloc::vec::Vec<crate::Handle<crate::Expression>> {
+        let function = match self.ty {
+            FunctionType::Function(handle) => &module.functions[handle],
+            FunctionType::EntryPoint(index) => &module.entry_points[index as usize].function,
+        };
+        crate::compact::values_for_continuing(
+            module,
+            function,
+            self.info,
+            body,
+            continuing,
+            break_if,
+            written_before,
+        )
+    }
+
     /// Helper method that generates a [`NameKey`](crate::proc::NameKey) for a local in the current function
     pub const fn name_key(
         &self,
