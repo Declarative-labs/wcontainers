@@ -145,7 +145,8 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   (made in a naga fork pinned by revision until upstream takes them).
 - Target formats are not a block a draw names (the brief lists targets among the blocks): the pass names
   its targets, so a seventh handle per draw would repeat it. `prepare` takes them as `TargetLayout`.
-- Direct3D 11 and 12 on WebGPU report feature level 11_0, not the top level the brief asks for: 11_1
+- Direct3D 11 and 12 on WebGPU report feature level 11_0 (when the adapter has 11_0's texture sizes;
+  otherwise a lower level), not the top level the brief asks for: 11_1
   requires logic ops, target-independent rasterisation and forced sample counts up to 16 (Direct3D 11)
   and binding tier 3 (Direct3D 12), none of which WebGPU can serve exactly.
 - Multisample counts per format fall short of Microsoft's 10_1 and 11_0 format tables (8 samples on 47
