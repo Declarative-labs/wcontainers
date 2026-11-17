@@ -2205,7 +2205,7 @@ found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
-737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, and the
-checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001 and
+5050002 (K5, with sockets), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
