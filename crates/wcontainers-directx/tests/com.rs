@@ -50,9 +50,11 @@ fn query_interface_follows_identity_and_parents() {
     let a: IUnknown = device.cast().unwrap();
     let b: IUnknown = dxgi.cast().unwrap();
     assert_eq!(a.as_raw(), b.as_raw(), "one IUnknown for both interfaces");
-    assert!(
-        device.cast::<ID3D11Device1>().is_err(),
-        "Direct3D 11.1 is not offered"
+    let one: IUnknown = device.cast::<ID3D11Device1>().unwrap().cast().unwrap();
+    assert_eq!(
+        a.as_raw(),
+        one.as_raw(),
+        "Direct3D 11.1's device is the same object"
     );
     let adapter: IDXGIAdapter1 = unsafe { dxgi.GetAdapter() }.unwrap().cast().unwrap();
     let desc = unsafe { adapter.GetDesc1() }.unwrap();

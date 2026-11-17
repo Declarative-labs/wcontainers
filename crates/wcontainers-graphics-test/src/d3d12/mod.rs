@@ -297,6 +297,51 @@ impl Gpu {
         index: u32,
         state: D3D12_RESOURCE_STATES,
     ) -> Result<DynamicImage> {
+        let (f, rows) = self.read_rows(texture, index, state)?;
+        texels::picture(f.Format, f.Width, f.Height, &rows, f.RowPitch as usize)
+    }
+
+    /// Reads back both planes of a depth and stencil texture now in `state` as one picture, laid
+    /// out as Direct3D 11 reads the whole texture: depth in red, stencil in green.
+    pub fn read_depth_stencil(
+        &self,
+        texture: &ID3D12Resource,
+        state: D3D12_RESOURCE_STATES,
+    ) -> Result<DynamicImage> {
+        let format = unsafe { texture.GetDesc() }.Format;
+        let (d, depth) = self.read_rows(texture, 0, state)?;
+        let (s, stencil) = self.read_rows(texture, 1, state)?;
+        let (width, height) = (d.Width as usize, d.Height as usize);
+        let size = if format == DXGI_FORMAT_D24_UNORM_S8_UINT {
+            4
+        } else {
+            8
+        };
+        let mut texels = vec![0u8; width * height * size];
+        for y in 0..height {
+            for x in 0..width {
+                let at = y * d.RowPitch as usize + x * 4;
+                let mut value: [u8; 4] = depth[at..at + 4].try_into().unwrap();
+                let stencil = stencil[y * s.RowPitch as usize + x];
+                let to = (y * width + x) * size;
+                if size == 4 {
+                    value[3] = stencil;
+                } else {
+                    texels[to + 4] = stencil;
+                }
+                texels[to..to + 4].copy_from_slice(&value);
+            }
+        }
+        texels::picture(format, d.Width, d.Height, &texels, width * size)
+    }
+
+    /// The footprint and bytes of subresource `index` of a 2D texture now in `state`.
+    fn read_rows(
+        &self,
+        texture: &ID3D12Resource,
+        index: u32,
+        state: D3D12_RESOURCE_STATES,
+    ) -> Result<(D3D12_SUBRESOURCE_FOOTPRINT, Vec<u8>)> {
         let desc = unsafe { texture.GetDesc() };
         let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
         let mut total = 0;
@@ -354,10 +399,9 @@ impl Gpu {
                 }),
                 Some(&mut mapped),
             )?;
-            let rows = std::slice::from_raw_parts(mapped.cast::<u8>(), total as usize);
-            let picture = texels::picture(f.Format, f.Width, f.Height, rows, f.RowPitch as usize);
+            let rows = std::slice::from_raw_parts(mapped.cast::<u8>(), total as usize).to_vec();
             readback.Unmap(0, Some(&D3D12_RANGE::default()));
-            picture
+            Ok((f, rows))
         }
     }
 

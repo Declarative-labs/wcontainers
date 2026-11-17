@@ -477,9 +477,9 @@ taps.
 Variants are chosen by fronts and made by the shaders crate. Every rewrite that depends on bound objects
 or on the back end's abilities (filtering in the program, border colours, mirror once, level-of-detail
 bias, storage formats from the bound view, constant buffers past the limits, vertex streams fetched in
-the program, how typed buffers are read (`TexelBufferRoute`: native, storage on WebGPU, a texture on
-WebGL 2), storage slots packed into one buffer, storage textures used with atomics read through a
-buffer, textures and targets stored as integers (`decoded`, `targets_in_shader`), blending or logic
+the program, how typed buffers are read (`TexelBufferRoute`: native where the back end has
+`TEXEL_BUFFERS`, which neither browser API has, storage on WebGPU, a texture on WebGL 2), storage slots
+packed into one buffer, storage textures used with atomics read through a buffer, textures and targets stored as integers (`decoded`, `targets_in_shader`), blending or logic
 operations done in the program, the sample mask written by the program, clip depth, flipped depth
 ranges, depth bias, the counting variant, the interpolation the pixel program reads the vertex
 program's outputs with, which WebGPU and GLSL ES require the two stages to agree on) is a field of
@@ -700,7 +700,9 @@ queries carry over as at any split (below). Exact: the
 - Occlusion queries live inside one pass. A guest query that spans a pass split (a target change or a
   copy in the middle, which the pass tracker turns into several passes) is several interface queries,
   one per pass; the front adds their counts or combines their "any" answers.
-- One interface query runs at a time (WebGPU allows one active occlusion query per pass). Guest queries
+- One interface query runs at a time (WebGPU allows one active occlusion query per pass), and each
+  index of the pass's set is begun at most once in that pass (WebGPU refuses a second), so a front
+  takes a fresh index for each stretch. Guest queries
   may overlap (Direct3D 11 and 12 and OpenGL allow several active at once, for example a predicate
   around per-object queries). The front ends the running interface query at every guest begin and end
   and starts a new one, and adds each stretch's result to every guest query open during it, as DXVK
@@ -937,11 +939,15 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      the sample count). The query's count is the sum over its counting passes. If any pixel's sum over
      its samples reached the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`;
      below it the resolved average keeps every count exact), the replay runs
-     again with the draws split into halves (of the draws, of one draw's instances, or of one list's
-     or strip's primitives, a triangle strip at an even triangle), the second half after the first and
+     again with the draws split into halves (of the draws; of one draw's instances, by raising the
+     first instance, where the back end has `BASE_VERTEX_INSTANCE` and the front says every
+     per-instance stream steps by one, so each instance reads what it read; otherwise of one list's
+     or strip's primitives, each drawn for every instance, a triangle strip at an even triangle), the
+     second half after the first and
      both from the depth the whole began with (kept by one more copy, made only where the draws'
      primitives times the sample count reach the bound), and the halves added, so the answer stays
-     exact. A single fan, strip with restart or indirect draw reaching the bound cannot be split: the
+     exact. A single fan, strip with restart or indirect draw reaching the bound cannot be split, nor
+     can one primitive's instances where the first instance cannot be raised: the
      helper refuses it (`GpuError::Invalid`), a known gap that needs, from one such draw on a back end
      without blendable `r32float`, a pixel whose samples together pass 2048 fragments (2048 at its one
      sample on a single-sampled target, 512 a sample on average on four samples). A program reading the primitive index sees it
@@ -1293,7 +1299,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   pixel's centre is inside are covered where the API would not cover them: a listed loss, at most part
   of one pixel row or column on each edge: edge samples on the other side of the fractional edge from
   their pixel's centre are drawn or left as the centre is, not as the sample is.
-- Targets of more bytes per sample than `color_bytes_per_sample`: each draw runs once per group of
+- Targets of more bytes per sample than `color_bytes_per_sample` (every back end counts them as WebGPU
+  does, by `color_target_bytes`: each target from a multiple of its alignment, `rgba8unorm` as 8 bytes,
+  so a front sizes the groups once for all back ends): each draw runs once per group of
   targets that fits, each run starting from a saved copy of depth and stencil, storage writes and
   queries kept only in the first run (`TargetsSplit`). Exact.
 - Drawing with no targets (Direct3D 11's storage-only drawing): the back end's own attachment (4.7).
@@ -1305,7 +1313,8 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   reported absent. Several viewports: `MultiViewportSplit`.
 - Vertex input: every format can be named (`VertexFormat` has every component count of every type);
   WebGPU's missing ones are fetched in the program or converted (`VertexFormatConverted`). Step rates
-  other than one instance: `InstanceRateInShader`. Direct3D reads zero past the end of a vertex buffer:
+  other than one instance: natively where the back end has `INSTANCE_STEP_RATE` (WebGL 2's divisor),
+  otherwise `InstanceRateInShader`. Direct3D reads zero past the end of a vertex buffer:
   for draws without indices the front draws the part past the end with a zero buffer bound
   (`VertexFetchZeroed`), exact; for indexed draws, indices past the end get what WebGPU's robust access
   gives (zero or a value from inside the buffer), a listed loss, as DXVK has on Vulkan without

@@ -1,6 +1,7 @@
 //! Samplers, one per cell: every minification, magnification and mip filter combination,
-//! anisotropy, level bias and clamps; every address mode for u against v with a border colour; and
-//! comparison sampling of a depth texture with each function, filtered and not, and gathering.
+//! anisotropy, level bias and clamps; minimum and maximum reduction filters (where the device says
+//! it has them); every address mode for u against v with a border colour; and comparison sampling
+//! of a depth texture with each function under each comparison filter, and gathering.
 
 use anyhow::Result;
 use windows::Win32::Graphics::Direct3D::*;
@@ -102,6 +103,25 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         "filters",
         cells(gpu, dxbc!("samplers.ps_sample"), 4, 64, &filters, 0)?,
     ));
+    let mut options = D3D11_FEATURE_DATA_D3D11_OPTIONS1::default();
+    unsafe {
+        gpu.device.CheckFeatureSupport(
+            D3D11_FEATURE_D3D11_OPTIONS1,
+            (&mut options as *mut D3D11_FEATURE_DATA_D3D11_OPTIONS1).cast(),
+            size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS1>() as u32,
+        )?
+    };
+    let reducing = options.MinMaxFiltering.as_bool();
+    outputs.push(Output::text(
+        "reduction_support",
+        format!("minimum and maximum filtering {reducing}\n"),
+    ));
+    if reducing {
+        outputs.push(Output::picture(
+            "reduction",
+            cells(gpu, dxbc!("samplers.ps_sample"), 4, 64, &reduction(), 0)?,
+        ));
+    }
 
     // Every address mode for u against v, linear filtering of an 8 by 8 checker.
     let texels = checker(8, 8, 1, 3);
@@ -224,6 +244,27 @@ pub fn filters() -> Vec<D3D11_SAMPLER_DESC> {
     filters
 }
 
+/// The minimum and maximum reduction of point, linear and anisotropic filtering.
+pub fn reduction() -> Vec<D3D11_SAMPLER_DESC> {
+    let wrap = [D3D11_TEXTURE_ADDRESS_WRAP; 2];
+    [
+        D3D11_FILTER_MINIMUM_MIN_MAG_MIP_POINT,
+        D3D11_FILTER_MINIMUM_MIN_MAG_LINEAR_MIP_POINT,
+        D3D11_FILTER_MINIMUM_MIN_MAG_MIP_LINEAR,
+        D3D11_FILTER_MINIMUM_ANISOTROPIC,
+        D3D11_FILTER_MAXIMUM_MIN_MAG_MIP_POINT,
+        D3D11_FILTER_MAXIMUM_MIN_MAG_LINEAR_MIP_POINT,
+        D3D11_FILTER_MAXIMUM_MIN_MAG_MIP_LINEAR,
+        D3D11_FILTER_MAXIMUM_ANISOTROPIC,
+    ]
+    .into_iter()
+    .map(|f| D3D11_SAMPLER_DESC {
+        MaxAnisotropy: 8,
+        ..sampler(f, wrap)
+    })
+    .collect()
+}
+
 /// Every address mode for u against v, linear filtered.
 pub fn address() -> Vec<D3D11_SAMPLER_DESC> {
     let modes = [
@@ -239,7 +280,8 @@ pub fn address() -> Vec<D3D11_SAMPLER_DESC> {
         .collect()
 }
 
-/// Each comparison function, point and linear filtered.
+/// Each comparison function under each comparison filter: point, linear with point mips, linear
+/// throughout, and anisotropic.
 pub fn compare() -> Vec<D3D11_SAMPLER_DESC> {
     let funcs = [
         D3D11_COMPARISON_NEVER,
@@ -254,11 +296,14 @@ pub fn compare() -> Vec<D3D11_SAMPLER_DESC> {
     [
         D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT,
         D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+        D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR,
+        D3D11_FILTER_COMPARISON_ANISOTROPIC,
     ]
     .into_iter()
     .flat_map(|filter| {
         funcs.map(|func| D3D11_SAMPLER_DESC {
             ComparisonFunc: func,
+            MaxAnisotropy: 4,
             ..sampler(filter, [D3D11_TEXTURE_ADDRESS_CLAMP; 2])
         })
     })

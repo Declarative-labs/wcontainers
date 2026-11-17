@@ -50,6 +50,9 @@ pub struct ContextState<B: Backend> {
     vertex_buffers: Vec<Option<VertexSlot<B>>>,
     index: Option<(Rc<Buffer<B>>, IndexFormat, u32)>,
     constant_buffers: [Vec<Option<Rc<Buffer<B>>>>; 2],
+    /// Per constant buffer slot, the range bound (first constant, constants), or none for the
+    /// whole buffer.
+    constant_ranges: [Vec<Option<(u32, u32)>>; 2],
     resources: [Vec<Option<Rc<View<B>>>>; 2],
     samplers: [Vec<Option<Rc<Sampler<B>>>>; 2],
     targets: Vec<Option<Rc<View<B>>>>,
@@ -80,6 +83,7 @@ impl<B: Backend> ContextState<B> {
             vertex_buffers: vec![None; VERTEX_SLOTS],
             index: None,
             constant_buffers: [vec![None; 14], vec![None; 14]],
+            constant_ranges: [vec![None; 14], vec![None; 14]],
             resources: [vec![None; 128], vec![None; 128]],
             samplers: [vec![None; 16], vec![None; 16]],
             targets: vec![None; 8],
@@ -276,7 +280,29 @@ impl<B: Backend> Device<B> {
         start: u32,
         b: &[Option<Rc<Buffer<B>>>],
     ) -> Result<()> {
-        if put_rc(&mut self.ctx.constant_buffers[stage], start, b)? {
+        self.set_constant_ranges(stage, start, b, &vec![None; b.len()])
+    }
+
+    /// Binds constant buffers from `start`, each with its range of 16-byte constants (first,
+    /// count; none for the whole buffer), as Direct3D 11.1 binds them.
+    pub fn set_constant_ranges(
+        &mut self,
+        stage: usize,
+        start: u32,
+        b: &[Option<Rc<Buffer<B>>>],
+        ranges: &[Option<(u32, u32)>],
+    ) -> Result<()> {
+        for r in ranges.iter().flatten() {
+            if r.0 % 16 != 0 || r.1 % 16 != 0 || r.1 > 4096 {
+                return Err(Error::InvalidArg(
+                    "a constant range not in multiples of 16 constants, or past 4096",
+                ));
+            }
+        }
+        let changed = put_rc(&mut self.ctx.constant_buffers[stage], start, b)?;
+        let slots = &mut self.ctx.constant_ranges[stage][start as usize..][..ranges.len()];
+        if changed || slots != ranges {
+            slots.copy_from_slice(ranges);
             self.ctx.sets_dirty[stage] = true;
         }
         Ok(())
@@ -688,7 +714,11 @@ impl<B: Backend> Device<B> {
             };
             for b in &shader.reflection.bindings {
                 let bound = self.ctx.constant_buffers[stage].get(b.register as usize);
+                let whole = self.ctx.constant_ranges[stage]
+                    .get(b.register as usize)
+                    .is_some_and(Option::is_none);
                 if let (SlotKind::Uniform, Some(Some(c))) = (b.kind, bound)
+                    && whole
                     && b.set as usize == stage
                     && let Some(&(_, declared)) =
                         shader.constant_sizes.iter().find(|(n, _)| *n == b.binding)
@@ -808,23 +838,58 @@ impl<B: Backend> Device<B> {
             };
             empty.push((b.binding, zero));
         }
-        let cbs: Vec<_> = self.ctx.constant_buffers[stage]
+        let mut cbs = Vec::new();
+        for (c, range) in self.ctx.constant_buffers[stage]
             .iter()
-            .map(|c| c.as_ref().map(|c| (c.gpu.borrow(), c.size.get())))
-            .collect();
+            .zip(&self.ctx.constant_ranges[stage])
+        {
+            let Some(c) = c else {
+                cbs.push(None);
+                continue;
+            };
+            let (offset, size) = match *range {
+                None => (0, c.size.get()),
+                // A range past the buffer's end is cut at it.
+                Some((first, count)) => {
+                    let offset = u64::from(first) * 16;
+                    let size = (u64::from(count) * 16).min(c.size.get().saturating_sub(offset));
+                    (offset, size)
+                }
+            };
+            cbs.push(Some((c.gpu.borrow(), offset, size)));
+        }
+        for b in wanted().filter(|b| b.kind == SlotKind::Uniform) {
+            let declared = shader
+                .constant_sizes
+                .iter()
+                .find(|(n, _)| *n == b.binding)
+                .map_or(0, |s| s.1);
+            if let Some(Some((_, _, size))) = cbs.get(b.register as usize)
+                && self.ctx.constant_ranges[stage][b.register as usize].is_some()
+                && *size < declared
+            {
+                return not_implemented(
+                    "a constant buffer range shorter than its shader declares, or empty",
+                );
+            }
+        }
         let views = &self.ctx.resources[stage];
         let samplers = &self.ctx.samplers[stage];
         let mut entries = Vec::new();
         for b in wanted() {
             let slot = b.register as usize;
             let resource = match b.kind {
-                SlotKind::Uniform => cbs.get(slot).and_then(Option::as_ref).map(|(c, size)| {
-                    BindingResource::UniformBuffer(BufferRange {
-                        buffer: &c.handle,
-                        offset: 0,
-                        size: *size,
-                    })
-                }),
+                SlotKind::Uniform => {
+                    cbs.get(slot)
+                        .and_then(Option::as_ref)
+                        .map(|(c, offset, size)| {
+                            BindingResource::UniformBuffer(BufferRange {
+                                buffer: &c.handle,
+                                offset: *offset,
+                                size: *size,
+                            })
+                        })
+                }
                 SlotKind::Texture => views
                     .get(slot)
                     .and_then(Option::as_ref)

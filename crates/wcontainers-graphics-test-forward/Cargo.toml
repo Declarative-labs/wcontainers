@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-graphics-test-forward"
-description = "A d3d11.dll that logs each call and forwards it to the system's, to prove programs load a replacement placed beside them, and takes a census of a program's Direct3D calls."
+description = "A d3d11.dll that logs each call and forwards it to the system's, to prove programs load a replacement placed beside them, and takes a census of a program's Direct3D calls and captures its frames on a clock that moves by frames."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 [target.'cfg(windows)'.dependencies]
 anyhow = "1.0.100"
 png = "0.18.1"
+retour = "0.3.1"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
@@ -25,7 +26,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Memory",
     "Win32_System_Threading",
 ] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_SystemInformation"] }
 
 [build-dependencies]
 object = { version = "0.41.0", default-features = false, features = ["read_core", "pe", "std"] }

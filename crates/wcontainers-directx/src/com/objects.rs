@@ -4,7 +4,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::core::OutRef;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::*;
+use windows::core::{OutRef, Result};
 
 use super::counted::{Held, counted};
 
@@ -69,14 +71,18 @@ pub struct Buffer {
     priority: Cell<u32>,
 }
 
-counted!(Buffer => Buffer_Impl { main: ID3D11Buffer, ID3D11Buffer_Vtbl });
+counted!(Buffer => Buffer_Impl {
+    main: ID3D11Buffer, ID3D11Buffer_Vtbl;
+    dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
+    surface: IDXGISurface1, IDXGISurface1_Vtbl, -3;
+});
 
 impl Buffer {
     pub fn new(front: Rc<front::Buffer<Chosen>>, device: ID3D11Device) -> Self {
         Buffer {
             front: Locked::new(front),
             child: Child::new(device),
-            priority: Cell::new(0),
+            priority: Cell::new(NORMAL_PRIORITY),
         }
     }
 
@@ -99,25 +105,64 @@ impl Buffer {
     pub(super) fn get_eviction_priority(&self) -> u32 {
         self.priority.get()
     }
+
+    pub(super) fn get_usage(&self) -> Result<DXGI_USAGE> {
+        Ok(dxgi_usage(self.front.desc.bind_flags))
+    }
+
+    /// DXGI's surface of a buffer: a row of its bytes of no format.
+    pub(super) fn get_desc_dxgi(&self) -> Result<DXGI_SURFACE_DESC> {
+        Ok(DXGI_SURFACE_DESC {
+            Width: self.front.desc.byte_width,
+            Height: 1,
+            Format: DXGI_FORMAT(0),
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+        })
+    }
+}
+
+/// The eviction priority of a new resource, `DXGI_RESOURCE_PRIORITY_NORMAL`.
+const NORMAL_PRIORITY: u32 = 0x7800_0000;
+
+/// DXGI's usage of a resource of these bind flags.
+fn dxgi_usage(bind: u32) -> DXGI_USAGE {
+    let mut u = 0;
+    if bind & D3D11_BIND_RENDER_TARGET.0 as u32 != 0 {
+        u |= DXGI_USAGE_RENDER_TARGET_OUTPUT.0;
+    }
+    if bind & D3D11_BIND_SHADER_RESOURCE.0 as u32 != 0 {
+        u |= DXGI_USAGE_SHADER_INPUT.0;
+    }
+    if bind & D3D11_BIND_UNORDERED_ACCESS.0 as u32 != 0 {
+        u |= DXGI_USAGE_UNORDERED_ACCESS.0;
+    }
+    DXGI_USAGE(u)
 }
 
 /// A texture of one dimension: its interface, description structure, conversion and resource type.
 macro_rules! texture {
-    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident, $desc:ident, $back:path, $dim:ident) => {
+    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident, $desc:ident, $back:path, $dim:ident $(, $surface:ident)?) => {
         pub struct $name {
             pub front: Locked<Rc<front::Texture<Chosen>>>,
             pub(super) child: Child,
             priority: Cell<u32>,
         }
 
-        counted!($name => $imp { main: $iface, $vtbl });
+        counted!($name => $imp {
+            main: $iface, $vtbl;
+            dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
+            $($surface: IDXGISurface1, IDXGISurface1_Vtbl, -3, if one_subresource;)?
+        });
 
         impl $name {
             pub fn new(front: Rc<front::Texture<Chosen>>, device: ID3D11Device) -> Self {
                 $name {
                     front: Locked::new(front),
                     child: Child::new(device),
-                    priority: Cell::new(0),
+                    priority: Cell::new(NORMAL_PRIORITY),
                 }
             }
 
@@ -140,6 +185,31 @@ macro_rules! texture {
             pub(super) fn get_eviction_priority(&self) -> u32 {
                 self.priority.get()
             }
+
+            pub(super) fn get_usage(&self) -> Result<DXGI_USAGE> {
+                Ok(dxgi_usage(self.front.desc.bind_flags))
+            }
+
+            /// Whether DXGI sees the texture as a surface: one level of one layer (3D textures
+            /// never are).
+            #[allow(dead_code)]
+            fn one_subresource(&self) -> bool {
+                self.front.desc.mip_levels == 1 && self.front.desc.array_size == 1
+            }
+
+            #[allow(dead_code)]
+            pub(super) fn get_desc_dxgi(&self) -> Result<DXGI_SURFACE_DESC> {
+                let d = &self.front.desc;
+                Ok(DXGI_SURFACE_DESC {
+                    Width: d.width,
+                    Height: d.height,
+                    Format: DXGI_FORMAT(d.format as i32),
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: d.sample_count,
+                        Quality: d.sample_quality,
+                    },
+                })
+            }
         }
     };
 }
@@ -151,7 +221,8 @@ texture!(
     ID3D11Texture1D_Vtbl,
     D3D11_TEXTURE1D_DESC,
     convert::texture1d_back,
-    D3D11_RESOURCE_DIMENSION_TEXTURE1D
+    D3D11_RESOURCE_DIMENSION_TEXTURE1D,
+    surface
 );
 texture!(
     Texture2D,
@@ -160,7 +231,8 @@ texture!(
     ID3D11Texture2D_Vtbl,
     D3D11_TEXTURE2D_DESC,
     convert::texture2d_back,
-    D3D11_RESOURCE_DIMENSION_TEXTURE2D
+    D3D11_RESOURCE_DIMENSION_TEXTURE2D,
+    surface
 );
 texture!(
     Texture3D,
@@ -304,20 +376,23 @@ impl SamplerState {
 pub struct BlendState {
     pub front: Locked<Rc<front::Blend<Chosen>>>,
     desc: D3D11_BLEND_DESC,
+    logic: convert::LogicOps,
     pub(super) child: Child,
 }
 
-counted!(BlendState => BlendState_Impl { main: ID3D11BlendState, ID3D11BlendState_Vtbl });
+counted!(BlendState => BlendState_Impl { main: ID3D11BlendState1 | ID3D11BlendState, ID3D11BlendState1_Vtbl });
 
 impl BlendState {
     pub fn new(
         front: Rc<front::Blend<Chosen>>,
         desc: D3D11_BLEND_DESC,
+        logic: convert::LogicOps,
         device: ID3D11Device,
     ) -> Self {
         BlendState {
             front: Locked::new(front),
             desc,
+            logic,
             child: Child::new(device),
         }
     }
@@ -325,6 +400,12 @@ impl BlendState {
     pub(super) fn get_desc(&self, out: *mut D3D11_BLEND_DESC) {
         if let Some(out) = unsafe { out.as_mut() } {
             *out = self.desc;
+        }
+    }
+
+    pub(super) fn get_desc1(&self, out: *mut D3D11_BLEND_DESC1) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = convert::blend_joined(&self.desc, &self.logic);
         }
     }
 }
@@ -365,7 +446,7 @@ pub struct RasterizerState {
     pub(super) child: Child,
 }
 
-counted!(RasterizerState => RasterizerState_Impl { main: ID3D11RasterizerState, ID3D11RasterizerState_Vtbl });
+counted!(RasterizerState => RasterizerState_Impl { main: ID3D11RasterizerState1 | ID3D11RasterizerState, ID3D11RasterizerState1_Vtbl });
 
 impl RasterizerState {
     pub fn new(
@@ -383,6 +464,25 @@ impl RasterizerState {
     pub(super) fn get_desc(&self, out: *mut D3D11_RASTERIZER_DESC) {
         if let Some(out) = unsafe { out.as_mut() } {
             *out = self.desc;
+        }
+    }
+
+    pub(super) fn get_desc1(&self, out: *mut D3D11_RASTERIZER_DESC1) {
+        let d = &self.desc;
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = D3D11_RASTERIZER_DESC1 {
+                FillMode: d.FillMode,
+                CullMode: d.CullMode,
+                FrontCounterClockwise: d.FrontCounterClockwise,
+                DepthBias: d.DepthBias,
+                DepthBiasClamp: d.DepthBiasClamp,
+                SlopeScaledDepthBias: d.SlopeScaledDepthBias,
+                DepthClipEnable: d.DepthClipEnable,
+                ScissorEnable: d.ScissorEnable,
+                MultisampleEnable: d.MultisampleEnable,
+                AntialiasedLineEnable: d.AntialiasedLineEnable,
+                ForcedSampleCount: 0,
+            };
         }
     }
 }

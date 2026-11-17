@@ -28,10 +28,7 @@ fn main() -> anyhow::Result<()> {
         };
         let gpu = d3d12::create(driver, debug)?;
         println!("adapter {}", gpu.adapter);
-        println!(
-            "{}",
-            wcontainers_graphics_test::library_paths(&["d3d12.dll", "dxgi.dll"])
-        );
+        println!("{}", wcontainers_graphics_test::library_paths());
         for name in names {
             let scene = d3d12::scenes::find(name)
                 .with_context(|| format!("no scene {name}; see gt-d3d12 list"))?;

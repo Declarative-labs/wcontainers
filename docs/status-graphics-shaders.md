@@ -4,9 +4,10 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 
 ## Where things stand
 
-Milestone G6a (first slice): done in run 3; runs 4 and 5 fixed what the independent checks of runs 3
-and 4 found (listed under "Run 4" and "Run 5" below). Run 5 merged origin/phase-2-graphics and every
-origin/phase-2-graphics-* branch again (no conflicts).
+Milestone G6a (first slice): done in run 3; runs 4, 5 and 6 fixed what the independent checks of runs
+3, 4 and 5 found (listed under "Run 4", "Run 5" and "Run 6" below). Run 6 merged origin/phase-2-graphics
+and every origin/phase-2-graphics-* branch again (no conflicts). Run 6's fixes are in and tested on
+the laptop; their drawing on the desktop is not done yet (first item of Next).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -46,9 +47,9 @@ Done:
   8 outputs pass (triangle, quads, topology, instanced, targets in 4 formats), instanced newly so
   after the constant buffer fix; the other 141 are missing outputs or failures of the front (it
   refuses what it does not serve yet, for example depth-stencil views, 1D and 3D textures, queries).
-  Through the direct3d-12 track's d3d12.dll only the triangle passes, and that front does not call
-  `convert` yet (it answers "DXIL shaders need the shaders crate's converter" for every other
-  shader), so DXIL is proven by `tests/draw.rs` instead.
+  Through the direct3d-12 track's d3d12.dll only the triangle passed in run 3, when that front did
+  not call `convert` yet; it does now (merged in run 6, `wcontainers-direct3d-12/src/device.rs`,
+  `convert` with `VariantKey::default()`), not re-run here. DXIL is proven by `tests/draw.rs`.
 - dxil-spirv built in too (submodule, pinned), and `convert` for DXIL: dxil-spirv's SPIR-V, read by
   naga's SPIR-V reader (`src/dxil.rs`), then given 6.4's binding rule. The rig now has 72 DXIL
   shaders: 49 convert (run 4), the rest are named (counts under Measurements).
@@ -148,7 +149,48 @@ Run 5 (the independent check of run 4, each finding fixed or recorded):
   (values compilers pack). `tests/draw.rs` draws the DXIL builds too (`vs_transform.dxil` with the
   pixel shader's), against real Direct3D 11's picture of the fxc build.
 
+Run 6 (the independent check of run 5, each finding fixed or recorded):
+- DXIL constant buffers indexed at run time were still declared as dxil-spirv declares them, 64 KiB
+  (4096 vectors), so a Direct3D 12 program binding its own smaller buffer failed WebGPU's minimum
+  binding size and lost the device; run 3's fix was DXBC only, and the "How the fronts call" text
+  claimed it for both. Now the DXIL route gives such a buffer the size the bytecode declares: the
+  sizes come from the DXIL's own resource list (`dx.resources`, read by dxil-spirv's bitcode parser
+  through the C boundary, `wcs_dxil_constant_sizes`), matched by space and register, read only when
+  a buffer is declared at 64 KiB; the replaced types are compacted away. Test
+  `dynamically_indexed_constants_keep_their_declared_size` now checks both routes on the rig's
+  `constants.ps_slots` and `constants.ps_window` (16, 256 and 4096 vectors; 64 vectors) and the
+  DXBC `instanced.vs`. The independent check's own `ps_cbuf` (scratch `check-g6a-r6/own`), converted
+  on the laptop after the fix, declares `array<vec4<f32>, 5>` by both routes.
+- Discard from DXIL: dxil-spirv writes `clip`/`discard` as `OpDemoteToHelperInvocation`, which naga's
+  reader refused (`unsupported extension SPV_EXT_demote_to_helper_invocation`), so every Direct3D 12
+  pixel shader with an alpha test failed. The carried reader now reads it as the IR's `Kill`, which
+  WGSL writes as `discard` (a demote in WGSL too) and GLSL as `discard`. `IsHelperLane()` and the wave
+  operations dxil-spirv guards with `OpIsHelperInvocationEXT` stay refused by the reader by name
+  (naga has no such built-in). The check's `ps_flow` (dxc build, discard in nested loops) now
+  converts, and its WGSL and GLSL ES validate (laptop, naga and glslang); not yet drawn.
+- `tests/draw.rs`: the WebGL 2 skip reason is per route (fxc build, dxc build), so the dxc build of
+  `ps_cases`, whose GLSL ES has no bitfield operations, is drawn on WebGL 2 (not yet run: the
+  desktop was unreachable).
+- Not finished: drawing the two fixes. The desktop refused every SSH session for the last hour of
+  the run (connection reset after the key exchange), so nothing could be compiled or drawn there.
+  Written and committed: `tests/own/route.hlsl` (`ps_rows`: a constant buffer indexed by the pixel's
+  column, bound at its declared 80 bytes; `ps_clip`: discards inside a loop, then an
+  implicit-derivative sample) and `compile.cmd` lines that compile it and `ps_textured` (`clip`) by
+  fxc and dxc. Not yet compiled; the draw cases for them are in scratch
+  `graphics-shaders/run6/draw-cases.patch` (apply it after compiling, then add the verdicts to
+  `tests/expected/own.txt` and `own-dxil.txt`).
+- Fuzz: the check's run (seed 31337, 6000 cases) found one DXIL case killed for memory and showed that
+  under an address-space cap the DXBC memory cases end as `Rejected` (the C++ `bad_alloc` caught at
+  the boundary); recorded under Known gaps. Its 26 refusals by our own checks (a caught panic of
+  naga's layouter on a too-large type, a lowering of mutated IR giving a u32 times f32 multiply) are
+  refusals of signed but mutated bytecode, as Known gaps says.
+
 Next (G6b and on, in order):
+- First, finish run 6 on the desktop: run `tests/own/compile.cmd` through `tools/graphics-rig/remote`,
+  copy back `ps_rows.*`, `ps_clip.*` and `ps_textured.dxil`, apply the scratch patch above, record
+  their verdicts, run the corpus suite, Chrome's `web/check` and `tests/draw.rs` (the DXIL builds of
+  `ps_rows`, `ps_clip`, `ps_textured`, and `ps_cases` now on WebGL 2 too), then the fuzz again (the
+  new own files change its cases).
 - DXIL inputs and outputs as the DXBC route lays them out: one four-component value per register
   (now each value keeps its own width, so a Direct3D 12 vertex shader writing a float4 that a pixel
   shader reads as float2 fails WebGPU's pipeline check), and elements dxc packs into one register
@@ -158,7 +200,7 @@ Next (G6b and on, in order):
 - DXIL binding numbers by root signature (6.4, `VariantKey::layout`); today Direct3D 11's rule.
 - Send the carried naga changes upstream (below).
 - naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
-  images without a format, discard as `SPV_EXT_demote_to_helper_invocation`, the sample mask kept as
+  images without a format, `OpIsHelperInvocationEXT` (`IsHelperLane()`, wave operations), the sample mask kept as
   an array, geometry and tessellation execution models (the stage helper), and 1D texture arrays
   (the DXBC route reads them as 2D arrays; DXIL refuses `Texture1DArray`).
 - dxil-spirv's crashes on signed but malformed DXIL (Known gaps): report upstream with the replay
@@ -212,8 +254,9 @@ let reflection = &converted.reflection;
   (semantic names from the container's signatures, location = register); a pixel shader's unread
   `SV_Position` may be listed where the DXBC route leaves it out. Sampled pairs are listed as for
   DXBC, by register (a pair's register spaces are not in the pair).
-- Constant buffers are declared with the size the bytecode gives them, so binding the program's own
-  buffer (or any range at least that long) satisfies WebGPU.
+- Constant buffers are declared with the size the bytecode gives them, on both routes (DXIL's
+  dynamically indexed ones since run 6), so binding the program's own buffer (or any range at least
+  that long) satisfies WebGPU.
 - Errors: `Rejected` (the container's checksum does not match, which Direct3D answers with
   `E_INVALIDARG` too, or dxbc-spirv or dxil-spirv refused the bytecode, with its message, including
   their failed assertions and exceptions natively), `Unsupported(name)` (a named feature or variant
@@ -228,6 +271,23 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 6, 2026-11-17, counts only (laptop i7-8750H, load average 1 to 4):
+- The whole suite with the corpus (`--include-ignored --skip mutated`), after the run's fixes and
+  before the new own shaders: every test passes and every verdict equals its record, unchanged from
+  run 5 (corpus 127 convert and 64 named, rig DXBC 56 of 79, rig DXIL 49 of 72; none of the rig's DXIL
+  discards, so the demote fix changes no rig verdict).
+- WebAssembly (`wasm-run5.sh`): `wasm_imports` (release) is 4,930,913 bytes (naga's compaction is
+  linked now), the same 10 WASI imports; the corpus test under wasmtime 38.0.4 passes and every file
+  it writes equals the native build's (corpus, rig, rig DXIL, own, own DXIL: 0 differ).
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000`, the same inputs as run 5 (the new own
+  shaders not yet in): 11 cases ended the process, the 10 DXIL cases of run 5 exactly (8 segmentation
+  faults, 2 `std::terminate`) and DXBC 934 killed for memory; run 5's DXBC memory cases 1539 and
+  2228 ended as `rejected` this time (how much memory the laptop had free differs between runs). Our
+  own checks refused the same 13 cases as in run 5. Log `~/wcontainers-graphics/fuzz-run6-seed7.log`.
+- The check of run 5 (seed 31337, 6000 cases, before run 6): 19 ended the process (9 segmentation
+  faults and 5 `std::terminate`, all DXIL; 5 killed for memory, 4 DXBC and 1 DXIL), 26 refused by our
+  own checks.
 
 Run 5, 2026-11-17, counts only:
 - Laptop (i7-8750H, load average 1 to 5), the whole suite with the corpus (`--include-ignored --skip
@@ -378,6 +438,8 @@ the tree as published"), plus these changes, each a later commit touching only `
   (`Error::UnsupportedImageLoadOperand`) instead of skipped with a log warning.
 - WGSL writer (run 5), `isnan`/`isinf` of f32 scalars and vectors written as bit tests (WGSL has
   neither).
+- SPIR-V reader (run 6), `OpDemoteToHelperInvocation` read as `Statement::Kill` (WGSL's `discard`
+  demotes too), its extension and capability accepted.
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
 not have. Each change is its own commit touching only `third_party/naga`, so each can be sent as it
 stands (`git diff d380816 HEAD -- third_party/naga`).
@@ -509,7 +571,11 @@ were already there.
 
 - Signed but malformed DXIL can end the process natively: dxil-spirv's bitcode reader faults or calls
   `std::terminate` (`bc/cast.hpp`) on it (10 of 3000 fuzz cases in run 5, 15 in run 4,
-  Measurements); malformed DXBC exhausted memory in 3 of 3000 (1 in run 4). Only bytecode whose checksum matches reaches the converters, so this needs a
+  Measurements); malformed DXBC exhausted memory in 3 of 3000 (1 in run 4), and the check of run 5
+  found one DXIL case too (seed 31337, case 4995). The exhaustion is inside the converters: with the
+  address space capped (`ulimit -v 3000000`) the DXBC cases end as `Rejected`, the C++ `bad_alloc`
+  caught at the boundary, but natively nothing bounds it without such a cap; on WebAssembly the
+  module's memory limit ends the instance. Only bytecode whose checksum matches reaches the converters, so this needs a
   program that signs malformed bytecode. dxil-spirv is used unmodified, so the fix belongs upstream
   (not yet reported). `tests/fuzz.rs` stays failing at those cases.
 - Mutated but signed bytecode that dxbc-spirv accepts can give IR our lowering refuses (`Malformed`)
