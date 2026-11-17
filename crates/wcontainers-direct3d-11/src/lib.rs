@@ -8,9 +8,12 @@ mod device;
 mod error;
 pub mod format;
 pub mod object;
+mod present;
 pub mod record;
 pub mod shader;
 
 pub use context::{Mapped, PIXEL, VERTEX};
 pub use device::{Device, Removal, top_level};
 pub use error::{Error, Result};
+pub use present::Chain;
+pub use wcontainers_directx_graphics_infrastructure::{Model, SwapChainDesc};

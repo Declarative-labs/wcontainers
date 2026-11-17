@@ -26,6 +26,8 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 # Exact: src/com/counted.rs builds objects in windows-core's own object layout.
 windows-core = "=0.62.2"
