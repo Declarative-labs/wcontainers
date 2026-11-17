@@ -405,8 +405,27 @@ static void fault_part_way(void) {
     close(sv[1]);
 }
 
+// A stream send of nothing sends no descriptor either.
+static void empty_with_descriptor(void) {
+    int sv[2], fd = 0;
+    pair(sv);
+    char control[CMSG_SPACE(sizeof(int))] = {0};
+    struct msghdr msg = {.msg_control = control, .msg_controllen = sizeof control};
+    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(c), &fd, sizeof fd);
+    result("send nothing with a descriptor", sendmsg(sv[0], &msg, 0));
+    state("after nothing", sv[1]);
+    receive("receive after nothing", sv[1], 8, 0);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
+    empty_with_descriptor();
     fault_part_way();
     basics();
     mark();

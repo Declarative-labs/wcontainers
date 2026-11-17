@@ -100,9 +100,13 @@ pub(super) fn inotify_init1(
     Ok(fd as u64)
 }
 
-/// The instance a descriptor names: EBADF without one, EINVAL if it is not an instance.
+/// The instance a descriptor names: EBADF without one (`fdget` passes over O_PATH files), EINVAL
+/// if it is not an instance.
 fn instance(kernel: &Kernel, tid: Tid, fd: u64) -> Result<Rc<RefCell<Instance>>, Errno> {
     let file = super::io::file(kernel, tid, fd)?;
+    if file.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
     of(&file.borrow()).ok_or(Errno::EINVAL)
 }
 
@@ -131,8 +135,7 @@ pub(super) fn inotify_add_watch(
     if mask & IN_MASK_ADD != 0 && mask & IN_MASK_CREATE != 0 {
         return Err(Errno::EINVAL);
     }
-    let file = super::io::file(kernel, tid, fd)?;
-    let instance = of(&file.borrow()).ok_or(Errno::EINVAL)?;
+    let instance = instance(kernel, tid, fd)?;
     let path = super::path_argument(kernel, cx, tid, path, false)?;
     let at = super::files::start(kernel, tid, AT_FDCWD as u64, &path)?;
     let follow = mask & IN_DONT_FOLLOW == 0;

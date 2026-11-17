@@ -1445,7 +1445,8 @@ fn send_stream(
     // A large write goes in pieces across waits; the call's progress is what went.
     let mut sent = kernel.threads[&tid].call.progress;
     let mut files_sent = sent > 0;
-    while sent < ordinary || (total == 0 && !files_sent && !message.files.is_empty()) {
+    // `unix_stream_sendmsg` sends nothing for nothing, descriptors included (measured).
+    while sent < ordinary {
         if peer.borrow().dead || peer.borrow().shutdown & RCV_SHUTDOWN != 0 {
             return if sent > 0 {
                 Ok(sent)
@@ -1488,9 +1489,6 @@ fn send_stream(
         peer.borrow_mut().queue.push_back(packet);
         data_ready(kernel, cx, &peer, EPOLLIN | EPOLLRDNORM);
         sent += size;
-        if total == 0 {
-            break;
-        }
     }
     if !urgent {
         return Ok(sent);
@@ -1781,7 +1779,11 @@ fn receive(
         }
         return result;
     }
+    // `unix_seqpacket_recvmsg` wants a connection before the datagram read refuses urgent data.
     if flags & MSG_OOB != 0 {
+        if kind == SOCK_SEQPACKET && socket.borrow().state != State::Connected {
+            return Err(Errno::ENOTCONN);
+        }
         return Err(Errno::EOPNOTSUPP);
     }
     let packet_ready = !socket.borrow().queue.is_empty();
@@ -2471,6 +2473,13 @@ pub(super) fn sendmsg(
     // `____sys_sendmsg` takes the control messages in; an internet protocol reads them itself.
     if header.control_length > i32::MAX as u64 {
         return Err(Errno::ENOBUFS);
+    }
+    // `unix_seqpacket_sendmsg` wants a connection before it reads the control messages.
+    if socket.borrow().local()
+        && socket.borrow().kind == SOCK_SEQPACKET
+        && socket.borrow().state != State::Connected
+    {
+        return Err(Errno::ENOTCONN);
     }
     let (files, cred, control) = if socket.borrow().inet.is_some() {
         let bytes = guest(kernel, cx, tid).read(header.control, header.control_length)?;
