@@ -78,11 +78,15 @@ fn file_capabilities_match_reference() {
     }
 }
 
-/// Private and shared mappings of backend files.
+/// Private and shared mappings of backend files, also saved and brought back. The first backend
+/// opens files for direct reads and writes, so Linux refuses shared mappings of them.
 #[test]
-#[ignore = "mappings of backend files are not built yet: counted \"backend call not built\", ENODEV"]
 fn file_mappings_match_reference() {
-    for run in same_on_backend("backendmap", driver::Injections::default()) {
+    let injections = driver::Injections {
+        saves: 4,
+        ..Default::default()
+    };
+    for run in same_on_backend("backendmap", injections) {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
     }
 }

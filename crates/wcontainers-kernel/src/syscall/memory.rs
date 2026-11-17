@@ -235,6 +235,8 @@ pub(super) fn do_mmap(
     let mut allowed = Permissions::all();
     // What backs the mapping, with Linux's checks on the file; `/dev/zero` gives zeroed memory.
     let mut zero_device = None;
+    // A private mapping of a backend file: the open file its bytes are read through.
+    let mut backend_copy = None;
     let file = match file {
         None => None,
         Some(file) => {
@@ -264,15 +266,24 @@ pub(super) fn do_mmap(
             }
             let zero = matches!(inode.content, Content::Special)
                 && Device::from_number(inode.rdev) == Some(Device::Zero);
+            // `fuse_file_mmap`: a private mapping holds a copy of the file's bytes; a shared one
+            // of a file opened for direct reads and writes is refused, as Linux refuses it.
             if matches!(inode.content, Content::Backend(_)) {
-                return Err(kernel.counters.refuse(
-                    cx.host,
-                    reason::BACKEND_CALL_NOT_BUILT,
-                    __NR_mmap.into(),
-                    Errno::ENODEV,
-                ));
+                let handle = file.backend.clone().ok_or(Errno::ENODEV)?;
+                if shared && !handle.may_map_shared() {
+                    return Err(Errno::ENODEV);
+                }
+                if shared {
+                    return Err(kernel.counters.refuse(
+                        cx.host,
+                        reason::BACKEND_CALL_NOT_BUILT,
+                        __NR_mmap.into(),
+                        Errno::ENODEV,
+                    ));
+                }
+                backend_copy = Some(handle);
             }
-            if !zero && !matches!(inode.content, Content::Regular(_)) {
+            if !zero && backend_copy.is_none() && !matches!(inode.content, Content::Regular(_)) {
                 return Err(Errno::ENODEV);
             }
             if grows_down {
@@ -294,7 +305,9 @@ pub(super) fn do_mmap(
             } else {
                 drop(inode);
                 // `shmem_mmap` counts mapping as reading the file.
-                super::io::accessed(kernel, cx, &node, file.flags);
+                if backend_copy.is_none() {
+                    super::io::accessed(kernel, cx, &node, file.flags);
+                }
                 Some((node, file.path.clone()))
             }
         }
@@ -327,22 +340,41 @@ pub(super) fn do_mmap(
         (None, None) if droppable => Backing::Droppable,
         (None, None) => Backing::Anonymous,
         (Some((node, path)), _) => {
+            // The backend says where its file ends now; nothing is kept of it.
+            if let Some(handle) = &backend_copy {
+                crate::fs::backend::getattr(node, Some(handle.fh))?;
+            }
             let size = match &mut node.borrow_mut().content {
                 Content::Regular(regular) => {
                     regular.set_mapped();
                     regular.size()
                 }
+                Content::Backend(remote) => remote.size.get(),
                 _ => 0,
             };
             let file_pages = page_up(size).saturating_sub(offset);
+            // A backend file's pages are each the mapping's own copy.
+            let copied = match &backend_copy {
+                Some(_) => {
+                    (offset / PAGE_SIZE..(offset + file_pages.min(length)) / PAGE_SIZE).collect()
+                }
+                None => alloc::collections::BTreeSet::new(),
+            };
             Backing::File {
                 node: node.clone(),
                 path: path.clone(),
                 offset,
                 file_end: start + file_pages.min(length),
-                copied: alloc::collections::BTreeSet::new(),
+                copied,
             }
         }
+    };
+    // Its bytes, read before anything changes, since the call runs again once they come.
+    let copy = match (&backend_copy, &backing) {
+        (Some(handle), Backing::File { file_end, .. }) => {
+            crate::fs::backend::read(handle, offset, file_end - start)?
+        }
+        _ => Vec::new(),
     };
     let may_lock_any = kernel.credentials(tid).has(CAP_IPC_LOCK);
     let process = kernel.process_of_mut(tid);
@@ -382,6 +414,11 @@ pub(super) fn do_mmap(
     let memory = process.memory;
     map.insert(cx.cpu, memory, mapping.clone())?;
     drop(map);
+    if !copy.is_empty() {
+        cx.cpu
+            .write(memory, start, &copy)
+            .map_err(crate::errno::from_cpu)?;
+    }
     crate::shared::show(kernel, cx, memory, &mapping)?;
     // `do_mmap`'s populate: a locked mapping, or one asked to be filled at once, is faulted in, and
     // writing a private one copies its file pages.
@@ -761,6 +798,7 @@ pub(super) fn madvise(
     {
         return Err(Errno::EINVAL);
     }
+    let mut kept = false;
     if matches!(advice, MADV_DONTNEED | MADV_DONTNEED_LOCKED) {
         // Private pages go back to what they were: zero, or the file's bytes. Shared pages keep their
         // bytes in what they share.
@@ -774,7 +812,7 @@ pub(super) fn madvise(
             }
             let from = mapping.start.max(at);
             let to = mapping.end.min(end);
-            drop_pages(
+            kept |= drop_pages(
                 cx,
                 process.memory,
                 &mut process.map.borrow_mut(),
@@ -785,6 +823,8 @@ pub(super) fn madvise(
             at = to;
         }
     }
+    kept_backend_pages(kernel, cx, kept, __NR_madvise);
+    let process = kernel.process_of_mut(tid);
     // Populating faults the pages in mapping by mapping (`madvise_populate`): a mapping that does not
     // allow the access is EINVAL, a gap before it ENOMEM.
     if matches!(advice, MADV_POPULATE_READ | MADV_POPULATE_WRITE) {
@@ -912,6 +952,19 @@ pub(super) fn mremap(
         .cloned()
         .ok_or(Errno::EFAULT)?;
     prepare(kernel, tid, &mapping, &request)?;
+    // Growing a mapping of a backend file or leaving its old range behind would read file pages
+    // again, which is not built for the backend.
+    if let Backing::File { node, .. } = &mapping.backing
+        && crate::fs::backend::remote(node).is_some()
+        && (new_length > old_length || flags & MREMAP_DONTUNMAP != 0)
+    {
+        return Err(kernel.counters.refuse(
+            cx.host,
+            reason::BACKEND_CALL_NOT_BUILT,
+            __NR_mremap.into(),
+            Errno::ENOMEM,
+        ));
+    }
     if to_new_address {
         remap_to(kernel, cx, tid, &mapping, request)
     } else {
@@ -1170,6 +1223,7 @@ fn move_range(
         *file_end = shift((*file_end).clamp(old, old + new_length));
     }
     if request.flags & MREMAP_DONTUNMAP != 0 {
+        // Never a backend file's mapping, refused before.
         drop_pages(cx, memory, &mut map, mapping, old, old_end)?;
     } else {
         map.unmap(cx.cpu, memory, old, old_end)?;
@@ -1192,7 +1246,8 @@ fn move_range(
 }
 
 /// Puts a private range back to what it held before it was touched: zero, or the file's bytes. A
-/// shared mapping's pages are what it shares and stay.
+/// shared mapping's pages are what it shares and stay. A backend file's pages are not read again
+/// (not built): they stay as they are, and the answer says so.
 fn drop_pages(
     cx: &mut Context<'_>,
     memory: wcontainers_abi::MemoryId,
@@ -1200,16 +1255,30 @@ fn drop_pages(
     mapping: &Mapping,
     from: u64,
     to: u64,
-) -> Result<(), Errno> {
+) -> Result<bool, Errno> {
     if mapping.shared {
-        return Ok(());
+        return Ok(false);
     }
-    match mapping.backing {
-        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to),
+    match &mapping.backing {
+        Backing::File { node, .. } if crate::fs::backend::remote(node).is_some() => Ok(true),
+        Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to).map(|()| false),
         _ => cx
             .cpu
             .zero(memory, from, to - from)
+            .map(|()| false)
             .map_err(errno::from_cpu),
+    }
+}
+
+/// Counts a backend file's private pages kept where Linux would read them again.
+fn kept_backend_pages(kernel: &mut Kernel, cx: &mut Context<'_>, kept: bool, call: u32) {
+    if kept {
+        let _ = kernel.counters.refuse(
+            cx.host,
+            reason::BACKEND_CALL_NOT_BUILT,
+            call.into(),
+            Errno::ENODEV,
+        );
     }
 }
 
