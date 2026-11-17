@@ -308,6 +308,9 @@ pub(super) fn file_to_pipe(
     if length == 0 {
         return Ok(0);
     }
+    if super::socket::of(input).is_some() {
+        return socket_to_pipe(kernel, cx, tid, input, output, length, nonblock, false);
+    }
     let free = with_pipe(output, |pipe| {
         if pipe.host.is_some() {
             pipe.capacity as u64

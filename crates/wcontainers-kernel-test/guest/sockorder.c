@@ -1,6 +1,9 @@
 // Answers layer 1 found differing: netlink's level checks before its arguments, its refusal of
-// an empty message, and a nonblocking read of a UDP socket shut for reading.
+// an empty message, a nonblocking read of a UDP socket shut for reading, a local socket's end
+// with credentials asked for, and sendfile from a socket into a pipe.
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/sendfile.h>
 #include <linux/netlink.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -60,6 +63,25 @@ int main(void) {
                    r < 0 ? strerror(errno) : "", m.msg_flags, (size_t)m.msg_controllen);
         }
         close(sv[1]);
+    }
+    // sendfile from a socket into a pipe reads the socket (`sock_splice_read`).
+    int kinds2[] = {SOCK_DGRAM, SOCK_STREAM, SOCK_SEQPACKET};
+    for (int k = 0; k < 3; k++) {
+        int sv[2], p[2];
+        socketpair(AF_UNIX, kinds2[k] | SOCK_NONBLOCK, 0, sv);
+        pipe2(p, O_NONBLOCK);
+        result("sendfile from an empty socket", sendfile(p[1], sv[0], NULL, 1UL << 40));
+        send(sv[1], "hello", 5, 0);
+        result("sendfile from a socket", sendfile(p[1], sv[0], NULL, 3));
+        char got[8] = {0};
+        result("pipe read", read(p[0], got, sizeof got));
+        printf("got %s\n", got);
+        off_t at = 0;
+        result("sendfile from a socket at an offset", sendfile(p[1], sv[0], &at, 3));
+        close(sv[0]);
+        close(sv[1]);
+        close(p[0]);
+        close(p[1]);
     }
     int u = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     result("udp shutdown unconnected", shutdown(u, SHUT_RDWR));
