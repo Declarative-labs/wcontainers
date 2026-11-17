@@ -120,6 +120,8 @@ pub(crate) struct Program {
     /// Its path from the root, with links followed.
     path: Vec<u8>,
     bytes: Vec<u8>,
+    /// A program on the backend: the open file it was read through, which its pages are kept by.
+    backend: Option<alloc::rc::Rc<crate::fs::backend::Handle>>,
     /// The caller may read it (Linux's `would_dump`).
     readable: bool,
     /// The new program could open it again by the name it was run by, as a script's interpreter
@@ -201,11 +203,11 @@ pub(crate) fn program_of(
         Content::Backend(remote) => Some(remote.size.get()),
         _ => None,
     };
-    let bytes = match (&inode.content, size) {
+    let (bytes, backend) = match (&inode.content, size) {
         (Content::Regular(file), _) => {
             let bytes = file.bytes(cpu);
             drop(inode);
-            bytes
+            (bytes, None)
         }
         // A program on the backend is opened there and read whole (`do_open_execat`).
         (Content::Backend(_), Some(size)) => {
@@ -214,7 +216,7 @@ pub(crate) fn program_of(
                 &node,
                 crate::linux::general::O_RDONLY | crate::linux::general::O_LARGEFILE,
             )?;
-            crate::fs::backend::read(&handle, 0, size)?
+            (crate::fs::backend::read(&handle, 0, size)?, Some(handle))
         }
         _ => return Err(Errno::EACCES),
     };
@@ -222,6 +224,7 @@ pub(crate) fn program_of(
         node,
         path,
         bytes,
+        backend,
         readable,
         reopenable: true,
     })
@@ -601,6 +604,13 @@ fn place(
         }
         None => (main.entry, 0),
     };
+    // A program on the backend shows the pages it was read into, as Linux's page cache.
+    for placed in core::iter::once(&program).chain(interpreter.as_ref().map(|(found, ..)| found)) {
+        if let Some(handle) = &placed.backend {
+            crate::shared::backend_block_of(kernel, cx, &placed.node, handle, &placed.bytes)
+                .map_err(fatal)?;
+        }
+    }
     crate::shared::show_all(kernel, cx, memory, &map).map_err(fatal)?;
     let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 
@@ -800,21 +810,6 @@ fn place_elf(
                 cx.cpu
                     .write(memory, last_page, &bytes[page_offset as usize..to as usize])
                     .map_err(errno::from_cpu)?;
-            }
-            // A program on the backend has no block of shared pages to show: each of its pages is
-            // the process's own copy, read with the program, with the zeroed data after it cleared.
-            if crate::fs::backend::remote(&program.node).is_some() {
-                let end = from + available;
-                cx.cpu
-                    .write(memory, start, &bytes[from as usize..end as usize])
-                    .map_err(errno::from_cpu)?;
-                copied.extend(from / PAGE_SIZE..end.div_ceil(PAGE_SIZE));
-                if segment_memory > segment_file && file_end != file_pages_end {
-                    let zeros = alloc::vec![0; (file_pages_end - file_end) as usize];
-                    cx.cpu
-                        .write(memory, file_end, &zeros)
-                        .map_err(errno::from_cpu)?;
-                }
             }
             // The file's pages are shown once every segment is placed.
             map.insert(

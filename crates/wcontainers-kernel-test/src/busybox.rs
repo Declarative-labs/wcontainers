@@ -150,6 +150,7 @@ fn run_ours_on(command: &[&str], seed: u64, backend: Option<&str>) -> driver::Ru
         environment: reference::ENVIRONMENT,
         working_directory: "/",
         backend,
+        cached: false,
     };
     driver::run(&container, seed)
         .unwrap_or_else(|failure| panic!("{command:?}: no outcome on our kernel: {failure:?}"))

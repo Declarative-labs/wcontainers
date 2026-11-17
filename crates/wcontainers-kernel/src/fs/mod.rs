@@ -344,6 +344,17 @@ pub(crate) struct Regular {
     pub segment: bool,
 }
 
+impl Content {
+    /// The block of shared pages a mapped file's mappings show, while it has one.
+    pub fn block(&self) -> Option<Block> {
+        match self {
+            Content::Regular(regular) => regular.block,
+            Content::Backend(remote) => remote.pages.as_ref().map(|pages| pages.block),
+            _ => None,
+        }
+    }
+}
+
 impl Default for Regular {
     fn default() -> Self {
         Self {

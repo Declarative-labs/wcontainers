@@ -63,11 +63,13 @@ pub mod reason {
     /// The host could not hand a message to the backend; the call that asked gets ENOTCONN, as from
     /// a FUSE connection that is gone. Detail: the FUSE opcode.
     pub const BACKEND_UNREACHABLE: &str = "backend unreachable";
-    /// A call on a file of the backend that is not built for it yet: a shared mapping of a file the
-    /// backend opened for cached reads and writes answers ENODEV, as a file system without `mmap`
-    /// does; MADV_DONTNEED keeps a private mapping's pages where Linux reads the file again; mremap
-    /// growing a mapping of one answers ENOMEM. Detail: the call number.
-    pub const BACKEND_CALL_NOT_BUILT: &str = "backend call not built";
+    /// A mapped backend file's pages were written back whole, changed or not, since which pages a
+    /// shared mapping wrote is not known (Linux writes back only dirty pages). Detail: none.
+    pub const BACKEND_PAGES_WRITTEN_WHOLE: &str = "backend pages written whole";
+    /// The backend said a mapped file's bytes changed (INVAL_INODE): its mapped pages, and reads of
+    /// it while mapped, keep the bytes they had, where Linux reads them again (plan section 15).
+    /// Detail: the node number.
+    pub const BACKEND_CHANGE_NOT_MAPPED: &str = "backend change not seen by mapped pages";
     /// An answer or notice from the backend that the kernel could not read or does not handle.
     /// Detail: the request number, or the notice's code.
     pub const BACKEND_UNEXPECTED: &str = "backend message unexpected";
@@ -95,7 +97,6 @@ pub mod reason {
         PROC_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
-        BACKEND_CALL_NOT_BUILT,
     ];
 }
 

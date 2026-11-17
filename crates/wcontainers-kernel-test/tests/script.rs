@@ -47,6 +47,7 @@ fn scripts_match_reference() {
                     environment: wcontainers_kernel_test::reference::ENVIRONMENT,
                     working_directory: "/",
                     backend: None,
+                    cached: false,
                 },
                 0,
             );

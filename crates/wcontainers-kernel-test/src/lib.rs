@@ -99,6 +99,7 @@ fn run_ours_on(
         environment: reference::ENVIRONMENT,
         working_directory: "/",
         backend,
+        cached: false,
     };
     driver::run_injected(&container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))

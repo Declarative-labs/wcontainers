@@ -253,6 +253,8 @@ pub struct Container<'a> {
     /// Where the file backend is mounted: `/` makes it the root, with the files unpacked into
     /// it; any other path is a volume, empty at the start. None keeps the root in memory.
     pub backend: Option<&'a str>,
+    /// Whether the backend opens files for the page cache rather than for direct reads and writes.
+    pub cached: bool,
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -315,6 +317,7 @@ pub fn run_injected(
         host.backend = Some(crate::backend::Backend::start(
             &crate::backend::out(),
             image,
+            container.cached,
         ));
     }
     let mut kernel = Kernel::new();

@@ -32,6 +32,11 @@ pub fn out() -> PathBuf {
 
 /// Builds the server once into `out/wc-backend/` and returns the directory holding it.
 pub fn server(out: &Path) -> PathBuf {
+    // Tests of one binary ask at once: one builds while the others wait for it.
+    static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _building = BUILDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let directory = out.join("wc-backend");
     let program = directory.join("wc-backend");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("backend");
@@ -80,6 +85,15 @@ pub fn server(out: &Path) -> PathBuf {
     directory
 }
 
+/// The server as its container runs it: opening files for the page cache if `cached`.
+fn serve_command(cached: bool) -> &'static str {
+    if cached {
+        "/wcb/wc-backend --cached"
+    } else {
+        "/wcb/wc-backend"
+    }
+}
+
 /// FUSE requests that have no answer: FORGET, NOTIFY_REPLY and BATCH_FORGET.
 fn answered(opcode: u32) -> bool {
     !matches!(opcode, 2 | 41 | 42)
@@ -105,8 +119,10 @@ pub enum Message {
 }
 
 impl Backend {
-    /// Starts a server on a directory in memory, empty or with `image` unpacked into it first.
-    pub fn start(out: &Path, image: Option<&[crate::image::File]>) -> Self {
+    /// Starts a server on a directory in memory, empty or with `image` unpacked into it first,
+    /// opening files for the page cache if `cached`, else for direct reads and writes.
+    pub fn start(out: &Path, image: Option<&[crate::image::File]>, cached: bool) -> Self {
+        let serve = serve_command(cached);
         static RUNS: AtomicU32 = AtomicU32::new(0);
         let server = server(out);
         let name = format!(
@@ -140,9 +156,9 @@ impl Backend {
                 command
                     .arg("--volume")
                     .arg(format!("{}:/wci/image.tar:ro", archive.display()));
-                format!("tar -xpf /wci/image.tar -C {SERVED} && exec /wcb/wc-backend pipe {SERVED}")
+                format!("tar -xpf /wci/image.tar -C {SERVED} && exec {serve} pipe {SERVED}")
             }
-            None => format!("exec /wcb/wc-backend pipe {SERVED}"),
+            None => format!("exec {serve} pipe {SERVED}"),
         };
         let mut child = command
             .args([IMAGE, "sh", "-c", &script])
@@ -266,7 +282,9 @@ pub fn reference_run(
     program: &Path,
     at: &str,
     arguments: &[&str],
+    cached: bool,
 ) -> crate::driver::Outcome {
+    let serve = serve_command(cached);
     static RUNS: AtomicU32 = AtomicU32::new(0);
     let server = server(out);
     let name = format!(
@@ -280,9 +298,8 @@ pub fn reference_run(
         .canonicalize()
         .expect("program directory exists");
     let file = Path::new("/wc").join(program.file_name().expect("program has a name"));
-    let script = format!(
-        "{FUSE_DEVICE_LINK} && mkdir -p {at} && exec /wcb/wc-backend mount {SERVED} {at} \"$@\""
-    );
+    let script =
+        format!("{FUSE_DEVICE_LINK} && mkdir -p {at} && exec {serve} mount {SERVED} {at} \"$@\"");
     let output = Command::new("docker")
         .args(["run", "--rm", "--platform", "linux/arm64", "--name", &name])
         .args(["--hostname", HOSTNAME])

@@ -795,7 +795,7 @@ pub(super) fn file_bytes(
             drop(inode);
             let file = file.borrow();
             let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
-            return crate::fs::backend::read(handle, offset, count);
+            return crate::shared::backend_read(cx, &node, handle, offset, count);
         }
         Content::Regular(regular) => regular.read(cx.cpu, offset, count),
         Content::Proc(_) => window(file.borrow().contents.as_deref().unwrap_or_default()),
@@ -1160,8 +1160,20 @@ pub(super) fn write_bytes(
             let written = {
                 let file = file.borrow();
                 let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
-                crate::fs::backend::write(handle, offset, bytes)?
+                let written = crate::fs::backend::write(handle, offset, bytes)?;
+                // Linux's page cache takes what a cached write wrote (`fuse_fill_write_pages`).
+                if !handle.direct_io() {
+                    crate::shared::backend_written(cx, &node, offset, &bytes[..written as usize]);
+                }
+                written
             };
+            // `fuse_write_update_attr`: the file ends at least where the write did.
+            if let Content::Backend(remote) = &node.borrow().content
+                && remote.size.get() < offset + written
+            {
+                remote.size.set(offset + written);
+            }
+            crate::shared::changed(kernel, cx, &node)?;
             if written == 0 && wanted > 0 {
                 return Err(Errno::EFAULT);
             }
@@ -2567,29 +2579,39 @@ pub(super) fn set_owner_of(kernel: &Kernel, tid: Tid, file: &FileRef, pid: i32, 
 /// way to be synced refuse.
 pub(super) fn fsync(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    sync_file(kernel, tid, fd, false)
+    sync_file(kernel, cx, tid, fd, false)
 }
 
 pub(super) fn fdatasync(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    sync_file(kernel, tid, fd, true)
+    sync_file(kernel, cx, tid, fd, true)
 }
 
-/// `vfs_fsync`: a file on the backend is synced there; tmpfs has nothing to write.
-fn sync_file(kernel: &Kernel, tid: Tid, fd: u64, data_only: bool) -> Result<u64, Errno> {
+/// `vfs_fsync`: a file on the backend is synced there, its mapped pages written back first
+/// (`fuse_fsync`); tmpfs has nothing to write.
+fn sync_file(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    fd: u64,
+    data_only: bool,
+) -> Result<u64, Errno> {
     let file = file(kernel, tid, fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
-    if let Some(handle) = &file.borrow().backend {
+    let handle = file.borrow().backend.clone();
+    if let Some(handle) = &handle {
+        let node = file.borrow().node.clone();
+        crate::shared::backend_write_back(kernel, cx, &node, 0, u64::MAX, true)?;
         crate::fs::backend::fsync(handle, data_only)?;
         return Ok(0);
     }

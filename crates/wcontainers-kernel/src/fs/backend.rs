@@ -132,6 +132,19 @@ pub(crate) struct Remote {
     pub size: Cell<u64>,
     pub blocks: Cell<u64>,
     pub block_size: Cell<u32>,
+    /// While a mapping shows the file: the pages its mappings show.
+    pub pages: Option<Pages>,
+}
+
+/// A mapped backend file's first `block.length` bytes in a block of shared pages, as Linux's page
+/// cache holds a mapped file: read from the backend when mapped, kept up to date by reads and
+/// writes through the kernel, and written back while a shared mapping may write them.
+pub(crate) struct Pages {
+    pub block: super::Block,
+    /// The open file its bytes are read and written back through (`fuse_write_file_get`).
+    pub handle: Rc<Handle>,
+    /// Whether a shared mapping that may write has shown it, so its bytes go back to the backend.
+    pub written: bool,
 }
 
 impl Drop for Remote {
@@ -549,6 +562,7 @@ impl Client {
                     size: Cell::new(0),
                     blocks: Cell::new(0),
                     block_size: Cell::new(0),
+                    pages: None,
                 }),
                 flocks: Vec::new(),
                 record_locks: Vec::new(),
@@ -1072,6 +1086,39 @@ pub(crate) fn write(handle: &Handle, offset: u64, bytes: &[u8]) -> Result<u64, E
     Ok(done as u64)
 }
 
+/// Writes a mapped file's pages back (`fuse_writepages`), waiting for the answers or, with nothing
+/// to wait, sending them on their own.
+pub(crate) fn write_back(
+    handle: &Handle,
+    offset: u64,
+    bytes: &[u8],
+    wait: bool,
+) -> Result<(), Errno> {
+    let chunk = handle.client.settled().max_write as usize;
+    for (index, part) in bytes.chunks(chunk.max(1)).enumerate() {
+        let input = fuse_write_in {
+            fh: handle.fh,
+            offset: offset + (index * chunk) as u64,
+            size: part.len() as u32,
+            write_flags: FUSE_WRITE_CACHE,
+            lock_owner: 0,
+            flags: handle.flags,
+            padding: 0,
+        };
+        let parts = [input.as_bytes(), part];
+        if wait {
+            handle
+                .client
+                .ask(fuse_opcode::FUSE_WRITE, handle.nodeid, &parts)?;
+        } else {
+            handle
+                .client
+                .tell(fuse_opcode::FUSE_WRITE as u32, handle.nodeid, &parts);
+        }
+    }
+    Ok(())
+}
+
 /// `fuse_flush`: a descriptor of the file closed.
 pub(crate) fn flush(handle: &Handle, owner: u64) -> Result<(), Errno> {
     let input = fuse_flush_in {
@@ -1402,7 +1449,7 @@ impl crate::Kernel {
     }
 
     /// A notice the backend sent unasked (`fuse_notify`). Nothing is cached, so most change only
-    /// what the kernel holds of an inode.
+    /// what the kernel holds of an inode, or the pages of a mapped file.
     pub(crate) fn backend_notice(&mut self, cx: &mut crate::Context<'_>, notice: &[u8]) {
         let Some(client) = self.files.backend.clone() else {
             return;
@@ -1419,14 +1466,22 @@ impl crate::Kernel {
                 self.wake(crate::process::Channel::Readiness);
                 true
             }
-            // An inode's attributes or bytes changed: nothing is kept of either, but what this
-            // run of a call had of its attributes is stale.
+            // An inode's attributes or bytes changed: what this run of a call had of its
+            // attributes is stale. A mapped file's pages keep their bytes (section 15 of the plan),
+            // where Linux would read them again.
             code if code == fuse_notify_code::FUSE_NOTIFY_INVAL_INODE as i32 => {
                 if let Ok((out, _)) = fuse_notify_inval_inode_out::read_from_prefix(body)
                     && let Some(node) = client.node_of(out.ino)
                     && let Content::Backend(remote) = &node.borrow().content
                 {
                     remote.fresh.set(0);
+                    if out.off >= 0 && remote.pages.is_some() {
+                        self.counters.count(
+                            cx.host,
+                            crate::reason::BACKEND_CHANGE_NOT_MAPPED,
+                            out.ino,
+                        );
+                    }
                 }
                 true
             }
@@ -1442,20 +1497,51 @@ impl crate::Kernel {
                 }
                 true
             }
-            // Bytes to keep: none are kept, and the backend still has them.
-            code if code == fuse_notify_code::FUSE_NOTIFY_STORE as i32 => true,
-            // The backend asks for the bytes kept: there are none.
+            // Bytes to keep (`fuse_notify_store`): a mapped file's pages take them, and the file
+            // ends at least where they do; otherwise nothing is kept and the backend has them.
+            code if code == fuse_notify_code::FUSE_NOTIFY_STORE as i32 => {
+                if let Ok((out, data)) = fuse_notify_store_out::read_from_prefix(body)
+                    && let Some(node) = client.node_of(out.nodeid)
+                    && node.borrow().content.block().is_some()
+                {
+                    let data = &data[..(out.size as usize).min(data.len())];
+                    crate::shared::backend_written(cx, &node, out.offset, data);
+                    if let Content::Backend(remote) = &node.borrow().content {
+                        let end = out.offset + data.len() as u64;
+                        remote.size.set(remote.size.get().max(end));
+                    }
+                    let _ = crate::shared::changed(self, cx, &node);
+                }
+                true
+            }
+            // The backend asks for the bytes kept (`fuse_retrieve`): a mapped file's, up to its
+            // end; none of any other file.
             code if code == fuse_notify_code::FUSE_NOTIFY_RETRIEVE as i32 => {
                 if let Ok((out, _)) = fuse_notify_retrieve_out::read_from_prefix(body) {
+                    let bytes = client
+                        .node_of(out.nodeid)
+                        .and_then(|node| {
+                            let size = node.borrow().size();
+                            crate::shared::backend_bytes(
+                                cx,
+                                &node,
+                                out.offset,
+                                u64::from(out.size),
+                                size,
+                            )
+                        })
+                        .unwrap_or_default();
                     let reply = fuse_notify_retrieve_in {
                         dummy1: 0,
                         offset: out.offset,
-                        size: 0,
+                        size: bytes.len() as u32,
                         dummy2: 0,
                         dummy3: 0,
                         dummy4: 0,
                     };
-                    client.notify_reply(out.notify_unique, out.nodeid, reply.as_bytes());
+                    let mut body = reply.as_bytes().to_vec();
+                    body.extend_from_slice(&bytes);
+                    client.notify_reply(out.notify_unique, out.nodeid, &body);
                 }
                 true
             }

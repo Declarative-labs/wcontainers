@@ -636,15 +636,24 @@ pub(super) fn open(
             && crate::fs::backend::remote(&node).is_some()
         {
             let opened = crate::fs::backend::open(&node, flags)?;
-            if flags & O_TRUNC != 0 && !crate::fs::backend::truncates_on_open(&opened) {
-                crate::fs::backend::setattr(
-                    &node,
-                    crate::fs::backend::Change {
-                        size: Some(0),
-                        fh: Some(opened.fh),
-                        ..Default::default()
-                    },
-                )?;
+            if flags & O_TRUNC != 0 {
+                if crate::fs::backend::truncates_on_open(&opened) {
+                    // `fuse_finish_open`: the file is empty now.
+                    if let Content::Backend(remote) = &node.borrow().content {
+                        remote.size.set(0);
+                    }
+                } else {
+                    crate::fs::backend::setattr(
+                        &node,
+                        crate::fs::backend::Change {
+                            size: Some(0),
+                            fh: Some(opened.fh),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+                crate::shared::backend_cut(cx, &node, 0, u64::MAX);
+                crate::shared::changed(kernel, cx, &node)?;
             }
             handle = Some(opened);
         }
@@ -2265,6 +2274,9 @@ fn truncate_node(
             ..Default::default()
         };
         crate::fs::backend::setattr(node, change)?;
+        // `fuse_do_setattr`'s `truncate_pagecache`: mapped pages past the end are gone.
+        crate::shared::backend_cut(cx, node, length, u64::MAX);
+        crate::shared::changed(kernel, cx, node)?;
         return Ok(0);
     }
     {
@@ -2406,6 +2418,18 @@ pub(super) fn fallocate(
             return Err(Errno::EOPNOTSUPP);
         }
         crate::fs::backend::fallocate(&handle, mode, offset, length)?;
+        // `fuse_file_fallocate`: a punched or zeroed range reads as zero from mapped pages too,
+        // and the file ends at least where the range does unless its size is kept.
+        if mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE) != 0 {
+            crate::shared::backend_cut(cx, &node, offset, end);
+        }
+        if let Content::Backend(remote) = &node.borrow().content
+            && mode & FALLOC_FL_KEEP_SIZE == 0
+            && remote.size.get() < end
+        {
+            remote.size.set(end);
+        }
+        crate::shared::changed(kernel, cx, &node)?;
         return Ok(0);
     }
     if node.borrow().is_secret()

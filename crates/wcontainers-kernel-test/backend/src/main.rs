@@ -4,7 +4,8 @@
 //! to standard output, for our kernel's backend hook. `wc-backend mount <directory> <mount point>
 //! <command>...` serves the same file system through Linux's own FUSE at the mount point, runs the
 //! command there without the power to mount (as in a default container) and ends with its status:
-//! the reference.
+//! the reference. Files are opened for direct reads and writes, unless `--cached` comes first: then
+//! they are opened for the client's page cache, which shared mappings need.
 
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -20,14 +21,22 @@ use fuse_backend_rs::transport::{FuseBuf, FuseDevWriter, FuseSession, Reader};
 const LARGEST: usize = (1 << 20) + 4096;
 
 fn main() {
-    let arguments: Vec<String> = std::env::args().collect();
+    let mut arguments: Vec<String> = std::env::args().collect();
+    let cached = arguments.get(1).is_some_and(|first| first == "--cached");
+    if cached {
+        arguments.remove(1);
+    }
     let directory = arguments.get(2).expect("a directory to serve");
-    // Nothing is kept for the client: every name and attribute is asked for again.
+    // No name or attribute is kept for the client: each is asked for again.
     let config = Config {
         root_dir: directory.clone(),
         do_import: true,
         xattr: true,
-        cache_policy: CachePolicy::Never,
+        cache_policy: if cached {
+            CachePolicy::Auto
+        } else {
+            CachePolicy::Never
+        },
         entry_timeout: Duration::ZERO,
         attr_timeout: Duration::ZERO,
         ..Default::default()
@@ -38,7 +47,9 @@ fn main() {
     match arguments.get(1).map(String::as_str) {
         Some("pipe") => pipe(&server),
         Some("mount") => mount(server, Path::new(&arguments[3]), &arguments[4..]),
-        _ => panic!("wc-backend pipe <directory> | mount <directory> <mount point> <command>..."),
+        _ => panic!(
+            "wc-backend [--cached] pipe <directory> | mount <directory> <mount point> <command>..."
+        ),
     }
 }
 
