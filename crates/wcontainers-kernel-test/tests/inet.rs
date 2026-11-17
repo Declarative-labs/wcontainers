@@ -117,3 +117,15 @@ fn option_corners_and_neighbours_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "inetcorners", &[]);
 }
+
+#[test]
+fn option_reads_and_socket_corners_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "optreads", &[]);
+}
+
+#[test]
+fn route_questions_and_rules_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "routeget", &[]);
+}

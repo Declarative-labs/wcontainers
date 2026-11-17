@@ -121,8 +121,14 @@ pub(crate) struct Socket {
     pass_pidfd: bool,
     pass_rights: bool,
     report_queued: bool,
-    /// The credentials of the other end, as at connect or listen (`sk_peer_cred`).
+    /// The credentials of the other end, as at connect or listen (`sk_peer_cred`), and its
+    /// supplementary groups.
     peer_cred: Option<Cred>,
+    peer_groups: Vec<u32>,
+    /// Datagrams dropped for want of room (`sk_drops`).
+    drops: u32,
+    /// Its SO_COOKIE, given when first asked for; 0 until then.
+    cookie: u64,
     /// Released: its last descriptor is gone (`SOCK_DEAD`).
     dead: bool,
     /// Options kept and given back as set.
@@ -185,6 +191,9 @@ impl Socket {
             pass_rights: true,
             report_queued: false,
             peer_cred: None,
+            peer_groups: Vec::new(),
+            drops: 0,
+            cookie: 0,
             dead: false,
             options: BTreeMap::new(),
             peek_offset: None,
@@ -330,6 +339,8 @@ pub(crate) struct Names {
     netlink: BTreeMap<u32, Weak<RefCell<Socket>>>,
     /// Local sockets whose queues were given descriptors, for counting and collecting them.
     carriers: Vec<Weak<RefCell<Socket>>>,
+    /// The last socket cookie given (`sock_gen_cookie`).
+    cookies: u64,
 }
 
 /// Closes the host connections let go since the last flush.
@@ -578,11 +589,13 @@ pub(super) fn socketpair(
     }
     let (family, kind) = (made.family, made.kind);
     let cred = own_cred(kernel, tid);
+    let groups = kernel.credentials(tid).groups.clone();
     let ends = [(); 2].map(|()| Rc::new(RefCell::new(Socket::new(family, kind, 0))));
     for (one, other) in [(0, 1), (1, 0)] {
         let mut socket = ends[one].borrow_mut();
         socket.peer = Some(ends[other].clone());
         socket.peer_cred = Some(cred);
+        socket.peer_groups = groups.clone();
         socket.state = State::Connected;
     }
     let first = make_file(kernel, cx, tid, ends[0].clone(), flags)?;
@@ -712,7 +725,8 @@ pub(super) fn bind(
         };
     }
     let name = read_name(kernel, cx, tid, address, length)?;
-    if socket.borrow().name.is_some() {
+    // `unix_autobind` comes first, and is done for a socket that has any name.
+    if !matches!(name, Name::Automatic) && socket.borrow().name.is_some() {
         // `unix_bind_bsd` makes the node before it looks at the socket.
         if let Name::Path(path) = &name
             && super::files::lookup_path(kernel, cx, tid, path).is_ok()
@@ -784,6 +798,15 @@ fn address_argument(
 fn node_key(node: &Node) -> (u64, u64) {
     let inode = node.borrow();
     (inode.fs.device, inode.ino)
+}
+
+/// SO_RCVLOWAT: how many bytes a TCP read waits for and its poll wants (`sock_rcvlowat`).
+pub(super) fn receive_low_water(own: &Socket) -> u64 {
+    own.options
+        .get(&(SOL_SOCKET, crate::linux::net::SO_RCVLOWAT))
+        .map_or(1, |value| {
+            i32::from_le_bytes(value[..4].try_into().expect("4 bytes")).max(1) as u64
+        })
 }
 
 /// `unix_autobind`: an abstract name of five hex digits not in use, counting on from one drawn at
@@ -883,6 +906,7 @@ pub(super) fn listen(
         return Err(Errno::EOPNOTSUPP);
     }
     let cred = peer_cred(kernel, tid);
+    let groups = kernel.credentials(tid).groups.clone();
     let mut listener = socket.borrow_mut();
     if !listener.connection() {
         return Err(Errno::EOPNOTSUPP);
@@ -894,6 +918,7 @@ pub(super) fn listen(
     listener.max_backlog = backlog as u32;
     listener.state = State::Listening;
     listener.peer_cred = Some(cred);
+    listener.peer_groups = groups;
     Ok(0)
 }
 
@@ -965,6 +990,7 @@ pub(super) fn connect(
         new.peer = Some(socket.clone());
         new.name = listener.name.clone();
         new.peer_cred = Some(peer_cred(kernel, tid));
+        new.peer_groups = kernel.credentials(tid).groups.clone();
         new.passcred = listener.passcred;
         new.pass_pidfd = listener.pass_pidfd;
         new.pass_rights = listener.pass_rights;
@@ -974,6 +1000,7 @@ pub(super) fn connect(
         client.state = State::Connected;
         client.peer = Some(embryo.clone());
         client.peer_cred = other.borrow().peer_cred;
+        client.peer_groups = other.borrow().peer_groups.clone();
     }
     other.borrow_mut().backlog.push_back(embryo);
     data_ready(kernel, cx, &other, EPOLLIN | EPOLLRDNORM);
@@ -1204,6 +1231,10 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
     let mut mask = 0u32;
     if own.error != 0 {
         mask |= EPOLLERR;
+        // `unix_dgram_poll` with SO_SELECT_ERR_QUEUE.
+        if own.kind != SOCK_STREAM && flag_on(&own, crate::linux::net::SO_SELECT_ERR_QUEUE) {
+            mask |= EPOLLPRI;
+        }
     }
     if own.shutdown == SHUTDOWN_MASK {
         mask |= EPOLLHUP;
@@ -2168,13 +2199,7 @@ fn receive_stream(
     let is_inet = socket.borrow().inet.is_some();
     // SO_RCVLOWAT, kept for every socket, is how much a TCP read waits for.
     let low = if is_inet {
-        socket
-            .borrow()
-            .options
-            .get(&(SOL_SOCKET, crate::linux::net::SO_RCVLOWAT))
-            .map_or(1, |value| {
-                i32::from_le_bytes(value[..4].try_into().expect("4 bytes")).max(1) as u64
-            })
+        receive_low_water(&socket.borrow())
     } else {
         1
     };
@@ -2972,6 +2997,19 @@ pub(super) fn recvmsg(
         data.resize(48, 0);
         put_control(&mut control, room, SOL_SOCKET, kind, &data, &mut out_flags);
     }
+    // `sock_recv_drops`: the drops before a datagram, when asked for as it came and now.
+    if let Some(arrival) = received.arrival.filter(|arrival| arrival.drops != 0)
+        && flag_on(&socket.borrow(), crate::linux::net::SO_RXQ_OVFL)
+    {
+        put_control(
+            &mut control,
+            room,
+            SOL_SOCKET,
+            crate::linux::net::SO_RXQ_OVFL,
+            &arrival.drops.to_le_bytes(),
+            &mut out_flags,
+        );
+    }
     // `sock_recv_mark` and `sock_recv_priority` for a datagram (an error read gives neither).
     if let Some(arrival) = received.arrival.filter(|arrival| !arrival.error) {
         use crate::linux::net::{SO_MARK, SO_PRIORITY, SO_RCVMARK, SO_RCVPRIORITY};
@@ -3249,6 +3287,14 @@ pub(super) fn setsockopt(
     match name {
         SO_SNDBUF | SO_RCVBUF => {
             let wanted = (int()? as u32 as u64).min(MAX_BUFFER) * 2;
+            let lock = if name == SO_SNDBUF {
+                SOCK_SNDBUF_LOCK
+            } else {
+                SOCK_RCVBUF_LOCK
+            };
+            let locks = buffer_locks(&own) | lock;
+            own.options
+                .insert((level, SO_BUF_LOCK), locks.to_le_bytes().to_vec());
             if name == SO_SNDBUF {
                 own.sndbuf = wanted.max(MIN_SNDBUF);
                 drop(own);
@@ -3313,7 +3359,7 @@ pub(super) fn setsockopt(
             own.options.insert((level, name), bytes[..8].to_vec());
         }
         // `sk_may_scm_recv` and `sk_is_unix`.
-        SO_PASSCRED if own.inet.is_some() => return Err(Errno::EOPNOTSUPP),
+        SO_PASSCRED | SO_PASSSEC if own.inet.is_some() => return Err(Errno::EOPNOTSUPP),
         SO_PASSPIDFD | SO_PASSRIGHTS if own.family != AF_UNIX => return Err(Errno::EOPNOTSUPP),
         SO_PASSCRED => own.passcred = int()? != 0,
         SO_PASSPIDFD => own.pass_pidfd = int()? != 0,
@@ -3451,8 +3497,99 @@ pub(super) fn setsockopt(
             }
             own.options.insert((level, name), bytes[..8].to_vec());
         }
+        // `sk_setsockopt`: debugging wants CAP_NET_ADMIN to turn on, as do busy polls.
+        SO_DEBUG | SO_PREFER_BUSY_POLL => {
+            let on = int()? != 0;
+            if on && !kernel.credentials(tid).has(CAP_NET_ADMIN) {
+                return Err(if name == SO_DEBUG {
+                    Errno::EACCES
+                } else {
+                    Errno::EPERM
+                });
+            }
+            own.options
+                .insert((level, name), i32::from(on).to_le_bytes().to_vec());
+        }
+        // A filter once locked stays locked.
+        SO_LOCK_FILTER => {
+            let on = int()? != 0;
+            if !on && flag_on(&own, SO_LOCK_FILTER) {
+                return Err(Errno::EPERM);
+            }
+            own.options
+                .insert((level, name), i32::from(on).to_le_bytes().to_vec());
+        }
+        // Kept and read back; nothing here acts on them: checksums, frame check sequences and
+        // wireless status are for devices this machine does not have.
+        SO_NO_CHECK | SO_WIFI_STATUS | SO_NOFCS | SO_RXQ_OVFL | SO_SELECT_ERR_QUEUE => {
+            let on = i32::from(int()? != 0);
+            own.options.insert((level, name), on.to_le_bytes().to_vec());
+        }
+        SO_BSDCOMPAT => {
+            int()?;
+        }
+        // `sk_detach_filter`: none is attached here.
+        SO_DETACH_FILTER => {
+            return Err(if flag_on(&own, SO_LOCK_FILTER) {
+                Errno::EPERM
+            } else {
+                Errno::ENOENT
+            });
+        }
+        // The rate TCP paces its sends at (`sk_max_pacing_rate`): kept, and counted when it is
+        // not unlimited, as nothing here paces.
+        SO_MAX_PACING_RATE => {
+            let value = int()? as u32;
+            let rate = if bytes.len() >= 8 {
+                u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"))
+            } else if value == u32::MAX {
+                u64::MAX
+            } else {
+                u64::from(value)
+            };
+            own.options
+                .insert((level, name), rate.to_le_bytes().to_vec());
+            drop(own);
+            if rate != u64::MAX {
+                kernel.counters.count(
+                    cx.host,
+                    crate::reason::OPTION_NOT_ACTED_ON,
+                    (u64::from(level) << 32) | u64::from(name),
+                );
+            }
+        }
+        SO_BUF_LOCK => {
+            let locks = int()? as u32;
+            if locks & !SOCK_BUF_LOCK_MASK != 0 {
+                return Err(Errno::EINVAL);
+            }
+            own.options
+                .insert((level, name), locks.to_le_bytes().to_vec());
+            if let Some(inet) = own.inet.as_deref_mut() {
+                inet.sndbuf_set = locks & SOCK_SNDBUF_LOCK != 0;
+                inet.rcvbuf_set = locks & SOCK_RCVBUF_LOCK != 0;
+            }
+        }
+        // `sk_setsockopt`: TCP alone rehashes its flow on a retransmit.
+        SO_TXREHASH => {
+            let value = int()?;
+            if !own
+                .inet
+                .as_deref()
+                .is_some_and(|inet| inet.protocol == inet::Protocol::Tcp)
+            {
+                return Err(Errno::EOPNOTSUPP);
+            }
+            if !(-1..=1).contains(&value) {
+                return Err(Errno::EINVAL);
+            }
+            let kept = if value == -1 { 1 } else { value };
+            own.options
+                .insert((level, name), kept.to_le_bytes().to_vec());
+        }
         SO_SNDLOWAT | SO_PEERCRED | SO_TYPE | SO_ERROR | SO_ACCEPTCONN | SO_DOMAIN
-        | SO_PROTOCOL | SO_PEERSEC | SO_PEERNAME | SO_PEERPIDFD => {
+        | SO_PROTOCOL | SO_PEERSEC | SO_PEERNAME | SO_PEERPIDFD | SO_BPF_EXTENSIONS
+        | SO_INCOMING_NAPI_ID | SO_COOKIE | SO_PEERGROUPS | SO_MEMINFO | SO_NETNS_COOKIE => {
             return Err(Errno::ENOPROTOOPT);
         }
         _ => {
@@ -3493,6 +3630,31 @@ fn peer_pidfd(
     guest(kernel, cx, tid).write_value(length, &(room as i32))?;
     kernel.files_mut(tid).add(file, true, 0, limit)?;
     Ok(0)
+}
+
+/// Whether a socket-level flag kept in its options is on.
+fn flag_on(own: &Socket, name: u32) -> bool {
+    own.options
+        .get(&(crate::linux::net::SOL_SOCKET, name))
+        .is_some_and(|value| value.iter().any(|&byte| byte != 0))
+}
+
+/// SO_BUF_LOCK: which of its buffer sizes the program set (`sk_userlocks`); an internet
+/// socket keeps them in its own part.
+fn buffer_locks(own: &Socket) -> u32 {
+    use crate::linux::net::{SOCK_RCVBUF_LOCK, SOCK_SNDBUF_LOCK};
+    if let Some(inet) = own.inet.as_deref() {
+        return (u32::from(inet.sndbuf_set) * SOCK_SNDBUF_LOCK)
+            | (u32::from(inet.rcvbuf_set) * SOCK_RCVBUF_LOCK);
+    }
+    own.options
+        .get(&(
+            crate::linux::net::SOL_SOCKET,
+            crate::linux::net::SO_BUF_LOCK,
+        ))
+        .map_or(0, |bytes| {
+            u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"))
+        })
 }
 
 /// The interface a socket is bound to (SO_BINDTODEVICE), 0 for none.
@@ -3539,7 +3701,7 @@ pub(super) fn getsockopt(
         return Err(Errno::EINVAL);
     }
     if socket.borrow().inet.is_some() {
-        if let Some(answer) = inet::get_option(kernel, cx, &socket, level, name) {
+        if let Some(answer) = inet::get_option(kernel, cx, &socket, level, name, room) {
             let bytes = answer?;
             // `ip_getsockopt` gives a small value in one byte to a buffer shorter than an int.
             let small = level == crate::linux::net::SOL_IP
@@ -3609,7 +3771,7 @@ pub(super) fn getsockopt(
             SO_ACCEPTCONN => int(i32::from(own.state == State::Listening)),
             SO_SNDBUF => int(own.sndbuf as i32),
             SO_RCVBUF => int(own.rcvbuf as i32),
-            SO_PASSCRED if own.inet.is_some() => return Err(Errno::EOPNOTSUPP),
+            SO_PASSCRED | SO_PASSSEC if own.inet.is_some() => return Err(Errno::EOPNOTSUPP),
             SO_PASSPIDFD | SO_PASSRIGHTS if own.family != AF_UNIX => {
                 return Err(Errno::EOPNOTSUPP);
             }
@@ -3688,6 +3850,80 @@ pub(super) fn getsockopt(
                 bytes
             }
             SO_PEERSEC => return Err(Errno::ENOPROTOOPT),
+            SO_DEBUG | SO_NO_CHECK | SO_WIFI_STATUS | SO_NOFCS | SO_RXQ_OVFL
+            | SO_SELECT_ERR_QUEUE | SO_LOCK_FILTER | SO_PREFER_BUSY_POLL => {
+                int(i32::from(flag_on(&own, name)))
+            }
+            // Nothing reserved, no busy polling device, and no filter attached.
+            SO_BSDCOMPAT | SO_INCOMING_NAPI_ID | SO_RESERVE_MEM => int(0),
+            SO_ATTACH_FILTER => Vec::new(),
+            // `bpf_tell_extensions`: SKF_AD_MAX.
+            SO_BPF_EXTENSIONS => int(64),
+            // A room shorter than a long reads an int, at most `~0U`.
+            SO_MAX_PACING_RATE => {
+                let rate = own.options.get(&(level, name)).map_or(u64::MAX, |bytes| {
+                    u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"))
+                });
+                if room < 8 {
+                    int(rate.min(u64::from(u32::MAX)) as u32 as i32)
+                } else {
+                    rate.to_le_bytes().to_vec()
+                }
+            }
+            SO_COOKIE => {
+                if room < 8 {
+                    return Err(Errno::EINVAL);
+                }
+                if own.cookie == 0 {
+                    drop(own);
+                    kernel.sockets.cookies += 1;
+                    socket.borrow_mut().cookie = kernel.sockets.cookies;
+                    own = socket.borrow_mut();
+                }
+                own.cookie.to_le_bytes().to_vec()
+            }
+            // The one network namespace's cookie.
+            SO_NETNS_COOKIE => {
+                if room != 8 {
+                    return Err(Errno::EINVAL);
+                }
+                1u64.to_le_bytes().to_vec()
+            }
+            // The other end's supplementary groups; with too little room, the room wanted.
+            SO_PEERGROUPS => {
+                if own.peer_cred.is_none() {
+                    return Err(Errno::ENODATA);
+                }
+                let wanted = own.peer_groups.len() * 4;
+                if (room as usize) < wanted {
+                    drop(own);
+                    guest(kernel, cx, tid).write_value(length, &(wanted as i32))?;
+                    return Err(Errno::ERANGE);
+                }
+                let bytes: Vec<u8> = own
+                    .peer_groups
+                    .iter()
+                    .flat_map(|group| group.to_le_bytes())
+                    .collect();
+                drop(own);
+                guest(kernel, cx, tid).write(value, &bytes)?;
+                guest(kernel, cx, tid).write_value(length, &(bytes.len() as i32))?;
+                return Ok(0);
+            }
+            SO_BUF_LOCK => int(buffer_locks(&own) as i32),
+            SO_TXREHASH => {
+                if !own
+                    .inet
+                    .as_deref()
+                    .is_some_and(|inet| inet.protocol == inet::Protocol::Tcp)
+                {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                own.options
+                    .get(&(level, name))
+                    .cloned()
+                    .unwrap_or_else(|| int(1))
+            }
             _ => {
                 drop(own);
                 return Err(kernel.counters.refuse(
@@ -3961,8 +4197,8 @@ fn interface_list(
 const MMSGHDR: u64 = 64;
 const MSG_LEN: u64 = 56;
 
-/// `__sys_sendmmsg`: each message sent as sendmsg sends it, its length stored after it. Messages
-/// after the first do not wait: a later one with no room ends the call with those sent.
+/// `__sys_sendmmsg`: each message sent as sendmsg sends it (waiting as it waits), its length
+/// stored after it. An error after the first ends the call with those sent.
 pub(super) fn sendmmsg(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -3971,30 +4207,33 @@ pub(super) fn sendmmsg(
 ) -> Result<u64, Errno> {
     let count = (count as u32).min(UIO_MAXIOV) as u64;
     socket_of(kernel, tid, fd)?;
-    let mut sent = 0;
+    let mut sent = kernel.threads[&tid].call.messages;
     while sent < count {
         let header = vector + sent * MMSGHDR;
-        let flags = if sent > 0 {
-            flags | u64::from(MSG_DONTWAIT)
-        } else {
-            flags
-        };
         match sendmsg(kernel, cx, tid, [fd, header, flags, 0, 0, 0]) {
             Ok(length) => {
                 guest(kernel, cx, tid).write_value(header + MSG_LEN, &(length as u32))?;
                 sent += 1;
+                next_message(kernel, tid, sent);
             }
-            Err(error) if sent == 0 => return Err(error),
+            Err(error) if sent == 0 || error == Errno::PARKED => return Err(error),
             Err(_) => break,
         }
     }
     Ok(sent)
 }
 
-/// `do_recvmmsg`: messages received as recvmsg receives them, their lengths stored after them.
-/// With MSG_WAITFORONE only the first waits; without it a message after the first that is not
-/// there yet ends the call too (counted "recvmmsg returned early"), where Linux waits for it. A
-/// timeout is checked after each message, as Linux checks it, and what is left of it is stored.
+/// One message of sendmmsg or recvmmsg is done: the next starts afresh, with its own wait.
+fn next_message(kernel: &mut Kernel, tid: Tid, done: u64) {
+    let call = &mut kernel.thread_mut(tid).call;
+    call.messages = done;
+    call.progress = 0;
+    call.deadline = None;
+}
+
+/// `do_recvmmsg`: messages received as recvmsg receives them (each waiting as it waits), their
+/// lengths stored after them. With MSG_WAITFORONE only the first waits. A timeout is checked
+/// only after each message, as Linux checks it, and what is left of it is stored.
 pub(super) fn recvmmsg(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -4016,11 +4255,11 @@ pub(super) fn recvmmsg(
     } else {
         None
     };
-    let mut received = 0;
+    let mut received = kernel.threads[&tid].call.messages;
     while received < count {
         let header = vector + received * MMSGHDR;
         let wait_for_one = flags & crate::linux_extra::MSG_WAITFORONE != 0;
-        let call_flags = if received > 0 {
+        let call_flags = if received > 0 && wait_for_one {
             (flags & !crate::linux_extra::MSG_WAITFORONE) | MSG_DONTWAIT
         } else {
             flags & !crate::linux_extra::MSG_WAITFORONE
@@ -4034,18 +4273,10 @@ pub(super) fn recvmmsg(
             Ok(length) => {
                 guest(kernel, cx, tid).write_value(header + MSG_LEN, &(length as u32))?;
                 received += 1;
+                next_message(kernel, tid, received);
             }
-            Err(error) if received == 0 => return Err(error),
-            Err(Errno::EAGAIN) => {
-                let nonblocking =
-                    flags & MSG_DONTWAIT != 0 || socket_file_nonblocking(kernel, tid, fd);
-                if !wait_for_one && !nonblocking {
-                    kernel
-                        .counters
-                        .count(cx.host, crate::reason::RECVMMSG_EARLY, 0);
-                }
-                break;
-            }
+            Err(error) if received == 0 || error == Errno::PARKED => return Err(error),
+            Err(Errno::EAGAIN) => break,
             Err(error) => {
                 // The error is kept for the next call (`do_recvmmsg`).
                 socket.borrow_mut().error = error.0 as i32;
@@ -4067,8 +4298,4 @@ pub(super) fn recvmmsg(
         guest(kernel, cx, tid).write_value(timeout, &value)?;
     }
     Ok(received)
-}
-
-fn socket_file_nonblocking(kernel: &Kernel, tid: Tid, fd: u64) -> bool {
-    super::io::file(kernel, tid, fd).is_ok_and(|file| file.borrow().flags & O_NONBLOCK != 0)
 }
