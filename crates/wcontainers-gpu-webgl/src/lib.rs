@@ -3985,8 +3985,11 @@ impl Backend for WebGl {
         if self.surface.as_ref().map(|s| s.id) != Some(surface.id) {
             return Err(GpuError::Invalid("webgl: the surface was destroyed"));
         }
-        if format != Format::Rgba8Unorm {
-            return Err(GpuError::Invalid("webgl: surfaces take rgba8unorm only"));
+        // BGRA textures are stored as RGBA, so both blit into the RGBA drawing buffer as they are.
+        if !matches!(format, Format::Rgba8Unorm | Format::Bgra8Unorm) {
+            return Err(GpuError::Invalid(
+                "webgl: surfaces take rgba8unorm and bgra8unorm only",
+            ));
         }
         if let Err(e) = self.platform.resize(&self.gl, width, height, vsync) {
             self.last_log = format!("webgl: resizing the surface: {e}");

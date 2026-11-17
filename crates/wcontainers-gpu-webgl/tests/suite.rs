@@ -270,3 +270,8 @@ fn generate_mipmap_equals_the_draws() {
 fn sixteen_bit_normalised_formats_follow_their_extension() {
     checks::sixteen_bit_normalised_formats_follow_their_extension::<Angle>();
 }
+
+#[test]
+fn bgra_surfaces_present() {
+    checks::bgra_surfaces_present::<Angle>();
+}

@@ -1094,6 +1094,46 @@ pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
     }
 }
 
+/// A `bgra8unorm` surface presents its frame: cleared to two colours in turn, the window shows each
+/// (the hosts read the window's bytes, which are RGBA).
+pub fn bgra_surfaces_present<H: Host>() {
+    let mut b = H::make();
+    assert!(
+        b.caps()
+            .formats
+            .get(Format::Bgra8Unorm)
+            .contains(FormatUse::PRESENT)
+    );
+    let window = H::window(&mut b);
+    let surface = b.create_surface(window).expect("create_surface");
+    b.configure_surface(&surface, Format::Bgra8Unorm, 4, 4, true)
+        .expect("configure_surface");
+    for (value, texel) in [
+        ([0.2f32, 0.4, 0.6, 1.0], [51u8, 102, 153, 255]),
+        ([1.0, 0.0, 0.2, 1.0], [255, 0, 51, 255]),
+    ] {
+        let v = b.current_texture(&surface).expect("current_texture");
+        b.begin_pass(&PassDesc {
+            colors: core::array::from_fn(|i| {
+                (i == 0).then_some(ColorAttachment {
+                    view: &v,
+                    depth_slice: 0,
+                    load: LoadOp::Clear(value.map(f32::to_bits)),
+                    store: StoreOp::Store,
+                    resolve: None,
+                })
+            }),
+            depth: None,
+            occlusion: None,
+            empty: None,
+        });
+        b.end_pass();
+        b.present(&surface).expect("present");
+        assert_eq!(H::shown(&mut b, window), texel.repeat(16), "{value:?}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
 /// The 16-bit normalised formats follow EXT_texture_norm16: with it, the unsigned ones sample,
 /// filter, render, blend and read back, as stored, now and later, and the signed ones sample and
 /// filter; without it, none has a use and making one is refused.

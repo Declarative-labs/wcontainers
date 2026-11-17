@@ -196,8 +196,8 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     if read_as(format, ext).is_some() || gl.class == Class::Depth || crate::host::kept(format) {
         uses |= FormatUse::COPY_OUT;
     }
-    // The canvas's drawing buffer is RGBA8, which surfaces present into.
-    if format == Format::Rgba8Unorm {
+    // The canvas's drawing buffer is RGBA8, which surfaces present into; BGRA8 is stored as RGBA8.
+    if matches!(format, Format::Rgba8Unorm | Format::Bgra8Unorm) {
         uses |= FormatUse::PRESENT;
     }
     uses
