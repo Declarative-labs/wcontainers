@@ -177,7 +177,7 @@ fn patched_table(original: *const ID3D11Device1_Vtbl) -> *const ID3D11Device1_Vt
 }
 
 /// `CheckMultisampleQualityLevels`: `E_INVALIDARG` for a null out pointer, and the count zeroed
-/// when the call fails, as Direct3D answers.
+/// for a sample count it has no levels for (`E_FAIL`), as Direct3D answers.
 unsafe extern "system" fn check_quality_levels(
     this: *mut c_void,
     format: DXGI_FORMAT,
@@ -190,7 +190,9 @@ unsafe extern "system" fn check_quality_levels(
     let mut n = 0;
     let entry = CHECK_QUALITY_LEVELS.get().expect("the table was patched");
     let hr = unsafe { entry(this, format, samples, &mut n) };
-    unsafe { *out = if hr.is_ok() { n } else { 0 } };
+    if hr.is_ok() || hr == windows::Win32::Foundation::E_FAIL {
+        unsafe { *out = n };
+    }
     hr
 }
 
@@ -782,6 +784,11 @@ impl Device_Impl {
         format: DXGI_FORMAT,
         samples: u32,
     ) -> Result<u32> {
+        // Values that name no DXGI format.
+        let f = format.0 as u32;
+        if !matches!(f, 0..=132 | 189..=191) {
+            return Err(E_INVALIDARG.into());
+        }
         if samples == 0 || samples > 32 {
             return Err(windows::Win32::Foundation::E_FAIL.into());
         }

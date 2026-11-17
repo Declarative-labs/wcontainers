@@ -584,8 +584,13 @@ impl<B: Backend> Device<B> {
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         // A count and quality the device reports no level for is invalid, as in Direct3D. The
-        // standard pattern is the back end's own; the centred one it cannot place.
-        let levels = self.multisample_quality_levels(d.format, d.sample_count);
+        // standard pattern is the back end's own; the centred one it cannot place. A single
+        // sample has quality 0; whether its format serves the bindings is checked below.
+        let levels = if d.sample_count == 1 {
+            1
+        } else {
+            self.multisample_quality_levels(d.format, d.sample_count)
+        };
         match d.sample_quality {
             STANDARD_MULTISAMPLE_PATTERN if levels > 0 => {}
             CENTER_MULTISAMPLE_PATTERN if levels > 0 => {
