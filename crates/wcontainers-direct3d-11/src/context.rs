@@ -4,13 +4,13 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Filter,
-    Format, FormatKind, FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat,
-    Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource,
-    ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderStage, SlotKind, SlowPath,
-    SourceStage, StageSet, StepMode, StoreOp, TextureUsage, Topology, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
-    helper_binding,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent,
+    Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue, IndexBinding,
+    IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, Program,
+    ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageSet, StepMode, StoreOp, TextureUsage, Topology, VariantKey,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport,
+    WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -85,6 +85,8 @@ pub struct ContextState<B: Backend> {
     pub(crate) sets: [Option<Kept<B, B::BindingSet>>; STAGES],
     sets_dirty: [bool; STAGES],
     pass_open: bool,
+    /// The size of the open pass when it has no attachments.
+    empty_pass: Option<EmptyPass>,
     clears: Vec<PendingClear<B>>,
     /// Mapped subresources: the resource's address, subresource, map type.
     mapped: Vec<(usize, u32, u32)>,
@@ -118,6 +120,7 @@ impl<B: Backend> ContextState<B> {
             sets: [None, None, None],
             sets_dirty: [true; STAGES],
             pass_open: false,
+            empty_pass: None,
             clears: Vec::new(),
             mapped: Vec::new(),
         }
@@ -715,13 +718,29 @@ impl<B: Backend> Device<B> {
                 None
             }
         };
+        let empty =
+            (targets.iter().all(Option::is_none) && depth.is_none()).then(|| self.empty_size());
         self.backend.begin_pass(&PassDesc {
             colors,
             depth: depth_attachment,
-            empty: None,
+            empty,
             occlusion: occlusion.as_ref().map(|s| &s.handle),
         });
         self.ctx.pass_open = true;
+        self.ctx.empty_pass = empty;
+    }
+
+    /// The size of a pass without attachments (Direct3D's drawing with only unordered access views
+    /// bound): what the first viewport reaches, one pixel to the largest 2D texture, one sample.
+    fn empty_size(&self) -> EmptyPass {
+        let max = self.backend.caps().limits.max_texture_2d;
+        let reach = |at: f32, len: f32| ((at + len).ceil().max(1.0) as u32).min(max);
+        let v = self.ctx.viewports.first().copied().unwrap_or_default();
+        EmptyPass {
+            width: reach(v.x, v.width),
+            height: reach(v.y, v.height),
+            samples: 1,
+        }
     }
 
     pub fn draw(&mut self, count: u32, start: u32) {
@@ -1706,6 +1725,15 @@ impl<B: Backend> Device<B> {
         );
         if nothing || self.ctx.viewports.is_empty() || (indexed && self.ctx.index.is_none()) {
             return Ok(());
+        }
+        // A pass without attachments is as large as the viewport of its first draw.
+        if self.ctx.pass_open
+            && let Some(open) = self.ctx.empty_pass
+        {
+            let wanted = self.empty_size();
+            if wanted.width > open.width || wanted.height > open.height {
+                self.end_pass();
+            }
         }
         self.open_pass();
         if !self.open_stretch() {

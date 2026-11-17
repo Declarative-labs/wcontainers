@@ -438,6 +438,13 @@ impl Backend for Recorder {
                 d.stencil.as_ref().map(|a| a.load)
             );
         }
+        if let Some(e) = &pass.empty {
+            let _ = write!(
+                line,
+                " empty {}x{} samples {}",
+                e.width, e.height, e.samples
+            );
+        }
         self.record(line);
     }
 

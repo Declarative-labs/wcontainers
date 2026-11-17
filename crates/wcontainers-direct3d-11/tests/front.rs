@@ -1576,3 +1576,48 @@ fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
         1
     );
 }
+
+#[test]
+fn a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    dev.om_set_render_targets(&[], None).unwrap();
+    let viewport = |dev: &mut Dev, width: f32, height: f32| {
+        dev.rs_set_viewports(&[Viewport {
+            width,
+            height,
+            max_depth: 1.0,
+            ..Default::default()
+        }]);
+    };
+    viewport(&mut dev, 40.0, 24.5);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    // A smaller viewport draws in the same pass; a larger one opens another.
+    viewport(&mut dev, 10.0, 10.0);
+    dev.draw(3, 0);
+    viewport(&mut dev, 64.0, 8.0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let passes: Vec<_> = log_from(&dev, from)
+        .into_iter()
+        .filter(|l| l.starts_with("begin_pass"))
+        .collect();
+    assert_eq!(
+        passes,
+        [
+            "begin_pass empty 40x25 samples 1",
+            "begin_pass empty 64x8 samples 1"
+        ]
+    );
+}
