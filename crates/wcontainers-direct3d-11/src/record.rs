@@ -1,0 +1,620 @@
+//! A back end that draws nothing: it writes every call into a log, and keeps the bytes host writes and
+//! copies put into buffers and textures, so read backs return them. Draws and clears change no bytes.
+//! It runs the front without a GPU, for checking the calls the front makes.
+
+use std::collections::HashMap;
+use std::fmt::Write;
+
+use wcontainers_gpu::*;
+
+use crate::format::row_bytes;
+
+/// The recording back end's handles: a number per object.
+pub type Id = u32;
+
+struct Texture {
+    desc: TextureDesc,
+    /// Per subresource (mip + layer * mips), tightly packed rows of blocks.
+    subresources: Vec<Vec<u8>>,
+}
+
+pub struct Recorder {
+    caps: Caps,
+    slow: SlowPaths,
+    helpers: Helpers<Recorder>,
+    next: Id,
+    /// One line per call.
+    pub log: Vec<String>,
+    /// Where each line is also written as it is recorded, if anywhere.
+    echo: Option<fn(&str)>,
+    buffers: HashMap<Id, Vec<u8>>,
+    textures: HashMap<Id, Texture>,
+    views: HashMap<Id, (Id, TextureViewDesc)>,
+    reads: HashMap<Id, Vec<u8>>,
+}
+
+impl std::fmt::Debug for Recorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Recorder({} calls)", self.log.len())
+    }
+}
+
+impl Recorder {
+    /// A recorder declaring the abilities WebGPU in Chrome declares on the development desktop (plan
+    /// 4.11), with every format able to do everything; `echo` also receives each line.
+    pub fn new(echo: Option<fn(&str)>) -> Self {
+        let limits = Limits {
+            max_texture_2d: 16384,
+            max_texture_cube: 16384,
+            max_texture_3d: 2048,
+            max_texture_layers: 2048,
+            max_buffer_size: 1 << 30,
+            max_uniform_buffer_size: 1 << 16,
+            max_storage_buffer_size: 1 << 30,
+            uniform_buffers_per_stage: 12,
+            textures_per_stage: 48,
+            samplers_per_stage: 16,
+            storage_buffers_per_stage: 10,
+            storage_textures_per_stage: 8,
+            vertex_streams: 8,
+            vertex_attributes: 30,
+            max_vertex_stride: 2048,
+            color_targets: 8,
+            color_bytes_per_sample: 128,
+            inter_stage_slots: 28,
+            min_uniform_offset_alignment: 256,
+            min_storage_offset_alignment: 256,
+            buffer_copy_alignment: 4,
+            immediate_bytes: 64,
+            compute_workgroup_storage: 32768,
+            compute_invocations: 1024,
+            compute_size: [1024, 1024, 64],
+            max_dispatch: 65535,
+            max_point_size: 1.0,
+            max_line_width: 1.0,
+            max_anisotropy: 16,
+            capture_buffers: 0,
+        };
+        Recorder {
+            caps: Caps {
+                features: Features::COMPUTE
+                    | Features::INDEPENDENT_BLEND
+                    | Features::DEPTH_CLAMP
+                    | Features::BASE_VERTEX_INSTANCE
+                    | Features::TEXTURE_VIEWS
+                    | Features::FRACTIONAL_VIEWPORT,
+                limits,
+                formats: FormatCaps {
+                    uses: [FormatUse::all(); Format::COUNT],
+                    samples: [0b101; Format::COUNT],
+                },
+            },
+            slow: SlowPaths::default(),
+            helpers: Helpers::default(),
+            next: 0,
+            log: Vec::new(),
+            echo,
+            buffers: HashMap::new(),
+            textures: HashMap::new(),
+            views: HashMap::new(),
+            reads: HashMap::new(),
+        }
+    }
+
+    fn id(&mut self) -> Id {
+        self.next += 1;
+        self.next
+    }
+
+    fn record(&mut self, line: String) {
+        if let Some(echo) = self.echo {
+            echo(&line);
+        }
+        self.log.push(line);
+    }
+
+    /// Byte ranges of each block row a region of `extent` at `origin` of `mip` covers, in the
+    /// subresource's tight storage: (offset in storage, bytes per row, row count).
+    fn rows(t: &Texture, mip: u32, origin: Origin, extent: Extent) -> (usize, usize, usize, usize) {
+        let (_, bh, _) = t.desc.format.block();
+        let width = (t.desc.width >> mip).max(1);
+        let (pitch, _) = row_bytes(t.desc.format, width, 1);
+        let (row, rows) = row_bytes(t.desc.format, extent.width, extent.height);
+        let (x, _) = row_bytes(t.desc.format, origin.x, 1);
+        let start = (origin.y / bh) as usize * pitch as usize + x as usize;
+        (start, pitch as usize, row as usize, rows as usize)
+    }
+
+    fn subresource(t: &Texture, mip: u32, layer: u32) -> usize {
+        (mip + layer * t.desc.mip_levels) as usize
+    }
+}
+
+impl Backend for Recorder {
+    type Buffer = Id;
+    type Texture = Id;
+    type TextureView = Id;
+    type Sampler = Id;
+    type Shader = Id;
+    type Program = Id;
+    type Blend = Id;
+    type DepthStencil = Id;
+    type Raster = Id;
+    type VertexLayout = Id;
+    type BindingSet = Id;
+    type QuerySet = Id;
+    type Readback = Id;
+    type Fence = Id;
+    type ResourceTable = Id;
+    type Surface = Id;
+
+    fn caps(&self) -> &Caps {
+        &self.caps
+    }
+
+    fn slow_paths(&mut self) -> &mut SlowPaths {
+        &mut self.slow
+    }
+
+    fn status(&mut self) -> DeviceStatus {
+        DeviceStatus::Ok
+    }
+
+    fn helpers(&mut self) -> &mut Helpers<Self> {
+        &mut self.helpers
+    }
+
+    fn create_buffer(&mut self, desc: &BufferDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.buffers.insert(id, vec![0; desc.size as usize]);
+        self.record(format!(
+            "create_buffer {id} size {} {:?} {:?}",
+            desc.size, desc.usage, desc.intent
+        ));
+        Ok(id)
+    }
+
+    fn create_texture(&mut self, desc: &TextureDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        let mut subresources = Vec::new();
+        for _layer in 0..desc.depth_or_layers {
+            for mip in 0..desc.mip_levels {
+                let (w, h) = ((desc.width >> mip).max(1), (desc.height >> mip).max(1));
+                let (row, rows) = row_bytes(desc.format, w, h);
+                subresources.push(vec![0; (row * rows) as usize]);
+            }
+        }
+        self.textures.insert(
+            id,
+            Texture {
+                desc: *desc,
+                subresources,
+            },
+        );
+        self.record(format!(
+            "create_texture {id} {:?} {}x{}x{} mips {} {:?}",
+            desc.format, desc.width, desc.height, desc.depth_or_layers, desc.mip_levels, desc.usage
+        ));
+        Ok(id)
+    }
+
+    fn create_view(&mut self, texture: &Id, desc: &TextureViewDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.views.insert(id, (*texture, *desc));
+        self.record(format!(
+            "create_view {id} of {texture} {:?} {:?} mips {}+{} layers {}+{}",
+            desc.format,
+            desc.dimension,
+            desc.base_mip,
+            desc.mip_count,
+            desc.base_layer,
+            desc.layer_count
+        ));
+        Ok(id)
+    }
+
+    fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!(
+            "create_sampler {id} {:?} {:?} {:?} {:?}",
+            desc.min, desc.mag, desc.mip, desc.address
+        ));
+        Ok(id)
+    }
+
+    fn create_shader(&mut self, module: &ShaderModule) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!(
+            "create_shader {id} {:?} {}",
+            module.stage, module.entry_point
+        ));
+        Ok(id)
+    }
+
+    fn create_program(&mut self, program: &Program<'_, Self>) -> Result<Id, GpuError> {
+        let id = self.id();
+        let line = match program {
+            Program::Render { vertex, fragment } => {
+                format!("create_program {id} vertex {vertex} fragment {fragment:?}")
+            }
+            Program::Compute(c) => format!("create_program {id} compute {c}"),
+        };
+        self.record(line);
+        Ok(id)
+    }
+
+    fn create_blend(&mut self, desc: &BlendDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!(
+            "create_blend {id} {:?} same {}",
+            desc.targets[0], desc.same_for_all
+        ));
+        Ok(id)
+    }
+
+    fn create_depth_stencil(&mut self, desc: &DepthStencilDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!(
+            "create_depth_stencil {id} {:?} write {} stencil {}",
+            desc.depth_compare,
+            desc.depth_write,
+            desc.stencil.is_some()
+        ));
+        Ok(id)
+    }
+
+    fn create_raster(&mut self, desc: &RasterDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!(
+            "create_raster {id} {:?} {:?} {:?} clip {}",
+            desc.fill, desc.cull, desc.front, desc.depth_clip
+        ));
+        Ok(id)
+    }
+
+    fn create_vertex_layout(&mut self, desc: &VertexLayoutDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        let mut line = format!("create_vertex_layout {id}");
+        for (i, s) in desc.streams.iter().enumerate() {
+            if let Some(s) = s {
+                let _ = write!(line, " stream {i} stride {} {:?}", s.stride, s.step);
+            }
+        }
+        for a in desc.attributes.iter().flatten() {
+            let _ = write!(
+                line,
+                " attribute {} at {}+{} {:?}",
+                a.location, a.stream, a.offset, a.format
+            );
+        }
+        self.record(line);
+        Ok(id)
+    }
+
+    fn create_binding_set(&mut self, entries: &[BindingEntry<'_, Self>]) -> Result<Id, GpuError> {
+        let id = self.id();
+        let mut line = format!("create_binding_set {id}");
+        for e in entries {
+            let what = match &e.resource {
+                BindingResource::UniformBuffer(r) => {
+                    format!("uniform {}+{}:{}", r.buffer, r.offset, r.size)
+                }
+                BindingResource::Texture(v) => format!("texture {v}"),
+                BindingResource::Sampler(s) => format!("sampler {s}"),
+                other => format!("{other:?}"),
+            };
+            let _ = write!(line, " {}={what}", e.binding);
+        }
+        self.record(line);
+        Ok(id)
+    }
+
+    fn binding_layout_key(&self, _set: &Id) -> BindingLayoutKey {
+        BindingLayoutKey {
+            unfilterable_textures: 0,
+        }
+    }
+
+    fn create_query_set(&mut self, kind: QueryKind, count: u32) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!("create_query_set {id} {kind:?} {count}"));
+        Ok(id)
+    }
+
+    fn destroy(&mut self, object: Object<Self>) {
+        if let Object::Buffer(id) = object {
+            self.buffers.remove(&id);
+        }
+        if let Object::Texture(id) = object {
+            self.textures.remove(&id);
+        }
+        self.record(format!("destroy {object:?}"));
+    }
+
+    fn write_buffer(&mut self, buffer: &Id, offset: u64, data: &[u8], mode: WriteMode) {
+        if let Some(b) = self.buffers.get_mut(buffer) {
+            b[offset as usize..offset as usize + data.len()].copy_from_slice(data);
+        }
+        self.record(format!(
+            "write_buffer {buffer} at {offset} {} bytes {mode:?}",
+            data.len()
+        ));
+    }
+
+    fn write_texture(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+        data: &[u8],
+        row_pitch: u32,
+        _rows_per_layer: u32,
+        mode: WriteMode,
+    ) {
+        if let Some(t) = self.textures.get_mut(region.texture) {
+            let (start, pitch, row, rows) = Self::rows(t, region.mip, region.origin, extent);
+            let sub = Self::subresource(t, region.mip, region.layer);
+            for r in 0..rows {
+                let src = r * row_pitch as usize;
+                let dst = start + r * pitch;
+                t.subresources[sub][dst..dst + row].copy_from_slice(&data[src..src + row]);
+            }
+        }
+        self.record(format!(
+            "write_texture {} mip {} layer {} at {},{} {}x{} pitch {row_pitch} {mode:?}",
+            region.texture,
+            region.mip,
+            region.layer,
+            region.origin.x,
+            region.origin.y,
+            extent.width,
+            extent.height
+        ));
+    }
+
+    fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
+        let mut line = String::from("begin_pass");
+        for (i, c) in pass.colors.iter().enumerate() {
+            if let Some(c) = c {
+                let _ = write!(
+                    line,
+                    " color {i} view {} {:?} {:?}",
+                    c.view, c.load, c.store
+                );
+            }
+        }
+        if let Some(d) = &pass.depth {
+            let _ = write!(
+                line,
+                " depth view {} {:?} stencil {:?}",
+                d.view,
+                d.depth.as_ref().map(|a| a.load),
+                d.stencil.as_ref().map(|a| a.load)
+            );
+        }
+        self.record(line);
+    }
+
+    fn end_pass(&mut self) {
+        self.record("end_pass".into());
+    }
+
+    fn draw(&mut self, call: &DrawCall<'_, Self>) {
+        let streams: Vec<_> = call
+            .vertex_buffers
+            .iter()
+            .map(|v| v.as_ref().map(|v| (*v.buffer, v.offset)))
+            .collect();
+        let index = call.index.as_ref().map(|i| (*i.buffer, i.offset, i.format));
+        let viewports: Vec<_> = call
+            .viewports
+            .iter()
+            .map(|v| [v.x, v.y, v.width, v.height].map(f32::from_bits))
+            .collect();
+        self.record(format!(
+            "draw program {} blend {} depth {} raster {} layout {} sets {:?} streams {streams:?} index {index:?} {:?} restart {} viewports {viewports:?} {:?}",
+            call.program,
+            call.blend,
+            call.depth_stencil,
+            call.raster,
+            call.vertex_layout,
+            call.bindings,
+            call.topology,
+            call.restart,
+            call.range
+        ));
+    }
+
+    fn begin_query(&mut self, index: u32) {
+        self.record(format!("begin_query {index}"));
+    }
+
+    fn end_query(&mut self) {
+        self.record("end_query".into());
+    }
+
+    fn copy_buffer(&mut self, src: &Id, src_offset: u64, dst: &Id, dst_offset: u64, size: u64) {
+        let (s, d, n) = (src_offset as usize, dst_offset as usize, size as usize);
+        if let Some(bytes) = self.buffers.get(src).map(|b| b[s..s + n].to_vec())
+            && let Some(b) = self.buffers.get_mut(dst)
+        {
+            b[d..d + n].copy_from_slice(&bytes);
+        }
+        self.record(format!(
+            "copy_buffer {src}+{src_offset} to {dst}+{dst_offset} {size} bytes"
+        ));
+    }
+
+    fn copy_texture(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let rows = self.textures.get(src.texture).map(|t| {
+            let (start, pitch, row, rows) = Self::rows(t, src.mip, src.origin, extent);
+            let sub = &t.subresources[Self::subresource(t, src.mip, src.layer)];
+            (0..rows)
+                .map(|r| sub[start + r * pitch..start + r * pitch + row].to_vec())
+                .collect::<Vec<_>>()
+        });
+        if let (Some(rows), Some(t)) = (rows, self.textures.get_mut(dst.texture)) {
+            let (start, pitch, row, _) = Self::rows(t, dst.mip, dst.origin, extent);
+            let sub = Self::subresource(t, dst.mip, dst.layer);
+            for (r, bytes) in rows.iter().enumerate() {
+                t.subresources[sub][start + r * pitch..start + r * pitch + row]
+                    .copy_from_slice(bytes);
+            }
+        }
+        self.record(format!(
+            "copy_texture {} mip {} layer {} at {},{} to {} mip {} layer {} at {},{} {}x{}",
+            src.texture,
+            src.mip,
+            src.layer,
+            src.origin.x,
+            src.origin.y,
+            dst.texture,
+            dst.mip,
+            dst.layer,
+            dst.origin.x,
+            dst.origin.y,
+            extent.width,
+            extent.height
+        ));
+    }
+
+    fn copy_buffer_to_texture(
+        &mut self,
+        src: &CopyBufferTexture<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        self.record(format!(
+            "copy_buffer_to_texture {} to {} {}x{}",
+            src.buffer, dst.texture, extent.width, extent.height
+        ));
+    }
+
+    fn copy_texture_to_buffer(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &CopyBufferTexture<'_, Self>,
+        extent: Extent,
+    ) {
+        self.record(format!(
+            "copy_texture_to_buffer {} to {} {}x{}",
+            src.texture, dst.buffer, extent.width, extent.height
+        ));
+    }
+
+    fn clear_buffer(&mut self, buffer: &Id, offset: u64, size: u64, pattern: &[u8]) {
+        self.record(format!(
+            "clear_buffer {buffer} at {offset} {size} bytes pattern {pattern:?}"
+        ));
+    }
+
+    fn resolve(&mut self, src: &TextureRegion<'_, Self>, dst: &TextureRegion<'_, Self>) {
+        self.record(format!("resolve {} to {}", src.texture, dst.texture));
+    }
+
+    fn submit(&mut self) -> Id {
+        let id = self.id();
+        self.record(format!("submit {id}"));
+        id
+    }
+
+    fn fence_done(&mut self, _fence: &Id) -> bool {
+        true
+    }
+
+    fn wait_fence(&mut self, _fence: &Id) {}
+
+    fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Id, GpuError> {
+        let id = self.id();
+        let (bytes, line) = match src {
+            ReadSource::Buffer {
+                buffer,
+                offset,
+                size,
+            } => {
+                let b = &self.buffers[buffer];
+                (
+                    b[*offset as usize..(*offset + *size) as usize].to_vec(),
+                    format!("read_back {id} buffer {buffer}+{offset} {size} bytes"),
+                )
+            }
+            ReadSource::Texture { region, extent } => {
+                let t = &self.textures[region.texture];
+                let (start, pitch, row, rows) = Self::rows(t, region.mip, region.origin, *extent);
+                let sub = &t.subresources[Self::subresource(t, region.mip, region.layer)];
+                let bytes = (0..rows)
+                    .flat_map(|r| {
+                        sub[start + r * pitch..start + r * pitch + row]
+                            .iter()
+                            .copied()
+                    })
+                    .collect();
+                (
+                    bytes,
+                    format!(
+                        "read_back {id} texture {} mip {} layer {} {}x{}",
+                        region.texture, region.mip, region.layer, extent.width, extent.height
+                    ),
+                )
+            }
+        };
+        self.reads.insert(id, bytes);
+        self.record(line);
+        Ok(id)
+    }
+
+    fn read_queries(&mut self, set: &Id, first: u32, count: u32) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.reads.insert(id, vec![0; count as usize * 8]);
+        self.record(format!("read_queries {id} of {set} {first}+{count}"));
+        Ok(id)
+    }
+
+    fn read_state(&mut self, _readback: &Id) -> ReadState {
+        ReadState::Ready
+    }
+
+    fn wait_read(&mut self, _readback: &Id) {}
+
+    fn finish_read(&mut self, readback: Id, dst: &mut [u8]) {
+        if let Some(bytes) = self.reads.remove(&readback) {
+            let n = bytes.len().min(dst.len());
+            dst[..n].copy_from_slice(&bytes[..n]);
+        }
+    }
+
+    fn create_surface(&mut self, window: u32) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!("create_surface {id} window {window}"));
+        Ok(id)
+    }
+
+    fn configure_surface(
+        &mut self,
+        surface: &Id,
+        format: Format,
+        width: u32,
+        height: u32,
+        vsync: bool,
+    ) -> Result<(), GpuError> {
+        self.record(format!(
+            "configure_surface {surface} {format:?} {width}x{height} vsync {vsync}"
+        ));
+        Ok(())
+    }
+
+    fn current_texture(&mut self, surface: &Id) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.record(format!("current_texture {surface} view {id}"));
+        Ok(id)
+    }
+
+    fn present(&mut self, surface: &Id) -> Result<(), GpuError> {
+        self.record(format!("present {surface}"));
+        Ok(())
+    }
+}
