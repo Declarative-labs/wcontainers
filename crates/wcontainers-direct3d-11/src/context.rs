@@ -782,7 +782,7 @@ impl<B: Backend> Device<B> {
                 (_, Some(StandIn::DefaultSampler)) => Zero::Sampler(self.default_sampler()?),
                 (_, None) => {
                     return not_implemented(
-                        "an empty slot read as a one-dimensional, multisampled or depth texture, or a comparison sampler",
+                        "an empty slot read as a multisampled or depth texture, or a comparison sampler",
                     );
                 }
             };
