@@ -1,0 +1,32 @@
+#!/bin/bash
+# From the Mac: compiles the shaders the corpus test wrote (its WCONTAINERS_SHADERS_OUT, copied here,
+# one directory per corpus) in Chrome on the desktop as one GPU job (compile.mjs), and copies each
+# directory's verdicts (chrome.txt) back beside its files. Exits 1 if any shader fails to compile.
+#   crates/wcontainers-shaders/web/check <out-dir>
+set -euo pipefail
+[ $# -eq 1 ] || { echo "usage: check <out-dir>" >&2; exit 2; }
+root=$(git rev-parse --show-toplevel)
+rig=$root/tools/graphics-rig
+# shellcheck source=tools/graphics-rig/common.sh
+. "$rig/common.sh"
+remote=C:/wc/out/$name/chrome
+connect
+rig_ssh "if exist C:\\wc\\out\\$name\\chrome rmdir /s /q C:\\wc\\out\\$name\\chrome"
+rig_ssh "mkdir C:\\wc\\out\\$name\\chrome"
+dirs=()
+for d in "$1"/*/; do
+    label=$(basename "$d")
+    rig_scp -r "${d%/}" "$host:$remote/$label"
+    dirs+=("C:\\wc\\out\\$name\\chrome\\$label")
+done
+set +e
+# The job's build stamp is written into the build directory, which nothing else here makes.
+"$rig/gpu-job" --build "(mkdir %CARGO_TARGET_DIR% 2>nul & ver >nul) && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1" \
+    -- "node crates\\wcontainers-shaders\\web\\compile.mjs ${dirs[*]}"
+code=$?
+set -e
+for d in "$1"/*/; do
+    label=$(basename "$d")
+    rig_scp "$host:$remote/$label/chrome.txt" "$d" || code=1
+done
+exit $code

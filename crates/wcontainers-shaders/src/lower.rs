@@ -1582,8 +1582,21 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 if let Literal::F32(x) = l
                     && !x.is_finite()
                 {
-                    // naga takes no infinite or NaN literals: the bits, reinterpreted, made where used.
+                    // naga takes no infinite or NaN literals, and WGSL compilers refuse them as
+                    // constant expressions: the bits, read from a variable so the value is made at
+                    // run time, reinterpreted where used.
                     let bits = self.lit(b, Literal::U32(op.lits[0] as u32));
+                    let ty = self.l.scalar_ty(Scalar::U32);
+                    let var = self.f.local_variables.append(
+                        LocalVariable {
+                            name: Some(format!("bits{id}")),
+                            ty,
+                            init: Some(bits),
+                        },
+                        Span::UNDEFINED,
+                    );
+                    let pointer = self.add(b, Expression::LocalVariable(var));
+                    let bits = self.add(b, Expression::Load { pointer });
                     return Ok(self.add(
                         b,
                         Expression::As {
