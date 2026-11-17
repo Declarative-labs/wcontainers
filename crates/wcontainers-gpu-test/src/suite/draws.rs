@@ -184,6 +184,61 @@ pub fn the_scissor_bounds_the_draw<H: Host>() {
     ok(&mut b);
 }
 
+/// A scissor reaching past the target, to the largest offsets, is clipped to the target.
+pub fn a_scissor_past_the_target_is_clipped_to_it<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let (t, v) = rgba8_target(&mut b, N);
+    let vb = vertex_buffer(&mut b, &QUAD);
+    let p = program(&mut b, CONSTANT, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = b
+        .create_raster(&RasterDesc {
+            scissor: true,
+            ..raster_desc(ProvokingVertex::First)
+        })
+        .expect("create_raster");
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let scissor = [ScissorRect {
+        x: 1,
+        y: 2,
+        width: u32::MAX,
+        height: u32::MAX,
+    }];
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        scissors: &scissor,
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let mut expected = Vec::new();
+    for y in 0..N {
+        for x in 0..N {
+            let inside = x >= 1 && y >= 2;
+            expected.extend_from_slice(&if inside { ROUNDED_BYTES } else { [0; 4] });
+        }
+    }
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
 /// The raster block every test of this file starts from.
 fn raster_desc(provoking: ProvokingVertex) -> RasterDesc {
     RasterDesc {

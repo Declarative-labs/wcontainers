@@ -567,12 +567,12 @@ pub trait Backend: Sized {
         };
         let width = rects
             .iter()
-            .map(|r| r.x + r.width)
+            .map(|r| r.x.saturating_add(r.width))
             .max()
             .unwrap_or(0);
         let height = rects
             .iter()
-            .map(|r| r.y + r.height)
+            .map(|r| r.y.saturating_add(r.height))
             .max()
             .unwrap_or(0);
         let viewport = [full_viewport(width, height)];

@@ -14,10 +14,11 @@ use wcontainers_gpu::*;
 
 /// One value a vertex passes on.
 #[derive(Clone, Debug)]
-struct Varying {
-    location: u32,
-    interpolation: Interpolation,
-    numbers: Vec<f64>,
+pub(crate) struct Varying {
+    pub location: u32,
+    pub interpolation: Interpolation,
+    pub kind: ScalarKind,
+    pub numbers: Vec<f64>,
 }
 
 /// A vertex in clip space, its values split by how they are interpolated.
@@ -55,11 +56,11 @@ impl Target {
 }
 
 /// The resources a draw's binding sets name.
-struct Bindings<'a> {
-    rec: &'a Recorder,
-    sets: &'a [Option<Entries>; MAX_BINDING_SETS],
+pub(crate) struct Bindings<'a> {
+    pub rec: &'a Recorder,
+    pub sets: &'a [Option<Entries>; MAX_BINDING_SETS],
     /// The draw's writes into storage buffers, applied when it ends.
-    writes: &'a RefCell<Vec<StorageWrite>>,
+    pub writes: &'a RefCell<Vec<StorageWrite>>,
 }
 
 impl Bindings<'_> {
@@ -349,7 +350,7 @@ fn sample_view(
 }
 
 /// The entry point of a module the program names.
-fn entry(module: &ShaderModule) -> Result<usize, Error> {
+pub(crate) fn entry(module: &ShaderModule) -> Result<usize, Error> {
     module
         .module
         .entry_points
@@ -359,7 +360,7 @@ fn entry(module: &ShaderModule) -> Result<usize, Error> {
 }
 
 /// The arguments of an entry point, each input made by `input`.
-fn arguments(
+pub(crate) fn arguments(
     module: &naga::Module,
     fun: &naga::Function,
     mut input: impl FnMut(&Binding, naga::Handle<naga::Type>) -> Result<Value, Error>,
@@ -575,22 +576,40 @@ fn clip(polygon: Vec<ClipVertex>, distance: impl Fn(&[f64; 4]) -> f64) -> Vec<Cl
     out
 }
 
-struct DrawState {
-    vertex: std::rc::Rc<ShaderModule>,
+pub(crate) struct DrawState {
+    pub vertex: std::rc::Rc<ShaderModule>,
     fragment: Option<std::rc::Rc<ShaderModule>>,
     blend: BlendDesc,
     depth_stencil: DepthStencilDesc,
-    raster: RasterDesc,
+    pub raster: RasterDesc,
     layout: VertexLayoutDesc,
-    sets: [Option<Entries>; MAX_BINDING_SETS],
+    pub sets: [Option<Entries>; MAX_BINDING_SETS],
     viewport: [f64; 6],
     scissor: Option<ScissorRect>,
 }
 
 impl Recorder {
-    fn gather(&self, call: &DrawCall<'_, Self>) -> Result<DrawState, Error> {
+    /// The entries of the binding sets a call binds.
+    pub(crate) fn sets(
+        &self,
+        bindings: &[Option<&crate::recorder::Id>; MAX_BINDING_SETS],
+    ) -> Result<[Option<Entries>; MAX_BINDING_SETS], Error> {
+        let mut sets: [Option<Entries>; MAX_BINDING_SETS] = Default::default();
+        for (slot, set) in sets.iter_mut().zip(bindings) {
+            if let Some(set) = set {
+                match self.obj(**set)? {
+                    Obj::BindingSet(s, _) => *slot = Some(s.clone()),
+                    _ => return Err("a binding set that is not one".into()),
+                }
+            }
+        }
+        Ok(sets)
+    }
+
+    pub(crate) fn gather(&self, call: &DrawCall<'_, Self>) -> Result<DrawState, Error> {
         let (vertex, fragment) = match self.obj(*call.program)? {
             Obj::Program(p) => (p.vertex.clone(), p.fragment.clone()),
+            Obj::ComputeProgram(_) => return Err("a compute program drawn".into()),
             _ => return Err("the draw's program is not a program".into()),
         };
         let Obj::Blend(blend) = self.obj(*call.blend)? else {
@@ -605,32 +624,21 @@ impl Recorder {
         let Obj::VertexLayout(layout) = self.obj(*call.vertex_layout)? else {
             return Err("the draw's vertex layout block is not one".into());
         };
-        let mut sets: [Option<Entries>; MAX_BINDING_SETS] = Default::default();
-        for (slot, set) in sets.iter_mut().zip(call.bindings) {
-            if let Some(set) = set {
-                match self.obj(*set)? {
-                    Obj::BindingSet(s, _) => *slot = Some(s.clone()),
-                    _ => return Err("a binding set that is not one".into()),
-                }
-            }
-        }
-        let vp = call.viewports.first().ok_or("a draw without a viewport")?;
+        let sets = self.sets(&call.bindings)?;
+        // A capture that does not rasterise needs neither viewport nor scissor.
         let f = |b: u32| f64::from(f32::from_bits(b));
-        let viewport = [
-            f(vp.x),
-            f(vp.y),
-            f(vp.width),
-            f(vp.height),
-            f(vp.min_depth),
-            f(vp.max_depth),
-        ];
+        let viewport = call.viewports.first().map_or([0.0; 6], |vp| {
+            [
+                f(vp.x),
+                f(vp.y),
+                f(vp.width),
+                f(vp.height),
+                f(vp.min_depth),
+                f(vp.max_depth),
+            ]
+        });
         let scissor = if raster.scissor {
-            Some(
-                *call
-                    .scissors
-                    .first()
-                    .ok_or("scissor on without a scissor")?,
-            )
+            call.scissors.first().copied()
         } else {
             None
         };
@@ -648,7 +656,7 @@ impl Recorder {
     }
 
     /// Checks the draw's own values against the rules and the features this back end declares.
-    fn draw_rules(&self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
+    pub(crate) fn draw_rules(&self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
         let has = self.caps().features;
         if call.viewports.len() > 1 || call.scissors.len() > 1 {
             return Err(
@@ -693,32 +701,7 @@ impl Recorder {
         {
             return Err("8-bit indices without INDEX_U8".into());
         }
-        let l = self.caps().limits;
-        if call.immediates.len() > l.immediate_bytes as usize {
-            return Err("immediates past the limit".into());
-        }
-        let mut counts = StageCounts::default();
-        for set in call.bindings.iter().flatten() {
-            if let Obj::BindingSet(_, c) = self.obj(**set)? {
-                for (all, one) in counts.iter_mut().zip(c) {
-                    for (a, o) in all.iter_mut().zip(one) {
-                        *a += o;
-                    }
-                }
-            }
-        }
-        let most = [
-            l.uniform_buffers_per_stage,
-            l.textures_per_stage,
-            l.samplers_per_stage,
-            l.storage_buffers_per_stage,
-        ];
-        if counts
-            .iter()
-            .any(|c| c.iter().zip(most).any(|(&n, m)| n > m))
-        {
-            return Err("bindings of one stage past a limit per stage".into());
-        }
+        self.binding_limits(&call.bindings, call.immediates)?;
         if !has.contains(Features::TEXTURE_VIEWS) {
             // Each texture through one mip range (WebGL 2 sets the range on the texture itself).
             let mut ranges = Vec::new();
@@ -742,13 +725,52 @@ impl Recorder {
         Ok(())
     }
 
+    /// Checks the immediates and the bindings of each stage against the limits.
+    pub(crate) fn binding_limits(
+        &self,
+        bindings: &[Option<&crate::recorder::Id>; MAX_BINDING_SETS],
+        immediates: &[u8],
+    ) -> Result<(), Error> {
+        let l = self.caps().limits;
+        if immediates.len() > l.immediate_bytes as usize {
+            return Err("immediates past the limit".into());
+        }
+        let mut counts = StageCounts::default();
+        for set in bindings.iter().flatten() {
+            if let Obj::BindingSet(_, c) = self.obj(**set)? {
+                for (all, one) in counts.iter_mut().zip(c) {
+                    for (a, o) in all.iter_mut().zip(one) {
+                        *a += o;
+                    }
+                }
+            }
+        }
+        let most = [
+            l.uniform_buffers_per_stage,
+            l.textures_per_stage,
+            l.samplers_per_stage,
+            l.storage_buffers_per_stage,
+        ];
+        if counts
+            .iter()
+            .any(|c| c.iter().zip(most).any(|(&n, m)| n > m))
+        {
+            return Err("bindings of one stage past a limit per stage".into());
+        }
+        Ok(())
+    }
+
     /// Checks what the program's bindings take of the resources bound there: a sampler that compares
     /// exactly where the program compares, no linear filter paired with a texture this back end does
     /// not filter, buffers at least the size of the program's blocks, and entries naming every stage
     /// that reads them. Bindings missing or of another kind are refused where the program reads them.
-    fn program_bindings(&self, state: &DrawState) -> Result<(), Error> {
+    pub(crate) fn program_bindings(
+        &self,
+        shaders: &[&ShaderModule],
+        sets: &[Option<Entries>; MAX_BINDING_SETS],
+    ) -> Result<(), Error> {
         let entry_at = |rb: &naga::ResourceBinding| {
-            state.sets[rb.group as usize]
+            sets[rb.group as usize]
                 .as_ref()
                 .and_then(|s| s.iter().find(|(b, _, _)| *b == rb.binding))
         };
@@ -762,7 +784,7 @@ impl Recorder {
                 _ => Ok(None),
             }
         };
-        for shader in std::iter::once(&state.vertex).chain(&state.fragment) {
+        for shader in shaders {
             let m = &shader.module;
             let info = shader.info.get_entry_point(entry(shader)?);
             let (stage, name) = match shader.stage {
@@ -855,17 +877,7 @@ impl Recorder {
                 uses.push((*buffer, *writable));
             }
         }
-        for v in call.vertex_buffers.iter().flatten() {
-            self.buffer_for(*v.buffer, BufferUsage::VERTEX, "a vertex stream")?;
-        }
-        if let Some(i) = &call.index {
-            self.buffer_for(*i.buffer, BufferUsage::INDEX, "an index binding")?;
-        }
-        if let DrawRange::Indirect { args, .. } | DrawRange::IndexedIndirect { args, .. } =
-            call.range
-        {
-            self.buffer_for(*args, BufferUsage::INDIRECT, "indirect arguments")?;
-        }
+        self.stream_usages(call)?;
         let pass = self.pass.as_mut().ok_or("draw outside a pass")?;
         for &(buffer, writable) in &uses {
             let (mine, theirs) = if writable {
@@ -886,15 +898,31 @@ impl Recorder {
         Ok(())
     }
 
+    /// Checks the buffers of the draw's streams, indices and arguments were made for that use.
+    pub(crate) fn stream_usages(&self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
+        for v in call.vertex_buffers.iter().flatten() {
+            self.buffer_for(*v.buffer, BufferUsage::VERTEX, "a vertex stream")?;
+        }
+        if let Some(i) = &call.index {
+            self.buffer_for(*i.buffer, BufferUsage::INDEX, "an index binding")?;
+        }
+        if let DrawRange::Indirect { args, .. } | DrawRange::IndexedIndirect { args, .. } =
+            call.range
+        {
+            self.buffer_for(*args, BufferUsage::INDIRECT, "indirect arguments")?;
+        }
+        Ok(())
+    }
+
     /// The buffer bytes a draw reads or writes: its index range, the elements its vertex streams
     /// fetch and the ranges its binding sets bind.
     /// Every (texture, subresource) the draw's bound views take in.
-    fn bound_subresources(
+    pub(crate) fn bound_subresources(
         &self,
-        state: &DrawState,
+        sets: &[Option<Entries>; MAX_BINDING_SETS],
     ) -> Result<Vec<(crate::recorder::Id, usize)>, Error> {
         let mut subs = Vec::new();
-        for (_, _, bound) in state.sets.iter().flatten().flatten() {
+        for (_, _, bound) in sets.iter().flatten().flatten() {
             if let Bound::Texture(view) = *bound {
                 let v = self.view(view)?;
                 let desc = self.texture(v.texture)?.desc;
@@ -908,7 +936,7 @@ impl Recorder {
         Ok(subs)
     }
 
-    fn draw_reads(
+    pub(crate) fn draw_reads(
         &self,
         call: &DrawCall<'_, Self>,
         state: &DrawState,
@@ -1001,7 +1029,7 @@ impl Recorder {
     }
 
     /// The (fetch index, vertex index) of each vertex the range names, None where a strip restarts.
-    fn vertex_list(
+    pub(crate) fn vertex_list(
         &self,
         call: &DrawCall<'_, Self>,
     ) -> Result<(Vec<Option<u32>>, u32, u32), Error> {
@@ -1050,7 +1078,7 @@ impl Recorder {
         })
     }
 
-    fn shade_vertex(
+    pub(crate) fn shade_vertex(
         &self,
         state: &DrawState,
         call: &DrawCall<'_, Self>,
@@ -1140,6 +1168,7 @@ impl Recorder {
                     values.push(Varying {
                         location,
                         interpolation,
+                        kind,
                         numbers: v.numbers()?,
                     });
                 }
@@ -1155,13 +1184,22 @@ impl Recorder {
     pub(crate) fn draw_call(&mut self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
         self.pass.as_ref().ok_or("draw outside a pass")?;
         let state = self.gather(call)?;
+        if call.viewports.is_empty() {
+            return Err("a draw without a viewport".into());
+        }
+        if state.raster.scissor && state.scissor.is_none() {
+            return Err("scissor on without a scissor".into());
+        }
         self.draw_rules(call)?;
-        self.program_bindings(&state)?;
+        let shaders: Vec<&ShaderModule> = std::iter::once(&*state.vertex)
+            .chain(state.fragment.as_deref())
+            .collect();
+        self.program_bindings(&shaders, &state.sets)?;
         self.usage_scope(call, &state)?;
         for (buffer, start, end) in self.draw_reads(call, &state)? {
             self.touch(buffer, start, end);
         }
-        for (texture, sub) in self.bound_subresources(&state)? {
+        for (texture, sub) in self.bound_subresources(&state.sets)? {
             self.touch_in(texture, sub, 0, u64::MAX);
         }
         let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
@@ -1258,8 +1296,26 @@ impl Recorder {
                 &writes,
             );
         }
-        for (group, binding, at, bytes) in writes.into_inner() {
-            let Some(Bound::Buffer { buffer, offset, .. }) = state.sets[group as usize]
+        self.apply_writes(&state.sets, writes.into_inner());
+        for t in colors.into_iter().flatten().chain(depth) {
+            if let Some(Obj::Texture(o)) = self.objects[t.texture.0 as usize].as_mut() {
+                o.subresources[t.sub] = t.bytes;
+            }
+        }
+        if let Some(Some((_, n))) = self.pass.as_mut().map(|p| p.query.as_mut()) {
+            *n += passed;
+        }
+        result
+    }
+
+    /// Applies a draw's or a dispatch's storage writes to the buffers bound where they went.
+    pub(crate) fn apply_writes(
+        &mut self,
+        sets: &[Option<Entries>; MAX_BINDING_SETS],
+        writes: Vec<StorageWrite>,
+    ) {
+        for (group, binding, at, bytes) in writes {
+            let Some(Bound::Buffer { buffer, offset, .. }) = sets[group as usize]
                 .as_ref()
                 .and_then(|s| s.iter().find(|(b, _, _)| *b == binding))
                 .map(|(_, _, r)| r.clone())
@@ -1271,15 +1327,6 @@ impl Recorder {
                 b.bytes[at..at + bytes.len()].copy_from_slice(&bytes);
             }
         }
-        for t in colors.into_iter().flatten().chain(depth) {
-            if let Some(Obj::Texture(o)) = self.objects[t.texture.0 as usize].as_mut() {
-                o.subresources[t.sub] = t.bytes;
-            }
-        }
-        if let Some(Some((_, n))) = self.pass.as_mut().map(|p| p.query.as_mut()) {
-            *n += passed;
-        }
-        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1331,41 +1378,17 @@ impl Recorder {
             sets: &state.sets,
             writes,
         };
+        let order = assemble(&list, call.topology, raster.provoking)?;
         for instance in first_instance..first_instance + instances {
             // Shade each vertex once per instance.
             let mut shaded: std::collections::HashMap<u32, ([f64; 4], Vec<Varying>)> =
                 Default::default();
-            let mut triangles: Vec<[u32; 3]> = Vec::new();
-            let mut strip: Vec<u32> = Vec::new();
-            for v in &list {
-                let Some(v) = *v else {
-                    strip.clear();
-                    continue;
-                };
+            for &v in &order {
                 if let std::collections::hash_map::Entry::Vacant(e) = shaded.entry(v) {
                     e.insert(self.shade_vertex(state, call, v, instance, first_instance)?);
                 }
-                strip.push(v);
-                match call.topology {
-                    Topology::TriangleList if strip.len() == 3 => {
-                        triangles.push([strip[0], strip[1], strip[2]]);
-                        strip.clear();
-                    }
-                    Topology::TriangleStrip if strip.len() >= 3 => {
-                        let i = strip.len() - 3;
-                        // Vulkan's strip order: odd triangles are (i, i + 2, i + 1), or
-                        // (i + 1, i, i + 2) with the last vertex provoking, which keeps the
-                        // provoking vertex at i or i + 2 as every API defines it.
-                        triangles.push(match (i & 1, raster.provoking) {
-                            (0, _) => [strip[i], strip[i + 1], strip[i + 2]],
-                            (_, ProvokingVertex::First) => [strip[i], strip[i + 2], strip[i + 1]],
-                            (_, ProvokingVertex::Last) => [strip[i + 1], strip[i], strip[i + 2]],
-                        });
-                    }
-                    _ => {}
-                }
             }
-            for tri in triangles {
+            for tri in order.as_chunks::<3>().0 {
                 let verts: Vec<&([f64; 4], Vec<Varying>)> =
                     tri.iter().map(|v| &shaded[v]).collect();
                 let provoking = match raster.provoking {
@@ -1520,8 +1543,8 @@ impl Recorder {
         if let Some(sc) = state.scissor {
             x0 = x0.max(i64::from(sc.x));
             y0 = y0.max(i64::from(sc.y));
-            x1 = x1.min(i64::from(sc.x + sc.width));
-            y1 = y1.min(i64::from(sc.y + sc.height));
+            x1 = x1.min(i64::from(sc.x) + i64::from(sc.width));
+            y1 = y1.min(i64::from(sc.y) + i64::from(sc.height));
         }
         x0 = x0.max(p.iter().map(|q| q.0).min().unwrap_or(0) >> 8);
         y0 = y0.max(p.iter().map(|q| q.1).min().unwrap_or(0) >> 8);
@@ -1835,6 +1858,43 @@ impl Recorder {
 }
 
 /// Whether a normalised format is signed.
+/// The vertices of each whole primitive `topology` makes of `list` (None restarts a strip), in the
+/// order drawn: strips as the lists they draw, odd triangles of a triangle strip as (i, i + 2, i + 1),
+/// or (i + 1, i, i + 2) with the last vertex provoking, which keeps the provoking vertex at i or i + 2
+/// as every API defines it (Vulkan's strip order).
+pub(crate) fn assemble(
+    list: &[Option<u32>],
+    topology: Topology,
+    provoking: ProvokingVertex,
+) -> Result<Vec<u32>, Error> {
+    let mut out = Vec::new();
+    for strip in list.split(Option::is_none) {
+        let s: Vec<u32> = strip.iter().flatten().copied().collect();
+        match topology {
+            Topology::PointList => out.extend(&s),
+            Topology::LineList => out.extend(s.as_chunks::<2>().0.iter().flatten()),
+            Topology::TriangleList => out.extend(s.as_chunks::<3>().0.iter().flatten()),
+            Topology::LineStrip => out.extend(s.windows(2).flatten()),
+            Topology::TriangleStrip => {
+                for (i, w) in s.windows(3).enumerate() {
+                    out.extend(match (i & 1, provoking) {
+                        (0, _) => [w[0], w[1], w[2]],
+                        (_, ProvokingVertex::First) => [w[0], w[2], w[1]],
+                        (_, ProvokingVertex::Last) => [w[1], w[0], w[2]],
+                    });
+                }
+            }
+            Topology::TriangleFan | Topology::LineLoop => {
+                return Err(
+                    "fans and loops go through draw_fan_or_loop on a back end without FAN_AND_LOOP"
+                        .into(),
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn signed(format: Format) -> bool {
     matches!(
         format,
