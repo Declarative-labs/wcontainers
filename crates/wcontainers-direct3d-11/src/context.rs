@@ -110,6 +110,22 @@ fn put<T: Clone>(slots: &mut [Option<T>], start: u32, items: &[Option<T>]) -> Re
     Ok(())
 }
 
+/// Binds `items` from `start`; true if any slot changed.
+fn put_rc<T>(slots: &mut [Option<Rc<T>>], start: u32, items: &[Option<Rc<T>>]) -> Result<bool> {
+    let start = start as usize;
+    if start + items.len() > slots.len() {
+        return Err(Error::InvalidArg("slots past the stage's last"));
+    }
+    let mut changed = false;
+    for (slot, item) in slots[start..start + items.len()].iter_mut().zip(items) {
+        if !same(slot, item) {
+            *slot = item.clone();
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 fn same<T>(a: &Option<Rc<T>>, b: &Option<Rc<T>>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => Rc::ptr_eq(a, b),
@@ -229,8 +245,9 @@ impl<B: Backend> Device<B> {
         start: u32,
         b: &[Option<Rc<Buffer<B>>>],
     ) -> Result<()> {
-        put(&mut self.ctx.constant_buffers[stage], start, b)?;
-        self.ctx.sets_dirty[stage] = true;
+        if put_rc(&mut self.ctx.constant_buffers[stage], start, b)? {
+            self.ctx.sets_dirty[stage] = true;
+        }
         Ok(())
     }
 
@@ -240,9 +257,31 @@ impl<B: Backend> Device<B> {
         start: u32,
         v: &[Option<Rc<View<B>>>],
     ) -> Result<()> {
-        put(&mut self.ctx.resources[stage], start, v)?;
-        self.ctx.sets_dirty[stage] = true;
+        // A view of a subresource bound as a target is bound as none, as Direct3D binds it.
+        let v: Vec<_> = v
+            .iter()
+            .map(|v| v.clone().filter(|v| !self.bound_as_target(v)))
+            .collect();
+        if put_rc(&mut self.ctx.resources[stage], start, &v)? {
+            self.ctx.sets_dirty[stage] = true;
+        }
         Ok(())
+    }
+
+    /// Whether a shader resource view is bound to `slot` of `stage`.
+    pub fn shader_resource_bound(&self, stage: usize, slot: u32) -> bool {
+        self.ctx.resources[stage]
+            .get(slot as usize)
+            .is_some_and(Option::is_some)
+    }
+
+    fn bound_as_target(&self, view: &View<B>) -> bool {
+        self.ctx
+            .targets
+            .iter()
+            .chain([&self.ctx.depth])
+            .flatten()
+            .any(|t| t.overlaps(view))
     }
 
     pub fn set_samplers(
@@ -251,8 +290,9 @@ impl<B: Backend> Device<B> {
         start: u32,
         s: &[Option<Rc<Sampler<B>>>],
     ) -> Result<()> {
-        put(&mut self.ctx.samplers[stage], start, s)?;
-        self.ctx.sets_dirty[stage] = true;
+        if put_rc(&mut self.ctx.samplers[stage], start, s)? {
+            self.ctx.sets_dirty[stage] = true;
+        }
         Ok(())
     }
 
@@ -272,6 +312,17 @@ impl<B: Backend> Device<B> {
             self.end_pass();
             self.ctx.targets = new;
             self.ctx.depth = depth;
+            // Binding a subresource as a target unbinds its shader resource views, as in Direct3D.
+            for stage in [VERTEX, PIXEL] {
+                let mut resources = std::mem::take(&mut self.ctx.resources[stage]);
+                for slot in &mut resources {
+                    if slot.as_ref().is_some_and(|v| self.bound_as_target(v)) {
+                        *slot = None;
+                        self.ctx.sets_dirty[stage] = true;
+                    }
+                }
+                self.ctx.resources[stage] = resources;
+            }
         }
         Ok(())
     }
@@ -404,7 +455,7 @@ impl<B: Backend> Device<B> {
                 layers,
                 c.value,
             ) {
-                self.lose(e.into());
+                let _ = self.gpu::<()>(Err(e));
             }
         }
     }
@@ -512,7 +563,8 @@ impl<B: Backend> Device<B> {
         let program = self.backend.create_program(&Program::Render {
             vertex: &vs.gpu.handle,
             fragment: ps.map(|p| &p.gpu.handle),
-        })?;
+        });
+        let program = self.gpu(program)?;
         let id = self.id();
         self.programs.insert(
             key,
@@ -557,7 +609,8 @@ impl<B: Backend> Device<B> {
                 });
             }
         }
-        let gpu = self.backend.create_vertex_layout(&desc)?;
+        let gpu = self.backend.create_vertex_layout(&desc);
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         self.layouts.insert(
             key,
@@ -608,7 +661,8 @@ impl<B: Backend> Device<B> {
         self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
         self.settle();
         let old = b.size.get();
-        let new = self.backend.create_buffer(&gpu_buffer(&b.desc, size))?;
+        let new = self.backend.create_buffer(&gpu_buffer(&b.desc, size));
+        let new = self.gpu(new)?;
         self.backend.clear_buffer(&new, old, size - old, &[0]);
         self.backend.copy_buffer(&b.handle(), 0, &new, 0, old);
         let id = self.id();
@@ -689,9 +743,10 @@ impl<B: Backend> Device<B> {
             });
         }
         // The entries borrow handles from the slot clones above, which live to the end of this call.
-        let set = self.backend.create_binding_set(&entries)?;
+        let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(cbs);
+        let set = self.gpu(set)?;
         let id = self.id();
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
         self.ctx.sets_dirty[stage] = false;
@@ -775,7 +830,8 @@ impl<B: Backend> Device<B> {
                     &[&bytes],
                     4,
                     &mut offsets,
-                )?;
+                );
+                let ring = self.gpu(ring)?;
                 let r = DrawRange::Indexed {
                     first: (offsets[0] / 4) as u32,
                     count: list.len() as u32,
@@ -1150,8 +1206,8 @@ impl<B: Backend> Device<B> {
                         offset: 0,
                         size: u64::from(d.byte_width),
                     };
-                    self.backend
-                        .read_back_now(&src, &mut b.shadow.borrow_mut())?;
+                    let r = self.backend.read_back_now(&src, &mut b.shadow.borrow_mut());
+                    self.gpu(r)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(b) as usize, 0, kind));
                 let data = b.shadow.borrow_mut().as_mut_ptr();
@@ -1192,8 +1248,8 @@ impl<B: Backend> Device<B> {
                     },
                 };
                 let mut shadow = t.shadow.borrow_mut();
-                self.backend
-                    .read_back_now(&src, &mut shadow[sub as usize])?;
+                let r = self.backend.read_back_now(&src, &mut shadow[sub as usize]);
+                self.gpu(r)?;
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
                     data: shadow[sub as usize].as_mut_ptr(),

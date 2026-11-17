@@ -130,17 +130,29 @@ fn views_hold_their_resource_and_return_it() {
     let mut view = None;
     unsafe { device.CreateRenderTargetView(&resource, None, Some(&mut view)) }.unwrap();
     let view = view.unwrap();
-    assert_eq!(refs(&texture), before + 1);
+    // The view's reference is the library's own: the program's count does not show it.
+    assert_eq!(refs(&texture), before);
     let back = unsafe { view.GetResource() }.unwrap();
     assert_eq!(back.as_raw(), resource.as_raw());
+    assert_eq!(refs(&texture), before + 1);
+    // Released by the program, the texture lives on in the view and comes back from it.
+    drop((back, resource));
+    let raw = texture.as_raw();
+    assert_eq!(
+        unsafe { (Interface::vtable(&texture).base__.base__.base__.Release)(raw) },
+        0
+    );
+    std::mem::forget(texture);
+    let back = unsafe { view.GetResource() }.unwrap();
+    assert_eq!((back.as_raw(), refs(&back)), (raw, 1));
     let mut vd = D3D11_RENDER_TARGET_VIEW_DESC::default();
     unsafe { view.GetDesc(&mut vd) };
     assert_eq!(vd.ViewDimension, D3D11_RTV_DIMENSION_TEXTURE2D);
     assert_eq!(vd.Format, desc.Format);
     // A view of a texture without the bind flag is refused, and a null out pointer only checks.
     let mut srv = None;
-    assert!(unsafe { device.CreateShaderResourceView(&resource, None, Some(&mut srv)) }.is_err());
-    assert!(unsafe { device.CreateRenderTargetView(&resource, None, None) }.is_ok());
+    assert!(unsafe { device.CreateShaderResourceView(&back, None, Some(&mut srv)) }.is_err());
+    assert!(unsafe { device.CreateRenderTargetView(&back, None, None) }.is_ok());
 }
 
 #[test]
@@ -268,7 +280,7 @@ fn equal_state_descriptions_give_the_live_object() {
     assert_eq!(refs(&a), 2);
     assert_ne!(blend(true).as_raw(), a.as_raw());
     drop((a, b));
-    // Once every reference went, an equal description makes an object of its own.
+    // Once the program's references went, an equal description hands out one again.
     assert_eq!(refs(&blend(false)), 1);
 
     let sampler = |filter| {
@@ -312,8 +324,8 @@ fn the_context_hands_back_what_is_bound() {
         assert!(buffers[0].is_none() && buffers[2].is_none());
         assert_eq!(buffers[1].as_ref().map(Interface::as_raw), Some(b.as_raw()));
         assert_eq!((strides, offsets), ([0, 16, 0], [0, 4, 0]));
-        // The context holds a reference on what is bound, and the getter hands out one more.
-        assert_eq!(refs(&b), 3);
+        // The context's reference is the library's own; the getter hands out one of the program's.
+        assert_eq!(refs(&b), 2);
         drop(buffers);
         context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         assert_eq!(

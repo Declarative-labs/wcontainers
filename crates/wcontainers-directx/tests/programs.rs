@@ -83,6 +83,43 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     );
 }
 
+/// Seeds and steps of the `lifetimes` runs: `WC_LIFETIMES=<first seed>,<seeds>,<steps>`.
+fn lifetime_cases() -> (u64, u64, usize) {
+    let v: Vec<u64> = std::env::var("WC_LIFETIMES")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|x| x.trim().parse().ok())
+        .collect();
+    match v[..] {
+        [first, seeds, steps] => (first, seeds, steps as usize),
+        _ => (1, 8, 300),
+    }
+}
+
+#[test]
+fn object_lifetimes_count_as_direct3d_counts_them() {
+    let (first, seeds, steps) = lifetime_cases();
+    let (system, ours) = (
+        place("lifetimes-system", false),
+        place("lifetimes-ours", true),
+    );
+    for seed in first..first + seeds {
+        let args = [&seed.to_string()[..], &steps.to_string()[..]];
+        let (code, want) = run_with("lifetimes", &system, &args);
+        assert_eq!(code, 0, "{want}");
+        let (code, got) = run_with("lifetimes", &ours, &args);
+        assert_eq!(code, 0, "{got}");
+        for (w, g) in want.lines().zip(got.lines()) {
+            assert_eq!(w, g, "seed {seed}: the first line that differs");
+        }
+        assert_eq!(want.lines().count(), got.lines().count(), "seed {seed}");
+    }
+    eprintln!(
+        "lifetimes: seeds {first}..{} of {steps} steps each",
+        first + seeds
+    );
+}
+
 /// `own_handled` with a depth-stencil view of `format`, beside the system's library and ours.
 fn handled_with_depth(format: &str) {
     for ours in [false, true] {

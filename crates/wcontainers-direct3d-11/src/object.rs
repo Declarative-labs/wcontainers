@@ -115,6 +115,28 @@ pub struct View<B: Backend> {
     pub gpu: Kept<B, B::TextureView>,
 }
 
+impl<B: Backend> View<B> {
+    /// Whether the two views share a subresource.
+    pub fn overlaps(&self, other: &View<B>) -> bool {
+        fn meet(a: u32, n: u32, b: u32, m: u32) -> bool {
+            a < b + m && b < a + n
+        }
+        Rc::ptr_eq(&self.texture, &other.texture)
+            && meet(
+                self.desc.first_mip,
+                self.desc.mip_count,
+                other.desc.first_mip,
+                other.desc.mip_count,
+            )
+            && meet(
+                self.desc.first_layer,
+                self.desc.layer_count,
+                other.desc.first_layer,
+                other.desc.layer_count,
+            )
+    }
+}
+
 pub struct Sampler<B: Backend> {
     pub desc: SamplerDesc,
     pub gpu: Kept<B, B::Sampler>,

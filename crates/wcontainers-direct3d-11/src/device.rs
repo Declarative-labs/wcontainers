@@ -8,8 +8,8 @@ use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
     BufferDesc as GpuBuffer, BufferUsage, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
-    FormatKind, FormatUse, FrontFace, LossReason, MAX_COLOR_TARGETS, MapIntent, Object, Origin,
-    ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
+    FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
+    Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
     StageValue, StencilFace, StencilOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
     TextureViewDesc, ViewDimension, WriteMode,
 };
@@ -46,6 +46,16 @@ pub enum Removal {
     Unserved,
     /// The back end lost its device.
     Lost(LossReason),
+}
+
+/// A back-end error in the front's terms, where it does not remove a device.
+fn gpu_error(e: GpuError) -> Error {
+    match e {
+        GpuError::Absent(_) => Error::NotImplemented("a feature the back end lacks"),
+        GpuError::OutOfMemory => Error::OutOfMemory,
+        GpuError::DeviceLost => Error::DeviceRemoved,
+        GpuError::Invalid(_) => Error::DeviceRemoved,
+    }
 }
 
 /// The blocks a `None` state stands for.
@@ -92,9 +102,15 @@ impl<B: Backend> Device<B> {
         let blend_desc = BlendDesc::default_state();
         let ds_desc = DepthStencilDesc::default_state();
         let raster_desc = RasterizerDesc::default_state();
-        let blend = backend.create_blend(&blend_block(&blend_desc))?;
-        let ds = backend.create_depth_stencil(&depth_stencil_block(&ds_desc))?;
-        let raster = backend.create_raster(&raster_block(&raster_desc))?;
+        let blend = backend
+            .create_blend(&blend_block(&blend_desc))
+            .map_err(gpu_error)?;
+        let ds = backend
+            .create_depth_stencil(&depth_stencil_block(&ds_desc))
+            .map_err(gpu_error)?;
+        let raster = backend
+            .create_raster(&raster_block(&raster_desc))
+            .map_err(gpu_error)?;
         let defaults = Defaults {
             blend: Rc::new(Blend {
                 desc: blend_desc,
@@ -148,10 +164,33 @@ impl<B: Backend> Device<B> {
 
     /// Removes the device because of `e`: a request it cannot serve, or the back end's loss.
     pub fn lose(&mut self, e: Error) {
+        self.remove(&format!("{e:?}"));
+    }
+
+    fn remove(&mut self, why: &str) {
         if self.poll_removed().is_none() {
-            eprintln!("wcontainers direct3d 11: device removed: {e:?}");
+            eprintln!("wcontainers direct3d 11: device removed: {why}");
             self.removed = Some(Removal::Unserved);
         }
+    }
+
+    /// The back end's answer in the front's terms. A loss or a call the back end refused removes the
+    /// device, with the back end's reason.
+    pub(crate) fn gpu<T>(&mut self, r: core::result::Result<T, GpuError>) -> Result<T> {
+        r.map_err(|e| match e {
+            GpuError::Absent(_) | GpuError::OutOfMemory => gpu_error(e),
+            GpuError::DeviceLost => {
+                if self.poll_removed().is_none() {
+                    eprintln!("wcontainers direct3d 11: device removed: the back end lost it");
+                    self.removed = Some(Removal::Lost(LossReason::Removed));
+                }
+                Error::DeviceRemoved
+            }
+            GpuError::Invalid(rule) => {
+                self.remove(&format!("the back end refused a call: {rule}"));
+                Error::DeviceRemoved
+            }
+        })
     }
 
     /// The warnings not yet shown: each slow path the first time it is taken.
@@ -221,7 +260,8 @@ impl<B: Backend> Device<B> {
         // (padded with zeros past the program's bytes) never needs an edge merge.
         let granule = u64::from(self.backend.caps().limits.buffer_copy_alignment.max(1));
         let size = u64::from(d.byte_width).div_ceil(granule) * granule;
-        let gpu = self.backend.create_buffer(&gpu_buffer(d, size))?;
+        let gpu = self.backend.create_buffer(&gpu_buffer(d, size));
+        let gpu = self.gpu(gpu)?;
         if let Some(bytes) = init {
             let bytes = &bytes[..d.byte_width as usize];
             if bytes.len() as u64 == size {
@@ -364,7 +404,8 @@ impl<B: Backend> Device<B> {
             cube,
             reinterpret: false,
         };
-        let gpu = self.backend.create_texture(&gpu_desc)?;
+        let gpu = self.backend.create_texture(&gpu_desc);
+        let gpu = self.gpu(gpu)?;
         let resolved = Texture2DDesc {
             mip_levels: mips,
             ..*d
@@ -495,7 +536,8 @@ impl<B: Backend> Device<B> {
                 layer_count: v.layer_count,
                 stencil: false,
             },
-        )?;
+        );
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(View {
             texture: texture.clone(),
@@ -578,7 +620,8 @@ impl<B: Backend> Device<B> {
             },
             compare,
             border,
-        })?;
+        });
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Sampler {
             desc: *d,
@@ -604,7 +647,8 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_blend(&block)?;
+        let gpu = self.backend.create_blend(&block);
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Blend {
             desc: *d,
@@ -628,7 +672,8 @@ impl<B: Backend> Device<B> {
         let block = depth_stencil_block(d);
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_depth_stencil(&block)?;
+        let gpu = self.backend.create_depth_stencil(&block);
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(DepthStencil {
             desc: *d,
@@ -652,7 +697,8 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_raster(&raster_block(d))?;
+        let gpu = self.backend.create_raster(&raster_block(d));
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Rasterizer {
             desc: *d,
@@ -670,7 +716,8 @@ impl<B: Backend> Device<B> {
         let module = converted.modules.pop().expect("one module");
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_shader(&module)?;
+        let gpu = self.backend.create_shader(&module);
+        let gpu = self.gpu(gpu)?;
         if stage == wcontainers_gpu::SourceStage::Vertex {
             self.vertex_inputs.insert(
                 *blake3::hash(bytecode).as_bytes(),
@@ -722,6 +769,9 @@ impl<B: Backend> Device<B> {
             };
             next_offset[slot] = offset + format::vertex_size(vf);
             let step = e.per_instance.then_some(e.step_rate);
+            if step.is_some_and(|r| r != 1) {
+                return not_implemented("instance step rates other than one");
+            }
             if resolved.iter().any(|r: &LayoutElement| r.slot == e.slot)
                 && instance_steps[slot] != step
             {

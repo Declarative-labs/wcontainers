@@ -9,12 +9,16 @@ use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice};
-use windows::core::{GUID, IUnknownImpl, Interface, OutRef, Ref, Result, Weak, implement};
+use windows::core::{
+    ComObjectInner, ComObjectInterface, GUID, IUnknownImpl, Interface, OutRef, Ref, Result,
+    implement,
+};
 
 use wcontainers_direct3d_11::desc::{self, InputElement, SubresourceData};
 use wcontainers_direct3d_11::format;
 use wcontainers_gpu::SourceStage;
 
+use super::counted::{Counted, Held};
 use super::*;
 
 #[implement(ID3D11Device, IDXGIDevice)]
@@ -31,34 +35,36 @@ pub struct Device {
     states: States,
 }
 
+/// The state objects made, by description, each held with a library reference for the device's
+/// life (Direct3D hands out the existing object for a description equal to one it has made).
 #[derive(Default)]
 struct States {
-    blend: RefCell<HashMap<Vec<u32>, Weak<ID3D11BlendState>>>,
-    depth_stencil: RefCell<HashMap<Vec<u32>, Weak<ID3D11DepthStencilState>>>,
-    raster: RefCell<HashMap<Vec<u32>, Weak<ID3D11RasterizerState>>>,
-    sampler: RefCell<HashMap<Vec<u32>, Weak<ID3D11SamplerState>>>,
+    blend: RefCell<HashMap<Vec<u32>, Held<BlendState_Impl>>>,
+    depth_stencil: RefCell<HashMap<Vec<u32>, Held<DepthStencilState_Impl>>>,
+    raster: RefCell<HashMap<Vec<u32>, Held<RasterizerState_Impl>>>,
+    sampler: RefCell<HashMap<Vec<u32>, Held<SamplerState_Impl>>>,
 }
 
-/// The live state object of description `key` in `live`, or a new one from `make`, recorded.
-fn shared_state<I: Interface>(
-    live: &RefCell<HashMap<Vec<u32>, Weak<I>>>,
+/// The state object of description `key` in `made`, or a new one from `make`, recorded.
+fn shared_state<T, I>(
+    made: &RefCell<HashMap<Vec<u32>, Held<T::Outer>>>,
     key: Vec<u32>,
     out: OutRef<I>,
     make: impl FnOnce() -> Result<I>,
-) -> Result<()> {
-    let found = live.borrow().get(&key).and_then(Weak::upgrade);
-    let object = match found {
-        Some(o) => o,
-        None => {
-            let o = make()?;
-            let weak = o.downgrade()?;
-            let mut live = live.borrow_mut();
-            live.retain(|_, w| w.upgrade().is_some());
-            live.insert(key, weak);
-            o
-        }
-    };
-    give(out, object)
+) -> Result<()>
+where
+    T: ComObjectInner,
+    T::Outer: Counted + ComObjectInterface<I> + std::any::Any,
+    I: Interface + windows::core::Type<I, Default = Option<I>>,
+{
+    let found = made.borrow().get(&key).map(Held::public);
+    if let Some(o) = found {
+        return give(out, o);
+    }
+    let o = make()?;
+    let held = Held::new(o.cast_object_ref::<T>()?);
+    made.borrow_mut().insert(key, held);
+    give(out, o)
 }
 
 /// A description's fields as words, for comparing descriptions without their padding.
@@ -236,7 +242,10 @@ impl Device_Impl {
             .borrow_mut()
             .create_view(&texture, d.as_ref(), desc::bind::SHADER_RESOURCE)
             .map_err(hresult)?;
-        let r = resource.as_ref().cloned().ok_or(E_INVALIDARG)?;
+        let r = resource
+            .as_ref()
+            .and_then(HeldResource::of)
+            .ok_or(E_INVALIDARG)?;
         give(out, ShaderResourceView::new(view, r, self.me()).into())
     }
 
@@ -253,7 +262,10 @@ impl Device_Impl {
             .borrow_mut()
             .create_view(&texture, d.as_ref(), desc::bind::RENDER_TARGET)
             .map_err(hresult)?;
-        let r = resource.as_ref().cloned().ok_or(E_INVALIDARG)?;
+        let r = resource
+            .as_ref()
+            .and_then(HeldResource::of)
+            .ok_or(E_INVALIDARG)?;
         give(out, RenderTargetView::new(view, r, self.me()).into())
     }
 
@@ -270,7 +282,10 @@ impl Device_Impl {
             .borrow_mut()
             .create_view(&texture, d.as_ref(), desc::bind::DEPTH_STENCIL)
             .map_err(hresult)?;
-        let r = resource.as_ref().cloned().ok_or(E_INVALIDARG)?;
+        let r = resource
+            .as_ref()
+            .and_then(HeldResource::of)
+            .ok_or(E_INVALIDARG)?;
         give(out, DepthStencilView::new(view, r, self.me()).into())
     }
 
@@ -360,7 +375,7 @@ impl Device_Impl {
         out: OutRef<ID3D11BlendState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        shared_state(&self.states.blend, blend_key(d), out, || {
+        shared_state::<BlendState, _>(&self.states.blend, blend_key(d), out, || {
             let state = self
                 .front
                 .borrow_mut()
@@ -376,7 +391,7 @@ impl Device_Impl {
         out: OutRef<ID3D11DepthStencilState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        shared_state(
+        shared_state::<DepthStencilState, _>(
             &self.states.depth_stencil,
             depth_stencil_key(d),
             out,
@@ -397,7 +412,7 @@ impl Device_Impl {
         out: OutRef<ID3D11RasterizerState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        shared_state(&self.states.raster, words(d), out, || {
+        shared_state::<RasterizerState, _>(&self.states.raster, words(d), out, || {
             let state = self
                 .front
                 .borrow_mut()
@@ -413,7 +428,7 @@ impl Device_Impl {
         out: OutRef<ID3D11SamplerState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        shared_state(&self.states.sampler, words(d), out, || {
+        shared_state::<SamplerState, _>(&self.states.sampler, words(d), out, || {
             let state = self
                 .front
                 .borrow_mut()

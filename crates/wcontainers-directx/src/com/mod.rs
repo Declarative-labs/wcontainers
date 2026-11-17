@@ -4,6 +4,7 @@
 
 mod context;
 mod convert;
+pub mod counted;
 mod device;
 mod dxgi;
 mod generated;
@@ -169,6 +170,7 @@ pub fn hresult(e: wcontainers_direct3d_11::Error) -> Error {
         F::NotImplemented(_) => E_NOTIMPL.into(),
         F::Unsupported => DXGI_ERROR_UNSUPPORTED.into(),
         F::StillDrawing => DXGI_ERROR_WAS_STILL_DRAWING.into(),
+        F::OutOfMemory => windows::Win32::Foundation::E_OUTOFMEMORY.into(),
         F::DeviceRemoved => DXGI_ERROR_DEVICE_REMOVED.into(),
     }
 }
@@ -257,23 +259,29 @@ impl Private {
     }
 }
 
-/// What every device child has: its device (held with a reference, as Direct3D's children hold
-/// theirs) and its private data.
+/// What every device child has: its device and its private data. The device is held with one
+/// reference while the program holds the child ([`counted`]); the context, which is not counted that
+/// way, gives its reference back when it goes.
 pub struct Child {
-    pub device: ID3D11Device,
+    device: ManuallyDrop<ID3D11Device>,
     pub private: Private,
 }
 
 impl Child {
+    /// A child holding `device`'s reference.
     pub fn new(device: ID3D11Device) -> Self {
         Child {
-            device,
+            device: ManuallyDrop::new(device),
             private: Private::default(),
         }
     }
 
+    pub fn device(&self) -> &ID3D11Device {
+        &self.device
+    }
+
     pub fn get_device(&self, out: OutRef<ID3D11Device>) {
-        let _ = out.write(Some(self.device.clone()));
+        let _ = out.write(Some(self.device().clone()));
     }
 
     pub(crate) fn get_private_data(
