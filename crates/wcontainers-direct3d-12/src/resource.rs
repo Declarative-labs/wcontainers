@@ -223,6 +223,11 @@ impl ResourceDesc {
         if self.mip_levels != 0 || self.dimension == DIMENSION_BUFFER {
             return u32::from(self.mip_levels).max(1);
         }
+        self.full_chain()
+    }
+
+    /// The levels down to one texel.
+    pub fn full_chain(&self) -> u32 {
         let depth = if self.dimension == DIMENSION_TEXTURE3D {
             u64::from(self.depth_or_array_size)
         } else {

@@ -19,7 +19,7 @@ use wcontainers_direct3d_12::{
     ResourceId, RootId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, format_support, plane_count};
-use wcontainers_gpu::Backend;
+use wcontainers_gpu::{Backend, Extent, Origin};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -1375,6 +1375,9 @@ impl Device {
                     features::quality_levels(&caps, d.Format.0 as u32, d.SampleCount)
                         .ok_or(E_FAIL)?;
             }
+            // Features past `D3D12_FEATURE_PROTECTED_RESOURCE_SESSION_TYPES` (34) are unknown to
+            // the Windows 10 runtime this library stands in for, which refuses them so.
+            f if f.0 > 34 => return Err(E_INVALIDARG.into()),
             _ => return Err(self.unsupported(&format!("CheckFeatureSupport({})", feature.0))),
         }
         Ok(())
@@ -1777,19 +1780,22 @@ impl Resource {
         }
     }
 
-    /// The checks `WriteToSubresource` and `ReadFromSubresource` share: a mapped texture in a heap
-    /// the CPU sees, a subresource it has, and a box inside it on block edges. `Ok(false)` for an
-    /// empty box, which moves nothing.
-    fn check_cpu_access(&self, subresource: u32, pbox: *const D3D12_BOX) -> Result<bool> {
+    /// The checks `WriteToSubresource` and `ReadFromSubresource` share: a texture in a heap the CPU
+    /// sees, a subresource it has, and a box inside it on block edges. The box's origin and extent
+    /// with the bytes a caller's layout of it spans, or `None` for an empty box, which moves
+    /// nothing. Real Direct3D 12 does not ask for a `Map` first, whatever the documentation says.
+    fn cpu_box(
+        &self,
+        subresource: u32,
+        pbox: *const D3D12_BOX,
+        row_pitch: u32,
+        depth_pitch: u32,
+    ) -> Result<Option<(Origin, Extent, usize)>> {
         let desc = resource_desc(&self.desc);
-        let Some(maps) = &self.cpu_maps else {
-            return Err(E_INVALIDARG.into());
-        };
-        let mips = desc.mips();
-        if subresource >= desc.subresources().map_err(hr)? {
+        if self.cpu_maps.is_none() || subresource >= desc.subresources().map_err(hr)? {
             return Err(E_INVALIDARG.into());
         }
-        let mip = subresource % mips;
+        let mip = subresource % desc.mips();
         let size = |n: u64| (n >> mip).max(1) as u32;
         let (w, h) = (size(desc.width), size(u64::from(desc.height)));
         let d = if desc.dimension == wcontainers_direct3d_12::resource::DIMENSION_TEXTURE3D {
@@ -1797,59 +1803,104 @@ impl Resource {
         } else {
             1
         };
+        let (bw, bh, bytes) = desc.texture_format().map_err(hr)?.0.block();
         // SAFETY: an optional box, as the API allows.
-        if let Some(b) = unsafe { pbox.as_ref() } {
-            let (bw, bh, _) = desc.texture_format().map_err(hr)?.0.block();
-            let edge = |v: u32, block: u32, end: u32| v.is_multiple_of(block) || v == end;
-            if b.right > w
-                || b.bottom > h
-                || b.back > d
-                || !b.left.is_multiple_of(bw)
-                || !b.top.is_multiple_of(bh)
-                || !edge(b.right, bw, w)
-                || !edge(b.bottom, bh, h)
-            {
-                return Err(E_INVALIDARG.into());
-            }
-            if b.left >= b.right || b.top >= b.bottom || b.front >= b.back {
-                return Ok(false);
-            }
+        let b = unsafe { pbox.as_ref() }.copied().unwrap_or(D3D12_BOX {
+            left: 0,
+            top: 0,
+            front: 0,
+            right: w,
+            bottom: h,
+            back: d,
+        });
+        let edge = |v: u32, block: u32, end: u32| v.is_multiple_of(block) || v == end;
+        if b.right > w
+            || b.bottom > h
+            || b.back > d
+            || !b.left.is_multiple_of(bw)
+            || !b.top.is_multiple_of(bh)
+            || !edge(b.right, bw, w)
+            || !edge(b.bottom, bh, h)
+        {
+            return Err(E_INVALIDARG.into());
         }
-        if maps.load(Ordering::Relaxed) == 0 {
-            return Err(windows::core::Error::new(
-                E_INVALIDARG,
-                "the texture is not mapped",
-            ));
+        if b.left >= b.right || b.top >= b.bottom || b.front >= b.back {
+            return Ok(None);
         }
-        Ok(true)
+        let extent = Extent {
+            width: b.right - b.left,
+            height: b.bottom - b.top,
+            depth_or_layers: b.back - b.front,
+        };
+        let row = (extent.width.div_ceil(bw) * bytes) as usize;
+        let rows = extent.height.div_ceil(bh) as usize;
+        let span = (extent.depth_or_layers as usize - 1) * depth_pitch as usize
+            + (rows - 1) * row_pitch as usize
+            + row;
+        let origin = Origin {
+            x: b.left,
+            y: b.top,
+            z: b.front,
+        };
+        Ok(Some((origin, extent, span)))
     }
 
     pub fn WriteToSubresource(
         &self,
         subresource: u32,
         pbox: *const D3D12_BOX,
-        _data: *const c_void,
-        _row_pitch: u32,
-        _depth_pitch: u32,
+        data: *const c_void,
+        row_pitch: u32,
+        depth_pitch: u32,
     ) -> Result<()> {
-        if self.check_cpu_access(subresource, pbox)? {
-            return Err(self.unsupported("WriteToSubresource of a mapped texture"));
-        }
-        Ok(())
+        let Some((origin, extent, span)) =
+            self.cpu_box(subresource, pbox, row_pitch, depth_pitch)?
+        else {
+            return Ok(());
+        };
+        let (id, data) = (self.id, data as usize);
+        gpu::call(move |d| {
+            // SAFETY: the caller's bytes of the layout it gave, read before the call returns.
+            let bytes = unsafe { std::slice::from_raw_parts(data as *const u8, span) };
+            d.write_subresource(
+                id,
+                subresource,
+                origin,
+                extent,
+                bytes,
+                (row_pitch, depth_pitch),
+            )
+        })
+        .map_err(hr)
     }
 
     pub fn ReadFromSubresource(
         &self,
-        _data: *mut c_void,
-        _row_pitch: u32,
-        _depth_pitch: u32,
+        data: *mut c_void,
+        row_pitch: u32,
+        depth_pitch: u32,
         subresource: u32,
         pbox: *const D3D12_BOX,
     ) -> Result<()> {
-        if self.check_cpu_access(subresource, pbox)? {
-            return Err(self.unsupported("ReadFromSubresource of a mapped texture"));
-        }
-        Ok(())
+        let Some((origin, extent, span)) =
+            self.cpu_box(subresource, pbox, row_pitch, depth_pitch)?
+        else {
+            return Ok(());
+        };
+        let (id, data) = (self.id, data as usize);
+        gpu::call(move |d| {
+            // SAFETY: the caller's memory of the layout it gave, written before the call returns.
+            let bytes = unsafe { std::slice::from_raw_parts_mut(data as *mut u8, span) };
+            d.read_subresource(
+                id,
+                subresource,
+                origin,
+                extent,
+                bytes,
+                (row_pitch, depth_pitch),
+            )
+        })
+        .map_err(hr)
     }
 }
 

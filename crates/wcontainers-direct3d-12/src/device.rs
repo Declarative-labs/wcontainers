@@ -436,7 +436,8 @@ impl<B: Backend> Device<B> {
                 width: u32::try_from(desc.width).map_err(|_| Error::Invalid("texture too wide"))?,
                 height: desc.height.max(1),
                 depth_or_layers: u32::from(desc.depth_or_array_size).max(1),
-                mip_levels: desc.mips(),
+                // Direct3D 12 takes more levels than the chain has; the texture keeps the chain.
+                mip_levels: desc.mips().min(desc.full_chain()),
                 samples: desc.sample_count.max(1),
                 usage,
                 cube: false,
@@ -544,6 +545,107 @@ impl<B: Backend> Device<B> {
             self.inherit(id, &overlaps);
         }
         Ok(id)
+    }
+
+    /// The region of subresource `sub` of texture `id` at `origin`, for slice `z` of a box.
+    fn subresource_region(
+        &self,
+        id: ResourceId,
+        sub: u32,
+        origin: Origin,
+        z: u32,
+    ) -> Result<TextureRegion<'_, B>, Error> {
+        let (texture, desc) = self.texture(id)?;
+        let mips = desc.mip_levels;
+        let three_d = desc.dimension == TextureDimension::D3;
+        Ok(TextureRegion {
+            texture,
+            mip: sub % mips,
+            layer: if three_d { 0 } else { sub / mips },
+            origin: Origin {
+                z: origin.z + z,
+                ..origin
+            },
+            stencil: false,
+        })
+    }
+
+    /// `WriteToSubresource`: the box at `origin` of `extent` texels of subresource `sub`, from
+    /// `data` with rows and slices the pitches' bytes apart.
+    pub fn write_subresource(
+        &mut self,
+        id: ResourceId,
+        sub: u32,
+        origin: Origin,
+        extent: Extent,
+        data: &[u8],
+        (row_pitch, depth_pitch): (u32, u32),
+    ) -> Result<(), Error> {
+        self.live()?;
+        let rows = extent.height.div_ceil(self.texture(id)?.1.format.block().1);
+        for z in 0..extent.depth_or_layers {
+            let start = (z * depth_pitch) as usize;
+            let region = self.subresource_region(id, sub, origin, z)?;
+            let (texture, region) = (region.texture.clone(), region);
+            let region = TextureRegion {
+                texture: &texture,
+                ..region
+            };
+            self.backend.write_texture(
+                &region,
+                Extent {
+                    depth_or_layers: 1,
+                    ..extent
+                },
+                &data[start..],
+                row_pitch,
+                rows,
+                WriteMode::Ordered,
+            );
+        }
+        Ok(())
+    }
+
+    /// `ReadFromSubresource`: the box of subresource `sub` into `data`, laid out as for
+    /// `write_subresource`, once the work recorded so far is done (`ReadBackWait`).
+    pub fn read_subresource(
+        &mut self,
+        id: ResourceId,
+        sub: u32,
+        origin: Origin,
+        extent: Extent,
+        data: &mut [u8],
+        (row_pitch, depth_pitch): (u32, u32),
+    ) -> Result<(), Error> {
+        self.live()?;
+        let (bw, bh, bytes) = self.texture(id)?.1.format.block();
+        let (rows, row) = (
+            extent.height.div_ceil(bh) as usize,
+            (extent.width.div_ceil(bw) * bytes) as usize,
+        );
+        let mut tight = vec![0; rows * row];
+        for z in 0..extent.depth_or_layers {
+            let region = self.subresource_region(id, sub, origin, z)?;
+            let (texture, region) = (region.texture.clone(), region);
+            self.backend.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        texture: &texture,
+                        ..region
+                    },
+                    extent: Extent {
+                        depth_or_layers: 1,
+                        ..extent
+                    },
+                },
+                &mut tight,
+            )?;
+            for (r, src) in tight.chunks(row).enumerate() {
+                let at = (z * depth_pitch) as usize + r * row_pitch as usize;
+                data[at..at + row].copy_from_slice(src);
+            }
+        }
+        Ok(())
     }
 
     /// `GetGPUVirtualAddress`: zero for textures.
