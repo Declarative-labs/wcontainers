@@ -64,6 +64,25 @@ fn main() {
         .warnings(false)
         .include(root)
         .define("DXBC_SPV_ENABLE_SM5", None);
+    // For WebAssembly the C++ is built with wasi-sdk's clang, libc and libc++ (exceptions off).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
+        let sdk = std::env::var("WASI_SDK_PATH")
+            .expect("WASI_SDK_PATH must name the wasi-sdk that builds the C++ for WebAssembly");
+        let lib = format!("{sdk}/share/wasi-sysroot/lib/wasm32-wasip1");
+        build
+            .compiler(format!("{sdk}/bin/clang++"))
+            .flag(format!("--sysroot={sdk}/share/wasi-sysroot"))
+            .cpp_link_stdlib(None);
+        // Only libc++ is taken from the SDK; libc stays Rust's own, so the two never mix.
+        let out = std::env::var("OUT_DIR").unwrap();
+        for name in ["libc++.a", "libc++abi.a"] {
+            std::fs::copy(format!("{lib}/{name}"), format!("{out}/{name}")).unwrap();
+        }
+        println!("cargo:rustc-link-search=native={out}");
+        println!("cargo:rustc-link-lib=static=c++");
+        println!("cargo:rustc-link-lib=static=c++abi");
+    }
+    println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
     for file in DXBC_SPIRV {
         build.file(root.join(file));
     }

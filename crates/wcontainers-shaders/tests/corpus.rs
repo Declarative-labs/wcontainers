@@ -42,6 +42,18 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     if let Some(out) = out {
         std::fs::write(out.join(format!("{name}.wgsl")), &wgsl).unwrap();
     }
+    // The converted module is a function of the source and the variant alone.
+    let again = convert(Source::Dxbc(&bytes), &VariantKey::default(), None).unwrap();
+    let m2 = &again.modules[0];
+    let wgsl2 = naga::back::wgsl::write_string(
+        &m2.module,
+        &m2.info,
+        naga::back::wgsl::WriterFlags::empty(),
+    )
+    .unwrap();
+    if wgsl2 != wgsl || m2.key != m.key {
+        return "convert nondeterministic".into();
+    }
     let reparsed = match naga::front::wgsl::parse_str(&wgsl) {
         Ok(m) => m,
         Err(e) => return format!("wgsl-parse {}", e.message()),
@@ -141,7 +153,7 @@ fn rig_shaders_convert_or_fail_with_a_named_reason() {
     assert!(counts.values().sum::<usize>() > 0);
     let unnamed: usize = counts
         .iter()
-        .filter(|(k, _)| k.starts_with("convert malformed") || k.starts_with("convert invalid"))
+        .filter(|(k, _)| k.starts_with("convert "))
         .map(|(_, n)| n)
         .sum();
     assert_eq!(
@@ -159,7 +171,7 @@ fn corpus_converts_or_fails_with_a_named_reason() {
     let counts = run(Path::new(&dir), "corpus");
     let unnamed: usize = counts
         .iter()
-        .filter(|(k, _)| k.starts_with("convert malformed") || k.starts_with("convert invalid"))
+        .filter(|(k, _)| k.starts_with("convert "))
         .map(|(_, n)| n)
         .sum();
     assert_eq!(

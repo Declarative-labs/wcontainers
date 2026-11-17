@@ -20,7 +20,7 @@ use naga::{
     Statement, StructMember, SwitchCase, SwitchValue, SwizzleComponent, Type, TypeInner,
     UnaryOperator, VectorSize,
 };
-use std::collections::{HashMap, HashSet};
+use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
 use wcontainers_gpu::{
     DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
     ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage, StageExtras, StageValue,
@@ -167,18 +167,18 @@ impl<'a> Lowering<'a> {
                 sampled_pairs: Vec::new(),
                 extras: StageExtras::None,
             },
-            resources: HashMap::new(),
+            resources: HashMap::default(),
             io: Vec::new(),
-            io_index: HashMap::new(),
-            memory: HashMap::new(),
-            functions: HashMap::new(),
+            io_index: HashMap::default(),
+            memory: HashMap::default(),
+            functions: HashMap::default(),
             main,
             helpers: None,
             early_tests: false,
             conservative: None,
             workgroup: [1; 3],
-            compared: HashSet::new(),
-            semantics: HashMap::new(),
+            compared: HashSet::default(),
+            semantics: HashMap::default(),
             discards: false,
             side_effects: false,
         })
@@ -616,7 +616,7 @@ impl<'a> Lowering<'a> {
         }
         // Callees come before callers in naga's arena: lower in reverse order of first call.
         let mut order = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         self.call_order(self.main, &mut order, &mut seen)?;
         for f in order {
             let handle = FunctionLowering::lower(self, f)?;
@@ -1350,12 +1350,12 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             l,
             f,
             e,
-            vals: HashMap::new(),
-            consts: HashMap::new(),
-            spills: HashMap::new(),
-            phis: HashMap::new(),
-            blocks: HashMap::new(),
-            block_of: HashMap::new(),
+            vals: HashMap::default(),
+            consts: HashMap::default(),
+            spills: HashMap::default(),
+            phis: HashMap::default(),
+            blocks: HashMap::default(),
+            block_of: HashMap::default(),
             params: fop.refs.clone(),
             cur: 0,
         };
@@ -1433,6 +1433,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 }
             }
         }
+        // Variables are made in id order, so the module is the same on every run and every host.
+        spill.sort_unstable();
+        spill.dedup();
         for v in spill {
             let op = ir.op(v);
             if self.spills.contains_key(&v)
@@ -1452,7 +1455,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             );
             self.spills.insert(v, local);
         }
-        let phis: Vec<u32> = self.blocks.values().flat_map(|b| b.phis.clone()).collect();
+        let mut phis: Vec<u32> = self.blocks.values().flat_map(|b| b.phis.clone()).collect();
+        phis.sort_unstable();
         for p in phis {
             let ty = self.l.ir_ty(&ir.op(p).ty)?;
             let local = self.f.local_variables.append(

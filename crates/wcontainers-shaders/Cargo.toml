@@ -20,3 +20,7 @@ naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "wasm_imports"
+crate-type = ["cdylib"]
