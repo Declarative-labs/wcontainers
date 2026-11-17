@@ -265,7 +265,8 @@ pub struct Device<B: Backend> {
     programs: query::Programs<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
-    removed: Option<&'static str>,
+    /// The error that removed the device, if one did.
+    removed: Option<Error>,
 }
 
 /// A swap chain and the resources standing for its back buffers.
@@ -308,9 +309,15 @@ impl<B: Backend> Device<B> {
         &mut self.backend
     }
 
-    /// Why the device was removed, if it was (`GetDeviceRemovedReason`).
-    pub fn removed(&self) -> Option<&'static str> {
+    /// The error that removed the device, if one did (`GetDeviceRemovedReason`).
+    pub fn removed(&self) -> Option<Error> {
         self.removed
+    }
+
+    /// Removes the device for `e`, as Direct3D 12 does for a call it cannot carry out; the first
+    /// error stays the reason.
+    pub fn remove(&mut self, e: Error) {
+        self.removed.get_or_insert(e);
     }
 
     /// Warnings not yet shown: each slow path the first time it is taken, and why a call failed
@@ -626,6 +633,7 @@ impl<B: Backend> Device<B> {
     pub fn create_root_signature(&mut self, blob: &[u8]) -> Result<RootId, Error> {
         self.live()?;
         let desc = deserialize(blob).map_err(Error::Invalid)?;
+        desc.validate().map_err(Error::Invalid)?;
         Ok(RootId(self.roots.insert(Arc::new(desc)) as u32))
     }
 
@@ -945,8 +953,9 @@ impl<B: Backend> Device<B> {
     // ---- Queues ----
 
     /// `CreateCommandQueue`: every queue shares the back end's one submission order.
-    pub fn create_queue(&mut self) -> QueueId {
-        QueueId(self.queues.insert(VecDeque::new()) as u32)
+    pub fn create_queue(&mut self) -> Result<QueueId, Error> {
+        self.live()?;
+        Ok(QueueId(self.queues.insert(VecDeque::new()) as u32))
     }
 
     /// A queue's release; work still held behind a wait never runs, as on the GPU.
@@ -1248,12 +1257,7 @@ impl<B: Backend> Device<B> {
             r.submission = Some(submission.clone());
         }
         if let Err(e) = result {
-            let reason = match e {
-                Error::Invalid(s) | Error::NotImplemented(s) => s,
-                Error::OutOfMemory => "out of memory",
-                Error::DeviceRemoved => "device removed",
-            };
-            self.removed = Some(reason);
+            self.remove(e);
             return Err(Error::DeviceRemoved);
         }
         Ok(())
@@ -1287,6 +1291,59 @@ impl<B: Backend> Device<B> {
             } => add(*resource),
             _ => {}
         }
+    }
+
+    /// `ResolveSubresource`: a multisampled subresource averaged into a single-sampled one of the
+    /// same size, read as `format`, which must be the source's stored format or its sRGB twin.
+    fn resolve_subresource(
+        &mut self,
+        dst: ResourceId,
+        dst_index: u32,
+        src: ResourceId,
+        src_index: u32,
+        format: u32,
+    ) -> Result<(), Error> {
+        let format = dxgi(format)?;
+        let region = |d: &Self, id: ResourceId, index: u32| {
+            let (texture, desc) = d.texture(id)?;
+            let r = &d.resources[id.0 as usize].desc;
+            let (mips, layers) = (r.mips(), r.layers());
+            if index >= mips * layers {
+                return Err(Error::Invalid("a resolve's subresource"));
+            }
+            let mip = index % mips;
+            let size = ((desc.width >> mip).max(1), (desc.height >> mip).max(1));
+            Ok((
+                texture.clone(),
+                desc.format,
+                desc.samples,
+                mip,
+                index / mips,
+                size,
+            ))
+        };
+        let (s, stored, samples, smip, slayer, ssize) = region(self, src, src_index)?;
+        let (t, _, tsamples, tmip, tlayer, tsize) = region(self, dst, dst_index)?;
+        if samples < 2 || tsamples != 1 || ssize != tsize {
+            return Err(Error::Invalid(
+                "a resolve from a multisampled texture into a single-sampled one of its size",
+            ));
+        }
+        if format.linear() != stored.linear() {
+            return Err(Error::NotImplemented(
+                "a resolve in a format reinterpreting the stored bits",
+            ));
+        }
+        let at = |texture, mip, layer| TextureRegion {
+            texture,
+            mip,
+            layer,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        self.backend
+            .resolve(&at(&s, smip, slayer), &at(&t, tmip, tlayer), format);
+        Ok(())
     }
 
     fn buffer(&self, id: ResourceId) -> Result<(&B::Buffer, HeapType), Error> {
@@ -1783,6 +1840,7 @@ impl<B: Backend> Replay<B> {
             | Command::ClearDepth { .. }
             | Command::CopyBuffer { .. }
             | Command::CopyTexture { .. }
+            | Command::Resolve { .. }
             | Command::ClearStorage { .. }
                 if self.skipped(d)? => {}
             Command::ClearTarget { view, color, rects } => {
@@ -1910,6 +1968,16 @@ impl<B: Backend> Replay<B> {
                 self.settle(d)?;
                 copy_texture(d, dst, *at, src, *area)?;
             }
+            Command::Resolve {
+                dst,
+                dst_index,
+                src,
+                src_index,
+                format,
+            } => {
+                self.settle(d)?;
+                d.resolve_subresource(*dst, *dst_index, *src, *src_index, *format)?;
+            }
             Command::Dispatch(groups) => {
                 if let Some(record) = self.predicated(d)? {
                     self.dispatch(d, *groups, record.as_ref())?;
@@ -1967,6 +2035,10 @@ impl<B: Backend> Replay<B> {
             Command::CopyTexture { dst, src, .. } => {
                 d.note(location(src), false);
                 d.note(location(dst), true);
+            }
+            Command::Resolve { dst, src, .. } => {
+                d.note(*src, false);
+                d.note(*dst, true);
             }
             Command::ClearTarget {
                 view: Descriptor::RenderTarget(v),

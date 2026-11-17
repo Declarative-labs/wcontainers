@@ -71,7 +71,7 @@ fn reference(name: &str) -> Vec<u8> {
 #[test]
 fn the_triangle_scene_matches_direct3d_12() {
     let mut device = Device::new(webgpu());
-    let queue = device.create_queue();
+    let queue = device.create_queue().unwrap();
     let scene = triangle::record(&mut device);
     let fence = device.create_fence(0);
     device.execute(queue, &scene.lists).unwrap();

@@ -1273,13 +1273,20 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn ResolveSubresource(
         &self,
-        _pdstresource: windows_core::Ref<ID3D12Resource>,
-        _dstsubresource: u32,
-        _psrcresource: windows_core::Ref<ID3D12Resource>,
-        _srcsubresource: u32,
-        _format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        pdstresource: windows_core::Ref<ID3D12Resource>,
+        dstsubresource: u32,
+        psrcresource: windows_core::Ref<ID3D12Resource>,
+        srcsubresource: u32,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
     ) {
-        self.unsupported("ResolveSubresource");
+        List::ResolveSubresource(
+            self,
+            pdstresource,
+            dstsubresource,
+            psrcresource,
+            srcsubresource,
+            format,
+        )
     }
     fn IASetPrimitiveTopology(
         &self,
