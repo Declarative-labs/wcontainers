@@ -60,6 +60,24 @@ pub(super) fn clone(
     }
 }
 
+/// `sched_fork` for a parent with SCHED_FLAG_RESET_ON_FORK: a real-time or deadline policy becomes
+/// SCHED_OTHER at nice 0, another keeps its policy with a negative nice raised to 0; the slice asked
+/// for and the flag go.
+fn reset_on_fork(schedule: &mut crate::process::Schedule) {
+    if !schedule.reset_on_fork {
+        return;
+    }
+    if matches!(schedule.policy, SCHED_FIFO | SCHED_RR | SCHED_DEADLINE) {
+        schedule.policy = SCHED_NORMAL;
+        schedule.priority = 0;
+        schedule.nice = 0;
+    } else {
+        schedule.nice = schedule.nice.max(0);
+    }
+    schedule.slice = 0;
+    schedule.reset_on_fork = false;
+}
+
 /// A `vfork` parent waits, not to be interrupted, until its child starts a program or ends.
 fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
     let borrowing = kernel
@@ -197,9 +215,11 @@ fn make_child(
     process.pidfd = None;
     if flags & CLONE_PARENT != 0 {
         process.parent = parent.parent;
+        process.parent_thread = parent.parent_thread;
         process.exit_signal = parent.exit_signal;
     } else {
         process.parent = pid;
+        process.parent_thread = tid;
         process.exit_signal = exit_signal;
     }
     let thread_cpu = cx
@@ -244,12 +264,7 @@ fn make_child(
             thread.alternate_stack = (0, 0, 0);
         }
     }
-    if thread.schedule.reset_on_fork {
-        thread.schedule.policy = SCHED_NORMAL;
-        thread.schedule.priority = 0;
-        thread.schedule.nice = thread.schedule.nice.max(0);
-        thread.schedule.reset_on_fork = false;
-    }
+    reset_on_fork(&mut thread.schedule);
     kernel.processes.insert(child, process);
     kernel.threads.insert(child, thread);
     super::sem::copy_undo(kernel, tid, child, flags & CLONE_SYSVSEM != 0);
@@ -332,12 +347,7 @@ fn make_thread(
     thread.rseq = None;
     thread.pidfd = None;
     thread.opening = None;
-    if thread.schedule.reset_on_fork {
-        thread.schedule.policy = SCHED_NORMAL;
-        thread.schedule.priority = 0;
-        thread.schedule.nice = thread.schedule.nice.max(0);
-        thread.schedule.reset_on_fork = false;
-    }
+    reset_on_fork(&mut thread.schedule);
     kernel.threads.insert(child, thread);
     super::sem::copy_undo(kernel, tid, child, flags & CLONE_SYSVSEM != 0);
     kernel
@@ -383,6 +393,7 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
         .processes
         .values()
         .filter(|process| process.parent == pid)
+        .filter(|process| options & __WNOTHREAD == 0 || process.parent_thread == tid)
         .filter(|process| match which {
             Which::Any => true,
             Which::Process(target) => process.pid == target,
@@ -399,7 +410,20 @@ fn find_child(kernel: &mut Kernel, tid: Tid, which: Which, options: u32) -> Resu
     if children.is_empty() {
         return Err(Errno::ECHILD);
     }
-    children.sort_by_key(|child| kernel.processes[child].started);
+    // `do_wait` looks at the caller's own children first, then each other thread's in turn.
+    let threads = &kernel.processes[&pid].threads;
+    let own = threads
+        .iter()
+        .position(|thread| *thread == tid)
+        .unwrap_or(0);
+    children.sort_by_key(|child| {
+        let process = &kernel.processes[child];
+        let turn = threads
+            .iter()
+            .position(|thread| *thread == process.parent_thread)
+            .map_or(usize::MAX, |at| (at + threads.len() - own) % threads.len());
+        (turn, process.started)
+    });
     let keep = options & WNOWAIT != 0;
     // `notask_error`: a child that has ended counts only for a wait that takes ends.
     let mut waitable = false;

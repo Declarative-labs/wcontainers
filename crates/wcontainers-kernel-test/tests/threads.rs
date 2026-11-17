@@ -105,3 +105,12 @@ fn process_signal_takers_match_reference() {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
     }
 }
+
+/// A child belongs to the thread that made it: parent death signals at that thread's end, waits
+/// with __WNOTHREAD and the order a wait looks at the threads' children.
+#[test]
+fn parent_threads_match_reference() {
+    for run in assert_same_output_seeded(&out(), "threadparent", &[], 0) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}

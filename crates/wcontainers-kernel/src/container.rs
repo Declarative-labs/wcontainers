@@ -375,6 +375,7 @@ impl Kernel {
         let process = Process {
             pid,
             parent: 0,
+            parent_thread: 0,
             group: pid,
             session: pid,
             memory: wcontainers_abi::MemoryId(0),

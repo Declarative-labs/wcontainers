@@ -62,6 +62,9 @@ pub(crate) struct StartingStack {
 pub(crate) struct Process {
     pub pid: Pid,
     pub parent: Pid,
+    /// The parent's thread it belongs to (Linux's `real_parent`): the one that made it, or the
+    /// thread that took it on when that one ended. A wait with __WNOTHREAD sees only its own.
+    pub parent_thread: Tid,
     pub group: Pid,
     pub session: Pid,
     pub memory: MemoryId,

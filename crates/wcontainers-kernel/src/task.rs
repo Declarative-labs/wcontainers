@@ -484,6 +484,8 @@ impl Kernel {
         if let Some(leader) = leader {
             process.ended_leader = leader;
         }
+        let heir = process.threads[0];
+        self.hand_children_to(cx, tid, heir);
         if !self.released.is_empty() {
             self.files_released(cx);
         }
@@ -508,6 +510,11 @@ impl Kernel {
         }
         self.threads.insert(pid, thread);
         syscall::sem::renumber(self, tid, pid);
+        for process in self.processes.values_mut() {
+            if process.parent_thread == tid {
+                process.parent_thread = pid;
+            }
+        }
         self.processes
             .get_mut(&pid)
             .expect("process exists")
@@ -645,6 +652,32 @@ impl Kernel {
         }
     }
 
+    /// An ended thread's children go to `heir`, a live thread of its process, each sent its
+    /// parent death signal (`forget_original_parent` finding a live thread of the group).
+    fn hand_children_to(&mut self, cx: &mut Context<'_>, tid: Tid, heir: Tid) {
+        let children: alloc::vec::Vec<Pid> = self
+            .processes
+            .values()
+            .filter(|process| process.parent_thread == tid)
+            .map(|process| process.pid)
+            .collect();
+        for child in children {
+            self.processes.get_mut(&child).expect("child").parent_thread = heir;
+            self.send_parent_death_signals(cx, child);
+        }
+    }
+
+    /// Sends each thread of `child` that asked for one its parent death signal.
+    fn send_parent_death_signals(&mut self, cx: &mut Context<'_>, child: Pid) {
+        for tid in self.processes[&child].threads.clone() {
+            let signal = self.threads[&tid].parent_death_signal;
+            if signal > 0 {
+                let info = crate::signal::kernel_info(signal as u32);
+                self.send_to_thread(cx, tid, signal as u32, info);
+            }
+        }
+    }
+
     /// Hands a dying process's children to the nearest subreaper above it or the first process
     /// (`forget_original_parent`), sends each its parent death signal, and treats process groups
     /// this leaves orphaned with stopped members as Linux does.
@@ -670,19 +703,19 @@ impl Kernel {
         } else {
             self.init.expect("the container has started")
         };
+        // The reaper's first live thread takes them (`find_alive_thread`).
+        let heir = self.processes[&reaper]
+            .threads
+            .first()
+            .copied()
+            .unwrap_or(0);
         for child in children {
             let process = self.processes.get_mut(&child).expect("child");
             process.parent = reaper;
+            process.parent_thread = heir;
             // A new parent always hears of the end by SIGCHLD (`reparent_leader`).
             process.exit_signal = SIGCHLD;
-            let threads = self.processes[&child].threads.clone();
-            for tid in threads {
-                let signal = self.threads[&tid].parent_death_signal;
-                if signal > 0 {
-                    let info = crate::signal::kernel_info(signal as u32);
-                    self.send_to_thread(cx, tid, signal as u32, info);
-                }
-            }
+            self.send_parent_death_signals(cx, child);
             if self.processes[&child].ended.is_some() {
                 // A zombie the new parent does not want goes at once; otherwise it is told.
                 self.notify_parent_of_zombie(cx, child);
