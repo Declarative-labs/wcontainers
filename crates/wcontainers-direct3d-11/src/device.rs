@@ -1192,7 +1192,7 @@ impl<B: Backend> Device<B> {
         };
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_sampler(&GpuSampler {
+        let made = GpuSampler {
             min: if anisotropic {
                 Filter::Linear
             } else {
@@ -1220,12 +1220,15 @@ impl<B: Backend> Device<B> {
             },
             compare,
             border,
-        });
+        };
+        let gpu = self.backend.create_sampler(&made);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Sampler {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::Sampler, &self.graveyard),
+            made,
+            twin: RefCell::new(None),
         }))
     }
 

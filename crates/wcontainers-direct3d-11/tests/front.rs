@@ -1392,3 +1392,187 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
     ));
     assert!(dev.removed.is_none());
 }
+
+#[test]
+fn a_draw_goes_through_the_first_viewport_and_scissor_rectangle() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let half = Viewport {
+        width: 32.0,
+        height: 32.0,
+        max_depth: 1.0,
+        ..Default::default()
+    };
+    dev.rs_set_viewports(&[half, Viewport { x: 32.0, ..half }]);
+    dev.rs_set_scissor_rects(&[[0, 0, 16, 16], [16, 16, 64, 64]]);
+    let draws = |dev: &Dev, from: usize| -> Vec<String> {
+        log_from(dev, from)
+            .into_iter()
+            .filter(|l| l.starts_with("draw "))
+            .collect()
+    };
+    // Without the scissor test, no rectangle.
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let d = draws(&dev, from);
+    assert!(
+        d[0].contains("viewports [[0.0, 0.0, 32.0, 32.0]] scissors []"),
+        "{d:#?}"
+    );
+    // With it, the first rectangle; with none set, one that passes nothing.
+    let r = dev
+        .create_rasterizer_state(&RasterizerDesc {
+            fill: 3,
+            cull: 1,
+            depth_clip: true,
+            scissor: true,
+            ..Default::default()
+        })
+        .unwrap();
+    dev.rs_set_state(Some(r));
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.rs_set_scissor_rects(&[]);
+    dev.draw(3, 0);
+    let d = draws(&dev, from);
+    assert!(d[0].contains("scissors [[0, 0, 16, 16]]"), "{d:#?}");
+    assert!(d[1].contains("scissors [[0, 0, 0, 0]]"), "{d:#?}");
+    assert!(dev.removed.is_none());
+}
+
+const R32F: u32 = 41;
+
+/// A full-target draw of `ps`, from the rig's samplers scene, reading an R32_FLOAT texture at t0.
+fn sampling(dev: &mut Dev, ps: &str) {
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(dev, &rtv, None, 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    let p = dev.create_shader(&corpus(ps), SourceStage::Pixel).unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let texture = dev
+        .create_texture(&tex2d(4, 4, R32F, bind::SHADER_RESOURCE), &[])
+        .unwrap();
+    let view = dev
+        .create_view(&texture, None, bind::SHADER_RESOURCE)
+        .unwrap();
+    dev.set_shader_resources(PIXEL, 0, &[Some(Rc::new(ShaderView::Texture(view)))])
+        .unwrap();
+}
+
+#[test]
+fn samplers_are_bound_comparing_as_the_program_reads_them() {
+    let mut dev = device();
+    sampling(&mut dev, "samplers.ps_compare");
+    // D3D11_COMPARISON_LESS, on a sampler whose filter does not compare.
+    let plain = SamplerDesc {
+        comparison: 2,
+        ..SamplerDesc::default_state()
+    };
+    let plain = dev.create_sampler_state(&plain).unwrap();
+    // The program compares through s1: the sampler is read through a twin that compares with its
+    // function, made once.
+    dev.set_samplers(PIXEL, 1, &[Some(plain.clone())]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let made_samplers: Vec<_> = log
+        .iter()
+        .filter(|l| l.starts_with("create_sampler"))
+        .collect();
+    assert_eq!(made_samplers.len(), 1, "{log:#?}");
+    assert!(made_samplers[0].ends_with("compare Some(Less)"), "{log:#?}");
+    let twin = made(&log, "create_sampler");
+    let set = &log[find(&log, "create_binding_set")];
+    assert!(set.contains(&format!("=sampler {twin}")), "{set}");
+
+    // A comparing sampler is bound as it is.
+    let comparing = SamplerDesc {
+        filter: 0x95,
+        comparison: 2,
+        ..SamplerDesc::default_state()
+    };
+    let comparing = dev.create_sampler_state(&comparing).unwrap();
+    dev.set_samplers(PIXEL, 1, &[Some(comparing.clone())])
+        .unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter().any(|l| l.starts_with("create_sampler")),
+        "{log:#?}"
+    );
+    let set = &log[find(&log, "create_binding_set")];
+    assert!(
+        set.contains(&format!("=sampler {}", comparing.gpu.handle)),
+        "{set}"
+    );
+
+    // A program that does not compare reads the comparing sampler through a twin that does not.
+    sampling(&mut dev, "samplers.ps_sample");
+    dev.set_samplers(PIXEL, 0, &[Some(comparing)]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    assert!(
+        log[find(&log, "create_sampler")].ends_with("compare None"),
+        "{log:#?}"
+    );
+}
+
+#[test]
+fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
+    let mut dev = device();
+    let uses = &mut dev.backend.caps.formats.uses[wcontainers_gpu::Format::R32Float.index()];
+    uses.remove(wcontainers_gpu::FormatUse::FILTER);
+    sampling(&mut dev, "samplers.ps_sample");
+    // Point sampling needs no filtering.
+    let point = SamplerDesc {
+        filter: 0,
+        ..SamplerDesc::default_state()
+    };
+    let point = dev.create_sampler_state(&point).unwrap();
+    dev.set_samplers(PIXEL, 0, &[Some(point)]).unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    assert_eq!(
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count(),
+        1
+    );
+    // An empty slot reads Direct3D's default sampler, which filters linearly: the program would
+    // have to filter, which the converter does not build yet.
+    dev.set_samplers(PIXEL, 0, &[None]).unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_some());
+    assert_eq!(
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count(),
+        1
+    );
+}

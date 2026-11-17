@@ -4,12 +4,13 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
-    FormatKind, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
-    MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ReadState, RingKind,
-    ScissorRect, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StepMode, StoreOp,
-    TextureUsage, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, Viewport as GpuViewport, WriteMode, helper_binding,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Filter,
+    Format, FormatKind, FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat,
+    Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource,
+    ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderStage, SlotKind, SlowPath,
+    SourceStage, StageSet, StepMode, StoreOp, TextureUsage, Topology, VariantKey, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
+    helper_binding,
 };
 
 use crate::desc::{
@@ -1254,6 +1255,52 @@ impl<B: Backend> Device<B> {
             };
             empty.push((b.binding, zero));
         }
+        // A sampler read the other way than it compares reads through its twin.
+        let mut twins: Vec<(u32, B::Sampler)> = Vec::new();
+        for b in wanted().filter(|b| b.kind == SlotKind::Sampler) {
+            let compares = !matches!(stand_in(b.binding), Some(StandIn::DefaultSampler));
+            let Some(s) = self.ctx.samplers[stage]
+                .get(b.register as usize)
+                .and_then(Option::clone)
+            else {
+                continue;
+            };
+            if s.made.compare.is_some() != compares {
+                twins.push((b.binding, self.sampler_twin(&s, compares)?));
+            }
+        }
+        // WebGPU and WebGL 2 filter only formats the back end says it filters; the others are
+        // filtered in the program, which the converter does not build yet.
+        for &(t, smp) in &shader.reflection.sampled_pairs {
+            let compares = wanted().any(|b| {
+                b.kind == SlotKind::Sampler
+                    && b.register == smp
+                    && !matches!(stand_in(b.binding), Some(StandIn::DefaultSampler))
+            });
+            // An empty slot reads Direct3D's default sampler, which filters linearly.
+            let linear = !compares
+                && self.ctx.samplers[stage]
+                    .get(smp as usize)
+                    .and_then(Option::as_ref)
+                    .is_none_or(|s| [s.made.min, s.made.mag, s.made.mip].contains(&Filter::Linear));
+            let unfiltered = match self.ctx.resources[stage]
+                .get(t as usize)
+                .and_then(Option::as_deref)
+            {
+                Some(ShaderView::Texture(v)) => !self
+                    .backend
+                    .caps()
+                    .formats
+                    .get(v.format)
+                    .contains(FormatUse::FILTER),
+                _ => false,
+            };
+            if linear && unfiltered {
+                return not_implemented(
+                    "a texture the back end cannot filter sampled linearly (FilterInShader)",
+                );
+            }
+        }
         let mut cbs = Vec::new();
         for (c, range) in self.ctx.constant_buffers[stage]
             .iter()
@@ -1341,10 +1388,14 @@ impl<B: Backend> Device<B> {
                     }
                     _ => None,
                 },
-                SlotKind::Sampler => samplers
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .map(|s| BindingResource::Sampler(&s.gpu.handle)),
+                SlotKind::Sampler => samplers.get(slot).and_then(Option::as_ref).map(|s| {
+                    BindingResource::Sampler(
+                        twins
+                            .iter()
+                            .find(|t| t.0 == b.binding)
+                            .map_or(&s.gpu.handle, |t| &t.1),
+                    )
+                }),
                 SlotKind::Storage => match (uavs[slot].as_deref(), &spans[slot]) {
                     (Some(ShaderView::Texture(v)), _) => Some(BindingResource::StorageTexture {
                         view: &v.gpu.handle,
@@ -1418,6 +1469,27 @@ impl<B: Backend> Device<B> {
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
         self.ctx.sets_dirty[stage] = false;
         Ok(())
+    }
+
+    /// `s` made comparing or not as `compares` says, kept on `s` from its first use.
+    fn sampler_twin(&mut self, s: &Sampler<B>, compares: bool) -> Result<B::Sampler> {
+        if let Some(t) = &*s.twin.borrow() {
+            return Ok(t.handle.clone());
+        }
+        // Direct3D leaves comparing through a sampler that does not compare undefined; the twin
+        // compares with the function its description names.
+        let compare = if compares {
+            Some(crate::device::compare_fn(s.desc.comparison)?)
+        } else {
+            None
+        };
+        let gpu = self
+            .backend
+            .create_sampler(&GpuSampler { compare, ..s.made });
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        *s.twin.borrow_mut() = Some(Kept::new(gpu.clone(), id, Object::Sampler, &self.graveyard));
+        Ok(gpu)
     }
 
     /// Writes the vertex program's helper constants, `[base vertex, first instance, block size,
@@ -1645,7 +1717,7 @@ impl<B: Backend> Device<B> {
 
         self.count_combination(&vs, ps.as_ref(), topology, samples);
         let ctx = &self.ctx;
-        // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots and 16 viewports).
+        // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots).
         let vertex_handles: [_; VERTEX_SLOTS] = std::array::from_fn(|slot| {
             ctx.vertex_buffers[slot]
                 .as_ref()
@@ -1686,24 +1758,34 @@ impl<B: Backend> Device<B> {
             }),
             _ => None,
         };
-        let viewport_count = ctx.viewports.len().min(VIEWPORTS);
-        let viewports: [GpuViewport; VIEWPORTS] = std::array::from_fn(|i| {
-            let v = ctx.viewports.get(i).copied().unwrap_or_default();
-            GpuViewport {
-                x: v.x.to_bits(),
-                y: v.y.to_bits(),
-                width: v.width.to_bits(),
-                height: v.height.to_bits(),
-                min_depth: v.min_depth.to_bits(),
-                max_depth: v.max_depth.to_bits(),
-            }
-        });
+        // Without a shader choosing one (none is served), Direct3D draws through the first viewport
+        // and scissor rectangle; with no rectangle set, the scissor test passes nothing.
+        let v = ctx.viewports[0];
+        let viewport = GpuViewport {
+            x: v.x.to_bits(),
+            y: v.y.to_bits(),
+            width: v.width.to_bits(),
+            height: v.height.to_bits(),
+            min_depth: v.min_depth.to_bits(),
+            max_depth: v.max_depth.to_bits(),
+        };
         let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
         let depth_stencil = ctx
             .depth_stencil
             .as_ref()
             .unwrap_or(&self.defaults.depth_stencil);
         let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
+        let no_rect = [ScissorRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        }];
+        let scissors: &[ScissorRect] = match ctx.scissors.first() {
+            _ if !raster.desc.scissor => &[],
+            Some(rect) => std::slice::from_ref(rect),
+            None => &no_rect,
+        };
         let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
         bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
@@ -1722,8 +1804,8 @@ impl<B: Backend> Device<B> {
             index,
             topology,
             restart: strip && indexed,
-            viewports: &viewports[..viewport_count],
-            scissors: &ctx.scissors,
+            viewports: std::slice::from_ref(&viewport),
+            scissors,
             blend_constant: ctx.blend_factor.map(f32::to_bits),
             stencil_reference: [ctx.stencil_ref as u8; 2],
             immediates: &[],

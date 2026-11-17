@@ -5,8 +5,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    Backend, Extent, Format, FormatKind, Object, Origin, Reflection, TextureDesc as GpuTexture,
-    TextureRegion, VertexFormat, ViewDimension,
+    Backend, Extent, Format, FormatKind, Object, Origin, Reflection, SamplerDesc as GpuSampler,
+    TextureDesc as GpuTexture, TextureRegion, VertexFormat, ViewDimension,
 };
 
 use crate::desc::{
@@ -254,6 +254,11 @@ pub struct BufferSpan<B: Backend> {
 pub struct Sampler<B: Backend> {
     pub desc: SamplerDesc,
     pub gpu: Kept<B, B::Sampler>,
+    /// What `gpu` was made from.
+    pub made: GpuSampler,
+    /// The same sampler comparing where `gpu` does not, or not where it does, for a program that reads
+    /// it the other way; made at the first such draw.
+    pub twin: RefCell<Option<Kept<B, B::Sampler>>>,
 }
 
 pub struct Blend<B: Backend> {

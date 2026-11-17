@@ -19,7 +19,8 @@ struct Texture {
 }
 
 pub struct Recorder {
-    caps: Caps,
+    /// What it declares; tests take uses away to reach a front's slow paths.
+    pub caps: Caps,
     slow: SlowPaths,
     helpers: Helpers<Recorder>,
     next: Id,
@@ -252,8 +253,8 @@ impl Backend for Recorder {
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.record(format!(
-            "create_sampler {id} {:?} {:?} {:?} {:?}",
-            desc.min, desc.mag, desc.mip, desc.address
+            "create_sampler {id} {:?} {:?} {:?} {:?} compare {:?}",
+            desc.min, desc.mag, desc.mip, desc.address, desc.compare
         ));
         Ok(id)
     }
@@ -469,8 +470,13 @@ impl Backend for Recorder {
             .iter()
             .map(|v| [v.x, v.y, v.width, v.height].map(f32::from_bits))
             .collect();
+        let scissors: Vec<_> = call
+            .scissors
+            .iter()
+            .map(|s| [s.x, s.y, s.width, s.height])
+            .collect();
         self.record(format!(
-            "draw program {} blend {} depth {} raster {} layout {} sets {:?} streams {streams:?} index {index:?} {:?} restart {} viewports {viewports:?} {:?}",
+            "draw program {} blend {} depth {} raster {} layout {} sets {:?} streams {streams:?} index {index:?} {:?} restart {} viewports {viewports:?} scissors {scissors:?} {:?}",
             call.program,
             call.blend,
             call.depth_stencil,
