@@ -14,6 +14,7 @@ mod fill;
 mod layout;
 mod memory;
 mod probe;
+mod vertex;
 mod wait;
 
 use std::borrow::Cow;
@@ -73,6 +74,7 @@ pub struct WebGpu {
     pool: memory::BufferPool,
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
+    vertices: vertex::Vertices,
     fills: fill::Fills,
     depth24: Depth24,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
@@ -152,6 +154,15 @@ struct BufferObj {
     used_in: Cell<u64>,
     /// The serial of the last lead encoder that writes it: queue writes to it then go behind those.
     lead_in: Cell<u64>,
+    /// Moved by every command that may write its bytes, so shadows made from them are made again.
+    written: Cell<u64>,
+}
+
+impl BufferObj {
+    /// Notes a command that may write its bytes.
+    fn wrote(&self) {
+        self.written.set(self.written.get() + 1);
+    }
 }
 
 #[derive(Debug)]
@@ -395,6 +406,7 @@ impl WebGpu {
             pool: Default::default(),
             arena: None,
             edge: None,
+            vertices: Default::default(),
             fills: Default::default(),
             float_clears,
             bind_epoch: 0,
@@ -872,6 +884,7 @@ impl Backend for WebGpu {
             static_bound: Cell::new(false),
             used_in: Cell::new(0),
             lead_in: Cell::new(0),
+            written: Cell::new(0),
         })))
     }
 
@@ -1140,18 +1153,10 @@ impl Backend for WebGpu {
     fn create_vertex_layout(&mut self, desc: &VertexLayoutDesc) -> Result<VertexLayout, GpuError> {
         for s in desc.streams.iter().flatten() {
             if !matches!(s.step, StepMode::Vertex | StepMode::Instance(1)) {
-                return Err(GpuError::Invalid(
-                    "instance step rates other than one are fetched in the program",
-                ));
+                return Err(GpuError::Absent(Features::INSTANCE_STEP_RATE));
             }
         }
         for a in desc.attributes.iter().flatten() {
-            if convert::vertex_format(a.format).is_none() {
-                self.fail(
-                    "a vertex format WebGPU lacks, which this back end converts (VertexFormatConverted), is not built yet",
-                );
-                return Err(GpuError::DeviceLost);
-            }
             if desc
                 .streams
                 .get(a.stream as usize)
@@ -1166,6 +1171,9 @@ impl Backend for WebGpu {
         let (block, made) = self.blocks.vertex_layouts.get(desc, id);
         if made {
             self.next_id = id;
+            if let Some(plan) = vertex::plan(desc) {
+                self.vertices.plans.insert(id, plan);
+            }
         }
         Ok(VertexLayout(block))
     }
@@ -1200,6 +1208,7 @@ impl Backend for WebGpu {
         match object {
             Object::Buffer(b) if b.0.in_arena => self.release_slice(&b.0),
             Object::Buffer(b) => {
+                self.vertices.forget(b.0.id);
                 let raw = b.0.raw.borrow().clone();
                 if pending(b.0.used_in.get()) || self.lead_pending(&b.0) {
                     self.destroy_after_submit.push(Doomed::Buffer(raw));
