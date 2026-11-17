@@ -31,10 +31,11 @@ wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = "1.0.1"
 
-# Real Direct3D 11 on the same GPU, through the rig's device and shaders (tests/direct3d.rs).
+# Real Direct3D 11 on the same GPU and WARP, through the rig's device and comparison (tests/direct3d.rs).
 [target.'cfg(windows)'.dev-dependencies]
 wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
-windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
+image = { version = "0.25.10", default-features = false }
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 # proptest, which the shared suite brings, takes getrandom's browser source to build for WebAssembly.

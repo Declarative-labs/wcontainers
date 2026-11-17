@@ -1,6 +1,8 @@
 //! Programs of the back end's own: draws where WebGPU has no command for the job (integer colour
-//! clears the API would round through a float, `IntegerClearByDraw`; depth written from a texture,
-//! `DepthWrittenByDraw`, plan section 4.2), and the empty fragment stage of programs without one.
+//! clears the API would round through a float, `IntegerClearByDraw`; depth and stencil written from
+//! a texture, `DepthWrittenByDraw` and `StencilWrittenByDraw`; depth and stencil drawn into a colour
+//! texture to be copied out, `DepthReadByDraw`; plan section 4.2), and the empty fragment stage of
+//! programs without one.
 
 use std::collections::HashMap;
 
@@ -52,8 +54,46 @@ impl DepthSource {
     }
 }
 
+/// How a draw reading depth or stencil writes it into a colour texture (`DepthReadByDraw`): the
+/// bytes a copy of that aspect into a buffer holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AspectRead {
+    /// 16-bit unorm depth into `r16uint`.
+    Unorm16,
+    /// 24-bit unorm depth into the low bits of `r32uint`.
+    Unorm24,
+    /// 32-bit float depth's bits into `r32uint`.
+    Float,
+    /// Stencil into `r8uint`.
+    Stencil,
+}
+
+impl AspectRead {
+    /// How the depth of `format`, or its stencil, is read, and the colour format it is drawn into.
+    pub fn of(format: Format, stencil: bool) -> Option<(AspectRead, Format)> {
+        use Format::*;
+        Some(match (stencil, format) {
+            (true, Stencil8 | Depth24PlusStencil8 | Depth32FloatStencil8) => {
+                (AspectRead::Stencil, R8Uint)
+            }
+            (false, Depth16Unorm) => (AspectRead::Unorm16, R16Uint),
+            (false, Depth24Plus | Depth24PlusStencil8) => (AspectRead::Unorm24, R32Uint),
+            (false, Depth32Float | Depth32FloatStencil8) => (AspectRead::Float, R32Uint),
+            _ => return None,
+        })
+    }
+}
+
 struct DepthProgram {
     pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+}
+
+/// The draws writing stencil from a texture of `r8uint` texels: one clearing the rectangle, then one
+/// per bit setting it where the source has it.
+struct StencilProgram {
+    clear: wgpu::RenderPipeline,
+    bits: [wgpu::RenderPipeline; 8],
     layout: wgpu::BindGroupLayout,
 }
 
@@ -65,7 +105,77 @@ pub struct Fills {
     clear_layout: Option<(wgpu::BindGroupLayout, wgpu::PipelineLayout)>,
     clears: HashMap<(TargetLayout, usize), wgpu::RenderPipeline>,
     depths: HashMap<(wgpu::TextureFormat, DepthSource), DepthProgram>,
+    stencils: HashMap<wgpu::TextureFormat, StencilProgram>,
+    reads: HashMap<AspectRead, DepthProgram>,
 }
+
+/// A view of one level and layer of `texture` in `aspect`, in that aspect's own format.
+fn level_view(
+    texture: &wgpu::Texture,
+    aspect: wgpu::TextureAspect,
+    mip: u32,
+    layer: u32,
+) -> wgpu::TextureView {
+    let format = texture.format();
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        label: None,
+        format: Some(format.aspect_specific_format(aspect).unwrap_or(format)),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        usage: None,
+        aspect,
+        base_mip_level: mip,
+        mip_level_count: Some(1),
+        base_array_layer: layer,
+        array_layer_count: Some(1),
+    })
+}
+
+/// The layout of a draw reading one texture at a shifted position: a uniform shift and the texture.
+fn loader_layout(
+    device: &wgpu::Device,
+    sample_type: wgpu::TextureSampleType,
+) -> (wgpu::BindGroupLayout, wgpu::PipelineLayout) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            fragment_entry(0, UNIFORM),
+            fragment_entry(
+                1,
+                wgpu::BindingType::Texture {
+                    sample_type,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+            ),
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    (layout, pipeline_layout)
+}
+
+/// The source of a stencil draw's own program: the first instance names the bit, 8 the clear.
+const STENCIL_WGSL: &str = "
+@group(0) @binding(0) var<uniform> shift: vec4<i32>;
+@group(0) @binding(1) var src: texture_2d<u32>;
+struct Covered {
+    @builtin(position) p: vec4f,
+    @location(0) @interpolate(flat) bit: u32,
+}
+@vertex fn cover(@builtin(vertex_index) i: u32, @builtin(instance_index) bit: u32) -> Covered {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return Covered(vec4f(p * 2.0 - 1.0, 0.0, 1.0), bit);
+}
+@fragment fn stencil(c: Covered) {
+    let s = textureLoad(src, vec2i(c.p.xy) + shift.xy, 0).x;
+    if c.bit < 8u && ((s >> c.bit) & 1u) == 0u {
+        discard;
+    }
+}
+";
 
 /// A 16-byte uniform buffer holding `words`.
 fn uniform(device: &wgpu::Device, words: [u32; 4]) -> wgpu::Buffer {
@@ -384,29 +494,7 @@ impl WebGpu {
             DepthSource::Float => wgpu::TextureSampleType::Float { filterable: false },
             _ => wgpu::TextureSampleType::Uint,
         };
-        let layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[
-                    fragment_entry(0, UNIFORM),
-                    fragment_entry(
-                        1,
-                        wgpu::BindingType::Texture {
-                            sample_type,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                    ),
-                ],
-            });
-        let pipeline_layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
+        let (layout, pipeline_layout) = loader_layout(&self.device, sample_type);
         self.counters.pipelines += 1;
         let pipeline = self
             .device
@@ -433,6 +521,265 @@ impl WebGpu {
                     entry_point: Some("depth"),
                     compilation_options: Default::default(),
                     targets: &[],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+        DepthProgram { pipeline, layout }
+    }
+
+    /// Writes the stencil of layers `dst_at.1..` of `dst` at level `dst_at.0`, in the rectangle at
+    /// `dst_at.2` of `size`, from the `u32` texels of `src` in `aspect` (an `r8uint` texture or a
+    /// stencil) at `src_at`, in `stream`, outside a pass (`StencilWrittenByDraw`): per layer one draw
+    /// clears the rectangle's stencil, then one per bit sets that bit where the source has it. `src`
+    /// is single-sampled with binding usage, `dst` has render usage.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stencil_by_draw(
+        &mut self,
+        stream: Stream,
+        src: (&wgpu::Texture, wgpu::TextureAspect),
+        src_at: (u32, u32, [u32; 2]),
+        dst: &wgpu::Texture,
+        dst_at: (u32, u32, [u32; 2]),
+        size: [u32; 2],
+        layers: u32,
+    ) {
+        self.slow.hit(SlowPath::StencilWrittenByDraw);
+        let raw = dst.format();
+        if !self.fills.stencils.contains_key(&raw) {
+            let program = self.stencil_program(raw);
+            self.fills.stencils.insert(raw, program);
+        }
+        let shift = [
+            src_at.2[0].wrapping_sub(dst_at.2[0]),
+            src_at.2[1].wrapping_sub(dst_at.2[1]),
+            0,
+            0,
+        ];
+        let value = uniform(&self.device, shift);
+        for l in 0..layers {
+            let from = level_view(src.0, src.1, src_at.0, src_at.1 + l);
+            let to = level_view(dst, wgpu::TextureAspect::All, dst_at.0, dst_at.1 + l);
+            let program = &self.fills.stencils[&raw];
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &program.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: value.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&from),
+                    },
+                ],
+            });
+            let (clear, bits) = (program.clear.clone(), program.bits.clone());
+            let mut rp = self
+                .stream(stream)
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &to,
+                        depth_ops: raw.has_depth_aspect().then(keep),
+                        stencil_ops: Some(keep()),
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            let (x, y) = (dst_at.2[0], dst_at.2[1]);
+            rp.set_viewport(x as f32, y as f32, size[0] as f32, size[1] as f32, 0.0, 1.0);
+            rp.set_scissor_rect(x, y, size[0], size[1]);
+            rp.set_bind_group(0, &group, &[]);
+            rp.set_pipeline(&clear);
+            rp.set_stencil_reference(0);
+            rp.draw(0..3, 8..9);
+            rp.set_stencil_reference(0xff);
+            for (bit, pipeline) in (0u32..).zip(&bits) {
+                rp.set_pipeline(pipeline);
+                rp.draw(0..3, bit..bit + 1);
+            }
+        }
+    }
+
+    fn stencil_program(&mut self, format: wgpu::TextureFormat) -> StencilProgram {
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(STENCIL_WGSL.into()),
+            });
+        let (layout, pipeline_layout) = loader_layout(&self.device, wgpu::TextureSampleType::Uint);
+        let depth = format.has_depth_aspect();
+        let make = |write_mask: u32| {
+            let face = wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Always,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Replace,
+            };
+            self.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("cover"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format,
+                        depth_write_enabled: depth.then_some(false),
+                        depth_compare: depth.then_some(wgpu::CompareFunction::Always),
+                        stencil: wgpu::StencilState {
+                            front: face,
+                            back: face,
+                            read_mask: 0xff,
+                            write_mask,
+                        },
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("stencil"),
+                        compilation_options: Default::default(),
+                        targets: &[],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
+        let program = StencilProgram {
+            clear: make(0xff),
+            bits: std::array::from_fn(|bit| make(1 << bit)),
+            layout,
+        };
+        self.counters.pipelines += 9;
+        program
+    }
+
+    /// Draws the depth or stencil (`read`) of layers `src_at.1..` of `src` at level `src_at.0`, in
+    /// the rectangle at `src_at.2` of `size`, into layers `0..layers` of the colour texture `dst` at
+    /// its origin, outside a pass (`DepthReadByDraw`). `src` is single-sampled with binding usage.
+    pub(crate) fn aspect_by_draw(
+        &mut self,
+        src: (&wgpu::Texture, AspectRead),
+        src_at: (u32, u32, [u32; 2]),
+        dst: &wgpu::Texture,
+        size: [u32; 2],
+        layers: u32,
+    ) {
+        self.slow.hit(SlowPath::DepthReadByDraw);
+        let (src_tex, read) = src;
+        if !self.fills.reads.contains_key(&read) {
+            let program = self.read_program(read, dst.format());
+            self.fills.reads.insert(read, program);
+        }
+        let aspect = match read {
+            AspectRead::Stencil => wgpu::TextureAspect::StencilOnly,
+            _ => wgpu::TextureAspect::DepthOnly,
+        };
+        let value = uniform(&self.device, [src_at.2[0], src_at.2[1], 0, 0]);
+        for l in 0..layers {
+            let from = level_view(src_tex, aspect, src_at.0, src_at.1 + l);
+            let to = level_view(dst, wgpu::TextureAspect::All, 0, l);
+            let program = &self.fills.reads[&read];
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &program.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: value.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&from),
+                    },
+                ],
+            });
+            let pipeline = program.pipeline.clone();
+            let mut rp = self
+                .stream(Stream::Main)
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &to,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            rp.set_viewport(0.0, 0.0, size[0] as f32, size[1] as f32, 0.0, 1.0);
+            rp.set_scissor_rect(0, 0, size[0], size[1]);
+            rp.set_pipeline(&pipeline);
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+    }
+
+    fn read_program(&mut self, read: AspectRead, target: wgpu::TextureFormat) -> DepthProgram {
+        let cover = self.cover();
+        // The conversions are exact: a unorm value stored as the nearest float is within half a
+        // step of its integer after one correctly rounded multiply.
+        let (texture, value) = match read {
+            AspectRead::Unorm16 => ("texture_2d<f32>", "u32(round(v.x * 65535.0))"),
+            AspectRead::Unorm24 => ("texture_2d<f32>", "u32(round(v.x * 16777215.0))"),
+            AspectRead::Float => ("texture_2d<f32>", "bitcast<u32>(v.x)"),
+            AspectRead::Stencil => ("texture_2d<u32>", "v.x"),
+        };
+        let source = format!(
+            "@group(0) @binding(0) var<uniform> shift: vec4<i32>;\n\
+             @group(0) @binding(1) var src: {texture};\n\
+             @fragment fn read(@builtin(position) p: vec4f) -> @location(0) vec4<u32> {{\n\
+                 let v = textureLoad(src, vec2i(p.xy) + shift.xy, 0);\n\
+                 return vec4<u32>({value}, 0u, 0u, 0u);\n\
+             }}\n"
+        );
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let sample_type = match read {
+            AspectRead::Stencil => wgpu::TextureSampleType::Uint,
+            _ => wgpu::TextureSampleType::Float { filterable: false },
+        };
+        let (layout, pipeline_layout) = loader_layout(&self.device, sample_type);
+        self.counters.pipelines += 1;
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &cover,
+                    entry_point: Some("cover"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("read"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(target.into())],
                 }),
                 multiview_mask: None,
                 cache: None,
