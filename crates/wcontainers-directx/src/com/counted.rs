@@ -138,10 +138,11 @@ impl<O: Counted> Drop for Held<O> {
 
 /// Makes `$outer`, the COM object around `$inner` (which has a `child: Child` field), counted as
 /// above, answering `QueryInterface` for each interface listed (with its vtable type) and those it
-/// derives from. The first is its identity's; each after it names its place among the vtable
-/// pointers (-2, -3, ...).
+/// derives from. The first is its identity's (with the interfaces it derives from that Rust code
+/// asks for after `|`); each after it names its place among the vtable pointers (-2, -3, ...) and
+/// may name a method of `$inner` saying whether the object offers it.
 macro_rules! counted {
-    ($inner:ident => $outer:ident { $first:ident: $first_iface:ident, $first_vtbl:ident $(; $field:ident: $iface:ident, $vtbl:ident, $offset:expr)* $(;)? }) => {
+    ($inner:ident => $outer:ident { $first:ident: $first_iface:ident $(| $also:ident)*, $first_vtbl:ident $(; $field:ident: $iface:ident, $vtbl:ident, $offset:expr $(, if $offers:ident)?)* $(;)? }) => {
         #[repr(C)]
         #[allow(non_camel_case_types)]
         pub struct $outer {
@@ -211,7 +212,7 @@ macro_rules! counted {
                 } else if $first_vtbl::matches(&iid) {
                     &self.$first as *const _ as *const std::ffi::c_void
                 }
-                $(else if $vtbl::matches(&iid) {
+                $(else if $vtbl::matches(&iid) $(&& self.this.$offers())? {
                     &self.$field as *const _ as *const std::ffi::c_void
                 })*
                 else {
@@ -284,6 +285,13 @@ macro_rules! counted {
             }
         }
 
+        $(impl windows_core::ComObjectInterface<$also> for $outer {
+            #[inline(always)]
+            fn as_interface_ref(&self) -> windows_core::InterfaceRef<'_, $also> {
+                unsafe { std::mem::transmute(&self.$first) }
+            }
+        })*
+
         $(impl windows_core::ComObjectInterface<$iface> for $outer {
             #[inline(always)]
             fn as_interface_ref(&self) -> windows_core::InterfaceRef<'_, $iface> {
@@ -296,6 +304,12 @@ macro_rules! counted {
                 windows_core::ComObject::new(this).into_interface()
             }
         }
+
+        $(impl From<$inner> for $also {
+            fn from(this: $inner) -> Self {
+                $first_iface::from(this).into()
+            }
+        })*
     };
 }
 

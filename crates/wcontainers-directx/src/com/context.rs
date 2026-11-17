@@ -9,7 +9,8 @@ use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 use windows::core::{
-    ComObjectInner, ComObjectInterface, IUnknownImpl, Interface, OutRef, Ref, Result, implement,
+    BOOL, ComObjectInner, ComObjectInterface, IUnknownImpl, Interface, OutRef, PCWSTR, Ref, Result,
+    implement,
 };
 
 use wcontainers_direct3d_11::desc::{Box3, Viewport};
@@ -19,7 +20,7 @@ use wcontainers_direct3d_11::{PIXEL, VERTEX, format};
 use super::counted::{Counted, Held};
 use super::*;
 
-#[implement(ID3D11DeviceContext)]
+#[implement(ID3D11DeviceContext1, ID3D11Multithread, ID3DUserDefinedAnnotation)]
 pub struct Context {
     front: Locked<Shared>,
     pub(super) child: Child,
@@ -28,6 +29,9 @@ pub struct Context {
     /// What is bound, as the program's objects, for the `Get` methods; holding a library reference
     /// on each, as Direct3D's context does.
     bound: RefCell<Bound>,
+    /// `ID3D11Multithread`: the program's `Enter` calls not yet left, and its protection flag.
+    entered: Cell<u32>,
+    protected: Cell<bool>,
 }
 
 /// The objects and values bound to the context.
@@ -36,6 +40,8 @@ struct Bound {
     ps: Option<Held<PixelShader_Impl>>,
     /// Per stage (vertex, pixel), per slot.
     constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 2],
+    /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
+    constant_ranges: [Vec<Option<(u32, u32)>>; 2],
     resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 2],
     samplers: [Vec<Option<Held<SamplerState_Impl>>>; 2],
     layout: Option<Held<InputLayout_Impl>>,
@@ -58,6 +64,7 @@ impl Default for Bound {
             vs: None,
             ps: None,
             constant_buffers: Default::default(),
+            constant_ranges: Default::default(),
             resources: Default::default(),
             samplers: Default::default(),
             layout: None,
@@ -114,6 +121,8 @@ impl Context {
             child: Child::new(device),
             slot: Locked::new(slot),
             bound: RefCell::new(Bound::default()),
+            entered: Cell::new(0),
+            protected: Cell::new(false),
         }
     }
 }
@@ -243,19 +252,57 @@ impl Context {
         start: u32,
         n: u32,
         list: *const Option<ID3D11Buffer>,
+        first: *const u32,
+        count: *const u32,
     ) {
         let h = held::<_, Buffer>(list, n);
         let b = fronts(&h, |b| &*b.front);
+        let ranges: Vec<_> = if first.is_null() || count.is_null() || list.is_null() {
+            vec![None; h.len()]
+        } else {
+            (0..h.len())
+                .map(|i| Some(unsafe { (*first.add(i), *count.add(i)) }))
+                .collect()
+        };
         let r = self
             .front
             .borrow_mut()
-            .set_constant_buffers(stage, start, &b);
+            .set_constant_ranges(stage, start, &b, &ranges);
         if self.quiet("SetConstantBuffers", r) {
-            store(
-                &mut self.bound.borrow_mut().constant_buffers[stage],
-                start,
-                h,
-            );
+            let mut bound = self.bound.borrow_mut();
+            store(&mut bound.constant_buffers[stage], start, h);
+            store(&mut bound.constant_ranges[stage], start, ranges);
+        }
+    }
+
+    /// Writes the ranges of `n` constant buffer slots from `start` to the program's arrays; a whole
+    /// buffer, and an empty slot, are the first 4096 constants.
+    fn get_constant_ranges(
+        &self,
+        stage: usize,
+        start: u32,
+        n: u32,
+        first: *mut u32,
+        count: *mut u32,
+    ) {
+        let bound = self.bound.borrow();
+        for i in 0..n as usize {
+            let slot = start as usize + i;
+            let range = match (
+                bound.constant_buffers[stage].get(slot),
+                bound.constant_ranges[stage].get(slot),
+            ) {
+                (Some(Some(_)), Some(Some(r))) => *r,
+                _ => (0, 4096),
+            };
+            unsafe {
+                if !first.is_null() {
+                    *first.add(i) = range.0;
+                }
+                if !count.is_null() {
+                    *count.add(i) = range.1;
+                }
+            }
         }
     }
 
@@ -265,7 +312,7 @@ impl Context {
         n: u32,
         list: *const Option<ID3D11Buffer>,
     ) {
-        self.set_constant_buffers(VERTEX, start, n, list);
+        self.set_constant_buffers(VERTEX, start, n, list, std::ptr::null(), std::ptr::null());
     }
 
     pub(super) fn ps_set_constant_buffers(
@@ -274,7 +321,63 @@ impl Context {
         n: u32,
         list: *const Option<ID3D11Buffer>,
     ) {
-        self.set_constant_buffers(PIXEL, start, n, list);
+        self.set_constant_buffers(PIXEL, start, n, list, std::ptr::null(), std::ptr::null());
+    }
+
+    pub(super) fn vs_set_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+        first: *const u32,
+        count: *const u32,
+    ) {
+        self.set_constant_buffers(VERTEX, start, n, list, first, count);
+    }
+
+    pub(super) fn ps_set_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+        first: *const u32,
+        count: *const u32,
+    ) {
+        self.set_constant_buffers(PIXEL, start, n, list, first, count);
+    }
+
+    pub(super) fn vs_get_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        out: OutRef<ID3D11Buffer>,
+        first: *mut u32,
+        count: *mut u32,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[VERTEX],
+            start,
+            n,
+            out_array(out),
+        );
+        self.get_constant_ranges(VERTEX, start, n, first, count);
+    }
+
+    pub(super) fn ps_get_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        out: OutRef<ID3D11Buffer>,
+        first: *mut u32,
+        count: *mut u32,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[PIXEL],
+            start,
+            n,
+            out_array(out),
+        );
+        self.get_constant_ranges(PIXEL, start, n, first, count);
     }
 
     fn set_shader_resources(
@@ -680,6 +783,105 @@ impl Context {
         self.quiet("CopySubresourceRegion", r);
     }
 
+    /// Direct3D 11.1's copy: its flags only promise what the program does not overlap, so it is
+    /// the plain copy.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn copy_subresource_region1(
+        &self,
+        dst: Ref<ID3D11Resource>,
+        dst_sub: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        src: Ref<ID3D11Resource>,
+        src_sub: u32,
+        src_box: *const D3D11_BOX,
+        _flags: u32,
+    ) {
+        self.copy_subresource_region(dst, dst_sub, x, y, z, src, src_sub, src_box);
+    }
+
+    /// Direct3D 11.1's update: its flags only promise what the program does not overlap.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn update_subresource1(
+        &self,
+        dst: Ref<ID3D11Resource>,
+        sub: u32,
+        dst_box: *const D3D11_BOX,
+        data: *const c_void,
+        row_pitch: u32,
+        depth_pitch: u32,
+        _flags: u32,
+    ) {
+        self.update_subresource(dst, sub, dst_box, data, row_pitch, depth_pitch);
+    }
+
+    /// Discards leave contents undefined; keeping them is one of the contents allowed.
+    pub(super) fn discard_resource(&self, _resource: Ref<ID3D11Resource>) {}
+
+    pub(super) fn discard_view(&self, _view: Ref<ID3D11View>) {}
+
+    pub(super) fn discard_view1(&self, _view: Ref<ID3D11View>, _rects: *const RECT, _n: u32) {}
+
+    /// `ClearView` of a whole render target view; rectangles and other views are not served.
+    pub(super) fn clear_view(
+        &self,
+        view: Ref<ID3D11View>,
+        color: *const f32,
+        rects: *const RECT,
+        n: u32,
+    ) {
+        if color.is_null() {
+            return;
+        }
+        let Some(v) = front_of(&view, |v: &RenderTargetView| &*v.front) else {
+            return self.unserved("ID3D11DeviceContext1::ClearView of a view not a render target");
+        };
+        if n != 0 && !rects.is_null() {
+            return self.unserved("ID3D11DeviceContext1::ClearView of rectangles");
+        }
+        let c = unsafe { *color.cast::<[f32; 4]>() };
+        self.front.borrow_mut().clear_render_target_view(&v, c);
+    }
+
+    /// `ID3D11Multithread::Enter`: the library's lock, held until `Leave`.
+    pub(super) fn enter(&self) {
+        std::mem::forget(lock());
+        self.entered.set(self.entered.get() + 1);
+    }
+
+    pub(super) fn leave(&self) {
+        if self.entered.get() > 0 {
+            self.entered.set(self.entered.get() - 1);
+            // SAFETY: this thread holds the lock taken by its `Enter`, and the call's own above it.
+            unsafe { unlock() };
+        }
+    }
+
+    /// Calls are serialised by the library's lock whatever the flag says; it is kept and reported.
+    pub(super) fn set_multithread_protected(&self, on: BOOL) -> BOOL {
+        self.protected.replace(on.as_bool()).into()
+    }
+
+    pub(super) fn get_multithread_protected(&self) -> BOOL {
+        self.protected.get().into()
+    }
+
+    /// Annotations, answered as Direct3D answers them when no profiling tool is attached.
+    pub(super) fn begin_event(&self, _name: &PCWSTR) -> i32 {
+        -1
+    }
+
+    pub(super) fn end_event(&self) -> i32 {
+        -1
+    }
+
+    pub(super) fn set_marker(&self, _name: &PCWSTR) {}
+
+    pub(super) fn get_status(&self) -> BOOL {
+        false.into()
+    }
+
     pub(super) fn update_subresource(
         &self,
         dst: Ref<ID3D11Resource>,
@@ -737,23 +939,34 @@ impl Context {
         flags: u32,
         out: *mut D3D11_MAPPED_SUBRESOURCE,
     ) -> Result<()> {
-        let r = resource
+        let mapped = resource
             .as_ref()
             .and_then(resource_of)
-            .ok_or(E_INVALIDARG)?;
-        let mapped = self
-            .front
-            .borrow_mut()
-            .map(&r, sub, kind.0 as u32, flags)
-            .map_err(hresult)?;
-        if let Some(out) = unsafe { out.as_mut() } {
-            *out = D3D11_MAPPED_SUBRESOURCE {
-                pData: mapped.data.cast(),
-                RowPitch: mapped.row_pitch,
-                DepthPitch: mapped.depth_pitch,
-            };
+            .ok_or(E_INVALIDARG.into())
+            .and_then(|r| {
+                self.front
+                    .borrow_mut()
+                    .map(&r, sub, kind.0 as u32, flags)
+                    .map_err(hresult)
+            });
+        let Some(out) = (unsafe { out.as_mut() }) else {
+            return mapped.map(drop);
+        };
+        match mapped {
+            Ok(m) => {
+                *out = D3D11_MAPPED_SUBRESOURCE {
+                    pData: m.data.cast(),
+                    RowPitch: m.row_pitch,
+                    DepthPitch: m.depth_pitch,
+                };
+                Ok(())
+            }
+            // A failed map hands out no pointer and leaves the pitches, as Direct3D does.
+            Err(e) => {
+                out.pData = std::ptr::null_mut();
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     pub(super) fn unmap(&self, resource: Ref<ID3D11Resource>, sub: u32) {
@@ -979,6 +1192,12 @@ pub(super) fn binds<T>(list: *const Option<T>, count: u32) -> bool {
 }
 
 /// Writes `count` empty slots to the program's array `out` (a stage or feature nothing is bound to).
+/// The program's array behind an out parameter the windows crate types as one object.
+pub(super) fn out_array<T: Interface>(out: OutRef<T>) -> *mut Option<T> {
+    // SAFETY: `OutRef` is a transparent pointer to the first element.
+    unsafe { std::mem::transmute(out) }
+}
+
 pub(super) fn nothing_bound<T>(out: *mut Option<T>, count: u32) {
     if !out.is_null() {
         for i in 0..count as usize {
