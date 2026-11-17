@@ -926,6 +926,14 @@ impl Inode {
             credentials.uid
         };
         let mode = self.mode;
+        // `acl_permission_check`: another than the owner checks the access list when the group
+        // has bits, which a backend without FUSE_POSIX_ACL gives as none and the inode holds.
+        if uid != self.uid
+            && mode & 0o070 != 0
+            && let Some(remote) = backend::remote_of(self)
+        {
+            remote.acls.borrow_mut()[0].get_or_insert_with(Vec::new);
+        }
         let bits = if uid == self.uid {
             (mode >> 6) & 7
         } else if credentials.in_group(self.gid, use_fs_ids) {

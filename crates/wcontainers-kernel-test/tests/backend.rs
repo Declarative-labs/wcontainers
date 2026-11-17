@@ -121,6 +121,27 @@ fn truncations_and_appends_match_reference() {
     }
 }
 
+/// sendfile, splice, tee and copy_file_range with backend files, then fadvise, readahead and
+/// cachestat, on both kinds of backend.
+#[test]
+fn transfers_match_reference() {
+    for cached in [false, true] {
+        for run in same_on("backendtransfer", driver::Injections::default(), cached) {
+            assert_warned_only(&run, &[]);
+        }
+    }
+}
+
+/// Attributes and access control lists read as root and as another user, on both kinds of backend.
+#[test]
+fn attributes_read_as_a_user_match_reference() {
+    for cached in [false, true] {
+        for run in same_on("backendacluser", driver::Injections::default(), cached) {
+            assert_warned_only(&run, &[]);
+        }
+    }
+}
+
 /// Creating through links to missing files, and extended attributes of named pipes.
 #[test]
 fn special_files_match_reference() {

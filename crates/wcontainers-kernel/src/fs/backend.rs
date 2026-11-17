@@ -163,6 +163,10 @@ pub(crate) struct Remote {
     pub pages: Option<Pages>,
     /// The thread whose call took its writes' lock last (`io::lock_backend_writes`).
     pub writer: Cell<Option<Tid>>,
+    /// The access and default access control lists the inode holds (`i_acl`, `i_default_acl`):
+    /// not held, or the list a read gave, empty for none. A permission check by another than the
+    /// owner holds none for the access list (`check_acl` through `fuse_get_inode_acl`).
+    pub acls: RefCell<[Option<Vec<u8>>; 2]>,
 }
 
 /// A mapped backend file's first `block.length` bytes in a block of shared pages, as Linux's page
@@ -187,6 +191,20 @@ impl Remote {
     /// What the inode holds changed, or the backend said it did (`fuse_reverse_inval_inode`).
     pub fn changed(&self) {
         self.version.set(self.client.next_version());
+    }
+
+    /// Lets go of the access control lists held (`forget_all_cached_acls`).
+    pub fn forget_acls(&self) {
+        *self.acls.borrow_mut() = [None, None];
+    }
+}
+
+/// The backend inode an inode is, a named pipe's too.
+pub(crate) fn remote_of(inode: &Inode) -> Option<&Remote> {
+    match &inode.content {
+        Content::Backend(remote) => Some(remote),
+        Content::Pipe(pipe) => pipe.backend.as_deref(),
+        _ => None,
     }
 }
 
@@ -644,6 +662,7 @@ impl Client {
                     block_size: Cell::new(0),
                     pages: None,
                     writer: Cell::new(None),
+                    acls: RefCell::new([None, None]),
                 }),
                 flocks: Vec::new(),
                 record_locks: Vec::new(),
@@ -795,23 +814,12 @@ fn message(unique: u64, opcode: u32, nodeid: u64, asker: &Asker, parts: &[&[u8]]
 
 /// The connection and node number of an inode on a backend.
 pub(crate) fn remote(node: &Node) -> Option<(Rc<Client>, u64)> {
-    match &node.borrow().content {
-        Content::Backend(remote) => Some((remote.client.clone(), remote.nodeid)),
-        Content::Pipe(pipe) => pipe
-            .backend
-            .as_ref()
-            .map(|remote| (remote.client.clone(), remote.nodeid)),
-        _ => None,
-    }
+    remote_of(&node.borrow()).map(|remote| (remote.client.clone(), remote.nodeid))
 }
 
 /// The node number of an inode on a backend.
 pub(crate) fn remote_number(inode: &Inode) -> u64 {
-    match &inode.content {
-        Content::Backend(remote) => remote.nodeid,
-        Content::Pipe(pipe) => pipe.backend.as_ref().map_or(0, |remote| remote.nodeid),
-        _ => 0,
-    }
+    remote_of(inode).map_or(0, |remote| remote.nodeid)
 }
 
 fn on_backend(node: &Node) -> (Rc<Client>, u64) {
@@ -847,7 +855,12 @@ fn entry_node(client: &Rc<Client>, body: &[u8], parent: &Node, name: &[u8]) -> R
 pub(crate) fn lookup(directory: &Node, name: &[u8]) -> Result<Node, Errno> {
     let (client, nodeid) = on_backend(directory);
     let body = client.ask(fuse_opcode::FUSE_LOOKUP, nodeid, &[&name_part(name)])?;
-    entry_node(&client, &body, directory, name)
+    let node = entry_node(&client, &body, directory, name)?;
+    // `fuse_dentry_revalidate`.
+    if let Some(remote) = remote_of(&node.borrow()) {
+        remote.forget_acls();
+    }
+    Ok(node)
 }
 
 /// Asks for an inode's attributes unless this run of the call already has them
@@ -873,6 +886,10 @@ pub(crate) fn getattr(node: &Node, fh: Option<u64>) -> Result<(), Errno> {
     };
     let body = client.ask(fuse_opcode::FUSE_GETATTR, nodeid, &[input.as_bytes()])?;
     let out: fuse_attr_out = first(&body)?;
+    // `fuse_perm_getattr`, `fuse_update_get_attr`.
+    if let Some(remote) = remote_of(&node.borrow()) {
+        remote.forget_acls();
+    }
     client.refresh(node, &out.attr);
     Ok(())
 }
@@ -1609,6 +1626,7 @@ impl crate::Kernel {
                 {
                     remote.fresh.set(0);
                     remote.changed();
+                    remote.forget_acls();
                     if out.off >= 0 && remote.pages.is_some() {
                         self.counters.count(
                             cx.host,

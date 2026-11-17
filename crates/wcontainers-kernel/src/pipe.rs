@@ -267,22 +267,41 @@ impl Pipe {
         Some(count)
     }
 
-    /// Takes `count` bytes from the front slot, which holds at least that many; whether the slot
+    /// Takes `count` bytes from the front slots, which hold at least that many; whether a slot
     /// emptied and went.
-    pub fn consume_front(&mut self, count: usize) -> bool {
-        let slot = self.slots.front_mut().expect("a slot to consume");
-        slot.read += count;
-        if slot.read == slot.page.len() {
-            self.slots.pop_front();
-            return true;
+    pub fn consume_front(&mut self, mut count: usize) -> bool {
+        let mut emptied = false;
+        while count > 0 {
+            let slot = self.slots.front_mut().expect("a slot to consume");
+            let taken = count.min(slot.page.len() - slot.read);
+            slot.read += taken;
+            count -= taken;
+            if slot.read == slot.page.len() {
+                self.slots.pop_front();
+                emptied = true;
+            }
         }
-        false
+        emptied
     }
 
     /// The front slot's unread bytes.
     pub fn front_bytes(&self) -> &[u8] {
         let slot = self.slots.front().expect("a slot");
         &slot.page[slot.read..]
+    }
+
+    /// Up to `count` unread bytes of the slots from the front, left in place.
+    pub fn unread_bytes(&self, count: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for slot in &self.slots {
+            let left = count - out.len();
+            if left == 0 {
+                break;
+            }
+            let unread = &slot.page[slot.read..];
+            out.extend_from_slice(&unread[..unread.len().min(left)]);
+        }
+        out
     }
 
     /// Slots in use.

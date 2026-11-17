@@ -62,18 +62,43 @@ fn on_backend(node: &Node) -> bool {
     crate::fs::backend::remote(node).is_some()
 }
 
-/// `do_get_acl` on the backend: `__fuse_get_acl` asks for the list into a page; none or ENODATA
-/// is no list, ERANGE is E2BIG, and a list comes back as `posix_acl_to_xattr` writes it.
+/// `vfs_get_acl` on the backend: a link has none to read; a list the inode holds is taken
+/// (`__get_acl`), else `__fuse_get_acl` asks for it into a page and the inode holds what it gives.
 fn backend_acl(node: &Node, name: &[u8]) -> Result<Vec<u8>, Errno> {
+    if node.borrow().file_type() == S_IFLNK {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let slot = usize::from(name == ACL_DEFAULT);
+    let held = crate::fs::backend::remote_of(&node.borrow())
+        .and_then(|remote| remote.acls.borrow()[slot].clone());
+    let list = match held {
+        Some(list) => list,
+        None => {
+            let list = asked_acl(node, name)?;
+            if let Some(remote) = crate::fs::backend::remote_of(&node.borrow()) {
+                remote.acls.borrow_mut()[slot] = Some(list.clone());
+            }
+            list
+        }
+    };
+    if list.is_empty() {
+        return Err(Errno::ENODATA);
+    }
+    Ok(list)
+}
+
+/// `__fuse_get_acl`: none or ENODATA is no list (empty), ERANGE is E2BIG, and a list comes back as
+/// `posix_acl_to_xattr` writes it.
+fn asked_acl(node: &Node, name: &[u8]) -> Result<Vec<u8>, Errno> {
     let value = match crate::fs::backend::getxattr(node, name, PAGE_SIZE as u32) {
         Ok(value) if !value.is_empty() => value,
-        Ok(_) | Err(Errno::ENODATA) => return Err(Errno::ENODATA),
+        Ok(_) | Err(Errno::ENODATA) => return Ok(Vec::new()),
         Err(Errno::ERANGE) => return Err(Errno::E2BIG),
         Err(error) => return Err(error),
     };
     check_acl(&value)?;
     if value.len() <= 4 {
-        return Err(Errno::ENODATA);
+        return Ok(Vec::new());
     }
     Ok(acl_normalized(&value))
 }
@@ -139,6 +164,10 @@ fn set_backend_acl(
     }
     {
         let inode = node.borrow();
+        // A link has no `set_acl`.
+        if inode.file_type() == S_IFLNK {
+            return Err(Errno::EOPNOTSUPP);
+        }
         if name == ACL_DEFAULT && !inode.is_directory() {
             return if list { Err(Errno::EACCES) } else { Ok(0) };
         }
