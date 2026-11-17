@@ -2642,8 +2642,8 @@ name = "wcontainers-direct3d-11"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "naga",
  "wcontainers-gpu",
+ "wcontainers-shaders",
 ]
 
 [[package]]
@@ -2665,6 +2665,7 @@ dependencies = [
 name = "wcontainers-directx"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "pollster",
  "wcontainers-direct3d-11",
  "wcontainers-gpu",

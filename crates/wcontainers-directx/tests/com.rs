@@ -166,14 +166,43 @@ fn private_data_round_trips() {
 #[test]
 fn unserved_shaders_are_refused_not_faked() {
     let (device, _context) = device();
-    // A shader without a conversion: refused at creation with E_NOTIMPL, nothing made.
+    // Bytes that are not a shader: E_INVALIDARG, nothing made.
     let mut code = b"DXBC".to_vec();
     code.resize(64, 7);
     let mut out = None;
     let r = unsafe { device.CreateVertexShader(&code, None, Some(&mut out)) };
     assert_eq!(
         r.err().map(|e| e.code()),
+        Some(windows::Win32::Foundation::E_INVALIDARG)
+    );
+    assert!(out.is_none());
+    // A valid pixel shader reading a value the converter does not provide yet: E_NOTIMPL.
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wcontainers-graphics-test/shaders/dxbc/geometry.ps_id.dxbc"
+    );
+    let code = std::fs::read(path).unwrap();
+    let mut out = None;
+    let r = unsafe { device.CreatePixelShader(&code, None, Some(&mut out)) };
+    assert_eq!(
+        r.err().map(|e| e.code()),
         Some(windows::Win32::Foundation::E_NOTIMPL)
     );
     assert!(out.is_none());
+}
+
+#[test]
+fn the_forwarding_d3d11_reaches_the_library() {
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::core::{HSTRING, s};
+    // The test runs from <profile>/deps; the libraries are in <profile>.
+    let exe = std::env::current_exe().unwrap();
+    let profile = exe.parent().unwrap().parent().unwrap();
+    let load = |name: &str| unsafe { LoadLibraryW(&HSTRING::from(profile.join(name).as_os_str())) };
+    let library = load("wcontainers_directx.dll").unwrap();
+    let forwarder = load("d3d11.dll").unwrap();
+    assert_ne!(library, forwarder);
+    let direct = unsafe { GetProcAddress(library, s!("D3D11CreateDevice")) }.unwrap();
+    let forwarded = unsafe { GetProcAddress(forwarder, s!("D3D11CreateDevice")) }.unwrap();
+    assert_eq!(direct as usize, forwarded as usize);
 }
