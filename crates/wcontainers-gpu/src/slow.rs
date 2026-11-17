@@ -167,7 +167,8 @@ pub enum SlowPath {
     EarlyTestsPerPrimitive,
     /// A per-resource minimum level-of-detail clamp applied by merged samplers and by the program.
     MinLodClamp,
-    /// A fractional viewport drawn with the enclosing whole-pixel viewport, adjusted in the program.
+    /// A fractional viewport, or one past [`crate::Viewport`]'s bounds, drawn with a whole-pixel
+    /// viewport within them that covers what it draws, adjusted in the program.
     ViewportInShader,
     /// A staging resource the GPU wrote, mapped for writing only, read back first so the bytes the
     /// program leaves alone keep the GPU's values.
@@ -434,7 +435,7 @@ impl SlowPath {
             SlowPath::MinLodClamp => {
                 "resource minimum lod clamp applied by samplers and the shader"
             }
-            SlowPath::ViewportInShader => "fractional viewport applied in the shader",
+            SlowPath::ViewportInShader => "fractional or oversized viewport applied in the shader",
             SlowPath::StagingRefreshed => "staging resource read back before a write-only map",
             SlowPath::AttachmentsFitted => {
                 "attachments of different sizes fitted through temporaries"

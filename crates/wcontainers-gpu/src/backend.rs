@@ -750,8 +750,10 @@ pub trait Backend: Sized {
     ///
     /// What is written: the vertex stage's location outputs in location order, each as its 32-bit
     /// components with no padding; built-ins such as the position are not captured (a program whose
-    /// position is captured writes it to a location too). With one target every output of a vertex is
-    /// written one after another, vertex after vertex; with more, output n goes to target n alone and
+    /// position is captured writes it to a location too). The program writes at least one location
+    /// output, and only outputs of 32-bit components. With one target every output of a vertex is
+    /// written one after another, vertex after vertex, at most
+    /// [`crate::Limits::capture_components`] components; with more, output n goes to target n alone and
     /// there are as many targets as outputs, at most [`crate::Limits::capture_buffers`]. Vertices are
     /// written once per vertex of each whole primitive, in draw order, instance after instance, and the
     /// targets hold every vertex the draw makes. Strips are written as the lists they draw: triangle
