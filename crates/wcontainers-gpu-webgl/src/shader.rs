@@ -399,14 +399,20 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
         let mut blocks: Vec<Slot> = Vec::new();
         for s in core::iter::once(&vertex).chain(&fragment) {
             for (name, texture, sampler) in &s.textures {
-                if let Some(location) = gl.get_uniform_location(raw, name) {
-                    gl.uniform_1_i32(Some(&location), units.len() as i32);
-                    units.push((*texture, *sampler));
-                    sizes.push(
-                        gl.get_uniform_location(raw, &format!("{name}_size"))
-                            .map(|l| (l, std::cell::Cell::new([-1; 3]))),
-                    );
+                let location = gl.get_uniform_location(raw, name);
+                let size = gl
+                    .get_uniform_location(raw, &format!("{name}_size"))
+                    .map(|l| (l, std::cell::Cell::new([-1; 3])));
+                // A texture only sized has no sampler uniform left, but still takes a unit so its
+                // size uniform follows the bound view.
+                if location.is_none() && size.is_none() {
+                    continue;
                 }
+                if let Some(location) = &location {
+                    gl.uniform_1_i32(Some(location), units.len() as i32);
+                }
+                units.push((*texture, *sampler));
+                sizes.push(size);
             }
             for (name, slot) in &s.blocks {
                 if let Some(index) = gl.get_uniform_block_index(raw, name) {

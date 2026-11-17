@@ -47,6 +47,8 @@ macro_rules! suite {
             linear_filtering_and_address_modes,
             instances_start_at_the_first_instance,
             indexed_strips_restart_and_add_the_base_vertex,
+            a_stream_of_stride_zero_reads_its_first_element,
+            comparison_samplers_compare_with_the_stored_depth,
             fragments_write_storage_buffers,
             multisampled_targets_cover_their_samples_and_resolve,
             programs_run_per_sample_and_read_samples,
