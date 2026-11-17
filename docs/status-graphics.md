@@ -176,6 +176,31 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
     counts `FilterInShader` per draw (new test).
   - 85 slow path reasons. 29 tests.
 
+- G0, run 8 (2026-11-17): every finding of the seventh independent check fixed:
+  - Helper constants: one block per program stage, each at its own binding of set 3
+    (`helper_binding(stage)`: 0 vertex and compute, 12 fragment), so a vertex stage's base vertex and a
+    pixel stage's LOD bias never share offsets (plan 6.4). Bindings a variant adds (pulled streams,
+    constants as storage or textures, Direct3D 12's spilled root constants) live in the reading stage's
+    own set and are named in the reflection (`ReflectedBinding::added`, `AddedBinding`). Direct3D 9-11
+    use one set per stage; `MAX_BINDING_SETS` doc and plan 5.1 agree.
+  - WebGPU's usage scope: `PassDesc` states the rule; the pass tracker splits (`UsageScopeSplit`), and a
+    draw using one buffer both ways (OpenGL, Vulkan) reads a copy (`UsageScopeCopied`) (plan 4.7, 5.x).
+  - `BindingLayoutKey` has only the unfilterable-texture bits; sampler layouts follow from them and the
+    program, so one program with point then linear samplers is one pipeline. `FilterInShader` binds the
+    real sampler, so other textures sharing it keep native filtering (plan 4.5).
+  - Creation never waits; what the APIs refuse at creation is decided on the calling thread by pure
+    checks over the bytes and a copy of `Caps` (plan 4.8); memory exhausted later is device loss
+    (`LossReason::OutOfMemory`, answered as device removed with `DXGI_ERROR_DRIVER_INTERNAL_ERROR`).
+  - Minor: whole-buffer ordered writes are `Discard`; uniform bindings use dynamic offsets and a uniform
+    ring (no bind group per draw); `depth_bias` is a float (`FRACTIONAL_DEPTH_BIAS`);
+    `multisample_lines` removed (line rule a listed loss); `BLEND_CONSTANT_ALPHA`; WebGL 2's window
+    origin decided (plan 6.5); event queries (5.1); sample counts per format (`FormatCaps::samples`,
+    `takes_samples`); Vulkan's GPU-to-host read backs (5.5); plan 6.3's 107-of-112 explained (the
+    harness validated with no capabilities); the WebGL 2 back end also built for the desktop on ANGLE
+    through `glow` and `khronos-egl` (plan 10, G3, G4); Direct3D 12 descriptors read at replay; the
+    built-in programs' keys are BLAKE3.
+  - 87 slow path reasons. 31 tests.
+
 ## Partly done
 
 - Nothing in G0. Designed for G1, not in the crate yet: the pass tracker (plan 4.7), the occlusion
@@ -183,13 +208,13 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## Next
 
-- G0's independent check, again (the seventh).
+- G0's independent check, again (the eighth).
 - G1 to G6 as in plan section 12; they can run in parallel. G1 is short and every other milestone builds
   its tests on it, so start it first.
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (29 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (31 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
@@ -235,6 +260,11 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   were read in Microsoft's format tables (`downloads/msdocs/`), the functional specification
   (`downloads/d3d11spec/`, 3.4.4, 8.16, 8.18), the aliasing page (`check6/spec/aliasing.md`), the WebGPU
   specification copy (`check-g0/spec/webgpu.bs`), naga 30.0.2's GLSL writer and dxil-spirv's source.
+- Run 8, on the Mac, load average 31.03, 63.57, 50.76: naga revalidated the five WGSL modules the
+  corpus harness had counted as failures, with the error text (`corpus/revalidate-run8.txt`, tool
+  `experiments/shader-corpus/src/bin/revalidate.rs`): three need `MULTISAMPLED_SHADING` and pass with
+  it, two need `SHADER_FLOAT16_IN_FLOAT32` (`pack2x16float`); both are WebGPU core. Counts, not timings.
+  The crate's tests ran at load average 91.83, 48.28, 38.23.
 - Run 3, on the Mac, load average 14.71, 16.16, 16.39: Chrome's adapter limits (plan 4.11), counts not
   timings. WebGPU: 16384 2D, 2048 3D and layers, 8 vertex buffers, 30 attributes, 12 uniform buffers, 10
   storage buffers, 48 sampled textures, 28 inter-stage slots, 64 immediate bytes, BC and BC sliced 3D
@@ -250,6 +280,12 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   Its tree, from `cargo tree`: all MIT or Apache-2.0 except `foldhash` (Zlib), `zerocopy`
   (BSD-2-Clause OR Apache-2.0 OR MIT), `unicode-ident` ((MIT OR Apache-2.0) AND Unicode-3.0),
   `codespan-reporting` (Apache-2.0), `libm` (MIT).
+- `blake3` 1.8.7 (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception, its repository's
+  `Cargo.toml`), used by `wcontainers-gpu` since run 8, `default-features = false`; it adds `arrayvec`,
+  `cfg-if`, `cc` (MIT OR Apache-2.0) and `constant_time_eq` (CC0-1.0 OR MIT-0 OR Apache-2.0). Already
+  in the workspace lock file through the translator.
+- Read in their repositories in run 8, to be added by G3: `glow` 0.18 (MIT OR Apache-2.0 OR Zlib),
+  `khronos-egl` 6.0 (MIT or Apache-2.0); ANGLE (BSD-3-Clause), a desktop test tool, never shipped.
 - Read in its repository, to be added by G2 and G3: `bcdec_rs` 0.2.1, MIT (Cargo.toml and the
   ScanMountGoat/image_dds LICENSE), a port of bcdec (MIT or Unlicense).
 - Read in their repositories, not yet dependencies: dxbc-spirv MIT (2025 Philip Rebohle; SPIRV-Headers
@@ -324,7 +360,14 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   4.12). Both were chosen over exact routes that would cost every draw (depth written in the program)
   or have none (WebGL 2 cannot copy multisampled renderbuffers).
 - `wcontainers-gpu` gained naga's `wgsl-in` feature, for the built-in programs of the fast-path
-  defaults.
+  defaults, and `blake3` for their content keys.
+- A memory failure found after the guest was told an object was made is reported as device loss
+  (`DXGI_ERROR_DEVICE_REMOVED`, reason `DXGI_ERROR_DRIVER_INTERNAL_ERROR`), not as `E_OUTOFMEMORY` at
+  creation: browsers report memory errors only after the call, and creation does not wait (plan 4.8).
+- Which line rasterisation rule Direct3D's `MultisampleEnable` picks is a listed loss: neither browser
+  API lets a program choose (plan 4.12).
+- The interface's usage-scope rule (one pass, one usage scope) binds every back end, so a future
+  native back end would split a few passes it need not (plan 4.7).
 - The workspace root `Cargo.toml` gained the `naga` workspace dependency (outside the crates this track
   owns, needed to add one).
 
