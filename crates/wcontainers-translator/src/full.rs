@@ -1591,6 +1591,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             let room = e.new_local(ValType::I64);
             e.kept_pages.push((low, room));
         }
+        const { assert!(G::FLAGS.len() <= 8, "at most 8 tracked flags") };
         for i in 0..G::FLAGS.len() {
             e.flag_locals[i] = e.new_local(ValType::I32);
         }

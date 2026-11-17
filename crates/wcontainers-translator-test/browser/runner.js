@@ -321,13 +321,6 @@ function run({
     new Uint8Array(translator.memory.buffer, cpuState + size, code.length).set(code);
     return contract.memoryFaults[translator.cpu_memory_fault(address, code.length)];
   }
-  // Byte views of the state memory and of the translator's memory, made again only after either grows.
-  let stateMemory = new Uint8Array(state.buffer);
-  let translatorMemory = new Uint8Array(translator.memory.buffer);
-  function views() {
-    if (stateMemory.buffer !== state.buffer) stateMemory = new Uint8Array(state.buffer);
-    if (translatorMemory.buffer !== translator.memory.buffer) translatorMemory = new Uint8Array(translator.memory.buffer);
-  }
   // An argument as `cpu_hook` takes it: i64 arguments arrive as BigInt, i32 ones as numbers.
   const wide = (value) => (typeof value === "bigint" ? value : BigInt(value));
   // A result as the hook returns it.
@@ -347,13 +340,18 @@ function run({
     } else {
       // The work is the translator's `cpu_hook` on a copy of the hook's bytes of the thread's state; a counted
       // slow path.
-      const at = BLOCK_AT + stateAt;
+      // The hook's bytes in the state memory, whose views stay valid as it never detaches, and at
+      // `cpu_state`, made again only once the translator's memory has grown, which detaches them.
+      const inState = new Uint8Array(state.buffer, BLOCK_AT + stateAt, stateLength);
+      let inTranslator = new Uint8Array(translator.memory.buffer, cpuState, stateLength);
+      const translatorView = () => {
+        if (inTranslator.byteLength === 0) inTranslator = new Uint8Array(translator.memory.buffer, cpuState, stateLength);
+        return inTranslator;
+      };
       hooks[name] = (a = 0, b = 0, c = 0, d = 0) => {
-        views();
-        for (let i = 0; i < stateLength; i++) translatorMemory[cpuState + i] = stateMemory[at + i];
+        translatorView().set(inState);
         translator.cpu_hook(index, wide(a), wide(b), wide(c), wide(d));
-        views();
-        for (let i = 0; i < stateLength; i++) stateMemory[at + i] = translatorMemory[cpuState + i];
+        inState.set(translatorView());
         const why = translator.cpu_hook_reason();
         // Registers are not saved here, so the detail is the first argument, not the address.
         if (why >= 0) slowPath(why, typeof a === "bigint" ? BigInt.asUintN(64, a) : a >>> 0, 0);

@@ -1154,9 +1154,10 @@ memory grows). Per hook call runner.js copies the hook's `stateLength` bytes fro
 at its block plus `stateAt` to that address, calls `cpu_hook` with the hook's index (from the contract's `hooks`) and its
 arguments (unused ones 0), reads `cpu_hook_result(i)` for each of the hook's results and `cpu_hook_reason()`
 (a `Reason` number, or -1 for none), and copies the bytes back. The contract lists each guest hook's result
-types, so an i32 result goes back as a number and two results (x86's X87 hook) as an array; the copies run
-over byte views made once (again only after a memory grows), so a call allocates nothing but the BigInts of
-its i32 arguments (and the array of a two-result hook). `Guest::step` reaches the browser the same
+types, so an i32 result goes back as a number and two results (x86's X87 hook) as an array. The copies are
+two `set`s between views of the hook's bytes made once per hook (the state memory is shared and never
+detaches; the view at `cpu_state` is made again only after the cdylib's memory has grown), so a call
+allocates nothing but the BigInts of its i32 arguments (and the array of a two-result hook). `Guest::step` reaches the browser the same
 way from X6: an export `cpu_step(kind, pc) -> i32` (kind 0 for `StepAt::Stop`, 1 for `StepAt::Kernel`; the
 answer is `Step`'s index) over the same buffer, which runner.js calls first in its stop hook and at its
 returns from the kernel only while the guest's contract says the CPU steps (`steps: true` for x86), so an

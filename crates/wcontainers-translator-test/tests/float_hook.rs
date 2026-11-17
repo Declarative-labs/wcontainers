@@ -48,8 +48,7 @@ fn float_hook_time_in_chrome() {
         let report = browser::repeated(&blob, how, Omit::default(), runs);
         assert_eq!(report.ran.stdout, theirs.stdout, "{look_ahead:?}");
         assert_eq!(report.ran.status, theirs.status, "{look_ahead:?}");
-        // The page times each run in milliseconds.
-        let best = report.runs.iter().copied().fold(f64::MAX, f64::min) / 1000.0;
+        let best = report.runs.iter().copied().fold(f64::MAX, f64::min);
         eprintln!("float hook in Chrome, {look_ahead:?}: best of {runs} {best:.4} s");
     }
 }

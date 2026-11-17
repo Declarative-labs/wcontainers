@@ -14,6 +14,52 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   3 with the translator's side of every item. Every part of the pass bar holds (see "X1, run 2"). Next:
   X2, the shared test harness (plan section 9).
 
+## X1, run 3 (2026-11-17)
+
+The second check of X1 found three blocking problems and five smaller ones. What was done about each:
+- Blocking, a CPU without flags made invalid modules: the "flags in locals" flags-word function was made
+  with an empty body for empty `FLAGS`. Now `FLAGS_WORDS` is 0 and no flags-word function, flag state local
+  or flags-word type is made when `FLAGS` is empty, and a return's compare skips the mask when
+  `FLAGS_WANTED` is 0. The test guest has a variant without flags (`Test<false>`, conditional jumps on a
+  register being zero, `FLAGS_WANTED` 0, `UNREACHABLE_RETURN` 1, like RV64GC); its translations validate
+  and run.
+- Blocking, grouping by segment unreachable: `MemoryAccess::plain` no longer rejects a segment, so
+  `fs:[r + d]` accesses group under (segment, base, write), and `fs:[d]` with no base or index under
+  (segment, none, write). The loop proofs still leave segment accesses out (they bound a register's values,
+  not a segment base's), and kept runs of pages are keyed by segment too. Shown by the test guest: two pairs
+  of segment loads have no exact check at full look-ahead (4 at none), and a pair whose second load reaches
+  an unreadable page faults exactly, with the first load done.
+- Blocking, the status file's departure about `before` walks contradicted the source: the sentence is gone
+  (the walks were built in run 2).
+- The test guest now runs: it moved to the test crate (`tests/test_guest.rs`), where a small runner of its
+  own (one thread, the program's pieces placed first, later code at look-ahead none, the exact piece at
+  bounded 1, every hook call recorded) runs eleven programs in wasmtime at none, bounded 1, 5, 256 and full,
+  for speed and size, with and without flags, and checks registers, pc, memory and hook calls: a trap leaving
+  pc after it; a call pushing its return address, a red-zone store and load, a register passed out only, the
+  flags in the block after a return; a flag kept by `inc`; a jump into the middle of an instruction; the
+  segment groups and their exact faults; a hook writing a register back and reading one; a raised stop seen
+  before the next instruction; a system call's registers and the CPU's own slow path; a run-time range;
+  a switch to a case and to an address not in its table; two accesses of one instruction and the second's
+  exact fault. With the two blocking fixes taken out, 11 of its 14 tests fail (the flagless modules invalid;
+  4 exact checks where 0 are expected).
+- Flag states are bits of a `u128` (was `u32`), so a CPU may have 126 shapes, checked at compile time.
+- The browser runner's `Cpu` hooks give every result (the contract lists each hook's result types; i32 as a
+  number, two results as an array), copy the hook's bytes with two `set`s between views made once per hook
+  (the one at `cpu_state` again after the cdylib's memory grows), and allocate only the BigInts of i32
+  arguments. Timed in Chrome with the new `float_hook_time_in_chrome` (`tests/float_hook.rs`, same program
+  and knobs as the wasmtime one), old (2274314's copy) and new alternating, best of 3 a run, 4 rounds each
+  (scratch `x1/run3/chrome-alternate.sh`, Mac):
+  - with run 2's path (a fresh array, four BigInts and three views a call; 36 bytes copied by views made
+    each call), load 38 to 46: old none 0.90 to 1.0 s, full 1.6 to 1.7 s; new none 1.3 to 1.4 s, full
+    2.0 s. New over old about 1.44 (none) and 1.25 (full). (This run's first printing divided seconds by
+    1000; the log `chrome-alternate.log` shows 0.0009 and so on, read as 0.9 s.)
+  - with views made once and `set`, load 19.7 to 35.8: best old none 0.9184 s, full 1.6141 s; best new none
+    0.9099 s, full 1.6082 s (`chrome-alternate2.log`). New over old 0.99 and 1.00.
+- The bottom loop's misaligned-target fault: not an interface item; the plan now says why (3.4, and
+  Departures).
+- `dyn` in the translator: the plan's sentence now says nothing of a guest is reached through `dyn`, and
+  names the loop-proof module's own `&dyn Fn` closures (translate time only).
+
 ## X1, run 2 (2026-11-17)
 
 The check's findings and what was done about each:
