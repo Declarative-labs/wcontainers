@@ -1,6 +1,6 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
@@ -72,6 +72,8 @@ pub struct TestHost {
     schedule: StdRng,
     /// The file backend, for a container with a volume.
     pub(crate) backend: Option<crate::backend::Backend>,
+    /// Connections to the outside and lookups.
+    network: crate::network::Network,
 }
 
 impl TestHost {
@@ -88,6 +90,7 @@ impl TestHost {
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             backend: None,
+            network: Default::default(),
         }
     }
 
@@ -144,6 +147,8 @@ impl TestHost {
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             // The backend and the answers it owes go on with the copy.
             backend: self.backend.take(),
+            // A new host has none of the old one's connections.
+            network: Default::default(),
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -210,22 +215,35 @@ impl Host for TestHost {
         }
     }
 
-    fn connect(&mut self, _: ConnectionId, _: &[u8], _: u16, _: bool) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn connect(
+        &mut self,
+        connection: ConnectionId,
+        address: &[u8],
+        port: u16,
+        stream: bool,
+    ) -> Result<(), HostError> {
+        self.network.connect(connection.0, address, port, stream)
     }
 
-    fn send(&mut self, _: ConnectionId, _: &[u8]) -> Result<usize, HostError> {
-        Err(HostError::NotSupported)
+    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        self.network.send(connection.0, bytes)
     }
 
-    fn receive(&mut self, _: ConnectionId, _: &mut [u8]) -> Result<usize, HostError> {
-        Err(HostError::NotSupported)
+    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        self.network.receive(connection.0, into)
     }
 
-    fn close(&mut self, _: ConnectionId) {}
+    fn finish(&mut self, connection: ConnectionId) {
+        self.network.finish(connection.0);
+    }
 
-    fn look_up(&mut self, _: u64, _: &str) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn close(&mut self, connection: ConnectionId) {
+        self.network.close(connection.0);
+    }
+
+    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
+        self.network.look_up(request, name);
+        Ok(())
     }
 
     fn listen(&mut self, _: ConnectionId, _: u16) -> Result<(), HostError> {
@@ -389,6 +407,7 @@ pub fn run_injected(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
+                network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
                 // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host
                     .backend
@@ -451,6 +470,17 @@ pub fn run_injected(
                     deliver(&mut kernel, &mut cpu, &mut host);
                     continue;
                 }
+                // The outside answers in real time: a wait for it goes on as long as the kernel's
+                // next timer, and at most ten seconds.
+                if host.network.waiting() {
+                    let now = host.monotonic_nanoseconds();
+                    let wait = until_nanoseconds.map_or(NETWORK_PATIENCE, |until| {
+                        Duration::from_nanos(until.saturating_sub(now)).min(NETWORK_PATIENCE)
+                    });
+                    if network_events(&mut kernel, &mut cpu, &mut host, wait) {
+                        continue;
+                    }
+                }
                 let Some(until) = until_nanoseconds else {
                     panic!(
                         "the kernel is idle with nothing to wake it, and this host has no events; \
@@ -486,6 +516,27 @@ pub fn run_injected(
         saved,
     };
     Ok(finish(run, report))
+}
+
+/// The longest the driver waits for the outside when nothing else can happen.
+const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
+
+/// Hands the kernel what the outside sent, after waiting up to `wait` for something; whether
+/// anything came.
+fn network_events(
+    kernel: &mut Kernel,
+    cpu: &mut dyn wcontainers_abi::Cpu,
+    host: &mut TestHost,
+    wait: Duration,
+) -> bool {
+    if !host.network.waiting() {
+        return false;
+    }
+    let owed = host.network.take(wait);
+    for event in &owed {
+        event.with(|event| kernel.event(cpu, host, event));
+    }
+    !owed.is_empty()
 }
 
 /// The longest a turn runs while the backend owes an answer, in nanoseconds of the CPU side.

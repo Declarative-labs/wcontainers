@@ -6,6 +6,8 @@
 
 mod inet;
 mod netlink;
+mod outside;
+mod resolver;
 
 pub(crate) use inet::Ports;
 
@@ -175,6 +177,25 @@ pub(crate) struct Names {
     inet: Ports,
     /// The port numbers netlink sockets hold.
     netlink: BTreeMap<u32, Weak<RefCell<Socket>>>,
+}
+
+/// Closes the host connections let go since the last flush.
+pub(crate) fn flush_outside(kernel: &mut Kernel, cx: &mut Context<'_>) {
+    kernel.sockets.inet.outside.flush(cx.host);
+}
+
+/// Hands a network event to the socket or lookup it is for; false if none waits for it.
+pub(crate) fn outside_event(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    event: &wcontainers_abi::Event<'_>,
+) -> bool {
+    outside::event(kernel, cx, event)
+}
+
+/// After a restore: connections to the outside read as closed.
+pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
+    outside::restored(kernel, cx);
 }
 
 impl Names {
@@ -874,7 +895,7 @@ pub(super) fn getpeername(
 
 pub(super) fn shutdown(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, how, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -886,7 +907,7 @@ pub(super) fn shutdown(
     // SHUT_RD, SHUT_WR, SHUT_RDWR as bits.
     let mode = (how + 1) as u8;
     if socket.borrow().inet.is_some() {
-        return inet::shutdown(kernel, &socket, mode);
+        return inet::shutdown(kernel, cx, &socket, mode);
     }
     if socket.borrow().netlink.is_some() {
         return Err(Errno::EOPNOTSUPP);

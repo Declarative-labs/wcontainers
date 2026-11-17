@@ -145,6 +145,12 @@ pub(crate) struct Inet {
     /// Whether the program set the buffer sizes (`SOCK_SNDBUF_LOCK`, `SOCK_RCVBUF_LOCK`).
     pub sndbuf_set: bool,
     pub rcvbuf_set: bool,
+    /// The host connection of a TCP connection to the outside.
+    pub outside: Option<u32>,
+    /// A UDP socket's host connections, by outside destination.
+    pub flows: alloc::collections::BTreeMap<Endpoint, u32>,
+    /// Whether the host takes more bytes of an outside connection now.
+    pub room: bool,
 }
 
 impl Inet {
@@ -164,6 +170,9 @@ impl Inet {
             closed_first: false,
             sndbuf_set: false,
             rcvbuf_set: false,
+            outside: None,
+            flows: alloc::collections::BTreeMap::new(),
+            room: false,
         }
     }
 }
@@ -175,6 +184,8 @@ pub(crate) struct Ports {
     /// Closed TCP connections in TIME_WAIT: their local end, whether they had SO_REUSEADDR, and
     /// until when.
     time_wait: Vec<(Endpoint, bool, u64)>,
+    /// Connections to the outside and name lookups under way.
+    pub outside: super::outside::Outside,
 }
 
 fn inet(socket: &SocketRef) -> core::cell::RefMut<'_, Inet> {
@@ -801,18 +812,13 @@ fn tcp_connect(
     if !reachable(&to.address) {
         return Err(Errno::ENETUNREACH);
     }
-    if !is_own(&to.address) {
-        return Err(kernel.counters.refuse(
-            cx.host,
-            crate::reason::FAMILY_NOT_BUILT,
-            u64::from(family),
-            Errno::ENETUNREACH,
-        ));
-    }
     if !inet_ref(socket).address_chosen {
         inet(socket).local.address = source_for(&to.address);
     }
     autobind(kernel, cx, tid, socket, true)?;
+    if !is_own(&to.address) {
+        return connect_outside(kernel, cx, tid, socket, to, nonblocking);
+    }
     {
         let mut own = socket.borrow_mut();
         own.error = 0;
@@ -855,6 +861,47 @@ fn tcp_connect(
     Ok(0)
 }
 
+/// A connect to the outside: the host's connection starts, and its answer finishes it.
+fn connect_outside(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    to: Endpoint,
+    nonblocking: bool,
+) -> Result<u64, Errno> {
+    let id = match super::outside::open(kernel, cx, socket, to, true) {
+        Ok(id) => id,
+        Err(error) => {
+            failed(kernel, socket, error);
+            let mut own = socket.borrow_mut();
+            own.error = 0;
+            own.shutdown = 0;
+            return Err(error);
+        }
+    };
+    {
+        let mut own = socket.borrow_mut();
+        own.error = 0;
+        own.shutdown = 0;
+        if !own.inet.as_deref().unwrap().sndbuf_set {
+            own.sndbuf = TCP_CONNECTED_SNDBUF;
+        }
+        let inet = own.inet.as_deref_mut().unwrap();
+        inet.remote = Some(to);
+        inet.done = false;
+        inet.closed_first = false;
+        inet.outside = Some(id);
+        inet.room = false;
+        inet.connecting = Some(Weak::new());
+    }
+    if nonblocking {
+        inet(socket).in_progress = true;
+        return Err(Errno::EINPROGRESS);
+    }
+    wait_connect(kernel, tid, socket)
+}
+
 /// Waits for a connect to finish, as `inet_wait_for_connect`.
 fn wait_connect(kernel: &mut Kernel, tid: Tid, socket: &SocketRef) -> Result<u64, Errno> {
     let timeout = socket.borrow().send_timeout;
@@ -893,14 +940,20 @@ fn finish_connect(socket: &SocketRef) -> Result<u64, Errno> {
 /// A connect was refused: the socket is closed with ECONNREFUSED to report, and lets go of the
 /// port it was given (`tcp_set_state(TCP_CLOSE)`).
 fn refused(kernel: &mut Kernel, socket: &SocketRef) {
+    failed(kernel, socket, Errno::ECONNREFUSED);
+}
+
+/// A connect failed with `error`, as [`refused`].
+pub(super) fn failed(kernel: &mut Kernel, socket: &SocketRef, error: Errno) {
     let port = {
         let mut own = socket.borrow_mut();
         own.state = State::Closed;
-        own.error = Errno::ECONNREFUSED.0 as i32;
+        own.error = error.0 as i32;
         own.shutdown = SHUTDOWN_MASK;
         let inet = own.inet.as_deref_mut().unwrap();
         inet.remote = None;
         inet.connecting = None;
+        inet.outside = None;
         let let_go = !inet.port_chosen && inet.held;
         if let_go {
             inet.held = false;
@@ -1089,7 +1142,12 @@ pub(super) fn peer_bytes(socket: &SocketRef) -> Vec<u8> {
 }
 
 /// `inet_shutdown` with `tcp_shutdown`: a TCP send shut sends a FIN.
-pub(super) fn shutdown(kernel: &mut Kernel, socket: &SocketRef, mode: u8) -> Result<u64, Errno> {
+pub(super) fn shutdown(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    mode: u8,
+) -> Result<u64, Errno> {
     let (state, connecting, protocol) = {
         let own = socket.borrow();
         let inet = own.inet.as_deref().unwrap();
@@ -1112,9 +1170,13 @@ pub(super) fn shutdown(kernel: &mut Kernel, socket: &SocketRef, mode: u8) -> Res
             Err(Errno::ENOTCONN)
         }
         State::Connected => {
+            let already = socket.borrow().shutdown & SEND_SHUTDOWN != 0;
             socket.borrow_mut().shutdown |= mode;
-            if protocol == Protocol::Tcp && mode & SEND_SHUTDOWN != 0 {
-                send_fin(kernel, socket);
+            if protocol == Protocol::Tcp && mode & SEND_SHUTDOWN != 0 && !already {
+                match inet_ref(socket).outside {
+                    Some(id) => super::outside::finish(cx, id),
+                    None => send_fin(kernel, socket),
+                }
             }
             kernel.wake(channel(socket));
             Ok(0)
@@ -1203,7 +1265,11 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
         if !own.queue.is_empty() {
             mask |= EPOLLIN | EPOLLRDNORM;
         }
-        if own.shutdown & SEND_SHUTDOWN != 0 || writable(&own) {
+        let room = match inet.outside {
+            Some(_) => inet.room,
+            None => writable(&own),
+        };
+        if own.shutdown & SEND_SHUTDOWN != 0 || room {
             mask |= EPOLLOUT | EPOLLWRNORM;
         }
     }
@@ -1223,6 +1289,7 @@ fn writable(own: &Socket) -> bool {
 /// for no wait), else the other end gets a FIN; a listener's waiting connections are reset; the
 /// ports are let go.
 pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+    super::outside::released(kernel, socket);
     let (state, protocol) = {
         let own = socket.borrow();
         (own.state, own.inet.as_deref().unwrap().protocol)
@@ -1237,6 +1304,7 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
                 }
                 refuse_waiting(kernel, socket);
             }
+            State::Connected if inet_ref(socket).outside.is_some() => {}
             State::Connected => {
                 let linger_zero = socket
                     .borrow()
@@ -1343,6 +1411,34 @@ fn tcp_send(
             }
             let timeout = socket.borrow().send_timeout;
             return Err(wait_room(kernel, tid, socket, false, timeout));
+        }
+        let outside = inet_ref(socket).outside;
+        if let Some(id) = outside {
+            if sent >= total {
+                return Ok(sent);
+            }
+            if socket.borrow().state != State::Connected {
+                return Err(Errno::EPIPE);
+            }
+            if !inet_ref(socket).room {
+                if sent > 0 && (nonblocking || kernel.signal_pending(tid)) {
+                    return Ok(sent);
+                }
+                let timeout = socket.borrow().send_timeout;
+                let error = wait_room(kernel, tid, socket, nonblocking, timeout);
+                if error == Errno::PARKED {
+                    kernel.thread_mut(tid).call.progress = sent;
+                }
+                return Err(error);
+            }
+            let size = (total - sent).min(TCP_PIECE);
+            let data = gather(kernel, cx, tid, &message.parts, sent, size)?;
+            match super::outside::send(kernel, cx, socket, id, &data) {
+                Ok(count) => sent += count as u64,
+                Err(_) if sent > 0 => return Ok(sent),
+                Err(error) => return Err(error),
+            }
+            continue;
         }
         let Some(peer) = socket.borrow().peer.clone() else {
             return Err(Errno::EPIPE);
@@ -1490,16 +1586,24 @@ fn udp_send(
     if family == AF_INET6 && v4_of(&to.address).is_none() && v4_of(&from.address).is_some() {
         from.address = LOOPBACK6;
     }
-    if !is_own(&to.address) && unicast(&to.address) {
-        return Err(kernel.counters.refuse(
-            cx.host,
-            crate::reason::FAMILY_NOT_BUILT,
-            u64::from(family),
-            Errno::ENETUNREACH,
-        ));
-    }
     let data = gather(kernel, cx, tid, &message.parts, 0, total)?;
-    match find_receiver(kernel, &to, &from) {
+    if !is_own(&to.address) {
+        if !unicast(&to.address) {
+            return Ok(total);
+        }
+        super::outside::send_datagram(kernel, cx, socket, to, &data)?;
+        return Ok(total);
+    }
+    let receiver = find_receiver(kernel, &to, &from);
+    let name_server = Endpoint {
+        address: mapped(network::NAME_SERVER),
+        port: 53,
+    };
+    if receiver.is_none() && to == name_server {
+        super::outside::query(kernel, cx, socket, name_server, &data);
+        return Ok(total);
+    }
+    match receiver {
         Some(receiver) => {
             let truesize = datagram_truesize(total);
             let held: u64 = receiver
@@ -1614,8 +1718,15 @@ pub(super) fn receive(
             return Err(Errno::ENOTCONN);
         }
     }
-    let (copied, mut received) =
-        super::receive_stream(kernel, cx, tid, socket, parts, size, flags, nonblocking)?;
+    let outside = inet_ref(socket).outside;
+    if let Some(id) = outside {
+        super::outside::pull(kernel, cx, socket, id);
+    }
+    let result = super::receive_stream(kernel, cx, tid, socket, parts, size, flags, nonblocking);
+    if let Some(id) = outside {
+        super::outside::pull(kernel, cx, socket, id);
+    }
+    let (copied, mut received) = result?;
     received.name = None;
     received.cred = None;
     Ok((copied, received))

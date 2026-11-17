@@ -1013,6 +1013,7 @@ impl Kernel {
                 crate::syscall::socket::released(self, &socket);
             }
         }
+        crate::syscall::socket::flush_outside(self, cx);
         crate::syscall::pipe::released(self, cx, files);
         // An open file's last close lets go of its record and flock locks.
         for node in nodes {

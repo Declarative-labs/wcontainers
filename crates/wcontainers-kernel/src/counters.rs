@@ -92,6 +92,10 @@ pub mod reason {
     /// A netlink request Linux answers that is not built: answered EOPNOTSUPP, as Linux does
     /// for a request with no handler. Detail: the message type, plus 2^16 for a dump.
     pub const NETLINK_REQUEST_NOT_BUILT: &str = "netlink request not built";
+    /// A name query to the container's name server asked for something other than an address of
+    /// the Internet class, which the host's lookup cannot answer: "not implemented" was answered.
+    /// Detail: the query type (0 for a message with other than one standard question).
+    pub const NAME_QUERY_NOT_ANSWERED: &str = "name query not answered";
     /// A netlink answer about an interface carried its traffic counters, which are not kept here
     /// and read zero. Detail: none.
     pub const INTERFACE_COUNTERS_NOT_KEPT: &str = "interface counters not kept";

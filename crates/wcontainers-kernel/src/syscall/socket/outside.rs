@@ -1,0 +1,508 @@
+//! Internet sockets whose other end is outside the container, carried by the host's network hooks
+//! (plan section 9): a TCP connection is one host connection, a UDP socket has one host
+//! connection for each outside destination it sends to. Bytes that arrive are pulled into the
+//! socket's queue when the host says they are there, so readiness is the kernel's to give. Name
+//! queries sent to the container's name server are answered here through the host's lookup.
+
+use alloc::collections::BTreeMap;
+use alloc::rc::{Rc, Weak};
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::cell::RefCell;
+
+use wcontainers_abi::{ConnectionId, HostError};
+
+use super::inet::{Endpoint, Protocol, v4_of};
+use super::{Packet, RCV_SHUTDOWN, SHUTDOWN_MASK, Socket, SocketRef, State, channel};
+use crate::linux::general::*;
+use crate::{Context, Errno, Kernel};
+
+/// The most bytes pulled from the host at once.
+const PIECE: usize = 65536;
+
+/// The connections to the outside and the name lookups under way.
+#[derive(Default)]
+pub(crate) struct Outside {
+    last: u32,
+    /// Each connection's socket, and for UDP the destination it carries.
+    connections: BTreeMap<u32, (Weak<RefCell<Socket>>, Option<Endpoint>)>,
+    last_lookup: u64,
+    lookups: BTreeMap<u64, Lookup>,
+    /// Connections let go where no host was at hand, closed at the next flush.
+    closing: Vec<u32>,
+}
+
+/// A name query waiting for the host's lookup.
+struct Lookup {
+    socket: Weak<RefCell<Socket>>,
+    /// The server's address it asked at.
+    server: Endpoint,
+    query: Vec<u8>,
+    name: String,
+}
+
+/// The address bytes the host is given: 4 for IPv4, else 16.
+fn host_address(endpoint: &Endpoint) -> Vec<u8> {
+    match v4_of(&endpoint.address) {
+        Some(v4) => v4.to_vec(),
+        None => endpoint.address.to_vec(),
+    }
+}
+
+/// A host's refusal as the error the guest sees: a host that cannot reach outside is a network
+/// without a route, which is counted.
+fn refusal(kernel: &mut Kernel, cx: &mut Context<'_>, error: HostError) -> Errno {
+    match error {
+        HostError::Errno(number) => Errno(number as u32),
+        HostError::Closed => Errno::ECONNREFUSED,
+        HostError::WouldBlock => Errno::EAGAIN,
+        HostError::NotSupported => {
+            kernel
+                .counters
+                .count(cx.host, crate::reason::HOST_CANNOT, 0);
+            Errno::ENETUNREACH
+        }
+    }
+}
+
+/// Starts a host connection for `socket` to `to`; its number.
+pub(super) fn open(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    to: Endpoint,
+    stream: bool,
+) -> Result<u32, Errno> {
+    let outside = &mut kernel.sockets.inet.outside;
+    outside.last = outside.last.wrapping_add(1).max(1);
+    let id = outside.last;
+    let address = host_address(&to);
+    if let Err(error) = cx.host.connect(ConnectionId(id), &address, to.port, stream) {
+        return Err(refusal(kernel, cx, error));
+    }
+    let flow = (!stream).then_some(to);
+    kernel
+        .sockets
+        .inet
+        .outside
+        .connections
+        .insert(id, (Rc::downgrade(socket), flow));
+    Ok(id)
+}
+
+/// Ends every host connection of a socket whose last descriptor went.
+pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+    let ids: Vec<u32> = kernel
+        .sockets
+        .inet
+        .outside
+        .connections
+        .iter()
+        .filter(|(_, (owner, _))| core::ptr::eq(owner.as_ptr(), Rc::as_ptr(socket)))
+        .map(|(&id, _)| id)
+        .collect();
+    for id in ids {
+        kernel.sockets.inet.outside.connections.remove(&id);
+        kernel.sockets.inet.outside.closing.push(id);
+    }
+}
+
+impl Outside {
+    /// Hands the host the connections released since the last call.
+    pub(crate) fn flush(&mut self, host: &mut dyn wcontainers_abi::Host) {
+        for id in core::mem::take(&mut self.closing) {
+            host.close(ConnectionId(id));
+        }
+    }
+}
+
+/// Pulls what the host has for a connection into its socket's queue, up to its receive buffer:
+/// bytes or datagrams, the end of a stream, or a reset.
+pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, id: u32) {
+    let Some(&(_, flow)) = kernel.sockets.inet.outside.connections.get(&id) else {
+        return;
+    };
+    let stream = flow.is_none();
+    loop {
+        let (held, room) = {
+            let own = socket.borrow();
+            let held: u64 = own.queue.iter().map(|packet| packet.truesize).sum();
+            (held, own.rcvbuf)
+        };
+        if stream && held >= room {
+            return;
+        }
+        if stream && socket.borrow().shutdown & RCV_SHUTDOWN != 0 {
+            return;
+        }
+        let size = if stream {
+            ((room - held) as usize).min(PIECE)
+        } else {
+            PIECE
+        };
+        let mut buffer = alloc::vec![0u8; size];
+        match cx.host.receive(ConnectionId(id), &mut buffer) {
+            Ok(0) if stream => {
+                let mut own = socket.borrow_mut();
+                own.shutdown |= RCV_SHUTDOWN;
+                if let Some(inet) = own.inet.as_deref_mut() {
+                    inet.done = true;
+                }
+                drop(own);
+                kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM | EPOLLRDHUP);
+                return;
+            }
+            Ok(count) => {
+                buffer.truncate(count);
+                let truesize = if stream {
+                    count as u64
+                } else {
+                    super::truesize(count as u64 + 59, 0)
+                };
+                if !stream && held > room {
+                    continue;
+                }
+                let packet = Packet {
+                    data: buffer,
+                    consumed: 0,
+                    files: Vec::new(),
+                    cred: super::Cred {
+                        pid: 0,
+                        uid: 65534,
+                        gid: 65534,
+                    },
+                    sender: Weak::new(),
+                    truesize,
+                    source: flow,
+                };
+                socket.borrow_mut().queue.push_back(packet);
+                kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);
+            }
+            Err(HostError::WouldBlock) | Err(HostError::NotSupported) => return,
+            Err(HostError::Closed) | Err(HostError::Errno(_)) if !stream => {
+                // The destination refused: a socket connected to it hears of it.
+                let connected_to = {
+                    let own = socket.borrow();
+                    (own.state == State::Connected)
+                        .then(|| own.inet.as_deref().and_then(|inet| inet.remote))
+                        .flatten()
+                };
+                if connected_to == flow {
+                    socket.borrow_mut().error = Errno::ECONNREFUSED.0 as i32;
+                }
+                forget_flow(kernel, socket, id);
+                kernel.wake_poll(channel(socket), EPOLLERR);
+                return;
+            }
+            Err(HostError::Closed) => {
+                reset(kernel, socket, Errno::ECONNRESET);
+                return;
+            }
+            Err(HostError::Errno(number)) => {
+                reset(kernel, socket, Errno(number as u32));
+                return;
+            }
+        }
+    }
+}
+
+/// A UDP socket's host connection to one destination is gone.
+fn forget_flow(kernel: &mut Kernel, socket: &SocketRef, id: u32) {
+    kernel.sockets.inet.outside.connections.remove(&id);
+    kernel.sockets.inet.outside.closing.push(id);
+    if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
+        inet.flows.retain(|_, flow| *flow != id);
+    }
+}
+
+/// A TCP connection to the outside was reset or failed: closed, with the error to report.
+fn reset(kernel: &mut Kernel, socket: &SocketRef, error: Errno) {
+    {
+        let mut own = socket.borrow_mut();
+        let close_wait = own.shutdown & RCV_SHUTDOWN != 0 && own.state == State::Connected;
+        own.error = if error == Errno::ECONNRESET && close_wait {
+            Errno::EPIPE.0 as i32
+        } else {
+            error.0 as i32
+        };
+        own.state = State::Closed;
+        own.shutdown = SHUTDOWN_MASK;
+        if let Some(inet) = own.inet.as_deref_mut() {
+            inet.connecting = None;
+            inet.room = false;
+        }
+    }
+    kernel.wake(channel(socket));
+}
+
+/// Sends bytes of a TCP connection to the outside, as much as the host takes now.
+pub(super) fn send(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    id: u32,
+    bytes: &[u8],
+) -> Result<usize, Errno> {
+    match cx.host.send(ConnectionId(id), bytes) {
+        Ok(count) => {
+            if count < bytes.len()
+                && let Some(inet) = socket.borrow_mut().inet.as_deref_mut()
+            {
+                inet.room = false;
+            }
+            Ok(count)
+        }
+        Err(HostError::WouldBlock) => {
+            if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
+                inet.room = false;
+            }
+            Ok(0)
+        }
+        Err(HostError::Closed) => {
+            reset(kernel, socket, Errno::ECONNRESET);
+            Err(Errno::ECONNRESET)
+        }
+        Err(error) => Err(refusal(kernel, cx, error)),
+    }
+}
+
+/// Sends one datagram to an outside destination through the socket's host connection for it.
+pub(super) fn send_datagram(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    to: Endpoint,
+    data: &[u8],
+) -> Result<(), Errno> {
+    let known = socket
+        .borrow()
+        .inet
+        .as_deref()
+        .and_then(|inet| inet.flows.get(&to).copied());
+    let id = match known {
+        Some(id) => id,
+        None => {
+            let id = open(kernel, cx, socket, to, false)?;
+            if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
+                inet.flows.insert(to, id);
+            }
+            id
+        }
+    };
+    match cx.host.send(ConnectionId(id), data) {
+        Ok(_) => Ok(()),
+        Err(HostError::WouldBlock) => Err(Errno::EAGAIN),
+        Err(HostError::Closed) => {
+            forget_flow(kernel, socket, id);
+            Err(Errno::ECONNREFUSED)
+        }
+        Err(error) => Err(refusal(kernel, cx, error)),
+    }
+}
+
+/// Finishes sending on a TCP connection to the outside.
+pub(super) fn finish(cx: &mut Context<'_>, id: u32) {
+    cx.host.finish(ConnectionId(id));
+}
+
+/// Hands an event about a connection or a lookup to its socket. Returns false for one nothing
+/// waits for.
+pub(crate) fn event(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    event: &wcontainers_abi::Event<'_>,
+) -> bool {
+    use wcontainers_abi::Event;
+    match *event {
+        Event::Connected { connection, error } => {
+            let Some(socket) = owner(kernel, connection.0) else {
+                return false;
+            };
+            let stream = inet_protocol(&socket) == Some(Protocol::Tcp);
+            if !stream {
+                if error != 0 {
+                    let flow = kernel.sockets.inet.outside.connections[&connection.0].1;
+                    let connected_to = socket.borrow().inet.as_deref().and_then(|inet| inet.remote);
+                    if connected_to == flow && socket.borrow().state == State::Connected {
+                        socket.borrow_mut().error = error;
+                    }
+                    forget_flow(kernel, &socket, connection.0);
+                    kernel.wake_poll(channel(&socket), EPOLLERR);
+                }
+                return true;
+            }
+            if error == 0 {
+                let mut own = socket.borrow_mut();
+                own.state = State::Connected;
+                own.error = 0;
+                let inet = own.inet.as_deref_mut().expect("an internet socket");
+                inet.connecting = None;
+                inet.room = true;
+                drop(own);
+                kernel.wake_poll(channel(&socket), EPOLLOUT | EPOLLWRNORM);
+            } else {
+                kernel
+                    .sockets
+                    .inet
+                    .outside
+                    .connections
+                    .remove(&connection.0);
+                cx.host.close(connection);
+                super::inet::failed(kernel, &socket, Errno(error as u32));
+            }
+            true
+        }
+        Event::ConnectionReady { connection } => {
+            let Some(socket) = owner(kernel, connection.0) else {
+                return false;
+            };
+            if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
+                inet.room = true;
+            }
+            pull(kernel, cx, &socket, connection.0);
+            kernel.wake_poll(channel(&socket), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+            true
+        }
+        Event::LookedUp {
+            request,
+            addresses,
+            error,
+        } => {
+            let Some(lookup) = kernel.sockets.inet.outside.lookups.remove(&request) else {
+                return false;
+            };
+            if let Some(socket) = lookup.socket.upgrade() {
+                let answer = super::resolver::answer(&lookup.query, addresses, error);
+                deliver(kernel, &socket, lookup.server, answer);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn owner(kernel: &Kernel, id: u32) -> Option<SocketRef> {
+    let (socket, _) = kernel.sockets.inet.outside.connections.get(&id)?;
+    socket.upgrade().filter(|socket| !socket.borrow().dead)
+}
+
+fn inet_protocol(socket: &SocketRef) -> Option<Protocol> {
+    socket.borrow().inet.as_deref().map(|inet| inet.protocol)
+}
+
+/// A datagram from `from` into a UDP socket's queue, if its buffer has room.
+pub(super) fn deliver(kernel: &mut Kernel, socket: &SocketRef, from: Endpoint, data: Vec<u8>) {
+    let truesize = super::truesize(data.len() as u64 + 59, 0);
+    let held: u64 = socket
+        .borrow()
+        .queue
+        .iter()
+        .map(|packet| packet.truesize)
+        .sum();
+    if held > socket.borrow().rcvbuf {
+        return;
+    }
+    let packet = Packet {
+        data,
+        consumed: 0,
+        files: Vec::new(),
+        cred: super::Cred {
+            pid: 0,
+            uid: 65534,
+            gid: 65534,
+        },
+        sender: Weak::new(),
+        truesize,
+        source: Some(from),
+    };
+    socket.borrow_mut().queue.push_back(packet);
+    kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);
+}
+
+/// A name query sent to the container's name server: answered at once when it asks for nothing
+/// the host can look up, else once the host's lookup comes back.
+pub(super) fn query(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    server: Endpoint,
+    data: &[u8],
+) {
+    match super::resolver::question(data) {
+        super::resolver::Question::Answer(answer) => deliver(kernel, socket, server, answer),
+        super::resolver::Question::Unanswerable(answer, kind) => {
+            kernel.counters.count(
+                cx.host,
+                crate::reason::NAME_QUERY_NOT_ANSWERED,
+                u64::from(kind),
+            );
+            deliver(kernel, socket, server, answer);
+        }
+        super::resolver::Question::LookUp(name) => {
+            let outside = &mut kernel.sockets.inet.outside;
+            outside.last_lookup += 1;
+            let request = outside.last_lookup;
+            outside.lookups.insert(
+                request,
+                Lookup {
+                    socket: Rc::downgrade(socket),
+                    server,
+                    query: data.to_vec(),
+                    name: name.clone(),
+                },
+            );
+            if let Err(error) = cx.host.look_up(request, &name) {
+                kernel.sockets.inet.outside.lookups.remove(&request);
+                let errno = refusal(kernel, cx, error);
+                let answer = super::resolver::answer(data, &[], errno.0 as i32);
+                deliver(kernel, socket, server, answer);
+            }
+        }
+        super::resolver::Question::Dropped => {}
+    }
+}
+
+/// After a restore on a new host: connections to the outside are reported closed (plan section
+/// 12), and lookups under way are asked again.
+pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
+    let connections = core::mem::take(&mut kernel.sockets.inet.outside.connections);
+    kernel.sockets.inet.outside.closing.clear();
+    for (id, (socket, flow)) in connections {
+        let Some(socket) = socket.upgrade() else {
+            continue;
+        };
+        if flow.is_some() {
+            if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
+                inet.flows.retain(|_, held| *held != id);
+            }
+            continue;
+        }
+        let connecting = socket
+            .borrow()
+            .inet
+            .as_deref()
+            .is_some_and(|inet| inet.connecting.is_some());
+        if connecting {
+            super::inet::failed(kernel, &socket, Errno::ECONNREFUSED);
+        } else {
+            reset(kernel, &socket, Errno::ECONNRESET);
+        }
+    }
+    let requests: Vec<(u64, String)> = kernel
+        .sockets
+        .inet
+        .outside
+        .lookups
+        .iter()
+        .map(|(&request, lookup)| (request, lookup.name.clone()))
+        .collect();
+    for (request, name) in requests {
+        if cx.host.look_up(request, &name).is_err()
+            && let Some(lookup) = kernel.sockets.inet.outside.lookups.remove(&request)
+            && let Some(socket) = lookup.socket.upgrade()
+        {
+            let answer = super::resolver::answer(&lookup.query, &[], Errno::EAGAIN.0 as i32);
+            deliver(kernel, &socket, lookup.server, answer);
+        }
+    }
+}

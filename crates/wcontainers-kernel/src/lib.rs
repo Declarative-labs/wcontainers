@@ -349,9 +349,21 @@ impl Kernel {
                 return;
             }
             Event::Connected { connection, .. } | Event::ConnectionReady { connection } => {
+                self.entry_now = cx.monotonic();
+                if syscall::socket::outside_event(self, &mut cx, &event) {
+                    self.settle(&mut cx);
+                    return;
+                }
                 u64::from(connection.0)
             }
-            Event::LookedUp { request, .. } => request,
+            Event::LookedUp { request, .. } => {
+                self.entry_now = cx.monotonic();
+                if syscall::socket::outside_event(self, &mut cx, &event) {
+                    self.settle(&mut cx);
+                    return;
+                }
+                request
+            }
             Event::TerminalInput { .. } | Event::TerminalResized { .. } => 0,
         };
         self.counters
@@ -426,6 +438,8 @@ impl Kernel {
         if moved != 0 {
             self.clock_was_set(moved, &tids);
         }
+        // The new host knows none of the old one's connections.
+        syscall::socket::restored(self, &mut cx);
         self.settle(&mut cx);
     }
 
