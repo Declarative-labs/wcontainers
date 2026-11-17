@@ -69,3 +69,9 @@ fn tcp_urgent_data_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "tcpoob", &[]);
 }
+
+#[test]
+fn orders_of_checks_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "sockorder", &[]);
+}

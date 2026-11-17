@@ -2326,7 +2326,9 @@ fn udp_receive(
             break;
         }
         if found.is_none() {
-            if own.queue.is_empty() && own.shutdown & RCV_SHUTDOWN != 0 {
+            // Shut for reading, an empty queue ends a wait; a nonblocking read finds nothing
+            // (`__skb_wait_for_more_packets` is never reached).
+            if own.queue.is_empty() && own.shutdown & RCV_SHUTDOWN != 0 && !nonblocking {
                 return Ok((0, Received::default()));
             }
             let timeout = own.receive_timeout;

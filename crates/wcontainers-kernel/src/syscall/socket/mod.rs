@@ -1373,6 +1373,10 @@ fn send(
     let kind = socket.borrow().kind;
     let is_inet = socket.borrow().inet.is_some();
     if socket.borrow().netlink.is_some() {
+        // `netlink_sendmsg` refuses an empty message.
+        if total == 0 {
+            return Err(Errno::ENODATA);
+        }
         let to = message.address.as_deref();
         return netlink::send(kernel, cx, tid, socket, message.data, to, total);
     }
@@ -3031,6 +3035,10 @@ pub(super) fn setsockopt(
             return answer;
         }
     } else if socket.borrow().netlink.is_some() && level != SOL_SOCKET {
+        // `netlink_setsockopt` refuses other levels before reading the value.
+        if level != SOL_NETLINK {
+            return Err(Errno::ENOPROTOOPT);
+        }
         let bytes = guest(kernel, cx, tid).read(value, (length as u64).min(64))?;
         return netlink::set_option(&socket, level, name, &bytes)
             .unwrap_or(Err(Errno::ENOPROTOOPT));
@@ -3206,6 +3214,10 @@ pub(super) fn getsockopt(
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
     let (level, name) = (level as u32, name as u32);
+    // `netlink_getsockopt` refuses other levels before reading the length.
+    if socket.borrow().netlink.is_some() && level != SOL_SOCKET && level != SOL_NETLINK {
+        return Err(Errno::ENOPROTOOPT);
+    }
     let room: i32 = guest(kernel, cx, tid).read_value(length)?;
     // A local socket has no options past its own level, whatever the length (`do_sock_getsockopt`).
     if socket.borrow().local() && level != SOL_SOCKET {
