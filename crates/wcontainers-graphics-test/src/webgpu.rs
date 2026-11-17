@@ -145,6 +145,6 @@ pub fn render_triangle(backends: wgpu::Backends) -> Result<Picture> {
     let image = crate::picture_from_rows(WIDTH, HEIGHT, &rows, PITCH as usize);
     Ok(Picture {
         adapter: adapter_name,
-        image,
+        image: image.into(),
     })
 }

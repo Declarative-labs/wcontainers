@@ -1,6 +1,8 @@
 //! The graphics test rig: reference scenes, the renderers that draw them, and picture comparison.
 
+pub mod check;
 pub mod compare;
+pub mod output;
 pub mod scene;
 pub mod webgpu;
 
@@ -11,12 +13,21 @@ pub mod d3d12;
 #[cfg(windows)]
 mod debug;
 #[cfg(windows)]
-mod hlsl;
+pub mod texels;
+
+/// Compiled DXIL of an entry point of shaders/<file>.hlsl, named "<file>.<entry>".
+#[cfg(windows)]
+#[macro_export]
+macro_rules! dxil {
+    ($name:literal) => {
+        include_bytes!(concat!(env!("OUT_DIR"), "/dxil/", $name, ".dxil")).as_slice()
+    };
+}
 
 use std::path::Path;
 
 use anyhow::Context;
-use image::RgbaImage;
+use image::{DynamicImage, RgbaImage};
 
 /// Which device draws a Direct3D reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +98,7 @@ pub fn library_paths(names: &[&str]) -> String {
 /// A drawn scene and the adapter that drew it.
 pub struct Picture {
     pub adapter: String,
-    pub image: RgbaImage,
+    pub image: DynamicImage,
 }
 
 /// Builds a picture from rows of RGBA8 texels that may be padded to `pitch` bytes.
@@ -100,7 +111,23 @@ pub fn picture_from_rows(width: u32, height: u32, rows: &[u8], pitch: usize) -> 
     RgbaImage::from_raw(width, height, texels).expect("rows hold the whole picture")
 }
 
-pub fn save(image: &RgbaImage, path: &Path) -> anyhow::Result<()> {
+/// The file extension a picture is saved under without loss: PNG holds 8 and 16-bit channels,
+/// OpenEXR 32-bit floats.
+pub fn extension(image: &DynamicImage) -> anyhow::Result<&'static str> {
+    Ok(match compare::Depth::of(image)? {
+        compare::Depth::Eight | compare::Depth::Sixteen => "png",
+        compare::Depth::Float => "exr",
+    })
+}
+
+/// Saves a picture losslessly; the path's extension must be the one `extension` gives.
+pub fn save(image: &DynamicImage, path: &Path) -> anyhow::Result<()> {
+    let wanted = extension(image)?;
+    anyhow::ensure!(
+        path.extension().is_some_and(|e| e == wanted),
+        "{} must be saved as .{wanted}",
+        path.display()
+    );
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -109,8 +136,7 @@ pub fn save(image: &RgbaImage, path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
-pub fn load(path: &Path) -> anyhow::Result<RgbaImage> {
-    Ok(image::open(path)
-        .with_context(|| format!("reading {}", path.display()))?
-        .into_rgba8())
+/// Loads a picture at its own depth.
+pub fn load(path: &Path) -> anyhow::Result<DynamicImage> {
+    image::open(path).with_context(|| format!("reading {}", path.display()))
 }

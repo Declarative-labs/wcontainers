@@ -1,14 +1,16 @@
 #!/bin/bash
-# The whole loop from the Mac: sends this checkout to the desktop, builds the rig there, draws every
-# scene with every renderer as one GPU job (loop.cmd) and compares the pictures; with a directory,
-# also copies the pictures into it.
+# The whole loop from the Mac: sends this checkout to the desktop, builds the rig there, checks every
+# Direct3D scene against its reference, runs three through the forwarding d3d11.dll and the triangle
+# through wgpu and Chrome, as one GPU job (loop.cmd) on the hidden desktop of the logged-in user's
+# session, since scenes present to windows; with a directory, also copies the triangle pictures of
+# the other renderers into it.
 #   tools/graphics-rig/loop [picture-dir]
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
 . "$here/common.sh"
 set +e
-"$here/gpu-job" --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && (if not exist tools\\graphics-rig\\browser\\node_modules\\playwright-core npm ci --prefix tools\\graphics-rig\\browser --no-fund --no-audit)" \
+"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1" \
     -- "tools\\graphics-rig\\loop.cmd $name"
 code=$?
 set -e
