@@ -1,7 +1,7 @@
 # wcontainers, phase two: one guest CPU interface, and x86-64
 
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
-ARM64 assumptions, and revised after each of the five independent checks of X0 (2026-11-17). Nothing of it
+ARM64 assumptions, and revised after each of the six independent checks of X0 (2026-11-17). Nothing of it
 is built yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
@@ -129,8 +129,12 @@ both (section 7.3):
   CODE + length + 1. So a stop by `int3` exactly one byte past the instruction's end means "the instruction
   ran, fell through, and its trap was held back".
 - A system call (`syscall`, and `int 0x80`, Linux's 32-bit system call gate, which also works from 64-bit
-  code) runs the call and gives no `TRAP_TRACE`; the filler stops it the same way. The runner never lets a
-  case's system call run: a seccomp filter turns it into `SIGSYS` first.
+  code) runs the call and gives no `TRAP_TRACE`; the filler stops it the same way. `sysenter` (valid in
+  64-bit mode on Intel) also runs a 32-bit call, but Linux returns from it to its vDSO's landing pad, far
+  from the case, and the thread then faults there. The runner never lets a case's system call run: a
+  seccomp filter turns into `SIGSYS` every call made from the instruction window and every call whose
+  `seccomp_data.arch` is `AUDIT_ARCH_I386`, wherever it was made (run 7: `sysenter` with the arch test
+  gives `SIGSYS`, without it the 32-bit call ran).
 
 ### The two experiments on the x86 machine (scratch, not in the repository)
 
@@ -271,14 +275,51 @@ are static binaries copied to `~/wcontainers-x86/proof`.
      mm0, [rdi]` each leave R0 as `ffff:` and the 64 bits written, TOP 0 and every register valid. An MMX
      read (`movq rax, mm0`, `movq [rdi], mm0`) leaves R0's top 16 bits as they were.
 
+   Run 7 (2026-11-17, x86 load 0.00, nothing timed), after the sixth independent check, with
+   `stepper5.c` (`stepper4.c` that also enters NT and ID, as below, and with `SECCOMP=1` installs the
+   filter of section 7.3 with its arch test), `cases11.sh`, `cases12.sh`, `cases13.sh` and their outputs:
+   - NT (rflags bit 14) is user state, as Intel's `popf` and `iret` pseudo-code allow at CPL 3: `popf` of
+     0x4202 and of 0x204202 keeps NT and ID, `popf` of 0x202 clears them, `pushf` stores them, a `nop`
+     keeps them, the `syscall` instruction keeps them (and r11 holds them), and a fault's signal frame
+     carries them (`ud2` from 0x204202 gives 0x214202 in the frame, RF added as for every fault). The
+     sixth check saw `popf` of 0x3FFFFF give 0x244ED7: NT, AC and ID kept, IOPL, RF, VIF and VIP not.
+   - `iretq` with NT set gives general protection, rip at the instruction, before it reads anything (its
+     frame unmapped, or rsp not canonical: still general protection). With NT clear it lands.
+   - `iretq` reads its 40-byte frame out of order: with nothing mapped the page fault is at rsp + 16
+     (rflags); rflags then CS are read before rip; SS is read before rsp (both unmapped: the fault is at
+     SS's slot); with rip's slot unmapped and the rest valid, the fault is at rip's slot; a null CS gives
+     general protection before SS is read, while CS 0x2b (data) with rip's slot unmapped gives the page
+     fault.
+   - Entering NT and ID: Linux's `rt_sigreturn` takes only the `FIX_EFLAGS` bits (the six flags, TF, DF,
+     RF, AC) from the frame and keeps the others from the rflags the caller had when it made the call
+     (the sixth check: a frame with ID or NT, IOPL or VIF entered without them; AC entered). So the
+     handler sets NT and ID in its own rflags (`pushfq; or; popfq`) just before it returns through
+     `rt_sigreturn`, and they reach the case: `pushf` from 0x200202, 0x4202 and 0x204AD7 stores those
+     values with TF. The handler that reads the case back clears them in its own rflags the same way.
+   - `sysenter` with the filter's arch test gives `SIGSYS` with rip and si_addr in the vDSO; `int 0x80`
+     and `syscall` give `SIGSYS` at CODE + 2. Without the arch test (the sixth check's `stepper_sc`)
+     `sysenter` ran i386 getpid and then faulted far from the case.
+   - A legacy prefix that makes a VEX or EVEX instruction invalid (66, F2, F3, REX, and 66 with REX) does
+     not change what the CPU counts: segment prefixes, then one of those, then `vaddps xmm0, xmm0, [rsp +
+     disp32]` (9 bytes as `C5`, 10 as `C4`) give `SIGILL` at 15 bytes in all and general protection at 16;
+     the EVEX `vaddps zmm0, zmm0, [rsp + disp32]` (11 bytes, this CPU has no AVX-512), alone or after a
+     66, gives `SIGILL` at 15 and general protection at 16. So the CPU counts the whole VEX or EVEX
+     instruction after such a prefix, with its ModRM, SIB and displacement. iced decodes each of them as
+     `INVALID` (66 then the 9 bytes: length 10; the 16-byte ones: length 15).
+   - On the reference, Ubuntu's glibc 2.31 loader `/lib64/ld-linux-x86-64.so.2` has `fxsave` and
+     `fxrstor` at 0x18aa5 and 0x18aba and `xsavec` and `xrstor` at 0x18c2c and 0x18c48: its lazy binding
+     trampolines, which save and restore the whole vector state, MXCSR included, at every lazy binding
+     (section 5.8).
+
    What this teaches the reference runner (section 7.3): write every vector register and the whole x87
    component (FCW, FSW, the abridged tag byte, FOP and the last-instruction pointers as zero, the eight
    slots in stack order) (else the runner's own values leak in), set the x87, SSE and AVX bits of the
    frame's XSAVE header (`xstate_bv` bits 0, 1 and 2) or the kernel loads their first state, read a
    component as its first state when its `xstate_bv` bit is clear, find the
    upper ymm halves at the offset CPUID leaf 0xD sub-leaf 2 gives, mask `TF`, `RF` (bit 16) and `IF` out of
-   the comparison of rflags, and mask `TF` out of every copy of rflags an instruction makes (the word
-   `pushf` stores, r11 after `syscall`).
+   the comparison of rflags, mask `TF` out of every copy of rflags an instruction makes (the word
+   `pushf` stores, r11 after `syscall`), enter NT and ID through its own rflags (run 7), and stop every
+   32-bit call by its arch.
 3. **Round trips.** A new SSH connection from the Mac: 0.24 to 0.32 s, five runs of `time ssh ... true`
    (Mac load 9.2, 2026-11-17, run 3; the first run saw about 344 ms at Mac load 57; the fourth independent
    check 0.24 to 0.40 s at Mac load 34). Run 5, with the x86 machine at load 5 to 7 from another job and
@@ -367,7 +408,7 @@ pub trait Guest: Sized + 'static {
     type Flag: Copy + Eq + core::fmt::Debug;
     /// The flags the translator tracks lazily, each with its bit in the saved flags word and its register
     /// bit, in the order the flags word is put together. The flags word holds these and nothing else
-    /// (x86's DF and the bits rflags always has are not in it, section 5.1).
+    /// (x86's DF, NT and ID and the bits rflags always has are not in it, section 5.1).
     const FLAGS: &'static [(Self::Flag, u32, u32)];
     /// How flags were last set: a shape with the locals holding its operands.
     type Flags: Copy + core::fmt::Debug;
@@ -836,7 +877,8 @@ milestone (section 6).
 
 Floating point slow path (T26). `float_slow` replaces "FPCR or FPSR tracking not zero";
 `FLOAT_CONTROLS` replaces "a write to `Fpcr` or `FloatTracking`". Calls and system calls forget the answer,
-as today.
+as today. x86's `float_slow` is "MXCSR's mode bits (`Mxcsr & 0xFFC0`) are not 0x1F80, or `MxcsrTracking`
+is not zero", and its `FLOAT_CONTROLS` are `Mxcsr` and `MxcsrTracking` (section 5.8).
 
 Hooks (T27). The CPU lists its hooks; the translator gives them function indices after its own six
 (system call, stop, memory fault, load code, warn, trap), so ARM64's float, clock and code-changed hooks
@@ -951,7 +993,7 @@ x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
   register. SP_BIT 4.
 - Flags: the six arithmetic flags at their rflags positions (CF 0, PF 2, AF 4, ZF 6, SF 7, OF 11); shapes
   in section 5.1. FLAGS_WANTED 1 << 62.
-- Block: `X86Block` (section 5.9). Controls: `Rflags` (DF and ID, section 5.1), MXCSR, MXCSR tracking, the
+- Block: `X86Block` (section 5.9). Controls: `Rflags` (DF, NT and ID, section 5.1), MXCSR, MXCSR tracking, the
   x87 control, status (with TOP) and tag words, the x87 last-instruction pointers, and `X87High(0..8)`,
   the sign and exponent of R0 to R7 (section 5.8, MMX).
 - Hooks: Float (SSE exact path, with MXCSR), X87 `(op: i32, low: i64, high: i64) -> (i64, i64)` reading and
@@ -1063,15 +1105,21 @@ Tests (section 7 gives the detail):
   of `FLAGS` keeps the liveness test per flag exact (section 3.4): no arithmetic instruction sets DF, so
   with DF among the flags no flag update could ever be found dead, and every string instruction would
   count as a flag reader. It lives in `Control::Rflags`, an i64 in the block holding the bits of rflags
-  outside the flags word that user code changes and keeps, at their rflags positions: DF (bit 10) and ID
-  (bit 21, which programs toggle to see that CPUID exists). A string instruction reads it with one load
-  and a shift per pass.
+  outside the flags word that user code changes and keeps, at their rflags positions: DF (bit 10), NT
+  (bit 14, nested task) and ID (bit 21, which programs toggle to see that CPUID exists). At CPL 3 `popf`
+  and `iretq` write exactly these three of the bits outside the six flags, besides AC (below) and TF
+  (below), and the reference keeps them (section 2, run 7: `popf` of 0x3FFFFF leaves 0x244ED7, so IOPL,
+  RF, VIF and VIP are not written). A string instruction reads DF with one load and a shift per pass.
+- **NT** means nothing to a 64-bit user program except one rule: `iretq` while NT is set gives general
+  protection (Intel's `iret` pseudo-code for IA-32e mode; seen on the reference, section 2, run 7), before
+  it reads its frame. So `iretq`'s meaning tests NT in `Control::Rflags` first. Nothing else reads it;
+  it is kept, stored by `pushf` and carried through signal frames like any user bit.
 - **The flags word** in the block holds the six arithmetic flags at their rflags positions and nothing
   else. The user-visible rflags is that word, or `Control::Rflags`, or bits 1 and 9 (IF), which user code
   always sees set: `pushf` puts it together in its meaning; `popf` and `iretq` split it (the six flags as a
-  `Packed` shape, DF and ID into the control, IOPL, IF and the other system bits ignored as user mode
-  does); the kernel's personality does the same at signal frames and `ptrace` (section 6). So the
-  interface needs no item for bits a CPU always has. When `popf` sets TF the instruction after it runs and
+  `Packed` shape, DF, NT and ID into the control, IOPL, IF, RF, VIF and VIP ignored as user mode does);
+  the kernel's personality does the same at signal frames and `ptrace` (section 6). So the interface needs
+  no item for bits a CPU always has. When `popf` sets TF the instruction after it runs and
   then stops with `SingleStep` (SIGTRAP, `TRAP_TRACE`), as on the CPU; that path is a counted slow path
   ("trap flag set by the program").
 - **AC** (bit 18, alignment checking, which Linux's CR0.AM makes work in user mode) is not provided:
@@ -1089,43 +1137,46 @@ Tests (section 7 gives the detail):
   reference CPU. Nothing of gex (AGPL) is copied or paraphrased.
 - iced decodes with `DecoderOptions::NONE`, which follows Intel where Intel and AMD decode differently. An
   encoding iced calls `INVALID` traps `Undefined` (SIGILL), except one longer than 15 bytes, which traps
-  `GeneralProtection` (SIGSEGV, `SI_KERNEL`, address 0, rip at the instruction): the CPU's length limit
-  wins over every other rule, invalid opcodes and invalid lock prefixes included (section 2, run 5). iced
-  reports both as `INVALID` with length 15 (it stops reading at 15 bytes), so `decode` tells them apart:
-  when iced gives `INVALID` with length 15, it works out the encoding's full length from the prefix run
-  at its start. It keeps the last `66`, the last `67`, the last of `F2` and `F3`, and a REX byte (`40` to
-  `4F`) when it is directly before the opcode, and drops every other prefix byte: all segment prefixes
-  (`26 2E 36 3E 64 65`) and lock bytes (`F0`), which change no instruction's length, repeats of the kept
-  kinds, and REX bytes followed by another prefix, which the CPU ignores. It decodes the rest with iced
-  and adds the count dropped to the rest's length. Only the length is used, so the drop may change what
-  the rest means (a lock that made it invalid, say) but not how long it is: `66` and `67` are the only
-  prefixes that change a length (Intel's "length-changing prefixes"), and the last of `F2` and `F3` stays
-  because it picks among mandatory-prefix forms, whose lengths iced may count differently when invalid.
-  The longest valid rest is 15 bytes: the four kept prefixes and a one-byte opcode with ModRM, SIB, a
-  32-bit displacement and a 32-bit immediate (`F3 66 67 48 C7 84 24`, then 4 and 4 bytes; REX.W wins over
-  `66`, so the immediate stays 4 bytes). iced decodes it as a 15-byte `mov`, the reference runs it, and
-  with a segment prefix before it, 16 bytes, gives general protection (seen by the fifth independent
-  check). So iced's limit never cuts a valid rest short. When the rest is an instruction,
-  its length is iced's and the sum is the CPU's length. When the rest is itself `INVALID`, iced's count
-  of the bytes after its opcode is iced's own choice, not the CPU's: the CPU's length decoder counts
-  bytes by its own tables even for opcodes that do not exist in 64-bit mode (section 2, run 5: `0F 38
-  FF` and `9A` count bytes after the opcode; `06` and `0F 24` count nothing after it, where iced counts
-  one). So the x86 crate holds a table, purpose-built because iced has none, of what the CPU counts
-  after each opcode iced decodes as `INVALID`: nothing, a ModRM (with the SIB and displacement it calls
-  for), a ModRM and an immediate of a given size, or an immediate. Run 5's sweep of the four legacy maps
-  (`sweep15.sh`: each opcode placed so it ends at byte 15) gives the first answers: nothing after `06 07
-  0E 16 17 1E 1F 27 2F 37 3F 60 61 CE D6` and, in the `0F` map, `04 0A 0C 0F 24 25 26 27 36`; at least
-  one byte after every other opcode iced calls `INVALID` there. X3 completes the table with the same
-  sweep, adding the maps behind `C4`, `C5` and `62`, run with each opcode ending at bytes 14 down to 8
-  (the count is how far back it still gives general protection), once with filler whose ModRM asks for
-  nothing more and once with a ModRM that asks for a SIB and a 32-bit displacement (which tells a ModRM
-  from an immediate); it keeps the sweep's script and output beside the crate's tests, and a test checks
-  the table against the recorded output. Over 15, the instruction stays iced's `INVALID` with that
-  length set in it (`set_len`, a byte) and its meaning traps `GeneralProtection`; otherwise its meaning
-  traps `Undefined`. This runs only for `INVALID` at length 15, so it costs nothing on any other
-  instruction; layer 1's no-form cases check it against the reference. A too-long encoding whose rest
-  runs past the end of the code range is `None` like any instruction that runs past it (what the CPU
-  does there is not seen, section 12).
+  `GeneralProtection` (SIGSEGV, `SI_KERNEL`, address 0, rip at the instruction): the CPU's length limit wins
+  over every other rule, invalid opcodes and invalid lock prefixes included (section 2, run 5). iced reports
+  both as `INVALID` with length 15 (it stops reading at 15 bytes), so `decode` tells them apart: when iced
+  gives `INVALID` with length 15, it works out the encoding's full length from the prefix run at its start. It
+  keeps the last `66`, the last `67`, the last of `F2` and `F3`, and a REX byte (`40` to `4F`) when it is
+  directly before the opcode, and drops every other prefix byte: all segment prefixes (`26 2E 36 3E 64 65`)
+  and lock bytes (`F0`), which change no instruction's length, repeats of the kept kinds, and REX bytes
+  followed by another prefix, which the CPU ignores. When the byte after the prefix run is `C4`, `C5` or `62`
+  (always a VEX or EVEX instruction in 64-bit mode), the kept `66`, `F2`, `F3` and REX are dropped as well:
+  before a VEX or EVEX instruction they only make it invalid, and the CPU still counts the whole VEX or EVEX
+  instruction after them, ModRM, SIB and displacement included (section 2, run 7: 16 bytes in all give general
+  protection, 15 give `SIGILL`, for each of them and for EVEX on a CPU without AVX-512); `67` stays, since it
+  changes the addressing and so the length. It decodes the rest with iced and adds the count dropped to the
+  rest's length. Only the length is used, so the drop may change what the rest means (a lock that made it
+  invalid, say) but not how long it is: `66` and `67` are the only prefixes that change a length (Intel's
+  "length-changing prefixes"), and the last of `F2` and `F3` stays because it picks among mandatory-prefix
+  forms, whose lengths iced may count differently when invalid. The longest valid rest is 15 bytes: the four
+  kept prefixes and a one-byte opcode with ModRM, SIB, a 32-bit displacement and a 32-bit immediate (`F3 66 67
+  48 C7 84 24`, then 4 and 4 bytes; REX.W wins over `66`, so the immediate stays 4 bytes). iced decodes it as
+  a 15-byte `mov`, the reference runs it, and with a segment prefix before it, 16 bytes, gives general
+  protection (seen by the fifth independent check). So iced's limit never cuts a valid rest short. When the
+  rest is an instruction, its length is iced's and the sum is the CPU's length. When the rest is itself
+  `INVALID`, iced's count of the bytes after its opcode is iced's own choice, not the CPU's: the CPU's length
+  decoder counts bytes by its own tables even for opcodes that do not exist in 64-bit mode (section 2, run 5:
+  `0F 38 FF` and `9A` count bytes after the opcode; `06` and `0F 24` count nothing after it, where iced counts
+  one). So the x86 crate holds a table, purpose-built because iced has none, of what the CPU counts after each
+  opcode iced decodes as `INVALID`: nothing, a ModRM (with the SIB and displacement it calls for), a ModRM and
+  an immediate of a given size, or an immediate. Run 5's sweep of the four legacy maps (`sweep15.sh`: each
+  opcode placed so it ends at byte 15) gives the first answers: nothing after `06 07 0E 16 17 1E 1F 27 2F 37
+  3F 60 61 CE D6` and, in the `0F` map, `04 0A 0C 0F 24 25 26 27 36`; at least one byte after every other
+  opcode iced calls `INVALID` there. X3 completes the table with the same sweep, adding the maps behind `C4`,
+  `C5` and `62`, run with each opcode ending at bytes 14 down to 8 (the count is how far back it still gives
+  general protection), once with filler whose ModRM asks for nothing more and once with a ModRM that asks for
+  a SIB and a 32-bit displacement (which tells a ModRM from an immediate); it keeps the sweep's script and
+  output beside the crate's tests, and a test checks the table against the recorded output. Over 15, the
+  instruction stays iced's `INVALID` with that length set in it (`set_len`, a byte) and its meaning traps
+  `GeneralProtection`; otherwise its meaning traps `Undefined`. This runs only for `INVALID` at length 15, so
+  it costs nothing on any other instruction; layer 1's no-form cases check it against the reference. A
+  too-long encoding whose rest runs past the end of the code range is `None` like any instruction that runs
+  past it (what the CPU does there is not seen, section 12).
 - An instruction of a feature not offered traps
   `Unsupported` (SIGILL, counted, warned), with x86's own reason when its claim group is the AVX setting
   (section 5.10). Which claim group a `Code` belongs to comes from the table the build script makes from
@@ -1147,6 +1198,16 @@ Tests (section 7 gives the detail):
   warned, x86's own reason "32-bit system call from 64-bit code, not provided". Expected from Linux's
   source and not seen on a running kernel without 32-bit emulation; layer 1 excludes `int 0x80` with that
   reason and the designed-answers test checks the fault.
+- `sysenter` (`0F 34`, iced `Code::Sysenter`, valid in 64-bit mode on Intel CPUs) is the other way into
+  Linux's 32-bit system calls: on the reference it runs one and returns to the vDSO (section 2, run 7).
+  A Linux kernel without 32-bit emulation loads `IA32_SYSENTER_CS` with the null selector
+  (`GDT_ENTRY_INVALID_SEG`, in `arch/x86/kernel/cpu/common.c`), and `sysenter` with that selector is
+  general protection by Intel's pseudo-code. So its meaning is the same as `int 0x80`'s: general
+  protection, rip at the instruction, counted and warned under the same reason. Expected from Linux's
+  source and the manual, not seen on such a kernel. Its feature, SEP, is claimed by default (section
+  5.10), as Linux without 32-bit emulation still reports it: the instruction exists; the kernel has no
+  32-bit system calls behind it. `sysexit` is kernel-only (general protection, as above). Layer 1
+  excludes `sysenter` with the reason of `int 0x80`, and the designed-answers test checks the fault.
 - **Division** (`div` and `idiv` at 8, 16, 32 and 64 bits) stops with divide error (`DivideError`:
   SIGFPE, `FPE_INTDIV`, rip at the instruction, nothing changed) when the divisor is 0 or the quotient
   does not fit the width. Seen on the reference (section 2, run 3): `div rcx` with rdx:rax = 1:0 and rcx 2
@@ -1196,27 +1257,31 @@ Tests (section 7 gives the detail):
   leaves to the bottom loop through "go to address". `ret imm16` also adds its immediate. `jmp` through a
   register or memory makes the same canonical check first, before anything changes; `call` makes it after its
   push (above).
-- **Far transfers** (`call far m16:64`, `jmp far m16:64`, `retf` and `retf imm16` in their 16, 32 and
-  64-bit operand sizes, `iretq`; valid in 64-bit user mode, so in layer 1's forms list). Their meanings
-  read the selector with the offset and act on it as the CPU does in user mode on Linux. Seen on the
-  reference (section 2, run 4): with selector 0x33 (Linux's 64-bit user code segment, the one running)
-  `call far [rdi]` reads its 10 bytes, pushes 16 (the return address at rsp - 16, the old CS 0x33
-  zero-extended above it) and lands at the offset; `jmp far` lands with nothing written; `retfq` pops the
-  offset and the selector, rsp up by 16; `iretq` pops rip, CS, rflags, rsp and SS (40 bytes) and lands
-  with rsp and rflags loaded (IF kept set). A selector that names no code segment (0, 0x2b, which is data,
-  and SS 0x33 for `iretq`) gives general protection with nothing written and rsp unchanged, so for far
-  transfers the selector is checked before the push; a non-canonical offset with selector 0x33 gives
-  general protection after the 16-byte push, as a near `call` does. So the meanings: read (access 0,
-  checked first), test the selector, push (access 1, for `call far`), test the offset is canonical, then
-  move rsp and transfer. A far transfer with selector 0x33 is, for the translator, a jump or call through
-  memory (`FlowKind::JumpThrough` or `CallThrough(Memory)`, the return address 16 bytes up for `call
-  far`'s matching `retf`) and `retf` and `iretq` are returns that leave to the bottom loop when the target
-  is not the one expected; they are rare, so no more than that. Selector 0x23 (Linux's 32-bit user code
+- **Far transfers** (`call far m16:64`, `jmp far m16:64`, `retf` and `retf imm16` in their 16, 32 and 64-bit
+  operand sizes, `iretq`; valid in 64-bit user mode, so in layer 1's forms list). Their meanings read the
+  selector with the offset and act on it as the CPU does in user mode on Linux. Seen on the reference (section
+  2, run 4): with selector 0x33 (Linux's 64-bit user code segment, the one running) `call far [rdi]` reads its
+  10 bytes, pushes 16 (the return address at rsp - 16, the old CS 0x33 zero-extended above it) and lands at
+  the offset; `jmp far` lands with nothing written; `retfq` pops the offset and the selector, rsp up by 16;
+  `iretq` pops rip, CS, rflags, rsp and SS (40 bytes) and lands with rsp and rflags loaded (IF kept set). A
+  selector that names no code segment (0, 0x2b, which is data, and SS 0x33 for `iretq`) gives general
+  protection with nothing written and rsp unchanged, so for far transfers the selector is checked before the
+  push; a non-canonical offset with selector 0x33 gives general protection after the 16-byte push, as a near
+  `call` does. So the meanings: read (access 0, checked first), test the selector, push (access 1, for `call
+  far`), test the offset is canonical, then move rsp and transfer. `iretq` differs in two ways (section 2, run
+  7). It first tests NT and gives general protection when it is set, before any read (section 5.1). And it
+  reads its frame as five 8-byte accesses in the CPU's order, not as one, so a page fault names the slot the
+  CPU names: rflags (rsp + 16) first, then CS with its null-selector test, and SS before rsp; a CS that is not
+  null but not a code segment faults only after rip's slot has been read. Where rip's read falls against SS's,
+  and each selector test against the reads, is settled at X5 by reference cases with partly mapped `iretq`
+  frames, before its meaning is written. A far transfer with selector 0x33 is, for the translator, a jump or
+  call through memory (`FlowKind::JumpThrough` or `CallThrough(Memory)`, the return address 16 bytes up for
+  `call far`'s matching `retf`) and `retf` and `iretq` are returns that leave to the bottom loop when the
+  target is not the one expected; they are rare, so no more than that. Selector 0x23 (Linux's 32-bit user code
   segment) switches the reference to 32-bit mode, which this phase does not have: it stops with general
-  protection at the instruction, nothing changed, the fault a CPU gives for a selector it cannot load;
-  counted and warned, x86's own reason "far transfer to 32-bit code, not provided", like `int 0x80`
-  (section 5.2). Layer 1
-  excludes selector 0x23 with that reason; the designed-answers test checks the fault.
+  protection at the instruction, nothing changed, the fault a CPU gives for a selector it cannot load; counted
+  and warned, x86's own reason "far transfer to 32-bit code, not provided", like `int 0x80` (section 5.2).
+  Layer 1 excludes selector 0x23 with that reason; the designed-answers test checks the fault.
 - After a WebAssembly call returns, the caller checks rsp is 8 above its value at the call (after the
   push); if not, it leaves to the next instruction through the bottom loop, as ARM64 does for a changed sp.
 - Deep recursion leaves to the bottom loop on the stack budget, as on ARM64.
@@ -1417,12 +1482,35 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   X5 the same check over all 2^32 inputs becomes a test that runs the meaning's formula against the
   reference CPU on the x86 machine (the scratch check took 73 s there for both instructions), and layer 1
   compares the translated forms like any other.
-- **MXCSR**, following the ARM64 pattern: in the default mode (0x1F80: round to nearest, no flush to zero,
-  no denormals-are-zero, all exceptions masked) and while the program has not written MXCSR, the fast path
-  runs and the sticky exception flags are not kept. Once the program sets another rounding mode, FTZ or
-  DAZ, unmasks an exception or writes MXCSR (as `feclearexcept` does), floating point takes the exact path
-  through the float hook with MXCSR, counted "exact floating point requested". An unmasked exception stops
-  with `FloatException` (SIGFPE with the `si_code` of the exception).
+- **MXCSR**, following the ARM64 pattern, where FPCR is the mode, FPSR the sticky flags, and a write of
+  FPSR turns on `FloatTracking`. MXCSR holds both: its mode is bits 6 to 15 (DAZ, the six exception
+  masks, the rounding control, FTZ), its sticky exception flags bits 0 to 5. It is one control, `Mxcsr`,
+  beside a control `MxcsrTracking`. Floating point takes the exact path through the float hook, counted
+  "exact floating point requested", when the mode is not the default's (0x1F80: round to nearest, no
+  flush to zero, no denormals-are-zero, all exceptions masked) or tracking is on; otherwise the fast path
+  runs and the sticky flags are not kept. What changes them:
+  - `ldmxcsr` and `vldmxcsr`, the program's own write of MXCSR (what `feclearexcept`, `fesetenv` and
+    `fesetround` do), write the control and turn tracking on, as ARM64's write of FPSR does.
+  - `fxrstor`, `xrstor` and the kernel's `rt_sigreturn` restore a saved state: they write the control and
+    never turn tracking on, so only the mode they restore decides the path. This matters because glibc's
+    dynamic loader runs `fxsave` and `fxrstor` (or `xsavec` and `xrstor` with XSAVE claimed) in its lazy
+    binding trampoline at every lazy binding of a program not linked with `BIND_NOW` (section 2, run 7;
+    glibc chooses the `fxsave` one when XSAVE is not claimed): restoring 0x1F80 there must leave the
+    program on the fast path.
+  - Nothing turns tracking off within a process; `execve` starts it off again with MXCSR 0x1F80.
+  An unmasked exception stops with `FloatException` (SIGFPE with the `si_code` of the exception).
+- **Reading the sticky flags while they are not kept** is a counted slow path, x86's form of ARM64's
+  `ReadStatus` (an FPSR read while `FloatTracking` is 0 calls the float hook, which only counts): `stmxcsr`
+  and `vstmxcsr`, and `fxsave`, `xsave`, `xsavec` and `xsaveopt` when they store MXCSR, test
+  `MxcsrTracking` and, when it is off, call the float hook with `ReadStatus`, counted "MXCSR's exception
+  flags read while not kept", with its warning. Then they store the control as it is: the mode exactly,
+  the flags as last written, which may be fewer than the CPU's. A save and its restore therefore round-trip
+  exactly. This counter fires at every lazy binding in a program without `BIND_NOW`, from one address in
+  the loader, so it warns once there; that is intended, not noise: the loader really did read flags that
+  may differ from the CPU's, and the warning says only that. A signal frame's MXCSR is written by the
+  kernel's personality, which, as ARM64's kernel does with FPSR today, writes the control without counting
+  (section 12 lists this as a known gap). The x87 status word is always kept (below), so x87 has no such
+  path.
 - **Not-a-number results** follow x86's rules (the first source operand's NaN, quieted; the default NaN is
   negative, 0xFFC00000 single), bit for bit, with no setting. The host probe asks whether the engine's NaN
   results already follow x86's rules; where they do not (expected on ARM hosts) the translator adds a
@@ -1495,14 +1583,13 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
 
 ### 5.9 The register block
 
-`X86Block`, defined in `wcontainers-x86` until the kernel milestone moves it next to ARM64's in the abi:
-16 general registers in hardware order, rip, the flags word (the six arithmetic flags, section 5.1), the
-`Rflags` control (DF and ID at their rflags positions), FS base, GS base, a 512-byte area in the FXSAVE layout
-(x87 control, status and tag words, last-instruction pointers, MXCSR and its mask, eight 16-byte x87
-register slots, sixteen xmm registers) except that the x87 slots are in physical order R0 to R7, then the
-upper halves of the sixteen ymm registers. The stop flag follows, padded to a multiple of 16. The kernel
-rotates the x87 slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a core
-dump).
+`X86Block`, defined in `wcontainers-x86` until the kernel milestone moves it next to ARM64's in the abi: 16
+general registers in hardware order, rip, the flags word (the six arithmetic flags, section 5.1), the `Rflags`
+control (DF, NT and ID at their rflags positions), FS base, GS base, a 512-byte area in the FXSAVE layout (x87
+control, status and tag words, last-instruction pointers, MXCSR and its mask, eight 16-byte x87 register
+slots, sixteen xmm registers) except that the x87 slots are in physical order R0 to R7, then the upper halves
+of the sixteen ymm registers. The stop flag follows, padded to a multiple of 16. The kernel rotates the x87
+slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a core dump).
 
 ### 5.10 What the CPU claims (CPUID), and the AVX setting
 
@@ -1516,7 +1603,8 @@ dump).
 - **Default claims**: only features every instruction of which maps onto WebAssembly without a software
   slow path, plus the x87 unit the architecture requires: FPU (software, counted, section 5.8), TSC, CX8,
   CMOV, MMX, FXSR, SSE, SSE2, SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CX16, LAHF-SAHF in 64-bit mode, LZCNT,
-  BMI1, ADX, MOVBE, RDTSCP, FSGSBASE, CLFLUSH, and the 64-bit basics (SYSCALL, NX, LM). This covers the
+  BMI1, ADX, MOVBE, RDTSCP, FSGSBASE, CLFLUSH, SEP (whose `sysenter` gives general protection as on a
+  kernel without 32-bit emulation, section 5.2), and the 64-bit basics (SYSCALL, NX, LM). This covers the
   x86-64-v2 level. `clflush` is a checked one-byte read of its address, which faults as a load there does
   (a page fault where nothing readable is mapped, general protection where the address is not canonical),
   and then nothing, since there is no cache to flush; the Intel manual gives it a byte load's checks and
@@ -1581,8 +1669,11 @@ resolved at compile time like the translator (the kernel generic over a personal
 `&mut dyn Cpu`). It contains:
 - **The register block** type and its conversions (the abi's `Cpu` trait becomes generic over it). ARM64's
   `RegisterBlock` stays; `X86Block` moves into the abi. The user-visible rflags (in `sigcontext`, for
-  `ptrace`) is put together from the flags word, the `Rflags` control (DF, ID) and bits 1 and 9, and split
-  back the same way at sigreturn, with Linux's `FIX_EFLAGS` mask and AC left clear (section 5.1).
+  `ptrace`) is put together from the flags word, the `Rflags` control (DF, NT, ID) and bits 1 and 9, and
+  split back at sigreturn as Linux does: only the `FIX_EFLAGS` bits come from the frame (the six flags,
+  TF, DF, RF and AC, with AC left clear, section 5.1); NT and ID keep the values the thread had when it
+  called `rt_sigreturn` (section 2, run 7). The frame's MXCSR is the `Mxcsr` control, and sigreturn
+  writes it back as `fxrstor` does, without turning tracking on (section 5.8).
 - **The address space**: the user address limit, `TASK_SIZE_MAX`, which is 0x7ffffffff000 on x86-64
   (2^47 less one page) against ARM64's 2^48 (today's `user::ADDRESS_LIMIT`, used by `mmap`, `mremap`,
   `brk` and the stack's placement), with no untagging on x86 (LAM is not offered). `mmap` with a hint or
@@ -1604,7 +1695,8 @@ resolved at compile time like the translator (the kernel generic over a personal
 - **Signal frames and sigreturn**: x86's `rt_sigframe` with the mandatory restorer, general registers in
   `sigcontext`, the FXSAVE/XSAVE image (x87 slots rotated by TOP, ymm upper halves when AVX is claimed),
   the 128-byte red zone skipped below rsp, and the frame aligned so rsp + 8 is a multiple of 16 at the
-  handler's entry. DF is cleared on entry.
+  handler's entry. DF (with TF and RF) is cleared on entry and NT and ID are kept, as Linux's
+  `handle_signal` does (from its source; checked against the reference at X10).
 - **Clone, exec and the auxiliary vector**: x86 `clone`'s argument order (flags, stack, parent tid, child
   tid, tls); the child's registers (rax 0, the new stack, FS base from tls); exec's start registers (rsp at
   argc, rdx 0); AT_HWCAP (CPUID leaf 1 edx), AT_HWCAP2 (FSGSBASE), AT_PLATFORM "x86_64", AT_MINSIGSTKSZ.
@@ -1612,7 +1704,8 @@ resolved at compile time like the translator (the kernel generic over a personal
   and the faults and their signals (section 3.2's trap kinds: divide error SIGFPE `FPE_INTDIV`, general
   protection SIGSEGV `SI_KERNEL` with address 0, float exceptions SIGFPE, single step SIGTRAP
   `TRAP_TRACE`, `int3` and `int 3` SIGTRAP `SI_KERNEL`, `int1` SIGTRAP `TRAP_BRKPT`, each breakpoint
-  with rip after it), and the stack fault from a memory fault, SIGBUS `SI_KERNEL` with address 0 (Linux's
+  with rip after it; general protection also for `int 0x80` and `sysenter`, section 5.2), and the stack
+  fault from a memory fault, SIGBUS `SI_KERNEL` with address 0 (Linux's
   #SS handler; section 2, run 6). The abi's `Exit` grows these kinds. A memory fault reaches the kernel
   already classified by the runner through `Guest::memory_fault` (a page fault with its address, general
   protection, or a stack fault), so the kernel stays `no_std`, CPU-free and without a CPU crate; hooks
@@ -1691,7 +1784,7 @@ pub trait GuestTest: Guest {
     /// with illegal instruction (a feature not offered).
     fn presented(code: &[u8], offer: Self::Offer) -> Result<(), &'static str>;
     /// A reason to leave an instance out (a jump to itself, a designed answer, ARM64's unpredictable
-    /// encodings, x86 `int 0x80` and selector 0x23), else `None`.
+    /// encodings, x86 `int 0x80`, `sysenter` and selector 0x23), else `None`.
     fn excluded(code: &[u8]) -> Option<&'static str>;
     /// Random bytes that are no instruction of any form (x86: what iced decodes as `INVALID`, among them
     /// prefix runs that take an encoding past 15 bytes, which give general protection, section 5.2).
@@ -1701,7 +1794,9 @@ pub trait GuestTest: Guest {
     fn offered(offer: Self::Offer) -> Vec<&'static str>;
     fn told(offer: Self::Offer) -> Vec<&'static str>;
     /// The designed answers (identity registers, CPUID leaves, rdtsc, xgetbv, AC reading back clear,
-    /// `int 0x80`): each an instruction, a starting state and the state and stop it must leave.
+    /// `int 0x80` and `sysenter`, and x86's MXCSR rules: `ldmxcsr` turns tracking on, `fxrstor` of
+    /// 0x1F80 keeps the fast path, `stmxcsr` and `fxsave` count while not tracking, section 5.8): each
+    /// instructions, a starting state and the state, stop and counters they must leave.
     fn designed(offer: Self::Offer) -> Vec<Designed>;
 
     // --- the comparable state ---
@@ -1709,11 +1804,16 @@ pub trait GuestTest: Guest {
     /// FCW, FSW, FTW, R0 to R7, xmm0 to xmm15, the ymm upper halves).
     const FIELDS: &'static [Field];
     /// The thread state (`BLOCK_SIZE + PRIVATE_BYTES` bytes) as field values in `FIELDS` order, and back.
-    /// x86 puts rflags together from the flags word, `Rflags` and bits 1 and 9 (section 5.1).
+    /// x86 puts rflags together from the flags word, `Rflags` (DF, NT, ID) and bits 1 and 9 (section
+    /// 5.1). Tracking is not a field: the case's `tracking`, drawn at random, is written beside the
+    /// fields (ARM64 `FloatTracking` as today, x86 `MxcsrTracking`).
     fn to_state(thread: &[u8]) -> State;
     fn from_state(state: &State, thread: &mut [u8]);
-    /// Per field, the bits allowed to differ in this case given both outcomes: sticky float
-    /// flags and x87 exception bits while not kept, TF in the copies of rflags an instruction makes
+    /// Per field, the bits allowed to differ in this case given both outcomes: the sticky float flags
+    /// while not kept, which must instead equal the case's starting ones (ARM64 FPSR's, today's rule;
+    /// x86 MXCSR bits 0 to 5 when the case does not track, starts with MXCSR's mode at the default and
+    /// writes no MXCSR, section 5.8; x87's status is always kept and always compared), TF in the
+    /// copies of rflags an instruction makes
     /// (`pushf`'s word, r11 after `syscall`), AC after `popf` (section 5.1), what a faulting access leaves
     /// unknown (ARM64), x87's last-instruction pointers. Never an undefined flag.
     fn may_differ(case: &Case, reference: &Outcome, translated: &Outcome) -> State;
@@ -1795,13 +1895,15 @@ The reference runner (crates/wcontainers-translator-test/reference) is one progr
 trait Machine {
     /// The byte the code area is filled with: ARM64 0 (`udf #0`), x86 0xCC (`int3`).
     const FILLER: u8;
-    /// Bytes after CODE that the seccomp filter treats as the case's own: ARM64 4, x86 16.
+    /// Bytes after CODE that the seccomp filter treats as the case's own: ARM64 4, x86 16. The filter
+    /// also stops every call whose arch is not the guest's (x86: `AUDIT_ARCH_I386`), made anywhere.
     const WINDOW: u64;
     /// The field names, sent first on every connection; the harness checks they are `G::FIELDS`' names.
     const FIELDS: &'static [&'static str];
     /// Write a case's state into the signal frame (x86: the general registers, rflags with TF set, the
     /// x87, SSE and AVX components and `xstate_bv` bits 0 to 2), and set the thread pointers (ARM64
-    /// tpidr_el0, x86 `arch_prctl` FS and GS).
+    /// tpidr_el0, x86 `arch_prctl` FS and GS). x86 also sets the case's NT and ID in the handler's own
+    /// rflags, since `rt_sigreturn` takes those from the caller, not the frame (section 2, run 7).
     fn enter(context: &mut libc::ucontext_t, state: &[u128]);
     /// Read the frame back into a state (a component whose `xstate_bv` bit is clear as its first state),
     /// after giving the runner its own thread pointer back.
@@ -1864,13 +1966,15 @@ so; it is never skipped silently.
 - **Isolation**: the runner forks per batch of cases and the child runs the cases; a case that damages the
   child (a write through a random pointer into the runner's own memory) shows as a child that dies, and that
   batch is rerun one case per child.
-- **One instruction** (section 2): the code area is filled with `int3`; the instruction is placed at CODE;
-  the handler (on an alternate stack, using no thread-local storage and only raw system calls) writes
-  every register into the frame including all vector registers, the whole x87 component (control, status
-  and abridged tag words, the eight slots in stack order, rotated from the case's physical R0 to R7 by
-  TOP, the last-instruction pointers zero) and the XSAVE header bits 0, 1 and 2 (section 2, run 4), sets
-  the FS and GS
-  bases with `arch_prctl`, sets TF and returns. The next signal is read back, knowing the instruction's
+- **One instruction** (section 2): the code area is filled with `int3`; the instruction is placed at CODE; the
+  handler (on an alternate stack, using no thread-local storage and only raw system calls) writes every
+  register into the frame including all vector registers, the whole x87 component (control, status and
+  abridged tag words, the eight slots in stack order, rotated from the case's physical R0 to R7 by TOP, the
+  last-instruction pointers zero) and the XSAVE header bits 0, 1 and 2 (section 2, run 4), sets the FS and GS
+  bases with `arch_prctl`, sets TF in the frame, sets the case's NT and ID in its own rflags with `pushfq; or;
+  popfq` (Linux's `rt_sigreturn` keeps those bits from its caller and takes only the `FIX_EFLAGS` bits from
+  the frame; section 2, run 7) and returns. The handler that reads the case back clears NT and ID in its own
+  rflags the same way before the runner goes on. The next signal is read back, knowing the instruction's
   length L:
   - `SIGTRAP` with `TRAP_TRACE` (2): landed at rip.
   - `SIGTRAP` with `SI_KERNEL` (128) and rip CODE + L + 1: the instruction ran and fell through with its
@@ -1881,8 +1985,10 @@ so; it is never skipped silently.
   - `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE`: faults with their codes. `SIGSEGV` with `SI_KERNEL` and
     address 0 is `GeneralProtection`; `SIGBUS` with `SI_KERNEL` and address 0 is `StackFault`; `SIGBUS`
     with `BUS_ADRALN` is `Alignment(address)`.
-  - `SIGSYS`, from a seccomp filter on the instruction window `[CODE, CODE + 16)`: a system call, for
-    `syscall` and for `int 0x80` (seen by seccomp as an i386 call), which never runs.
+  - `SIGSYS`, from the seccomp filter, which stops every call made from the instruction window `[CODE,
+    CODE + 16)` and every call whose `seccomp_data.arch` is `AUDIT_ARCH_I386` wherever it was made: a
+    system call, for `syscall`, `int 0x80` and `sysenter` (whose `SIGSYS` arrives with rip in the vDSO,
+    section 2, run 7), which never runs.
   Anything else (a stop elsewhere, a signal not listed) is reported as such and fails the case; nothing is
   mapped by guesswork. A repeated string instruction is stepped on while rip stays at CODE. The runner's
   own FS base is set back before anything else.
@@ -1911,15 +2017,18 @@ memory operand's base, or rsp for the implicit stack accesses, in the last 64 by
 non-canonical value (section 5.4), with every base register drawn, rsp and rbp and r12 and r13 among
 them and `fs:` and `gs:` prefixes among the operands, so that the page fault, general protection and
 the stack fault are each compared with the reference. Random registers, flags, vector, x87 and
-MXCSR values are weighted toward edge values; MXCSR is the default in half the cases. The reference runs it by
+MXCSR values are weighted toward edge values; MXCSR is the default in half the cases, and tracking (section
+5.8) is on in half, as ARM64's is today. The starting rflags holds what user code can hold: the six flags, DF,
+NT and ID drawn, bits 1 and 9 set, and AC, TF, IOPL, RF, VIF and VIP clear (AC because the translator never
+holds it, section 5.1; NT and ID are entered as section 7.3 says). The reference runs it by
 the trap flag; the translator runs it at look-ahead none; every register, every flag (including undefined
 ones), the touched memory and the stop are compared. Random byte strings that iced decodes as `INVALID` are
 compared with the CPU's stop: SIGILL, or general protection for the ones past 15 bytes (section 5.2), which
-`no_form` draws on purpose as runs of prefixes before a body; valid ones also check the length (where the
-CPU lands). Exclusions, each
-with a reason: a jump to itself; the instructions answered by design (CPUID, rdtsc, rdtscp, xgetbv), which a
-designed-answers test checks instead; and `int 0x80`, which the reference kernel runs as a 32-bit system call
-and this phase does not provide (section 5.2), also checked by the designed-answers test.
+`no_form` draws on purpose as runs of prefixes before a body (a legacy one, or a VEX or EVEX one after a
+66, F2, F3 or REX that makes it invalid); valid ones also check the length (where the CPU lands).
+Exclusions, each with a reason: a jump to itself; the instructions answered by design (CPUID, rdtsc, rdtscp, xgetbv), which a
+designed-answers test checks instead; and `int 0x80` and `sysenter`, which the reference kernel runs as 32-bit
+system calls and this phase does not provide (section 5.2), also checked by the designed-answers test.
 
 **Layer 2: random small programs**, from the shared program model (loops with counters, calls, bounded
 recursion, tail calls, calls and jumps through registers, jump tables in both x86 compiler styles, frames,
@@ -1988,17 +2097,17 @@ Measured throughout, recorded with machine and load: translation speed, output s
   are moved onto the interface then.
 - **X2, the shared test harness.** `GuestTest` and the ARM64 implementation; the harness, runners, browser
   build (feature-chosen guest, contract JSON with the per-CPU numbers) and reference transport generic; the
-  x86 reference runner built, uploaded and proven on the x86 machine through the harness's transport on a
-  hand list of cases (as section 2's experiment, now in the repository) and on a blob. Pass bar: every
-  ARM64 test passes with the same seeds giving the same cases and programs (layer 1 cases and layer 2
-  programs byte for byte the same per seed); the x86 reference answers a hand list of at least 30
-  instructions with what the Intel manual says, each checked by hand in the test, among them every stop
-  of section 7.3's list (`mov ss` with its held-back trap, `int3`, `int 3`, `int1`, `syscall` and `int
-  0x80` as `SIGSYS`, a `ret` to a non-canonical address, general protection from `mov rax, [rbx]` and the
-  stack fault from `mov rax, [rbp]` and from `push rax`, each with a non-canonical address), x87
-  instructions whose state is written and read back (section 2, run 4) and a `call far` with selector
-  0x33. The trait of section 7.2 is the one built;
-  where building it shows a signature must change, the change is recorded in the status file.
+  x86 reference runner built, uploaded and proven on the x86 machine through the harness's transport on a hand
+  list of cases (as section 2's experiment, now in the repository) and on a blob. Pass bar: every ARM64 test
+  passes with the same seeds giving the same cases and programs (layer 1 cases and layer 2 programs byte for
+  byte the same per seed); the x86 reference answers a hand list of at least 30 instructions with what the
+  Intel manual says, each checked by hand in the test, among them every stop of section 7.3's list (`mov ss`
+  with its held-back trap, `int3`, `int 3`, `int1`, `syscall`, `int 0x80` and `sysenter` as `SIGSYS`, `pushf`
+  from a state with NT and ID set storing them, a `ret` to a non-canonical address, general protection from
+  `mov rax, [rbx]` and the stack fault from `mov rax, [rbp]` and from `push rax`, each with a non-canonical
+  address), x87 instructions whose state is written and read back (section 2, run 4) and a `call far` with
+  selector 0x33. The trait of section 7.2 is the one built; where building it shows a signature must change,
+  the change is recorded in the status file.
 - **X3, x86 at look-ahead none, integers.** `wcontainers-x86` with the decoder, the block, the base integer
   instructions (moves, arithmetic and logic at every width, lea, push and pop, call and ret, jmp and jcc, cmov
   and setcc, shifts and rotates, multiply and divide, string instructions without rep, syscall), lazy flags,
@@ -2020,7 +2129,8 @@ Measured throughout, recorded with machine and load: translation speed, output s
   gives the same results at none and full and is timed on the x86 machine natively, in wasmtime and in
   Chrome.
 - **X5, every default instruction.** All integer instructions of the default claims, SSE through SSE4.2,
-  MXCSR fast and exact paths, NaN rules and the probe, CPUID and its designed answers, rep string
+  MXCSR fast and exact paths with tracking and the counted read of its flags (section 5.8) and their
+  designed answers, NaN rules and the probe, CPUID and its designed answers, rep string
   instructions (bulk and one element), FS and GS, the approximate reciprocals by section 5.8's formula. The
   passed-register lists measured and chosen. Pass bar: layer 1 complete for the default forms at 1,000
   cases a form, layer 3 Csmith at 1,000 programs, zero mismatches; the reciprocal formula equal to the
@@ -2095,6 +2205,14 @@ apply unchanged.
 - Not seen on the reference: which fault the CPU gives for an encoding past 15 bytes that runs into an
   unmapped page (section 5.2 treats it as running past the end of the code range); layer 1 places no case
   there today.
+- The cost of the counted MXCSR read in glibc's lazy binding trampoline (one float hook call per lazy
+  binding, expected small beside the binding's own work), and how many programs fire that counter.
+- Not seen, expected from sources: `sysenter` giving general protection on a kernel without 32-bit
+  emulation (section 5.2), and Linux keeping NT and ID across signal delivery (section 6). Where rip's
+  read falls in `iretq`'s order (section 5.3), settled at X5.
+- A known gap shared with ARM64 today: a signal handler that reads the sticky float flags from its
+  frame (MXCSR on x86, FPSR on ARM64) while they are not kept sees the flags last written, and nothing
+  counts it (section 5.8).
 
 ## 13. Where the evidence is
 
@@ -2112,10 +2230,13 @@ outputs, and `cases6.out`. Run 5 added `cases7.sh`, `cases8.sh` and `sweep15.sh`
 sweep beside iced's decoding) and `brk.c` (ARM64's breakpoint `si_code`); the fourth independent check's
 cases are in `check4`. Run 6 added `cases9.sh` and `cases10.sh` with their outputs (the stack fault
 against general protection, alignment first, MMX writes and the x87 registers); the fifth independent
-check's cases are in `check5`. The x86 machine holds copies of the programs and scripts in
+check's cases are in `check5`. Run 7 added `stepper5.c` (NT and ID entered, the seccomp filter with its
+arch test), `cases11.sh`, `cases12.sh` and `cases13.sh` with their outputs (NT and ID, `sysenter`, a
+legacy prefix before VEX and EVEX, `iretq`'s order); the sixth independent check's cases are in `check6`.
+The x86 machine holds copies of the programs and scripts in
 `~/wcontainers-x86/proof` (with `approx.out`, `approx_formula.out`, `approx_mxcsr.out`; the cases
 scripts' outputs are kept only on the Mac), and the independent checks' own files in
-`~/wcontainers-x86/check`, `check2`, `check3`, `check4` and `check5`.
+`~/wcontainers-x86/check`, `check2`, `check3`, `check4`, `check5` and `check6`.
 
 ## Appendix A. Every kind b and c place of the seam map, and where it is covered
 

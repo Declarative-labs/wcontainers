@@ -7,7 +7,7 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 
 - X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the first independent
   check's findings fixed in run 2, the second check's in run 3, the third's in run 4, the fourth's in
-  run 5 and the fifth's in run 6, the same day (below).
+  run 5, the fifth's in run 6 and the sixth's in run 7, the same day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -231,7 +231,43 @@ nothing timed):
 - Cross-references fixed (RISC-V is 3.5, the reasons are 3.4) and section 13 lists all five checks'
   folders on the x86 machine.
 
+## X0, run 7 (2026-11-17): the sixth independent check's findings, all fixed in the plan
+
+Each was first repeated and widened on the reference with `stepper5` (`cases11.sh`, `cases12.sh`,
+`cases13.sh`, x86 load 0.00, nothing timed):
+- Blocking, NT: `popf` and `iretq` keep NT (bit 14) in user mode, `pushf` stores it, `syscall` and fault
+  frames keep it, and `iretq` with NT set is general protection before it reads its frame. Plan 5.1:
+  `Control::Rflags` holds DF, NT and ID; `iretq` tests NT first (5.3); the kernel's personality puts NT
+  in signal frames and keeps NT and ID at sigreturn as Linux does (6).
+- Found while checking: `iretq` reads its frame out of order (rflags, then CS, SS before rsp), so a page
+  fault names the slot the CPU names. Plan 5.3: five checked reads in the CPU's order; where rip's read
+  falls is settled at X5 before the meaning is written.
+- Entering NT and ID: proven by setting them in the handler's own rflags just before `rt_sigreturn`,
+  which keeps non-`FIX_EFLAGS` bits from its caller. Plan 7.3 (`Machine::enter`, the one-instruction
+  steps) and 7.4 (starting rflags: six flags, DF, NT, ID drawn; AC, TF, IOPL, RF, VIF, VIP clear).
+- MXCSR and lazy binding: `ldmxcsr` turns tracking on; `fxrstor`, `xrstor` and sigreturn restore without
+  it, so glibc's lazy binding trampoline keeps the fast path. `float_slow` is mode bits not 0x1F80 or
+  tracking (3.4, 5.8). Confirmed on the reference: the loader has `fxsave`/`fxrstor` and
+  `xsavec`/`xrstor`.
+- Reading MXCSR's flags while not kept: `stmxcsr` and the `fxsave`/`xsave` family call the float hook
+  with `ReadStatus`, counted "MXCSR's exception flags read while not kept" (5.8). `may_differ` now says
+  what ARM64's layer 1 does today: untracked default-mode flags must equal the case's starting ones; the
+  x87 clause is gone (x87 status is always kept). A signal frame's MXCSR is not counted, as ARM64's FPSR
+  today; listed in plan 12.
+- VEX or EVEX after 66, F2, F3 or REX: the CPU counts the whole VEX or EVEX instruction (16 bytes give
+  general protection, 15 `SIGILL`, also EVEX on this CPU without AVX-512). Plan 5.2 drops those prefixes
+  too when the next byte is C4, C5 or 62 (67 stays); 7.4's no-form cases draw such runs.
+- `sysenter`: the reference filter now also traps every `AUDIT_ARCH_I386` call wherever made (proven:
+  `SIGSYS` with rip in the vDSO). Its meaning is general protection like `int 0x80` (a kernel without
+  32-bit emulation loads a null `IA32_SYSENTER_CS`; expected from Linux's source, not seen); SEP claimed;
+  excluded from layer 1 with `int 0x80`'s reason and checked by the designed answers (2, 5.2, 5.10, 6,
+  7.2 to 7.4, X2, 12).
+
 ## How to run
+
+- Run 7's experiments: build `stepper5.c` like the steppers below, copy `stepper5`, `cases11.sh`,
+  `cases12.sh` and `cases13.sh` to `~/wcontainers-x86/proof/` and run each there. `SECCOMP=1` in the
+  environment installs the filter with its arch test.
 
 - Run 6's experiments: copy `stepper4`, `cases9.sh`, `cases10.sh` from scratch `reference-proof/` to
   `~/wcontainers-x86/proof/` and run each there (`ssh tom@192.168.2.240 'cd ~/wcontainers-x86/proof &&
@@ -266,11 +302,11 @@ nothing timed):
   mainline Linux 7.3.4 kernel; reached as `ssh -o BatchMode=yes tom@192.168.2.240`.
 - Installed on it by this track: nothing. Already there before this track and not used by it: Rust
   (`~/.rustup` dated 2026-11-14, rustc 1.100.0). Files of this track: `~/wcontainers-x86/proof/` (hello,
-  stepper, stepper3, stepper4, the scripts cases.sh, cases2.sh, cases4.sh, cases5.sh, cases7.sh,
-  cases8.sh, sweep15.sh, cases9.sh, cases10.sh, and approx, approx_dump, approx_formula, approx_mxcsr
+  stepper, stepper3, stepper4, stepper5, the scripts cases.sh, cases2.sh, cases4.sh, cases5.sh, cases7.sh,
+  cases8.sh, sweep15.sh, cases9.sh, cases10.sh, cases11.sh, cases12.sh, cases13.sh, and approx, approx_dump, approx_formula, approx_mxcsr
   with approx.out, approx_formula.out and approx_mxcsr.out). The cases scripts' outputs are kept only in
   the Mac's scratch `reference-proof/`. The independent checks' files are in `~/wcontainers-x86/check`,
-  `check2`, `check3`, `check4` and `check5`. Installed in runs 2 to 6: nothing.
+  `check2`, `check3`, `check4`, `check5` and `check6`. Installed in runs 2 to 7: nothing.
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -282,11 +318,12 @@ nothing timed):
   times (analysis, formula in MXCSR 0x1F80, formula in 0xFFC0); in run 4, 21 more hand-written cases; in
   run 5, 21 hand-written cases (`cases7.sh`, `cases8.sh`) and the 1,024-opcode sweep twice over (each
   opcode at the boundary and alone, 2,048 runs), plus one ARM64 `brk` in Docker; in run 6, 46 hand-written
-  cases (`cases9.sh` 38, `cases10.sh` 8).
+  cases (`cases9.sh` 38, `cases10.sh` 8); in run 7, 45 hand-written cases (`cases11.sh` 15, `cases12.sh`
+  18, `cases13.sh` 12).
 
 ## Measurements
 
-All in the "X0, run 1" to "run 6" sections above.
+All in the "X0, run 1" to "run 7" sections above.
 
 ## Licences of what this track uses
 
@@ -335,3 +372,8 @@ None yet (no milestone of the plan has been built).
   and warned. A real x86 Linux would fault misaligned accesses while AC is set.
 - A far transfer to Linux's 32-bit code segment (selector 0x23) gives general protection, counted, until
   32-bit mode is built.
+- `sysenter` also gives general protection (as `int 0x80`), while SEP is claimed: the instruction exists,
+  the kernel has no 32-bit calls behind it, as on Linux without 32-bit emulation.
+- Glibc programs without `BIND_NOW` fire the counter "MXCSR's exception flags read while not kept" at each
+  lazy binding (the loader's `fxsave`), warning once; a state restore never moves a program off the fast
+  path, only `ldmxcsr` or a non-default mode does.
