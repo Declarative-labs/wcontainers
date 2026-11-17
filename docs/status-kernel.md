@@ -1870,6 +1870,12 @@ each sequence the runner puts back what a sequence can change outside its direct
   Seed 4040103 failed at 2000 on statx with an empty mask (Known issues). Fresh plain layer 1 seed
   4040201 passed 20000 (333.4 s, load about 11 to 15) at head 49f67c3 (before the direct IO read and
   ACL read fixes, which touch only backend files).
+- K4, second run: the milestone's fresh layer 1 seeds at head ee59eab, every fix in: 4040202
+  passed 20000 (331.2 s), 4040203 passed 20000 (331.0 s), run side by side with the whole suite
+  (load 13.2 at the start, 17.0 at the end), and 4040204 passed 20000 (346.0 s, load 13.5 to 16.0).
+- K4, second run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p wcontainers-kernel
+  -p wcontainers-kernel-test`) at head ee59eab beside two layer 1 runs: 141 passed, 0 failed, 5
+  ignored, 6 min 29 s, load 13.8 at the start and 14.5 at the end.
 - K4, second run: `messages_per_call` gave the same counts as the first run's (below) with FLUSH at
   every close.
 - K4, first run: layer 1 seed 9393002 (the check's failing seed) passed 30000 with the SIGPIPE fix
@@ -2390,7 +2396,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K4 goes on. Left for this milestone, most important first:
+K4 goes on. Its fresh layer 1 seeds are done (Measurements). Left for this milestone, most
+important first:
 1. Shared mappings of backend files opened without direct IO (a block of shared pages filled with
    READ, written back with WRITE at msync, munmap and exit, and reads and writes of the file going
    through the block while it is mapped). Untestable against the reference with the first backend,
@@ -2399,10 +2406,11 @@ K4 goes on. Left for this milestone, most important first:
    (both counted "backend call not built" now).
 3. copy_file_range, sendfile and fadvise on backend files are reached by layer 1 on the backend;
    splice and cachestat on them are untested.
-4. The milestone's three fresh layer 1 seeds of 20000 with every fix in, at the end.
+4. Layer 1 on the backend seed 4040103 (statx with an empty mask, Known issues) is left failing;
+   no backend seeds have run beyond 0 and 4040101 to 4040103.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
-737, 3023 to 3034, 4040001, and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001
-to 9393003.
+737, 3023 to 3034, 4040001, 4040201 to 4040204, and the checks' 91001 to 91003, 8181801 to
+8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend: 0 and 4040101 to 4040103.
