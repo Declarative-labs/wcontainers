@@ -11,9 +11,6 @@ use crate::memory::Lock;
 use crate::process::{Channel, Pid, Report, Tid};
 use crate::{Context, Errno, Kernel, errno};
 
-/// Linux's `CSIGNAL`: the low byte of clone's flags is the signal sent to the parent at the end.
-const CSIGNAL: u64 = 0xff;
-
 /// `clone(flags, stack, parent_tid, tls, child_tid)`, arm64's argument order.
 pub(super) fn clone(
     kernel: &mut Kernel,
@@ -26,8 +23,9 @@ pub(super) fn clone(
         let child = kernel.threads[&tid].call.progress as Pid;
         return vfork_wait(kernel, tid, child);
     }
-    let exit_signal = flags & CSIGNAL;
-    let flags = (flags as u32) & !(CSIGNAL as u32);
+    // The low byte of clone's flags is the signal sent to the parent at the end.
+    let exit_signal = flags & u64::from(CSIGNAL);
+    let flags = (flags as u32) & !CSIGNAL;
     // Legacy clone gives the descriptor CLONE_PIDFD makes where the parent's thread id would go.
     if flags & CLONE_PIDFD != 0 && flags & CLONE_PARENT_SETTID != 0 {
         return Err(Errno::EINVAL).into();
