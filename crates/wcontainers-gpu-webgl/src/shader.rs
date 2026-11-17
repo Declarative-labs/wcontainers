@@ -50,6 +50,8 @@ pub struct ProgramObj {
 pub struct Linked {
     /// Texture unit n samples the texture in slot `.0` through the sampler in slot `.1`.
     pub units: Vec<(Slot, Option<Slot>)>,
+    /// Unit n's hidden size uniform (see [`sizes_from_uniforms`]), with the value it holds.
+    pub sizes: Vec<Option<(glow::UniformLocation, std::cell::Cell<[i32; 3]>)>>,
     /// Uniform block binding point n reads the uniform buffer in this slot.
     pub blocks: Vec<Slot>,
     /// naga's `naga_vs_first_instance` (added to `gl_InstanceID`) and `naga_vs_base_vertex` (added to
@@ -129,6 +131,12 @@ pub fn compile(
 ) -> Result<ShaderObj, GpuError> {
     let (source, reflection) = write_glsl(module, flip_y)
         .map_err(|_| GpuError::Invalid("webgl: naga could not write the shader as GLSL ES 3.00"))?;
+    let names: Vec<&str> = reflection
+        .texture_mapping
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let source = sizes_from_uniforms(source, &names);
     let m = &module.module;
     let mut textures: Vec<_> = reflection
         .texture_mapping
@@ -162,6 +170,54 @@ pub fn compile(
         source,
         outputs,
     })
+}
+
+/// Turns each `textureSize(t, l)` into a shift of the hidden uniform `t_size`, the size of the bound
+/// view's first level, which the back end sets with the view. ANGLE on Direct3D 11 answers
+/// `textureSize` for the wrong level once a texture's base level has changed.
+fn sizes_from_uniforms(source: String, names: &[&str]) -> String {
+    if !source.contains("textureSize(") {
+        return source;
+    }
+    const HELPERS: &str = "ivec2 _wc_size_2d(ivec3 s, int l) { return max(s.xy >> l, ivec2(1)); }\n\
+        ivec3 _wc_size_array(ivec3 s, int l) { return ivec3(max(s.xy >> l, ivec2(1)), s.z); }\n\
+        ivec3 _wc_size_3d(ivec3 s, int l) { return max(s >> l, ivec3(1)); }\n";
+    let mut out = String::with_capacity(source.len() + 512);
+    let mut helpers = false;
+    for line in source.lines() {
+        out.push_str(line);
+        out.push('\n');
+        let declared = names.iter().find(|n| {
+            line.starts_with("uniform ")
+                && line.contains("sampler")
+                && line
+                    .strip_suffix(';')
+                    .is_some_and(|l| l.ends_with(&format!(" {n}")))
+        });
+        if let Some(name) = declared {
+            out.push_str(&format!("uniform highp ivec3 {name}_size;\n"));
+            if !helpers {
+                out.push_str(HELPERS);
+                helpers = true;
+            }
+        }
+    }
+    for name in names {
+        let helper = match source.lines().find(|l| {
+            l.starts_with("uniform ")
+                && l.strip_suffix(';')
+                    .is_some_and(|l| l.ends_with(&format!(" {name}")))
+        }) {
+            Some(l) if l.contains("sampler3D") => "_wc_size_3d",
+            Some(l) if l.contains("Array") => "_wc_size_array",
+            _ => "_wc_size_2d",
+        };
+        out = out.replace(
+            &format!("textureSize({name}, "),
+            &format!("{helper}({name}_size, "),
+        );
+    }
+    out
 }
 
 /// Starts compiling GLSL of `stage`.
@@ -339,12 +395,17 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
         }
         gl.use_program(Some(raw));
         let mut units = Vec::new();
+        let mut sizes = Vec::new();
         let mut blocks: Vec<Slot> = Vec::new();
         for s in core::iter::once(&vertex).chain(&fragment) {
             for (name, texture, sampler) in &s.textures {
                 if let Some(location) = gl.get_uniform_location(raw, name) {
                     gl.uniform_1_i32(Some(&location), units.len() as i32);
                     units.push((*texture, *sampler));
+                    sizes.push(
+                        gl.get_uniform_location(raw, &format!("{name}_size"))
+                            .map(|l| (l, std::cell::Cell::new([-1; 3]))),
+                    );
                 }
             }
             for (name, slot) in &s.blocks {
@@ -366,6 +427,7 @@ pub fn finish(gl: &glow::Context, program: &ProgramObj) -> Result<Linked, String
         };
         Ok(Linked {
             units,
+            sizes,
             blocks,
             first_instance: uniform(glsl::FIRST_INSTANCE_BINDING),
             base_vertex: uniform(glsl::BASE_VERTEX_BINDING),

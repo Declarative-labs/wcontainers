@@ -1918,6 +1918,21 @@ impl WebGl {
                     t.levels.set(levels);
                 }
             }
+            if let Some((location, held)) = &linked.sizes[unit] {
+                let base = v.desc.base_mip;
+                let d = &t.desc;
+                let depth = match d.dimension {
+                    TextureDimension::D3 => (d.depth_or_layers >> base).max(1),
+                    _ => v.desc.layer_count,
+                };
+                let size = [(d.width >> base).max(1), (d.height >> base).max(1), depth];
+                let size = size.map(|s| s as i32);
+                if held.get() != size {
+                    // SAFETY: the program is in use.
+                    unsafe { gl.uniform_3_i32(Some(location), size[0], size[1], size[2]) };
+                    held.set(size);
+                }
+            }
             if self.applied.units[unit].1 != ids.1 {
                 // SAFETY: a plain GL call; the sampler is alive.
                 unsafe { gl.bind_sampler(unit as u32, sampler.map(|s| s.raw).or(point)) };
