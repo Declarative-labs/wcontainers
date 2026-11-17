@@ -47,6 +47,14 @@ the desktop"), and committed locally, not pushed. What it did:
   0x00ffffff where Direct3D gives 0xffffffff. The recorder now keeps such textures in Direct3D's
   layout and moves the aspect a region names; front test
   `staging_depth_with_stencil_moves_both_aspects_in_direct3ds_layout` (never run).
+- 34f07fa: `CreateInputLayout` with no elements makes a layout for a vertex shader without inputs
+  (Wine's test_create_input_layout, which crashed releasing the layout we refused); a shader with
+  inputs is still refused, each input needing an element. Front test
+  `an_input_layout_without_elements_serves_a_vertex_shader_without_inputs` (never run).
+- test_update_subresource (run 3): the WebGPU back end refused a `write_texture` ("bytes per row
+  less than a complete row"); which of the test's boxes did it is not known from the log (the
+  first boxes are whole-row pitches, empty boxes are dropped). Run that test alone with the
+  back end's messages next.
 - Read Wine's source for two other wrong answers of run 3, both outside this front (Asked of
   other tracks): test_depth_stencil_sampling reads stencil from the green channel of an
   `X24_TYPELESS_G8_UINT` view, where WebGPU's stencil view gives it in red; and
@@ -504,7 +512,7 @@ buffer and unordered access views, geometry, stream output and compute), so they
 ## What comes next (G4b and on)
 
 After G4 run 5, first, once the desktop answers again: run 4's list below, where item 1 now also
-covers 1034db1, bf33687 and f114492 (run `resume.sh g4r6`, which does items 1 and 2 in one go), and the
+covers 1034db1, bf33687, f114492 and 34f07fa (run `resume.sh g4r6`, which does items 1 and 2 in one go), and the
 rig's `draws` scene for the bases. Then, still open from section 12's list and needing more than
 the desktop:
 - Move the context onto the interface's `PassTracker` (item 7 of the older list): it gives
@@ -727,9 +735,9 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
-- crates/wcontainers-direct3d-11/tests/front.rs, 24 tests since G4 run 5 (the bases in the
+- crates/wcontainers-direct3d-11/tests/front.rs, 25 tests since G4 run 5 (the bases in the
   helper block and indirect draws read back, in place of the removal test; building ahead; depth
-  with stencil staging in Direct3D's layouts), never run; 22 before (since G4 run 1 also: depth-stencil
+  with stencil staging in Direct3D's layouts; empty input layouts), never run; 22 before (since G4 run 1 also: depth-stencil
   copies whole and of both aspects, typeless textures viewed through their group's members): the three scenes' calls on the recording
   back end (the scenes' own DXBC from the rig's corpus, converted), shader stages read from every
   corpus container, feature level choice, destruction after release, creation refusals (wrong stage,
