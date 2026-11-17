@@ -1353,8 +1353,10 @@ impl<B: Backend> Device<B> {
         elements: &[InputElement],
         vs_bytecode: &[u8],
     ) -> Result<Rc<InputLayout>> {
-        if elements.is_empty() || elements.len() > 32 {
-            return Err(Error::InvalidArg("an input layout has 1 to 32 elements"));
+        // No elements is a layout for a vertex shader without inputs; one with inputs is refused
+        // below, as each of its inputs needs an element.
+        if elements.len() > 32 {
+            return Err(Error::InvalidArg("an input layout has at most 32 elements"));
         }
         let key = *blake3::hash(vs_bytecode).as_bytes();
         let inputs = match self.vertex_inputs.get(&key) {

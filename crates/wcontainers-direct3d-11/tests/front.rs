@@ -1018,6 +1018,20 @@ fn staging_depth_with_stencil_moves_both_aspects_in_direct3ds_layout() {
 }
 
 #[test]
+fn an_input_layout_without_elements_serves_a_vertex_shader_without_inputs() {
+    let mut dev = device();
+    // common.vs_full reads only SV_VertexID; common.vs_color reads a position and a colour.
+    assert!(
+        dev.create_input_layout(&[], &corpus("common.vs_full"))
+            .is_ok()
+    );
+    assert!(matches!(
+        dev.create_input_layout(&[], &corpus("common.vs_color")),
+        Err(Error::InvalidArg(_))
+    ));
+}
+
+#[test]
 fn a_back_end_loss_reaches_the_program_where_it_waits() {
     let mut dev = device();
     let desc = BufferDesc {
