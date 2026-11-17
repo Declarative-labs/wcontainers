@@ -147,6 +147,9 @@ impl Backend for Recorder {
     fn create_binding_set(&mut self, _: &[BindingEntry<'_, Self>]) -> Result<Id, GpuError> {
         Ok(self.id())
     }
+    fn binding_layout_key(&self, _: &Id) -> BindingLayoutKey {
+        BindingLayoutKey::default()
+    }
     fn create_query_set(&mut self, _: QueryKind, _: u32) -> Result<Id, GpuError> {
         Ok(self.id())
     }

@@ -105,6 +105,10 @@ pub enum SlowPath {
     /// A logic operation in the program on a draw whose primitives may overlap, drawn one primitive at
     /// a time.
     LogicOpPerPrimitive,
+    /// A layered draw (layer chosen per primitive) run once per layer used, into that layer.
+    LayerSplit,
+    /// The part of a draw past the end of a vertex buffer drawn with a zero buffer bound.
+    VertexFetchZeroed,
     /// Refused, not slow: a program needs more bindings of one kind than the back end has, and no exact
     /// route exists, so making it failed.
     BindingsBeyondLimit,
@@ -112,7 +116,7 @@ pub enum SlowPath {
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 47] = [
+    pub const ALL: [SlowPath; 49] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -159,6 +163,8 @@ impl SlowPath {
         SlowPath::FilterInShader,
         SlowPath::StreamOutRepacked,
         SlowPath::LogicOpPerPrimitive,
+        SlowPath::LayerSplit,
+        SlowPath::VertexFetchZeroed,
         SlowPath::BindingsBeyondLimit,
     ];
 
@@ -211,6 +217,8 @@ impl SlowPath {
             SlowPath::FilterInShader => "texture filtered in the shader",
             SlowPath::StreamOutRepacked => "stream output repacked",
             SlowPath::LogicOpPerPrimitive => "logic operation drawn one primitive at a time",
+            SlowPath::LayerSplit => "layered draw split per layer",
+            SlowPath::VertexFetchZeroed => "vertex fetch past the end zeroed",
             SlowPath::BindingsBeyondLimit => "program refused: more bindings than the back end has",
         }
     }

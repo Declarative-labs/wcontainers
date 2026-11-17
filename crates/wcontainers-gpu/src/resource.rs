@@ -224,6 +224,15 @@ pub enum BindingResource<'a, B: Backend> {
     Table(&'a B::ResourceTable),
 }
 
+/// What a pipeline must know of a binding set beyond its program: which sampled textures (bit = binding
+/// number minus 32) cannot be filtered on this back end, and which samplers (bit = binding number minus
+/// 16) filter. WebGPU builds layouts from it (plan section 4.5); back ends without layouts give zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct BindingLayoutKey {
+    pub unfilterable_textures: u128,
+    pub filtering_samplers: u16,
+}
+
 /// One slot of a binding set: which program binding it fills, and with what.
 #[derive(Debug)]
 pub struct BindingEntry<'a, B: Backend> {

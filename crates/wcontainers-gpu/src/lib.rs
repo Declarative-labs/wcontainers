@@ -53,9 +53,10 @@ pub use format::{Format, FormatKind};
 pub use helpers::Helpers;
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{
-    BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, CopyBufferTexture, Extent,
-    MapIntent, Origin, QueryKind, ReadSource, ReadState, SamplerDesc, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
+    BindingEntry, BindingLayoutKey, BindingResource, BufferDesc, BufferRange, BufferUsage,
+    CopyBufferTexture, Extent, MapIntent, Origin, QueryKind, ReadSource, ReadState, SamplerDesc,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
+    WriteMode,
 };
 pub use shader::{Program, ShaderModule, ShaderStage, StageSet};
 pub use slow::{SlowPath, SlowPaths};

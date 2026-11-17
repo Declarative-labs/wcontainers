@@ -9,9 +9,9 @@ use crate::error::{DeviceStatus, GpuError};
 use crate::format::{Format, FormatKind};
 use crate::helpers::{self, Builtin, Helpers, PARAMS_SIZE, Ring};
 use crate::resource::{
-    BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, CopyBufferTexture, Extent,
-    MapIntent, QueryKind, ReadSource, ReadState, SamplerDesc, TextureDesc, TextureDimension,
-    TextureRegion, TextureViewDesc, ViewDimension, WriteMode,
+    BindingEntry, BindingLayoutKey, BindingResource, BufferDesc, BufferRange, BufferUsage,
+    CopyBufferTexture, Extent, MapIntent, QueryKind, ReadSource, ReadState, SamplerDesc,
+    TextureDesc, TextureDimension, TextureRegion, TextureViewDesc, ViewDimension, WriteMode,
 };
 use crate::shader::{Program, ShaderModule, StageSet};
 use crate::slow::{SlowPath, SlowPaths};
@@ -68,6 +68,9 @@ pub struct PrepareDesc<'a, B: Backend> {
     pub vertex_layout: &'a B::VertexLayout,
     pub targets: TargetLayout,
     pub topology: Topology,
+    /// The layout keys of the binding sets the draws will bind, as [`Backend::binding_layout_key`] gave
+    /// them or a cache recorded them; the zero key assumes filterable textures and filtering samplers.
+    pub layouts: [BindingLayoutKey; crate::MAX_BINDING_SETS],
 }
 
 /// Any object a back end made, for [`Backend::destroy`].
@@ -160,6 +163,8 @@ pub trait Backend: Sized {
         &mut self,
         entries: &[BindingEntry<'_, Self>],
     ) -> Result<Self::BindingSet, GpuError>;
+    /// The layout key of a binding set, for [`PrepareDesc::layouts`] and the cache.
+    fn binding_layout_key(&self, set: &Self::BindingSet) -> BindingLayoutKey;
     fn create_query_set(&mut self, kind: QueryKind, count: u32)
     -> Result<Self::QuerySet, GpuError>;
     /// Releases an object. Work already recorded that uses it still sees it; the back end frees it when
