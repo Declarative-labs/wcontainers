@@ -149,7 +149,10 @@ Objects, each made from plain data and named by an associated type of the back e
   `TEXTURE_CUBE_MAP`, `TEXTURE_3D`) knows it then; `TextureDesc::own_view` is that kind. There is no 1D
   texture: an API's 1D textures are 2D textures one texel high, read as such by converted programs, which
   every back end serves with mipmaps, arrays and rendering (WebGPU's 1D textures allow none of these).
-  Samplers have no level-of-detail bias, because neither browser API has one (4.12).
+  A multisampled texture is 2D with one level and one layer, never a storage texture, and its bytes
+  move only by draws, resolves and whole-subresource copies between equal sample counts (WebGPU's
+  rules; a front holds a multisampled array, such as Direct3D's `Texture2DMSArray`, as one texture per
+  layer). Samplers have no level-of-detail bias, because neither browser API has one (4.12).
 - `create_shader(&ShaderModule)`: a validated `naga::Module` with its entry point, stage and content key.
 - `create_program(&Program)`: vertex plus optional fragment shader, or one compute shader.
 - The state blocks: `create_blend`, `create_depth_stencil`, `create_raster`, `create_vertex_layout`.
@@ -175,7 +178,8 @@ Bytes in:
 Recording:
 - `begin_pass(&PassDesc)` and `end_pass()`. A pass names up to eight color targets and one depth-stencil
   target, each with what happens at the start (`Load`, `Clear(value)`, `DontCare`) and the end (`Store`,
-  `Discard`), resolve targets, and the occlusion query set. Every attachment has the same size (4.7).
+  `Discard`), resolve targets, and the occlusion query set. Every attachment has the same size (4.7) and sample
+  count; a resolve target is single-sampled, in its attachment's format.
 - `draw(&DrawCall)`: inside a pass. Section 4.4.
 - `begin_query(index)`, `end_query()`: occlusion, inside a pass.
 - `copy_buffer`, `copy_texture`, `copy_buffer_to_texture`, `copy_texture_to_buffer`, `clear_buffer`
