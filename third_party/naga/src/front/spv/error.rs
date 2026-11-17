@@ -73,6 +73,10 @@ pub enum Error {
     UnknownRelationalFunction(spirv::Op),
     #[error("unsupported group operation %{0}")]
     UnsupportedGroupOperation(spirv::Word),
+    #[error("{0:?} on integers of the other signedness")]
+    UnsupportedSignedness(spirv::Op),
+    #[error("unsupported image load operand {0:#x}")]
+    UnsupportedImageLoadOperand(u32),
     #[error("invalid parameter {0:?}")]
     InvalidParameter(spirv::Op),
     #[error("invalid operand count {1} for {0:?}")]

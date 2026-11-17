@@ -1480,6 +1480,347 @@ impl IDXGIObject_Impl for Adapter_Impl {
     }
 }
 
+impl IDXGIFactory2_Impl for Factory_Impl {
+    fn IsWindowedStereoEnabled(&self) -> windows::core::BOOL {
+        let _lock = lock();
+        self.is_windowed_stereo_enabled()
+    }
+    fn CreateSwapChainForHwnd(
+        &self,
+        pdevice: windows::core::Ref<windows::core::IUnknown>,
+        hwnd: windows::Win32::Foundation::HWND,
+        pdesc: *const DXGI_SWAP_CHAIN_DESC1,
+        pfullscreendesc: *const DXGI_SWAP_CHAIN_FULLSCREEN_DESC,
+        prestricttooutput: windows::core::Ref<IDXGIOutput>,
+    ) -> windows::core::Result<IDXGISwapChain1> {
+        let _lock = lock();
+        self.create_swap_chain_for_hwnd(pdevice, hwnd, pdesc, pfullscreendesc, prestricttooutput)
+    }
+    fn CreateSwapChainForCoreWindow(
+        &self,
+        pdevice: windows::core::Ref<windows::core::IUnknown>,
+        pwindow: windows::core::Ref<windows::core::IUnknown>,
+        pdesc: *const DXGI_SWAP_CHAIN_DESC1,
+        prestricttooutput: windows::core::Ref<IDXGIOutput>,
+    ) -> windows::core::Result<IDXGISwapChain1> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory2::CreateSwapChainForCoreWindow"))
+    }
+    fn GetSharedResourceAdapterLuid(
+        &self,
+        hresource: windows::Win32::Foundation::HANDLE,
+    ) -> windows::core::Result<windows::Win32::Foundation::LUID> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory2::GetSharedResourceAdapterLuid"))
+    }
+    fn RegisterStereoStatusWindow(
+        &self,
+        windowhandle: windows::Win32::Foundation::HWND,
+        wmsg: u32,
+    ) -> windows::core::Result<u32> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory2::RegisterStereoStatusWindow"))
+    }
+    fn RegisterStereoStatusEvent(
+        &self,
+        hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows::core::Result<u32> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory2::RegisterStereoStatusEvent"))
+    }
+    fn UnregisterStereoStatus(&self, dwcookie: u32) {
+        let _lock = lock();
+        missing_void("IDXGIFactory2::UnregisterStereoStatus")
+    }
+    fn RegisterOcclusionStatusWindow(
+        &self,
+        windowhandle: windows::Win32::Foundation::HWND,
+        wmsg: u32,
+    ) -> windows::core::Result<u32> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory2::RegisterOcclusionStatusWindow"))
+    }
+    fn RegisterOcclusionStatusEvent(
+        &self,
+        hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows::core::Result<u32> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory2::RegisterOcclusionStatusEvent"))
+    }
+    fn UnregisterOcclusionStatus(&self, dwcookie: u32) {
+        let _lock = lock();
+        missing_void("IDXGIFactory2::UnregisterOcclusionStatus")
+    }
+    fn CreateSwapChainForComposition(
+        &self,
+        pdevice: windows::core::Ref<windows::core::IUnknown>,
+        pdesc: *const DXGI_SWAP_CHAIN_DESC1,
+        prestricttooutput: windows::core::Ref<IDXGIOutput>,
+    ) -> windows::core::Result<IDXGISwapChain1> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory2::CreateSwapChainForComposition"))
+    }
+}
+
+impl IDXGIFactory1_Impl for Factory_Impl {
+    fn EnumAdapters1(&self, adapter: u32) -> windows::core::Result<IDXGIAdapter1> {
+        let _lock = lock();
+        self.enum_adapters1(adapter)
+    }
+    fn IsCurrent(&self) -> windows::core::BOOL {
+        let _lock = lock();
+        self.is_current()
+    }
+}
+
+impl IDXGIFactory_Impl for Factory_Impl {
+    fn EnumAdapters(&self, adapter: u32) -> windows::core::Result<IDXGIAdapter> {
+        let _lock = lock();
+        self.enum_adapters(adapter)
+    }
+    fn MakeWindowAssociation(
+        &self,
+        windowhandle: windows::Win32::Foundation::HWND,
+        flags: DXGI_MWA_FLAGS,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.make_window_association(windowhandle, flags)
+    }
+    fn GetWindowAssociation(&self) -> windows::core::Result<windows::Win32::Foundation::HWND> {
+        let _lock = lock();
+        self.get_window_association()
+    }
+    fn CreateSwapChain(
+        &self,
+        pdevice: windows::core::Ref<windows::core::IUnknown>,
+        pdesc: *const DXGI_SWAP_CHAIN_DESC,
+        ppswapchain: windows::core::OutRef<IDXGISwapChain>,
+    ) -> windows::core::HRESULT {
+        let _lock = lock();
+        self.create_swap_chain(pdevice, pdesc, ppswapchain)
+    }
+    fn CreateSoftwareAdapter(
+        &self,
+        module: windows::Win32::Foundation::HMODULE,
+    ) -> windows::core::Result<IDXGIAdapter> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory::CreateSoftwareAdapter"))
+    }
+}
+
+impl IDXGIObject_Impl for Factory_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_parent(riid, ppparent)
+    }
+}
+
+impl IDXGISwapChain1_Impl for SwapChain_Impl {
+    fn GetDesc1(&self) -> windows::core::Result<DXGI_SWAP_CHAIN_DESC1> {
+        let _lock = lock();
+        self.get_desc1()
+    }
+    fn GetFullscreenDesc(&self) -> windows::core::Result<DXGI_SWAP_CHAIN_FULLSCREEN_DESC> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain1::GetFullscreenDesc"))
+    }
+    fn GetHwnd(&self) -> windows::core::Result<windows::Win32::Foundation::HWND> {
+        let _lock = lock();
+        self.get_hwnd()
+    }
+    fn GetCoreWindow(
+        &self,
+        refiid: *const windows::core::GUID,
+        ppunk: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain1::GetCoreWindow"))
+    }
+    fn Present1(
+        &self,
+        syncinterval: u32,
+        presentflags: DXGI_PRESENT,
+        ppresentparameters: *const DXGI_PRESENT_PARAMETERS,
+    ) -> windows::core::HRESULT {
+        let _lock = lock();
+        self.present1(syncinterval, presentflags, ppresentparameters)
+    }
+    fn IsTemporaryMonoSupported(&self) -> windows::core::BOOL {
+        let _lock = lock();
+        missing_void("IDXGISwapChain1::IsTemporaryMonoSupported");
+        Default::default()
+    }
+    fn GetRestrictToOutput(&self) -> windows::core::Result<IDXGIOutput> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain1::GetRestrictToOutput"))
+    }
+    fn SetBackgroundColor(&self, pcolor: *const DXGI_RGBA) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain1::SetBackgroundColor"))
+    }
+    fn GetBackgroundColor(&self) -> windows::core::Result<DXGI_RGBA> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain1::GetBackgroundColor"))
+    }
+    fn SetRotation(
+        &self,
+        rotation: windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain1::SetRotation"))
+    }
+    fn GetRotation(
+        &self,
+    ) -> windows::core::Result<windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain1::GetRotation"))
+    }
+}
+
+impl IDXGISwapChain_Impl for SwapChain_Impl {
+    fn Present(&self, syncinterval: u32, flags: DXGI_PRESENT) -> windows::core::HRESULT {
+        let _lock = lock();
+        self.present(syncinterval, flags)
+    }
+    fn GetBuffer(
+        &self,
+        buffer: u32,
+        riid: *const windows::core::GUID,
+        ppsurface: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_buffer(buffer, riid, ppsurface)
+    }
+    fn SetFullscreenState(
+        &self,
+        fullscreen: windows::core::BOOL,
+        ptarget: windows::core::Ref<IDXGIOutput>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.set_fullscreen_state(fullscreen, ptarget)
+    }
+    fn GetFullscreenState(
+        &self,
+        pfullscreen: *mut windows::core::BOOL,
+        pptarget: windows::core::OutRef<IDXGIOutput>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_fullscreen_state(pfullscreen, pptarget)
+    }
+    fn GetDesc(&self) -> windows::core::Result<DXGI_SWAP_CHAIN_DESC> {
+        let _lock = lock();
+        self.get_desc()
+    }
+    fn ResizeBuffers(
+        &self,
+        buffercount: u32,
+        width: u32,
+        height: u32,
+        newformat: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        swapchainflags: &DXGI_SWAP_CHAIN_FLAG,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.resize_buffers(buffercount, width, height, newformat, swapchainflags)
+    }
+    fn ResizeTarget(
+        &self,
+        pnewtargetparameters: *const windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_DESC,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain::ResizeTarget"))
+    }
+    fn GetContainingOutput(&self) -> windows::core::Result<IDXGIOutput> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain::GetContainingOutput"))
+    }
+    fn GetFrameStatistics(&self, pstats: *mut DXGI_FRAME_STATISTICS) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain::GetFrameStatistics"))
+    }
+    fn GetLastPresentCount(&self) -> windows::core::Result<u32> {
+        let _lock = lock();
+        self.get_last_present_count()
+    }
+}
+
+impl IDXGIDeviceSubObject_Impl for SwapChain_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows::core::GUID,
+        ppdevice: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_device(riid, ppdevice)
+    }
+}
+
+impl IDXGIObject_Impl for SwapChain_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_parent(riid, ppparent)
+    }
+}
+
 impl ID3D11Buffer_Impl for Buffer_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_BUFFER_DESC) {
         let _lock = lock();

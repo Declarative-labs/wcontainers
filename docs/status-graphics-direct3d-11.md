@@ -1,9 +1,53 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice.
+Runs so far: six on G4a, the first slice; then run 1 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 1 merged origin/phase-2-graphics-webgpu, -webgl and -direct3d-12 (cleanly) and fixed what the
+independent check of G4a run 6 found:
+- Copies of depth with stencil: the interface's `copy_texture` could not say "both aspects", which
+  is the only texture copy WebGPU allows for those formats. Interface change c8a7be9 says a copy
+  between two textures of a combined format copies both aspects in one call (`stencil` false on
+  both sides). The front now makes one call, and drops a part of a depth-stencil subresource (a box
+  or an offset), as Direct3D does. The recording back end asserts no aspect is named. The WebGPU
+  back end still copies the depth aspect only, so the real-device test is a known failure (below).
+- The documentation of empty one-dimensional slots: converted DXBC reads a 1D texture as 2D, so the
+  2D stand-in serves it (no removal, no warning). Corrected in device.rs and What comes next.
+- `CreateTexture2D` with a sample count the device reports no quality level for (any count above
+  one) answers `E_INVALIDARG`, as Direct3D does, with a "not served: multisampled textures"
+  warning; `own_refused` checks both answers against real Direct3D.
+- The forwarder placement in the rig's scenes: dropped from How to run. The rig's programs print
+  where d3d11.dll and dxgi.dll came from, so its replacement check cannot see the library behind
+  a forwarder; the forwarder is checked by `own_handled` (programs.rs), which prints where
+  `D3D11CreateDevice` resolved. Asked of the rig track (Asked of other tracks).
+- Draws allocate nothing on the heap: vertex bindings and viewports are fixed arrays (32 slots,
+  16 viewports; `RSSetViewports` with more is dropped), and a binding set rebuild no longer clones
+  the stage's slots.
+Then, new in G4:
+- Typeless textures: stored as a member of their group (the depth format where bound for depth or
+  where the group is depth with stencil, otherwise a colour member), viewed through members whose
+  bits need no reinterpreting: the D formats for depth-stencil views, `R24_UNORM_X8_TYPELESS`,
+  `X24_TYPELESS_G8_UINT`, `R32_FLOAT`, `R16_UNORM` and the like for one aspect of depth, and a colour
+  member or its sRGB twin. A view reinterpreting bits (an `R8G8B8A8_UINT` view of an
+  `R8G8B8A8_TYPELESS` texture) is `E_NOTIMPL`: WebGPU lacks `FORMAT_REINTERPRET`, and the front keeps
+  no reinterpreting copy yet (`ReinterpretCopy`). `CheckFormatSupport` reports a typeless format's
+  texture uses only.
+- Swap chains (What comes next items 0 and 4, in part): `IDXGIAdapter::GetParent` gives a factory
+  (`IDXGIFactory2`: `CreateSwapChain`, `CreateSwapChainForHwnd`, `EnumAdapters`/`1` of the one
+  adapter, window association kept) whose swap chains (`IDXGISwapChain1`) are the infrastructure
+  crate's on the program's window (a wgpu surface from the library's one `wgpu` instance). The front
+  holds them (src/present.rs, `Chain`): each back buffer is a front texture over a handle the swap
+  chain owns (`Kept::borrowed`). `GetBuffer` hands out the same object each time; `Present` settles
+  the context and presents, and answers `DXGI_STATUS_OCCLUDED` without presenting for a window that
+  is hidden or minimised, as DXGI does; `ResizeBuffers` is `DXGI_ERROR_INVALID_CALL` while the
+  program holds a back buffer or anything still holds its texture; fullscreen and multisampled
+  or stereo swap chains are `E_NOTIMPL`, warned. Checked line by line against real Direct3D by the
+  example `own_swap_chain`. Not yet: outputs (`GetContainingOutput`, `EnumOutputs`), the factory
+  from `CreateDXGIFactory` (a dxgi.dll of ours), `IDXGISwapChain2` and later, frame statistics.
+- The generator now answers `E_NOTIMPL` (warned) for an unserved method returning a bare HRESULT
+  (before: success, and for the context also a device removal; `GetData` among them).
 
 G4a (the rig's three Direct3D 11 scenes drawn through our own d3d11.dll) is done:
 - Run 6 merged origin/phase-2-graphics (which carried -webgpu and -direct3d-12) and -shaders,
@@ -132,19 +176,78 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 `UpdateSubresource`, maps of staging resources and of dynamic buffers (`MappedUploadWhole`),
 `ClearState`, `Flush`, the context's `Get` methods, and the device's capability queries.
 
+## Wine's Direct3D 11 tests through ours
+
+Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. After swap chains (run 1 of G4, second run of the file, 2026-11-17, same
+  machine and placement; 4 min 44 s on the GPU, not alone): 56 of 166 pass (test_create_buffer
+  test_depthstencil_view_interfaces test_create_rasterizer_state test_device_removed_reason
+  test_device_context_state test_blend test_sample_c_lz test_multiple_render_targets test_scissor
+  test_fragment_coords test_initial_texture_data test_discard test_check_multisample_quality_levels
+  test_clear_render_target_view_2d test_initial_depth_stencil_state test_draw_depth_only
+  test_shader_stage_input_output_matching test_sm4_if_instruction test_sm4_breakc_instruction
+  test_sm4_continuec_instruction test_sm4_discard_instruction test_sm5_swapc_instruction
+  test_input_assembler test_null_sampler test_check_feature_support test_immediate_constant_buffer
+  test_fp_specials test_uint_shader_instructions test_face_culling test_line_antialiasing_blending
+  test_fl9_draw test_ddy test_shader_input_registers_limits test_unbind_shader_resource_view
+  test_stencil_separate test_sm4_ret_instruction test_primitive_restart
+  test_render_target_device_mismatch test_fractional_viewports test_conservative_depth_output
+  test_multisample_resolve test_sample_mask test_depth_clip test_staging_buffers
+  test_deferred_context_swap_state test_unbound_streams test_constant_buffer_offset
+  test_dynamic_map_synchronization test_logic_op test_shared_resource test_clear_during_render
+  test_stencil_export test_nv12 test_filter_minmax). Some of these pass because the test skips what
+  our capability answers report absent (multisampling, logic ops, stencil export, NV12), as on a
+  device without those features. 92 crash, 17 fail, 1 times out (test_dispatch_indirect, 120 s,
+  after `CopyStructureCount` removed the device; why it then loops is not known yet). The first
+  unserved call of the 108, counted: CreateTexture3D 9, buffer views 8, CreateQuery 6, 1D textures
+  5, deferred contexts 5, multisampled textures 4, stream output 5, WARP or reference drivers 4,
+  unordered access views of textures 4, geometry and compute shaders 4, instance step rates 2,
+  10.1's copy conversions 2, shader conversions the shaders crate names (VertexWithoutPosition,
+  DynamicOffset, ClipDistance, TypedBuffer, StructType, SampleCount) 8, depth bias, dual-source
+  blending, LOD bias, view reinterpreting, misc flags 1 each; 14 fail a check with no unserved call
+  first (wrong answers to read: E_INVALIDARG or E_NOINTERFACE where Direct3D succeeds, sampler and
+  depth-stencil descriptions read back, input layout alignment). Logs: logs/g4r1-wine-d3d11-b.log
+  and wine-logs/g4r1-b in the scratch directory.
+- d3d11, first run of G4 run 1 (before swap chains; 166 tests run, 1 excluded by the rig, 162 of
+  them passing on real Direct3D): 11 pass
+  (test_create_buffer, test_depthstencil_view_interfaces, test_create_rasterizer_state,
+  test_device_removed_reason, test_device_context_state, test_multiple_render_targets, test_discard,
+  test_check_multisample_quality_levels, test_check_feature_support, test_fl9_draw,
+  test_shared_resource); 147 crash and 8 fail. 122 of the 155 stop where Wine's helper makes a swap
+  chain (`IDXGIAdapter::GetParent` for the factory answers `E_NOINTERFACE`, then the test reads
+  through a null pointer): the swap chain is the first thing to build. The other 33 stop at named
+  gaps: 1D and 3D textures, deferred contexts, queries, unordered access views, structured and raw
+  buffers, misc flags (keyed mutex, GDI), `ID3D11Device1` and other interfaces, typed buffer views,
+  and some description checks (blend state, input layout alignment, sampler and depth-stencil state
+  descriptions read back, the format support of feature levels). The first failing check of each is
+  in logs/g4r1-wine-d3d11.log and wine-logs/g4r1 in the scratch directory.
+- d3d10core, dxgi: not run through ours yet.
+
+The gap list (a test failing through ours only because of a named absent feature): not started.
+Most of the 108 stop at features G4 is to serve (3D and 1D textures, queries, deferred contexts,
+buffer and unordered access views, geometry, stream output and compute), so they are work, not gaps.
+
 ## Known failures
 
-- None marked in the tests. The former one (depth with stencil views) was fixed by the WebGPU back
-  end in run 6.
-- Back-end gap, not ours to fix (crates/wcontainers-gpu-webgpu): a texture copy of one aspect of a
-  combined depth-stencil format, which the interface's `copy_texture` takes (`TextureRegion::stencil`)
-  and WebGPU forbids ("Copy source aspects must refer to all aspects of the source texture format").
-  wgpu loses the device and the front reports the generic reason "the back end lost it (Error)".
-  The rig's stencil scene stops here (reading its depth-stencil target back through a staging copy).
+- `depth_with_stencil_copies_as_direct3d_does` (programs.rs, ignored with its reason): the example
+  `own_depth_copy` clears an `R24G8_TYPELESS` depth-stencil texture, copies it by `CopyResource` and
+  `CopySubresourceRegion`, and loads the copy's depth. Real Direct3D: no removal, depth 0.25 read
+  back. Ours: removed (0x887A0020) with "Copy source aspects must refer to all aspects of the source
+  texture format": the WebGPU back end (crates/wcontainers-gpu-webgpu, memory.rs `copy_texture_impl`,
+  through `convert::aspect`) still copies the depth aspect alone. It passes once that back end
+  follows interface change c8a7be9 (a copy between textures of a combined format names no aspect).
 
 ## What comes next (G4b and on)
 
-0. Interfaces still answering `E_NOINTERFACE` (from the check of run 4, not done in run 5):
+First, by the Wine counts above and the rig's census (every real program uses a swap chain, then
+`DrawIndexed`, `Map`, `UpdateSubresource`, queries in 8 of 14, `CreateTexture3D` in 2, compute and
+geometry in 1 or 2): 3D and 1D textures, queries (event, occlusion, timestamp), buffer views
+(typed, structured, raw), the 14 wrong answers, deferred contexts, unordered access views and
+compute, then the geometry and stream output slow paths; then the three real programs
+(sdk-tutorial07, bgfx examples, chocolate-doom are candidates from the rig), and d3d10core and dxgi.
+
+0. Interfaces still answering `E_NOINTERFACE` (from the check of run 4; the factory and swap
+   chains are done since G4 run 1, outputs are not):
    `ID3D11Device1` and `ID3D11DeviceContext1` (Direct3D 11.1: whole interfaces to serve),
    `IDXGIDevice1`, `ID3D11Multithread` (its `Enter`/`Leave` would take the library lock), `IDXGISurface`
    and `IDXGIResource` on textures, and the adapter's `GetParent` (a factory) and outputs. The factory,
@@ -157,8 +260,9 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 2. The helper constants (set 3): SV_VertexID and SV_InstanceID with non-zero start or base locations
    (now refused at the draw), sampler LOD bias, and the other variant fields of 6.4; choose the
    `VariantKey` per draw instead of the default.
-3. Empty slots still not served (the draw removes the device, named): a one-dimensional,
-   multisampled or depth texture slot, and a comparison sampler slot.
+3. Empty slots still not served (the draw removes the device, named): a multisampled or depth
+   texture slot, and a comparison sampler slot. (A one-dimensional slot is served: converted DXBC
+   reads 1D textures as 2D, so the 2D stand-in is bound.)
 4. The swap chain and presenting through the Direct3D 12 track's infrastructure crate (merged, not
    used yet: the three scenes save their pictures by reading back).
 5. d3d12.dll and dxgi.dll forwarders, once the library exports their entry points. Before that,
@@ -179,11 +283,11 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 
 From the checkout root on the Mac (the desktop does all building and testing). The desktop's
 checkout needs the shaders crate's submodules, so commands start with `git submodule update --init --recursive -q`.
-- Front tests (recording back end, no GPU), 20 tests:
+- Front tests (recording back end, no GPU), 22 tests:
   `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-direct3d-11"`.
-- Library tests (COM behaviour, the forwarder, threads, our programs; they make real devices, so
-  a GPU job), 20 tests:
-  `tools/graphics-rig/gpu-job --build "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-directx --no-run" -- "cargo test -q -j 3 -p wcontainers-directx -- --test-threads 1"`
+- Library tests (COM behaviour, the forwarder, threads, our programs; they make real devices and a
+  window, so a GPU job on the hidden desktop), 22 tests:
+  `tools/graphics-rig/gpu-job --desktop --build "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-directx --no-run" -- "cargo test -q -j 3 -p wcontainers-directx -- --test-threads 1"`
   (add `--nocapture` to see what the programs print).
   The random lifetimes comparison takes `WC_LIFETIMES=<first seed>,<seeds>,<steps>` (default 1,8,300);
   one seed alone: `set WC_LIFETIMES=17,1,300&& cargo test -q -j 3 -p wcontainers-directx --test
@@ -192,11 +296,14 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 - Lint: `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo clippy -q -j 3 -p wcontainers-directx -p wcontainers-direct3d-11 --all-targets -- -D warnings"`.
 - The scenes through our library copied in as d3d11.dll:
   `tools/graphics-rig/scenes --build "git submodule update --init --recursive -q && cargo build -q -j 3 -p wcontainers-directx" --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' --api d3d11 triangle quads topology`.
-- Through the forwarder: the same with
-  `--dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\d3d11.dll' --dll 'wcontainers_directx.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll'`.
-  The pictures are checked as usual, but the rig also prints one "did not load the replacement
-  wcontainers_directx.dll" FAIL per scene: its programs report only where d3d11.dll and dxgi.dll came
-  from, so it cannot see the library the forwarder reaches. Read the picture lines.
+- The forwarder placement is checked by the library tests (`own_handled` through our d3d11.dll
+  beside wcontainers_directx.dll), not by the scenes command: the rig's replacement check fails any
+  `--dll` library its programs do not report, and they report only d3d11.dll and dxgi.dll.
+- Wine's Direct3D 11 tests through our library (one GPU job; build the library first):
+  `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo build -q -j 3 -p wcontainers-directx"`,
+  then `tools/graphics-rig/wine-tests run --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' d3d11`
+  (or `d3d11:test_a/test_b` for some). Logs land in pyro-parked/wcontainers-scratch/graphics-rig/wine-logs
+  (the rig's script copies them there); this track keeps its own copies in logs/.
 - The rig's own forwarding library (the control): `--build "cargo build -q -j 3 -p wcontainers-graphics-test-forward"`
   and `--dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll'`.
 - Logs on the desktop in C:\wc\out\phase-2-graphics-direct3d-11\scenes\d3d11\<scene>.log and .stdout.
@@ -251,7 +358,8 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
-- crates/wcontainers-direct3d-11/tests/front.rs, 20 tests: the three scenes' calls on the recording
+- crates/wcontainers-direct3d-11/tests/front.rs, 22 tests (since G4 run 1 also: depth-stencil
+  copies whole and of both aspects, typeless textures viewed through their group's members): the three scenes' calls on the recording
   back end (the scenes' own DXBC from the rig's corpus, converted), shader stages read from every
   corpus container, feature level choice, destruction after release, creation refusals (wrong stage,
   unconvertible shader, blend targets past the first, valid formats not served), dynamic constant
@@ -270,14 +378,18 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   `ClearState`), unused stages taking unbinding calls, a target unbinding its shader views (by mip),
   device creation's answers (adapter with a driver type, the swap chain entry point), and capability
   queries claiming only what creation serves.
-- crates/wcontainers-directx/tests/programs.rs, 6 tests: our programs, system and
-  ours; `own_edges` (example: copies within and between groups, an empty vertex slot, empty texture,
+- crates/wcontainers-directx/tests/programs.rs, 8 tests (1 the known failure, ignored): our
+  programs, system and ours; `own_swap_chain` (since G4 run 1; it makes a window, so the library
+  tests run with `gpu-job --desktop`) and `own_depth_copy` compared line by line; `own_edges` (example: copies within and between groups, an empty vertex slot, empty texture,
   cube, constant buffer and sampler slots, each printed as hex rows) compared line by line with real
   Direct3D; `lifetimes` (example), a seeded random sequence of makes, references, releases, bindings,
   getters, `GetResource`, `GetDevice` and `ClearState`, printing every count after each step, run beside
   the system's d3d11.dll and ours and compared line by line; `own_handled` with a D32_FLOAT and with a D24_UNORM_S8_UINT depth-stencil view.
   `own_handled` now also writes and copies a buffer at unaligned byte ranges and checks every byte.
-- Last full run: 2026-11-17, run 6, on the desktop from this tree: front 20 passed; library 14 + 6
+- Last full run: 2026-11-17, G4 run 1, on the desktop from this tree: front 22 passed; library
+  14 + 7 passed and 1 ignored (the known failure, run alone with `--ignored`: fails as described);
+  lint clean.
+- Before it: 2026-11-17, run 6, on the desktop from this tree: front 20 passed; library 14 + 6
   passed (lifetimes at 8 seeds of 300 steps; `own_edges` identical to real Direct3D); lint clean.
 - Before it: 2026-11-17, run 5, on the desktop from this tree: front 19 passed; library 14 + 4
   passed (lifetimes at 8 seeds of 300 steps), and with `--include-ignored` the known failure fails as
@@ -327,12 +439,22 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Interface changes
 
+- c8a7be9 "interface: copied combined depth-stencil textures whole in copy_texture": the
+  documentation of `copy_texture` and `TextureRegion::stencil`, and the plan's sentence in 4.2: a copy
+  between two textures of a combined depth-stencil format copies both aspects in one call, naming
+  none; copies to and from buffers name one aspect.
 - 7f73347 "interface: named the slow path of a constant buffer grown to its shader's declared size,
   and said a depth attachment holds both aspects": `SlowPath::ConstantBufferGrown`, and one sentence
   on `TextureViewDesc::stencil` (a combined-format view a pass draws into holds both aspects), with
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- 2026-11-17, G4 run 1, Wine's d3d11 file through our library copied in as d3d11.dll (RTX 3080,
+  through the queue, not alone; Mac load average about 40 to 60): before swap chains 11 of 166 pass
+  in 2 min 10 s; after, 56 of 166 in 4 min 44 s (most of the longer time is one 120 s timeout).
+  Real Direct3D's baseline (the rig's): 162 pass in 51.5 s.
+- 2026-11-17, G4 run 1, `own_swap_chain` beside the system's library and ours: identical output.
 
 - 2026-11-17, run 6, after the merges and fixes, through our library copied in as d3d11.dll
   (through the queue, not alone; desktop CPU load 28 % sampled after; Mac load average 47): the same
@@ -392,8 +514,18 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   distinct vertex shader).
 - The rig's replacement check cannot see wcontainers_directx.dll behind the forwarder (above).
 
+## Asked of other tracks
+
+- WebGPU back end: follow interface change c8a7be9 (copy both aspects of a combined depth-stencil
+  format in `copy_texture`, with `wgpu::TextureAspect::All`).
+- Rig: let the scene programs report where every `--dll` library came from (they print d3d11.dll and
+  dxgi.dll only), so the forwarder placement can be checked by the scenes command.
+
 ## Licences
 
+Added in G4 run 1: the windows crate's `Win32_System_LibraryLoader` and
+`Win32_UI_WindowsAndMessaging` features (same crate, MIT OR Apache-2.0); the front now depends on
+our infrastructure crate. Nothing installed on the desktop.
 Added in run 5: `rand` 0.9.5 and `rand_chacha` 0.9.0 (MIT OR Apache-2.0, already in the lock file)
 as dev-dependencies of the library, for the `lifetimes` program. Added in run 3: `naga` (the
 workspace's, MIT OR Apache-2.0) to the front, for the declared sizes of constant buffers (still a direct

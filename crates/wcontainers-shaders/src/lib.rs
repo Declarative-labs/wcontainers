@@ -66,7 +66,8 @@ pub const WEBGPU_CAPABILITIES: Capabilities = Capabilities::MULTISAMPLED_SHADING
     .union(Capabilities::SHADER_FLOAT16_IN_FLOAT32);
 
 /// What goes into every content key besides the source and the variant: this crate's version and the
-/// BLAKE3 hash of the converters' C++ sources as built.
+/// BLAKE3 hash of everything that makes the module (the converters' C++ as built, this crate's Rust
+/// and the carried naga).
 pub const CONVERTER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "+",

@@ -102,3 +102,15 @@ impl StructReturns for ID3D12CommandQueue {
         })
     }
 }
+
+impl StructReturns for ID3D12Heap {
+    fn patched(original: &ID3D12Heap_Vtbl) -> &'static ID3D12Heap_Vtbl {
+        static VTBL: OnceLock<ID3D12Heap_Vtbl> = OnceLock::new();
+        VTBL.get_or_init(|| {
+            // SAFETY: a bitwise copy of a table of function pointers.
+            let mut v = unsafe { std::ptr::read(original) };
+            returns_pointer!(v.GetDesc() -> D3D12_HEAP_DESC);
+            v
+        })
+    }
+}

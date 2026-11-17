@@ -187,8 +187,9 @@ Recording:
   WebGPU clears only to zero, so its back end fills with any other pattern by copies from a block of
   the pattern, `PatternClearCopied`), `resolve`: outside a pass. A buffer copy or read back of a format
   with depth and stencil moves the aspect its region names (the stencil byte, or depth in four bytes);
-  a copy between two such textures moves both aspects, as WebGPU requires, and a front whose API copies
-  one plane (Direct3D 12's plane slices, Vulkan's aspects) goes through a buffer. `resolve` names the format the samples are averaged in, the source's
+  `copy_texture` between two such textures moves both aspects in one call, as Direct3D copies it and
+  as WebGPU requires, and a front whose API copies one plane (Direct3D 12's plane slices, Vulkan's
+  aspects) goes through a buffer. `resolve` names the format the samples are averaged in, the source's
   stored format or its sRGB twin, because Direct3D 11's and 12's `ResolveSubresource` take one: a
   multisampled `R8G8B8A8_TYPELESS` target (one texture seen through sRGB and linear views) resolves in
   linear light as `UNORM_SRGB` and on the stored values as `UNORM`. WebGPU resolves natively through
