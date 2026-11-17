@@ -1,0 +1,23 @@
+#!/bin/bash
+# From the Mac: one GPU job on the desktop that builds the scenes example natively and for
+# WebAssembly, draws the three reference scenes through the WebGPU back end natively and in Chrome,
+# and compares them with real Direct3D 11's (check.cmd). With a directory, copies the pictures there.
+#   crates/wcontainers-gpu-webgpu/web/check [picture-dir]
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+rig=$root/tools/graphics-rig
+# shellcheck source=tools/graphics-rig/common.sh
+. "$rig/common.sh"
+build="cargo build -j 3 -p wcontainers-gpu-webgpu --example scenes"
+build+=" && cargo build -j 3 -p wcontainers-gpu-webgpu --example scenes --target wasm32-unknown-unknown"
+build+=" && cargo build -j 3 -p wcontainers-graphics-test --bin gt-compare"
+build+=" && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1"
+set +e
+"$rig/gpu-job" --build "$build" -- "crates\\wcontainers-gpu-webgpu\\web\\check.cmd $name"
+code=$?
+set -e
+if [ $# -gt 0 ]; then
+    mkdir -p "$1"
+    rig_scp -r "$host:C:/wc/out/$name-webgpu/*" "$1/"
+fi
+exit $code
