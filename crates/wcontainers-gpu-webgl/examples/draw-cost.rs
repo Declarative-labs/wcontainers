@@ -12,7 +12,7 @@ use kit::Kit;
 use wasm_bindgen::prelude::*;
 use wcontainers_gpu::*;
 use wcontainers_gpu_webgl::WebGl;
-use wcontainers_gpu_webgpu::WebGpu;
+use wcontainers_gpu_webgpu::{WebGpu, block_on};
 
 /// A quad at the uniform's place, in its colour.
 const QUAD: &str = "
@@ -136,30 +136,34 @@ impl GlCost {
 #[wasm_bindgen]
 pub struct GpuCost(WebGpu, Scene<WebGpu>, String);
 
-#[wasm_bindgen]
-pub async fn gpu_cost() -> Result<GpuCost, JsError> {
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = wgpu::Backends::BROWSER_WEBGPU;
-    let instance = wgpu::Instance::new(desc);
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
+// JSPI exports, which wasm-bindgen still marks experimental.
+#[allow(deprecated)]
+mod gpu {
+    use super::*;
+
+    /// The WebGPU back end waits for its probe by suspending, so this is a JSPI export.
+    #[wasm_bindgen(jspi)]
+    pub fn gpu_cost() -> Result<GpuCost, JsError> {
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        desc.backends = wgpu::Backends::BROWSER_WEBGPU;
+        let instance = wgpu::Instance::new(desc);
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             ..Default::default()
-        })
-        .await
+        }))
         .map_err(|e| JsError::new(&format!("no WebGPU adapter: {e}")))?;
-    let info = adapter.get_info();
-    let (device, queue) = adapter
-        .request_device(&WebGpu::device_descriptor(&adapter))
-        .await
-        .map_err(|e| JsError::new(&format!("no WebGPU device: {e}")))?;
-    let mut b = WebGpu::new(&adapter, device, queue);
-    let s = Scene::new(&mut b);
-    Ok(GpuCost(
-        b,
-        s,
-        format!("{} ({:?})", info.name, info.device_type),
-    ))
+        let info = adapter.get_info();
+        let (device, queue) =
+            block_on(adapter.request_device(&WebGpu::device_descriptor(&adapter)))
+                .map_err(|e| JsError::new(&format!("no WebGPU device: {e}")))?;
+        let mut b = WebGpu::new(&adapter, device, queue);
+        let s = Scene::new(&mut b);
+        Ok(GpuCost(
+            b,
+            s,
+            format!("{} ({:?})", info.name, info.device_type),
+        ))
+    }
 }
 
 #[wasm_bindgen]
