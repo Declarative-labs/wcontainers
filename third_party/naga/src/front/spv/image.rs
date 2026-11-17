@@ -365,7 +365,7 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
 
     pub(super) fn parse_image_load(
         &mut self,
-        mut words_left: u16,
+        words_left: u16,
         ctx: &mut super::BlockContext,
         emitter: &mut crate::proc::Emitter,
         block: &mut crate::Block,
@@ -378,15 +378,11 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
         let image_id = self.next()?;
         let coordinate_id = self.next()?;
 
-        let mut image_ops = if words_left != 0 {
-            words_left -= 1;
-            self.next()?
-        } else {
-            0
-        };
+        let mut image_ops = if words_left != 0 { self.next()? } else { 0 };
 
         let mut sample = None;
         let mut level = None;
+        let mut offset = None;
         while image_ops != 0 {
             let bit = 1 << image_ops.trailing_zeros();
             match spirv::ImageOperands::from_bits_truncate(bit) {
@@ -396,20 +392,28 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     let lod_handle =
                         self.get_expr_handle(lod_expr, lod_lexp, ctx, emitter, block, body_idx);
                     level = Some(lod_handle);
-                    words_left -= 1;
                 }
                 spirv::ImageOperands::SAMPLE => {
                     let sample_expr = self.next()?;
                     let sample_handle = self.lookup_expression.lookup(sample_expr)?.handle;
                     sample = Some(sample_handle);
-                    words_left -= 1;
                 }
+                spirv::ImageOperands::OFFSET | spirv::ImageOperands::CONST_OFFSET => {
+                    let offset_expr = self.next()?;
+                    let offset_lexp = self.lookup_expression.lookup(offset_expr)?;
+                    let offset_handle = self.get_expr_handle(
+                        offset_expr,
+                        offset_lexp,
+                        ctx,
+                        emitter,
+                        block,
+                        body_idx,
+                    );
+                    offset = Some((offset_handle, offset_lexp.type_id));
+                }
+                spirv::ImageOperands::NONTEMPORAL => {}
                 other => {
-                    log::warn!("Unknown image load op {other:?}");
-                    for _ in 0..words_left {
-                        self.next()?;
-                    }
-                    break;
+                    return Err(Error::UnsupportedImageLoadOperand(other.bits()));
                 }
             }
             image_ops ^= bit;
@@ -444,6 +448,24 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                 (coord, array_index, class.is_depth())
             }
             _ => return Err(Error::InvalidImage(image_ty)),
+        };
+        // A load's texel offset is added to its coordinate (the IR's load has no offset).
+        let coordinate = match offset {
+            Some((offset, offset_type_id)) => {
+                let span = self.span_from_with_op(start);
+                let offset_kind = self.int_kind(ctx, offset_type_id)?;
+                let coord_kind = self.int_kind(ctx, coord_lexp.type_id)?;
+                let offset = Self::retype_int(ctx, offset, offset_kind, coord_kind, span);
+                ctx.expressions.append(
+                    crate::Expression::Binary {
+                        op: crate::BinaryOperator::Add,
+                        left: coordinate,
+                        right: offset,
+                    },
+                    span,
+                )
+            }
+            None => coordinate,
         };
 
         let image_load_expr = crate::Expression::ImageLoad {
