@@ -117,18 +117,20 @@ pub fn dxgi_format(value: u32) -> Option<(Format, bool)> {
 /// sRGB ones only in the blit model, as DXGI rules.
 pub const BACK_BUFFER_FORMATS: [u32; 6] = [10, 24, 28, 29, 87, 91];
 
-/// The interface format a surface is configured with for a back buffer of `format`: its own where
-/// the back end presents it, else `rgba16float` for more than 8 bits per channel where presented,
-/// else `rgba8unorm`, which every back end presents.
+/// The interface format a surface is configured with for a back buffer of `format`. Swap chains
+/// present in SDR sRGB only (`presents_in`), so a float surface would add nothing: a float back
+/// buffer is presented encoded, like the others, into `rgb10a2unorm` where presented. Other formats
+/// use their own where presented, else `rgb10a2unorm` for 10-bit buffers, else `rgba8unorm`, which
+/// every back end presents.
 pub fn present_format(caps: &Caps, format: Format) -> Format {
     let presents = |f: Format| caps.formats.get(f).contains(FormatUse::PRESENT);
     let own = format.linear();
-    if presents(own) {
+    if own != Format::Rgba16Float && presents(own) {
         own
     } else if matches!(own, Format::Rgba16Float | Format::Rgb10a2Unorm)
-        && presents(Format::Rgba16Float)
+        && presents(Format::Rgb10a2Unorm)
     {
-        Format::Rgba16Float
+        Format::Rgb10a2Unorm
     } else {
         Format::Rgba8Unorm
     }

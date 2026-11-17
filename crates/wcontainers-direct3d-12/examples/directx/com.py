@@ -1,7 +1,8 @@
 # Writes com.rs from the windows crate's *_Impl traits: python3 com.py > com.rs
 # Each entry of OBJECTS names an object, its interface and the methods objects.rs or present.rs do.
-import re, glob
-W = glob.glob('/Users/thomaseaton/.cargo/registry/src/*/windows-0.62.2/src/Windows/Win32/Graphics')[0]
+import re, glob, os
+CARGO = os.environ.get('CARGO_HOME', os.path.expanduser('~/.cargo'))
+W = glob.glob(f'{CARGO}/registry/src/*/windows-0.62.2/src/Windows/Win32/Graphics')[0]
 src = {m: open(f'{W}/{m}/mod.rs').read() for m in ['Direct3D12', 'Dxgi', 'Direct3D']}
 
 def trait(name):

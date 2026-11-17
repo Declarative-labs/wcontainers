@@ -62,11 +62,13 @@ pub enum Step {
         at: [u8; 6],
     },
     /// A pass on a texture's first level and layer: its load, and triangles of random corners and
-    /// colours, each blended or not.
+    /// colours, each blended or not; or, where `multisampled` and the format averages, a pass on a
+    /// four-sample texture of that size resolved into it.
     Pass {
         which: u16,
         load: u8,
         triangles: Vec<([f32; 6], [f32; 4], bool)>,
+        multisampled: bool,
     },
     ClearTexture {
         which: u16,
@@ -148,12 +150,14 @@ pub fn steps(max: usize) -> impl Strategy<Value = Vec<Step>> {
                     any::<bool>()
                 ),
                 0..4
-            )
+            ),
+            any::<bool>()
         )
-            .prop_map(|(which, load, triangles)| Step::Pass {
+            .prop_map(|(which, load, triangles, multisampled)| Step::Pass {
                 which,
                 load,
-                triangles
+                triangles,
+                multisampled
             }),
         (any::<u16>(), prop::array::uniform4(unit))
             .prop_map(|(which, value)| Step::ClearTexture { which, value }),
@@ -559,9 +563,12 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 which,
                 load,
                 triangles,
+                multisampled,
             } if !textures.is_empty() => {
                 let (t, desc) = &textures[pick(*which, textures.len())];
                 let uint = desc.format == Format::R32Uint;
+                let multisampled =
+                    *multisampled && !uint && b.caps().formats.takes_samples(desc.format, 4);
                 let vertices: Vec<u8> = triangles
                     .iter()
                     .flat_map(|(corners, color, _)| {
@@ -598,18 +605,51 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     1 => LoadOp::Clear([u32::from(*load), 0, 0, 0]),
                     _ => LoadOp::DontCare,
                 };
+                let samples = if multisampled {
+                    let ms = b.create_texture(&TextureDesc {
+                        mip_levels: 1,
+                        depth_or_layers: 1,
+                        samples: 4,
+                        usage: TextureUsage::RENDER,
+                        ..*desc
+                    })?;
+                    let v = b.create_view(
+                        &ms,
+                        &TextureViewDesc {
+                            format: desc.format,
+                            dimension: ViewDimension::D2,
+                            base_mip: 0,
+                            mip_count: 1,
+                            base_layer: 0,
+                            layer_count: 1,
+                            stencil: false,
+                        },
+                    )?;
+                    Some((ms, v))
+                } else {
+                    None
+                };
                 let mut pass = PassDesc {
                     colors: Default::default(),
                     depth: None,
                     empty: None,
                     occlusion: None,
                 };
-                pass.colors[0] = Some(ColorAttachment {
-                    view: &view,
-                    depth_slice: 0,
-                    resolve: None,
-                    load,
-                    store: StoreOp::Store,
+                pass.colors[0] = Some(match &samples {
+                    Some((_, ms)) => ColorAttachment {
+                        view: ms,
+                        depth_slice: 0,
+                        resolve: Some(&view),
+                        load,
+                        store: StoreOp::Discard,
+                    },
+                    None => ColorAttachment {
+                        view: &view,
+                        depth_slice: 0,
+                        resolve: None,
+                        load,
+                        store: StoreOp::Store,
+                    },
                 });
                 b.begin_pass(&pass);
                 let viewport = [Viewport {
@@ -658,6 +698,10 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     });
                 }
                 b.end_pass();
+                if let Some((ms, v)) = samples {
+                    b.destroy(Object::TextureView(v));
+                    b.destroy(Object::Texture(ms));
+                }
                 b.destroy(Object::TextureView(view));
                 b.destroy(Object::Buffer(vb));
             }

@@ -1,6 +1,7 @@
 @echo off
-rem On the desktop, as a GPU job (run by web\check from the Mac): draws the three reference scenes
-rem through the WebGPU back end natively (wgpu on Direct3D 12 and on Vulkan) and in Chrome on
+rem On the desktop, as a GPU job (run by web\check from the Mac): draws the three reference scenes,
+rem and the quads again on depth24plus-stencil8, through the WebGPU back end natively (wgpu on
+rem Direct3D 12 and on Vulkan) and in Chrome on
 rem WebGPU (the back end built for WebAssembly), compares every picture with real Direct3D 11's at
 rem tolerance 0, and checks that the quads with a changed blend factor or depth function differ from
 rem it both ways. Exits 1 if any check fails.
@@ -19,8 +20,12 @@ node crates\wcontainers-gpu-webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-f
 for %%s in (triangle quads instanced) do (
     for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do call :same %%r-%%s.png %%s.png
 )
+for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do call :same %%r-quads-d24s8.png quads.png
 for %%t in (blend-factor depth-function) do (
-    for %%r in (webgpu-dx12 chrome-webgpu) do call :differs %%t\%%r-quads.png
+    for %%r in (webgpu-dx12 chrome-webgpu) do (
+        call :differs %%t\%%r-quads.png
+        call :differs %%t\%%r-quads-d24s8.png
+    )
 )
 exit /b %FAILED%
 

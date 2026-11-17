@@ -989,7 +989,7 @@ fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuE
 }
 
 /// A viewport over `width` by `height` pixels at depth zero to one.
-fn full_viewport(width: u32, height: u32) -> Viewport {
+pub(crate) fn full_viewport(width: u32, height: u32) -> Viewport {
     Viewport {
         x: 0,
         y: 0,
@@ -1001,7 +1001,7 @@ fn full_viewport(width: u32, height: u32) -> Viewport {
 }
 
 /// A draw of the built-in full-screen triangle with `program`, no bindings and no depth test.
-fn builtin_draw<'a, B: Backend>(
+pub(crate) fn builtin_draw<'a, B: Backend>(
     b: &'a helpers::Builtins<B>,
     program: &'a B::Program,
     viewports: &'a [Viewport],

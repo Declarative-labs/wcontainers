@@ -1,0 +1,89 @@
+// What run.mjs and suite.mjs share: serving this directory's pages and wasm-bindgen's output, launching
+// the rig's Chrome with a working WebGL 2, and reading chrome://gpu. Uses the Chrome build and the
+// playwright-core package the graphics rig installs (tools/graphics-rig/browser).
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import { readFile, readdir } from 'node:fs/promises';
+import { join, dirname, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(join(here, '../../../tools/graphics-rig/browser/package.json'));
+const { chromium } = require('playwright-core');
+
+// Serves <name>.html from this directory and /pkg/ from <pkg>; resolves to the server.
+export async function serve(pkg) {
+  const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
+  const server = createServer(async (request, response) => {
+    const path = new URL(request.url, 'http://localhost').pathname;
+    const file = /^\/[a-z]+\.html$/.test(path) ? join(here, path.slice(1)) : path.startsWith('/pkg/') ? join(pkg, path.slice(5)) : null;
+    if (!file) return response.writeHead(404).end();
+    try {
+      response.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' }).end(await readFile(file));
+    } catch {
+      response.writeHead(404).end();
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return server;
+}
+
+// Launches the one Chrome build the rig pins in C:\wc\chrome, headless, once a WebGL 2 context
+// survives in it. Chrome's GPU process can restart just after Chrome starts and lose the contexts made
+// before it settles; a launch where none survives in ten tries is closed and Chrome launched again,
+// up to three times.
+export async function launch() {
+  const root = 'C:\\wc\\chrome\\chrome';
+  const builds = (await readdir(root)).filter((d) => d.startsWith('win64-'));
+  if (builds.length !== 1) throw new Error(`${root} holds ${builds.length} Chrome builds, not one`);
+  const executablePath = join(root, builds[0], 'chrome-win64', 'chrome.exe');
+  for (let launches = 1; launches <= 3; launches++) {
+    const browser = await chromium.launch({ executablePath, headless: true });
+    const lost = await gpuReady(browser);
+    if (lost < 10) {
+      console.log(`chrome ${browser.version()}${lost ? `: ${lost} WebGL contexts were lost while the GPU process started` : ''}`);
+      return browser;
+    }
+    console.log(`chrome: no WebGL 2 context survived half a second in ten tries; launch ${launches} closed`);
+    await browser.close();
+  }
+  throw new Error('no launch of Chrome kept a WebGL 2 context in three');
+}
+
+// How many WebGL 2 contexts were lost (or not made) before one survived half a second; 10 if none did.
+async function gpuReady(browser) {
+  const page = await browser.newPage();
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const survived = await page.evaluate(async () => {
+        const gl = document.createElement('canvas').getContext('webgl2');
+        if (!gl) return false;
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return !gl.isContextLost();
+      });
+      if (survived) return attempt;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    return 10;
+  } finally {
+    await page.close();
+  }
+}
+
+// The adapters chrome://gpu reports for WebGL (ANGLE) and WebGPU (Dawn), as lines.
+export async function gpuReport(browser) {
+  const page = await browser.newPage();
+  await page.goto('chrome://gpu');
+  await page.waitForFunction(() => document.querySelector('info-view')?.shadowRoot?.textContent.includes('GL_RENDERER'));
+  const text = await page.evaluate(() => {
+    const walk = (node) => node.shadowRoot ? walk(node.shadowRoot) : [...node.childNodes]
+      .map((c) => (c.nodeType === 3 ? c.textContent : (/^(BR|LI|DIV|TR|H3)$/.test(c.tagName) ? '\n' : '') + walk(c)))
+      .join('');
+    return walk(document.body);
+  });
+  await page.close();
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => /^GL_RENDERER|^GL_VENDOR|^\*?\s*WebGL2?:|^\*?\s*WebGPU:/.test(l));
+  for (const l of lines) console.log(`chrome://gpu: ${l}`);
+  return lines.map((l) => `chrome://gpu: ${l}\n`).join('');
+}

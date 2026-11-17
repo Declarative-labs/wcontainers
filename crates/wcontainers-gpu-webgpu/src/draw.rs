@@ -215,6 +215,8 @@ type SetKey = Vec<(u32, u8, u64, u64, u64)>;
 #[derive(Default)]
 pub struct Caches {
     sets: HashMap<SetKey, Weak<SetObj>>,
+    /// How many binding sets were alive at the last pruning.
+    sets_alive: usize,
     /// Bind groups by what they are made of.
     groups: HashMap<GroupKey, Weak<GroupObj>>,
     /// How many bind groups were alive at the last pruning.
@@ -230,12 +232,19 @@ pub struct Caches {
 }
 
 impl Caches {
-    /// Forgets bind groups no set holds any more, once the table has doubled since last time.
-    pub fn prune_groups(&mut self) {
-        if self.groups.len() > 2 * self.groups_alive.max(64) {
-            self.groups.retain(|_, g| g.strong_count() > 0);
-            self.groups_alive = self.groups.len();
-        }
+    /// Forgets binding sets and bind groups nothing holds any more.
+    pub fn prune(&mut self) {
+        prune(&mut self.sets, &mut self.sets_alive);
+        prune(&mut self.groups, &mut self.groups_alive);
+    }
+}
+
+/// Forgets entries nothing holds, once the table has doubled since it was last pruned, so each
+/// insert costs constant time on average.
+fn prune<K, V>(table: &mut HashMap<K, Weak<V>>, alive: &mut usize) {
+    if table.len() > 2 * (*alive).max(64) {
+        table.retain(|_, v| v.strong_count() > 0);
+        *alive = table.len();
     }
 }
 
@@ -560,7 +569,7 @@ impl WebGpu {
                         size: NonZeroU64::new(size),
                     })
                 }
-                SetRes::View(v) => wgpu::BindingResource::TextureView(&v.0.raw),
+                SetRes::View(v) => wgpu::BindingResource::TextureView(&v.0.read),
                 SetRes::Sampler(s) => wgpu::BindingResource::Sampler(&s.0.raw),
             };
             entries.push(wgpu::BindGroupEntry {

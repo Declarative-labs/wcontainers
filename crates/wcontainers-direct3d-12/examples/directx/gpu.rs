@@ -5,18 +5,22 @@
 use std::num::NonZeroIsize;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::mpsc::{RecvTimeoutError, Sender, sync_channel};
+use std::sync::mpsc::{Sender, TryRecvError, sync_channel};
 use std::time::Duration;
 
 use wcontainers_direct3d_12::Device;
 use wcontainers_gpu_webgpu::WebGpu;
 use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent};
+use windows::Win32::System::Threading::{
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW, INFINITE,
+    SetEvent, SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GWLP_HINSTANCE, GetWindowLongPtrW, MSG, MsgWaitForMultipleObjects, PM_NOREMOVE,
     PM_QS_SENDMESSAGE, PeekMessageW, QS_SENDMESSAGE,
 };
+use windows::core::PCWSTR;
 
 pub type Front = Device<WebGpu>;
 type Job = Box<dyn FnOnce(&mut State) + Send>;
@@ -57,7 +61,13 @@ impl State {
     }
 }
 
-static THREAD: OnceLock<Mutex<Sender<Job>>> = OnceLock::new();
+/// The channel to the device thread, and the event set after each send that wakes it.
+struct Thread {
+    jobs: Mutex<Sender<Job>>,
+    sent: usize,
+}
+
+static THREAD: OnceLock<Thread> = OnceLock::new();
 
 const THREAD_NAME: &str = "wcontainers-gpu";
 
@@ -68,8 +78,12 @@ pub fn on_device_thread() -> bool {
 
 /// The back end on wgpu's Vulkan path: in a process whose `d3d12.dll` is this library, wgpu's
 /// Direct3D 12 path would load this library as the system's.
-fn start() -> Mutex<Sender<Job>> {
+fn start() -> Thread {
     let (tx, rx) = std::sync::mpsc::channel::<Job>();
+    // SAFETY: plain object creation.
+    let sent = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }
+        .expect("wcontainers: an event")
+        .0 as usize;
     std::thread::Builder::new()
         .name(THREAD_NAME.into())
         .spawn(move || {
@@ -90,21 +104,34 @@ fn start() -> Mutex<Sender<Job>> {
                 instance,
                 windows: 0,
             };
+            // A high-resolution timer paces the looks at fences while events wait on them.
+            // SAFETY: plain object creation.
+            let timer = unsafe {
+                CreateWaitableTimerExW(
+                    None,
+                    PCWSTR::null(),
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS.0,
+                )
+            }
+            .expect("wcontainers: a timer");
+            let sent = HANDLE(sent as *mut _);
             loop {
-                let job = if state.front.has_waiters() {
-                    match rx.recv_timeout(FENCE_POLL) {
-                        Ok(job) => Some(job),
-                        Err(RecvTimeoutError::Timeout) => None,
-                        Err(RecvTimeoutError::Disconnected) => break,
+                match rx.try_recv() {
+                    Ok(job) => job(&mut state),
+                    Err(TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Empty) => {
+                        // SAFETY: waits on this thread's own event and timer.
+                        unsafe {
+                            if state.front.has_waiters() {
+                                let due = -(FENCE_POLL.as_nanos() as i64 / 100);
+                                let _ = SetWaitableTimer(timer, &due, 0, None, None, false);
+                                WaitForMultipleObjects(&[sent, timer], false, INFINITE);
+                            } else {
+                                WaitForSingleObject(sent, INFINITE);
+                            }
+                        }
                     }
-                } else {
-                    match rx.recv() {
-                        Ok(job) => Some(job),
-                        Err(_) => break,
-                    }
-                };
-                if let Some(job) = job {
-                    job(&mut state);
                 }
                 for event in state.front.reached_events() {
                     // SAFETY: the event the program gave `SetEventOnCompletion`.
@@ -116,16 +143,22 @@ fn start() -> Mutex<Sender<Job>> {
             }
         })
         .expect("wcontainers: the device thread");
-    Mutex::new(tx)
+    Thread {
+        jobs: Mutex::new(tx),
+        sent,
+    }
 }
 
 fn send(job: Job) {
-    THREAD
-        .get_or_init(start)
+    let thread = THREAD.get_or_init(start);
+    thread
+        .jobs
         .lock()
         .unwrap()
         .send(job)
         .expect("wcontainers: the device thread ended");
+    // SAFETY: the device thread's event, which lives as long as the process.
+    let _ = unsafe { SetEvent(HANDLE(thread.sent as *mut _)) };
 }
 
 /// Runs `f` on the device thread with everything it owns and returns its answer.
@@ -139,7 +172,7 @@ pub fn call_state<R: Send + 'static>(f: impl FnOnce(&mut State) -> R + Send + 's
 
 thread_local! {
     /// Set by the device thread when a call of [`call_windowed`] is answered.
-    static ANSWERED: usize = unsafe { CreateEventW(None, false, false, windows::core::PCWSTR::null()) }
+    static ANSWERED: usize = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }
         .expect("wcontainers: an event")
         .0 as usize;
 }

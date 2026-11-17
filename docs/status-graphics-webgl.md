@@ -5,15 +5,16 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a (a first slice: real pictures through the interface on WebGL 2) is done, with the fixes of both
-independent checks (runs 2 and 3). The rig's three Direct3D 11 reference scenes (triangle; textured,
-depth-tested, blended quads; an instanced draw reading a constant buffer) are drawn by small programs
-that call the interface directly, with WGSL programs written to GLSL ES 3.00 by naga, in Chrome's
-WebGL 2 on the RTX 3080 and natively through ANGLE, and every picture equals real Direct3D 11's
-exactly, with and without EXT_clip_control and WEBGL_provoking_vertex. Thirteen more pictures guard
-other routes (see "Done"); one of them fails on native ANGLE with EXT_clip_control only, through an
-ANGLE bug (see "Known failures"). The shared suite (13 tests) passes 11 on ANGLE with every
-extension. The rest of G3 (section 12's pass bar) is "Next".
+G3a is done. G3 (section 12's pass bar) is under way: run 1 of G3 fixed every finding of the last
+check, ran the shared suite in Chrome as well as on ANGLE, and built surfaces and present, depth read
+backs (depth, and stencil with WEBGL_stencil_texturing) by draws and views in the sRGB twin. The
+shared suite (20 tests, origin/phase-2-graphics 975c55c) passes 20 of 20 in Chrome's WebGL 2 with
+every extension, and 18 of 20 natively on ANGLE (the two failures are bugs of the ANGLE test build;
+see "Known failures"). Three checks of the back end's own (vertex and instance numbers under bases
+with 8, 16 and 32-bit indices; Discard then NoOverwrite writes; depth and stencil read back) pass in
+Chrome on every route and on ANGLE but for one ANGLE bug. Without EXT_clip_control or WEBGL_provoking_vertex the suite's own raster
+blocks ask for what the back end refuses (known failures, G1's suite). Most of the pass bar is still
+"Next".
 
 ## Done
 
@@ -29,8 +30,8 @@ extension. The rest of G3 (section 12's pass bar) is "Next".
     `getBufferSubData`), submit (with a `getError` check that turns a GL error into device loss) and
     fences.
   - State applied only where it changed (plan 4.4): each draw compares block handles with the last
-    applied ones; a changed block is converted and only the GL values that differ from what GL
-    holds are set (state.rs, `GlValues`). Bindings are walked only when the program or a set
+    applied ones; for a changed block only the GL values that differ from what GL holds are set
+    (state.rs, `GlValues`). Bindings are walked only when the program or a set
     changed, and each texture unit, sampler and uniform block point is rebound only when it differs.
     Vertex attributes are respecified only when the layout, a stream's buffer or its offset changed.
     Clears open the masks and scissor through the same record, and mark the blocks for reapplying.
@@ -81,12 +82,35 @@ extension. The rest of G3 (section 12's pass bar) is "Next".
     host copy of the whole range). A native buffer read whose map fails, a WebGL read that raises an
     error, and a read back whose sync object could not be made lose the device instead of answering
     with stale bytes. `max_point_size` is 1 (programs write `gl_PointSize = 1`; `POINT_SIZE` absent).
+  - G3 run 1: each block is converted to the GL values it stands for when it is made (state.rs
+    `GlBlend`, `GlDepthStencil`, `GlRaster`, `GlLayout`, plan 4.4), so a draw that applies a changed
+    block only compares and sets values. A draw whose binding sets lack a resource its program reads
+    (or hold the wrong kind) loses the device with the slot named in `last_log` instead of reading what
+    the unit held before. Surfaces: one per back end (a WebGL context draws into its one canvas;
+    natively the EGL surface); `configure_surface` sizes the canvas's drawing buffer (natively a new
+    pbuffer) and makes an `rgba8unorm` texture that `current_texture` hands out; `present` copies it
+    into the drawing buffer by `blitFramebuffer`, upside down (GL's row 0 is the bottom). `vsync` changes
+    nothing: the browser shows the canvas at the display's rate and presenting never waits. Depth read
+    backs (`DepthReadByDraw`, counted): a full-screen triangle fetches each depth texel of a 2D or 2D
+    array texture and writes its stored value (16-bit unorm, 24-bit unorm in a 32-bit word, or a
+    float's bits) into an `r32uint` texture, which reads back like any colour texture; it draws with
+    GL's lower-left origin so rows match on both window-origin routes. The depth of depth-stencil
+    formats reads the same way; their stencil with WEBGL_stencil_texturing (enabled by the back end;
+    `GL_ANGLE_stencil_texturing` natively, which mozangle 0.7.1 lacks), fetched as unsigned integers
+    with the texture's `DEPTH_STENCIL_TEXTURE_MODE` set to `STENCIL_INDEX` for the draw and put back.
+    Views in the sRGB twin: the
+    twin is a second GL texture of the same shape, made at the first such view; each side records
+    when it was written (passes drawing into it, writes, copies) and is brought up to date from the
+    other before it is read, sampled or written, every level and layer through a pixel pack buffer
+    (`CopyThroughBuffer`, counted). Draws look at sampled textures only while a twin exists. Read backs
+    waited for in the browser are ready at once (WebGL updates a sync object only between tasks).
   - Not built yet: reaching one loses the device (`LossReason::Error`, `Err(DeviceLost)` where the
     call returns a result) with the missing piece named in `WebGl::last_log()`, never a panic; a
     multisampled texture is refused as `Invalid` (the caps give one sample). Not built: queries,
     surfaces and present, resolves, multisampled textures, sRGB-twin and stencil views, empty
     passes, copies of depth and of formats a framebuffer cannot read, texture-to-buffer copies of
-    formats read wider than stored, vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2
+    formats read wider than stored (depth included), stencil read backs without
+    WEBGL_stencil_texturing, depth read backs of cube textures, stencil views, vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2
     integer, 11-11-10), negative stream offsets after a base vertex, copies between an index-only
     and a data-only buffer, buffer-texture copies with an index-only buffer.
 - platform.rs: the context. In the browser `WebGl::on_canvas(WebGl2RenderingContext, off)`;
@@ -117,7 +141,21 @@ extension. The rest of G3 (section 12's pass bar) is "Next".
   triangle, then a 64-pixel square cleared red by `clear_rects`, which draws with the interface's
   built-in programs), equal to Direct3D's triangle with that square red. Every fan or loop picture
   also fails if `FanConverted` or `LoopConverted` was counted while `FAN_AND_LOOP` is present.
-- tests/suite.rs: the shared suite (`wcontainers_gpu_test::suite!`) on ANGLE, Windows only.
+- tests/suite.rs: the shared suite (`wcontainers_gpu_test::suite!`) and the checks of
+  examples/common/checks.rs on ANGLE, Windows only. examples/browser.rs is the suite's host in
+  Chrome: browser/suite.mjs opens browser/suite.html once per test (a failing test panics and the
+  module traps), each device on a new canvas, `Host::shown` reading the canvas through a 2D canvas.
+  The list of tests comes from the native suite's `--list`, so a test the browser host lacks fails.
+- examples/common/checks.rs: `vertex_and_instance_numbers_include_the_bases` (points writing
+  `vertex_index`, `instance_index` and the elements a per-vertex and a per-instance stream read into
+  an `rgba32uint` target; non-indexed and 8, 16 and 32-bit indexed instanced draws with first vertex,
+  base vertex and first instance), `discard_then_no_overwrite_writes` (a read back recorded before a
+  `Discard` write of part of a buffer sees the old bytes; `NoOverwrite` writes above the part land),
+  `depth_and_stencil_read_back` (every depth format with `COPY_OUT` cleared to 0.25 and stencil 0x5a,
+  the middle 2 by 2 set to 0.75 and 0xc3 by `clear_rects`, read back as stored: unorm depth within
+  one step, float depth and stencil exactly).
+- browser/chrome.mjs: what run.mjs and suite.mjs share. Chrome is launched again (up to three times)
+  when no WebGL 2 context survives half a second in ten tries, which once made the whole check fail.
 - Independent check, all done on 2026-11-17: drew the three scenes and compared (exactly equal, both
   on ANGLE and in Chrome, with and without EXT_clip_control); the quads with the colour blend's
   destination factor One fails (25016 pixels differ, largest 38) and with the depth test Greater
@@ -131,11 +169,14 @@ extension. The rest of G3 (section 12's pass bar) is "Next".
 
 All from the checkout root on the Mac.
 
-- Everything at once (both scene routes in Chrome and on ANGLE, and the suite on ANGLE three ways),
-  one GPU job after the build; exit 1 on any unexpected verdict, so today it exits 1 for the known
-  failures:
+- Everything at once (both scene routes in Chrome and on ANGLE, and the suite with the checks in
+  Chrome and on ANGLE three ways each: every extension, without EXT_clip_control, without both), one
+  GPU job after the build; exit 1 on any failure, so today it exits 1 for the known failures. The
+  Chrome suite verdicts land in `<out>\suite-chrome*.txt`:
   `tools/graphics-rig/gpu-job --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
   About 40 s as a job once built.
+- The suite in Chrome alone (after build.cmd and a `--list` into a file, as all.cmd does):
+  `node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR%\webgl-pkg" <out-file> <list-file> [<extensions off>]`.
 - Once per desktop (done; about 4 minutes):
   `tools/graphics-rig/remote "crates\wcontainers-gpu-webgl\angle\build.cmd"` builds ANGLE's
   libEGL.dll and libGLESv2.dll from the mozangle crate into C:\wc\tools\angle-mozangle-0.7.1.
@@ -164,11 +205,14 @@ How another track uses the back end natively (G4's Windows library on WebGL 2): 
 `wcontainers-gpu-webgl`, and make the back end on the device thread with
 `WebGl::on_angle(Path::new(r"C:\wc\tools\angle-mozangle-0.7.1"), &["EXT_clip_control"])` after
 running angle\build.cmd once. Switch EXT_clip_control off natively: this ANGLE mirrors scissor
-rectangles vertically under it (see "Known failures"), and without it every picture here is right;
-the front then rewrites clip depth (`ClipDepthRewrite`), as it must for browsers without the
-extension. The context is current on the calling thread, which must be the device thread.
-In the browser: `WebGl::on_canvas(canvas.getContext("webgl2"), &[])`. Either reports the same `Caps`
-on the RTX 3080 (compared on 2026-11-17: identical lists).
+rectangles vertically under it (see "Known failures"), which breaks every scissored draw; without it
+the front rewrites clip depth (`ClipDepthRewrite`), as it must for browsers without the extension.
+The caps then lack `CLIP_DEPTH_ZERO_ONE`, which Chrome on the same GPU has (see "Departures"). The
+context is current on the calling thread, which must be the device thread. Natively the surface is
+an off-screen pbuffer; a real window needs an EGL window surface, not built yet.
+In the browser: `WebGl::on_canvas(canvas.getContext("webgl2"), &[])`; the canvas is the surface.
+With every extension both report the same `Caps` on the RTX 3080 (compared on 2026-11-17: identical
+lists).
 
 ## Capabilities
 
@@ -201,6 +245,10 @@ without stencil also sample. Copy out (read back): R8, RG8 and RGBA8 normalised 
 every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGBA32F (with
 EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. One sample only.
 No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil8, block-compressed.
+Since G3 run 1: `PRESENT` on `rgba8unorm` (the canvas's drawing buffer), and `COPY_OUT` on
+`depth16unorm`, `depth24plus` and `depth32float` (by `DepthReadByDraw`), and on `depth24plus-stencil8`
+and `depth32float-stencil8` where WEBGL_stencil_texturing is present (Chrome on the RTX 3080: yes;
+mozangle natively: no).
 
 ## Measurements
 
@@ -233,6 +281,28 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
   extension (all but `generate_mips_averages_in_the_values_format` and `present_shows_the_frame`); 5
   without EXT_clip_control, and 5 without it and WEBGL_provoking_vertex (the others are refused by
   the suite's own raster block; see "Known failures").
+- 2026-11-17, G3 run 1, same desktop (RTX 3080, driver 32.0.16.2101; jobs from the queue, not timed,
+  about 40 s each between 15:02 and 15:19 desktop time; CPU load 17% just after): the shared suite at
+  origin/phase-2-graphics 975c55c, 20 tests, plus the 2 checks:
+  - Chrome 157.0.8103.78 with every extension: 22 of 22 pass. Without EXT_clip_control: 9 of 22;
+    without it and WEBGL_provoking_vertex: 9 of 22 (the rest refused by the suite's raster blocks).
+  - ANGLE (mozangle 0.7.1) with every extension: 20 of 22 (`present_shows_the_frame` and
+    `the_scissor_bounds_the_draw` fail). Without EXT_clip_control: 8 of 22; without both: 8 of 22.
+  - Before the fixes of this run the suite in Chrome failed 18 of 20 (read backs never ready after
+    `wait_read`), and `generate_mips_averages_in_the_values_format` failed everywhere (no sRGB twin).
+  - The 16 scene pictures: as in run 3 (all as expected in Chrome on both routes and on ANGLE without
+    the extensions; `triangle-clear_rects` fails on ANGLE with EXT_clip_control).
+  - Lint clean on both targets.
+- The final tree of run 1 (b6a0c43) was checked once more as a whole (job 15:25 to 15:26 desktop
+  time): the same verdicts as the run before it, listed next.
+- Later the same day (job 15:23 to 15:24 desktop time, queued, not timed), with stencil read backs
+  and the third check: Chrome with every extension 23 of 23; without EXT_clip_control 10 of 23,
+  without both 10 of 23 (the third check passes on all three, with all five depth formats). ANGLE
+  with every extension 20 of 23 (`depth_and_stencil_read_back` fails too: `Depth16Unorm: depth at 5
+  is 0x4000, expected 0xbfff`, the scissor bug below); without the extensions 9 of 23 (the check
+  passes, depth-only formats only).
+- In the first full check of this run, Chrome's first launch kept no WebGL 2 context in ten tries
+  and was closed; the second launch worked. In the other launches one context was lost first.
 - Chrome's GPU process restarted once just after Chrome started in most runs (the first WebGL
   context lost, or none made); run.mjs waits for a context to survive half a second first and says
   how many did not.
@@ -242,24 +312,30 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
 
 ## Known failures
 
-- `triangle-clear_rects` on native ANGLE with EXT_clip_control (4096 pixels: the red square is
-  missing). mozangle 0.7.1's ANGLE mirrors the scissor rectangle vertically when the clip origin is
-  upper-left, though EXT_clip_control leaves scissors in window coordinates: with the square moved to
-  rows 192 to 255 (a full-height viewport) it came out at rows 0 to 63; with the square at rows 64
-  to 127 the mirrored scissor misses the 128-row viewport and nothing is drawn. Chrome 157's ANGLE
-  draws it right, and so does this ANGLE without EXT_clip_control. A bug of the test tool, not of the
-  back end; left failing. Natively, tracks should switch EXT_clip_control off (see "How to run").
-- Suite `present_shows_the_frame`: surfaces and present are not built, so `Rgba8Unorm` lacks
-  `PRESENT`. G3's next work.
-- Suite `generate_mips_averages_in_the_values_format`: the built-in programs now draw on every route,
-  but the test reads the texture through its sRGB twin, and views in the twin are not built: the
-  device is lost with that named in `last_log`.
-- Suite, without EXT_clip_control or WEBGL_provoking_vertex: `triangle_covers_...`,
-  `textured_draw_...`, `edges_through_pixel_centres_...`, `depth_writes_off_...`,
-  `srgb_targets_...` and (without EXT_clip_control) `strips_take_flat_values_...`: the suite's own
-  raster blocks ask for clip depth from zero and provoking vertex First, which the back end lacks on
-  those routes and refuses as the interface says. The suite (G1's crate) should take both from the
-  caps, as the built-ins do.
+- `triangle-clear_rects` and the suite's `the_scissor_bounds_the_draw` on native ANGLE with
+  EXT_clip_control. mozangle 0.7.1's ANGLE mirrors the scissor rectangle vertically when the clip
+  origin is upper-left, though EXT_clip_control leaves scissors in window coordinates (in its
+  source, StateManager11.cpp turns on `presentPathFastActive` for an upper-left origin, lines 871 to
+  874, and then sets `scissorY = height - scissor.height - scissor.y`, lines 1415 to 1418). In the
+  suite, the scissor x 1, y 2, w 2, h 1 on a 4 by 4 target drew row 1 instead of row 2. The check
+  `depth_and_stencil_read_back` fails the same way: its `clear_rects` into a depth-only framebuffer
+  missed the target altogether (the mirrored height seems to be the 1 by 1 pbuffer's). Chrome 157's
+  ANGLE draws all three right, and so does this ANGLE without EXT_clip_control. A bug of the test
+  tool; left failing.
+- Suite `present_shows_the_frame` on native ANGLE: reading this ANGLE's pbuffer default framebuffer
+  gives 72 in every byte whatever was drawn into it, even right after a `glClear` of it, with no GL
+  error, a complete framebuffer, an RGBA8 configuration with no samples, and reads in RGBA and in
+  the implementation's BGRA format alike. In Chrome the same test passes (the canvas read through a
+  2D canvas). A bug of the test tool, or of using an ANGLE pbuffer this way; left failing.
+- Suite, without EXT_clip_control or WEBGL_provoking_vertex, in Chrome and on ANGLE: 13 tests
+  (`triangle_covers_...`, `textured_draw_...`, `edges_through_pixel_centres_...`,
+  `strips_take_flat_values_...`, `depth_writes_off_...`, `srgb_targets_...`,
+  `values_are_interpolated_...`, `the_scissor_bounds_...`, `stencil_operations_...`,
+  `near_clipping_...`, `linear_filtering_...`, `instances_start_...`, `indexed_strips_...`; on ANGLE
+  also `present_shows_the_frame`): the suite's own raster blocks ask for clip depth from zero
+  (`depth_minus_one` false) and provoking vertex First, which the back end lacks on those routes and
+  refuses as the interface says (`Absent(CLIP_DEPTH_ZERO_ONE)`, `Absent(PROVOKING_VERTEX_FIRST)`).
+  The suite (G1's crate) should take both from the caps, as the built-in programs do.
 
 ## Departures from the plan
 
@@ -289,6 +365,23 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
   in a helper's block (the built-ins' raster asked for a provoking vertex WebGL 2 lacks without an
   extension), the fix is two lines in the style of the clip depth one beside it, and no other route
   made the fast-path defaults usable here; G1 should take it over.
+- The last merge of origin/phase-2-graphics in run 1 was undone before it was pushed (see "Next"):
+  its suite crate no longer builds for WebAssembly, and the Chrome host of the suite needs it.
+- Natively the back end is to be made with EXT_clip_control switched off (above), so its caps lack
+  `CLIP_DEPTH_ZERO_ONE`, which Chrome on the same GPU reports; section 10 says the native route
+  reports the Caps the browser would. The reason: this ANGLE mirrors every scissored draw under the
+  extension (checked in its source), and the browser route without the extension is one the front
+  must serve anyway. With every extension both report identical caps.
+- Presenting copies the frame once more than WebGPU does: WebGL's drawing buffer is not a texture,
+  so `current_texture` is a texture of the back end's and `present` blits it into the drawing buffer
+  (one full-size copy per frame, expected cheap, not measured). Not counted as a slow path: it is
+  the only route WebGL 2 has.
+- A back end has one surface (`create_surface` a second time is `Invalid`): a WebGL context draws
+  into one canvas only. `vsync` is not honoured (the browser decides).
+- Views in the sRGB twin are a second texture kept in step inside the back end, since the interface
+  allows such views on every texture; plan 4.12 has fronts copy only for other formats
+  (`ReinterpretCopy`). Counted as `CopyThroughBuffer`, the route plan 4.12 names for WebGL 2's copies
+  within a typeless group.
 - Draws with a provoking vertex the raster block does not name: `draw_fan_or_loop` follows the raster
   block, as the default's converted list also assumes; its `provoking` argument is not used.
 
@@ -333,16 +426,37 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
 
 ## Next
 
+First: merge origin/phase-2-graphics again. At the end of G3 run 1 it held 20 newer commits
+(up to 2684d97) whose `wcontainers-gpu-test` depends on `proptest = "1.12.0"` with its default
+features, which do not build for wasm32 (`wait-timeout`'s `imp` module is missing; `getrandom` 0.4.3
+also needs its `wasm_js` feature, which this crate can turn on as a wasm32 dev-dependency). The suite's
+host in Chrome needs that crate for wasm32, so the merge was made locally, failed to build, and was
+dropped before it was pushed. Once G1 gives proptest `default-features = false, features = ["std"]`
+(or keeps it out of the wasm32 build), merge, add `getrandom = { version = "0.4.3", features =
+["wasm_js"] }` as a wasm32 dev-dependency (MIT OR Apache-2.0), and add the new suite test
+`fragments_write_storage_buffers` to examples/browser.rs's list.
+
 G3's pass bar (plan section 12), in about this order:
-1. Surfaces and present (the suite's last test), with `Host::shown` reading the canvas or the pbuffer.
-2. A test that reads `vertex_index` under a base vertex (built, untested).
-3. Depth copies (`blitFramebuffer`), `CopyThroughBuffer` for formats a framebuffer cannot read,
-   resolves and multisampled renderbuffers, 16-bit float read backs.
-4. Queries (`OcclusionAny`, timestamps with `timestamps_disjoint`).
-5. Views in the sRGB twin (the suite's `generate_mips` test needs them), then the extension
-   features of "Capabilities", each with its route and a test; the fast paths `clear_texture`,
-   `clear_rects`, `generate_mips`; transform feedback; `POINT_SIZE`.
-6. BC formats (native or `BlockDecoded`), BGRA by `FormatConverted`, 16-bit normalised by
-   EXT_texture_norm16, stencil views (WEBGL_stencil_texturing and `StencilCopiedByDraw`),
-   `DepthReadByDraw`, the 24-bit depth probe.
-7. The rest of section 12's G3 list, and per-draw cost against G2.
+1. Per-draw cost against G2 on the same scene, in Chrome (a scene of many small draws changing a
+   uniform range and a texture per draw, timed in both back ends as `gpu-job --alone`).
+2. Stencil without WEBGL_stencil_texturing (the eight-draw bit route of plan 4.12, for read backs
+   and for stencil views, `StencilCopiedByDraw`), stencil views with it, then `SAMPLE` on the
+   depth-stencil formats; the pass bar's test reading both ways with equal answers.
+3. Copies within a typeless group (`CopyThroughBuffer`; by a draw where the widths differ, since
+   `readPixels` reads integers and floats four components wide), and depth copies by `blitFramebuffer`.
+4. Queries: occlusion (`OcclusionAny`), timestamps and `timestamps_disjoint` (EXT_disjoint_timer_query
+   in Chrome where present); WebGL gives query results only between tasks, so a wait needs the device
+   thread's event loop (plan 4.8's JSPI).
+5. Transform feedback (`capture_vertices` with and without rasterising), and the index twin written
+   by it (`IndexBufferTwin`, `IndexTwinReadBack`).
+6. Multisampled textures, resolves, `MultisampleCopyResolved`; the 24-bit depth probe.
+7. `generate_mips` against G2 for `r32float` without OES_texture_float_linear and an integer twin of
+   a 16-bit normalised format (the default's `FilterInShader`); the `generateMipmap` override;
+   `clear_texture` and `clear_rects` by `clearBuffer*`.
+8. BC and RGB9E5 read back as written (`HostCopyKept`, `BlockDecoded`), BGRA by `FormatConverted`,
+   16-bit normalised by EXT_texture_norm16.
+9. Both window-origin routes against G2 (a culled one-sided triangle, a `gl_FragCoord` gradient, a mip
+   chain and a read back); a fractional viewport through `ViewportInShader` against G2; a fractional
+   `depth_bias` and `ConstantAlpha` natively; cube, array and 3D textures made with the GL target of
+   `own_view`, with a test.
+10. An EGL window surface natively, for G4's Windows library.

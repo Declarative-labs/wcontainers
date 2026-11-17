@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 
 /// GL_UPPER_LEFT_EXT and GL_ZERO_TO_ONE_EXT, and their defaults, for `clipControlEXT`.
 pub const UPPER_LEFT: u32 = 0x8CA2;
+pub const LOWER_LEFT: u32 = 0x8CA1;
 pub const ZERO_TO_ONE: u32 = 0x935F;
 pub const NEGATIVE_ONE_TO_ONE: u32 = 0x935E;
 
@@ -15,7 +16,7 @@ pub const FIRST_VERTEX: u32 = 0x8E4D;
 pub const LAST_VERTEX: u32 = 0x8E4E;
 
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 7] = [
+const EXTENSIONS: [(&str, &str); 8] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
     ("WEBGL_provoking_vertex", "GL_ANGLE_provoking_vertex"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
@@ -29,6 +30,7 @@ const EXTENSIONS: [(&str, &str); 7] = [
         "EXT_texture_filter_anisotropic",
         "GL_EXT_texture_filter_anisotropic",
     ),
+    ("WEBGL_stencil_texturing", "GL_ANGLE_stencil_texturing"),
 ];
 
 /// The extensions the back end uses that the context has, by WebGL name, less those switched off.
@@ -61,12 +63,13 @@ mod native {
     pub struct Platform {
         clip_control: Option<ClipControl>,
         provoking_vertex: Option<ProvokingVertex>,
-        _egl: Option<Egl>,
+        egl: Option<Egl>,
     }
 
     struct Egl {
         instance: egl::DynamicInstance<egl::EGL1_0>,
         display: egl::Display,
+        config: egl::Config,
         context: egl::Context,
         surface: egl::Surface,
     }
@@ -104,6 +107,36 @@ mod native {
                 unsafe { f(mode) };
             }
         }
+
+        /// Gives the default framebuffer, which surfaces present into, this size: a new off-screen
+        /// surface made current in place of the old one.
+        pub fn resize(
+            &mut self,
+            _gl: &glow::Context,
+            width: u32,
+            height: u32,
+        ) -> Result<(), String> {
+            let Some(e) = &mut self.egl else {
+                return Err("no EGL surface to resize".into());
+            };
+            let size = [
+                egl::WIDTH,
+                width as i32,
+                egl::HEIGHT,
+                height as i32,
+                egl::NONE,
+            ];
+            let surface = e
+                .instance
+                .create_pbuffer_surface(e.display, e.config, &size)
+                .map_err(|err| format!("eglCreatePbufferSurface: {err}"))?;
+            e.instance
+                .make_current(e.display, Some(surface), Some(surface), Some(e.context))
+                .map_err(|err| format!("eglMakeCurrent: {err}"))?;
+            let _ = e.instance.destroy_surface(e.display, e.surface);
+            e.surface = surface;
+            Ok(())
+        }
     }
 
     /// Makes an OpenGL ES 3.0 context through ANGLE's `libEGL.dll` (or `libEGL.so`, `libEGL.dylib`) in
@@ -128,27 +161,37 @@ mod native {
         instance
             .initialize(display)
             .map_err(|e| format!("eglInitialize: {e}"))?;
-        let config = instance
-            .choose_first_config(
-                display,
-                &[
-                    egl::SURFACE_TYPE,
-                    egl::PBUFFER_BIT,
-                    egl::RENDERABLE_TYPE,
-                    egl::OPENGL_ES3_BIT,
+        // EGL sorts deeper colour buffers first, so the RGBA8 one surfaces present into is picked out.
+        let attributes = [
+            egl::SURFACE_TYPE,
+            egl::PBUFFER_BIT,
+            egl::RENDERABLE_TYPE,
+            egl::OPENGL_ES3_BIT,
+            egl::NONE,
+        ];
+        let mut configs = Vec::with_capacity(
+            instance
+                .matching_config_count(display, &attributes)
+                .map_err(|e| format!("eglChooseConfig: {e}"))?,
+        );
+        instance
+            .choose_config(display, &attributes, &mut configs)
+            .map_err(|e| format!("eglChooseConfig: {e}"))?;
+        let config = configs
+            .into_iter()
+            .find(|c| {
+                let get = |a| instance.get_config_attrib(display, *c, a).unwrap_or(-1);
+                [
                     egl::RED_SIZE,
-                    8,
                     egl::GREEN_SIZE,
-                    8,
                     egl::BLUE_SIZE,
-                    8,
                     egl::ALPHA_SIZE,
-                    8,
-                    egl::NONE,
-                ],
-            )
-            .map_err(|e| format!("eglChooseConfig: {e}"))?
-            .ok_or("ANGLE has no OpenGL ES 3 configuration")?;
+                ]
+                .into_iter()
+                .all(|a| get(a) == 8)
+                    && get(egl::SAMPLES) == 0
+            })
+            .ok_or("ANGLE has no RGBA8 OpenGL ES 3 configuration")?;
         // OpenGL ES is EGL's bound API from the start, so only EGL 1.0's calls are needed.
         let context = instance
             .create_context(
@@ -188,9 +231,10 @@ mod native {
         let platform = Platform {
             clip_control,
             provoking_vertex,
-            _egl: Some(Egl {
+            egl: Some(Egl {
                 instance,
                 display,
+                config,
                 context,
                 surface,
             }),
@@ -243,6 +287,10 @@ mod web {
     pub struct Platform {
         clip_control: Option<(js_sys::Object, js_sys::Function)>,
         provoking_vertex: Option<(js_sys::Object, js_sys::Function)>,
+        /// The context, and its canvas (on the page or off-screen), whose drawing buffer surfaces
+        /// present into.
+        context: WebGl2RenderingContext,
+        canvas: JsValue,
     }
 
     impl Platform {
@@ -256,6 +304,35 @@ mod web {
             if let Some((ext, f)) = &self.provoking_vertex {
                 let _ = f.call1(ext, &JsValue::from(mode));
             }
+        }
+
+        /// Gives the canvas's drawing buffer, which surfaces present into, this size. Err when the
+        /// browser made it smaller (WebGL may, under memory pressure or past its largest size).
+        pub fn resize(
+            &mut self,
+            _gl: &glow::Context,
+            width: u32,
+            height: u32,
+        ) -> Result<(), String> {
+            for (name, value) in [("width", width), ("height", height)] {
+                js_sys::Reflect::set(
+                    &self.canvas,
+                    &JsValue::from_str(name),
+                    &JsValue::from(value),
+                )
+                .map_err(|e| format!("setting the canvas's {name}: {e:?}"))?;
+            }
+            let made = (
+                self.context.drawing_buffer_width(),
+                self.context.drawing_buffer_height(),
+            );
+            if made != (width as i32, height as i32) {
+                return Err(format!(
+                    "the browser made the drawing buffer {} by {}, not {width} by {height}",
+                    made.0, made.1
+                ));
+            }
+            Ok(())
         }
     }
 
@@ -294,11 +371,17 @@ mod web {
         let clip_control = extension_call(&context, "EXT_clip_control", "clipControlEXT");
         let provoking_vertex =
             extension_call(&context, "WEBGL_provoking_vertex", "provokingVertexWEBGL");
+        // Enabled here since glow does not know it; its calls are plain texture parameters.
+        let _ = context.get_extension("WEBGL_stencil_texturing");
+        let canvas = js_sys::Reflect::get(&context, &JsValue::from_str("canvas"))
+            .unwrap_or(JsValue::UNDEFINED);
         (
-            glow::Context::from_webgl2_context(context),
+            glow::Context::from_webgl2_context(context.clone()),
             Platform {
                 clip_control,
                 provoking_vertex,
+                context,
+                canvas,
             },
         )
     }
