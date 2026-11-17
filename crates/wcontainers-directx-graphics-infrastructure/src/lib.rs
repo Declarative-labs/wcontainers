@@ -8,7 +8,6 @@ mod format;
 mod output;
 mod support;
 mod swapchain;
-mod wgsl;
 
 pub use adapter::{ADAPTER_LUID, AdapterDesc};
 pub use format::{
@@ -19,7 +18,6 @@ pub use support::{FormatSupport, format_support, plane_count, support1, support2
 pub use swapchain::{
     DEFAULT_LATENCY, MAX_BUFFERS, Model, SwapChain, SwapChainDesc, SwapChainError,
 };
-pub use wgsl::program_from_wgsl;
 
 use wcontainers_gpu::Caps;
 

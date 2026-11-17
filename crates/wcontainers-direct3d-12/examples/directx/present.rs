@@ -340,10 +340,14 @@ pub fn create(
     if desc.Stereo.as_bool() || desc.SampleDesc.Count != 1 {
         return Err(DXGI_ERROR_INVALID_CALL.into());
     }
-    if desc.Scaling != DXGI_SCALING_STRETCH || desc.AlphaMode.0 > DXGI_ALPHA_MODE_IGNORE.0 {
+    // A window's swap chain shows no alpha: DXGI refuses premultiplied and straight alpha for it.
+    if desc.AlphaMode != DXGI_ALPHA_MODE_UNSPECIFIED && desc.AlphaMode != DXGI_ALPHA_MODE_IGNORE {
+        return Err(DXGI_ERROR_INVALID_CALL.into());
+    }
+    if desc.Scaling != DXGI_SCALING_STRETCH {
         return Err(windows::core::Error::new(
             E_NOTIMPL,
-            "scaling other than stretching, or a shown alpha",
+            "scaling other than stretching",
         ));
     }
     let model = Model::from_dxgi(desc.SwapEffect.0 as u32).ok_or(DXGI_ERROR_INVALID_CALL)?;
@@ -662,10 +666,14 @@ impl SwapChain {
         })
     }
 
+    /// Each format presents in one colour space, so there is nothing to change.
     pub fn SetColorSpace1(&self, space: DXGI_COLOR_SPACE_TYPE) -> Result<()> {
-        let id = self.id;
-        let space = space.0 as u32;
-        gpu::call(move |d| d.set_color_space(id, space)).map_err(|_| E_INVALIDARG.into())
+        let format = self.state.lock().unwrap().desc.Format.0 as u32;
+        if presents_in(format, space.0 as u32) {
+            Ok(())
+        } else {
+            Err(E_INVALIDARG.into())
+        }
     }
 }
 

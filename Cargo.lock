@@ -2696,8 +2696,6 @@ dependencies = [
 name = "wcontainers-directx-graphics-infrastructure"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "naga",
  "wcontainers-gpu",
 ]
 

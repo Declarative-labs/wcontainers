@@ -7,7 +7,10 @@
 //!   check_d3d12 compare <a.rgba> <b.rgba> <tolerance>
 //!   check_d3d12 features <out.txt>
 //!   check_d3d12 compare-features <real.txt> <ours.txt> [all]
-//! It draws with the rig's triangle shaders, the only DXIL the front takes until DXIL is converted.
+//!   check_d3d12 outputs <out.txt>   (output 0's `GetDesc1` and swap chains' colour spaces, for
+//!   compare-features)
+//!   check_d3d12 fence-wait [rounds]   (time from a queue's signal to its fence event, waited for)
+//! It draws with the rig's triangle shaders.
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -72,6 +75,13 @@ fn main() -> windows::core::Result<()> {
         Some("features") => {
             std::fs::write(&args[2], features()?).expect("writing the answers");
         }
+        Some("fence-wait") => {
+            let rounds: u32 = args.get(2).map_or(1000, |n| n.parse().expect("a count"));
+            fence_wait(rounds)?;
+        }
+        Some("outputs") => {
+            std::fs::write(&args[2], outputs()?).expect("writing the answers");
+        }
         Some("compare-features") => {
             let real = std::fs::read_to_string(&args[2]).expect("real Direct3D 12's answers");
             let ours = std::fs::read_to_string(&args[3]).expect("our answers");
@@ -122,8 +132,9 @@ fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
                 // A bound: ours may be wider, or zero where the ability is absent.
                 "ge" => o >= r || o == 0,
                 "bits" => o & !r == 0,
-                _ => false,
+                _ => rule == "info",
             },
+            _ if rule == "info" => true,
             // Ours refused what real answered.
             (Some(_), None) => true,
             _ => false,
@@ -147,6 +158,162 @@ fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
         }
     );
     good
+}
+
+/// Times rounds of: an empty queue signals a fence, the program asks for an event at that value
+/// and waits for it. Prints the mean and largest wait.
+#[cfg(windows)]
+fn fence_wait(rounds: u32) -> windows::core::Result<()> {
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Direct3D12::*;
+    use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+    let mut device: Option<ID3D12Device> = None;
+    unsafe { D3D12CreateDevice(None, D3D_FEATURE_LEVEL_11_0, &mut device)? };
+    let device = device.unwrap();
+    let queue: ID3D12CommandQueue =
+        unsafe { device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())? };
+    let fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? };
+    let event = unsafe { CreateEventW(None, false, false, None)? };
+    let mut times = Vec::with_capacity(rounds as usize);
+    for i in 1..=u64::from(rounds) {
+        let start = std::time::Instant::now();
+        unsafe {
+            queue.Signal(&fence, i)?;
+            fence.SetEventOnCompletion(i, event)?;
+            WaitForSingleObject(event, INFINITE);
+        }
+        times.push(start.elapsed().as_micros());
+    }
+    let first = times[0];
+    let mean = times.iter().sum::<u128>() / times.len() as u128;
+    times.sort_unstable();
+    let p99 = times[times.len() * 99 / 100];
+    let largest = times[times.len() - 1];
+    println!(
+        "{rounds} rounds: first {first} us, mean {mean} us, 99th percentile {p99} us, largest {largest} us"
+    );
+    Ok(())
+}
+
+/// Output 0's description (`info`: listed, never beyond) and what swap chains of four back buffer
+/// formats answer `CheckColorSpaceSupport` for each colour space (`bits`).
+#[cfg(windows)]
+fn outputs() -> windows::core::Result<String> {
+    use std::fmt::Write;
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Direct3D12::*;
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    use windows::Win32::Graphics::Dxgi::*;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
+    };
+    use windows::core::{Interface, w};
+    let mut out = String::new();
+    let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
+    let adapter = unsafe { factory.EnumAdapters1(0)? };
+    match unsafe { adapter.EnumOutputs(0) }.and_then(|o| o.cast::<IDXGIOutput6>()) {
+        Ok(output) => describe(&output, &mut out)?,
+        Err(e) => writeln!(out, "output err_{:x} info", e.code().0).unwrap(),
+    }
+    let mut device: Option<ID3D12Device> = None;
+    unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)? };
+    let device = device.unwrap();
+    let queue: ID3D12CommandQueue =
+        unsafe { device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())? };
+    let window = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("outputs"),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            100,
+            100,
+            None,
+            None,
+            None,
+            None,
+        )?
+    };
+    for format in [
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_FORMAT_R10G10B10A2_UNORM,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+    ] {
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
+            Width: 64,
+            Height: 64,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 2,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            Scaling: DXGI_SCALING_STRETCH,
+            ..Default::default()
+        };
+        let chain = unsafe { factory.CreateSwapChainForHwnd(&queue, window, &desc, None, None) }
+            .and_then(|c| c.cast::<IDXGISwapChain3>());
+        let chain = match chain {
+            Ok(c) => c,
+            Err(e) => {
+                writeln!(out, "swap_chain_{} err_{:x} info", format.0, e.code().0).unwrap();
+                continue;
+            }
+        };
+        for space in 0..=25 {
+            let flags =
+                unsafe { chain.CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE(space)) }.unwrap_or(0);
+            writeln!(out, "color_space_{}_{space} {flags:#x} bits", format.0).unwrap();
+        }
+    }
+    unsafe { DestroyWindow(window)? };
+    Ok(out)
+}
+
+/// Output `output`'s `GetDesc1`, a line per value.
+#[cfg(windows)]
+fn describe(
+    output: &windows::Win32::Graphics::Dxgi::IDXGIOutput6,
+    out: &mut String,
+) -> windows::core::Result<()> {
+    use std::fmt::Write;
+    let d = unsafe { output.GetDesc1()? };
+    let name = String::from_utf16_lossy(
+        &d.DeviceName[..d.DeviceName.iter().position(|&c| c == 0).unwrap_or(32)],
+    );
+    let r = d.DesktopCoordinates;
+    for (key, value) in [
+        ("output_name", name),
+        (
+            "output_desktop",
+            format!("{},{},{},{}", r.left, r.top, r.right, r.bottom),
+        ),
+        ("output_bits_per_color", d.BitsPerColor.to_string()),
+        ("output_color_space", d.ColorSpace.0.to_string()),
+        (
+            "output_primaries",
+            format!(
+                "{:?},{:?},{:?},{:?}",
+                d.RedPrimary, d.GreenPrimary, d.BluePrimary, d.WhitePoint
+            )
+            .replace(' ', ""),
+        ),
+        (
+            "output_luminance",
+            format!(
+                "{},{},{}",
+                d.MinLuminance, d.MaxLuminance, d.MaxFullFrameLuminance
+            ),
+        ),
+    ] {
+        writeln!(out, "{key} {value} info").unwrap();
+    }
+    Ok(())
 }
 
 /// What `CheckFeatureSupport` answers, a line per value: name, value in hexadecimal (or the
