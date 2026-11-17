@@ -59,6 +59,15 @@ pub struct TextureObj {
     read: Option<format::ReadAs>,
     /// The base and max level GL holds for the texture, set from the view a draw samples.
     levels: Cell<(u32, u32)>,
+    /// Shared with its sRGB twin: 0 while both hold the same texels, else the side (1 the texture as
+    /// made, 2 its twin) holding newer ones.
+    newest: Rc<Cell<u8>>,
+    side: u8,
+    /// On the texture as made: its twin, a second GL texture in the twin format, made at the first
+    /// view in that format (WebGL 2 has no views).
+    twin: std::cell::OnceCell<Texture>,
+    /// On a twin: the texture it is the twin of.
+    own: Option<std::rc::Weak<TextureObj>>,
 }
 
 #[derive(Debug)]
@@ -251,6 +260,8 @@ pub struct WebGl {
     pass: Option<Pass>,
     /// How many buffers have a stale range, so draws look for them only when some do.
     stale_buffers: u32,
+    /// How many sRGB twins exist, so draws look at their textures only when some do.
+    twins: u32,
     /// GL's last compile or link log, for tests and bug reports.
     last_log: String,
     surface: Option<SurfaceState>,
@@ -308,6 +319,7 @@ impl WebGl {
             empty_fragment,
             pass: None,
             stale_buffers: 0,
+            twins: 0,
             last_log: String::new(),
             surface: None,
             depth_read: [None, None],
@@ -386,6 +398,131 @@ impl WebGl {
             self.last_log = format!("webgl: invalid: {rule}");
         }
         self.fail(LossReason::Error);
+    }
+
+    /// The sRGB twin of `texture` in `format`, made at its first use: a second GL texture of the same
+    /// shape, which [`WebGl::fresh`] keeps holding the same bytes.
+    fn twin_of(&mut self, texture: &Texture, format: Format) -> Result<Texture, GpuError> {
+        if let Some(t) = texture.twin.get() {
+            return Ok(t.clone());
+        }
+        let readable = |f: Format| {
+            format::read_as(f, format::FormatExtensions::found(&self.extensions))
+                .is_some_and(|r| r.texel_read() == r.texel_kept())
+        };
+        if !readable(texture.desc.format) || !readable(format) {
+            return Err(self.unbuilt("sRGB twins of formats read back wider than stored"));
+        }
+        let mut twin = self.create_texture(&TextureDesc {
+            format,
+            ..texture.desc
+        })?;
+        let t = Rc::get_mut(&mut twin.0).expect("a texture just made has one handle");
+        t.newest = texture.newest.clone();
+        t.side = 2;
+        t.own = Some(Rc::downgrade(&texture.0));
+        if texture.newest.get() == 0 {
+            texture.newest.set(1);
+        }
+        self.twins += 1;
+        let _ = texture.twin.set(twin.clone());
+        Ok(twin)
+    }
+
+    /// Before `t` is read or written: copies its twin's texels into it when the twin holds newer ones.
+    fn fresh(&mut self, t: &Texture) {
+        let newest = t.newest.get();
+        if newest == 0 || newest == t.side {
+            return;
+        }
+        let other = match t.side {
+            1 => t.twin.get().cloned(),
+            _ => t.own.as_ref().and_then(|own| own.upgrade()).map(Handle),
+        };
+        if let Some(other) = other {
+            self.copy_whole(&other, t);
+        }
+        t.newest.set(0);
+    }
+
+    /// After `t` was written: its twin no longer holds the same texels, and the next draw binds again.
+    fn written(&mut self, t: &Texture) {
+        if t.side == 2 || t.twin.get().is_some() {
+            t.newest.set(t.side);
+            self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
+        }
+    }
+
+    /// Copies every level and layer of `from` into `to`, a texture of the same shape whose texels have
+    /// the same bytes, through a pixel pack buffer ([`SlowPath::CopyThroughBuffer`]).
+    fn copy_whole(&mut self, from: &Texture, to: &Texture) {
+        self.slow.hit(SlowPath::CopyThroughBuffer);
+        let read = from
+            .read
+            .expect("twins are made only of formats read as stored");
+        let texel = read.texel_kept() as u32;
+        let d = from.desc;
+        for mip in 0..d.mip_levels {
+            let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
+            let layers = if d.dimension == TextureDimension::D3 {
+                (d.depth_or_layers >> mip).max(1)
+            } else {
+                d.depth_or_layers
+            };
+            let layer_bytes = w * h * texel;
+            // SAFETY: plain GL calls on the current context.
+            let pbo = unsafe {
+                let Ok(pbo) = self.gl.create_buffer() else {
+                    self.fail(LossReason::OutOfMemory);
+                    return;
+                };
+                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
+                self.gl.buffer_data_size(
+                    glow::PIXEL_PACK_BUFFER,
+                    (layer_bytes * layers) as i32,
+                    glow::STREAM_COPY,
+                );
+                self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                pbo
+            };
+            for layer in 0..layers {
+                self.read_framebuffer(from, mip, layer);
+                // SAFETY: the pack buffer holds every layer's rows.
+                unsafe {
+                    self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pbo));
+                    self.gl.read_pixels(
+                        0,
+                        0,
+                        w as i32,
+                        h as i32,
+                        read.format,
+                        read.ty,
+                        glow::PixelPackData::BufferOffset(layer * layer_bytes),
+                    );
+                    self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                }
+            }
+            // SAFETY: a plain GL call; the buffer is unbound and deleted after the upload.
+            unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo)) };
+            let region = TextureRegion {
+                texture: to,
+                mip,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            };
+            let extent = Extent {
+                width: w,
+                height: h,
+                depth_or_layers: layers,
+            };
+            self.upload(&region, extent, Texels::Offset(0), w * texel, h);
+            // SAFETY: plain GL calls; GL keeps the buffer for the upload already issued.
+            unsafe {
+                self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+                self.gl.delete_buffer(pbo);
+            }
+        }
     }
 
     /// Opens the write masks and the scissor for a clear or a copy, which obey them, and makes the next
@@ -584,6 +721,7 @@ impl WebGl {
         region: &TextureRegion<'_, Self>,
         extent: Extent,
     ) -> Result<Texture, GpuError> {
+        self.fresh(region.texture);
         let src = region.texture.clone();
         let Some((scale, kept)) = depth::stored(src.desc.format) else {
             return Err(GpuError::Invalid("webgl: not a depth format"));
@@ -828,6 +966,7 @@ impl WebGl {
         }) {
             return r;
         }
+        self.fresh(region.texture);
         let t = region.texture;
         let read = t.read.ok_or(GpuError::Invalid(
             "webgl: the format cannot be read back here",
@@ -1286,6 +1425,10 @@ impl Backend for WebGl {
                 format::FormatExtensions::found(&self.extensions),
             ),
             levels: Cell::new((0, desc.mip_levels - 1)),
+            newest: Rc::new(Cell::new(0)),
+            side: 1,
+            twin: std::cell::OnceCell::new(),
+            own: None,
         })))
     }
 
@@ -1303,12 +1446,19 @@ impl Backend for WebGl {
         if !to_draw && !whole {
             return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
         }
-        if desc.format != t.format || desc.stencil {
-            return Err(self.unbuilt("views in the sRGB twin and stencil views"));
+        if desc.stencil {
+            return Err(self.unbuilt("stencil views"));
         }
+        let texture = if desc.format == t.format {
+            texture.clone()
+        } else if desc.format.linear() == t.format.linear() {
+            self.twin_of(texture, desc.format)?
+        } else {
+            return Err(GpuError::Absent(Features::FORMAT_REINTERPRET));
+        };
         Ok(Handle(Rc::new(ViewObj {
             id: self.id(),
-            texture: texture.clone(),
+            texture,
             desc: *desc,
         })))
     }
@@ -1564,6 +1714,13 @@ impl Backend for WebGl {
             }
             return;
         }
+        if let Object::Texture(t) = &object
+            && let Some(twin) = t.twin.get()
+        {
+            self.twins -= 1;
+            let twin = twin.clone();
+            self.destroy(Object::Texture(twin));
+        }
         let gl = &self.gl;
         // SAFETY: GL keeps an object alive for commands already issued that use it.
         unsafe {
@@ -1653,6 +1810,8 @@ impl Backend for WebGl {
         rows_per_layer: u32,
         _mode: WriteMode,
     ) {
+        self.fresh(region.texture);
+        self.written(region.texture);
         self.upload(
             region,
             extent,
@@ -1682,6 +1841,12 @@ impl Backend for WebGl {
         if let Some(d) = &pass.depth {
             key[MAX_COLOR_TARGETS] = Some(Self::attachment(d.view, 0));
             views[MAX_COLOR_TARGETS] = Some(d.view);
+        }
+        if self.twins > 0 {
+            for v in views.iter().flatten() {
+                self.fresh(&v.texture);
+                self.written(&v.texture);
+            }
         }
         let fb = self.framebuffer(key, &views);
         let gl = &self.gl;
@@ -1815,6 +1980,15 @@ impl Backend for WebGl {
         };
         if self.stale_buffers > 0 {
             self.refresh_draw(call);
+        }
+        if self.twins > 0 {
+            for set in call.bindings.iter().flatten() {
+                for (_, bound) in &set.entries {
+                    if let Bound::Texture(v) = bound {
+                        self.fresh(&v.texture);
+                    }
+                }
+            }
         }
         if self.applied.program != program.id {
             // SAFETY: a plain GL call; the program is alive.
@@ -2007,6 +2181,9 @@ impl Backend for WebGl {
             self.unbuilt("copies of depth and of formats a framebuffer cannot read");
             return;
         }
+        self.fresh(src.texture);
+        self.fresh(dst.texture);
+        self.written(dst.texture);
         let d = dst.texture.clone();
         for i in 0..extent.depth_or_layers {
             let layer = self.read_layer(src, i);
@@ -2064,6 +2241,8 @@ impl Backend for WebGl {
             return;
         };
         self.refresh(src.buffer, Some(false));
+        self.fresh(dst.texture);
+        self.written(dst.texture);
         // SAFETY: a plain GL call; the buffer holds other data.
         unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(data)) };
         self.upload(
@@ -2092,6 +2271,7 @@ impl Backend for WebGl {
         {
             return;
         }
+        self.fresh(src.texture);
         let read = src
             .texture
             .read
@@ -2247,6 +2427,9 @@ impl Backend for WebGl {
             })
         {
             return r;
+        }
+        if let ReadSource::Texture { region, .. } = src {
+            self.fresh(region.texture);
         }
         let size = match src {
             ReadSource::Buffer { size, .. } => *size as usize,
