@@ -162,6 +162,27 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 `UpdateSubresource`, maps of staging resources and of dynamic buffers (`MappedUploadWhole`),
 `ClearState`, `Flush`, the context's `Get` methods, and the device's capability queries.
 
+## Wine's Direct3D 11 tests through ours
+
+Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. Run 1 of G4 (2026-11-17, RTX 3080, through our library copied in as
+  d3d11.dll, 166 tests run, 1 excluded by the rig, 162 of them passing on real Direct3D): 11 pass
+  (test_create_buffer, test_depthstencil_view_interfaces, test_create_rasterizer_state,
+  test_device_removed_reason, test_device_context_state, test_multiple_render_targets, test_discard,
+  test_check_multisample_quality_levels, test_check_feature_support, test_fl9_draw,
+  test_shared_resource); 147 crash and 8 fail. 122 of the 155 stop where Wine's helper makes a swap
+  chain (`IDXGIAdapter::GetParent` for the factory answers `E_NOINTERFACE`, then the test reads
+  through a null pointer): the swap chain is the first thing to build. The other 33 stop at named
+  gaps: 1D and 3D textures, deferred contexts, queries, unordered access views, structured and raw
+  buffers, misc flags (keyed mutex, GDI), `ID3D11Device1` and other interfaces, typed buffer views,
+  and some description checks (blend state, input layout alignment, sampler and depth-stencil state
+  descriptions read back, the format support of feature levels). The first failing check of each is
+  in logs/g4r1-wine-d3d11.log and wine-logs/g4r1 in the scratch directory.
+- d3d10core, dxgi: not run through ours yet.
+
+The gap list (a test failing through ours only because of a named absent feature): not started;
+it is written once the swap chain no longer stops most tests.
+
 ## Known failures
 
 - `depth_with_stencil_copies_as_direct3d_does` (programs.rs, ignored with its reason): the example
