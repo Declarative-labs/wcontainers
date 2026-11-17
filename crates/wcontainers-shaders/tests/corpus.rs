@@ -74,12 +74,14 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     }
 
     let stage = m.module.entry_points[0].stage;
+    // The options the WebGL 2 back end writes with (`wcontainers-gpu-webgl`'s `write_glsl`, on a
+    // context with EXT_clip_control, so without its y flip).
     let options = naga::back::glsl::Options {
         version: naga::back::glsl::Version::Embedded {
             version: 300,
             is_webgl: true,
         },
-        writer_flags: naga::back::glsl::WriterFlags::empty(),
+        writer_flags: naga::back::glsl::WriterFlags::FORCE_POINT_SIZE,
         ..Default::default()
     };
     let pipeline = naga::back::glsl::PipelineOptions {
