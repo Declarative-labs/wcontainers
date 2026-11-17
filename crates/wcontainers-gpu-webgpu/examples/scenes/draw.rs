@@ -551,12 +551,17 @@ pub fn read(b: &mut B, t: &Targets) -> Result<<B as Backend>::Readback> {
     }))
 }
 
-/// Draws a scene into fresh targets, starts its read back and submits.
-pub fn render(b: &mut B, which: Scene, twist: Twist) -> Result<<B as Backend>::Readback> {
-    render_on(b, which, twist, Format::Depth32Float)
-}
+/// The pictures drawn and compared with Direct3D's: each scene with a 32-bit float depth target,
+/// and the quads again on depth and stencil, which most Direct3D programs draw with.
+pub const PICTURES: [(&str, Scene, Format); 4] = [
+    ("triangle", Scene::Triangle, Format::Depth32Float),
+    ("quads", Scene::Quads, Format::Depth32Float),
+    ("instanced", Scene::Instanced, Format::Depth32Float),
+    ("quads-d24s8", Scene::Quads, Format::Depth24PlusStencil8),
+];
 
-/// As [`render`], with a depth target of `depth`'s format where the scene has one.
+/// Draws a scene into fresh targets, with a depth target of `depth`'s format where the scene has one,
+/// starts its read back and submits.
 pub fn render_on(
     b: &mut B,
     which: Scene,

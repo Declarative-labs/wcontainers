@@ -28,6 +28,9 @@ G2a (the first slice) is done, run 1, 2026-11-17:
   on Vulkan, and built for WebAssembly in Chrome 157's WebGPU. Tolerance 0 (see Measurements).
 - The quads with the colour source factor changed to one, or the depth test changed to greater,
   fail the comparison both natively and in Chrome.
+- Since run 4 the quads also equal Direct3D's picture drawn on `depth24plus-stencil8` (natively and
+  in Chrome) and on every other depth format of 24 bits or more (natively), and the whole shared
+  suite runs here, present included (Vulkan 21 of 21; Direct3D 12 20 of 21, the known clear).
 - Writes keep command order (test `writes_take_effect_in_command_order`: copies between an
   ordered write that stages, a second one, and a renaming discard each read the bytes written just
   before them), and an ordered write of a vertex buffer the open pass drew with splits the pass
@@ -153,6 +156,9 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   bug): the interface and plan 5.7 give the conversion to the back end. Listed below.
 - The shared test crate now brings proptest (getrandom, which needs a feature to build for
   WebAssembly), so it is a dev-dependency only off WebAssembly and tests/suite.rs is native only.
+- `web/check` also draws the quads on `depth24plus-stencil8` (picture `quads-d24s8`) with wgpu on
+  Direct3D 12 and Vulkan and in Chrome, compares it with Direct3D 11's quads at tolerance 0, and
+  requires its twisted versions to differ.
 - New tests: bindings.rs `combined_depth_stencil_views_draw_and_read_each_aspect` (both combined
   formats: cleared to depth 0.25 and stencil 7 through one view, then that view and a stencil
   view read by a program, [64, 7, 0, 255]); scenes.rs `quads_match_direct3d_on_every_depth_format`
@@ -207,16 +213,32 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wasm32-unknown-unknown --examples` for the WebAssembly build.
 - Both ways against Direct3D, one command: `crates/wcontainers-gpu-webgpu/web/check [dir]`. One
   GPU job builds the scenes example natively and for WebAssembly, gt-compare and the rig's page
-  driver packages, then (web/check.cmd) runs wasm-bindgen, draws the three scenes with wgpu on
-  Direct3D 12 and on Vulkan, draws them in Chrome (web/draw.mjs, web/scenes.html), compares all
-  nine with references/d3d11 at tolerance 0, and draws the quads with each twist both ways and
-  requires them to differ. Prints Chrome's WebGPU adapter and fails unless it is a GPU, not a
+  driver packages, then (web/check.cmd) runs wasm-bindgen, draws the three scenes and the quads on
+  `depth24plus-stencil8` with wgpu on Direct3D 12 and on Vulkan, draws them in Chrome
+  (web/draw.mjs, web/scenes.html), compares all twelve with references/d3d11 at tolerance 0, and
+  draws both quads pictures with each twist both ways and requires them to differ. Prints Chrome's WebGPU adapter and fails unless it is a GPU, not a
   fallback. With a directory, the pictures are copied there. About 7 minutes cold, the job itself
   5 s.
 - One renderer by hand, on the desktop: `scenes <dx12|vulkan|metal> <dir> [none|blend-factor|
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 4 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load 4 % sampled right after; Mac load average 27 to 50):
+- All tests on Vulkan: 41 of 41 (bindings 5 in 0.58 s, scenes 4 in 0.57 s, suite 21 in 2.31 s,
+  present among them, writes 11 in 1.08 s). On Direct3D 12: 40 of 41, the known
+  `clears_fill_exactly` failure (bindings 2.08 s, scenes 1.80 s, suite 8.90 s, writes 4.41 s).
+  The shared `stencil_operations_and_tests`, which lost the device before, passes on both.
+- Before the fix of `shown`, reading the screen gave black on the rig's hidden desktop, and
+  `present_shows_the_frame` failed with all texels [0, 0, 0, 255]; with `PrintWindow` it passes on
+  both APIs.
+- `web/check`: all twelve pictures (three scenes and `quads-d24s8`, each by wgpu on Direct3D 12,
+  on Vulkan, and in Chrome 157.0.8103.78) equal Direct3D 11's at tolerance 0; the twists differ as
+  before (blend factor 16384 pixels by up to 92, depth function 25016 by up to 204), on
+  `quads-d24s8` too; Chrome's WebGPU adapter is "NVIDIA GeForce RTX 3080", D3D12, discrete GPU,
+  not a fallback. Clippy with warnings denied passes; the WebAssembly build checks.
+- The random byte test was not run again: nothing it exercises changed.
 
 Run 3 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs; Mac
 load average 26 to 30):

@@ -35,7 +35,7 @@ fn device() -> WebGpu {
 }
 
 fn render(b: &mut WebGpu, which: Scene, twist: Twist) -> Vec<u8> {
-    let rb = draw::render(b, which, twist).unwrap();
+    let rb = draw::render_on(b, which, twist, wcontainers_gpu::Format::Depth32Float).unwrap();
     b.wait_read(&rb);
     let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
     b.finish_read(rb, &mut rgba);
