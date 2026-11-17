@@ -2838,6 +2838,8 @@ impl List {
             let t = unsafe { &b.Anonymous.Transition };
             let checked = if t.pResource.is_none() {
                 Err(Error::Invalid("a transition of no resource"))
+            } else if t.StateBefore == t.StateAfter {
+                Err(Error::Invalid("a transition into the state it starts in"))
             } else {
                 check_state(t.StateBefore.0 as u32).and(check_state(t.StateAfter.0 as u32))
             };
