@@ -11,8 +11,8 @@ use crate::d3d11::{Gpu, cell, solid};
 use crate::dxbc;
 use crate::output::Output;
 
-const SIZE: u32 = 256;
-const CONSTANT: [f32; 4] = [0.3, 0.6, 0.9, 0.45];
+pub const SIZE: u32 = 256;
+pub const CONSTANT: [f32; 4] = [0.3, 0.6, 0.9, 0.45];
 
 const COLOR_FACTORS: [D3D11_BLEND; 17] = [
     D3D11_BLEND_ZERO,
@@ -141,6 +141,17 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         }
         Ok(Output::picture("", gpu.read(&texture, 0, 0)?))
     };
+    let mut outputs = Vec::new();
+    for (part, columns, size, cells) in parts() {
+        let mut output = picture(columns, size, cells)?;
+        output.part = part.to_owned();
+        outputs.push(output);
+    }
+    Ok(outputs)
+}
+
+/// The pictures: their names, columns, cell sizes and each cell's blend.
+pub fn parts() -> Vec<(&'static str, u32, u32, Vec<D3D11_BLEND_DESC>)> {
     let one_target = |t: D3D11_RENDER_TARGET_BLEND_DESC| {
         let mut desc = D3D11_BLEND_DESC::default();
         desc.RenderTarget[0] = t;
@@ -202,16 +213,10 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         })
         .collect();
 
-    let mut outputs = Vec::new();
-    for (part, columns, size, cells) in [
+    vec![
         ("factors", 17, 15, factors),
         ("alpha", 11, 23, alpha),
         ("ops", 5, 51, ops),
         ("masks", 4, 64, masks),
-    ] {
-        let mut output = picture(columns, size, cells)?;
-        output.part = part.to_owned();
-        outputs.push(output);
-    }
-    Ok(outputs)
+    ]
 }

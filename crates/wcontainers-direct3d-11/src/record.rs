@@ -516,8 +516,16 @@ impl Backend for Recorder {
         ));
     }
 
-    fn resolve(&mut self, src: &TextureRegion<'_, Self>, dst: &TextureRegion<'_, Self>) {
-        self.record(format!("resolve {} to {}", src.texture, dst.texture));
+    fn resolve(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        format: Format,
+    ) {
+        self.record(format!(
+            "resolve {} to {} as {format:?}",
+            src.texture, dst.texture
+        ));
     }
 
     fn submit(&mut self) -> Id {

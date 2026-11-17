@@ -189,6 +189,7 @@ impl Recorder {
                 features: Features::INDEPENDENT_BLEND
                     | Features::PROVOKING_VERTEX_FIRST
                     | Features::PROVOKING_VERTEX_LAST
+                    | Features::SAMPLE_SHADING
                     | Features::TEXTURE_VIEWS
                     | Features::FRACTIONAL_VIEWPORT
                     | Features::FRACTIONAL_DEPTH_BIAS

@@ -16,13 +16,13 @@ use crate::output::Output;
 const SIZE: u32 = 64;
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind {
+pub enum Kind {
     Float,
     Uint,
     Sint,
 }
 
-const FORMATS: [(&str, DXGI_FORMAT, Kind); 22] = [
+pub const FORMATS: [(&str, DXGI_FORMAT, Kind); 22] = [
     ("rgba8_unorm", DXGI_FORMAT_R8G8B8A8_UNORM, Kind::Float),
     ("rgba8_srgb", DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, Kind::Float),
     ("rgba8_snorm", DXGI_FORMAT_R8G8B8A8_SNORM, Kind::Float),

@@ -16,7 +16,7 @@ const GREEN: [f32; 4] = [0.2, 0.85, 0.3, 1.0];
 const BLUE: [f32; 4] = [0.2, 0.4, 0.95, 1.0];
 const YELLOW: [f32; 4] = [0.95, 0.85, 0.2, 1.0];
 
-const FUNCS: [D3D11_COMPARISON_FUNC; 8] = [
+pub const FUNCS: [D3D11_COMPARISON_FUNC; 8] = [
     D3D11_COMPARISON_NEVER,
     D3D11_COMPARISON_LESS,
     D3D11_COMPARISON_EQUAL,

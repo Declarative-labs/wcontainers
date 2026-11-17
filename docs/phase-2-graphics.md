@@ -178,8 +178,9 @@ Recording:
 - `draw(&DrawCall)`: inside a pass. Section 4.4.
 - `begin_query(index)`, `end_query()`: occlusion, inside a pass.
 - `copy_buffer`, `copy_texture`, `copy_buffer_to_texture`, `copy_texture_to_buffer`, `clear_buffer`
-  (a pattern of 1 to 16 bytes repeated: zero, or an element's bits for Direct3D's storage view clears),
-  `resolve`: outside a pass. `resolve` names the format the samples are averaged in, the source's
+  (a pattern of 1 to 16 bytes repeated: zero, or an element's bits for Direct3D's storage view clears;
+  WebGPU clears only to zero, so its back end fills with any other pattern by copies from a block of
+  the pattern, `PatternClearCopied`), `resolve`: outside a pass. `resolve` names the format the samples are averaged in, the source's
   stored format or its sRGB twin, because Direct3D 11's and 12's `ResolveSubresource` take one: a
   multisampled `R8G8B8A8_TYPELESS` target (one texture seen through sRGB and linear views) resolves in
   linear light as `UNORM_SRGB` and on the stored values as `UNORM`. WebGPU resolves natively through
@@ -191,7 +192,11 @@ Recording:
   pixel buffer uploads); WebGPU needs multiples of 256, so its back end copies such rows through a
   staging buffer at its own pitch, one buffer copy per row (`RowsRepacked`); Direct3D 12's own 256-byte
   pitch rule never meets it. WebGPU cannot copy a buffer into `depth24plus` or `depth32float`: its back
-  end copies the buffer into an `r32float` texture and draws the depth from it (`DepthWrittenByDraw`).
+  end copies the buffer into a colour texture and draws the depth from it (`DepthWrittenByDraw`): for
+  `depth32float` an `r32float` texture whose texels are the depth; for `depth24plus` an `r32uint`
+  texture, since the bytes a front hands over for it are 24-bit unorm depth in the low bits of a 32-bit
+  word (Direct3D's `D24_UNORM_S8_UINT` depth, Vulkan's D24 depth aspect, GL's `UNSIGNED_INT_24_8`), and
+  the draw writes `(v & 0xffffff) / 16777215`.
   Buffer ranges are byte-granular in every call; a back end whose API copies
   in larger granules (`Limits::buffer_copy_alignment`, 4 on WebGPU for `writeBuffer`,
   `copyBufferToBuffer` and `clearBuffer`) does the aligned middle natively and merges the edge words with
@@ -1005,15 +1010,20 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   published) and EXT_depth_clamp (90.8%, Android 25%), and no primitive index (GLSL ES 3.00 has no
   `gl_PrimitiveID`). Native where the bit is set (`CLIP_DISTANCE`, `CULL_DISTANCE`,
   `DUAL_SOURCE_BLEND`, `DEPTH_CLAMP`, `PRIMITIVE_INDEX`); otherwise:
-  - Clip distances: the variant `VariantFlags::CLIP_DISTANCE` passes each distance divided by w as an
-    ordinary value interpolated linearly in screen space (a clip distance is linear in clip space, so
-    over w it is affine on the screen, and its sign is the distance's since w is positive inside the
-    clip volume), and the fragment program discards where one is negative. That is exactly the set of
-    pixels clipping leaves, and the attributes are interpolated as clipping leaves them. On
-    multisampled targets the program evaluates each value at each sample position from its screen
-    derivatives (exact for an affine value) and clears those samples from its output sample mask
-    (`@builtin(sample_mask)` on WebGPU; `gl_SampleMask` on WebGL 2 with OES_sample_variables, without
-    which multisampling is reported absent anyway, above). `ClipDistanceInShader`. Exact.
+  - Clip distances: the variant `VariantFlags::CLIP_DISTANCE` passes each distance as an ordinary
+    perspective-correct value, and the fragment program discards where one is negative. A clip
+    distance is linear in clip space, so perspective-correct interpolation gives its exact value at
+    the pixel's point of the primitive, whose sign is the clip test. That is exactly the set of pixels
+    clipping leaves, and the attributes are interpolated as clipping leaves them. GLSL ES 3.00 has no
+    `noperspective` (naga's GLSL writer refuses linear interpolation for ES), so no route here needs
+    a value interpolated linearly in screen space: where one is needed, the program multiplies the
+    perspective-correct value by the fragment position's w (`gl_FragCoord.w`, one over the
+    interpolated clip w), which gives the value over w interpolated affinely on the screen. On
+    multisampled targets the program takes each distance over w that way, evaluates it at each sample
+    position from its screen derivatives (exact for an affine value) and clears those samples from its
+    output sample mask (`@builtin(sample_mask)` on WebGPU; `gl_SampleMask` on WebGL 2 with
+    OES_sample_variables, without which multisampling is reported absent anyway, above). The same
+    program serves both back ends. `ClipDistanceInShader`. Exact up to float rounding.
   - Cull distances: a primitive is dropped only when all its vertices are negative on one plane, which
     no fragment can tell (an interpolated value can be negative where a vertex is not), so a discard
     cannot make them. The front hands such draws to the stage helper (section 7) as if they had a
@@ -1025,8 +1035,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
     slow; dual-source blending is used by some engines' subpixel text and by OpenGL 3.3, so G4 counts
     it on real programs.
   - Depth clamping: the variant `VariantFlags::DEPTH_CLAMP` keeps clip z inside the clip volume in the
-    last vertex stage, passes z over w as a value interpolated linearly, and writes the fragment's depth
-    from it, with the raster block's bias added (as `DepthBiasInShader` does, since a written depth is
+    last vertex stage, passes the unclamped clip z as a perspective-correct value, and writes the
+    fragment's depth from it times the fragment position's w (z over w, affine on the screen, as
+    above; no `noperspective` is needed), with the raster block's bias added (as `DepthBiasInShader` does, since a written depth is
     not biased by the fixed function) and clamped to the viewport's depth range
     (`HelperValue::DepthRange`). `DepthClampInShader`. Exact; writing depth turns off early depth tests
     for those draws only.

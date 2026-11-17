@@ -11,16 +11,21 @@ repository.workspace = true
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 naga.workspace = true
 wgpu-naga-bridge = "30.0.2"
-wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir"] }
+wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir", "wgsl"] }
 
 [dev-dependencies]
 anyhow = "1.0.100"
 bytemuck = "1.25.2"
+fastrand = "2.5.0"
 naga = { workspace = true, features = ["wgsl-in"] }
 png = "0.18.1"
+wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = "1.0.1"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 js-sys = "0.3.107"

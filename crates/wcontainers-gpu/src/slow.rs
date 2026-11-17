@@ -150,7 +150,7 @@ pub enum SlowPath {
     /// A copy between two formats the API copies only through a buffer: two copies.
     CopyThroughBuffer,
     /// Depth copied into a texture whose depth cannot be written by a copy (from a texture, or from a
-    /// buffer through a float texture), by a draw writing depth.
+    /// buffer through an `r32float` or `r32uint` texture), by a draw writing depth.
     DepthWrittenByDraw,
     /// A texture whose format the back end cannot read back or copy on the GPU, kept on the host too.
     HostCopyKept,
@@ -214,8 +214,8 @@ pub enum SlowPath {
     /// A buffer one draw uses both as writable storage and another way: the other use reads a copy made
     /// before the pass.
     UsageScopeCopied,
-    /// Clip distances applied by the program: interpolated as ordinary values, the fragment discarded
-    /// or its samples masked where one is negative.
+    /// Clip distances applied by the program: interpolated as ordinary perspective-correct values, the
+    /// fragment discarded or its samples masked where one is negative.
     ClipDistanceInShader,
     /// Depth clamped instead of clipped by the program, which writes the fragment's depth.
     DepthClampInShader,
@@ -230,11 +230,14 @@ pub enum SlowPath {
     /// A resolve asked in the sRGB twin of the stored format averaged in the stored format, because the
     /// back end cannot read its multisampled samples another way (a listed loss).
     ResolveInStoredFormat,
+    /// A buffer range filled with a non-zero pattern by copies from a block of the pattern, where the
+    /// API clears buffers only to zero.
+    PatternClearCopied,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 93] = [
+    pub const ALL: [SlowPath; 94] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -328,6 +331,7 @@ impl SlowPath {
         SlowPath::PrimitiveIdAsGeometry,
         SlowPath::RowsRepacked,
         SlowPath::ResolveInStoredFormat,
+        SlowPath::PatternClearCopied,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -438,6 +442,7 @@ impl SlowPath {
             SlowPath::PrimitiveIdAsGeometry => "primitive index made by the stage helper",
             SlowPath::RowsRepacked => "copy rows repacked to the api's pitch",
             SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
+            SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
         }
     }
 }

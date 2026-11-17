@@ -68,9 +68,18 @@ fn gpu<T>(r: Result<T, GpuError>) -> Result<T> {
 /// Makes the back end on the first high-performance adapter of `backends`, which must be a GPU;
 /// returns it with the adapter's description.
 pub async fn device(backends: wgpu::Backends) -> Result<(WebGpu, String)> {
+    device_on(&instance(backends)).await
+}
+
+/// A wgpu instance on `backends`.
+pub fn instance(backends: wgpu::Backends) -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
-    let instance = wgpu::Instance::new(desc);
+    wgpu::Instance::new(desc)
+}
+
+/// As [`device`], on an instance the caller keeps (to make surfaces with).
+pub async fn device_on(instance: &wgpu::Instance) -> Result<(WebGpu, String)> {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -117,7 +126,7 @@ pub fn shader(
     }))
 }
 
-fn program(b: &mut B, source: &str) -> Result<<B as Backend>::Program> {
+pub fn program(b: &mut B, source: &str) -> Result<<B as Backend>::Program> {
     let vs = shader(b, source, "vs", ShaderStage::Vertex)?;
     let ps = shader(b, source, "ps", ShaderStage::Fragment)?;
     gpu(b.create_program(&Program::Render {
@@ -239,11 +248,11 @@ pub fn texture_2d(
 
 /// What a scene draws with, made once; `draw` records it into a pass.
 pub struct Prepared {
-    program: <B as Backend>::Program,
-    blend: <B as Backend>::Blend,
-    depth_stencil: <B as Backend>::DepthStencil,
-    raster: <B as Backend>::Raster,
-    vertex_layout: <B as Backend>::VertexLayout,
+    pub program: <B as Backend>::Program,
+    pub blend: <B as Backend>::Blend,
+    pub depth_stencil: <B as Backend>::DepthStencil,
+    pub raster: <B as Backend>::Raster,
+    pub vertex_layout: <B as Backend>::VertexLayout,
     pub vertices: <B as Backend>::Buffer,
     index: Option<<B as Backend>::Buffer>,
     sets: [Option<<B as Backend>::BindingSet>; 4],
@@ -452,7 +461,7 @@ pub fn draw(b: &mut B, p: &Prepared) {
 /// The targets a scene draws into.
 pub struct Targets {
     pub color: <B as Backend>::Texture,
-    color_view: <B as Backend>::TextureView,
+    pub color_view: <B as Backend>::TextureView,
     depth_view: Option<<B as Backend>::TextureView>,
 }
 

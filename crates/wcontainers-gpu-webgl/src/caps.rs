@@ -95,6 +95,7 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
         }
     }
     Caps {
+        adapter: Default::default(),
         features,
         limits,
         formats,

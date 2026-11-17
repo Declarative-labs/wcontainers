@@ -24,7 +24,18 @@ and built the scenes; its second run (2026-11-17) did this:
   a census of device, context, swap chain and factory calls and saves frames 10, 60 and 120. The
   census files are in tools/graphics-rig/census. Only two sources of programs, both samples and
   demos; no game yet (Next).
-- The milestone's independent check has not been run.
+- Third run (2026-11-17): two open-source games added to the real programs (Chocolate Doom
+  playing Freedoom's first demo through SDL's Direct3D 11 renderer, and Godot 4.7.2 running its
+  2D and 3D platformer demo games on Direct3D 11, through ANGLE, and on Direct3D 12), 16 programs
+  in all; vkd3d's Direct3D 12 conformance tests and its shader runner built and baselined beside
+  Wine's (Part 2 now has 8 test files); the blending, depth, stencil, render target format and
+  sampler scenes drawn through Direct3D 12 pipeline state objects and descriptor tables (now 14
+  D3D12 scenes, 62 outputs; 27 Direct3D 11 scenes, 130 outputs), every picture equal to Direct3D
+  11's but 202 pixels of mip filtering; and the milestone's check run from a fresh checkout (see
+  Measurements).
+- Still missing for Part 1: a Direct3D 12 version of the texture-kind scene (1D, 3D, cube, arrays,
+  mip chains, BC1 to BC7) and of the rasterizer, multisampling and multiple-target scenes; Direct3D
+  12 reaches 2D textures, mips and every sampler so far.
 
 The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
 its sections 10 to 12 (one source two builds, testing, milestones G4 and G5) were read for this run.
@@ -102,8 +113,10 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   order, not disjoint; pixel shader invocations as "at least the covered pixels").
 - Scenes are listed by `gt-d3d11 list` and `gt-d3d12 list`; a scene alone, on the desktop:
   `gt-d3d11 <scene>... <hardware|warp> <dir> [--debug]` writes `<scene>[-<part>].<png|exr|txt>`.
-  The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs and
-  src/d3d12/scenes.rs; each file's first comment says what it covers.
+  The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs,
+  src/d3d12/scenes.rs and src/d3d12/states.rs; each file's first comment says what it covers.
+  states.rs draws Direct3D 11's blend, depth, stencil and formats scenes (the same cells, from the
+  same tables) through Direct3D 12, each state combination made into its own pipeline state object.
 - Shaders: crates/wcontainers-graphics-test/shaders/*.hlsl, each naming its entry points in header
   lines `// fxc: <target> <entry>, ...` (DXBC for Direct3D 11) and `// dxc: ...` (DXIL, shader model
   6.0, for Direct3D 12). build.rs compiles them with the newest Windows SDK's fxc.exe and dxc.exe
@@ -118,21 +131,40 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   the copy built (C:\wc\wine\build\<file>.c) to run only when wc_wanted("<name>") says so
   (desktop/wine-select.h: the names in WC_WINE_ONLY, or all); the names go to <file>.tests. Not a
   GPU job. About 14 s with the sources present.
+  It also fetches vkd3d 2.1 (commit fb7f9ff3c1f8d972ee6f1b8c6a92caf6c8ba1e10, sparse: tests,
+  include, crosslibs) into C:\wc\wine\vkd3d and builds, as vkd3d's "crosstest" make target does,
+  vkd3d-d3d12 (176 tests), vkd3d-d3d12_invalid_usage (3), vkd3d-hlsl_d3d12 (9) and
+  vkd3d-shader_runner (302 .shader_test files, each a test named by its path under vkd3d's tests with
+  + for /, for example hlsl+abs.shader_test). The headers vkd3d's build makes from .idl files come
+  from llvm-mingw's widl; config.h is empty; the copy of vkd3d_test.h built picks a test by exact
+  name (VKD3D_TEST_FILTER) instead of by substring. About 25 s for everything.
 - `tools/graphics-rig/wine-tests list <file>`: the names of a file's tests.
 - `tools/graphics-rig/wine-tests run [--warp] [--record] [--dll <name>=<path>]...
   [<file>[:<test>/<test>...]]...`: one GPU job on the hidden desktop (desktop/wine-run.ps1) running
-  every test of the named files (all four by default), or only the named tests, each in its own
+  every test of the named files (all eight by default), or only the named tests, each in its own
   process with a 120 s limit, on the GPU or on WARP, with replacement libraries beside the test
-  programs if given. Tests listed in tools/graphics-rig/wine-excluded.txt never run. Each test
+  programs if given (and the Windows SDK's dxcompiler.dll and dxil.dll, for vkd3d's shader model 6
+  tests). Tests listed in tools/graphics-rig/wine-excluded.txt never run. Each test
   gets a verdict (pass, fail, crash, timeout) from Wine's summary line and exit code, compared with
   tools/graphics-rig/wine-baseline/<file>-<driver>.txt: "pass", "FAIL, passes on real Direct3D",
   or "known, <verdict> on real Direct3D" for tests that fail on the real thing (not counted).
   Exits 1 on any FAIL. `--record` runs real Direct3D and copies the results into wine-baseline.
   Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs). Example:
-  `wine-tests run d3d11:test_blend_state/test_texture`.
-- `tools/graphics-rig/programs build`: fetches the real programs at pinned commits into
-  C:\wc\programs\src and builds them with the Build Tools' MSBuild (desktop/programs.ps1, which
-  lists them). About 6 minutes from nothing, most of it bgfx.
+  `wine-tests run d3d11:test_blend_state/test_texture` or
+  `wine-tests run vkd3d-shader_runner:hlsl+abs.shader_test`. A whole run of all eight files takes
+  about 9 minutes on the GPU, most of it the shader runner (about 1 s a file). vkd3d's tests give
+  their verdict by vkd3d's summary line; on Windows its "todo" marks count as plain checks.
+- `tools/graphics-rig/programs build`: fetches the real programs at pinned commits (or downloads
+  released builds at pinned SHA-256 hashes into C:\wc\downloads) into C:\wc\programs\src, builds
+  them with the Build Tools' MSBuild and has Godot import its demo projects (headless, no drawing)
+  (desktop/programs.ps1, which lists them). About 6 minutes from nothing, most of it bgfx. The
+  programs: sdk-tutorial02, 04 to 07; bgfx-01-cubes, 06-bump, 09-hdr, 16-shadowmaps, 21-deferred,
+  24-nbody; chocolate-doom (Chocolate Doom 3.1.1, `-timedemo demo1` of Freedoom 0.13.0's
+  freedoom1.wad, one game tic a frame, window, no mouse, sound or music, SDL_RENDER_DRIVER=direct3d11);
+  godot-platformer-3d-d3d11 and godot-platformer-2d-d3d11 (Godot 4.7.2's compatibility renderer on
+  ANGLE's Direct3D 11, `--fixed-fps 60`); godot-platformer-3d-d3d12 and godot-platformer-2d-d3d12
+  (Godot's Forward+ renderer on Direct3D 12, writing its own frames with `--write-movie` and quitting
+  after the last). Nobody plays the games: Doom replays its demo, Godot's demos stand idle.
 - `tools/graphics-rig/programs run [--census] [--capture <frames>] [--dll <name>=<path>]...
   [<program>...]`: one GPU job on the hidden desktop running each program (copied to
   C:\wc\out\<branch>\programs\<program>\bin, in its own working directory) with the forwarding
@@ -141,7 +173,12 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   other --dll libraries go beside the program. Prints pass (presented the last frame, every frame
   saved) or FAIL per program, exits 1 on any FAIL; frames and census to the scratch directory
   (programs/<program>). `--census` (real Direct3D only) also copies each census into
-  tools/graphics-rig/census/<program>.txt.
+  tools/graphics-rig/census/<program>.txt. Direct3D 12 programs run without the forwarding library
+  (it is Direct3D 11 only), so they have no census; they pass when they exit with 0 after writing
+  every frame, and a replacement d3d12.dll or dxgi.dll given with --dll goes beside them. Every
+  program gets APPDATA and LOCALAPPDATA in its output directory, so Godot's settings, logs and
+  shader caches stay under C:\wc. The whole directory of each program's executable is copied (SDL
+  and Godot's console wrapper load files beside it).
 - The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
@@ -232,6 +269,17 @@ versions it finds and writes them to C:\wc\setup\versions.txt; on 2026-11-17 (R1
   limited rights, any number at once, no trigger: only started by jobs). It creates the desktop
   wc-rig in the owner's session while a job runs; nothing is shown on his screen. Requests pass
   through C:\wc\desktop. The real programs' sources and builds are in C:\wc\programs (0.94 GB).
+
+- Since R1's third run: Godot 4.7.2 (C:\wc\programs\src\godot, the official Windows build, 0.17
+  GB unpacked), Chocolate Doom 3.1.1 with its SDL2 libraries, Freedoom 0.13.0 and Godot's demo
+  projects (sparse), all in C:\wc\programs (1.41 GB in all now), their downloads in C:\wc\downloads
+  (0.41 GB in all now), and vkd3d's test sources and builds in C:\wc\wine (0.17 GB in all with
+  Wine's). Godot's settings, logs and shader caches go to each run's output directory (APPDATA and
+  LOCALAPPDATA are set per run) and, for the import step, C:\wc\programs\godot-data; nothing was
+  written to the owner's profile. Measured at the end of the third run: C:\wc 41.05 GB, of which
+  C:\wc\target 36.45 GB, but only 5.74 GB of that is this branch's build: the other graphics tracks
+  (direct3d-11, direct3d-12, shaders, webgl, webgpu and two check directories) now build there
+  through the rig too. 474.8 GB free on C:.
 
 C:\wc holds, besides the tools above (bin, cargo, chrome, rustup, pueue): the installers in
 downloads (0.12 GB), the Graphics Tools task's log in setup, checkouts (C:\wc\src\<branch>, 0.02 GB),
@@ -430,6 +478,62 @@ console, Mac load average 25 to 60):
 - Disk: C:\wc 9.27 GB in all (C:\wc\target 5.50, C:\wc\programs 0.94, C:\wc\wine 0.16), 503.9 GB
   free on C: (508.8 GB at the end of R0's third run).
 
+R1 third run (2026-11-17; desktop CPU load 1 to 5 % before each run, owner logged in at the
+console, Mac load average 38 to 51):
+- Games: chocolate-doom (Freedoom's demo through SDL's Direct3D 11 renderer) and the four Godot
+  programs pass, 120 frames each, 3 frames saved; through the forwarding library 2.2 to 3.3 s for
+  Doom, 24 to 33 s for the Godot 3D platformer on ANGLE (its shaders compiled cold every run), 4.5
+  to 5 s for the 2D one, 17 to 32 s for Godot on Direct3D 12 (its movie writer reads every frame
+  back). Over two runs, Doom's and Godot's Direct3D 11 frames were identical byte for byte, and so
+  were the 2D Godot game's Direct3D 12 frames; the 3D one on Direct3D 12 differed at frames 60 and
+  120 in 69 and 79 of 746496 pixels, by 1. Census: same over two runs for Doom and the 3D Godot
+  game; the 2D one differed in 3 lines (CreateBuffer 112 against 92, Map and Unmap 21206 against
+  21186, VSSetConstantBuffers 1430 against 1424). Godot's ANGLE back buffer is R10G10B10A2, now
+  saved as a 16-bit PNG (each 10-bit value widened by repeating its top bits). All 16 programs
+  pass in one `programs run` (1 min 49 s for the job).
+- vkd3d's tests, baseline (two GPU runs gave the same verdict for every test):
+  vkd3d-d3d12: 176 tests, 174 pass on the GPU (2488098 checks, 45 s), 175 on WARP (2488043 checks,
+  8 s). vkd3d-d3d12_invalid_usage: 3 of 3 on both (56 and 59 checks). vkd3d-hlsl_d3d12: 9 of 9 on
+  both (25192 and 25193 checks). vkd3d-shader_runner: 302 files, 299 pass on the GPU (194308
+  checks, 265 s), 280 on WARP (171730 checks, 124 s; WARP has no Direct3D 9 device, so that part is
+  skipped there).
+- Failing on real Direct3D, so not in the bar, with the reason read from the failed checks: on both,
+  vkd3d-d3d12 test_copy_block_compressed_texture (creating its texture returns E_INVALIDARG on this
+  Windows 10 Direct3D 12 runtime, then the test crashes); on the GPU only,
+  test_update_descriptor_tables_after_root_signature_change (1 check: a texel reads 0 where
+  0xff00ff00 is expected), shader runner hlsl+mesh (mesh shader pipelines are refused,
+  E_INVALIDARG, by this runtime), hlsl+uav-rwbuffer (6 checks: creating shader model 6 states
+  returns E_FAIL where success is expected) and hlsl+uav-rwtexture (10 checks: success where
+  failure is expected); on WARP only, 9 shader runner files crash (access violations in WARP,
+  among them wave operations, switch and 64-bit casts) and 11 fail (half and float rounding,
+  gather-cmp, UAV formats and others; each log names the line).
+- Direct3D 12 state scenes: blend, depth, stencil, formats and samplers, recorded twice on the GPU
+  with the debug layer (no error) and once on WARP. Against the Direct3D 11 references of the same
+  scenes, every Direct3D 12 picture is identical (blend 4, depth 4 pictures, stencil, formats 16
+  pictures and the support text, samplers address, gather, compare and compare_zero), except
+  samplers-filters: 202 of 65536 pixels differ by up to 2 (the mip-filtered cells). WARP against
+  the GPU: at most 2 steps, but for samplers-filters (anisotropy, as on Direct3D 11). The debug
+  layer warns, not errs, for each pipeline made without vertex input and for dual-source pixel
+  shaders writing a second target the pipeline does not bind.
+- A bug of the first draft, kept here as a trap for the fronts: a Direct3D 12 command list's reset
+  sets the blend factor back to zero, so it must be set again on every list (the blend-alpha
+  picture differed from Direct3D 11's in 20966 pixels until it was).
+- Check from a fresh checkout (clone of phase-2-graphics-rig at 2433400 in the scratch directory):
+  `scenes --api d3d11 triangle blend depth stencil formats samplers` 47 passed, 12 s;
+  `scenes --api d3d12 triangle blend depth stencil formats heaps` 39 passed, 7 s;
+  `wine-tests run d3d10core` 110 tests counted, 0 FAIL, 111 s; `scenes --build ... --dll
+  d3d11.dll=<forwarding library> --api d3d11 triangle blend stencil` 7 passed (each program loaded
+  d3d11.dll from its own directory), 12 s; `programs run --dll d3d11.dll=<forwarding library>
+  chocolate-doom` pass, 120 frames. With the blend constant's alpha changed from 0.45 to 0.46 in
+  that checkout, `scenes --api d3d12 blend` failed blend-alpha (206 pixels beyond 2, by up to 3) and
+  passed the other three, exit 1. `cargo tree --workspace -e all` (2112 lines) names no Wine,
+  vkd3d, Godot, Doom or Freedoom crate. Licences read at the source on 2026-11-17 (GitHub's licence
+  detection and the files themselves): DirectX-SDK-Samples MIT, bgfx, bx and bimg BSD-2-Clause,
+  godot and godot-demo-projects MIT, chocolate-doom GPL-2.0 (COPYING.md), Freedoom BSD-3-Clause
+  (COPYING.adoc), vkd3d LGPL-2.1 (COPYING and LICENSE at the pinned commit).
+- End of the third run: `loop` passes (37 s with the build), the 6 unit tests pass through
+  `remote`, clippy with warnings denied passes for both crates on the desktop, shellcheck passes.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -530,12 +634,28 @@ There is no plan document in this checkout; these depart from the task or brief 
 - Nineteen Wine tests that would change the owner's display are excluded, found by searching each
   test's calls for ChangeDisplaySettings, SetFullscreenState, fullscreen swap chains,
   SetGammaControl and ClipCursor.
-- vkd3d's Direct3D 12 conformance tests, which the task allows instead of Wine's small d3d12 file,
-  are not built yet: Wine's d3d12 file (10 tests) is the Direct3D 12 part of the baseline.
+- vkd3d's tests are built like Wine's, with llvm-mingw rather than vkd3d's own configure and
+  make (no MSYS or autotools on the desktop): the headers vkd3d's build generates come from
+  llvm-mingw's widl (run in the output directory, as widl names each header's guard after the path
+  given), config.h is empty, and the one change to vkd3d's framework is that the copy of
+  vkd3d_test.h compiled selects a test by exact name rather than by substring, so one test can run
+  alone. The shader runner is included: its tests compile HLSL with the system's d3dcompiler_47.dll
+  and the SDK's dxcompiler.dll and run them on Direct3D 9, 11 and 12, which a replacement library
+  must also serve.
+- The Godot games reach Direct3D 11 through ANGLE (Godot's compatibility renderer, as Chrome's
+  WebGL does), not through a Direct3D 11 renderer of their own: no permissively licensed game with
+  freely licensed data and a native 64-bit Direct3D 11 renderer was found. Chocolate Doom uses
+  SDL 2's Direct3D 11 renderer, a native one. Chocolate Doom is GPL-2.0: it is downloaded as its
+  released build and run for testing only, never part of the repository or any crate.
+- Direct3D 12 programs save their own frames (Godot's movie writer) rather than through a capture
+  hook, and have no call census: the forwarding library is Direct3D 11 only.
+- The Direct3D 12 state scenes take their cells from the Direct3D 11 scenes' own tables (blend
+  descriptions, comparison functions, formats, samplers) and convert each description by value
+  (the enumerations have the same values), so both APIs are tested on the same ground and their
+  pictures can be compared with each other as well as with WARP.
 - The DirectX SDK samples built on DXUT are not used: DXUT needs Microsoft's D3DX NuGet package,
   whose licence must be accepted on download (requireLicenseAcceptance, Microsoft's own terms).
   Only the five plain Direct3D 11 tutorials are used, which need nothing but the Windows SDK.
-- No open-source game yet: the real programs are Microsoft's samples and bgfx's examples (demos).
 - The census forwarding library hands the program wrapped contexts instead of patching their table
   (see Measurements); devices, swap chains and factories are patched, and any entry the runtime
   changes afterwards is reported in census.txt.
@@ -560,6 +680,10 @@ There is no plan document in this checkout; these depart from the task or brief 
   queries are not counted. Factory calls made before the program's first device are not counted.
   A program that gets a context other than through D3D11CreateDevice(AndSwapChain),
   GetImmediateContext* or CreateDeferredContext* would not be counted on it.
+- Godot's 3D platformer on Direct3D 12 differs from run to run in under 80 pixels by 1 (see
+  Measurements); its Direct3D 11 frames, Doom's and the 2D game's do not.
+- Godot's 3D game on ANGLE takes about 30 s, most of it compiling shaders, as each run starts with
+  empty caches.
 - Frames of programs animated by the clock differ from run to run, so a replacement's frames are
   for looking at, not for comparing; `programs run` passes a program that presents every frame.
 
@@ -612,18 +736,22 @@ C++/Direct3D11/Tutorials fetched), bgfx at 3aab3201, bx at 365db1e2 and bimg at 
 (BSD-2-Clause each, per GitHub's licence detection of their LICENSE files). In R1's second run
 the forwarding crate gained png 0.18.1 (MIT OR Apache-2.0, already in the lock file), anyhow and
 windows (MIT OR Apache-2.0).
+In R1's third run (read at the source on 2026-11-17): Godot 4.7.2's official build (MIT; it
+contains ANGLE, BSD-3-Clause, and the other libraries its COPYRIGHT.txt lists) and
+godot-demo-projects at b761b4cd (MIT, LICENSE.md); Chocolate Doom 3.1.1's released build (GPL-2.0,
+testing only; it carries SDL2, SDL2_mixer and SDL2_net, zlib); Freedoom 0.13.0 (BSD-3-Clause,
+COPYING.adoc; its SHA-256 matches the project's signed checksum file); vkd3d 2.1 test sources
+(LGPL-2.1, testing only, in C:\wc\wine\vkd3d, never in the repository or a crate). No crate was
+added.
 pueue MIT, Git GPL-2.0, Node MIT, Rust MIT OR Apache-2.0, Visual Studio Build Tools and Windows SDK
 under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
 R1 continues, in this order:
-1. One or two open-source games with 64-bit Direct3D 11 renderers and clear licences, through
-   `programs` (an SDL 2 game forced to SDL's direct3d11 renderer is one route; candidates must be
-   read at their source, and must keep drawing while occluded).
-2. Direct3D 12 versions of the pipeline-state scenes (blending, depth and stencil, formats,
-   textures and samplers).
-3. vkd3d's Direct3D 12 tests built and baselined like Wine's (LGPL, testing only, in C:\wc).
-4. The milestone's independent check from a fresh checkout: a sample of scenes, one Wine test file,
-   the forwarding library beside three scenes and one program, a scene broken on purpose, no Wine
-   test in any crate's dependency tree, each licence read at its source.
+1. A Direct3D 12 version of the texture-kind scene (1D, 3D, cube and their arrays, mip chains, BC1
+   to BC7), in src/d3d12/states.rs with the Immediate helper and fill_levels there, taking its
+   textures from the Direct3D 11 scene as blend, depth, stencil, formats and samplers do; then the
+   rasterizer, multisampling and multiple-target scenes the same way.
+2. Run the milestone's independent check again on what changed (the check of this run is in
+   Measurements).

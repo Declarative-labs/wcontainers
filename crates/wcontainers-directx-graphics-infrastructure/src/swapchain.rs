@@ -83,7 +83,9 @@ impl SwapChainDesc {
                 return Err("flip models take 2 to 16 buffers");
             }
             if format != format.linear() {
-                return Err("flip models take no sRGB formats; sRGB views of the buffers draw sRGB");
+                return Err(
+                    "flip models take no sRGB formats; sRGB views of the buffers draw sRGB",
+                );
             }
         } else if !(1..=MAX_BUFFERS).contains(&self.buffers) {
             return Err("blit models take 1 to 16 buffers");

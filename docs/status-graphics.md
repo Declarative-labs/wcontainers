@@ -13,6 +13,13 @@ branches into it at the start and end of every run.
   - The Linux build loop, `tools/graphics-rig/linux`.
   - `crates/wcontainers-gpu-test`: the recording back end (`Recorder`) and the first seven tests of
     the shared suite, which any back end runs with one macro line (How to run).
+- G1a, run 2 (2026-11-17), every finding of G1a's independent check settled (list below), and
+  done and pushed:
+  - the six track branches merged at the start (webgpu, webgl, direct3d-11, direct3d-12, shaders,
+    rig) and again at the end;
+  - four wrong answers of the recording back end fixed;
+  - six suite tests added (13 now);
+  - the plan's clip distance and depth clamp routes made writable in GLSL ES 3.00.
 
 ## G0's open findings, and how each was settled (plan section, crate item)
 
@@ -44,6 +51,33 @@ branches into it at the start and end of every run.
   2^31 (plan 4.4; `VertexStream::stride` doc; the unused-stream doc now says `None`).
 - 93 slow path reasons (six new). 32 tests in `wcontainers-gpu`.
 
+## G1a's check findings, and how each was settled (run 2)
+
+- Blocking, the recorder's wrong answers: sRGB alpha now linear (`texel.rs`); odd strip triangles
+  with the last vertex provoking ordered (i + 1, i, i + 2), as Vulkan does; a fragment whose
+  coverage is empty (raster mask and written `sample_mask`) skips depth and stencil too; a draw
+  takes only its attachments' subresources out of the texture, so it may read the texture's other
+  levels and layers (a subresource both read and written is refused as a violation, except a depth
+  attachment with every aspect read-only). `generate_mips` through the sRGB twin now runs on it.
+- Blocking, no `noperspective` in GLSL ES 3.00: clip distances and the unclamped depth now travel as
+  perspective-correct values; where a screen-affine value is needed the program multiplies by the
+  fragment position's w (plan 4.12; `VariantFlags::CLIP_DISTANCE` and `DEPTH_CLAMP` docs).
+- Suite holes: new tests `edges_through_pixel_centres_follow_the_top_left_rule`,
+  `strips_take_flat_values_from_the_provoking_vertex`, `depth_writes_off_leave_the_depth`,
+  `a_fragment_covering_no_sample_writes_nothing`, `srgb_targets_convert_colour_but_not_alpha`,
+  `generate_mips_averages_in_the_values_format`; the tight-pitch copy now has two rows.
+- `present_shows_the_frame` always checks content: `Host::shown` returns the texels, no longer an
+  Option. A host gives its back end a window it can see; one that cannot leaves the test out of its
+  `suite!(@each ...)` list and says so.
+- Buffer copies into `depth24plus` go through `r32uint` and `(v & 0xffffff) / 16777215` (plan 4.2,
+  `copy_buffer_to_texture` doc).
+- Left for G1b, as the finding itself says: the recorder does not yet check usage flags (`COPY_DST`
+  for writes, `COPY_SRC` for read backs, `VERTEX`, `UNIFORM`, `SAMPLE`) or that `copy_texture`'s
+  formats are of one typeless group (it checks only equal texel sizes). The interface does not yet
+  state which usage each call needs; that is part of the same work.
+- The status claims corrected (below): the recorder's honesty, the interpreter crate, the tight
+  pitch, the merges.
+
 ## Interface changes
 
 - Commit c60a829 ("interface: gave resolve its format, ..."): `Backend::resolve` takes a `Format`
@@ -56,7 +90,25 @@ branches into it at the start and end of every run.
   (`AdapterInfo`: the GPU's name, PCI vendor and device numbers, whether it is software), for DXGI's
   adapter description. Plain data in the interface's style; kept as it is. The recording back end
   declares itself software.
-- Settled at the end-of-run merges: the webgpu back end's `resolve` and the direct3d-12 track's test
+- Commit 275c370 (run 2, "interface: passed clip distances and unclamped depth as
+  perspective-correct values, ..."): documentation only, of `VariantFlags::CLIP_DISTANCE`,
+  `DEPTH_CLAMP`, `SlowPath::ClipDistanceInShader`, `DepthWrittenByDraw` and `copy_buffer_to_texture`.
+- From the webgl track (db2c406, merged in run 2): the `BLEND_CONSTANT_ALPHA` doc says a WebGL back
+  end refuses a block using the constant colour and constant alpha together, with `Absent` of that
+  bit, and the front blends that block in the program. Documentation in the interface's style; kept.
+- From the webgpu track (61a266e, merged at the end of run 2): `SlowPath::PatternClearCopied`, a
+  buffer filled with a non-zero pattern by copies where the API clears only to zero. A counted slow
+  path in the interface's style; kept (94 reasons now).
+- Settled at the end-of-run merges of run 2: the webgpu track's suite host
+  (`wcontainers-gpu-webgpu/tests/suite.rs`) returned None from `shown`; with `shown` now returning
+  the texels, it lists every suite test but `present_shows_the_frame` with `suite!(@each ...)`, since
+  it cannot read a presented swap chain. The webgpu track should add new suite tests to that list,
+  or check presenting where it can see the frame (a canvas in Chrome).
+- Settled at the start-of-run merges of run 2: the webgl back end and the direct3d-11 track's test
+  recorder (`wcontainers-direct3d-11/src/record.rs`) were given `resolve`'s format argument; the
+  webgl back end's `Caps::adapter` takes its renderer string as the name (PCI numbers and software
+  unknown, so zero and false); the webgpu back end's caps conflict kept both sides.
+- Settled at the end-of-run merges of run 1: the webgpu back end's `resolve` and the direct3d-12 track's test
   recorder (`wcontainers-directx-graphics-infrastructure/tests/support/record.rs`) were given
   `resolve`'s new format argument (the WebGPU one makes both views in that format), so the workspace
   builds; the shaders track's `tools/graphics-rig/linux` and ours were the same tool, merged into one
@@ -75,23 +127,32 @@ branches into it at the start and end of every run.
   arithmetic, vectors, matrices, structs, locals, branches, loops, uniform and read-only storage
   buffers, texture samples and loads); triangles are clipped to the depth range, snapped to 1/256
   pixel, filled by pixel centres and the top-left rule, depth and stencil tested, blended. What it
-  does not do yet is an error naming it and device loss, never a wrong answer: points and lines,
+  does not do yet is refused with an error naming it and device loss: points and lines,
   multisampling (only one sample is declared), cube sampling, implicit level of detail over more than
-  one level (needs derivatives), storage writes, compute, indirect draws, alpha to coverage.
+  one level (needs derivatives), storage writes, compute, indirect draws, alpha to coverage. Where it
+  gives a wrong answer that is a bug: G1a's check found four (sRGB alpha, strip provoking vertex,
+  uncovered fragments writing depth, a false violation for a draw reading another level of its
+  target), all fixed in run 2, each now caught by a suite test.
 - Its `Caps` declare only what it does: held formats are the 8, 16 and 32-bit colour formats and the
-  depth and stencil formats; no BC, no storage, one sample. No interpreter crate for naga's IR
-  exists, so `program.rs` is our own.
+  depth and stencil formats; no BC, no storage, one sample; `SAMPLE_SHADING` (with one sample,
+  per-sample shading is per-pixel). `program.rs` is our own interpreter: the only crate that runs
+  naga's IR on the CPU, barracuda-naga-exec 0.4.0, is AGPL-3.0-or-later and runs compute shaders
+  only.
 - Suite tests (`crates/wcontainers-gpu-test/src/suite.rs`), each generic over `Host`:
   `buffer_writes_land_in_order_and_read_back`, `texture_writes_land_and_read_back`,
-  `copies_move_bytes_exactly` (includes an unaligned buffer copy, a copy within one buffer and a
-  12-byte row pitch, which WebGPU must repack), `clears_fill_exactly`,
+  `copies_move_bytes_exactly` (includes an unaligned buffer copy, a copy within one buffer and two
+  rows at a 12-byte row pitch, which WebGPU must repack), `clears_fill_exactly`,
   `triangle_covers_the_pixels_whose_centres_it_holds` (with a culled back face),
-  `textured_draw_with_depth_and_blending`, `present_shows_the_frame` (checks the shown texels where the
-  host can see them: `Host::shown` returns None otherwise).
+  `textured_draw_with_depth_and_blending`, `edges_through_pixel_centres_follow_the_top_left_rule`,
+  `strips_take_flat_values_from_the_provoking_vertex` (each provoking vertex the back end declares),
+  `depth_writes_off_leave_the_depth`, `a_fragment_covering_no_sample_writes_nothing` (where
+  `SAMPLE_SHADING` is declared), `srgb_targets_convert_colour_but_not_alpha`,
+  `generate_mips_averages_in_the_values_format`, `present_shows_the_frame`.
 
 ## Next
 
-- G1b: the pass tracker (plan 4.7, with attachment fitting and the usage-scope split), the occlusion
+- G1b: the recorder's usage and typeless-group checks (above), with the interface stating which
+  usage each call needs; the pass tracker (plan 4.7, with attachment fitting and the usage-scope split), the occlusion
   counter (4.12), the combination tracker (4.4); the recording back end's remaining rules (usage
   scope, write ordering across passes) and a structured call stream that replays identically; the
   seeded random call-sequence generator (100,000 cases, count recorded); every fast-path default shown
@@ -130,7 +191,27 @@ branches into it at the start and end of every run.
   `textured_draw_with_depth_and_blending`. Linux laptop load 1.6 to 2.7.
 - The whole workspace checks on Linux (`cargo check --workspace --all-targets`, 4 m 48 s at load 1.6
   to 4.0 with 5 jobs, after the rig merge; again after the webgpu, direct3d-12 and shaders merges at
-  the end of the run). No webgl or direct3d-11 branch existed on origin yet.
+  the end of the run). Run 1's end-of-run merges (about 05:12) missed what reached origin before its
+  push (05:19): direct3d-11's first push, webgpu e17dfd3 and shaders 5e1123d. Run 2 merged them at
+  its start.
+- Run 2: suite on the recording back end 13 of 13 pass, recorder rule tests 5 of 5 (Linux laptop,
+  load about 1). The check's own inputs (`g1a-check/own_inputs.rs` in scratch, 7 tests) all pass on
+  the fixed recorder.
+- Run 2, the suite catches a wrong back end: ten faults put one at a time into a copy of the recorder
+  on the laptop (script `g1a-run2/breaks.py` in scratch, results in `g1a-run2/results.txt`; load
+  3.7 to 6.4 with 4 jobs), each failing the suite:
+  - region x origin ignored: `copies_move_bytes_exactly`, `texture_writes_land_and_read_back`;
+  - front faces taken as clockwise: `triangle_covers_the_pixels_whose_centres_it_holds`;
+  - `Less` compared as greater: `depth_writes_off_leave_the_depth`,
+    `a_fragment_covering_no_sample_writes_nothing`, `textured_draw_with_depth_and_blending`;
+  - depth write switch ignored: `depth_writes_off_leave_the_depth`;
+  - top-left rule inverted: `edges_through_pixel_centres_follow_the_top_left_rule`;
+  - sRGB alpha encoded: `srgb_targets_convert_colour_but_not_alpha`;
+  - odd strip triangles taking the last-provoking value from the middle vertex:
+    `strips_take_flat_values_from_the_provoking_vertex`;
+  - uncovered fragments writing depth: `a_fragment_covering_no_sample_writes_nothing`;
+  - buffer row pitches below 256 read as 256: `copies_move_bytes_exactly`;
+  - the first presented frame shown again: `present_shows_the_frame`.
 - G0's shader corpus counts are in the plan, section 6.3.
 
 ## Dependencies added and their licences

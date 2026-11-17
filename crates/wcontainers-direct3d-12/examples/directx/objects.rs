@@ -14,9 +14,9 @@ use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
 use wcontainers_direct3d_12::{
-    Error, FenceId, GraphicsPipelineDesc, PipelineId, ResourceId, RootId,
+    Error, FenceId, GraphicsPipelineDesc, PipelineId, ResourceId, RootId, features,
 };
-use wcontainers_directx_graphics_infrastructure::AdapterDesc;
+use wcontainers_directx_graphics_infrastructure::{AdapterDesc, format_support, plane_count};
 use wcontainers_gpu::Backend;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
@@ -518,6 +518,183 @@ impl Device {
                 why,
             )),
         }
+    }
+
+    pub fn CheckFeatureSupport(
+        &self,
+        feature: D3D12_FEATURE,
+        data: *mut c_void,
+        size: u32,
+    ) -> Result<()> {
+        /// The program's structure for `feature`, when it passed one of the right size.
+        ///
+        /// # Safety
+        /// `data` points to `size` writable bytes, as the API requires.
+        unsafe fn fill<'a, T>(data: *mut c_void, size: u32) -> Result<&'a mut T> {
+            if data.is_null() || size as usize != size_of::<T>() {
+                return Err(E_INVALIDARG.into());
+            }
+            // SAFETY: as the caller promises; the size is the structure's.
+            Ok(unsafe { &mut *data.cast::<T>() })
+        }
+        let caps = gpu::call(|d| d.backend().caps().clone());
+        let b = |v: bool| BOOL::from(v);
+        // SAFETY (each `fill` call): the program's pointer and size, as the API defines them.
+        match feature {
+            D3D12_FEATURE_D3D12_OPTIONS => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS>(data, size)? };
+                let o = features::options(&caps);
+                *d = D3D12_FEATURE_DATA_D3D12_OPTIONS {
+                    DoublePrecisionFloatShaderOps: b(o.double_precision_float_shader_ops),
+                    OutputMergerLogicOp: b(o.output_merger_logic_op),
+                    MinPrecisionSupport: D3D12_SHADER_MIN_PRECISION_SUPPORT(
+                        o.min_precision_support as i32,
+                    ),
+                    TiledResourcesTier: D3D12_TILED_RESOURCES_TIER(o.tiled_resources_tier as i32),
+                    ResourceBindingTier: D3D12_RESOURCE_BINDING_TIER(
+                        o.resource_binding_tier as i32,
+                    ),
+                    PSSpecifiedStencilRefSupported: b(o.ps_specified_stencil_ref_supported),
+                    TypedUAVLoadAdditionalFormats: b(o.typed_uav_load_additional_formats),
+                    ROVsSupported: b(o.rovs_supported),
+                    ConservativeRasterizationTier: D3D12_CONSERVATIVE_RASTERIZATION_TIER(
+                        o.conservative_rasterization_tier as i32,
+                    ),
+                    MaxGPUVirtualAddressBitsPerResource: o.max_gpu_virtual_address_bits_per_resource,
+                    StandardSwizzle64KBSupported: b(o.standard_swizzle_64kb_supported),
+                    CrossNodeSharingTier: D3D12_CROSS_NODE_SHARING_TIER(
+                        o.cross_node_sharing_tier as i32,
+                    ),
+                    CrossAdapterRowMajorTextureSupported: b(
+                        o.cross_adapter_row_major_texture_supported,
+                    ),
+                    VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation: b(
+                        o.vp_and_rt_array_index_from_any_shader_feeding_rasterizer_supported_without_gs_emulation,
+                    ),
+                    ResourceHeapTier: D3D12_RESOURCE_HEAP_TIER(o.resource_heap_tier as i32),
+                };
+            }
+            D3D12_FEATURE_D3D12_OPTIONS1 => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS1>(data, size)? };
+                let o = features::options1(&caps);
+                *d = D3D12_FEATURE_DATA_D3D12_OPTIONS1 {
+                    WaveOps: b(o.wave_ops),
+                    WaveLaneCountMin: o.wave_lane_count_min,
+                    WaveLaneCountMax: o.wave_lane_count_max,
+                    TotalLaneCount: o.total_lane_count,
+                    ExpandedComputeResourceStates: b(o.expanded_compute_resource_states),
+                    Int64ShaderOps: b(o.int64_shader_ops),
+                };
+            }
+            D3D12_FEATURE_D3D12_OPTIONS2 => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS2>(data, size)? };
+                *d = D3D12_FEATURE_DATA_D3D12_OPTIONS2 {
+                    DepthBoundsTestSupported: b(features::depth_bounds(&caps)),
+                    ProgrammableSamplePositionsTier: D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER(
+                        features::ABSENT_TIER as i32,
+                    ),
+                };
+            }
+            // Every field of these blocks is an ability the front does not have (plan section
+            // 9: view instancing, barycentrics, 16-bit shader operations, ray tracing, variable
+            // rate shading, mesh shaders, sampler feedback), and zero says absent.
+            D3D12_FEATURE_D3D12_OPTIONS3 => {
+                *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS3>(data, size)? } =
+                    Default::default();
+            }
+            D3D12_FEATURE_D3D12_OPTIONS4 => {
+                *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS4>(data, size)? } =
+                    Default::default();
+            }
+            D3D12_FEATURE_D3D12_OPTIONS5 => {
+                *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS5>(data, size)? } =
+                    Default::default();
+            }
+            D3D12_FEATURE_D3D12_OPTIONS6 => {
+                *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS6>(data, size)? } =
+                    Default::default();
+            }
+            D3D12_FEATURE_D3D12_OPTIONS7 => {
+                *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS7>(data, size)? } =
+                    Default::default();
+            }
+            D3D12_FEATURE_ARCHITECTURE => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_ARCHITECTURE>(data, size)? };
+                if d.NodeIndex != 0 {
+                    return Err(E_INVALIDARG.into());
+                }
+                let a = features::Architecture::default();
+                d.TileBasedRenderer = b(a.tile_based_renderer);
+                d.UMA = b(a.uma);
+                d.CacheCoherentUMA = b(a.cache_coherent_uma);
+            }
+            D3D12_FEATURE_ARCHITECTURE1 => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_ARCHITECTURE1>(data, size)? };
+                if d.NodeIndex != 0 {
+                    return Err(E_INVALIDARG.into());
+                }
+                let a = features::Architecture::default();
+                d.TileBasedRenderer = b(a.tile_based_renderer);
+                d.UMA = b(a.uma);
+                d.CacheCoherentUMA = b(a.cache_coherent_uma);
+                d.IsolatedMMU = b(a.isolated_mmu);
+            }
+            D3D12_FEATURE_FEATURE_LEVELS => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_FEATURE_LEVELS>(data, size)? };
+                // SAFETY: the program's array of `NumFeatureLevels` levels.
+                let asked: Vec<u32> =
+                    unsafe { many(d.pFeatureLevelsRequested, d.NumFeatureLevels) }
+                        .iter()
+                        .map(|l| l.0 as u32)
+                        .collect();
+                if asked.is_empty() {
+                    return Err(E_INVALIDARG.into());
+                }
+                let level =
+                    features::max_feature_level(&caps, &asked).ok_or(DXGI_ERROR_UNSUPPORTED)?;
+                d.MaxSupportedFeatureLevel = D3D_FEATURE_LEVEL(level as i32);
+            }
+            D3D12_FEATURE_SHADER_MODEL => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_SHADER_MODEL>(data, size)? };
+                d.HighestShaderModel =
+                    D3D_SHADER_MODEL(features::shader_model(d.HighestShaderModel.0 as u32) as i32);
+            }
+            D3D12_FEATURE_ROOT_SIGNATURE => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_ROOT_SIGNATURE>(data, size)? };
+                d.HighestVersion = D3D_ROOT_SIGNATURE_VERSION(features::root_signature(
+                    d.HighestVersion.0 as u32,
+                ) as i32);
+            }
+            D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT => {
+                let d =
+                    unsafe { fill::<D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT>(data, size)? };
+                d.MaxGPUVirtualAddressBitsPerResource = features::VIRTUAL_ADDRESS_BITS;
+                d.MaxGPUVirtualAddressBitsPerProcess = features::VIRTUAL_ADDRESS_BITS;
+            }
+            D3D12_FEATURE_FORMAT_SUPPORT => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>(data, size)? };
+                let s = format_support(&caps, d.Format.0 as u32);
+                d.Support1 = D3D12_FORMAT_SUPPORT1(s.support1 as i32);
+                d.Support2 = D3D12_FORMAT_SUPPORT2(s.support2 as i32);
+                if s.is_empty() {
+                    return Err(E_FAIL.into());
+                }
+            }
+            D3D12_FEATURE_FORMAT_INFO => {
+                let d = unsafe { fill::<D3D12_FEATURE_DATA_FORMAT_INFO>(data, size)? };
+                d.PlaneCount = plane_count(d.Format.0 as u32).ok_or(E_INVALIDARG)?;
+            }
+            D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS => {
+                let d =
+                    unsafe { fill::<D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS>(data, size)? };
+                d.NumQualityLevels = 0;
+                d.NumQualityLevels =
+                    features::quality_levels(&caps, d.Format.0 as u32, d.SampleCount)
+                        .ok_or(E_FAIL)?;
+            }
+            _ => return Err(self.unsupported(&format!("CheckFeatureSupport({})", feature.0))),
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

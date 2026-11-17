@@ -109,7 +109,8 @@ fn linear_to_srgb(c: f64) -> f64 {
     }
 }
 
-/// Reads one colour texel. Missing channels read as 0, 0, 0, 1.
+/// Reads one colour texel. Missing channels read as 0, 0, 0, 1. sRGB formats convert red, green and
+/// blue; alpha is linear.
 pub fn decode(format: Format, bytes: &[u8]) -> [f64; 4] {
     let (n, size, num, swap) = layout(format).expect("decode of a format not held");
     let mut out = [0.0, 0.0, 0.0, 1.0];
@@ -127,6 +128,7 @@ pub fn decode(format: Format, bytes: &[u8]) -> [f64; 4] {
         };
         *v = match num {
             Num::Unorm => bits as f64 / ((1u64 << (size * 8)) - 1) as f64,
+            Num::Srgb if c == 3 => bits as f64 / 255.0,
             Num::Srgb => srgb_to_linear(bits as f64 / 255.0),
             Num::Snorm => (signed(bits) as f64 / max).max(-1.0),
             Num::Uint => bits as f64,
@@ -155,6 +157,7 @@ pub fn encode(format: Format, mut value: [f64; 4], bytes: &mut [u8]) {
                 let max = ((1u64 << bits) - 1) as f64;
                 (v.clamp(0.0, 1.0) * max).round_ties_even() as u64
             }
+            Num::Srgb if c == 3 => (v.clamp(0.0, 1.0) * 255.0).round_ties_even() as u64,
             Num::Srgb => (linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round_ties_even() as u64,
             Num::Snorm => {
                 let max = ((1u64 << (bits - 1)) - 1) as f64;

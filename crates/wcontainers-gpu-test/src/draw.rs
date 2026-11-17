@@ -31,7 +31,8 @@ struct ValueLayout {
     entries: Vec<(Varying, usize)>,
 }
 
-/// A draw's attachment, taken out of the objects while the draw writes it.
+/// A draw's attachment: the bytes of its one subresource, taken out of the texture while the draw
+/// writes them, so the draw may read the texture's other subresources.
 struct Target {
     texture: crate::recorder::Id,
     sub: usize,
@@ -39,14 +40,14 @@ struct Target {
     format: Format,
     width: u32,
     height: u32,
-    object: TextureObj,
+    bytes: Vec<u8>,
 }
 
 impl Target {
     fn texel(&mut self, x: u32, y: u32) -> &mut [u8] {
         let size = self.format.block().2 as usize;
         let at = ((self.slice * self.height + y) * self.width + x) as usize * size;
-        &mut self.object.subresources[self.sub][at..at + size]
+        &mut self.bytes[at..at + size]
     }
 }
 
@@ -629,6 +630,31 @@ impl Recorder {
         })
     }
 
+    /// Every (texture, subresource) the bound texture views cover.
+    fn read_subresources(
+        &self,
+        sets: &[Option<Vec<(u32, Bound)>>; MAX_BINDING_SETS],
+    ) -> Result<Vec<(crate::recorder::Id, usize)>, Error> {
+        let mut out = Vec::new();
+        for (_, bound) in sets.iter().flatten().flatten() {
+            if let Bound::Texture(view) = bound {
+                let v = self.view(*view)?;
+                let desc = &self.texture(v.texture)?.desc;
+                let layers = if desc.dimension == TextureDimension::D3 {
+                    0..1
+                } else {
+                    v.desc.base_layer..v.desc.base_layer + v.desc.layer_count
+                };
+                for mip in v.desc.base_mip..v.desc.base_mip + v.desc.mip_count {
+                    for layer in layers.clone() {
+                        out.push((v.texture, subresource(desc, mip, layer)));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// The (fetch index, vertex index) of each vertex the range names, None where a strip restarts.
     fn vertex_list(
         &self,
@@ -799,26 +825,40 @@ impl Recorder {
             .collect();
         let depth_view = pass.depth;
         let (pw, ph) = (pass.width, pass.height);
-        let take = |r: &mut Self, view, slice| -> Result<Target, Error> {
+        let read = self.read_subresources(&state.sets)?;
+        let take = |r: &mut Self, view, slice, read_only: bool| -> Result<Target, Error> {
             let (texture, sub, slice) = r.attachment(view, slice)?;
             let format = r.view(view)?.desc.format;
             let (width, height) = r.view_size(view)?;
-            match r.objects[texture.0 as usize].take() {
-                Some(Obj::Texture(object)) => Ok(Target {
-                    texture,
-                    sub,
-                    slice,
-                    format,
-                    width,
-                    height,
-                    object,
-                }),
-                _ => Err("an attachment attached twice".into()),
+            if read.contains(&(texture, sub)) && !read_only {
+                return Err(
+                    "a subresource bound for reading while it is a written attachment".into(),
+                );
             }
+            let Some(Obj::Texture(t)) = r.objects[texture.0 as usize].as_mut() else {
+                return Err("an attachment that is not a texture".into());
+            };
+            let bytes = if read_only {
+                t.subresources[sub].clone()
+            } else {
+                std::mem::take(&mut t.subresources[sub])
+            };
+            if bytes.is_empty() {
+                return Err("an attachment attached twice".into());
+            }
+            Ok(Target {
+                texture,
+                sub,
+                slice,
+                format,
+                width,
+                height,
+                bytes,
+            })
         };
         let mut result = Ok(());
         for c in color_views {
-            match c.map(|(v, s)| take(self, v, s)).transpose() {
+            match c.map(|(v, s)| take(self, v, s, false)).transpose() {
                 Ok(t) => colors.push(t),
                 Err(e) => {
                     result = Err(e);
@@ -826,7 +866,13 @@ impl Recorder {
                 }
             }
         }
-        let mut depth = match depth_view.map(|(v, _, _)| take(self, v, 0)).transpose() {
+        // A depth attachment whose every aspect is read-only may also be bound for reading.
+        let depth_read_only =
+            |(_, d, s): DepthOps| d.is_none_or(|a| a.read_only) && s.is_none_or(|a| a.read_only);
+        let mut depth = match depth_view
+            .map(|o| take(self, o.0, 0, depth_read_only(o)))
+            .transpose()
+        {
             Ok(d) => d,
             Err(e) => {
                 result = Err(e);
@@ -847,7 +893,9 @@ impl Recorder {
             );
         }
         for t in colors.into_iter().flatten().chain(depth) {
-            self.objects[t.texture.0 as usize] = Some(Obj::Texture(t.object));
+            if let Some(Obj::Texture(o)) = self.objects[t.texture.0 as usize].as_mut() {
+                o.subresources[t.sub] = t.bytes;
+            }
         }
         if let Some(Some((_, n))) = self.pass.as_mut().map(|p| p.query.as_mut()) {
             *n += passed;
@@ -911,9 +959,14 @@ impl Recorder {
                     }
                     Topology::TriangleStrip if strip.len() >= 3 => {
                         let i = strip.len() - 3;
-                        // Vulkan's and WebGPU's strip order, keeping the first vertex first.
-                        let odd = i & 1;
-                        triangles.push([strip[i], strip[i + 1 + odd], strip[i + 2 - odd]]);
+                        // Vulkan's strip order: odd triangles are (i, i + 2, i + 1), or
+                        // (i + 1, i, i + 2) with the last vertex provoking, which keeps the
+                        // provoking vertex at i or i + 2 as every API defines it.
+                        triangles.push(match (i & 1, raster.provoking) {
+                            (0, _) => [strip[i], strip[i + 1], strip[i + 2]],
+                            (_, ProvokingVertex::First) => [strip[i], strip[i + 2], strip[i + 1]],
+                            (_, ProvokingVertex::Last) => [strip[i + 1], strip[i], strip[i + 2]],
+                        });
                     }
                     _ => {}
                 }
@@ -1214,6 +1267,10 @@ impl Recorder {
                     }
                 }
                 z = z.clamp(vmin.min(vmax), vmax.max(vmin));
+                // A fragment covering no sample writes nothing: no depth, stencil or colour.
+                if mask == 0 {
+                    continue;
+                }
                 // Depth and stencil.
                 let mut depth_pass = true;
                 let mut stencil_pass = true;
@@ -1258,7 +1315,7 @@ impl Recorder {
                         texel::encode_depth(format, z, t);
                     }
                 }
-                if !(depth_pass && stencil_pass) || mask == 0 {
+                if !(depth_pass && stencil_pass) {
                     continue;
                 }
                 *passed += 1;

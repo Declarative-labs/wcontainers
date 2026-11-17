@@ -1,4 +1,8 @@
 # <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>
+blend-alpha.png 2 0 warp 15714 2
+blend-factors.png 2 0 warp 53491 2
+blend-masks.png 1 0 warp 34040 1
+blend-ops.png 2 0 warp 50930 2
 bundles.png 1 0 warp 1568 1
 compute-image.exr 0 0 warp 0 0
 compute-sums.txt exact warp same
@@ -7,6 +11,36 @@ copies-buffer.txt exact warp same
 copies-region.png 0 0 warp 0 0
 copies-resolve.png 1 0 warp 780 1
 copies-resource.png 0 0 warp 0 0
+depth-bias.png 0 0 warp 0 0
+depth-clip.png 0 0 warp 0 0
+depth-clip_depth.exr 0.0000002980232238769531 0 warp 4630 0.0000002980232238769531
+depth-funcs.png 1 0 warp 21280 1
+depth-shader.png 0 0 warp 0 0
+depth-shader_depth.exr 0.00000011920928955078125 0 warp 1952 0.00000011920928955078125
+formats-b5g6r5_unorm.png 1 0 warp 698 1
+formats-bgra8_srgb.png 1 0 warp 611 1
+formats-bgra8_unorm.png 1 0 warp 186 1
+formats-bgrx8_unorm.png 1 0 warp 64 1
+formats-r16_unorm.png 0 0 warp 0 0
+formats-r32_float.exr 0 0 warp 0 0
+formats-r32_uint.exr 0 0 warp 0 0
+formats-r8_unorm.png 0 0 warp 0 0
+formats-rg11b10_float.exr 0 0 warp 0 0
+formats-rg16_float.exr 0 0 warp 0 0
+formats-rg8_unorm.png 0 0 warp 0 0
+formats-rgb10a2_unorm.png 1 0 warp 217 1
+formats-rgba16_float.exr 0 0 warp 0 0
+formats-rgba16_sint.png 0 0 warp 0 0
+formats-rgba16_snorm.png 1 0 warp 72 1
+formats-rgba16_unorm.png 1 0 warp 76 1
+formats-rgba32_float.exr 0 0 warp 0 0
+formats-rgba32_sint.exr 0 0 warp 0 0
+formats-rgba8_snorm.png 1 0 warp 263 1
+formats-rgba8_srgb.png 1 0 warp 611 1
+formats-rgba8_uint.png 0 0 warp 0 0
+formats-rgba8_unorm.png 1 0 warp 186 1
+formats-srgb_blend.png 1 0 warp 2890 1
+formats-support.txt exact warp same
 heaps-first.png 1 0 warp 1599 1
 heaps-second.png 1 0 warp 1365 1
 queries-results.txt exact warp same
@@ -14,6 +48,13 @@ queries.png 1 0 warp 470 1
 queues-sums.txt exact warp same
 queues.png 1 0 warp 1980 1
 roots.png 1 0 warp 5714 1
+samplers-address.png 2 0 warp 17370 2
+samplers-compare.png 1 0 warp 17880 1
+samplers-compare_zero.png 1 0 warp 396 1
+samplers-filters.png 8 6004 warp 20414 179
+samplers-gather.png 0 0 warp 0 0
+stencil-values.png 0 0 warp 0 0
+stencil.png 1 0 warp 4448 1
 swapchain-frame0.png 1 0 warp 3408 1
 swapchain-frame1.png 1 0 warp 7037 1
 swapchain-frame2.png 1 0 warp 3408 1

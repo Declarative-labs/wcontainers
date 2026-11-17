@@ -210,7 +210,9 @@ impl WebGl {
     pub fn new(gl: glow::Context, platform: platform::Platform, off: &[&str]) -> WebGl {
         let extensions = platform::extensions(&gl, off);
         let renderer = platform::renderer(&gl);
-        let caps = caps::caps(&gl, &extensions);
+        let mut caps = caps::caps(&gl, &extensions);
+        // WebGL names the GPU only by its renderer string; PCI numbers and software are unknown.
+        caps.adapter.name = renderer.clone();
         let flip_y = !extensions.contains("EXT_clip_control");
         let clip_depth = if flip_y {
             platform::NEGATIVE_ONE_TO_ONE
@@ -1548,7 +1550,12 @@ impl Backend for WebGl {
         unimplemented!("webgl: buffer clears are not built yet")
     }
 
-    fn resolve(&mut self, _src: &TextureRegion<'_, Self>, _dst: &TextureRegion<'_, Self>) {
+    fn resolve(
+        &mut self,
+        _src: &TextureRegion<'_, Self>,
+        _dst: &TextureRegion<'_, Self>,
+        _format: Format,
+    ) {
         unimplemented!("webgl: resolves are not built yet")
     }
 

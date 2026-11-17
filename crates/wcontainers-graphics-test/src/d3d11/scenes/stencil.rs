@@ -12,7 +12,7 @@ use crate::output::Output;
 
 const SIZE: u32 = 192;
 
-fn op(pass: D3D11_STENCIL_OP, func: D3D11_COMPARISON_FUNC) -> D3D11_DEPTH_STENCILOP_DESC {
+pub fn op(pass: D3D11_STENCIL_OP, func: D3D11_COMPARISON_FUNC) -> D3D11_DEPTH_STENCILOP_DESC {
     D3D11_DEPTH_STENCILOP_DESC {
         StencilFailOp: D3D11_STENCIL_OP_KEEP,
         StencilDepthFailOp: D3D11_STENCIL_OP_KEEP,
@@ -22,7 +22,7 @@ fn op(pass: D3D11_STENCIL_OP, func: D3D11_COMPARISON_FUNC) -> D3D11_DEPTH_STENCI
 }
 
 /// Stencil on, depth always passing and not written; the same operation for both faces.
-fn stencil(
+pub fn stencil(
     front: D3D11_DEPTH_STENCILOP_DESC,
     back: D3D11_DEPTH_STENCILOP_DESC,
     read: u8,
@@ -39,7 +39,7 @@ fn stencil(
 }
 
 /// A triangle, clockwise (front-facing) or not.
-fn triangle(cx: f32, cy: f32, r: f32, clockwise: bool) -> [Colored; 3] {
+pub fn triangle(cx: f32, cy: f32, r: f32, clockwise: bool) -> [Colored; 3] {
     let white = |x: f32, y: f32| [x, y, 0.5, 1.0, 1.0, 1.0, 1.0];
     let (a, b, c) = (
         white(cx, cy + r),

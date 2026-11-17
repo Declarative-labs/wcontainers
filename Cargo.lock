@@ -2672,6 +2672,8 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wgpu",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
@@ -2738,6 +2740,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "fastrand",
  "js-sys",
  "naga",
  "png",
@@ -2745,8 +2748,10 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wcontainers-gpu",
+ "wcontainers-gpu-test",
  "wgpu",
  "wgpu-naga-bridge",
+ "windows-sys",
 ]
 
 [[package]]

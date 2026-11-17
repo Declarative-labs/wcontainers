@@ -13,13 +13,14 @@ impl Host for RecorderHost {
     fn window(_: &mut Recorder) -> u32 {
         7
     }
-    fn shown(backend: &mut Recorder, window: u32) -> Option<Vec<u8>> {
+    fn shown(backend: &mut Recorder, window: u32) -> Vec<u8> {
         backend
             .shown
             .iter()
             .rev()
             .find(|f| f.window == window)
             .map(|f| f.bytes.clone())
+            .unwrap_or_default()
     }
 }
 

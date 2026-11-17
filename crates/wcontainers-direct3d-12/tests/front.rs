@@ -8,7 +8,7 @@ mod record;
 
 use wcontainers_direct3d_12::features::*;
 use wcontainers_direct3d_12::root::*;
-use wcontainers_gpu::{Features, Format};
+use wcontainers_gpu::{Features, Format, FormatUse};
 
 fn signature(version: u32) -> RootSignatureDesc {
     RootSignatureDesc {
@@ -124,8 +124,25 @@ fn webgpu_reports_11_0_and_tier_1() {
     assert_eq!(shader_model(0x51), 0x51);
     assert!(!depth_bounds(&caps));
     assert_eq!(ABSENT_TIER, 0);
-    assert_eq!(quality_levels(&caps, Format::Rgba8Unorm, 4), 1);
-    assert_eq!(quality_levels(&caps, Format::Rgba8Unorm, 8), 0);
+    // R8G8B8A8_UNORM, then A8_UNORM, which the recorder lacks.
+    assert_eq!(quality_levels(&caps, 28, 4), Some(1));
+    assert_eq!(quality_levels(&caps, 28, 8), Some(0));
+    assert_eq!(quality_levels(&caps, 65, 1), None);
+    assert_eq!(
+        max_feature_level(&caps, &[0x9100, 0xa000, 0xb000, 0xc000]),
+        Some(FEATURE_LEVEL_11_0)
+    );
+    assert_eq!(max_feature_level(&caps, &[0xa000, 0x9300]), Some(0xa000));
+    assert_eq!(max_feature_level(&caps, &[0xc200]), None);
+    assert_eq!(
+        (root_signature(1), root_signature(2), root_signature(3)),
+        (1, 2, ROOT_SIGNATURE_1_1)
+    );
+    assert_eq!(
+        options(&caps).max_gpu_virtual_address_bits_per_resource,
+        VIRTUAL_ADDRESS_BITS
+    );
+    assert!(!Architecture::default().uma);
 }
 
 #[test]
@@ -138,11 +155,14 @@ fn resource_tables_give_11_1_and_tier_3() {
 }
 
 #[test]
-fn no_device_without_compute_or_11_0_sizes() {
+fn no_device_without_compute_11_0_sizes_or_d32_s8_targets() {
     let mut caps = record::webgpu_like_caps();
     caps.features.remove(Features::COMPUTE);
     assert_eq!(feature_level(&caps), None);
     let mut caps = record::webgpu_like_caps();
     caps.limits.max_texture_layers = 256;
+    assert_eq!(feature_level(&caps), None);
+    let mut caps = record::webgpu_like_caps();
+    caps.formats.uses[Format::Depth32FloatStencil8.index()] = FormatUse::empty();
     assert_eq!(feature_level(&caps), None);
 }
