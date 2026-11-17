@@ -80,6 +80,15 @@ pub fn instance(backends: wgpu::Backends) -> wgpu::Instance {
 
 /// As [`device`], on an instance the caller keeps (to make surfaces with).
 pub async fn device_on(instance: &wgpu::Instance) -> Result<(WebGpu, String)> {
+    device_without(instance, wgpu::Features::empty()).await
+}
+
+/// As [`device_on`], with the device made without `features`, to test what a device lacking
+/// them declares and does.
+pub async fn device_without(
+    instance: &wgpu::Instance,
+    features: wgpu::Features,
+) -> Result<(WebGpu, String)> {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -93,9 +102,9 @@ pub async fn device_on(instance: &wgpu::Instance) -> Result<(WebGpu, String)> {
         "the adapter is the software {}, not a GPU",
         info.name
     );
-    let (device, queue) = adapter
-        .request_device(&WebGpu::device_descriptor(&adapter))
-        .await?;
+    let mut desc = WebGpu::device_descriptor(&adapter);
+    desc.required_features.remove(features);
+    let (device, queue) = adapter.request_device(&desc).await?;
     let name = format!(
         "{} ({:?}, {:?}, {} {})",
         info.name, info.backend, info.device_type, info.driver, info.driver_info

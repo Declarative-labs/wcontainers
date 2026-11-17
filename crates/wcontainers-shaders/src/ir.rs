@@ -284,9 +284,12 @@ pub struct Ir {
 }
 
 impl Ir {
-    /// The instruction with id `id` (non-zero).
-    pub fn op(&self, id: u32) -> &Op {
-        &self.ops[id as usize - 1]
+    /// The instruction with id `id`; a null or out-of-range id is malformed IR.
+    pub fn op(&self, id: u32) -> Result<&Op, crate::ConvertError> {
+        (id as usize)
+            .checked_sub(1)
+            .and_then(|i| self.ops.get(i))
+            .ok_or_else(|| crate::ConvertError::Malformed(alloc::format!("no instruction {id}")))
     }
 
     /// Reads the serialised token form.

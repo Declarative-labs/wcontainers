@@ -33,6 +33,10 @@ pub struct Recorder {
     reads: HashMap<Id, Vec<u8>>,
     /// Set to lose the device: what `status` reports.
     pub lost: Option<LossReason>,
+    /// Set to make read backs pending until a submit (or a wait) after them, as on a GPU.
+    pub reads_need_submit: bool,
+    /// The last id submitted.
+    submitted: Id,
 }
 
 impl std::fmt::Debug for Recorder {
@@ -105,6 +109,8 @@ impl Recorder {
             views: HashMap::new(),
             reads: HashMap::new(),
             lost: None,
+            reads_need_submit: false,
+            submitted: 0,
         }
     }
 
@@ -537,6 +543,7 @@ impl Backend for Recorder {
     fn submit(&mut self) -> Id {
         let id = self.id();
         self.record(format!("submit {id}"));
+        self.submitted = id;
         id
     }
 
@@ -592,11 +599,18 @@ impl Backend for Recorder {
         Ok(id)
     }
 
-    fn read_state(&mut self, _readback: &Id) -> ReadState {
-        ReadState::Ready
+    fn read_state(&mut self, readback: &Id) -> ReadState {
+        if self.reads_need_submit && *readback > self.submitted {
+            ReadState::Pending
+        } else {
+            ReadState::Ready
+        }
     }
 
-    fn wait_read(&mut self, _readback: &Id) {}
+    fn wait_read(&mut self, readback: &Id) {
+        self.record(format!("wait_read {readback}"));
+        self.submitted = self.submitted.max(*readback);
+    }
 
     fn finish_read(&mut self, readback: Id, dst: &mut [u8]) {
         if let Some(bytes) = self.reads.remove(&readback) {

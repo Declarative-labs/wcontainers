@@ -2,8 +2,11 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 
+#include "boundary.h"
+#include "dxbc/dxbc_container.h"
 #include "dxil_spirv_c.h"
 
 namespace {
@@ -15,49 +18,71 @@ void log_error(void* userdata, dxil_spv_log_level level, const char* text) {
     *first = text;
 }
 
-char* copy(const std::string& s) {
-  char* out = static_cast<char*>(std::malloc(s.size() + 1));
-  if (out)
-    std::memcpy(out, s.c_str(), s.size() + 1);
-  return out;
+// Direct3D 12 takes a container whose checksum matches its bytes (the validator's signature), or one
+// carrying the bypass value dxc writes when it does not sign.
+bool signed_or_bypassed(const uint8_t* data, size_t size) {
+  dxbc_spv::dxbc::Container container(data, size);
+  if (!container)
+    return false;
+  if (container.validateHash())
+    return true;
+  auto hash = container.getHash();
+  for (auto byte : hash.data)
+    if (byte != 1)
+      return false;
+  return true;
+}
+
+struct Blob {
+  dxil_spv_parsed_blob blob = nullptr;
+  dxil_spv_converter converter = nullptr;
+  ~Blob() {
+    if (converter)
+      dxil_spv_converter_free(converter);
+    if (blob)
+      dxil_spv_parsed_blob_free(blob);
+  }
+};
+
+struct LogScope {
+  explicit LogScope(std::string* first) { dxil_spv_set_thread_log_callback(log_error, first); }
+  ~LogScope() { dxil_spv_set_thread_log_callback(nullptr, nullptr); }
+};
+
+int convert(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+  if (!signed_or_bypassed(data, size)) {
+    *error = wcs::copy("the container's checksum does not match its bytes");
+    return 1;
+  }
+  std::string first;
+  LogScope scope(&first);
+  Blob b;
+  if (dxil_spv_parse_dxil_blob(data, size, &b.blob) != DXIL_SPV_SUCCESS) {
+    *error = wcs::copy(first.empty() ? "not a DXIL container" : first);
+    return 1;
+  }
+  if (dxil_spv_create_converter(b.blob, &b.converter) != DXIL_SPV_SUCCESS ||
+      dxil_spv_converter_run(b.converter) != DXIL_SPV_SUCCESS) {
+    *error = wcs::copy(first.empty() ? "dxil-spirv could not convert the shader" : first);
+    return 2;
+  }
+  dxil_spv_compiled_spirv spirv = { };
+  if (dxil_spv_converter_get_compiled_spirv(b.converter, &spirv) != DXIL_SPV_SUCCESS ||
+      !(*out = static_cast<uint32_t*>(std::malloc(spirv.size)))) {
+    *error = wcs::copy(first.empty() ? "dxil-spirv gave no SPIR-V" : first);
+    return 3;
+  }
+  std::memcpy(*out, spirv.data, spirv.size);
+  *out_words = spirv.size / 4;
+  return 0;
 }
 
 }
 
 // Returns 0 and the SPIR-V in `out` (free with wcs_free), or nonzero with the reason in `error`.
 extern "C" int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
-  std::string first;
-  dxil_spv_set_thread_log_callback(log_error, &first);
   *out = nullptr;
   *out_words = 0;
   *error = nullptr;
-
-  dxil_spv_parsed_blob blob = nullptr;
-  if (dxil_spv_parse_dxil_blob(data, size, &blob) != DXIL_SPV_SUCCESS) {
-    dxil_spv_set_thread_log_callback(nullptr, nullptr);
-    *error = copy(first.empty() ? "not a DXIL container" : first);
-    return 1;
-  }
-  dxil_spv_converter converter = nullptr;
-  int status = 0;
-  if (dxil_spv_create_converter(blob, &converter) != DXIL_SPV_SUCCESS ||
-      dxil_spv_converter_run(converter) != DXIL_SPV_SUCCESS) {
-    status = 2;
-  } else {
-    dxil_spv_compiled_spirv spirv = { };
-    if (dxil_spv_converter_get_compiled_spirv(converter, &spirv) != DXIL_SPV_SUCCESS ||
-        !(*out = static_cast<uint32_t*>(std::malloc(spirv.size)))) {
-      status = 3;
-    } else {
-      std::memcpy(*out, spirv.data, spirv.size);
-      *out_words = spirv.size / 4;
-    }
-  }
-  if (status)
-    *error = copy(first.empty() ? "dxil-spirv could not convert the shader" : first);
-  if (converter)
-    dxil_spv_converter_free(converter);
-  dxil_spv_parsed_blob_free(blob);
-  dxil_spv_set_thread_log_callback(nullptr, nullptr);
-  return status;
+  return wcs::contained("dxil-spirv", error, [&] { return convert(data, size, out, out_words, error); });
 }

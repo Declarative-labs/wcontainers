@@ -9,19 +9,19 @@ use core::{
 };
 
 use super::{
-    help,
+    BackendResult, Error, FragmentEntryPoint, Options, PipelineOptions, ShaderModel, help,
     help::{
         WrappedArrayLength, WrappedConstructor, WrappedImageQuery, WrappedStructMatrixAccess,
         WrappedZeroValue,
     },
     storage::StoreValue,
-    BackendResult, Error, FragmentEntryPoint, Options, PipelineOptions, ShaderModel,
 };
 use crate::{
-    back::{self, get_entry_points, Baked},
+    Handle, Module, RayQueryFunction, Scalar, ScalarKind, ShaderStage, TypeInner,
+    back::{self, Baked, get_entry_points},
     common,
-    proc::{self, index, ExternalTextureNameKey, NameKey},
-    valid, Handle, Module, RayQueryFunction, Scalar, ScalarKind, ShaderStage, TypeInner,
+    proc::{self, ExternalTextureNameKey, NameKey, index},
+    valid,
 };
 
 const LOCATION_SEMANTIC: &str = "LOC";
@@ -943,8 +943,17 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 write!(
                     self.out,
                     "{{ GetAttributeAtVertex({0}.{1}, 0), GetAttributeAtVertex({0}.{1}, 1), GetAttributeAtVertex({0}.{1}, 2) }}",
-                    ep_input.arg_name,
-                    fake_member.name,
+                    ep_input.arg_name, fake_member.name,
+                )?;
+            }
+            // The IR's fragment position has 1/w in w, as SPIR-V's and GLSL's; HLSL's has w.
+            Some(crate::Binding::BuiltIn(crate::BuiltIn::Position { .. }))
+                if ep.stage == ShaderStage::Fragment =>
+            {
+                write!(
+                    self.out,
+                    "float4({0}.{1}.xyz, 1.0 / {0}.{1}.w)",
+                    ep_input.arg_name, fake_member.name
                 )?;
             }
             _ => {
@@ -2788,7 +2797,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                     ref other => {
                         return Err(Error::Custom(format!(
                             "invalid address space {other:?} for atomic statement"
-                        )))
+                        )));
                     }
                 }
                 if let Some(cmp) = compare_expr {
@@ -5097,7 +5106,7 @@ fn get_inner_matrix_of_global_uniform(
             {
                 return mat_data.or_else(|| {
                     array_base.and_then(|array_base| get_inner_matrix_data(module, array_base))
-                })
+                });
             }
             _ => break,
         };

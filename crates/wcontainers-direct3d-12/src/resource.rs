@@ -48,15 +48,22 @@ pub enum HeapType {
     Readback,
 }
 
-/// `D3D12_HEAP_FLAGS` this front honours: the deny flags (they only narrow what the heap holds),
-/// `CREATE_NOT_RESIDENT` (resources are always resident) and `CREATE_NOT_ZEROED` (memory is zeroed
-/// anyway).
-const HEAP_FLAGS_TAKEN: u32 = 0x4 | 0x40 | 0x80 | 0x800 | 0x1000;
+/// `D3D12_HEAP_FLAGS`: every defined bit, the deny flags, and the ones this front honours as they
+/// are (resources are always resident, and memory is zeroed anyway).
+const HEAP_FLAGS_DEFINED: u32 =
+    0x1 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000;
+const HEAP_FLAGS_DENY: u32 = 0x4 | 0x40 | 0x80;
+const HEAP_FLAGS_TAKEN: u32 = 0x800 | 0x1000;
 
-/// Refuses heap flags asking for an ability the front lacks: sharing, display, protected memory,
-/// write watching, cross-adapter atomics and manual write tracking.
-pub fn check_heap_flags(flags: u32) -> Result<(), Error> {
-    if flags & !HEAP_FLAGS_TAKEN != 0 {
+/// Checks heap flags: refuses undefined bits and, for committed resources (`committed`), the deny
+/// flags, as Direct3D 12 does; reports as not done those asking for an ability the front lacks
+/// (sharing, display, protected memory, write watching, cross-adapter atomics, manual write
+/// tracking).
+pub fn check_heap_flags(flags: u32, committed: bool) -> Result<(), Error> {
+    if flags & !HEAP_FLAGS_DEFINED != 0 || (committed && flags & HEAP_FLAGS_DENY != 0) {
+        return Err(Error::Invalid("heap flags"));
+    }
+    if flags & !(HEAP_FLAGS_TAKEN | HEAP_FLAGS_DENY) != 0 {
         return Err(Error::NotImplemented(
             "heap flags for sharing, display, protection, write watching or atomics",
         ));

@@ -175,6 +175,8 @@ struct ViewObj {
 struct SamplerObj {
     id: u64,
     raw: wgpu::Sampler,
+    /// Any of its filters is linear.
+    filtering: bool,
 }
 
 #[derive(Debug)]
@@ -215,12 +217,19 @@ impl ProgramObj {
         &self,
         bindings: &[Option<&BindingSet>; MAX_BINDING_SETS],
     ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
+        self.own_keys(bindings.map(|s| s.map_or_else(BindingLayoutKey::default, |s| s.0.key)))
+    }
+
+    /// The parts of the sets' layout keys this program's layout depends on: the textures it samples
+    /// through a sampler.
+    fn own_keys(
+        &self,
+        sets: [BindingLayoutKey; MAX_BINDING_SETS],
+    ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
         let mut keys = [BindingLayoutKey::default(); MAX_BINDING_SETS];
         for shader in self.stages() {
-            for ((k, s), paired) in keys.iter_mut().zip(bindings).zip(shader.paired) {
-                if let Some(s) = s {
-                    k.unfilterable_textures |= s.0.key.unfilterable_textures & paired;
-                }
+            for ((k, s), paired) in keys.iter_mut().zip(&sets).zip(shader.paired) {
+                k.unfilterable_textures |= s.unfilterable_textures & paired;
             }
         }
         keys
@@ -311,6 +320,7 @@ impl WebGpu {
             | wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+            | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         wgpu::DeviceDescriptor {
             label: None,
@@ -506,6 +516,11 @@ fn caps(
             features |= ours;
         }
     }
+    // In the browser `prepare`'s pipeline compiles in the GPU process while the page goes on;
+    // natively wgpu compiles it at once on the calling thread.
+    if cfg!(target_arch = "wasm32") {
+        features |= Features::BACKGROUND_PREPARE;
+    }
     let adapter_specific = f.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
     let mut formats = FormatCaps {
         uses: [FormatUse::empty(); Format::COUNT],
@@ -546,8 +561,11 @@ fn caps(
                 !depth && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT),
                 FormatUse::RENDER,
             ),
+            // wgpu marks every filterable float format blendable, renderable or not.
             (
-                flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
+                !depth
+                    && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+                    && flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
                 FormatUse::BLEND,
             ),
             (
@@ -939,7 +957,11 @@ impl Backend for WebGpu {
             },
             border_color: None,
         });
-        Ok(Sampler(Rc::new(SamplerObj { id: self.id(), raw })))
+        Ok(Sampler(Rc::new(SamplerObj {
+            id: self.id(),
+            raw,
+            filtering: [desc.min, desc.mag, desc.mip].contains(&Filter::Linear),
+        })))
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {
@@ -954,6 +976,18 @@ impl Backend for WebGpu {
             .iter()
             .position(|e| e.name == module.entry_point && e.stage == stage)
             .ok_or(GpuError::Invalid("the module has no such entry point"))?;
+        // Checked against what WebGPU's core language and this device's features allow (plan 6.3),
+        // so a program the browser would refuse is refused here too, natively as well.
+        let info = wgpu_naga_bridge::create_validator(
+            self.device.features(),
+            wgpu::DownlevelFlags::compliant(),
+            naga::valid::ValidationFlags::all(),
+        )
+        .validate(&module.module)
+        .map_err(|e| {
+            eprintln!("webgpu: program refused: {}", e.as_inner());
+            GpuError::Invalid("a program WebGPU's language and this device's features do not allow")
+        })?;
         let raw = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -962,8 +996,8 @@ impl Backend for WebGpu {
             });
         Ok(Shader(Rc::new(ShaderObj {
             module: module.module.clone(),
-            info: module.info.clone(),
-            paired: layout::paired(&module.module, module.info.get_entry_point(entry_index)),
+            paired: layout::paired(&module.module, info.get_entry_point(entry_index)),
+            info,
             entry_index,
             entry: module.entry_point.clone(),
             stage,
@@ -1179,6 +1213,10 @@ impl Backend for WebGpu {
         if self.pass.take().is_none() {
             self.fail("end_pass without a pass");
         }
+    }
+
+    fn prepare(&mut self, desc: &wcontainers_gpu::PrepareDesc<'_, Self>) {
+        self.prepare_impl(desc);
     }
 
     fn draw(&mut self, call: &wcontainers_gpu::DrawCall<'_, Self>) {

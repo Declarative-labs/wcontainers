@@ -269,6 +269,20 @@ fn sample_view(
         Level::Bias(b) => b,
     };
     let filter = if lod > 0.0 { s.min } else { s.mag };
+    let linear = Filter::Linear;
+    if (filter == linear || (s.mip == linear && levels > 1))
+        && reference.is_none()
+        && !rec
+            .caps()
+            .formats
+            .get(v.desc.format)
+            .contains(FormatUse::FILTER)
+    {
+        return Err(format!(
+            "{:?} filtered, which this back end does not filter",
+            v.desc.format
+        ));
+    }
     let lod = f64::from(lod)
         .clamp(
             f64::from(f32::from_bits(s.lod_range[0])),
@@ -640,6 +654,52 @@ impl Recorder {
         })
     }
 
+    /// Checks the draw's own values against the rules and the features this back end declares.
+    fn draw_rules(&self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
+        let has = self.caps().features;
+        for v in call.viewports {
+            if f32::from_bits(v.min_depth) > f32::from_bits(v.max_depth) {
+                return Err("a viewport whose min_depth is above its max_depth".into());
+            }
+            if !has.contains(Features::FRACTIONAL_VIEWPORT)
+                && [v.x, v.y, v.width, v.height]
+                    .iter()
+                    .any(|&b| f32::from_bits(b).fract() != 0.0)
+            {
+                return Err("a fractional viewport without FRACTIONAL_VIEWPORT".into());
+            }
+        }
+        if call.stencil_reference[0] != call.stencil_reference[1]
+            && !has.contains(Features::STENCIL_PER_FACE)
+        {
+            return Err("stencil references per face without STENCIL_PER_FACE".into());
+        }
+        let bases = match call.range {
+            DrawRange::Vertices { first_instance, .. } => first_instance != 0,
+            DrawRange::Indexed {
+                base_vertex,
+                first_instance,
+                ..
+            } => base_vertex != 0 || first_instance != 0,
+            _ => false,
+        };
+        if bases && !has.contains(Features::BASE_VERTEX_INSTANCE) {
+            return Err("a base vertex or first instance without BASE_VERTEX_INSTANCE".into());
+        }
+        if call
+            .index
+            .as_ref()
+            .is_some_and(|i| i.format == IndexFormat::U8)
+            && !has.contains(Features::INDEX_U8)
+        {
+            return Err("8-bit indices without INDEX_U8".into());
+        }
+        if call.immediates.len() > self.caps().limits.immediate_bytes as usize {
+            return Err("immediates past the limit".into());
+        }
+        Ok(())
+    }
+
     /// Checks the draw's buffers were made for how it uses them, and the usage-scope rule of a pass: a
     /// buffer any draw of the pass binds as writable storage is used no other way by any draw of the
     /// pass (texture subresources cannot be storage here).
@@ -938,6 +998,7 @@ impl Recorder {
     pub(crate) fn draw_call(&mut self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
         self.pass.as_ref().ok_or("draw outside a pass")?;
         let state = self.gather(call)?;
+        self.draw_rules(call)?;
         self.usage_scope(call, &state)?;
         for (buffer, start, end) in self.draw_reads(call, &state)? {
             self.touch(buffer, start, end);
@@ -1359,6 +1420,9 @@ impl Recorder {
                 Ok(Value::U32(0))
             })?;
         }
+        if per_sample && !self.caps().features.contains(Features::SAMPLE_SHADING) {
+            return Err("a program run per sample without SAMPLE_SHADING".into());
+        }
         let inside = |q: (i64, i64)| {
             !edges.iter().zip(&biased).any(|(&(a, b), &tl)| {
                 let e = edge(a, b, q);
@@ -1556,8 +1620,10 @@ impl Recorder {
                             }
                             let mut result = src;
                             if let Some((color, alpha)) = rule.blend {
-                                if texel::integer(format) {
-                                    return Err("blending into an integer target".into());
+                                if !self.caps().formats.get(format).contains(FormatUse::BLEND) {
+                                    return Err(format!(
+                                        "blending into {format:?}, which this back end does not blend"
+                                    ));
                                 }
                                 // Normalised targets clamp what is blended into them, the constant
                                 // too.

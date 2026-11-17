@@ -482,6 +482,10 @@ pub struct VariantKey {
     pub min_lod_clamped: u128,
     /// Where the program reads the draw's bases.
     pub draw_base: DrawBaseSource,
+    /// How the next stage interpolates the vertex program's float outputs, by location, where not
+    /// `Perspective`: the program writes each so, since WebGPU and GLSL ES require the two stages to
+    /// agree. The front takes it from the pixel program's [`Reflection::inputs`].
+    pub output_interpolation: Vec<(u32, Interpolation)>,
     /// The sample count of the targets, where the program depends on it.
     pub samples: u8,
     /// A hash of the binding layout that numbers the slots, for APIs whose layout the program does not
