@@ -115,6 +115,8 @@ pub struct Reference {
     pub depth_bias: Option<(i32, f32, f32)>,
     /// The draw's range, where not the whole grid from vertex 0.
     pub bases: Option<Bases>,
+    /// The sampled texture's per-resource minimum level-of-detail clamp (`SetResourceMinLOD`).
+    pub min_lod: Option<f32>,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -198,12 +200,19 @@ pub fn direct3d_11(
         D3D11_BIND_SHADER_RESOURCE,
     );
     desc.MipLevels = levels;
+    if reference.min_lod.is_some() {
+        desc.MiscFlags = D3D11_RESOURCE_MISC_RESOURCE_CLAMP.0 as u32;
+    }
     let data: Vec<_> = level_data
         .iter()
         .enumerate()
         .map(|(n, t)| d3d11::data(t, (TEXTURE_SIZE >> n).max(1) * 4, 0))
         .collect();
     let texture = gpu.texture2d(&desc, &data).unwrap();
+    if let Some(clamp) = reference.min_lod {
+        let resource: ID3D11Resource = texture.cast().unwrap();
+        unsafe { gpu.context.SetResourceMinLOD(&resource, clamp) };
+    }
     let view = gpu.srv(&texture.cast().unwrap(), None).unwrap();
     let sampler = gpu
         .sampler(&D3D11_SAMPLER_DESC {
@@ -525,6 +534,10 @@ pub struct Setup {
     /// The draw's range, where not `count` vertices from vertex 0; an argument buffer is also bound
     /// at [`wcontainers_gpu::DRAW_ARGUMENTS_BINDING`] when the vertex program reads its bases there.
     pub bases: Option<Bases>,
+    /// The sampled texture's minimum level-of-detail clamp: the pixel program's samples go through a
+    /// merged sampler whose range starts at it, bound at
+    /// [`wcontainers_gpu::CLAMPED_SAMPLER_BINDING`] plus each pair's index.
+    pub min_lod: Option<f32>,
 }
 
 impl Setup {
@@ -542,6 +555,7 @@ impl Setup {
             blend_constant: [0.0; 4],
             levels: 1,
             bases: None,
+            min_lod: None,
         }
     }
 }
@@ -630,18 +644,21 @@ pub fn ours<B: Backend + 'static>(
             WriteMode::Ordered,
         );
     }
-    let sampler = b
-        .create_sampler(&SamplerDesc {
+    let sampler_from = |b: &mut B, min_lod: f32| {
+        b.create_sampler(&SamplerDesc {
             min: Filter::Linear,
             mag: Filter::Linear,
             mip: Filter::Linear,
             address: [wcontainers_gpu::AddressMode::Clamp; 3],
-            lod_range: [0, f32::MAX.to_bits()],
+            lod_range: [min_lod.to_bits(), f32::MAX.to_bits()],
             anisotropy: 1,
             compare: None,
             border: BorderColor::TransparentBlack,
         })
-        .unwrap();
+        .unwrap()
+    };
+    let sampler = sampler_from(b, 0.0);
+    let merged = setup.min_lod.map(|clamp| sampler_from(b, clamp));
 
     // Each stage's slots, from its reflection: vertex slots in set 0, pixel slots in set 1.
     let mut sets: [Vec<BindingEntry<'_, B>>; 2] = [Vec::new(), Vec::new()];
@@ -728,6 +745,15 @@ pub fn ours<B: Backend + 'static>(
             }),
         })
         .collect();
+    if let Some(merged) = &merged {
+        for n in 0..ps.reflection.sampled_pairs.len() as u32 {
+            helper_entries.push(BindingEntry {
+                binding: wcontainers_gpu::CLAMPED_SAMPLER_BINDING + n,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(merged),
+            });
+        }
+    }
     if reads_arguments {
         let buffer = arguments.as_ref().expect("an indirect draw");
         helper_entries.push(BindingEntry {

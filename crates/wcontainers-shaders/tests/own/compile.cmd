@@ -40,7 +40,7 @@ for %%e in (ps_ftoi ps_table ps_deriv ps_coarse) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_carry -Gis -Fo vs_carry.dxil values.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_negate /Fo ps_negate.dxbc negate.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_negate -Gis -Fo ps_negate.dxil negate.hlsl || exit /b 1
-for %%e in (ps_dual ps_levels ps_samples ps_ids) do (
+for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc variants.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil variants.hlsl || exit /b 1
 )
