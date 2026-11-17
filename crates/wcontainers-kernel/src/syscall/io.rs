@@ -1669,9 +1669,12 @@ pub(super) fn lseek(
             .ok_or(Errno::EINVAL)
     };
     if let Some(handle) = &file.backend {
-        // `fuse_file_llseek`: the backend finds data and holes; the end is where it says now.
+        // `fuse_file_llseek`: the backend finds data and holes; the end is where it says now. A
+        // directory seeks over the size it holds (`generic_file_llseek`).
         match whence {
-            SEEK_END => crate::fs::backend::getattr(&file.node, Some(handle.fh))?,
+            SEEK_END if !handle.directory => {
+                crate::fs::backend::getattr(&file.node, Some(handle.fh))?
+            }
             SEEK_DATA | SEEK_HOLE if !handle.directory => {
                 let position = crate::fs::backend::lseek(handle, offset, whence)?;
                 file.offset = position;
@@ -1711,7 +1714,10 @@ pub(super) fn lseek(
                 SEEK_SET => offset,
                 SEEK_CUR => current()?,
                 SEEK_END => size.checked_add(offset).ok_or(Errno::EINVAL)?,
-                _ => return Err(Errno::EINVAL),
+                // Only directories come here: all data up to the size, as an unsigned offset.
+                SEEK_DATA | SEEK_HOLE if offset as u64 >= size as u64 => return Err(Errno::ENXIO),
+                SEEK_DATA => offset,
+                _ => size,
             }
         }
         Content::Regular(regular) => {

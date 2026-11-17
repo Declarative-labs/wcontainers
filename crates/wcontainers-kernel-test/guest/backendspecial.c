@@ -1,5 +1,6 @@
 // Links to missing files and named pipes on the backend: creating through a dangling link, and
-// extended attributes of a named pipe reached by path, by descriptor and through /proc.
+// extended attributes of a named pipe reached by path, by descriptor and through /proc, and seeks
+// in an open directory.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -59,5 +60,14 @@ int main(void) {
     SHOW("getxattr cap regular", getxattr("regular", "security.capability", buf, sizeof buf));
     SHOW("getxattr cap regular via proc", getxattr(name, "security.capability", buf, 65537));
     SHOW("getxattr cap directory", getxattr(".", "security.capability", buf, sizeof buf));
+    int directory = open(".", O_RDONLY | O_DIRECTORY);
+    fstat(directory, &st);
+    long size = st.st_size;
+    SHOW("seek data 3", lseek(directory, 3, SEEK_DATA));
+    SHOW("seek hole 3 is size", lseek(directory, 3, SEEK_HOLE) == size);
+    SHOW("seek data at size", lseek(directory, size, SEEK_DATA));
+    SHOW("seek hole -1", lseek(directory, -1, SEEK_HOLE));
+    SHOW("seek end is size", lseek(directory, 0, SEEK_END) == size);
+    SHOW("seek end -1 is size - 1", lseek(directory, -1, SEEK_END) == size - 1);
     return 0;
 }
