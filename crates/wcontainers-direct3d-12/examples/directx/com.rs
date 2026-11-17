@@ -969,12 +969,12 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateCommandSignature(
         &self,
-        _pdesc: *const D3D12_COMMAND_SIGNATURE_DESC,
-        _prootsignature: windows_core::Ref<ID3D12RootSignature>,
-        _riid: *const windows_core::GUID,
-        _ppvcommandsignature: *mut *mut core::ffi::c_void,
+        pdesc: *const D3D12_COMMAND_SIGNATURE_DESC,
+        prootsignature: windows_core::Ref<ID3D12RootSignature>,
+        riid: *const windows_core::GUID,
+        ppvcommandsignature: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("CreateCommandSignature"))
+        Device::CreateCommandSignature(self, pdesc, prootsignature, riid, ppvcommandsignature)
     }
     fn GetResourceTiling(
         &self,
@@ -1570,14 +1570,22 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn ExecuteIndirect(
         &self,
-        _pcommandsignature: windows_core::Ref<ID3D12CommandSignature>,
-        _maxcommandcount: u32,
-        _pargumentbuffer: windows_core::Ref<ID3D12Resource>,
-        _argumentbufferoffset: u64,
-        _pcountbuffer: windows_core::Ref<ID3D12Resource>,
-        _countbufferoffset: u64,
+        pcommandsignature: windows_core::Ref<ID3D12CommandSignature>,
+        maxcommandcount: u32,
+        pargumentbuffer: windows_core::Ref<ID3D12Resource>,
+        argumentbufferoffset: u64,
+        pcountbuffer: windows_core::Ref<ID3D12Resource>,
+        countbufferoffset: u64,
     ) {
-        self.unsupported("ExecuteIndirect");
+        List::ExecuteIndirect(
+            self,
+            pcommandsignature,
+            maxcommandcount,
+            pargumentbuffer,
+            argumentbufferoffset,
+            pcountbuffer,
+            countbufferoffset,
+        )
     }
 }
 
@@ -1874,6 +1882,49 @@ impl ID3D12DeviceChild_Impl for QueryHeap_Impl {
 }
 
 impl ID3D12Object_Impl for QueryHeap_Impl {
+    fn GetPrivateData(
+        &self,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().GetPrivateData(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().SetPrivateData(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        self.base().SetPrivateDataInterface(guid, pdata)
+    }
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
+    }
+}
+
+impl ID3D12CommandSignature_Impl for CommandSignature_Impl {}
+
+impl ID3D12Pageable_Impl for CommandSignature_Impl {}
+
+impl ID3D12DeviceChild_Impl for CommandSignature_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().GetDevice(riid, ppvdevice)
+    }
+}
+
+impl ID3D12Object_Impl for CommandSignature_Impl {
     fn GetPrivateData(
         &self,
         guid: *const windows_core::GUID,

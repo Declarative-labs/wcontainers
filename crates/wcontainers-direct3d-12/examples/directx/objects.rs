@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
 use wcontainers_direct3d_12::list::{
-    Command, CommandList, CopyLocation, Descriptor, IndexBufferView, ResourceView, RootArgument,
-    SamplerView, TargetView, VertexBufferView, ViewportF,
+    Command, CommandList, CopyLocation, Descriptor, IndexBufferView, IndirectArgument,
+    ResourceView, RootArgument, SamplerView, TargetView, VertexBufferView, ViewportF,
 };
 use wcontainers_direct3d_12::resource::{Footprint, HeapType, ResourceDesc};
 use wcontainers_direct3d_12::state::{
@@ -75,6 +75,7 @@ not_implemented!(
     RootSignature,
     PipelineState,
     QueryHeap,
+    CommandSignature,
     Heap,
     DescriptorHeap,
     Blob
@@ -267,7 +268,8 @@ macro_rules! based {
 }
 based!(
     Device => base, Queue => 1, Allocator => 1, Fence => base, Resource => base,
-    RootSignature => 1, PipelineState => 1, QueryHeap => 1, Heap => 2, DescriptorHeap => base, List => base
+    RootSignature => 1, PipelineState => 1, QueryHeap => 1, Heap => 2, DescriptorHeap => base, List => base,
+    CommandSignature => 1
 );
 
 /// The front's description of a resource.
@@ -601,6 +603,70 @@ impl Device {
         let (kind, count) = (d.Type.0 as u32, d.Count);
         let id = gpu::call(move |dev| dev.create_query_heap(kind, count)).map_err(hr)?;
         give::<ID3D12QueryHeap>(QueryHeap(id, Base::child()).into(), riid, out)
+    }
+
+    pub fn CreateCommandSignature(
+        &self,
+        pdesc: *const D3D12_COMMAND_SIGNATURE_DESC,
+        root: Ref<ID3D12RootSignature>,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description with `NumArgumentDescs` arguments.
+        let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let descs = unsafe { many(d.pArgumentDescs, d.NumArgumentDescs) };
+        let mut arguments = Vec::with_capacity(descs.len());
+        for a in descs {
+            // SAFETY: each argument's union member is the one its type names.
+            let argument = unsafe {
+                match a.Type {
+                    D3D12_INDIRECT_ARGUMENT_TYPE_DRAW => IndirectArgument::Draw,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED => IndirectArgument::DrawIndexed,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH => IndirectArgument::Dispatch,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW => {
+                        IndirectArgument::VertexBuffer {
+                            slot: a.Anonymous.VertexBuffer.Slot,
+                        }
+                    }
+                    D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW => IndirectArgument::IndexBuffer,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT => IndirectArgument::Constants {
+                        root: a.Anonymous.Constant.RootParameterIndex,
+                        offset: a.Anonymous.Constant.DestOffsetIn32BitValues,
+                        count: a.Anonymous.Constant.Num32BitValuesToSet,
+                    },
+                    D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW => {
+                        IndirectArgument::RootView {
+                            root: a.Anonymous.ConstantBufferView.RootParameterIndex,
+                        }
+                    }
+                    D3D12_INDIRECT_ARGUMENT_TYPE_SHADER_RESOURCE_VIEW => {
+                        IndirectArgument::RootView {
+                            root: a.Anonymous.ShaderResourceView.RootParameterIndex,
+                        }
+                    }
+                    D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW => {
+                        IndirectArgument::RootView {
+                            root: a.Anonymous.UnorderedAccessView.RootParameterIndex,
+                        }
+                    }
+                    _ => {
+                        return Err(hr(Error::NotImplemented("this kind of indirect argument")));
+                    }
+                }
+            };
+            arguments.push(argument);
+        }
+        let signature = wcontainers_direct3d_12::list::CommandSignature::new(
+            d.ByteStride,
+            arguments,
+            root.is_some(),
+        )
+        .map_err(hr)?;
+        give::<ID3D12CommandSignature>(
+            CommandSignature(Arc::new(signature), Base::child()).into(),
+            riid,
+            out,
+        )
     }
 
     pub fn CreateComputePipelineState(
@@ -1558,6 +1624,12 @@ impl Drop for Heap {
     }
 }
 
+#[implement(ID3D12CommandSignature)]
+pub struct CommandSignature(
+    pub Arc<wcontainers_direct3d_12::list::CommandSignature>,
+    Base,
+);
+
 #[implement(ID3D12QueryHeap)]
 pub struct QueryHeap(pub QueryHeapId, Base);
 
@@ -2044,6 +2116,45 @@ impl List {
 
     pub fn Dispatch(&self, x: u32, y: u32, z: u32) {
         self.record(Command::Dispatch([x, y, z]));
+    }
+
+    pub fn ExecuteIndirect(
+        &self,
+        signature: Ref<ID3D12CommandSignature>,
+        max: u32,
+        args: Ref<ID3D12Resource>,
+        args_offset: u64,
+        count: Ref<ID3D12Resource>,
+        count_offset: u64,
+    ) {
+        let args_ref = args;
+        let (Some(signature), Some(args)) = (signature.as_ref(), id(&args_ref)) else {
+            return self.rec.lock().unwrap().fail(Error::Invalid(
+                "ExecuteIndirect with no signature or arguments",
+            ));
+        };
+        // SAFETY: command signatures come from this library.
+        let signature = unsafe { signature.as_impl() }.0.clone();
+        let width = |r: &Ref<ID3D12Resource>| {
+            // SAFETY: resources come from this library.
+            r.as_ref().map_or(0, |r| unsafe { r.as_impl() }.desc.Width)
+        };
+        let (args_width, count_width) = (width(&args_ref), width(&count));
+        if !signature.fits(max, args_offset, args_width)
+            || (count.is_some()
+                && (!count_offset.is_multiple_of(4) || count_offset + 4 > count_width))
+        {
+            return self.rec.lock().unwrap().fail(Error::Invalid(
+                "ExecuteIndirect's arguments or count past their buffer's end",
+            ));
+        }
+        self.record(Command::ExecuteIndirect {
+            signature,
+            max,
+            args,
+            args_offset,
+            count: id(&count).map(|c| (c, count_offset)),
+        });
     }
 
     /// A storage view clear; the view is read from its CPU handle when recorded.
