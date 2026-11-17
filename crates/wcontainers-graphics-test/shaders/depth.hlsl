@@ -1,6 +1,7 @@
 // Pixel shaders that write depth: any value, and values the rasterizer's depth may only grow or
 // shrink towards.
 // fxc: ps_5_0 ps_depth, ps_5_0 ps_greater, ps_5_0 ps_less
+// dxc: ps_6_0 ps_depth, ps_6_0 ps_greater, ps_6_0 ps_less
 struct ColorOut { float4 pos : SV_Position; float4 color : COLOR; };
 struct Out { float4 color : SV_Target; float depth : SV_Depth; };
 Out ps_depth(ColorOut i) {

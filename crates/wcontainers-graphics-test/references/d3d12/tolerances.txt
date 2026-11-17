@@ -1,4 +1,8 @@
 # <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>
+blend-alpha.png 2 0 warp 15714 2
+blend-factors.png 2 0 warp 53491 2
+blend-masks.png 1 0 warp 34040 1
+blend-ops.png 2 0 warp 50930 2
 bundles.png 1 0 warp 1568 1
 compute-image.exr 0 0 warp 0 0
 compute-sums.txt exact warp same
@@ -7,6 +11,12 @@ copies-buffer.txt exact warp same
 copies-region.png 0 0 warp 0 0
 copies-resolve.png 1 0 warp 780 1
 copies-resource.png 0 0 warp 0 0
+depth-bias.png 0 0 warp 0 0
+depth-clip.png 0 0 warp 0 0
+depth-clip_depth.exr 0.0000002980232238769531 0 warp 4630 0.0000002980232238769531
+depth-funcs.png 1 0 warp 21280 1
+depth-shader.png 0 0 warp 0 0
+depth-shader_depth.exr 0.00000011920928955078125 0 warp 1952 0.00000011920928955078125
 heaps-first.png 1 0 warp 1599 1
 heaps-second.png 1 0 warp 1365 1
 queries-results.txt exact warp same
@@ -14,6 +24,8 @@ queries.png 1 0 warp 470 1
 queues-sums.txt exact warp same
 queues.png 1 0 warp 1980 1
 roots.png 1 0 warp 5714 1
+stencil-values.png 0 0 warp 0 0
+stencil.png 1 0 warp 4448 1
 swapchain-frame0.png 1 0 warp 3408 1
 swapchain-frame1.png 1 0 warp 7037 1
 swapchain-frame2.png 1 0 warp 3408 1
