@@ -153,7 +153,9 @@ K5 built (all four runs):
     UDP socket connecting to a `sockaddr_in` (`__ip6_datagram_connect`; EAFNOSUPPORT for
     IPV6_V6ONLY), an empty netlink message (ENODATA), netlink's option levels refused before
     the value or length is read (ENOPROTOOPT), and a nonblocking read of a UDP socket shut for
-    reading (EAGAIN; a waiting one ends with 0).
+    reading (EAGAIN; a waiting one ends with 0), netlink's urgent and empty messages refused
+    before their control messages are read, and descriptors refused with EINVAL on sockets that
+    are not local (`__scm_send`).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -1338,7 +1340,9 @@ each sequence the runner puts back what a sequence can change outside its direct
   EPOLLWRBAND; on 94f7d0d 5050429 passed (317 s, load 51 to 54), 5050427 found the pending
   error before a queued sequenced packet and 5050428 the IPv6 connect to a `sockaddr_in`; on
   8b58c43 5050430 (291 s), 5050431 (144 s) and 5050432 (59 s) found the empty netlink message,
-  the shut UDP read and netlink's getsockopt level (load 44 to 59).
+  the shut UDP read and netlink's getsockopt level (load 44 to 59); on 2aefa16 5050435 passed
+  (334 s, load 59 to 34), 5050433 and 5050434 found netlink's empty sendmsg with control
+  messages.
 - K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
   --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
   scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
@@ -2008,9 +2012,11 @@ K5, in this order (what the five runs built is under Where things stand):
    counted "proc entry not built". fanotify_mark is still "system call not implemented"
    (fanotify_init is refused by Docker's profile, so no group can exist; Linux's flag checks come
    before EBADF and EINVAL, and linux-raw-sys has no FAN_MARK_* to check them with).
-5. inotify gaps: IN_UNMOUNT is never sent; a mapping does not keep an unlinked inode's watches
-   alive (Linux sends IN_DELETE_SELF at the last unmap); events of files changed on the backend
-   from outside are not seen (plan section 15's kind).
+5. inotify gaps: a mapping does not hold its file open here (Linux's `vm_file` does), so an
+   unlinked file's IN_DELETE_SELF and a mapped file's IN_CLOSE_* come at the last close, where
+   Linux sends them at the last unmap; events of files changed on the backend from outside are
+   not seen (plan section 15's kind). IN_UNMOUNT is never sent, as nothing in a default Docker
+   container can unmount (umount needs CAP_SYS_ADMIN).
 
 K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
 found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
