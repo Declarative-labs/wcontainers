@@ -1,5 +1,7 @@
 //! Mirrors the export table of the system's d3d11.dll: every export becomes a thunk of ours with the
-//! same name and ordinal.
+//! same name and ordinal, except the device-creating ones, which go to typed functions of the crate.
+//! Also reads the method tables of the counted COM interfaces from the Windows SDK's headers and
+//! makes the counting thunks the census patches into them (src/census.rs).
 
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -9,12 +11,44 @@ use object::pe::{IMAGE_SCN_MEM_EXECUTE, ImageNtHeaders64};
 use object::read::pe::{ExportTarget, PeFile};
 
 const LIBRARY: &str = "d3d11";
+/// Exports served by typed functions `wc_typed_<name>` of the crate.
+const TYPED: &[&str] = &["D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain"];
+/// Interfaces whose methods the census counts, with the SDK header defining each.
+const INTERFACES: &[(&str, &str)] = &[
+    ("ID3D11Device", "d3d11.h"),
+    ("ID3D11Device1", "d3d11_1.h"),
+    ("ID3D11Device2", "d3d11_2.h"),
+    ("ID3D11Device3", "d3d11_3.h"),
+    ("ID3D11Device4", "d3d11_4.h"),
+    ("ID3D11Device5", "d3d11_4.h"),
+    ("ID3D11DeviceContext", "d3d11.h"),
+    ("ID3D11DeviceContext1", "d3d11_1.h"),
+    ("ID3D11DeviceContext2", "d3d11_2.h"),
+    ("ID3D11DeviceContext3", "d3d11_3.h"),
+    ("ID3D11DeviceContext4", "d3d11_3.h"),
+    ("IDXGISwapChain", "dxgi.h"),
+    ("IDXGISwapChain1", "dxgi1_2.h"),
+    ("IDXGISwapChain2", "dxgi1_3.h"),
+    ("IDXGISwapChain3", "dxgi1_4.h"),
+    ("IDXGISwapChain4", "dxgi1_5.h"),
+    ("IDXGIFactory", "dxgi.h"),
+    ("IDXGIFactory1", "dxgi.h"),
+    ("IDXGIFactory2", "dxgi1_2.h"),
+    ("IDXGIFactory3", "dxgi1_3.h"),
+    ("IDXGIFactory4", "dxgi1_4.h"),
+    ("IDXGIFactory5", "dxgi1_5.h"),
+    ("IDXGIFactory6", "dxgi1_6.h"),
+    ("IDXGIFactory7", "dxgi1_6.h"),
+];
+/// How many distinct method tables the census can patch.
+const INSTANCES: usize = 24;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("exports.rs");
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap() != "windows" {
         std::fs::write(&out, "").unwrap();
+        std::fs::write(out.with_file_name("census.rs"), "").unwrap();
         return;
     }
     assert_eq!(
@@ -64,6 +98,13 @@ fn main() {
             .expect("every export has a name, so programs that import by name find it");
         let name = std::str::from_utf8(name).unwrap();
         writeln!(table, "    c\"{name}\",").unwrap();
+        if TYPED.contains(&name) {
+            println!(
+                "cargo::rustc-cdylib-link-arg=/EXPORT:{name}=wc_typed_{name},@{}",
+                export.ordinal
+            );
+            continue;
+        }
         println!(
             "cargo::rustc-cdylib-link-arg=/EXPORT:{name}={thunk},@{}",
             export.ordinal
@@ -88,4 +129,98 @@ fn main() {
         "pub const LIBRARY: &str = \"{LIBRARY}\";\n{table}\ncore::arch::global_asm!({asm:?}, resolve = sym resolve);\n"
     );
     std::fs::write(&out, source).unwrap();
+    std::fs::write(out.with_file_name("census.rs"), census()).unwrap();
+}
+
+/// The newest Windows SDK's header directory (holding um and shared).
+fn sdk_headers() -> PathBuf {
+    let root = std::path::Path::new(r"C:\Program Files (x86)\Windows Kits\10\Include");
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(root)
+        .expect("the Windows SDK is not installed")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join("um").join("d3d11_4.h").exists())
+        .collect();
+    versions.sort();
+    versions.pop().expect("no Windows SDK with d3d11_4.h")
+}
+
+/// The methods of `interface`, in table order, from its C method table struct in `header`.
+fn methods(header: &str, interface: &str) -> Vec<String> {
+    let start = format!("typedef struct {interface}Vtbl");
+    let end = format!("}} {interface}Vtbl;");
+    let from = header.find(&start).unwrap_or_else(|| panic!("no {start}"));
+    let body = &header[from..from + header[from..].find(&end).unwrap()];
+    body.split("STDMETHODCALLTYPE *")
+        .skip(1)
+        .map(|rest| rest[..rest.find(')').unwrap()].trim().to_owned())
+        .collect()
+}
+
+/// The census's interface table and its counting thunks: thunk n, 16 bytes from the previous one,
+/// adds one to COUNTS[n] and jumps to ORIGINALS[n], touching no register or stack slot. Instance i
+/// of a patched table uses thunks i * SLOTS to i * SLOTS + its length - 1.
+fn census() -> String {
+    let dir = sdk_headers();
+    let mut text = String::from("pub static INTERFACES: &[(&str, &[&str])] = &[\n");
+    let mut slots = 0;
+    for (interface, file) in INTERFACES {
+        let path = ["um", "shared"]
+            .iter()
+            .map(|sub| dir.join(sub).join(file))
+            .find(|p| p.exists())
+            .unwrap_or_else(|| panic!("no {file} in the SDK"));
+        println!("cargo::rerun-if-changed={}", path.display());
+        let header = std::fs::read_to_string(&path).unwrap();
+        let names = methods(&header, interface);
+        slots = slots.max(names.len());
+        writeln!(text, "    (\"{interface}\", &{names:?}),").unwrap();
+    }
+    text.push_str("];\n");
+    writeln!(
+        text,
+        "pub const INSTANCES: usize = {INSTANCES};\npub const SLOTS: usize = {slots};"
+    )
+    .unwrap();
+    let mut asm = String::from(".balign 16\n.globl wc_census_thunks\nwc_census_thunks:\n");
+    for n in 0..INSTANCES * slots {
+        write!(
+            asm,
+            ".balign 16\nlock inc qword ptr [rip + {{counts}} + {}]\njmp qword ptr [rip + {{originals}} + {}]\n",
+            8 * n,
+            8 * n
+        )
+        .unwrap();
+    }
+    // Wrapper thunks for the contexts, which the program is handed wrapped (census.rs): thunk
+    // t * CONTEXT_SLOTS + k counts method k of table t, puts the wrapped object in place of the
+    // wrapper as `this` and jumps through the object's own table as it is at that moment.
+    let context = INTERFACES
+        .iter()
+        .find(|(name, _)| *name == "ID3D11DeviceContext4")
+        .unwrap();
+    let context_slots = methods(
+        &std::fs::read_to_string(dir.join("um").join(context.1)).unwrap(),
+        context.0,
+    )
+    .len();
+    writeln!(text, "pub const CONTEXT_SLOTS: usize = {context_slots};").unwrap();
+    asm.push_str(".balign 32\n.globl wc_wrapper_thunks\nwc_wrapper_thunks:\n");
+    for t in 0..2 {
+        for k in 0..context_slots {
+            write!(
+                asm,
+                ".balign 32\nlock inc qword ptr [rip + {{wrapped}} + {}]\nmov rcx, qword ptr [rcx + 8]\n\
+                 mov rax, qword ptr [rcx]\njmp qword ptr [rax + {}]\n",
+                8 * (t * context_slots + k),
+                8 * k
+            )
+            .unwrap();
+        }
+    }
+    writeln!(
+        text,
+        "core::arch::global_asm!({asm:?}, counts = sym COUNTS, originals = sym ORIGINALS, wrapped = sym WRAPPED_COUNTS);"
+    )
+    .unwrap();
+    text
 }

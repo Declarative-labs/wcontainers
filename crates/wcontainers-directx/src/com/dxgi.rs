@@ -12,21 +12,23 @@ use super::*;
 #[implement(IDXGIAdapter1)]
 pub struct Adapter {
     pub(super) private: Private,
-    gpu: Gpu,
+    info: wcontainers_gpu::AdapterInfo,
 }
 
 impl Adapter {
-    pub fn new(gpu: Gpu) -> Self {
+    pub fn new(info: wcontainers_gpu::AdapterInfo) -> Self {
         Adapter {
             private: Private::default(),
-            gpu,
+            info,
         }
     }
 
     pub(super) fn get_desc1(&self) -> Result<DXGI_ADAPTER_DESC1> {
         let mut d = DXGI_ADAPTER_DESC1 {
             AdapterLuid: LUID::default(),
-            Flags: if self.gpu.software {
+            VendorId: self.info.vendor,
+            DeviceId: self.info.device,
+            Flags: if self.info.software {
                 DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32
             } else {
                 0
@@ -37,7 +39,7 @@ impl Adapter {
             .Description
             .iter_mut()
             .take(127)
-            .zip(self.gpu.name.encode_utf16())
+            .zip(self.info.name.encode_utf16())
         {
             *o = c;
         }

@@ -18,7 +18,8 @@ G4a (the rig's three Direct3D 11 scenes drawn through our own d3d11.dll) is part
 - The Windows library (crates/wcontainers-directx, `wcontainers_directx.dll`) exports
   `D3D11CreateDevice` and wraps the front in COM objects made with the `windows` crate's `implement`:
   the device (`ID3D11Device` and `IDXGIDevice`), the immediate context, an adapter
-  (`IDXGIAdapter1`, named after the GPU), and every object above. It draws through the WebGPU back end
+  (`IDXGIAdapter1`, described from the back end's `Caps::adapter`: "NVIDIA GeForce RTX 3080" on the
+  desktop), and every object above. It draws through the WebGPU back end
   (merged from origin/phase-2-graphics-webgpu) on `wgpu`'s most capable adapter.
 - The three scene programs, unchanged, with our library beside them as d3d11.dll, on the RTX 3080
   (2026-11-17, desktop otherwise in use by other tracks' queue jobs, load not measured):
@@ -33,9 +34,10 @@ G4a (the rig's three Direct3D 11 scenes drawn through our own d3d11.dll) is part
   the programs and references are unchanged.
 
 What G4a still lacks, most important first:
-1. Merge origin/phase-2-graphics-direct3d-12 (it now holds the infrastructure crate and an interface
-   change: caps hold the adapter description) and origin/phase-2-graphics-shaders; take the adapter
-   name from the infrastructure crate instead of `com::Gpu`.
+1. Merge origin/phase-2-graphics-shaders (not merged yet: it carries a patched naga in the tree and
+   no `convert` so far). origin/phase-2-graphics-direct3d-12 is merged; its infrastructure crate
+   (swap chains, presenting) is not used yet, since the three scenes save their pictures by reading
+   back, not by presenting.
 2. Real DXBC conversion: the six shaders of the three scenes are hand-written WGSL with hand-written
    reflections (crates/wcontainers-direct3d-11/src/standin.rs), keyed by the blake3 of the DXBC like
    cache entries; every other shader is refused with `E_NOTIMPL`. Replace with

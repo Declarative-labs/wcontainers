@@ -36,29 +36,17 @@ pub type Chosen = wcontainers_gpu_webgpu::WebGpu;
 pub type Front = wcontainers_direct3d_11::Device<Chosen>;
 pub type Shared = Rc<RefCell<Front>>;
 
-/// The GPU a back end was made on: its name and whether it is a software rasteriser.
-#[derive(Clone, Debug)]
-pub struct Gpu {
-    pub name: String,
-    pub software: bool,
-}
-
 /// Makes the back end on the most capable GPU `wgpu` finds, or none if there is none.
-pub fn backend() -> Option<(Chosen, Gpu)> {
+pub fn backend() -> Option<Chosen> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
     }))
     .ok()?;
-    let info = adapter.get_info();
     let (device, queue) =
         pollster::block_on(adapter.request_device(&Chosen::device_descriptor(&adapter))).ok()?;
-    let gpu = Gpu {
-        name: format!("{} (wcontainers on WebGPU, {:?})", info.name, info.backend),
-        software: info.device_type == wgpu::DeviceType::Cpu,
-    };
-    Some((Chosen::new(&adapter, device, queue), gpu))
+    Some(Chosen::new(&adapter, device, queue))
 }
 
 static WARNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());

@@ -32,14 +32,17 @@ pub fn create_device(
     levels: &[u32],
     flags: u32,
 ) -> Result<(ID3D11Device, ID3D11DeviceContext, u32)> {
-    let (backend, gpu) = backend().ok_or(windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED)?;
+    let backend = backend().ok_or(windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED)?;
     let front = Front::new(backend, levels).map_err(hresult)?;
+    let info = wcontainers_gpu::Backend::caps(&front.backend)
+        .adapter
+        .clone();
     let level = front.feature_level();
     let device: ID3D11Device = Device {
         front: Rc::new(RefCell::new(front)),
         private: Private::default(),
         context: Rc::new(Cell::new(std::ptr::null_mut())),
-        adapter: Adapter::new(gpu).into(),
+        adapter: Adapter::new(info).into(),
         flags,
         exception_mode: Cell::new(0),
     }

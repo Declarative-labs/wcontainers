@@ -88,6 +88,10 @@ impl Recorder {
                     uses: [FormatUse::all(); Format::COUNT],
                     samples: [0b101; Format::COUNT],
                 },
+                adapter: AdapterInfo {
+                    name: "wcontainers recording back end (draws nothing)".into(),
+                    ..Default::default()
+                },
             },
             slow: SlowPaths::default(),
             helpers: Helpers::default(),
