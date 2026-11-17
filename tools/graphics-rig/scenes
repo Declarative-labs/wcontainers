@@ -1,6 +1,7 @@
 #!/bin/bash
 # The Direct3D scenes from the Mac, as one GPU job on the desktop (gt-run, see its source for the
-# details). Checking prints one line per scene output, pass or FAIL, and exits 1 if any fails:
+# details), run on the hidden desktop of the logged-in user's session (`gpu-job --desktop`), since
+# scenes present to windows. Checking prints one line per scene output, pass or FAIL, and exits 1 if any fails:
 #   tools/graphics-rig/scenes [--build <command>] [--dll <name>=<path>]... [--api d3d11|d3d12]
 #       [--driver hardware|warp] [<scene>...]
 # --dll puts a library beside the scene programs under that name, for example a replacement
@@ -26,10 +27,10 @@ while [ $# -gt 0 ]; do
 done
 out="C:\\wc\\out\\$name"
 if [ -z "$record" ]; then
-    exec "$here/gpu-job" --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run check $out\\scenes ${args[*]-}"
+    exec "$here/gpu-job" --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run check $out\\scenes ${args[*]-}"
 fi
 [ ${#args[@]} -eq 0 ] || { echo "scenes: --record takes no other arguments" >&2; exit 2; }
-"$here/gpu-job" --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run record $out\\record"
+"$here/gpu-job" --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run record $out\\record"
 crate=$root/crates/wcontainers-graphics-test
 for dir in references/d3d11 references/d3d12 shaders/dxbc shaders/dxil; do
     rm -rf "${crate:?}/$dir"
