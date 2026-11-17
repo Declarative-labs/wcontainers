@@ -817,15 +817,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "ieee-apsqrt"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4328941c554aaeea28ca420cd1f10e932fa38874faf8c75e3ed184c64c5c6cec"
-dependencies = [
- "rustc_apfloat",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1867,7 +1858,6 @@ dependencies = [
 name = "wcontainers-arm64"
 version = "0.1.0"
 dependencies = [
- "ieee-apsqrt",
  "rustc_apfloat",
  "wasm-encoder 0.263.0",
  "yaxpeax-arch",
@@ -1926,6 +1916,7 @@ dependencies = [
  "gimli 0.34.0",
  "object 0.40.0",
  "proptest",
+ "rayon",
  "serde_json",
  "wasmparser 0.263.0",
  "wasmtime",

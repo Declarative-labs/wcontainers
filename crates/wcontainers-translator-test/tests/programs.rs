@@ -1,16 +1,28 @@
 //! C programs give the same output and exit status through the translator as on real ARM64 Linux.
 
-use wcontainers_translator::LookAhead;
 use wcontainers_translator::contract::Reason;
+use wcontainers_translator::{LookAhead, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
     Blob, Library, Ran, build, build_with, native, ran, reachable_memory, ready_with, translated,
-    translated_stopping_everywhere,
+    translated_for, translated_stopping_everywhere,
 };
 use wcontainers_translator_test::runner::Machine;
 
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
+
+/// A blob at full look-ahead in Chrome, translated for speed and for size, gives Linux's run.
+fn full_matches_in_chrome(blob: &Blob, theirs: &Ran) {
+    for optimise in [Optimise::Speed, Optimise::Size] {
+        let ours = browser::translated_with(blob, (LookAhead::Full, optimise), Default::default());
+        assert_eq!(
+            ours.ran, *theirs,
+            "{} at full for {optimise:?} in Chrome",
+            blob.name
+        );
+    }
+}
 
 #[test]
 fn programs_match_linux() {
@@ -58,9 +70,13 @@ fn deep_recursion_matches_linux() {
                 assert!(left > 0 && continued > 0, "{what}");
             }
         });
-        for look_ahead in [LookAhead::None, LookAhead::Full] {
-            let ours = browser::translated_with(&blob, look_ahead, Default::default());
-            let what = format!("{} at {look_ahead:?} in Chrome", blob.name);
+        for how in [
+            (LookAhead::None, Optimise::Speed),
+            (LookAhead::Full, Optimise::Speed),
+            (LookAhead::Full, Optimise::Size),
+        ] {
+            let ours = browser::translated_with(&blob, how, Default::default());
+            let what = format!("{} at {how:?} in Chrome", blob.name);
             assert_eq!(ours.ran, theirs, "{what}");
             assert!(ours.count("engine stack nearly full") > 0, "{what}");
         }
@@ -96,8 +112,7 @@ fn unwinding_matches_linux() {
                 blob.name
             );
             every_look_ahead_matches(&blob, &theirs, print_counters);
-            let ours = browser::translated_with(&blob, LookAhead::Full, Default::default());
-            assert_eq!(ours.ran, theirs, "{} at full in Chrome", blob.name);
+            full_matches_in_chrome(&blob, &theirs);
         }
     }
 }
@@ -112,8 +127,7 @@ fn stacks_switched_by_the_program_match_linux() {
             let theirs = native(&blob);
             assert_eq!(theirs.status, 0, "{}", blob.name);
             every_look_ahead_matches(&blob, &theirs, print_counters);
-            let ours = browser::translated_with(&blob, LookAhead::Full, Default::default());
-            assert_eq!(ours.ran, theirs, "{} at full in Chrome", blob.name);
+            full_matches_in_chrome(&blob, &theirs);
         }
     }
 }
@@ -134,9 +148,13 @@ fn written_code_and_null_calls_match_linux() {
                 }
             });
             for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
-                let ours = browser::translated_with(&blob, look_ahead, Default::default());
-                let what = format!("{} at {look_ahead:?} in Chrome", blob.name);
-                assert_eq!(ours.ran, theirs, "{what}");
+                for optimise in [Optimise::Speed, Optimise::Size] {
+                    let ours =
+                        browser::translated_with(&blob, (look_ahead, optimise), Default::default());
+                    let what =
+                        format!("{} at {look_ahead:?} for {optimise:?} in Chrome", blob.name);
+                    assert_eq!(ours.ran, theirs, "{what}");
+                }
             }
         }
     }
@@ -152,8 +170,7 @@ fn cut_functions_and_split_translations_match_linux() {
         let theirs = native(&blob);
         assert_eq!(theirs.status, 0, "{}", blob.name);
         every_look_ahead_matches(&blob, &theirs, |_, _| {});
-        let ours = browser::translated_with(&blob, LookAhead::Full, Default::default());
-        assert_eq!(ours.ran, theirs, "{} at full in Chrome", blob.name);
+        full_matches_in_chrome(&blob, &theirs);
     }
     for (name, optimisation) in [
         ("hello", "-O2"),
@@ -213,10 +230,15 @@ fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Mac
     assert_eq!(&none, theirs, "{} at none", blob.name);
     check(&format!("{} at None", blob.name), &none_machine);
     let mut runs = Vec::new();
-    for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
-        let (ours, machine, registers) = translated(blob, look_ahead);
+    for how in [
+        (LookAhead::Full, Optimise::Speed),
+        (LookAhead::Full, Optimise::Size),
+        (LookAhead::AT_RUN_TIME, Optimise::Speed),
+    ] {
+        let (ours, machine, registers) = translated_for(blob, how);
+        let (look_ahead, optimise) = how;
         runs.push((
-            format!("{} at {look_ahead:?}", blob.name),
+            format!("{} at {look_ahead:?} for {optimise:?}", blob.name),
             ours,
             machine,
             registers,
@@ -317,9 +339,13 @@ fn match_linux(programs: &[(&str, Library)]) {
             built.push((optimisation, blob.bytes.clone()));
             let theirs = native(&blob);
             let mut finals = Vec::new();
-            for look_ahead in [LookAhead::None, LookAhead::Full] {
-                let (ours, mut machine, registers) = translated(&blob, look_ahead);
-                let what = format!("{name} at {optimisation}, look-ahead {look_ahead:?}");
+            for how in [
+                (LookAhead::None, Optimise::Speed),
+                (LookAhead::Full, Optimise::Speed),
+                (LookAhead::Full, Optimise::Size),
+            ] {
+                let (ours, mut machine, registers) = translated_for(&blob, how);
+                let what = format!("{name} at {optimisation}, {how:?}");
                 assert_eq!(
                     String::from_utf8_lossy(&ours.stdout),
                     String::from_utf8_lossy(&theirs.stdout),
@@ -340,14 +366,16 @@ fn match_linux(programs: &[(&str, Library)]) {
                 assert_eq!(machine.count(Reason::UnsupportedInstructionReached), 0);
                 finals.push((registers, reachable_memory(&mut machine, &blob)));
             }
-            assert_eq!(
-                finals[0].0, finals[1].0,
-                "registers of {name} at {optimisation}, full against none"
-            );
-            assert!(
-                finals[0].1 == finals[1].1,
-                "memory of {name} at {optimisation}, full against none"
-            );
+            for (registers, memory) in &finals[1..] {
+                assert_eq!(
+                    finals[0].0, *registers,
+                    "registers of {name} at {optimisation}, full against none"
+                );
+                assert!(
+                    finals[0].1 == *memory,
+                    "memory of {name} at {optimisation}, full against none"
+                );
+            }
         }
         eprintln!(
             "{name}: {} distinct blobs from {} levels",
@@ -369,17 +397,21 @@ fn stops_at_every_check_change_nothing() {
             let what = format!("{name} at {optimisation}");
             let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
             assert_eq!(none, theirs, "{what} at none");
-            let (full, mut machine, registers) =
-                translated_stopping_everywhere(&blob, LookAhead::Full);
-            assert_eq!(full, theirs, "{what} at full, stopping everywhere");
-            assert_eq!(registers, none_registers, "registers of {what}");
-            assert!(
-                reachable_memory(&mut machine, &blob) == reachable_memory(&mut none_machine, &blob),
-                "memory of {what}"
-            );
-            let stops = machine.count(Reason::StoppedByFlag);
-            eprintln!("{what}: {stops} stops");
-            assert!(stops > 1000, "{what} stopped only {stops} times");
+            for optimise in [Optimise::Speed, Optimise::Size] {
+                let (full, mut machine, registers) =
+                    translated_stopping_everywhere(&blob, (LookAhead::Full, optimise));
+                let what = format!("{what} for {optimise:?}");
+                assert_eq!(full, theirs, "{what} at full, stopping everywhere");
+                assert_eq!(registers, none_registers, "registers of {what}");
+                assert!(
+                    reachable_memory(&mut machine, &blob)
+                        == reachable_memory(&mut none_machine, &blob),
+                    "memory of {what}"
+                );
+                let stops = machine.count(Reason::StoppedByFlag);
+                eprintln!("{what}: {stops} stops");
+                assert!(stops > 1000, "{what} stopped only {stops} times");
+            }
         }
     }
 }

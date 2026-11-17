@@ -54,6 +54,7 @@ pub(crate) fn plan<'a>(
     let mut finder = Finder {
         code,
         decoded: Decodes::default(),
+        means: FxHashMap::default(),
     };
     let functions = match bound {
         None => finder.functions(starts),
@@ -89,7 +90,7 @@ pub(crate) fn plan<'a>(
                         others.iter().map(|&d| function.blocks[d].start).collect();
                     let start = function.blocks[*h].start;
                     let bounds = (&entries, &headers[..]);
-                    let piece = finder.explore(start, bounds, &mut BTreeSet::new(), reach);
+                    let piece = finder.explore(start, bounds, &mut Found::new(), reach);
                     // Where a loop piece would need more entries, the stop check carries on in place instead.
                     if !irreducible(&piece).is_empty() {
                         return None;
@@ -118,6 +119,15 @@ impl Planned<'_> {
     /// The entries of the pieces the lookup table holds, in order.
     pub(crate) fn entries(&self) -> Vec<u64> {
         self.functions.iter().map(|f| f.entry).collect()
+    }
+
+    /// What made an entry one: [`Means::Given`] for every start of the plan.
+    pub(crate) fn means(&self, entry: u64) -> Means {
+        self.finder
+            .means
+            .get(&entry)
+            .copied()
+            .unwrap_or(Means::Given)
     }
 
     /// Offsets that cut the `i`th function in two, as starts.
@@ -219,6 +229,17 @@ struct Function {
 struct Finder<'a> {
     code: &'a Code<'a>,
     decoded: Decodes,
+    /// What made each function's entry one, where it is not a start given.
+    means: FxHashMap<u64, Means>,
+}
+
+/// Entries a function shows, with what shows each.
+type Found = BTreeMap<u64, Means>;
+
+/// Note an entry found, keeping the first listed means where several find it.
+fn note(found: &mut Found, offset: u64, means: Means) {
+    let kept = found.entry(offset).or_insert(means);
+    *kept = (*kept).min(means);
 }
 
 /// Decoded instructions by offset.
@@ -444,39 +465,49 @@ impl Finder<'_> {
             let mut work: Vec<u64> = entries.difference(&explored).copied().collect();
             while !work.is_empty() {
                 explored.extend(&work);
-                let found: Vec<BTreeSet<u64>> = work
+                let found: Vec<Found> = work
                     .par_iter()
                     .map(|&entry| {
-                        let mut found = BTreeSet::new();
+                        let mut found = Found::new();
                         self.explore(entry, (&entries, &[]), &mut found, Reach::All);
                         found
                     })
                     .collect();
                 work = Vec::new();
-                for offset in found.into_iter().flatten() {
-                    if self.code.inside(offset) && entries.insert(offset) {
-                        work.push(offset);
+                let mut round = Found::new();
+                for (offset, means) in found.into_iter().flatten() {
+                    if self.code.inside(offset) && !entries.contains(&offset) {
+                        note(&mut round, offset, means);
                     }
+                }
+                for (offset, means) in round {
+                    entries.insert(offset);
+                    self.means.insert(offset, means);
+                    work.push(offset);
                 }
             }
             let functions: Vec<Function> = entries
                 .par_iter()
-                .map(|&entry| {
-                    self.explore(entry, (&entries, &[]), &mut BTreeSet::new(), Reach::All)
-                })
+                .map(|&entry| self.explore(entry, (&entries, &[]), &mut Found::new(), Reach::All))
                 .collect();
-            let more_entries: Vec<Vec<u64>> = functions
+            let more_entries: Vec<Vec<(u64, Means)>> = functions
                 .par_iter()
                 .map(|function| {
                     let parts = function.blocks.len().div_ceil(FUNCTION_BLOCKS);
-                    let mut offsets = irreducible(function);
-                    offsets.extend(cuts(function, parts));
-                    offsets
+                    let reducible = irreducible(function).into_iter();
+                    let cut = cuts(function, parts).into_iter();
+                    reducible
+                        .map(|o| (o, Means::Reducible))
+                        .chain(cut.map(|o| (o, Means::Cut)))
+                        .collect()
                 })
                 .collect();
             let mut more = false;
-            for offset in more_entries.into_iter().flatten() {
-                more |= entries.insert(offset);
+            for (offset, means) in more_entries.into_iter().flatten() {
+                if entries.insert(offset) {
+                    self.means.insert(offset, means);
+                    more = true;
+                }
             }
             if !more {
                 self.keep(&functions);
@@ -495,7 +526,7 @@ impl Finder<'_> {
                 .par_iter()
                 .map(|&s| {
                     let reach = Reach::Count(limit);
-                    self.explore(s, (&bounds, &[]), &mut BTreeSet::new(), reach)
+                    self.explore(s, (&bounds, &[]), &mut Found::new(), reach)
                 })
                 .collect();
             let mut more = false;
@@ -518,7 +549,7 @@ impl Finder<'_> {
         &self,
         entry: u64,
         (entries, others): (&BTreeSet<u64>, &[u64]),
-        found: &mut BTreeSet<u64>,
+        found: &mut Found,
         reach: Reach<'_>,
     ) -> Function {
         let mut body = BTreeSet::new();
@@ -549,7 +580,7 @@ impl Finder<'_> {
                     link: true,
                     offset: by,
                 } => {
-                    found.insert(offset.wrapping_add_signed(by));
+                    note(found, offset.wrapping_add_signed(by), Means::Call);
                 }
                 Instruction::PcRelative {
                     page: false,
@@ -609,7 +640,9 @@ impl Finder<'_> {
         }
 
         let switched: FxHashSet<u64> = tables.values().flatten().copied().collect();
-        found.extend(built.into_iter().filter(|b| !switched.contains(b)));
+        for b in built.into_iter().filter(|b| !switched.contains(b)) {
+            note(found, b, Means::Built);
+        }
 
         // Cut the body into blocks, the entry's first.
         let mut blocks: Vec<Block> = Vec::new();

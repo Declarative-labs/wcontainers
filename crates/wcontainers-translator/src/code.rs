@@ -3,7 +3,7 @@
 use crate::contract::*;
 use crate::state::{Slot, load_flag, store_flags};
 use crate::thread::{memarg, piece_ref, piece_type, state_memory};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, CustomSection, ElementSection, Elements, Encode, EntityType,
@@ -74,6 +74,47 @@ pub enum Error {
 /// module would pass an engine's limits; code in one module reaches another's through the lookup.
 pub struct Translation {
     pub modules: Vec<CodeModule>,
+    /// How many of the pieces in the lookup table each means found, by [`Means`] number.
+    pub found: [u64; Means::ALL.len()],
+}
+
+/// What made an address the start of a piece in the lookup table. Where several did, the first listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Means {
+    /// A start the caller gave.
+    Given,
+    /// The target of a direct call.
+    Call,
+    /// An address the code builds that points into the code.
+    Built,
+    /// Where the code goes from another piece, at look-ahead none.
+    Followed,
+    /// An entry that keeps a function's control flow reducible.
+    Reducible,
+    /// A cut in a function too large for the translator's own limit or an engine's.
+    Cut,
+}
+
+impl Means {
+    pub const ALL: [Means; 6] = [
+        Means::Given,
+        Means::Call,
+        Means::Built,
+        Means::Followed,
+        Means::Reducible,
+        Means::Cut,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Means::Given => "given",
+            Means::Call => "call targets",
+            Means::Built => "built addresses",
+            Means::Followed => "followed",
+            Means::Reducible => "kept reducible",
+            Means::Cut => "cuts",
+        }
+    }
 }
 
 /// One code module and where its pieces start.
@@ -331,11 +372,21 @@ fn translate_within(
             return Err(Error::BadStart(start));
         }
     }
+    let mut counts = [0; Means::ALL.len()];
+    let given: BTreeSet<u64> = starts.iter().copied().collect();
     let modules = match look_ahead {
         LookAhead::Bounded(0) => return Err(Error::NoBound),
         LookAhead::None | LookAhead::Bounded(1) => {
             let found = none_found(&blob_code, starts, look_ahead == LookAhead::None);
             let entries: Vec<u64> = found.iter().map(|f| f.0).collect();
+            for entry in &entries {
+                let means = if given.contains(entry) {
+                    Means::Given
+                } else {
+                    Means::Followed
+                };
+                counts[means as usize] += 1;
+            }
             let first = none_emit(&blob_code, &found, 0..found.len());
             let how = (look_ahead, optimise);
             modules(blob, how, &entries, first, module_bytes, |group| {
@@ -355,6 +406,14 @@ fn translate_within(
                 let first = planned.emit(0..entries.len());
                 let over: Vec<usize> = (0..first.len()).filter(|&i| first[i].too_large()).collect();
                 if over.is_empty() {
+                    // Starts added to cut a function too large for an engine count as cuts.
+                    for entry in &entries {
+                        let means = match planned.means(*entry) {
+                            Means::Given if !given.contains(entry) => Means::Cut,
+                            means => means,
+                        };
+                        counts[means as usize] += 1;
+                    }
                     let emit = |group| planned.emit(group);
                     let how = (look_ahead, optimise);
                     break modules(blob, how, &entries, first, module_bytes, emit);
@@ -365,7 +424,10 @@ fn translate_within(
             }
         }
     };
-    Ok(Translation { modules })
+    Ok(Translation {
+        modules,
+        found: counts,
+    })
 }
 
 /// The code modules of a translation whose pieces the lookup table holds are at `entries`: `first`, every

@@ -4,6 +4,7 @@
 pub mod binaries;
 pub mod browser;
 pub mod changes;
+pub mod jobs;
 pub mod layer1;
 pub mod layer2;
 pub mod layer3;
