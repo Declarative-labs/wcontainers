@@ -51,9 +51,12 @@ Built in K4's fifth run:
 - Layer 1 harness: plain seed 4040506 failed because the reference's caller died of SIGIO after a
   write to a pseudo-terminal slave whose master had FIOASYNC: a terminal names the caller as owner
   when none is set (`__tty_fasync`), and our caller is the container's first process, which Linux
-  keeps from signals it has no handler for. guest/layer1.c now ignores SIGIO and every signal
-  F_SETSIG may choose there (1, 5, 8, 22, 32, 64) in the caller on both sides, as it does SIGPIPE;
-  no generated call reads their actions differently since both runners set the same. The kernel
+  keeps from signals it has no handler for. Both callers now ignore SIGPIPE, SIGIO and every
+  signal F_SETSIG may choose there (1, 5, 8, 22, 32, 64): the reference's in guest/layer1.c, ours
+  in `run_ours_on`'s setup calls (`IGNORED_SIGNALS`; our caller does not run that part of the
+  runner, so before only the reference's ignored SIGPIPE, which no generated call reads). Seeds
+  4040507 to 4040509 failed while only one side ignored them (rt_sigaction read SIGHUP's and
+  64's old action); they are not counted as passing runs. The kernel
   was right: tests/sigio.rs `terminal_signals_without_an_owner_match_reference`
   (guest/ptyasync.c, an owner named by FIOASYNC, its SIGIO handled and by default) passes.
 
@@ -400,8 +403,9 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   hidden inode there; ours is held by descriptor 0. Without this the inodes in use in `/dev` differ by
   one.
 - Both runners' callers ignore SIGPIPE, SIGIO and the signals F_SETSIG may choose (1, 5, 8, 22, 32,
-  64), which Linux keeps from our caller (the container's first process) and not from the
-  reference's; so what Linux does for a first process with these at their default is not compared.
+  64; guest/layer1.c and `IGNORED_SIGNALS` in layer1.rs), which Linux keeps from our caller (the
+  container's first process) and not from the reference's; so what Linux does for a first process
+  with these at their default is not compared, and rt_sigaction reads SIG_IGN for 1 and 64.
 
 What layer 1 does not generate, and why:
 - Terminal writes of more than 256 bytes, blocking terminal descriptors, a controlling terminal
@@ -1382,6 +1386,20 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K4, fifth run, final, at head deb0e5c (every fix in): plain layer 1 seeds 4040510, 4040511,
+  4040512 each passed 20000 (328.1 s, 388.0 s, 327.3 s) and the harness's failing seed 4040506
+  passed 20000 (326.7 s), four side by side with the whole suite, load 17.8 at the start and 18.5 to
+  20.5 at the end. Whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`): 151 passed, 0 failed, 5 ignored, 6 min 53 s,
+  load 17.8 at the start and 17.4 at the end. Backend seed 4040116 and caching backend seed 4040315
+  each passed 2000 (116.8 s, 117.1 s, side by side, load 19.4 to 15.8).
+- K4, fifth run, at heads f7cf6fc to 717998b: backend seeds 4040113 to 4040115 and caching backend
+  seeds 4040312 (the directory seek seed, after its fix) to 4040314 each passed 2000 (139 to 192 s,
+  load 12 to 50). Plain 4040504 and 4040505 passed 20000 (328.0 s, 328.3 s) before the layer 1
+  harness fix. A whole-suite run at 717998b beside five other jobs (load 12 to 46) had two failures
+  of the reference's known races: terminal's `making_pairs` (`exec /wc/tty: no such file`, the
+  shared guest directory) and futexpi's print order (the woken waiter printed before the unlocking
+  thread); the final suite run above passed both.
 - K4, fifth run, at head aecc367 (the fourth run's end): plain layer 1 seeds 4040401, 4040402,
   4040403 each passed 20000 (330.0 s, 330.7 s, 329.6 s; side by side with each other and the
   suite; load 16.2 at the start, 28.6 at the end). Backend seed 4040111 passed 2000 (144.3 s,
@@ -1901,7 +1919,7 @@ found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
-737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040506, and the
+737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, and the
 checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
-0, 4040101 to 4040105, 4040111 to 4040113; on the caching backend: 0, 4040301 to 4040303, 4040311,
-4040312, and the check's 7171002.
+0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
+to 4040315, and the check's 7171002.
