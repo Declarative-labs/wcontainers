@@ -164,6 +164,8 @@ pub enum Call {
     ClearBuffer(Id, u64, u64, Vec<u8>),
     Resolve(Region, Region, Format),
     Submit(Id),
+    FenceDone(Id),
+    WaitFence(Id),
     WaitRead(Id),
     /// A buffer range, or a texture region and extent.
     ReadBack(Result<(Id, u64, u64), (Region, Extent)>, Made),
@@ -207,6 +209,8 @@ impl Call {
             Call::ClearBuffer(..) => "clear_buffer",
             Call::Resolve(..) => "resolve",
             Call::Submit(..) => "submit",
+            Call::FenceDone(..) => "fence_done",
+            Call::WaitFence(..) => "wait_fence",
             Call::WaitRead(..) => "wait_read",
             Call::ReadBack(..) => "read_back",
             Call::ReadQueries(..) => "read_queries",
@@ -526,6 +530,8 @@ fn run(r: &mut Recorder, call: &Call) {
         Call::ClearBuffer(b, offset, size, pattern) => r.clear_buffer(b, *offset, *size, pattern),
         Call::Resolve(s, d, f) => r.resolve(&s.get(), &d.get(), *f),
         Call::Submit(_) => _ = r.submit(),
+        Call::FenceDone(f) => _ = r.fence_done(f),
+        Call::WaitFence(f) => r.wait_fence(f),
         Call::WaitRead(rb) => r.wait_read(rb),
         Call::ReadBack(src, _) => {
             _ = match src {

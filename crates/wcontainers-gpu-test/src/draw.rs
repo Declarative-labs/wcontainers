@@ -690,8 +690,8 @@ impl Recorder {
         Ok(())
     }
 
-    /// The buffer bytes a draw reads: its index range, the elements its vertex streams fetch and the
-    /// ranges its binding sets bind.
+    /// The buffer bytes a draw reads or writes: its index range, the elements its vertex streams
+    /// fetch and the ranges its binding sets bind.
     fn draw_reads(
         &self,
         call: &DrawCall<'_, Self>,
@@ -933,8 +933,9 @@ impl Recorder {
         self.pass.as_ref().ok_or("draw outside a pass")?;
         let state = self.gather(call)?;
         self.usage_scope(call, &state)?;
-        let reads = self.draw_reads(call, &state)?;
-        self.reads.extend(reads);
+        for (buffer, start, end) in self.draw_reads(call, &state)? {
+            self.touch(buffer, start, end);
+        }
         let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
         match call.topology {
             Topology::TriangleList | Topology::TriangleStrip => {}

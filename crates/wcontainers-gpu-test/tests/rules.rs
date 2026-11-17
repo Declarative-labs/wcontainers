@@ -663,13 +663,14 @@ fn no_overwrite_writes_touch_nothing_unfinished_reads() {
     d.draw(&p, None, Topology::TriangleList, false);
     d.r.end_pass();
     let vertices = d.vertices;
-    // The draw read bytes 0 to 24; past them a no-overwrite write is fine, and after a submit
-    // anywhere.
+    // The draw read bytes 0 to 24; past them a no-overwrite write is fine, and anywhere once the
+    // caller waited for the work.
     let more = buffer(&mut d.r, 48, BufferUsage::VERTEX | BufferUsage::COPY_DST);
     d.r.write_buffer(&more, 0, &[0; 4], WriteMode::NoOverwrite);
     d.r.write_buffer(&vertices, 16, &[0; 4], WriteMode::NoOverwrite);
     d.refused(&format!(
-        "a NoOverwrite write over bytes of buffer {} an unfinished command reads",
+        "a NoOverwrite write over bytes of buffer {} an unfinished command or an ordered write \
+         touches",
         format!("{vertices:?}")
             .trim_start_matches("Id(")
             .trim_end_matches(')')
@@ -684,6 +685,10 @@ fn no_overwrite_writes_touch_nothing_unfinished_reads() {
     let vertices = d.vertices;
     d.r.write_buffer(&vertices, 16, &[0; 4], WriteMode::NoOverwrite);
     assert!(d.r.violations.is_empty());
+    // An ordered write not yet waited for counts as unfinished too.
+    d.r.write_buffer(&vertices, 0, &[0; 4], WriteMode::Ordered);
+    d.r.write_buffer(&vertices, 2, &[0; 4], WriteMode::NoOverwrite);
+    assert_eq!(d.r.violations.len(), 1);
 }
 
 #[test]

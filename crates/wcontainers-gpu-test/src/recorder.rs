@@ -70,9 +70,16 @@ pub(crate) enum Obj {
     Raster(RasterDesc),
     VertexLayout(Box<VertexLayoutDesc>),
     BindingSet(Vec<(u32, Bound)>),
-    QuerySet { kind: QueryKind, results: Vec<u64> },
-    Readback { bytes: Vec<u8>, ready_at: u64 },
-    Fence,
+    QuerySet {
+        kind: QueryKind,
+        results: Vec<u64>,
+    },
+    Readback {
+        bytes: Vec<u8>,
+        ready_at: u64,
+    },
+    /// A fence, and the submit it ends.
+    Fence(u64),
     Surface(SurfaceObj),
 }
 
@@ -112,9 +119,9 @@ pub struct Recorder {
     pub calls: Vec<Call>,
     /// How deep the calls being made are inside another base call, whose own entry is the one kept.
     nested: u32,
-    /// Buffer ranges commands recorded since the last submit read: what no `NoOverwrite` write may
-    /// touch.
-    pub(crate) reads: Vec<(Id, u64, u64)>,
+    /// Buffer ranges commands read or wrote, and `Ordered` writes wrote, with the submit they belong
+    /// to, until the caller waits for that submit: what no `NoOverwrite` write may touch.
+    pub(crate) touched: Vec<(Id, u64, u64, u64)>,
     /// Every rule of the interface a caller broke, and every call this back end could not carry out.
     /// Either loses the device.
     pub violations: Vec<String>,
@@ -226,7 +233,7 @@ impl Recorder {
             submits: 0,
             calls: Vec::new(),
             nested: 0,
-            reads: Vec::new(),
+            touched: Vec::new(),
             violations: Vec::new(),
             shown: Vec::new(),
         }
@@ -591,7 +598,7 @@ impl Recorder {
                 size,
             } => {
                 self.buffer_for(**buffer, BufferUsage::COPY_SRC, "a read back")?;
-                self.reads.push((**buffer, *offset, *offset + *size));
+                self.touch(**buffer, *offset, *offset + *size);
                 let b = self.buffer(**buffer)?;
                 let range = *offset as usize..(*offset + *size) as usize;
                 b.bytes
@@ -604,6 +611,11 @@ impl Recorder {
                 self.read_region(region, *extent)
             }
         }
+    }
+
+    /// Notes bytes a command recorded now reads or writes, part of the next submit.
+    pub(crate) fn touch(&mut self, buffer: Id, start: u64, end: u64) {
+        self.touched.push((buffer, start, end, self.submits + 1));
     }
 
     fn readback(&mut self, bytes: Vec<u8>) -> Id {
@@ -1195,14 +1207,18 @@ impl Backend for Recorder {
             r.buffer_for(*buffer, BufferUsage::COPY_DST, "write_buffer")?;
             let end = offset + data.len() as u64;
             if mode == WriteMode::NoOverwrite
-                && r.reads
+                && r.touched
                     .iter()
-                    .any(|&(b, s, e)| b == *buffer && s < end && offset < e)
+                    .any(|&(b, s, e, _)| b == *buffer && s < end && offset < e)
             {
                 return Err(format!(
-                    "a NoOverwrite write over bytes of buffer {} an unfinished command reads",
+                    "a NoOverwrite write over bytes of buffer {} an unfinished command or an \
+                     ordered write touches",
                     buffer.0
                 ));
+            }
+            if mode == WriteMode::Ordered {
+                r.touch(*buffer, offset, end);
             }
             let b = r.buffer_mut(*buffer)?;
             let end = offset as usize + data.len();
@@ -1294,7 +1310,8 @@ impl Backend for Recorder {
         self.check(|r| {
             r.outside_pass("copy_buffer")?;
             r.buffer_for(*src, BufferUsage::COPY_SRC, "copy_buffer")?;
-            r.reads.push((*src, src_offset, src_offset + size));
+            r.touch(*src, src_offset, src_offset + size);
+            r.touch(*dst, dst_offset, dst_offset + size);
             r.buffer_for(*dst, BufferUsage::COPY_DST, "copy_buffer")?;
             if src == dst && src_offset < dst_offset + size && dst_offset < src_offset + size {
                 return Err("copy between overlapping ranges of one buffer".into());
@@ -1368,7 +1385,7 @@ impl Backend for Recorder {
             let end = src.offset
                 + (u64::from(extent.depth_or_layers - 1) * rows_per_layer + rows - 1) * pitch
                 + u64::from(extent.width.div_ceil(bw) * size);
-            r.reads.push((*src.buffer, src.offset, end));
+            r.touch(*src.buffer, src.offset, end);
             r.texture_for(
                 *dst.texture,
                 TextureUsage::COPY_DST,
@@ -1416,6 +1433,11 @@ impl Backend for Recorder {
             if (dst.row_pitch as usize) < len || rows_per_layer < rows {
                 return Err("copy pitch smaller than the region".into());
             }
+            let span = bytes.len().div_ceil(len.max(1)).saturating_sub(1);
+            let last = dst.offset
+                + ((span / rows * rows_per_layer + span % rows) * dst.row_pitch as usize + len)
+                    as u64;
+            r.touch(*dst.buffer, dst.offset, last);
             let b = r.buffer_mut(*dst.buffer)?;
             for (n, row) in bytes.chunks_exact(len.max(1)).enumerate() {
                 let (layer, y) = (n / rows, n % rows);
@@ -1436,6 +1458,7 @@ impl Backend for Recorder {
         self.check(|r| {
             r.outside_pass("clear_buffer")?;
             r.buffer_for(*buffer, BufferUsage::COPY_DST, "clear_buffer")?;
+            r.touch(*buffer, offset, offset + size);
             if !matches!(pattern.len(), 1 | 2 | 4 | 8 | 16)
                 || !size.is_multiple_of(pattern.len() as u64)
             {
@@ -1468,22 +1491,27 @@ impl Backend for Recorder {
             self.violate("submit inside a pass");
         }
         self.submits += 1;
-        // The recording back end finishes all work at a submit.
-        self.reads.clear();
-        let id = self.add(Obj::Fence);
+        let id = self.add(Obj::Fence(self.submits));
         self.log(Call::Submit(id));
         id
     }
 
+    /// The recording back end finishes all work at a submit, so every fence is done; the caller now
+    /// knows the work before it finished.
     fn fence_done(&mut self, fence: &Id) -> bool {
-        if !matches!(self.obj(*fence), Ok(Obj::Fence)) {
-            self.violate("fence_done of an object that is not a fence");
+        self.log(Call::FenceDone(*fence));
+        match self.obj(*fence) {
+            Ok(&Obj::Fence(n)) => self.touched.retain(|t| t.3 > n),
+            _ => self.violate("fence_done of an object that is not a fence"),
         }
         true
     }
 
     fn wait_fence(&mut self, fence: &Id) {
+        self.log(Call::WaitFence(*fence));
+        self.nested += 1;
         self.fence_done(fence);
+        self.nested -= 1;
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Id, GpuError> {
@@ -1555,6 +1583,9 @@ impl Backend for Recorder {
             self.nested += 1;
             self.submit();
             self.nested -= 1;
+        }
+        if let Ok(&Obj::Readback { ready_at, .. }) = self.obj(*readback) {
+            self.touched.retain(|t| t.3 > ready_at);
         }
     }
 
