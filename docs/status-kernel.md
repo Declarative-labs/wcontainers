@@ -138,8 +138,20 @@ K5 built (all four runs):
     queues carry is let go; releases cascade within one call (a socket's queue, a collected
     cycle). A user with more descriptors in flight than its RLIMIT_NOFILE sends no more
     (ETOOMANYREFS, `too_many_unix_fds`), unless it has CAP_SYS_RESOURCE or CAP_SYS_ADMIN.
+  - TCP's urgent data between the container's own sockets (`tcp_mark_urg`, `tcp_check_urg`,
+    `tcp_recv_urg`): the last byte of a MSG_OOB send is the receiver's mark; a read stops before
+    it, and one at it reads it with SO_OOBINLINE or else passes over it (the urgent data ends);
+    MSG_OOB reads it once (a peek leaves it; no room gives 0 with MSG_TRUNC; EINVAL with none,
+    inline or once read); a second urgent byte makes the first ordinary, or drops it when it is
+    next and not inline; SIOCATMARK, POLLPRI while unread, POLLIN wanting a byte past an
+    urgent one at the front, FIONREAD counting only up to it (`tcp_inq`), SIGURG to the owner.
+    To the outside a send with MSG_OOB and bytes is still refused (the hooks carry no urgent
+    data), counted "call flag not built".
   - Layer 1 found (fixed, measured): MSG_OOB reads on netlink sockets, a mapping of a TCP
-    socket, netlink's EPOLLWRBAND, packet information asked for after a datagram came.
+    socket, netlink's EPOLLWRBAND, packet information asked for after a datagram came, a pending
+    error before a queued local datagram or sequenced packet (`__skb_try_recv_datagram`), an IPv6
+    UDP socket connecting to a `sockaddr_in` (`__ip6_datagram_connect`; EAFNOSUPPORT for
+    IPV6_V6ONLY).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -152,6 +164,8 @@ Tests added in the fifth run (each against the reference):
   filling and draining, shut, reset, refused, chosen signals, a waiting reader; UDP data and
   refusals; netlink dump parts, a second dump, a faulting read), `socket_mappings_match_reference`
   (guest/tcpmap.c), `error_queue_matches_reference` (guest/recverr.c).
+- tests/inet.rs `tcp_urgent_data_matches_reference` (guest/tcpoob.c); guest/unixsock.c: a
+  pending error before queued messages; guest/udpcontrol.c: IPv6 sockets connecting to IPv4.
 - tests/unixsock.rs `cycles_are_collected_as_linux` (guest/unixgc.c: a socket in its own queue,
   two pairs in each other's, a cycle reached from an open socket, ETOOMANYREFS at a limit of 16).
   Linux collects on a work queue at the release of any local socket on the whole machine (other
@@ -1318,7 +1332,8 @@ each sequence the runner puts back what a sequence can change outside its direct
   passed, 5050422 and 5050424 found netlink's MSG_OOB read; on 5a254ef 5050422, 5050424 and
   5050425 failed (netlink's MSG_OOB, then the late packet information); on f9509e3 5050424 and
   5050426 passed (338 s and 339 s, three side by side, load 65 to 52), 5050425 found netlink's
-  EPOLLWRBAND.
+  EPOLLWRBAND; on 94f7d0d 5050429 passed (317 s, load 51 to 54), 5050427 found the pending
+  error before a queued sequenced packet and 5050428 the IPv6 connect to a `sockaddr_in`.
 - K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
   --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
   scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
@@ -1975,8 +1990,9 @@ K5, in this order (what the five runs built is under Where things stand):
 2. Not built, counted "socket option not built": TCP_INFO (Linux 7.0 gives 280 bytes, measured;
    about half its fields are timings and rates of real segments this TCP does not have, so a
    model needs a decision on what to give for them), TCP_ZEROCOPY_RECEIVE, SO_TIMESTAMPING (old
-   and new), and the internet send control messages listed under Where things stand. TCP's
-   urgent data (a send with MSG_OOB and bytes is refused, counted).
+   and new), and the internet send control messages listed under Where things stand. Urgent
+   data to the outside (a send with MSG_OOB and bytes on an outside connection is refused,
+   counted).
 3. Local sockets left: a socket's `/proc/<pid>/fdinfo` (fdinfo is not built at all). A SCM_PIDFD
    or SO_PEERPIDFD for a reaped process whose number was given again would name the new one
    (numbers are kept, not Linux's `struct pid`). ETOOMANYREFS is checked just before the
