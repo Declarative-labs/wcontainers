@@ -5,8 +5,9 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K5 (sockets and network), second run: the network inside the container, netlink, the interface
-ioctls and the hooks to the outside with name lookup are built (below). K5 is not complete; what
-is left is under Next.
+ioctls, the hooks to the outside with name lookup, inotify, sendmmsg and recvmmsg, and their
+layer 1 and layer 2 tests are built (below). K5 is not complete: accepting connections from
+outside and a few smaller parts are left (Next).
 
 K5 progress (second run):
 - Internet sockets (syscall/socket/inet.rs, `net/ipv4`, `net/ipv6`): AF_INET and AF_INET6, TCP
@@ -57,7 +58,40 @@ K5 progress (second run):
   `clients_talk_to_a_server_outside_as_linux` (guest/outside.c: lookup, blocking and
   nonblocking TCP, a refused port, UDP, a name that does not exist, against a server in the test
   process) and `outside_connections_read_reset_after_a_restore` (guest/outsidesave.c);
-  tests/saving.rs now also saves guest/inet.c.
+  tests/saving.rs now also saves guest/inet.c; tests/netprograms.rs runs busybox's `nc -l -e
+  cat` with `nc`, an `nc -l` server with `wget`, and `ip addr`, `ip link`, `ip route`, `ip -6
+  addr` (both roots, against the reference).
+- sendmmsg and recvmmsg (`__sys_sendmmsg`, `do_recvmmsg`): lengths stored after each message,
+  MSG_WAITFORONE, the timeout checked after each message and what is left of it stored, a later
+  error kept for the next call. Messages after the first never wait: sendmmsg ends with those
+  sent, and a blocking recvmmsg without MSG_WAITFORONE returns those it has where Linux waits for
+  the rest (counted "recvmmsg returned early"). Tested in guest/inet.c.
+- FIONREAD (SIOCINQ) and TIOCOUTQ (SIOCOUTQ) on sockets, FIOSETOWN and FIOGETOWN; the interface
+  ioctls; SIOCGSTAMP counted "ioctl request not built".
+- inotify (syscall/inotify.rs, `fs/notify/inotify/inotify_user.c` and the `fsnotify` hooks):
+  inotify_init1, inotify_add_watch (IN_MASK_ADD, IN_MASK_CREATE, IN_ONLYDIR, IN_DONT_FOLLOW,
+  IN_ONESHOT, masks of flags alone taken as Linux takes them), inotify_rm_watch, read (whole
+  events, EINVAL when the first does not fit, waits unless nonblocking), poll, epoll, FIONREAD,
+  merging of an event equal to the last, IN_Q_OVERFLOW at 16384. Watches sit on inodes
+  (`Inode::watches`). Events: IN_OPEN, IN_ACCESS and IN_MODIFY (read_at, write_at, vectored),
+  IN_CLOSE_WRITE and IN_CLOSE_NOWRITE at an open file's last close, IN_ATTRIB (chmod, chown,
+  utimensat, link count), IN_MODIFY for truncation, IN_CREATE (every `files::create`, link),
+  IN_DELETE, IN_MOVED_FROM and IN_MOVED_TO with one cookie, IN_MOVE_SELF, IN_DELETE_SELF and
+  IN_IGNORED when an inode with no name is no longer open (`dentry_unlink_inode`). An open
+  file's directory is the one it was opened by (`OpenFile::dentry`); a path call's is the one
+  the inode was made with or last moved to, while that still names it. Tested by
+  tests/inotify.rs `inotify_matches_reference` (guest/inotify.c).
+- Layer 1 makes socket, socketpair, bind, listen, connect, sendto, recvfrom, shutdown,
+  setsockopt, getsockopt, eventfd2, epoll_create1, epoll_ctl, epoll_pwait, inotify_init1,
+  inotify_add_watch and inotify_rm_watch. Every socket is nonblocking and sends and receives do
+  not wait; kinds the kernel refuses on purpose are not made; binds take port 0 or an abstract
+  name, and connects and sends go to a loopback port nothing binds, so nothing a sequence leaves
+  in the reference's network (which lives across sequences) changes a later one; receives read
+  no address (random port numbers and automatic names differ). Ran: seed 5050001 300 sequences
+  and seed 5050002 4000 sequences, both passed (load about 35 to 40).
+- Whole suite at the inotify commit (`cargo test -p wcontainers-kernel -p
+  wcontainers-kernel-test`, load 30 to 42): 88 test binaries, 160 tests passed, 0 failed, 5
+  ignored (the known ones).
 
 K5 progress (first run):
 - Readiness keyed by event (`Kernel::wake_poll(channel, key)`, Linux's `wake_up_poll`): every
@@ -1717,6 +1751,33 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K5, second run, the made-up network (plan section 15 allows it; these are its choices): lo
+  (1) and eth0 (2) only, where the reference's kernel (Docker Desktop's linuxkit) also shows
+  eight tunnel devices and numbers eth0 11; eth0 is 172.17.0.2/16 with hardware address
+  02:42:ac:11:00:02 and MTU 65535 (the reference's), where Docker gives each container its own
+  address and a random hardware address; traffic counters read zero (counted). The name server
+  is 127.0.0.11, as Docker's own for user networks, where the reference's default bridge names
+  Docker Desktop's 192.168.65.7. Tests hide what Docker chooses per container.
+- K5, second run, TCP between the container's own addresses: how much a connection holds is the
+  sender's SO_SNDBUF of unread bytes (counted "tcp room modelled" when a send finds none), where
+  Linux's depends on timing (windows, buffer growth); writable at two thirds empty as
+  `__sk_stream_is_writeable`. A connect to a full backlog waits and is completed by the accept
+  that makes room (counted "tcp connect waits for backlog room"), where Linux drops the SYN and
+  retries after 1, 3, 7 seconds and so on. Nagle and delayed acknowledgements are not modelled:
+  every send arrives at once. An end that closes first holds its port for TIME_WAIT from the
+  moment both FINs are sent, or from its release if the other end's FIN never came (Linux:
+  FIN_WAIT2, then TIME_WAIT). UDP true sizes are near Linux's, not equal (92 of 1000-byte
+  datagrams fill the reference's receive buffer).
+- K5, second run, the outside: a UDP socket has one host connection per outside destination
+  (the hooks carry no source address). What an outside connection's bytes look like to poll comes
+  from the kernel's own queue, pulled on `ConnectionReady` and at each read. Name queries are
+  answered with TTL 0 (the lookup hook gives none) and only for A and AAAA (others "not
+  implemented", counted). The test host maps `host.docker.internal` and its address to this
+  machine's loopback, so one server serves the reference and ours.
+- K5, second run: inotify's directory for a call by path is where the inode was made or last
+  moved to (inodes keep no other dentries), so after a hard link Linux may name the other link;
+  IN_DELETE_SELF waits for the last open file (descriptor tables are searched), not for
+  mappings.
 - K5, first run: a backend directory's later pages are listed with plain READDIR. Linux also
   uses READDIRPLUS for them when a name in the directory was looked up afresh, or first
   revalidated after READDIRPLUS made it, since its last listing (`FUSE_I_ADVISE_RDPLUS`); which
@@ -1968,6 +2029,7 @@ Notices the backend sends that Linux refuses are counted "backend notice refused
 refusal of the guest).
 Approximations that are not refusals have their own counters: "tcp room modelled", "tcp
 connect waits for backlog room", "interface counters not kept", "name query not answered",
+"recvmmsg returned early",
 "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
 written", "vmsplice pages copied", "backend pages written whole", "backend change not seen by
@@ -2102,28 +2164,28 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K5, in this order (its first run fixed the K4 check's findings and built epoll, eventfd and
-local sockets):
-1. The network inside the container: AF_INET and AF_INET6 with a loopback interface, TCP
-   (states, connect, listen, accept, shutdown, reset on close with unread bytes) and UDP between
-   processes wholly in the kernel; options as Linux answers them (SOL_SOCKET for inet,
-   IPPROTO_TCP, IPPROTO_IP, IPPROTO_IPV6). Measure the reference first (Docker's bridge: lo and
-   eth0 with 172.17.0.x).
-2. Netlink (NETLINK_ROUTE): RTM_GETLINK, RTM_GETADDR, RTM_GETROUTE dumps as the reference shows
-   lo and eth0 (`ip addr`, musl's `getifaddrs`, `if_nameindex`).
-3. The hooks to the outside (host.rs has connect, send, receive, close, listen, accept,
-   `Event::Connected`, `ConnectionReady`), name lookup through `look_up` (answering packets to
-   the resolver in /etc/resolv.conf), the test host's outside server, and section 12's rule that
-   outside connections read as closed after a restore.
-4. inotify on the in-memory file systems (inotify_init1, inotify_add_watch, inotify_rm_watch);
-   fanotify_mark as the reference refuses it.
-5. Local sockets left: MSG_OOB on streams (counted, EOPNOTSUPP; 7.0 has CONFIG_AF_UNIX_OOB),
-   SO_PASSPIDFD and SCM_PIDFD, SIOCINQ and SIOCOUTQ, sendmmsg and recvmmsg, collecting sockets
-   passed over themselves (such a cycle stays open here), `touch_atime` of a socket node at
-   connect, splice and sendfile into sockets, a socket's `/proc/<pid>/fdinfo`.
-6. Layer 1 with the new calls (socketpair, send and receive, epoll, eventfd), layer 2 programs (a
-   server and client inside; clients talking to a test server outside), and the three
-   end-of-milestone seeds of 20000.
+K5, in this order (the first run built epoll, eventfd and local sockets; the second the network
+inside, netlink, the outside hooks with name lookup, inotify, sendmmsg and recvmmsg, and layer 1
+and layer 2 tests of them):
+1. Accepting connections from outside: `Host::listen` and `Host::accept` are not used yet. A
+   listener bound to the any address or eth0's address could ask the host to listen on its port
+   (a host may answer NotSupported), and each `ConnectionReady` on the listener becomes an
+   embryo in its backlog carried by `outside.rs`. Re-listen after a restore.
+2. Local sockets left: MSG_OOB on streams (counted, EOPNOTSUPP; 7.0 has CONFIG_AF_UNIX_OOB),
+   SO_PASSPIDFD and SCM_PIDFD, collecting sockets passed over themselves (such a cycle stays
+   open here), `touch_atime` of a socket node at connect, splice and sendfile into sockets
+   (unchecked against the reference), a socket's `/proc/<pid>/fdinfo`.
+3. `/proc/net` (dev, tcp, tcp6, udp, udp6, unix, route, if_inet6, netstat, snmp): not built
+   ("proc entry not built"); `ifconfig` and `netstat` read them. TCP_INFO and the options that add
+   control messages (IP_PKTINFO, IP_RECVTTL, IPV6_RECVPKTINFO, SO_TIMESTAMP*) are counted "socket
+   option not built". fanotify_mark is still "system call not implemented" (fanotify_init is
+   refused by Docker's profile, so no group can exist; Linux's flag checks come before EBADF and
+   EINVAL, and linux-raw-sys has no FAN_MARK_* to check them with).
+4. inotify gaps: IN_EXCL_UNLINK is kept but not acted on; IN_UNMOUNT is never sent; a
+   mapping does not keep an unlinked inode's watches alive (Linux sends IN_DELETE_SELF at the
+   last unmap); events of files changed on the backend from outside are not seen (plan section
+   15's kind); RENAME_EXCHANGE sends one pair of move events where Linux sends two.
+5. The three end-of-milestone layer 1 seeds of 20000 once the above is done.
 
 K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
 found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
