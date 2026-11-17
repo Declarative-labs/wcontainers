@@ -14,10 +14,10 @@ mod draw;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor,
-    BlendOp, BufferDesc, BufferRange, BufferUsage, ColorAttachment, DepthAttachment, DeviceStatus,
-    DrawCall, DrawRange, Extent, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc,
-    ReadSource, StageSet, StoreOp, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    ViewDimension, Viewport, WriteMode,
+    BlendOp, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn, DepthAttachment,
+    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Format, FormatUse, LoadOp,
+    MapIntent, Origin, PassDesc, Program, ReadSource, ShaderStage, StageSet, StoreOp,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -461,4 +461,192 @@ fn combined_depth_stencil_views_draw_and_read_each_aspect() {
         ran += 1;
     }
     assert!(ran > 0, "every device holds depth24plus-stencil8");
+}
+
+/// A vertex stage alone, moving the triangle by its constants: depth 0.5 with no fragment stage.
+const VERTEX_ONLY_WGSL: &str = r#"
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.5, 1.0);
+}
+"#;
+
+/// Each stage's helper constants in set 3 (plan 6.4: binding 0 the vertex stage's, 12 the
+/// fragment stage's): the vertex block moves the triangle onto the right pixel, the fragment
+/// block colours it.
+const HELPERS_WGSL: &str = r#"
+struct V { shift: vec4f }
+struct F { color: vec4f }
+@group(3) @binding(0) var<uniform> v: V;
+@group(3) @binding(12) var<uniform> f: F;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0 + v.shift.xy, 0.0, 1.0);
+}
+@fragment fn ps() -> @location(0) vec4f { return f.color; }
+"#;
+
+fn draw_call<'a>(
+    k: &'a Kit,
+    bindings: [Option<&'a <WebGpu as Backend>::BindingSet>; 4],
+    viewport: &'a [Viewport],
+) -> DrawCall<'a, WebGpu> {
+    DrawCall {
+        program: &k.program,
+        blend: &k.blend,
+        depth_stencil: &k.depth_stencil,
+        raster: &k.raster,
+        vertex_layout: &k.vertex_layout,
+        bindings,
+        vertex_buffers: &[],
+        index: None,
+        topology: Topology::TriangleList,
+        restart: false,
+        viewports: viewport,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: 3,
+            first_instance: 0,
+            instances: 1,
+        },
+    }
+}
+
+fn whole(width: u32) -> [Viewport; 1] {
+    [Viewport {
+        x: 0,
+        y: 0,
+        width: (width as f32).to_bits(),
+        height: 1.0f32.to_bits(),
+        min_depth: 0,
+        max_depth: 1.0f32.to_bits(),
+    }]
+}
+
+/// A program with no fragment stage drawn into a colour and a depth target: the colour keeps its
+/// clear and the depth test and write happen.
+#[test]
+fn programs_without_a_fragment_stage_write_only_depth() {
+    let mut b = device();
+    let vs = draw::shader(&mut b, VERTEX_ONLY_WGSL, "vs", ShaderStage::Vertex).unwrap();
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vs,
+            fragment: None,
+        })
+        .unwrap();
+    let depth_stencil = b
+        .create_depth_stencil(&DepthStencilDesc {
+            depth_compare: Some(CompareFn::Less),
+            depth_write: true,
+            ..draw::no_depth()
+        })
+        .unwrap();
+    let k = Kit {
+        program,
+        depth_stencil,
+        ..kit(&mut b, Format::Rgba8Unorm, 1, &draw::opaque())
+    };
+    let (depth, depth_view) = draw::texture_2d(
+        &mut b,
+        Format::Depth32Float,
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    )
+    .unwrap();
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: Some(DepthAttachment {
+            view: &depth_view,
+            depth: Some(AspectOps {
+                load: LoadOp::Clear(1.0f32.to_bits()),
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        }),
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &k.view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear([0.2f32, 0.4, 0.6, 1.0].map(f32::to_bits)),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    b.draw(&draw_call(&k, [None; 4], &whole(1)));
+    let color = finish(&mut b, &k, 4);
+    let rb = b
+        .read_back(&ReadSource::Texture {
+            region: TextureRegion {
+                texture: &depth,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: 1,
+                height: 1,
+                depth_or_layers: 1,
+            },
+        })
+        .unwrap();
+    b.submit();
+    b.wait_read(&rb);
+    let mut got = [0u8; 4];
+    b.finish_read(rb, &mut got);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(color, [51, 102, 153, 255]);
+    assert_eq!(f32::from_le_bytes(got), 0.5);
+}
+
+/// One draw's vertex and fragment helper blocks, two entries of set 3, each read by its own stage.
+#[test]
+fn helper_blocks_of_each_stage_read_their_own_values() {
+    let mut b = device();
+    let k = Kit {
+        program: draw::program(&mut b, HELPERS_WGSL).unwrap(),
+        ..kit(&mut b, Format::Rgba8Unorm, 2, &draw::opaque())
+    };
+    let vertex = constants(&mut b, 16, MapIntent::Often);
+    let fragment = constants(&mut b, 16, MapIntent::Often);
+    // Clip space moves right by one: only the right pixel is covered.
+    b.write_buffer(&vertex, 0, &unorm([255, 0, 0, 0]), WriteMode::Discard);
+    b.write_buffer(&fragment, 0, &unorm([10, 20, 30, 255]), WriteMode::Discard);
+    let block = |buffer| BufferRange {
+        buffer,
+        offset: 0,
+        size: 16,
+    };
+    let helpers = b
+        .create_binding_set(&[
+            BindingEntry {
+                binding: 0,
+                stages: StageSet::VERTEX,
+                resource: BindingResource::UniformBuffer(block(&vertex)),
+            },
+            BindingEntry {
+                binding: 12,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::UniformBuffer(block(&fragment)),
+            },
+        ])
+        .unwrap();
+    begin(&mut b, &k, [0.0; 4]);
+    b.draw(&draw_call(
+        &k,
+        [None, None, None, Some(&helpers)],
+        &whole(2),
+    ));
+    let got = finish(&mut b, &k, 4);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(got, [0, 0, 0, 0, 10, 20, 30, 255]);
 }

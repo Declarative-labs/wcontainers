@@ -683,12 +683,16 @@ impl WebGpu {
             }
         }
         let fragment = match fragment {
-            Some(f) => Some((f, targets)),
+            Some(f) => Some((f.0.raw.clone(), f.0.entry.as_str(), targets)),
             None if targets.iter().all(Option::is_none) => None,
+            // WebGPU draws into colour targets only with a fragment stage: one writing nothing,
+            // so the targets keep what they hold, as with no fragment shader in other APIs.
             None => {
-                return Err(
-                    "a program without a fragment shader drawing into color targets is not built yet",
-                );
+                for t in targets.iter_mut().flatten() {
+                    t.write_mask = wgpu::ColorWrites::empty();
+                    t.blend = None;
+                }
+                Some((self.no_fragment(), "none", targets))
             }
         };
         let raster = &call.raster.0.desc;
@@ -757,12 +761,14 @@ impl WebGpu {
                     mask: u64::from(raster.sample_mask),
                     alpha_to_coverage_enabled: blend.alpha_to_coverage,
                 },
-                fragment: fragment.as_ref().map(|(f, targets)| wgpu::FragmentState {
-                    module: &f.0.raw,
-                    entry_point: Some(&f.0.entry),
-                    compilation_options: Default::default(),
-                    targets,
-                }),
+                fragment: fragment
+                    .as_ref()
+                    .map(|(module, entry, targets)| wgpu::FragmentState {
+                        module,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets,
+                    }),
                 multiview_mask: None,
                 cache: None,
             });

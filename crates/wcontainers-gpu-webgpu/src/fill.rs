@@ -1,6 +1,6 @@
-//! Draws the back end makes itself where WebGPU has no command for the job: integer colour clears
-//! the API would round through a float (`IntegerClearByDraw`), and depth written from a texture
-//! (`DepthWrittenByDraw`, plan section 4.2).
+//! Programs of the back end's own: draws where WebGPU has no command for the job (integer colour
+//! clears the API would round through a float, `IntegerClearByDraw`; depth written from a texture,
+//! `DepthWrittenByDraw`, plan section 4.2), and the empty fragment stage of programs without one.
 
 use std::collections::HashMap;
 
@@ -61,6 +61,7 @@ struct DepthProgram {
 #[derive(Default)]
 pub struct Fills {
     cover: Option<wgpu::ShaderModule>,
+    no_fragment: Option<wgpu::ShaderModule>,
     clear_layout: Option<(wgpu::BindGroupLayout, wgpu::PipelineLayout)>,
     clears: HashMap<(TargetLayout, usize), wgpu::RenderPipeline>,
     depths: HashMap<(wgpu::TextureFormat, DepthSource), DepthProgram>,
@@ -107,6 +108,20 @@ const UNIFORM: wgpu::BindingType = wgpu::BindingType::Buffer {
 };
 
 impl WebGpu {
+    /// A fragment stage writing nothing, for programs without one that draw into colour targets.
+    pub(crate) fn no_fragment(&mut self) -> wgpu::ShaderModule {
+        let device = &self.device;
+        self.fills
+            .no_fragment
+            .get_or_insert_with(|| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Wgsl("@fragment fn none() {}".into()),
+                })
+            })
+            .clone()
+    }
+
     fn cover(&mut self) -> wgpu::ShaderModule {
         let device = &self.device;
         self.fills
