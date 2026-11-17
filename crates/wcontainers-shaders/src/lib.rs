@@ -13,7 +13,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
-use wcontainers_gpu::{Reflection, ShaderModule, VariantKey};
+use wcontainers_gpu::{Reflection, ShaderModule, TexelBufferRoute, VariantKey};
 
 /// Shader bytecode in one of the forms the fronts hand over.
 #[derive(Clone, Copy, Debug)]
@@ -66,11 +66,11 @@ pub const WEBGPU_CAPABILITIES: Capabilities = Capabilities::MULTISAMPLED_SHADING
     .union(Capabilities::SHADER_FLOAT16_IN_FLOAT32);
 
 /// What goes into every content key besides the source and the variant: this crate's version and the
-/// converters' revisions.
+/// BLAKE3 hash of the converters' C++ sources as built.
 pub const CONVERTER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+dxbc-spirv.6196cc6c62b7b04acb4f3e713ff3bb1a7e7950fd",
-    "+dxil-spirv.510991e707cda3aa389305448edad7c7dd76e3e7"
+    "+",
+    env!("WCS_CONVERTER_SOURCES")
 );
 
 /// Converts a shader into the common form, as the variant asks. `root_signature` is the Direct3D 12
@@ -80,10 +80,13 @@ pub fn convert(
     variant: &VariantKey,
     root_signature: Option<&[u8]>,
 ) -> Result<Converted, ConvertError> {
-    let _ = root_signature;
+    unbuilt(variant, root_signature)?;
     let (bytes, (module, reflection, stage)) = match source {
-        Source::Dxbc(bytes) => (bytes, lower::lower(&dxbc::to_ir(bytes)?, variant)?),
-        Source::Dxil(bytes) => (bytes, dxil::lower(bytes, variant)?),
+        Source::Dxbc(bytes) => (
+            bytes,
+            contained(|| lower::lower(&dxbc::to_ir(bytes)?, variant))?,
+        ),
+        Source::Dxil(bytes) => (bytes, contained(|| dxil::lower(bytes, variant))?),
         Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
     };
     let info = validate(&module)?;
@@ -101,6 +104,77 @@ pub fn convert(
         }],
         reflection,
     })
+}
+
+/// Runs a conversion step on bytecode from the guest, so that a panic in it (our bug) fails this call
+/// as `Malformed` instead of ending the host. Where panics abort (WebAssembly) it ends the module
+/// instance, which the host reports as a failed conversion.
+fn contained<T>(f: impl FnOnce() -> Result<T, ConvertError>) -> Result<T, ConvertError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let text = panic
+            .downcast_ref::<&str>()
+            .map(|s| String::from(*s))
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        Err(ConvertError::Malformed(format!(
+            "the conversion panicked: {text}"
+        )))
+    })
+}
+
+/// Refuses, by name, every rewrite the variant asks for that this conversion does not build yet, so no
+/// front gets the plain program under a variant's key.
+fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), ConvertError> {
+    let VariantKey {
+        flags,
+        filter_in_shader,
+        border_in_shader,
+        mirror_once_in_shader,
+        lod_bias,
+        constants_as_storage,
+        constants_as_texture,
+        pulled,
+        storage_formats,
+        texel_buffers,
+        storage_packed,
+        texels_through_buffer,
+        decoded,
+        targets_in_shader,
+        min_lod_clamped,
+        draw_base: _,
+        output_interpolation: _,
+        samples,
+        layout,
+    } = variant;
+    let asked = [
+        (!flags.is_empty(), "VariantFlags"),
+        (*filter_in_shader != 0, "FilterInShader"),
+        (*border_in_shader != 0, "BorderInShader"),
+        (*mirror_once_in_shader != 0, "MirrorOnceInShader"),
+        (*lod_bias != 0, "LodBiasInShader"),
+        (*constants_as_storage != 0, "ConstantsAsStorage"),
+        (*constants_as_texture != 0, "ConstantsAsTexture"),
+        (!pulled.is_empty(), "VertexPulledInShader"),
+        (!storage_formats.is_empty(), "StorageFormats"),
+        (
+            *texel_buffers != TexelBufferRoute::Native,
+            "TexelBufferRoute",
+        ),
+        (*storage_packed != 0, "StoragePacked"),
+        (*texels_through_buffer != 0, "TexelsThroughBuffer"),
+        (!decoded.is_empty(), "NormAsInteger"),
+        (!targets_in_shader.is_empty(), "TargetsInShader"),
+        (*min_lod_clamped != 0, "MinLodClamp"),
+        (*samples != 0, "SampleCount"),
+        (
+            *layout != [0; 32] || root_signature.is_some(),
+            "RootSignatureLayout",
+        ),
+    ];
+    match asked.iter().find(|(on, _)| *on) {
+        Some((_, name)) => Err(ConvertError::Unsupported(name)),
+        None => Ok(()),
+    }
 }
 
 fn validate(module: &naga::Module) -> Result<naga::valid::ModuleInfo, ConvertError> {

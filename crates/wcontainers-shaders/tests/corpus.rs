@@ -1,10 +1,13 @@
 //! Converts every shader of the corpora and writes each result as WGSL and GLSL ES 3.00, checking the
 //! WGSL by reading and validating it again and the GLSL with glslangValidator where it is installed.
 //!
-//! Corpora: the rig's compiled Direct3D shaders in `wcontainers-graphics-test/shaders/dxbc` (always), and
-//! the directory in `WCONTAINERS_SHADER_CORPUS` (the plan's 191 DXBC blobs from Wine's tests, kept outside
-//! the repository). `WCONTAINERS_SHADERS_OUT` names a directory for the written files and a verdict per
-//! shader (`verdicts.txt`); `GLSLANG` names the glslangValidator to run.
+//! Each shader's verdict must equal the one recorded in `tests/expected/<corpus>.txt`.
+//!
+//! Corpora: the rig's compiled Direct3D shaders in `wcontainers-graphics-test/shaders/{dxbc,dxil}`, this
+//! crate's own in `tests/own`, and (an ignored test) the directory in `WCONTAINERS_SHADER_CORPUS` (the
+//! plan's 191 DXBC blobs from Wine's tests, kept outside the repository). `WCONTAINERS_SHADERS_OUT` names
+//! a directory for the written files, a verdict per shader (`verdicts.txt`) and the classes in the
+//! expected files' form (`classes.txt`); with it, `GLSLANG` names the glslangValidator to run.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -134,91 +137,99 @@ fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
     if let Some(out) = &out {
         std::fs::create_dir_all(out).unwrap();
     }
+    let glslang = out.is_some() && std::env::var_os("GLSLANG").is_some();
+    let expected_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/expected")
+        .join(format!("{label}.txt"));
+    let expected: BTreeMap<String, String> = std::fs::read_to_string(&expected_file)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(f, v)| (f.to_string(), v.to_string()))
+        .collect();
     let mut counts = BTreeMap::new();
     let mut lines = String::new();
+    let mut classes = String::new();
+    let mut differ = Vec::new();
     for path in shaders(dir, ext) {
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
         let v = verdict(&path, out.as_deref());
         let class: String = v.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
-        *counts.entry(class).or_insert(0) += 1;
-        lines.push_str(&format!(
-            "{}\t{v}\n",
-            path.file_name().unwrap().to_string_lossy()
-        ));
+        *counts.entry(class.clone()).or_insert(0) += 1;
+        lines.push_str(&format!("{file}\t{v}\n"));
+        classes.push_str(&format!("{file}\t{class}\n"));
+        // Without glslang, a shader glslang refuses is written and reads as "ok".
+        let matches = expected.get(&file).is_some_and(|e| {
+            *e == class || (!glslang && e == "ok-wgsl glsl-compile" && class == "ok")
+        });
+        // Only conversions and named failures may be recorded.
+        let named = ["ok", "ok-wgsl", "unsupported", "spirv-reader"]
+            .contains(&v.split_whitespace().next().unwrap_or(""));
+        if !matches || !named {
+            differ.push(format!(
+                "{file}: expected {:?}, got {v:?}",
+                expected.get(&file)
+            ));
+        }
     }
     if let Some(out) = &out {
         std::fs::write(out.join("verdicts.txt"), &lines).unwrap();
+        std::fs::write(out.join("classes.txt"), &classes).unwrap();
     }
     eprintln!("{label}:");
     for (k, n) in &counts {
         eprintln!("  {n:4} {k}");
     }
+    let missing: Vec<_> = expected
+        .keys()
+        .filter(|f| {
+            !lines
+                .lines()
+                .any(|l| l.split('\t').next() == Some(f.as_str()))
+        })
+        .collect();
+    assert!(
+        differ.is_empty() && missing.is_empty(),
+        "{label}: verdicts differ from {}:\n{}\nmissing: {missing:?}",
+        expected_file.display(),
+        differ.join("\n")
+    );
     counts
 }
 
+/// Every verdict is the one recorded for that shader in `tests/expected/<corpus>.txt` (a conversion,
+/// or a named failure: `unsupported`, `spirv-reader`, or GLSL ES 3.00 lacking what the shader uses);
+/// a change either way, including invalid WGSL, fails until the record is updated.
 #[test]
-fn rig_shaders_convert_or_fail_with_a_named_reason() {
+fn rig_shaders_give_their_recorded_verdicts() {
     let dir =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders/dxbc");
     let counts = run(&dir, "dxbc", "rig");
     assert!(counts.values().sum::<usize>() > 0);
-    let unnamed: usize = counts
-        .iter()
-        .filter(|(k, _)| k.starts_with("convert "))
-        .map(|(_, n)| n)
-        .sum();
-    assert_eq!(
-        unnamed, 0,
-        "shaders failing without a named reason: {counts:?}"
-    );
 }
 
 #[test]
-fn corpus_converts_or_fails_with_a_named_reason() {
-    let Some(dir) = std::env::var_os("WCONTAINERS_SHADER_CORPUS") else {
-        eprintln!("WCONTAINERS_SHADER_CORPUS not set; skipped");
-        return;
-    };
+#[ignore = "needs WCONTAINERS_SHADER_CORPUS, the plan's 191 shaders, kept outside the repository"]
+fn corpus_gives_its_recorded_verdicts() {
+    let dir = std::env::var_os("WCONTAINERS_SHADER_CORPUS")
+        .expect("WCONTAINERS_SHADER_CORPUS must name the corpus directory");
     let counts = run(Path::new(&dir), "dxbc", "corpus");
-    let unnamed: usize = counts
-        .iter()
-        .filter(|(k, _)| k.starts_with("convert "))
-        .map(|(_, n)| n)
-        .sum();
-    assert_eq!(
-        unnamed, 0,
-        "shaders failing without a named reason: {counts:?}"
-    );
+    assert_eq!(counts.values().sum::<usize>(), 191);
 }
 
 #[test]
-fn rig_dxil_shaders_convert_or_fail_with_a_named_reason() {
+fn rig_dxil_shaders_give_their_recorded_verdicts() {
     let dir =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders/dxil");
     let counts = run(&dir, "dxil", "rig-dxil");
     assert!(counts.values().sum::<usize>() > 0);
-    let unnamed: usize = counts
-        .iter()
-        .filter(|(k, _)| k.starts_with("convert "))
-        .map(|(_, n)| n)
-        .sum();
-    assert_eq!(
-        unnamed, 0,
-        "shaders failing without a named reason: {counts:?}"
-    );
 }
 
 #[test]
-fn own_shaders_convert() {
+fn own_shaders_give_their_recorded_verdicts() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
-    let counts = run(&dir, "dxbc", "own");
-    // All give valid WGSL; GLSL ES 3.00 lacks the bitfield operations two of them use, which the
-    // WebGL 2 back end lowers (plan 6.5).
-    let wgsl: usize = counts
-        .iter()
-        .filter(|(k, _)| k.starts_with("ok"))
-        .map(|(_, n)| n)
-        .sum();
-    assert_eq!(wgsl, shaders(&dir, "dxbc").len(), "{counts:?}");
+    run(&dir, "dxbc", "own");
+    run(&dir, "dxil", "own-dxil");
 }
 
 /// The same HLSL compiled by fxc (DXBC) and by dxc (DXIL) gives the same values at the same locations,
@@ -315,7 +326,7 @@ fn dxil_draw_bases_from_the_helpers() {
 }
 
 /// Every rig shader compiled both by fxc (DXBC) and by dxc (DXIL) that converts by both routes gets the
-/// same bindings and the same sampled pairs from each.
+/// same bindings, sampled pairs and stage extras from each.
 #[test]
 fn dxil_bindings_and_sampled_pairs_match_dxbc() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders");
@@ -350,6 +361,7 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
         let (a, b) = (&a.reflection, &b.reflection);
         assert_eq!(bindings(a), bindings(b), "{name} bindings");
         assert_eq!(a.sampled_pairs, b.sampled_pairs, "{name} sampled pairs");
+        assert_eq!(a.extras, b.extras, "{name} extras");
         compared += 1;
         sampling += usize::from(!a.sampled_pairs.is_empty());
     }

@@ -4,8 +4,9 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 
 ## Where things stand
 
-Milestone G6a (first slice): done in run 3. Run 3 merged origin/phase-2-graphics and every
-origin/phase-2-graphics-* branch again (only Cargo.lock conflicted; the shared line's was taken).
+Milestone G6a (first slice): done in run 3; run 4 fixed what the independent check of run 3 found
+(listed under "Run 4" below). Run 4 merged origin/phase-2-graphics and every origin/phase-2-graphics-*
+branch again (no conflicts).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -14,8 +15,10 @@ Done:
   for WebAssembly (`wasm32-wasip1`, wasi-sdk 25).
 - `convert` (6.4) for DXBC by the direct route: dxbc-spirv's legalised IR, serialised, read in Rust
   (`src/ir.rs`) and lowered straight into naga (`src/lower.rs`). Vertex, pixel and compute shaders.
-  Every corpus shader converts or fails with a named reason; the WGSL is read back and validated by
-  naga with WebGPU's core capabilities, the GLSL ES 3.00 compiled by glslangValidator.
+  Every corpus shader converts or fails with a named reason. `tests/corpus.rs` checks each shader's
+  verdict against the one recorded in `tests/expected/<corpus>.txt` (written WGSL read back and
+  validated by naga with WebGPU's core capabilities; GLSL ES 3.00 written and compiled by
+  glslangValidator when `GLSLANG` is set), so any change either way fails until the record changes.
 - Chrome's own compile of every written file (run 2): `crates/wcontainers-shaders/web/check <out-dir>`
   compiles each WGSL file with Chrome's WebGPU and each GLSL file with its WebGL 2 on the desktop's
   RTX 3080 (one GPU job, counts below). Every converted shader's WGSL compiles in Chrome (run 3:
@@ -47,9 +50,8 @@ Done:
   `convert` yet (it answers "DXIL shaders need the shaders crate's converter" for every other
   shader), so DXIL is proven by `tests/draw.rs` instead.
 - dxil-spirv built in too (submodule, pinned), and `convert` for DXIL: dxil-spirv's SPIR-V, read by
-  naga's SPIR-V reader (`src/dxil.rs`), then given 6.4's binding rule. 11 of the rig's 14 DXIL shaders
-  convert, WGSL and GLSL ES both compile in Chrome; the other 3 stop at the reader's known gaps
-  (6.2): typed buffers ("unsupported image dimension", twice) and a storage image without a format.
+  naga's SPIR-V reader (`src/dxil.rs`), then given 6.4's binding rule. The rig now has 72 DXIL
+  shaders: 49 convert (run 4), the rest are named (counts under Measurements).
 - DXIL, run 2: `draw_base: Helpers` reads the bases from the vertex helper block exactly as the DXBC
   route lays it out (the entry point becomes a function, called by a new entry point that passes
   the bases, or zeros for `draw_base: None`). Inputs and outputs are in the reflection, named from
@@ -66,6 +68,47 @@ Done:
   checks that the 18 rig shaders compiled by both fxc and dxc that convert by both routes get the same
   bindings and pairs (4 of them sample).
 
+Run 4 (the independent check's findings, each fixed or recorded):
+- `convert` refuses every `VariantKey` rewrite it does not build, by name, on both routes
+  (`Unsupported("LodBiasInShader")` and so on; a root signature or `layout` is
+  `Unsupported("RootSignatureLayout")`). Before, it returned the plain program for them. Test
+  `tests/variants.rs`.
+- Malformed bytecode: a container whose checksum does not match is `Rejected` before either converter
+  sees it, as real Direct3D 11 and 12 refuse it with `E_INVALIDARG` (test
+  `direct3d_refuses_a_wrong_checksum_as_convert_does` in `tests/draw.rs`). Natively the converters
+  are built with C++ exceptions, their assertions throw (`cpp/assert` stands in for `assert.h`), and
+  each boundary turns any exception into `Rejected`; a panic in our lowering becomes `Malformed`;
+  `Ir::op` checks its id. What still ends the process, from the seeded fuzz of re-signed mutations
+  (`tests/fuzz.rs`): dxil-spirv's bitcode reader on signed but malformed DXIL (segmentation faults
+  and its own `std::terminate` in `bc/cast.hpp`), and one DXBC case that exhausts memory; see Known
+  gaps. On WebAssembly (no exceptions, panics abort) every such failure traps the shaders module
+  instance, which the host must report as a failed conversion and re-instantiate.
+- The corpus tests compare every verdict with the recorded one (above); the 191-shader corpus test is
+  `#[ignore]`d with its reason and fails when run without `WCONTAINERS_SHADER_CORPUS`.
+- The independent check's own shaders (`ps_xtemp`, `ps_index`, `ps_posw`, `vs_flat`, `ps_early2`) are
+  in its scratch; ours for the same cases are `ps_local`, `ps_depth`, `vs_shade`/`ps_flat`.
+- Interpolation between stages: interface change `VariantKey::output_interpolation` (below). A vertex
+  program writes each output as the pixel program reads it (flat, linear, centroid, sample), on both
+  routes, so `nointerpolation` floats, `noperspective` and `centroid` link on WebGPU and GLSL ES.
+- Local arrays indexed at run time (`dcl_indexableTemp`): dxbc-spirv resolves them and leaves an
+  unused declaration without a type, which we now skip (it was named `StructType`).
+- Two resources at one register in different register spaces are `Unsupported("RegisterSpace")` on
+  both routes under Direct3D 11's numbering, until root signatures number them.
+- naga's HLSL writer gives the fragment position's w as 1/w, as the common form and GLSL have it.
+- `resinfo` at level 0 no longer asks for the level count (a bound view has at least one level), so
+  GLSL ES can write it: 3 more corpus shaders are written as GLSL ES.
+- DXIL pixel shaders report early tests, side effects, discards and per-sample running; test
+  `dxil_bindings_and_sampled_pairs_match_dxbc` now also compares the extras of both routes. DXIL
+  reports `PrimitiveId`, `VertexWithoutPosition` and `Texture1DArray` by name where the module
+  would have been invalid.
+- `CONVERTER_VERSION` carries a BLAKE3 hash of the converters' C++ sources as built (`build.rs`,
+  carriage returns left out), not revisions written by hand.
+- The dynamically indexed constant buffers' sizes come from dxbc-spirv's own parser through the C
+  boundary, matched by space and register; the Rust parser of SHDR is gone.
+- naga's WGSL writer writes the module's diagnostic filters (`diagnostic(off,
+  derivative_uniformity);`), so Chrome sees what naga validated.
+- Six new shaders of our own (`tests/own/more.hlsl`, `spaces.hlsl`) for these cases.
+
 Next (G6b and on, in order):
 - DXIL inputs and outputs as the DXBC route lays them out: one four-component value per register
   (now each value keeps its own width, so a Direct3D 12 vertex shader writing a float4 that a pixel
@@ -73,6 +116,12 @@ Next (G6b and on, in order):
   (dxil-spirv gives them a SPIR-V component; naga's reader drops it, so two values claim one
   location). Both fit one wrapper, the one `draw_bases` already makes.
 - DXIL binding numbers by root signature (6.4, `VariantKey::layout`); today Direct3D 11's rule.
+- naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
+  images without a format, discard as `SPV_EXT_demote_to_helper_invocation`, the sample mask kept as
+  an array, geometry and tessellation execution models (the stage helper), and 1D texture arrays
+  (the DXBC route reads them as 2D arrays; DXIL refuses `Texture1DArray`).
+- dxil-spirv's crashes on signed but malformed DXIL (Known gaps): report upstream with the replay
+  cases.
 - The remaining `VariantKey` fields and flags of 6.4, the stage helper (section 7), the cache
   (section 8), and the corpus of real game shaders.
 - GLSL ES 3.00 lacks bitfield operations, `textureGather` and multisampled samplers: what Chrome's
@@ -88,15 +137,25 @@ let module: &wcontainers_gpu::ShaderModule = &converted.modules[0];  // hand to 
 let reflection = &converted.reflection;
 ```
 - `variant_key` is `wcontainers_gpu::VariantKey`; `VariantKey::default()` for the plain program. Fields
-  implemented now: `draw_base` (`None`, `Helpers`). Asking for any other field's rewrite is not yet
-  honoured (constants as storage or texture are refused as `Unsupported("ConstantsVariant")`).
+  built now: `draw_base` (`None`, `Helpers`) and `output_interpolation`. Every other field set to
+  anything but its default, and a root signature, is refused by name: `Unsupported` with
+  `VariantFlags`, `FilterInShader`, `BorderInShader`, `MirrorOnceInShader`, `LodBiasInShader`,
+  `ConstantsAsStorage`, `ConstantsAsTexture`, `VertexPulledInShader`, `StorageFormats`,
+  `TexelBufferRoute`, `StoragePacked`, `TexelsThroughBuffer`, `NormAsInteger`, `TargetsInShader`,
+  `MinLodClamp`, `SampleCount` or `RootSignatureLayout`.
+- Linking a vertex and a pixel shader: convert the pixel shader first, then ask for the vertex
+  shader with `output_interpolation` = every `(location, interpolation)` of the pixel shader's
+  `reflection.inputs` with no `system` value whose interpolation is not `Perspective` (as
+  `tests/draw.rs`'s `ours` does). WebGPU and GLSL ES require the two stages to agree; without it a
+  pixel shader reading `nointerpolation`, `noperspective`, `centroid` or `sample` values fails
+  pipeline creation or program linking.
 - Bindings follow 6.4 for Direct3D 10 and 11: set 0 for vertex and compute shaders' slots, set 1 for
   pixel shaders' (including their UAVs), binding = `SlotKind::first_binding()` + register. Each is
   listed in `reflection.bindings` (kind, register, set, binding). Resource arrays and slots beyond a
   kind's range are refused.
 - Inputs and outputs: every user value lives at location = its register, as a four-component value
-  of its scalar type (so a vertex and a pixel shader converted apart always match, whatever
-  components each uses). `reflection.inputs` and `outputs` give semantic, index, register, mask,
+  of its scalar type (so the types of a vertex and a pixel shader converted apart always match,
+  whatever components each uses; their interpolation matches through `output_interpolation`). `reflection.inputs` and `outputs` give semantic, index, register, mask,
   location and component. Pixel shader output n is `@location(n)`, `SystemValue::Target(n)`.
 - With `draw_base: Helpers`, a vertex shader reading `SV_VertexID` or `SV_InstanceID` reads the
   draw's bases from its helper block (set 3, `helper_binding(Vertex)`), `HelperValue::DrawBase` at
@@ -114,12 +173,51 @@ let reflection = &converted.reflection;
   DXBC, by register (a pair's register spaces are not in the pair).
 - Constant buffers are declared with the size the bytecode gives them, so binding the program's own
   buffer (or any range at least that long) satisfies WebGPU.
-- Errors: `Rejected` (dxbc-spirv or dxil-spirv refused the bytecode, with its message),
-  `Unsupported(name)` (a named feature not provided yet, for example `GeometryShader`, `StorageImage`,
-  `TypedBuffer`, `Atomics`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL only), `Malformed`
-  and `Invalid` (our bugs: the corpus test fails on any of these).
+- Errors: `Rejected` (the container's checksum does not match, which Direct3D answers with
+  `E_INVALIDARG` too, or dxbc-spirv or dxil-spirv refused the bytecode, with its message, including
+  their failed assertions and exceptions natively), `Unsupported(name)` (a named feature or variant
+  not provided yet, for example `GeometryShader`, `StorageImage`, `TypedBuffer`, `Atomics`,
+  `RegisterSpace`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL only), `Malformed` and
+  `Invalid` (our bugs, a panic in the lowering included: the corpus tests fail on any of these). A
+  front answers each with the API's own refusal (`E_INVALIDARG` at shader creation).
+- On WebAssembly a converter failure that is not an error return (dxil-spirv's crashes on signed but
+  malformed DXIL, see Known gaps) traps the shaders module; the host reports it as a failed
+  conversion.
 
 ## Measurements
+
+Run 4, 2026-11-17, on the Linux laptop (i7-8750H, load average 1 to 2), counts only:
+- Corpus test (all verdicts as recorded in `tests/expected`): corpus 127 convert (88 GLSL ES compile
+  in glslang, 15 do not, 24 not written: 3 fewer unwritten than run 3, from the level-zero fold), 64
+  named failures with the same counts by reason as below; rig DXBC 56 of 79 (unchanged); rig DXIL 49
+  of 72 (the rig's DXIL grew from 27; the rest: execution models of geometry and tessellation 17,
+  typed buffers 2, a storage image without a format 1, an unsupported built-in 1, the sample mask as
+  an array 1, `PrimitiveId`, `VertexWithoutPosition`, `Texture1DArray`); own DXBC 12 of 13
+  (`ps_spaces` is `RegisterSpace`), own DXIL `ps_spaces` `RegisterSpace`.
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000`, inputs the rig's, our own and the
+  corpus, every mutation re-signed so it reaches the converters, restarted after each crash
+  (scratch `graphics-shaders/fuzz/resume.sh`): 16 of the 3000 cases ended the process, 15 of them
+  DXIL (10 segmentation faults and 5 `std::terminate` in dxil-spirv: cases 751, 943, 1113, 1632,
+  1651, 1656, 1732, 1846, 1937, 1955, 2443, 2693, 2774, 2775, 2810) and one DXBC case killed for
+  memory (1996, `024_ps_ld_sint8_code_1.dxbc`). No assertion abort, foreign exception or Rust panic
+  ended it (run 3's check found 43 foreign exceptions, 25 assertions and 4 panics in 5,950 DXBC
+  cases, and 292 assertions in 2,000 DXIL cases, all unsigned mutations, which the checksum now
+  refuses). Replay one case: `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_FIRST=751
+  WCONTAINERS_FUZZ_CASES=752`.
+- Chrome 157 on the RTX 3080 (`web/check`, one GPU job, about 3 s), the files of the run above:
+  WGSL corpus 127 of 127, rig DXBC 56 of 56, rig DXIL 49 of 49, own 12 of 12; GLSL ES corpus 90 of
+  103, rig DXBC 47 of 53, rig DXIL 46 of 48, own 9 of 11. Every GLSL ES failure is a bitfield
+  operation, `textureGather` or `sampler2DMS`. Verdicts in scratch `graphics-shaders/run4/out`.
+- `tests/draw.rs` on the desktop (RTX 3080; the desktop is shared, no timings): every own pair equal
+  to Direct3D 11 texel for texel on WebGPU (9 of 9) and on WebGL 2 (6 drawn: `ps_flat`, `ps_local`,
+  `ps_size` among them; `ps_depth` differs in 2591 of 4096 texels, largest 77, the back end's depth,
+  recorded as a known failure of that back end); the rig's triangle from DXIL and DXBC equal to
+  Direct3D 12's picture on both. Real Direct3D 11 (`CreatePixelShader`) and 12
+  (`CreateGraphicsPipelineState`) answer a container with one flipped byte with `E_INVALIDARG`
+  (0x80070057), and `convert` with `Rejected`.
+- WebAssembly: `wasm_imports` (release) is 4,837,106 bytes, the same 10 WASI imports. The corpus test
+  built for `wasm32-wasip1` under wasmtime 38.0.4 passes (all records met) and writes every file equal
+  to the native build's; its verdicts differ only where glslang, which it cannot run, would refuse.
 
 Run 3, 2026-11-17, after all of run 3's changes:
 - Laptop corpus test (i7-8750H, load average below 6): corpus 127 convert (85 GLSL ES compile in
@@ -141,8 +239,8 @@ extension enabled. Verdicts per file in `chrome.txt` beside the written files. A
   GLSL 86 (the sample mask).
 - rig DXBC: WGSL 56 of 56; GLSL ES 47 of 53 (bitfield insert 3 and extract 1, gather 1,
   `sampler2DMS` 1).
-- rig DXIL: WGSL 11 of 11, GLSL ES 11 of 11 (measured before run 2's DXIL entry point wrapper; the
-  re-run after it was started at the end of run 2 and its result not read). Own: WGSL 5 of 5, GLSL ES 3 of 5 (bitfield operations).
+- rig DXIL: WGSL 11 of 11, GLSL ES 11 of 11 (before run 2's DXIL entry point wrapper; run 3's re-run
+  after it gave 24 of 24 and 23 of 24, above). Own: WGSL 5 of 5, GLSL ES 3 of 5 (bitfield operations).
 - Each run of the 196 files' compile took about 2 s of GPU job time.
 
 All on the Linux laptop (i7-8750H, Ubuntu 20.04), load average below 4 during the runs, 2026-11-17.
@@ -152,8 +250,8 @@ Direct route (this crate) on the plan's 191-shader DXBC corpus (`WCONTAINERS_SHA
 - 127 convert and their WGSL validates (naga, WebGPU core capabilities).
 - Of those, 100 are written as GLSL ES 3.00 by naga and 85 compile in glslangValidator 8.13. The 15
   that do not: bitfield extract, insert, reverse and find-MSB (8), `textureGather` (4),
-  `gl_SampleID` and `gl_SampleMask` (2, which need OES_sample_variables, which naga does not enable;
-  Chrome's verdict, with the extensions the back end enables, is still to run), and one more. The 27
+  `gl_SampleID` and `gl_SampleMask` (2, which need OES_sample_variables; run 2 made naga enable it,
+  and Chrome compiles them, above), and one more. The 27
   naga does not write, by the features it names: texture level queries 14, storage buffers 7, compute
   3, sample counts 2, cube arrays 1 (all absent on WebGL 2, or back-end fixes of 6.5).
 - 64 fail with a named reason: StorageImage 15, Atomics 9, GeometryShader 7, VertexWithoutPosition 6,
@@ -193,6 +291,11 @@ the tree as published"), plus these changes, each a later commit touching only `
   `uint(gl_SampleMaskIn[0])` (GLSL's are `int` arrays), requesting GL_OES_sample_variables on ES.
 - WGSL writer, an f32 literal whose shortest digits name a number past f32::MAX (f32::MAX itself) is
   written with the f64 digits of its exact value, which WGSL compilers accept.
+- HLSL writer (wgpu's Direct3D 12 path), a fragment entry point's position is passed on as
+  `float4(p.xyz, 1.0 / p.w)`: the IR's fragment position has 1/w in w (SPIR-V's and GLSL's rule,
+  which dxbc-spirv inverts back to Direct3D's w), HLSL's `SV_Position` has w.
+- WGSL writer, the module's diagnostic filters are written as `diagnostic(...)` directives
+  (`Severity::to_wgsl_ident` added beside `from_wgsl_ident`).
 Not yet sent upstream.
 
 ## How to run
@@ -216,14 +319,25 @@ Not yet sent upstream.
   -p wcontainers-shaders --all-targets -- -D warnings"`.
 - The rig's scenes through the direct3d-11 track's library: `tools/graphics-rig/scenes --build "$S &&
   cargo build -q -j 3 -p wcontainers-directx" --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' --api d3d11`.
-- Unit and corpus tests: `tools/graphics-rig/linux 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
+- Unit and corpus tests: `tools/graphics-rig/linux sh -c 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
   WCONTAINERS_SHADERS_OUT=$HOME/wcontainers-graphics/out GLSLANG=glslangValidator cargo test -p
-  wcontainers-shaders -- --nocapture'`. Prints the verdict counts; the written WGSL and GLSL and
-  `verdicts.txt` land in `~/wcontainers-graphics/out/{rig,corpus}`. Without `WCONTAINERS_SHADER_CORPUS`
-  only the rig's shaders run; without `GLSLANG` the GLSL is written but not compiled.
+  wcontainers-shaders -- --include-ignored --skip mutated'`. Each corpus's verdicts must equal
+  `tests/expected/<corpus>.txt`; the written WGSL and GLSL, `verdicts.txt` and `classes.txt` (the
+  records' form: copy it over the record after a deliberate change) land in
+  `~/wcontainers-graphics/out/<corpus>`. The 191-shader corpus test is ignored without
+  `--include-ignored` and fails without `WCONTAINERS_SHADER_CORPUS`; glslang runs only with both
+  `GLSLANG` and `WCONTAINERS_SHADERS_OUT`.
+- Fuzz (long, one command): `tools/graphics-rig/linux sh -c 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
+  WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000 cargo test -p wcontainers-shaders --test fuzz
+  -- --ignored --nocapture'`. Each case is printed before it runs; `WCONTAINERS_FUZZ_FIRST=n` starts
+  at case n. It ends at the first case that crashes (Known gaps); scratch
+  `graphics-shaders/fuzz/resume.sh <seed> <cases>`, run on the laptop after one build, restarts past
+  each crash and lists them.
 - WebAssembly: add `WASI_SDK_PATH=$HOME/wcontainers-graphics/tools/wasi-sdk` and `--target
-  wasm32-wasip1`; run tests with `~/wcontainers-graphics/tools/wasmtime/wasmtime run --dir
-  corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm`.
+  wasm32-wasip1`; run a test with `~/wcontainers-graphics/tools/wasmtime/wasmtime run --dir $S::$S
+  --dir corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm --include-ignored`,
+  where `$S` is the source copy (`~/wcontainers-graphics/src/phase-2-graphics-shaders`), which the
+  tests read at their build path.
 - After cloning: `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
   crates/wcontainers-shaders/dxil-spirv` and `git -C crates/wcontainers-shaders/dxil-spirv submodule
   update --init third_party/spirv-headers`. dxbc-spirv's own SPIRV-Headers and dxil-spirv's other
@@ -250,7 +364,7 @@ were already there.
 - naga 30.0.2 (carried, see above): MIT OR Apache-2.0; its `spv-in` reader is now used.
 - `cc` 1.11 (build dependency, compiles the C++): MIT OR Apache-2.0 (its Cargo.toml); with `jobserver`
   0.1 (MIT OR Apache-2.0) for its parallel feature.
-- `blake3` 1.8: as in the plan's section 3.
+- `blake3` 1.8: as in the plan's section 3; also a build dependency now (hashing the C++ sources).
 - Dev-dependencies of `tests/draw.rs`, Windows only, already in the workspace's lock: `windows` 0.62
   (MIT OR Apache-2.0), `wgpu` 30 (MIT OR Apache-2.0), `pollster` 1 (Apache-2.0 OR MIT), and the
   workspace's own wcontainers-gpu-webgpu, wcontainers-gpu-webgl and wcontainers-graphics-test.
@@ -263,6 +377,17 @@ were already there.
 
 ## Departures from the plan
 
+- wasi-sdk is not in the flake (6.2 says G6 adds it): the only machine that builds for WebAssembly is
+  the laptop, which has no Nix (the Mac must not build). It stays a release archive there (How to
+  run) until a Nix machine builds WebAssembly.
+- `tests/fuzz.rs` writes MD5's block function out (about 25 lines) to sign mutated containers: the
+  DXBC checksum needs MD5's raw block function with its own last block, and the RustCrypto `md-5`
+  crate keeps that function private. Test code only.
+- DXIL whose checksum is the bypass value dxc writes when it does not sign (sixteen bytes of 1) is
+  taken as signed; real Direct3D 12's answer to it is not measured (every DXIL we have is signed).
+- Malformed bytecode is contained natively by C++ exceptions at the boundary and `catch_unwind`
+  around our lowering; 6.2 builds the C++ with exceptions off everywhere. WebAssembly keeps them off
+  (wasi-sdk 25's libc++ has none), where the module instance is the boundary.
 - naga is carried as a copy in the tree (`third_party/naga`, patched in by the workspace), not as a fork
   by git revision (6.2): a fork needs a new repository on the owner's account, and this track commits
   only to its own branch. Moving to a git revision later changes one line of the workspace manifest.
@@ -287,10 +412,15 @@ were already there.
 
 ## Known gaps found so far
 
-- WebGPU requires a vertex output's interpolation to equal the pixel input's; a vertex shader converted
-  alone writes floats as perspective, center. A pixel shader reading `noperspective`, `centroid` or
-  `sample` inputs will fail pipeline creation until `VariantKey` carries the pixel shader's
-  interpolation per location (an interface change to propose).
+- Signed but malformed DXIL can end the process natively: dxil-spirv's bitcode reader faults or calls
+  `std::terminate` (`bc/cast.hpp`) on it (15 of 3000 fuzz cases, Measurements); one malformed DXBC
+  case exhausted memory. Only bytecode whose checksum matches reaches the converters, so this needs a
+  program that signs malformed bytecode. dxil-spirv is used unmodified, so the fix belongs upstream
+  (not yet reported). `tests/fuzz.rs` stays failing at those cases.
+- GLSL ES 3.00 has no `noperspective`: a pixel shader reading one is not written for WebGL 2.
+- The WebGL 2 back end's fragment depth: check run 3 measured a pixel shader reading `SV_Position.z`
+  wrong through it (z arrives as (z+1)/2); that is the WebGL track's clip depth. `ps_depth` is drawn
+  through it in `tests/draw.rs` (result in Measurements).
 - Direct3D links stages by register here; programs whose vertex outputs and pixel inputs use different
   registers for one semantic need remapping by semantic (also a variant to add).
 - Out-of-bounds texture loads give what WebGPU's robustness gives, not Direct3D's zero. So does a
@@ -302,4 +432,7 @@ were already there.
 
 ## Interface changes
 
-None.
+- `VariantKey::output_interpolation: Vec<(u32, Interpolation)>` (commit "interface: gave the variant
+  key the interpolation ..."): how the pixel program interpolates each vertex output, by location,
+  where not `Perspective`; the vertex program writes them so. A variant field, as 4.4 has all
+  rewrites that depend on what else is bound; plan text in section 4 says so.
