@@ -4,7 +4,7 @@
 //! sampler feedback, tiled resources, rasterizer ordered views, conservative rasterisation and 64-bit
 //! integers absent.
 
-use wcontainers_directx_graphics_infrastructure::{format_support, takes_samples};
+use wcontainers_directx_graphics_infrastructure::takes_samples;
 use wcontainers_gpu::{Caps, Features, Format, FormatUse};
 
 pub const FEATURE_LEVEL_11_0: u32 = 0xb000;
@@ -176,12 +176,15 @@ pub fn depth_bounds(caps: &Caps) -> bool {
     caps.has(Features::DEPTH_BOUNDS)
 }
 
-/// `CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS)` for a `DXGI_FORMAT` value: one
-/// quality level for a sample count a resource of the format may have, none otherwise; None (the
-/// call fails) for a format the device does not take at all.
+/// `CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS)` for a `DXGI_FORMAT` value, as
+/// Direct3D 12 answers: one quality level for one sample whatever the format; for more, one where a
+/// resource of the format may have that count and none otherwise; None (the call fails) for no
+/// samples, or for `R1_UNORM` (66), which Direct3D 12 takes for no resource.
 pub fn quality_levels(caps: &Caps, format: u32, samples: u32) -> Option<u32> {
-    if format_support(caps, format).is_empty() {
-        return None;
+    match samples {
+        _ if format == 66 => None,
+        0 => None,
+        1 => Some(1),
+        _ => Some(u32::from(takes_samples(caps, format, samples))),
     }
-    Some(u32::from(takes_samples(caps, format, samples)))
 }

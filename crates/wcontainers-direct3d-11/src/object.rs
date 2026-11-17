@@ -5,8 +5,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    Backend, Extent, Format, FormatKind, Object, Origin, Reflection, TextureDesc as GpuTexture,
-    TextureRegion, VertexFormat, ViewDimension,
+    Backend, Extent, Format, FormatKind, Object, Origin, Reflection, SamplerDesc as GpuSampler,
+    TextureDesc as GpuTexture, TextureRegion, VertexFormat, ViewDimension,
 };
 
 use crate::desc::{
@@ -89,8 +89,9 @@ pub enum Staged<B: Backend> {
     Current,
     /// The GPU wrote it since the shadow was filled; no read back started.
     Written,
-    /// The GPU wrote it, and the read back started after that write.
-    Reading(B::Readback),
+    /// The GPU wrote it, and the read back started after that write: of the whole, or for a format
+    /// with depth and stencil of the depth, then of the stencil.
+    Reading(B::Readback, Option<B::Readback>),
 }
 
 impl<B: Backend> Buffer<B> {
@@ -150,6 +151,17 @@ impl<B: Backend> Texture<B> {
         ))
     }
 
+    /// The stencil aspect of subresource `sub` whole, for a format with depth and stencil, whose
+    /// aspects the back end reads and writes apart.
+    pub fn stencil_region(&self, sub: u32) -> Option<(TextureRegion<'_, B>, Extent)> {
+        if self.format.kind() != FormatKind::DepthStencil {
+            return None;
+        }
+        let (mut region, extent) = self.whole(sub)?;
+        region.stencil = true;
+        Some((region, extent))
+    }
+
     /// Bytes of a row, rows of a slice, and slices of mip `mip`, tightly packed.
     pub fn packed(&self, mip: u32) -> (u32, u32, u32) {
         let e = self.mip_extent(mip);
@@ -204,9 +216,49 @@ impl<B: Backend> View<B> {
     }
 }
 
+/// A view a shader reads (a shader resource view) or writes (an unordered access view): of a
+/// texture, or of a range of a buffer.
+pub enum ShaderView<B: Backend> {
+    Texture(Rc<View<B>>),
+    Buffer(BufferSpan<B>),
+}
+
+impl<B: Backend> ShaderView<B> {
+    /// The texture view, for a view of a texture.
+    pub fn texture(&self) -> Option<&Rc<View<B>>> {
+        match self {
+            ShaderView::Texture(v) => Some(v),
+            ShaderView::Buffer(_) => None,
+        }
+    }
+
+    /// Whether the two views share a subresource of a texture, or any of one buffer.
+    pub fn overlaps(&self, other: &ShaderView<B>) -> bool {
+        match (self, other) {
+            (ShaderView::Texture(a), ShaderView::Texture(b)) => a.overlaps(b),
+            (ShaderView::Buffer(a), ShaderView::Buffer(b)) => Rc::ptr_eq(&a.buffer, &b.buffer),
+            _ => false,
+        }
+    }
+}
+
+/// A range of a buffer a view reads or writes, with the hidden counter of an append, consume or
+/// counter view.
+pub struct BufferSpan<B: Backend> {
+    pub buffer: Rc<Buffer<B>>,
+    pub offset: u64,
+    pub size: u64,
+    pub counter: Option<Kept<B, B::Buffer>>,
+}
+
 pub struct Sampler<B: Backend> {
     pub desc: SamplerDesc,
     pub gpu: Kept<B, B::Sampler>,
+    /// What `gpu` was made from.
+    pub made: GpuSampler,
+    /// The same sampler comparing where `gpu` does not, or not where it does, for a program that reads
+    /// it the other way; made at the first such draw.
+    pub twin: RefCell<Option<Kept<B, B::Sampler>>>,
 }
 
 pub struct Blend<B: Backend> {
@@ -219,9 +271,15 @@ pub struct DepthStencil<B: Backend> {
     pub gpu: Kept<B, B::DepthStencil>,
 }
 
+/// A raster block made with one sample mask.
+pub type MaskedRaster<B> = (u32, Kept<B, <B as Backend>::Raster>);
+
 pub struct Rasterizer<B: Backend> {
     pub desc: RasterizerDesc,
     pub gpu: Kept<B, B::Raster>,
+    /// The block made with each sample mask leaving out samples, which Direct3D sets with the
+    /// blend state and the back ends keep in the raster block; made at a mask's first draw.
+    pub masked: RefCell<Vec<MaskedRaster<B>>>,
 }
 
 /// One input element resolved against the vertex shader's signature.
@@ -249,6 +307,9 @@ pub struct Shader<B: Backend> {
     /// What stands in for an empty slot of each texture and sampler it reads, by binding number
     /// (`None` where nothing does yet).
     pub stand_ins: Vec<(u32, Option<StandIn>)>,
+    /// A vertex shader's bytecode, converted again for pixel shaders that interpolate its outputs
+    /// other than by perspective; empty for the other stages.
+    pub bytecode: Vec<u8>,
 }
 
 /// What a draw binds for an empty texture or sampler slot its shader reads.
@@ -258,4 +319,6 @@ pub enum StandIn {
     Zeros(ViewDimension, FormatKind),
     /// Direct3D's default sampler state.
     DefaultSampler,
+    /// A buffer of zeros read as a structured or raw buffer.
+    ZeroBuffer,
 }

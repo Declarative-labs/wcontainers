@@ -51,24 +51,142 @@ pub enum HeapType {
     Readback,
 }
 
-/// `D3D12_HEAP_FLAGS`: every defined bit, the deny flags, and the ones this front honours as they
-/// are (resources are always resident, and memory is zeroed anyway).
+/// `D3D12_HEAP_FLAGS`: every defined bit, and the deny flags.
 const HEAP_FLAGS_DEFINED: u32 =
     0x1 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000;
 const HEAP_FLAGS_DENY: u32 = 0x4 | 0x40 | 0x80;
-const HEAP_FLAGS_TAKEN: u32 = 0x800 | 0x1000;
+
+/// The heap flags asking for an ability the front lacks, each with its reason. The others are
+/// honoured as they are: resources are always resident, memory is zeroed anyway, and atomics on
+/// one adapter need nothing of the heap.
+const HEAP_FLAGS_REFUSED: [(u32, &str); 6] = [
+    (0x1, "shared heaps"),
+    (0x8, "heaps allowing display"),
+    (0x20, "heaps shared across adapters"),
+    (0x100, "hardware-protected heaps"),
+    (0x200, "heaps allowing write watching"),
+    (0x2000, "heaps with manual write tracking"),
+];
 
 /// Checks heap flags: refuses undefined bits and, for committed resources (`committed`), the deny
-/// flags, as Direct3D 12 does; reports as not done those asking for an ability the front lacks
-/// (sharing, display, protected memory, write watching, cross-adapter atomics, manual write
-/// tracking).
+/// flags, as Direct3D 12 does; reports as not done those asking for an ability the front lacks.
 pub fn check_heap_flags(flags: u32, committed: bool) -> Result<(), Error> {
     if flags & !HEAP_FLAGS_DEFINED != 0 || (committed && flags & HEAP_FLAGS_DENY != 0) {
         return Err(Error::Invalid("heap flags"));
     }
-    if flags & !(HEAP_FLAGS_TAKEN | HEAP_FLAGS_DENY) != 0 {
-        return Err(Error::NotImplemented(
-            "heap flags for sharing, display, protection, write watching or atomics",
+    match HEAP_FLAGS_REFUSED.iter().find(|(bit, _)| flags & bit != 0) {
+        Some(&(_, reason)) => Err(Error::NotImplemented(reason)),
+        None => Ok(()),
+    }
+}
+
+/// `CreateHeap`'s checks of what the description asks beyond its type: an alignment of 0, 64 KiB
+/// or 4 MiB, and no display flag (only committed resources are displayed).
+pub fn check_heap(alignment: u64, flags: u32) -> Result<(), Error> {
+    if ![0, 64 << 10, 4 << 20].contains(&alignment) {
+        return Err(Error::Invalid("a heap's alignment"));
+    }
+    if flags & 0x8 != 0 {
+        return Err(Error::Invalid("a heap allowing display"));
+    }
+    check_heap_flags(flags, false)
+}
+
+/// `D3D12_CPU_PAGE_PROPERTY` values.
+const PAGE_NOT_AVAILABLE: u32 = 1;
+const PAGE_WRITE_COMBINE: u32 = 2;
+const PAGE_WRITE_BACK: u32 = 3;
+/// `D3D12_MEMORY_POOL_L0` and `_L1`: system memory and the adapter's own.
+const POOL_L0: u32 = 1;
+const POOL_L1: u32 = 2;
+
+/// The heap a custom heap's properties name on a discrete adapter (the one `ARCHITECTURE`
+/// reports), and whether the CPU sees it. Memory the CPU does not see is a default heap; the
+/// adapter's own memory is never CPU-visible (no GPU upload heaps).
+pub fn custom_heap(page: u32, pool: u32) -> Result<(HeapType, bool), Error> {
+    match (page, pool) {
+        (PAGE_NOT_AVAILABLE, POOL_L0 | POOL_L1) => Ok((HeapType::Default, false)),
+        (PAGE_WRITE_COMBINE | PAGE_WRITE_BACK, POOL_L0) => Ok((HeapType::Default, true)),
+        _ => Err(Error::Invalid("custom heap properties")),
+    }
+}
+
+/// `D3D12_RESOURCE_STATES` that write; none combines with another state.
+const WRITE_STATES: u32 = 0x4 | 0x8 | 0x10 | 0x100 | 0x400 | 0x1000;
+const STATE_RENDER_TARGET: u32 = 0x4;
+const STATE_DEPTH_WRITE: u32 = 0x10;
+const STATE_COPY_DEST: u32 = 0x400;
+/// `D3D12_RESOURCE_STATE_GENERIC_READ`.
+const STATE_GENERIC_READ: u32 = 0xac3;
+/// `D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS`.
+const FLAG_SIMULTANEOUS_ACCESS: u32 = 0x20;
+
+/// The checks of `CreateCommittedResource` and `CreatePlacedResource` that Direct3D 12 makes of a
+/// description, its heap (`cpu_custom`: a custom heap the CPU sees), its initial state and whether a
+/// clear value is given.
+pub fn check_creation(
+    heap: HeapType,
+    cpu_custom: bool,
+    desc: &ResourceDesc,
+    state: u32,
+    clear: bool,
+) -> Result<(), Error> {
+    if state & WRITE_STATES != 0 && !state.is_power_of_two() {
+        return Err(Error::Invalid("a write state combined with another"));
+    }
+    if desc.dimension == DIMENSION_BUFFER {
+        if clear {
+            return Err(Error::Invalid("a clear value for a buffer"));
+        }
+        if desc.mip_levels != 1 || desc.layout != 1 || desc.format != 0 {
+            return Err(Error::Invalid("a buffer's description"));
+        }
+        if desc.flags & (FLAG_RENDER_TARGET | FLAG_DEPTH_STENCIL | FLAG_SIMULTANEOUS_ACCESS) != 0
+            || (heap != HeapType::Default && desc.flags & FLAG_UNORDERED_ACCESS != 0)
+        {
+            return Err(Error::Invalid("a buffer's flags"));
+        }
+        let state_ok = match heap {
+            HeapType::Upload => state == 0 || state == STATE_GENERIC_READ,
+            HeapType::Readback => state == 0 || state == STATE_COPY_DEST,
+            HeapType::Default => true,
+        };
+        if !state_ok {
+            return Err(Error::Invalid(
+                "the initial state of an upload or readback buffer",
+            ));
+        }
+        if cpu_custom {
+            // Its bytes would move both ways between the CPU's memory and the GPU's.
+            return Err(Error::NotImplemented(
+                "buffers in a custom heap the CPU sees",
+            ));
+        }
+        return Ok(());
+    }
+    if heap != HeapType::Default {
+        return Err(Error::Invalid("textures live in default or custom heaps"));
+    }
+    if desc.sample_count == 0 || desc.format == 0 {
+        return Err(Error::Invalid("a texture's sample count or format"));
+    }
+    if desc.sample_count > 1 && desc.flags & (FLAG_RENDER_TARGET | FLAG_DEPTH_STENCIL) == 0 {
+        return Err(Error::Invalid("a multisampled texture that is no target"));
+    }
+    if (state == STATE_RENDER_TARGET && desc.flags & FLAG_RENDER_TARGET == 0)
+        || (state == STATE_DEPTH_WRITE && desc.flags & FLAG_DEPTH_STENCIL == 0)
+    {
+        return Err(Error::Invalid("a target state without the target flag"));
+    }
+    let (format, _) = desc.texture_format()?;
+    let (bw, bh, _) = format.block();
+    if bw > 1
+        && (desc.dimension != DIMENSION_TEXTURE2D && desc.dimension != DIMENSION_TEXTURE3D
+            || !desc.width.is_multiple_of(u64::from(bw))
+            || !desc.height.is_multiple_of(bh))
+    {
+        return Err(Error::Invalid(
+            "a block-compressed texture of part of a block",
         ));
     }
     Ok(())
@@ -111,6 +229,11 @@ impl ResourceDesc {
         if self.mip_levels != 0 || self.dimension == DIMENSION_BUFFER {
             return u32::from(self.mip_levels).max(1);
         }
+        self.full_chain()
+    }
+
+    /// The levels down to one texel.
+    pub fn full_chain(&self) -> u32 {
         let depth = if self.dimension == DIMENSION_TEXTURE3D {
             u64::from(self.depth_or_array_size)
         } else {
@@ -141,9 +264,29 @@ impl ResourceDesc {
         }
     }
 
-    /// The interface format of a texture and whether its DXGI format is typeless.
+    /// The interface format of a texture and whether its DXGI format is typeless. A typeless
+    /// texture allowing depth-stencil views whose family has a depth format is stored in it (as
+    /// `R24G8` and `R32G8X24` are), and views of the family's colour formats read its depth.
     pub fn texture_format(&self) -> Result<(Format, bool), Error> {
-        dxgi_format(self.format).ok_or(Error::Invalid("a format the front cannot store"))
+        let (format, typeless) =
+            dxgi_format(self.format).ok_or(Error::Invalid("a format the front cannot store"))?;
+        if typeless && self.flags & FLAG_DEPTH_STENCIL != 0 {
+            match format {
+                Format::R32Float => return Ok((Format::Depth32Float, false)),
+                Format::R16Float => return Ok((Format::Depth16Unorm, false)),
+                _ => {}
+            }
+        }
+        Ok((format, typeless))
+    }
+
+    /// The depth format whose depth a view of colour format `view` reads.
+    pub fn depth_read_as(view: Format) -> Option<Format> {
+        match view {
+            Format::R32Float => Some(Format::Depth32Float),
+            Format::R16Unorm => Some(Format::Depth16Unorm),
+            _ => None,
+        }
     }
 
     /// `GetResourceAllocationInfo` for this resource: its size and alignment in a heap. Buffers and

@@ -3,7 +3,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
-use std::num::NonZeroIsize;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::Win32::Foundation::{
@@ -12,10 +11,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_SHADER_RESOURCE, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    GWLP_HINSTANCE, GetClientRect, GetWindowLongPtrW, IsIconic, IsWindowVisible,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsIconic, IsWindowVisible};
 use windows::core::{
     BOOL, GUID, HRESULT, IUnknown, IUnknownImpl, Interface, OutRef, Ref, Result, implement,
 };
@@ -69,27 +65,8 @@ fn client_size(hwnd: HWND) -> (u32, u32) {
 /// Registers `hwnd` with the device's back end as a host window and gives its number.
 fn add_window(front: &Shared, hwnd: HWND) -> Result<u32> {
     static WINDOWS: AtomicU32 = AtomicU32::new(0);
-    let instance = instance().ok_or(DXGI_ERROR_UNSUPPORTED)?;
-    // SAFETY: reads a field of the program's window.
-    let module = unsafe { GetWindowLongPtrW(hwnd, GWLP_HINSTANCE) };
-    // SAFETY: asks for the program's module, which lives as long as the process.
-    let program = unsafe { GetModuleHandleW(None) }.map_or(0, |m| m.0 as isize);
-    let mut handle =
-        wgpu::rwh::Win32WindowHandle::new(NonZeroIsize::new(hwnd.0 as isize).ok_or(E_INVALIDARG)?);
-    handle.hinstance = NonZeroIsize::new(module).or(NonZeroIsize::new(program));
-    let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-        raw_display_handle: Some(wgpu::rwh::RawDisplayHandle::Windows(
-            wgpu::rwh::WindowsDisplayHandle::new(),
-        )),
-        raw_window_handle: wgpu::rwh::RawWindowHandle::Win32(handle),
-    };
-    // SAFETY: the program keeps its window while a swap chain uses it, as DXGI requires.
-    let surface = unsafe { instance.create_surface_unsafe(target) }.map_err(|e| {
-        eprintln!("wcontainers direct3d 11: no surface for the window: {e}");
-        Error::from(DXGI_ERROR_INVALID_CALL)
-    })?;
     let id = WINDOWS.fetch_add(1, Ordering::Relaxed) + 1;
-    front.borrow_mut().backend.add_window(id, surface);
+    chosen::add_window(&mut front.borrow_mut().backend, id, hwnd)?;
     Ok(id)
 }
 
@@ -364,6 +341,18 @@ impl SwapChain_Impl {
             target.write(None)?;
         }
         Ok(())
+    }
+
+    /// The back buffers are presented unrotated; asking for that changes nothing.
+    pub(super) fn set_rotation(&self, rotation: DXGI_MODE_ROTATION) -> Result<()> {
+        if rotation != DXGI_MODE_ROTATION_IDENTITY {
+            return Err(missing("swap chains rotating their back buffers"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn get_rotation(&self) -> Result<DXGI_MODE_ROTATION> {
+        Ok(DXGI_MODE_ROTATION_IDENTITY)
     }
 
     pub(super) fn get_desc1(&self) -> Result<DXGI_SWAP_CHAIN_DESC1> {

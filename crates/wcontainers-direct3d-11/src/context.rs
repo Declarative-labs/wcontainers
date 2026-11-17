@@ -4,23 +4,37 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    DepthAttachment, DrawCall, DrawRange, Extent, FormatKind, IndexBinding, IndexFormat, LoadOp,
-    MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ReadState, ScissorRect,
-    SlotKind, SlowPath, StageSet, StepMode, StoreOp, SystemValue, Topology, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent,
+    Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue, IndexBinding,
+    IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, Program,
+    ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageSet, StepMode, StoreOp, TextureUsage, Topology, VariantKey,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport,
+    WriteMode, helper_binding,
 };
 
 use crate::desc::{
     self, Box3, SubresourceData, TexDim, TextureDesc, Viewport, map, topology, usage,
 };
-use crate::device::{Device, gpu_buffer, integer_format};
+use crate::device::{Device, ZERO_BYTES, gpu_buffer, integer_format, resolvable};
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
 
-/// The shader stages whose slots this context keeps: vertex (set 0) and pixel (set 1).
+/// The shader stages whose slots this context keeps: vertex (set 0), pixel (set 1) and compute
+/// (set 0 of its own programs).
 pub const VERTEX: usize = 0;
 pub const PIXEL: usize = 1;
+pub const COMPUTE: usize = 2;
+const STAGES: usize = 3;
+
+/// Unordered access slots of the pixel and compute stages at feature level 11_0.
+pub const UAV_SLOTS: usize = 8;
+
+/// The binding set a stage's program reads its slots from.
+fn set_of(stage: usize) -> u32 {
+    if stage == PIXEL { 1 } else { 0 }
+}
 
 /// A vertex buffer slot: buffer, stride, offset.
 type VertexSlot<B> = (Rc<Buffer<B>>, u32, u32);
@@ -45,29 +59,34 @@ pub struct Mapped {
 pub struct ContextState<B: Backend> {
     vs: Option<Rc<Shader<B>>>,
     ps: Option<Rc<Shader<B>>>,
-    layout: Option<Rc<InputLayout>>,
+    cs: Option<Rc<Shader<B>>>,
+    pub(crate) layout: Option<Rc<InputLayout>>,
     topology: u32,
     vertex_buffers: Vec<Option<VertexSlot<B>>>,
     index: Option<(Rc<Buffer<B>>, IndexFormat, u32)>,
-    constant_buffers: [Vec<Option<Rc<Buffer<B>>>>; 2],
+    constant_buffers: [Vec<Option<Rc<Buffer<B>>>>; STAGES],
     /// Per constant buffer slot, the range bound (first constant, constants), or none for the
     /// whole buffer.
-    constant_ranges: [Vec<Option<(u32, u32)>>; 2],
-    resources: [Vec<Option<Rc<View<B>>>>; 2],
-    samplers: [Vec<Option<Rc<Sampler<B>>>>; 2],
-    targets: Vec<Option<Rc<View<B>>>>,
-    depth: Option<Rc<View<B>>>,
-    blend: Option<Rc<Blend<B>>>,
+    constant_ranges: [Vec<Option<(u32, u32)>>; STAGES],
+    resources: [Vec<Option<Rc<ShaderView<B>>>>; STAGES],
+    samplers: [Vec<Option<Rc<Sampler<B>>>>; STAGES],
+    /// Per stage, the unordered access views bound (none for the vertex stage).
+    uavs: [Vec<Option<Rc<ShaderView<B>>>>; STAGES],
+    pub(crate) targets: Vec<Option<Rc<View<B>>>>,
+    pub(crate) depth: Option<Rc<View<B>>>,
+    pub(crate) blend: Option<Rc<Blend<B>>>,
     blend_factor: [f32; 4],
     sample_mask: u32,
-    depth_stencil: Option<Rc<DepthStencil<B>>>,
+    pub(crate) depth_stencil: Option<Rc<DepthStencil<B>>>,
     stencil_ref: u32,
-    raster: Option<Rc<Rasterizer<B>>>,
+    pub(crate) raster: Option<Rc<Rasterizer<B>>>,
     viewports: Vec<Viewport>,
     scissors: Vec<ScissorRect>,
-    sets: [Option<Kept<B, B::BindingSet>>; 2],
-    sets_dirty: [bool; 2],
+    pub(crate) sets: [Option<Kept<B, B::BindingSet>>; STAGES],
+    sets_dirty: [bool; STAGES],
     pass_open: bool,
+    /// The size of the open pass when it has no attachments.
+    empty_pass: Option<EmptyPass>,
     clears: Vec<PendingClear<B>>,
     /// Mapped subresources: the resource's address, subresource, map type.
     mapped: Vec<(usize, u32, u32)>,
@@ -78,14 +97,16 @@ impl<B: Backend> ContextState<B> {
         ContextState {
             vs: None,
             ps: None,
+            cs: None,
             layout: None,
             topology: topology::UNDEFINED,
             vertex_buffers: vec![None; VERTEX_SLOTS],
             index: None,
-            constant_buffers: [vec![None; 14], vec![None; 14]],
-            constant_ranges: [vec![None; 14], vec![None; 14]],
-            resources: [vec![None; 128], vec![None; 128]],
-            samplers: [vec![None; 16], vec![None; 16]],
+            constant_buffers: std::array::from_fn(|_| vec![None; 14]),
+            constant_ranges: std::array::from_fn(|_| vec![None; 14]),
+            resources: std::array::from_fn(|_| vec![None; 128]),
+            samplers: std::array::from_fn(|_| vec![None; 16]),
+            uavs: [Vec::new(), vec![None; UAV_SLOTS], vec![None; UAV_SLOTS]],
             targets: vec![None; 8],
             depth: None,
             blend: None,
@@ -96,9 +117,10 @@ impl<B: Backend> ContextState<B> {
             raster: None,
             viewports: Vec::new(),
             scissors: Vec::new(),
-            sets: [None, None],
-            sets_dirty: [true; 2],
+            sets: [None, None, None],
+            sets_dirty: [true; STAGES],
             pass_open: false,
+            empty_pass: None,
             clears: Vec::new(),
             mapped: Vec::new(),
         }
@@ -217,13 +239,52 @@ enum Zero<B: Backend> {
     Buffer(B::Buffer, u64),
     View(B::TextureView),
     Sampler(B::Sampler),
+    /// The zero buffer read as a structured or raw buffer.
+    Storage(B::Buffer),
 }
 
 /// How a draw names its range before the front picks the interface's form.
 #[derive(Clone, Copy)]
 enum Range {
-    Vertices { count: u32, start: u32 },
-    Indexed { count: u32, start: u32, base: i32 },
+    Vertices {
+        count: u32,
+        start: u32,
+    },
+    Indexed {
+        count: u32,
+        start: u32,
+        base: i32,
+    },
+    /// The arguments are in a buffer, at a byte offset.
+    Indirect {
+        indexed: bool,
+        offset: u32,
+    },
+}
+
+/// Texels of Direct3D's layout of a format with depth and stencil, `texel` bytes each
+/// (D24_UNORM_S8_UINT: depth in the low 24 bits of a word, stencil in its high byte;
+/// D32_FLOAT_S8X24_UINT: the float, the stencil byte, three unused), as the back end takes them:
+/// depth in four bytes per texel (24-bit depth in the low bits of a word), stencil in one.
+pub(crate) fn split_depth_stencil(texel: u32, bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let n = bytes.len() / texel as usize;
+    let mut depth = Vec::with_capacity(n * 4);
+    let mut stencil = Vec::with_capacity(n);
+    for c in bytes.chunks_exact(texel as usize) {
+        if texel == 4 {
+            depth.extend_from_slice(&[c[0], c[1], c[2], 0]);
+            stencil.push(c[3]);
+        } else {
+            depth.extend_from_slice(&c[..4]);
+            stencil.push(c[4]);
+        }
+    }
+    (depth, stencil)
+}
+
+/// Bytes of one indirect draw's arguments: four words, five for an indexed draw.
+const fn indirect_bytes(indexed: bool) -> u32 {
+    if indexed { 20 } else { 16 }
 }
 
 impl<B: Backend> Device<B> {
@@ -239,6 +300,56 @@ impl<B: Backend> Device<B> {
             self.ctx.ps = shader;
             self.ctx.sets_dirty[PIXEL] = true;
         }
+    }
+
+    pub fn cs_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
+        if !same(&self.ctx.cs, &shader) {
+            self.ctx.cs = shader;
+            self.ctx.sets_dirty[COMPUTE] = true;
+        }
+    }
+
+    /// Binds unordered access views to `stage` (pixel or compute) from `start`, setting the hidden
+    /// counters of those given an initial count (`u32::MAX` keeps a counter as it is).
+    pub fn set_uavs(
+        &mut self,
+        stage: usize,
+        start: u32,
+        views: &[Option<Rc<ShaderView<B>>>],
+        counts: Option<&[u32]>,
+    ) -> Result<()> {
+        if put_rc(&mut self.ctx.uavs[stage], start, views)? {
+            self.ctx.sets_dirty[stage] = true;
+            // What a pipeline writes it no longer reads: the pixel stage's views are bound with the
+            // targets, for every stage.
+            if stage == COMPUTE {
+                self.unbind_written(&[COMPUTE]);
+            } else {
+                self.unbind_written(&[VERTEX, PIXEL, COMPUTE]);
+            }
+        }
+        for (i, v) in views.iter().enumerate() {
+            let count = counts.and_then(|c| c.get(i)).copied().unwrap_or(u32::MAX);
+            if let (Some(ShaderView::Buffer(span)), true) = (v.as_deref(), count != u32::MAX)
+                && let Some(counter) = &span.counter
+            {
+                self.end_pass();
+                self.backend.write_buffer(
+                    &counter.handle,
+                    0,
+                    &count.to_le_bytes(),
+                    WriteMode::Ordered,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a view is bound to unordered access slot `slot` of `stage`.
+    pub fn uav_bound(&self, stage: usize, slot: u32) -> bool {
+        self.ctx.uavs[stage]
+            .get(slot as usize)
+            .is_some_and(Option::is_some)
     }
 
     pub fn ia_set_input_layout(&mut self, layout: Option<Rc<InputLayout>>) {
@@ -312,12 +423,12 @@ impl<B: Backend> Device<B> {
         &mut self,
         stage: usize,
         start: u32,
-        v: &[Option<Rc<View<B>>>],
+        v: &[Option<Rc<ShaderView<B>>>],
     ) -> Result<()> {
-        // A view of a subresource bound as a target is bound as none, as Direct3D binds it.
+        // A view of a subresource the pipeline writes is bound as none, as Direct3D binds it.
         let v: Vec<_> = v
             .iter()
-            .map(|v| v.clone().filter(|v| !self.bound_as_target(v)))
+            .map(|v| v.clone().filter(|v| !self.written(stage, v)))
             .collect();
         if put_rc(&mut self.ctx.resources[stage], start, &v)? {
             self.ctx.sets_dirty[stage] = true;
@@ -330,6 +441,31 @@ impl<B: Backend> Device<B> {
         self.ctx.resources[stage]
             .get(slot as usize)
             .is_some_and(Option::is_some)
+    }
+
+    /// Whether `stage`'s pipeline writes a subresource of `view`: through a target, or an unordered
+    /// access view of the pixel stage (graphics stages) or of the compute stage.
+    fn written(&self, stage: usize, view: &ShaderView<B>) -> bool {
+        let writer = if stage == COMPUTE { COMPUTE } else { PIXEL };
+        view.texture().is_some_and(|t| self.bound_as_target(t))
+            || self.ctx.uavs[writer]
+                .iter()
+                .flatten()
+                .any(|u| u.overlaps(view))
+    }
+
+    /// Unbinds the shader resource views of `stages` that name what their pipeline writes.
+    fn unbind_written(&mut self, stages: &[usize]) {
+        for &stage in stages {
+            let mut resources = std::mem::take(&mut self.ctx.resources[stage]);
+            for slot in &mut resources {
+                if slot.as_ref().is_some_and(|v| self.written(stage, v)) {
+                    *slot = None;
+                    self.ctx.sets_dirty[stage] = true;
+                }
+            }
+            self.ctx.resources[stage] = resources;
+        }
     }
 
     fn bound_as_target(&self, view: &View<B>) -> bool {
@@ -370,16 +506,7 @@ impl<B: Backend> Device<B> {
             self.ctx.targets = new;
             self.ctx.depth = depth;
             // Binding a subresource as a target unbinds its shader resource views, as in Direct3D.
-            for stage in [VERTEX, PIXEL] {
-                let mut resources = std::mem::take(&mut self.ctx.resources[stage]);
-                for slot in &mut resources {
-                    if slot.as_ref().is_some_and(|v| self.bound_as_target(v)) {
-                        *slot = None;
-                        self.ctx.sets_dirty[stage] = true;
-                    }
-                }
-                self.ctx.resources[stage] = resources;
-            }
+            self.unbind_written(&[VERTEX, PIXEL, COMPUTE]);
         }
         Ok(())
     }
@@ -591,13 +718,29 @@ impl<B: Backend> Device<B> {
                 None
             }
         };
+        let empty =
+            (targets.iter().all(Option::is_none) && depth.is_none()).then(|| self.empty_size());
         self.backend.begin_pass(&PassDesc {
             colors,
             depth: depth_attachment,
-            empty: None,
+            empty,
             occlusion: occlusion.as_ref().map(|s| &s.handle),
         });
         self.ctx.pass_open = true;
+        self.ctx.empty_pass = empty;
+    }
+
+    /// The size of a pass without attachments (Direct3D's drawing with only unordered access views
+    /// bound): what the first viewport reaches, one pixel to the largest 2D texture, one sample.
+    fn empty_size(&self) -> EmptyPass {
+        let max = self.backend.caps().limits.max_texture_2d;
+        let reach = |at: f32, len: f32| ((at + len).ceil().max(1.0) as u32).min(max);
+        let v = self.ctx.viewports.first().copied().unwrap_or_default();
+        EmptyPass {
+            width: reach(v.x, v.width),
+            height: reach(v.y, v.height),
+            samples: 1,
+        }
     }
 
     pub fn draw(&mut self, count: u32, start: u32) {
@@ -627,20 +770,146 @@ impl<B: Backend> Device<B> {
         );
     }
 
+    /// `DrawInstancedIndirect` (`indexed` false) and `DrawIndexedInstancedIndirect`. Arguments
+    /// Direct3D does not read are invalid; a draw this front cannot serve removes the device.
+    pub fn draw_indirect(
+        &mut self,
+        args: &Rc<Buffer<B>>,
+        offset: u32,
+        indexed: bool,
+    ) -> Result<()> {
+        self.check_indirect(args, offset, indexed)?;
+        if self.removed.is_some() {
+            return Ok(());
+        }
+        let reads_bases = self
+            .ctx
+            .vs
+            .as_ref()
+            .is_some_and(|vs| vs.reflection.helper_size > 0);
+        let r = if self
+            .backend
+            .caps()
+            .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
+            && !reads_bases
+        {
+            self.try_draw(Range::Indirect { indexed, offset }, 0, 1, Some(args))
+        } else {
+            self.read_indirect(args, offset, indexed)
+                .and_then(|(range, first, n)| self.try_draw(range, first, n, None))
+        };
+        if let Err(e) = r {
+            self.lose(e);
+        }
+        Ok(())
+    }
+
+    /// An indirect draw's arguments read back (`IndirectReadBack`), as the range, first instance and
+    /// instance count of a direct draw: for back ends without indirect draws or without a first
+    /// instance in them, and for vertex programs reading the draw's bases, which the converter does
+    /// not yet take from the arguments (`DrawBaseFromArguments`).
+    fn read_indirect(
+        &mut self,
+        args: &Buffer<B>,
+        offset: u32,
+        indexed: bool,
+    ) -> Result<(Range, u32, u32)> {
+        self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        self.settle();
+        let size = indirect_bytes(indexed) as usize;
+        let handle = args.handle();
+        let rb = self.backend.read_back(&ReadSource::Buffer {
+            buffer: &handle,
+            offset: u64::from(offset),
+            size: size as u64,
+        });
+        let rb = self.gpu(rb)?;
+        if self.backend.read_state(&rb) == ReadState::Pending {
+            self.backend.wait_read(&rb);
+        }
+        let mut bytes = [0u8; 20];
+        self.backend.finish_read(rb, &mut bytes[..size]);
+        let word = |i: usize| u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap());
+        // D3D11_DRAW_INSTANCED_INDIRECT_ARGS and D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS.
+        Ok(if indexed {
+            let range = Range::Indexed {
+                count: word(0),
+                start: word(2),
+                base: word(3) as i32,
+            };
+            (range, word(4), word(1))
+        } else {
+            let range = Range::Vertices {
+                count: word(0),
+                start: word(2),
+            };
+            (range, word(3), word(1))
+        })
+    }
+
+    /// Direct3D reads indirect arguments only from buffers made for them, at whole words inside it.
+    fn check_indirect(&self, args: &Buffer<B>, offset: u32, indexed: bool) -> Result<()> {
+        if args.desc.misc_flags & desc::MISC_DRAWINDIRECT_ARGS == 0 {
+            return Err(Error::InvalidArg(
+                "indirect arguments in a buffer not made for them",
+            ));
+        }
+        if !offset.is_multiple_of(4)
+            || u64::from(offset) + u64::from(indirect_bytes(indexed))
+                > u64::from(args.desc.byte_width)
+        {
+            return Err(Error::InvalidArg("indirect arguments past the buffer"));
+        }
+        Ok(())
+    }
+
     /// Draws; a draw this front cannot serve removes the device, the only answer Direct3D has for it.
     fn draw_any(&mut self, range: Range, first_instance: u32, instances: u32) {
-        if let Err(e) = self.try_draw(range, first_instance, instances) {
+        if let Err(e) = self.try_draw(range, first_instance, instances, None) {
             self.lose(e);
         }
     }
 
-    fn program(&mut self, vs: &Rc<Shader<B>>, ps: Option<&Rc<Shader<B>>>) -> Result<B::Program> {
+    /// The program of a vertex and pixel shader pair, made at its first use.
+    pub(crate) fn program(
+        &mut self,
+        vs: &Rc<Shader<B>>,
+        ps: Option<&Rc<Shader<B>>>,
+    ) -> Result<B::Program> {
         let key = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
         if let Some(p) = self.programs.get(&key) {
             return Ok(p.handle.clone());
         }
+        // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
+        // pixel shader alone chooses: the vertex shader is converted again to write its outputs so.
+        let mut interpolation: Vec<(u32, Interpolation)> = ps
+            .iter()
+            .flat_map(|p| &p.reflection.inputs)
+            .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
+            .map(|i| (i.location, i.interpolation))
+            .collect();
+        interpolation.sort_by_key(|i| i.0);
+        interpolation.dedup_by_key(|i| i.0);
+        if !interpolation.is_empty() && !self.interpolated.contains_key(&key) {
+            let variant = VariantKey {
+                output_interpolation: interpolation,
+                ..crate::shader::base_key(SourceStage::Vertex)
+            };
+            let mut converted =
+                crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &variant)?;
+            let module = converted.modules.pop().expect("one module");
+            let shader = self.backend.create_shader(&module);
+            let shader = self.gpu(shader)?;
+            let id = self.id();
+            self.interpolated
+                .insert(key, Kept::new(shader, id, Object::Shader, &self.graveyard));
+        }
+        let vertex = self
+            .interpolated
+            .get(&key)
+            .map_or(&vs.gpu.handle, |s| &s.handle);
         let program = self.backend.create_program(&Program::Render {
-            vertex: &vs.gpu.handle,
+            vertex,
             fragment: ps.map(|p| &p.gpu.handle),
         });
         let program = self.gpu(program)?;
@@ -652,16 +921,30 @@ impl<B: Backend> Device<B> {
         Ok(program)
     }
 
-    fn vertex_layout(&mut self) -> Result<B::VertexLayout> {
-        let layout = self.ctx.layout.clone();
+    /// The strides of the bound vertex buffers in the slots the input layout reads, zero elsewhere.
+    pub(crate) fn strides(&self) -> [u32; 32] {
         let mut strides = [0u32; 32];
-        if let Some(l) = &layout {
+        if let Some(l) = &self.ctx.layout {
             for e in &l.elements {
                 strides[e.slot as usize] = self.ctx.vertex_buffers[e.slot as usize]
                     .as_ref()
                     .map_or(0, |v| v.1);
             }
         }
+        strides
+    }
+
+    fn vertex_layout(&mut self) -> Result<B::VertexLayout> {
+        let strides = self.strides();
+        self.vertex_layout_for(self.ctx.layout.clone(), strides)
+    }
+
+    /// The vertex layout block of an input layout read at `strides`, made at its first use.
+    pub(crate) fn vertex_layout_for(
+        &mut self,
+        layout: Option<Rc<InputLayout>>,
+        strides: [u32; 32],
+    ) -> Result<B::VertexLayout> {
         let key = (layout.as_ref().map_or(0, |l| l.id), strides);
         if let Some(v) = self.layouts.get(&key) {
             return Ok(v.handle.clone());
@@ -703,12 +986,8 @@ impl<B: Backend> Device<B> {
     /// is made again.
     fn grow_constants(&mut self) -> Result<()> {
         let mut small = Vec::new();
-        for stage in [VERTEX, PIXEL] {
-            let shader = if stage == VERTEX {
-                &self.ctx.vs
-            } else {
-                &self.ctx.ps
-            };
+        for stage in [VERTEX, PIXEL, COMPUTE] {
+            let shader = self.stage_shader(stage);
             let Some(shader) = shader.as_ref().filter(|_| self.ctx.sets_dirty[stage]) else {
                 continue;
             };
@@ -719,7 +998,7 @@ impl<B: Backend> Device<B> {
                     .is_some_and(Option::is_none);
                 if let (SlotKind::Uniform, Some(Some(c))) = (b.kind, bound)
                     && whole
-                    && b.set as usize == stage
+                    && b.set == set_of(stage)
                     && let Some(&(_, declared)) =
                         shader.constant_sizes.iter().find(|(n, _)| *n == b.binding)
                     && declared > c.size.get()
@@ -734,7 +1013,7 @@ impl<B: Backend> Device<B> {
             }
         }
         if !small.is_empty() {
-            self.ctx.sets_dirty = [true; 2];
+            self.ctx.sets_dirty = [true; STAGES];
         }
         Ok(())
     }
@@ -759,22 +1038,147 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// The shader bound to `stage`.
+    fn stage_shader(&self, stage: usize) -> &Option<Rc<Shader<B>>> {
+        match stage {
+            VERTEX => &self.ctx.vs,
+            PIXEL => &self.ctx.ps,
+            _ => &self.ctx.cs,
+        }
+    }
+
+    /// `Dispatch` and `DispatchIndirect`; one this front cannot serve removes the device.
+    pub fn dispatch(&mut self, groups: [u32; 3], indirect: Option<(&Rc<Buffer<B>>, u32)>) {
+        if let Err(e) = self.try_dispatch(groups, indirect) {
+            self.lose(e);
+        }
+    }
+
+    fn try_dispatch(
+        &mut self,
+        groups: [u32; 3],
+        indirect: Option<(&Rc<Buffer<B>>, u32)>,
+    ) -> Result<()> {
+        if self.removed.is_some() {
+            return Ok(());
+        }
+        self.bury();
+        // Without a compute shader Direct3D runs nothing.
+        let Some(cs) = self.ctx.cs.clone() else {
+            return Ok(());
+        };
+        self.settle();
+        self.grow_constants()?;
+        self.update_set(COMPUTE)?;
+        let key = (cs.gpu.id, 0);
+        let program = match self.programs.get(&key) {
+            Some(p) => p.handle.clone(),
+            None => {
+                let p = self
+                    .backend
+                    .create_program(&Program::Compute(&cs.gpu.handle));
+                let p = self.gpu(p)?;
+                let id = self.id();
+                self.programs.insert(
+                    key,
+                    Kept::new(p.clone(), id, Object::Program, &self.graveyard),
+                );
+                p
+            }
+        };
+        let args = indirect.map(|(b, offset)| (b.gpu.borrow(), offset));
+        let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
+        bindings[0] = self.ctx.sets[COMPUTE].as_ref().map(|k| &k.handle);
+        let call = DispatchCall {
+            program: &program,
+            bindings,
+            immediates: &[],
+            groups: match &args {
+                None => DispatchGroups::Direct(groups),
+                Some((b, offset)) => DispatchGroups::Indirect {
+                    args: &b.handle,
+                    offset: u64::from(*offset),
+                },
+            },
+        };
+        let r = self.backend.dispatch(&call);
+        drop(args);
+        self.gpu(r)
+    }
+
+    /// `CopyStructureCount`: the hidden counter of a buffer view, written into `dst` at `offset`.
+    pub fn copy_structure_count(
+        &mut self,
+        dst: &Buffer<B>,
+        offset: u32,
+        view: &ShaderView<B>,
+    ) -> Result<()> {
+        let ShaderView::Buffer(BufferSpan {
+            counter: Some(c), ..
+        }) = view
+        else {
+            return Err(Error::InvalidArg("a view without a counter"));
+        };
+        if !offset.is_multiple_of(4) || u64::from(offset) + 4 > u64::from(dst.desc.byte_width) {
+            return Err(Error::InvalidArg("a count written past the buffer"));
+        }
+        self.settle();
+        self.backend
+            .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), 4);
+        Ok(())
+    }
+
+    /// `ClearUnorderedAccessViewUint` (`float` false) and `Float`: buffer views take the first value
+    /// for each 32-bit word; texture views each texel, as raw bits of the view's format.
+    pub fn clear_uav(&mut self, view: &ShaderView<B>, values: [u32; 4], float: bool) -> Result<()> {
+        self.settle();
+        match view {
+            ShaderView::Buffer(span) => {
+                if float {
+                    return not_implemented("a float clear of a buffer view");
+                }
+                self.backend.clear_buffer(
+                    &span.buffer.handle(),
+                    span.offset,
+                    span.size,
+                    &values[0].to_le_bytes(),
+                );
+                Ok(())
+            }
+            ShaderView::Texture(v) => {
+                if !v.texture.gpu_desc.usage.contains(TextureUsage::RENDER) {
+                    return not_implemented(
+                        "a clear of an unordered access view of a format no pass draws into",
+                    );
+                }
+                let integer = matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
+                if integer == float {
+                    return not_implemented(
+                        "a clear of an unordered access view converting between float and integer",
+                    );
+                }
+                let r = self.backend.clear_texture(
+                    &v.texture.gpu.handle,
+                    &v.texture.gpu_desc,
+                    v.format,
+                    v.desc.first_mip..v.desc.first_mip + 1,
+                    v.desc.first_layer..v.desc.first_layer + v.desc.layer_count,
+                    ClearValue::Color(values),
+                );
+                self.gpu(r)
+            }
+        }
+    }
+
     /// Makes the binding set of `stage` from its slots and its shader's reflection, when it changed.
     fn update_set(&mut self, stage: usize) -> Result<()> {
         if !self.ctx.sets_dirty[stage] {
             return Ok(());
         }
-        let shader = if stage == VERTEX {
-            self.ctx.vs.clone()
-        } else {
-            self.ctx.ps.clone()
-        };
-        let Some(shader) = shader.filter(|s| {
-            s.reflection
-                .bindings
-                .iter()
-                .any(|b| b.set as usize == stage)
-        }) else {
+        let set = set_of(stage);
+        let shader = self.stage_shader(stage).clone();
+        let Some(shader) = shader.filter(|s| s.reflection.bindings.iter().any(|b| b.set == set))
+        else {
             self.ctx.sets[stage] = None;
             self.ctx.sets_dirty[stage] = false;
             return Ok(());
@@ -784,13 +1188,22 @@ impl<B: Backend> Device<B> {
                 .reflection
                 .bindings
                 .iter()
-                .filter(move |b| b.set as usize == stage)
+                .filter(move |b| b.set == set)
         };
-        let stages = if stage == VERTEX {
-            StageSet::VERTEX
-        } else {
-            StageSet::FRAGMENT
+        let stages = match stage {
+            VERTEX => StageSet::VERTEX,
+            PIXEL => StageSet::FRAGMENT,
+            _ => StageSet::COMPUTE,
         };
+        let stand_in = |n| {
+            shader
+                .stand_ins
+                .iter()
+                .find(|(b, _)| *b == n)
+                .and_then(|s| s.1)
+        };
+        // Whether a shader resource binding reads a structured or raw buffer, not a texture.
+        let reads_buffer = |n| matches!(stand_in(n), Some(StandIn::ZeroBuffer));
         // What stands in for each empty slot the shader reads, by binding number.
         let mut empty: Vec<(u32, Zero<B>)> = Vec::new();
         for b in wanted() {
@@ -799,24 +1212,46 @@ impl<B: Backend> Device<B> {
                 SlotKind::Uniform => self.ctx.constant_buffers[stage]
                     .get(slot)
                     .is_some_and(Option::is_some),
-                SlotKind::Texture => self.ctx.resources[stage]
-                    .get(slot)
-                    .is_some_and(Option::is_some),
+                // A view of the other kind (a texture where a buffer is read) reads as none.
+                SlotKind::Texture => {
+                    match self.ctx.resources[stage]
+                        .get(slot)
+                        .and_then(Option::as_deref)
+                    {
+                        Some(ShaderView::Texture(_)) => !reads_buffer(b.binding),
+                        Some(ShaderView::Buffer(_)) => reads_buffer(b.binding),
+                        None => false,
+                    }
+                }
                 SlotKind::Sampler => self.ctx.samplers[stage]
                     .get(slot)
                     .is_some_and(Option::is_some),
-                _ => return not_implemented("storage views"),
+                SlotKind::Storage => match self.ctx.uavs[stage].get(slot) {
+                    Some(Some(_)) => true,
+                    _ => return not_implemented("an empty unordered access slot a shader uses"),
+                },
+                SlotKind::Counter => match self.ctx.uavs[stage].get(slot) {
+                    Some(Some(u))
+                        if matches!(
+                            &**u,
+                            ShaderView::Buffer(BufferSpan {
+                                counter: Some(_),
+                                ..
+                            })
+                        ) =>
+                    {
+                        true
+                    }
+                    _ => {
+                        return Err(Error::InvalidArg(
+                            "a shader counts with a view that has no counter",
+                        ));
+                    }
+                },
             };
             if filled {
                 continue;
             }
-            let stand_in = |n| {
-                shader
-                    .stand_ins
-                    .iter()
-                    .find(|(b, _)| *b == n)
-                    .and_then(|s| s.1)
-            };
             let zero = match (b.kind, stand_in(b.binding)) {
                 (SlotKind::Uniform, _) => {
                     let declared = shader
@@ -830,6 +1265,7 @@ impl<B: Backend> Device<B> {
                     Zero::View(self.zero_view(dimension, kind)?)
                 }
                 (_, Some(StandIn::DefaultSampler)) => Zero::Sampler(self.default_sampler()?),
+                (_, Some(StandIn::ZeroBuffer)) => Zero::Storage(self.zero_storage()?),
                 (_, None) => {
                     return not_implemented(
                         "an empty slot read as a multisampled or depth texture, or a comparison sampler",
@@ -837,6 +1273,52 @@ impl<B: Backend> Device<B> {
                 }
             };
             empty.push((b.binding, zero));
+        }
+        // A sampler read the other way than it compares reads through its twin.
+        let mut twins: Vec<(u32, B::Sampler)> = Vec::new();
+        for b in wanted().filter(|b| b.kind == SlotKind::Sampler) {
+            let compares = !matches!(stand_in(b.binding), Some(StandIn::DefaultSampler));
+            let Some(s) = self.ctx.samplers[stage]
+                .get(b.register as usize)
+                .and_then(Option::clone)
+            else {
+                continue;
+            };
+            if s.made.compare.is_some() != compares {
+                twins.push((b.binding, self.sampler_twin(&s, compares)?));
+            }
+        }
+        // WebGPU and WebGL 2 filter only formats the back end says it filters; the others are
+        // filtered in the program, which the converter does not build yet.
+        for &(t, smp) in &shader.reflection.sampled_pairs {
+            let compares = wanted().any(|b| {
+                b.kind == SlotKind::Sampler
+                    && b.register == smp
+                    && !matches!(stand_in(b.binding), Some(StandIn::DefaultSampler))
+            });
+            // An empty slot reads Direct3D's default sampler, which filters linearly.
+            let linear = !compares
+                && self.ctx.samplers[stage]
+                    .get(smp as usize)
+                    .and_then(Option::as_ref)
+                    .is_none_or(|s| [s.made.min, s.made.mag, s.made.mip].contains(&Filter::Linear));
+            let unfiltered = match self.ctx.resources[stage]
+                .get(t as usize)
+                .and_then(Option::as_deref)
+            {
+                Some(ShaderView::Texture(v)) => !self
+                    .backend
+                    .caps()
+                    .formats
+                    .get(v.format)
+                    .contains(FormatUse::FILTER),
+                _ => false,
+            };
+            if linear && unfiltered {
+                return not_implemented(
+                    "a texture the back end cannot filter sampled linearly (FilterInShader)",
+                );
+            }
         }
         let mut cbs = Vec::new();
         for (c, range) in self.ctx.constant_buffers[stage]
@@ -873,6 +1355,22 @@ impl<B: Backend> Device<B> {
                 );
             }
         }
+        // The back-end buffers of the buffer views bound for unordered access.
+        let spans: Vec<_> = self.ctx.uavs[stage]
+            .iter()
+            .map(|u| match u.as_deref() {
+                Some(ShaderView::Buffer(span)) => Some((span.buffer.gpu.borrow(), span)),
+                _ => None,
+            })
+            .collect();
+        let srvs: Vec<_> = self.ctx.resources[stage]
+            .iter()
+            .map(|v| match v.as_deref() {
+                Some(ShaderView::Buffer(span)) => Some((span.buffer.gpu.borrow(), span)),
+                _ => None,
+            })
+            .collect();
+        let uavs = &self.ctx.uavs[stage];
         let views = &self.ctx.resources[stage];
         let samplers = &self.ctx.samplers[stage];
         let mut entries = Vec::new();
@@ -890,15 +1388,64 @@ impl<B: Backend> Device<B> {
                             })
                         })
                 }
-                SlotKind::Texture => views
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .map(|v| BindingResource::Texture(&v.gpu.handle)),
-                SlotKind::Sampler => samplers
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .map(|s| BindingResource::Sampler(&s.gpu.handle)),
-                _ => return not_implemented("storage views"),
+                SlotKind::Texture => match (
+                    views.get(slot).and_then(Option::as_deref),
+                    srvs.get(slot).and_then(Option::as_ref),
+                ) {
+                    (Some(ShaderView::Texture(v)), _) if !reads_buffer(b.binding) => {
+                        Some(BindingResource::Texture(&v.gpu.handle))
+                    }
+                    (_, Some((buffer, span))) if reads_buffer(b.binding) => {
+                        Some(BindingResource::StorageBuffer {
+                            range: BufferRange {
+                                buffer: &buffer.handle,
+                                offset: span.offset,
+                                size: span.size,
+                            },
+                            writable: false,
+                        })
+                    }
+                    _ => None,
+                },
+                SlotKind::Sampler => samplers.get(slot).and_then(Option::as_ref).map(|s| {
+                    BindingResource::Sampler(
+                        twins
+                            .iter()
+                            .find(|t| t.0 == b.binding)
+                            .map_or(&s.gpu.handle, |t| &t.1),
+                    )
+                }),
+                SlotKind::Storage => match (uavs[slot].as_deref(), &spans[slot]) {
+                    (Some(ShaderView::Texture(v)), _) => Some(BindingResource::StorageTexture {
+                        view: &v.gpu.handle,
+                        writable: true,
+                    }),
+                    (_, Some((buffer, span))) => Some(BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer: &buffer.handle,
+                            offset: span.offset,
+                            size: span.size,
+                        },
+                        writable: true,
+                    }),
+                    _ => None,
+                },
+                SlotKind::Counter => match &spans[slot] {
+                    Some((
+                        _,
+                        BufferSpan {
+                            counter: Some(c), ..
+                        },
+                    )) => Some(BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer: &c.handle,
+                            offset: 0,
+                            size: 4,
+                        },
+                        writable: true,
+                    }),
+                    _ => None,
+                },
             };
             let resource = match resource {
                 Some(r) => r,
@@ -914,6 +1461,14 @@ impl<B: Backend> Device<B> {
                         size: *size,
                     }),
                     Zero::View(view) => BindingResource::Texture(view),
+                    Zero::Storage(buffer) => BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer,
+                            offset: 0,
+                            size: ZERO_BYTES,
+                        },
+                        writable: false,
+                    },
                     Zero::Sampler(sampler) => BindingResource::Sampler(sampler),
                 },
             };
@@ -926,6 +1481,8 @@ impl<B: Backend> Device<B> {
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(cbs);
+        drop(spans);
+        drop(srvs);
         let set = self.gpu(set)?;
         let id = self.id();
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
@@ -933,7 +1490,98 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    fn try_draw(&mut self, range: Range, first_instance: u32, instances: u32) -> Result<()> {
+    /// The bound raster block made with sample mask `mask`, kept on its rasterizer state from its
+    /// first use.
+    fn masked_raster(&mut self, mask: u32) -> Result<B::Raster> {
+        let r = self
+            .ctx
+            .raster
+            .clone()
+            .unwrap_or_else(|| self.defaults.raster.clone());
+        if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == mask) {
+            return Ok(k.handle.clone());
+        }
+        let gpu = self.backend.create_raster(&wcontainers_gpu::RasterDesc {
+            sample_mask: mask,
+            ..crate::device::raster_block(&r.desc)
+        });
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        r.masked.borrow_mut().push((
+            mask,
+            Kept::new(gpu.clone(), id, Object::Raster, &self.graveyard),
+        ));
+        Ok(gpu)
+    }
+
+    /// `s` made comparing or not as `compares` says, kept on `s` from its first use.
+    fn sampler_twin(&mut self, s: &Sampler<B>, compares: bool) -> Result<B::Sampler> {
+        if let Some(t) = &*s.twin.borrow() {
+            return Ok(t.handle.clone());
+        }
+        // Direct3D leaves comparing through a sampler that does not compare undefined; the twin
+        // compares with the function its description names.
+        let compare = if compares {
+            Some(crate::device::compare_fn(s.desc.comparison)?)
+        } else {
+            None
+        };
+        let gpu = self
+            .backend
+            .create_sampler(&GpuSampler { compare, ..s.made });
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        *s.twin.borrow_mut() = Some(Kept::new(gpu.clone(), id, Object::Sampler, &self.graveyard));
+        Ok(gpu)
+    }
+
+    /// Writes the vertex program's helper constants, `[base vertex, first instance, block size,
+    /// offset of the bases]`, where they differ from the last written (`DrawBaseInHelpers`), and
+    /// keeps the set binding them.
+    fn write_draw_base(&mut self, key: [u32; 4]) -> Result<()> {
+        if self.draw_base.as_ref().is_some_and(|(k, _)| *k == key) {
+            return Ok(());
+        }
+        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+        let [base, first_instance, size, at] = key;
+        let mut block = [0u8; 256];
+        let at = at as usize;
+        if size as usize > block.len() || at + 12 > size as usize {
+            return not_implemented("a helper block laid out past the draw's bases");
+        }
+        let block = &mut block[..size as usize];
+        // HelperValue::DrawBase: base vertex, first instance, draw number (always 0 here).
+        block[at..at + 4].copy_from_slice(&base.to_le_bytes());
+        block[at + 4..at + 8].copy_from_slice(&first_instance.to_le_bytes());
+        let align = self.backend.caps().limits.min_uniform_offset_alignment;
+        let mut offsets = [0u64];
+        let ring = self
+            .backend
+            .write_buffer_ring(RingKind::Data, &[block], align, &mut offsets);
+        let ring = self.gpu(ring)?;
+        let set = self.backend.create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Vertex),
+            stages: StageSet::VERTEX,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &ring,
+                offset: offsets[0],
+                size: u64::from(size),
+            }),
+        }]);
+        let set = self.gpu(set)?;
+        let id = self.id();
+        self.draw_base = Some((key, Kept::new(set, id, Object::BindingSet, &self.graveyard)));
+        Ok(())
+    }
+
+    /// A draw; `args` holds an indirect draw's arguments.
+    fn try_draw(
+        &mut self,
+        range: Range,
+        first_instance: u32,
+        instances: u32,
+        args: Option<&Rc<Buffer<B>>>,
+    ) -> Result<()> {
         if self.removed.is_some() {
             return Ok(());
         }
@@ -945,20 +1593,29 @@ impl<B: Backend> Device<B> {
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());
         }
-        // The common form's vertex and instance indices include the draw's bases, which SV_VertexID
-        // and SV_InstanceID leave out; the helper constants that take them off are not served yet.
-        let vertex_base = match range {
-            Range::Vertices { start, .. } => start != 0,
-            Range::Indexed { base, .. } => base != 0,
+        // A mask leaving out samples of multisampled targets draws through a twin of the raster
+        // block made with it.
+        let samples = self
+            .ctx
+            .targets
+            .iter()
+            .chain([&self.ctx.depth])
+            .flatten()
+            .map(|v| v.texture.desc.sample_count)
+            .max()
+            .unwrap_or(1);
+        let all = u32::MAX >> (32 - samples.min(32));
+        let mask = self.ctx.sample_mask & all;
+        let masked = if samples > 1 && mask != all {
+            if !self.backend.caps().has(Features::SAMPLE_MASK) {
+                return not_implemented(
+                    "a sample mask without the back end's (SampleMaskInShader)",
+                );
+            }
+            Some(self.masked_raster(mask)?)
+        } else {
+            None
         };
-        let reads = |sv| vs.reflection.inputs.iter().any(|i| i.system == Some(sv));
-        if (vertex_base && reads(SystemValue::VertexId))
-            || (first_instance != 0 && reads(SystemValue::InstanceId))
-        {
-            return not_implemented(
-                "SV_VertexID or SV_InstanceID with a non-zero start or base location",
-            );
-        }
         // The converter writes no program whose second output feeds the blend yet.
         if self
             .ctx
@@ -986,11 +1643,41 @@ impl<B: Backend> Device<B> {
         self.grow_constants()?;
         self.update_set(VERTEX)?;
         self.update_set(PIXEL)?;
+        // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
+        // include: a vertex program reading them takes the bases from its helper constants.
+        let reads_bases = vs.reflection.helper_size > 0;
+        if reads_bases {
+            let base = match range {
+                Range::Vertices { start, .. } => start,
+                Range::Indexed { base, .. } => base as u32,
+                Range::Indirect { .. } => unreachable!("read back by draw_indirect"),
+            };
+            let at = vs
+                .reflection
+                .helpers
+                .iter()
+                .find(|h| h.value == HelperValue::DrawBase)
+                .map_or(0, |h| h.offset);
+            self.write_draw_base([base, first_instance, vs.reflection.helper_size, at])?;
+        }
 
-        let indexed = matches!(range, Range::Indexed { .. });
+        let indexed = matches!(
+            range,
+            Range::Indexed { .. } | Range::Indirect { indexed: true, .. }
+        );
+        let args = args.map(|b| b.gpu.borrow());
         let (topology, gpu_range, generated) = match plain_topology(self.ctx.topology) {
             Some(t) => {
                 let r = match range {
+                    Range::Indirect { indexed, offset } => {
+                        let args = &args.as_ref().expect("indirect arguments").handle;
+                        let offset = u64::from(offset);
+                        if indexed {
+                            DrawRange::IndexedIndirect { args, offset }
+                        } else {
+                            DrawRange::Indirect { args, offset }
+                        }
+                    }
                     Range::Vertices { count, start } => DrawRange::Vertices {
                         first: start,
                         count,
@@ -1009,7 +1696,9 @@ impl<B: Backend> Device<B> {
             }
             None => {
                 let Range::Vertices { count, start } = range else {
-                    return not_implemented("indexed adjacency draws without a geometry shader");
+                    return not_implemented(
+                        "indexed or indirect adjacency draws without a geometry shader",
+                    );
                 };
                 let Some((t, list)) = adjacency_indices(self.ctx.topology, count) else {
                     return not_implemented("a topology without a geometry or hull shader");
@@ -1047,12 +1736,36 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
         }
+        // The back ends bias triangles only, and move 24-bit depth by Direct3D's steps only where
+        // they store it as such.
+        if raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0 {
+            if !matches!(topology, Topology::TriangleList | Topology::TriangleStrip) {
+                return not_implemented("depth bias on lines and points");
+            }
+            if raster.depth_bias != 0
+                && self.ctx.depth.as_ref().is_some_and(|d| {
+                    matches!(d.format, Format::Depth24Plus | Format::Depth24PlusStencil8)
+                })
+                && !self.backend.caps().has(Features::DEPTH24_UNORM)
+            {
+                return not_implemented("a constant depth bias on 24-bit depth stored as float");
+            }
+        }
         let nothing = matches!(
             gpu_range,
             DrawRange::Indexed { count: 0, .. } | DrawRange::Vertices { count: 0, .. }
         );
         if nothing || self.ctx.viewports.is_empty() || (indexed && self.ctx.index.is_none()) {
             return Ok(());
+        }
+        // A pass without attachments is as large as the viewport of its first draw.
+        if self.ctx.pass_open
+            && let Some(open) = self.ctx.empty_pass
+        {
+            let wanted = self.empty_size();
+            if wanted.width > open.width || wanted.height > open.height {
+                self.end_pass();
+            }
         }
         self.open_pass();
         if !self.open_stretch() {
@@ -1062,8 +1775,9 @@ impl<B: Backend> Device<B> {
             self.open_stretch();
         }
 
+        self.count_combination(&vs, ps.as_ref(), topology, samples);
         let ctx = &self.ctx;
-        // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots and 16 viewports).
+        // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots).
         let vertex_handles: [_; VERTEX_SLOTS] = std::array::from_fn(|slot| {
             ctx.vertex_buffers[slot]
                 .as_ref()
@@ -1104,41 +1818,54 @@ impl<B: Backend> Device<B> {
             }),
             _ => None,
         };
-        let viewport_count = ctx.viewports.len().min(VIEWPORTS);
-        let viewports: [GpuViewport; VIEWPORTS] = std::array::from_fn(|i| {
-            let v = ctx.viewports.get(i).copied().unwrap_or_default();
-            GpuViewport {
-                x: v.x.to_bits(),
-                y: v.y.to_bits(),
-                width: v.width.to_bits(),
-                height: v.height.to_bits(),
-                min_depth: v.min_depth.to_bits(),
-                max_depth: v.max_depth.to_bits(),
-            }
-        });
+        // Without a shader choosing one (none is served), Direct3D draws through the first viewport
+        // and scissor rectangle; with no rectangle set, the scissor test passes nothing.
+        let v = ctx.viewports[0];
+        let viewport = GpuViewport {
+            x: v.x.to_bits(),
+            y: v.y.to_bits(),
+            width: v.width.to_bits(),
+            height: v.height.to_bits(),
+            min_depth: v.min_depth.to_bits(),
+            max_depth: v.max_depth.to_bits(),
+        };
         let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
         let depth_stencil = ctx
             .depth_stencil
             .as_ref()
             .unwrap_or(&self.defaults.depth_stencil);
         let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
+        let no_rect = [ScissorRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        }];
+        let scissors: &[ScissorRect] = match ctx.scissors.first() {
+            _ if !raster.desc.scissor => &[],
+            Some(rect) => std::slice::from_ref(rect),
+            None => &no_rect,
+        };
         let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
         bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
+        if reads_bases {
+            bindings[HELPER_SET as usize] = self.draw_base.as_ref().map(|(_, k)| &k.handle);
+        }
         let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
         let call = DrawCall {
             program: &program,
             blend: &blend.gpu.handle,
             depth_stencil: &depth_stencil.gpu.handle,
-            raster: &raster.gpu.handle,
+            raster: masked.as_ref().unwrap_or(&raster.gpu.handle),
             vertex_layout: &vertex_layout,
             bindings,
             vertex_buffers: &vertex_buffers[..used],
             index,
             topology,
             restart: strip && indexed,
-            viewports: &viewports[..viewport_count],
-            scissors: &ctx.scissors,
+            viewports: std::slice::from_ref(&viewport),
+            scissors,
             blend_constant: ctx.blend_factor.map(f32::to_bits),
             stencil_reference: [ctx.stencil_ref as u8; 2],
             immediates: &[],
@@ -1177,6 +1904,7 @@ impl<B: Backend> Device<B> {
                         t.depth,
                         t.mip_levels,
                         t.array_size,
+                        t.sample_count,
                     )
                 };
                 if shape(a) != shape(b) || Rc::ptr_eq(d, s) {
@@ -1289,6 +2017,51 @@ impl<B: Backend> Device<B> {
             }
             _ => Err(Error::InvalidArg("a copy between a buffer and a texture")),
         }
+    }
+
+    /// `ResolveSubresource`: the samples of a multisampled subresource averaged into a
+    /// single-sampled subresource of its size, both read as `format`.
+    pub fn resolve_subresource(
+        &mut self,
+        dst: &Resource<B>,
+        dst_sub: u32,
+        src: &Resource<B>,
+        src_sub: u32,
+        format: u32,
+    ) -> Result<()> {
+        let (Resource::Texture(d), Resource::Texture(s)) = (dst, src) else {
+            return Err(Error::InvalidArg("a resolve between buffers"));
+        };
+        let (dm, sm) = (d.desc.mip_levels, s.desc.mip_levels);
+        if s.desc.sample_count < 2
+            || d.desc.sample_count != 1
+            || dst_sub >= dm * d.desc.array_size
+            || src_sub >= sm * s.desc.array_size
+        {
+            return Err(Error::InvalidArg(
+                "a resolve of a multisampled subresource into a single-sampled one",
+            ));
+        }
+        let (de, se) = (d.mip_extent(dst_sub % dm), s.mip_extent(src_sub % sm));
+        if (de.width, de.height) != (se.width, se.height) {
+            return Err(Error::InvalidArg(
+                "a resolve between subresources of two sizes",
+            ));
+        }
+        let (into, _) = format::view_format(format, d.desc.format, d.format)?;
+        format::view_format(format, s.desc.format, s.format)?;
+        if !resolvable(into) {
+            return Err(Error::InvalidArg(
+                "a resolve in a format that does not average",
+            ));
+        }
+        self.settle();
+        self.backend.resolve(
+            &s.region(src_sub % sm, src_sub / sm, Origin { x: 0, y: 0, z: 0 }),
+            &d.region(dst_sub % dm, dst_sub / dm, Origin { x: 0, y: 0, z: 0 }),
+            into,
+        );
+        self.texture_written(d, dst_sub)
     }
 
     /// `UpdateSubresource`: `bytes` is the stand-in's copy of the program's data.
@@ -1431,7 +2204,8 @@ impl<B: Backend> Device<B> {
                         size: u64::from(d.byte_width),
                     };
                     let mut staged = b.staged.borrow_mut();
-                    self.refresh(&mut staged, &src, &mut b.shadow.borrow_mut(), reads, wait)?;
+                    let shadow = &mut b.shadow.borrow_mut();
+                    self.refresh(&mut staged, &src, None, shadow, reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(b) as usize, 0, kind));
                 let data = b.shadow.borrow_mut().as_mut_ptr();
@@ -1458,12 +2232,17 @@ impl<B: Backend> Device<B> {
                 };
                 let (row, rows, _) = t.packed(region.mip);
                 let src = ReadSource::Texture { region, extent };
+                let stencil = t.stencil_region(sub);
                 let mut shadow = t.shadow.borrow_mut();
                 let mut staged = t.staged.borrow_mut();
                 let s = sub as usize;
                 // A dynamic texture's shadow is the program's to fill; nothing is read back.
                 if d.usage == usage::STAGING {
-                    self.refresh(&mut staged[s], &src, &mut shadow[s], reads, wait)?;
+                    let stencil =
+                        stencil.map(|(region, extent)| ReadSource::Texture { region, extent });
+                    let texel = t.format.block().2 as usize;
+                    let stencil = stencil.as_ref().map(|s| (s, texel));
+                    self.refresh(&mut staged[s], &src, stencil, &mut shadow[s], reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
@@ -1488,7 +2267,7 @@ impl<B: Backend> Device<B> {
                 offset: 0,
                 size: u64::from(b.desc.byte_width),
             });
-            Staged::Reading(self.gpu(r)?)
+            Staged::Reading(self.gpu(r)?, None)
         } else {
             Staged::Written
         };
@@ -1506,7 +2285,17 @@ impl<B: Backend> Device<B> {
             let r = self
                 .backend
                 .read_back(&ReadSource::Texture { region, extent });
-            Staged::Reading(self.gpu(r)?)
+            let r = self.gpu(r)?;
+            let stencil = match t.stencil_region(sub) {
+                Some((region, extent)) => {
+                    let s = self
+                        .backend
+                        .read_back(&ReadSource::Texture { region, extent });
+                    Some(self.gpu(s)?)
+                }
+                None => None,
+            };
+            Staged::Reading(r, stencil)
         } else {
             Staged::Written
         };
@@ -1515,39 +2304,80 @@ impl<B: Backend> Device<B> {
     }
 
     /// Brings a staging subresource's shadow up to the GPU's bytes before a map hands it out: the
-    /// read back started at the copy, or one started now; a write-only map that needs it is
+    /// read back started at the copy, or one started now from `src` (and from `stencil`, the stencil
+    /// aspect of a format with depth and stencil, with the bytes of the shadow's texels); a write-only map that needs it is
     /// `StagingRefreshed`. Without `wait`, a read back not yet done answers `StillDrawing` (after
     /// submitting, so it gets done).
     fn refresh(
         &mut self,
         staged: &mut Staged<B>,
         src: &ReadSource<'_, B>,
+        stencil: Option<(&ReadSource<'_, B>, usize)>,
         shadow: &mut [u8],
         reads: bool,
         wait: bool,
     ) -> Result<()> {
-        let rb = match std::mem::replace(staged, Staged::Current) {
+        let (rb, stencil_rb) = match std::mem::replace(staged, Staged::Current) {
             Staged::Current => return Ok(()),
             Staged::Written => {
                 self.settle();
                 let r = self.backend.read_back(src);
-                self.gpu(r)?
+                let r = self.gpu(r)?;
+                let s = match stencil {
+                    Some((src, _)) => {
+                        let s = self.backend.read_back(src);
+                        Some(self.gpu(s)?)
+                    }
+                    None => None,
+                };
+                (r, s)
             }
-            Staged::Reading(rb) => rb,
+            Staged::Reading(rb, s) => (rb, s),
         };
-        if self.backend.read_state(&rb) == ReadState::Pending {
+        let pending = self.backend.read_state(&rb) == ReadState::Pending
+            || stencil_rb
+                .as_ref()
+                .is_some_and(|s| self.backend.read_state(s) == ReadState::Pending);
+        if pending {
             if !wait {
-                *staged = Staged::Reading(rb);
+                *staged = Staged::Reading(rb, stencil_rb);
                 self.flush();
                 return Err(Error::StillDrawing);
             }
             self.backend.slow_paths().hit(SlowPath::ReadBackWait);
             self.backend.wait_read(&rb);
+            if let Some(s) = &stencil_rb {
+                self.backend.wait_read(s);
+            }
         }
         if !reads {
             self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
         }
-        self.backend.finish_read(rb, shadow);
+        match stencil_rb {
+            None => self.backend.finish_read(rb, shadow),
+            Some(s) => {
+                // Direct3D's layouts: D24_UNORM_S8_UINT is depth in the low 24 bits of a word and
+                // stencil in its high byte; D32_FLOAT_S8X24_UINT is the float, the stencil byte and
+                // three unused bytes. The back end gives depth in four bytes and stencil in one.
+                let texel = stencil.map_or(4, |s| s.1);
+                let n = shadow.len() / texel;
+                let mut depth = vec![0u8; n * 4];
+                let mut stencil = vec![0u8; n];
+                self.backend.finish_read(rb, &mut depth);
+                self.backend.finish_read(s, &mut stencil);
+                for i in 0..n {
+                    let t = &mut shadow[i * texel..(i + 1) * texel];
+                    if texel == 4 {
+                        t[..3].copy_from_slice(&depth[i * 4..i * 4 + 3]);
+                        t[3] = stencil[i];
+                    } else {
+                        t[..4].copy_from_slice(&depth[i * 4..i * 4 + 4]);
+                        t[4] = stencil[i];
+                        t[5..].fill(0);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1583,11 +2413,36 @@ impl<B: Backend> Device<B> {
                 let (region, extent) = t.whole(sub).expect("a subresource the map checked");
                 let (row, rows, _) = t.packed(region.mip);
                 self.end_pass();
+                let shadow = &t.shadow.borrow()[sub as usize];
+                let Some((stencil, _)) = t.stencil_region(sub) else {
+                    self.backend.write_texture(
+                        &region,
+                        extent,
+                        shadow,
+                        row,
+                        rows,
+                        WriteMode::Ordered,
+                    );
+                    return;
+                };
+                // Each aspect of a format with depth and stencil apart, from Direct3D's layout
+                // (see `refresh`): depth in four bytes per texel, stencil in one.
+                let texel = t.format.block().2;
+                let (depth, stencils) = split_depth_stencil(texel, shadow);
+                let texels = row / texel;
                 self.backend.write_texture(
                     &region,
                     extent,
-                    &t.shadow.borrow()[sub as usize],
-                    row,
+                    &depth,
+                    texels * 4,
+                    rows,
+                    WriteMode::Ordered,
+                );
+                self.backend.write_texture(
+                    &stencil,
+                    extent,
+                    &stencils,
+                    texels,
                     rows,
                     WriteMode::Ordered,
                 );

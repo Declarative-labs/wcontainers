@@ -23,7 +23,7 @@ impl ID3D11Device1_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppdeferredcontext, |ppdeferredcontext| {
-            Err(missing("ID3D11Device1::CreateDeferredContext1"))
+            self.create_deferred_context1(contextflags, ppdeferredcontext)
         })
     }
     fn CreateBlendState1(
@@ -58,7 +58,15 @@ impl ID3D11Device1_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppcontextstate, |ppcontextstate| {
-            Err(missing("ID3D11Device1::CreateDeviceContextState"))
+            self.create_device_context_state(
+                flags,
+                pfeaturelevels,
+                featurelevels,
+                sdkversion,
+                emulatedinterface,
+                pchosenfeaturelevel,
+                ppcontextstate,
+            )
         })
     }
     fn OpenSharedResource1(
@@ -146,7 +154,7 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppuaview, |ppuaview| {
-            Err(missing("ID3D11Device::CreateUnorderedAccessView"))
+            self.create_unordered_access_view(presource, pdesc, ppuaview)
         })
     }
     fn CreateRenderTargetView(
@@ -288,7 +296,12 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppcomputeshader, |ppcomputeshader| {
-            Err(missing("ID3D11Device::CreateComputeShader"))
+            self.create_compute_shader(
+                pshaderbytecode,
+                bytecodelength,
+                pclasslinkage,
+                ppcomputeshader,
+            )
         })
     }
     fn CreateClassLinkage(&self) -> windows::core::Result<ID3D11ClassLinkage> {
@@ -370,7 +383,7 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppdeferredcontext, |ppdeferredcontext| {
-            Err(missing("ID3D11Device::CreateDeferredContext"))
+            self.create_deferred_context(contextflags, ppdeferredcontext)
         })
     }
     fn OpenSharedResource(
@@ -700,9 +713,12 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext1::CSSetConstantBuffers1",
-            super::context::binds(ppconstantbuffers, numbuffers),
+        self.cs_set_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
         )
     }
     fn VSGetConstantBuffers1(
@@ -781,7 +797,13 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *mut u32,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+        self.cs_get_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
     }
     fn SwapDeviceContextState(
         &self,
@@ -789,7 +811,7 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pppreviousstate: windows::core::OutRef<ID3DDeviceContextState>,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext1::SwapDeviceContextState")
+        self.swap_device_context_state(pstate, pppreviousstate)
     }
     fn ClearView(
         &self,
@@ -1062,7 +1084,15 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         puavinitialcounts: *const u32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews")
+        self.om_set_render_targets_and_unordered_access_views(
+            numrtvs,
+            pprendertargetviews,
+            pdepthstencilview,
+            uavstartslot,
+            numuavs,
+            ppunorderedaccessviews,
+            puavinitialcounts,
+        )
     }
     fn OMSetBlendState(
         &self,
@@ -1103,7 +1133,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::DrawIndexedInstancedIndirect")
+        self.draw_indexed_instanced_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn DrawInstancedIndirect(
         &self,
@@ -1111,11 +1141,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::DrawInstancedIndirect")
+        self.draw_instanced_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn Dispatch(&self, threadgroupcountx: u32, threadgroupcounty: u32, threadgroupcountz: u32) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::Dispatch")
+        self.dispatch(threadgroupcountx, threadgroupcounty, threadgroupcountz)
     }
     fn DispatchIndirect(
         &self,
@@ -1123,7 +1153,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::DispatchIndirect")
+        self.dispatch_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn RSSetState(&self, prasterizerstate: windows::core::Ref<ID3D11RasterizerState>) {
         let _call = self.call();
@@ -1194,7 +1224,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         psrcview: windows::core::Ref<ID3D11UnorderedAccessView>,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::CopyStructureCount")
+        self.copy_structure_count(pdstbuffer, dstalignedbyteoffset, psrcview)
     }
     fn ClearRenderTargetView(
         &self,
@@ -1210,7 +1240,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         values: *const u32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::ClearUnorderedAccessViewUint")
+        self.clear_unordered_access_view_uint(punorderedaccessview, values)
     }
     fn ClearUnorderedAccessViewFloat(
         &self,
@@ -1218,7 +1248,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         values: *const f32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::ClearUnorderedAccessViewFloat")
+        self.clear_unordered_access_view_float(punorderedaccessview, values)
     }
     fn ClearDepthStencilView(
         &self,
@@ -1252,7 +1282,13 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::ResolveSubresource")
+        self.resolve_subresource(
+            pdstresource,
+            dstsubresource,
+            psrcresource,
+            srcsubresource,
+            format,
+        )
     }
     fn ExecuteCommandList(
         &self,
@@ -1260,7 +1296,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         restorecontextstate: windows::core::BOOL,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::ExecuteCommandList")
+        self.execute_command_list(pcommandlist, restorecontextstate)
     }
     fn HSSetShaderResources(
         &self,
@@ -1359,10 +1395,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::CSSetShaderResources",
-            super::context::binds(ppshaderresourceviews, numviews),
-        )
+        self.cs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn CSSetUnorderedAccessViews(
         &self,
@@ -1372,9 +1405,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         puavinitialcounts: *const u32,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::CSSetUnorderedAccessViews",
-            super::context::binds(ppunorderedaccessviews, numuavs),
+        self.cs_set_unordered_access_views(
+            startslot,
+            numuavs,
+            ppunorderedaccessviews,
+            puavinitialcounts,
         )
     }
     fn CSSetShader(
@@ -1384,10 +1419,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::CSSetShader",
-            !pcomputeshader.is_null(),
-        )
+        self.cs_set_shader(pcomputeshader, ppclassinstances, numclassinstances)
     }
     fn CSSetSamplers(
         &self,
@@ -1396,10 +1428,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::CSSetSamplers",
-            super::context::binds(ppsamplers, numsamplers),
-        )
+        self.cs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn CSSetConstantBuffers(
         &self,
@@ -1408,10 +1437,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::CSSetConstantBuffers",
-            super::context::binds(ppconstantbuffers, numbuffers),
-        )
+        self.cs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn VSGetConstantBuffers(
         &self,
@@ -1583,7 +1609,14 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppunorderedaccessviews: *mut Option<ID3D11UnorderedAccessView>,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::OMGetRenderTargetsAndUnorderedAccessViews")
+        self.om_get_render_targets_and_unordered_access_views(
+            numrtvs,
+            pprendertargetviews,
+            ppdepthstencilview,
+            uavstartslot,
+            numuavs,
+            ppunorderedaccessviews,
+        )
     }
     fn OMGetBlendState(
         &self,
@@ -1703,7 +1736,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppshaderresourceviews, numviews)
+        self.cs_get_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn CSGetUnorderedAccessViews(
         &self,
@@ -1712,7 +1745,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppunorderedaccessviews: *mut Option<ID3D11UnorderedAccessView>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppunorderedaccessviews, numuavs)
+        self.cs_get_unordered_access_views(startslot, numuavs, ppunorderedaccessviews)
     }
     fn CSGetShader(
         &self,
@@ -1721,8 +1754,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pnumclassinstances: *mut u32,
     ) {
         let _call = self.call();
-        super::context::no_instances(pnumclassinstances);
-        let _ = ppcomputeshader.write(None);
+        self.cs_get_shader(ppcomputeshader, ppclassinstances, pnumclassinstances)
     }
     fn CSGetSamplers(
         &self,
@@ -1731,7 +1763,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppsamplers, numsamplers)
+        self.cs_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn CSGetConstantBuffers(
         &self,
@@ -1740,7 +1772,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *mut Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppconstantbuffers, numbuffers)
+        self.cs_get_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn ClearState(&self) {
         let _call = self.call();
@@ -1764,7 +1796,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppcommandlist: windows::core::OutRef<ID3D11CommandList>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11DeviceContext::FinishCommandList"))
+        self.finish_command_list(restoredeferredcontextstate, ppcommandlist)
     }
 }
 
@@ -1865,6 +1897,124 @@ impl IDXGIAdapter_Impl for Adapter_Impl {
 }
 
 impl IDXGIObject_Impl for Adapter_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_parent(riid, ppparent)
+    }
+}
+
+impl IDXGIOutput_Impl for Output_Impl {
+    fn GetDesc(&self) -> windows::core::Result<DXGI_OUTPUT_DESC> {
+        let _lock = lock();
+        self.get_desc()
+    }
+    fn GetDisplayModeList(
+        &self,
+        enumformat: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        flags: DXGI_ENUM_MODES,
+        pnummodes: *mut u32,
+        pdesc: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_DESC,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_display_mode_list(enumformat, flags, pnummodes, pdesc)
+    }
+    fn FindClosestMatchingMode(
+        &self,
+        pmodetomatch: *const windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_DESC,
+        pclosestmatch: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_DESC,
+        pconcerneddevice: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.find_closest_matching_mode(pmodetomatch, pclosestmatch, pconcerneddevice)
+    }
+    fn WaitForVBlank(&self) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::WaitForVBlank"))
+    }
+    fn TakeOwnership(
+        &self,
+        pdevice: windows::core::Ref<windows::core::IUnknown>,
+        exclusive: windows::core::BOOL,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::TakeOwnership"))
+    }
+    fn ReleaseOwnership(&self) {
+        let _lock = lock();
+        missing_void("IDXGIOutput::ReleaseOwnership")
+    }
+    fn GetGammaControlCapabilities(
+        &self,
+        pgammacaps: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_GAMMA_CONTROL_CAPABILITIES,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetGammaControlCapabilities"))
+    }
+    fn SetGammaControl(
+        &self,
+        parray: *const windows::Win32::Graphics::Dxgi::Common::DXGI_GAMMA_CONTROL,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::SetGammaControl"))
+    }
+    fn GetGammaControl(
+        &self,
+        parray: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_GAMMA_CONTROL,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetGammaControl"))
+    }
+    fn SetDisplaySurface(
+        &self,
+        pscanoutsurface: windows::core::Ref<IDXGISurface>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::SetDisplaySurface"))
+    }
+    fn GetDisplaySurfaceData(
+        &self,
+        pdestination: windows::core::Ref<IDXGISurface>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetDisplaySurfaceData"))
+    }
+    fn GetFrameStatistics(&self, pstats: *mut DXGI_FRAME_STATISTICS) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIOutput::GetFrameStatistics"))
+    }
+}
+
+impl IDXGIObject_Impl for Output_Impl {
     fn SetPrivateData(
         &self,
         name: *const windows::core::GUID,
@@ -2118,13 +2268,13 @@ impl IDXGISwapChain1_Impl for SwapChain_Impl {
         rotation: windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION,
     ) -> windows::core::Result<()> {
         let _lock = lock();
-        Err(missing("IDXGISwapChain1::SetRotation"))
+        self.set_rotation(rotation)
     }
     fn GetRotation(
         &self,
     ) -> windows::core::Result<windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION> {
         let _lock = lock();
-        Err(missing("IDXGISwapChain1::GetRotation"))
+        self.get_rotation()
     }
 }
 
@@ -3075,6 +3225,53 @@ impl ID3D11DeviceChild_Impl for ShaderResourceView_Impl {
     }
 }
 
+impl ID3D11UnorderedAccessView_Impl for UnorderedAccessView_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D11_UNORDERED_ACCESS_VIEW_DESC) {
+        let _lock = lock();
+        self.get_desc(pdesc)
+    }
+}
+
+impl ID3D11View_Impl for UnorderedAccessView_Impl {
+    fn GetResource(&self, ppresource: windows::core::OutRef<ID3D11Resource>) {
+        let _lock = lock();
+        self.get_resource(ppresource)
+    }
+}
+
+impl ID3D11DeviceChild_Impl for UnorderedAccessView_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11SamplerState_Impl for SamplerState_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_SAMPLER_DESC) {
         let _lock = lock();
@@ -3418,6 +3615,116 @@ impl ID3D11DeviceChild_Impl for VertexShader_Impl {
 impl ID3D11PixelShader_Impl for PixelShader_Impl {}
 
 impl ID3D11DeviceChild_Impl for PixelShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11ComputeShader_Impl for ComputeShader_Impl {}
+
+impl ID3D11DeviceChild_Impl for ComputeShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11CommandList_Impl for CommandList_Impl {
+    fn GetContextFlags(&self) -> u32 {
+        let _lock = lock();
+        self.get_context_flags()
+    }
+}
+
+impl ID3D11DeviceChild_Impl for CommandList_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3DDeviceContextState_Impl for DeviceContextState_Impl {}
+
+impl ID3D11DeviceChild_Impl for DeviceContextState_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)

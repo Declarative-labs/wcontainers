@@ -1,7 +1,7 @@
-//! The crate's own shaders (tests/own) drawn by real Direct3D 11 and, converted by `convert`, through
-//! the WebGPU back end (wgpu on Direct3D 12) and the WebGL 2 back end (on ANGLE) on the same GPU. Each
-//! picture must equal Direct3D's texel for texel, which checks that the converted programs mean what the
-//! bytecode means.
+//! The crate's own shaders (tests/own) drawn by real Direct3D 11 (fxc's builds) and 12 (dxc's builds)
+//! and, converted by `convert`, through the WebGPU back end (wgpu on Direct3D 12) and the WebGL 2 back
+//! end (on ANGLE) on the same GPU. Each picture must equal Direct3D's of the same bytecode texel for
+//! texel, which checks that the converted programs mean what the bytecode means.
 //!
 //! Windows only, and needs a GPU: run as a GPU job (docs/status-graphics-shaders.md). The WebGL 2 back
 //! end loads ANGLE from `WCONTAINERS_ANGLE` (default C:\wc\tools\angle-mozangle-0.7.1, which the WebGL
@@ -34,7 +34,8 @@ struct Case {
     vs: &'static str,
     ps: &'static str,
     format: Format,
-    /// The constant buffer's tint (`ps_loop` takes its trip count from `w`).
+    /// The constant buffer's tint (`ps_loop` takes its trip count from `w`, `ps_ftoi` its special
+    /// values).
     tint: [f32; 4],
     /// Drawn from the vertex grid; otherwise three vertices without a buffer.
     grid: bool,
@@ -42,11 +43,12 @@ struct Case {
     not_on_webgl: [Option<&'static str>; 2],
     /// A known failure of the WebGL 2 back end, outside this crate: drawn and reported, not failed on.
     known_on_webgl: Option<&'static str>,
-    /// Also compiled by dxc (`<name>.dxil`): drawn by the DXIL route too, against the same picture.
+    /// Also compiled by dxc (`<name>.dxil`): drawn by the DXIL route too, against real Direct3D 12's
+    /// picture of that build.
     dxil: bool,
 }
 
-const CASES: [Case; 16] = [
+const CASES: [Case; 22] = [
     Case {
         vs: "vs_transform",
         ps: "ps_textured",
@@ -137,9 +139,7 @@ const CASES: [Case; 16] = [
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: [None, None],
-        known_on_webgl: Some(
-            "the back end's hidden texture size uniform stays unset, so textureSize gives 1 by 1",
-        ),
+        known_on_webgl: None,
         dxil: false,
     },
     Case {
@@ -199,6 +199,66 @@ const CASES: [Case; 16] = [
         vs: "vs_transform",
         ps: "ps_clip",
         format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_carry",
+        ps: "ps_textured",
+        format: Format::Rgba8Unorm,
+        tint: [1.0, 0.75, 0.5, 1.5],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_ftoi",
+        format: Format::Rgba32Uint,
+        tint: [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2_147_483_648.0],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_table",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_deriv",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [Some("GLSL ES 3.00 has no fine derivatives"); 2],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_coarse",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_negate",
+        format: Format::Rgba32Uint,
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: [None, None],
@@ -376,6 +436,245 @@ fn read(gpu: &Gpu, texture: &ID3D11Texture2D, format: Format) -> Vec<u8> {
             out.extend_from_slice(std::slice::from_raw_parts(start, row));
         }
         gpu.context.Unmap(&staging, 0);
+    }
+    out
+}
+
+/// Draws a case's DXIL build with real Direct3D 12, bound as Direct3D 11 binds the DXBC build: the
+/// constants at b0 for both stages, the texture at t0 and a linear clamping sampler at s0. Returns
+/// the target's texels, rows tightly packed.
+fn direct3d_12(gpu: &wcontainers_graphics_test::d3d12::Gpu, case: &Case) -> Vec<u8> {
+    use wcontainers_graphics_test::d3d12::{
+        area, buffer_desc, bytecode as code, element, footprint_location, tex2d_desc,
+        texture_location, transition,
+    };
+    use windows::Win32::Graphics::Direct3D12::*;
+    let (vs, ps) = (
+        bytecode(&format!("{}.dxil", case.vs)),
+        bytecode(&format!("{}.dxil", case.ps)),
+    );
+    let table = [D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: 1,
+        OffsetInDescriptorsFromTableStart: 0,
+        ..Default::default()
+    }];
+    let parameters = [
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Descriptor: D3D12_ROOT_DESCRIPTOR::default(),
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: table.as_ptr(),
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        },
+    ];
+    let sampler = D3D12_STATIC_SAMPLER_DESC {
+        Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        MaxAnisotropy: 1,
+        ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
+        MaxLOD: f32::MAX,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+        ..Default::default()
+    };
+    let root = gpu
+        .root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
+            Version: D3D_ROOT_SIGNATURE_VERSION_1_0,
+            Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
+                Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
+                    NumParameters: parameters.len() as u32,
+                    pParameters: parameters.as_ptr(),
+                    NumStaticSamplers: 1,
+                    pStaticSamplers: &sampler,
+                    Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+                },
+            },
+        })
+        .unwrap();
+    let layout = [
+        element(s!("POSITION"), DXGI_FORMAT_R32G32B32_FLOAT, 0),
+        element(s!("TEXCOORD"), DXGI_FORMAT_R32G32_FLOAT, 12),
+    ];
+    let format = dxgi(case.format);
+    let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+        pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
+        VS: code(&vs),
+        PS: code(&ps),
+        SampleMask: u32::MAX,
+        RasterizerState: D3D12_RASTERIZER_DESC {
+            FillMode: D3D12_FILL_MODE_SOLID,
+            CullMode: D3D12_CULL_MODE_NONE,
+            DepthClipEnable: true.into(),
+            ..Default::default()
+        },
+        InputLayout: D3D12_INPUT_LAYOUT_DESC {
+            pInputElementDescs: layout.as_ptr(),
+            NumElements: if case.grid { layout.len() as u32 } else { 0 },
+        },
+        PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        NumRenderTargets: 1,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        ..Default::default()
+    };
+    desc.RTVFormats[0] = format;
+    desc.BlendState.RenderTarget[0] = D3D12_RENDER_TARGET_BLEND_DESC {
+        SrcBlend: D3D12_BLEND_ONE,
+        DestBlend: D3D12_BLEND_ZERO,
+        BlendOp: D3D12_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D12_BLEND_ONE,
+        DestBlendAlpha: D3D12_BLEND_ZERO,
+        BlendOpAlpha: D3D12_BLEND_OP_ADD,
+        LogicOp: D3D12_LOGIC_OP_NOOP,
+        RenderTargetWriteMask: 0xf,
+        ..Default::default()
+    };
+    let pipeline: ID3D12PipelineState =
+        unsafe { gpu.device.CreateGraphicsPipelineState(&desc) }.unwrap();
+    drop(std::mem::ManuallyDrop::into_inner(desc.pRootSignature));
+
+    let constants = gpu.upload(&constants(case.tint)).unwrap();
+    let vertices = grid();
+    let vertex_buffer = gpu.upload(bytes_of(&vertices)).unwrap();
+    let texture = gpu
+        .committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &tex2d_desc(
+                TEXTURE_SIZE,
+                TEXTURE_SIZE,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D12_RESOURCE_FLAG_NONE,
+            ),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            None,
+        )
+        .unwrap();
+    gpu.fill_texture(&texture, &texels(), TEXTURE_SIZE * 4)
+        .unwrap();
+    let views = gpu
+        .descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true)
+        .unwrap();
+    unsafe {
+        gpu.device
+            .CreateShaderResourceView(&texture, None, gpu.cpu(&views, 0))
+    };
+    let target = gpu
+        .committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &tex2d_desc(SIZE, SIZE, format, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            None,
+        )
+        .unwrap();
+    let rtvs = gpu
+        .descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, false)
+        .unwrap();
+    let rtv = gpu.cpu(&rtvs, 0);
+    unsafe { gpu.device.CreateRenderTargetView(&target, None, rtv) };
+    let clear = if case.format == Format::Rgba32Uint {
+        [0.0; 4]
+    } else {
+        CLEAR
+    };
+    let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+    let mut total = 0;
+    let target_desc = unsafe { target.GetDesc() };
+    unsafe {
+        gpu.device.GetCopyableFootprints(
+            &target_desc,
+            0,
+            1,
+            0,
+            Some(&mut footprint),
+            None,
+            None,
+            Some(&mut total),
+        )
+    };
+    let readback = gpu
+        .committed(
+            D3D12_HEAP_TYPE_READBACK,
+            &buffer_desc(total),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            None,
+        )
+        .unwrap();
+    let l = &gpu.list;
+    unsafe {
+        l.ResourceBarrier(&[transition(
+            &texture,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )]);
+        l.SetPipelineState(&pipeline);
+        l.SetGraphicsRootSignature(&root);
+        l.SetDescriptorHeaps(&[Some(views.clone())]);
+        l.SetGraphicsRootConstantBufferView(0, constants.GetGPUVirtualAddress());
+        l.SetGraphicsRootDescriptorTable(1, gpu.gpu(&views, 0));
+        l.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        if case.grid {
+            l.IASetVertexBuffers(
+                0,
+                Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: vertex_buffer.GetGPUVirtualAddress(),
+                    SizeInBytes: std::mem::size_of_val(vertices.as_slice()) as u32,
+                    StrideInBytes: 20,
+                }]),
+            );
+        }
+        l.ClearRenderTargetView(rtv, &clear, None);
+        l.OMSetRenderTargets(1, Some(&rtv), false, None);
+        area(l, 0, 0, SIZE, SIZE);
+        l.DrawInstanced(if case.grid { 96 } else { 3 }, 1, 0, 0);
+        l.ResourceBarrier(&[transition(
+            &target,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+        )]);
+        l.CopyTextureRegion(
+            &footprint_location(&readback, footprint),
+            0,
+            0,
+            0,
+            &texture_location(&target, 0),
+            None,
+        );
+    }
+    gpu.submit().unwrap();
+    let row = (SIZE * case.format.block().2) as usize;
+    let pitch = footprint.Footprint.RowPitch as usize;
+    let mut out = Vec::with_capacity(row * SIZE as usize);
+    unsafe {
+        let mut mapped = std::ptr::null_mut();
+        readback
+            .Map(
+                0,
+                Some(&D3D12_RANGE {
+                    Begin: 0,
+                    End: total as usize,
+                }),
+                Some(&mut mapped),
+            )
+            .unwrap();
+        let bytes = std::slice::from_raw_parts(mapped.cast::<u8>(), total as usize);
+        for y in 0..SIZE as usize {
+            out.extend_from_slice(&bytes[y * pitch..y * pitch + row]);
+        }
+        readback.Unmap(0, Some(&D3D12_RANGE::default()));
     }
     out
 }
@@ -789,6 +1088,8 @@ fn keep(name: &str, texels: &[u8], format: Format) {
 
 #[test]
 fn own_shaders_draw_as_direct3d_does() {
+    let mut wgpu_backend = webgpu();
+    let mut gl = webgl();
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
         false,
@@ -796,14 +1097,28 @@ fn own_shaders_draw_as_direct3d_does() {
     )
     .unwrap();
     eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
-    let mut wgpu_backend = webgpu();
-    let mut gl = webgl();
+    let gpu12 = wcontainers_graphics_test::d3d12::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+    )
+    .unwrap();
     let mut failures = Vec::new();
     let grid = grid();
     for case in &CASES {
         let name = format!("{}+{}", case.vs, case.ps);
         let reference = direct3d(&gpu, case);
         keep(&format!("{name}.d3d11"), &reference, case.format);
+        // Each DXIL build is held to Direct3D 12 drawing that same DXIL.
+        let reference_12 = case.dxil.then(|| {
+            let texels = direct3d_12(&gpu12, case);
+            keep(&format!("{name}.d3d12"), &texels, case.format);
+            let (count, largest) = differ(&reference, &texels, case.format);
+            eprintln!(
+                "{name} d3d12-dxil against d3d11-dxbc: {count} of {} texels differ, largest difference {largest}",
+                SIZE * SIZE
+            );
+            texels
+        });
         // Flat values come from the first vertex, as Direct3D's, where the back end offers it.
         let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
             ProvokingVertex::First
@@ -831,9 +1146,13 @@ fn own_shaders_draw_as_direct3d_does() {
         }
         for (back_end, texels) in runs {
             keep(&format!("{name}.{back_end}"), &texels, case.format);
-            let (count, largest) = differ(&reference, &texels, case.format);
+            let (against, reference) = match &reference_12 {
+                Some(r) if back_end.ends_with("dxil") => ("direct3d 12", r),
+                _ => ("direct3d 11", &reference),
+            };
+            let (count, largest) = differ(reference, &texels, case.format);
             eprintln!(
-                "{name} {back_end}: {count} of {} texels differ, largest difference {largest}",
+                "{name} {back_end}: {count} of {} texels differ from {against}, largest difference {largest}",
                 SIZE * SIZE
             );
             if count > 0 {
@@ -847,7 +1166,7 @@ fn own_shaders_draw_as_direct3d_does() {
             }
         }
     }
-    assert!(failures.is_empty(), "differ from Direct3D 11: {failures:?}");
+    assert!(failures.is_empty(), "differ from Direct3D: {failures:?}");
 }
 
 /// The rig's triangle scene drawn from its DXIL (dxc) and its DXBC (fxc) through both back ends, each

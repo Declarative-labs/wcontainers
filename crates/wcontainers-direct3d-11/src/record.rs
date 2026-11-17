@@ -19,7 +19,8 @@ struct Texture {
 }
 
 pub struct Recorder {
-    caps: Caps,
+    /// What it declares; tests take uses away to reach a front's slow paths.
+    pub caps: Caps,
     slow: SlowPaths,
     helpers: Helpers<Recorder>,
     next: Id,
@@ -46,6 +47,11 @@ impl std::fmt::Debug for Recorder {
 }
 
 impl Recorder {
+    /// The bytes buffer `id` holds now.
+    pub fn buffer_bytes(&self, id: Id) -> Option<&[u8]> {
+        self.buffers.get(&id).map(Vec::as_slice)
+    }
+
     /// A recorder declaring the abilities WebGPU in Chrome declares on the development desktop (plan
     /// 4.11), with every format able to do everything; `echo` also receives each line.
     pub fn new(echo: Option<fn(&str)>) -> Self {
@@ -88,7 +94,8 @@ impl Recorder {
                     | Features::DEPTH_CLAMP
                     | Features::BASE_VERTEX_INSTANCE
                     | Features::TEXTURE_VIEWS
-                    | Features::FRACTIONAL_VIEWPORT,
+                    | Features::FRACTIONAL_VIEWPORT
+                    | Features::SAMPLE_MASK,
                 limits,
                 formats: FormatCaps {
                     uses: [FormatUse::all(); Format::COUNT],
@@ -136,6 +143,20 @@ impl Recorder {
         let (x, _) = row_bytes(t.desc.format, origin.x, 1);
         let start = (origin.y / bh) as usize * pitch as usize + x as usize;
         (start, pitch as usize, row as usize, rows as usize)
+    }
+
+    /// For a format with depth and stencil, which the recorder keeps in Direct3D's layout, the aspect
+    /// a region names: bytes per stored texel, the aspect's bytes within one, and its bytes per texel
+    /// as the interface hands it over (depth in four, stencil in one).
+    fn aspect(t: &Texture, stencil: bool) -> Option<(usize, core::ops::Range<usize>, usize)> {
+        let texel = t.desc.format.block().2 as usize;
+        let aspect = match (texel, stencil) {
+            (4, false) => (4, 0..3, 4),
+            (4, true) => (4, 3..4, 1),
+            (_, false) => (texel, 0..4, 4),
+            (_, true) => (texel, 4..5, 1),
+        };
+        (t.desc.format.kind() == FormatKind::DepthStencil).then_some(aspect)
     }
 
     fn subresource(t: &Texture, mip: u32, layer: u32) -> usize {
@@ -233,8 +254,8 @@ impl Backend for Recorder {
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.record(format!(
-            "create_sampler {id} {:?} {:?} {:?} {:?}",
-            desc.min, desc.mag, desc.mip, desc.address
+            "create_sampler {id} {:?} {:?} {:?} {:?} compare {:?}",
+            desc.min, desc.mag, desc.mip, desc.address, desc.compare
         ));
         Ok(id)
     }
@@ -283,8 +304,8 @@ impl Backend for Recorder {
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.record(format!(
-            "create_raster {id} {:?} {:?} {:?} clip {}",
-            desc.fill, desc.cull, desc.front, desc.depth_clip
+            "create_raster {id} {:?} {:?} {:?} clip {} mask {:#x}",
+            desc.fill, desc.cull, desc.front, desc.depth_clip, desc.sample_mask
         ));
         Ok(id)
     }
@@ -370,10 +391,20 @@ impl Backend for Recorder {
         if let Some(t) = self.textures.get_mut(region.texture) {
             let (start, pitch, row, rows) = Self::rows(t, region.mip, region.origin, extent);
             let sub = Self::subresource(t, region.mip, region.layer);
+            let aspect = Self::aspect(t, region.stencil);
             for r in 0..rows {
                 let src = r * row_pitch as usize;
                 let dst = start + r * pitch;
-                t.subresources[sub][dst..dst + row].copy_from_slice(&data[src..src + row]);
+                let out = &mut t.subresources[sub][dst..dst + row];
+                match &aspect {
+                    None => out.copy_from_slice(&data[src..src + row]),
+                    Some((texel, part, given)) => {
+                        for (i, o) in out.chunks_exact_mut(*texel).enumerate() {
+                            let at = src + i * given;
+                            o[part.clone()].copy_from_slice(&data[at..at + part.len()]);
+                        }
+                    }
+                }
             }
         }
         self.record(format!(
@@ -408,11 +439,31 @@ impl Backend for Recorder {
                 d.stencil.as_ref().map(|a| a.load)
             );
         }
+        if let Some(e) = &pass.empty {
+            let _ = write!(
+                line,
+                " empty {}x{} samples {}",
+                e.width, e.height, e.samples
+            );
+        }
         self.record(line);
     }
 
     fn end_pass(&mut self) {
         self.record("end_pass".into());
+    }
+
+    fn prepare(&mut self, desc: &PrepareDesc<'_, Self>) {
+        self.record(format!(
+            "prepare program {} blend {} depth {} raster {} layout {} {:?} {:?}",
+            desc.program,
+            desc.blend,
+            desc.depth_stencil,
+            desc.raster,
+            desc.vertex_layout,
+            desc.targets,
+            desc.topology,
+        ));
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
@@ -427,8 +478,13 @@ impl Backend for Recorder {
             .iter()
             .map(|v| [v.x, v.y, v.width, v.height].map(f32::from_bits))
             .collect();
+        let scissors: Vec<_> = call
+            .scissors
+            .iter()
+            .map(|s| [s.x, s.y, s.width, s.height])
+            .collect();
         self.record(format!(
-            "draw program {} blend {} depth {} raster {} layout {} sets {:?} streams {streams:?} index {index:?} {:?} restart {} viewports {viewports:?} {:?}",
+            "draw program {} blend {} depth {} raster {} layout {} sets {:?} streams {streams:?} index {index:?} {:?} restart {} viewports {viewports:?} scissors {scissors:?} {:?}",
             call.program,
             call.blend,
             call.depth_stencil,
@@ -576,13 +632,18 @@ impl Backend for Recorder {
                 let t = &self.textures[region.texture];
                 let (start, pitch, row, rows) = Self::rows(t, region.mip, region.origin, *extent);
                 let sub = &t.subresources[Self::subresource(t, region.mip, region.layer)];
-                let bytes = (0..rows)
-                    .flat_map(|r| {
-                        sub[start + r * pitch..start + r * pitch + row]
-                            .iter()
-                            .copied()
-                    })
-                    .collect();
+                let rows = (0..rows).map(|r| &sub[start + r * pitch..start + r * pitch + row]);
+                let bytes = match Self::aspect(t, region.stencil) {
+                    None => rows.flatten().copied().collect(),
+                    Some((texel, part, given)) => rows
+                        .flat_map(|r| r.chunks_exact(texel))
+                        .flat_map(|c| {
+                            let mut out = [0u8; 4];
+                            out[..part.len()].copy_from_slice(&c[part.clone()]);
+                            out.into_iter().take(given)
+                        })
+                        .collect(),
+                };
                 (
                     bytes,
                     format!(

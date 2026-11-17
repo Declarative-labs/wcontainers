@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+pub mod cache;
 mod dxbc;
 mod dxil;
 mod ir;
@@ -82,26 +83,20 @@ pub fn convert(
     root_signature: Option<&[u8]>,
 ) -> Result<Converted, ConvertError> {
     unbuilt(variant, root_signature)?;
-    let (bytes, (module, reflection, stage)) = match source {
-        Source::Dxbc(bytes) => (
-            bytes,
-            contained(|| lower::lower(&dxbc::to_ir(bytes)?, variant))?,
-        ),
-        Source::Dxil(bytes) => (bytes, contained(|| dxil::lower(bytes, variant))?),
+    let (module, reflection, stage) = match source {
+        Source::Dxbc(bytes) => contained(|| lower::lower(&dxbc::to_ir(bytes)?, variant))?,
+        Source::Dxil(bytes) => contained(|| dxil::lower(bytes, variant))?,
         Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
     };
     let info = validate(&module)?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(bytes);
-    hasher.update(CONVERTER_VERSION.as_bytes());
-    hasher.update(format!("{variant:?}").as_bytes());
+    let key = cache::shader_key(source, variant);
     Ok(Converted {
         modules: vec![ShaderModule {
             module,
             info,
             entry_point: "main".into(),
             stage,
-            key: *hasher.finalize().as_bytes(),
+            key,
         }],
         reflection,
     })

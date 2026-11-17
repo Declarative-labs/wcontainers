@@ -14,39 +14,120 @@ use wcontainers_gpu::{
 use crate::fill::{AspectRead, DepthSource};
 use crate::{
     Buffer, BufferObj, MAP_PENDING, MAP_READY, QuerySet, Readback, ReadbackObj, Stream, Texture,
-    WebGpu, convert, row_bytes,
+    TextureObj, WebGpu, convert, row_bytes,
 };
 
 /// The most bytes of pattern a non-zero clear uploads.
 const PATTERN_BLOCK: u64 = 64 * 1024;
 
-/// Storage that renamed buffers gave up, reused once the GPU has finished with it.
-#[derive(Default)]
-pub struct BufferPool {
-    /// Storage still used by the work of the serial it was retired in.
-    retired: Vec<(u64, wgpu::Buffer)>,
-    /// Storage free to reuse, by size and usage.
-    free: HashMap<(u64, u32), Vec<wgpu::Buffer>>,
+/// GPU storage a renamed buffer or texture gives up.
+pub trait Spare: Clone {
+    /// What storage must share to stand in for another.
+    type Key: std::hash::Hash + Eq + Copy;
+    fn key(&self) -> Self::Key;
+    fn destroy(&self);
 }
 
-impl BufferPool {
-    fn take(
-        &mut self,
-        size: u64,
-        usage: wgpu::BufferUsages,
-        completed: u64,
-    ) -> Option<wgpu::Buffer> {
-        let free = &mut self.free;
+impl Spare for wgpu::Buffer {
+    type Key = (u64, u32);
+    fn key(&self) -> Self::Key {
+        (self.size(), self.usage().bits())
+    }
+    fn destroy(&self) {
+        wgpu::Buffer::destroy(self);
+    }
+}
+
+impl Spare for wgpu::Texture {
+    /// Size, levels, samples, dimension, format and usage; the view formats follow the format.
+    type Key = ([u32; 5], wgpu::TextureDimension, wgpu::TextureFormat, u32);
+    fn key(&self) -> Self::Key {
+        let s = self.size();
+        (
+            [
+                s.width,
+                s.height,
+                s.depth_or_array_layers,
+                self.mip_level_count(),
+                self.sample_count(),
+            ],
+            self.dimension(),
+            self.format(),
+            self.usage().bits(),
+        )
+    }
+    fn destroy(&self) {
+        wgpu::Texture::destroy(self);
+    }
+}
+
+/// Storage that renamed buffers or textures gave up, reused once the GPU has finished with it.
+/// Each buffer or texture counts the storage its renames made; destroying it destroys as much of
+/// the pool's storage of its key, so the pool holds no more than its live objects made.
+pub struct Pool<T: Spare> {
+    /// Storage still used by the work of the serial it was retired in.
+    retired: Vec<(u64, T)>,
+    /// Storage free to reuse, by key.
+    free: HashMap<T::Key, Vec<T>>,
+    /// Storage destroyed objects made and the pool still holds, by key: destroyed as it becomes
+    /// free.
+    owed: HashMap<T::Key, u64>,
+}
+
+impl<T: Spare> Default for Pool<T> {
+    fn default() -> Self {
+        Pool {
+            retired: Vec::new(),
+            free: HashMap::new(),
+            owed: HashMap::new(),
+        }
+    }
+}
+
+impl<T: Spare> Pool<T> {
+    /// Frees storage whose work has completed, destroying what is owed; answers how much it
+    /// destroyed.
+    pub fn reclaim(&mut self, completed: u64) -> u64 {
+        let (free, owed) = (&mut self.free, &mut self.owed);
+        let mut dropped = 0;
         self.retired.retain(|(serial, b)| {
             if *serial > completed {
                 return true;
             }
-            free.entry((b.size(), b.usage().bits()))
-                .or_default()
-                .push(b.clone());
+            match owed.get_mut(&b.key()) {
+                Some(n) if *n > 0 => {
+                    *n -= 1;
+                    b.destroy();
+                    dropped += 1;
+                }
+                _ => free.entry(b.key()).or_default().push(b.clone()),
+            }
             false
         });
-        free.get_mut(&(size, usage.bits())).and_then(Vec::pop)
+        dropped
+    }
+
+    fn take(&mut self, key: T::Key) -> Option<T> {
+        self.free.get_mut(&key).and_then(Vec::pop)
+    }
+
+    fn retire(&mut self, serial: u64, old: T) {
+        self.retired.push((serial, old));
+    }
+
+    /// Owes back `spares` of this key, destroying free ones at once; answers how many it
+    /// destroyed.
+    fn give_back(&mut self, key: T::Key, spares: u64) -> u64 {
+        if spares == 0 {
+            return 0;
+        }
+        let free = self.free.entry(key).or_default();
+        let now = (spares as usize).min(free.len());
+        for b in free.drain(free.len() - now..) {
+            b.destroy();
+        }
+        *self.owed.entry(key).or_default() += spares - now as u64;
+        now as u64
     }
 }
 
@@ -139,14 +220,15 @@ where
 }
 
 fn texel_copy<'a>(
-    texture: &'a crate::TextureObj,
+    raw: &'a wgpu::Texture,
+    texture: &crate::TextureObj,
     mip: u32,
     layer: u32,
     origin: wcontainers_gpu::Origin,
     stencil: bool,
 ) -> wgpu::TexelCopyTextureInfo<'a> {
     wgpu::TexelCopyTextureInfo {
-        texture: &texture.raw,
+        texture: raw,
         mip_level: mip,
         origin: wgpu::Origin3d {
             x: origin.x,
@@ -200,21 +282,79 @@ impl WebGpu {
 
     /// Gives a buffer fresh storage; the old storage is kept for the work already recorded with it.
     fn rename(&mut self, b: &BufferObj) {
-        let size = b.raw.borrow().size();
-        let completed = self.completed.load(Ordering::Acquire);
-        let fresh = self.pool.take(size, b.usage, completed).unwrap_or_else(|| {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size,
-                usage: b.usage,
-                mapped_at_creation: false,
-            })
-        });
-        let old = b.raw.replace(fresh);
-        self.pool.retired.push((self.serial, old));
+        let old = b.raw.borrow().clone();
+        self.reclaim_spares();
+        let fresh = match self.pool.take(old.key()) {
+            Some(spare) => {
+                self.counters.spares_reused += 1;
+                spare
+            }
+            None => {
+                b.spares.set(b.spares.get() + 1);
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: old.size(),
+                    usage: b.usage,
+                    mapped_at_creation: false,
+                })
+            }
+        };
+        b.raw.replace(fresh);
+        self.pool.retire(self.serial, old);
         let storage = self.id();
         self.moved(b, Some(storage), 0);
         self.counters.renames += 1;
+    }
+
+    /// Gives a texture fresh storage for a `Discard` write, as `rename` does for buffers; views and
+    /// bind groups naming the old storage are made again at their next use.
+    fn rename_texture(&mut self, t: &TextureObj) {
+        let old = t.raw();
+        self.reclaim_spares();
+        let fresh = match self.texture_pool.take(old.key()) {
+            Some(spare) => {
+                self.counters.spares_reused += 1;
+                spare
+            }
+            None => {
+                t.spares.set(t.spares.get() + 1);
+                let twin = convert::srgb_twin(old.format());
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: old.size(),
+                    mip_level_count: old.mip_level_count(),
+                    sample_count: old.sample_count(),
+                    dimension: old.dimension(),
+                    format: old.format(),
+                    usage: old.usage(),
+                    view_formats: twin.as_slice(),
+                })
+            }
+        };
+        t.raw.replace(fresh);
+        t.generation.set(t.generation.get() + 1);
+        self.texture_pool.retire(self.serial, old);
+        self.bind_epoch += 1;
+        self.counters.texture_renames += 1;
+    }
+
+    /// Frees renamed storage the GPU has finished with.
+    pub(crate) fn reclaim_spares(&mut self) {
+        let completed = self.completed.load(Ordering::Acquire);
+        self.counters.spares_dropped +=
+            self.pool.reclaim(completed) + self.texture_pool.reclaim(completed);
+    }
+
+    /// Destroys as much pooled storage as a destroyed buffer's renames made.
+    pub(crate) fn give_back_spares(&mut self, b: &BufferObj) {
+        let key = b.raw.borrow().key();
+        self.counters.spares_dropped += self.pool.give_back(key, b.spares.get());
+    }
+
+    /// Destroys as much pooled storage as a destroyed texture's renames made.
+    pub(crate) fn give_back_texture_spares(&mut self, t: &TextureObj) {
+        let key = t.raw().key();
+        self.counters.spares_dropped += self.texture_pool.give_back(key, t.spares.get());
     }
 
     /// Records that a buffer's bytes now start at `base` of new storage or of the same.
@@ -400,7 +540,7 @@ impl WebGpu {
                     stencil: false,
                 };
                 w.depth_copy(
-                    (&staged.0.raw, sf, how),
+                    (&staged.0.raw(), sf, how),
                     (0, 0, [0, 0]),
                     &dst,
                     extent,
@@ -414,8 +554,27 @@ impl WebGpu {
             }
             return;
         }
-        let copy = texel_copy(t, region.mip, region.layer, region.origin, region.stencil);
-        if !self.pending(t.used_in.get()) || mode == WriteMode::NoOverwrite {
+        // A discard of a texture recorded work uses takes fresh storage, unless the open pass draws
+        // into it, which must keep drawing into the storage it opened with.
+        let attached = self.pass.as_ref().is_some_and(|p| {
+            p.attached
+                .iter()
+                .any(|a| Rc::ptr_eq(&a.0, &region.texture.0))
+        });
+        let renamed = mode == WriteMode::Discard && self.pending(t.used_in.get()) && !attached;
+        if renamed {
+            self.rename_texture(t);
+        }
+        let raw = t.raw();
+        let copy = texel_copy(
+            &raw,
+            t,
+            region.mip,
+            region.layer,
+            region.origin,
+            region.stencil,
+        );
+        if renamed || !self.pending(t.used_in.get()) || mode == WriteMode::NoOverwrite {
             self.queue.write_texture(
                 copy,
                 data,
@@ -459,7 +618,7 @@ impl WebGpu {
                         rows_per_image: Some(rows as u32),
                     },
                 },
-                texel_copy(&tex.0, mip, layer, origin, stencil),
+                texel_copy(&tex.0.raw(), &tex.0, mip, layer, origin, stencil),
                 extent3d(extent),
             );
         });
@@ -550,19 +709,25 @@ impl WebGpu {
                     self.fail("a copy into depth from a format outside its typeless group");
                     return;
                 };
-                self.depth_copy((&s.raw, sf, how), at, dst, extent, Stream::Main);
+                self.depth_copy((&s.raw(), sf, how), at, dst, extent, Stream::Main);
             }
             if df.kind() != FormatKind::Depth {
                 if sf != df {
                     self.fail("a copy into stencil from another format");
                     return;
                 }
-                self.stencil_copy((&s.raw, wgpu::TextureAspect::StencilOnly), at, dst, extent);
+                self.stencil_copy(
+                    (&s.raw(), wgpu::TextureAspect::StencilOnly),
+                    at,
+                    dst,
+                    extent,
+                );
             }
             return;
         }
-        let mut from = texel_copy(s, src.mip, src.layer, src.origin, src.stencil);
-        let mut to = texel_copy(d, dst.mip, dst.layer, dst.origin, dst.stencil);
+        let (s_raw, d_raw) = (s.raw(), d.raw());
+        let mut from = texel_copy(&s_raw, s, src.mip, src.layer, src.origin, src.stencil);
+        let mut to = texel_copy(&d_raw, d, dst.mip, dst.layer, dst.origin, dst.stencil);
         if combined {
             from.aspect = wgpu::TextureAspect::All;
             to.aspect = wgpu::TextureAspect::All;
@@ -628,7 +793,7 @@ impl WebGpu {
         }
         if !src.0.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
             || !d
-                .raw
+                .raw()
                 .usage()
                 .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
         {
@@ -641,7 +806,7 @@ impl WebGpu {
             stream,
             src,
             src_at,
-            (&d.raw, d.desc.format),
+            (&d.raw(), d.desc.format),
             (dst.mip, dst.layer, [dst.origin.x, dst.origin.y]),
             [extent.width, extent.height],
             extent.depth_or_layers,
@@ -664,7 +829,7 @@ impl WebGpu {
         }
         if !src.0.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
             || !d
-                .raw
+                .raw()
                 .usage()
                 .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
         {
@@ -677,7 +842,7 @@ impl WebGpu {
             Stream::Main,
             src,
             src_at,
-            &d.raw,
+            &d.raw(),
             (dst.mip, dst.layer, [dst.origin.x, dst.origin.y]),
             [extent.width, extent.height],
             extent.depth_or_layers,
@@ -705,7 +870,12 @@ impl WebGpu {
         if whole && read != AspectRead::Unorm24 {
             return Ok(None);
         }
-        if t.desc.samples > 1 || !t.raw.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+        if t.desc.samples > 1
+            || !t
+                .raw()
+                .usage()
+                .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+        {
             self.fail("a depth or stencil read by a draw needs a single-sampled bound source");
             return Err(());
         }
@@ -725,11 +895,11 @@ impl WebGpu {
             return Err(());
         };
         t.used_in.set(self.serial);
-        let raw = t.raw.clone();
+        let raw = t.raw();
         self.aspect_by_draw(
             (&raw, read),
             (region.mip, region.layer, [region.origin.x, region.origin.y]),
-            &drawn.0.raw,
+            &drawn.0.raw(),
             [extent.width, extent.height],
             extent.depth_or_layers,
         );
@@ -825,7 +995,7 @@ impl WebGpu {
             };
             self.copy_buffer_texture(buffer, &at_origin(&staged), extent, true);
             t.used_in.set(self.serial);
-            let raw = staged.0.raw.clone();
+            let raw = staged.0.raw();
             self.stencil_copy(
                 (&raw, wgpu::TextureAspect::All),
                 (0, 0, [0, 0]),
@@ -845,7 +1015,7 @@ impl WebGpu {
             self.copy_buffer_texture(buffer, &at_origin(&staged), extent, true);
             t.used_in.set(self.serial);
             self.depth_copy(
-                (&staged.0.raw, sf, how),
+                (&staged.0.raw(), sf, how),
                 (0, 0, [0, 0]),
                 region,
                 extent,
@@ -869,7 +1039,8 @@ impl WebGpu {
                     rows_per_image: Some(rows as u32),
                 },
             };
-            let to = texel_copy(&tex.0, mip, layer, origin, stencil);
+            let tex_raw = tex.0.raw();
+            let to = texel_copy(&tex_raw, &tex.0, mip, layer, origin, stencil);
             if to_texture {
                 w.encoder()
                     .copy_buffer_to_texture(info, to, extent3d(extent));
@@ -1073,7 +1244,15 @@ impl WebGpu {
                 let pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
                 let layers = u64::from(extent.depth_or_layers);
                 let target = self.map_target(pitch * rows * layers);
-                let tex = texel_copy(t, region.mip, region.layer, region.origin, region.stencil);
+                let raw = t.raw();
+                let tex = texel_copy(
+                    &raw,
+                    t,
+                    region.mip,
+                    region.layer,
+                    region.origin,
+                    region.stencil,
+                );
                 self.encoder().copy_texture_to_buffer(
                     tex,
                     wgpu::TexelCopyBufferInfo {

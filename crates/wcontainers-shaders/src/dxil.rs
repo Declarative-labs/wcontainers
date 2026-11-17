@@ -180,6 +180,7 @@ pub(crate) fn lower(
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
     unconverted(&module)?;
+    direct3d_float_to_int(&mut module)?;
     declared_sizes(dxil, &mut module)?;
     crate::lower::derivatives_anywhere(&mut module);
     let ep = module
@@ -357,12 +358,322 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     {
         return Err(ConvertError::Unsupported("VertexWithoutPosition"));
     }
+    // dxil-spirv reads a component of a constant buffer picked at run time through a second view of
+    // the buffer as scalars, 4 bytes apart; WebGPU's uniform arrays step by 16 bytes, and WGSL takes
+    // one variable per binding.
+    let scalar_view = |v: &GlobalVariable| {
+        match module.types[v.ty].inner {
+        TypeInner::Struct { ref members, .. } => members.iter().any(|m| {
+            matches!(module.types[m.ty].inner, TypeInner::Array { stride, .. } if stride % 16 != 0)
+        }),
+        _ => false,
+    }
+    };
+    if module
+        .global_variables
+        .iter()
+        .any(|(_, v)| v.space == AddressSpace::Uniform && scalar_view(v))
+    {
+        return Err(ConvertError::Unsupported("ConstantComponentIndexing"));
+    }
+    // naga's IR holds no infinite or NaN literal; the reader makes them from SPIR-V's constants.
+    let non_finite =
+        |e: &Expression| matches!(*e, Expression::Literal(Literal::F32(x)) if !x.is_finite());
+    let functions = core::iter::once(&ep.function).chain(module.functions.iter().map(|(_, f)| f));
+    if module.global_expressions.iter().any(|(_, e)| non_finite(e))
+        || functions
+            .flat_map(|f| f.expressions.iter())
+            .any(|(_, e)| non_finite(e))
+    {
+        return Err(ConvertError::Unsupported("NonFiniteConstant"));
+    }
     if builtins.iter().any(|(b, ty)| {
         *b == BuiltIn::SampleMask && matches!(module.types[*ty].inner, TypeInner::Array { .. })
     }) {
         return Err(ConvertError::Reader(
             "the sample mask stays an array".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Calls `f` on `block` and on every block nested in it.
+fn each_block(block: &mut naga::Block, f: &mut impl FnMut(&mut naga::Block)) {
+    f(block);
+    for s in block.iter_mut() {
+        match s {
+            Statement::Block(b) => each_block(b, f),
+            Statement::If { accept, reject, .. } => {
+                each_block(accept, f);
+                each_block(reject, f);
+            }
+            Statement::Switch { cases, .. } => {
+                for c in cases {
+                    each_block(&mut c.body, f);
+                }
+            }
+            Statement::Loop {
+                body, continuing, ..
+            } => {
+                each_block(body, f);
+                each_block(continuing, f);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// An f32 to integer conversion: the integer's kind and the vector size.
+type FloatToInt = (ScalarKind, Option<naga::VectorSize>);
+
+/// A conversion's expression, its kind and its operand.
+type Conversion = (Handle<Expression>, FloatToInt, Handle<Expression>);
+
+/// Each f32 to i32 or u32 conversion in `f`.
+fn float_to_ints(module: &Module, f: &Function) -> Result<Vec<Conversion>, ConvertError> {
+    let mut typifier = naga::front::Typifier::new();
+    let ctx = naga::proc::ResolveContext::with_locals(module, &f.local_variables, &f.arguments);
+    let mut found = Vec::new();
+    for (h, e) in f.expressions.iter() {
+        let Expression::As {
+            expr,
+            kind: kind @ (ScalarKind::Sint | ScalarKind::Uint),
+            convert: Some(width),
+        } = *e
+        else {
+            continue;
+        };
+        typifier
+            .grow(expr, &f.expressions, &ctx)
+            .map_err(|e| ConvertError::Malformed(format!("{e}")))?;
+        let (size, scalar) = match *typifier.get(expr, &module.types) {
+            TypeInner::Scalar(s) => (None, s),
+            TypeInner::Vector { size, scalar } => (Some(size), scalar),
+            _ => continue,
+        };
+        if scalar.kind != ScalarKind::Float {
+            continue;
+        }
+        if (scalar.width, width) != (4, 4) {
+            return Err(ConvertError::Unsupported("FloatToIntWidth"));
+        }
+        found.push((h, (kind, size), expr));
+    }
+    Ok(found)
+}
+
+/// A function giving Direct3D's f32 to integer conversion: 0 for NaN, the integer's limits at and
+/// past them.
+fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Function {
+    let mut ty = |kind| {
+        let scalar = Scalar { kind, width: 4 };
+        let inner = match size {
+            None => TypeInner::Scalar(scalar),
+            Some(size) => TypeInner::Vector { size, scalar },
+        };
+        module
+            .types
+            .insert(Type { name: None, inner }, Span::UNDEFINED)
+    };
+    let float = ty(ScalarKind::Float);
+    let int = ty(kind);
+    let mut f = Function {
+        name: Some(String::from(if kind == ScalarKind::Sint {
+            "d3d_ftoi"
+        } else {
+            "d3d_ftou"
+        })),
+        arguments: alloc::vec![FunctionArgument {
+            name: Some("x".into()),
+            ty: float,
+            binding: None,
+        }],
+        result: Some(naga::FunctionResult {
+            ty: int,
+            binding: None,
+        }),
+        ..Default::default()
+    };
+    let e = &mut f.expressions;
+    let x = e.append(Expression::FunctionArgument(0), Span::UNDEFINED);
+    let (above, below, max, min, zero) = if kind == ScalarKind::Sint {
+        let (max, min) = (Literal::I32(i32::MAX), Literal::I32(i32::MIN));
+        (2_147_483_648.0, -2_147_483_648.0, max, min, Literal::I32(0))
+    } else {
+        let (max, zero) = (Literal::U32(u32::MAX), Literal::U32(0));
+        (4_294_967_296.0, 0.0, max, zero, zero)
+    };
+    let literals = [
+        Literal::F32(above),
+        Literal::F32(below),
+        max,
+        min,
+        zero,
+        Literal::U32(0x7fff_ffff),
+        Literal::U32(0x7f80_0000),
+    ]
+    .map(|l| e.append(Expression::Literal(l), Span::UNDEFINED));
+    let start = e.len();
+    let [above, below, max, min, zero, magnitude, infinity] = literals.map(|value| match size {
+        None => value,
+        Some(size) => e.append(Expression::Splat { size, value }, Span::UNDEFINED),
+    });
+    let mut add = |expr| e.append(expr, Span::UNDEFINED);
+    let converted = add(Expression::As {
+        expr: x,
+        kind,
+        convert: Some(4),
+    });
+    let bits = add(Expression::As {
+        expr: x,
+        kind: ScalarKind::Uint,
+        convert: None,
+    });
+    let bits = add(Expression::Binary {
+        op: naga::BinaryOperator::And,
+        left: bits,
+        right: magnitude,
+    });
+    let nan = add(Expression::Binary {
+        op: naga::BinaryOperator::Greater,
+        left: bits,
+        right: infinity,
+    });
+    let high = add(Expression::Binary {
+        op: naga::BinaryOperator::GreaterEqual,
+        left: x,
+        right: above,
+    });
+    let low = add(Expression::Binary {
+        op: naga::BinaryOperator::LessEqual,
+        left: x,
+        right: below,
+    });
+    let value = add(Expression::Select {
+        condition: high,
+        accept: max,
+        reject: converted,
+    });
+    let value = add(Expression::Select {
+        condition: low,
+        accept: min,
+        reject: value,
+    });
+    let value = add(Expression::Select {
+        condition: nan,
+        accept: zero,
+        reject: value,
+    });
+    let range = Range::from_index_range(start as u32..f.expressions.len() as u32, &f.expressions);
+    f.body.push(Statement::Emit(range), Span::UNDEFINED);
+    f.body
+        .push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+    f
+}
+
+/// naga's float to integer conversion is not Direct3D's, which gives 0 for NaN and the integer's
+/// limits at and past them (WGSL and naga's HLSL stop at the largest float below the limit, and
+/// differ on NaN). dxbc-spirv builds Direct3D's for DXBC; here every f32 to i32 or u32 conversion of
+/// the DXIL module becomes a call of a function that gives it.
+fn direct3d_float_to_int(module: &mut Module) -> Result<(), ConvertError> {
+    // (function index, or entry point index + functions, and its conversions)
+    let mut found = Vec::new();
+    for (i, (_, f)) in module.functions.iter().enumerate() {
+        found.push((i, float_to_ints(module, f)?));
+    }
+    let n = module.functions.len();
+    for (i, ep) in module.entry_points.iter().enumerate() {
+        found.push((n + i, float_to_ints(module, &ep.function)?));
+    }
+    found.retain(|(_, c)| !c.is_empty());
+    if found.is_empty() {
+        return Ok(());
+    }
+    // Callees precede their callers in naga's arena, so the new functions go first.
+    let old: Vec<_> = module.functions.drain().collect();
+    let mut helpers: Vec<(FloatToInt, Handle<Function>)> = Vec::new();
+    for (_, conversions) in &found {
+        for &(_, key, _) in conversions {
+            if !helpers.iter().any(|(k, _)| *k == key) {
+                let f = float_to_int_function(module, key);
+                helpers.push((key, module.functions.append(f, Span::UNDEFINED)));
+            }
+        }
+    }
+    let moved: Vec<Handle<Function>> = old
+        .into_iter()
+        .map(|(_, f, span)| module.functions.append(f, span))
+        .collect();
+    let remap = |f: &mut Function| {
+        each_block(&mut f.body, &mut |block| {
+            for s in block.iter_mut() {
+                if let Statement::Call { function, .. } = s {
+                    *function = moved[function.index()];
+                }
+            }
+        });
+        for (_, e) in f.expressions.iter_mut() {
+            if let Expression::CallResult(function) = e {
+                *function = moved[function.index()];
+            }
+        }
+    };
+    for &h in &moved {
+        remap(&mut module.functions[h]);
+    }
+    for ep in module.entry_points.iter_mut() {
+        remap(&mut ep.function);
+    }
+
+    for (i, conversions) in found {
+        let f = match moved.get(i) {
+            Some(&h) => &mut module.functions[h],
+            None => &mut module.entry_points[i - n].function,
+        };
+        let calls: Vec<_> = conversions
+            .iter()
+            .map(|&(h, key, arg)| {
+                let helper = helpers.iter().find(|(k, _)| *k == key).map(|(_, h)| *h);
+                (h, helper.expect("made above"), arg)
+            })
+            .collect();
+        each_block(&mut f.body, &mut |block| {
+            let converts = |s: &Statement| matches!(s, Statement::Emit(r) if r.clone().any(|h| calls.iter().any(|c| c.0 == h)));
+            if !block.iter().any(converts) {
+                return;
+            }
+            for (s, span) in core::mem::take(block).span_into_iter() {
+                let Statement::Emit(range) = s else {
+                    block.push(s, span);
+                    continue;
+                };
+                // The emitted run so far, split at each call.
+                let mut run: Option<(Handle<Expression>, Handle<Expression>)> = None;
+                for h in range {
+                    let Some(&(_, function, arg)) = calls.iter().find(|c| c.0 == h) else {
+                        run = Some((run.map_or(h, |r| r.0), h));
+                        continue;
+                    };
+                    if let Some((first, last)) = run.take() {
+                        block.push(Statement::Emit(Range::new_from_bounds(first, last)), span);
+                    }
+                    block.push(
+                        Statement::Call {
+                            function,
+                            arguments: alloc::vec![arg],
+                            result: Some(h),
+                        },
+                        span,
+                    );
+                }
+                if let Some((first, last)) = run {
+                    block.push(Statement::Emit(Range::new_from_bounds(first, last)), span);
+                }
+            }
+        });
+        for (h, function, _) in calls {
+            *f.expressions.get_mut(h) = Expression::CallResult(function);
+        }
     }
     Ok(())
 }

@@ -548,6 +548,9 @@ pub struct Writer<W> {
     pub(super) named_expressions: crate::NamedExpressions,
     /// Set of expressions that need to be baked to avoid unnecessary repetition in output
     need_bake_expressions: back::NeedBakeExpressions,
+    /// Values a loop's `continuing` block reads that its body has yet to define, with the
+    /// variables declared before the loop that the body assigns them to.
+    continuing_values: FastHashMap<Handle<crate::Expression>, String>,
     pub(super) namer: proc::Namer,
     pub(super) wrapped_functions: FastHashSet<WrappedFunction>,
     emit_int_div_checks: bool,
@@ -951,6 +954,7 @@ impl<W: Write> Writer<W> {
             names: FastHashMap::default(),
             named_expressions: Default::default(),
             need_bake_expressions: Default::default(),
+            continuing_values: Default::default(),
             namer: proc::Namer::default(),
             wrapped_functions: FastHashSet::default(),
             emit_int_div_checks: true,
@@ -3972,6 +3976,16 @@ impl<W: Write> Writer<W> {
                             _ => (),
                         }
 
+                        // A value a loop's `continuing` reads: assigned to its variable.
+                        if let Some(name) = self.continuing_values.remove(&handle) {
+                            self.named_expressions.shift_remove(&handle);
+                            write!(self.out, "{level}{name} = ")?;
+                            self.put_expression(handle, &context.expression, true)?;
+                            writeln!(self.out, ";")?;
+                            self.named_expressions.insert(handle, name);
+                            continue;
+                        }
+
                         let ptr_class = context.expression.resolve_type(handle).pointer_space();
                         let expr_name = if ptr_class.is_some() {
                             None // don't bake pointer expressions (just yet)
@@ -4089,6 +4103,29 @@ impl<W: Write> Writer<W> {
                     if let Some((ref decl, _)) = force_loop_bound_statements {
                         writeln!(self.out, "{decl}")?;
                     }
+                    // `continuing` is written ahead of the body, so the body's values it reads
+                    // live in variables declared before the loop.
+                    let mut continuing_names = Vec::new();
+                    if gate_name.is_some() {
+                        let values = crate::compact::values_for_continuing(
+                            context.expression.module,
+                            context.expression.function,
+                            context.expression.info,
+                            body,
+                            continuing,
+                            break_if,
+                            |handle| self.named_expressions.contains_key(&handle),
+                        );
+                        for handle in values {
+                            let name = self.namer.call("loop_value");
+                            write!(self.out, "{level}")?;
+                            self.start_baking_expression(handle, &context.expression, &name)?;
+                            writeln!(self.out, "{{}};")?;
+                            self.named_expressions.insert(handle, name.clone());
+                            self.continuing_values.insert(handle, name.clone());
+                            continuing_names.push((handle, name));
+                        }
+                    }
                     if let Some(ref gate_name) = gate_name {
                         writeln!(self.out, "{level}bool {gate_name} = true;")?;
                     }
@@ -4113,6 +4150,9 @@ impl<W: Write> Writer<W> {
                         writeln!(self.out, "{lif}{gate_name} = false;")?;
                     }
                     self.put_block(level.next(), body, context)?;
+                    for (handle, _) in continuing_names {
+                        self.continuing_values.remove(&handle);
+                    }
 
                     writeln!(self.out, "{level}}}")?;
                 }
@@ -4469,6 +4509,21 @@ impl<W: Write> Writer<W> {
                     writeln!(self.out, ");")?;
                 }
                 crate::Statement::RayPipelineFunction(_) => unreachable!(),
+            }
+            // A statement's result a loop's `continuing` reads.
+            if !self.continuing_values.is_empty() {
+                let made: Vec<_> = self
+                    .continuing_values
+                    .iter()
+                    .filter_map(|(&handle, name)| {
+                        let value = self.named_expressions.get(&handle)?;
+                        (value != name).then(|| (handle, name.clone(), value.clone()))
+                    })
+                    .collect();
+                for (handle, name, value) in made {
+                    writeln!(self.out, "{level}{name} = {value};")?;
+                    self.continuing_values.remove(&handle);
+                }
             }
         }
 

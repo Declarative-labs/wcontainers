@@ -358,6 +358,33 @@ fn f32s(v: [f32; 4]) -> [u32; 4] {
 }
 
 #[test]
+fn scissors_reaching_past_the_largest_offset_are_cut_to_the_area() {
+    let area = ScissorRect {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+    };
+    let wide = ScissorRect {
+        x: 1,
+        y: 1,
+        width: u32::MAX,
+        height: u32::MAX,
+    };
+    let mut out = Vec::new();
+    cut_scissors(&[wide], area, &mut out);
+    assert_eq!(
+        out,
+        [ScissorRect {
+            x: 1,
+            y: 1,
+            width: 3,
+            height: 3
+        }]
+    );
+}
+
+#[test]
 fn an_implicit_fronts_clear_becomes_the_passs_load() {
     let mut k = Kit::new();
     let mut passes = PassTracker::default();

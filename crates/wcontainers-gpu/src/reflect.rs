@@ -13,7 +13,7 @@ use bitflags::bitflags;
 
 /// The kind of API slot a resource comes from. Each kind owns a fixed range of binding numbers in every
 /// binding set, so a slot's binding number never depends on what else the program uses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SlotKind {
     /// Constant buffers, uniform blocks.
     Uniform,
@@ -89,7 +89,7 @@ pub const DRAW_ARGUMENTS_BINDING: u32 = 11;
 
 /// The API stage a shader was written for. Geometry, hull and domain shaders become compute and vertex
 /// programs in the shaders crate's stage helper; the others become one program stage each.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SourceStage {
     Vertex,
     Hull,
@@ -100,7 +100,7 @@ pub enum SourceStage {
 }
 
 /// One resource the shader uses, where the API names it and where the converted program binds it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ReflectedBinding {
     pub kind: SlotKind,
     /// The API's register space (Direct3D 12) or zero.
@@ -121,7 +121,7 @@ pub struct ReflectedBinding {
 /// vertex and compute programs, set 1 for fragment programs; plan section 6.4), numbered in its kind's
 /// range from the first binding past the highest one of that kind the stage's program already uses, so
 /// the stages of one draw, converted apart, never collide.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AddedBinding {
     /// Vertex stream n, fetched in the program (a read-only storage buffer).
     PulledStream(u32),
@@ -135,7 +135,7 @@ pub enum AddedBinding {
 }
 
 /// A value the API's pipeline gives a stage, or takes from it, by meaning rather than by location.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SystemValue {
     Position,
     /// The API's vertex number. Direct3D's `SV_VertexID` leaves out the draw's first or base vertex;
@@ -168,7 +168,7 @@ pub enum SystemValue {
 }
 
 /// The scalar type of a stage value's components.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ScalarKind {
     Float,
     Sint,
@@ -176,7 +176,7 @@ pub enum ScalarKind {
 }
 
 /// How a value is interpolated between vertices.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Interpolation {
     Perspective,
     Linear,
@@ -189,7 +189,7 @@ pub enum Interpolation {
 
 /// One input or output of a stage, as the API's signature names it (Direct3D's semantic name and index,
 /// register and component mask), and the location the converted program gives it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct StageValue {
     pub semantic: String,
     pub semantic_index: u32,
@@ -207,7 +207,7 @@ pub struct StageValue {
 }
 
 /// What a stage needs beyond its bindings and values.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum StageExtras {
     None,
     Pixel {
@@ -253,7 +253,7 @@ pub enum StageExtras {
 
 /// A value the front writes into the program's helper constants before a draw or dispatch, at the byte
 /// offset the reflection gives. Each exists only in programs whose variant needs it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HelperValue {
     /// The part of a storage binding's offset below [`crate::Limits::min_storage_offset_alignment`],
     /// in bytes (u32), which the program adds to its addresses.
@@ -311,14 +311,14 @@ pub enum HelperValue {
 }
 
 /// Where one helper value sits in the helper constants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HelperSlot {
     pub value: HelperValue,
     pub offset: u32,
 }
 
 /// Everything a front needs to know of a converted shader.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Reflection {
     pub stage: SourceStage,
     pub inputs: Vec<StageValue>,
@@ -336,7 +336,7 @@ pub struct Reflection {
 
 bitflags! {
     /// Whole-program rewrites a variant applies.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
     pub struct VariantFlags: u32 {
         /// Clip depth rewritten as `2z - w` ([`crate::SlowPath::ClipDepthRewrite`]).
         const CLIP_DEPTH_REWRITE = 1 << 0;
@@ -392,7 +392,9 @@ bitflags! {
 /// that leaves them out ([`SystemValue::VertexId`], [`SystemValue::InstanceId`]) or names them
 /// ([`SystemValue::BaseVertex`], [`SystemValue::BaseInstance`], [`SystemValue::DrawIndex`]) is made from
 /// them by the shaders crate.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum DrawBaseSource {
     /// The program reads no base.
     #[default]
@@ -406,7 +408,9 @@ pub enum DrawBaseSource {
 }
 
 /// How a program reads typed buffers (Direct3D's `Buffer` and `RWBuffer`, OpenGL's texture buffers).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum TexelBufferRoute {
     /// As texel buffers, where [`crate::Features::TEXEL_BUFFERS`] is present.
     #[default]
@@ -420,7 +424,7 @@ pub enum TexelBufferRoute {
 
 /// A color target the program writes itself: encoded into the guest's format where the texture is
 /// stored in another, and combined with its old value where the back end cannot blend it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TargetInShader {
     pub target: u8,
     /// The guest's format, which the program encodes its output into
@@ -438,7 +442,7 @@ pub struct TargetInShader {
 /// Every rewrite that depends on what is bound or on the back end's abilities is a field here, and the
 /// conversion reads nothing else: a converted shader is a function of its source bytes, the converter's
 /// version and this key, so equal cache keys name equal modules on every back end.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VariantKey {
     pub flags: VariantFlags,
     /// Textures filtered in the program from loads ([`crate::SlowPath::FilterInShader`]).

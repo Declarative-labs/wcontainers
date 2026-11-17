@@ -104,7 +104,7 @@
 103_vs_code_9.dxbc	ok
 104_ps_code_ddy.dxbc	ok
 105_ps_code_ddy_coarse.dxbc	ok
-106_ps_code_ddy_fine.dxbc	ok
+106_ps_code_ddy_fine.dxbc	ok-wgsl glsl-write
 107_ps_last_register_code.dxbc	ok
 108_ps_ld_2d_float_code.dxbc	unsupported StorageImage
 109_ps_ld_2d_uint_code.dxbc	unsupported StorageImage

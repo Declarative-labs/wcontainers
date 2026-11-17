@@ -16,10 +16,11 @@ use wcontainers_gpu::{
     AddressMode, AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc,
     BlendFactor, BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment,
     CompareFn, DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent,
-    Features, Filter, Format, FormatUse, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin,
-    PassDesc, Program, ReadSource, SamplerDesc, ShaderModule, ShaderStage, StageSet, StepMode,
-    StoreOp, TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexAttribute, VertexFormat,
-    VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
+    Features, Filter, Format, FormatUse, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Object,
+    Origin, PassDesc, Program, ReadSource, SamplerDesc, ShaderModule, ShaderStage, SlowPath,
+    StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, Viewport,
+    WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -364,6 +365,116 @@ fn load_only_textures_keep_one_pipeline_for_any_view() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(got, [200, 0, 0, 255, 0, 0, 0, 255]);
     assert_eq!(b.counters().pipelines - before.pipelines, 1);
+}
+
+fn one_texel(b: &mut WebGpu, texture: &<WebGpu as Backend>::Texture, x: u32, rgba: [u8; 4]) {
+    b.write_texture(
+        &TextureRegion {
+            texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin { x, y: 0, z: 0 },
+            stencil: false,
+        },
+        Extent {
+            width: 1,
+            height: 1,
+            depth_or_layers: 1,
+        },
+        &rgba,
+        4,
+        1,
+        WriteMode::Discard,
+    );
+}
+
+/// A scripted scene of four frames, each of four draws loading a texture that a `Discard` write
+/// fills before every draw (Direct3D 11's `Map(WRITE_DISCARD)` of a dynamic texture): the writes
+/// after a frame's first draw rename the texture, the first frame's renames make textures and later
+/// frames' take the pool's, nothing splits the pass, and each pixel is its own write's red. Then a
+/// `Discard` of the texture the open pass draws into cannot rename it: it splits the pass.
+#[test]
+fn discarded_textures_are_renamed_from_the_pool() {
+    let mut b = device();
+    let (target, view) = draw::texture_2d(
+        &mut b,
+        Format::Rgba8Unorm,
+        4,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    let k = Kit {
+        program: draw::program(&mut b, LOAD_WGSL).unwrap(),
+        target,
+        view,
+        ..kit(&mut b, Format::Rgba8Unorm, 4, &draw::opaque())
+    };
+    let (texture, texture_view) = draw::texture_2d(
+        &mut b,
+        Format::Rgba8Unorm,
+        1,
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&texture_view),
+        }])
+        .unwrap();
+    let red = |frame: u32, i: u32| (frame * 4 + i) as u8 * 15 + 7;
+    let mut seen = Vec::new();
+    for frame in 0..4 {
+        let before = *b.counters();
+        begin(&mut b, &k, [0.0, 1.0, 0.0, 1.0]);
+        for i in 0..4 {
+            one_texel(&mut b, &texture, 0, [red(frame, i), 9, 9, 255]);
+            draw_at(&mut b, &k, &set, Some(i));
+        }
+        let got = finish(&mut b, &k, 4);
+        // The frame's work is done, so the storage it gave up is free for the next.
+        let fence = b.submit();
+        b.wait_fence(&fence);
+        let want: Vec<u8> = (0..4).flat_map(|i| [red(frame, i), 0, 0, 255]).collect();
+        assert_eq!(got, want, "frame {frame}");
+        let c = *b.counters();
+        seen.push((
+            c.texture_renames - before.texture_renames,
+            c.spares_reused - before.spares_reused,
+        ));
+    }
+    eprintln!("texture renames and spares reused per frame: {seen:?}");
+    assert_eq!(seen, [(3, 0), (3, 3), (3, 3), (3, 3)]);
+    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
+    // The pass draws into the target: a discard of it is ordered in the pass instead.
+    let before = *b.counters();
+    begin(&mut b, &k, [0.0, 1.0, 0.0, 1.0]);
+    draw_at(&mut b, &k, &set, Some(0));
+    one_texel(&mut b, &k.target, 3, [1, 2, 3, 4]);
+    draw_at(&mut b, &k, &set, Some(1));
+    let got = finish(&mut b, &k, 4);
+    let last = red(3, 3);
+    assert_eq!(
+        got,
+        [
+            [last, 0, 0, 255],
+            [last, 0, 0, 255],
+            [0, 255, 0, 255],
+            [1, 2, 3, 4]
+        ]
+        .concat()
+    );
+    assert_eq!(b.counters().texture_renames, before.texture_renames);
+    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 1);
+    b.destroy(Object::Texture(texture));
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    b.submit();
+    assert_eq!(b.counters().spares_dropped, 3, "{:?}", b.counters());
+    assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
 const ASPECTS_WGSL: &str = r#"

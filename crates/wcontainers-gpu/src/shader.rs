@@ -9,7 +9,7 @@ use bitflags::bitflags;
 
 /// Pipeline stages a back end runs. Geometry, hull and domain stages never reach a back end: the shared
 /// stage helper lowers them to compute and vertex programs first (see the plan, section 7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ShaderStage {
     Vertex,
     Fragment,

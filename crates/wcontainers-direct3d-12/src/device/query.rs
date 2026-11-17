@@ -68,6 +68,36 @@ pub(super) struct Predicate<B: Backend> {
     value: Option<u64>,
 }
 
+/// The argument records of the draws and dispatches `commands` make, bundles' included.
+fn argument_words(commands: &[Command], words: &mut Vec<u32>) {
+    for c in commands {
+        match *c {
+            Command::Draw {
+                vertices,
+                instances,
+                first_vertex,
+                first_instance,
+            } => words.extend([vertices, instances, first_vertex, first_instance, 0]),
+            Command::DrawIndexed {
+                indices,
+                instances,
+                first_index,
+                base_vertex,
+                first_instance,
+            } => words.extend([
+                indices,
+                instances,
+                first_index,
+                base_vertex as u32,
+                first_instance,
+            ]),
+            Command::Dispatch(g) => words.extend([g[0], g[1], g[2], 0, 0]),
+            Command::Bundle(ref inner) => argument_words(inner, words),
+            _ => {}
+        }
+    }
+}
+
 /// The front's own compute programs.
 #[derive(Clone, Copy)]
 pub(super) enum Own {
@@ -294,31 +324,7 @@ impl<B: Backend> Device<B> {
             return Err(Error::Invalid("a predicate past its buffer's end"));
         }
         let mut words: Vec<u32> = Vec::new();
-        for c in covered {
-            match *c {
-                Command::Draw {
-                    vertices,
-                    instances,
-                    first_vertex,
-                    first_instance,
-                } => words.extend([vertices, instances, first_vertex, first_instance, 0]),
-                Command::DrawIndexed {
-                    indices,
-                    instances,
-                    first_index,
-                    base_vertex,
-                    first_instance,
-                } => words.extend([
-                    indices,
-                    instances,
-                    first_index,
-                    base_vertex as u32,
-                    first_instance,
-                ]),
-                Command::Dispatch(g) => words.extend([g[0], g[1], g[2], 0, 0]),
-                _ => {}
-            }
-        }
+        argument_words(covered, &mut words);
         let mut predicate = Predicate {
             resource,
             offset,

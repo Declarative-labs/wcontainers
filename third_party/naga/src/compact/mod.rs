@@ -692,6 +692,93 @@ impl From<FunctionTracer<'_>> for FunctionMap {
     }
 }
 
+/// The values a loop's `continuing` block and `break_if` read that the loop's `body` defines at
+/// its top level, in handle order.
+///
+/// Writers that put `continuing` ahead of the body (`if (!loop_init) { .. }`) declare these
+/// before the loop and assign them where the body defines them, so `continuing` reads the values
+/// of the iteration that just ran instead of evaluating them again from changed variables.
+/// `written_before(handle)` tells whether a statement's result was written before the loop.
+#[cfg(any(glsl_out, hlsl_out, msl_out))]
+pub(crate) fn values_for_continuing(
+    module: &crate::Module,
+    function: &crate::Function,
+    info: &crate::valid::FunctionInfo,
+    body: &[crate::Statement],
+    continuing: &[crate::Statement],
+    break_if: Option<crate::Handle<crate::Expression>>,
+    written_before: impl Fn(crate::Handle<crate::Expression>) -> bool,
+) -> Vec<crate::Handle<crate::Expression>> {
+    use crate::Expression as Ex;
+
+    let mut emitted = HandleSet::for_arena(&function.expressions);
+    for statement in body {
+        if let crate::Statement::Emit(ref range) = *statement {
+            emitted.insert_iter(range.clone());
+        }
+    }
+    let defined_in_body =
+        |handle: crate::Handle<crate::Expression>| match function.expressions[handle] {
+            Ex::CallResult(_)
+            | Ex::AtomicResult { .. }
+            | Ex::WorkGroupUniformLoadResult { .. }
+            | Ex::RayQueryProceedResult
+            | Ex::SubgroupBallotResult
+            | Ex::SubgroupOperationResult { .. } => !written_before(handle),
+            _ => emitted.contains(handle),
+        };
+    let holds_value = |handle: crate::Handle<crate::Expression>| {
+        let inner = info[handle].ty.inner_with(&module.types);
+        inner.pointer_space().is_none()
+            && !inner.is_handle()
+            && !matches!(
+                *inner,
+                crate::TypeInner::BindingArray { .. } | crate::TypeInner::RayQuery { .. }
+            )
+    };
+
+    let mut functions_pending = HandleSet::for_arena(&module.functions);
+    let mut functions_used = HandleSet::for_arena(&module.functions);
+    let mut types_used = HandleSet::for_arena(&module.types);
+    let mut global_variables_used = HandleSet::for_arena(&module.global_variables);
+    let mut constants_used = HandleSet::for_arena(&module.constants);
+    let mut overrides_used = HandleSet::for_arena(&module.overrides);
+    let mut global_expressions_used = HandleSet::for_arena(&module.global_expressions);
+    let mut tracer = FunctionTracer {
+        function,
+        constants: &module.constants,
+        overrides: &module.overrides,
+        functions_pending: &mut functions_pending,
+        functions_used: &mut functions_used,
+        types_used: &mut types_used,
+        global_variables_used: &mut global_variables_used,
+        constants_used: &mut constants_used,
+        overrides_used: &mut overrides_used,
+        global_expressions_used: &mut global_expressions_used,
+        expressions_used: HandleSet::for_arena(&function.expressions),
+    };
+    tracer.trace_block(continuing);
+    if let Some(condition) = break_if {
+        tracer.expressions_used.insert(condition);
+    }
+
+    // Operands precede their users in the arena, so one pass from the back reaches every
+    // expression read, stopping at the body's values.
+    let mut values = Vec::new();
+    for (handle, expression) in function.expressions.iter().rev() {
+        if !tracer.expressions_used.contains(handle) {
+            continue;
+        }
+        if defined_in_body(handle) && holds_value(handle) {
+            values.push(handle);
+        } else {
+            tracer.as_expression().trace_expression(expression);
+        }
+    }
+    values.reverse();
+    values
+}
+
 #[test]
 fn type_expression_interdependence() {
     let mut module: crate::Module = Default::default();

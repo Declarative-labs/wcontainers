@@ -8,11 +8,15 @@
 //! plan's 191 DXBC blobs from Wine's tests, kept outside the repository). `WCONTAINERS_SHADERS_OUT` names
 //! a directory for the written files, a verdict per shader (`verdicts.txt`) and the classes in the
 //! expected files' form (`classes.txt`); with it, `GLSLANG` names the glslangValidator to run.
+//!
+//! Every converted shader also goes through the cache's record (plan section 8) under each variant
+//! key a front asks for today, and must come back to the same bytes; `cache.txt` lists each key and
+//! a hash of its record, so builds (native, WebAssembly) can be compared.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use wcontainers_gpu::VariantKey;
-use wcontainers_shaders::{ConvertError, Source, WEBGPU_CAPABILITIES, convert};
+use wcontainers_gpu::{DrawBaseSource, VariantKey};
+use wcontainers_shaders::{ConvertError, Source, WEBGPU_CAPABILITIES, cache, convert};
 
 fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -21,6 +25,55 @@ fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
     v.retain(|p| p.extension().is_some_and(|e| e == ext));
     v.sort();
     v
+}
+
+/// One line per variant key a front asks for today under which the shader converts: the key's name,
+/// the content key and the BLAKE3 hash of the cache record. Fails if a record does not decode to
+/// the same record or converting again gives other bytes.
+fn records(path: &Path, file: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path).unwrap();
+    let source = if path.extension().is_some_and(|e| e == "dxil") {
+        Source::Dxil(&bytes)
+    } else {
+        Source::Dxbc(&bytes)
+    };
+    let keys = [
+        ("plain", VariantKey::default()),
+        (
+            "draw-base-helpers",
+            VariantKey {
+                draw_base: DrawBaseSource::Helpers,
+                ..VariantKey::default()
+            },
+        ),
+    ];
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let mut lines = String::new();
+    for (name, variant) in &keys {
+        let Ok(converted) = convert(source, variant, None) else {
+            continue;
+        };
+        let key = cache::shader_key(source, variant);
+        let record = cache::encode(&converted);
+        let again = cache::encode(&convert(source, variant, None).unwrap());
+        if again != record {
+            return Err(format!(
+                "{file} {name}: converting again gave another record"
+            ));
+        }
+        let decoded = cache::decode(key, &record).map_err(|e| format!("{file} {name}: {e}"))?;
+        if cache::encode(&decoded) != record || decoded.modules[0].key != key {
+            return Err(format!(
+                "{file} {name}: the record did not come back the same"
+            ));
+        }
+        lines.push_str(&format!(
+            "{file}\t{name}\t{}\t{}\n",
+            hex(&key),
+            hex(blake3::hash(&record).as_bytes())
+        ));
+    }
+    Ok(lines)
 }
 
 /// The verdict for one shader: "ok" or the first failing step and its reason.
@@ -136,6 +189,12 @@ fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
     let out = std::env::var_os("WCONTAINERS_SHADERS_OUT").map(|o| PathBuf::from(o).join(label));
     if let Some(out) = &out {
         std::fs::create_dir_all(out).unwrap();
+        // Compared between builds: the content key's part that names the converter.
+        std::fs::write(
+            out.join("converter-version.txt"),
+            wcontainers_shaders::CONVERTER_VERSION,
+        )
+        .unwrap();
     }
     let glslang = out.is_some() && std::env::var_os("GLSLANG").is_some();
     let expected_file = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -151,8 +210,13 @@ fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
     let mut lines = String::new();
     let mut classes = String::new();
     let mut differ = Vec::new();
+    let mut cached = String::new();
     for path in shaders(dir, ext) {
         let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        match records(&path, &file) {
+            Ok(lines) => cached.push_str(&lines),
+            Err(e) => differ.push(e),
+        }
         let v = verdict(&path, out.as_deref());
         let class: String = v.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
         *counts.entry(class.clone()).or_insert(0) += 1;
@@ -175,6 +239,7 @@ fn run(dir: &Path, ext: &str, label: &str) -> BTreeMap<String, usize> {
     if let Some(out) = &out {
         std::fs::write(out.join("verdicts.txt"), &lines).unwrap();
         std::fs::write(out.join("classes.txt"), &classes).unwrap();
+        std::fs::write(out.join("cache.txt"), &cached).unwrap();
     }
     eprintln!("{label}:");
     for (k, n) in &counts {

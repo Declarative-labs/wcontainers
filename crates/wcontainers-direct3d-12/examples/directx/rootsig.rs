@@ -109,7 +109,7 @@ impl Tables {
                         D3D12_ROOT_PARAMETER1_0 {
                             DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE1 {
                                 NumDescriptorRanges: r.len() as u32,
-                                pDescriptorRanges: r.as_ptr(),
+                                pDescriptorRanges: array(r),
                             },
                         }
                     }
@@ -137,7 +137,7 @@ impl Tables {
                         D3D12_ROOT_PARAMETER_0 {
                             DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
                                 NumDescriptorRanges: r.len() as u32,
-                                pDescriptorRanges: r.as_ptr(),
+                                pDescriptorRanges: array(r),
                             },
                         }
                     }
@@ -158,7 +158,7 @@ impl Tables {
                 });
             }
         }
-        let samplers = (t._samplers.len() as u32, t._samplers.as_ptr());
+        let samplers = (t._samplers.len() as u32, array(&t._samplers));
         let flags = D3D12_ROOT_SIGNATURE_FLAGS(desc.flags as i32);
         t.desc = if v1 {
             D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
@@ -166,7 +166,7 @@ impl Tables {
                 Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
                     Desc_1_1: D3D12_ROOT_SIGNATURE_DESC1 {
                         NumParameters: t._params1.len() as u32,
-                        pParameters: t._params1.as_ptr(),
+                        pParameters: array(&t._params1),
                         NumStaticSamplers: samplers.0,
                         pStaticSamplers: samplers.1,
                         Flags: flags,
@@ -179,7 +179,7 @@ impl Tables {
                 Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
                     Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
                         NumParameters: t._params0.len() as u32,
-                        pParameters: t._params0.as_ptr(),
+                        pParameters: array(&t._params0),
                         NumStaticSamplers: samplers.0,
                         pStaticSamplers: samplers.1,
                         Flags: flags,
@@ -239,5 +239,14 @@ impl ID3D12VersionedRootSignatureDeserializer_Impl for VersionedDeserializer_Imp
 
     fn GetUnconvertedRootSignatureDesc(&self) -> *mut D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
         &self.unconverted.desc as *const _ as *mut _
+    }
+}
+
+/// An array for a description: null when empty, as the description the program serialized had it.
+fn array<T>(items: &[T]) -> *const T {
+    if items.is_empty() {
+        std::ptr::null()
+    } else {
+        items.as_ptr()
     }
 }

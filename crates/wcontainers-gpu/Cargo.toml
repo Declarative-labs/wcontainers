@@ -8,10 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bitflags.workspace = true
+bitflags = { workspace = true, features = ["serde"] }
 blake3 = { version = "1", default-features = false }
 half = { version = "2", default-features = false }
 naga = { workspace = true, features = ["wgsl-in"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }

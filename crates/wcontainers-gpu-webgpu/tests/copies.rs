@@ -409,6 +409,98 @@ fn group_textures_copy_into_part_of_depth_exactly() {
     }
 }
 
+/// Whether 32-bit float depth copied in holds what the loss plan 4.12 lists: a draw writes it, so
+/// values in 0 to 1 keep their bits, values outside are clamped and NaN becomes zero; denormals and
+/// -0 are kept or become zero (the RTX 3080 keeps -0 and flushes denormals, Metal on Apple M5 the
+/// opposite). Direct3D's `CopyResource` keeps every bit.
+fn drawable(word: u32, got: u32) -> bool {
+    let v = f32::from_bits(word);
+    if v.is_nan() {
+        got == 0
+    } else if v.is_subnormal() || v == 0.0 {
+        got == word || got == 0
+    } else {
+        got == v.clamp(0.0, 1.0).to_bits()
+    }
+}
+
+/// Float words a draw cannot write as depth (above 1, below 0, a denormal, NaN) beside ones it can,
+/// copied into `depth32float` from an `r32float` texture and from a buffer: each texel holds what
+/// the listed loss says.
+#[test]
+fn float_depth_copies_keep_what_a_draw_can_write() {
+    let mut b = device();
+    let mut words: Vec<u32> = vec![
+        0x3e80_0000, // 0.25
+        0x4000_0000, // 2
+        0xbf00_0000, // -0.5
+        0x8000_0000, // -0
+        0x0000_1234, // a denormal
+        0x7fc0_0001, // NaN
+        0x3f80_0000, // 1
+        0x3dfc_d6ea, // 0.1234
+    ];
+    words.resize((W * H) as usize, 0x3f00_0000);
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let (src, _) = draw::texture_2d(
+        &mut b,
+        Format::R32Float,
+        W,
+        H,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    b.write_texture(
+        &region(&src, 0, 0),
+        extent(W, H),
+        &bytes,
+        W * 4,
+        H,
+        WriteMode::Ordered,
+    );
+    let buffer = b
+        .create_buffer(&BufferDesc {
+            size: bytes.len() as u64,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    b.write_buffer(&buffer, 0, &bytes, WriteMode::Ordered);
+    let (from_texture, _) = depth_texture(&mut b, Format::Depth32Float);
+    let (from_buffer, _) = depth_texture(&mut b, Format::Depth32Float);
+    b.copy_texture(
+        &region(&src, 0, 0),
+        &region(&from_texture, 0, 0),
+        extent(W, H),
+    );
+    b.copy_buffer_to_texture(
+        &CopyBufferTexture {
+            buffer: &buffer,
+            offset: 0,
+            row_pitch: W * 4,
+            rows_per_layer: H,
+        },
+        &region(&from_buffer, 0, 0),
+        extent(W, H),
+    );
+    for (name, t) in [
+        ("from a texture", &from_texture),
+        ("from a buffer", &from_buffer),
+    ] {
+        let got: Vec<u32> = read(&mut b, t, 4)
+            .chunks(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        eprintln!("{name}: {:08x?}", &got[..8]);
+        let wrong: Vec<_> = (0..words.len())
+            .filter(|i| !drawable(words[*i], got[*i]))
+            .map(|i| (i, words[i], got[i]))
+            .collect();
+        assert!(wrong.is_empty(), "{name}: {wrong:x?}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
 /// Copies between colour formats of one typeless group move the bits unchanged, through a buffer
 /// where the formats differ and natively between sRGB twins.
 #[test]

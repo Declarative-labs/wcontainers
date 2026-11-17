@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use wcontainers_direct3d_11::desc::*;
-use wcontainers_direct3d_11::object::{Buffer, Resource, Texture, View};
+use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{Device, Error, PIXEL, Removal, VERTEX, shader};
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
@@ -316,8 +316,8 @@ fn quads_scene() {
     solid(&mut dev);
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
     dev.ia_set_index_buffer(Some(indices), 57, 0).unwrap();
-    dev.set_shader_resources(PIXEL, 0, &[Some(view.clone())])
-        .unwrap();
+    let srv = Rc::new(ShaderView::Texture(view.clone()));
+    dev.set_shader_resources(PIXEL, 0, &[Some(srv)]).unwrap();
     dev.set_samplers(PIXEL, 0, &[Some(sampler.clone())])
         .unwrap();
     dev.om_set_blend_state(Some(blend), None, u32::MAX);
@@ -741,8 +741,36 @@ fn depth_stencil_copies_are_whole_and_of_both_aspects() {
     assert!(dev.removed.is_none());
 }
 
+/// Per draw, the vertex helper set it binds and the bases (base vertex, first instance) that set's
+/// block holds; none for a draw without one.
+fn draw_bases(dev: &Dev) -> Vec<Option<(String, i32, u32)>> {
+    let log = &dev.backend.log;
+    let bases = |line: &str| -> Option<(String, i32, u32)> {
+        let sets = line.split_once("sets [")?.1.split_once(']')?.0;
+        let set = sets
+            .split(", ")
+            .nth(3)?
+            .strip_prefix("Some(")?
+            .strip_suffix(')')?;
+        let prefix = format!("create_binding_set {set} 0=uniform ");
+        let made = log.iter().find_map(|m| m.strip_prefix(prefix.as_str()))?;
+        let (buffer, rest) = made.split_once('+')?;
+        let (offset, size) = rest.split_once(':')?;
+        assert_eq!(size, "16", "{made}");
+        let bytes = dev.backend.buffer_bytes(buffer.parse().ok()?)?;
+        let at: usize = offset.parse().ok()?;
+        let word =
+            |i: usize| u32::from_le_bytes(bytes[at + 4 * i..at + 4 * i + 4].try_into().unwrap());
+        Some((set.to_string(), word(0) as i32, word(1)))
+    };
+    log.iter()
+        .filter(|l| l.starts_with("draw "))
+        .map(|l| bases(l))
+        .collect()
+}
+
 #[test]
-fn vertex_ids_with_a_start_location_are_not_served() {
+fn vertex_ids_read_the_draws_bases_from_the_helper_constants() {
     let mut dev = device();
     let target = dev
         .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
@@ -754,27 +782,89 @@ fn vertex_ids_with_a_start_location_are_not_served() {
         .unwrap();
     dev.vs_set_shader(Some(vs));
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let indices = immutable(&mut dev, &[0; 12], bind::INDEX_BUFFER);
+    dev.ia_set_index_buffer(Some(indices), 57, 0).unwrap();
+    // SV_VertexID and SV_InstanceID leave out the start and base locations the common form's
+    // indices include; the front writes them into the helper block when they change.
     dev.draw(3, 0);
+    dev.draw(3, 3);
+    dev.draw_instanced(3, 2, 3, 0);
+    dev.draw_instanced(3, 1, 0, 4);
+    dev.draw_indexed(3, 0, -2);
+    dev.draw_indexed_instanced(3, 1, 3, 5, 6);
+    assert!(dev.removed.is_none());
+    let bases = draw_bases(&dev);
+    let values: Vec<_> = bases
+        .iter()
+        .map(|b| b.as_ref().map(|b| (b.1, b.2)))
+        .collect();
+    assert_eq!(
+        values,
+        [
+            Some((0, 0)),
+            Some((3, 0)),
+            Some((3, 0)),
+            Some((0, 4)),
+            Some((-2, 0)),
+            Some((5, 6)),
+        ]
+    );
+    // Equal bases keep their block: one write per change.
+    let sets: Vec<_> = bases.iter().flatten().map(|b| &b.0).collect();
+    assert_eq!(sets[1], sets[2]);
+    assert_ne!(sets[0], sets[1]);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::DrawBaseInHelpers),
+        5
+    );
+
+    // Indirect arguments are read back where the back end cannot take the bases from them.
+    let words: Vec<u8> = [3u32, 1, 7, 2, 0, 0, 0, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let desc = BufferDesc {
+        byte_width: 32,
+        usage: usage::DEFAULT,
+        misc_flags: MISC_DRAWINDIRECT_ARGS,
+        ..Default::default()
+    };
+    let args = dev.create_buffer(&desc, Some(&words)).unwrap();
+    dev.draw_indirect(&args, 0, false).unwrap();
     assert!(dev.removed.is_none());
     assert_eq!(
+        draw_bases(&dev)
+            .last()
+            .unwrap()
+            .as_ref()
+            .map(|b| (b.1, b.2)),
+        Some((7, 2))
+    );
+    assert!(
         dev.backend
             .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
-        1
+            .last()
+            .unwrap()
+            .contains("Vertices { first: 7, count: 3, first_instance: 2, instances: 1 }"),
+        "{:?}",
+        dev.backend.log.last()
     );
-    // SV_VertexID leaves the start location out; the front cannot take it off yet.
-    dev.draw(3, 3);
-    assert!(dev.removed.is_some());
     assert_eq!(
-        dev.backend
-            .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
+        dev.backend.slow_paths().count(SlowPath::IndirectReadBack),
         1
     );
+    // A buffer not made for arguments, an offset off a word or arguments past the end are invalid
+    // and draw nothing.
+    let draws = draw_bases(&dev).len();
+    let plain = immutable(&mut dev, &words, bind::VERTEX_BUFFER);
+    assert!(matches!(
+        dev.draw_indirect(&plain, 0, false),
+        Err(Error::InvalidArg(_))
+    ));
+    assert!(dev.draw_indirect(&args, 2, false).is_err());
+    assert!(dev.draw_indirect(&args, 16, true).is_err());
+    assert_eq!(draw_bases(&dev).len(), draws);
+    assert!(dev.removed.is_none());
 }
 
 #[test]
@@ -835,6 +925,110 @@ fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u
     dev.ia_set_vertex_buffers(0, &[Some((vertices, stride, 0))])
         .unwrap();
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+}
+
+#[test]
+fn a_new_pair_is_built_ahead_with_the_states_its_vertex_shader_was_drawn_with() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    dev.draw(3, 0);
+    // The first pair met no drawn state: nothing was built ahead.
+    assert_eq!(dev.prepared_use(), (0, 0));
+    let from = dev.backend.log.len();
+    let ps = dev
+        .create_shader(&corpus("common.ps_color"), SourceStage::Pixel)
+        .unwrap();
+    let prepared: Vec<_> = dev.backend.log[from..]
+        .iter()
+        .filter(|l| l.starts_with("prepare "))
+        .cloned()
+        .collect();
+    assert_eq!(prepared.len(), 1, "{:#?}", &dev.backend.log[from..]);
+    assert_eq!(dev.prepared_use(), (0, 1));
+    dev.ps_set_shader(Some(ps));
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    assert_eq!(dev.prepared_use(), (1, 0));
+    // The draw used the program and states prepared.
+    let draw = dev
+        .backend
+        .log
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("draw "))
+        .unwrap();
+    let head = |l: &str| l.split(" layout ").next().unwrap().to_string();
+    assert_eq!(
+        head(draw).trim_start_matches("draw "),
+        head(&prepared[0]).trim_start_matches("prepare ")
+    );
+}
+
+#[test]
+fn staging_depth_with_stencil_moves_both_aspects_in_direct3ds_layout() {
+    // D24_UNORM_S8_UINT (four bytes a texel) and D32_FLOAT_S8X24_UINT (eight).
+    for (format, texel) in [(45u32, 4usize), (20, 8)] {
+        let mut dev = device();
+        let desc = TextureDesc {
+            usage: usage::STAGING,
+            bind_flags: 0,
+            cpu_access_flags: cpu::READ | cpu::WRITE,
+            ..tex2d(2, 2, format, 0)
+        };
+        let a = Resource::Texture(dev.create_texture(&desc, &[]).unwrap());
+        let b = Resource::Texture(dev.create_texture(&desc, &[]).unwrap());
+        // Every texel distinct in depth and stencil (the unused bytes of D32_FLOAT_S8X24 zero).
+        let bytes: Vec<u8> = (0..4u8)
+            .flat_map(|i| {
+                let mut t = vec![0u8; texel];
+                t[..4].copy_from_slice(&[0x10 + i, 0x20 + i, 0x30 + i, 0x40 + i]);
+                if texel == 8 {
+                    t[4] = 0x50 + i;
+                }
+                t
+            })
+            .collect();
+        let mapped = dev.map(&a, 0, map::WRITE, 0).unwrap();
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.data, bytes.len()) };
+        let from = dev.backend.log.len();
+        dev.unmap(&a, 0);
+        let writes = dev.backend.log[from..]
+            .iter()
+            .filter(|l| l.starts_with("write_texture "))
+            .count();
+        assert_eq!(writes, 2, "one write per aspect");
+        dev.copy_resource(&b, &a).unwrap();
+        let mapped = dev.map(&b, 0, map::READ, 0).unwrap();
+        assert_eq!(mapped.row_pitch as usize, 2 * texel);
+        let back = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        dev.unmap(&b, 0);
+        assert_eq!(back, bytes, "format {format}");
+        assert!(dev.removed.is_none());
+    }
+}
+
+#[test]
+fn an_input_layout_without_elements_serves_a_vertex_shader_without_inputs() {
+    let mut dev = device();
+    // common.vs_full reads only SV_VertexID; common.vs_color reads a position and a colour.
+    assert!(
+        dev.create_input_layout(&[], &corpus("common.vs_full"))
+            .is_ok()
+    );
+    assert!(matches!(
+        dev.create_input_layout(&[], &corpus("common.vs_color")),
+        Err(Error::InvalidArg(_))
+    ));
 }
 
 #[test]
@@ -1097,7 +1291,12 @@ fn binding_the_same_objects_again_makes_no_new_binding_set() {
             .filter(|l| l.starts_with("create_binding_set"))
             .count()
     };
-    assert_eq!(sets(&mut dev, Some(&cb)), 1, "the first draw makes it");
+    // The vertex program reads SV_InstanceID: its helper block's set is made once as well.
+    assert_eq!(
+        sets(&mut dev, Some(&cb)),
+        2,
+        "the first draw makes the stage's set and the helper block's"
+    );
     assert_eq!(sets(&mut dev, Some(&cb)), 0, "rebinding the same buffer");
     let other = dev.create_buffer(&desc, None).unwrap();
     assert_eq!(sets(&mut dev, Some(&other)), 1, "a different buffer");
@@ -1111,6 +1310,7 @@ fn a_view_of_a_target_is_unbound_and_cannot_be_bound() {
     d.mip_levels = 2;
     let t = dev.create_texture(&d, &[]).unwrap();
     let srv = dev.create_view(&t, None, bind::SHADER_RESOURCE).unwrap();
+    let srv = Rc::new(ShaderView::Texture(srv));
     let rtv = dev.create_view(&t, None, bind::RENDER_TARGET).unwrap();
     dev.set_shader_resources(PIXEL, 3, &[Some(srv.clone())])
         .unwrap();
@@ -1196,4 +1396,378 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         Err(Error::InvalidArg(_))
     ));
     assert!(dev.removed.is_none());
+}
+
+#[test]
+fn a_draw_goes_through_the_first_viewport_and_scissor_rectangle() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let half = Viewport {
+        width: 32.0,
+        height: 32.0,
+        max_depth: 1.0,
+        ..Default::default()
+    };
+    dev.rs_set_viewports(&[half, Viewport { x: 32.0, ..half }]);
+    dev.rs_set_scissor_rects(&[[0, 0, 16, 16], [16, 16, 64, 64]]);
+    let draws = |dev: &Dev, from: usize| -> Vec<String> {
+        log_from(dev, from)
+            .into_iter()
+            .filter(|l| l.starts_with("draw "))
+            .collect()
+    };
+    // Without the scissor test, no rectangle.
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let d = draws(&dev, from);
+    assert!(
+        d[0].contains("viewports [[0.0, 0.0, 32.0, 32.0]] scissors []"),
+        "{d:#?}"
+    );
+    // With it, the first rectangle; with none set, one that passes nothing.
+    let r = dev
+        .create_rasterizer_state(&RasterizerDesc {
+            fill: 3,
+            cull: 1,
+            depth_clip: true,
+            scissor: true,
+            ..Default::default()
+        })
+        .unwrap();
+    dev.rs_set_state(Some(r));
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.rs_set_scissor_rects(&[]);
+    dev.draw(3, 0);
+    let d = draws(&dev, from);
+    assert!(d[0].contains("scissors [[0, 0, 16, 16]]"), "{d:#?}");
+    assert!(d[1].contains("scissors [[0, 0, 0, 0]]"), "{d:#?}");
+    assert!(dev.removed.is_none());
+}
+
+const R32F: u32 = 41;
+
+/// A full-target draw of `ps`, from the rig's samplers scene, reading an R32_FLOAT texture at t0.
+fn sampling(dev: &mut Dev, ps: &str) {
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(dev, &rtv, None, 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    let p = dev.create_shader(&corpus(ps), SourceStage::Pixel).unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let texture = dev
+        .create_texture(&tex2d(4, 4, R32F, bind::SHADER_RESOURCE), &[])
+        .unwrap();
+    let view = dev
+        .create_view(&texture, None, bind::SHADER_RESOURCE)
+        .unwrap();
+    dev.set_shader_resources(PIXEL, 0, &[Some(Rc::new(ShaderView::Texture(view)))])
+        .unwrap();
+}
+
+#[test]
+fn samplers_are_bound_comparing_as_the_program_reads_them() {
+    let mut dev = device();
+    sampling(&mut dev, "samplers.ps_compare");
+    // D3D11_COMPARISON_LESS, on a sampler whose filter does not compare.
+    let plain = SamplerDesc {
+        comparison: 2,
+        ..SamplerDesc::default_state()
+    };
+    let plain = dev.create_sampler_state(&plain).unwrap();
+    // The program compares through s1: the sampler is read through a twin that compares with its
+    // function, made once.
+    dev.set_samplers(PIXEL, 1, &[Some(plain.clone())]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let made_samplers: Vec<_> = log
+        .iter()
+        .filter(|l| l.starts_with("create_sampler"))
+        .collect();
+    assert_eq!(made_samplers.len(), 1, "{log:#?}");
+    assert!(made_samplers[0].ends_with("compare Some(Less)"), "{log:#?}");
+    let twin = made(&log, "create_sampler");
+    let set = &log[find(&log, "create_binding_set")];
+    assert!(set.contains(&format!("=sampler {twin}")), "{set}");
+
+    // A comparing sampler is bound as it is.
+    let comparing = SamplerDesc {
+        filter: 0x95,
+        comparison: 2,
+        ..SamplerDesc::default_state()
+    };
+    let comparing = dev.create_sampler_state(&comparing).unwrap();
+    dev.set_samplers(PIXEL, 1, &[Some(comparing.clone())])
+        .unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter().any(|l| l.starts_with("create_sampler")),
+        "{log:#?}"
+    );
+    let set = &log[find(&log, "create_binding_set")];
+    assert!(
+        set.contains(&format!("=sampler {}", comparing.gpu.handle)),
+        "{set}"
+    );
+
+    // A program that does not compare reads the comparing sampler through a twin that does not.
+    sampling(&mut dev, "samplers.ps_sample");
+    dev.set_samplers(PIXEL, 0, &[Some(comparing)]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    assert!(
+        log[find(&log, "create_sampler")].ends_with("compare None"),
+        "{log:#?}"
+    );
+}
+
+#[test]
+fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
+    let mut dev = device();
+    let uses = &mut dev.backend.caps.formats.uses[wcontainers_gpu::Format::R32Float.index()];
+    uses.remove(wcontainers_gpu::FormatUse::FILTER);
+    sampling(&mut dev, "samplers.ps_sample");
+    // Point sampling needs no filtering.
+    let point = SamplerDesc {
+        filter: 0,
+        ..SamplerDesc::default_state()
+    };
+    let point = dev.create_sampler_state(&point).unwrap();
+    dev.set_samplers(PIXEL, 0, &[Some(point)]).unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    assert_eq!(
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count(),
+        1
+    );
+    // An empty slot reads Direct3D's default sampler, which filters linearly: the program would
+    // have to filter, which the converter does not build yet.
+    dev.set_samplers(PIXEL, 0, &[None]).unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_some());
+    assert_eq!(
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    dev.om_set_render_targets(&[], None).unwrap();
+    let viewport = |dev: &mut Dev, width: f32, height: f32| {
+        dev.rs_set_viewports(&[Viewport {
+            width,
+            height,
+            max_depth: 1.0,
+            ..Default::default()
+        }]);
+    };
+    viewport(&mut dev, 40.0, 24.5);
+    // The target's pending clear runs first, in a pass of its own.
+    dev.flush();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    // A smaller viewport draws in the same pass; a larger one opens another.
+    viewport(&mut dev, 10.0, 10.0);
+    dev.draw(3, 0);
+    viewport(&mut dev, 64.0, 8.0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let passes: Vec<_> = log_from(&dev, from)
+        .into_iter()
+        .filter(|l| l.starts_with("begin_pass"))
+        .collect();
+    assert_eq!(
+        passes,
+        [
+            "begin_pass empty 40x25 samples 1",
+            "begin_pass empty 64x8 samples 1"
+        ]
+    );
+}
+
+#[test]
+fn constants_rewritten_between_draws_make_no_binding_set_and_split_no_pass() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "dynamic.ps_tint",
+        &elements,
+        28,
+    );
+    let dynamic = BufferDesc {
+        byte_width: 16,
+        usage: usage::DYNAMIC,
+        bind_flags: bind::CONSTANT_BUFFER,
+        cpu_access_flags: cpu::WRITE,
+        ..Default::default()
+    };
+    let dynamic = dev.create_buffer(&dynamic, None).unwrap();
+    let default = BufferDesc {
+        byte_width: 16,
+        usage: usage::DEFAULT,
+        bind_flags: bind::CONSTANT_BUFFER,
+        ..Default::default()
+    };
+    let default = dev.create_buffer(&default, Some(&[0; 16])).unwrap();
+    let from = dev.backend.log.len();
+    // Map(WRITE_DISCARD) before each draw.
+    dev.set_constant_buffers(PIXEL, 0, &[Some(dynamic.clone())])
+        .unwrap();
+    let r = Resource::Buffer(dynamic);
+    for i in 0..3 {
+        let m = dev.map(&r, 0, map::WRITE_DISCARD, 0).unwrap();
+        unsafe { std::ptr::write_bytes(m.data, i, 16) };
+        dev.unmap(&r, 0);
+        dev.draw(3, 0);
+    }
+    // UpdateSubresource, whole and in part, before each draw.
+    dev.set_constant_buffers(PIXEL, 0, &[Some(default.clone())])
+        .unwrap();
+    let d = Resource::Buffer(default);
+    dev.update_subresource(&d, 0, None, &[1; 16], 0, 0).unwrap();
+    dev.draw(3, 0);
+    let part = Box3 {
+        left: 4,
+        right: 8,
+        bottom: 1,
+        back: 1,
+        ..Default::default()
+    };
+    dev.update_subresource(&d, 0, Some(&part), &[2; 4], 0, 0)
+        .unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let count = |p: &str| log.iter().filter(|l| l.starts_with(p)).count();
+    assert_eq!(count("draw "), 5, "{log:#?}");
+    assert_eq!(count("begin_pass"), 1, "{log:#?}");
+    assert_eq!(count("end_pass"), 0, "{log:#?}");
+    // One binding set for each buffer bound, none for a draw.
+    assert_eq!(count("create_binding_set"), 2, "{log:#?}");
+    let writes: Vec<_> = log
+        .iter()
+        .filter(|l| l.starts_with("write_buffer"))
+        .collect();
+    assert_eq!(writes.len(), 5, "{log:#?}");
+    assert!(
+        writes[..4]
+            .iter()
+            .all(|w| w.ends_with("at 0 16 bytes Discard")),
+        "{writes:#?}"
+    );
+    assert!(writes[4].ends_with("at 4 4 bytes Ordered"), "{writes:#?}");
+}
+
+#[test]
+fn a_sample_mask_draws_through_a_raster_block_made_with_it_once() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let target = dev
+        .create_texture(
+            &TextureDesc {
+                sample_count: 4,
+                ..tex2d(16, 16, RGBA8, bind::RENDER_TARGET)
+            },
+            &[],
+        )
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    let from = dev.backend.log.len();
+    let rasters = |dev: &Dev, from: usize| -> Vec<String> {
+        log_from(dev, from)
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .map(|l| {
+                l.split(" raster ")
+                    .nth(1)
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    dev.draw(3, 0);
+    dev.om_set_blend_state(None, None, 0b0101);
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    // Bits past the target's samples change nothing.
+    dev.om_set_blend_state(None, None, 0xffff_fff5);
+    dev.draw(3, 0);
+    dev.om_set_blend_state(None, None, u32::MAX);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let made: Vec<_> = log_from(&dev, from)
+        .into_iter()
+        .filter(|l| l.starts_with("create_raster"))
+        .collect();
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(made[0].ends_with("mask 0x5"), "{}", made[0]);
+    let masked = made[0].split(' ').nth(1).unwrap().to_string();
+    let drawn = rasters(&dev, from);
+    assert_eq!(drawn.len(), 5);
+    assert_ne!(drawn[0], masked);
+    assert_eq!(&drawn[1..4], [masked.clone(), masked.clone(), masked]);
+    assert_eq!(drawn[4], drawn[0]);
 }

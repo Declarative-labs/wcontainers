@@ -1,0 +1,309 @@
+//! Building ahead (plan 4.4): the state tuples each vertex shader is drawn with, counted per draw, and
+//! the pipelines of a new pair of shaders prepared with them before the pair's first draw.
+
+use std::cmp::Ordering;
+use std::rc::{Rc, Weak};
+
+use wcontainers_gpu::{
+    Backend, BindingLayoutKey, Combination, CombinationTracker, Format, MAX_BINDING_SETS,
+    PrepareDesc, ScalarKind, TargetLayout, Topology, VertexFormat,
+};
+
+use crate::device::Device;
+use crate::object::{Blend, DepthStencil, InputLayout, Rasterizer, Shader};
+use crate::{PIXEL, VERTEX};
+
+/// What a pipeline is built from besides its program: state objects, the input layout and the
+/// strides it is read at, the targets, the topology and the binding sets' layout keys. It holds its
+/// objects, so a tuple picked later can still be prepared.
+pub(crate) struct Tuple<B: Backend> {
+    blend: Rc<Blend<B>>,
+    depth_stencil: Rc<DepthStencil<B>>,
+    raster: Rc<Rasterizer<B>>,
+    layout: Option<Rc<InputLayout>>,
+    strides: [u32; 32],
+    targets: TargetLayout,
+    topology: Topology,
+    layouts: [BindingLayoutKey; MAX_BINDING_SETS],
+}
+
+type TupleKey = (
+    [u64; 4],
+    [u32; 32],
+    [Option<Format>; 8],
+    Option<Format>,
+    u32,
+    u8,
+    [u128; MAX_BINDING_SETS],
+);
+
+impl<B: Backend> Tuple<B> {
+    fn key(&self) -> TupleKey {
+        (
+            [
+                self.blend.gpu.id,
+                self.depth_stencil.gpu.id,
+                self.raster.gpu.id,
+                self.layout.as_ref().map_or(0, |l| l.id),
+            ],
+            self.strides,
+            self.targets.colors,
+            self.targets.depth_stencil,
+            self.targets.samples,
+            self.topology as u8,
+            self.layouts.map(|k| k.unfilterable_textures),
+        )
+    }
+}
+
+impl<B: Backend> Clone for Tuple<B> {
+    fn clone(&self) -> Self {
+        Tuple {
+            blend: self.blend.clone(),
+            depth_stencil: self.depth_stencil.clone(),
+            raster: self.raster.clone(),
+            layout: self.layout.clone(),
+            strides: self.strides,
+            targets: self.targets,
+            topology: self.topology,
+            layouts: self.layouts,
+        }
+    }
+}
+
+impl<B: Backend> PartialEq for Tuple<B> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl<B: Backend> Eq for Tuple<B> {}
+
+impl<B: Backend> PartialOrd for Tuple<B> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<B: Backend> Ord for Tuple<B> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// The last draw's combination, and the binding sets its layout keys were read from.
+struct Last<B: Backend> {
+    program: (u64, u64),
+    sets: [u64; 2],
+    tuple: Tuple<B>,
+    combination: Combination,
+}
+
+/// The device's record of combinations drawn and prepared.
+pub(crate) struct Ahead<B: Backend> {
+    /// Keyed by vertex shader id, program (vertex and pixel shader ids) and tuple.
+    tracker: CombinationTracker<u64, (u64, u64), Tuple<B>>,
+    last: Option<Last<B>>,
+    /// The shaders made most recently of each stage, which a new shader of the other is paired with.
+    last_vertex: Weak<Shader<B>>,
+    last_pixel: Weak<Shader<B>>,
+}
+
+impl<B: Backend> Ahead<B> {
+    pub fn new() -> Self {
+        Ahead {
+            tracker: CombinationTracker::default(),
+            last: None,
+            last_vertex: Weak::new(),
+            last_pixel: Weak::new(),
+        }
+    }
+
+    /// How many prepared combinations were drawn since, and how many were not.
+    pub fn prepared_use(&self) -> (u64, u64) {
+        self.tracker.prepared_use()
+    }
+}
+
+/// The vertex shader writes every value the pixel shader reads, at its location, with its type and
+/// components: a pair a pipeline can be built from.
+fn covers<B: Backend>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
+    ps.reflection
+        .inputs
+        .iter()
+        .filter(|i| i.system.is_none())
+        .all(|i| {
+            vs.reflection.outputs.iter().any(|o| {
+                o.system.is_none()
+                    && o.location == i.location
+                    && o.scalar == i.scalar
+                    && o.mask & i.mask == i.mask
+            })
+        })
+}
+
+/// The scalar type a vertex format is read as.
+fn scalar(f: VertexFormat) -> ScalarKind {
+    use VertexFormat::*;
+    match f {
+        Uint8x1 | Uint8x2 | Uint8x3 | Uint8x4 | Uint16x1 | Uint16x2 | Uint16x3 | Uint16x4
+        | Uint32x1 | Uint32x2 | Uint32x3 | Uint32x4 => ScalarKind::Uint,
+        Sint8x1 | Sint8x2 | Sint8x3 | Sint8x4 | Sint16x1 | Sint16x2 | Sint16x3 | Sint16x4
+        | Sint32x1 | Sint32x2 | Sint32x3 | Sint32x4 => ScalarKind::Sint,
+        _ => ScalarKind::Float,
+    }
+}
+
+/// The input layout gives the vertex shader every input it reads, at its location and of its type.
+fn fits<B: Backend>(vs: &Shader<B>, layout: Option<&InputLayout>) -> bool {
+    vs.reflection
+        .inputs
+        .iter()
+        .filter(|i| i.system.is_none())
+        .all(|i| {
+            layout.is_some_and(|l| {
+                l.elements
+                    .iter()
+                    .any(|e| e.location == i.location && scalar(e.format) == i.scalar)
+            })
+        })
+}
+
+impl<B: Backend> Device<B> {
+    /// How many combinations built ahead were drawn since, and how many were not.
+    pub fn prepared_use(&self) -> (u64, u64) {
+        self.ahead.prepared_use()
+    }
+
+    /// Counts a draw of program `vs` and `ps` with the bound state. The tuple is looked up only
+    /// when something in it changed since the last draw.
+    pub(crate) fn count_combination(
+        &mut self,
+        vs: &Shader<B>,
+        ps: Option<&Rc<Shader<B>>>,
+        topology: Topology,
+        samples: u32,
+    ) {
+        let program = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
+        let ctx = &self.ctx;
+        let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
+        let depth_stencil = ctx
+            .depth_stencil
+            .as_ref()
+            .unwrap_or(&self.defaults.depth_stencil);
+        let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
+        let set_id = |stage: usize| ctx.sets[stage].as_ref().map_or(0, |k| k.id);
+        let sets = [set_id(VERTEX), set_id(PIXEL)];
+        let strides = self.strides();
+        let mut targets = TargetLayout {
+            colors: [None; 8],
+            depth_stencil: ctx.depth.as_ref().map(|d| d.format),
+            samples,
+        };
+        for (c, t) in targets.colors.iter_mut().zip(&ctx.targets) {
+            *c = t.as_ref().map(|v| v.format);
+        }
+        if let Some(last) = &self.ahead.last
+            && last.program == program
+            && last.sets == sets
+            && Rc::ptr_eq(&last.tuple.blend, blend)
+            && Rc::ptr_eq(&last.tuple.depth_stencil, depth_stencil)
+            && Rc::ptr_eq(&last.tuple.raster, raster)
+            && last.tuple.layout.as_ref().map(Rc::as_ptr) == ctx.layout.as_ref().map(Rc::as_ptr)
+            && last.tuple.strides == strides
+            && last.tuple.targets == targets
+            && last.tuple.topology == topology
+        {
+            let c = last.combination;
+            self.ahead.tracker.drawn(c);
+            return;
+        }
+        let key = |stage: usize| {
+            ctx.sets[stage]
+                .as_ref()
+                .map_or(BindingLayoutKey::default(), |k| {
+                    self.backend.binding_layout_key(&k.handle)
+                })
+        };
+        let mut layouts = [BindingLayoutKey::default(); MAX_BINDING_SETS];
+        layouts[0] = key(VERTEX);
+        layouts[1] = key(PIXEL);
+        let tuple = Tuple {
+            blend: blend.clone(),
+            depth_stencil: depth_stencil.clone(),
+            raster: raster.clone(),
+            layout: ctx.layout.clone(),
+            strides,
+            targets,
+            topology,
+            layouts,
+        };
+        let c = self.ahead.tracker.combination(&vs.gpu.id, &program, &tuple);
+        self.ahead.tracker.drawn(c);
+        self.ahead.last = Some(Last {
+            program,
+            sets,
+            tuple,
+            combination: c,
+        });
+    }
+
+    /// Pairs a new vertex or pixel shader with the latest shader of the other stage whose values
+    /// match it, and prepares the pair's pipelines with the tuples the tracker picks: those its
+    /// vertex shader was drawn with, or the most drawn one its inputs fit.
+    pub(crate) fn build_ahead(&mut self, new: &Rc<Shader<B>>, vertex: bool) {
+        let (vs, ps) = if vertex {
+            self.ahead.last_vertex = Rc::downgrade(new);
+            (Some(new.clone()), self.ahead.last_pixel.upgrade())
+        } else {
+            self.ahead.last_pixel = Rc::downgrade(new);
+            (self.ahead.last_vertex.upgrade(), Some(new.clone()))
+        };
+        let (Some(vs), Some(ps)) = (vs, ps) else {
+            return;
+        };
+        if !covers(&vs, &ps) {
+            return;
+        }
+        let program_key = (vs.gpu.id, ps.gpu.id);
+        let picked = self
+            .ahead
+            .tracker
+            .pick(&vs.gpu.id, &program_key, |t| fits(&vs, t.layout.as_deref()));
+        if picked.is_empty() {
+            return;
+        }
+        // A pair the back end cannot build is left to its first draw, which reports it.
+        let Ok(program) = self.program(&vs, Some(&ps)) else {
+            return;
+        };
+        for t in picked {
+            let Ok(vertex_layout) = self.vertex_layout_for(t.layout.clone(), t.strides) else {
+                return;
+            };
+            self.backend.prepare(&PrepareDesc {
+                program: &program,
+                blend: &t.blend.gpu.handle,
+                depth_stencil: &t.depth_stencil.gpu.handle,
+                raster: &t.raster.gpu.handle,
+                vertex_layout: &vertex_layout,
+                targets: t.targets,
+                topology: t.topology,
+                layouts: t.layouts,
+            });
+        }
+    }
+}
+
+impl<B: Backend> Drop for Device<B> {
+    /// Reports how the pipelines built ahead were used (plan 4.4).
+    fn drop(&mut self) {
+        let (drawn, not) = self.ahead.prepared_use();
+        if drawn + not > 0 {
+            eprintln!(
+                "wcontainers direct3d 11: built ahead {} combinations: {drawn} drawn since, {not} not",
+                drawn + not
+            );
+        }
+    }
+}

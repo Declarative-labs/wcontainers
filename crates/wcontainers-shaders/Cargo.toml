@@ -9,15 +9,20 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
-naga = { workspace = true, features = ["spv-in"] }
+naga = { workspace = true, features = ["spv-in", "serialize", "deserialize"] }
 blake3 = { version = "1", default-features = false }
+crc32fast = { version = "1", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
 [build-dependencies]
 blake3 = "1"
 cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
-naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }
+fastrand = "2"
+serde = { version = "1", features = ["derive"] }
+naga = { workspace = true, features = ["wgsl-in", "glsl-out", "hlsl-out", "msl-out", "wgsl-out"] }
 
 # tests/draw.rs: real Direct3D 11 beside the WebGPU and WebGL 2 back ends.
 [target.'cfg(windows)'.dev-dependencies]

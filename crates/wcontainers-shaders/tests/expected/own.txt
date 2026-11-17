@@ -1,10 +1,14 @@
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
+ps_coarse.dxbc	ok
 ps_depth.dxbc	ok
+ps_deriv.dxbc	ok-wgsl glsl-write
 ps_flat.dxbc	ok
+ps_ftoi.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
 ps_local.dxbc	ok
 ps_loop.dxbc	ok
+ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
 ps_rows.dxbc	ok
@@ -13,8 +17,10 @@ ps_signed.dxbc	ok
 ps_size.dxbc	ok
 ps_spaces.dxbc	unsupported RegisterSpace
 ps_special.dxbc	ok
+ps_table.dxbc	ok
 ps_textured.dxbc	ok
 ps_window.dxbc	ok
+vs_carry.dxbc	ok
 vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_pack.dxbc	ok
 vs_shade.dxbc	ok
