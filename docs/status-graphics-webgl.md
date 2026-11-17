@@ -293,6 +293,8 @@ mozangle natively: no).
   - The 16 scene pictures: as in run 3 (all as expected in Chrome on both routes and on ANGLE without
     the extensions; `triangle-clear_rects` fails on ANGLE with EXT_clip_control).
   - Lint clean on both targets.
+- The final tree of run 1 (b6a0c43) was checked once more as a whole (job 15:25 to 15:26 desktop
+  time): the same verdicts as the run before it, listed next.
 - Later the same day (job 15:23 to 15:24 desktop time, queued, not timed), with stencil read backs
   and the third check: Chrome with every extension 23 of 23; without EXT_clip_control 10 of 23,
   without both 10 of 23 (the third check passes on all three, with all five depth formats). ANGLE
@@ -363,6 +365,8 @@ mozangle natively: no).
   in a helper's block (the built-ins' raster asked for a provoking vertex WebGL 2 lacks without an
   extension), the fix is two lines in the style of the clip depth one beside it, and no other route
   made the fast-path defaults usable here; G1 should take it over.
+- The last merge of origin/phase-2-graphics in run 1 was undone before it was pushed (see "Next"):
+  its suite crate no longer builds for WebAssembly, and the Chrome host of the suite needs it.
 - Natively the back end is to be made with EXT_clip_control switched off (above), so its caps lack
   `CLIP_DEPTH_ZERO_ONE`, which Chrome on the same GPU reports; section 10 says the native route
   reports the Caps the browser would. The reason: this ANGLE mirrors every scissored draw under the
@@ -421,6 +425,16 @@ mozangle natively: no).
   back end): BSD-3-Clause (its Cargo.toml and LICENSE, ANGLE's).
 
 ## Next
+
+First: merge origin/phase-2-graphics again. At the end of G3 run 1 it held 20 newer commits
+(up to 2684d97) whose `wcontainers-gpu-test` depends on `proptest = "1.12.0"` with its default
+features, which do not build for wasm32 (`wait-timeout`'s `imp` module is missing; `getrandom` 0.4.3
+also needs its `wasm_js` feature, which this crate can turn on as a wasm32 dev-dependency). The suite's
+host in Chrome needs that crate for wasm32, so the merge was made locally, failed to build, and was
+dropped before it was pushed. Once G1 gives proptest `default-features = false, features = ["std"]`
+(or keeps it out of the wasm32 build), merge, add `getrandom = { version = "0.4.3", features =
+["wasm_js"] }` as a wasm32 dev-dependency (MIT OR Apache-2.0), and add the new suite test
+`fragments_write_storage_buffers` to examples/browser.rs's list.
 
 G3's pass bar (plan section 12), in about this order:
 1. Per-draw cost against G2 on the same scene, in Chrome (a scene of many small draws changing a
