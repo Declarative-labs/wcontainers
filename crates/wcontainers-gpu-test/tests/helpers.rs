@@ -309,11 +309,7 @@ impl Kit {
     }
 
     fn calls(&self, name: &str) -> usize {
-        self.r
-            .calls
-            .iter()
-            .filter(|c| c.split(' ').next() == Some(name))
-            .count()
+        self.r.calls.iter().filter(|c| c.name() == name).count()
     }
 
     fn healthy(&mut self) {

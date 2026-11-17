@@ -1,6 +1,6 @@
-# Writes the body of com.rs from the windows crate's *_Impl traits: python3 com.py 'Type:IInterface:Method,...' ...
-# (each argument names an object, its interface and the methods objects.rs does; see the status file).
-import re, sys, glob
+# Writes com.rs from the windows crate's *_Impl traits: python3 com.py > com.rs
+# Each entry of OBJECTS names an object, its interface and the methods objects.rs or present.rs do.
+import re, glob
 W = glob.glob('/Users/thomaseaton/.cargo/registry/src/*/windows-0.62.2/src/Windows/Win32/Graphics')[0]
 src = {m: open(f'{W}/{m}/mod.rs').read() for m in ['Direct3D12', 'Dxgi', 'Direct3D']}
 
@@ -22,16 +22,6 @@ def qualify(sig, mod):
     sig = sig.replace('super::super::Security::', 'windows::Win32::Security::')
     sig = re.sub(r'super::Common::', 'windows::Win32::Graphics::Dxgi::Common::', sig)
     sig = re.sub(r'super::Gdi::', 'windows::Win32::Graphics::Gdi::', sig)
-    for name in re.findall(r'\b(I[A-Z0-9][A-Za-z0-9_]*|D3D12_[A-Z0-9_]+|DXGI_[A-Z0-9_]+|D3D_[A-Z0-9_]+)\b', sig):
-        pass
-    return sig
-
-def unqualified_types(sig, mod):
-    prefix = {'Direct3D12': 'windows::Win32::Graphics::Direct3D12::', 'Dxgi': 'windows::Win32::Graphics::Dxgi::', 'Direct3D': 'windows::Win32::Graphics::Direct3D::'}[mod]
-    # Bare names in the trait's own module.
-    def fix(m):
-        t = m.group(0)
-        return t
     return sig
 
 def body(sig, kind):
@@ -43,15 +33,47 @@ def body(sig, kind):
         return 'self.unsupported("%s").code()' % name
     if ret == '()':
         return 'self.unsupported("%s");' % name
-    return 'self.unsupported("%s");\n        Default::default()' % name
+    # A plain value has no way to say "not implemented": objects.rs must answer it.
+    raise SystemExit('%s returns %s: objects.rs must answer it' % (name, ret))
 
 def args(sig):
     inner = sig[sig.index('(') + 1: sig.index(')')]
     parts = [p.strip() for p in inner.split(',')][1:]
     return ', '.join(p.split(':')[0] for p in parts if p)
 
-out = []
-for spec in sys.argv[1:]:
+OBJECTS = [
+    'Factory:IDXGIFactory4:EnumAdapters1,EnumAdapters,EnumAdapterByLuid,IsCurrent,GetCreationFlags,IsWindowedStereoEnabled,CreateSwapChainForHwnd,CreateSwapChain',
+    'Adapter:IDXGIAdapter1:GetDesc1,GetDesc,EnumOutputs',
+    'Output:IDXGIOutput6:GetDesc,GetDesc1,GetDisplayModeList,GetDisplayModeList1,FindClosestMatchingMode,FindClosestMatchingMode1,CheckHardwareCompositionSupport,SupportsOverlays',
+    'SwapChain:IDXGISwapChain4:Present,Present1,GetBuffer,ResizeBuffers,GetDesc1,GetDesc,GetHwnd,GetDevice,GetCurrentBackBufferIndex,GetLastPresentCount,SetMaximumFrameLatency,GetMaximumFrameLatency,GetFrameLatencyWaitableObject,GetFullscreenState,SetFullscreenState,IsTemporaryMonoSupported,CheckColorSpaceSupport,SetColorSpace1',
+    'Device:ID3D12Device:GetNodeCount,CreateCommandQueue,CreateCommandAllocator,CreateGraphicsPipelineState,CreateCommandList,CheckFeatureSupport,CreateDescriptorHeap,GetDescriptorHandleIncrementSize,CreateRootSignature,CreateRenderTargetView,CreateCommittedResource,CreateFence,GetDeviceRemovedReason,GetCopyableFootprints,GetAdapterLuid,GetResourceAllocationInfo,GetCustomHeapProperties',
+    'Queue:ID3D12CommandQueue:ExecuteCommandLists,Signal,GetDesc',
+    'Allocator:ID3D12CommandAllocator:Reset',
+    'List:ID3D12GraphicsCommandList:Close,Reset,DrawInstanced,DrawIndexedInstanced,CopyBufferRegion,CopyTextureRegion,IASetPrimitiveTopology,RSSetViewports,RSSetScissorRects,OMSetBlendFactor,OMSetStencilRef,SetPipelineState,ResourceBarrier,SetGraphicsRootSignature,IASetIndexBuffer,IASetVertexBuffers,OMSetRenderTargets,ClearRenderTargetView,GetType',
+    'Fence:ID3D12Fence:GetCompletedValue,SetEventOnCompletion,Signal',
+    'Resource:ID3D12Resource:Map,Unmap,GetDesc,GetGPUVirtualAddress',
+    'RootSignature:ID3D12RootSignature:',
+    'PipelineState:ID3D12PipelineState:',
+    'DescriptorHeap:ID3D12DescriptorHeap:GetDesc,GetCPUDescriptorHandleForHeapStart,GetGPUDescriptorHandleForHeapStart',
+    'Blob:ID3DBlob:GetBufferPointer,GetBufferSize',
+]
+
+HEADER = '''//! The methods of each object's interfaces that the front does not do yet, made by com.py from the
+//! `windows` crate's interface traits: each reports itself as not implemented (a command list's also
+//! fails its `Close`), and the methods objects.rs and present.rs do are passed to them.
+
+#![allow(clippy::too_many_arguments, unused_variables)]
+
+use windows::Win32::Graphics::Direct3D::*;
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Dxgi::*;
+
+use crate::objects::*;
+use crate::present::*;
+'''
+
+out = [HEADER]
+for spec in OBJECTS:
     ty, iface, hand = spec.split(':')
     hand = set(hand.split(',')) if hand else set()
     chain = []

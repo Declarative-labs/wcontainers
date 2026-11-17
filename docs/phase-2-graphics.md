@@ -73,8 +73,9 @@ back end; the guest stand-in libraries and the call channel; sound and input.
 
 ## 3. Crates and which way they depend
 
-- `wcontainers-gpu`: the interface (section 4). Depends on `naga` (the common form), `bitflags` and
-  `blake3` (content keys of the built-in programs, as of every key, section 8) only.
+- `wcontainers-gpu`: the interface (section 4). Depends on `naga` (the common form), `bitflags`,
+  `blake3` (content keys of the built-in programs, as of every key, section 8) and `half` (the
+  occlusion counter's `r16float` sums) only.
 - `wcontainers-gpu-webgpu`: the WebGPU back end, written on the `wgpu` crate, which runs natively (Metal,
   Direct3D 12, Vulkan) for tests and on the browser's WebGPU when built for WebAssembly. Depends on the
   interface only (plus `wgpu`).
@@ -660,7 +661,9 @@ Rules a pass description follows:
   the buffers and subresources its draws named as writable storage and those they named any other way
   (both sets empty in the common pass, so the check is a test of one flag); before a draw that would
   put a resource in both, it ends the pass with `Store` and begins the next on the same targets with
-  `Load` (`UsageScopeSplit`, counted); a resolve target is named only by the last part. Running
+  `Load` (`UsageScopeSplit`, counted); each part names the resolve target, whose last resolve is the
+  one that stays (a part cannot be known to be the last when it begins; a split pass costs one more
+  resolve). Running
 queries carry over as at any split (below). Exact: the
   later draw sees the storage writes, as the APIs promise after their barrier or hazard rule. Within one
   draw, Direct3D forbids the same resource as a storage view and any other binding (Direct3D 11's
@@ -900,7 +903,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      from the front, which gets it from the shaders crate (`VariantFlags::COUNTING`); so the helper
      (G1) needs nothing from G6, and G1's tests give it counting programs written in WGSL. Blending happens exactly for the samples that
      pass every per-fragment test, so each sample holds how many fragments passed there.
-  4. A reduction sums the target into the query's result (WebGPU: a dispatch; WebGL 2: a read back
+  4. A reduction sums the target into the query's result (the helper as built at G1 reads the target
+     back now and sums it on the device thread on every back end, so on WebGPU it waits, counted
+     `ReadBackWait`; a dispatch summing it on the GPU is to come with G2; WebGL 2: a read back
      summed on the device thread, a multisampled target resolved first and the average multiplied by
      the sample count). If any sample reached the counting format's exact bound (2^24 for `r32float`,
      2048 for `r16float`), the replay runs again with the draws split into halves and the halves added,
@@ -2197,11 +2202,12 @@ Direct3D 11:
 Direct3D 12:
 - **WebGPU: feature level 11_0** under the same conditions as Direct3D 11 (sizes and
   depth32float-stencil8; otherwise
-  `D3D12CreateDevice` fails as on hardware below 11_0), resource binding tier 1 (`RESOURCE_TABLES` absent; 11_1 requires tier
-  3 in the Direct3D 12 table), shader model 6.0 (6.6 needs tier 3), wave operations where `SUBGROUPS`.
+  `D3D12CreateDevice` fails as on hardware below 11_0), resource binding tier 1 (`RESOURCE_TABLES` absent;
+  11_1 is not reported: Direct3D 12's table asks logic operations and target-independent
+  rasterisation of it), shader model 6.0 (6.6 needs tier 3), wave operations where `SUBGROUPS`.
   Absent: ray tracing, mesh shaders, variable rate shading, sampler feedback, 64-bit integers, tiled
   resources, depth bounds, rasterizer ordered views, conservative rasterisation. Multisampling as for
-  Direct3D 11. When a browser offers resource tables, the front reports tier 3 and 11_1.
+  Direct3D 11. When a browser offers resource tables, the front reports tier 3.
 - **WebGL 2:** not offered; `D3D12CreateDevice` fails as on hardware below 11_0.
 
 ## 10. One source, two builds

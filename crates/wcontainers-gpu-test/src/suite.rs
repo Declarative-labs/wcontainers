@@ -47,6 +47,7 @@ macro_rules! suite {
             linear_filtering_and_address_modes,
             instances_start_at_the_first_instance,
             indexed_strips_restart_and_add_the_base_vertex,
+            fragments_write_storage_buffers,
             present_shows_the_frame,
         );
     };

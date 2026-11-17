@@ -88,6 +88,7 @@ fn the_triangle_scene_matches_direct3d_12() {
         .collect();
     let expected = reference("triangle.png");
     let (allowed, beyond) = tolerance("triangle.png");
+    assert_eq!(picture.len(), expected.len(), "the picture's size");
     let diffs: Vec<u8> = picture
         .iter()
         .zip(&expected)
