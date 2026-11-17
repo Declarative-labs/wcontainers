@@ -18,7 +18,9 @@ pub trait Host {
     fn shown(backend: &mut Self::Backend, window: u32) -> Vec<u8>;
 }
 
-/// Declares one `#[test]` per suite test for a [`Host`].
+/// Declares one `#[test]` per suite test for a [`Host`]; `suite!(@each Host; test, ...)` declares the
+/// named ones only, for a host that cannot run every test (one that cannot see its window leaves out
+/// `present_shows_the_frame`).
 #[macro_export]
 macro_rules! suite {
     ($host:ty) => {

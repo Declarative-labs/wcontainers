@@ -51,9 +51,10 @@ impl wcontainers_gpu_test::Host for Native {
         WINDOW
     }
 
-    fn shown(_: &mut WebGpu, _: u32) -> Option<Vec<u8>> {
-        // A swap chain's texels cannot be read back once presented.
-        None
+    fn shown(_: &mut WebGpu, _: u32) -> Vec<u8> {
+        unreachable!(
+            "a swap chain's texels cannot be read back once presented, so present is left out"
+        )
     }
 }
 
@@ -100,4 +101,18 @@ fn window_target() -> wgpu::SurfaceTargetUnsafe {
     panic!("this host opens windows only on Windows");
 }
 
-wcontainers_gpu_test::suite!(Native);
+// Every suite test but present_shows_the_frame, which needs a window whose texels this host can see.
+wcontainers_gpu_test::suite!(@each Native;
+    buffer_writes_land_in_order_and_read_back,
+    texture_writes_land_and_read_back,
+    copies_move_bytes_exactly,
+    clears_fill_exactly,
+    triangle_covers_the_pixels_whose_centres_it_holds,
+    textured_draw_with_depth_and_blending,
+    edges_through_pixel_centres_follow_the_top_left_rule,
+    strips_take_flat_values_from_the_provoking_vertex,
+    depth_writes_off_leave_the_depth,
+    a_fragment_covering_no_sample_writes_nothing,
+    srgb_targets_convert_colour_but_not_alpha,
+    generate_mips_averages_in_the_values_format,
+);

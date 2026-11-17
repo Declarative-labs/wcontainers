@@ -96,6 +96,14 @@ branches into it at the start and end of every run.
 - From the webgl track (db2c406, merged in run 2): the `BLEND_CONSTANT_ALPHA` doc says a WebGL back
   end refuses a block using the constant colour and constant alpha together, with `Absent` of that
   bit, and the front blends that block in the program. Documentation in the interface's style; kept.
+- From the webgpu track (61a266e, merged at the end of run 2): `SlowPath::PatternClearCopied`, a
+  buffer filled with a non-zero pattern by copies where the API clears only to zero. A counted slow
+  path in the interface's style; kept (94 reasons now).
+- Settled at the end-of-run merges of run 2: the webgpu track's suite host
+  (`wcontainers-gpu-webgpu/tests/suite.rs`) returned None from `shown`; with `shown` now returning
+  the texels, it lists every suite test but `present_shows_the_frame` with `suite!(@each ...)`, since
+  it cannot read a presented swap chain. The webgpu track should add new suite tests to that list,
+  or check presenting where it can see the frame (a canvas in Chrome).
 - Settled at the start-of-run merges of run 2: the webgl back end and the direct3d-11 track's test
   recorder (`wcontainers-direct3d-11/src/record.rs`) were given `resolve`'s format argument; the
   webgl back end's `Caps::adapter` takes its renderer string as the name (PCI numbers and software
