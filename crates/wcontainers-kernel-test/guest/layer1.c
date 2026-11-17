@@ -479,6 +479,14 @@ int main(int argc, char **argv) {
             // Our caller is the container's first process, which Linux keeps from a SIGPIPE it has
             // no handler for; ignored here too, a write with no reader is EPIPE on both sides.
             signal(SIGPIPE, SIG_IGN);
+            // The same for I/O signals: a terminal given FIOASYNC or O_ASYNC names the caller as
+            // the owner (`__tty_fasync`), so SIGIO, or what F_SETSIG chooses, reaches it. Set
+            // directly, since the C library refuses its own signals 32 to 34.
+            static const int io_signals[] = {SIGHUP, SIGTRAP, SIGFPE, SIGTTOU, SIGIO, 32, 64};
+            for (unsigned index = 0; index < sizeof io_signals / sizeof io_signals[0]; index++) {
+                uint64_t ignored[4] = {(uint64_t)SIG_IGN, 0, 0, 0};
+                syscall(SYS_rt_sigaction, io_signals[index], ignored, 0, 8);
+            }
             self_pid = getpid();
             uint64_t self = (uint64_t)self_pid;
             int terminal = opens_terminal(sequence, calls);
