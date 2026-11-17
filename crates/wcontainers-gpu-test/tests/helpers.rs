@@ -914,6 +914,285 @@ fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
     k.healthy();
 }
 
+/// One draw of a counted query: `count` vertices of `vertices` (the quad where None) as a strip,
+/// `instances` times, at the target's size, with the counting program `counting` kept first.
+#[allow(clippy::too_many_arguments)]
+fn counted_draw(
+    k: &mut Kit,
+    passes: &mut PassTracker<Recorder>,
+    counter: &mut OcclusionCounter<Recorder>,
+    (p, counting): (&Id, &Id),
+    (ds, writes): (&Id, bool),
+    set: &Id,
+    size: f32,
+    (vertices, count, instances): (Option<Id>, u32, u32),
+) -> Result<(), GpuError> {
+    let vertices = vertices.unwrap_or(k.quad);
+    let viewport = [Viewport {
+        x: 0f32.to_bits(),
+        y: 0f32.to_bits(),
+        width: size.to_bits(),
+        height: size.to_bits(),
+        min_depth: 0f32.to_bits(),
+        max_depth: 1f32.to_bits(),
+    }];
+    let streams = [Some(VertexBinding {
+        buffer: &vertices,
+        offset: 0,
+    })];
+    let call = DrawCall {
+        program: p,
+        blend: &k.blend,
+        depth_stencil: ds,
+        raster: &k.raster,
+        vertex_layout: &k.layout,
+        bindings: [Some(set), None, None, None],
+        vertex_buffers: &streams,
+        index: None,
+        topology: Topology::TriangleStrip,
+        restart: false,
+        viewports: &viewport,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count,
+            first_instance: 0,
+            instances,
+        },
+    };
+    counter.draw(&mut k.r, passes, &call, counting, false, writes)?;
+    passes.before_draw(&mut k.r, &[])?;
+    k.r.draw(&call);
+    Ok(())
+}
+
+/// A colour target and a depth target of `size` squared, the depth cleared to `depth`.
+fn depth_targets(k: &mut Kit, size: u32, depth: f32) -> PassTargets<Recorder> {
+    let mut targets = colors(k.target(size, size, Format::Rgba8Unorm));
+    targets.depth = Some(k.target(size, size, Format::Depth32Float));
+    let mut clear = PassTracker::default();
+    clear.set_targets(&mut k.r, targets.clone()).unwrap();
+    clear
+        .clear_depth_stencil(&mut k.r, Some(depth.to_bits()), None)
+        .unwrap();
+    clear.close(&mut k.r).unwrap();
+    targets
+}
+
+/// A counted query's draws see what they saw when drawn: a buffer the front writes between them,
+/// and the targets it changes between them, are counted as they were, the front flushing the
+/// counter first. A change of targets without a flush is refused.
+#[test]
+fn the_occlusion_counter_counts_across_writes_and_target_changes() {
+    let mut k = Kit::new();
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let programs = (&p, &counting);
+    let tests = k.depth(Some(CompareFn::Less), false);
+    let a = depth_targets(&mut k, 4, 0.6);
+    let b = depth_targets(&mut k, 4, 0.4);
+    passes.set_targets(&mut k.r, a.clone()).unwrap();
+    // One binding set over one buffer, written between the draws.
+    let set = k.params(0, [1.0; 4], 0.5);
+    let write = |k: &mut Kit, depth: f32| {
+        let bytes: Vec<u8> = [1.0f32, 1.0, 1.0, 1.0, depth]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        k.r.write_buffer(&k.uniforms, 0, &bytes, WriteMode::Ordered);
+    };
+
+    // At 0.5 the quad passes its 16 samples against 0.6; rewritten to 0.75, none.
+    counter.begin(&mut k.r, &mut passes).unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&tests, false),
+        &set,
+        4.0,
+        (None, 4, 1),
+    )
+    .unwrap();
+    counter.flush(&mut k.r, &mut passes).unwrap();
+    write(&mut k, 0.75);
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&tests, false),
+        &set,
+        4.0,
+        (None, 4, 1),
+    )
+    .unwrap();
+    assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), 16);
+
+    // At 0.5 against target A (0.6): 16; then against target B (0.4): none.
+    write(&mut k, 0.5);
+    counter.begin(&mut k.r, &mut passes).unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&tests, false),
+        &set,
+        4.0,
+        (None, 4, 1),
+    )
+    .unwrap();
+    counter.flush(&mut k.r, &mut passes).unwrap();
+    passes.set_targets(&mut k.r, b.clone()).unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&tests, false),
+        &set,
+        4.0,
+        (None, 4, 1),
+    )
+    .unwrap();
+    counter.flush(&mut k.r, &mut passes).unwrap();
+    passes.set_targets(&mut k.r, a.clone()).unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&tests, false),
+        &set,
+        4.0,
+        (None, 4, 1),
+    )
+    .unwrap();
+    assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), 32);
+    assert_eq!(k.r.slow_paths().count(SlowPath::OcclusionCountReplay), 5);
+
+    // The targets changed without a flush.
+    counter.begin(&mut k.r, &mut passes).unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&tests, false),
+        &set,
+        4.0,
+        (None, 4, 1),
+    )
+    .unwrap();
+    passes.set_targets(&mut k.r, b).unwrap();
+    let refused = Err(GpuError::Invalid(
+        "the targets of a counted query changed without a flush",
+    ));
+    assert_eq!(
+        counted_draw(
+            &mut k,
+            &mut passes,
+            &mut counter,
+            programs,
+            (&tests, false),
+            &set,
+            4.0,
+            (None, 4, 1)
+        ),
+        refused
+    );
+    assert_eq!(counter.end(&mut k.r, &mut passes).map(|_| ()), refused);
+    k.healthy();
+}
+
+/// Past the counting format's bound with draws that write depth, each half is counted from the
+/// depth the whole began with, the second after the first: 3,000 instances of a quad at 0.5 writing
+/// depth with `LessEqual` over depth 1.0 (all pass, 12,000), then a quad at 0.3 writing it with
+/// `Less` (4). Counted from the depth the whole left, the first would pass nowhere. A strip of
+/// 3,000 triangles over the target is split into strips of whole pairs.
+#[test]
+fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
+    let mut k = Kit::on(Recorder::with_caps(|c| {
+        let at = Format::R32Float.index();
+        c.formats.uses[at].remove(FormatUse::BLEND);
+    }));
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let programs = (&p, &counting);
+    let writes = k.depth(Some(CompareFn::LessEqual), true);
+    let nearer = k.depth(Some(CompareFn::Less), true);
+    let targets = depth_targets(&mut k, 2, 1.0);
+    passes.set_targets(&mut k.r, targets).unwrap();
+    let near = k.params(0, [1.0; 4], 0.5);
+    let front = k.params(1, [1.0; 4], 0.3);
+    counter.begin(&mut k.r, &mut passes).unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&writes, true),
+        &near,
+        2.0,
+        (None, 4, 3000),
+    )
+    .unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&nearer, true),
+        &front,
+        2.0,
+        (None, 4, 1),
+    )
+    .unwrap();
+    assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), 12_004);
+
+    // A strip of 3,002 vertices cycling through one triangle's corners over the target: 3,000
+    // triangles, each covering every pixel. Counted whole (full), then as two strips of 1,500.
+    let corners: Vec<u8> = [-1.0f32, -1.0, 3.0, -1.0, -1.0, 3.0]
+        .repeat(1001)
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let strip =
+        k.r.create_buffer(&BufferDesc {
+            size: corners.len() as u64,
+            usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    k.r.write_buffer(&strip, 0, &corners, WriteMode::Discard);
+    let none = k.depth(None, false);
+    counter.begin(&mut k.r, &mut passes).unwrap();
+    counted_draw(
+        &mut k,
+        &mut passes,
+        &mut counter,
+        programs,
+        (&none, false),
+        &near,
+        2.0,
+        (Some(strip), 3002, 1),
+    )
+    .unwrap();
+    let before = k.calls("draw");
+    assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), 12_000);
+    assert_eq!(k.calls("draw") - before, 3);
+    k.healthy();
+}
+
 /// On a four-sample target the counter counts samples: a rectangle whose right edge crosses pixel 1
 /// at x = 1.25 covers its sample 2 alone (the standard positions), so two rows hold 4 + 1 samples
 /// each.
@@ -999,8 +1278,9 @@ fn the_combination_tracker_picks_the_tuples_drawn() {
         ('b', ('b', 'y'), 30, 5),
         ('b', ('b', 'y'), 20, 1),
     ] {
+        let c = t.combination(&vertex, &program, &tuple);
         for _ in 0..draws {
-            t.drawn(&vertex, &program, &tuple);
+            t.drawn(c);
         }
     }
     // A new pairing of a drawn vertex shader takes every tuple it was drawn with.
@@ -1013,9 +1293,11 @@ fn the_combination_tracker_picks_the_tuples_drawn() {
     // The cache's record counts as drawn for its vertex shader.
     assert_eq!(t.pick(&'d', &('d', 'z'), |_| true), [40]);
     // Of the five prepared combinations, two are drawn later.
-    t.drawn(&'a', &('a', 'z'), &20);
-    t.drawn(&'c', &('c', 'z'), &10);
-    t.drawn(&'c', &('c', 'z'), &10);
+    let az20 = t.combination(&'a', &('a', 'z'), &20);
+    let cz10 = t.combination(&'c', &('c', 'z'), &10);
+    t.drawn(az20);
+    t.drawn(cz10);
+    t.drawn(cz10);
     assert_eq!(t.prepared_use(), (2, 3));
     // Preparing a combination again counts it once.
     t.pick(&'a', &('a', 'z'), |_| true);
