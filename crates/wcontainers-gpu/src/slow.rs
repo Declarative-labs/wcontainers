@@ -245,11 +245,14 @@ pub enum SlowPath {
     /// A surface format the window lacks (`rgba8unorm` on a Metal layer) drawn into a texture of
     /// that format, then into the window's own format by one draw at each present.
     PresentConverted,
+    /// A captured draw the API's transform feedback cannot take (strips, fans, loops, indices) captured
+    /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
+    CaptureExpanded,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 98] = [
+    pub const ALL: [SlowPath; 99] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -348,6 +351,7 @@ impl SlowPath {
         SlowPath::IntegerClearByDraw,
         SlowPath::StencilWrittenByDraw,
         SlowPath::PresentConverted,
+        SlowPath::CaptureExpanded,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -463,6 +467,7 @@ impl SlowPath {
             SlowPath::IntegerClearByDraw => "integer colour clear made by a draw",
             SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
             SlowPath::PresentConverted => "surface format converted by a draw at present",
+            SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
         }
     }
 }

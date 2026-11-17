@@ -82,6 +82,9 @@ mod native {
     use khronos_egl as egl;
     use std::path::Path;
 
+    /// EGL_DIRECT_COMPOSITION_ANGLE, a window surface attribute of EGL_ANGLE_direct_composition.
+    const DIRECT_COMPOSITION: egl::Int = 0x33A5;
+
     type ClipControl = unsafe extern "system" fn(u32, u32);
     type ProvokingVertex = unsafe extern "system" fn(u32);
     type GetQueryiv = unsafe extern "system" fn(u32, u32, *mut i32);
@@ -91,22 +94,30 @@ mod native {
         clip_control: Option<ClipControl>,
         provoking_vertex: Option<ProvokingVertex>,
         get_queryiv: Option<GetQueryiv>,
-        egl: Option<Egl>,
+        egl: Egl,
     }
 
     struct Egl {
-        instance: egl::DynamicInstance<egl::EGL1_0>,
+        instance: egl::DynamicInstance<egl::EGL1_1>,
         display: egl::Display,
         config: egl::Config,
         context: egl::Context,
-        surface: egl::Surface,
+        /// The 1 by 1 off-screen surface, current while no window surface is.
+        pbuffer: egl::Surface,
+        /// The window surface frames are presented into, current while it exists.
+        window: Option<egl::Surface>,
+        /// The host's windows, by the numbers its graphics hook gives them.
+        windows: std::collections::HashMap<u32, egl::NativeWindowType>,
     }
 
     impl Drop for Egl {
         fn drop(&mut self) {
             let e = &self.instance;
             let _ = e.make_current(self.display, None, None, None);
-            let _ = e.destroy_surface(self.display, self.surface);
+            if let Some(window) = self.window {
+                let _ = e.destroy_surface(self.display, window);
+            }
+            let _ = e.destroy_surface(self.display, self.pbuffer);
             let _ = e.destroy_context(self.display, self.context);
             let _ = e.terminate(self.display);
         }
@@ -173,40 +184,105 @@ mod native {
         /// Natively query results arrive without the thread giving way, so nothing is done.
         pub fn next_task(&self) {}
 
-        /// Gives the default framebuffer, which surfaces present into, this size: a new off-screen
-        /// surface made current in place of the old one.
-        pub fn resize(
-            &mut self,
-            _gl: &glow::Context,
-            width: u32,
-            height: u32,
-        ) -> Result<(), String> {
-            let Some(e) = &mut self.egl else {
-                return Err("no EGL surface to resize".into());
-            };
-            let size = [
-                egl::WIDTH,
-                width as i32,
-                egl::HEIGHT,
-                height as i32,
-                egl::NONE,
-            ];
-            let surface = e
+        /// Names a host window (an `HWND` on Windows) that `attach` may make a surface on.
+        ///
+        /// # Safety
+        /// `window` is a native window that outlives every surface made on it.
+        pub unsafe fn add_window(&mut self, name: u32, window: *mut core::ffi::c_void) {
+            self.egl.windows.insert(name, window);
+        }
+
+        /// Makes an EGL window surface on the host's window `name` and makes it current, so the
+        /// default framebuffer is that window's back buffer.
+        pub fn attach(&mut self, name: u32) -> Result<(), String> {
+            let e = &mut self.egl;
+            let window = *e
+                .windows
+                .get(&name)
+                .ok_or_else(|| format!("no host window {name}"))?;
+            // A flip-model swap chain through DirectComposition where ANGLE offers it: presented
+            // without a copy into the window's redirection surface.
+            let direct = e
                 .instance
-                .create_pbuffer_surface(e.display, e.config, &size)
-                .map_err(|err| format!("eglCreatePbufferSurface: {err}"))?;
+                .query_string(Some(e.display), egl::EXTENSIONS)
+                .is_ok_and(|x| {
+                    x.to_bytes()
+                        .split(|c| *c == b' ')
+                        .any(|n| n == b"EGL_ANGLE_direct_composition")
+                });
+            let attributes = [DIRECT_COMPOSITION, egl::TRUE as egl::Int, egl::NONE];
+            // SAFETY: `add_window`'s caller promised the window outlives its surfaces.
+            let surface = unsafe {
+                e.instance.create_window_surface(
+                    e.display,
+                    e.config,
+                    window,
+                    direct.then_some(&attributes[..]),
+                )
+            }
+            .map_err(|err| format!("eglCreateWindowSurface: {err}"))?;
             e.instance
                 .make_current(e.display, Some(surface), Some(surface), Some(e.context))
                 .map_err(|err| format!("eglMakeCurrent: {err}"))?;
-            let _ = e.instance.destroy_surface(e.display, e.surface);
-            e.surface = surface;
+            e.window = Some(surface);
             Ok(())
+        }
+
+        /// Puts the off-screen surface back and destroys the window surface.
+        pub fn detach(&mut self) {
+            let e = &mut self.egl;
+            if let Some(window) = e.window.take() {
+                let _ = e.instance.make_current(
+                    e.display,
+                    Some(e.pbuffer),
+                    Some(e.pbuffer),
+                    Some(e.context),
+                );
+                let _ = e.instance.destroy_surface(e.display, window);
+            }
+        }
+
+        /// Sets whether swaps wait for the display. The window surface takes the window's size
+        /// itself, so `width` and `height` change nothing here.
+        pub fn resize(
+            &mut self,
+            _gl: &glow::Context,
+            _width: u32,
+            _height: u32,
+            vsync: bool,
+        ) -> Result<(), String> {
+            let e = &self.egl;
+            e.instance
+                .swap_interval(e.display, i32::from(vsync))
+                .map_err(|err| format!("eglSwapInterval: {err}"))
+        }
+
+        /// The size of the default framebuffer frames are presented into.
+        pub fn drawable_size(&self, _gl: &glow::Context) -> (i32, i32) {
+            let e = &self.egl;
+            let Some(window) = e.window else {
+                return (0, 0);
+            };
+            let get = |a| e.instance.query_surface(e.display, window, a).unwrap_or(0);
+            (get(egl::WIDTH), get(egl::HEIGHT))
+        }
+
+        /// Shows the window surface's back buffer.
+        pub fn swap(&self) -> Result<(), String> {
+            let e = &self.egl;
+            match e.window {
+                Some(window) => e
+                    .instance
+                    .swap_buffers(e.display, window)
+                    .map_err(|err| format!("eglSwapBuffers: {err}")),
+                None => Err("no window surface".into()),
+            }
         }
     }
 
     /// Makes an OpenGL ES 3.0 context through ANGLE's `libEGL.dll` (or `libEGL.so`, `libEGL.dylib`) in
     /// `dir`, current on this thread with a 1 by 1 off-screen surface, since every picture is drawn
-    /// into textures.
+    /// into textures until a surface is made on a host window.
     pub fn angle(dir: &Path) -> Result<(glow::Context, Platform), String> {
         let name = if cfg!(windows) {
             "libEGL.dll"
@@ -218,7 +294,7 @@ mod native {
         let path = dir.join(name);
         // SAFETY: ANGLE's libEGL is a plain EGL library; loading it runs no code of ours.
         let instance =
-            unsafe { egl::DynamicInstance::<egl::EGL1_0>::load_required_from_filename(&path) }
+            unsafe { egl::DynamicInstance::<egl::EGL1_1>::load_required_from_filename(&path) }
                 .map_err(|e| format!("loading {}: {e}", path.display()))?;
         // SAFETY: the default display needs no native display handle.
         let display = unsafe { instance.get_display(egl::DEFAULT_DISPLAY) }
@@ -229,7 +305,7 @@ mod native {
         // EGL sorts deeper colour buffers first, so the RGBA8 one surfaces present into is picked out.
         let attributes = [
             egl::SURFACE_TYPE,
-            egl::PBUFFER_BIT,
+            egl::PBUFFER_BIT | egl::WINDOW_BIT,
             egl::RENDERABLE_TYPE,
             egl::OPENGL_ES3_BIT,
             egl::NONE,
@@ -257,7 +333,7 @@ mod native {
                     && get(egl::SAMPLES) == 0
             })
             .ok_or("ANGLE has no RGBA8 OpenGL ES 3 configuration")?;
-        // OpenGL ES is EGL's bound API from the start, so only EGL 1.0's calls are needed.
+        // OpenGL ES is EGL's bound API from the start; EGL 1.1 adds the swap interval.
         let context = instance
             .create_context(
                 display,
@@ -266,11 +342,11 @@ mod native {
                 &[egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE],
             )
             .map_err(|e| format!("eglCreateContext: {e}"))?;
-        let surface = instance
+        let pbuffer = instance
             .create_pbuffer_surface(display, config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
             .map_err(|e| format!("eglCreatePbufferSurface: {e}"))?;
         instance
-            .make_current(display, Some(surface), Some(surface), Some(context))
+            .make_current(display, Some(pbuffer), Some(pbuffer), Some(context))
             .map_err(|e| format!("eglMakeCurrent: {e}"))?;
         let load = |name: &str| {
             instance
@@ -304,13 +380,15 @@ mod native {
             clip_control,
             provoking_vertex,
             get_queryiv,
-            egl: Some(Egl {
+            egl: Egl {
                 instance,
                 display,
                 config,
                 context,
-                surface,
-            }),
+                pbuffer,
+                window: None,
+                windows: Default::default(),
+            },
         };
         Ok((gl, platform))
     }
@@ -420,13 +498,35 @@ mod web {
             unsafe { next_task() }
         }
 
+        /// The context draws into its canvas whatever window the host names.
+        pub fn attach(&mut self, _name: u32) -> Result<(), String> {
+            Ok(())
+        }
+
+        pub fn detach(&mut self) {}
+
+        /// The size of the canvas's drawing buffer, which frames are presented into.
+        pub fn drawable_size(&self, _gl: &glow::Context) -> (i32, i32) {
+            (
+                self.context.drawing_buffer_width(),
+                self.context.drawing_buffer_height(),
+            )
+        }
+
+        /// The browser shows the drawing buffer when the device thread returns to its event loop.
+        pub fn swap(&self) -> Result<(), String> {
+            Ok(())
+        }
+
         /// Gives the canvas's drawing buffer, which surfaces present into, this size. Err when the
         /// browser made it smaller (WebGL may, under memory pressure or past its largest size).
+        /// `vsync` changes nothing: the browser shows the canvas at the display's rate.
         pub fn resize(
             &mut self,
             _gl: &glow::Context,
             width: u32,
             height: u32,
+            _vsync: bool,
         ) -> Result<(), String> {
             for (name, value) in [("width", width), ("height", height)] {
                 js_sys::Reflect::set(

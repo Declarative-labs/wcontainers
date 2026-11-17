@@ -1796,7 +1796,9 @@ converted vertex shader.
 - Read back now: `readPixels` and `getBufferSubData`, inside the call. Depth and stencil, which
   `readPixels` cannot take, are drawn into a colour texture first (`DepthReadByDraw`, 4.12).
 - Fans and loops native; 8-bit indices native; transform feedback native, with or without
-  rasterising; `resolve_queries` by its default (`QueryResolveWait`), since GLES 3.0 gives query results
+  rasterising, for lists without indices (GLES 3.0 captures nothing else); strips, fans, loops and
+  indexed draws are captured as points in list order, one draw per run of consecutive vertices, with
+  indices read back first, and drawn again for the picture when rasterising (`CaptureExpanded`); `resolve_queries` by its default (`QueryResolveWait`), since GLES 3.0 gives query results
   only to the host; `timestamps_disjoint` from `GPU_DISJOINT_EXT`; the 24-bit depth probe (4.11); base vertex and first instance by binding the vertex
   streams at an offset (`BaseVertexRebind`), with the hidden uniforms `naga_vs_base_vertex` and
   `naga_vs_first_instance` set per draw so `vertex_index` and `instance_index` still include them

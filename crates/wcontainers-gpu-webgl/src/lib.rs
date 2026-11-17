@@ -7,6 +7,7 @@
 //! negate y and the front face is swapped.
 
 mod caps;
+mod capture;
 mod convert;
 mod depth;
 mod format;
@@ -197,7 +198,7 @@ pub type QuerySet = Handle<QuerySetObj>;
 #[derive(Clone, Debug)]
 pub enum NoTable {}
 
-/// The one surface a back end has: its context's canvas (natively, the EGL surface).
+/// The one surface a back end has: its context's canvas (natively, an EGL window surface).
 #[derive(Clone, Debug)]
 pub struct Surface {
     id: Id,
@@ -540,6 +541,17 @@ impl WebGl {
     pub fn on_angle(dir: &std::path::Path, off: &[&str]) -> Result<WebGl, String> {
         let (gl, platform) = platform::angle(dir)?;
         Ok(WebGl::new(gl, platform, off))
+    }
+
+    /// Names a host window (an `HWND` on Windows) that `create_surface` may attach to, as the host's
+    /// graphics hook numbers it.
+    ///
+    /// # Safety
+    /// `window` is a native window that outlives every surface made on it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub unsafe fn add_window(&mut self, name: u32, window: *mut core::ffi::c_void) {
+        // SAFETY: as the caller promises.
+        unsafe { self.platform.add_window(name, window) }
     }
 
     /// Makes the back end on a canvas's WebGL 2 context.
@@ -1101,38 +1113,6 @@ impl WebGl {
         self.applied.blend = 0;
         self.applied.depth_stencil = 0;
         self.applied.raster = 0;
-    }
-
-    /// The texels last presented, read from the default framebuffer, rows top first: for hosts that
-    /// cannot see the window otherwise (natively, the EGL surface is off-screen).
-    pub fn read_presented(&mut self) -> Vec<u8> {
-        let Some((t, _)) = self.surface.as_ref().and_then(|s| s.frame.as_ref()) else {
-            return Vec::new();
-        };
-        let (w, h) = (t.desc.width as usize, t.desc.height as usize);
-        let mut texels = vec![0; w * h * 4];
-        // SAFETY: plain GL calls; the read framebuffer binding is put back.
-        unsafe {
-            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-            self.gl.read_pixels(
-                0,
-                0,
-                w as i32,
-                h as i32,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelPackData::Slice(Some(&mut texels)),
-            );
-            self.gl
-                .bind_framebuffer(glow::READ_FRAMEBUFFER, self.applied.read_framebuffer);
-        }
-        // GL's row 0 is the bottom of the window.
-        texels
-            .chunks_exact(w * 4)
-            .rev()
-            .flatten()
-            .copied()
-            .collect()
     }
 
     fn framebuffer(
@@ -2673,11 +2653,12 @@ impl Backend for WebGl {
 
     fn destroy(&mut self, object: Object<Self>) {
         if let Object::Surface(surface) = &object {
-            if self.surface.as_ref().is_some_and(|s| s.id == surface.id)
-                && let Some((t, v)) = self.surface.take().and_then(|s| s.frame)
-            {
-                self.destroy(Object::TextureView(v));
-                self.destroy(Object::Texture(t));
+            if self.surface.as_ref().is_some_and(|s| s.id == surface.id) {
+                if let Some((t, v)) = self.surface.take().and_then(|s| s.frame) {
+                    self.destroy(Object::TextureView(v));
+                    self.destroy(Object::Texture(t));
+                }
+                self.platform.detach();
             }
             return;
         }
@@ -3808,27 +3789,32 @@ impl Backend for WebGl {
     }
 
     /// A WebGL context draws into one canvas, the one the back end was made on, whatever window the
-    /// host names; so a back end has one surface at a time.
-    fn create_surface(&mut self, _window: u32) -> Result<Surface, GpuError> {
+    /// host names; so a back end has one surface at a time. Natively the surface is an EGL window
+    /// surface on a window the host named with `add_window`.
+    fn create_surface(&mut self, window: u32) -> Result<Surface, GpuError> {
         if self.surface.is_some() {
             return Err(GpuError::Invalid(
                 "webgl: a back end has one surface, its context's canvas",
             ));
+        }
+        if let Err(e) = self.platform.attach(window) {
+            self.last_log = format!("webgl: attaching to window {window}: {e}");
+            return Err(GpuError::Invalid("webgl: the host has no such window"));
         }
         let id = self.id();
         self.surface = Some(SurfaceState { id, frame: None });
         Ok(Surface { id })
     }
 
-    /// `vsync` changes nothing: the browser shows the canvas when it composites the page, at the
-    /// display's rate, and presenting never waits.
+    /// In the browser `vsync` changes nothing: the browser shows the canvas when it composites the
+    /// page, at the display's rate, and presenting never waits. Natively it is the swap interval.
     fn configure_surface(
         &mut self,
         surface: &Surface,
         format: Format,
         width: u32,
         height: u32,
-        _vsync: bool,
+        vsync: bool,
     ) -> Result<(), GpuError> {
         if self.surface.as_ref().map(|s| s.id) != Some(surface.id) {
             return Err(GpuError::Invalid("webgl: the surface was destroyed"));
@@ -3836,7 +3822,7 @@ impl Backend for WebGl {
         if format != Format::Rgba8Unorm {
             return Err(GpuError::Invalid("webgl: surfaces take rgba8unorm only"));
         }
-        if let Err(e) = self.platform.resize(&self.gl, width, height) {
+        if let Err(e) = self.platform.resize(&self.gl, width, height, vsync) {
             self.last_log = format!("webgl: resizing the surface: {e}");
             return Err(GpuError::OutOfMemory);
         }
@@ -3885,8 +3871,10 @@ impl Backend for WebGl {
         }
     }
 
-    /// Copies the frame into the drawing buffer, upside down since GL's row 0 is the bottom of the
-    /// window; the browser shows it when the device thread returns to its event loop.
+    /// Copies the frame into the drawing buffer (natively the window's back buffer, then swapped),
+    /// upside down since GL's row 0 is the bottom of the window, stretched to the drawing buffer's
+    /// size where the host's window has another; the browser shows it when the device thread returns
+    /// to its event loop.
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
         if let Some(reason) = self.lost {
             return Err(match reason {
@@ -3904,6 +3892,7 @@ impl Backend for WebGl {
         self.read_framebuffer(&texture, 0, 0);
         self.open_writes();
         let (w, h) = (texture.desc.width as i32, texture.desc.height as i32);
+        let (dw, dh) = self.platform.drawable_size(&self.gl);
         // SAFETY: plain GL calls; the frame's framebuffer is bound for reading.
         unsafe {
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
@@ -3914,12 +3903,17 @@ impl Backend for WebGl {
                 w,
                 h,
                 0,
-                h,
-                w,
+                dh,
+                dw,
                 0,
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );
+        }
+        if let Err(e) = self.platform.swap() {
+            self.last_log = format!("webgl: presenting: {e}");
+            self.fail(LossReason::Removed);
+            return Err(GpuError::DeviceLost);
         }
         Ok(())
     }
@@ -4025,8 +4019,10 @@ impl Backend for WebGl {
 
     /// Transform feedback: the program linked again with its location outputs as varyings
     /// (interleaved, or separate with more than one target), drawn with `RASTERIZER_DISCARD` unless
-    /// it rasterises. GLES 3.0 captures only draws of lists without indices. A target holding indices
-    /// too gets its index GL buffer refreshed before an index read (`IndexTwinReadBack`).
+    /// it rasterises. GLES 3.0 captures only lists without indices; other draws are captured as
+    /// points in list order, one draw per run of consecutive vertices, and drawn again for the picture
+    /// (`CaptureExpanded`). A target holding indices too gets its index GL buffer refreshed before an
+    /// index read (`IndexTwinReadBack`).
     fn capture_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,
@@ -4043,21 +4039,6 @@ impl Backend for WebGl {
                  saying whether a pass is open",
             ));
         }
-        let (mode, per_primitive) = match call.topology {
-            Topology::PointList => (glow::POINTS, 1),
-            Topology::LineList => (glow::LINES, 2),
-            Topology::TriangleList => (glow::TRIANGLES, 3),
-            _ => return Err(self.unbuilt("capture_vertices of strips, fans and loops")),
-        };
-        let DrawRange::Vertices {
-            first,
-            count,
-            first_instance,
-            instances,
-        } = call.range
-        else {
-            return Err(self.unbuilt("capture_vertices of indexed draws"));
-        };
         let outputs = &call.program.stages.0.outputs;
         let separate = targets.len() > 1;
         if outputs.is_empty()
@@ -4069,8 +4050,110 @@ impl Backend for WebGl {
                  32-bit, or other than one target per output",
             ));
         }
-        // GL captures whole primitives only.
-        let vertices = u64::from(count - count % per_primitive) * u64::from(instances);
+        let native = match (call.topology, &call.range) {
+            (Topology::PointList, DrawRange::Vertices { .. }) => Some((glow::POINTS, 1)),
+            (Topology::LineList, DrawRange::Vertices { .. }) => Some((glow::LINES, 2)),
+            (Topology::TriangleList, DrawRange::Vertices { .. }) => Some((glow::TRIANGLES, 3)),
+            _ => None,
+        };
+        // The vertex numbers in list order, for draws GL cannot capture as they are.
+        let mut list = Vec::new();
+        let (first_instance, instances, vertices_per_instance) = match (native, &call.range) {
+            (
+                Some((_, per_primitive)),
+                DrawRange::Vertices {
+                    count,
+                    first_instance,
+                    instances,
+                    ..
+                },
+            ) => (*first_instance, *instances, count - count % per_primitive),
+            (
+                None,
+                DrawRange::Vertices {
+                    first,
+                    count,
+                    first_instance,
+                    instances,
+                },
+            ) => {
+                let numbers = (*first..first.saturating_add(*count)).map(Some);
+                capture::list_order(
+                    call.topology,
+                    call.raster.0.1.provoking(),
+                    numbers,
+                    &mut list,
+                );
+                (*first_instance, *instances, list.len() as u32)
+            }
+            (
+                None,
+                DrawRange::Indexed {
+                    first,
+                    count,
+                    base_vertex,
+                    first_instance,
+                    instances,
+                },
+            ) => {
+                let Some(index) = &call.index else {
+                    return Err(GpuError::Invalid("an indexed draw with no index buffer"));
+                };
+                let size = index.format.size();
+                let start = index.offset + u64::from(*first) * u64::from(size);
+                let bytes = u64::from(*count) * u64::from(size);
+                if start + bytes > index.buffer.size {
+                    return Err(GpuError::Invalid(
+                        "indices past the end of the index buffer",
+                    ));
+                }
+                let mut raw = vec![0u8; bytes as usize];
+                self.refresh(index.buffer, Some(true));
+                let gl_buffer = index.buffer.index.or(index.buffer.data);
+                // SAFETY: plain GL calls; the copy target takes buffers of either WebGL type, and the
+                // range was checked above.
+                let read = unsafe {
+                    self.gl.bind_buffer(glow::COPY_READ_BUFFER, gl_buffer);
+                    platform::get_buffer_sub_data(
+                        &self.gl,
+                        glow::COPY_READ_BUFFER,
+                        start as i32,
+                        &mut raw,
+                    )
+                };
+                if !read {
+                    return Err(self.read_failed());
+                }
+                // GL restarts at the largest value always (a front whose API does not rewrites).
+                let restart = index.format.restart_value();
+                let mut negative = false;
+                let numbers = raw.chunks_exact(size as usize).map(|c| {
+                    let mut word = [0; 4];
+                    word[..c.len()].copy_from_slice(c);
+                    let i = u32::from_le_bytes(word);
+                    if i == restart {
+                        return None;
+                    }
+                    let v = i64::from(i) + i64::from(*base_vertex);
+                    negative |= v < 0;
+                    Some(v.max(0) as u32)
+                });
+                capture::list_order(
+                    call.topology,
+                    call.raster.0.1.provoking(),
+                    numbers,
+                    &mut list,
+                );
+                if negative {
+                    return Err(self.unbuilt(
+                        "capture_vertices reaching below vertex 0 by a negative base vertex",
+                    ));
+                }
+                (*first_instance, *instances, list.len() as u32)
+            }
+            _ => return Err(GpuError::Absent(Features::INDIRECT)),
+        };
+        let vertices = u64::from(vertices_per_instance) * u64::from(instances);
         let stride = |n: usize| -> u64 {
             if separate {
                 u64::from(outputs[n].1)
@@ -4089,9 +4172,10 @@ impl Backend for WebGl {
                  or into a range smaller than the vertices the draw makes",
             ));
         }
+        let discard = !rasterize || native.is_none();
         let kind = shader::Capture {
             separate,
-            rasterize,
+            rasterize: !discard,
         };
         let slot = &call.program.captures[kind.slot()];
         let capture = match slot.get() {
@@ -4113,9 +4197,9 @@ impl Backend for WebGl {
         let gl = &self.gl;
         // SAFETY: plain GL calls; the targets' data GL buffers are alive and hold the ranges.
         unsafe {
-            if !rasterize {
+            if discard {
                 // Outside a pass nothing is drawn; the default framebuffer is always complete.
-                if self.applied.draw_framebuffer.is_some() {
+                if !rasterize && self.applied.draw_framebuffer.is_some() {
                     gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
                     self.applied.draw_framebuffer = None;
                 }
@@ -4143,24 +4227,51 @@ impl Backend for WebGl {
                 self.applied.program = capture.id;
                 self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
             }
-            gl.begin_transform_feedback(mode);
+            gl.begin_transform_feedback(native.map_or(glow::POINTS, |(mode, _)| mode));
         }
-        self.draw(&DrawCall {
-            program: &capture,
-            index: None,
-            range: DrawRange::Vertices {
-                first,
-                count,
-                first_instance,
-                instances,
-            },
-            ..*call
-        });
+        if let DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        } = call.range
+            && native.is_some()
+        {
+            self.draw(&DrawCall {
+                program: &capture,
+                index: None,
+                range: DrawRange::Vertices {
+                    first,
+                    count,
+                    first_instance,
+                    instances,
+                },
+                ..*call
+            });
+        } else {
+            self.slow.hit(SlowPath::CaptureExpanded);
+            for instance in 0..instances {
+                for (first, count) in capture::runs(&list) {
+                    self.draw(&DrawCall {
+                        program: &capture,
+                        index: None,
+                        topology: Topology::PointList,
+                        range: DrawRange::Vertices {
+                            first,
+                            count,
+                            first_instance: first_instance + instance,
+                            instances: 1,
+                        },
+                        ..*call
+                    });
+                }
+            }
+        }
         let gl = &self.gl;
         // SAFETY: plain GL calls ending what was begun above.
         unsafe {
             gl.end_transform_feedback();
-            if !rasterize {
+            if discard {
                 gl.disable(glow::RASTERIZER_DISCARD);
             }
             for n in 0..targets.len() {
@@ -4173,6 +4284,9 @@ impl Backend for WebGl {
                 let end = t.offset + vertices * stride(n);
                 self.mark_stale(t.buffer, true, t.offset, end);
             }
+        }
+        if rasterize && native.is_none() {
+            self.draw(call);
         }
         match self.lost {
             Some(_) => Err(GpuError::DeviceLost),
