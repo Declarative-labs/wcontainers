@@ -108,7 +108,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
             None => E_NOINTERFACE,
         };
     }
-    let factory: IDXGIFactory4 = Factory(flags).into();
+    let factory: IDXGIFactory4 = Factory::new(flags).into();
     // SAFETY: as the caller passed them.
     unsafe { hand_out(&factory.cast().unwrap(), riid, out) }
 }

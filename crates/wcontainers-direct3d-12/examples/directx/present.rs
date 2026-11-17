@@ -151,7 +151,7 @@ unsafe fn fill<T>(modes: Vec<T>, count: *mut u32, list: *mut T) -> Result<()> {
 impl Output {
     /// The adapter the output belongs to.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give(crate::objects::Factory(0).EnumAdapters1(0)?, riid, out)
+        give(crate::objects::Factory::new(0).EnumAdapters1(0)?, riid, out)
     }
 
     fn name(&self) -> [u16; 32] {
@@ -659,7 +659,7 @@ impl SwapChain {
 
     /// A new factory: swap chains do not keep the one that made them.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give::<IDXGIFactory4>(crate::objects::Factory(0).into(), riid, out)
+        give::<IDXGIFactory4>(crate::objects::Factory::new(0).into(), riid, out)
     }
 
     /// The output showing most of the window.

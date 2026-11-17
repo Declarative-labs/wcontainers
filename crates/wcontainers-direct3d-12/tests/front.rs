@@ -204,6 +204,7 @@ fn webgpu_reports_11_0_and_tier_1() {
     assert_eq!(quality_levels(&caps, 65, 1), Some(1));
     assert_eq!(quality_levels(&caps, 65, 4), Some(0));
     assert_eq!(quality_levels(&caps, 28, 0), None);
+    assert_eq!(quality_levels(&caps, 66, 1), None);
     assert_eq!(
         max_feature_level(&caps, &[0x9100, 0xa000, 0xb000, 0xc000]),
         Some(FEATURE_LEVEL_11_0)

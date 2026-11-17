@@ -86,7 +86,11 @@ not_implemented!(
 
 /// A DXGI factory, with the flags it was made with.
 #[implement(IDXGIFactory4)]
-pub struct Factory(pub u32);
+pub struct Factory {
+    pub flags: u32,
+    /// The window `MakeWindowAssociation` named, as a number.
+    window: std::sync::atomic::AtomicIsize,
+}
 
 impl Factory {
     pub fn EnumAdapters1(&self, adapter: u32) -> Result<IDXGIAdapter1> {
@@ -114,13 +118,37 @@ impl Factory {
         give(self.EnumAdapters1(0)?, riid, out)
     }
 
+    pub fn new(flags: u32) -> Self {
+        Self {
+            flags,
+            window: Default::default(),
+        }
+    }
+
+    /// The front never changes modes on Alt+Enter nor reacts to Print Screen, the keys this
+    /// association governs, so only the window is kept.
+    pub fn MakeWindowAssociation(&self, window: HWND, flags: DXGI_MWA_FLAGS) -> Result<()> {
+        if flags.0
+            & !(DXGI_MWA_NO_WINDOW_CHANGES.0 | DXGI_MWA_NO_ALT_ENTER.0 | DXGI_MWA_NO_PRINT_SCREEN.0)
+            != 0
+        {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        self.window.store(window.0 as isize, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn GetWindowAssociation(&self) -> Result<HWND> {
+        Ok(HWND(self.window.load(Ordering::Relaxed) as *mut c_void))
+    }
+
     /// The adapter list never changes.
     pub fn IsCurrent(&self) -> BOOL {
         TRUE
     }
 
     pub fn GetCreationFlags(&self) -> DXGI_CREATE_FACTORY_FLAGS {
-        DXGI_CREATE_FACTORY_FLAGS(self.0)
+        DXGI_CREATE_FACTORY_FLAGS(self.flags)
     }
 
     /// No stereo output.
@@ -231,7 +259,7 @@ impl Adapter {
     /// The host's monitors, the primary first.
     /// A new factory: adapters do not keep the one that enumerated them.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give::<IDXGIFactory4>(Factory(0).into(), riid, out)
+        give::<IDXGIFactory4>(Factory::new(0).into(), riid, out)
     }
 
     pub fn EnumOutputs(&self, output: u32) -> Result<IDXGIOutput> {
@@ -1087,12 +1115,13 @@ impl Device {
                 let layers = u32::from(r.desc.DepthOrArraySize);
                 // SAFETY: an optional description, as the API allows.
                 match unsafe { pdesc.as_ref() } {
+                    // The whole of the top level: every slice of an array or a 3D texture.
                     None => Some(TargetView {
                         resource: r.id,
                         format: r.desc.Format.0 as u32,
                         mip: 0,
                         first_layer: 0,
-                        layers: 1,
+                        layers: layers.max(1),
                     }),
                     Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D => {
                         // SAFETY: the member the dimension names.
@@ -2122,6 +2151,16 @@ impl Resource {
             .into(),
         );
         resource.into()
+    }
+
+    /// No resource of this front has a protected session.
+    pub fn GetProtectedResourceSession(
+        &self,
+        _riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        clear_out(out);
+        Err(DXGI_ERROR_NOT_FOUND.into())
     }
 
     /// The description with an empty sampler feedback region (`D3D12_OPTIONS7` reports no

@@ -179,9 +179,10 @@ pub fn depth_bounds(caps: &Caps) -> bool {
 /// `CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS)` for a `DXGI_FORMAT` value, as
 /// Direct3D 12 answers: one quality level for one sample whatever the format; for more, one where a
 /// resource of the format may have that count and none otherwise; None (the call fails) for no
-/// samples.
+/// samples, or for `R1_UNORM` (66), which Direct3D 12 takes for no resource.
 pub fn quality_levels(caps: &Caps, format: u32, samples: u32) -> Option<u32> {
     match samples {
+        _ if format == 66 => None,
         0 => None,
         1 => Some(1),
         _ => Some(u32::from(takes_samples(caps, format, samples))),
