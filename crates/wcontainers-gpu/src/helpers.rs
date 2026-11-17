@@ -7,6 +7,7 @@
 
 use crate::backend::Backend;
 use crate::error::GpuError;
+use crate::format::FormatKind;
 use crate::resource::{AddressMode, BorderColor, Filter, SamplerDesc, ViewDimension};
 use crate::shader::{Program, ShaderModule, ShaderStage};
 use crate::state::{
@@ -74,6 +75,10 @@ pub(crate) enum Builtin {
     ClearDepth,
     /// No fragment shader: stencil-only clears.
     ClearStencil,
+    /// Writes each texel of the texture at binding 32 (of this kind: float, unsigned or signed)
+    /// into the same place of the target: with `true`, from a multisampled texture, run per sample
+    /// and reading that sample; with `false`, from a single-sampled one into every sample.
+    SampleCopy(FormatKind, bool),
 }
 
 impl Builtin {
@@ -82,6 +87,7 @@ impl Builtin {
         !matches!(
             self,
             Builtin::ClearStencil
+                | Builtin::SampleCopy(..)
                 | Builtin::Mip(ViewDimension::D2, MipRead::Filtered | MipRead::Unfiltered)
         )
     }
@@ -102,6 +108,28 @@ impl Builtin {
         }
         let body = match self {
             Builtin::Mip(dim, read) => return mip_source(s, dim, read),
+            Builtin::SampleCopy(kind, multisampled) => {
+                let t = match kind {
+                    FormatKind::Uint => "u32",
+                    FormatKind::Sint => "i32",
+                    _ => "f32",
+                };
+                let (ty, input, sample) = if multisampled {
+                    (
+                        "texture_multisampled_2d",
+                        ", @builtin(sample_index) i: u32",
+                        "i32(i)",
+                    )
+                } else {
+                    ("texture_2d", "", "0")
+                };
+                s.push_str(&format!(
+                    "@group(0) @binding(32) var src: {ty}<{t}>;\n\
+                     @fragment fn fs(@builtin(position) p: vec4<f32>{input}) -> @location(0) vec4<{t}> {{\n    \
+                     return textureLoad(src, vec2<i32>(p.xy), {sample});\n}}\n"
+                ));
+                return s;
+            }
             Builtin::ClearFloat => {
                 "@fragment fn fs() -> @location(0) vec4<f32> { return bitcast<vec4<f32>>(params.value); }"
             }
@@ -310,10 +338,10 @@ pub(crate) const RASTER: RasterDesc = RasterDesc {
 pub(crate) fn module(which: Builtin) -> Result<(naga::Module, naga::valid::ModuleInfo), GpuError> {
     let module = naga::front::wgsl::parse_str(&which.source())
         .map_err(|_| GpuError::Invalid("built-in shaders do not parse"))?;
-    let caps = if matches!(which, Builtin::Mip(ViewDimension::CubeArray, _)) {
-        naga::valid::Capabilities::CUBE_ARRAY_TEXTURES
-    } else {
-        naga::valid::Capabilities::empty()
+    let caps = match which {
+        Builtin::Mip(ViewDimension::CubeArray, _) => naga::valid::Capabilities::CUBE_ARRAY_TEXTURES,
+        Builtin::SampleCopy(_, true) => naga::valid::Capabilities::MULTISAMPLED_SHADING,
+        _ => naga::valid::Capabilities::empty(),
     };
     let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
         .validate(&module)

@@ -30,6 +30,10 @@ fn all() -> Vec<Builtin> {
             v.push(Builtin::Mip(dim, MipRead::Snorm));
         }
     }
+    for kind in [FormatKind::Float, FormatKind::Uint, FormatKind::Sint] {
+        v.push(Builtin::SampleCopy(kind, false));
+        v.push(Builtin::SampleCopy(kind, true));
+    }
     v
 }
 
@@ -68,7 +72,7 @@ fn glsl_es_300(
 }
 
 /// Writes every built-in program as WGSL, and as GLSL ES 3.00 for WebGL 2 (all but the cube-array
-/// ones, which WebGL 2 never makes). With `WCONTAINERS_GPU_BUILTINS_OUT` set, also saves each file
+/// ones and those reading samples, which WebGL 2 never makes). With `WCONTAINERS_GPU_BUILTINS_OUT` set, also saves each file
 /// there, for compiling in a browser.
 #[test]
 fn every_built_in_program_writes_in_each_back_end_language() {
@@ -81,7 +85,10 @@ fn every_built_in_program_writes_in_each_back_end_language() {
         let name = format!("{which:?}").replace([' ', '(', ')', ','], "");
         let wgsl = wgsl::write_string(&module, &info, wgsl::WriterFlags::empty())
             .unwrap_or_else(|e| panic!("{which:?}: wgsl: {e}"));
-        let webgl = !matches!(which, Builtin::Mip(ViewDimension::CubeArray, _));
+        let webgl = !matches!(
+            which,
+            Builtin::Mip(ViewDimension::CubeArray, _) | Builtin::SampleCopy(_, true)
+        );
         let mut files = alloc::vec![(format!("{name}.wgsl"), wgsl)];
         for (i, ep) in module.entry_points.iter().enumerate() {
             match glsl_es_300(&module, &info, i) {

@@ -6,24 +6,28 @@
 //! different sizes ([`SlowPath::AttachmentsFitted`]), splits a pass where a draw would break its usage
 //! scope ([`SlowPath::UsageScopeSplit`]), and carries a running occlusion query across every split.
 
-use crate::MAX_COLOR_TARGETS;
-use crate::backend::{Backend, aspects};
+use crate::backend::{Backend, Object, aspects, builtin_draw, full_viewport};
 use crate::draw::{
-    AspectOps, ColorAttachment, DepthAttachment, EmptyPass, LoadOp, PassDesc, ScissorRect, StoreOp,
+    AspectOps, ColorAttachment, DepthAttachment, DrawCall, EmptyPass, LoadOp, PassDesc,
+    ScissorRect, StoreOp,
 };
 use crate::error::GpuError;
-use crate::format::Format;
+use crate::format::{Format, FormatKind};
+use crate::helpers::{self, Builtin};
 use crate::resource::{
-    Extent, Origin, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    ViewDimension,
+    BindingEntry, BindingResource, Extent, Origin, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, ViewDimension,
 };
+use crate::shader::StageSet;
 use crate::slow::SlowPath;
+use crate::{Features, MAX_COLOR_TARGETS};
 use alloc::vec::Vec;
 use core::ops::Range;
 
 /// One attachment: the view a pass names and the subresource it is, as the front made them. A colour
 /// attachment or resolve target whose size differs from the pass's is copied in and out of a
-/// temporary, so its texture needs `COPY_SRC` and `COPY_DST`.
+/// temporary, so its texture needs `COPY_SRC` and `COPY_DST`; a multisampled one is copied by a draw
+/// reading it, so it needs `SAMPLE` too.
 #[derive(Debug)]
 pub struct Target<B: Backend> {
     pub view: B::TextureView,
@@ -335,10 +339,18 @@ impl<B: Backend> PassTracker<B> {
                 height: area.height,
                 depth_or_layers: 1,
             };
+            let targets = targets.clone();
             for (i, c) in targets.colors.iter().enumerate() {
                 let Some(c) = c else { continue };
-                if let Some((t, true)) = open.colors[i] {
-                    b.copy_texture(&self.pool[t].region(), &c.target.region(), extent);
+                match open.colors[i] {
+                    Some((t, true)) if c.target.samples > 1 => {
+                        let temporary = self.pool[t].target(c.target.format);
+                        self.copy_samples(b, &temporary, &c.target, extent)?;
+                    }
+                    Some((t, true)) => {
+                        b.copy_texture(&self.pool[t].region(), &c.target.region(), extent)
+                    }
+                    _ => {}
                 }
                 if let (Some(t), Some(r)) = (open.resolves[i], &c.resolve) {
                     b.copy_texture(&self.pool[t].region(), &r.region(), extent);
@@ -455,7 +467,10 @@ impl<B: Backend> PassTracker<B> {
             depth_or_layers: 1,
             mip_levels: 1,
             samples,
-            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            usage: TextureUsage::RENDER
+                | TextureUsage::COPY_SRC
+                | TextureUsage::COPY_DST
+                | TextureUsage::SAMPLE,
             cube: false,
             reinterpret: false,
         })?;
@@ -478,6 +493,73 @@ impl<B: Backend> PassTracker<B> {
             in_use: true,
         });
         Ok(self.pool.len() - 1)
+    }
+
+    /// Copies the area `extent` of multisampled `src` into `dst` by a draw: each sample read and
+    /// written where the back end reads samples in programs, otherwise the source resolved and drawn
+    /// into every sample ([`SlowPath::MultisampleCopyResolved`], a listed loss).
+    fn copy_samples(
+        &mut self,
+        b: &mut B,
+        src: &Target<B>,
+        dst: &Target<B>,
+        extent: Extent,
+    ) -> Result<(), GpuError> {
+        let kind = match src.format.kind() {
+            k @ (FormatKind::Uint | FormatKind::Sint) => k,
+            _ => FormatKind::Float,
+        };
+        let direct = b
+            .caps()
+            .features
+            .contains(Features::MULTISAMPLE_READ | Features::SAMPLE_SHADING);
+        let (view, which) = if direct {
+            (src.view.clone(), Builtin::SampleCopy(kind, true))
+        } else if kind != FormatKind::Float {
+            // Integer samples cannot be averaged by a resolve.
+            return Err(GpuError::Absent(Features::MULTISAMPLE_READ));
+        } else {
+            b.slow_paths().hit(SlowPath::MultisampleCopyResolved);
+            let k = self.temporary(b, (src.width, src.height, src.format, 1))?;
+            b.resolve(&src.region(), &self.pool[k].region(), src.format);
+            (self.pool[k].view.clone(), Builtin::SampleCopy(kind, false))
+        };
+        let builtins = helpers::builtins(b)?;
+        let program = helpers::program(b, which)?;
+        let set = b.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&view),
+        }])?;
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
+        pass.colors[0] = Some(ColorAttachment {
+            view: &dst.view,
+            depth_slice: dst.depth_slice,
+            resolve: None,
+            load: LoadOp::Load,
+            store: StoreOp::Store,
+        });
+        let viewport = [full_viewport(dst.width, dst.height)];
+        let area = ScissorRect {
+            x: 0,
+            y: 0,
+            width: extent.width,
+            height: extent.height,
+        };
+        b.begin_pass(&pass);
+        b.draw(&DrawCall {
+            bindings: [Some(&set), None, None, None],
+            scissors: core::slice::from_ref(&area),
+            ..builtin_draw(&builtins, &program, &viewport)
+        });
+        b.end_pass();
+        b.destroy(Object::BindingSet(set));
+        Ok(())
     }
 
     fn open_pass(&mut self, b: &mut B) -> Result<(), GpuError> {
@@ -524,15 +606,12 @@ impl<B: Backend> PassTracker<B> {
                     let Some(c) = c else { continue };
                     let t = &c.target;
                     if (t.width, t.height) != (width, height) {
-                        if t.samples > 1 {
-                            // Copying samples needs a draw reading each one (plan 4.7), not yet here.
-                            return Err(GpuError::Invalid(
-                                "multisampled attachments of different sizes",
-                            ));
-                        }
                         let k = self.temporary(b, (width, height, t.format, t.samples))?;
                         let (load, store) = self.ops.colors[i];
-                        if load == LoadOp::Load {
+                        if load == LoadOp::Load && t.samples > 1 {
+                            let temporary = self.pool[k].target(t.format);
+                            self.copy_samples(b, t, &temporary, extent)?;
+                        } else if load == LoadOp::Load {
                             b.copy_texture(&t.region(), &self.pool[k].region(), extent);
                         }
                         open.colors[i] = Some((k, store == StoreOp::Store));
@@ -598,6 +677,21 @@ impl<B: Backend> PassTracker<B> {
 }
 
 impl<B: Backend> Temporary<B> {
+    /// The temporary as an attachment seen through `format`, its own.
+    fn target(&self, format: Format) -> Target<B> {
+        Target {
+            view: self.view.clone(),
+            texture: self.texture.clone(),
+            format,
+            mip: 0,
+            layer: 0,
+            depth_slice: 0,
+            width: self.key.0,
+            height: self.key.1,
+            samples: self.key.3,
+        }
+    }
+
     fn region(&self) -> TextureRegion<'_, B> {
         TextureRegion {
             texture: &self.texture,
