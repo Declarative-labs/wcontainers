@@ -69,6 +69,33 @@ The Linux Test Project (layer 3):
 - On ours the image is loaded once into a prepared kernel (`driver::prepare`) and each test runs
   in a process forked from it, so a kernel crash or a hang ends only that test; the clock is the
   repeatable one, so the suite's own timeouts are in the guest's time.
+  A watchdog in each test's process calls a run that ends no turn for 120 s a hang (stuck in
+  one call or turn); one still ending turns at the time limit is a timeout (slower than the
+  limit on the stand-in, not a difference of behaviour). The comparison groups differences by
+  cause: a crash of the kernel, a hang, a timeout, a part not built (a warning that no test
+  whose verdict matches gave), and else a wrong answer.
+- The bar (reference, measured): 2694 tests in 26 groups; 1243 pass, 153 fail, 548 broken, 746
+  skipped, 3 warning, 1 exit 255 (sched:trace_sched01). syscalls alone: 1552 tests, 973 pass,
+  49 fail, 314 broken (177 of them "Failed to acquire device": no loop devices in a default
+  container), 213 skipped, 3 warning. Results: scratch ltp/reference-1.tsv (logs beside it).
+  Run with 5 jobs, load 20 to 30; the tests' own times add to 11622 s.
+- First whole run on ours (scratch ltp/ours-1.tsv, compare-1.txt), mostly at 931c5a3 to
+  e7b79ef (the tests that crashed or hung were run again after their fixes): 2310 of 2694
+  verdicts matched, 384 differed: 1 kernel crash (pty02, then fixed), 15 slower than the
+  limit, 79 a part not built, 289 wrong answers. Kernel crashes and hangs it found, each fixed
+  with a test against the reference:
+  - kill06, kill08: SIGKILL to one's own process group ended the sender's thread before the
+    other members were signalled, and the next lookup of the sender panicked (tests/processes.rs
+    `killing_own_group_matches_reference`, guest/groupkill.c).
+  - clock_gettime01 waited for ever for `/proc/self/stat`'s user time, always 0: the stat file
+    now shows the process's CPU time and its reaped children's (guest/cputime.c).
+  - pipeio_1 to _8: two writers that found a pipe full woke each other for ever inside the
+    kernel (both wait on the pipe's one channel and each woke it before waiting); a writer now
+    wakes readers only for bytes it added (tests/processes.rs
+    `writers_waiting_on_a_full_pipe_match_reference`, guest/pipewriters.c).
+  - pty02: a canonical terminal in EXTPROC mode reads past its line end, and the count of what
+    it holds overflowed; it wraps as Linux's unsigned difference does (tests/terminal.rs
+    `extproc_reads_match_reference`, guest/ttyextproc.c).
 
 
 - Local sockets of every kind (stream, datagram, sequenced packets), names (paths and abstract),
