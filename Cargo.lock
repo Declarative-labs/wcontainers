@@ -2637,6 +2637,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-gpu-webgpu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "js-sys",
+ "naga",
+ "png",
+ "pollster",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wcontainers-gpu",
+ "wgpu",
+ "wgpu-naga-bridge",
+]
+
+[[package]]
 name = "wcontainers-graphics-test"
 version = "0.1.0"
 dependencies = [
