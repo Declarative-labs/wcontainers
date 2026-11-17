@@ -208,8 +208,16 @@ K5 built (all four runs):
     OPT_TSONLY, OPT_ID on an unconnected TCP socket: EINVAL; a bound clock: EOPNOTSUPP) and read
     back; software receive timestamps (SCM_TIMESTAMPING: the time and two empty ones) on UDP,
     TCP (the last buffer's) and local datagrams beside SO_TIMESTAMP, as measured; hardware flags
-    are kept and give nothing, as on Linux's loopback. Software send timestamps (TX_SOFTWARE,
-    TX_SCHED, TX_ACK, TX_COMPLETION) are refused and counted, as an option and per send.
+    are kept and give nothing, as on Linux's loopback. Software send timestamps on UDP with
+    OPT_TSONLY: per datagram that leaves, a SCHED then a SND entry on the error queue (ENOMSG,
+    SO_EE_ORIGIN_TIMESTAMPING, no bytes, SCM_TIMESTAMPING before IP_RECVERR or IPV6_RECVERR,
+    EPOLLERR while queued, the socket's error left alone), keyed by OPT_ID's count of sends that
+    asked for any send timestamp (hardware ones too) or by SCM_TS_OPT_ID, as an option and per
+    send (measured). Local and netlink sockets take the flags and make none, as Linux. TCP's
+    send timestamps, TX_COMPLETION and copies of the packet (no OPT_TSONLY) are refused and
+    counted.
+  - A connect waiting for a full backlog's room (SYN_SENT) gives TCP_MAXSEG 524 and TCP_INFO's
+    SYN-sent values (measured).
   - IPv4 multicast and broadcast inside the container: IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP,
     MCAST_JOIN_GROUP and MCAST_LEAVE_GROUP (`ip_mc_join_group`'s checks; at most 20 groups,
     ENOBUFS; EPROTO on TCP), IP_MULTICAST_IF (an address, `ip_mreq` or `ip_mreqn`), a group's
@@ -1411,7 +1419,9 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
-- K5, sixth run, layer 1: seed 5050451 passed 3000 sequences at 47d0230 (51 s, load about 33).
+- K5, sixth run, layer 1: seed 5050451 passed 3000 sequences at 47d0230 (51 s, load about 33);
+  the fifth run's open seed 5050446 passed 20000 with the statfs fix (338 s) and the fresh seed
+  5050452 passed 20000 at 9835ab5 (341 s), side by side, load about 30 to 40.
 - K5, fifth run, layer 1 at 20000 sequences each: on 3063305 (the fourth run's end) 5050423
   passed, 5050422 and 5050424 found netlink's MSG_OOB read; on 5a254ef 5050422, 5050424 and
   5050425 failed (netlink's MSG_OOB, then the late packet information); on f9509e3 5050424 and
@@ -2111,13 +2121,11 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K5, in this order (what the six runs built is under Where things stand):
-1. Software send timestamps (SO_TIMESTAMPING's TX_SOFTWARE, TX_SCHED, TX_ACK; refused and
-   counted now). Measured on the reference (k5r6/tsing.c in scratch): per UDP datagram an error
-   queue entry for SCHED (ee_info 1) then SND (0), each ENOMSG with origin 4
-   (SO_EE_ORIGIN_TIMESTAMPING), SCM_TIMESTAMPING before IP_RECVERR, OPT_ID counting sends from
-   0; OPT_TSONLY gives no bytes, without it the frame from its Ethernet header (14 zero bytes,
-   then IPv4 and UDP headers whose checksum and id are hard to match). TCP adds ACK and keys by
-   byte. Then TCP_DEFER_ACCEPT (an accept and a listener's poll wait for data or the deferral's
+1. The rest of the send timestamps (refused and counted now): TCP's (SCHED, SND and ACK per
+   send, keyed by byte; needs MSG_ERRQUEUE and EPOLLERR on TCP sockets) and copies of the packet
+   without OPT_TSONLY (the frame from its Ethernet header: 14 zero bytes, then IPv4 and UDP
+   headers whose checksum and id are hard to match; measured in scratch k5r6/tsing.c). Then
+   TCP_DEFER_ACCEPT (an accept and a listener's poll wait for data or the deferral's
    end; `secs_to_retrans` for the value), the other options under Not built.
 2. Urgent data to the outside (a send with MSG_OOB and bytes on an outside connection is
    refused, counted): the Host hooks carry no urgent data.
@@ -2137,7 +2145,7 @@ K5, in this order (what the six runs built is under Where things stand):
    not seen (plan section 15's kind). IN_UNMOUNT is never sent, as nothing in a default Docker
    container can unmount (umount needs CAP_SYS_ADMIN).
 6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
-   ENETUNREACH, as eth0 has no IPv6). SYN_SENT's TCP_MAXSEG is 536 here and 524 on Linux.
+   ENETUNREACH, as eth0 has no IPv6).
 7. The per-milestone layer 1 bar (three fresh seeds of 20000) is to be run again at the
    milestone's end with every fix in; fresh seeds start at 5050453.
 
