@@ -25,11 +25,12 @@ float4 ps_rows(VsOut i) : SV_Target0 {
 // Discards where a channel is dark, from inside a loop; the survivors sample again, which needs the
 // discarded neighbours' derivatives.
 float4 ps_clip(VsOut i) : SV_Target0 {
-    float4 c = albedo.Sample(linear_clamp, i.uv);
+    float4 s = albedo.Sample(linear_clamp, i.uv);
+    float c[4] = { s.x, s.y, s.z, s.w };
     [loop] for (uint k = 0; k < 4; k++) {
         if (c[k] < 0.25)
             discard;
         c[k] *= 0.5;
     }
-    return c + albedo.Sample(linear_clamp, i.uv * 2.0) * 0.5;
+    return float4(c[0], c[1], c[2], c[3]) + albedo.Sample(linear_clamp, i.uv * 2.0) * 0.5;
 }

@@ -46,7 +46,7 @@ struct Case {
     dxil: bool,
 }
 
-const CASES: [Case; 14] = [
+const CASES: [Case; 16] = [
     Case {
         vs: "vs_transform",
         ps: "ps_textured",
@@ -55,7 +55,7 @@ const CASES: [Case; 14] = [
         grid: true,
         not_on_webgl: [None, None],
         known_on_webgl: None,
-        dxil: false,
+        dxil: true,
     },
     Case {
         vs: "vs_transform",
@@ -117,7 +117,7 @@ const CASES: [Case; 14] = [
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: [None, None],
-        known_on_webgl: Some("the fragment's z arrives as (z + 1) / 2, the back end's clip depth"),
+        known_on_webgl: None,
         dxil: false,
     },
     Case {
@@ -137,7 +137,9 @@ const CASES: [Case; 14] = [
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: [None, None],
-        known_on_webgl: None,
+        known_on_webgl: Some(
+            "the back end's hidden texture size uniform stays unset, so textureSize gives 1 by 1",
+        ),
         dxil: false,
     },
     Case {
@@ -180,6 +182,26 @@ const CASES: [Case; 14] = [
             Some("GLSL ES 3.00 has no bitfield operations (fxc extracts bits)"),
             None,
         ],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_rows",
+        format: Format::Rgba8Unorm,
+        tint: [1.0, 0.75, 0.5, 1.5],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_clip",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
     },
