@@ -143,6 +143,46 @@ impl<B: Backend> Device<B> {
         self.level
     }
 
+    /// What `CheckFormatSupport` answers for DXGI format `dxgi`: the uses this front serves on its
+    /// back end (multisampling, 1D and 3D textures and typed buffers are not served).
+    pub fn format_support(&self, dxgi: u32) -> u32 {
+        use crate::desc::support::*;
+        let mut bits = 0;
+        if format::vertex_format(dxgi).is_some() {
+            bits |= IA_VERTEX_BUFFER;
+        }
+        if format::index_format(dxgi).is_some() {
+            bits |= IA_INDEX_BUFFER;
+        }
+        let Some(f) = format::texture_format(dxgi) else {
+            return bits;
+        };
+        let uses = self.backend.caps().formats.get(f);
+        if uses.is_empty() {
+            return bits;
+        }
+        bits |= TEXTURE2D | TEXTURECUBE | MIP;
+        for (has, bit) in [
+            (FormatUse::SAMPLE, SHADER_LOAD),
+            (FormatUse::FILTER, SHADER_SAMPLE),
+            (FormatUse::RENDER, RENDER_TARGET),
+            (FormatUse::BLEND, BLENDABLE),
+            (FormatUse::DEPTH_STENCIL, DEPTH_STENCIL),
+            (FormatUse::COPY_OUT, CPU_LOCKABLE),
+        ] {
+            if uses.contains(has) {
+                bits |= bit;
+            }
+        }
+        bits
+    }
+
+    /// What `CheckMultisampleQualityLevels` answers: one level for a single sample of a format
+    /// textures can have, none otherwise (multisampled textures are not served yet).
+    pub fn multisample_quality_levels(&self, dxgi: u32, samples: u32) -> u32 {
+        u32::from(samples == 1 && self.format_support(dxgi) & crate::desc::support::TEXTURE2D != 0)
+    }
+
     /// Why the device is removed, if it is, polling the back end first (plan section 4.10).
     pub fn poll_removed(&mut self) -> Option<Removal> {
         if self.removed.is_none()

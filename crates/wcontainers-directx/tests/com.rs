@@ -218,9 +218,88 @@ fn the_forwarding_d3d11_reaches_the_library() {
     let library = load("wcontainers_directx.dll").unwrap();
     let forwarder = load("d3d11.dll").unwrap();
     assert_ne!(library, forwarder);
-    let direct = unsafe { GetProcAddress(library, s!("D3D11CreateDevice")) }.unwrap();
-    let forwarded = unsafe { GetProcAddress(forwarder, s!("D3D11CreateDevice")) }.unwrap();
-    assert_eq!(direct as usize, forwarded as usize);
+    for name in [
+        s!("D3D11CreateDevice"),
+        s!("D3D11CreateDeviceAndSwapChain"),
+        s!("D3D11On12CreateDevice"),
+    ] {
+        let direct = unsafe { GetProcAddress(library, name) }.unwrap();
+        let forwarded = unsafe { GetProcAddress(forwarder, name) }.unwrap();
+        assert_eq!(direct as usize, forwarded as usize);
+    }
+}
+
+#[test]
+fn device_creation_answers_as_direct3d() {
+    use wcontainers_directx::com::{D3D11CreateDevice, D3D11CreateDeviceAndSwapChain};
+    use windows::Win32::Foundation::{E_INVALIDARG, E_NOTIMPL, HMODULE};
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIAdapter};
+    let (device, _context) = device();
+    let adapter: IDXGIAdapter =
+        unsafe { device.cast::<IDXGIDevice>().unwrap().GetAdapter() }.unwrap();
+    let null: *mut std::ffi::c_void = std::ptr::null_mut();
+    let make = |adapter: *mut std::ffi::c_void,
+                driver: D3D_DRIVER_TYPE,
+                out: *mut *mut std::ffi::c_void| unsafe {
+        D3D11CreateDevice(
+            adapter,
+            driver.0,
+            HMODULE::default(),
+            0,
+            std::ptr::null(),
+            0,
+            7,
+            out,
+            null.cast(),
+            null.cast(),
+        )
+    };
+    // An adapter goes with an unknown driver type, and no adapter with a named one.
+    assert_eq!(
+        make(adapter.as_raw(), D3D_DRIVER_TYPE_HARDWARE, null.cast()),
+        E_INVALIDARG
+    );
+    assert_eq!(
+        make(null, D3D_DRIVER_TYPE_UNKNOWN, null.cast()),
+        E_INVALIDARG
+    );
+    let mut out = null;
+    assert_eq!(
+        make(adapter.as_raw(), D3D_DRIVER_TYPE_UNKNOWN, &mut out).0,
+        0
+    );
+    drop(unsafe { ID3D11Device::from_raw(out) });
+    // Without a swap chain asked for, the device as D3D11CreateDevice makes it.
+    let both = |desc: *const DXGI_SWAP_CHAIN_DESC,
+                chain: *mut *mut std::ffi::c_void,
+                out: *mut *mut std::ffi::c_void| unsafe {
+        D3D11CreateDeviceAndSwapChain(
+            null,
+            D3D_DRIVER_TYPE_HARDWARE.0,
+            HMODULE::default(),
+            0,
+            std::ptr::null(),
+            0,
+            7,
+            desc.cast(),
+            chain,
+            out,
+            null.cast(),
+            null.cast(),
+        )
+    };
+    let mut out = null;
+    assert_eq!(both(std::ptr::null(), null.cast(), &mut out).0, 0);
+    drop(unsafe { ID3D11Device::from_raw(out) });
+    let desc = DXGI_SWAP_CHAIN_DESC::default();
+    let mut chain: *mut std::ffi::c_void = std::ptr::NonNull::dangling().as_ptr();
+    assert_eq!(both(&desc, &mut chain, null.cast()), E_NOTIMPL);
+    assert!(chain.is_null());
+    assert_eq!(
+        both(std::ptr::null(), &mut chain, null.cast()),
+        E_INVALIDARG
+    );
 }
 
 #[test]
@@ -377,4 +456,161 @@ fn stages_the_front_lacks_take_unbinding_and_report_nothing_bound() {
         assert!(buffers.iter().all(Option::is_none));
         assert!(device.GetDeviceRemovedReason().is_ok());
     }
+}
+
+#[test]
+fn binding_a_target_unbinds_its_shader_views() {
+    let (device, context) = device();
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: 8,
+        Height: 8,
+        MipLevels: 2,
+        ArraySize: 1,
+        Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        ..Default::default()
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)) }.unwrap();
+    let texture = texture.unwrap();
+    let srv = |mip: u32| {
+        let d = D3D11_SHADER_RESOURCE_VIEW_DESC {
+            Format: desc.Format,
+            ViewDimension: windows::Win32::Graphics::Direct3D::D3D11_SRV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D11_TEX2D_SRV {
+                    MostDetailedMip: mip,
+                    MipLevels: 1,
+                },
+            },
+        };
+        let mut out = None;
+        unsafe { device.CreateShaderResourceView(&texture, Some(&d), Some(&mut out)) }.unwrap();
+        out
+    };
+    let (top, second) = (srv(0), srv(1));
+    let mut rtv = None;
+    unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut rtv)) }.unwrap();
+    let bound = || {
+        let mut views: [Option<ID3D11ShaderResourceView>; 2] = Default::default();
+        unsafe { context.PSGetShaderResources(0, Some(&mut views)) };
+        views.map(|v| v.is_some())
+    };
+    unsafe {
+        context.PSSetShaderResources(0, Some(&[top.clone(), second.clone()]));
+        assert_eq!(bound(), [true, true]);
+        // The target is level 0: its view is unbound, the view of level 1 stays.
+        context.OMSetRenderTargets(Some(&[rtv]), None::<&ID3D11DepthStencilView>);
+        assert_eq!(bound(), [false, true]);
+        // A view of a level bound as a target is bound as none.
+        context.PSSetShaderResources(0, Some(std::slice::from_ref(&top)));
+        assert_eq!(bound(), [false, true]);
+        context.OMSetRenderTargets(None, None::<&ID3D11DepthStencilView>);
+        context.PSSetShaderResources(0, Some(&[top]));
+        assert_eq!(bound(), [true, true]);
+    }
+}
+
+#[test]
+fn capability_queries_claim_only_what_creation_serves() {
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    let (device, _context) = device();
+    let mut claimed = 0;
+    for f in 1..=132 {
+        let format = DXGI_FORMAT(f);
+        let Ok(bits) = (unsafe { device.CheckFormatSupport(format) }) else {
+            continue;
+        };
+        let levels = unsafe { device.CheckMultisampleQualityLevels(format, 4) }.unwrap();
+        assert_eq!(
+            levels, 0,
+            "format {f}: multisampled textures are not served"
+        );
+        if bits & D3D11_FORMAT_SUPPORT_TEXTURE2D.0 as u32 == 0 {
+            continue;
+        }
+        claimed += 1;
+        for (bit, bind) in [
+            (D3D11_FORMAT_SUPPORT_TEXTURE2D, 0),
+            (
+                D3D11_FORMAT_SUPPORT_SHADER_LOAD,
+                D3D11_BIND_SHADER_RESOURCE.0,
+            ),
+            (
+                D3D11_FORMAT_SUPPORT_RENDER_TARGET,
+                D3D11_BIND_RENDER_TARGET.0,
+            ),
+            (
+                D3D11_FORMAT_SUPPORT_DEPTH_STENCIL,
+                D3D11_BIND_DEPTH_STENCIL.0,
+            ),
+        ] {
+            if bits & bit.0 as u32 == 0 {
+                continue;
+            }
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: 4,
+                Height: 4,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: format,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: bind as u32,
+                ..Default::default()
+            };
+            let mut out = None;
+            let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut out)) };
+            assert!(r.is_ok(), "format {f} bind {bind:#x}: {r:?}");
+        }
+        assert_eq!(
+            unsafe { device.CheckMultisampleQualityLevels(format, 1) }.unwrap(),
+            1
+        );
+    }
+    assert!(claimed > 20, "{claimed} formats claimed");
+    let rgba = unsafe { device.CheckFormatSupport(DXGI_FORMAT_R8G8B8A8_UNORM) }.unwrap();
+    let want = D3D11_FORMAT_SUPPORT_TEXTURE2D.0
+        | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0
+        | D3D11_FORMAT_SUPPORT_RENDER_TARGET.0
+        | D3D11_FORMAT_SUPPORT_BLENDABLE.0;
+    assert_eq!(rgba & want as u32, want as u32);
+    // Each feature answers with its own structure's size only; absent features are zeros.
+    let mut threading = D3D11_FEATURE_DATA_THREADING {
+        DriverConcurrentCreates: true.into(),
+        DriverCommandLists: true.into(),
+    };
+    let size = size_of::<D3D11_FEATURE_DATA_THREADING>() as u32;
+    let p = (&raw mut threading).cast();
+    unsafe { device.CheckFeatureSupport(D3D11_FEATURE_THREADING, p, size) }.unwrap();
+    assert!(
+        !threading.DriverConcurrentCreates.as_bool() && !threading.DriverCommandLists.as_bool()
+    );
+    let r = unsafe { device.CheckFeatureSupport(D3D11_FEATURE_THREADING, p, size + 4) };
+    assert_eq!(
+        r.map_err(|e| e.code()),
+        Err(windows::Win32::Foundation::E_INVALIDARG)
+    );
+    let mut support = D3D11_FEATURE_DATA_FORMAT_SUPPORT {
+        InFormat: DXGI_FORMAT_R8G8B8A8_UNORM,
+        OutFormatSupport: 0,
+    };
+    let size = size_of::<D3D11_FEATURE_DATA_FORMAT_SUPPORT>() as u32;
+    unsafe {
+        device.CheckFeatureSupport(
+            D3D11_FEATURE_FORMAT_SUPPORT,
+            (&raw mut support).cast(),
+            size,
+        )
+    }
+    .unwrap();
+    assert_eq!(support.OutFormatSupport, rgba);
 }

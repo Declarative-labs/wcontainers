@@ -343,15 +343,11 @@ pub unsafe extern "system" fn D3D11CreateDevice(
     level: *mut D3D_FEATURE_LEVEL,
     context: *mut *mut c_void,
 ) -> HRESULT {
-    let driver_ok = if adapter.is_null() {
-        driver_type == DRIVER_HARDWARE
-    } else {
-        driver_type == DRIVER_UNKNOWN
-    };
-    if !software.is_invalid() || (adapter.is_null() && driver_type == DRIVER_UNKNOWN) {
+    // With an adapter the driver type is unknown; without one it is named.
+    if !software.is_invalid() || adapter.is_null() == (driver_type == DRIVER_UNKNOWN) {
         return E_INVALIDARG;
     }
-    if !driver_ok {
+    if adapter.is_null() && driver_type != DRIVER_HARDWARE {
         warn_once("D3D11CreateDevice with a software, reference, WARP or null driver");
         return DXGI_ERROR_UNSUPPORTED;
     }
@@ -383,4 +379,72 @@ pub unsafe extern "system" fn D3D11CreateDevice(
         *device = d.into_raw();
     }
     windows::Win32::Foundation::S_OK
+}
+
+/// `D3D11CreateDeviceAndSwapChain`, as Microsoft documents it: without a swap chain asked for, the
+/// device as `D3D11CreateDevice` makes it.
+///
+/// # Safety
+/// The pointers are what the caller of `D3D11CreateDeviceAndSwapChain` passes.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
+    adapter: *mut c_void,
+    driver_type: i32,
+    software: HMODULE,
+    flags: u32,
+    levels: *const D3D_FEATURE_LEVEL,
+    level_count: u32,
+    sdk_version: u32,
+    swap_chain_desc: *const c_void,
+    swap_chain: *mut *mut c_void,
+    device: *mut *mut c_void,
+    level: *mut D3D_FEATURE_LEVEL,
+    context: *mut *mut c_void,
+) -> HRESULT {
+    if !swap_chain.is_null() {
+        unsafe { *swap_chain = std::ptr::null_mut() };
+        if swap_chain_desc.is_null() {
+            return E_INVALIDARG;
+        }
+        return missing("D3D11CreateDeviceAndSwapChain with a swap chain").code();
+    }
+    unsafe {
+        D3D11CreateDevice(
+            adapter,
+            driver_type,
+            software,
+            flags,
+            levels,
+            level_count,
+            sdk_version,
+            device,
+            level,
+            context,
+        )
+    }
+}
+
+/// `D3D11On12CreateDevice`: not served (no Direct3D 12 device of ours to layer on yet).
+///
+/// # Safety
+/// Writes nothing; the arguments are not read.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn D3D11On12CreateDevice(
+    _device: *mut c_void,
+    _flags: u32,
+    _levels: *const D3D_FEATURE_LEVEL,
+    _level_count: u32,
+    _queues: *const *mut c_void,
+    _queue_count: u32,
+    _node_mask: u32,
+    out_device: *mut *mut c_void,
+    out_context: *mut *mut c_void,
+    _level: *mut D3D_FEATURE_LEVEL,
+) -> HRESULT {
+    for out in [out_device, out_context] {
+        if !out.is_null() {
+            unsafe { *out = std::ptr::null_mut() };
+        }
+    }
+    missing("D3D11On12CreateDevice").code()
 }

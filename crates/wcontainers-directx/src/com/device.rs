@@ -8,6 +8,7 @@ use std::rc::Rc;
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
 use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice};
 use windows::core::{
     ComObjectInner, ComObjectInterface, GUID, IUnknownImpl, Interface, OutRef, Ref, Result,
@@ -436,6 +437,97 @@ impl Device_Impl {
                 .map_err(hresult)?;
             Ok(SamplerState::new(state, *d, self.me()).into())
         })
+    }
+
+    pub(super) fn check_format_support(&self, format: DXGI_FORMAT) -> Result<u32> {
+        match self.front.borrow().format_support(format.0 as u32) {
+            // Direct3D's answer for a format the device does not support at all.
+            0 => Err(windows::Win32::Foundation::E_FAIL.into()),
+            bits => Ok(bits),
+        }
+    }
+
+    pub(super) fn check_multisample_quality_levels(
+        &self,
+        format: DXGI_FORMAT,
+        samples: u32,
+    ) -> Result<u32> {
+        Ok(self
+            .front
+            .borrow()
+            .multisample_quality_levels(format.0 as u32, samples))
+    }
+
+    /// Each feature's answer: what is served, and absent (zeros, Direct3D's "not supported") for
+    /// the rest. A size other than the feature's structure is `E_INVALIDARG`, as Direct3D answers.
+    pub(super) fn check_feature_support(
+        &self,
+        feature: D3D11_FEATURE,
+        data: *mut c_void,
+        size: u32,
+    ) -> Result<()> {
+        let want = match feature {
+            D3D11_FEATURE_THREADING => size_of::<D3D11_FEATURE_DATA_THREADING>(),
+            D3D11_FEATURE_DOUBLES => size_of::<D3D11_FEATURE_DATA_DOUBLES>(),
+            D3D11_FEATURE_FORMAT_SUPPORT => size_of::<D3D11_FEATURE_DATA_FORMAT_SUPPORT>(),
+            D3D11_FEATURE_FORMAT_SUPPORT2 => size_of::<D3D11_FEATURE_DATA_FORMAT_SUPPORT2>(),
+            D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS => {
+                size_of::<D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS>()
+            }
+            D3D11_FEATURE_D3D11_OPTIONS => size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS>(),
+            D3D11_FEATURE_ARCHITECTURE_INFO => size_of::<D3D11_FEATURE_DATA_ARCHITECTURE_INFO>(),
+            D3D11_FEATURE_D3D9_OPTIONS => size_of::<D3D11_FEATURE_DATA_D3D9_OPTIONS>(),
+            D3D11_FEATURE_SHADER_MIN_PRECISION_SUPPORT => {
+                size_of::<D3D11_FEATURE_DATA_SHADER_MIN_PRECISION_SUPPORT>()
+            }
+            D3D11_FEATURE_D3D9_SHADOW_SUPPORT => {
+                size_of::<D3D11_FEATURE_DATA_D3D9_SHADOW_SUPPORT>()
+            }
+            D3D11_FEATURE_D3D11_OPTIONS1 => size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS1>(),
+            D3D11_FEATURE_D3D9_SIMPLE_INSTANCING_SUPPORT => {
+                size_of::<D3D11_FEATURE_DATA_D3D9_SIMPLE_INSTANCING_SUPPORT>()
+            }
+            D3D11_FEATURE_MARKER_SUPPORT => size_of::<D3D11_FEATURE_DATA_MARKER_SUPPORT>(),
+            D3D11_FEATURE_D3D9_OPTIONS1 => size_of::<D3D11_FEATURE_DATA_D3D9_OPTIONS1>(),
+            D3D11_FEATURE_D3D11_OPTIONS2 => size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS2>(),
+            D3D11_FEATURE_D3D11_OPTIONS3 => size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS3>(),
+            D3D11_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT => {
+                size_of::<D3D11_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT>()
+            }
+            D3D11_FEATURE_D3D11_OPTIONS4 => size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS4>(),
+            D3D11_FEATURE_SHADER_CACHE => size_of::<D3D11_FEATURE_DATA_SHADER_CACHE>(),
+            D3D11_FEATURE_D3D11_OPTIONS5 => size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS5>(),
+            D3D11_FEATURE_DISPLAYABLE => size_of::<D3D11_FEATURE_DATA_DISPLAYABLE>(),
+            _ => return Err(E_INVALIDARG.into()),
+        };
+        if data.is_null() || size as usize != want {
+            return Err(E_INVALIDARG.into());
+        }
+        if feature == D3D11_FEATURE_FORMAT_SUPPORT {
+            let d = unsafe { &mut *data.cast::<D3D11_FEATURE_DATA_FORMAT_SUPPORT>() };
+            d.OutFormatSupport = self.check_format_support(d.InFormat)?;
+            return Ok(());
+        }
+        if feature == D3D11_FEATURE_FORMAT_SUPPORT2 {
+            let d = unsafe { &mut *data.cast::<D3D11_FEATURE_DATA_FORMAT_SUPPORT2>() };
+            self.check_format_support(d.InFormat)?;
+            d.OutFormatSupport2 = 0;
+            return Ok(());
+        }
+        unsafe { std::ptr::write_bytes(data.cast::<u8>(), 0, want) };
+        // From 10_0 every device has textures of any size and instancing; the rest is absent.
+        match feature {
+            D3D11_FEATURE_D3D9_OPTIONS => unsafe {
+                (*data.cast::<D3D11_FEATURE_DATA_D3D9_OPTIONS>()).FullNonPow2TextureSupport =
+                    true.into();
+            },
+            D3D11_FEATURE_D3D9_SIMPLE_INSTANCING_SUPPORT => unsafe {
+                (*data.cast::<D3D11_FEATURE_DATA_D3D9_SIMPLE_INSTANCING_SUPPORT>())
+                    .SimpleInstancingSupported = true.into();
+            },
+            _ => {}
+        }
+        Ok(())
     }
 
     pub(super) fn get_feature_level(&self) -> D3D_FEATURE_LEVEL {
