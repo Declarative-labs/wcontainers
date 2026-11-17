@@ -2882,9 +2882,12 @@ pub(super) fn recvmsg(
     if let Some((level, kind, data)) = &received.error {
         put_control(&mut control, room, *level, *kind, data, &mut out_flags);
     }
-    let passcred = socket.borrow().passcred && socket.borrow().family == AF_UNIX;
+    // A datagram read that found none (its end) gives no control messages
+    // (`__unix_dgram_recvmsg`); a stream read that examined nothing has empty credentials.
+    let passcred = socket.borrow().passcred
+        && socket.borrow().family == AF_UNIX
+        && (received.cred.is_some() || socket.borrow().kind == SOCK_STREAM);
     if passcred {
-        // A stream read that examined nothing has empty credentials.
         let cred = received.cred.unwrap_or(Cred {
             pid: 0,
             uid: 0,
@@ -2905,10 +2908,13 @@ pub(super) fn recvmsg(
     }
     // `scm_pidfd_recv`: a process descriptor (close on exec) for the sender, made only when its
     // whole message fits.
-    if socket.borrow().pass_pidfd {
+    let sender = received.cred.map(|cred| cred.pid).filter(|pid| *pid != 0);
+    if socket.borrow().pass_pidfd
+        && let Some(pid) = sender
+    {
         if room.saturating_sub(control.len()) < CMSG_HEADER as usize + 4 {
             out_flags |= MSG_CTRUNC;
-        } else if let Some(pid) = received.cred.map(|cred| cred.pid).filter(|pid| *pid != 0) {
+        } else {
             let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
             let fd = super::pidfd::make(kernel, cx, tid, pid, 0)
                 .and_then(|file| kernel.files_mut(tid).add(file, true, 0, limit))

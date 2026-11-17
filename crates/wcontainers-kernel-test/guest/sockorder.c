@@ -39,6 +39,28 @@ int main(void) {
     result("sendmsg nothing with a closed descriptor", sendmsg(n, &msg, 0));
     none.iov_len = 1;
     result("sendmsg a byte with a closed descriptor", sendmsg(n, &msg, 0));
+    // A read at the end gives credentials and a process descriptor only on a stream.
+    int kinds[] = {SOCK_SEQPACKET, SOCK_DGRAM, SOCK_STREAM};
+    for (int k = 0; k < 3; k++) {
+        int sv[2];
+        socketpair(AF_UNIX, kinds[k] | SOCK_NONBLOCK, 0, sv);
+        int on = 1;
+        setsockopt(sv[1], SOL_SOCKET, SO_PASSCRED, &on, sizeof on);
+        setsockopt(sv[1], SOL_SOCKET, 76, &on, sizeof on);
+        shutdown(sv[0], SHUT_WR);
+        close(sv[0]);
+        char byte;
+        struct iovec iov = {.iov_base = &byte, .iov_len = 1};
+        for (int room = 0; room <= 64; room += 64) {
+            char control[64];
+            struct msghdr m = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = control,
+                               .msg_controllen = room};
+            long r = recvmsg(sv[1], &m, MSG_DONTWAIT);
+            printf("kind %d end room %d: %ld %s flags %#x controllen %zu\n", kinds[k], room, r,
+                   r < 0 ? strerror(errno) : "", m.msg_flags, (size_t)m.msg_controllen);
+        }
+        close(sv[1]);
+    }
     int u = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     result("udp shutdown unconnected", shutdown(u, SHUT_RDWR));
     char buf[8];
