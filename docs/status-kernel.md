@@ -1518,6 +1518,16 @@ each sequence the runner puts back what a sequence can change outside its direct
   by side beside the whole suite's build, load 38.6 at the start and 67.0 at the end). Before
   that, seed 5050458 found the SCM_PIDFD order (the first 3000 run, 38.6 s) and passed 3000
   with it fixed (47.1 s, load about 33).
+- K5, eighth run: whole suite at d3cf740 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel -p wcontainers-kernel-test` in a clean copy with its own build, beside
+  the three seeds): 185 passed, 1 failed, 5 ignored, 17 min 24 s with the build, load 48.5 at
+  the start and 60.3 at the end. The failure was the run's own: the SCM_PIDFD change set
+  MSG_CTRUNC on a local datagram read that found its end (guest/sockorder.c), where Linux
+  gives such a read no control messages; fixed at b70a418.
+- K5, eighth run: whole suite at b70a418 (the run's last code; same command, clean copy, own
+  build, beside seed 5050462): 186 passed, 0 failed, 5 ignored, 17 min 3 s with the build,
+  load 84.1 at the start and 29.9 at the end. Seed 5050462 passed 20000 at b70a418 (335.6 s,
+  load 82.5 at the start, 48.5 at the end).
 
 - K5, seventh run: whole suite at 187f214 (the run's last code; same command, clean copy, own
   build): 184 passed, 1 failed, 5 ignored, 21 min 51 s with the build (ten of them a hung
@@ -2317,8 +2327,8 @@ stand), in this order:
 6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
    ENETUNREACH, as eth0 has no IPv6).
 7. The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
-   5050461, with sendmmsg, recvmmsg and epoll_pwait2 now generated). Fresh seeds start at
-   5050462.
+   5050461 at 090feaf, with sendmmsg, recvmmsg and epoll_pwait2 now generated; 5050462 at the
+   run's last code b70a418). Fresh seeds start at 5050463.
 8. Left from the eighth run: a client whose held request went with its listener sends its
    FIN (shutdown or close) without drawing the reset Linux's FIN draws; neighbour entries for
    eth0 traffic (counted); TCP_QUICKACK's timing (a departure); busybox `su` not rerun.
@@ -2342,6 +2352,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050461 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
