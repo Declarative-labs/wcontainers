@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps,
-    CopyBufferTexture, DepthStencilDesc, DeviceStatus, Extent, Features, FillMode, Format,
+    CopyBufferTexture, DepthStencilDesc, DeviceStatus, Extent, Features, FillMode, Filter, Format,
     FormatCaps, FormatKind, FormatUse, GpuError, Helpers, Limits, LossReason, Object, PassDesc,
     Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource, ReadState, SamplerDesc,
     ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc, TextureDimension, TextureRegion,
@@ -61,6 +61,8 @@ pub struct WebGpu {
     /// Host windows the graphics hook registered, by the number it gives them.
     windows: HashMap<u32, wgpu::Surface<'static>>,
     counters: Counters,
+    /// The texture usages each format allows on this device, by [`Format::index`].
+    usages: [wgpu::TextureUsages; Format::COUNT],
 }
 
 #[derive(Debug)]
@@ -257,7 +259,7 @@ impl WebGpu {
             };
             on_lost.lock().unwrap().get_or_insert(reason);
         });
-        let caps = caps(adapter, &device);
+        let (caps, usages) = caps(adapter, &device);
         WebGpu {
             device,
             queue,
@@ -277,6 +279,7 @@ impl WebGpu {
             pool: Default::default(),
             windows: HashMap::new(),
             counters: Counters::default(),
+            usages,
         }
     }
 
@@ -327,7 +330,10 @@ impl WebGpu {
 
 /// What the device can do, in the interface's words (plan section 4.11). Only what this back end
 /// carries out is declared.
-fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Caps {
+fn caps(
+    adapter: &wgpu::Adapter,
+    device: &wgpu::Device,
+) -> (Caps, [wgpu::TextureUsages; Format::COUNT]) {
     let f = device.features();
     let l = device.limits();
     let mut features = Features::COMPUTE
@@ -371,7 +377,8 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Caps {
         uses: [FormatUse::empty(); Format::COUNT],
         samples: [0; Format::COUNT],
     };
-    for i in 0..Format::COUNT {
+    let mut usages = [wgpu::TextureUsages::empty(); Format::COUNT];
+    for (i, allowed) in usages.iter_mut().enumerate() {
         let format = format_at(i);
         let Some(raw) = convert::texture_format(format) else {
             continue;
@@ -385,6 +392,7 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Caps {
             raw.guaranteed_format_features(f)
         };
         let u = ff.allowed_usages;
+        *allowed = u;
         let flags = ff.flags;
         let mut uses = FormatUse::empty();
         let depth = format.is_depth_stencil();
@@ -489,7 +497,7 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Caps {
         capture_buffers: 0,
     };
     let info = adapter.get_info();
-    Caps {
+    let caps = Caps {
         adapter: wcontainers_gpu::AdapterInfo {
             name: info.name,
             vendor: info.vendor,
@@ -499,7 +507,8 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Caps {
         features,
         limits,
         formats,
-    }
+    };
+    (caps, usages)
 }
 
 /// The format at position `i` of [`Format`]'s list.
@@ -689,8 +698,10 @@ impl Backend for WebGpu {
                 usage |= theirs;
             }
         }
-        // Read backs and the staging route of ordered writes copy in and out of every texture.
-        usage |= wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+        // Read backs and the staging route of ordered writes copy in and out of every texture whose
+        // format allows it.
+        let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+        usage |= copies & self.usages[desc.format.index()];
         let srgb_twin = (format.remove_srgb_suffix() != format)
             .then(|| format.remove_srgb_suffix())
             .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()));
@@ -756,7 +767,12 @@ impl Backend for WebGpu {
             lod_min_clamp: f32::from_bits(desc.lod_range[0]).max(0.0),
             lod_max_clamp: f32::from_bits(desc.lod_range[1]).min(32.0),
             compare: desc.compare.map(convert::compare),
-            anisotropy_clamp: desc.anisotropy.clamp(1, 16),
+            // Anisotropy applies only to fully linear filtering, in WebGPU as in Direct3D.
+            anisotropy_clamp: if [desc.min, desc.mag, desc.mip].contains(&Filter::Nearest) {
+                1
+            } else {
+                desc.anisotropy.clamp(1, 16)
+            },
             border_color: None,
         });
         Ok(Sampler(Rc::new(SamplerObj { id: self.id(), raw })))
