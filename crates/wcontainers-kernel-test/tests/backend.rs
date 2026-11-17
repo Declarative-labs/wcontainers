@@ -63,7 +63,7 @@ fn file_calls_match_reference() {
 
 /// Private and shared mappings of backend files.
 #[test]
-#[ignore = "mappings of backend files are not built yet: counted \"backend file mapping not built\", ENODEV"]
+#[ignore = "mappings of backend files are not built yet: counted \"backend call not built\", ENODEV"]
 fn file_mappings_match_reference() {
     for run in same_on_backend("backendmap", driver::Injections::default()) {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);

@@ -38,7 +38,7 @@ fn target(
     tid: Tid,
     target: Target,
 ) -> Result<Node, Errno> {
-    match target {
+    let node = match target {
         Target::Path { path, follow } => {
             super::files::lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, follow)
         }
@@ -50,7 +50,16 @@ fn target(
             let node = file.borrow().node.clone();
             Ok(node)
         }
+    }?;
+    if crate::fs::backend::remote(&node).is_some() {
+        return Err(kernel.counters.refuse(
+            cx.host,
+            crate::counters::reason::BACKEND_CALL_NOT_BUILT,
+            0,
+            Errno::EOPNOTSUPP,
+        ));
     }
+    Ok(node)
 }
 
 /// An attribute name, as Linux's `import_xattr_name` copies it.

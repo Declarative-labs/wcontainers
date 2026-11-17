@@ -267,8 +267,8 @@ pub(super) fn do_mmap(
             if matches!(inode.content, Content::Backend(_)) {
                 return Err(kernel.counters.refuse(
                     cx.host,
-                    reason::BACKEND_MAPPING_NOT_BUILT,
-                    inode.ino,
+                    reason::BACKEND_CALL_NOT_BUILT,
+                    __NR_mmap.into(),
                     Errno::ENODEV,
                 ));
             }

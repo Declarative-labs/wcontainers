@@ -2291,14 +2291,16 @@ K4 goes on. Left for this milestone, most important first:
    it: `Kernel::start` loads the first program synchronously today; with the root on the backend
    the first exec must be a parked call like any other. Then layer 2's busybox, shell and thread
    programs again on a backend root.
-2. Mappings of backend files, private and shared (counted "backend file mapping not built", ENODEV;
+2. Mappings of backend files, private and shared (counted "backend call not built", ENODEV;
    tests/backend.rs `file_mappings_match_reference` is ignored for it). A private mapping can copy
    the file's pages at the mapping (READ); a shared one needs a block of shared pages filled from
    the backend and written back with WRITE at msync, munmap and exit.
 3. Layer 1 on the backend, against Linux's FUSE on the same server, call by call.
-4. Extended attributes, fallocate, copy_file_range, splice and sendfile on backend files, access
-   checks through other paths (each still reaches only tmpfs code: they answer as for a file with
-   no such content); FLUSH at every close; tests of the notices (the test host could send them).
+4. Extended attributes (GETXATTR, SETXATTR, LISTXATTR, REMOVEXATTR) and fallocate on backend
+   files: counted "backend call not built" and EOPNOTSUPP for now. copy_file_range, splice,
+   sendfile, cachestat and fadvise on backend files are untested (they reach the generic read and
+   write paths or tmpfs code). FLUSH at every close; tests of the notices (the test host could send
+   them).
 5. The milestone's three fresh layer 1 seeds of 20000 with every fix in, at the end.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is

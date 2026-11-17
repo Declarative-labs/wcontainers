@@ -2357,6 +2357,14 @@ pub(super) fn fallocate(
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
+    if file.borrow().backend.is_some() {
+        return Err(kernel.counters.refuse(
+            cx.host,
+            reason::BACKEND_CALL_NOT_BUILT,
+            __NR_fallocate.into(),
+            Errno::EOPNOTSUPP,
+        ));
+    }
     let mode = mode as u32;
     if (offset as i64) < 0 || (length as i64) <= 0 {
         return Err(Errno::EINVAL);
