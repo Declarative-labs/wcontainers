@@ -5,6 +5,7 @@
 mod draw;
 pub mod program;
 mod recorder;
+pub mod sequence;
 pub mod stream;
 pub mod suite;
 pub mod texel;

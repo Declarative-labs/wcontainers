@@ -2717,6 +2717,7 @@ dependencies = [
  "blake3",
  "half",
  "naga",
+ "proptest",
  "wcontainers-gpu",
 ]
 

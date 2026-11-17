@@ -227,6 +227,24 @@ impl Recorder {
         }
     }
 
+    /// The bytes every live buffer and texture holds, by object, and the frames shown: what two
+    /// recordings of one stream must agree on.
+    pub fn contents(&self) -> (Vec<Option<Vec<u8>>>, Vec<Vec<u8>>) {
+        let objects = self
+            .objects
+            .iter()
+            .map(|o| match o {
+                Some(Obj::Buffer(b)) => Some(b.bytes.clone()),
+                Some(Obj::Texture(t)) => Some(t.subresources.concat()),
+                _ => None,
+            })
+            .collect();
+        (
+            objects,
+            self.shown.iter().map(|f| f.bytes.clone()).collect(),
+        )
+    }
+
     fn add(&mut self, obj: Obj) -> Id {
         self.objects.push(Some(obj));
         Id(self.objects.len() as u32 - 1)
