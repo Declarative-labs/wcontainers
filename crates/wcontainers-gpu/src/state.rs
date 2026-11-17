@@ -294,12 +294,14 @@ pub struct VertexAttribute {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VertexStream {
     /// Bytes between elements. Not part of Direct3D 11's input layout, so the Direct3D 11 front builds
-    /// the block from the layout and the bound strides together.
+    /// the block from the layout and the bound strides together. Zero means every vertex and instance
+    /// reads the same element, as Direct3D and Vulkan define it; WebGL 2, where zero means tightly
+    /// packed, draws such a stream with an instance divisor of 2^31.
     pub stride: u32,
     pub step: StepMode,
 }
 
-/// The vertex layout block. Unused streams have stride zero and no attributes.
+/// The vertex layout block. Unused streams are `None`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VertexLayoutDesc {
     pub streams: [Option<VertexStream>; MAX_VERTEX_STREAMS],

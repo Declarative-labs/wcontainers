@@ -1286,8 +1286,6 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd0dd362bf26c0ffdd143df6da66a25d287e196eff482f117771010b207ad163"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -2640,12 +2638,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-direct3d-12"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "naga",
+ "png",
+ "pollster",
+ "slab",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-gpu",
+ "wcontainers-gpu-webgpu",
+ "wgpu",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "naga",
+ "wcontainers-gpu",
+]
+
+[[package]]
 name = "wcontainers-gpu"
 version = "0.1.0"
 dependencies = [
  "bitflags",
  "blake3",
  "naga",
+]
+
+[[package]]
+name = "wcontainers-gpu-test"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "half",
+ "naga",
+ "wcontainers-gpu",
 ]
 
 [[package]]
@@ -2661,6 +2693,23 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-graphics-test",
  "web-sys",
+]
+
+[[package]]
+name = "wcontainers-gpu-webgpu"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "js-sys",
+ "naga",
+ "png",
+ "pollster",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wcontainers-gpu",
+ "wgpu",
+ "wgpu-naga-bridge",
 ]
 
 [[package]]
@@ -2683,7 +2732,10 @@ dependencies = [
 name = "wcontainers-graphics-test-forward"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "object 0.41.0",
+ "png",
+ "windows",
  "windows-sys",
 ]
 
@@ -2713,6 +2765,14 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-kernel",
+]
+
+[[package]]
+name = "wcontainers-shaders"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "wcontainers-gpu",
 ]
 
 [[package]]

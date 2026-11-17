@@ -1,0 +1,1000 @@
+//! The shared back-end suite: tests through the interface that every back end runs. Each uses only
+//! what the interface promises every back end, checks exact answers where the APIs promise them and a
+//! stated tolerance where they do not, and ends by checking the device is still working. A back end
+//! runs them all with [`crate::suite!`].
+
+use wcontainers_gpu::*;
+
+/// What the suite needs of a back end beyond the interface.
+pub trait Host {
+    type Backend: Backend;
+    /// A new device.
+    fn make() -> Self::Backend;
+    /// A window to present into, as the host's graphics hook names it.
+    fn window(backend: &mut Self::Backend) -> u32;
+    /// The texels last shown in `window`, rows top first, tightly packed in the surface's format, where
+    /// the host can see them; None where it cannot.
+    fn shown(backend: &mut Self::Backend, window: u32) -> Option<Vec<u8>>;
+}
+
+/// Declares one `#[test]` per suite test for a [`Host`].
+#[macro_export]
+macro_rules! suite {
+    ($host:ty) => {
+        $crate::suite!(@each $host;
+            buffer_writes_land_in_order_and_read_back,
+            texture_writes_land_and_read_back,
+            copies_move_bytes_exactly,
+            clears_fill_exactly,
+            triangle_covers_the_pixels_whose_centres_it_holds,
+            textured_draw_with_depth_and_blending,
+            present_shows_the_frame,
+        );
+    };
+    (@each $host:ty; $($test:ident),* $(,)?) => {
+        $(
+            #[test]
+            fn $test() {
+                $crate::suite::$test::<$host>();
+            }
+        )*
+    };
+}
+
+/// Bytes no test writes by accident: a fixed pattern.
+fn pattern(len: usize, seed: u8) -> Vec<u8> {
+    (0..len)
+        .map(|i| (i as u8).wrapping_mul(37).wrapping_add(seed))
+        .collect()
+}
+
+fn ok<B: Backend>(b: &mut B) {
+    assert_eq!(b.status(), DeviceStatus::Ok, "the device was lost");
+}
+
+fn needs<B: Backend>(b: &B, format: Format, uses: FormatUse) {
+    let has = b.caps().formats.get(format);
+    assert!(
+        has.contains(uses),
+        "{format:?} lacks {:?}, which every back end has",
+        uses - has
+    );
+}
+
+fn buffer<B: Backend>(b: &mut B, size: u64, usage: BufferUsage) -> B::Buffer {
+    b.create_buffer(&BufferDesc {
+        size,
+        usage,
+        intent: MapIntent::Rarely,
+    })
+    .expect("create_buffer")
+}
+
+fn texture<B: Backend>(
+    b: &mut B,
+    format: Format,
+    size: (u32, u32),
+    layers: u32,
+    mips: u32,
+    usage: TextureUsage,
+) -> B::Texture {
+    b.create_texture(&TextureDesc {
+        dimension: TextureDimension::D2,
+        format,
+        width: size.0,
+        height: size.1,
+        depth_or_layers: layers,
+        mip_levels: mips,
+        samples: 1,
+        usage,
+        cube: false,
+        reinterpret: false,
+    })
+    .expect("create_texture")
+}
+
+/// A 2D view of one level and one layer.
+fn view<B: Backend>(b: &mut B, texture: &B::Texture, format: Format) -> B::TextureView {
+    b.create_view(
+        texture,
+        &TextureViewDesc {
+            format,
+            dimension: ViewDimension::D2,
+            base_mip: 0,
+            mip_count: 1,
+            base_layer: 0,
+            layer_count: 1,
+            stencil: false,
+        },
+    )
+    .expect("create_view")
+}
+
+fn region<B: Backend>(
+    texture: &B::Texture,
+    mip: u32,
+    layer: u32,
+    x: u32,
+    y: u32,
+) -> TextureRegion<'_, B> {
+    TextureRegion {
+        texture,
+        mip,
+        layer,
+        origin: Origin { x, y, z: 0 },
+        stencil: false,
+    }
+}
+
+fn extent(width: u32, height: u32, layers: u32) -> Extent {
+    Extent {
+        width,
+        height,
+        depth_or_layers: layers,
+    }
+}
+
+/// Reads back later: records the read, submits, waits and copies the answer out.
+fn read<B: Backend>(b: &mut B, src: &ReadSource<'_, B>, len: usize) -> Vec<u8> {
+    let rb = b.read_back(src).expect("read_back");
+    b.submit();
+    b.wait_read(&rb);
+    assert_eq!(
+        b.read_state(&rb),
+        ReadState::Ready,
+        "a read back not ready after wait_read"
+    );
+    let mut out = vec![0; len];
+    b.finish_read(rb, &mut out);
+    out
+}
+
+fn read_buffer<B: Backend>(b: &mut B, buffer: &B::Buffer, offset: u64, size: u64) -> Vec<u8> {
+    read(
+        b,
+        &ReadSource::Buffer {
+            buffer,
+            offset,
+            size,
+        },
+        size as usize,
+    )
+}
+
+fn read_texture<B: Backend>(
+    b: &mut B,
+    region: TextureRegion<'_, B>,
+    e: Extent,
+    texel: usize,
+) -> Vec<u8> {
+    let len = (e.width * e.height * e.depth_or_layers) as usize * texel;
+    read(b, &ReadSource::Texture { region, extent: e }, len)
+}
+
+fn shader<B: Backend>(b: &mut B, source: &str, entry: &str, stage: ShaderStage) -> B::Shader {
+    let module = naga::front::wgsl::parse_str(source).expect("test program parses");
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .expect("test program validates");
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(source.as_bytes());
+    hasher.update(entry.as_bytes());
+    b.create_shader(&ShaderModule {
+        module,
+        info,
+        entry_point: entry.into(),
+        stage,
+        key: *hasher.finalize().as_bytes(),
+    })
+    .expect("create_shader")
+}
+
+fn program<B: Backend>(b: &mut B, source: &str, vs: &str, fs: &str) -> B::Program {
+    let v = shader(b, source, vs, ShaderStage::Vertex);
+    let f = shader(b, source, fs, ShaderStage::Fragment);
+    let p = b
+        .create_program(&Program::Render {
+            vertex: &v,
+            fragment: Some(&f),
+        })
+        .expect("create_program");
+    b.destroy(Object::Shader(v));
+    b.destroy(Object::Shader(f));
+    p
+}
+
+fn f32_bits(v: [f32; 4]) -> [u32; 4] {
+    v.map(f32::to_bits)
+}
+
+fn opaque() -> RenderTargetBlend {
+    RenderTargetBlend {
+        blend: None,
+        writes: ColorWrites::all(),
+    }
+}
+
+fn blend<B: Backend>(b: &mut B, target: RenderTargetBlend) -> B::Blend {
+    b.create_blend(&BlendDesc {
+        targets: [target; MAX_COLOR_TARGETS],
+        same_for_all: true,
+        alpha_to_coverage: false,
+        logic_op: None,
+    })
+    .expect("create_blend")
+}
+
+fn depth_test<B: Backend>(b: &mut B, compare: Option<CompareFn>, write: bool) -> B::DepthStencil {
+    b.create_depth_stencil(&DepthStencilDesc {
+        depth_compare: compare,
+        depth_write: write,
+        stencil: None,
+        stencil_read_mask: [0xff; 2],
+        stencil_write_mask: [0xff; 2],
+        depth_bounds: None,
+    })
+    .expect("create_depth_stencil")
+}
+
+fn raster<B: Backend>(b: &mut B, cull: CullMode) -> B::Raster {
+    b.create_raster(&RasterDesc {
+        fill: FillMode::Solid,
+        cull,
+        front: FrontFace::CounterClockwise,
+        depth_bias: 0,
+        depth_bias_slope: 0,
+        depth_bias_clamp: 0,
+        depth_clip: true,
+        scissor: false,
+        line_width: 1.0f32.to_bits(),
+        provoking: ProvokingVertex::First,
+        depth_minus_one: false,
+        sample_mask: !0,
+    })
+    .expect("create_raster")
+}
+
+/// A layout of one stream of `vec2<f32>` positions at location 0.
+fn positions<B: Backend>(b: &mut B) -> B::VertexLayout {
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 8,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    b.create_vertex_layout(&desc).expect("create_vertex_layout")
+}
+
+fn viewport(width: u32, height: u32) -> [Viewport; 1] {
+    [Viewport {
+        x: 0.0f32.to_bits(),
+        y: 0.0f32.to_bits(),
+        width: (width as f32).to_bits(),
+        height: (height as f32).to_bits(),
+        min_depth: 0.0f32.to_bits(),
+        max_depth: 1.0f32.to_bits(),
+    }]
+}
+
+fn floats(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+fn color_pass<'a, B: Backend>(view: &'a B::TextureView, load: LoadOp<[u32; 4]>) -> PassDesc<'a, B> {
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view,
+        depth_slice: 0,
+        resolve: None,
+        load,
+        store: StoreOp::Store,
+    });
+    pass
+}
+
+/// Asserts each byte is within `tolerance` of the expected one, naming the first texel that is not.
+fn assert_close(got: &[u8], expected: &[u8], tolerance: u8, texel: usize, width: usize) {
+    assert_eq!(got.len(), expected.len());
+    for (i, (g, e)) in got.iter().zip(expected).enumerate() {
+        if g.abs_diff(*e) > tolerance {
+            let t = i / texel;
+            panic!(
+                "texel ({}, {}) is {:?}, expected {:?} within {tolerance}",
+                t % width,
+                t / width,
+                &got[t * texel..t * texel + texel],
+                &expected[t * texel..t * texel + texel]
+            );
+        }
+    }
+}
+
+/// Buffer writes at any byte offset land in the order they were recorded, a read back sees the bytes
+/// as they were when it was recorded, and reading back now gives the same.
+pub fn buffer_writes_land_in_order_and_read_back<H: Host>() {
+    let mut b = H::make();
+    let usage = BufferUsage::VERTEX | BufferUsage::COPY_SRC | BufferUsage::COPY_DST;
+    let buf = buffer(&mut b, 64, usage);
+    let mut expected = pattern(64, 11);
+    b.write_buffer(&buf, 0, &expected, WriteMode::Discard);
+    b.write_buffer(&buf, 3, &[1, 2, 3, 4, 5], WriteMode::Ordered);
+    b.write_buffer(&buf, 5, &[9], WriteMode::Ordered);
+    b.write_buffer(&buf, 40, &[7; 6], WriteMode::NoOverwrite);
+    expected[3..8].copy_from_slice(&[1, 2, 9, 4, 5]);
+    expected[40..46].fill(7);
+    assert_eq!(read_buffer(&mut b, &buf, 0, 64), expected);
+
+    let mut part = vec![0; 7];
+    b.read_back_now(
+        &ReadSource::Buffer {
+            buffer: &buf,
+            offset: 9,
+            size: 7,
+        },
+        &mut part,
+    )
+    .expect("read_back_now");
+    assert_eq!(part, expected[9..16]);
+
+    // A write recorded after a read back does not change what it reads.
+    let rb = b
+        .read_back(&ReadSource::Buffer {
+            buffer: &buf,
+            offset: 0,
+            size: 8,
+        })
+        .expect("read_back");
+    b.write_buffer(&buf, 0, &[0xee; 8], WriteMode::Ordered);
+    b.submit();
+    b.wait_read(&rb);
+    let mut first = [0; 8];
+    b.finish_read(rb, &mut first);
+    assert_eq!(first, expected[..8]);
+    assert_eq!(read_buffer(&mut b, &buf, 0, 8), [0xee; 8]);
+    ok(&mut b);
+}
+
+/// Texture writes with padded rows and layers land in the right texels of the right level and layer,
+/// and read back tightly packed.
+pub fn texture_writes_land_and_read_back<H: Host>() {
+    let mut b = H::make();
+    needs(
+        &b,
+        Format::Rgba8Unorm,
+        FormatUse::SAMPLE | FormatUse::COPY_OUT,
+    );
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let t = texture(&mut b, Format::Rgba8Unorm, (5, 3), 2, 2, usage);
+    // Both layers of level 0, rows 24 bytes apart (20 used), layers 4 rows apart (3 used).
+    let data = pattern(24 * 4 * 2, 3);
+    b.write_texture(
+        &region(&t, 0, 0, 0, 0),
+        extent(5, 3, 2),
+        &data,
+        24,
+        4,
+        WriteMode::Ordered,
+    );
+    let level1 = pattern(16, 99);
+    b.write_texture(
+        &region(&t, 1, 1, 0, 0),
+        extent(2, 1, 1),
+        &level1,
+        16,
+        1,
+        WriteMode::Ordered,
+    );
+    let patch = pattern(12 * 2, 200);
+    b.write_texture(
+        &region(&t, 0, 0, 1, 1),
+        extent(3, 2, 1),
+        &patch,
+        12,
+        2,
+        WriteMode::Ordered,
+    );
+
+    let layer = |l: usize| -> Vec<u8> {
+        (0..3)
+            .flat_map(|y| data[l * 96 + y * 24..l * 96 + y * 24 + 20].to_vec())
+            .collect()
+    };
+    let mut layer0 = layer(0);
+    for y in 0..2 {
+        let at = (1 + y) * 20 + 4;
+        layer0[at..at + 12].copy_from_slice(&patch[y * 12..y * 12 + 12]);
+    }
+    let layer1 = layer(1);
+    assert_eq!(
+        read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(5, 3, 1), 4),
+        layer0
+    );
+    assert_eq!(
+        read_texture(&mut b, region(&t, 0, 1, 0, 0), extent(5, 3, 1), 4),
+        layer1
+    );
+    assert_eq!(
+        read_texture(&mut b, region(&t, 1, 1, 0, 0), extent(2, 1, 1), 4),
+        level1[..8]
+    );
+    let both: Vec<u8> = layer0.iter().chain(&layer1).copied().collect();
+    assert_eq!(
+        read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(5, 3, 2), 4),
+        both
+    );
+    let corner: Vec<u8> = (0..2)
+        .flat_map(|y| layer0[y * 20 + 8..y * 20 + 16].to_vec())
+        .collect();
+    assert_eq!(
+        read_texture(&mut b, region(&t, 0, 0, 2, 0), extent(2, 2, 1), 4),
+        corner
+    );
+
+    needs(
+        &b,
+        Format::R32Float,
+        FormatUse::SAMPLE | FormatUse::COPY_OUT,
+    );
+    let f = texture(&mut b, Format::R32Float, (3, 2), 1, 1, usage);
+    let values = floats(&[1.5, -2.25, 1e-3, 65504.0, -0.0, 3.0e38]);
+    b.write_texture(
+        &region(&f, 0, 0, 0, 0),
+        extent(3, 2, 1),
+        &values,
+        12,
+        2,
+        WriteMode::Discard,
+    );
+    assert_eq!(
+        read_texture(&mut b, region(&f, 0, 0, 0, 0), extent(3, 2, 1), 4),
+        values
+    );
+    ok(&mut b);
+}
+
+/// Copies between buffers (at byte offsets, and within one buffer), from a buffer into a texture at a
+/// 256-byte and at a tight row pitch, between textures and from a texture into a buffer move exactly
+/// the bytes they name.
+pub fn copies_move_bytes_exactly<H: Host>() {
+    let mut b = H::make();
+    needs(
+        &b,
+        Format::Rgba8Unorm,
+        FormatUse::SAMPLE | FormatUse::COPY_OUT,
+    );
+    let usage = BufferUsage::COPY_SRC | BufferUsage::COPY_DST;
+    let src = buffer(&mut b, 1024, usage);
+    let dst = buffer(&mut b, 1024, usage);
+    let src_bytes = pattern(1024, 5);
+    let mut dst_bytes = pattern(1024, 77);
+    b.write_buffer(&src, 0, &src_bytes, WriteMode::Discard);
+    b.write_buffer(&dst, 0, &dst_bytes, WriteMode::Discard);
+    b.copy_buffer(&src, 1, &dst, 2, 6);
+    dst_bytes[2..8].copy_from_slice(&src_bytes[1..7]);
+    b.copy_buffer(&dst, 100, &dst, 200, 16);
+    dst_bytes.copy_within(100..116, 200);
+    assert_eq!(read_buffer(&mut b, &dst, 0, 1024), dst_bytes);
+
+    let tusage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let a = texture(&mut b, Format::Rgba8Unorm, (4, 4), 1, 1, tusage);
+    let mut a_bytes = pattern(64, 140);
+    b.write_texture(
+        &region(&a, 0, 0, 0, 0),
+        extent(4, 4, 1),
+        &a_bytes,
+        16,
+        4,
+        WriteMode::Ordered,
+    );
+    // Two rows of three texels from offset 256 at a pitch of 256, and one row at a tight pitch.
+    b.copy_buffer_to_texture(
+        &CopyBufferTexture {
+            buffer: &src,
+            offset: 256,
+            row_pitch: 256,
+            rows_per_layer: 2,
+        },
+        &region(&a, 0, 0, 1, 1),
+        extent(3, 2, 1),
+    );
+    for y in 0..2 {
+        let at = (1 + y) * 16 + 4;
+        a_bytes[at..at + 12].copy_from_slice(&src_bytes[256 + y * 256..256 + y * 256 + 12]);
+    }
+    b.copy_buffer_to_texture(
+        &CopyBufferTexture {
+            buffer: &src,
+            offset: 12,
+            row_pitch: 12,
+            rows_per_layer: 1,
+        },
+        &region(&a, 0, 0, 0, 3),
+        extent(3, 1, 1),
+    );
+    a_bytes[48..60].copy_from_slice(&src_bytes[12..24]);
+    assert_eq!(
+        read_texture(&mut b, region(&a, 0, 0, 0, 0), extent(4, 4, 1), 4),
+        a_bytes
+    );
+
+    let c = texture(&mut b, Format::Rgba8Unorm, (4, 4), 1, 1, tusage);
+    let mut c_bytes = pattern(64, 33);
+    b.write_texture(
+        &region(&c, 0, 0, 0, 0),
+        extent(4, 4, 1),
+        &c_bytes,
+        16,
+        4,
+        WriteMode::Ordered,
+    );
+    b.copy_texture(
+        &region(&a, 0, 0, 1, 1),
+        &region(&c, 0, 0, 0, 2),
+        extent(2, 2, 1),
+    );
+    for y in 0..2 {
+        let (from, to) = ((1 + y) * 16 + 4, (2 + y) * 16);
+        c_bytes[to..to + 8].copy_from_slice(&a_bytes[from..from + 8]);
+    }
+    b.copy_texture_to_buffer(
+        &region(&c, 0, 0, 0, 0),
+        &CopyBufferTexture {
+            buffer: &dst,
+            offset: 0,
+            row_pitch: 256,
+            rows_per_layer: 4,
+        },
+        extent(4, 4, 1),
+    );
+    for y in 0..4 {
+        dst_bytes[y * 256..y * 256 + 16].copy_from_slice(&c_bytes[y * 16..y * 16 + 16]);
+    }
+    assert_eq!(read_buffer(&mut b, &dst, 0, 1024), dst_bytes);
+    ok(&mut b);
+}
+
+/// A pass's clear load writes the value in each target's format exactly, and a buffer clear repeats
+/// its pattern over exactly its range.
+pub fn clears_fill_exactly<H: Host>() {
+    let mut b = H::make();
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    for (format, value, expected) in [
+        (
+            Format::Rgba8Unorm,
+            f32_bits([0.2, 0.4, 0.6, 1.0]),
+            vec![51u8, 102, 153, 255],
+        ),
+        (
+            Format::R32Uint,
+            [0xdead_beef, 0, 0, 0],
+            0xdead_beefu32.to_le_bytes().to_vec(),
+        ),
+        (
+            Format::R32Float,
+            f32_bits([-1.5, 0.0, 0.0, 0.0]),
+            (-1.5f32).to_le_bytes().to_vec(),
+        ),
+    ] {
+        needs(&b, format, FormatUse::RENDER | FormatUse::COPY_OUT);
+        let t = texture(&mut b, format, (3, 2), 1, 1, usage);
+        let v = view(&mut b, &t, format);
+        b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear(value)));
+        b.end_pass();
+        let texel = expected.len();
+        let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(3, 2, 1), texel);
+        assert_eq!(got, expected.repeat(6), "{format:?}");
+    }
+    let buf = buffer(&mut b, 32, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    let mut bytes = pattern(32, 9);
+    b.write_buffer(&buf, 0, &bytes, WriteMode::Discard);
+    b.clear_buffer(&buf, 4, 16, &[1, 2, 3, 4]);
+    for i in 0..4 {
+        bytes[4 + i * 4..8 + i * 4].copy_from_slice(&[1, 2, 3, 4]);
+    }
+    assert_eq!(read_buffer(&mut b, &buf, 0, 32), bytes);
+    ok(&mut b);
+}
+
+const TRIANGLE: &str = "
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.2, 0.6, 1.0, 1.0);
+}
+";
+
+/// A counter-clockwise triangle colours exactly the pixels whose centres it holds (no centre lies near
+/// an edge, so every rule agrees), and a clockwise one is culled as a back face.
+pub fn triangle_covers_the_pixels_whose_centres_it_holds<H: Host>() {
+    let mut b = H::make();
+    needs(
+        &b,
+        Format::Rgba8Unorm,
+        FormatUse::RENDER | FormatUse::COPY_OUT,
+    );
+    const N: u32 = 16;
+    let front = [[-0.927f32, -0.819], [0.855, -0.526], [-0.337, 0.904]];
+    let back = [[0.3f32, 0.95], [0.95, 0.95], [0.95, 0.3]];
+    let verts: Vec<f32> = front.iter().chain(&back).flatten().copied().collect();
+    let vb = buffer(&mut b, 48, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&verts), WriteMode::Discard);
+    let t = texture(
+        &mut b,
+        Format::Rgba8Unorm,
+        (N, N),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let v = view(&mut b, &t, Format::Rgba8Unorm);
+    let p = program(&mut b, TRIANGLE, "vs", "fs");
+    let (bl, ds, rs, vl) = (
+        blend(&mut b, opaque()),
+        depth_test(&mut b, None, false),
+        raster(&mut b, CullMode::Back),
+        positions(&mut b),
+    );
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<H::Backend>(
+        &v,
+        LoadOp::Clear(f32_bits([0.0, 0.0, 0.0, 1.0])),
+    ));
+    b.draw(&DrawCall {
+        program: &p,
+        blend: &bl,
+        depth_stencil: &ds,
+        raster: &rs,
+        vertex_layout: &vl,
+        bindings: [None; MAX_BINDING_SETS],
+        vertex_buffers: &streams,
+        index: None,
+        topology: Topology::TriangleList,
+        restart: false,
+        viewports: &vp,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: 6,
+            first_instance: 0,
+            instances: 1,
+        },
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+
+    // Each centre's signed distance in pixels to each edge of the front triangle.
+    let px = |c: [f32; 2]| {
+        (
+            (f64::from(c[0]) + 1.0) * 0.5 * f64::from(N),
+            (1.0 - f64::from(c[1])) * 0.5 * f64::from(N),
+        )
+    };
+    let corners: Vec<(f64, f64)> = front.iter().map(|&c| px(c)).collect();
+    let mut expected = Vec::new();
+    for y in 0..N {
+        for x in 0..N {
+            let q = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let d: Vec<f64> = (0..3)
+                .map(|i| {
+                    let (a, c) = (corners[i], corners[(i + 1) % 3]);
+                    let len = ((c.0 - a.0).powi(2) + (c.1 - a.1).powi(2)).sqrt();
+                    ((c.0 - a.0) * (q.1 - a.1) - (c.1 - a.1) * (q.0 - a.0)) / len
+                })
+                .collect();
+            assert!(
+                d.iter().all(|e| e.abs() > 0.01),
+                "test triangle passes near pixel ({x}, {y})"
+            );
+            let inside = d.iter().all(|&e| e < 0.0) || d.iter().all(|&e| e > 0.0);
+            expected.extend_from_slice(if inside {
+                &[51, 153, 255, 255]
+            } else {
+                &[0, 0, 0, 255]
+            });
+        }
+    }
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
+const TEXTURED: &str = "
+struct Params { color: vec4<f32>, depth: f32 }
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(16) var samp: sampler;
+@group(0) @binding(32) var tex: texture_2d<f32>;
+struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
+@vertex fn vs(@location(0) p: vec2<f32>) -> Out {
+    var o: Out;
+    o.pos = vec4<f32>(p, params.depth, 1.0);
+    o.uv = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+    return o;
+}
+@fragment fn flat() -> @location(0) vec4<f32> {
+    return params.color;
+}
+@fragment fn textured(i: Out) -> @location(0) vec4<f32> {
+    return textureSample(tex, samp, i.uv);
+}
+";
+
+/// Three draws into a colour and a depth target: an opaque left half nearer the viewer; a textured
+/// quad over all of it, behind the left half, blended over the clear colour by the texture's alpha;
+/// then a quad between the two depths, tested `Greater` and writing green only, which lands on the
+/// left half alone. Exact where nothing is blended, within one step where it is.
+pub fn textured_draw_with_depth_and_blending<H: Host>() {
+    let mut b = H::make();
+    needs(
+        &b,
+        Format::Rgba8Unorm,
+        FormatUse::RENDER | FormatUse::BLEND | FormatUse::SAMPLE | FormatUse::COPY_OUT,
+    );
+    needs(&b, Format::Depth32Float, FormatUse::DEPTH_STENCIL);
+    const N: u32 = 4;
+    let color = texture(
+        &mut b,
+        Format::Rgba8Unorm,
+        (N, N),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let color_view = view(&mut b, &color, Format::Rgba8Unorm);
+    let depth = texture(
+        &mut b,
+        Format::Depth32Float,
+        (N, N),
+        1,
+        1,
+        TextureUsage::RENDER,
+    );
+    let depth_view = view(&mut b, &depth, Format::Depth32Float);
+
+    let mut texels = Vec::new();
+    for j in 0..N {
+        for i in 0..N {
+            texels.extend_from_slice(&[
+                (i * 60 + 15) as u8,
+                (j * 60 + 15) as u8,
+                ((i + j) * 20 + 10) as u8,
+                128,
+            ]);
+        }
+    }
+    let tex = texture(
+        &mut b,
+        Format::Rgba8Unorm,
+        (N, N),
+        1,
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    );
+    b.write_texture(
+        &region(&tex, 0, 0, 0, 0),
+        extent(N, N, 1),
+        &texels,
+        N * 4,
+        N,
+        WriteMode::Ordered,
+    );
+    let tex_view = view(&mut b, &tex, Format::Rgba8Unorm);
+    let sampler = b
+        .create_sampler(&SamplerDesc {
+            min: Filter::Nearest,
+            mag: Filter::Nearest,
+            mip: Filter::Nearest,
+            address: [AddressMode::Clamp; 3],
+            lod_range: [0.0f32.to_bits(), 32.0f32.to_bits()],
+            anisotropy: 1,
+            compare: None,
+            border: BorderColor::TransparentBlack,
+        })
+        .expect("create_sampler");
+
+    // Parameters of the three draws, one per 256-byte step: colour, then depth.
+    let step = u64::from(b.caps().limits.min_uniform_offset_alignment.max(256));
+    let uniforms = buffer(
+        &mut b,
+        step * 3,
+        BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+    );
+    for (k, params) in [
+        [1.0, 0.0, 0.0, 1.0, 0.25],
+        [0.0, 0.0, 0.0, 0.0, 0.5],
+        [0.0, 1.0, 0.0, 1.0, 0.375],
+    ]
+    .iter()
+    .enumerate()
+    {
+        b.write_buffer(
+            &uniforms,
+            step * k as u64,
+            &floats(params),
+            WriteMode::Ordered,
+        );
+    }
+    let set = |b: &mut H::Backend, k: u64, textured: bool| {
+        let mut entries = vec![BindingEntry {
+            binding: 0,
+            stages: StageSet::VERTEX | StageSet::FRAGMENT,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &uniforms,
+                offset: step * k,
+                size: 32,
+            }),
+        }];
+        if textured {
+            entries.push(BindingEntry {
+                binding: 16,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(&sampler),
+            });
+            entries.push(BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&tex_view),
+            });
+        }
+        b.create_binding_set(&entries).expect("create_binding_set")
+    };
+    let sets = [
+        set(&mut b, 0, false),
+        set(&mut b, 1, true),
+        set(&mut b, 2, false),
+    ];
+
+    let quads = [
+        -1.0f32, -1.0, 0.0, -1.0, -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0,
+    ];
+    let vb = buffer(&mut b, 64, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&quads), WriteMode::Discard);
+    let flat = program(&mut b, TEXTURED, "vs", "flat");
+    let textured = program(&mut b, TEXTURED, "vs", "textured");
+    let over = blend(
+        &mut b,
+        RenderTargetBlend {
+            blend: Some((
+                BlendComponent {
+                    src: BlendFactor::SrcAlpha,
+                    dst: BlendFactor::OneMinusSrcAlpha,
+                    op: BlendOp::Add,
+                },
+                BlendComponent {
+                    src: BlendFactor::One,
+                    dst: BlendFactor::Zero,
+                    op: BlendOp::Add,
+                },
+            )),
+            writes: ColorWrites::all(),
+        },
+    );
+    let opaque_blend = blend(&mut b, opaque());
+    let green_only = blend(
+        &mut b,
+        RenderTargetBlend {
+            blend: None,
+            writes: ColorWrites::G,
+        },
+    );
+    let nearer = depth_test(&mut b, Some(CompareFn::Less), true);
+    let further = depth_test(&mut b, Some(CompareFn::Greater), false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+
+    let mut pass =
+        color_pass::<H::Backend>(&color_view, LoadOp::Clear(f32_bits([0.0, 0.0, 1.0, 1.0])));
+    pass.depth = Some(DepthAttachment {
+        view: &depth_view,
+        depth: Some(AspectOps {
+            load: LoadOp::Clear(1.0f32.to_bits()),
+            store: StoreOp::Store,
+            read_only: false,
+        }),
+        stencil: None,
+    });
+    b.begin_pass(&pass);
+    let draws = [
+        (&flat, &opaque_blend, &nearer, &sets[0], 0),
+        (&textured, &over, &nearer, &sets[1], 4),
+        (&flat, &green_only, &further, &sets[2], 4),
+    ];
+    for (program, blend, depth_stencil, set, first) in draws {
+        b.draw(&DrawCall {
+            program,
+            blend,
+            depth_stencil,
+            raster: &rs,
+            vertex_layout: &vl,
+            bindings: [Some(set), None, None, None],
+            vertex_buffers: &streams,
+            index: None,
+            topology: Topology::TriangleStrip,
+            restart: false,
+            viewports: &vp,
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices {
+                first,
+                count: 4,
+                first_instance: 0,
+                instances: 1,
+            },
+        });
+    }
+    b.end_pass();
+    let got = read_texture(&mut b, region(&color, 0, 0, 0, 0), extent(N, N, 1), 4);
+
+    let a = 128.0 / 255.0;
+    let mut expected = Vec::new();
+    for y in 0..N as usize {
+        for x in 0..N as usize {
+            if x < 2 {
+                expected.extend_from_slice(&[255, 255, 0, 255]);
+            } else {
+                let t = &texels[(y * N as usize + x) * 4..][..4];
+                let mix = |c: u8, d: f64| {
+                    ((f64::from(c) / 255.0 * a + d * (1.0 - a)) * 255.0).round() as u8
+                };
+                expected.extend_from_slice(&[mix(t[0], 0.0), mix(t[1], 0.0), mix(t[2], 1.0), 128]);
+            }
+        }
+    }
+    assert_close(&got, &expected, 1, 4, N as usize);
+    ok(&mut b);
+}
+
+/// What is drawn into the surface's current texture is what the host shows, frame after frame.
+pub fn present_shows_the_frame<H: Host>() {
+    let mut b = H::make();
+    needs(&b, Format::Rgba8Unorm, FormatUse::PRESENT);
+    let window = H::window(&mut b);
+    let surface = b.create_surface(window).expect("create_surface");
+    b.configure_surface(&surface, Format::Rgba8Unorm, 4, 4, true)
+        .expect("configure_surface");
+    for (value, texel) in [
+        ([0.2, 0.4, 0.6, 1.0], [51, 102, 153, 255]),
+        ([1.0, 0.0, 0.2, 1.0], [255, 0, 51, 255]),
+    ] {
+        let v = b.current_texture(&surface).expect("current_texture");
+        b.begin_pass(&color_pass::<H::Backend>(
+            &v,
+            LoadOp::Clear(f32_bits(value)),
+        ));
+        b.end_pass();
+        b.present(&surface).expect("present");
+        if let Some(shown) = H::shown(&mut b, window) {
+            assert_eq!(shown, texel.repeat(16));
+        }
+    }
+    ok(&mut b);
+}

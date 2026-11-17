@@ -1,0 +1,62 @@
+#!/bin/bash
+# Real Direct3D 11 programs (DirectX SDK tutorials and bgfx examples), from the
+# Mac; desktop/programs.ps1 lists them with their sources, pinned commits and how each runs.
+#   tools/graphics-rig/programs build
+#       fetches and builds them all into C:\wc\programs; not a GPU job
+#   tools/graphics-rig/programs run [--census] [--capture <frames>] [--dll <name>=<path>]... [<program>...]
+#       one GPU job on the hidden desktop running each program (all by default) through the
+#       forwarding d3d11.dll until its last captured frame (default frames 10,60,120), with
+#       replacement libraries if given (paths on the desktop, relative to its checkout); prints
+#       pass or FAIL for each (pass: it presented the last frame and every frame was saved) and
+#       exits 1 on any FAIL. The frames and census files are copied to
+#       pyro-parked/wcontainers-scratch/graphics-rig/programs/<program>. --census runs real
+#       Direct3D only and also copies each census.txt into tools/graphics-rig/census/<program>.txt,
+#       to be committed.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+usage="usage: programs build | run [--census] [--capture <frames>] [--dll <name>=<path>]... [<program>...]"
+[ $# -gt 0 ] || { echo "$usage" >&2; exit 2; }
+script='powershell -NoProfile -ExecutionPolicy Bypass -File tools\graphics-rig\desktop\programs.ps1'
+case $1 in
+    build) exec "$here/remote" "$script -Mode build" ;;
+    run) shift ;;
+    *) echo "$usage" >&2; exit 2 ;;
+esac
+census=
+options=
+dlls=()
+programs=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --census) census=1; shift ;;
+        --capture) options+=" -Capture $2"; shift 2 ;;
+        --dll) dlls+=("$2"); shift 2 ;;
+        *) programs+=("$1"); shift ;;
+    esac
+done
+[ -z "$census" ] || [ ${#dlls[@]} -eq 0 ] || { echo "programs: --census runs real Direct3D only" >&2; exit 2; }
+[ ${#programs[@]} -eq 0 ] || options+=" -Programs $(IFS=,; echo "${programs[*]}")"
+[ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
+out="C:\\wc\\out\\$name\\programs"
+set +e
+"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test-forward" -- \
+    "$script -Mode run -Out $out -Forward %CARGO_TARGET_DIR%\\debug\\wcontainers_graphics_test_forward.dll$options"
+code=$?
+set -e
+scratch=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/programs
+mkdir -p "$scratch"
+rig_scp -r "$host:C:/wc/out/$name/programs/*" "$scratch/" 2>/dev/null || true
+rm -rf "$scratch"/*/bin
+if [ -n "$census" ]; then
+    mkdir -p "$here/census"
+    for dir in "$scratch"/*/; do
+        program=$(basename "$dir")
+        if [ ${#programs[@]} -eq 0 ] || [[ " ${programs[*]} " == *" $program "* ]]; then
+            [ ! -f "$dir/census.txt" ] || cp "$dir/census.txt" "$here/census/$program.txt"
+        fi
+    done
+    echo "programs: census files copied into $here/census"
+fi
+exit $code

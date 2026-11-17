@@ -140,8 +140,8 @@ pub enum SlowPath {
     /// A 16-bit normalised format, or a rendered 8-bit signed normalised one, the back end lacks, stored
     /// as the integer format of the same bits: decoded and filtered in the program, encoded on writes.
     NormAsInteger,
-    /// Blending done in the program, reading a copy of the target: into a target stored as integers, or
-    /// of a format the back end cannot blend.
+    /// Blending done in the program, reading a copy of the target: into a target stored as integers, of
+    /// a format the back end cannot blend, or with dual-source factors the back end lacks.
     BlendInShader,
     /// A sample mask other than all ones written by the fragment program.
     SampleMaskInShader,
@@ -149,7 +149,8 @@ pub enum SlowPath {
     StencilCopiedByDraw,
     /// A copy between two formats the API copies only through a buffer: two copies.
     CopyThroughBuffer,
-    /// Depth copied into a texture whose depth cannot be written by a copy, by a draw writing depth.
+    /// Depth copied into a texture whose depth cannot be written by a copy (from a texture, or from a
+    /// buffer through a float texture), by a draw writing depth.
     DepthWrittenByDraw,
     /// A texture whose format the back end cannot read back or copy on the GPU, kept on the host too.
     HostCopyKept,
@@ -213,11 +214,27 @@ pub enum SlowPath {
     /// A buffer one draw uses both as writable storage and another way: the other use reads a copy made
     /// before the pass.
     UsageScopeCopied,
+    /// Clip distances applied by the program: interpolated as ordinary values, the fragment discarded
+    /// or its samples masked where one is negative.
+    ClipDistanceInShader,
+    /// Depth clamped instead of clipped by the program, which writes the fragment's depth.
+    DepthClampInShader,
+    /// Cull distances applied by the stage helper, which drops each primitive whose vertices are all
+    /// negative on one plane.
+    CullDistanceAsGeometry,
+    /// The pixel shader's primitive index made by the stage helper, as for a geometry shader.
+    PrimitiveIdAsGeometry,
+    /// A copy between a buffer and a texture whose row pitch the back end's API does not take, made
+    /// through a buffer at a pitch it takes.
+    RowsRepacked,
+    /// A resolve asked in the sRGB twin of the stored format averaged in the stored format, because the
+    /// back end cannot read its multisampled samples another way (a listed loss).
+    ResolveInStoredFormat,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 87] = [
+    pub const ALL: [SlowPath; 93] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -305,6 +322,12 @@ impl SlowPath {
         SlowPath::AntialiasedLinesAsQuads,
         SlowPath::UsageScopeSplit,
         SlowPath::UsageScopeCopied,
+        SlowPath::ClipDistanceInShader,
+        SlowPath::DepthClampInShader,
+        SlowPath::CullDistanceAsGeometry,
+        SlowPath::PrimitiveIdAsGeometry,
+        SlowPath::RowsRepacked,
+        SlowPath::ResolveInStoredFormat,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -409,6 +432,12 @@ impl SlowPath {
             SlowPath::AntialiasedLinesAsQuads => "antialiased lines drawn as covered rectangles",
             SlowPath::UsageScopeSplit => "pass split between a storage write and another use",
             SlowPath::UsageScopeCopied => "buffer used two ways in one draw read from a copy",
+            SlowPath::ClipDistanceInShader => "clip distances applied in the shader",
+            SlowPath::DepthClampInShader => "depth clamped in the shader",
+            SlowPath::CullDistanceAsGeometry => "cull distances applied by the stage helper",
+            SlowPath::PrimitiveIdAsGeometry => "primitive index made by the stage helper",
+            SlowPath::RowsRepacked => "copy rows repacked to the api's pitch",
+            SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
         }
     }
 }

@@ -27,6 +27,8 @@ struct Recorder {
     bound_samplers: Vec<Id>,
     /// Each buffer's usage, by id.
     usages: Vec<(Id, BufferUsage)>,
+    /// The format of each view made, in order.
+    view_formats: Vec<Format>,
 }
 
 type Id = u32;
@@ -67,6 +69,7 @@ impl Recorder {
         };
         Recorder {
             caps: Some(Caps {
+                adapter: crate::caps::AdapterInfo::default(),
                 features: Features::empty(),
                 limits,
                 formats: FormatCaps {
@@ -128,6 +131,7 @@ impl Backend for Recorder {
     }
     fn create_view(&mut self, t: &Id, d: &TextureViewDesc) -> Result<Id, GpuError> {
         let id = self.id();
+        self.view_formats.push(d.format);
         self.log.push(format!(
             "create_view {id} of {t} {:?} mip {}+{} layer {}+{}",
             d.dimension, d.base_mip, d.mip_count, d.base_layer, d.layer_count
@@ -248,7 +252,7 @@ impl Backend for Recorder {
     ) {
     }
     fn clear_buffer(&mut self, _: &Id, _: u64, _: u64, _: &[u8]) {}
-    fn resolve(&mut self, _: &TextureRegion<'_, Self>, _: &TextureRegion<'_, Self>) {}
+    fn resolve(&mut self, _: &TextureRegion<'_, Self>, _: &TextureRegion<'_, Self>, _: Format) {}
     fn submit(&mut self) -> Id {
         self.id()
     }
@@ -1067,6 +1071,25 @@ fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
     let desc = texture(TextureDimension::D2, Format::R32Float, 2, 2);
     generate(&mut r, &desc, desc.format);
     assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 2);
+}
+
+#[test]
+fn generate_mips_through_the_srgb_twin_reads_and_writes_srgb_views() {
+    let mut r = Recorder::new();
+    let mut desc = texture(TextureDimension::D2, Format::Rgba8Unorm, 1, 3);
+    desc.reinterpret = true;
+    r.generate_mips(&50, &desc, Format::Rgba8UnormSrgb, 1..3, 0..1)
+        .unwrap();
+    assert_eq!(r.view_formats, [Format::Rgba8UnormSrgb; 4]);
+    assert_eq!(
+        made(&r),
+        [Builtin::Mip(ViewDimension::D2, MipRead::Filtered)]
+    );
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert!(matches!(
+        r.generate_mips(&50, &desc, Format::Bgra8UnormSrgb, 1..3, 0..1),
+        Err(GpuError::Invalid(_))
+    ));
 }
 
 #[test]
