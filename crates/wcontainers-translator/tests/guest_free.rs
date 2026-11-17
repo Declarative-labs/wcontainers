@@ -10,9 +10,9 @@ const ALLOWED: [&str; 2] = ["wcontainers_abi", "wcontainers_guest_cpu"];
 /// What it may name of the abi crate, always by its full path.
 const ABI_ALLOWED: [&str; 2] = ["PAGE_SIZE", "Permissions"];
 
-/// Every `wcontainers_*` crate name in `text` that is not allowed, and every use of the abi crate other
-/// than `wcontainers_abi::<an allowed item>`.
-fn named(text: &str) -> Vec<String> {
+/// Every `wcontainers_*` crate name in `text` that is not allowed and, in Rust source, every use of the abi
+/// crate other than `wcontainers_abi::<an allowed item>`, so that it cannot be named under another name.
+fn named(text: &str, rust: bool) -> Vec<String> {
     let normal = text.replace('-', "_");
     let word = |from: &str| -> String {
         from.chars()
@@ -28,10 +28,11 @@ fn named(text: &str) -> Vec<String> {
             }
             let rest = &normal[at + name.len()..];
             let item = rest.strip_prefix("::").map(word);
-            let in_rust = rest.starts_with("::") || rest.starts_with(';');
             match (name.as_str(), item) {
                 ("wcontainers_abi", Some(item)) if ABI_ALLOWED.contains(&item.as_str()) => None,
-                ("wcontainers_abi", _) if in_rust => Some(format!("{name}{}", word(rest))),
+                ("wcontainers_abi", _) if rust => {
+                    Some(format!("{name}{}", rest.lines().next().unwrap_or("")))
+                }
                 _ => None,
             }
         })
@@ -40,15 +41,22 @@ fn named(text: &str) -> Vec<String> {
 
 #[test]
 fn the_abi_check_finds_what_it_should() {
-    assert!(named("wcontainers_abi::PAGE_SIZE wcontainers_abi::Permissions").is_empty());
-    assert_eq!(named("x: wcontainers_abi::RegisterBlock").len(), 1);
+    let rust = |text| named(text, true);
+    assert!(rust("wcontainers_abi::PAGE_SIZE wcontainers_abi::Permissions").is_empty());
+    assert!(rust("use wcontainers_abi::Permissions as P;").is_empty());
+    assert_eq!(rust("x: wcontainers_abi::RegisterBlock").len(), 1);
     assert_eq!(
-        named("use wcontainers_abi::{PAGE_SIZE, STOP_FLAG_OFFSET};").len(),
+        rust("use wcontainers_abi::{PAGE_SIZE, STOP_FLAG_OFFSET};").len(),
         1
     );
-    assert_eq!(named("use wcontainers_abi;").len(), 1);
-    assert_eq!(named("wcontainers_arm64::Arm64").len(), 1);
-    assert!(named("wcontainers-abi.workspace = true").is_empty());
+    assert_eq!(rust("use wcontainers_abi;").len(), 1);
+    assert_eq!(
+        rust("use wcontainers_abi as abi;\nfn f(b: abi::RegisterBlock) {}").len(),
+        1
+    );
+    assert_eq!(rust("extern crate wcontainers_abi as abi;").len(), 1);
+    assert_eq!(rust("wcontainers_arm64::Arm64").len(), 1);
+    assert!(named("wcontainers-abi.workspace = true", false).is_empty());
 }
 
 fn sources(directory: &Path, files: &mut Vec<std::path::PathBuf>) {
@@ -72,7 +80,7 @@ fn the_translator_names_no_guest_cpu_crate() {
         .filter(|line| !line.starts_with("name ="))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut found: Vec<String> = named(&dependencies)
+    let mut found: Vec<String> = named(&dependencies, false)
         .into_iter()
         .map(|name| format!("Cargo.toml: {name}"))
         .collect();
@@ -82,7 +90,7 @@ fn the_translator_names_no_guest_cpu_crate() {
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap();
         found.extend(
-            named(&text)
+            named(&text, true)
                 .into_iter()
                 .map(|name| format!("{}: {name}", file.display())),
         );
@@ -93,8 +101,17 @@ fn the_translator_names_no_guest_cpu_crate() {
 #[test]
 fn the_check_finds_a_cpu_crate() {
     assert_eq!(
-        named("use wcontainers_arm64::Instruction;\nwcontainers-x86 = { path = \"x\" }"),
+        named(
+            "use wcontainers_arm64::Instruction;\nwcontainers-x86 = { path = \"x\" }",
+            false
+        ),
         ["wcontainers_arm64", "wcontainers_x86"]
     );
-    assert!(named("use wcontainers_guest_cpu::Guest; wcontainers-abi.workspace = true").is_empty());
+    assert!(
+        named(
+            "use wcontainers_guest_cpu::Guest; wcontainers-abi.workspace = true",
+            false
+        )
+        .is_empty()
+    );
 }
