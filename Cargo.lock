@@ -3123,7 +3123,7 @@ dependencies = [
  "wcontainers-graphics-test",
  "web-sys",
  "wgpu",
- "windows-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

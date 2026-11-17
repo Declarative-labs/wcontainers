@@ -27,6 +27,8 @@ pub fn caps(
         | Features::INDEX_U8
         // Transform feedback is GLES 3.0 core.
         | Features::TRANSFORM_FEEDBACK
+        // vertexAttribDivisor takes any rate.
+        | Features::INSTANCE_STEP_RATE
         // FRACTIONAL_DEPTH_BIAS: polygonOffset takes float units, but GL may round them; set by the
         // back end's probe.
         | Features::BLEND_CONSTANT_ALPHA;
