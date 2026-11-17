@@ -154,5 +154,15 @@ int main(void) {
     show("asked late", r4, 512);
     show("asked late ipv4 to ipv6", r6, 512);
     show("asked late ipv6", r6, 512);
+    // An IPv6 socket connects to an IPv4 address given as one; one for IPv6 alone cannot.
+    int c6 = socket(AF_INET6, SOCK_DGRAM, 0);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    printf("ipv6 connect to ipv4 %d\n", connect(c6, (void *)&a, sizeof a));
+    printf("ipv6 send to ipv4 %zd\n", send(c6, "nine", 4, 0));
+    show("from ipv6 by ipv4", r4, 0);
+    int only = socket(AF_INET6, SOCK_DGRAM, 0);
+    setsockopt(only, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof one);
+    int r = connect(only, (void *)&a, sizeof a);
+    printf("ipv6 only connect to ipv4 %d %s\n", r, r < 0 ? strerror(errno) : "");
     return 0;
 }

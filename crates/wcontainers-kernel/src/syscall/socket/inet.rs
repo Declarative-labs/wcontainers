@@ -709,8 +709,15 @@ pub(super) fn connect(
     }
     let protocol = inet_ref(socket).protocol;
     let family = socket.borrow().family;
-    let named = if u16::from_le_bytes([bytes[0], bytes[1]]) as u32 == AF_UNSPEC {
+    let given = u16::from_le_bytes([bytes[0], bytes[1]]) as u32;
+    let named = if given == AF_UNSPEC {
         Named::Unspecified
+    } else if protocol == Protocol::Udp && family == AF_INET6 && given == AF_INET {
+        // `__ip6_datagram_connect` hands an IPv4 address to IPv4's connect.
+        if inet_ref(socket).v6only {
+            return Err(Errno::EAFNOSUPPORT);
+        }
+        read_endpoint(AF_INET, bytes)?
     } else {
         read_endpoint(family, bytes)?
     };
@@ -1351,8 +1358,27 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
         mask |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
     }
     if !connecting {
-        if !own.queue.is_empty() {
+        // `tcp_stream_is_readable`: at an urgent byte not inline, a byte past it is wanted.
+        let held: usize = own
+            .queue
+            .iter()
+            .map(|packet| (packet.data.len() - packet.consumed).max(usize::from(packet.urgent)))
+            .sum();
+        let at_mark = !own.urgent_inline()
+            && own
+                .queue
+                .iter()
+                .find(|packet| packet.urgent || packet.consumed < packet.data.len())
+                .is_some_and(|packet| packet.urgent);
+        if held > usize::from(at_mark) {
             mask |= EPOLLIN | EPOLLRDNORM;
+        }
+        if own
+            .queue
+            .iter()
+            .any(|packet| packet.urgent && packet.consumed == 0)
+        {
+            mask |= EPOLLPRI;
         }
         let room = match inet.outside {
             Some(_) => inet.room,
@@ -1462,11 +1488,12 @@ pub(super) fn send(
             if let Some(control) = &message.control {
                 sent_control(kernel, cx, control, true, false).map_err(|_| Errno::EINVAL)?;
             }
-            // Urgent bytes are refused only where they would go: an unconnected socket fails
-            // first (`sk_stream_wait_connect`).
-            let connected =
-                socket.borrow().state == State::Connected && inet_ref(socket).connecting.is_none();
-            if message.flags & MSG_OOB != 0 && total > 0 && connected {
+            // Urgent data to the outside is refused only where it would go: an unconnected
+            // socket fails first (`sk_stream_wait_connect`).
+            let outside = socket.borrow().state == State::Connected
+                && inet_ref(socket).connecting.is_none()
+                && inet_ref(socket).outside.is_some();
+            if message.flags & MSG_OOB != 0 && total > 0 && outside {
                 return Err(kernel.counters.refuse_flag(
                     cx.host,
                     __NR_sendmsg,
@@ -1579,6 +1606,16 @@ fn tcp_send(
         }
         let size = (total - sent).min(sndbuf - written).min(TCP_PIECE);
         let data = gather(kernel, cx, tid, message.data, sent, size)?;
+        // With MSG_OOB the last byte is urgent: the receiver's mark (`tcp_mark_urg`).
+        let urgent = message.flags & MSG_OOB != 0 && sent + size == total;
+        let (data, last) = if urgent {
+            let mut data = data;
+            let last = data.pop().expect("a byte");
+            (data, Some(last))
+        } else {
+            (data, None)
+        };
+        let size = data.len() as u64;
         let packet = Packet {
             data,
             consumed: 0,
@@ -1609,14 +1646,118 @@ fn tcp_send(
             let held: u64 = other.queue.iter().map(|packet| packet.truesize).sum();
             held < other.rcvbuf
         };
-        peer.borrow_mut().queue.push_back(packet);
-        if arrives {
-            super::data_ready(kernel, cx, &peer, EPOLLIN | EPOLLRDNORM);
-        } else {
-            kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
+        if size > 0 {
+            peer.borrow_mut().queue.push_back(packet);
+            if arrives {
+                super::data_ready(kernel, cx, &peer, EPOLLIN | EPOLLRDNORM);
+            } else {
+                kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
+            }
         }
         sent += size;
+        if let Some(byte) = last {
+            urgent_arrives(kernel, cx, tid, socket, &peer, byte);
+            sent += 1;
+        }
     }
+}
+
+/// `tcp_check_urg` and `tcp_urg`: a new urgent byte at the end of the receiver's queue. An
+/// earlier one becomes an ordinary byte, unless it is the next to read and not inline, when it is
+/// passed over. The receiver's owner hears of it (SIGURG), and its readers of data.
+fn urgent_arrives(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    peer: &SocketRef,
+    byte: u8,
+) {
+    let dropped = {
+        let mut other = peer.borrow_mut();
+        let inline = other.urgent_inline();
+        let earlier = other.queue.iter().position(|packet| packet.urgent);
+        let mut dropped = None;
+        if let Some(at) = earlier {
+            let next = other
+                .queue
+                .iter()
+                .take(at)
+                .all(|packet| packet.consumed == packet.data.len());
+            if next && !inline {
+                dropped = other.queue.remove(at);
+            } else {
+                let packet = &mut other.queue[at];
+                packet.urgent = false;
+                packet.consumed = 0;
+            }
+        }
+        dropped
+    };
+    if let Some(packet) = dropped {
+        super::drop_packet(kernel, cx, packet);
+    }
+    let packet = Packet {
+        data: alloc::vec![byte],
+        consumed: 0,
+        files: Vec::new(),
+        cred: super::own_cred(kernel, tid),
+        sender: Rc::downgrade(socket),
+        truesize: 1,
+        source: None,
+        arrival: None,
+        time: super::stamp(kernel, cx, peer),
+        urgent: true,
+        owner: 0,
+    };
+    socket.borrow_mut().written += 1;
+    peer.borrow_mut().queue.push_back(packet);
+    super::send_urgent(kernel, cx, peer);
+    super::data_ready(
+        kernel,
+        cx,
+        peer,
+        EPOLLIN | EPOLLPRI | EPOLLRDNORM | EPOLLRDBAND,
+    );
+}
+
+/// `tcp_recv_urg`: the urgent byte, out of band, once (a peek leaves it); EINVAL with none, with
+/// SO_OOBINLINE or once it was read. Its read leaves it in the queue emptied, the mark.
+fn receive_urgent(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    parts: super::Data<'_>,
+    flags: u32,
+) -> Result<(u64, Received), Errno> {
+    let byte = {
+        let mut own = socket.borrow_mut();
+        let inline = own.urgent_inline();
+        let packet = own
+            .queue
+            .iter_mut()
+            .find(|packet| packet.urgent)
+            .filter(|packet| !inline && packet.consumed == 0)
+            .ok_or(Errno::EINVAL)?;
+        let byte = packet.data[0];
+        if flags & MSG_PEEK == 0 {
+            packet.consumed = 1;
+        }
+        byte
+    };
+    let mut received = Received {
+        flags: MSG_OOB,
+        ..Received::default()
+    };
+    if parts.size() == 0 {
+        received.flags |= MSG_TRUNC;
+        return Ok((0, received));
+    }
+    if flags & MSG_TRUNC == 0 {
+        scatter(kernel, cx, tid, parts, &[byte]).map_err(|_| Errno::EFAULT)?;
+    }
+    Ok((1, received))
 }
 
 /// The true size Linux charges a receiver for a datagram of `size` bytes (measured): its buffer
@@ -2106,10 +2247,9 @@ pub(super) fn receive(
         if own.state == State::Listening {
             return Err(Errno::ENOTCONN);
         }
-        // `tcp_recv_urg`: no urgent byte has come (sending one is not built), as for a
-        // connection that was sent none.
         if flags & MSG_OOB != 0 {
-            return Err(Errno::EINVAL);
+            drop(own);
+            return receive_urgent(kernel, cx, tid, socket, parts, flags);
         }
         let connecting = own.inet.as_deref().unwrap().connecting.is_some();
         if own.state == State::Closed && !connecting && own.queue.is_empty() {

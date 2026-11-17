@@ -463,8 +463,28 @@ static void access_time(void) {
     close(t);
 }
 
+// A pending error comes before a queued message: the other end went with bytes unread.
+static void error_first(void) {
+    int kinds[] = {SOCK_SEQPACKET, SOCK_STREAM};
+    for (int k = 0; k < 2; k++) {
+        int sv[2];
+        socketpair(AF_UNIX, kinds[k] | SOCK_NONBLOCK, 0, sv);
+        send(sv[0], "", 0, 0);
+        send(sv[0], "q", 1, 0);
+        send(sv[1], "abcde", 5, 0);
+        close(sv[0]);
+        char buf[16];
+        long r = recv(sv[1], buf, sizeof buf, MSG_PEEK);
+        printf("kind %d first: %ld %s\n", kinds[k], r, r < 0 ? strerror(errno) : "");
+        r = recv(sv[1], buf, sizeof buf, 0);
+        printf("kind %d then: %ld %s\n", kinds[k], r, r < 0 ? strerror(errno) : "");
+        close(sv[1]);
+    }
+}
+
 int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
+    error_first();
     access_time();
     pairs();
     names();

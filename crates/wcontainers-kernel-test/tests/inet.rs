@@ -63,3 +63,9 @@ fn error_queue_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "recverr", &[]);
 }
+
+#[test]
+fn tcp_urgent_data_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "tcpoob", &[]);
+}

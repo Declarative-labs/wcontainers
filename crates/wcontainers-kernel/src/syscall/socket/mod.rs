@@ -1994,15 +1994,14 @@ fn receive(
         }
         return Err(Errno::EOPNOTSUPP);
     }
+    // `__skb_try_recv_datagram`: a pending error comes before any datagram.
+    let error = core::mem::take(&mut socket.borrow_mut().error);
+    if error != 0 {
+        return Err(Errno(error as u32));
+    }
     let packet_ready = !socket.borrow().queue.is_empty();
     if !packet_ready {
         let own = socket.borrow();
-        if own.error != 0 {
-            let error = own.error;
-            drop(own);
-            socket.borrow_mut().error = 0;
-            return Err(Errno(error as u32));
-        }
         // A datagram socket shut for reading ends only a wait; a nonblocking read of it finds
         // nothing (`__unix_dgram_recvmsg` turns EAGAIN into the end for sequenced packets only).
         if kind == SOCK_DGRAM && own.shutdown & RCV_SHUTDOWN != 0 && nonblocking {
@@ -2124,8 +2123,13 @@ fn receive_stream(
         if copied >= size && size > 0 {
             break;
         }
-        if !is_inet && socket.borrow().queue.get(index).is_some() {
-            match manage_urgent(kernel, cx, socket, index, peek, copied) {
+        if socket.borrow().queue.get(index).is_some() {
+            let managed = if is_inet {
+                pass_tcp_urgent(kernel, cx, socket, index, peek, copied)
+            } else {
+                manage_urgent(kernel, cx, socket, index, peek, copied)
+            };
+            match managed {
                 Some(at) => index = at,
                 None if copied > 0 => break,
                 None => index = socket.borrow().queue.len(),
@@ -2317,6 +2321,44 @@ fn manage_urgent(
     } else {
         Some(index)
     }
+}
+
+/// `tcp_recvmsg` at TCP's urgent byte (read out of band or not): a read with bytes stops there;
+/// one without reads it as an ordinary byte with SO_OOBINLINE, else passes over it, letting it
+/// go unless peeking (the urgent data ends). The buffer to read, or None.
+fn pass_tcp_urgent(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    mut index: usize,
+    peek: bool,
+    copied: u64,
+) -> Option<usize> {
+    let (urgent, unread) = {
+        let own = socket.borrow();
+        let packet = own.queue.get(index)?;
+        (packet.urgent, packet.consumed == 0)
+    };
+    if !urgent {
+        return Some(index);
+    }
+    if copied > 0 {
+        return None;
+    }
+    if unread && socket.borrow().urgent_inline() {
+        return Some(index);
+    }
+    if peek {
+        index += 1;
+    } else {
+        let packet = socket
+            .borrow_mut()
+            .queue
+            .remove(index)
+            .expect("the urgent byte");
+        drop_packet(kernel, cx, packet);
+    }
+    socket.borrow().queue.get(index).map(|_| index)
 }
 
 /// `unix_stream_recv_urg`: the urgent byte the mark is at, out of band. Taken, it stays in the
@@ -2918,10 +2960,13 @@ pub(super) fn recvmsg(
     Ok(received.reported.unwrap_or(copied))
 }
 
-/// What a stream holds unread, as FIONREAD and SCM_INQ tell it (`unix_inq_len`, `tcp_inq`).
+/// What a stream holds unread, as FIONREAD and SCM_INQ tell it (`unix_inq_len`, `tcp_inq`):
+/// with TCP's urgent byte ahead and not inline, what comes before it.
 fn queued(own: &Socket) -> u64 {
+    let tcp_mark = own.inet.is_some() && !own.urgent_inline();
     own.queue
         .iter()
+        .take_while(|packet| !(tcp_mark && packet.urgent))
         .map(|packet| (packet.data.len() - packet.consumed) as u64)
         .sum::<u64>()
         + own.skipped_urgent
@@ -3384,17 +3429,22 @@ pub(super) fn ioctl(
                 return put_int(kernel, cx, amount as i32);
             }
             // `unix_ioctl`: at the urgent byte, or at an emptied buffer with none past it or the
-            // urgent byte next. TCP's urgent data is not built (MSG_OOB is refused).
+            // urgent byte next. `tcp_ioctl`: the urgent byte, read or not, is next.
             SIOCATMARK => {
                 let own = socket.borrow();
                 let mut queue = own.queue.iter();
-                let mark = family == AF_UNIX
-                    && queue.next().is_some_and(|first| {
+                let mark = if family == AF_UNIX {
+                    queue.next().is_some_and(|first| {
                         first.urgent
                             || (first.consumed == first.data.len()
                                 && (!own.has_urgent()
                                     || queue.next().is_some_and(|next| next.urgent)))
-                    });
+                    })
+                } else {
+                    queue
+                        .find(|packet| packet.urgent || packet.consumed < packet.data.len())
+                        .is_some_and(|packet| packet.urgent)
+                };
                 drop(own);
                 return put_int(kernel, cx, i32::from(mark));
             }
