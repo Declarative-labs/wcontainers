@@ -10,10 +10,10 @@ use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture,
     DepthAttachment, DrawCall, DrawRange, Extent, Features, FormatKind, GpuError, IndexBinding,
     IndexFormat, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, Origin,
-    PassDesc, PrepareDesc, Program, ReadSource, ReadState, ScissorRect, ShaderStage, SlowPath,
-    StepMode, StoreOp, TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport, WriteMode,
+    PassDesc, PrepareDesc, Program, ReadSource, ReadState, SamplerDesc, ScissorRect, ShaderStage,
+    SlowPath, StageSet, StepMode, StoreOp, TargetLayout, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -44,8 +44,12 @@ id!(
     /// A fence.
     FenceId,
     /// A swap chain.
-    ChainId
+    ChainId,
+    /// A descriptor heap.
+    HeapId
 );
+
+mod bind;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
 const ADDRESS_BASE: u64 = 1 << 32;
@@ -77,8 +81,8 @@ enum Storage<B: Backend> {
     Texture {
         texture: B::Texture,
         desc: TextureDesc,
-        /// Views made for passes, by what they view.
-        views: Vec<(TargetView, B::TextureView)>,
+        /// Views made for passes and shaders, by what they view.
+        views: Vec<(TextureViewDesc, B::TextureView)>,
         /// False for a swap chain's back buffer, whose texture the swap chain owns.
         owned: bool,
     },
@@ -104,6 +108,8 @@ struct Pipeline<B: Backend> {
     strip_cut: u32,
     /// The vertex shader reads `SV_VertexID` or `SV_InstanceID`, which leave out the draw's bases.
     reads_bases: bool,
+    /// What the program's stages bind, and the size each stage's uniform blocks declare.
+    bindings: Vec<bind::StageBinding>,
 }
 
 /// `D3D12_GRAPHICS_PIPELINE_STATE_DESC`, the parts this front reads.
@@ -141,14 +147,28 @@ struct PendingRead<B: Backend> {
     size: usize,
 }
 
+/// A descriptor heap: the slots CPU handles point into, and the first GPU handle.
+struct Heap {
+    slots: Box<[Descriptor]>,
+    gpu: u64,
+}
+
+/// Where GPU descriptor handles start, far from GPU virtual addresses.
+const HANDLE_BASE: u64 = 1 << 56;
+
 /// The device: every object and the replay of command lists, on one back end owned by one thread.
 pub struct Device<B: Backend> {
     backend: B,
     resources: Slab<Resource<B>>,
     pipelines: Slab<Pipeline<B>>,
-    roots: Slab<RootSignatureDesc>,
+    roots: Slab<Arc<RootSignatureDesc>>,
     fences: Slab<Fence<B>>,
     addresses: AddressMap<ResourceId>,
+    heaps: Slab<Heap>,
+    handles: AddressMap<HeapId>,
+    samplers: HashMap<SamplerDesc, B::Sampler>,
+    /// Upload buffers already written to the GPU in this `ExecuteCommandLists`.
+    uploaded: Vec<ResourceId>,
     layouts: HashMap<VertexLayoutDesc, B::VertexLayout>,
     reads: Vec<PendingRead<B>>,
     /// Events to set when a fence reaches a value: fence, value, and the shell's token for the event.
@@ -174,6 +194,10 @@ impl<B: Backend> Device<B> {
             roots: Slab::new(),
             fences: Slab::new(),
             addresses: AddressMap::new(ADDRESS_BASE),
+            heaps: Slab::new(),
+            handles: AddressMap::new(HANDLE_BASE),
+            samplers: HashMap::new(),
+            uploaded: Vec::new(),
             layouts: HashMap::new(),
             reads: Vec::new(),
             waiters: Vec::new(),
@@ -351,13 +375,49 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    // ---- Descriptor heaps ----
+
+    /// `CreateDescriptorHeap`: `count` empty slots, which the program writes through the returned
+    /// pointer (its CPU handles) and names in tables by the returned GPU handle. The slots stay where
+    /// they are until the heap is destroyed.
+    pub fn create_descriptor_heap(&mut self, count: u32) -> (HeapId, *mut Descriptor, u64) {
+        let count = count.max(1);
+        let id = HeapId(self.heaps.vacant_key() as u32);
+        let gpu = self
+            .handles
+            .insert(u64::from(count) * crate::address::DESCRIPTOR_SIZE, id);
+        let mut slots = vec![Descriptor::Empty; count as usize].into_boxed_slice();
+        let cpu = slots.as_mut_ptr();
+        self.heaps.insert(Heap { slots, gpu });
+        (id, cpu, gpu)
+    }
+
+    pub fn destroy_descriptor_heap(&mut self, id: HeapId) {
+        if let Some(h) = self.heaps.try_remove(id.0 as usize) {
+            self.handles.remove(h.gpu);
+        }
+    }
+
+    /// The descriptor a GPU handle names, as the heap holds it now.
+    fn descriptor_at(&self, handle: u64) -> Result<Descriptor, Error> {
+        let (heap, offset) = self
+            .handles
+            .find(handle)
+            .ok_or(Error::Invalid("a GPU descriptor handle of no heap"))?;
+        let heap = &self.heaps[heap.0 as usize];
+        let index = (offset / crate::address::DESCRIPTOR_SIZE) as usize;
+        // SAFETY: a slot of a live heap. The program writes slots through its CPU handles; it may
+        // not change a descriptor while work that reads it is being submitted.
+        Ok(unsafe { std::ptr::read_volatile(&heap.slots[index]) })
+    }
+
     // ---- Root signatures and pipelines ----
 
     /// `CreateRootSignature` from a serialized blob.
     pub fn create_root_signature(&mut self, blob: &[u8]) -> Result<RootId, Error> {
         self.live()?;
         let desc = deserialize(blob).map_err(Error::Invalid)?;
-        Ok(RootId(self.roots.insert(desc) as u32))
+        Ok(RootId(self.roots.insert(Arc::new(desc)) as u32))
     }
 
     pub fn destroy_root_signature(&mut self, id: RootId) {
@@ -372,9 +432,10 @@ impl<B: Backend> Device<B> {
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<PipelineId, Error> {
         self.live()?;
-        if desc.root.is_none_or(|r| !self.roots.contains(r.0 as usize)) {
-            return Err(Error::Invalid("a pipeline needs its root signature"));
-        }
+        let root = desc
+            .root
+            .filter(|r| self.roots.contains(r.0 as usize))
+            .ok_or(Error::Invalid("a pipeline needs its root signature"))?;
         let vs = self.convert(desc.vs, ShaderStage::Vertex)?;
         let ps = if desc.ps.is_empty() {
             None
@@ -427,9 +488,19 @@ impl<B: Backend> Device<B> {
                 .transpose()?,
             samples: desc.samples.max(1),
         };
+        let mut bindings = bind::stage_bindings(&vs, StageSet::VERTEX);
+        if let Some(ps) = &ps {
+            bindings.extend(bind::stage_bindings(ps, StageSet::FRAGMENT));
+        }
+        bind::check(&self.roots[root.0 as usize], &bindings)?;
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
-        let raster = desc.raster.block(caps, desc.sample_mask, targets.samples)?;
+        let raster = desc.raster.block(
+            caps,
+            desc.sample_mask,
+            targets.samples,
+            desc.topology_type == 3,
+        )?;
         let depth_stencil = desc.depth_stencil.block(targets.depth_stencil.is_some())?;
         let topology = match desc.topology_type {
             1 => Topology::PointList,
@@ -472,6 +543,7 @@ impl<B: Backend> Device<B> {
             targets,
             strip_cut: desc.strip_cut,
             reads_bases,
+            bindings,
         };
         let packed = packed_strides(&pipeline.inputs);
         let layout = self.vertex_layout(&pipeline.inputs, &packed)?;
@@ -488,9 +560,8 @@ impl<B: Backend> Device<B> {
         Ok(PipelineId(self.pipelines.insert(pipeline) as u32))
     }
 
-    /// A DXIL or DXBC shader in the common form. Shaders reading resources wait for root
-    /// parameters, which the front does not bind yet; the converter's own refusals are kept as
-    /// messages.
+    /// A DXIL or DXBC shader in the common form. Shaders reading helper constants wait for the
+    /// variants that need them; the converter's own refusals are kept as messages.
     fn convert(&mut self, code: &[u8], stage: ShaderStage) -> Result<Converted, Error> {
         let source = if container_has(code, *b"DXIL") {
             Source::Dxil(code)
@@ -515,10 +586,8 @@ impl<B: Backend> Device<B> {
         if converted.modules.len() != 1 || converted.modules[0].stage != stage {
             return Err(Error::Invalid("a shader of another stage"));
         }
-        if !converted.reflection.bindings.is_empty() || converted.reflection.helper_size != 0 {
-            return Err(Error::NotImplemented(
-                "shaders reading resources need root parameters",
-            ));
+        if converted.reflection.helper_size != 0 {
+            return Err(Error::NotImplemented("shaders reading helper constants"));
         }
         Ok(converted)
     }
@@ -632,6 +701,10 @@ impl<B: Backend> Device<B> {
     /// `GetCompletedValue`. Read backs whose work is done are in readback memory first (waiting only
     /// for their bytes to arrive), so the program sees the bytes when it sees the value.
     pub fn completed(&mut self, id: FenceId) -> u64 {
+        // A removed device's fences report every value reached, as Direct3D 12's do.
+        if self.removed.is_some() {
+            return u64::MAX;
+        }
         let Some(f) = self.fences.get_mut(id.0 as usize) else {
             return 0;
         };
@@ -792,26 +865,13 @@ impl<B: Backend> Device<B> {
     /// replayed into the back end in order, and the work is submitted.
     pub fn execute(&mut self, lists: &[Arc<[Command]>]) -> Result<(), Error> {
         self.live()?;
+        self.uploaded.clear();
         let mut uploads: Vec<ResourceId> = Vec::new();
         for c in lists.iter().flat_map(|l| l.iter()) {
             self.uploads_read(c, &mut uploads);
         }
-        uploads.sort_by_key(|r| r.0);
-        uploads.dedup();
         for id in uploads {
-            if let Some(Resource {
-                storage:
-                    Storage::Buffer {
-                        buffer,
-                        host: Some(host),
-                    },
-                ..
-            }) = self.resources.get(id.0 as usize)
-            {
-                self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
-                self.backend
-                    .write_buffer(buffer, 0, host, WriteMode::NoOverwrite);
-            }
+            self.upload(id);
         }
         let first_read = self.reads.len();
         let result = lists.iter().try_for_each(|l| {
@@ -888,26 +948,13 @@ impl<B: Backend> Device<B> {
 
     /// The back end's view for a render target or depth view, made once per resource and view.
     fn view(&mut self, v: &TargetView) -> Result<B::TextureView, Error> {
-        let Some(Resource {
-            storage:
-                Storage::Texture {
-                    texture,
-                    desc,
-                    views,
-                    ..
-                },
-            ..
-        }) = self.resources.get_mut(v.resource.0 as usize)
-        else {
-            return Err(Error::Invalid("a target view of no texture"));
-        };
-        if let Some((_, view)) = views.iter().find(|(k, _)| k == v) {
-            return Ok(view.clone());
-        }
-        let three_d = desc.dimension == TextureDimension::D3;
-        let view = self.backend.create_view(
-            texture,
-            &TextureViewDesc {
+        let three_d = matches!(
+            self.resources.get(v.resource.0 as usize).map(|r| &r.storage),
+            Some(Storage::Texture { desc, .. }) if desc.dimension == TextureDimension::D3
+        );
+        self.texture_view(
+            v.resource,
+            TextureViewDesc {
                 format: dxgi(v.format)?,
                 dimension: if three_d {
                     ViewDimension::D3
@@ -922,8 +969,27 @@ impl<B: Backend> Device<B> {
                 layer_count: if three_d { 1 } else { v.layers.max(1) },
                 stencil: false,
             },
-        )?;
-        views.push((*v, view.clone()));
+        )
+    }
+
+    /// The back end's view `desc` of texture `resource`, made once.
+    fn texture_view(
+        &mut self,
+        resource: ResourceId,
+        desc: TextureViewDesc,
+    ) -> Result<B::TextureView, Error> {
+        let Some(Resource {
+            storage: Storage::Texture { texture, views, .. },
+            ..
+        }) = self.resources.get_mut(resource.0 as usize)
+        else {
+            return Err(Error::Invalid("a texture view of no texture"));
+        };
+        if let Some((_, view)) = views.iter().find(|(k, _)| *k == desc) {
+            return Ok(view.clone());
+        }
+        let view = self.backend.create_view(texture, &desc)?;
+        views.push((desc, view.clone()));
         Ok(view)
     }
 
@@ -1064,6 +1130,7 @@ struct Replay {
     colors: Vec<Descriptor>,
     depth: Option<Descriptor>,
     pass_open: bool,
+    graphics: bind::RootState,
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
     /// own before anything else reads the texture.
     clears: Vec<(TargetView, ClearValue)>,
@@ -1088,6 +1155,7 @@ impl Replay {
             colors: Vec::new(),
             depth: None,
             pass_open: false,
+            graphics: bind::RootState::default(),
             clears: Vec::new(),
         }
     }
@@ -1110,7 +1178,7 @@ impl Replay {
                 &desc,
                 dxgi(v.format)?,
                 v.mip..v.mip + 1,
-                v.first_layer..v.first_layer + v.layers.max(1),
+                v.first_layer..v.first_layer.saturating_add(v.layers.max(1)),
                 value,
             )?;
         }
@@ -1124,6 +1192,48 @@ impl Replay {
     fn run<B: Backend>(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
         match c {
             Command::Pipeline(p) => self.pipeline = Some(*p),
+            Command::RootSignature { compute, root } => {
+                if *compute {
+                    return Err(Error::NotImplemented("compute root signatures"));
+                }
+                let signature = root.and_then(|r| d.roots.get(r.0 as usize).cloned());
+                if root.is_some() && signature.is_none() {
+                    return Err(Error::Invalid("no such root signature"));
+                }
+                self.graphics.set_root(*root, signature.as_deref());
+            }
+            Command::RootArgument {
+                compute,
+                index,
+                argument,
+            } => {
+                if *compute {
+                    return Err(Error::NotImplemented("compute root arguments"));
+                }
+                *self
+                    .graphics
+                    .arguments
+                    .get_mut(*index as usize)
+                    .ok_or(Error::Invalid("a root parameter index out of range"))? =
+                    Some(*argument);
+            }
+            Command::RootConstants {
+                compute,
+                index,
+                offset,
+                values,
+            } => {
+                if *compute {
+                    return Err(Error::NotImplemented("compute root constants"));
+                }
+                let at = *offset as usize;
+                self.graphics
+                    .constants
+                    .get_mut(*index as usize)
+                    .and_then(|c| c.get_mut(at..at + values.len()))
+                    .ok_or(Error::Invalid("root constants out of range"))?
+                    .copy_from_slice(values);
+            }
             Command::Topology(t) => self.topology = crate::state::topology(*t)?,
             Command::VertexBuffers { start, views } => {
                 let at = *start as usize;
@@ -1280,9 +1390,10 @@ impl Replay {
         d: &mut Device<B>,
         range: DrawRange<'_, B>,
     ) -> Result<(), Error> {
-        let pid = self
-            .pipeline
-            .ok_or(Error::Invalid("drawing with no pipeline state"))?;
+        // A draw with no pipeline state draws nothing, as the hardware does.
+        let Some(pid) = self.pipeline else {
+            return Ok(());
+        };
         let bases = match &range {
             DrawRange::Vertices {
                 first,
@@ -1444,13 +1555,15 @@ impl Replay {
             ));
         }
         let restart = p.strip_cut != 0;
+        let sets = d.binding_sets(&self.graphics, pid)?;
+        let p = &d.pipelines[pid.0 as usize];
         let call = DrawCall {
             program: &p.program,
             blend: &p.blend,
             depth_stencil: &p.depth_stencil,
             raster: &p.raster,
             vertex_layout: &layout,
-            bindings: [None; wcontainers_gpu::MAX_BINDING_SETS],
+            bindings: sets.each_ref().map(Option::as_ref),
             vertex_buffers: &vertex_buffers,
             index: index.as_ref().map(|(buffer, offset, format)| IndexBinding {
                 buffer,

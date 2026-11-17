@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::Error;
-use crate::device::{PipelineId, ResourceId};
+use crate::device::{PipelineId, ResourceId, RootId};
 
 /// A render target view as a descriptor holds it (`D3D12_RENDER_TARGET_VIEW_DESC` resolved against
 /// its resource): the program copies descriptors as bytes, so this is plain data.
@@ -19,7 +19,49 @@ pub struct TargetView {
     pub layers: u32,
 }
 
-/// What one descriptor slot of a CPU heap holds. At most [`crate::address::DESCRIPTOR_SIZE`] bytes.
+/// A shader resource or unordered access view as a descriptor holds it
+/// (`D3D12_SHADER_RESOURCE_VIEW_DESC`, `D3D12_UNORDERED_ACCESS_VIEW_DESC`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub struct ResourceView {
+    pub resource: ResourceId,
+    /// The DXGI format the view reads the texels as (the resource's own where the view says none).
+    pub format: u32,
+    /// `D3D12_SRV_DIMENSION` or `D3D12_UAV_DIMENSION`.
+    pub dimension: u32,
+    /// `Shader4ComponentMapping` (shader resource views).
+    pub mapping: u32,
+    /// Buffers: the first element.
+    pub first_element: u64,
+    /// Buffers: the element count; textures: the mip count.
+    pub count: u32,
+    /// Buffers: the structure stride, zero for typed and raw views.
+    pub stride: u32,
+    /// Textures: the first mip.
+    pub mip: u32,
+    pub first_layer: u32,
+    pub layers: u32,
+    /// Buffers: `D3D12_BUFFER_SRV_FLAGS` or `D3D12_BUFFER_UAV_FLAGS` (raw).
+    pub flags: u32,
+    /// Textures: `ResourceMinLODClamp`, as f32 bits.
+    pub min_lod: u32,
+}
+
+/// `D3D12_SAMPLER_DESC`, floats as bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub struct SamplerView {
+    pub filter: u32,
+    pub address: [u32; 3],
+    pub lod_bias: u32,
+    pub anisotropy: u32,
+    pub compare: u32,
+    pub border: [u32; 4],
+    pub min_lod: u32,
+    pub max_lod: u32,
+}
+
+/// What one descriptor slot of a heap holds. At most [`crate::address::DESCRIPTOR_SIZE`] bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C, u32)]
 pub enum Descriptor {
@@ -31,6 +73,14 @@ pub enum Descriptor {
         /// `D3D12_DSV_FLAGS`: 1 depth read only, 2 stencil read only.
         read_only: u32,
     },
+    /// A constant buffer view: a GPU virtual address and a size in bytes.
+    ConstantBuffer {
+        address: u64,
+        size: u32,
+    },
+    ShaderResource(ResourceView),
+    UnorderedAccess(ResourceView),
+    Sampler(SamplerView),
 }
 
 const _: () = assert!(size_of::<Descriptor>() <= crate::address::DESCRIPTOR_SIZE as usize);
@@ -79,10 +129,36 @@ pub enum CopyLocation {
     },
 }
 
+/// A root parameter's argument (`SetGraphicsRoot*`, `SetComputeRoot*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootArgument {
+    /// A descriptor table's first GPU descriptor handle.
+    Table(u64),
+    /// A root descriptor's GPU virtual address.
+    Descriptor(u64),
+}
+
 /// One recorded command.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Pipeline(PipelineId),
+    /// `SetGraphicsRootSignature` (`compute` false) or `SetComputeRootSignature`.
+    RootSignature {
+        compute: bool,
+        root: Option<RootId>,
+    },
+    RootArgument {
+        compute: bool,
+        index: u32,
+        argument: RootArgument,
+    },
+    /// `Set*Root32BitConstants`: `values` from the 32-bit value `offset` of the parameter.
+    RootConstants {
+        compute: bool,
+        index: u32,
+        offset: u32,
+        values: Vec<u32>,
+    },
     Topology(u32),
     VertexBuffers {
         start: u32,

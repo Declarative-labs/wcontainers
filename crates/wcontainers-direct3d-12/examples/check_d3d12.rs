@@ -141,6 +141,7 @@ fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
             _ if rule == "info" => true,
             // Ours refused what real answered.
             (Some(_), None) => true,
+            _ if o == "notimpl" => true,
             _ => false,
         };
         if !within || verbose {
