@@ -14,6 +14,8 @@ pub struct Recorder {
     helpers: Helpers<Recorder>,
     next: u32,
     fences: u32,
+    /// Submissions the pretend GPU has finished: only those the test finishes or a wait reaches.
+    done: u32,
 }
 
 /// Capabilities like WebGPU's in Chrome on a desktop GPU, as far as the tests need them.
@@ -114,6 +116,7 @@ impl Recorder {
             helpers: Helpers::default(),
             next: 0,
             fences: 0,
+            done: 0,
         }
     }
 
@@ -121,6 +124,11 @@ impl Recorder {
         self.next += 1;
         self.calls.push(format!("create {} {what:?}", self.next));
         Ok(Id(self.next))
+    }
+
+    /// The GPU catches up: every submission so far is finished.
+    pub fn finish(&mut self) {
+        self.done = self.fences;
     }
 
     /// The recorded calls whose text starts with `prefix`.
@@ -299,11 +307,12 @@ impl Backend for Recorder {
         self.calls.push(format!("submit {}", self.fences));
         self.fences
     }
-    fn fence_done(&mut self, _fence: &u32) -> bool {
-        true
+    fn fence_done(&mut self, fence: &u32) -> bool {
+        *fence <= self.done
     }
     fn wait_fence(&mut self, fence: &u32) {
         self.calls.push(format!("wait_fence {fence}"));
+        self.done = self.done.max(*fence);
     }
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Id, GpuError> {
         self.id(("read_back", src))

@@ -134,9 +134,10 @@ fn encode(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Whether a back buffer of `format` is presented through the encoding copy.
-fn encodes(format: Format) -> bool {
-    format != format.linear() || format == Format::Rgba16Float
+/// Whether a back buffer of `format` is presented through the encoding copy: sRGB formats, and
+/// 16-bit float buffers holding linear light (their colour space unless the program sets sRGB).
+fn encodes(format: Format, linear: bool) -> bool {
+    format != format.linear() || format == Format::Rgba16Float && linear
 }
 
 fn copy_program<B: Backend>(backend: &mut B, encode: bool) -> Result<B::Program, GpuError> {
@@ -174,6 +175,8 @@ pub struct SwapChain<B: Backend> {
     in_flight: VecDeque<B::Fence>,
     copy: Copy<B>,
     encode: bool,
+    /// The back buffers hold linear light (`DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`).
+    linear: bool,
 }
 
 impl<B: Backend> SwapChain<B> {
@@ -184,7 +187,8 @@ impl<B: Backend> SwapChain<B> {
         let surface = backend.create_surface(window)?;
         let surface_format = present_format(backend.caps(), format);
         backend.configure_surface(&surface, surface_format, desc.width, desc.height, true)?;
-        let encode = encodes(format);
+        let linear = format == Format::Rgba16Float;
+        let encode = encodes(format, linear);
         let copy = Copy {
             program: copy_program(backend, encode)?,
             blend: backend.create_blend(&BlendDesc {
@@ -236,6 +240,7 @@ impl<B: Backend> SwapChain<B> {
             in_flight: VecDeque::new(),
             copy,
             encode,
+            linear,
         };
         chain.make_buffers(backend)?;
         Ok(chain)
@@ -250,22 +255,7 @@ impl<B: Backend> SwapChain<B> {
             1
         };
         for _ in 0..count {
-            let texture = backend.create_texture(&TextureDesc {
-                dimension: TextureDimension::D2,
-                format: self.format,
-                width: self.desc.width,
-                height: self.desc.height,
-                depth_or_layers: 1,
-                mip_levels: 1,
-                samples: 1,
-                usage: self.desc.usage
-                    | TextureUsage::RENDER
-                    | TextureUsage::SAMPLE
-                    | TextureUsage::COPY_SRC
-                    | TextureUsage::COPY_DST,
-                cube: false,
-                reinterpret: true,
-            })?;
+            let texture = backend.create_texture(&self.buffer_desc())?;
             let view = backend.create_view(
                 &texture,
                 &TextureViewDesc {
@@ -298,6 +288,27 @@ impl<B: Backend> SwapChain<B> {
 
     pub fn desc(&self) -> &SwapChainDesc {
         &self.desc
+    }
+
+    /// What each back buffer texture is: 2D, one level, one sample, views of other formats of its
+    /// group allowed so sRGB views work.
+    pub fn buffer_desc(&self) -> TextureDesc {
+        TextureDesc {
+            dimension: TextureDimension::D2,
+            format: self.format,
+            width: self.desc.width,
+            height: self.desc.height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: self.desc.usage
+                | TextureUsage::RENDER
+                | TextureUsage::SAMPLE
+                | TextureUsage::COPY_SRC
+                | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: true,
+        }
     }
 
     /// The back buffer `index` (`GetBuffer`): any of a flip model's, buffer 0 of a blit model's.
@@ -464,13 +475,10 @@ impl<B: Backend> SwapChain<B> {
             desc.format = format;
         }
         let new_format = desc.check().map_err(SwapChainError::InvalidCall)?;
-        let encode = encodes(new_format);
-        if encode != self.encode {
-            let program = copy_program(backend, encode)?;
-            let old = std::mem::replace(&mut self.copy.program, program);
-            backend.destroy(Object::Program(old));
-            self.encode = encode;
+        if new_format != self.format {
+            self.linear = new_format == Format::Rgba16Float;
         }
+        self.set_encode(backend, encodes(new_format, self.linear))?;
         self.drop_buffers(backend);
         self.desc = desc;
         self.format = new_format;
@@ -484,6 +492,27 @@ impl<B: Backend> SwapChain<B> {
         )?;
         self.current = 0;
         self.make_buffers(backend)?;
+        Ok(())
+    }
+
+    fn set_encode(&mut self, backend: &mut B, encode: bool) -> Result<(), GpuError> {
+        if encode != self.encode {
+            let program = copy_program(backend, encode)?;
+            let old = std::mem::replace(&mut self.copy.program, program);
+            backend.destroy(Object::Program(old));
+            self.encode = encode;
+        }
+        Ok(())
+    }
+
+    /// `SetColorSpace1`: what the back buffers hold, one of the spaces [`crate::presents_in`]
+    /// takes for their format.
+    pub fn set_color_space(&mut self, backend: &mut B, space: u32) -> Result<(), SwapChainError> {
+        if !crate::presents_in(self.desc.format, space) {
+            return Err(SwapChainError::InvalidCall("a colour space not presented"));
+        }
+        self.linear = space == crate::COLOR_SPACE_LINEAR;
+        self.set_encode(backend, encodes(self.format, self.linear))?;
         Ok(())
     }
 
