@@ -817,3 +817,65 @@ fn layouts_follow_each_views_filterability() {
         }
     }
 }
+
+/// The formats `texture-formats-tier1` adds or makes renderable: the 16-bit normalised ones exist,
+/// and the 8-bit signed normalised ones render, blend and multisample, only on a device that has
+/// them (natively wgpu's 16-bit-norm and adapter-specific format features; a browser device without
+/// tier 1 is made the same way here), and a format without bits cannot be made.
+#[test]
+fn tier1_formats_are_declared_only_with_it() {
+    let backends = match std::env::var("WEBGPU_API").as_deref() {
+        Ok("dx12") => wgpu::Backends::DX12,
+        Ok("vulkan") => wgpu::Backends::VULKAN,
+        Ok("metal") => wgpu::Backends::METAL,
+        _ => wgpu::Backends::PRIMARY,
+    };
+    let instance = draw::instance(backends);
+    let sixteen = [
+        Format::R16Unorm,
+        Format::R16Snorm,
+        Format::Rg16Unorm,
+        Format::Rg16Snorm,
+        Format::Rgba16Unorm,
+        Format::Rgba16Snorm,
+    ];
+    let snorm8 = [Format::R8Snorm, Format::Rg8Snorm, Format::Rgba8Snorm];
+    let tier1 = FormatUse::RENDER | FormatUse::BLEND;
+    let mut b = pollster::block_on(draw::device_without(
+        &instance,
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ))
+    .unwrap()
+    .0;
+    for f in sixteen {
+        assert!(b.caps().formats.get(f).is_empty(), "{f:?} without tier 1");
+        let made = draw::texture_2d(&mut b, f, 1, 1, TextureUsage::SAMPLE);
+        assert!(made.is_err(), "{f:?} made without tier 1");
+    }
+    for f in snorm8 {
+        let uses = b.caps().formats.get(f);
+        assert!(
+            uses.contains(FormatUse::SAMPLE | FormatUse::FILTER),
+            "{f:?}: {uses:?}"
+        );
+        assert!(!uses.intersects(tier1), "{f:?} without tier 1: {uses:?}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let b = pollster::block_on(draw::device_on(&instance)).unwrap().0;
+    let adapter_has = |f: Format| !b.caps().formats.get(f).is_empty();
+    if !sixteen.into_iter().all(adapter_has) {
+        eprintln!("this adapter has no 16-bit normalised formats");
+        return;
+    }
+    for f in sixteen.into_iter().chain(snorm8) {
+        let uses = b.caps().formats.get(f);
+        assert!(uses.contains(FormatUse::SAMPLE), "{f:?}: {uses:?}");
+        if f != Format::R16Snorm && f != Format::Rg16Snorm && f != Format::Rgba16Snorm {
+            assert!(
+                uses.contains(FormatUse::RENDER),
+                "{f:?} with tier 1: {uses:?}"
+            );
+        }
+    }
+}

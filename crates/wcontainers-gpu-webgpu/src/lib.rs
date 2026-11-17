@@ -313,6 +313,7 @@ impl WebGpu {
             | wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+            | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         wgpu::DeviceDescriptor {
             label: None,
@@ -548,8 +549,11 @@ fn caps(
                 !depth && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT),
                 FormatUse::RENDER,
             ),
+            // wgpu marks every filterable float format blendable, renderable or not.
             (
-                flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
+                !depth
+                    && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+                    && flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
                 FormatUse::BLEND,
             ),
             (
