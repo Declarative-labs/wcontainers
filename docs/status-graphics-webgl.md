@@ -5,12 +5,12 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. After run 6, G3 (section 12's pass bar) is met in Chrome and natively on ANGLE with
+G3a is done. After run 7, G3 (section 12's pass bar) is met in Chrome and natively on ANGLE with
 every extension. What remains cannot be fixed inside this crate:
-- Chrome's WebGL 2 passes the shared suite (24 tests) and the back end's 16 checks, 40 of 40, with
+- Chrome's WebGL 2 passes the shared suite (24 tests) and the back end's 19 checks, 43 of 43, with
   every extension and again without WEBGL_stencil_texturing and the four BC extensions.
-- Natively on ANGLE also 40 of 40 with every extension since run 6: `present_shows_the_frame` now
-  presents through an EGL window surface on a real window instead of a pbuffer.
+- Natively on ANGLE also 43 of 43 with every extension (since run 6 `present_shows_the_frame`
+  presents through an EGL window surface on a real window instead of a pbuffer).
 - Against the WebGPU back end, 5 of 6 comparisons pass. The one that fails is `r32float` filtered
   in the program here against WebGPU's hardware filter (one float step off in 5 of 16 values, from
   G1's in-shader filter); the same comparison route against route is byte-equal.
@@ -19,9 +19,12 @@ every extension. What remains cannot be fixed inside this crate:
 - `TIMESTAMPS` is built but cannot run here: Chrome (every ANGLE back end) and mozangle give 0
   timestamp bits on the RTX 3080.
 
-Run 6 merged origin/phase-2-graphics (41816d5) and origin/phase-2-graphics-webgpu (eb1e292), added
-the native window surface, built captures of strips, fans, loops and indexed draws (they lost the
-device before, while `TRANSFORM_FEEDBACK` was declared), and made `max_line_width` 1.
+Run 7 merged origin/phase-2-graphics (688aff2) and origin/phase-2-graphics-webgpu, declared the
+interface's new `INSTANCE_STEP_RATE` (and fixed expanded captures, which ignored step rates), refused
+texel buffers as `Absent(TEXEL_BUFFERS)` and anisotropy past the limit as `Invalid`, built copies
+into and out of RGB9E5 and BC textures and sRGB views of BC textures, and added a check that every
+feature WebGL 2 lacks is left out of the caps and refused as absent. Suite and checks: 43 of 43 in
+Chrome and on ANGLE with every extension.
 
 ## Done
 
@@ -283,8 +286,7 @@ device before, while `TRANSFORM_FEEDBACK` was declared), and made `max_line_widt
     format where its WebGL extension is present (`compressedTexSubImage`, not in 3D), else decoded
     by bcdec_rs (`BlockDecoded`): BC1 to BC3 and BC7 as RGBA8, BC4 and BC5 as R8 and RG8 (snorm for
     the signed ones), BC6H as RGBA16F. `BLOCK_COMPRESSION` is declared when all four extensions are
-    present. Copies into or out of host-kept textures, and their sRGB views, lose the device as not
-    built.
+    present. Their sRGB views lose the device as not built (copies were built in run 7).
   - New checks (in Chrome and on ANGLE): `vertices_captured_with_and_without_rasterising`
     (interleaved, separate at an offset, while drawing, whole primitives only, and the pass rule),
     `captured_indices_drawn_both_ways` (a buffer holding indices and vertices, written by the host
@@ -325,6 +327,36 @@ device before, while `TRANSFORM_FEEDBACK` was declared), and made `max_line_widt
   - Timestamps: Chrome 157 on the RTX 3080 gives 0 timestamp bits (64 elapsed-time bits) on every
     ANGLE back end it offers: Direct3D 11, Direct3D 11 on 12, Vulkan and OpenGL (`--use-angle=`,
     measured 2026-11-17 10:15). So `TIMESTAMPS` cannot run in Chrome on this machine either.
+
+- G3 run 7:
+  - Merged origin/phase-2-graphics (688aff2) and origin/phase-2-graphics-webgpu (one conflict in
+    slow.rs: both branches had added a slow path at the end; both kept).
+  - `INSTANCE_STEP_RATE` (new in the interface) is declared: `vertexAttribDivisor` takes any rate.
+    Expanded captures (`CaptureExpanded`) draw one instance at a time, and before this run they moved
+    per-instance streams by one element per instance whatever the rate. `draw_from` now takes how
+    many instances past the first a draw starts, `instance_index` adds them and each per-instance
+    stream steps by them at its own rate (never, for rate 0 and stride 0).
+  - `TEXEL_BUFFERS` (new) is absent: a texel buffer binding is refused as `Absent(TEXEL_BUFFERS)`
+    (before: `Invalid`).
+  - A sampler with anisotropy past `max_anisotropy` is `Invalid`, as the recording back end has it;
+    before, it was clamped silently, and without EXT_texture_filter_anisotropic ignored.
+  - Copies into and out of textures kept on the host (RGB9E5, BC), which lost the device before:
+    between two of them, and from one into an uncompressed texture whose texels are its blocks, from
+    the host copy as a host write; into one from an uncompressed texture or a buffer, read back
+    first (`HostCopyReadBack`); into a buffer from the host copy, row by row as buffer writes.
+    `extent` is in the source's texels, as the WebGPU back end takes it.
+  - sRGB views of BC textures (device loss before): the sRGB twin is a second host-kept texture;
+    it is brought up to date by copying the host bytes over and uploading every level (counted
+    `HostCopyKept`), in the same twin tracking as other sRGB views.
+  - New checks (Chrome and ANGLE): `absent_features_are_refused` (every feature WebGL 2 lacks is
+    left out of the caps and refused as `Absent` of its bit at the block, sampler, shader, binding,
+    table or query set that asks for it; those an extension gives, only where it is off; anisotropy
+    past the limit `Invalid`) and `copies_into_and_out_of_host_kept_textures` (BC1, BC3, BC7 sRGB,
+    BC4 snorm and RGB9E5; a copied solid BC1 block loads red). `vertex_and_instance_numbers_include_the_bases`
+    now steps its per-instance stream at rates 1, 2, 0 and 3, and the list-order capture check
+    captures a strip with a per-instance stream at rates 1, 2 and 0. And
+    `srgb_views_of_block_compressed_textures` (a grey BC1 block loads 131 to 133 through the
+    texture's view and 58 to 60 through the sRGB one, then white after a later write).
 
 - G3 run 5:
   - The test tool: angle/build.cmd unpacks mozangle 0.7.1 into C:\wc\tools\mozangle-0.7.1-patched
@@ -430,7 +462,8 @@ lists).
 
 Declared today (each one built): `READ_BACK_NOW`, `FAN_AND_LOOP` (WebGL 2 topologies),
 `PROVOKING_VERTEX_LAST` (GL's rule), `PROVOKING_VERTEX_FIRST` (with WEBGL_provoking_vertex),
-`CLIP_DEPTH_MINUS_ONE`, `CLIP_DEPTH_ZERO_ONE` (with EXT_clip_control), `INDEX_U8`, `DEPTH24_UNORM`
+`CLIP_DEPTH_MINUS_ONE`, `CLIP_DEPTH_ZERO_ONE` (with EXT_clip_control), `INDEX_U8`,
+`INSTANCE_STEP_RATE` (since run 7; `vertexAttribDivisor`), `DEPTH24_UNORM`
 (by the probe: set in Chrome 157 and on mozangle on the RTX 3080), `FRACTIONAL_DEPTH_BIAS` (by its
 probe: absent in Chrome 157 and on mozangle on the RTX 3080, where ANGLE's Direct3D 11 rounds the
 units), `TIMESTAMPS` (with EXT_disjoint_timer_query_webgl2 and timestamp bits above zero: absent
@@ -638,6 +671,21 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - Before the window surface used DirectComposition, the test window read 240 in every byte (the
     window's own background painted over ANGLE's blit-model frame) and, with the paint suppressed,
     0 (black). Both were found by `present_shows_the_frame`.
+- 2026-11-17, G3 run 7, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times, queued
+  jobs, not timed; other tracks' jobs queued beside them). Merged origin/phase-2-graphics 688aff2
+  and origin/phase-2-graphics-webgpu; 24 suite tests and 19 checks (43). Final tree, one job of
+  all.cmd with `--desktop` (11:14 to 11:23), lint clean on both targets in its build:
+  - Chrome 157.0.8103.78: 43 of 43 with every extension; 43 of 43 without WEBGL_stencil_texturing
+    and the BC extensions; 28 of 43 without EXT_clip_control; 28 of 43 without it and
+    WEBGL_provoking_vertex.
+  - ANGLE (patched mozangle 0.7.1): 43 of 43 with every extension; 28 of 43 without
+    EXT_clip_control; 28 of 43 without both and the BC extensions.
+  - The 4 unit tests of src/capture.rs pass. All 64 scene verdicts as expected.
+  - Against the WebGPU back end: 5 of 6, the r32float comparison against the hardware filter
+    failing as before.
+  - The job before (11:01 to 11:10), with the step rates, `TEXEL_BUFFERS` and the absent check but
+    without the host-kept copies and sRGB BC views: 41 of 41 with every extension in Chrome and on
+    ANGLE, 26 of 41 on the routes without the extensions, the same 5 of 6 against WebGPU.
 - Per-draw cost, run 5 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
   and method as run 3). Since the merge, the cost page has to make the WebGPU device inside a JSPI
   export. Before that fix the page hung twice, once for 10 minutes and once for 2.
@@ -691,12 +739,12 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   error, a complete framebuffer, an RGBA8 configuration with no samples, and reads in RGBA and in
   the implementation's BGRA format alike. In Chrome the same test passes (the canvas read through a
   2D canvas). The pbuffer is no longer presented into.
-- Suite, without EXT_clip_control or WEBGL_provoking_vertex, in Chrome and on ANGLE: 13 tests
+- Suite, without EXT_clip_control or WEBGL_provoking_vertex, in Chrome and on ANGLE: 15 tests
   (`triangle_covers_...`, `textured_draw_...`, `edges_through_pixel_centres_...`,
   `strips_take_flat_values_...`, `depth_writes_off_...`, `srgb_targets_...`,
   `values_are_interpolated_...`, `the_scissor_bounds_...`, `stencil_operations_...`,
-  `near_clipping_...`, `linear_filtering_...`, `instances_start_...`, `indexed_strips_...`; on ANGLE
-  also `present_shows_the_frame`): the suite's own raster blocks ask for clip depth from zero
+  `near_clipping_...`, `linear_filtering_...`, `instances_start_...`, `indexed_strips_...`,
+  `multisampled_targets_...`, `occlusion_queries_...`; run 7): the suite's own raster blocks ask for clip depth from zero
   (`depth_minus_one` false) and provoking vertex First, which the back end lacks on those routes and
   refuses as the interface says (`Absent(CLIP_DEPTH_ZERO_ONE)`, `Absent(PROVOKING_VERTEX_FIRST)`).
   The suite (G1's crate) should take both from the caps, as the built-in programs do.
@@ -777,6 +825,9 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   twice; Direct3D runs it once, but a vertex program gives the same results each time. A capture
   past MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS fails
   its link and loses the device with GL's log; the interface has no limit for it.
+- The sRGB twin of a BC texture is refreshed from the host copy and counted `HostCopyKept` (run 7):
+  none of the named slow paths is closer, and the twin route for other formats counts
+  `CopyThroughBuffer`, which this is not.
 - BC4 and BC5 decoded without their extension are stored at 8 bits (bcdec_rs's byte output), which
   is coarser than a native decode. Read backs are unaffected (host copy). BC in 3D textures is
   always decoded, since GLES compresses only 2D, array and cube textures.
@@ -854,12 +905,10 @@ What is left of G3's pass bar cannot be done in this crate:
   gives some is needed to run that route.
 
 After that, in about this order:
-1. Copies into and out of host-kept textures (RGB9E5, BC): from them as host writes (plan 5.8),
-   into them by `HostCopyReadBack`.
-2. BGRA (`FormatConverted`) and 16-bit normalised formats by EXT_texture_norm16.
-3. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
+1. BGRA (`FormatConverted`) and 16-bit normalised formats by EXT_texture_norm16.
+2. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
    `clearBuffer*` (plan 5.8). An override that falls back to the default needs the default's body
    as a public function of `wcontainers-gpu` first (an "interface:" commit).
-4. Captures whose base vertex reaches below vertex 0 (now device loss naming it).
-5. Suite routes without EXT_clip_control or WEBGL_provoking_vertex stay known failures until G1's
+3. Captures whose base vertex reaches below vertex 0 (now device loss naming it).
+4. Suite routes without EXT_clip_control or WEBGL_provoking_vertex stay known failures until G1's
    suite takes clip depth and provoking vertex from the caps.

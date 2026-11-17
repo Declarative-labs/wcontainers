@@ -788,12 +788,10 @@ impl WebGl {
         if let Some(t) = texture.twin.get() {
             return Ok(t.clone());
         }
-        if texture.host.is_some() {
-            return Err(self.unbuilt("sRGB views of block-compressed textures"));
-        }
         let readable = |f: Format| {
-            format::read_as(f, format::FormatExtensions::found(&self.extensions))
-                .is_some_and(|r| r.texel_read() == r.texel_kept())
+            host::kept(f)
+                || format::read_as(f, format::FormatExtensions::found(&self.extensions))
+                    .is_some_and(|r| r.texel_read() == r.texel_kept())
         };
         if !readable(texture.desc.format) || !readable(format) {
             return Err(self.unbuilt("sRGB twins of formats read back wider than stored"));
@@ -884,9 +882,15 @@ impl WebGl {
     }
 
     /// Copies every level and layer of `from` into `to`, a texture of the same shape whose texels have
-    /// the same bytes.
+    /// the same bytes: on the GPU, or for textures kept on the host from host copy to host copy, then
+    /// uploaded.
     fn copy_whole(&mut self, from: &Texture, to: &Texture) {
         let d = from.desc;
+        let kept = from.host.as_ref().zip(to.host.as_ref());
+        if let Some((a, b)) = kept {
+            self.slow.hit(SlowPath::HostCopyKept);
+            b.copy_from(a);
+        }
         for mip in 0..d.mip_levels {
             let region = |texture| TextureRegion {
                 texture,
@@ -904,7 +908,11 @@ impl WebGl {
                     d.depth_or_layers
                 },
             };
-            self.copy_through_pbo(&region(from), &region(to), extent);
+            if kept.is_some() {
+                self.upload_blocks(&region(to), extent);
+            } else {
+                self.copy_through_pbo(&region(from), &region(to), extent);
+            }
         }
     }
 
@@ -1589,6 +1597,41 @@ impl WebGl {
         [region.origin.x, region.origin.y, z]
     }
 
+    /// A copy from or into a texture kept on the host, in blocks (`extent` is in the source's
+    /// texels): the source's blocks from its host copy, or read back first where it has none
+    /// ([`SlowPath::HostCopyReadBack`]), then written into the destination as a host write (into
+    /// both its forms where it keeps a host copy, as texels where it does not).
+    fn copy_host_kept(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let (sbw, sbh, bytes) = src.texture.desc.format.block();
+        let (dbw, dbh, dst_bytes) = dst.texture.desc.format.block();
+        if bytes != dst_bytes {
+            return self.invalid(format!(
+                "a copy from {:?} into {:?}, whose blocks differ in size",
+                src.texture.desc.format, dst.texture.desc.format
+            ));
+        }
+        let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
+        let mut packed = vec![0; (cols * rows * bytes * extent.depth_or_layers) as usize];
+        if src.texture.host.is_none() {
+            self.slow.hit(SlowPath::HostCopyReadBack);
+        }
+        if self.read_texture_now(src, extent, &mut packed).is_err() {
+            self.unbuilt("copies into textures kept on the host from formats GL cannot read back");
+            return;
+        }
+        let into = Extent {
+            width: cols * dbw,
+            height: rows * dbh,
+            depth_or_layers: extent.depth_or_layers,
+        };
+        self.write_texture(dst, into, &packed, cols * bytes, rows, WriteMode::Ordered);
+    }
+
     /// Uploads a region of a block-compressed texture from its host copy: as blocks natively, else
     /// decoded ([`SlowPath::BlockDecoded`]).
     fn upload_blocks(&mut self, region: &TextureRegion<'_, Self>, extent: Extent) {
@@ -2071,13 +2114,15 @@ impl WebGl {
     }
 
     /// Points each attribute at its stream, moved by the draw's base vertex and first instance
-    /// (WebGL 2 has no draws with bases: [`SlowPath::BaseVertexRebind`]). Err when a stream's offset
-    /// would fall below zero.
+    /// (WebGL 2 has no draws with bases: [`SlowPath::BaseVertexRebind`]), and per-instance streams
+    /// on by what `later` instances past the first step through at their rate. Err when a stream's
+    /// offset would fall below zero.
     fn apply_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,
         base_vertex: i64,
         first_instance: u32,
+        later: u32,
     ) -> Result<(), ()> {
         let layout = &call.vertex_layout.0.1;
         let mut wanted = [None; MAX_VERTEX_STREAMS];
@@ -2087,7 +2132,11 @@ impl WebGl {
                 continue;
             };
             let moved = if a.per_instance {
-                i64::from(first_instance)
+                let stepped = match a.divisor {
+                    NEVER_ADVANCES => 0,
+                    n => later / n,
+                };
+                i64::from(first_instance) + i64::from(stepped)
             } else {
                 base_vertex
             } * i64::from(a.stride);
@@ -2181,6 +2230,204 @@ enum Texels<'a> {
 /// Floats travel as bits through the interface.
 fn f(bits: u32) -> f32 {
     f32::from_bits(bits)
+}
+
+impl WebGl {
+    /// [`Backend::draw`], with the draw's instances starting `later` instances past its first
+    /// instance: `instance_index` and the per-instance streams as the full draw has them there.
+    fn draw_from(&mut self, call: &DrawCall<'_, Self>, later: u32) {
+        let (base_vertex, first_instance, instances) = match call.range {
+            DrawRange::Vertices {
+                first_instance,
+                instances,
+                ..
+            } => (0, first_instance, instances),
+            DrawRange::Indexed {
+                base_vertex,
+                first_instance,
+                instances,
+                ..
+            } => (i64::from(base_vertex), first_instance, instances),
+            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
+                // INDIRECT is absent: the front reads the arguments back first.
+                self.fail(LossReason::Error);
+                return;
+            }
+        };
+        let program = call.program;
+        let Some(linked) = self.linked(program) else {
+            return;
+        };
+        if self.stale_buffers > 0 {
+            self.refresh_draw(call);
+        }
+        if self.twins > 0 {
+            for set in call.bindings.iter().flatten() {
+                for (_, bound) in &set.entries {
+                    if let Bound::Texture(v) = bound {
+                        self.fresh(&v.texture);
+                    }
+                }
+            }
+            // Filling a stencil copy draws into framebuffers of its own.
+            if let Some(pass) = &self.pass
+                && self.applied.draw_framebuffer != Some(pass.framebuffer)
+            {
+                // SAFETY: a plain GL call; the pass's framebuffer is alive.
+                unsafe {
+                    self.gl
+                        .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pass.framebuffer))
+                };
+                self.applied.draw_framebuffer = Some(pass.framebuffer);
+            }
+        }
+        if self.applied.program != program.id {
+            // SAFETY: a plain GL call; the program is alive.
+            unsafe { self.gl.use_program(Some(program.raw)) };
+            self.applied.program = program.id;
+            self.applied.sets = [u64::MAX; MAX_BINDING_SETS];
+        }
+        let (gl, v) = (&self.gl, &mut self.values);
+        if self.applied.blend != call.blend.0.0 {
+            state::blend(gl, v, &call.blend.0.1);
+            self.applied.blend = call.blend.0.0;
+        }
+        let reference = call.stencil_reference[0];
+        if self.applied.depth_stencil != call.depth_stencil.0.0
+            || self.applied.stencil_reference != reference
+        {
+            state::depth_stencil(gl, v, &call.depth_stencil.0.1, reference);
+            self.applied.depth_stencil = call.depth_stencil.0.0;
+            self.applied.stencil_reference = reference;
+        }
+        if self.applied.raster != call.raster.0.0 {
+            state::raster(gl, v, &call.raster.0.1, &self.platform);
+            self.applied.raster = call.raster.0.0;
+        }
+        // SAFETY: plain GL state calls.
+        unsafe {
+            if let Some(vp) = call.viewports.first() {
+                let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
+                let rect = floats.map(|v| v as i32);
+                // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
+                if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
+                    self.invalid(format!(
+                        "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
+                    ));
+                    return;
+                }
+                if v.viewport != rect {
+                    gl.viewport(rect[0], rect[1], rect[2], rect[3]);
+                    v.viewport = rect;
+                }
+                let range = [f(vp.min_depth), f(vp.max_depth)];
+                if v.depth_range != range {
+                    gl.depth_range_f32(range[0], range[1]);
+                    v.depth_range = range;
+                }
+            }
+            if v.scissor_test
+                && let Some(s) = call.scissors.first()
+            {
+                let rect = [s.x as i32, s.y as i32, s.width as i32, s.height as i32];
+                if v.scissor != rect {
+                    gl.scissor(rect[0], rect[1], rect[2], rect[3]);
+                    v.scissor = rect;
+                }
+            }
+            let color = call.blend_constant.map(f);
+            if v.blend_color != color {
+                gl.blend_color(color[0], color[1], color[2], color[3]);
+                v.blend_color = color;
+            }
+        }
+        match self.apply_bindings(program.id, linked, &call.bindings) {
+            Ok(()) => {}
+            Err(Unbindable::Missing((set, binding))) => {
+                self.invalid(format!(
+                    "the draw's binding sets hold no fitting resource at set {set} binding \
+                     {binding}, which its program reads"
+                ));
+                return;
+            }
+            Err(Unbindable::BothAspects) => {
+                self.unbuilt("depth and stencil views of one texture fetched by one draw");
+                return;
+            }
+            Err(Unbindable::NoSampler) => {
+                self.fail(LossReason::OutOfMemory);
+                return;
+            }
+            Err(Unbindable::Multisampled((set, binding))) => {
+                self.invalid(format!(
+                    "the draw's program reads the multisampled texture at set {set} binding \
+                     {binding}, which needs the absent MULTISAMPLE_READ"
+                ));
+                return;
+            }
+        }
+        if base_vertex != 0 || first_instance != 0 || later != 0 {
+            self.slow.hit(SlowPath::BaseVertexRebind);
+        }
+        if self
+            .apply_vertices(call, base_vertex, first_instance, later)
+            .is_err()
+        {
+            self.unbuilt("negative stream offsets after the base vertex");
+            return;
+        }
+        // The streams moved by the bases, so GL's ids lack them: the program adds them back.
+        for (uniform, value) in [
+            (&linked.first_instance, first_instance + later),
+            (&linked.base_vertex, base_vertex as u32),
+        ] {
+            if let Some((location, held)) = uniform
+                && held.get() != value
+            {
+                // SAFETY: the program is in use.
+                unsafe { self.gl.uniform_1_u32(Some(location), value) };
+                held.set(value);
+            }
+        }
+        let mode = state::mode(call.topology);
+        let gl = &self.gl;
+        match call.range {
+            DrawRange::Vertices { first, count, .. } => {
+                // SAFETY: the draw's state is applied.
+                unsafe {
+                    gl.draw_arrays_instanced(mode, first as i32, count as i32, instances as i32)
+                };
+            }
+            DrawRange::Indexed { first, count, .. } => {
+                let Some(index) = &call.index else {
+                    self.fail(LossReason::Error);
+                    return;
+                };
+                if self.applied.index != index.buffer.id {
+                    // SAFETY: the buffer's index GL buffer is alive.
+                    unsafe { gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, index.buffer.index) };
+                    self.applied.index = index.buffer.id;
+                }
+                let ty = match index.format {
+                    IndexFormat::U8 => glow::UNSIGNED_BYTE,
+                    IndexFormat::U16 => glow::UNSIGNED_SHORT,
+                    IndexFormat::U32 => glow::UNSIGNED_INT,
+                };
+                let offset = index.offset + u64::from(first) * u64::from(index.format.size());
+                // SAFETY: the draw's state and index buffer are applied.
+                unsafe {
+                    gl.draw_elements_instanced(
+                        mode,
+                        count as i32,
+                        ty,
+                        offset as i32,
+                        instances as i32,
+                    )
+                };
+            }
+            _ => unreachable!("indirect draws returned above"),
+        }
+    }
 }
 
 impl Backend for WebGl {
@@ -2401,6 +2648,9 @@ impl Backend for WebGl {
             AddressMode::Border => Err(GpuError::Absent(Features::BORDER_COLOR)),
             AddressMode::MirrorOnce => Err(GpuError::Absent(Features::MIRROR_ONCE)),
         };
+        if desc.anisotropy > self.caps.limits.max_anisotropy {
+            return Err(GpuError::Invalid("a sampler's anisotropy past the limit"));
+        }
         let wrap = [
             address(desc.address[0])?,
             address(desc.address[1])?,
@@ -2442,9 +2692,10 @@ impl Backend for WebGl {
                 );
                 gl.sampler_parameter_i32(raw, glow::TEXTURE_COMPARE_FUNC, state::compare(c) as i32);
             }
-            if desc.anisotropy > 1 && self.extensions.contains("EXT_texture_filter_anisotropic") {
-                let a = desc.anisotropy.min(self.caps.limits.max_anisotropy);
-                gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_ANISOTROPY_EXT, f32::from(a));
+            // Above 1 only where EXT_texture_filter_anisotropic raised the limit.
+            if desc.anisotropy > 1 {
+                let a = f32::from(desc.anisotropy);
+                gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_ANISOTROPY_EXT, a);
             }
             raw
         };
@@ -2614,10 +2865,9 @@ impl Backend for WebGl {
                         Features::FRAGMENT_STORAGE_WRITE | Features::VERTEX_STORAGE_READ,
                     ));
                 }
+                // WebGL 2 has no buffer textures: fronts read typed buffers another way.
                 BindingResource::TexelBuffer { .. } => {
-                    return Err(GpuError::Invalid(
-                        "webgl: texel buffers are read as textures by the front",
-                    ));
+                    return Err(GpuError::Absent(Features::TEXEL_BUFFERS));
                 }
                 BindingResource::Table(_) => {
                     return Err(GpuError::Absent(Features::RESOURCE_TABLES));
@@ -2958,197 +3208,7 @@ impl Backend for WebGl {
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
-        let (base_vertex, first_instance, instances) = match call.range {
-            DrawRange::Vertices {
-                first_instance,
-                instances,
-                ..
-            } => (0, first_instance, instances),
-            DrawRange::Indexed {
-                base_vertex,
-                first_instance,
-                instances,
-                ..
-            } => (i64::from(base_vertex), first_instance, instances),
-            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
-                // INDIRECT is absent: the front reads the arguments back first.
-                self.fail(LossReason::Error);
-                return;
-            }
-        };
-        let program = call.program;
-        let Some(linked) = self.linked(program) else {
-            return;
-        };
-        if self.stale_buffers > 0 {
-            self.refresh_draw(call);
-        }
-        if self.twins > 0 {
-            for set in call.bindings.iter().flatten() {
-                for (_, bound) in &set.entries {
-                    if let Bound::Texture(v) = bound {
-                        self.fresh(&v.texture);
-                    }
-                }
-            }
-            // Filling a stencil copy draws into framebuffers of its own.
-            if let Some(pass) = &self.pass
-                && self.applied.draw_framebuffer != Some(pass.framebuffer)
-            {
-                // SAFETY: a plain GL call; the pass's framebuffer is alive.
-                unsafe {
-                    self.gl
-                        .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pass.framebuffer))
-                };
-                self.applied.draw_framebuffer = Some(pass.framebuffer);
-            }
-        }
-        if self.applied.program != program.id {
-            // SAFETY: a plain GL call; the program is alive.
-            unsafe { self.gl.use_program(Some(program.raw)) };
-            self.applied.program = program.id;
-            self.applied.sets = [u64::MAX; MAX_BINDING_SETS];
-        }
-        let (gl, v) = (&self.gl, &mut self.values);
-        if self.applied.blend != call.blend.0.0 {
-            state::blend(gl, v, &call.blend.0.1);
-            self.applied.blend = call.blend.0.0;
-        }
-        let reference = call.stencil_reference[0];
-        if self.applied.depth_stencil != call.depth_stencil.0.0
-            || self.applied.stencil_reference != reference
-        {
-            state::depth_stencil(gl, v, &call.depth_stencil.0.1, reference);
-            self.applied.depth_stencil = call.depth_stencil.0.0;
-            self.applied.stencil_reference = reference;
-        }
-        if self.applied.raster != call.raster.0.0 {
-            state::raster(gl, v, &call.raster.0.1, &self.platform);
-            self.applied.raster = call.raster.0.0;
-        }
-        // SAFETY: plain GL state calls.
-        unsafe {
-            if let Some(vp) = call.viewports.first() {
-                let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
-                let rect = floats.map(|v| v as i32);
-                // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
-                if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
-                    self.invalid(format!(
-                        "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
-                    ));
-                    return;
-                }
-                if v.viewport != rect {
-                    gl.viewport(rect[0], rect[1], rect[2], rect[3]);
-                    v.viewport = rect;
-                }
-                let range = [f(vp.min_depth), f(vp.max_depth)];
-                if v.depth_range != range {
-                    gl.depth_range_f32(range[0], range[1]);
-                    v.depth_range = range;
-                }
-            }
-            if v.scissor_test
-                && let Some(s) = call.scissors.first()
-            {
-                let rect = [s.x as i32, s.y as i32, s.width as i32, s.height as i32];
-                if v.scissor != rect {
-                    gl.scissor(rect[0], rect[1], rect[2], rect[3]);
-                    v.scissor = rect;
-                }
-            }
-            let color = call.blend_constant.map(f);
-            if v.blend_color != color {
-                gl.blend_color(color[0], color[1], color[2], color[3]);
-                v.blend_color = color;
-            }
-        }
-        match self.apply_bindings(program.id, linked, &call.bindings) {
-            Ok(()) => {}
-            Err(Unbindable::Missing((set, binding))) => {
-                self.invalid(format!(
-                    "the draw's binding sets hold no fitting resource at set {set} binding \
-                     {binding}, which its program reads"
-                ));
-                return;
-            }
-            Err(Unbindable::BothAspects) => {
-                self.unbuilt("depth and stencil views of one texture fetched by one draw");
-                return;
-            }
-            Err(Unbindable::NoSampler) => {
-                self.fail(LossReason::OutOfMemory);
-                return;
-            }
-            Err(Unbindable::Multisampled((set, binding))) => {
-                self.invalid(format!(
-                    "the draw's program reads the multisampled texture at set {set} binding \
-                     {binding}, which needs the absent MULTISAMPLE_READ"
-                ));
-                return;
-            }
-        }
-        if base_vertex != 0 || first_instance != 0 {
-            self.slow.hit(SlowPath::BaseVertexRebind);
-        }
-        if self
-            .apply_vertices(call, base_vertex, first_instance)
-            .is_err()
-        {
-            self.unbuilt("negative stream offsets after the base vertex");
-            return;
-        }
-        // The streams moved by the bases, so GL's ids lack them: the program adds them back.
-        for (uniform, value) in [
-            (&linked.first_instance, first_instance),
-            (&linked.base_vertex, base_vertex as u32),
-        ] {
-            if let Some((location, held)) = uniform
-                && held.get() != value
-            {
-                // SAFETY: the program is in use.
-                unsafe { self.gl.uniform_1_u32(Some(location), value) };
-                held.set(value);
-            }
-        }
-        let mode = state::mode(call.topology);
-        let gl = &self.gl;
-        match call.range {
-            DrawRange::Vertices { first, count, .. } => {
-                // SAFETY: the draw's state is applied.
-                unsafe {
-                    gl.draw_arrays_instanced(mode, first as i32, count as i32, instances as i32)
-                };
-            }
-            DrawRange::Indexed { first, count, .. } => {
-                let Some(index) = &call.index else {
-                    self.fail(LossReason::Error);
-                    return;
-                };
-                if self.applied.index != index.buffer.id {
-                    // SAFETY: the buffer's index GL buffer is alive.
-                    unsafe { gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, index.buffer.index) };
-                    self.applied.index = index.buffer.id;
-                }
-                let ty = match index.format {
-                    IndexFormat::U8 => glow::UNSIGNED_BYTE,
-                    IndexFormat::U16 => glow::UNSIGNED_SHORT,
-                    IndexFormat::U32 => glow::UNSIGNED_INT,
-                };
-                let offset = index.offset + u64::from(first) * u64::from(index.format.size());
-                // SAFETY: the draw's state and index buffer are applied.
-                unsafe {
-                    gl.draw_elements_instanced(
-                        mode,
-                        count as i32,
-                        ty,
-                        offset as i32,
-                        instances as i32,
-                    )
-                };
-            }
-            _ => unreachable!("indirect draws returned above"),
-        }
+        self.draw_from(call, 0);
     }
 
     fn begin_query(&mut self, index: u32) {
@@ -3230,8 +3290,7 @@ impl Backend for WebGl {
         extent: Extent,
     ) {
         if src.texture.host.is_some() || dst.texture.host.is_some() {
-            self.unbuilt("copies of textures kept on the host (RGB9E5, block-compressed)");
-            return;
+            return self.copy_host_kept(src, dst, extent);
         }
         if src.texture.desc.samples > 1 || dst.texture.desc.samples > 1 {
             return self.copy_samples(src, dst);
@@ -3323,7 +3382,29 @@ impl Backend for WebGl {
             return;
         };
         if dst.texture.host.is_some() {
-            self.unbuilt("copies into textures kept on the host (RGB9E5, block-compressed)");
+            // The buffer's bytes read back, then written as a host write.
+            let (bw, bh, bytes) = dst.texture.desc.format.block();
+            let (row, rows) = (
+                u64::from(extent.width.div_ceil(bw) * bytes),
+                u64::from(extent.height.div_ceil(bh)),
+            );
+            let layers = u64::from(extent.depth_or_layers);
+            if rows == 0 || layers == 0 {
+                return;
+            }
+            let (pitch, per_layer) = (u64::from(src.row_pitch), u64::from(src.rows_per_layer));
+            let size = pitch * (per_layer * (layers - 1) + rows - 1) + row;
+            let mut bytes = vec![0; size as usize];
+            self.slow.hit(SlowPath::HostCopyReadBack);
+            let read = ReadSource::Buffer {
+                buffer: src.buffer,
+                offset: src.offset,
+                size,
+            };
+            if self.read_back_now(&read, &mut bytes).is_ok() {
+                let (pitch, per_layer) = (src.row_pitch, src.rows_per_layer);
+                self.write_texture(dst, extent, &bytes, pitch, per_layer, WriteMode::Ordered);
+            }
             return;
         }
         self.refresh(src.buffer, Some(false));
@@ -3348,8 +3429,28 @@ impl Backend for WebGl {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        if src.texture.host.is_some() {
-            self.unbuilt("copies from textures kept on the host (RGB9E5, block-compressed)");
+        if let Some(h) = &src.texture.host {
+            // From the host copy, each row of blocks written into the buffer in order.
+            let (bw, bh, bytes) = src.texture.desc.format.block();
+            let (row, rows) = (
+                (extent.width.div_ceil(bw) * bytes) as usize,
+                extent.height.div_ceil(bh) as usize,
+            );
+            let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
+            let size = [extent.width, extent.height, extent.depth_or_layers];
+            h.read(
+                &src.texture.desc,
+                src.mip,
+                Self::corner(src),
+                size,
+                &mut packed,
+            );
+            let (pitch, per_layer) = (u64::from(dst.row_pitch), u64::from(dst.rows_per_layer));
+            for (i, chunk) in packed.chunks_exact(row).enumerate() {
+                let (layer, r) = ((i / rows) as u64, (i % rows) as u64);
+                let at = dst.offset + (layer * per_layer + r) * pitch;
+                self.write_buffer(dst.buffer, at, chunk, WriteMode::Ordered);
+            }
             return;
         }
         if self
@@ -4250,20 +4351,21 @@ impl Backend for WebGl {
             });
         } else {
             self.slow.hit(SlowPath::CaptureExpanded);
-            for instance in 0..instances {
+            for later in 0..instances {
                 for (first, count) in capture::runs(&list) {
-                    self.draw(&DrawCall {
+                    let run = DrawCall {
                         program: &capture,
                         index: None,
                         topology: Topology::PointList,
                         range: DrawRange::Vertices {
                             first,
                             count,
-                            first_instance: first_instance + instance,
+                            first_instance,
                             instances: 1,
                         },
                         ..*call
-                    });
+                    };
+                    self.draw_from(&run, later);
                 }
             }
         }
