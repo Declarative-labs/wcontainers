@@ -13,7 +13,10 @@ use crate::d3d11::{Gpu, cell, checker, data, solid, tex2d};
 use crate::dxbc;
 use crate::output::Output;
 
-fn sampler(filter: D3D11_FILTER, address: [D3D11_TEXTURE_ADDRESS_MODE; 2]) -> D3D11_SAMPLER_DESC {
+pub fn sampler(
+    filter: D3D11_FILTER,
+    address: [D3D11_TEXTURE_ADDRESS_MODE; 2],
+) -> D3D11_SAMPLER_DESC {
     D3D11_SAMPLER_DESC {
         Filter: filter,
         AddressU: address[0],
@@ -94,54 +97,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let mips = gpu.texture2d(&desc, &init)?;
     let view = gpu.srv(&mips.cast()?, None)?;
     unsafe { c.PSSetShaderResources(0, Some(&[Some(view)])) };
-    let wrap = [D3D11_TEXTURE_ADDRESS_WRAP; 2];
-    let mut filters: Vec<D3D11_SAMPLER_DESC> = [
-        D3D11_FILTER_MIN_MAG_MIP_POINT,
-        D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR,
-        D3D11_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT,
-        D3D11_FILTER_MIN_POINT_MAG_MIP_LINEAR,
-        D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT,
-        D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
-        D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-        D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-    ]
-    .into_iter()
-    .map(|f| sampler(f, wrap))
-    .collect();
-    for anisotropy in [2, 16] {
-        filters.push(D3D11_SAMPLER_DESC {
-            MaxAnisotropy: anisotropy,
-            ..sampler(D3D11_FILTER_ANISOTROPIC, wrap)
-        });
-    }
-    let linear = sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR, wrap);
-    filters.extend([
-        D3D11_SAMPLER_DESC {
-            MipLODBias: 1.5,
-            ..linear
-        },
-        D3D11_SAMPLER_DESC {
-            MipLODBias: -2.0,
-            ..linear
-        },
-        D3D11_SAMPLER_DESC {
-            MinLOD: 2.0,
-            ..linear
-        },
-        D3D11_SAMPLER_DESC {
-            MaxLOD: 1.0,
-            ..linear
-        },
-        D3D11_SAMPLER_DESC {
-            MinLOD: 1.5,
-            MaxLOD: 1.5,
-            ..linear
-        },
-        D3D11_SAMPLER_DESC {
-            MaxLOD: 0.0,
-            ..sampler(D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT, wrap)
-        },
-    ]);
+    let filters = filters();
     outputs.push(Output::picture(
         "filters",
         cells(gpu, dxbc!("samplers.ps_sample"), 4, 64, &filters, 0)?,
@@ -153,17 +109,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     desc.Usage = D3D11_USAGE_IMMUTABLE;
     let small = gpu.texture2d(&desc, &[data(&texels, 32, 0)])?;
     unsafe { c.PSSetShaderResources(0, Some(&[Some(gpu.srv(&small.cast()?, None)?)])) };
-    let modes = [
-        D3D11_TEXTURE_ADDRESS_WRAP,
-        D3D11_TEXTURE_ADDRESS_MIRROR,
-        D3D11_TEXTURE_ADDRESS_CLAMP,
-        D3D11_TEXTURE_ADDRESS_BORDER,
-        D3D11_TEXTURE_ADDRESS_MIRROR_ONCE,
-    ];
-    let address: Vec<_> = modes
-        .iter()
-        .flat_map(|&v| modes.map(|u| sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR, [u, v])))
-        .collect();
+    let address = address();
     outputs.push(Output::picture(
         "address",
         cells(gpu, dxbc!("samplers.ps_sample"), 5, 48, &address, 0)?,
@@ -213,6 +159,88 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     desc.Anonymous.Texture2D.MipLevels = 1;
     let depth_view = gpu.srv(&depth.cast()?, Some(&desc))?;
     unsafe { c.PSSetShaderResources(0, Some(&[Some(depth_view)])) };
+    let compare = compare();
+    outputs.push(Output::picture(
+        "compare",
+        cells(gpu, dxbc!("samplers.ps_compare"), 4, 48, &compare, 1)?,
+    ));
+    outputs.push(Output::picture(
+        "compare_zero",
+        cells(gpu, dxbc!("samplers.ps_compare_zero"), 4, 48, &compare, 1)?,
+    ));
+    Ok(outputs)
+}
+
+/// Every filter combination, anisotropy, level bias and clamps, sampling the six-level texture.
+pub fn filters() -> Vec<D3D11_SAMPLER_DESC> {
+    let wrap = [D3D11_TEXTURE_ADDRESS_WRAP; 2];
+    let mut filters: Vec<D3D11_SAMPLER_DESC> = [
+        D3D11_FILTER_MIN_MAG_MIP_POINT,
+        D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR,
+        D3D11_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT,
+        D3D11_FILTER_MIN_POINT_MAG_MIP_LINEAR,
+        D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT,
+        D3D11_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
+        D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+        D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+    ]
+    .into_iter()
+    .map(|f| sampler(f, wrap))
+    .collect();
+    for anisotropy in [2, 16] {
+        filters.push(D3D11_SAMPLER_DESC {
+            MaxAnisotropy: anisotropy,
+            ..sampler(D3D11_FILTER_ANISOTROPIC, wrap)
+        });
+    }
+    let linear = sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR, wrap);
+    filters.extend([
+        D3D11_SAMPLER_DESC {
+            MipLODBias: 1.5,
+            ..linear
+        },
+        D3D11_SAMPLER_DESC {
+            MipLODBias: -2.0,
+            ..linear
+        },
+        D3D11_SAMPLER_DESC {
+            MinLOD: 2.0,
+            ..linear
+        },
+        D3D11_SAMPLER_DESC {
+            MaxLOD: 1.0,
+            ..linear
+        },
+        D3D11_SAMPLER_DESC {
+            MinLOD: 1.5,
+            MaxLOD: 1.5,
+            ..linear
+        },
+        D3D11_SAMPLER_DESC {
+            MaxLOD: 0.0,
+            ..sampler(D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT, wrap)
+        },
+    ]);
+    filters
+}
+
+/// Every address mode for u against v, linear filtered.
+pub fn address() -> Vec<D3D11_SAMPLER_DESC> {
+    let modes = [
+        D3D11_TEXTURE_ADDRESS_WRAP,
+        D3D11_TEXTURE_ADDRESS_MIRROR,
+        D3D11_TEXTURE_ADDRESS_CLAMP,
+        D3D11_TEXTURE_ADDRESS_BORDER,
+        D3D11_TEXTURE_ADDRESS_MIRROR_ONCE,
+    ];
+    modes
+        .iter()
+        .flat_map(|&v| modes.map(|u| sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR, [u, v])))
+        .collect()
+}
+
+/// Each comparison function, point and linear filtered.
+pub fn compare() -> Vec<D3D11_SAMPLER_DESC> {
     let funcs = [
         D3D11_COMPARISON_NEVER,
         D3D11_COMPARISON_LESS,
@@ -223,7 +251,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         D3D11_COMPARISON_GREATER_EQUAL,
         D3D11_COMPARISON_ALWAYS,
     ];
-    let compare: Vec<_> = [
+    [
         D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT,
         D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
     ]
@@ -234,14 +262,5 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
             ..sampler(filter, [D3D11_TEXTURE_ADDRESS_CLAMP; 2])
         })
     })
-    .collect();
-    outputs.push(Output::picture(
-        "compare",
-        cells(gpu, dxbc!("samplers.ps_compare"), 4, 48, &compare, 1)?,
-    ));
-    outputs.push(Output::picture(
-        "compare_zero",
-        cells(gpu, dxbc!("samplers.ps_compare_zero"), 4, 48, &compare, 1)?,
-    ));
-    Ok(outputs)
+    .collect()
 }
