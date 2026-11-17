@@ -4,6 +4,14 @@ use naga::back::glsl;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 
 fn write_glsl(wgsl: &str, stage: naga::ShaderStage, flags: glsl::WriterFlags) -> String {
+    try_write_glsl(wgsl, stage, flags).expect("write")
+}
+
+fn try_write_glsl(
+    wgsl: &str,
+    stage: naga::ShaderStage,
+    flags: glsl::WriterFlags,
+) -> Result<String, glsl::Error> {
     let module = naga::front::wgsl::parse_str(wgsl).expect("parse");
     let info = Validator::new(ValidationFlags::all(), Capabilities::MULTISAMPLED_SHADING)
         .validate(&module)
@@ -29,11 +37,9 @@ fn write_glsl(wgsl: &str, stage: naga::ShaderStage, flags: glsl::WriterFlags) ->
         &options,
         &pipeline,
         naga::proc::BoundsCheckPolicies::default(),
-    )
-    .expect("writer")
-    .write()
-    .expect("write");
-    out
+    )?
+    .write()?;
+    Ok(out)
 }
 
 const NUMBERS: &str = "
@@ -195,4 +201,33 @@ fn hlsl_continuing_reads_the_body_values_of_its_iteration() {
     assert!(block.contains("a = loop_value;"), "{out}");
     assert!(!block.contains('*'), "{out}");
     assert!(out.contains("float loop_value = (float)0;"), "{out}");
+}
+
+#[test]
+fn fine_derivatives_are_refused_by_glsl_es() {
+    let fine = "
+@fragment fn main(@location(0) x: f32) -> @location(0) vec4f {
+    return vec4f(dpdxFine(x), dpdyFine(x), 0.0, 1.0);
+}";
+    let error = try_write_glsl(
+        fine,
+        naga::ShaderStage::Fragment,
+        glsl::WriterFlags::empty(),
+    )
+    .expect_err("GLSL ES 3.00 has no fine derivatives");
+    assert!(
+        matches!(error, glsl::Error::MissingFeatures(f) if f.contains(glsl::Features::DERIVATIVE_CONTROL)),
+        "{error:?}"
+    );
+    let coarse = "
+@fragment fn main(@location(0) x: f32) -> @location(0) vec4f {
+    return vec4f(dpdxCoarse(x), dpdy(x), fwidthCoarse(x), 1.0);
+}";
+    let out = write_glsl(
+        coarse,
+        naga::ShaderStage::Fragment,
+        glsl::WriterFlags::empty(),
+    );
+    assert!(out.contains("dFdx("), "{out}");
+    assert!(out.contains("fwidth("), "{out}");
 }
