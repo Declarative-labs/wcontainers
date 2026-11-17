@@ -5,8 +5,9 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 
 ## Where things stand
 
-R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done, in its first
-run. Everything below was run from this Mac against the desktop on 2026-11-17.
+R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done. The second
+run fixed what the independent check found (listed under "Second run"). Everything below was run from
+this Mac against the desktop on 2026-11-17.
 
 - The desktop has Git, Rust, the C++ build tools and Windows SDK, Node, Chrome for Testing, Windows'
   Graphics Tools (the Direct3D debug layers) and pueue, all listed under "The desktop".
@@ -19,9 +20,12 @@ run. Everything below was run from this Mac against the desktop on 2026-11-17.
   with real Direct3D 11 on the RTX 3080 and on WARP, the triangle with Direct3D 12 on both, the
   triangle through wgpu (Direct3D 12 and Vulkan back ends) and in Chrome through WebGPU and WebGL 2,
   and compares pictures (`gt-compare`).
-- crates/wcontainers-graphics-test-forward builds a d3d11.dll that logs every call and forwards it to
-  the system one; a scene program placed beside it runs through it and draws the same picture.
-- `loop` does all of it in one command and fails if a picture leaves its tolerance.
+- crates/wcontainers-graphics-test-forward builds a d3d11.dll that logs each call of its 51 exported
+  functions and forwards it to the system one (calls on the COM objects those return go through their
+  vtables straight to the system library and are not seen); a scene program placed beside it runs
+  through it and draws the same picture.
+- `loop` does all of it in one command and fails if a picture leaves its tolerance, if the forwarding
+  run's device was not created through the replacement d3d11.dll, or if Chrome did not draw on a GPU.
 
 ## How to run
 
@@ -33,18 +37,27 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - `tools/graphics-rig/remote <command>`: sends this checkout's working tree (untracked files
   included, ignored ones not) as a commit to C:\wc\src\<branch> and runs the command there with
   cmd.exe, with `CARGO_TARGET_DIR=C:\wc\target\<branch>`. Example:
-  `tools/graphics-rig/remote cargo build -p wcontainers-graphics-test`. Runs of one branch take turns.
+  `tools/graphics-rig/remote cargo build -p wcontainers-graphics-test`. Runs of one branch take turns,
+  and wait for that branch's running GPU jobs (each job holds the branch's lock shared).
 - `tools/graphics-rig/gpu-job [--priority N] [--alone] -- <command>`: runs a command as a GPU job in
-  C:\wc\src\<branch> (send it with `remote` first). Higher N starts first; `--alone` waits until no
-  other job runs and holds new ones back until it ends. Prints the job's output, then its timing
-  line on standard error; exits with the job's code (125: the queue client failed).
-- `tools/graphics-rig/queue-check`: on an idle queue, submits sleeping jobs and checks that two jobs
-  run together, that a later priority-10 job starts before an earlier priority-0 one when every slot
-  is taken, and that an alone job runs with nothing beside it. About 30 s.
+  C:\wc\src\<branch>. That copy must hold this working tree as it is now (send it with `remote`
+  first); the job checks the git tree id when it starts and fails with 125 and a message if it differs,
+  so a job never runs code other than what is on the Mac. N is any integer, higher starts first;
+  `--alone` waits until no other job runs and holds new ones back until it ends. Prints the job's
+  output, then its timing line on standard error; exits with the job's code (125: the queue client
+  or the job's wrapper failed, with a message saying which).
+- `tools/graphics-rig/queue-check`: sends the working tree, then on an idle queue submits sleeping jobs
+  and checks that two jobs run together, that of twice as many jobs as slots submitted together
+  exactly as many as there are slots run at once, that a later priority-10 job starts before an
+  earlier priority-0 one when every slot is taken, and that an alone job runs with nothing beside it.
+  About 40 s.
 - `tools/graphics-rig/loop [picture-dir]`: builds the rig on the desktop, then one GPU job
   (tools/graphics-rig/loop.cmd) draws every scene with every renderer into C:\wc\out\<branch>, runs
   the forwarding test and compares: GPU pictures against the GPU's Direct3D 11 picture at tolerance
-  0, GPU against WARP at tolerance 1. With a directory, the pictures are also copied there.
+  0, GPU against WARP at tolerance 1. It also fails unless the forwarding run logged
+  "d3d11 forward: D3D11CreateDevice..." (the program's device creation went through the replacement),
+  and unless Chrome's WebGPU adapter is a GPU (type discrete or integrated, not a fallback) and its
+  WebGL 2 renderer names the same GPU. With a directory, the pictures are also copied there.
 - `tools/graphics-rig/inventory`: prints the desktop's installed programs, root scheduled tasks,
   services, Graphics Tools state, PATHs and C:\wc, to compare with "The desktop" below. The listing
   taken before anything was installed is in the scratch directory
@@ -52,13 +65,20 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   not in this public repository, as it lists the owner's software.
 - Single renderers, on the desktop (in a job): `gt-d3d11 <triangle|quads|instanced|all>
   <hardware|warp> <dir>`, `gt-d3d12 <hardware|warp> <dir>`, `gt-wgpu <dx12|vulkan|gl> <dir>`,
-  `node tools\graphics-rig\browser\draw.mjs <dir>`. `gt-wgpu metal <dir>` also runs on the Mac.
+  `gt-scene triangle > triangle.json` then `node tools\graphics-rig\browser\draw.mjs triangle.json
+  <dir>` (the page takes the triangle's size, clear colour and vertices from scene.rs through
+  gt-scene, and the shader from triangle.wgsl). `gt-wgpu metal <dir>` also runs on the Mac.
 - `gt-compare <a.png> <b.png> [tolerance]`: prints pixel count, how many differ in any channel by
   more than the tolerance, the largest channel difference and the first differing pixel. Exit 0 when
   none differ beyond the tolerance, 1 when some do, 2 on error.
 - Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (2 unit tests
   of the comparison) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
-  since most of the code is Windows-only.
+  since most of the code is Windows-only; `shellcheck -x tools/graphics-rig/*` (minus the .cmd) for
+  the Mac scripts.
+- The Mac scripts share tools/graphics-rig/common.sh: every ssh and scp to the desktop goes through one
+  shared connection per checkout (control socket ~/.ssh/wc-rig-<hash of the git dir>, kept 10 minutes
+  after last use), opened first with a retry every 15 s for up to 20 minutes, so a run started while
+  the desktop refuses new connections waits instead of failing.
 
 ## The desktop
 
@@ -142,6 +162,25 @@ on an idle queue.
 A change is caught: with the red of the triangle's first corner set to 0.9 in the browser page only,
 `loop` failed: Chrome WebGPU and WebGL 2 each differed from Direct3D 11 in 18928 pixels, by up to 25.
 
+Second run (desktop CPU about 4 %, Mac load average 11 to 16):
+- `loop` with the forwarding DLL's copy removed from loop.cmd now fails (exit 1, "the forwarding run
+  did not create its device through the replacement d3d11.dll"), though its picture still equals
+  the direct one; with the copy it passes and logs the four calls. `findstr /x` cannot be used for
+  this check: it never matches lines ending in LF alone, which is how Rust's eprintln ends them.
+- With the triangle's first red set to 0.998 in scene.rs only, `loop` passes (every renderer, Chrome
+  included, draws the changed triangle), and gt-compare against the earlier pictures finds 3260
+  pixels differing by 1, for Direct3D 11 and Chrome WebGL 2 alike.
+- Chrome's adapters, now checked by draw.mjs: WebGPU {"description":"NVIDIA GeForce RTX 3080",
+  "backend":"D3D12","type":"discrete GPU","fallback":false}; WebGL 2 "ANGLE (NVIDIA, NVIDIA GeForce
+  RTX 3080 (0x00002206) Direct3D11 vs_5_0 ps_5_0, D3D11)".
+- `queue-check`, one run, all five rules pass: of 8 four-second jobs submitted together, 4 started at
+  01.470 to 01.540 and the other 4 at 05.949 to 06.020, once the first ended (most at once: 4).
+- `gpu-job --priority -2` runs (task at priority -2). A `gpu-job` after an untracked file was added
+  on the Mac, without `remote`, failed with 125 and the tree message. A `remote` started 3 s into a
+  7 s job waited ("waiting for another run") and ran 1 s after the job ended.
+- `loop`, everything built: 18 s end to end with the remote build step; the GPU job itself 3.7 to
+  5.9 s.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -156,6 +195,8 @@ or an export without a name would stop the build; d3d11 has neither.
 Proof: loop.cmd copies gt-d3d11.exe and the built DLL (as d3d11.dll) into one directory and runs the
 triangle there. The log shows D3D11CreateDevice, D3D11CoreRegisterLayers,
 D3D11CoreGetLayeredDeviceSize and D3D11CoreCreateLayeredDevice, and the picture equals the direct one.
+The picture alone proves nothing (the system d3d11.dll draws the same), so loop.cmd fails unless the
+log has the program's device creation in it.
 
 Traps:
 - Search order: d3d11.dll, d3d12.dll and dxgi.dll are not in the desktop's KnownDLLs list, so the program's own directory is searched
@@ -207,13 +248,27 @@ There is no plan document in this checkout; these depart from the task or brief 
 
 ## Known issues
 
-- Once, SSH to the desktop failed for about 9 minutes (connections reset right after key exchange)
-  and then recovered by itself, with no reboot and nothing in the OpenSSH or System logs; cause
-  unknown. `remote` and `gpu-job` do not retry.
+- SSH to the desktop has twice refused new connections (reset right after key exchange) for about
+  9 to 10 minutes and then recovered by itself, with no reboot and nothing in the OpenSSH or System
+  logs; the second time came after about 30 ssh sessions in 10 minutes. Cause unknown; sshd_config
+  sets no limits of its own. The scripts now share one connection and wait up to 20 minutes for it
+  (see How to run); not yet seen against a real outage.
+- The quads and instanced scenes are drawn only by d3d11.rs, so the loop compares them only GPU
+  against WARP: a change or bug in those scenes passes, as does any difference of at most 1 per
+  channel. A scene change is caught only by comparing with earlier pictures (`loop <dir>` keeps
+  them; `gt-compare` the two). The same holds for the triangle now that the browser page takes it
+  from scene.rs: every renderer draws the same changed triangle. Fronts drawing these scenes will be
+  the second renderer that makes these comparisons mean something.
+- The branch lock is per branch: two agents sharing a branch still take turns correctly, but one
+  agent's `remote` between another's `remote` and `gpu-job` makes the later job fail its tree check
+  (it never runs the wrong code).
 - If a `gpu-job` client is cut off, its job still runs; its output stays in
   C:\wc\pueue\data\task_logs and the finished task stays listed until `pueue clean`.
 - If the queue daemon restarts with jobs left, it pauses its groups; `setup-desktop` cleans those jobs
   and resumes the groups when it starts the daemon.
+- An alone job pauses the default group and resumes it when it ends, also when its command fails;
+  if its wrapper is killed (seen with `pueue kill --group alone`) the group stays paused until the
+  next `gpu-job`, which resumes it when no alone job is queued or running and says so.
 - A queued job starts PowerShell twice (pueue's shell runs desktop/job.ps1) before its command; a
   job of `exit 7` took 0.3 s from start to end.
 
@@ -221,7 +276,8 @@ There is no plan document in this checkout; these depart from the task or brief 
 
 Added crates (all transitive dependencies are permissive: MIT, Apache-2.0, Zlib, ISC, BSD,
 Unlicense-or-MIT, Unicode-3.0): anyhow, bytemuck (Zlib OR Apache-2.0 OR MIT), image, pollster, wgpu,
-windows, windows-sys, object, all MIT OR Apache-2.0 unless said. Node packages (tools only):
+windows, windows-sys, object, serde_json 1.0.154 (already in the workspace's lock file), all MIT OR
+Apache-2.0 unless said. Node packages (tools only):
 playwright-core 1.65.1 and @puppeteer/browsers 3.2.7, Apache-2.0. Tools on the desktop, none shipped:
 pueue MIT, Git GPL-2.0, Node MIT, Rust MIT OR Apache-2.0, Visual Studio Build Tools and Windows SDK
 under Microsoft's licence terms, Chrome for Testing under Google's terms.
