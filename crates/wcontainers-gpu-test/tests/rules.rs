@@ -67,6 +67,15 @@ fn buffer(r: &mut Recorder, size: u64, usage: BufferUsage) -> Id {
 
 fn texture(r: &mut Recorder, format: Format, size: u32, usage: TextureUsage) -> Id {
     r.create_texture(&TextureDesc {
+        usage,
+        ..texture_desc(format, size)
+    })
+    .unwrap()
+}
+
+/// A square 2D texture of one level and layer with every use but storage.
+fn texture_desc(format: Format, size: u32) -> TextureDesc {
+    TextureDesc {
         dimension: TextureDimension::D2,
         format,
         width: size,
@@ -74,11 +83,10 @@ fn texture(r: &mut Recorder, format: Format, size: u32, usage: TextureUsage) -> 
         depth_or_layers: 1,
         mip_levels: 1,
         samples: 1,
-        usage,
+        usage: ALL,
         cube: false,
         reinterpret: false,
-    })
-    .unwrap()
+    }
 }
 
 fn view(r: &mut Recorder, t: &Id, format: Format) -> Id {
@@ -1384,6 +1392,49 @@ fn buffer_texture_copies_take_pitches_covering_the_region() {
 }
 
 #[test]
+fn buffer_texture_copies_take_offsets_and_pitches_of_whole_blocks() {
+    // 4-byte blocks of rgba8unorm; of depth24plus-stencil8, 4 bytes of depth and 1 of stencil.
+    let pitch = "a buffer-texture copy's row pitch is not a whole number of blocks";
+    let offset = "a buffer-texture copy's offset is not a whole number of blocks";
+    let cases: [(Format, bool, u64, u32, &[&str]); 8] = [
+        (Format::Rgba8Unorm, false, 4, 12, &[]),
+        (Format::Rgba8Unorm, false, 0, 9, &[pitch]),
+        (Format::Rgba8Unorm, false, 2, 8, &[offset]),
+        (Format::Depth24PlusStencil8, false, 4, 12, &[]),
+        (Format::Depth24PlusStencil8, false, 0, 10, &[pitch]),
+        (Format::Depth24PlusStencil8, false, 2, 8, &[offset]),
+        (Format::Depth24PlusStencil8, true, 0, 3, &[]),
+        (Format::Depth24PlusStencil8, true, 1, 2, &[]),
+    ];
+    for (format, stencil, at, row_pitch, want) in cases {
+        for to_texture in [false, true] {
+            let mut r = Recorder::new();
+            let b = buffer(&mut r, 64, COPIES);
+            let t = texture(&mut r, format, 2, ALL);
+            let side = CopyBufferTexture {
+                buffer: &b,
+                offset: at,
+                row_pitch,
+                rows_per_layer: 2,
+            };
+            let texels = TextureRegion {
+                stencil,
+                ..region(&t)
+            };
+            if to_texture {
+                r.copy_buffer_to_texture(&side, &texels, extent(2));
+            } else {
+                r.copy_texture_to_buffer(&texels, &side, extent(2));
+            }
+            assert_eq!(
+                r.violations, want,
+                "{format:?} stencil {stencil} offset {at} pitch {row_pitch} to texture {to_texture}"
+            );
+        }
+    }
+}
+
+#[test]
 fn reads_back_stay_inside_their_buffers() {
     let mut r = Recorder::new();
     let b = buffer(&mut r, 16, COPIES);
@@ -1484,6 +1535,217 @@ fn a_discard_write_gives_the_buffer_fresh_contents() {
     d.r.end_pass();
     d.r.write_buffer(&vertices, 20, &[0; 4], WriteMode::NoOverwrite);
     assert_eq!(d.r.violations.len(), 1);
+}
+
+#[test]
+fn a_discard_texture_write_gives_the_texture_fresh_contents() {
+    // A 2 by 2 texture of two levels: a copy reads level 0, then a discard writes one texel of it.
+    let mut r = Recorder::new();
+    let t = r
+        .create_texture(&TextureDesc {
+            mip_levels: 2,
+            ..texture_desc(Format::Rgba8Unorm, 2)
+        })
+        .unwrap();
+    let b = buffer(&mut r, 16, COPIES);
+    let level = |mip| TextureRegion { mip, ..region(&t) };
+    r.write_texture(&level(0), extent(2), &[9; 16], 8, 2, WriteMode::Ordered);
+    r.write_texture(&level(1), extent(1), &[8; 4], 4, 1, WriteMode::Ordered);
+    let side = CopyBufferTexture {
+        buffer: &b,
+        offset: 0,
+        row_pitch: 8,
+        rows_per_layer: 2,
+    };
+    r.copy_texture_to_buffer(&level(0), &side, extent(2));
+    let corner = TextureRegion {
+        origin: Origin { x: 1, y: 1, z: 0 },
+        ..region(&t)
+    };
+    r.write_texture(&corner, extent(1), &[1; 4], 4, 1, WriteMode::Discard);
+    // Nothing earlier uses the fresh texture, so no-overwrite writes may follow over the copy's texels.
+    r.write_texture(
+        &region(&t),
+        extent(1),
+        &[2; 4],
+        4,
+        1,
+        WriteMode::NoOverwrite,
+    );
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    let (objects, _) = r.contents();
+    let mut want = [0xcd; 20];
+    want[..4].copy_from_slice(&[2; 4]);
+    want[12..16].copy_from_slice(&[1; 4]);
+    assert_eq!(
+        objects[n(&t).parse::<usize>().unwrap()].as_deref(),
+        Some(&want[..])
+    );
+    assert_eq!(
+        objects[n(&b).parse::<usize>().unwrap()].as_deref(),
+        Some(&[9; 16][..]),
+        "the copy recorded before the discard"
+    );
+}
+
+#[test]
+fn a_no_overwrite_texture_write_keeps_off_texels_in_use() {
+    let refusal = |t: &Id| {
+        format!(
+            "a NoOverwrite write over texels of texture {} an unfinished command or an ordered write touches",
+            n(t)
+        )
+    };
+    fn at(t: &Id, x: u32, y: u32) -> TextureRegion<'_, Recorder> {
+        TextureRegion {
+            origin: Origin { x, y, z: 0 },
+            ..region(t)
+        }
+    }
+    let one = extent(1);
+    // An ordered write not waited for, then texels beside it and over it.
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.write_texture(&at(&t, 0, 0), one, &[1; 4], 4, 1, WriteMode::Ordered);
+    r.write_texture(&at(&t, 1, 0), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    r.write_texture(&at(&t, 0, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    r.write_texture(&at(&t, 0, 0), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    assert_eq!(r.violations, [refusal(&t)]);
+    // Each command that reads or writes texel (1, 1), then writes beside it and over it; and over
+    // it after a wait.
+    type Use = fn(&mut Recorder, &Id, &Id, &Id);
+    let uses: [(&str, Use); 5] = [
+        ("copy_texture_to_buffer", |r, t, _, b| {
+            r.copy_texture_to_buffer(
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                &CopyBufferTexture {
+                    buffer: b,
+                    offset: 0,
+                    row_pitch: 4,
+                    rows_per_layer: 1,
+                },
+                extent(1),
+            )
+        }),
+        ("copy_buffer_to_texture", |r, t, _, b| {
+            r.copy_buffer_to_texture(
+                &CopyBufferTexture {
+                    buffer: b,
+                    offset: 0,
+                    row_pitch: 4,
+                    rows_per_layer: 1,
+                },
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                extent(1),
+            )
+        }),
+        ("copy_texture from", |r, t, other, _| {
+            r.copy_texture(
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                &region(other),
+                extent(1),
+            )
+        }),
+        ("copy_texture to", |r, t, other, _| {
+            r.copy_texture(
+                &region(other),
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                extent(1),
+            )
+        }),
+        ("read_back", |r, t, _, _| {
+            r.read_back(&ReadSource::Texture {
+                region: TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                extent: extent(1),
+            })
+            .unwrap();
+        }),
+    ];
+    for (name, use_texels) in uses {
+        for wait in [false, true] {
+            let mut r = Recorder::new();
+            let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+            let other = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+            let b = buffer(&mut r, 64, COPIES);
+            use_texels(&mut r, &t, &other, &b);
+            if wait {
+                let done = r.submit();
+                r.wait_fence(&done);
+            }
+            r.write_texture(&at(&t, 0, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+            assert!(r.violations.is_empty(), "{name}: {:?}", r.violations);
+            r.write_texture(&at(&t, 1, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+            let want = if wait { vec![] } else { vec![refusal(&t)] };
+            assert_eq!(r.violations, want, "{name}, waited {wait}");
+        }
+    }
+    // A resolve writes all of its destination.
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let ms = r
+        .create_texture(&TextureDesc {
+            samples: 4,
+            usage: TextureUsage::RENDER,
+            ..texture_desc(Format::Rgba8Unorm, 2)
+        })
+        .unwrap();
+    r.resolve(&region(&ms), &region(&t), Format::Rgba8Unorm);
+    r.write_texture(&at(&t, 1, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    assert_eq!(r.violations, [refusal(&t)]);
+    // A pass attaching slice 1 of level 1 (2 by 2 by 2) of a 3D texture uses that slice alone.
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
+    let level = view_of(&mut r, &t, ViewDimension::D3, (1, 1), (0, 1));
+    r.begin_pass(&pass_of([ColorAttachment {
+        depth_slice: 1,
+        ..color(&level)
+    }]));
+    r.end_pass();
+    let slice = |z| TextureRegion {
+        mip: 1,
+        origin: Origin { x: 0, y: 0, z },
+        ..region(&t)
+    };
+    r.write_texture(&slice(0), extent(2), &[2; 16], 8, 2, WriteMode::NoOverwrite);
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    r.write_texture(&slice(1), extent(2), &[2; 16], 8, 2, WriteMode::NoOverwrite);
+    assert_eq!(r.violations, [refusal(&t)]);
+    // A draw sampling the texture, and a pass attaching it, use all its texels.
+    let mut d = Drawing::new();
+    let sampled = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    let sampled_view = view(&mut d.r, &sampled, Format::Rgba8Unorm);
+    let set =
+        d.r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&sampled_view),
+        }])
+        .unwrap();
+    let p = d.program("loads");
+    d.begin();
+    d.draw(&p, Some(&set), Topology::TriangleList, false);
+    d.r.end_pass();
+    let target = d.target;
+    for t in [&sampled, &target] {
+        d.r.write_texture(&at(t, 1, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    }
+    assert_eq!(d.r.violations, [refusal(&sampled), refusal(&target)]);
 }
 
 #[test]

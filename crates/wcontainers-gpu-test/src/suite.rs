@@ -51,6 +51,7 @@ macro_rules! suite {
             comparison_samplers_compare_with_the_stored_depth,
             fragments_write_storage_buffers,
             multisampled_targets_cover_their_samples_and_resolve,
+            resolves_average_in_the_format_named,
             programs_run_per_sample_and_read_samples,
             occlusion_queries_answer_whether_samples_passed,
             present_shows_the_frame,

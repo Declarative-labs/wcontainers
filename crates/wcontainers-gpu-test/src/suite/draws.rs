@@ -1106,20 +1106,10 @@ fn samples_of<B: Backend>(b: &mut B, ms: &B::TextureView, n: u32) -> Vec<u8> {
     read_texture(b, region(&t, 0, 0, 0, 0), extent(n, n, 1), 4)
 }
 
-/// Four samples at the standard positions WebGPU, Direct3D and Vulkan share ((0.375, 0.125),
-/// (0.875, 0.375), (0.125, 0.625), (0.625, 0.875) in the pixel): rectangles whose right edges cross
-/// pixel 1 of rows 0 to 2 at 1.25, 1.5 and 1.75 cover one, two and three of its samples, so its
-/// resolved value is 1/4, 1/2 and 3/4 of white, one step of tolerance; resolved at the pass's end and
-/// by `resolve`, alike. Where the back end reads samples in programs, each sample's own coverage is
-/// checked too: pixel 1 of row 0 covers sample 2 alone.
-pub fn multisampled_targets_cover_their_samples_and_resolve<H: Host>() {
-    let mut b = H::make();
-    const N: u32 = 4;
-    let Some((ms, msv)) = four_sample_target(&mut b, N) else {
-        return;
-    };
-    let (resolved, resolved_view) = rgba8_target(&mut b, N);
-    let (again, _) = rgba8_target(&mut b, N);
+/// Draws white into the four-sample 4 by 4 `rgba8unorm` target `ms`, cleared to zero: all of row 3,
+/// and rows 0 to 2 from the left edge to 1.25, 1.5 and 1.75 pixels, so pixel 1 of those rows has one,
+/// two and three of its samples covered. The pass resolves into `resolve` where given.
+fn cover_rows<B: Backend>(b: &mut B, ms: &B::TextureView, resolve: Option<&B::TextureView>) {
     // Rows 0 to 3, each from x = 0 to its right edge, in pixels.
     let edges = [1.25f32, 1.5, 1.75, 4.0];
     let mut quads = Vec::new();
@@ -1142,22 +1132,22 @@ pub fn multisampled_targets_cover_their_samples_and_resolve<H: Host>() {
             bottom,
         ]);
     }
-    let vb = vertex_buffer(&mut b, &quads);
-    let p = program(&mut b, COVER, "vs", "white");
-    let bl = blend(&mut b, opaque());
-    let ds = depth_test(&mut b, None, false);
+    let vb = vertex_buffer(b, &quads);
+    let p = program(b, COVER, "vs", "white");
+    let bl = blend(b, opaque());
+    let ds = depth_test(b, None, false);
     let rs = b
         .create_raster(&raster_desc(ProvokingVertex::First))
         .expect("create_raster");
-    let vl = positions(&mut b);
-    let vp = viewport(N, N);
+    let vl = positions(b);
+    let vp = viewport(4, 4);
     let streams = [Some(VertexBinding {
         buffer: &vb,
         offset: 0,
     })];
-    let mut pass = color_pass::<H::Backend>(&msv, LoadOp::Clear([0; 4]));
+    let mut pass = color_pass::<B>(ms, LoadOp::Clear([0; 4]));
     if let Some(c) = &mut pass.colors[0] {
-        c.resolve = Some(&resolved_view);
+        c.resolve = resolve;
     }
     b.begin_pass(&pass);
     b.draw(&call(
@@ -1172,6 +1162,23 @@ pub fn multisampled_targets_cover_their_samples_and_resolve<H: Host>() {
         vertices(0, 24),
     ));
     b.end_pass();
+}
+
+/// Four samples at the standard positions WebGPU, Direct3D and Vulkan share ((0.375, 0.125),
+/// (0.875, 0.375), (0.125, 0.625), (0.625, 0.875) in the pixel): rectangles whose right edges cross
+/// pixel 1 of rows 0 to 2 at 1.25, 1.5 and 1.75 cover one, two and three of its samples, so its
+/// resolved value is 1/4, 1/2 and 3/4 of white, one step of tolerance; resolved at the pass's end and
+/// by `resolve`, alike. Where the back end reads samples in programs, each sample's own coverage is
+/// checked too: pixel 1 of row 0 covers sample 2 alone.
+pub fn multisampled_targets_cover_their_samples_and_resolve<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let Some((ms, msv)) = four_sample_target(&mut b, N) else {
+        return;
+    };
+    let (resolved, resolved_view) = rgba8_target(&mut b, N);
+    let (again, _) = rgba8_target(&mut b, N);
+    cover_rows(&mut b, &msv, Some(&resolved_view));
     let at = |t| region(t, 0, 0, 0, 0);
     b.resolve(&at(&ms), &at(&again), Format::Rgba8Unorm);
     let mut expected = Vec::new();
@@ -1204,6 +1211,51 @@ pub fn multisampled_targets_cover_their_samples_and_resolve<H: Host>() {
             }
         }
         assert_close(&got, &expected, 0, 4, N as usize);
+    }
+    ok(&mut b);
+}
+
+/// `resolve` averages in the format it names: the stored `rgba8unorm` on the stored values, its sRGB
+/// twin in linear light (pixel 1's colour of a quarter, half and three quarters of white gives 137,
+/// 188 and 225; alpha is linear in both). The bytes follow the format named, not the destination's,
+/// so an `rgba8unorm` and an `rgba8unorm-srgb` destination hold the same. Where a back end averages
+/// the stored values instead it counts `ResolveInStoredFormat`, a listed loss (plan 4.12), and the
+/// stored averages are what it must give.
+pub fn resolves_average_in_the_format_named<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let Some((ms, msv)) = four_sample_target(&mut b, N) else {
+        return;
+    };
+    let uses = FormatUse::RENDER | FormatUse::COPY_OUT | FormatUse::RESOLVE;
+    needs(&b, Format::Rgba8Unorm, uses);
+    needs(&b, Format::Rgba8UnormSrgb, uses);
+    cover_rows(&mut b, &msv, None);
+    let (linear, _) = rgba8_target(&mut b, N);
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let srgb = texture(&mut b, Format::Rgba8UnormSrgb, (N, N), 1, 1, usage);
+    let at = |t| region(t, 0, 0, 0, 0);
+    for format in [Format::Rgba8Unorm, Format::Rgba8UnormSrgb] {
+        for t in [&linear, &srgb] {
+            let losses = b.slow_paths().count(SlowPath::ResolveInStoredFormat);
+            b.resolve(&at(&ms), &at(t), format);
+            let stored = format == Format::Rgba8Unorm
+                || b.slow_paths().count(SlowPath::ResolveInStoredFormat) > losses;
+            let mut expected = Vec::new();
+            for row in 0..N as usize {
+                for x in 0..N {
+                    let (colour, alpha) = match (row, x) {
+                        (_, 0) | (3, _) => (255, 255),
+                        (_, 1) if stored => ([64, 128, 191][row], [64, 128, 191][row]),
+                        (_, 1) => ([137, 188, 225][row], [64, 128, 191][row]),
+                        _ => (0, 0),
+                    };
+                    expected.extend_from_slice(&[colour, colour, colour, alpha]);
+                }
+            }
+            let got = read_texture(&mut b, at(t), extent(N, N, 1), 4);
+            assert_close(&got, &expected, 1, 4, N as usize);
+        }
     }
     ok(&mut b);
 }

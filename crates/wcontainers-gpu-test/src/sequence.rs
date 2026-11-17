@@ -25,6 +25,8 @@ pub enum Step {
     WriteTexture {
         which: u16,
         at: [u8; 6],
+        mode: u8,
+        pitch: u8,
         seed: u8,
     },
     CopyBuffer {
@@ -114,8 +116,20 @@ pub fn steps(max: usize) -> impl Strategy<Value = Vec<Step>> {
                 seed
             }
         ),
-        (any::<u16>(), any::<[u8; 6]>(), any::<u8>())
-            .prop_map(|(which, at, seed)| Step::WriteTexture { which, at, seed }),
+        (
+            any::<u16>(),
+            any::<[u8; 6]>(),
+            any::<u8>(),
+            any::<u8>(),
+            any::<u8>()
+        )
+            .prop_map(|(which, at, mode, pitch, seed)| Step::WriteTexture {
+                which,
+                at,
+                mode,
+                pitch,
+                seed
+            }),
         (any::<[u16; 2]>(), any::<[u16; 3]>())
             .prop_map(|(which, at)| Step::CopyBuffer { which, at }),
         (any::<[u16; 2]>(), any::<[u8; 8]>())
@@ -444,6 +458,44 @@ fn region<B: Backend>(
     }
 }
 
+/// Texels of one level and layer of a texture (by index), a rectangle from `min` to `max`.
+#[derive(Clone, Copy)]
+struct Area {
+    texture: usize,
+    mip: u32,
+    layer: u32,
+    min: [u32; 2],
+    max: [u32; 2],
+}
+
+impl Area {
+    fn of(texture: usize, mip: u32, layer: u32, origin: Origin, e: Extent) -> Self {
+        Self {
+            texture,
+            mip,
+            layer,
+            min: [origin.x, origin.y],
+            max: [origin.x + e.width, origin.y + e.height],
+        }
+    }
+
+    /// Every texel of a level and layer.
+    fn whole(texture: usize, mip: u32, layer: u32) -> Self {
+        Self {
+            texture,
+            mip,
+            layer,
+            min: [0; 2],
+            max: [u32::MAX; 2],
+        }
+    }
+
+    fn meets(&self, o: &Self) -> bool {
+        (self.texture, self.mip, self.layer) == (o.texture, o.mip, o.layer)
+            && (0..2).all(|k| self.min[k] < o.max[k] && o.min[k] < self.max[k])
+    }
+}
+
 /// Runs `steps` on `b` as valid calls, and gives every byte read back, in order.
 pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuError> {
     let kit = kit(b)?;
@@ -459,6 +511,8 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
     // Buffer ranges (by index into `buffers`) commands or writes touched since the last wait for
     // all work: what a no-overwrite write keeps off without waiting.
     let mut pending: Vec<(usize, u64, u64)> = Vec::new();
+    // The same for texels.
+    let mut texels: Vec<Area> = Vec::new();
     let finish = |b: &mut B, rb: B::Readback, len: usize, read: &mut Vec<Vec<u8>>| {
         b.submit();
         b.wait_read(&rb);
@@ -524,6 +578,7 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     let fence = b.submit();
                     b.wait_fence(&fence);
                     pending.clear();
+                    texels.clear();
                 }
                 // A discard gives the buffer fresh contents that nothing earlier uses.
                 match mode {
@@ -533,18 +588,44 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 }
                 b.write_buffer(buffer, offset, &bytes(len as usize, *seed), mode);
             }
-            Step::WriteTexture { which, at, seed } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+            Step::WriteTexture {
+                which,
+                at,
+                mode,
+                pitch,
+                seed,
+            } if !textures.is_empty() => {
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
                 let (mip, layer, origin, e) = region_of(desc, at);
-                let pitch = e.width * texel_size(desc.format);
-                let data = bytes((pitch * e.height) as usize, *seed);
+                let texel = texel_size(desc.format);
+                let row = e.width * texel;
+                let row_pitch = row + texel * u32::from(*pitch % 3);
+                let data = bytes((row_pitch * (e.height - 1) + row) as usize, *seed);
+                let mode = [
+                    WriteMode::Ordered,
+                    WriteMode::Discard,
+                    WriteMode::NoOverwrite,
+                ][pick(*mode, 3)];
+                let area = Area::of(i, mip, layer, origin, e);
+                if mode == WriteMode::NoOverwrite && texels.iter().any(|a| a.meets(&area)) {
+                    let fence = b.submit();
+                    b.wait_fence(&fence);
+                    pending.clear();
+                    texels.clear();
+                }
+                match mode {
+                    WriteMode::Ordered => texels.push(area),
+                    WriteMode::Discard => texels.retain(|a| a.texture != i),
+                    WriteMode::NoOverwrite => {}
+                }
                 b.write_texture(
                     &region::<B>(t, mip, layer, origin),
                     e,
                     &data,
-                    pitch,
+                    row_pitch,
                     e.height,
-                    WriteMode::Ordered,
+                    mode,
                 );
             }
             Step::CopyBuffer { which, at } if !buffers.is_empty() => {
@@ -587,6 +668,8 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 if i == j && smip == dmip && slayer == dlayer {
                     continue;
                 }
+                texels.push(Area::of(i, smip, slayer, so, e));
+                texels.push(Area::of(j, dmip, dlayer, dst_origin, e));
                 b.copy_texture(
                     &region::<B>(s, smip, slayer, so),
                     &region::<B>(d, dmip, dlayer, dst_origin),
@@ -607,7 +690,8 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
             } if !buffers.is_empty() && !textures.is_empty() => {
                 let i = pick(which[0], buffers.len());
                 let (buffer, size) = &buffers[i];
-                let (t, desc) = &textures[pick(which[1], textures.len())];
+                let k = pick(which[1], textures.len());
+                let (t, desc) = &textures[k];
                 let (mip, layer, origin, e) = region_of(desc, at);
                 let texel = texel_size(desc.format);
                 let row = e.width * texel;
@@ -616,8 +700,11 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 if need > *size {
                     continue;
                 }
-                let offset = u64::from(*offset) % (size - need + 1);
+                // A whole number of texels from the buffer's start.
+                let texel = u64::from(texel);
+                let offset = u64::from(*offset) % ((size - need) / texel + 1) * texel;
                 pending.push((i, offset, offset + need));
+                texels.push(Area::of(k, mip, layer, origin, e));
                 let side = CopyBufferTexture {
                     buffer,
                     offset,
@@ -666,8 +753,10 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 finish(b, rb, len as usize, &mut read);
             }
             Step::ReadTexture { which, at } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
                 let (mip, layer, origin, e) = region_of(desc, at);
+                texels.push(Area::of(i, mip, layer, origin, e));
                 let rb = b.read_back(&ReadSource::Texture {
                     region: region::<B>(t, mip, layer, origin),
                     extent: e,
@@ -682,7 +771,9 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 multisampled,
                 options,
             } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
+                texels.push(Area::whole(i, 0, 0));
                 pass(
                     b,
                     &kit,
@@ -696,7 +787,13 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 )?;
             }
             Step::ClearTexture { which, value } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
+                for mip in 0..desc.mip_levels {
+                    for layer in 0..desc.depth_or_layers {
+                        texels.push(Area::whole(i, mip, layer));
+                    }
+                }
                 let value = match desc.format.kind() {
                     FormatKind::Uint => value.map(|v| (v * 255.0) as u32),
                     FormatKind::Sint => value.map(|v| ((v * 255.0) as i32 - 128) as u32),
@@ -726,7 +823,14 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                         }
                     }
                 } else {
-                    b.destroy(Object::Texture(textures.remove(i - buffers.len()).0));
+                    let i = i - buffers.len();
+                    b.destroy(Object::Texture(textures.remove(i).0));
+                    texels.retain(|a| a.texture != i);
+                    for a in &mut texels {
+                        if a.texture > i {
+                            a.texture -= 1;
+                        }
+                    }
                 }
             }
             Step::Submit => {

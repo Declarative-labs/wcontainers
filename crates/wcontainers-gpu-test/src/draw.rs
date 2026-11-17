@@ -877,6 +877,26 @@ impl Recorder {
 
     /// The buffer bytes a draw reads or writes: its index range, the elements its vertex streams
     /// fetch and the ranges its binding sets bind.
+    /// Every (texture, subresource) the draw's bound views take in.
+    fn bound_subresources(
+        &self,
+        state: &DrawState,
+    ) -> Result<Vec<(crate::recorder::Id, usize)>, Error> {
+        let mut subs = Vec::new();
+        for (_, bound) in state.sets.iter().flatten().flatten() {
+            if let Bound::Texture(view) = *bound {
+                let v = self.view(view)?;
+                let desc = self.texture(v.texture)?.desc;
+                for mip in v.desc.base_mip..v.desc.base_mip + v.desc.mip_count {
+                    for layer in v.desc.base_layer..v.desc.base_layer + v.desc.layer_count {
+                        subs.push((v.texture, subresource(&desc, mip, layer)));
+                    }
+                }
+            }
+        }
+        Ok(subs)
+    }
+
     fn draw_reads(
         &self,
         call: &DrawCall<'_, Self>,
@@ -1129,6 +1149,9 @@ impl Recorder {
         self.usage_scope(call, &state)?;
         for (buffer, start, end) in self.draw_reads(call, &state)? {
             self.touch(buffer, start, end);
+        }
+        for (texture, sub) in self.bound_subresources(&state)? {
+            self.touch_in(texture, sub, 0, u64::MAX);
         }
         let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
         match call.topology {
