@@ -1366,6 +1366,11 @@ each sequence the runner puts back what a sequence can change outside its direct
 - K5, fifth run, end of the milestone's layer 1 bar: on f73d3aa (every fix in) the fresh seeds
   5050448, 5050449 and 5050450 passed 20000 sequences each (339 s, 336 s and 399 s, three side
   by side, load 74 at the start and 49 at the end).
+- K5, fifth run: whole suite at f73d3aa (the run's last code; same command, clean copy, own
+  build): 177 passed, 1 failed, 5 ignored, 11 min 18 s with the build, load 22.8 at the start
+  and 27.8 at the end. The failure is the reference's known race in threads
+  `process_signal_takers_match_reference` (theirs "main willing: taken by thread 1", see Known
+  issues); two reruns alone passed.
 - K5, fifth run: whole suite at 619f3d0 (same command, clean copy, own build, beside three layer
   1 runs): 178 passed, 0 failed, 5 ignored, 13 min 54 s with the build, load 25.6 at the start
   and 56.3 at the end.
@@ -1935,6 +1940,9 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K5, fifth run: the sigpick reference race came once more in the whole suite at f73d3aa (load
+  about 25); two reruns alone passed.
 
 - K5, fourth run: threads `process_signal_takers_match_reference` (sigpick) failed once more in
   the whole suite at 65ae145 (load about 30): the reference gave the process signal to thread 1.
