@@ -4,7 +4,7 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K4 are done. K5 (sockets and network) has had five runs and is not complete: what is left
+K0 to K4 are done. K5 (sockets and network) has had six runs and is not complete: what is left
 is under Next. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
 and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
@@ -171,11 +171,52 @@ K5 built (all four runs):
     UDP_GRO and UDP_ENCAP are counted "socket option not built" (ENOPROTOOPT, as a Linux
     without them).
 
+- Sixth run (each against the reference):
+  - TCP_INFO (`tcp_get_info`, 280 bytes as Linux 7.0): a fresh socket's and a listener's
+    exactly as Linux (a listener's queue and limit, a fresh socket's starting values and
+    `tcp_jiffies32` times); a connection's from a model of this TCP's traffic (`Traffic` in
+    syscall/socket/inet.rs: every segment arrives and is acknowledged at once, a send goes in
+    segments of the MSS, each data segment and FIN draws one acknowledgement; the handshake's
+    numbers, options, window scales, MSS, windows and MTUs are Linux's on loopback, measured).
+    Round trips, rates and the RTO are a fixed short loopback round trip. Counted "tcp info
+    modelled". TCP_MAXSEG gives the same MSS (32741 or 32732 for a connector until the other end
+    has sent, 32768 after and for an accepted end, as measured). TCP refuses a negative option
+    length (EINVAL), where IPv6 and UDP take it as unsigned.
+  - Internet send control messages: IP_PKTINFO and IPV6_PKTINFO (a source must be the
+    container's own and not multicast or broadcast, ENETUNREACH or EINVAL; an interface must
+    exist, ENODEV; IPv6 has no route out of eth0; a loopback source cannot leave through eth0;
+    through lo every destination is delivered inside, with lo's index; to a loopback address out
+    of eth0 the datagram is lost), an IPv6 socket's IPv6 packet information naming an IPv4
+    address for an IPv4 destination, IP_PROTOCOL (checked, raw sockets only), IPV6_HOPLIMIT,
+    IPV6_TCLASS (-1 sends 255, measured), IPV6_DONTFRAG, IPV6_FLOWINFO (checked; labels are
+    sent only with IPV6_FLOWINFO_SEND), SO_MARK and SO_PRIORITY (CAP_NET_RAW or CAP_NET_ADMIN,
+    or priorities 0 to 6), SCM_TXTIME (with SO_TXTIME). IPv4 options (IP_RETOPTS), IPv6
+    extension headers and send timestamps stay refused and counted.
+  - SO_MARK and SO_PRIORITY as Linux: root in Docker has CAP_NET_RAW, so both are set (they were
+    EPERM before, which was wrong); IP_TOS sets the priority it gives when it changes
+    (`rt_tos2priority`); SO_RCVMARK and SO_RCVPRIORITY give a UDP datagram's mark and priority
+    after its timestamp; SO_TXTIME set and read (CLOCK_MONOTONIC, or others with
+    CAP_NET_ADMIN: EPERM in Docker). An IPv6 socket's own IP_TTL and IP_TOS apply to its
+    datagrams over IPv4.
+  - UDP_SEGMENT as an option and a control message (`udp_cmsg_send` reads UDP's messages
+    first): a longer datagram goes as segments, at most 128 (EINVAL past), each a datagram to
+    its receiver or to the outside; a receiver with UDP_GRO takes it whole with a UDP_GRO
+    message naming the segment size (`udp_unexpected_gso`). UDP_ENCAP stays counted (IPsec and
+    L2TP encapsulation need the kernel's IPsec, which is not built).
+
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
 and those calls are at its end. The third run's claim that seed 5050003 had them among its calls
 was wrong. At K4's end the list had 257 entries, so only its last (timerfd_gettime) was never
 made. The kind is now a `u16`; seeds made before this make different sequences now.
+
+Tests added in the sixth run (each against the reference):
+- tests/inet.rs `tcp_info_matches_reference` (guest/tcpinfo.c: exact fields through a
+  connection's life over IPv4 and IPv6, timing fields only as plausible),
+  `send_control_messages_match_reference` (guest/inetsend.c, as root and a user),
+  `udp_segmentation_matches_reference` (guest/udpsegment.c).
+- Layer 1 sets SO_MARK, SO_PRIORITY, SO_RCVMARK, SO_RCVPRIORITY, SO_TXTIME and IP_TOS, and sends
+  IPv4 packet information naming 127.0.0.5 as the source.
 
 Tests added in the fifth run (each against the reference):
 - tests/inet.rs `io_signals_match_reference` (guest/inetasync.c: TCP connect, listener, data,
@@ -1347,6 +1388,7 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K5, sixth run, layer 1: seed 5050451 passed 3000 sequences at 47d0230 (51 s, load about 33).
 - K5, fifth run, layer 1 at 20000 sequences each: on 3063305 (the fourth run's end) 5050423
   passed, 5050422 and 5050424 found netlink's MSG_OOB read; on 5a254ef 5050422, 5050424 and
   5050425 failed (netlink's MSG_OOB, then the late packet information); on f9509e3 5050424 and
@@ -1562,6 +1604,12 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K5, sixth run: TCP_INFO of a connection is a model (counted "tcp info modelled"): Linux's
+  round trips, rates, RTO, delayed acknowledgements, window growth and segment counts depend on
+  timing and load (retransmissions were measured on a loaded reference), so they cannot be
+  matched. The model is that every segment arrives and is acknowledged at once over a 10 us
+  round trip; what Linux gives the same on every quiet loopback run is given exactly.
 
 - K5, fifth run: Linux collects cycles of local sockets on a work queue when any local socket on
   the machine is released (other containers' too), so when a cycle goes depends on the whole
