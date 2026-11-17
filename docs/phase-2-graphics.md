@@ -925,15 +925,17 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      back now and sums it on the device thread on every back end, so on WebGPU it waits, counted
      `ReadBackWait`; a dispatch summing it on the GPU is to come with G2; WebGL 2: a read back
      summed on the device thread, a multisampled target resolved first and the average multiplied by
-     the sample count). The query's count is the sum over its counting passes. If any sample reached
-     the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`), the replay runs
+     the sample count). The query's count is the sum over its counting passes. If any pixel's sum over
+     its samples reached the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`;
+     below it the resolved average keeps every count exact), the replay runs
      again with the draws split into halves (of the draws, of one draw's instances, or of one list's
      or strip's primitives, a triangle strip at an even triangle), the second half after the first and
-     both from the depth the whole began with (kept by one more copy, made only where the draws have
-     as many primitives as the bound), and the halves added, so the answer stays exact. A single fan,
-     strip with restart or indirect draw past the bound cannot be split: the helper refuses it
-     (`GpuError::Invalid`), a known gap that needs over 2048 fragments at one sample from one such
-     draw on a back end without blendable `r32float`. A program reading the primitive index sees it
+     both from the depth the whole began with (kept by one more copy, made only where the draws'
+     primitives times the sample count reach the bound), and the halves added, so the answer stays
+     exact. A single fan, strip with restart or indirect draw reaching the bound cannot be split: the
+     helper refuses it (`GpuError::Invalid`), a known gap that needs, from one such draw on a back end
+     without blendable `r32float`, a pixel whose samples together pass 2048 fragments (2048 at its one
+     sample on a single-sampled target, 512 a sample on average on four samples). A program reading the primitive index sees it
      start again in a split's second half.
   The cost is one pass and one reduction per counted query and per change inside it, and a depth copy
   only for those whose draws write depth or stencil (unmeasured; G4 measures it on real programs).

@@ -21,7 +21,8 @@ struct Entry<V, T> {
     vertex: V,
     tuple: T,
     draws: u64,
-    prepared: bool,
+    /// Its draws when it was first prepared.
+    prepared_at: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -63,7 +64,7 @@ impl<V: Ord + Clone, P: Ord + Clone, T: Ord + Clone> CombinationTracker<V, P, T>
             vertex: vertex.clone(),
             tuple: tuple.clone(),
             draws: 0,
-            prepared: false,
+            prepared_at: None,
         });
         self.ids.insert(key, c);
         c
@@ -118,15 +119,23 @@ impl<V: Ord + Clone, P: Ord + Clone, T: Ord + Clone> CombinationTracker<V, P, T>
         }
         for t in &picked {
             let c = self.combination(vertex, program, t);
-            self.entries[c.0].prepared = true;
+            let e = &mut self.entries[c.0];
+            e.prepared_at.get_or_insert(e.draws);
         }
         picked
     }
 
-    /// How many prepared combinations a draw has used since, and how many none has.
+    /// How many prepared combinations a draw has used since they were prepared, and how many none
+    /// has.
     pub fn prepared_use(&self) -> (u64, u64) {
-        let prepared = self.entries.iter().filter(|e| e.prepared);
-        let used = prepared.clone().filter(|e| e.draws > 0).count() as u64;
-        (used, prepared.count() as u64 - used)
+        let mut counts = (0, 0);
+        for e in &self.entries {
+            match e.prepared_at {
+                Some(at) if e.draws > at => counts.0 += 1,
+                Some(_) => counts.1 += 1,
+                None => {}
+            }
+        }
+        counts
     }
 }
