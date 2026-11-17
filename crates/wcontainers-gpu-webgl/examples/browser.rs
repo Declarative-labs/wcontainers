@@ -3,6 +3,8 @@
 //! suite.html).
 #![cfg(target_arch = "wasm32")]
 
+#[path = "common/checks.rs"]
+mod checks;
 #[path = "common/scenes.rs"]
 mod scenes;
 
@@ -94,11 +96,13 @@ impl wcontainers_gpu_test::Host for Chrome {
     }
 }
 
-/// Every suite test by name.
+/// Every suite test, then every check of examples/common/checks.rs, by name.
 macro_rules! suite {
-    ($($test:ident),* $(,)?) => {
-        const SUITE: &[(&str, fn())] =
-            &[$((stringify!($test), wcontainers_gpu_test::suite::$test::<Chrome>)),*];
+    ($($test:ident),* $(,)?; $($check:ident),* $(,)?) => {
+        const SUITE: &[(&str, fn())] = &[
+            $((stringify!($test), wcontainers_gpu_test::suite::$test::<Chrome>),)*
+            $((stringify!($check), checks::$check::<Chrome>),)*
+        ];
     };
 }
 
@@ -122,7 +126,9 @@ suite!(
     linear_filtering_and_address_modes,
     instances_start_at_the_first_instance,
     indexed_strips_restart_and_add_the_base_vertex,
-    present_shows_the_frame,
+    present_shows_the_frame;
+    vertex_and_instance_numbers_include_the_bases,
+    discard_then_no_overwrite_writes,
 );
 
 /// Runs the suite test `name` with `off` (extensions to treat as missing, separated by spaces). A
