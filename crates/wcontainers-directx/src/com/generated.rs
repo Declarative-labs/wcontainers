@@ -2268,13 +2268,13 @@ impl IDXGISwapChain1_Impl for SwapChain_Impl {
         rotation: windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION,
     ) -> windows::core::Result<()> {
         let _lock = lock();
-        Err(missing("IDXGISwapChain1::SetRotation"))
+        self.set_rotation(rotation)
     }
     fn GetRotation(
         &self,
     ) -> windows::core::Result<windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION> {
         let _lock = lock();
-        Err(missing("IDXGISwapChain1::GetRotation"))
+        self.get_rotation()
     }
 }
 
