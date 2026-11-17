@@ -371,11 +371,17 @@ fn pipe_to_file(
             Content::Special => Device::from_number(inode.rdev),
             _ => None,
         };
+        // Only files with `splice_write` take a splice (`do_splice_from`): tmpfs files other than
+        // secret memory, and the devices other than `/dev/full`; not `/proc` files, process,
+        // event, timer and signal descriptors or message queues.
+        let splice_write = match inode.content {
+            Content::Regular(_) => !inode.is_secret(),
+            Content::Special => device != Some(Device::Full),
+            _ => false,
+        };
         (
             matches!(inode.content, Content::Regular(_)),
-            !inode.is_secret()
-                && !matches!(inode.content, Content::Proc(_))
-                && device != Some(Device::Full),
+            splice_write,
             !matches!(device, Some(Device::Null | Device::Zero)),
         )
     };
