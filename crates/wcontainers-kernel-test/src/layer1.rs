@@ -50,6 +50,10 @@ const SOCKET_PAIR: u64 = 0x1ac0;
 const MSGHDRS: u64 = 0x1640;
 const MSGHDR_COUNT: u64 = 8;
 const SEND_HEADERS: u64 = 5;
+/// `struct mmsghdr`s for sendmmsg and recvmmsg, 64 bytes apart: two copies of the first send
+/// headers, then one of the first receive header.
+const MMSGHDRS: u64 = 0x3740;
+const MMSG_SENDS: u64 = 2;
 /// `struct epoll_event`s, 16 bytes apart on ARM64.
 const EPOLL_EVENTS: u64 = 0x3700;
 const EPOLL_EVENT_MASKS: [u32; 4] = [
@@ -512,6 +516,12 @@ fn message_areas(arena: &mut [u8], values: &[u64]) {
         put(at + 40, &room.to_le_bytes());
         put(at + 48, &0u32.to_le_bytes());
     }
+    for (slot, index) in [0, 1, SEND_HEADERS].into_iter().enumerate() {
+        let from = (MSGHDRS + index * 56) as usize;
+        let at = (MMSGHDRS + slot as u64 * 64) as usize;
+        arena.copy_within(from..from + 56, at);
+        arena[at + 56..at + 64].fill(0);
+    }
 }
 
 /// How many sendmsg calls with control messages and how many recvmsg calls the reference ran
@@ -529,7 +539,13 @@ pub fn message_calls(sequence: &Sequence, theirs: &SequenceResult) -> (u64, u64)
                     sends += 1;
                 }
             }
-            linux::__NR_recvmsg => receives += 1,
+            linux::__NR_sendmmsg => {
+                let at = (call.arguments[1] - ARENA + 32) as usize;
+                if sequence.arena[at..at + 8] != [0; 8] {
+                    sends += 1;
+                }
+            }
+            linux::__NR_recvmsg | linux::__NR_recvmmsg => receives += 1,
             _ => {}
         }
     }
@@ -1813,11 +1829,14 @@ pub const CALLS: &[u32] = &[
     linux::__NR_sendmsg,
     linux::__NR_recvmsg,
     linux::__NR_recvmsg,
+    linux::__NR_sendmmsg,
+    linux::__NR_recvmmsg,
     linux::__NR_eventfd2,
     linux::__NR_epoll_create1,
     linux::__NR_epoll_ctl,
     linux::__NR_epoll_ctl,
     linux::__NR_epoll_pwait,
+    linux::__NR_epoll_pwait2,
     linux::__NR_inotify_init1,
     linux::__NR_inotify_add_watch,
     linux::__NR_inotify_add_watch,
@@ -3860,6 +3879,41 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             let header = SEND_HEADERS + b % (MSGHDR_COUNT - SEND_HEADERS);
             [fd(a), ARENA + MSGHDRS + header * 56, flags, 0, 0, 0]
         }
+        linux::__NR_sendmmsg => {
+            let flags = u64::from(net::MSG_DONTWAIT | net::MSG_NOSIGNAL)
+                | pick(&[0u64, 0, u64::from(net::MSG_MORE)], c);
+            [
+                fd(a),
+                ARENA + MMSGHDRS,
+                pick(&[1u64, MMSG_SENDS, 0], b),
+                flags,
+                0,
+                0,
+            ]
+        }
+        // One receive header (more would read the values past it as headers), no timeout.
+        linux::__NR_recvmmsg => {
+            let flags = u64::from(net::MSG_DONTWAIT)
+                | pick(
+                    &[
+                        0u64,
+                        0,
+                        u64::from(net::MSG_PEEK),
+                        u64::from(net::MSG_TRUNC),
+                        u64::from(net::MSG_CMSG_CLOEXEC),
+                        u64::from(net::MSG_ERRQUEUE),
+                    ],
+                    c,
+                );
+            [
+                fd(a),
+                ARENA + MMSGHDRS + MMSG_SENDS * 64,
+                pick(&[1u64, 1, 0], b),
+                flags,
+                0,
+                0,
+            ]
+        }
         linux::__NR_setsockopt | linux::__NR_getsockopt => {
             let (level, name) = pick(
                 &[
@@ -3956,6 +4010,15 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             0,
         ],
         linux::__NR_epoll_pwait => [fd(a), buffer(b), pick(&[1u64, 4, 0, u64::MAX], c), 0, 0, 8],
+        // A timeout of zero: a sequence never waits.
+        linux::__NR_epoll_pwait2 => [
+            fd(a),
+            buffer(b),
+            pick(&[1u64, 4, 0, u64::MAX], c),
+            ARENA + NULLS,
+            0,
+            8,
+        ],
         linux::__NR_inotify_init1 => [
             u64::from(linux::IN_NONBLOCK) | pick(&[0u64, u64::from(linux::IN_CLOEXEC), 1], a),
             0,
@@ -4080,7 +4143,9 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
         linux::__NR_waitid => vec![fixed(c + 16, 4), fixed(c + 32, 16), fixed(e, 144)],
         linux::__NR_getrandom => vec![by_value(a, b)],
         // A sender's process number and the times (as in `volatile`).
-        linux::__NR_recvmsg => vec![fixed(ARENA + RECV_CONTROL, RECV_CONTROL_SIZE)],
+        linux::__NR_recvmsg | linux::__NR_recvmmsg => {
+            vec![fixed(ARENA + RECV_CONTROL, RECV_CONTROL_SIZE)]
+        }
         linux::__NR_sched_rr_get_interval => vec![fixed(b, 16)],
         linux::__NR_sched_getattr if c >= 32 => vec![fixed(b + 24, 8)],
         linux::__NR_uname => vec![fixed(a + 130, 130)],
@@ -5056,7 +5121,7 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
         return out;
     }
     // The sender's process number and the times in a receive's control messages.
-    if call.number == linux::__NR_recvmsg {
+    if matches!(call.number, linux::__NR_recvmsg | linux::__NR_recvmmsg) {
         let length = read_word(arena, b + 40, 8)
             .unwrap_or(0)
             .min(RECV_CONTROL_SIZE);
@@ -5378,7 +5443,10 @@ pub fn difference(
     for (index, call) in sequence.calls.iter().enumerate() {
         let name = wcontainers_kernel::system_call_name(call.number.into()).unwrap_or("?");
         let mut line = format!("{index}: {name}({:x?})", call.arguments);
-        if matches!(call.number, linux::__NR_sendmsg | linux::__NR_recvmsg) {
+        if matches!(
+            call.number,
+            linux::__NR_sendmsg | linux::__NR_recvmsg | linux::__NR_sendmmsg | linux::__NR_recvmmsg
+        ) {
             line.push_str(&header_text(&sequence.arena, call.arguments[1]));
         }
         match (our_seen.get(index), their_seen.get(index)) {

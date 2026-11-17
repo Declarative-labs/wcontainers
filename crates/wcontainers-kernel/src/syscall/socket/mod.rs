@@ -3060,30 +3060,6 @@ pub(super) fn recvmsg(
             &mut out_flags,
         );
     }
-    // `scm_pidfd_recv`: a process descriptor (close on exec) for the sender, made only when its
-    // whole message fits.
-    let sender = received.cred.map(|cred| cred.pid).filter(|pid| *pid != 0);
-    if socket.borrow().pass_pidfd
-        && let Some(pid) = sender
-    {
-        if room.saturating_sub(control.len()) < CMSG_HEADER as usize + 4 {
-            out_flags |= MSG_CTRUNC;
-        } else {
-            let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
-            let fd = super::pidfd::make(kernel, cx, tid, pid, 0)
-                .and_then(|file| kernel.files_mut(tid).add(file, true, 0, limit))
-                .unwrap_or_else(|error| -(error.0 as i32));
-            let data = fd.to_le_bytes();
-            put_control(
-                &mut control,
-                room,
-                SOL_SOCKET,
-                crate::linux_extra::SCM_PIDFD,
-                &data,
-                &mut out_flags,
-            );
-        }
-    }
     if !received.files.is_empty() {
         let space = room.saturating_sub(control.len());
         let fits = space.saturating_sub(CMSG_HEADER as usize) / 4;
@@ -3117,6 +3093,29 @@ pub(super) fn recvmsg(
                 .next_multiple_of(CMSG_ALIGN as usize)
                 .min(room);
             control.resize(padded, 0);
+        }
+    }
+    // `scm_pidfd_recv`, after the descriptors: a process descriptor (close on exec) for the
+    // sender, made only when its whole message fits; too little room is MSG_CTRUNC whether or
+    // not the message carries a sender.
+    let sender = received.cred.map(|cred| cred.pid).filter(|pid| *pid != 0);
+    if socket.borrow().pass_pidfd {
+        if room.saturating_sub(control.len()) < CMSG_HEADER as usize + 4 {
+            out_flags |= MSG_CTRUNC;
+        } else if let Some(pid) = sender {
+            let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+            let fd = super::pidfd::make(kernel, cx, tid, pid, 0)
+                .and_then(|file| kernel.files_mut(tid).add(file, true, 0, limit))
+                .unwrap_or_else(|error| -(error.0 as i32));
+            let data = fd.to_le_bytes();
+            put_control(
+                &mut control,
+                room,
+                SOL_SOCKET,
+                crate::linux_extra::SCM_PIDFD,
+                &data,
+                &mut out_flags,
+            );
         }
     }
     // SO_INQ: what is left to read, once the read went well.

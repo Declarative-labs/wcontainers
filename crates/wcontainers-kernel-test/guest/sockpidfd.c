@@ -371,6 +371,55 @@ static void attribute_rights(const char *who) {
     close(sv[1]);
 }
 
+// Descriptors and a process descriptor in one read: SCM_RIGHTS comes first, and too little room
+// left for SCM_PIDFD is MSG_CTRUNC whether or not the message names its sender.
+static void send_hello(int s, int with_fd) {
+    char c[CMSG_SPACE(4)];
+    struct iovec v = {"hello", 5};
+    struct msghdr m = {.msg_iov = &v, .msg_iovlen = 1};
+    if (with_fd) {
+        m.msg_control = c, m.msg_controllen = sizeof c;
+        struct cmsghdr *h = CMSG_FIRSTHDR(&m);
+        h->cmsg_level = SOL_SOCKET, h->cmsg_type = SCM_RIGHTS, h->cmsg_len = CMSG_LEN(4);
+        int fd = 0;
+        memcpy(CMSG_DATA(h), &fd, 4);
+    }
+    sendmsg(s, &m, 0);
+}
+
+static void read_two(const char *what, int s, int room) {
+    char c[128], b[8];
+    struct iovec v = {b, 2};
+    struct msghdr m = {.msg_iov = &v, .msg_iovlen = 1, .msg_control = c, .msg_controllen = room};
+    long n = recvmsg(s, &m, MSG_DONTWAIT);
+    printf("%s: %ld flags %x controllen %u:", what, n, m.msg_flags, (unsigned)m.msg_controllen);
+    for (struct cmsghdr *h = CMSG_FIRSTHDR(&m); h; h = CMSG_NXTHDR(&m, h)) {
+        printf(" (%d %d len %u)", h->cmsg_level, h->cmsg_type, (unsigned)h->cmsg_len);
+        if (h->cmsg_type == SCM_RIGHTS || h->cmsg_type == SCM_PIDFD) close(*(int *)CMSG_DATA(h));
+    }
+    printf("\n");
+}
+
+static void rights_and_pidfd(void) {
+    int one = 1;
+    for (int type = SOCK_STREAM; type <= SOCK_DGRAM; type++)
+        for (int after = 0; after < 2; after++)
+            for (int room = 24; room <= 64; room += 40) {
+                int sv[2];
+                socketpair(AF_UNIX, type, 0, sv);
+                if (!after) setsockopt(sv[1], SOL_SOCKET, SO_PASSPIDFD, &one, sizeof one);
+                send_hello(sv[0], 1);
+                if (after) setsockopt(sv[1], SOL_SOCKET, SO_PASSPIDFD, &one, sizeof one);
+                char what[64];
+                snprintf(what, sizeof what, "kind %d, SO_PASSPIDFD %s the send, room %d", type,
+                         after ? "after" : "before", room);
+                read_two(what, sv[1], room);
+                send_hello(sv[0], 0);
+                read_two("  then", sv[1], room);
+                close(sv[0]), close(sv[1]);
+            }
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     peers();
@@ -378,6 +427,7 @@ int main(void) {
     rights();
     queued();
     failed_reads();
+    rights_and_pidfd();
     attributes();
     attribute_rights("root");
     setresuid(1000, -1, 1000);
