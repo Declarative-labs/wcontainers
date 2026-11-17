@@ -6,8 +6,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 ## Where things stand
 
 - X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the first independent
-  check's findings fixed in run 2, the second check's in run 3 and the third check's in run 4, the same
-  day (below).
+  check's findings fixed in run 2, the second check's in run 3, the third's in run 4 and the fourth's in
+  run 5, the same day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -177,8 +177,40 @@ nothing timed):
   cases (`cases6.out`, run as `./stepper3 488b07 rdi=0x20000101 rflags=0x40202` and so on), all as
   recorded in plan section 2, run 4.
 
+## X0, run 5 (2026-11-17): the fourth independent check's findings, all fixed in the plan
+
+Each was first repeated or widened on the reference (x86 load 3.6 to 5.4 from another job, nothing timed):
+- Blocking, encodings past 15 bytes: they give general protection, not `SIGILL`, whatever the body is
+  (valid, an invalid opcode, an invalid lock): `cases7.sh`. iced reports them as `INVALID` length 15, like
+  a 15-byte invalid one. Plan 5.2 now decides it: for `INVALID` at length 15, `decode` drops the prefix
+  bytes that change no length (keeps the last 66, 67, F2/F3 and a REX before the opcode), decodes the
+  rest and adds the count; over 15 is `GeneralProtection`, otherwise `Undefined`. iced's count after an
+  opcode it calls `INVALID` is not the CPU's (`cases8.sh`: `0F 24` counts no ModRM, `0F 38 FF` counts
+  one), so the x86 crate gets a table of what the CPU counts after each such opcode, started from a sweep
+  of 1,024 opcodes (`sweep15.sh`, 24 count nothing, 539 at least one byte) and completed at X3 (plan 5.2,
+  9). `no_form` and 7.4 now say so; X3's pass bar gains 10,000 no-form cases.
+- `built_address` now takes `at, i, blob, code, before` like `jump_table`; ARM64 reads the word at
+  `at - 4` from the blob whenever it lies in code, exactly as full.rs:561-581, so its output cannot
+  change; RV64GC walks `before` (plan 3.2, 3.4).
+- `clflush`: a checked one-byte read, then nothing (reference: page fault unmapped, general protection
+  non-canonical; `prefetchnta` never faults) (plan 5.10).
+- `Stop::Breakpoint(si_code)`, with `GuestTest::breakpoint_code(detail)` for the translated side; ARM64's
+  `brk` gives `TRAP_BRKPT` (1), seen in Docker with `brk.c` (plan 7.2, 7.3).
+- `Locals` holds 9: x86's shift by cl keeps value, count, result and six old flags, one local each, which
+  keeps the per-flag liveness (plan 3.2, 5.1).
+- Header now says four checks; 7.3's connection cost now quotes what was measured. Run 5 measured five
+  new SSH connections at 0.92 to 1.19 s (x86 load 6.9 from another job, Mac load 27.6) and then 0.27 to
+  0.48 s (Mac 28.2); the fourth check saw 0.24 to 0.40 s at Mac load 34.
+- This file's list of what is on the x86 machine is corrected (the cases outputs are only on the Mac).
+
 ## How to run
 
+- Run 5's experiments: copy `stepper4`, `cases7.sh`, `cases8.sh`, `sweep15.sh` from scratch
+  `reference-proof/` to `~/wcontainers-x86/proof/` and run each there. `sweep15.iced` adds to each line
+  of `sweep15.out` iced's decoding of the opcode followed by eight `cc` bytes (scratch `dis` tool);
+  `sweep15.classes` keeps the `INVALID` ones, as "more" where the boundary gives general protection and
+  the opcode alone does not, else "none". `brk.c`: `nix develop -c zig cc -target aarch64-linux-musl -static -O2 -o brk brk.c`, then
+  `docker run --rm --name wc-x86-brk -v <scratch>/reference-proof:/p:ro alpine:3.22 /p/brk`.
 - Run 4's experiments: `python3 -I <scratch>/scripts/make_stepper4.py <scratch>/reference-proof/stepper3.c
   <scratch>/reference-proof/stepper4.c`, build it as below, copy `stepper4`, `cases4.sh`, `cases5.sh` to
   `~/wcontainers-x86/proof/` and run the two scripts there.
@@ -201,9 +233,11 @@ nothing timed):
   mainline Linux 7.3.4 kernel; reached as `ssh -o BatchMode=yes tom@192.168.2.240`.
 - Installed on it by this track: nothing. Already there before this track and not used by it: Rust
   (`~/.rustup` dated 2026-11-14, rustc 1.100.0). Files of this track: `~/wcontainers-x86/proof/` (hello,
-  stepper, stepper3, stepper4, cases.sh, cases2.sh, cases4.sh, cases5.sh, approx, approx_dump,
-  approx_formula, approx_mxcsr and their .out files); the independent checks' files are in
-  `~/wcontainers-x86/check`, `check2` and `check3`. Installed in runs 3 and 4: nothing.
+  stepper, stepper3, stepper4, the scripts cases.sh, cases2.sh, cases4.sh, cases5.sh, cases7.sh,
+  cases8.sh, sweep15.sh, and approx, approx_dump, approx_formula, approx_mxcsr with approx.out,
+  approx_formula.out and approx_mxcsr.out). The cases scripts' outputs are kept only in the Mac's scratch
+  `reference-proof/`. The independent checks' files are in `~/wcontainers-x86/check`, `check2`, `check3`
+  and `check4`. Installed in runs 2 to 5: nothing.
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -212,11 +246,13 @@ nothing timed):
 
 - X0: 22 single-instruction cases on the reference CPU in run 1, 6 more in run 2, 21 more in run 3
   (hand-written, no seed); in run 3 also every one of the 2^32 inputs of `rcpss` and of `rsqrtss`, three
-  times (analysis, formula in MXCSR 0x1F80, formula in 0xFFC0); in run 4, 21 more hand-written cases.
+  times (analysis, formula in MXCSR 0x1F80, formula in 0xFFC0); in run 4, 21 more hand-written cases; in
+  run 5, 21 hand-written cases (`cases7.sh`, `cases8.sh`) and the 1,024-opcode sweep twice over (each
+  opcode at the boundary and alone, 2,048 runs), plus one ARM64 `brk` in Docker.
 
 ## Measurements
 
-All in the "X0, run 1", "run 2" and "run 3" sections above.
+All in the "X0, run 1" to "run 5" sections above.
 
 ## Licences of what this track uses
 
