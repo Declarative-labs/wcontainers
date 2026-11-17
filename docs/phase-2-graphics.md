@@ -322,6 +322,9 @@ Present or absent, with no cheap default:
   `rasterize` false it runs outside a pass and draws nothing (rasterizer discard); with it true it runs
   inside a pass and also draws the primitives in the same run of the vertex work, as Direct3D's
   `RasterizedStream` naming the captured stream and OpenGL's transform feedback without discard do.
+  It writes the vertex stage's location outputs in location order as packed 32-bit components (no
+  built-ins): with one target interleaved, vertex after vertex; with more, output n into target n
+  (OpenGL's interleaved and separate modes), once per vertex of each primitive, strips as lists.
   WebGL 2 has both natively; WebGPU has neither, and the shaders crate's stage helper builds stream
   output from compute instead (section 7), whose draw of the captured vertices is the rasterised part.
 - `create_resource_table`, `write_resource_table`: big resource tables (`RESOURCE_TABLES`). Absent in both

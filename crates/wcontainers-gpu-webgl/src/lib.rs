@@ -10,6 +10,7 @@ mod caps;
 mod convert;
 mod depth;
 mod format;
+mod host;
 pub mod platform;
 mod shader;
 mod state;
@@ -85,6 +86,10 @@ pub struct TextureObj {
     /// With WEBGL_stencil_texturing, whether programs fetching a depth-stencil texture get its stencil
     /// (else its depth).
     stencil_mode: Cell<bool>,
+    /// Its bytes on the host, for formats GL cannot read back.
+    host: Option<host::HostCopy>,
+    /// The format a block-compressed texture is stored in when decoded.
+    decoded: Option<Format>,
 }
 
 #[derive(Debug)]
@@ -129,6 +134,8 @@ pub struct ReadbackObj {
     waited: bool,
     /// Texels read wider than they are stored, kept narrow when finished.
     repack: Option<format::ReadAs>,
+    /// Texels read from a host copy, ready when made.
+    host: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -683,6 +690,8 @@ impl WebGl {
             twin: std::cell::OnceCell::new(),
             own: None,
             stencil_mode: Cell::new(false),
+            host: None,
+            decoded: None,
         })))
     }
 
@@ -766,6 +775,9 @@ impl WebGl {
     fn twin_of(&mut self, texture: &Texture, format: Format) -> Result<Texture, GpuError> {
         if let Some(t) = texture.twin.get() {
             return Ok(t.clone());
+        }
+        if texture.host.is_some() {
+            return Err(self.unbuilt("sRGB views of block-compressed textures"));
         }
         let readable = |f: Format| {
             format::read_as(f, format::FormatExtensions::found(&self.extensions))
@@ -1587,6 +1599,104 @@ impl WebGl {
     }
 
     /// Writes texels from the host or from a buffer (bound as the pixel unpack buffer) into a region.
+    /// A region's first texel and slice (layer, or depth slice in 3D), as the host copy counts them.
+    fn corner(region: &TextureRegion<'_, Self>) -> [u32; 3] {
+        let z = if region.texture.desc.dimension == TextureDimension::D3 {
+            region.origin.z
+        } else {
+            region.layer
+        };
+        [region.origin.x, region.origin.y, z]
+    }
+
+    /// Uploads a region of a block-compressed texture from its host copy: as blocks natively, else
+    /// decoded ([`SlowPath::BlockDecoded`]).
+    fn upload_blocks(&mut self, region: &TextureRegion<'_, Self>, extent: Extent) {
+        let t = region.texture.clone();
+        let Some(h) = &t.host else { return };
+        let level = |size: u32| (size >> region.mip).max(1);
+        // The texels the region covers inside the level; blocks may reach past its edge.
+        let w = extent.width.min(level(t.desc.width) - region.origin.x);
+        let ht = extent.height.min(level(t.desc.height) - region.origin.y);
+        let (bw, bh, block_bytes) = t.desc.format.block();
+        let (wide, high) = (w.div_ceil(bw) as usize, ht.div_ceil(bh) as usize);
+        let slices = extent.depth_or_layers as usize;
+        let mut blocks = vec![0; wide * high * slices * block_bytes as usize];
+        h.read(
+            &t.desc,
+            region.mip,
+            Self::corner(region),
+            [w, ht, extent.depth_or_layers],
+            &mut blocks,
+        );
+        let extent = Extent {
+            width: w,
+            height: ht,
+            ..extent
+        };
+        if let Some(decoded) = t.decoded {
+            let texels = host::decode(t.desc.format, &blocks, wide);
+            let texel = decoded.block().2;
+            return self.upload(
+                region,
+                extent,
+                Texels::Bytes(&texels),
+                wide as u32 * 4 * texel,
+                high as u32 * 4,
+            );
+        }
+        let Some(raw) = t.tex() else { return };
+        self.bind_scratch(t.target, raw);
+        let gl = &self.gl;
+        let (x, y, level) = (
+            region.origin.x as i32,
+            region.origin.y as i32,
+            region.mip as i32,
+        );
+        let slice = wide * high * block_bytes as usize;
+        // SAFETY: plain GL calls; `blocks` holds every block of the region, tightly packed.
+        unsafe {
+            match t.target {
+                glow::TEXTURE_2D => gl.compressed_tex_sub_image_2d(
+                    t.target,
+                    level,
+                    x,
+                    y,
+                    w as i32,
+                    ht as i32,
+                    t.gl.internal,
+                    glow::CompressedPixelUnpackData::Slice(&blocks),
+                ),
+                glow::TEXTURE_CUBE_MAP => {
+                    for (i, face) in blocks.chunks_exact(slice).enumerate() {
+                        gl.compressed_tex_sub_image_2d(
+                            glow::TEXTURE_CUBE_MAP_POSITIVE_X + region.layer + i as u32,
+                            level,
+                            x,
+                            y,
+                            w as i32,
+                            ht as i32,
+                            t.gl.internal,
+                            glow::CompressedPixelUnpackData::Slice(face),
+                        );
+                    }
+                }
+                _ => gl.compressed_tex_sub_image_3d(
+                    t.target,
+                    level,
+                    x,
+                    y,
+                    region.layer as i32,
+                    w as i32,
+                    ht as i32,
+                    slices as i32,
+                    t.gl.internal,
+                    glow::CompressedPixelUnpackData::Slice(&blocks),
+                ),
+            }
+        }
+    }
+
     fn upload(
         &mut self,
         region: &TextureRegion<'_, Self>,
@@ -1596,7 +1706,7 @@ impl WebGl {
         rows_per_layer: u32,
     ) {
         let t = region.texture.clone();
-        let (_, _, block_bytes) = t.desc.format.block();
+        let (_, _, block_bytes) = t.decoded.unwrap_or(t.desc.format).block();
         let Some(raw) = t.tex() else {
             return self.invalid("texels written into a multisampled texture".into());
         };
@@ -1694,6 +1804,12 @@ impl WebGl {
         extent: Extent,
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
+        if let Some(h) = &region.texture.host {
+            let corner = Self::corner(region);
+            let size = [extent.width, extent.height, extent.depth_or_layers];
+            h.read(&region.texture.desc, region.mip, corner, size, dst);
+            return Ok(());
+        }
         if let Some(r) = self.through_depth(region, extent, |b, colour| {
             b.read_texture_now(colour, extent, dst)
         }) {
@@ -1916,6 +2032,21 @@ impl WebGl {
                     gl.tex_parameter_i32(t.target, glow::TEXTURE_BASE_LEVEL, levels.0 as i32);
                     gl.tex_parameter_i32(t.target, glow::TEXTURE_MAX_LEVEL, levels.1 as i32);
                     t.levels.set(levels);
+                }
+            }
+            if let Some((location, held)) = &linked.sizes[unit] {
+                let base = v.desc.base_mip;
+                let d = &t.desc;
+                let depth = match d.dimension {
+                    TextureDimension::D3 => (d.depth_or_layers >> base).max(1),
+                    _ => v.desc.layer_count,
+                };
+                let size = [(d.width >> base).max(1), (d.height >> base).max(1), depth];
+                let size = size.map(|s| s as i32);
+                if held.get() != size {
+                    // SAFETY: the program is in use.
+                    unsafe { gl.uniform_3_i32(Some(location), size[0], size[1], size[2]) };
+                    held.set(size);
                 }
             }
             if self.applied.units[unit].1 != ids.1 {
@@ -2149,11 +2280,36 @@ impl Backend for WebGl {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
-        let gl_format = format::gl_format(desc.format)
-            .filter(|_| self.caps.formats.get(desc.format) != FormatUse::empty())
-            .ok_or(GpuError::Invalid(
+        if self.caps.formats.get(desc.format) == FormatUse::empty() {
+            return Err(GpuError::Invalid(
                 "webgl: the format has no capabilities here",
-            ))?;
+            ));
+        }
+        // Block-compressed formats are GL's compressed formats with their extension (not in 3D,
+        // which GLES does not compress), else stored decoded.
+        let (gl_format, decoded) = match host::compressed(desc.format) {
+            Some((internal, ext, _))
+                if self.extensions.contains(ext) && desc.dimension != TextureDimension::D3 =>
+            {
+                let class = format::Class::Norm { render: false };
+                let (format, ty) = (0, 0);
+                let f = format::GlFormat {
+                    internal,
+                    format,
+                    ty,
+                    class,
+                };
+                (Some(f), None)
+            }
+            Some((_, _, decoded)) => {
+                self.slow.hit(SlowPath::BlockDecoded);
+                (format::gl_format(decoded), Some(decoded))
+            }
+            None => (format::gl_format(desc.format), None),
+        };
+        let gl_format = gl_format.ok_or(GpuError::Invalid(
+            "webgl: the format has no capabilities here",
+        ))?;
         if desc.samples > 1 {
             return self.create_samples(desc, gl_format);
         }
@@ -2202,6 +2358,11 @@ impl Backend for WebGl {
             twin: std::cell::OnceCell::new(),
             own: None,
             stencil_mode: Cell::new(false),
+            host: host::kept(desc.format).then(|| {
+                self.slow.hit(SlowPath::HostCopyKept);
+                host::HostCopy::new(desc)
+            }),
+            decoded,
         })))
     }
 
@@ -2573,6 +2734,12 @@ impl Backend for WebGl {
                     if p.handles.get() == 0 {
                         self.programs.remove(&p.pair);
                         gl.delete_program(p.raw);
+                        for c in p.captures.iter().filter_map(|c| c.get()) {
+                            gl.delete_program(c.raw);
+                            if self.applied.program == c.id {
+                                self.applied.program = 0;
+                            }
+                        }
                         if self.applied.program == p.id {
                             self.applied.program = 0;
                         }
@@ -2628,6 +2795,20 @@ impl Backend for WebGl {
     ) {
         self.fresh(region.texture);
         self.written(region.texture);
+        if let Some(h) = &region.texture.host {
+            h.write(
+                &region.texture.desc,
+                region.mip,
+                Self::corner(region),
+                [extent.width, extent.height, extent.depth_or_layers],
+                data,
+                row_pitch as usize,
+                rows_per_layer as usize,
+            );
+            if host::compressed(region.texture.desc.format).is_some() {
+                return self.upload_blocks(region, extent);
+            }
+        }
         self.upload(
             region,
             extent,
@@ -3067,6 +3248,10 @@ impl Backend for WebGl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
+        if src.texture.host.is_some() || dst.texture.host.is_some() {
+            self.unbuilt("copies of textures kept on the host (RGB9E5, block-compressed)");
+            return;
+        }
         if src.texture.desc.samples > 1 || dst.texture.desc.samples > 1 {
             return self.copy_samples(src, dst);
         }
@@ -3156,6 +3341,10 @@ impl Backend for WebGl {
             self.unbuilt("copies into textures from index-only buffers");
             return;
         };
+        if dst.texture.host.is_some() {
+            self.unbuilt("copies into textures kept on the host (RGB9E5, block-compressed)");
+            return;
+        }
         self.refresh(src.buffer, Some(false));
         self.fresh(dst.texture);
         self.written(dst.texture);
@@ -3178,6 +3367,10 @@ impl Backend for WebGl {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
+        if src.texture.host.is_some() {
+            self.unbuilt("copies from textures kept on the host (RGB9E5, block-compressed)");
+            return;
+        }
         if self
             .through_depth(src, extent, |b, colour| {
                 b.copy_texture_to_buffer(colour, dst, extent);
@@ -3364,6 +3557,26 @@ impl Backend for WebGl {
         {
             return r;
         }
+        if let ReadSource::Texture { region, extent } = src
+            && let Some(h) = &region.texture.host
+        {
+            let (bw, bh, bytes) = region.texture.desc.format.block();
+            let size = extent.width.div_ceil(bw) * extent.height.div_ceil(bh) * bytes;
+            let mut kept = vec![0; (size * extent.depth_or_layers) as usize];
+            let corner = Self::corner(region);
+            let whole = [extent.width, extent.height, extent.depth_or_layers];
+            h.read(&region.texture.desc, region.mip, corner, whole, &mut kept);
+            return Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
+                pbo: None,
+                queries: Vec::new(),
+                timestamps: false,
+                size: kept.len(),
+                sync: None,
+                waited: false,
+                repack: None,
+                host: Some(kept),
+            }))));
+        }
         if let ReadSource::Texture { region, .. } = src {
             self.fresh(region.texture);
         }
@@ -3465,6 +3678,7 @@ impl Backend for WebGl {
             sync,
             waited: false,
             repack,
+            host: None,
         }))))
     }
 
@@ -3489,6 +3703,7 @@ impl Backend for WebGl {
             sync: None,
             waited: false,
             repack: None,
+            host: None,
         }))))
     }
 
@@ -3537,6 +3752,11 @@ impl Backend for WebGl {
     }
 
     fn finish_read(&mut self, readback: Readback, dst: &mut [u8]) {
+        if let Some(kept) = readback.borrow_mut().host.take() {
+            let n = kept.len().min(dst.len());
+            dst[..n].copy_from_slice(&kept[..n]);
+            return;
+        }
         let Some(pbo) = readback.borrow().pbo else {
             let r = readback.borrow();
             for (q, out) in r.queries.iter().zip(dst.as_chunks_mut::<8>().0) {
@@ -3801,6 +4021,163 @@ impl Backend for WebGl {
             }
         }
         Ok(())
+    }
+
+    /// Transform feedback: the program linked again with its location outputs as varyings
+    /// (interleaved, or separate with more than one target), drawn with `RASTERIZER_DISCARD` unless
+    /// it rasterises. GLES 3.0 captures only draws of lists without indices. A target holding indices
+    /// too gets its index GL buffer refreshed before an index read (`IndexTwinReadBack`).
+    fn capture_vertices(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+        targets: CaptureTargets<'_, Self>,
+        rasterize: bool,
+    ) -> Result<(), GpuError> {
+        if self.lost.is_some() {
+            return Err(GpuError::DeviceLost);
+        }
+        let max = self.caps.limits.capture_buffers as usize;
+        if targets.is_empty() || targets.len() > max || rasterize != self.pass.is_some() {
+            return Err(GpuError::Invalid(
+                "capture_vertices with no targets, more than capture_buffers, or rasterize not \
+                 saying whether a pass is open",
+            ));
+        }
+        let (mode, per_primitive) = match call.topology {
+            Topology::PointList => (glow::POINTS, 1),
+            Topology::LineList => (glow::LINES, 2),
+            Topology::TriangleList => (glow::TRIANGLES, 3),
+            _ => return Err(self.unbuilt("capture_vertices of strips, fans and loops")),
+        };
+        let DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        } = call.range
+        else {
+            return Err(self.unbuilt("capture_vertices of indexed draws"));
+        };
+        let outputs = &call.program.stages.0.outputs;
+        let separate = targets.len() > 1;
+        if outputs.is_empty()
+            || outputs.iter().any(|(_, bytes)| *bytes == 0)
+            || (separate && outputs.len() != targets.len())
+        {
+            return Err(GpuError::Invalid(
+                "capture_vertices of a program with no location outputs, outputs that are not \
+                 32-bit, or other than one target per output",
+            ));
+        }
+        // GL captures whole primitives only.
+        let vertices = u64::from(count - count % per_primitive) * u64::from(instances);
+        let stride = |n: usize| -> u64 {
+            if separate {
+                u64::from(outputs[n].1)
+            } else {
+                outputs.iter().map(|(_, b)| u64::from(*b)).sum()
+            }
+        };
+        if targets.iter().enumerate().any(|(n, t)| {
+            t.buffer.data.is_none()
+                || t.offset % 4 != 0
+                || vertices * stride(n) > t.size
+                || t.offset + t.size > t.buffer.size
+        }) {
+            return Err(GpuError::Invalid(
+                "capture_vertices into a buffer without CAPTURE, at an offset not a multiple of 4, \
+                 or into a range smaller than the vertices the draw makes",
+            ));
+        }
+        let kind = shader::Capture {
+            separate,
+            rasterize,
+        };
+        let slot = &call.program.captures[kind.slot()];
+        let capture = match slot.get() {
+            Some(c) => c.clone(),
+            None => {
+                let id = self.id();
+                let c =
+                    shader::link_capture(&self.gl, id, call.program, kind, self.empty_fragment)?;
+                slot.get_or_init(|| Rc::new(c)).clone()
+            }
+        };
+        let capture = Handle(capture);
+        if self.linked(&capture).is_none() {
+            return Err(GpuError::DeviceLost);
+        }
+        for t in targets {
+            self.refresh(t.buffer, Some(false));
+        }
+        let gl = &self.gl;
+        // SAFETY: plain GL calls; the targets' data GL buffers are alive and hold the ranges.
+        unsafe {
+            if !rasterize {
+                // Outside a pass nothing is drawn; the default framebuffer is always complete.
+                if self.applied.draw_framebuffer.is_some() {
+                    gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+                    self.applied.draw_framebuffer = None;
+                }
+                gl.enable(glow::RASTERIZER_DISCARD);
+            }
+            // WebGL refuses a draw while a capture target is bound anywhere else.
+            for target in [
+                glow::ARRAY_BUFFER,
+                glow::COPY_READ_BUFFER,
+                glow::COPY_WRITE_BUFFER,
+            ] {
+                gl.bind_buffer(target, None);
+            }
+            for (n, t) in targets.iter().enumerate() {
+                gl.bind_buffer_range(
+                    glow::TRANSFORM_FEEDBACK_BUFFER,
+                    n as u32,
+                    t.buffer.data,
+                    t.offset as i32,
+                    t.size as i32,
+                );
+            }
+            if self.applied.program != capture.id {
+                gl.use_program(Some(capture.raw));
+                self.applied.program = capture.id;
+                self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
+            }
+            gl.begin_transform_feedback(mode);
+        }
+        self.draw(&DrawCall {
+            program: &capture,
+            index: None,
+            range: DrawRange::Vertices {
+                first,
+                count,
+                first_instance,
+                instances,
+            },
+            ..*call
+        });
+        let gl = &self.gl;
+        // SAFETY: plain GL calls ending what was begun above.
+        unsafe {
+            gl.end_transform_feedback();
+            if !rasterize {
+                gl.disable(glow::RASTERIZER_DISCARD);
+            }
+            for n in 0..targets.len() {
+                gl.bind_buffer_base(glow::TRANSFORM_FEEDBACK_BUFFER, n as u32, None);
+            }
+            gl.bind_buffer(glow::TRANSFORM_FEEDBACK_BUFFER, None);
+        }
+        for (n, t) in targets.iter().enumerate() {
+            if t.buffer.index.is_some() {
+                let end = t.offset + vertices * stride(n);
+                self.mark_stale(t.buffer, true, t.offset, end);
+            }
+        }
+        match self.lost {
+            Some(_) => Err(GpuError::DeviceLost),
+            None => Ok(()),
+        }
     }
 
     /// `queryCounterEXT` with `TIMESTAMP_EXT`, which GL writes between any two commands.

@@ -5,16 +5,18 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. G3 (section 12's pass bar) is about two thirds done after run 3. Run 3 merged the
-shared line (528db9c) and the WebGPU branch (33949c3), and built occlusion queries (waited for in
-Chrome through JSPI), timestamps where the GPU writes them (it does not here), multisampled textures
-as renderbuffers with resolves and `MultisampleCopyResolved` copies, and a probe that declares
-`FRACTIONAL_DEPTH_BIAS` only where GL keeps a fractional bias (ANGLE on Direct3D 11 does not: it was
-declared before without being true). It measured the per-draw cost against the WebGPU back end in
-Chrome. The shared suite (24 tests at 528db9c) and the 11 checks of the back end's own pass 34 of 35
-in Chrome's WebGL 2 with every extension; the one failure is `loads_count_levels_from_the_view` (see
-"Known failures"). Not built yet: transform feedback (and the index twin written by it), BC and
-RGB9E5 read backs, BGRA and 16-bit normalised formats (see "Next").
+G3a is done. G3 (section 12's pass bar) is done except one item that waits on G1, after run 4.
+Run 4 merged the shared line (d31a49e) and the WebGPU branch (2fddc0e). It built transform feedback
+(`capture_vertices` with and without rasterising, and captured indices drawn both ways), BC and
+RGB9E5 textures read back as written (a host copy; BC native with WebGL's extensions, else decoded
+by bcdec_rs), and exact texture size queries above a view's first level (ANGLE answered for the
+wrong level). In Chrome's WebGL 2 the shared suite (24 tests) and the back end's 15 checks pass 39
+of 39 with every extension, and again with WEBGL_stencil_texturing and the four BC extensions off.
+Against the WebGPU back end 4 of 5 comparisons pass. The fractional viewport and the integer twin's
+mips now pass. The one failure is `r32float` mips without OES_texture_float_linear, one float step
+off, which comes from G1's in-shader filter (see "Known failures"). Routes without EXT_clip_control
+or WEBGL_provoking_vertex still fail the suite tests whose own raster blocks ask for what is
+absent, also G1's to change.
 
 ## Done
 
@@ -106,8 +108,8 @@ RGB9E5 read backs, BGRA and 16-bit normalised formats (see "Next").
     waited for in the browser are ready at once (WebGL updates a sync object only between tasks).
   - Not built yet: reaching one loses the device (`LossReason::Error`, `Err(DeviceLost)` where the
     call returns a result) with the missing piece named in `WebGl::last_log()`, never a panic; a
-    multisampled texture is refused as `Invalid` (the caps give one sample). Not built: queries,
-    resolves, multisampled textures, empty passes, transform feedback, copies from signed normalised
+    multisampled texture is refused as `Invalid` (the caps give one sample). Not built (queries, resolves,
+    multisampled textures and transform feedback were built later): empty passes, copies from signed normalised
     formats and of formats a framebuffer cannot read (RGB9E5, BC), copies between depth and colour,
     texture-to-buffer copies of formats read wider than stored (depth included), depth read backs of
     cube textures, both aspects of one depth-stencil texture fetched by one draw, vertex formats GL
@@ -254,13 +256,48 @@ RGB9E5 read backs, BGRA and 16-bit normalised formats (see "Next").
   - examples/draw-cost.rs, browser/cost.html and cost.mjs: the per-draw cost of both back ends in one
     Chrome (see "Measurements").
 
+- G3 run 4:
+  - Transform feedback (`capture_vertices`, `TRANSFORM_FEEDBACK`, `capture_buffers` from
+    `MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS`). A capture links the program again from its GLSL
+    with its location outputs (`_vs2fs_locationN`) as varyings, interleaved for one target and
+    separate for more, with the empty fragment shader when it does not rasterise. There are four
+    such programs per program at most, each made at its first capture. The draw runs between
+    `beginTransformFeedback` and `endTransformFeedback`, with `RASTERIZER_DISCARD` and the default
+    framebuffer outside a pass. A target that holds indices too gets its index twin marked stale, so
+    the next index read refreshes it (`IndexTwinReadBack`). Generic buffer bindings are cleared
+    first, because WebGL refuses a capture target bound anywhere else. GLES 3.0 captures only draws
+    of lists without indices: strips, fans, loops and indexed captures lose the device as not built.
+    A target too small for the vertices, or the wrong number of targets, is `Invalid`.
+  - Size queries: a program that calls `textureSize` gets a hidden uniform `<sampler>_size` per
+    texture (the bound view's first level: width, height, and depth or layers). `textureSize(t, l)`
+    becomes a shift of it, set when the bound view changes. ANGLE (Chrome's and mozangle alike)
+    answers `textureSize` for the wrong level once a texture's base level has changed.
+  - Host copies (`HostCopyKept`, src/host.rs): RGB9E5 and BC textures keep every level on the host.
+    Writes go there and to GL; read backs, now and later, come from it. BC is GL's compressed
+    format where its WebGL extension is present (`compressedTexSubImage`, not in 3D), else decoded
+    by bcdec_rs (`BlockDecoded`): BC1 to BC3 and BC7 as RGBA8, BC4 and BC5 as R8 and RG8 (snorm for
+    the signed ones), BC6H as RGBA16F. `BLOCK_COMPRESSION` is declared when all four extensions are
+    present. Copies into or out of host-kept textures, and their sRGB views, lose the device as not
+    built.
+  - New checks (in Chrome and on ANGLE): `vertices_captured_with_and_without_rasterising`
+    (interleaved, separate at an offset, while drawing, whole primitives only, and the pass rule),
+    `captured_indices_drawn_both_ways` (a buffer holding indices and vertices, written by the host
+    and then captured, drawn as indices and as a vertex stream, the twin refreshed once),
+    `block_compressed_and_shared_exponent_textures_read_back_as_written` (RGB9E5 and all 14 BC
+    formats; two layers of three levels, the last smaller than a block; one block written again;
+    read back now and later; a solid BC1 block and an RGB9E5 texel loaded), and
+    `fragment_depth_follows_the_clip_convention`.
+  - all.cmd's Chrome run without WEBGL_stencil_texturing, and its ANGLE run without both clip
+    extensions, also switch off the four BC extensions, so the decoded route runs.
+
 ## How to run
 
 All from the checkout root on the Mac.
 
 - Everything at once (both scene routes in Chrome and on ANGLE; the suite with the checks in
   Chrome four ways (every extension, without EXT_clip_control, without it and WEBGL_provoking_vertex,
-  without WEBGL_stencil_texturing) and on ANGLE three ways; the comparisons with the WebGPU back end),
+  without WEBGL_stencil_texturing and the BC extensions) and on ANGLE three ways (the third also
+  without the BC extensions); the comparisons with the WebGPU back end),
   one GPU job after the build; exit 1 on any failure, so today it exits 1 for the known failures. The
   Chrome suite verdicts land in `<out>\suite-chrome*.txt`:
   `tools/graphics-rig/gpu-job --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
@@ -322,14 +359,16 @@ Declared today (each one built): `READ_BACK_NOW`, `FAN_AND_LOOP` (WebGL 2 topolo
 probe: absent in Chrome 157 and on mozangle on the RTX 3080, where ANGLE's Direct3D 11 rounds the
 units), `TIMESTAMPS` (with EXT_disjoint_timer_query_webgl2 and timestamp bits above zero: absent
 on the RTX 3080, zero bits), `BLEND_CONSTANT_ALPHA` (GLES 3.0 core; mixed with the constant colour
-refused, as WebGL requires). Everything else is absent, including
-what WebGL 2 or Chrome's extensions have but this back end does not build yet: `TRANSFORM_FEEDBACK`,
+refused, as WebGL requires), `TRANSFORM_FEEDBACK` (since run 4; GLES 3.0 core), `BLOCK_COMPRESSION`
+(since run 4, with WEBGL_compressed_texture_s3tc and its sRGB twin, EXT_texture_compression_rgtc and
+EXT_texture_compression_bptc: all four in Chrome 157 and mozangle on the RTX 3080). Everything else is
+absent, including what WebGL 2 or Chrome's extensions have but this back end does not build yet:
 `POINT_SIZE` (WGSL has no point size; a front would need a program variant writing it),
 `OCCLUSION_COUNT`, `MULTISAMPLE_READ` and `SAMPLE_SHADING` (WebGL 2 has none of them), and by
 extension (all reported by Chrome on the RTX 3080)
 `POLYGON_MODE`, `CLIP_DISTANCE`,
 `CULL_DISTANCE`, `DEPTH_CLAMP`, `DUAL_SOURCE_BLEND`, `INDEPENDENT_BLEND`, `MIRROR_ONCE`,
-`DEPTH_BIAS_CLAMP`, `BLOCK_COMPRESSION`, `SAMPLE_SHADING`. The adapter is WebGL's renderer string
+`DEPTH_BIAS_CLAMP`, `SAMPLE_SHADING`. The adapter is WebGL's renderer string
 (unmasked in Chrome), PCI numbers 0 (WebGL gives none), software when it names SwiftShader,
 llvmpipe or Microsoft Basic Render Driver.
 
@@ -349,7 +388,9 @@ every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGB
 EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. Since run 3, samples:
 1, 2, 4 and 8 for the colour formats that render and are not integers, and for depth formats (as
 GL reports them on the RTX 3080); integer formats take one.
-No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil8, block-compressed.
+No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil8. Since run 4:
+the 14 BC formats sample, filter and copy out (read back from the host copy) on every route, and
+RGB9E5 copies out too.
 Since G3 run 1: `PRESENT` on `rgba8unorm` (the canvas's drawing buffer), and `COPY_OUT` on every
 depth format (by `DepthReadByDraw`). Since run 2: `SAMPLE` and `COPY_OUT` on `depth24plus-stencil8`
 and `depth32float-stencil8` on every route (stencil natively with WEBGL_stencil_texturing, which
@@ -466,6 +507,26 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   These are the device thread's costs only (both APIs hand the work to Chrome's GPU process, whose
   cost is not in them). An earlier run of the same scene was void: the WebGL device had been lost
   at creation by a bug in the new probe.
+- 2026-11-17, G3 run 4, same desktop (RTX 3080, driver 32.0.16.2101; queued jobs, not timed,
+  about 75 s each between 16:47 and 17:11 desktop time), after merging origin/phase-2-graphics
+  d31a49e and origin/phase-2-graphics-webgpu 2fddc0e; 24 suite tests and 15 checks (39):
+  - Chrome 157.0.8103.78 with every extension: 39 of 39. Without WEBGL_stencil_texturing and the
+    four BC extensions (BC decoded): 39 of 39. Without EXT_clip_control: 24 of 39; without it and
+    WEBGL_provoking_vertex: 24 of 39 (the rest refused by the suite's own raster blocks).
+  - ANGLE (mozangle 0.7.1) with every extension: 34 of 39 (`present_shows_the_frame`,
+    `the_scissor_bounds_the_draw`, `depth_and_stencil_read_back`, `stencil_sampled_and_read_back`,
+    `fragment_depth_follows_the_clip_convention`: the test tool's bugs under EXT_clip_control and
+    its pbuffer). Without EXT_clip_control: 23 of 39; without both and the BC extensions: 23 of 39.
+  - Against the WebGPU back end (wgpu 30.0.2, Direct3D 12): 4 of 5. The fractional viewport now
+    passes, because G2 declares `FRACTIONAL_VIEWPORT`. The integer twin's mips pass since the size
+    fix. The r32float mips still fail.
+  - At the start of the run, before any change: Chrome 34 of 35 and ANGLE 30 of 35, as in run 3.
+  - The capture checks passed the first time they ran, on every route. The new BC check failed
+    once, on my own expectation: RGB9E5's green of 0.5 written to `rgba8unorm` gave 127 for 127.5,
+    so the check now uses values that round without a tie.
+  - Both Chrome and mozangle report the four BC extensions, so `BLOCK_COMPRESSION` is declared on
+    both with every extension.
+  - Lint clean on both targets (final tree checked at 17:08).
 - In the first full check of G3 run 1, Chrome's first launch kept no WebGL 2 context in ten tries
   and was closed; the second launch worked. In the other launches one context was lost first.
 - Chrome's GPU process restarted once just after Chrome started in most runs (the first WebGL
@@ -477,26 +538,18 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Known failures
 
-- `a_fractional_viewport_in_the_program_equals_webgpu_native` (tests/against_webgpu.rs): the WebGPU
-  back end does not declare `FRACTIONAL_VIEWPORT` yet (its status: it waits on its own half-pixel
-  test), so there is no native fractional viewport to compare with. Run it again when G2 declares
-  it.
-
-- `loads_count_levels_from_the_view`, in Chrome and on ANGLE: `textureDimensions(t, 0)` of a view
-  starting at level 1 of a 4-wide `rgba8uint` texture gives 1 (level 2's width) instead of 2; the
-  loads themselves read the right levels. A probe drawing GLSL of its own on a fresh texture with
-  base level 1 read 2, for float and integer textures alike; the failing check's texture was drawn
-  at base level 0 first and is read through naga's GLSL. Rebinding the texture after the base level
-  changes did not help. Cause not isolated yet (ANGLE's size metadata after a base level change, or
-  naga's GLSL); the next run dumps the GLSL. It makes
-  `generate_mips_of_an_integer_twin_equals_webgpu` fail too: from level 2 on, the built-in mip
-  program sizes the level above wrongly and copies texels instead of averaging them (WebGPU's
-  result equals the averages computed by hand).
 - `generate_mips_of_r32float_without_float_filtering_equals_webgpu` without
   OES_texture_float_linear: 5 of 16 values of level 1 differ from WebGPU's by one float step. The
   built-in mip program filters in the shader (`FilterInShader`, G1's helper) while WebGPU's sampler
   filters in hardware; the order of the arithmetic differs. With the extension (hardware filtering
-  on both) they are equal. A property of the helper; for G1.
+  on both) they are equal. A property of the helper; for G1 (helpers.rs is G1's alone). It is the
+  one item of the pass bar that still fails. Matching it exactly would mean the helper does its
+  arithmetic in the order this GPU's filter does, which other GPUs need not share.
+- `fragment_depth_follows_the_clip_convention` on native ANGLE with EXT_clip_control: the
+  fragment's position z reads 0.75 for clip z 0.5 in zero-to-one, where Chrome's ANGLE reads 0.5
+  (as WebGPU did when run 3 first saw this). It passes in Chrome on every route, and natively without the extension, which is the
+  route the native back end is documented to use. It is a bug of the test tool, like the scissor
+  mirroring below; left failing.
 
 - `triangle-clear_rects` and the suite's `the_scissor_bounds_the_draw` on native ANGLE with
   EXT_clip_control. mozangle 0.7.1's ANGLE mirrors the scissor rectangle vertically when the clip
@@ -590,7 +643,25 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   needing `MULTISAMPLE_READ`, the others as not built); plan 5.8 names `MultisampleCopyResolved`
   for copies in general.
 
+- Size queries are answered from a hidden uniform holding the bound view's size (run 4), not by
+  GL's `textureSize`, because ANGLE answers for the wrong level after a base level change. It costs
+  one uniform per texture a program sizes, set only when the bound view changes.
+- `capture_vertices` builds only list draws without indices, as GLES 3.0 allows; strips, fans,
+  loops and indexed draws lose the device as not built. Building them would need host
+  expansion of indices and streams, and `vertex_index` would then be wrong. The front's stream
+  output on WebGL 2 meets this. A capture past MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS fails
+  its link and loses the device with GL's log; the interface has no limit for it.
+- BC4 and BC5 decoded without their extension are stored at 8 bits (bcdec_rs's byte output), which
+  is coarser than a native decode. Read backs are unaffected (host copy). BC in 3D textures is
+  always decoded, since GLES compresses only 2D, array and cube textures.
+
 ## Interface changes
+
+- d37c5d9 "interface: said which vertex outputs capture_vertices writes to which target and how
+  they are packed": the vertex stage's location outputs in location order as packed 32-bit
+  components, no built-ins. With one target they are interleaved; with more, output n goes to
+  target n, as OpenGL's two modes. Strips are written as lists, and the targets hold every vertex.
+  A doc comment on `capture_vertices` and `Limits::capture_buffers`, and the plan's 4.3 text.
 
 - db2c406 "interface: said that a webgl back end refuses a blend block using the constant colour and
   constant alpha together": a doc comment on `Features::BLEND_CONSTANT_ALPHA` and the plan's WebGL 2
@@ -621,6 +692,8 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 ## Licences
 
 - glow 0.18.0: MIT OR Apache-2.0 OR Zlib (its Cargo.toml); its slotmap 1.1.1: Zlib.
+- bcdec_rs 0.2.1 (run 4, for `BlockDecoded`): MIT (its Cargo.toml; the plan's section 3 records its
+  repository's LICENSE). No dependencies.
 - khronos-egl 6.0.0 (native only, feature `dynamic`): MIT/Apache-2.0 (its Cargo.toml); its
   libloading 0.8.9: ISC; libc 0.2.191 and pkg-config 0.3.34: MIT OR Apache-2.0.
 - naga 30.0.2 (`glsl-out`; `wgsl-in` for the test programs): MIT OR Apache-2.0.
@@ -636,31 +709,16 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
-G3's pass bar (plan section 12), what is left, in about this order:
-1. Transform feedback: `capture_vertices` with and without rasterising (programs linked again with
-   `transformFeedbackVaryings`, kept per program and captured layout; `RASTERIZER_DISCARD` when not
-   rasterising), the `TRANSFORM_FEEDBACK` feature and `capture_buffers` limit, and the index twin a
-   capture writes (`IndexBufferTwin`, `IndexTwinReadBack`, drawn both ways). The interface leaves
-   open which outputs go to which target (`CaptureTargets` is a list of ranges): settle it with G1
-   (interleaved into one target, or one output per target in GL's separate mode) before building.
-2. BC and RGB9E5 read back as written (`HostCopyKept`, `BlockDecoded` with `bcdec_rs` as G2 does,
-   BC natively with WEBGL_compressed_texture_s3tc and EXT_texture_compression_rgtc/bptc), BGRA
-   (`FormatConverted`), 16-bit normalised by EXT_texture_norm16 (present in Chrome here).
-3. The size query of views starting above level 0: naga writes plain `textureSize(t, level)`, so
-   the wrong level comes from ANGLE after the texture's base level changed (a fresh texture with
-   base level 1 answers right). Try making the view's own GL texture state fresh (or note it as an
-   ANGLE bug with a reduced case); then the integer twin's generate_mips against G2.
+G3's pass bar has one item left, and it is G1's: the r32float in-shader mip filter's one-step
+difference. After that, in about this order:
+1. Captures of strips, fans, loops and indexed draws (now device loss as not built), if a front
+   needs them on WebGL 2.
+2. Copies into and out of host-kept textures (RGB9E5, BC): from them as host writes (plan 5.8),
+   into them by `HostCopyReadBack`.
+3. BGRA (`FormatConverted`) and 16-bit normalised formats by EXT_texture_norm16.
 4. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
-   `clearBuffer*` (plan 5.8). An override that falls back to the default for other formats needs the
-   default callable: Rust cannot call a trait's default from its override, so the default's body
-   must move into a public function of `wcontainers-gpu` first (an "interface:" commit, in the
-   interface's fast-path-with-a-default style).
-5. Run `a_fractional_viewport_in_the_program_equals_webgpu_native` once G2 declares
-   `FRACTIONAL_VIEWPORT`.
-6. `gl_FragCoord.z` (WGSL's position z in fragments) read 0.75 for clip z 0.5 on ANGLE with
-   EXT_clip_control in zero-to-one, where WebGPU reads 0.5: needs a check of its own and a fix or a
-   named loss.
-7. An EGL window surface natively, for G4's Windows library.
-8. Suite routes without EXT_clip_control or WEBGL_provoking_vertex stay known failures until G1's
-   suite takes clip depth and provoking vertex from the caps; the r32float in-shader mip filter's
-   one-step difference is G1's helper.
+   `clearBuffer*` (plan 5.8). An override that falls back to the default needs the default's body
+   as a public function of `wcontainers-gpu` first (an "interface:" commit).
+5. An EGL window surface natively, for G4's Windows library.
+6. Suite routes without EXT_clip_control or WEBGL_provoking_vertex stay known failures until G1's
+   suite takes clip depth and provoking vertex from the caps.

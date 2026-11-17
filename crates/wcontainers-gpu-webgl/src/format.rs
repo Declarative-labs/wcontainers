@@ -133,6 +133,10 @@ impl FormatExtensions {
 
 /// What `format` can be used for on a context with `ext`.
 pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
+    // Block-compressed formats are sampled natively or decoded, and read back from the host copy.
+    if crate::host::compressed(format).is_some() {
+        return FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
+    }
     let Some(gl) = gl_format(format) else {
         return FormatUse::empty();
     };
@@ -159,7 +163,8 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
         };
     // Depth and stencil read back by draws into a colour texture; stencil is sampled with
     // WEBGL_stencil_texturing or from a copy filled by draws.
-    if read_as(format, ext).is_some() || gl.class == Class::Depth {
+    // Formats GL cannot read back are read from the host copy.
+    if read_as(format, ext).is_some() || gl.class == Class::Depth || crate::host::kept(format) {
         uses |= FormatUse::COPY_OUT;
     }
     // The canvas's drawing buffer is RGBA8, which surfaces present into.
