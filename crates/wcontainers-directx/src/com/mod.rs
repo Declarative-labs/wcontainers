@@ -26,6 +26,7 @@ use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_MORE_DATA, DXGI_ERROR_NOT_FOUND,
     DXGI_ERROR_SDK_COMPONENT_MISSING, DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_WAS_STILL_DRAWING,
+    DXGI_SWAP_CHAIN_DESC, IDXGIDevice, IDXGIFactory, IDXGISwapChain,
 };
 use windows::core::{Error, GUID, HRESULT, IUnknown, Interface, OutRef, Ref, Result};
 
@@ -447,14 +448,29 @@ pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
     level: *mut D3D_FEATURE_LEVEL,
     context: *mut *mut c_void,
 ) -> HRESULT {
-    if !swap_chain.is_null() {
-        unsafe { *swap_chain = std::ptr::null_mut() };
-        if swap_chain_desc.is_null() {
-            return E_INVALIDARG;
-        }
-        return missing("D3D11CreateDeviceAndSwapChain with a swap chain").code();
+    if swap_chain.is_null() {
+        return unsafe {
+            D3D11CreateDevice(
+                adapter,
+                driver_type,
+                software,
+                flags,
+                levels,
+                level_count,
+                sdk_version,
+                device,
+                level,
+                context,
+            )
+        };
     }
-    unsafe {
+    unsafe { *swap_chain = std::ptr::null_mut() };
+    let Some(desc) = (unsafe { swap_chain_desc.cast::<DXGI_SWAP_CHAIN_DESC>().as_ref() }) else {
+        return E_INVALIDARG;
+    };
+    // The device, then its swap chain from the factory of the device's adapter, as DXGI makes it.
+    let mut made: *mut c_void = std::ptr::null_mut();
+    let hr = unsafe {
         D3D11CreateDevice(
             adapter,
             driver_type,
@@ -463,11 +479,38 @@ pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
             levels,
             level_count,
             sdk_version,
-            device,
+            &mut made,
             level,
-            context,
+            std::ptr::null_mut(),
         )
+    };
+    if hr.is_err() {
+        return hr;
     }
+    // SAFETY: `D3D11CreateDevice` handed out this reference.
+    let d = unsafe { ID3D11Device::from_raw(made) };
+    let chain = (|| -> Result<IDXGISwapChain> {
+        let factory: IDXGIFactory = unsafe { d.cast::<IDXGIDevice>()?.GetAdapter()?.GetParent()? };
+        let mut chain = None;
+        unsafe { factory.CreateSwapChain(&d, desc, &mut chain) }.ok()?;
+        chain.ok_or_else(|| E_INVALIDARG.into())
+    })();
+    let chain = match chain {
+        Ok(c) => c,
+        Err(e) => return e.code(),
+    };
+    unsafe {
+        *swap_chain = chain.into_raw();
+        if !context.is_null() {
+            *context = d
+                .GetImmediateContext()
+                .map_or(std::ptr::null_mut(), Interface::into_raw);
+        }
+        if !device.is_null() {
+            *device = d.into_raw();
+        }
+    }
+    windows::Win32::Foundation::S_OK
 }
 
 /// `D3D11On12CreateDevice`: not served (no Direct3D 12 device of ours to layer on yet).

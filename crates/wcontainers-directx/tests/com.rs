@@ -234,8 +234,9 @@ fn the_forwarding_d3d11_reaches_the_library() {
 #[test]
 fn device_creation_answers_as_direct3d() {
     use wcontainers_directx::com::{D3D11CreateDevice, D3D11CreateDeviceAndSwapChain};
-    use windows::Win32::Foundation::{E_INVALIDARG, E_NOTIMPL, HMODULE};
+    use windows::Win32::Foundation::{E_INVALIDARG, HMODULE};
     use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
     use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIAdapter};
     let (device, _context) = device();
     let adapter: IDXGIAdapter =
@@ -294,9 +295,13 @@ fn device_creation_answers_as_direct3d() {
     let mut out = null;
     assert_eq!(both(std::ptr::null(), null.cast(), &mut out).0, 0);
     drop(unsafe { ID3D11Device::from_raw(out) });
+    // A swap chain without a window is an invalid call, as DXGI answers it.
     let desc = DXGI_SWAP_CHAIN_DESC::default();
     let mut chain: *mut std::ffi::c_void = std::ptr::NonNull::dangling().as_ptr();
-    assert_eq!(both(&desc, &mut chain, null.cast()), E_NOTIMPL);
+    assert_eq!(
+        both(&desc, &mut chain, null.cast()),
+        DXGI_ERROR_INVALID_CALL
+    );
     assert!(chain.is_null());
     assert_eq!(
         both(std::ptr::null(), &mut chain, null.cast()),
