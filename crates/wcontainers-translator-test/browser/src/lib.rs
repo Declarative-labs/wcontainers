@@ -74,16 +74,9 @@ pub extern "C" fn translate(
     let host = Arm64::host_from_probe(probe);
     let code = code_start..code_end;
     let result = INPUT.with_borrow(|blob| match module_bytes {
-        0 => translate_omitting::<Arm64>(
-            blob,
-            code,
-            &[start],
-            look_ahead,
-            optimise,
-            host,
-            (),
-            omit,
-        ),
+        0 => {
+            translate_omitting::<Arm64>(blob, code, &[start], look_ahead, optimise, host, (), omit)
+        }
         _ => {
             let module_bytes = module_bytes as usize;
             translate_in_modules::<Arm64>(
@@ -235,6 +228,12 @@ pub extern "C" fn contract() -> i32 {
                 "body": body,
                 "stateAt": hook.state.at,
                 "stateLength": hook.state.len,
+                // "i32" or "i64" for each result.
+                "results": hook
+                    .results
+                    .iter()
+                    .map(|ty| format!("{ty:?}").to_lowercase())
+                    .collect::<Vec<_>>(),
             })
         })
         .collect();

@@ -321,7 +321,18 @@ function run({
     new Uint8Array(translator.memory.buffer, cpuState + size, code.length).set(code);
     return contract.memoryFaults[translator.cpu_memory_fault(address, code.length)];
   }
-  contract.guestHooks.forEach(({ name, body, stateAt, stateLength }, index) => {
+  // Byte views of the state memory and of the translator's memory, made again only after either grows.
+  let stateMemory = new Uint8Array(state.buffer);
+  let translatorMemory = new Uint8Array(translator.memory.buffer);
+  function views() {
+    if (stateMemory.buffer !== state.buffer) stateMemory = new Uint8Array(state.buffer);
+    if (translatorMemory.buffer !== translator.memory.buffer) translatorMemory = new Uint8Array(translator.memory.buffer);
+  }
+  // An argument as `cpu_hook` takes it: i64 arguments arrive as BigInt, i32 ones as numbers.
+  const wide = (value) => (typeof value === "bigint" ? value : BigInt(value));
+  // A result as the hook returns it.
+  const narrow = (value, type) => (type === "i32" ? Number(BigInt.asIntN(32, value)) : value);
+  contract.guestHooks.forEach(({ name, body, stateAt, stateLength, results }, index) => {
     if (body === "clock") {
       hooks[name] = () => BigInt(Math.round((performance.now() - startedAt) * 1e6));
     } else if (body === "codeChanged") {
@@ -337,18 +348,17 @@ function run({
       // The work is the translator's `cpu_hook` on a copy of the hook's bytes of the thread's state; a counted
       // slow path.
       const at = BLOCK_AT + stateAt;
-      hooks[name] = (...args) => {
-        new Uint8Array(translator.memory.buffer, cpuState, stateLength).set(new Uint8Array(state.buffer, at, stateLength));
-        const wide = [0, 1, 2, 3].map((i) => BigInt.asIntN(64, BigInt(args[i] ?? 0)));
-        translator.cpu_hook(index, ...wide);
-        new Uint8Array(state.buffer, at, stateLength).set(new Uint8Array(translator.memory.buffer, cpuState, stateLength));
+      hooks[name] = (a = 0, b = 0, c = 0, d = 0) => {
+        views();
+        for (let i = 0; i < stateLength; i++) translatorMemory[cpuState + i] = stateMemory[at + i];
+        translator.cpu_hook(index, wide(a), wide(b), wide(c), wide(d));
+        views();
+        for (let i = 0; i < stateLength; i++) stateMemory[at + i] = translatorMemory[cpuState + i];
         const why = translator.cpu_hook_reason();
         // Registers are not saved here, so the detail is the first argument, not the address.
-        if (why >= 0) {
-          const first = args[0] ?? 0;
-          slowPath(why, typeof first === "bigint" ? BigInt.asUintN(64, first) : first >>> 0, 0);
-        }
-        return translator.cpu_hook_result(0);
+        if (why >= 0) slowPath(why, typeof a === "bigint" ? BigInt.asUintN(64, a) : a >>> 0, 0);
+        if (results.length === 1) return narrow(translator.cpu_hook_result(0), results[0]);
+        return results.map((type, i) => narrow(translator.cpu_hook_result(i), type));
       };
     }
   });
