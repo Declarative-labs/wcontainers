@@ -2663,14 +2663,13 @@ dependencies = [
 name = "wcontainers-direct3d-12"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "naga",
  "png",
  "pollster",
  "slab",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
+ "wcontainers-shaders",
  "wgpu",
  "windows",
  "windows-core",
