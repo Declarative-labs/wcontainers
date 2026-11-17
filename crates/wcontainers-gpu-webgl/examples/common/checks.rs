@@ -1375,8 +1375,10 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
 
 /// `generate_mips` of formats that render and filter, which this back end fills by
 /// `generateMipmap`, equals the interface's draws (`generate_mips_by_draws`) on a texture with the
-/// same texels: 2D, 2D array of odd size, cube and 3D textures, every level and only the last two
-/// (the levels above written with texels of their own), in every such format that reads back.
+/// same texels: 2D textures and 2D arrays of even and odd sizes, cube and 3D textures, every level
+/// and only the last two (the levels above written with texels of their own), in every such format
+/// that reads back. Where they differ, the first such texel is given with the box average of the four
+/// it comes from (sides of even length).
 pub fn generate_mipmap_equals_the_draws<H: Host>() {
     use crate::kit;
     use Format as F;
@@ -1387,8 +1389,11 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         | TextureUsage::COPY_DST;
     let shapes = [
         (TextureDimension::D2, [16, 16, 1], false),
+        (TextureDimension::D2, [13, 7, 1], false),
         (TextureDimension::D2, [13, 7, 2], false),
+        (TextureDimension::D2, [16, 8, 2], false),
         (TextureDimension::D2, [8, 8, 6], true),
+        (TextureDimension::D2, [7, 7, 6], true),
         (TextureDimension::D3, [8, 8, 4], false),
     ];
     let mut tested = 0;
@@ -1407,7 +1412,15 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         }
         let texel = format.block().2 as usize;
         for (seed, &(dimension, size, cube)) in shapes.iter().enumerate() {
-            let levels = 4;
+            // Four levels, or the full chain where it is shorter.
+            let largest: u32 = size[0]
+                .max(size[1])
+                .max(if dimension == TextureDimension::D3 {
+                    size[2]
+                } else {
+                    1
+                });
+            let levels = 4.min(largest.ilog2() + 1);
             let made =
                 |b: &mut H::Backend| kit::texture(b, dimension, format, size, levels, usage, cube);
             for first in [1, 2] {
@@ -1505,9 +1518,45 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                         })
                         .collect();
                     if differ.iter().any(|&n| n > 0) {
+                        // The first texel that differs, and the box average of the four it
+                        // comes from where the level above was written with even sides.
+                        let at = got
+                            .chunks(texel)
+                            .zip(want.chunks(texel))
+                            .position(|(a, b)| a != b)
+                            .unwrap_or(0);
+                        let above = written.get(mip as usize - 1).filter(|_| {
+                            let p = shape(mip - 1);
+                            p[0] % 2 == 0 && p[1] % 2 == 0 && dimension == TextureDimension::D2
+                        });
+                        let box_average = above.map(|bytes| {
+                            let (w, plane) = (s[0] as usize, (s[0] * s[1]) as usize);
+                            let (l, x, y) = (at / plane, at % w, at % plane / w);
+                            let p = shape(mip - 1);
+                            let base = |dx: usize, dy: usize| {
+                                (l * (p[0] * p[1]) as usize
+                                    + (2 * y + dy) * p[0] as usize
+                                    + 2 * x
+                                    + dx)
+                                    * texel
+                            };
+                            (0..texel)
+                                .map(|c| {
+                                    let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                                        .iter()
+                                        .map(|&(dx, dy)| u32::from(bytes[base(dx, dy) + c]))
+                                        .sum();
+                                    sum as f32 / 4.0
+                                })
+                                .collect::<Vec<_>>()
+                        });
+                        let t = |v: &[u8]| v[at * texel..(at + 1) * texel].to_vec();
                         failures.push(format!(
-                            "{what}: level {mip} differs in {differ:?} of {} texels per layer",
-                            s[0] * s[1]
+                            "{what}: level {mip} differs in {differ:?} of {} texels per layer; \
+                             texel {at}: generateMipmap {:?}, the draws {:?}, box {box_average:?}",
+                            s[0] * s[1],
+                            t(&got),
+                            t(&want)
                         ));
                     }
                 }
@@ -3646,4 +3695,300 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
     assert!(b.slow_paths().count(SlowPath::HostCopyReadBack) > before);
     assert_eq!(read_buffer(&mut b, &buf, 8), bytes, "r8uint in a buffer");
     assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Every level of a texture stays as written while level 1 is sampled, level 2's first layer is
+/// cleared and then each layer (or slice) of level 2 is drawn from level 1 in turn, as the mip draws
+/// do, and after every level is sampled again: 2D arrays of odd and even size, a 2D texture of odd
+/// size and a 3D texture, each level read back after each step.
+pub fn levels_stay_as_written_while_others_are_read_and_drawn<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let k = kit::Kit::new(&mut b);
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::SAMPLE
+        | TextureUsage::RENDER
+        | TextureUsage::COPY_SRC
+        | TextureUsage::COPY_DST;
+    let scratch = kit::texture(&mut b, TextureDimension::D2, f, [1, 1, 1], 1, usage, false);
+    let scratch_view = kit::target(&mut b, &scratch, f, 0, 0);
+    let mut failures = Vec::new();
+    for (dimension, size) in [
+        (TextureDimension::D2, [13, 7, 2]),
+        (TextureDimension::D2, [16, 8, 2]),
+        (TextureDimension::D2, [13, 7, 1]),
+        (TextureDimension::D3, [8, 8, 4]),
+    ] {
+        let three_d = dimension == TextureDimension::D3;
+        let (own, ty, at) = match (three_d, size[2]) {
+            (true, _) => (ViewDimension::D3, "texture_3d<f32>", "vec3<i32>(0), 0"),
+            (false, 1) => (ViewDimension::D2, "texture_2d<f32>", "vec2<i32>(0), 0"),
+            _ => (
+                ViewDimension::D2Array,
+                "texture_2d_array<f32>",
+                "vec2<i32>(0), 0, 0",
+            ),
+        };
+        let wgsl = format!(
+            "@group(0) @binding(32) var t: {ty};
+            @vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {{
+                return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+            }}
+            @fragment fn fs() -> @location(0) vec4<f32> {{
+                return textureLoad(t, {at});
+            }}"
+        );
+        let program = kit::program(&mut b, &wgsl, "vs", "fs");
+        let levels = 4;
+        let t = kit::texture(&mut b, dimension, f, size, levels, usage, false);
+        let shape = |mip: u32| {
+            let n = |s: u32| (s >> mip).max(1);
+            [
+                n(size[0]),
+                n(size[1]),
+                if three_d { n(size[2]) } else { size[2] },
+            ]
+        };
+        let mut want: Vec<Vec<u8>> = (0..levels)
+            .map(|mip| {
+                let s = shape(mip);
+                let bytes = pattern((s[0] * s[1] * s[2] * 4) as usize, 11 + mip * 7 + size[0]);
+                b.write_texture(
+                    &TextureRegion {
+                        texture: &t,
+                        mip,
+                        layer: 0,
+                        origin: Origin::default(),
+                        stencil: false,
+                    },
+                    Extent {
+                        width: s[0],
+                        height: s[1],
+                        depth_or_layers: s[2],
+                    },
+                    &bytes,
+                    s[0] * 4,
+                    s[1],
+                    WriteMode::Ordered,
+                );
+                bytes
+            })
+            .collect();
+        let check = |b: &mut H::Backend, want: &[Vec<u8>], step: &str| {
+            let mut failures = Vec::new();
+            for mip in 0..levels {
+                let s = shape(mip);
+                let got = kit::read(b, &t, mip, 0, s, 4, false);
+                let layer = (s[0] * s[1] * 4) as usize;
+                let differ: Vec<usize> = got
+                    .chunks(layer)
+                    .zip(want[mip as usize].chunks(layer))
+                    .map(|(g, w)| g.chunks(4).zip(w.chunks(4)).filter(|(a, b)| a != b).count())
+                    .collect();
+                if differ.iter().any(|&n| n > 0) {
+                    failures.push(format!(
+                        "{dimension:?} {size:?} after {step}: level {mip} differs in {differ:?} of {} texels per layer",
+                        s[0] * s[1]
+                    ));
+                }
+            }
+            failures
+        };
+        failures.extend(check(&mut b, &want, "the writes"));
+        // Level 1 sampled alone, as the mip draws' source.
+        let source = kit::view(
+            &mut b,
+            &t,
+            f,
+            own,
+            1,
+            1,
+            0,
+            if three_d { 1 } else { size[2] },
+        );
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&source),
+            }])
+            .expect("create_binding_set");
+        let one = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+        b.begin_pass(&kit::pass(&scratch_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &one,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let loaded = kit::read(&mut b, &scratch, 0, 0, [1, 1, 1], 4, false);
+        if loaded != want[1][..4] {
+            failures.push(format!(
+                "{dimension:?} {size:?}: level 1 loaded {loaded:?}, written {:?}",
+                &want[1][..4]
+            ));
+        }
+        failures.extend(check(&mut b, &want, "sampling level 1"));
+        // Level 2's first layer (slice) cleared, the source still bound as the mip draws leave it.
+        let s2 = shape(2);
+        let level_target = |b: &mut H::Backend, layer| {
+            if three_d {
+                kit::view(b, &t, f, ViewDimension::D3, 2, 1, 0, 1)
+            } else {
+                kit::target(b, &t, f, 2, layer)
+            }
+        };
+        let target = level_target(&mut b, 0);
+        let clear = [0.2f32, 0.4, 0.6, 1.0].map(f32::to_bits);
+        b.begin_pass(&kit::pass(&target, clear, None));
+        b.end_pass();
+        for texel in want[2][..(s2[0] * s2[1] * 4) as usize].chunks_mut(4) {
+            texel.copy_from_slice(&[51, 102, 153, 255]);
+        }
+        failures.extend(check(&mut b, &want, "clearing level 2's first layer"));
+        // Every layer (or slice) of level 2 drawn from level 1 in turn, as the mip draws do.
+        let vp = [kit::viewport(0.0, 0.0, s2[0] as f32, s2[1] as f32)];
+        let layer = (s2[0] * s2[1] * 4) as usize;
+        let first = want[1][..4].to_vec();
+        for n in 0..s2[2] {
+            let (at, slice) = if three_d { (0, n) } else { (n, 0) };
+            let target = level_target(&mut b, at);
+            let mut pass = kit::pass(&target, [0; 4], None);
+            if let Some(c) = pass.colors[0].as_mut() {
+                c.depth_slice = slice;
+                c.load = LoadOp::DontCare;
+            }
+            b.begin_pass(&pass);
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &vp,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            b.destroy(Object::TextureView(target));
+            let from = n as usize * layer;
+            for texel in want[2][from..from + layer].chunks_mut(4) {
+                texel.copy_from_slice(&first);
+            }
+        }
+        failures.extend(check(&mut b, &want, "drawing level 2 from level 1"));
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(source));
+        // Every level sampled again.
+        let layers = if three_d { 1 } else { size[2] };
+        let whole = kit::view(&mut b, &t, f, own, 0, levels, 0, layers);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&whole),
+            }])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&scratch_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &one,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        failures.extend(check(&mut b, &want, "sampling every level"));
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(whole));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A pass without attachments rasterises: occlusion queries answer that a triangle covering it
+/// passed and one wholly outside it did not, at one sample and at four, and it leaves the device
+/// whole.
+pub fn passes_without_attachments_rasterise<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let k = kit::Kit::new(&mut b);
+    // A triangle over the pass, or right of it.
+    let wgsl = "
+    struct P { x: vec4<f32> }
+    @group(0) @binding(0) var<uniform> p: P;
+    @vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+        return vec4<f32>(f32((v & 1u) << 2u) - 1.0 + p.x.x, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+    }
+    @fragment fn fs() -> @location(0) vec4<f32> {
+        return vec4<f32>(1.0);
+    }";
+    let program = kit::program(&mut b, wgsl, "vs", "fs");
+    let align = b.caps().limits.min_uniform_offset_alignment as u64;
+    let params = b
+        .create_buffer(&BufferDesc {
+            size: align * 2,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            intent: MapIntent::Often,
+        })
+        .expect("create_buffer");
+    b.write_buffer(&params, 0, &0f32.to_le_bytes(), WriteMode::Ordered);
+    b.write_buffer(&params, align, &8f32.to_le_bytes(), WriteMode::Ordered);
+    let sets: Vec<_> = [0, align]
+        .into_iter()
+        .map(|offset| {
+            b.create_binding_set(&[BindingEntry {
+                binding: 0,
+                stages: StageSet::VERTEX,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &params,
+                    offset,
+                    size: 16,
+                }),
+            }])
+            .expect("create_binding_set")
+        })
+        .collect();
+    let vp = [kit::viewport(0.0, 0.0, 8.0, 4.0)];
+    for samples in [1, 4] {
+        if !b.caps().formats.takes_samples(Format::R8Unorm, samples) {
+            continue;
+        }
+        let queries = b
+            .create_query_set(QueryKind::OcclusionAny, 2)
+            .expect("create_query_set");
+        b.begin_pass(&PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: Some(EmptyPass {
+                width: 8,
+                height: 4,
+                samples,
+            }),
+            occlusion: Some(&queries),
+        });
+        for (query, set) in sets.iter().enumerate() {
+            b.begin_query(query as u32);
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(set),
+                &vp,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_query();
+        }
+        b.end_pass();
+        let rb = b.read_queries(&queries, 0, 2).expect("read_queries");
+        b.submit();
+        b.wait_read(&rb);
+        let mut out = [0u8; 16];
+        b.finish_read(rb, &mut out);
+        let passed: Vec<bool> = out.chunks(8).map(|c| c.iter().any(|&x| x != 0)).collect();
+        assert_eq!(passed, [true, false], "{samples} samples");
+        assert_eq!(b.status(), DeviceStatus::Ok, "{samples} samples");
+    }
 }
