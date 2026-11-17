@@ -49,7 +49,8 @@ reference runner and browser translator.
 The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three layers at 100 percent, 6 at once):
 - Directory: `/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long`
   (`ledger.txt`, `driver.log`, `logs/`, `trees/`, `target/`).
-- Alive? `pgrep -fl long-runs.sh` (one line; never start a second beside it). What it is doing: `tail -3
+- Alive? `pgrep -fl long-runs.sh` and look for the line `bash .../long-runs.sh` (any shell whose command
+  text holds the name matches too, a watcher's included; never start a second driver beside it). What it is doing: `tail -3
   .../p2/long/driver.log`. Done so far: `cut -f1,2,4,6,7,10 .../p2/long/ledger.txt`.
 - Restart after a stop or a fix (from the checkout root, all committed):
   `WC_LONG_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long WC_LONG_SEED=100 WC_LONG_ACCEPT=c38b4ad nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh >> .../p2/long/driver.log 2>&1 &`
@@ -85,6 +86,14 @@ Progress (from the ledger):
   mismatches; 573 to 2,384 s a chunk (most 620 to 770; chunk 8 took 2,384 s and chunk 11 1,263 s at load
   30 to 130, no failure), load 12 to 130. At about 440 compared in about 700 s a chunk, the rest (about 216
   chunks) is expected to take about 42 hours more (an extrapolation).
+- Layer 3 at 2026-11-17 11:05: 30 chunks passed, 13,128 compared, 0 mismatches, still on 445e3cf; chunks
+  took 573 to 2,639 s (median 709 s), load 14 to 80. From 05:33 to 11:05 it passed 18 chunks, about 18
+  minutes a chunk with the gaps between chunks; at that pace the rest (about 199 chunks) is about 60 hours
+  (an extrapolation).
+- 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
+  alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
+  at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
+  not the load.
 
 What is left of P2, in order:
 1. Let layer 3 run to 100,000 compared. Look at the ledger now and then; treat any failing chunk as a real
