@@ -26,17 +26,16 @@ it, a second list E_INVALIDARG), lists reset only when closed, an open list exec
 device with `DXGI_ERROR_INVALID_CALL`, creation after removal answering
 `DXGI_ERROR_DEVICE_REMOVED`, equal root signature blobs giving one object, root signature
 register checks, small (4 KiB) and multisampled (64 KiB) placement alignments and the refusal of
-others, and `ResolveSubresource` (commit 3405674, tested). Then the desktop stopped taking ssh
-connections for the rest of the run (over two hours), so the next changes are written but neither
-built nor tested, and are kept out of the branch as a patch:
-pyro-parked/wcontainers-scratch/graphics-direct3d-12/run8-untested.patch (apply with `git apply`
-at the checkout's root). It holds: twin textures for views reinterpreting a typeless texture's
-bits (`ReinterpretCopy`, `Device::view_holder` in alias.rs), the frame latency waitable object,
-multisampled render target view dimensions and array sizes of -1, a refusal of views reinterpreting
-bits without a twin, fixes for three device-thread panics (cube arrays of -1 cubes, inverted copy
-boxes, pipeline states released before their list ran), multisampled textures made drawable, and
-`GetClockCalibration` answering E_FAIL. G5 is not complete: see "Test files", "Gap list" and
-"Next".
+others, and `ResolveSubresource` (commit 3405674, tested). Run 8's last changes, written while
+the desktop refused ssh, were kept as a patch. Run 9 (2026-11-17, fifth run of G5) merged the
+shared line and the rig branch (no conflicts; webgpu, webgl, direct3d-11 and shaders had nothing
+new), built and tested that patch and committed it (d89ad8d: twin textures for views
+reinterpreting a typeless texture's bits, the frame latency waitable object, multisampled render
+target views, three device-thread panics fixed, `GetClockCalibration` E_FAIL), then added null
+descriptors, custom heaps, `WriteToSubresource`/`ReadFromSubresource`, Direct3D 12's creation
+checks, bundles and the back buffers' shared reference on their swap chain (deee187 and after).
+New ssh logins to the desktop failed all through run 9 (see Departures for how the rig was
+reached). G5 is not complete: see "Test files", "Gap list" and "Next".
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -108,15 +107,17 @@ boxes, pipeline states released before their list ran), multisampled textures ma
   copies move the plane's aspect.
 - Draws with no render target (run 7) open an empty pass as large as the viewports, at the
   pipeline's sample count; a viewport change ends it.
-- Refused with E_NOTIMPL and the reason printed (`wcontainers: <reason>: not implemented`): null
-  descriptors, arrays of resources, component mappings other than identity, minimum level-of-detail
+- Refused with E_NOTIMPL and the reason printed (`wcontainers: <reason>: not implemented`): arrays
+  of resources, component mappings other than identity, minimum level-of-detail
   clamps, level-of-detail bias, min/max filters, border colours and mirror-once without the back
   end's feature, alpha-antialiased lines, depth bias on lines and points, forced sample counts,
   conservative rasterisation, typed buffer views, UAV counters, counted occlusion queries,
   timestamps (the WebGPU back end lacks `TIMESTAMPS`; `GetTimestampFrequency` answers E_FAIL as for
-  a queue without them), pipeline and stream output statistics, bundles, stream output,
-  `ResolveSubresource`, rectangles in UAV clears, an occlusion query across passes, video command
-  lists, custom heaps.
+  a queue without them), pipeline and stream output statistics, stream output, rectangles in UAV
+  clears, an occlusion query across passes, video command lists, buffers in custom heaps the CPU
+  sees. The newer interfaces
+  (`ID3D12Device1` and later, `ID3D12GraphicsCommandList1` and later) are not offered, so
+  `QueryInterface` answers E_NOINTERFACE for them.
 - The Windows library (`examples/directx`, `d3d12.dll`, with `dxgi.dll` forwarding to it): as in run
   4, plus (run 5) `D3D12CreateRootSignatureDeserializer` and `D3D12CreateVersionedRootSignatureDeserializer`,
   the system library's export ordinals (101 for `D3D12CreateDevice`, and so on), one device per
@@ -172,6 +173,53 @@ compares the lines (`examples/check/cases.rs`). Run 7, RTX 3080, commit 7f5e0ed:
 How a file counts: the rig compares each test's verdict with real Direct3D 12's on this GPU
 (`wine-tests run`, below). "Real" counts tests that pass on real Direct3D 12. The rig's baseline now
 counts 174 vkd3d-d3d12 tests passing on real Direct3D 12 (172 before).
+
+The rig's rule is stricter since its fifth run (merged in run 9): a test that skips what real
+Direct3D 12 runs, or runs fewer checks, fails. Thirteen tests counted as passing in run 8 fail by
+that rule alone (they skip at an absent interface or feature: see the gap list); they are not
+regressions.
+
+Run 9 (2026-11-17, full run after deee187, RTX 3080; scratch run9/wine2.log), tests passing on
+real Direct3D 12 that pass through ours:
+- d3d12 (Wine): 7 of 7 (test_swapchain_refcount now passes).
+- vkd3d-d3d12: 74 of 174 by the stricter rule. Newly passing in run 9: null_cbv, null_srv,
+  bundle_state_inheritance, cube_maps, copy_texture_buffer, multisample_rendering, sample_mask, fractional_viewports, dispatch_zero_thread_groups.
+- vkd3d-d3d12_invalid_usage: 1 of 3; vkd3d-hlsl_d3d12: 8 of 9 (test_thread_id: StorageImage).
+- 49 tests crash, all after one of our refusals (the tests then use an object they did not get);
+  none panicked in our code.
+- After that run (not yet in a full run): `CheckFeatureSupport` past feature 34, more mip levels
+  than the chain, and `WriteToSubresource`/`ReadFromSubresource` that do the work. Run on named
+  tests only (run9/wine3.log): read_write_subresource and map_resource pass; create_heap and
+  create_committed_resource fail no check but run 191 of 192 and 80 of 85; create_placed_resource,
+  null_uav (StorageImage) and gather still crash; clear_render_target_view fails 7 of 273.
+What the 100 failing vkd3d-d3d12 tests stop at first (one test can have several):
+- The converter (G6), 30: StorageImage (10, with hlsl's thread_id), TypedBuffer (3, plus buffer_srv
+  and uav_load), Atomics (4), StorageCounter (3), ClipDistance (2), SampleCount,
+  MultisampledArrayTexture, InterpolateAt, RegisterSpace, dual-source blending's second output.
+- Geometry, hull and domain stages and stream output (the stage helper, G6): 12, and 5 that skip
+  at "stream output is not supported".
+- Interfaces not offered (front): `ID3D12Device1` (multi_fence_event), `ID3D12Device2`
+  (create_pipeline_state), `ID3D12Device5` (enumerate_meta_commands), `ID3D12Device8`
+  (resource_allocation_info), `ID3D12GraphicsCommandList2` (write_buffer_immediate).
+- Reported absent as Direct3D 12 expects, so the test skips (final gap list): tiled resources
+  (create_reserved_resource, get_resource_tiling), logic operations (output_merger_logic_op),
+  `SV_RenderTargetArrayIndex` from the vertex stage (ps_layer), resource binding tier 2
+  (unbounded_resource_arrays, unbounded_samplers), descriptor arrays (resource_arrays), float64
+  (shader_instructions).
+- Absent in WebGPU and refused: timestamps (query_timestamp, resolve_non_issued_query_data), pipeline
+  statistics (query_pipeline_statistics), logic operations in a pipeline
+  (create_graphics_pipeline_state).
+- Device removed at replay by a refusal: occlusion queries counted or across passes
+  (query_occlusion, resolve_query_data_in_different/reordered_command_list), a reinterpreting
+  view of a depth texture without a twin (sample_c_lz).
+- Front, still to find (no refusal first): check_feature_support, clear_depth_stencil_view,
+  clock_calibration, create_command_list, create_placed_resource (crashes with heap corruption,
+  0xc0000374), multisample_quality_levels, render_a8, root_signature_byte_code,
+  root_signature_limits, copy_descriptors, execute_indirect, primitive_restart,
+  64kb_texture_alignment, gather and gather_c, conditional_rendering, bufinfo_instruction,
+  clear_render_target_view (7 of 273 checks), unknown_rtv_format and
+  clear_unordered_access_view_image (a list's `Close` fails), instance_id and zero_vertex_stride
+  (instance step rates and zero strides on WebGPU).
 
 Run 8 (2026-11-17, commit 3405674, the first full run of this run), tests passing on real
 Direct3D 12 that pass through ours:
@@ -293,7 +341,22 @@ bundles, compute, queues, queries, copies (resolve) and msaa at calls not done; 
 tessellation and streamout at their stages (the stage helper, G6). Dual-source blending needs the
 converter to mark the second output (G6).
 
-## Gap list (run 8; the draft of the pass bar's written list)
+## Real program (run 9)
+
+`tools/graphics-rig/programs run --dll "d3d12.dll=%CARGO_TARGET_DIR%\debug\examples\d3d12.dll"
+--dll "dxgi.dll=%CARGO_TARGET_DIR%\debug\examples\dxgi.dll" godot-platformer-2d-d3d12` (first try,
+12:28 Pacific, build after deee187 with the subresource calls): FAIL, exit 0xc0000005 after 5.5 s,
+1 frame, 0 of 3 frames saved. Godot's output.log (scratch graphics-rig/programs/<program>) shows it
+made the device ("D3D12 11_0 - Forward+ - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3080"), then:
+- `CreateQueryHeap` of timestamps: E_NOTIMPL (absent on this back end; Godot logs it and goes on).
+- `CreateResource` of a texture with a heap flag the front refuses ("heap flags for sharing,
+  display, protection, write watching or atomics"; which flag is not printed yet: print it, and
+  likely serve `ALLOW_SHADER_ATOMICS`, 0x400, which needs nothing of us beyond atomics in shaders).
+- A compute shader with a storage image of no format: "image read/write without format is not
+  currently supported" (naga's SPIR-V reader; G6), so `CreateComputePipelineState` fails.
+Then it crashes, after those refusals.
+
+## Gap list (run 9; the draft of the pass bar's written list)
 
 Each line is an absent feature behind failing tests, and who provides it. A gap belongs on the final
 list only when it is the back end's or browser's to lack (reported absent as Direct3D 12 expects);
@@ -304,40 +367,43 @@ those tracks.
   where the adapter lacks `timestamp-query` (`GetTimestampFrequency` and `GetClockCalibration`
   answer E_FAIL); logic operations (`D3D12_FEATURE_DATA_D3D12_OPTIONS.OutputMergerLogicOp`
   false); conservative rasterisation, raster order views, tiled resources, ray tracing, mesh
-  shaders, variable rate shading, sampler feedback (all reported absent in `CheckFeatureSupport`).
+  shaders, variable rate shading, sampler feedback, float64, resource binding tier 2 and
+  descriptor arrays where the back end lacks big tables, `SV_RenderTargetArrayIndex` from the vertex
+  stage (all reported absent in `CheckFeatureSupport`).
 - Absent in WebGPU, served by slow paths still to write in the front: one-dimensional textures (as
-  2D), multisampled array textures, block-compressed textures whose top level is not a multiple of
-  4 (padded), vertex strides that are not a multiple of 4 (repacked), vertices past the bound
-  buffer in indirect draws (WebGPU skips the draw).
+  2D), multisampled array textures, vertex strides that are not a multiple of 4 (repacked), zero
+  strides and instance step rates, vertices past the bound buffer in indirect draws (WebGPU skips
+  the draw).
 - G6 (converter): StorageImage, TypedBuffer, Atomics, StorageCounter, RegisterSpace,
   DynamicOffset, ClipDistance, SampleCount, RenderTargetArrayIndex, InterpolateAt, dual-source
   blending's second output, the counting variant (counted occlusion), DrawBaseFromArguments
-  (`SV_VertexID` with a base vertex in `ExecuteIndirect`), `SPV_KHR_float_controls` from
-  dxil-spirv (Wine's d3d12 test_draw), the stage helper (geometry, hull, domain, stream output).
+  (`SV_VertexID` with a base vertex in `ExecuteIndirect`), the stage helper (geometry, hull,
+  domain, stream output).
 - G2 (WebGPU back end): `TIMESTAMPS`.
-- Front, this milestone: bundles, null descriptors, custom heaps and the sharing and display heap
-  flags, `WriteToSubresource`/`ReadFromSubresource`, depth views of `R32_TYPELESS` textures made
-  without the depth flag, swap chain reference counts (test_swapchain_refcount).
+- Front, this milestone: the newer interfaces (`ID3D12Device1` to `ID3D12Device8`,
+  `ID3D12GraphicsCommandList1` and later; abi.rs patches the `ID3D12Device` vtable only, so the
+  patch must move to the newest interface offered), depth views of `R32_TYPELESS` textures made
+  without the depth flag, the "still to find" tests under Test files, buffers in CPU-visible custom
+  heaps.
 
 ## Next, in this order
 
-1. Apply run 8's patch (above), regenerate nothing (com.rs is in it), then format, lint, run the
-   crate tests and the test files (`bin/wine-all.sh` below), fix what fails and commit. The desktop
-   stopped taking ssh connections in the middle of run 8 (TCP connects, then "Connection reset"
-   after key exchange, from about 10:30 to past 11:45 Pacific), so the patch was never built.
-   Check clear_render_target_view (twins), cube_maps, copy_texture_buffer and bufinfo_instruction
-   (the panics).
-2. `check_d3d12 cases` again: the webgpu branch now reads 24-bit depth by draws, so depth-planes
-   may now be equal. Add a case for the waitable object against real DXGI.
-3. The real Direct3D 12 program: `tools/graphics-rig/programs run --dll d3d12.dll=... --dll
-   dxgi.dll=... godot-platformer-2d-d3d12`, compared with the rig's references in
-   pyro-parked/wcontainers-scratch/graphics-rig/program-references. Not tried yet.
-4. The front gaps of the gap list: null descriptors, bundles, custom heaps, `WriteToSubresource`,
-   depth views of `R32_TYPELESS`, the WebGPU-refused cases (refuse honestly or serve by a slow
-   path), test_swapchain_refcount.
-5. Counted occlusion and timestamps against real Direct3D 12 when G6's counting variant and G2's
+1. A full run of the test files (`bin/wine-all.sh`) on the final tree of run 9: only the named
+   tests ran after the subresource calls, the feature answer and the mip clamp
+   (read_write_subresource and map_resource pass; create_heap and create_committed_resource have
+   no failed checks but run 191 of 192 and 80 of 85 checks: find which creations real Direct3D
+   takes that ours refuses).
+2. The real Direct3D 12 program, godot-platformer-2d-d3d12 (see "Real program" above): the heap
+   flag first, then what crashes it, then compare its frames with the rig's references.
+3. Offer the newer interfaces (Device1 to Device8, GraphicsCommandList1 to 4 at least): com.py
+   generates them; move abi.rs's vtable patch to the newest interface; methods not done answer
+   E_NOTIMPL with the reason. Five tests skip on them, and real programs ask for them.
+4. The "still to find" tests (Test files), create_placed_resource's heap corruption first.
+5. `check_d3d12 cases` again (depth-planes may now be equal: the webgpu branch reads 24-bit depth
+   by draws); add a case for the waitable object against real DXGI.
+6. Counted occlusion and timestamps against real Direct3D 12 when G6's counting variant and G2's
    `TIMESTAMPS` land; `SV_VertexID` with a base vertex when G6's `DrawBaseFromArguments` lands.
-6. vkd3d-shader_runner (302 files) through ours; recording without allocating per command, the
+7. vkd3d-shader_runner (302 files) through ours; recording without allocating per command, the
    call buffer of plan 4.8, moving `examples/directx` into `crates/wcontainers-directx`.
 
 ## For the Direct3D 11 track: using the infrastructure crate
@@ -541,7 +607,47 @@ A working example of all of it is this track's Windows library: `examples/direct
   passes") rather than summed over passes; a query begun where the open pass counts in another heap
   ends that pass.
 
-The next three entries describe run 8's patch, not yet on the branch.
+- Null descriptors (run 9, `src/device/null.rs`): a view made with no resource, or a constant
+  buffer view at address zero, binds a front-owned resource of zeros of the shape the program reads
+  (a 64 KiB buffer; 1x1 textures of the program's dimension, sample type and storage format, made
+  at pipeline creation). Writable ones are separate and zeroed again before the submission that
+  bound them ends, so a write through a null view is dropped for later submissions but visible to
+  reads through a null view later in the same submission (Direct3D 12 drops it at once). A null
+  view's `GetDimensions` answers 1 (or the 64 KiB buffer's length) where Direct3D 12 answers 0. An
+  unwritten (empty) descriptor slot is read the same way: Direct3D 12 leaves that undefined.
+- Custom heaps (run 9): properties are checked as a discrete adapter's (`ARCHITECTURE` says so);
+  memory the CPU does not see is a default heap; CPU-visible (L0, write-combine or write-back)
+  heaps hold textures stored as default ones. Their buffers are refused with E_NOTIMPL ("buffers in
+  a custom heap the CPU sees": the bytes would move both ways). Such textures `Map` with no pointer.
+  `WriteToSubresource` writes the box on the device thread (an ordered texture write) and
+  `ReadFromSubresource` reads it back at once (`ReadBackWait`); both check the box and subresource
+  and do nothing for an empty box. Neither asks for a `Map` first: Microsoft's documentation does,
+  but real Direct3D 12 on the RTX 3080 does not (vkd3d's test_read_write_subresource, 68 checks,
+  passes there without one).
+- `CheckFeatureSupport` answers E_INVALIDARG for features past 34
+  (`PROTECTED_RESOURCE_SESSION_TYPES`), which this desktop's Windows 10 runtime does not know and
+  refuses so (vkd3d's tests ask `D3D12_OPTIONS8` and `D3D12_OPTIONS16` and pass on it).
+- A texture made with more mip levels than its chain has (Direct3D 12 takes that and reports the
+  count asked for) is stored with the full chain only.
+- Bundles (run 9): `ExecuteBundle` records the closed bundle's commands into the direct list, and
+  they replay in its state; what they set stays set. Commands a bundle may not hold are not
+  refused at the bundle's `Close`.
+- Back buffers (run 9) share one reference on their swap chain while the program holds any of
+  them (DXGI's rule, measured by Wine's test_swapchain_refcount); the swap chain holds them weakly.
+- Creation checks (run 9, `resource::check_creation`): write states combined with others, buffer
+  clear values, flags and layouts, the states of upload and readback buffers, textures in upload
+  and readback heaps, zero sample counts, multisampled textures that are no target, target states
+  without the target flag, and block-compressed textures of part of a block (refused, as
+  Direct3D 12 on this Windows 10 desktop reports no unaligned block textures); heap alignments
+  other than 0, 64 KiB and 4 MiB, and heaps allowing display. Failed creation calls set the out
+  pointer to null.
+- The desktop refused new ssh logins all through run 9 (reset after key exchange, from before
+  11:45 to past 12:08 Pacific). Run 9 sent its rig commands over another checkout's shared
+  connection that was still open (a symlink at this checkout's control socket path to it,
+  ~/.ssh/wc-rig-78928cb75b0c7924, one session at a time), nothing in that checkout touched. The
+  link was removed at the end of run 9; if new logins still fail, the rig waits up to 20 minutes.
+
+The next entries came with run 8's patch, committed in run 9 (d89ad8d).
 - Views reinterpreting a typeless texture's bits (run 8) get a twin texture in the view's format,
   made at the first such descriptor (`Device::view_holder`), and the descriptor names the twin.
   The twin and its texture inherit each other's writes by the alias copies of plan 5.2 (counted

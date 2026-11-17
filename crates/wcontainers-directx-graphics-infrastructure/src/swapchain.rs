@@ -190,6 +190,8 @@ pub struct SwapChain<B: Backend> {
     presents: u64,
     latency: u32,
     in_flight: VecDeque<B::Fence>,
+    /// Presented frames whose GPU work has finished, counted when found finished.
+    retired: u64,
     copy: Copy<B>,
     encode: bool,
 }
@@ -252,6 +254,7 @@ impl<B: Backend> SwapChain<B> {
             presents: 0,
             latency: DEFAULT_LATENCY,
             in_flight: VecDeque::new(),
+            retired: 0,
             copy,
             encode,
         };
@@ -364,8 +367,21 @@ impl<B: Backend> SwapChain<B> {
                 break;
             }
             self.in_flight.pop_front();
+            self.retired += 1;
         }
         self.in_flight.len() as u32
+    }
+
+    /// Presented frames found finished so far (by `frames_queued` and the waits of `present`): what
+    /// DXGI's frame latency waitable object is released for.
+    pub fn frames_retired(&mut self, backend: &mut B) -> u64 {
+        self.frames_queued(backend);
+        self.retired
+    }
+
+    /// Whether presented frames are still on the GPU, without asking it.
+    pub fn frames_in_flight(&self) -> bool {
+        !self.in_flight.is_empty()
     }
 
     /// Whether a present now would block for frame pacing (`DXGI_PRESENT_DO_NOT_WAIT` then answers
@@ -460,6 +476,7 @@ impl<B: Backend> SwapChain<B> {
         while self.frames_queued(backend) > self.latency {
             let oldest = self.in_flight.pop_front().expect("frames are queued");
             backend.wait_fence(&oldest);
+            self.retired += 1;
         }
         Ok(())
     }

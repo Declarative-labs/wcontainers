@@ -10,7 +10,7 @@ use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture,
-    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
     FormatKind, FormatUse, GpuError, IndexBinding, IndexFormat, LoadOp, MAX_COLOR_TARGETS,
     MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc, Program, ReadSource,
     ReadState, SamplerDesc, ScissorRect, ShaderStage, SlowPath, StageSet, StepMode, StoreOp,
@@ -61,6 +61,7 @@ id!(
 mod alias;
 mod bind;
 mod indirect;
+mod null;
 mod query;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
@@ -147,6 +148,11 @@ struct Resource<B: Backend> {
     /// brought up to date.
     written: u64,
     synced: u64,
+    /// Textures holding this typeless texture's bits in formats the back end cannot view them as,
+    /// which inherit from it and from each other (`alias.rs`, `ReinterpretCopy`).
+    twins: Vec<ResourceId>,
+    /// Whether this is such a twin.
+    twin: bool,
 }
 
 /// A heap of `CreateHeap`. Each placed resource in a default heap has storage of its own (plan
@@ -263,6 +269,7 @@ pub struct Device<B: Backend> {
     /// The last write stamp given.
     stamp: u64,
     programs: query::Programs<B>,
+    nulls: null::Nulls<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
     /// The error that removed the device, if one did.
@@ -273,6 +280,8 @@ pub struct Device<B: Backend> {
 struct Chain<B: Backend> {
     chain: SwapChain<B>,
     buffers: Vec<ResourceId>,
+    /// The token of the frame latency waitable object, and the retired frames it was released for.
+    waitable: Option<(u64, u64)>,
 }
 
 impl<B: Backend> Device<B> {
@@ -300,6 +309,7 @@ impl<B: Backend> Device<B> {
             touched: Vec::new(),
             stamp: 0,
             programs: query::Programs::default(),
+            nulls: null::Nulls::default(),
             messages: Vec::new(),
             removed: None,
         }
@@ -396,7 +406,10 @@ impl<B: Backend> Device<B> {
             if desc.flags & resource::FLAG_DENY_SHADER_RESOURCE == 0 {
                 usage |= TextureUsage::SAMPLE;
             }
-            if desc.flags & (resource::FLAG_RENDER_TARGET | resource::FLAG_DEPTH_STENCIL) != 0 {
+            // Multisampled textures are made to draw into whatever their flags say (WebGPU's rule).
+            if desc.flags & (resource::FLAG_RENDER_TARGET | resource::FLAG_DEPTH_STENCIL) != 0
+                || desc.sample_count > 1
+            {
                 usage |= TextureUsage::RENDER;
             }
             if desc.flags & resource::FLAG_UNORDERED_ACCESS != 0 {
@@ -423,7 +436,8 @@ impl<B: Backend> Device<B> {
                 width: u32::try_from(desc.width).map_err(|_| Error::Invalid("texture too wide"))?,
                 height: desc.height.max(1),
                 depth_or_layers: u32::from(desc.depth_or_array_size).max(1),
-                mip_levels: desc.mips(),
+                // Direct3D 12 takes more levels than the chain has; the texture keeps the chain.
+                mip_levels: desc.mips().min(desc.full_chain()),
                 samples: desc.sample_count.max(1),
                 usage,
                 cube: false,
@@ -449,6 +463,8 @@ impl<B: Backend> Device<B> {
             inherits: Vec::new(),
             written: 0,
             synced: 0,
+            twins: Vec::new(),
+            twin: false,
         });
         Ok(id)
     }
@@ -457,11 +473,12 @@ impl<B: Backend> Device<B> {
     pub fn create_heap(
         &mut self,
         size: u64,
+        alignment: u64,
         heap: HeapType,
         flags: u32,
     ) -> Result<MemoryId, Error> {
         self.live()?;
-        resource::check_heap_flags(flags, false)?;
+        resource::check_heap(alignment, flags)?;
         if size == 0 {
             return Err(Error::Invalid("a heap of zero bytes"));
         }
@@ -530,6 +547,107 @@ impl<B: Backend> Device<B> {
         Ok(id)
     }
 
+    /// The region of subresource `sub` of texture `id` at `origin`, for slice `z` of a box.
+    fn subresource_region(
+        &self,
+        id: ResourceId,
+        sub: u32,
+        origin: Origin,
+        z: u32,
+    ) -> Result<TextureRegion<'_, B>, Error> {
+        let (texture, desc) = self.texture(id)?;
+        let mips = desc.mip_levels;
+        let three_d = desc.dimension == TextureDimension::D3;
+        Ok(TextureRegion {
+            texture,
+            mip: sub % mips,
+            layer: if three_d { 0 } else { sub / mips },
+            origin: Origin {
+                z: origin.z + z,
+                ..origin
+            },
+            stencil: false,
+        })
+    }
+
+    /// `WriteToSubresource`: the box at `origin` of `extent` texels of subresource `sub`, from
+    /// `data` with rows and slices the pitches' bytes apart.
+    pub fn write_subresource(
+        &mut self,
+        id: ResourceId,
+        sub: u32,
+        origin: Origin,
+        extent: Extent,
+        data: &[u8],
+        (row_pitch, depth_pitch): (u32, u32),
+    ) -> Result<(), Error> {
+        self.live()?;
+        let rows = extent.height.div_ceil(self.texture(id)?.1.format.block().1);
+        for z in 0..extent.depth_or_layers {
+            let start = (z * depth_pitch) as usize;
+            let region = self.subresource_region(id, sub, origin, z)?;
+            let (texture, region) = (region.texture.clone(), region);
+            let region = TextureRegion {
+                texture: &texture,
+                ..region
+            };
+            self.backend.write_texture(
+                &region,
+                Extent {
+                    depth_or_layers: 1,
+                    ..extent
+                },
+                &data[start..],
+                row_pitch,
+                rows,
+                WriteMode::Ordered,
+            );
+        }
+        Ok(())
+    }
+
+    /// `ReadFromSubresource`: the box of subresource `sub` into `data`, laid out as for
+    /// `write_subresource`, once the work recorded so far is done (`ReadBackWait`).
+    pub fn read_subresource(
+        &mut self,
+        id: ResourceId,
+        sub: u32,
+        origin: Origin,
+        extent: Extent,
+        data: &mut [u8],
+        (row_pitch, depth_pitch): (u32, u32),
+    ) -> Result<(), Error> {
+        self.live()?;
+        let (bw, bh, bytes) = self.texture(id)?.1.format.block();
+        let (rows, row) = (
+            extent.height.div_ceil(bh) as usize,
+            (extent.width.div_ceil(bw) * bytes) as usize,
+        );
+        let mut tight = vec![0; rows * row];
+        for z in 0..extent.depth_or_layers {
+            let region = self.subresource_region(id, sub, origin, z)?;
+            let (texture, region) = (region.texture.clone(), region);
+            self.backend.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        texture: &texture,
+                        ..region
+                    },
+                    extent: Extent {
+                        depth_or_layers: 1,
+                        ..extent
+                    },
+                },
+                &mut tight,
+            )?;
+            for (r, src) in tight.chunks(row).enumerate() {
+                let at = (z * depth_pitch) as usize + r * row_pitch as usize;
+                data[at..at + row].copy_from_slice(src);
+            }
+        }
+        Ok(())
+    }
+
     /// `GetGPUVirtualAddress`: zero for textures.
     pub fn address(&self, id: ResourceId) -> u64 {
         self.resources.get(id.0 as usize).map_or(0, |r| r.address)
@@ -572,6 +690,9 @@ impl<B: Backend> Device<B> {
             m.placed.retain(|p| p.2 != id);
         }
         self.disinherit(id, &r.inherits);
+        for t in r.twins {
+            self.destroy_resource(t);
+        }
         self.reads.retain(|p| p.resource != id);
         match r.storage {
             Storage::Buffer { buffer, .. } => self.backend.destroy(Object::Buffer(buffer)),
@@ -707,6 +828,7 @@ impl<B: Backend> Device<B> {
             bindings.extend(bind::stage_bindings(ps, StageSet::FRAGMENT));
         }
         bind::check(&root, &bindings)?;
+        self.prepare_nulls(&bind::null_shapes(&bindings))?;
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
         let raster = desc.raster.block(
@@ -791,6 +913,7 @@ impl<B: Backend> Device<B> {
         let cs = self.convert(cs, ShaderStage::Compute)?;
         let bindings = bind::stage_bindings(&cs, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
+        self.prepare_nulls(&bind::null_shapes(&bindings))?;
         let shader = self.backend.create_shader(&cs.modules[0])?;
         let program = self.backend.create_program(&Program::Compute(&shader));
         self.backend.destroy(Object::Shader(shader));
@@ -932,6 +1055,35 @@ impl<B: Backend> Device<B> {
 
     pub fn has_waiters(&self) -> bool {
         !self.waiters.is_empty()
+            || self
+                .chains
+                .iter()
+                .any(|(_, c)| c.waitable.is_some() && c.chain.frames_in_flight())
+    }
+
+    /// Gives swap chain `id` a frame latency waitable object, `token`, released once for each frame
+    /// that finishes from now on.
+    pub fn set_waitable(&mut self, id: ChainId, token: u64) {
+        if let Some(c) = self.chains.get_mut(id.0 as usize) {
+            let retired = c.chain.frames_retired(&mut self.backend);
+            c.waitable = Some((token, retired));
+        }
+    }
+
+    /// The waitable objects of swap chains whose frames finished since the last call, and how many
+    /// frames finished for each.
+    pub fn frames_finished(&mut self) -> Vec<(u64, u32)> {
+        let mut out = Vec::new();
+        for (_, c) in &mut self.chains {
+            if let Some((token, released)) = &mut c.waitable {
+                let retired = c.chain.frames_retired(&mut self.backend);
+                if retired > *released {
+                    out.push((*token, (retired - *released) as u32));
+                    *released = retired;
+                }
+            }
+        }
+        out
     }
 
     /// The tokens of events whose fence has reached its value, asking the back end without waiting.
@@ -1152,7 +1304,11 @@ impl<B: Backend> Device<B> {
         self.live().map_err(|_| GpuError::DeviceLost)?;
         let chain = SwapChain::new(&mut self.backend, window, desc)?;
         let buffers = adopt_buffers(&mut self.resources, &chain);
-        Ok(ChainId(self.chains.insert(Chain { chain, buffers }) as u32))
+        Ok(ChainId(self.chains.insert(Chain {
+            chain,
+            buffers,
+            waitable: None,
+        }) as u32))
     }
 
     /// The resource standing for back buffer `index` (`GetBuffer`).
@@ -1252,6 +1408,7 @@ impl<B: Backend> Device<B> {
             }
             replay.finish(self)
         });
+        let result = result.and_then(|()| self.zero_written_nulls());
         let submission = self.backend.submit();
         for r in &mut self.reads[first_read..] {
             r.submission = Some(submission.clone());
@@ -1265,6 +1422,10 @@ impl<B: Backend> Device<B> {
 
     /// Adds the upload resources command `c` reads.
     fn uploads_read(&self, c: &Command, out: &mut Vec<ResourceId>) {
+        if let Command::Bundle(commands) = c {
+            commands.iter().for_each(|c| self.uploads_read(c, out));
+            return;
+        }
         let mut add = |id: ResourceId| {
             if self
                 .resources
@@ -1400,7 +1561,13 @@ impl<B: Backend> Device<B> {
         desc: TextureViewDesc,
     ) -> Result<B::TextureView, Error> {
         let Some(Resource {
-            storage: Storage::Texture { texture, views, .. },
+            storage:
+                Storage::Texture {
+                    texture,
+                    views,
+                    desc: tdesc,
+                    ..
+                },
             ..
         }) = self.resources.get_mut(resource.0 as usize)
         else {
@@ -1408,6 +1575,15 @@ impl<B: Backend> Device<B> {
         };
         if let Some((_, view)) = views.iter().find(|(k, _)| *k == desc) {
             return Ok(view.clone());
+        }
+        let stored = tdesc.format;
+        if stored.linear() != desc.format.linear()
+            && !stored.is_depth_stencil()
+            && !self.backend.caps().has(Features::FORMAT_REINTERPRET)
+        {
+            return Err(Error::NotImplemented(
+                "a view reinterpreting a texture's bits without its twin",
+            ));
         }
         let view = self.backend.create_view(texture, &desc)?;
         views.push((desc, view.clone()));
@@ -1544,6 +1720,8 @@ fn adopt_buffers<B: Backend>(
             inherits: Vec::new(),
             written: 0,
             synced: 0,
+            twins: Vec::new(),
+            twin: false,
         });
         out.push(ResourceId(id as u32));
         i += 1;
@@ -1767,12 +1945,25 @@ impl<B: Backend> Replay<B> {
     }
 
     fn run(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
+        // A bundle's commands run in the calling list's state, and what they set stays set.
+        if let Command::Bundle(commands) = c {
+            return commands.iter().try_for_each(|c| self.run(d, c));
+        }
         d.touched.clear();
         if d.aliased != 0 {
             self.copies_due(d, c)?;
         }
         match c {
-            Command::Pipeline(p) => self.pipeline = Some(*p),
+            // Run at the top.
+            Command::Bundle(_) => {}
+            Command::Pipeline(p) => {
+                if !d.pipelines.contains(p.0 as usize) {
+                    return Err(Error::Invalid(
+                        "a pipeline state released before its list ran",
+                    ));
+                }
+                self.pipeline = Some(*p);
+            }
             Command::RootSignature { compute, root } => {
                 let signature = root.and_then(|r| d.roots.get(r.0 as usize).cloned());
                 if root.is_some() && signature.is_none() {
@@ -2648,6 +2839,10 @@ fn copy_texture<B: Backend>(
             1
         },
     };
+    // An empty box copies nothing.
+    if area.is_some_and(|a| a[3] <= a[0] || a[4] <= a[1] || a[5] <= a[2]) {
+        return Ok(());
+    }
     let src_origin = area.map_or([0; 3], |a| [a[0], a[1], a[2]]);
     let extent_of = |full: Extent| match area {
         Some(a) => Extent {
