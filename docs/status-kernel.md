@@ -4,13 +4,71 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 and K1 are done (K1's thirteen runs are in git history and in the Layer 1 section). K2 (many
-processes): the eighth run declared it done; two independent checks followed; the ninth run fixed the
-first one's findings and the tenth the second's (below). K3 (threads): the first run fixed the K2
-check's last findings and built threads, futexes and timers; the second built the per-thread `/proc`,
-layer 2's libc-test, scheduling between threads and clone's sharing flags; the third clone's last
-combinations and per-thread credentials; the fourth woken calls run at their turn, RLIMIT_CPU and
-the shared dumpable flag; the fifth and sixth the two K3 checks' findings (below). See Next.
+K0 to K3 are done (their runs are in git history and below). K4 (files outside) is partly built: its
+first run fixed the last K3 check's findings and built the FUSE side with the backend mounted as a
+volume; the root file system on the backend, mappings of backend files and layer 1 on the backend
+are not built yet (see Next).
+
+Built in K4's first run:
+- The K3 check's findings (each tested against the reference unless said otherwise):
+  - A periodic POSIX timer whose signal is ignored when it fires waits, as Linux's
+    `posixtimer_sig_ignore`, and sends it again when the signal's action stops being SIG_IGN
+    (`timer::unignore` from `rt_sigaction`; a SIG_DFL that ignores does not count, as
+    `do_sigaction`'s `was_ignored`). A one-shot timer is disarmed when it fires
+    (`posix_timer_queue_signal`), so `timer_gettime` gives 0 once it fired, 1 ns only while due
+    and not fired. ITIMER_REAL that fired and waits for SIGALRM to be taken reports 0
+    (`hrtimer_active`), so `alarm(0)` returns 0 then. tests/timers.rs
+    `ignored_and_blocked_timer_signals_match_reference` (guest/timerignore.c, the check's tignore,
+    tblocked and aignore, each part in its own child).
+  - Layer 1: the reference's caller ignores SIGPIPE (guest/layer1.c), which Linux keeps from our
+    caller, the container's first process; no generated call reads SIGPIPE's action. Seed 9393002
+    passed 30000 (below).
+  - Signals arriving from outside are injected at seeded moments (`driver::Injections::signal`,
+    through the new `Kernel::kill`, which sends from outside the container as `docker kill` does;
+    SIGKILL ends the first process). tests/procsignals.rs `injected_signals_change_nothing`
+    (guest/interrupted.c: pipes, sleeps, threads and waits written not to notice SIGUSR1; 40 signals
+    and 3 saves per seed, compared with a reference that gets none). `run_saving` became
+    `run_injected`.
+  - jobs.c `leader_exit`'s reference race and the stale status lines (Known issues; Partial list).
+- The FUSE side (fs/backend.rs). Every operation on the backend is the FUSE message Linux sends
+  (layouts from `fuse-abi` 0.2.0, protocol 7.40), handed to the host by `Host::backend_send`; the
+  answer comes back as `Event::BackendReply`. A call that needs an answer asks and parks on
+  `Channel::Backend`; when the answer comes, the call runs again from its start and every question
+  it asks again is answered from the replies its runs had, in order (`Client::ask`), so each
+  message goes once. The inodes and handles a call's answers give are held until the call ends.
+  No signal ends a wait for the backend (Linux's FUSE waits once a request is sent).
+- INIT asks for Linux's own flags less those that cache, hand locks to the backend or read
+  directories with attributes. Locks stay in the kernel, as Linux's FUSE without POSIX_LOCKS.
+- Built over the backend: path walks (LOOKUP; attributes asked again with GETATTR when this run of
+  the call has not had them), stat, fstat, statx, open (OPEN, OPENDIR, CREATE; O_TRUNC with the open
+  when the backend takes it, SETATTR otherwise), read and write (READ and WRITE in pieces of what
+  INIT allowed), lseek (GETATTR for SEEK_END, LSEEK for data and holes), getdents64 (READDIR),
+  close (FLUSH, then RELEASE when the last holder goes), fsync and fdatasync, mkdir, mknod,
+  symlink, link, unlink, rmdir, rename and renameat2 (RENAME, RENAME2), readlink, chmod, chown,
+  utimensat, truncate and ftruncate (SETATTR, with the set-user and set-group bits sent cleared as
+  `fuse_setattr` does when the backend does not kill them), statfs (STATFS), name_to_handle_at
+  (`fuse_encode_fh`), and execve of programs and scripts on the backend (read whole; each page is
+  the process's own copy).
+- Inodes the kernel holds no more are forgotten (FORGET with the lookups counted); an answer no
+  call takes gives back what it handed out (FORGET, RELEASE).
+- Notices: POLL wakes every wait on readiness; INVAL_INODE makes a held inode's attributes stale;
+  INVAL_ENTRY has nothing to drop; DELETE leaves a held inode with no links; STORE has nothing to
+  keep; RETRIEVE is answered with no bytes (NOTIFY_REPLY). RESEND and unknown codes are counted
+  "backend message unexpected". Not tested yet (the passthrough server sends none).
+- `Start::volume` mounts the backend at a path, as `docker run -v` (flags nosuid, nodev, noatime,
+  as the reference's FUSE mount shows).
+- The first backend: crates/wcontainers-kernel-test/backend, fuse-backend-rs 0.14.0's passthrough
+  file system and server (no file system written here), built for ARM64 Linux in a
+  `rust:1.91-alpine3.22` container (`backend::server`; fuse-backend-rs's build script cannot cross
+  build from macOS). `wc-backend pipe <dir>` serves over standard streams for our kernel;
+  `wc-backend mount <dir> <at> <command>` mounts it through Linux's FUSE with default_permissions
+  and allow_other and runs the command there without CAP_SYS_ADMIN, for the reference. The
+  directory is a tmpfs in the server's container. The test host answers in the server's order at
+  moments drawn from the seed (`driver::deliver`), and a save hands the server and the answers owed
+  to the copy.
+- Tests: tests/backend.rs `file_calls_match_reference` (guest/backendfiles.c, 3 seeds),
+  `file_calls_survive_saves` (12 saves a seed), `messages_per_call` (Measurements),
+  `file_mappings_match_reference` (ignored: mappings not built).
 
 Built in K3's sixth run (the second K3 check's findings, each tested against the reference unless
 said otherwise):
@@ -1087,11 +1145,7 @@ Partial (inside the list above), each with its reason:
 - process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
   `ptrace_may_access`, counted "call on another process not built", ENOSYS.
 - clone: namespaces are refused by Docker's profile as in the reference.
-- futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL. A shared
-  futex in a private file mapping is keyed by memory and address even before the page is copied
-  (Linux keys an unwritten page by the file).
-- timer_create: the timer's preallocated signal is not counted against RLIMIT_SIGPENDING (Linux
-  refuses a timer with EAGAIN over it).
+- futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL.
 - process_mrelease never frees anything: there is no dying process to free.
 - pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
@@ -1216,7 +1270,7 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   (measured by the check: a 50 s slack slept 49.964 s; the largest slack never ended) and on a busy
   one much sooner (the options test once saw four 2 s slacks end early under load 22).
 
-## Tests (last run 2026-11-16, K3's fourth run; counts under Measurements)
+## Tests (counts and the last whole-suite run under Measurements)
 
 All pass except the ignored known failures listed above. Added in K3's fifth run: timers
 `cpu_clock_sleeps_match_reference` (guest/cpusleep.c, with 2 saves a seed: sleeps on the process's
@@ -1744,6 +1798,25 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K4, first run: layer 1 seed 9393002 (the check's failing seed) passed 30000 with the SIGPIPE fix
+  (478.4 s, load 13.5 at the start, 32.2 at the end).
+- K4, first run: messages each kind of call sends to the backend, 100 of each less the setup,
+  measured by tests/backend.rs `messages_per_call` (seed 1; opcodes: 1 LOOKUP, 2 FORGET, 3 GETATTR,
+  9 MKDIR, 10 UNLINK, 11 RMDIR, 12 RENAME, 14 OPEN, 15 READ, 16 WRITE, 18 RELEASE, 25 FLUSH,
+  27 OPENDIR, 28 READDIR, 29 RELEASEDIR, 35 CREATE). Paths are `d/f` from the working directory, the
+  backend's root:
+  - stat: 2 LOOKUP, 1 GETATTR (the working directory's attributes for the search check).
+  - fstat: 1 GETATTR.
+  - open and close: 2 LOOKUP, 1 GETATTR, 1 OPEN, 1 FLUSH, 1 RELEASE.
+  - pread of 4 KiB: 1 READ. pwrite of 4 KiB: 1 WRITE.
+  - opendir, readdir to the end, closedir of 12 entries: 1 LOOKUP, 1 GETATTR, 1 OPENDIR, 2 READDIR,
+    1 FLUSH, 1 RELEASEDIR.
+  - create, close and unlink: 4 LOOKUP, 2 GETATTR, 1 CREATE, 1 FLUSH, 1 RELEASE, 1 UNLINK, 2 FORGET.
+  - mkdir and rmdir: 4 LOOKUP, 2 GETATTR, 1 MKDIR, 1 RMDIR, 2 FORGET.
+  - rename: 4 LOOKUP, 1 GETATTR, 1 RENAME.
+  The backend test (453 messages a run) takes about 1.1 s a seed including the reference container
+  (load about 15).
+
 - K3, sixth run: layer 1 fresh seeds 3030, 3031, 3032 at 20000 each, side by side (load 13 to 32):
   3031 passed (318.4 s), 3032 passed (317.8 s), 3030 failed at its timer_create (fixed above).
   Seed 3023 passed 20000 after the harness fix (313.8 s, load 13.8 to 14.3); the checker's seed
@@ -1911,6 +1984,21 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K4: the backend is mounted as a volume (`Start::volume`), not yet as the root (Next). The
+  reference for the backend runs the server as the container's first process and the program as
+  its child, in a container with /dev/fuse and CAP_SYS_ADMIN (dropped from the program's sets), so
+  Docker's seccomp profile there is the one for CAP_SYS_ADMIN; the program is not the first
+  process there.
+- K4: a call waiting for the backend is not interrupted (no FUSE_INTERRUPT); Linux sends INTERRUPT
+  on a signal and goes on waiting. A fatal signal ends the process at once here, and the answer
+  that comes later gives back what it handed out.
+- K4: FLUSH is sent by close only; descriptors closed by dup2, close_range, exec or exit send none
+  (Linux flushes at each). The passthrough server's FLUSH changes nothing visible.
+- K4: an open file's path for `/proc/<pid>/fd` on the backend is the name it was opened by, not a
+  followed link's target (walking again would ask the backend again).
+- K4: requests the backend took before a save are answered after it by the host that goes on with
+  the backend (the test host's copy); a host that cannot must bring the backend back with them.
 
 - K3, sixth run: setting the wall clock is not compared with the reference. Docker gives no
   CAP_SYS_TIME, and adding it would set the clock of every container on this shared machine (time
@@ -2101,6 +2189,9 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K4, first run: none. (`Host::backend_send`, `Event::BackendReply` and `Event::BackendNotice` are
+  used as they were.)
+
 - K3, sixth run: none.
 - K3, fifth run: none.
 - K3, fourth run: none.
@@ -2136,6 +2227,12 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K4, first run (from the K3 check): terminal's `job_control` (guest/jobs.c `leader_exit`) can fail
+  from a race in the reference: Linux's `disassociate_ctty` sends SIGHUP to the foreground group
+  before `session_clear_tty`, and on a loaded multi-CPU reference the job can open `/dev/tty` in that
+  window (theirs "job /dev/tty: 4", ours always the final ENXIO). Seen once in a whole-suite run at
+  load 40 to 60; three reruns alone passed. The test is left as it is.
 
 - K3, sixth run: layer 1 seed 3023 (open since the fifth run) was the harness: the IPC status calls
   (IPC_STAT, SEM_STAT, SEM_STAT_ANY and the shm and msg ones) write sequence numbers and times
@@ -2189,29 +2286,23 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K3 is complete (sixth run: the second K3 check's findings fixed). Next is K4 (see the plan). Left
-open:
-- Poll and select waiters watching descriptors share one channel (Known gaps).
-- A host wall clock step during a run is not seen as a setting (Departures).
-- The futex queues still allocate when a futex first gets waiters (Departures); the cost of a wait
-  was not measured.
+K4 goes on. Left for this milestone, most important first:
+1. The root file system on the backend, and a container's files unpacked from an image through
+   it: `Kernel::start` loads the first program synchronously today; with the root on the backend
+   the first exec must be a parked call like any other. Then layer 2's busybox, shell and thread
+   programs again on a backend root.
+2. Mappings of backend files, private and shared (counted "backend file mapping not built", ENODEV;
+   tests/backend.rs `file_mappings_match_reference` is ignored for it). A private mapping can copy
+   the file's pages at the mapping (READ); a shared one needs a block of shared pages filled from
+   the backend and written back with WRITE at msync, munmap and exit.
+3. Layer 1 on the backend, against Linux's FUSE on the same server, call by call.
+4. Extended attributes, fallocate, copy_file_range, splice and sendfile on backend files, access
+   checks through other paths (each still reaches only tmpfs code: they answer as for a file with
+   no such content); FLUSH at every close; tests of the notices (the test host could send them).
+5. The milestone's three fresh layer 1 seeds of 20000 with every fix in, at the end.
 
-Left open by the fourth run, by choice, and not holding K3:
-1. Lock waiters share one channel (Known gaps): waking only the waiters blocked on the lock that
-   changed (Linux's `fl_blocked_requests`) would keep woken-for-nothing waiters in the deadlock loops.
-2. sigio's reference race (Known issues), seen three times in whole-suite runs under load; the guest
-   could wait for the byte with a timeout rather than a poll of 0.
-3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator).
-
-Earlier:
-
-1. Both K2 checks' findings are fixed (ninth and tenth runs). The next milestone is K3 (see the
-   plan); the known gaps above come before K6's bar. Left open, by choice: rseq aborts on preemption
-   (K3), `/proc/<pid>/stat` and `status` pending signals (counted "proc fields not tracked"). A
-   restore into a kernel in its own WebAssembly memory comes with K7.
-2. Test binaries build guest programs into one shared directory, which a reference container may
-   read while another cargo invocation rewrites it (Known issues); each binary could build into its
-   own.
-3. The one-million-sequence layer 1 run once at the end of the kernel track (orchestrator). Seeds up
-   to 737 are used (and the checks' 91001 to 91003 and 8181801 to 8181803).
-
+Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
+not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
+sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
+737, 3023 to 3034, 4040001, and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001
+to 9393003.
