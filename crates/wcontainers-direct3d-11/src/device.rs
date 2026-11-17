@@ -158,6 +158,7 @@ impl<B: Backend> Device<B> {
             raster: Rc::new(Rasterizer {
                 desc: raster_desc,
                 gpu: Kept::new(raster, id(), Object::Raster, &graveyard),
+                masked: RefCell::new(Vec::new()),
             }),
         };
         Ok(Device {
@@ -688,8 +689,13 @@ impl<B: Backend> Device<B> {
                 usage |= u;
             }
         }
-        // The back end multisamples only textures drawn into, which Direct3D does not require.
-        if d.sample_count > 1 {
+        // The back end multisamples and resolves only into textures drawn into, which Direct3D does
+        // not require of a multisampled texture or of a resolve's destination.
+        let resolves_into = d.usage == usage::DEFAULT
+            && d.dimension == TexDim::D2
+            && resolvable(format)
+            && [2, 4, 8, 16].iter().any(|&n| self.takes_samples(format, n));
+        if d.sample_count > 1 || resolves_into {
             usage |= TextureUsage::RENDER;
         }
         // Unordered access views are cleared by clearing passes where the format can be drawn into.
@@ -1319,6 +1325,7 @@ impl<B: Backend> Device<B> {
         Ok(Rc::new(Rasterizer {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::Raster, &self.graveyard),
+            masked: RefCell::new(Vec::new()),
         }))
     }
 
