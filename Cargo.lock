@@ -1116,6 +1116,7 @@ dependencies = [
  "cfg-if",
  "crunchy",
  "num-traits",
+ "serde",
  "zerocopy",
 ]
 
@@ -1481,6 +1482,7 @@ dependencies = [
  "once_cell",
  "petgraph",
  "rustc-hash 1.1.0",
+ "serde",
  "spirv",
  "thiserror",
  "unicode-ident",
@@ -1495,6 +1497,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "rustc-hash 1.1.0",
+ "serde",
  "thiserror",
 ]
 
@@ -3227,8 +3230,12 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "cc",
+ "crc32fast",
+ "fastrand",
  "naga",
  "pollster",
+ "postcard",
+ "serde",
  "wcontainers-gpu",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",
