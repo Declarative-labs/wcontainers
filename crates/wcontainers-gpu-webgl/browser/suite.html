@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGL 2 back end suite</title>
+<script type="module">
+// Runs one test of the shared back-end suite through the WebGL 2 back end built for WebAssembly
+// (pkg/browser.js): ?test=<name>&off=<extensions to treat as missing, separated by spaces>. Sets
+// window.done to { ok, message } when it ends; a failing test panics and the module traps, so a page
+// runs one test.
+import init, { suite_test } from './pkg/browser.js';
+const params = new URLSearchParams(location.search);
+let canvas = null;
+let panic = '';
+window.makeContext = () => {
+  canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false, alpha: true });
+  if (!gl) throw new Error('no WebGL 2 context');
+  canvas.addEventListener('webglcontextlost', (e) => console.log(`context lost: ${e.statusMessage}`));
+  return gl;
+};
+// What the canvas shows, as the page composites it: drawn into a 2D canvas and read back.
+window.shownTexels = () => {
+  const view = document.createElement('canvas');
+  view.width = canvas.width;
+  view.height = canvas.height;
+  const c = view.getContext('2d');
+  c.drawImage(canvas, 0, 0);
+  return new Uint8Array(c.getImageData(0, 0, view.width, view.height).data.buffer);
+};
+window.panicked = (message) => { panic = message; };
+try {
+  await init();
+  suite_test(params.get('test'), params.get('off') ?? '');
+  window.done = { ok: true, message: '' };
+} catch (e) {
+  window.done = { ok: false, message: panic || String(e) };
+}
+</script>

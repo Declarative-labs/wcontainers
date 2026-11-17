@@ -99,13 +99,14 @@ pub trait Resources {
         level: Level,
         compare: Option<f32>,
     ) -> Result<[f64; 4], Error>;
-    /// Loads one texel.
+    /// Loads one texel, or one sample of a multisampled texel.
     fn load(
         &self,
         image: (u32, u32),
         coord: [i64; 3],
         layer: Option<i64>,
         level: i64,
+        sample: Option<i64>,
     ) -> Result<[f64; 4], Error>;
     /// The size of a level of the texture.
     fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error>;
@@ -680,7 +681,7 @@ impl<R: Resources> Invocation<'_, R> {
                 image,
                 coordinate,
                 array_index,
-                sample: None,
+                sample,
                 level,
             } => {
                 let kind = match *self.kind(image) {
@@ -709,7 +710,8 @@ impl<R: Resources> Invocation<'_, R> {
                 }
                 let layer = array_index.map(|a| self.eval(a)?.int()).transpose()?;
                 let level = level.map(|l| self.eval(l)?.int()).transpose()?.unwrap_or(0);
-                let texel = self.resources.load(image, c, layer, level)?;
+                let sample = sample.map(|n| self.eval(n)?.int()).transpose()?;
+                let texel = self.resources.load(image, c, layer, level, sample)?;
                 if depth {
                     Value::F32(texel[0] as f32)
                 } else {

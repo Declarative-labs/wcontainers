@@ -95,9 +95,12 @@ pub(crate) type DepthOps = (Id, Option<AspectOps<u32>>, Option<AspectOps<u8>>);
 /// The open pass: its attachments, as (view, 3D slice).
 pub(crate) struct Pass {
     pub colors: [Option<(Id, u32, StoreOp)>; MAX_COLOR_TARGETS],
+    /// Multisampled attachments and the views they resolve into when the pass ends.
+    pub resolves: Vec<(Id, Id)>,
     pub depth: Option<DepthOps>,
     pub width: u32,
     pub height: u32,
+    pub samples: u32,
     pub occlusion: Option<Id>,
     /// The running occlusion query and whether any sample passed.
     pub query: Option<(u32, u64)>,
@@ -154,7 +157,8 @@ impl Recorder {
             if !texel::held(f) {
                 continue;
             }
-            *n = 1;
+            // One sample, and four for every format drawn into (bit n for 2^n samples).
+            *n = 0b101;
             *u = FormatUse::SAMPLE | FormatUse::COPY_OUT;
             if f.is_depth_stencil() {
                 *u |= FormatUse::DEPTH_STENCIL;
@@ -212,6 +216,8 @@ impl Recorder {
                     | Features::PROVOKING_VERTEX_FIRST
                     | Features::PROVOKING_VERTEX_LAST
                     | Features::SAMPLE_SHADING
+                    | Features::SAMPLE_MASK
+                    | Features::MULTISAMPLE_READ
                     | Features::TEXTURE_VIEWS
                     | Features::FRACTIONAL_VIEWPORT
                     | Features::FRACTIONAL_DEPTH_BIAS
@@ -237,6 +243,14 @@ impl Recorder {
             violations: Vec::new(),
             shown: Vec::new(),
         }
+    }
+
+    /// A recording back end whose capabilities `change` alters (a feature or a format's uses taken
+    /// away), so a test drives the route a helper takes on back ends without them.
+    pub fn with_caps(change: impl FnOnce(&mut Caps)) -> Self {
+        let mut r = Self::new();
+        change(&mut r.caps);
+        r
     }
 
     /// The bytes every live buffer and texture holds, by object, and the frames shown: what two
@@ -449,7 +463,7 @@ impl Recorder {
         let mip = (sub as u32) / layers(&t.desc);
         let (w, h, _) = level_size(&t.desc, mip);
         let size = format.block().2 as usize;
-        let plane = (w * h) as usize * size;
+        let plane = (w * h * t.desc.samples) as usize * size;
         let bytes = &mut t.subresources[sub][slice as usize * plane..(slice as usize + 1) * plane];
         for texel in bytes.chunks_exact_mut(size) {
             f(texel);
@@ -469,19 +483,47 @@ impl Recorder {
                 }
             }
         };
+        let mut count = None;
+        let mut same_samples = |n: u32| -> Result<(), String> {
+            match count {
+                Some(c) if c != n => Err("attachments of different sample counts".to_string()),
+                _ => {
+                    count = Some(n);
+                    Ok(())
+                }
+            }
+        };
         let mut colors = [None; MAX_COLOR_TARGETS];
+        let mut resolves = Vec::new();
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else { continue };
-            if c.resolve.is_some() {
-                return Err("a resolve target, but no texture here is multisampled".into());
-            }
             let (w, h) = self.view_size(*c.view)?;
             same(w, h)?;
             let format = self.view(*c.view)?.desc.format;
             if format.is_depth_stencil() {
                 return Err("a depth format as a colour attachment".into());
             }
-            self.attachment(*c.view, c.depth_slice)?;
+            let (texture, _, _) = self.attachment(*c.view, c.depth_slice)?;
+            let samples = self.texture(texture)?.desc.samples;
+            same_samples(samples)?;
+            if let Some(r) = c.resolve {
+                let (rw, rh) = self.view_size(*r)?;
+                same(rw, rh)?;
+                let (rt, _, _) = self.attachment(*r, 0)?;
+                if samples == 1 || self.texture(rt)?.desc.samples != 1 {
+                    return Err(
+                        "a resolve from a single-sampled attachment or into a multisampled one"
+                            .into(),
+                    );
+                }
+                if self.view(*r)?.desc.format != format {
+                    return Err("a resolve target of another format than its attachment".into());
+                }
+                if !resolvable(format) {
+                    return Err("a resolve of a format that cannot be averaged".into());
+                }
+                resolves.push((*c.view, *r));
+            }
             colors[i] = Some((*c.view, c.depth_slice, c.store));
         }
         let mut depth = None;
@@ -497,12 +539,13 @@ impl Recorder {
             if d.depth.is_some() != has_depth || d.stencil.is_some() != has_stencil {
                 return Err("depth attachment aspects differ from the format's".into());
             }
-            self.attachment(*d.view, 0)?;
+            let (texture, _, _) = self.attachment(*d.view, 0)?;
+            same_samples(self.texture(texture)?.desc.samples)?;
             depth = Some((*d.view, d.depth, d.stencil));
         }
-        let (width, height) = match (size, pass.empty) {
-            (Some(s), None) => s,
-            (None, Some(e)) => (e.width, e.height),
+        let (width, height, samples) = match (size, pass.empty) {
+            (Some(s), None) => (s.0, s.1, count.unwrap_or(1)),
+            (None, Some(e)) => (e.width, e.height, e.samples),
             (Some(_), Some(_)) => return Err("a pass with attachments and `empty`".into()),
             (None, None) => return Err("a pass with no attachment and no `empty`".into()),
         };
@@ -554,9 +597,11 @@ impl Recorder {
         }
         self.pass = Some(Pass {
             colors,
+            resolves,
             depth,
             width,
             height,
+            samples,
             occlusion: pass.occlusion.copied(),
             query: None,
             written: Vec::new(),
@@ -569,6 +614,17 @@ impl Recorder {
         let pass = self.pass.take().ok_or("end_pass without a pass")?;
         if pass.query.is_some() {
             return Err("a pass ended with its query running".into());
+        }
+        for (from, to) in pass.resolves {
+            let format = self.view(from)?.desc.format;
+            let (src, ..) = self.attachment(from, 0)?;
+            let (dst, sub, _) = self.attachment(to, 0)?;
+            let src_sub = subresource(
+                &self.texture(src)?.desc,
+                self.view(from)?.desc.base_mip,
+                self.view(from)?.desc.base_layer,
+            );
+            self.average(src, src_sub, dst, sub, format)?;
         }
         for (view, slice, store) in pass.colors.into_iter().flatten() {
             if store == StoreOp::Discard {
@@ -613,6 +669,37 @@ impl Recorder {
         }
     }
 
+    /// Writes into subresource `dst_sub` of `dst` the average of the samples of subresource `src_sub`
+    /// of `src`, as values of `format`.
+    fn average(
+        &mut self,
+        src: Id,
+        src_sub: usize,
+        dst: Id,
+        dst_sub: usize,
+        format: Format,
+    ) -> Result<(), String> {
+        let s = self.texture(src)?;
+        let n = s.desc.samples as usize;
+        let size = format.block().2 as usize;
+        let bytes = &s.subresources[src_sub];
+        let plane = bytes.len() / n;
+        let mut out = vec![0u8; plane];
+        for (i, texel) in out.chunks_exact_mut(size).enumerate() {
+            let mut sum = [0.0; 4];
+            for k in 0..n {
+                let at = k * plane + i * size;
+                let v = texel::decode(format, &bytes[at..at + size]);
+                for c in 0..4 {
+                    sum[c] += v[c];
+                }
+            }
+            texel::encode(format, sum.map(|x| x / n as f64), texel);
+        }
+        self.texture_mut(dst)?.subresources[dst_sub] = out;
+        Ok(())
+    }
+
     /// Notes bytes a command recorded now reads or writes, part of the next submit.
     pub(crate) fn touch(&mut self, buffer: Id, start: u64, end: u64) {
         self.touched.push((buffer, start, end, self.submits + 1));
@@ -622,6 +709,11 @@ impl Recorder {
         let ready_at = self.submits + 1;
         self.add(Obj::Readback { bytes, ready_at })
     }
+}
+
+/// Whether samples of `format` can be averaged by a resolve: colour formats that are not integers.
+fn resolvable(format: Format) -> bool {
+    !format.is_depth_stencil() && !texel::integer(format)
 }
 
 /// Every format, in the order of [`Caps::formats`].
@@ -760,6 +852,12 @@ fn for_rows(
     mut f: impl FnMut(usize, usize, usize),
 ) -> Result<(), String> {
     let (bw, bh, size) = desc.format.block();
+    if desc.samples > 1 {
+        return Err(
+            "a multisampled texture's bytes moved other than by a draw, a resolve or a whole copy"
+                .into(),
+        );
+    }
     if region.mip >= desc.mip_levels {
         return Err("a region past the last level".into());
     }
@@ -877,12 +975,23 @@ impl Backend for Recorder {
                     "cube texture whose layers are not whole cubes",
                 ));
             }
+            if desc.samples > 1
+                && (desc.dimension != TextureDimension::D2
+                    || desc.mip_levels != 1
+                    || desc.depth_or_layers != 1
+                    || desc.usage.contains(TextureUsage::STORAGE))
+            {
+                return Err(GpuError::Invalid(
+                    "a multisampled texture that is not 2D with one level and one layer, or is storage",
+                ));
+            }
+            // A multisampled level holds its samples as consecutive planes.
             let mut subresources = Vec::new();
             for mip in 0..desc.mip_levels {
                 let (row, rows) = level_rows(desc, mip);
                 let (_, _, slices) = level_size(desc, mip);
                 for _ in 0..layers(desc) {
-                    subresources.push(vec![0; row * rows * slices as usize]);
+                    subresources.push(vec![0; row * rows * (slices * desc.samples) as usize]);
                 }
             }
             let id = self.add(Obj::Texture(TextureObj {
@@ -1350,6 +1459,23 @@ impl Backend for Recorder {
             if texel::bits_group(sf) != texel::bits_group(df) {
                 return Err("copy between formats of different typeless groups".into());
             }
+            let (sd, dd) = (r.texture(*src.texture)?.desc, r.texture(*dst.texture)?.desc);
+            if sd.samples > 1 || dd.samples > 1 {
+                let whole = |d: &TextureDesc, at: &TextureRegion<'_, Self>| {
+                    at.origin == (Origin { x: 0, y: 0, z: 0 })
+                        && (extent.width, extent.height, extent.depth_or_layers)
+                            == (d.width, d.height, 1)
+                };
+                if sd.samples != dd.samples || !whole(&sd, src) || !whole(&dd, dst) {
+                    return Err(
+                        "a multisampled copy that is not of whole subresources of one sample count"
+                            .into(),
+                    );
+                }
+                let bytes = r.texture(*src.texture)?.subresources[0].clone();
+                r.texture_mut(*dst.texture)?.subresources[0] = bytes;
+                return Ok(());
+            }
             let bytes = r.read_region(src, extent)?;
             let (bw, bh, size) = sf.block();
             let pitch = extent.width.div_ceil(bw) * size;
@@ -1483,7 +1609,35 @@ impl Backend for Recorder {
         format: Format,
     ) {
         self.log(Call::Resolve(Region::of(src), Region::of(dst), format));
-        self.violate("resolve: this back end makes no multisampled texture to resolve");
+        self.check(|r| {
+            r.outside_pass("resolve")?;
+            r.texture_for(*src.texture, TextureUsage::RENDER, "resolve")?;
+            r.texture_for(*dst.texture, TextureUsage::RENDER, "resolve")?;
+            let (s, d) = (r.texture(*src.texture)?.desc, r.texture(*dst.texture)?.desc);
+            if s.samples == 1 || d.samples != 1 {
+                return Err(
+                    "a resolve from a single-sampled texture or into a multisampled one".into(),
+                );
+            }
+            if format.linear() != s.format.linear() || d.format.linear() != s.format.linear() {
+                return Err(
+                    "a resolve between formats other than one format and its sRGB twin".into(),
+                );
+            }
+            if !resolvable(format) {
+                return Err("a resolve of a format that cannot be averaged".into());
+            }
+            if dst.mip >= d.mip_levels
+                || dst.layer >= layers(&d)
+                || level_size(&d, dst.mip) != level_size(&s, 0)
+                || src.mip != 0
+                || src.layer != 0
+            {
+                return Err("a resolve between subresources of different sizes".into());
+            }
+            let sub = subresource(&d, dst.mip, dst.layer);
+            r.average(*src.texture, 0, *dst.texture, sub, format)
+        });
     }
 
     fn submit(&mut self) -> Id {
