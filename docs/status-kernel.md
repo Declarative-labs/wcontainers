@@ -4,7 +4,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K4 are done. K5 (sockets and network) has had seven runs; what is left is under Next. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
+K0 to K4 are done. K5 (sockets and network) is built: every part of its milestone exists and is
+tested against the reference, and at the seventh run's end (187f214) the fresh layer 1 seeds
+5050453, 5050456 and 5050457 passed 20000 sequences each with every fix in. What remains are
+single corner differences and options not built, each counted, listed under Next for later runs. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
 and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
 
