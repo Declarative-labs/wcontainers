@@ -155,6 +155,7 @@ suite!(
     bgra_textures_keep_their_byte_order,
     sampled_views_are_whole_textures_of_one_mip_range,
     generate_mipmap_equals_the_draws,
+    sixteen_bit_normalised_formats_follow_their_extension,
 );
 
 thread_local! {

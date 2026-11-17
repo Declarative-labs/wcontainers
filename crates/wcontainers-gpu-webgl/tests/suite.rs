@@ -265,3 +265,8 @@ fn sampled_views_are_whole_textures_of_one_mip_range() {
 fn generate_mipmap_equals_the_draws() {
     checks::generate_mipmap_equals_the_draws::<Angle>();
 }
+
+#[test]
+fn sixteen_bit_normalised_formats_follow_their_extension() {
+    checks::sixteen_bit_normalised_formats_follow_their_extension::<Angle>();
+}

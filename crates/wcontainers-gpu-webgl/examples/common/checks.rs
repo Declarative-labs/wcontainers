@@ -743,6 +743,11 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rgba8UnormSrgb, Format::Rgba8Uint),
         (Format::Bgra8Unorm, Format::Bgra8UnormSrgb),
         (Format::Bgra8UnormSrgb, Format::Bgra8Unorm),
+        (Format::Rgba16Unorm, Format::Rgba16Uint),
+        (Format::Rgba16Uint, Format::Rgba16Unorm),
+        (Format::R16Unorm, Format::R16Uint),
+        (Format::Rg16Sint, Format::Rg16Unorm),
+        (Format::Rg16Unorm, Format::Rg16Sint),
     ];
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
@@ -1089,6 +1094,96 @@ pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
     }
 }
 
+/// The 16-bit normalised formats follow EXT_texture_norm16: with it, the unsigned ones sample,
+/// filter, render, blend and read back, as stored, now and later, and the signed ones sample and
+/// filter; without it, none has a use and making one is refused.
+pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
+    use crate::kit;
+    use Format as F;
+    let mut b = H::make();
+    let has = b.caps().formats.get(F::Rgba16Unorm) != FormatUse::empty();
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    for format in [F::R16Unorm, F::Rg16Unorm, F::Rgba16Unorm] {
+        let uses = b.caps().formats.get(format);
+        if !has {
+            assert_eq!(uses, FormatUse::empty(), "{format:?}");
+            continue;
+        }
+        let want = FormatUse::SAMPLE
+            | FormatUse::FILTER
+            | FormatUse::RENDER
+            | FormatUse::BLEND
+            | FormatUse::COPY_OUT;
+        assert!(uses.contains(want), "{format:?}: {uses:?}");
+        let texel = format.block().2 as usize;
+        let bytes = pattern(12 * texel, 0x51ed_270b);
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 3, 1],
+            1,
+            usage,
+            false,
+        );
+        let region = TextureRegion {
+            texture: &t,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let extent = Extent {
+            width: 4,
+            height: 3,
+            depth_or_layers: 1,
+        };
+        b.write_texture(
+            &region,
+            extent,
+            &bytes,
+            4 * texel as u32,
+            3,
+            WriteMode::Ordered,
+        );
+        assert_eq!(
+            kit::read(&mut b, &t, 0, 0, [4, 3, 1], texel, false),
+            bytes,
+            "{format:?} now"
+        );
+        let rb = b
+            .read_back(&ReadSource::Texture { region, extent })
+            .expect("read_back");
+        b.submit();
+        b.wait_read(&rb);
+        let mut later = vec![0; bytes.len()];
+        b.finish_read(rb, &mut later);
+        assert_eq!(later, bytes, "{format:?} later");
+    }
+    for format in [F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm] {
+        let uses = b.caps().formats.get(format);
+        if has {
+            assert_eq!(uses, FormatUse::SAMPLE | FormatUse::FILTER, "{format:?}");
+        } else {
+            assert_eq!(uses, FormatUse::empty(), "{format:?}");
+            let made = b.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: 4,
+                height: 4,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::SAMPLE,
+                cube: false,
+                reinterpret: false,
+            });
+            assert!(matches!(made, Err(GpuError::Invalid(_))), "{format:?}");
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
 /// `generate_mips` of formats that render and filter, which this back end fills by
 /// `generateMipmap`, equals the interface's draws (`generate_mips_by_draws`) on a texture with the
 /// same texels: 2D, 2D array of odd size, cube and 3D textures, every level and only the last two
@@ -1108,7 +1203,14 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         (TextureDimension::D3, [8, 8, 4], false),
     ];
     let mut tested = 0;
-    for format in [F::Rgba8Unorm, F::Rgba8UnormSrgb, F::Bgra8Unorm, F::R32Float] {
+    for format in [
+        F::Rgba8Unorm,
+        F::Rgba8UnormSrgb,
+        F::Bgra8Unorm,
+        F::R32Float,
+        F::Rgba16Unorm,
+        F::R16Unorm,
+    ] {
         let need = FormatUse::RENDER | FormatUse::FILTER | FormatUse::COPY_OUT;
         if !b.caps().formats.get(format).contains(need) {
             continue;

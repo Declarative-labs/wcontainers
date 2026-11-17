@@ -60,6 +60,13 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
         F::R16Uint => f(R16UI, RED_INTEGER, UNSIGNED_SHORT, int),
         F::R16Sint => f(R16I, RED_INTEGER, SHORT, int),
         F::R16Float => f(R16F, RED, HALF_FLOAT, Half),
+        // 16-bit normalised formats with EXT_texture_norm16 ([`uses`] gives none without it).
+        F::R16Unorm => f(R16, RED, UNSIGNED_SHORT, norm),
+        F::R16Snorm => f(R16_SNORM, RED, SHORT, snorm),
+        F::Rg16Unorm => f(RG16, RG, UNSIGNED_SHORT, norm),
+        F::Rg16Snorm => f(RG16_SNORM, RG, SHORT, snorm),
+        F::Rgba16Unorm => f(RGBA16, RGBA, UNSIGNED_SHORT, norm),
+        F::Rgba16Snorm => f(RGBA16_SNORM, RGBA, SHORT, snorm),
         F::Rg8Unorm => f(RG8, RG, UNSIGNED_BYTE, norm),
         F::Rg8Snorm => f(RG8_SNORM, RG, BYTE, snorm),
         F::Rg8Uint => f(RG8UI, RG_INTEGER, UNSIGNED_BYTE, int),
@@ -135,6 +142,7 @@ pub struct FormatExtensions {
     pub color_buffer_float: bool,
     pub float_linear: bool,
     pub float_blend: bool,
+    pub norm16: bool,
 }
 
 impl FormatExtensions {
@@ -143,6 +151,7 @@ impl FormatExtensions {
             color_buffer_float: ext.contains("EXT_color_buffer_float"),
             float_linear: ext.contains("OES_texture_float_linear"),
             float_blend: ext.contains("EXT_float_blend"),
+            norm16: ext.contains("EXT_texture_norm16"),
         }
     }
 }
@@ -156,6 +165,10 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     let Some(gl) = gl_format(format) else {
         return FormatUse::empty();
     };
+    let norm16 = matches!(gl.class, Class::Norm { .. }) && matches!(gl.ty, UNSIGNED_SHORT | SHORT);
+    if norm16 && !ext.norm16 {
+        return FormatUse::empty();
+    }
     let target = FormatUse::RENDER | FormatUse::BLEND;
     let mut uses = FormatUse::SAMPLE
         | match gl.class {
@@ -237,8 +250,8 @@ impl ReadAs {
 
 /// How GLES 3.0's `readPixels` reads `format` back exactly (its always-supported pairs: normalised
 /// bytes as RGBA bytes, integers as RGBA 32-bit integers, and floats as RGBA floats with
-/// EXT_color_buffer_float), or None where it cannot: formats that are not colour-renderable, packed
-/// ones and 16-bit floats.
+/// EXT_color_buffer_float; 16-bit normalised ones as RGBA shorts with EXT_texture_norm16), or None
+/// where it cannot: formats that are not colour-renderable, packed ones and 16-bit floats.
 pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
     let gl = gl_format(format)?;
     let comp_kept = match gl.ty {
@@ -249,6 +262,9 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
     };
     let (format_read, ty, comp_read) = match gl.class {
         Class::Norm { render: true } if gl.ty == UNSIGNED_BYTE => (RGBA, UNSIGNED_BYTE, 1),
+        Class::Norm { render: true } if gl.ty == UNSIGNED_SHORT && ext.norm16 => {
+            (RGBA, UNSIGNED_SHORT, 2)
+        }
         Class::Int { render: true } if matches!(gl.ty, BYTE | SHORT | INT) => {
             (RGBA_INTEGER, INT, 4)
         }
