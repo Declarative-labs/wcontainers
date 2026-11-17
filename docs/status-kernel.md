@@ -10,7 +10,51 @@ first one's findings and the tenth the second's (below). K3 (threads): the first
 check's last findings and built threads, futexes and timers; the second built the per-thread `/proc`,
 layer 2's libc-test, scheduling between threads and clone's sharing flags; the third clone's last
 combinations and per-thread credentials; the fourth woken calls run at their turn, RLIMIT_CPU and
-the shared dumpable flag; the fifth the K3 check's findings (below). K3 is complete; see Next.
+the shared dumpable flag; the fifth and sixth the two K3 checks' findings (below). See Next.
+
+Built in K3's sixth run (the second K3 check's findings, each tested against the reference unless
+said otherwise):
+- A call that a stop interrupted keeps its restart code across a save (`Kernel::restore` leaves a
+  `Resume::Return` of an ERESTART code alone; the signals acted on at SIGCONT turn it into the call
+  again or EINTR). Before, a restore wrote 512 or 516 into x0 and the call answered it (the check's
+  blocking finding: cpusleep under seeds 507 and 520, stopread). tests/procsignals.rs
+  `stopped_calls_go_on_match_reference` (guest/stopread.c, 6 saves) fails without the fix under
+  seed 2 and passes with it; seeds 507 and 520 of cpusleep pass.
+- ppoll and pselect6 that watch no descriptor (musl's `pause` is ppoll(NULL, 0, NULL, NULL)) park
+  on `Channel::Nothing`, so only their time or a signal ends them; before, every object change woke
+  them and an idle thread took a process signal Linux gives the first thread. tests/threads.rs
+  `process_signal_takers_match_reference` (guest/sigpick.c). The reference runs on one CPU there:
+  on several CPUs its choice raced once in about ten runs (thread 1 instead of 0, under load 30 to
+  90; 8 of 8 one-CPU runs matched).
+- A child belongs to the thread that made it (`Process::parent_thread`, Linux's `real_parent`): at
+  that thread's end its children go to the first live thread of the process with their parent
+  death signals (`hand_children_to`, as `forget_original_parent`), a wait with __WNOTHREAD sees only
+  the caller's own children (ECHILD for another thread's), a wait looks at the caller's children
+  before the other threads' in turn (`do_wait`), and an exec from another thread renumbers them.
+  tests/threads.rs `parent_threads_match_reference` (guest/threadparent.c).
+- SCHED_FLAG_RESET_ON_FORK as `sched_fork`: real-time and deadline become SCHED_OTHER at nice 0,
+  other policies stay with a negative nice raised to 0, and the custom slice goes (guest/schedattr.c
+  now forks a SCHED_BATCH child).
+- Shared futex keys as `get_futex_key` on pages the futex cannot write: a read-only private file
+  page not yet copied is keyed by the file (a MAP_SHARED mapping of it wakes it); a read-only
+  anonymous page or copied private page is EFAULT. tests/threads.rs `futex_keys_match_reference`
+  (the check's guest/futexkeys.c, 2 saves).
+- splice into a file without `splice_write` (process, timer and signal descriptors, message queues,
+  `/proc`, secret memory, `/dev/full`) is EINVAL before the pipe is looked at (`do_splice_from`);
+  guest/sendanon.c. Layer 1 seed 5150002 then passed 25000 sequences.
+- A restore that finds the wall clock moved against the monotonic clock is a setting of the wall
+  clock, as Linux's resume from suspend (`Kernel::clock_was_set`, `timer::clock_was_set`): timers on
+  the wall clock's base (timer descriptors on CLOCK_REALTIME, absolute POSIX timers on it, POSIX
+  timers on CLOCK_TAI) and calls waiting for a wall clock time (`Call::wall`: absolute futex waits,
+  FUTEX_LOCK_PI, absolute clock_nanosleep, message queue time-outs, and a futex restart) move with
+  it, and timer descriptors set with TFD_TIMER_CANCEL_ON_SET are canceled (read and settime answer
+  ECANCELED once, poll shows them readable). tests/timers.rs `wall_clock_setting_moves_its_timers`
+  (guest/wallset.c; the test host moves its wall clock two hours at each of 20 saves). Not compared
+  with the reference (see Departures); the test fails without the change.
+- CSIGNAL comes from the generated constants.
+- Not changed: a timer set to a time already past fires by the very next call here, where the
+  reference's interrupt usually comes just after it (the check's tpast.c). The plan's section 15
+  gives clock and timer precision to the host, and the reference itself races there (timercorner).
 
 Built in K3's fifth run (the K3 check's findings):
 - clock_nanosleep on a CPU clock (the process's, another thread's, another process's) is a timer
@@ -988,7 +1032,7 @@ Partial (inside the list above), each with its reason:
   GET/SET_NO_NEW_PRIVS, GET/SET_SECCOMP, CAP_AMBIENT (eleventh run: is-set, raise, lower, clear, with
   `cap_task_prctl`'s checks), SET/GET_CHILD_SUBREAPER (orphans go to the nearest subreaper),
   SET/GET_PDEATHSIG (kept per thread, cleared on a change of ids or a secure exec; sent when the parent
-  ends), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
+  thread ends, even while its process goes on), GET/SET_TIMERSLACK (kept; real-time threads keep theirs), GET/SET_THP_DISABLE (kept; no
   huge pages here), GET_MDWE (0: none can be set), GET_AUXV, GET_SECUREBITS (the keep-capabilities bit;
   the others cannot be set), SET_MM (EPERM without CAP_SYS_RESOURCE, which Docker's root lacks; the map
   size form), SET/GET_IO_FLUSHER (EPERM without CAP_SYS_RESOURCE). Not built, each counted "prctl
@@ -1009,7 +1053,8 @@ Partial (inside the list above), each with its reason:
   memory is the made-up machine's size less every mapped and tmpfs page (counted "page residency not
   tracked"); `/proc/meminfo` has only some of Linux's lines (counted "proc fields not tracked", 4).
 - ppoll, pselect6: they park until a file's readiness may have changed (any change to a pipe,
-  terminal, queue, process descriptor or signal descriptor, any close), their deadline or a signal,
+  terminal, queue, process descriptor or signal descriptor, any close), their deadline or a signal
+  (one watching no descriptor until its deadline or a signal only),
   with their signal mask applied while they wait. Pipes, terminals, named pipes, message queues and
   process and signal descriptors have their own poll; other files are always ready: Linux's default
   poll mask, readable only for `/dev/random` (`random_poll`, the generator ready from the start) and
@@ -1084,6 +1129,11 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   close of an open file holding locks, wakes every lock waiter, where Linux wakes only those blocked
   on the lock that changed. A waiter woken for nothing is out of `posix_locks_deadlock`'s loops until
   its turn comes and it waits again, so a deadlock asked about in that window is not seen.
+- Poll and select waiters that watch descriptors share one channel: any object's change wakes them
+  all to look again, where Linux wakes only those on the changed file's wait queue. A waiter woken
+  for nothing that does not block a process signal may take it before the thread Linux's
+  `complete_signal` chose (seen only with `pause`, now fixed; one watching descriptors would need
+  per-file wait queues).
 - CPU timers and RLIMIT_CPU are looked at whenever a thread comes back from running (and its turn
   ends when one is due); Linux looks at its timer tick, so there a limit already passed when it is set
   takes up to a tick. tests/cpulimit.rs prints nothing in that window.
@@ -1839,6 +1889,14 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K3, sixth run: setting the wall clock is not compared with the reference. Docker gives no
+  CAP_SYS_TIME, and adding it would set the clock of every container on this shared machine (time
+  namespaces do not cover CLOCK_REALTIME). The test's expected lines come from Linux's source
+  (`clock_was_set`, `timerfd_clock_was_set`, `timerfd_read_iter`, `common_hrtimer_arm`). The kernel
+  sees a setting only at a restore (as Linux at resume); the host gives no sign of a step of its own
+  wall clock during a run, so then timers on the wall clock keep their monotonic time and nothing is
+  canceled.
+
 - libc-test runs each test through its own runner with a 600 s time limit (`runtest -t 600`), not
   its default 5 s: the stand-in CPU on a loaded machine is far slower than the reference, and only a
   test that never ends should time out.
@@ -2020,6 +2078,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K3, sixth run: none.
 - K3, fifth run: none.
 - K3, fourth run: none.
 - K3, third run: none.
