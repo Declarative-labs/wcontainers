@@ -334,6 +334,32 @@ fn clear_rects_draws_one_triangle_per_rectangle_in_one_pass() {
     healthy(&mut r);
 }
 
+/// A rectangle reaching to the largest offsets is cleared to the view's edges, through a viewport
+/// within the bounds the recorder checks (`max_texture_2d` wide at most).
+#[test]
+fn clear_rects_reaching_past_the_largest_offset_clear_to_the_views_edges() {
+    let mut r = Recorder::new();
+    let (t, _) = texture(&mut r, 4, 1, 1);
+    let v = view(&mut r, &t);
+    let rect = [ScissorRect {
+        x: 1,
+        y: 2,
+        width: u32::MAX,
+        height: u32::MAX,
+    }];
+    r.clear_rects(&v, Format::Rgba8Unorm, ClearValue::Color(red()), &rect)
+        .unwrap();
+    let got = read(&mut r, &t, 0, 0, 4);
+    for y in 0..4 {
+        for x in 0..4 {
+            let inside = x >= 1 && y >= 2;
+            let want: &[u8] = if inside { &[255, 0, 0, 255] } else { &[0; 4] };
+            assert_eq!(&got[(y * 4 + x) * 4..][..4], want, "({x}, {y})");
+        }
+    }
+    healthy(&mut r);
+}
+
 /// A depth-stencil texture of `format` and its view, 4 by 4.
 fn depth_texture(r: &mut Recorder, format: Format) -> (Id, Id) {
     let t = r

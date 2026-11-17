@@ -239,6 +239,239 @@ pub fn a_scissor_past_the_target_is_clipped_to_it<H: Host>() {
     ok(&mut b);
 }
 
+/// `clear_rects` clears each rectangle, clipped to the view, one reaching to the largest offsets
+/// included, and leaves the rest.
+pub fn clear_rects_clear_each_rectangle_clipped_to_the_view<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let (t, v) = rgba8_target(&mut b, N);
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.end_pass();
+    let rects = [
+        ScissorRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+        ScissorRect {
+            x: 2,
+            y: 1,
+            width: u32::MAX,
+            height: u32::MAX,
+        },
+    ];
+    let value = ClearValue::Color(f32_bits([0.25, 0.85, 0.55, 1.0]));
+    b.clear_rects(&v, Format::Rgba8Unorm, value, &rects)
+        .expect("clear_rects");
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let mut expected = Vec::new();
+    for y in 0..N {
+        for x in 0..N {
+            let inside = (x == 0 && y == 0) || (x >= 2 && y >= 1);
+            expected.extend_from_slice(&if inside { ROUNDED_BYTES } else { [0; 4] });
+        }
+    }
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
+/// A copy between `depth24plus-stencil8` textures moves both aspects. The source holds depth 0.75
+/// and stencil 7 on its left half and depth 0.25 and stencil 0 on its right; the destination holds
+/// depth 1 and stencil 3 before the copy. Draws tested against the destination then find the
+/// source's values: a depth test at 0.5 passes on the left only, a stencil test for 7 on the left
+/// only, one for 0 on the right only.
+pub fn copies_between_depth_stencil_textures_move_both_aspects<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let f = Format::Depth24PlusStencil8;
+    needs(&b, f, FormatUse::DEPTH_STENCIL);
+    let (t, v) = rgba8_target(&mut b, N);
+    let src = texture(
+        &mut b,
+        f,
+        (N, N),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let dst = texture(
+        &mut b,
+        f,
+        (N, N),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_DST,
+    );
+    let sv = view(&mut b, &src, f);
+    let dv = view(&mut b, &dst, f);
+    let vb = vertex_buffer(
+        &mut b,
+        &[
+            -1.0, -1.0, -1.0, 1.0, 0.0, -1.0, 0.0, 1.0, // left half
+            -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, // all
+        ],
+    );
+    let p = program(&mut b, CONSTANT, "vs", "fs");
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let block = |b: &mut H::Backend,
+                 depth: Option<(CompareFn, bool)>,
+                 stencil: Option<(CompareFn, StencilOp)>| {
+        let face = |(compare, pass)| StencilFace {
+            compare,
+            fail: StencilOp::Keep,
+            depth_fail: StencilOp::Keep,
+            pass,
+        };
+        b.create_depth_stencil(&DepthStencilDesc {
+            depth_compare: depth.map(|d| d.0),
+            depth_write: depth.is_some_and(|d| d.1),
+            stencil: stencil.map(|s| (face(s), face(s))),
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        })
+        .expect("create_depth_stencil")
+    };
+    let writes = |b: &mut H::Backend, writes| {
+        blend(
+            b,
+            RenderTargetBlend {
+                blend: None,
+                writes,
+            },
+        )
+    };
+    let attach = |view, depth, stencil, store| DepthAttachment::<H::Backend> {
+        view,
+        depth: Some(AspectOps {
+            load: depth,
+            store,
+            read_only: false,
+        }),
+        stencil: Some(AspectOps {
+            load: stencil,
+            store,
+            read_only: false,
+        }),
+    };
+    let black = LoadOp::Clear(f32_bits([0.0, 0.0, 0.0, 1.0]));
+
+    // The source: depth 0.75 (z 0.5 through the depth range 0.75 to 0.75) and stencil 7 on the
+    // left half.
+    let at = |depth: f32| {
+        [Viewport {
+            min_depth: depth.to_bits(),
+            max_depth: depth.to_bits(),
+            ..viewport(N, N)[0]
+        }]
+    };
+    let setup = block(
+        &mut b,
+        Some((CompareFn::Always, true)),
+        Some((CompareFn::Always, StencilOp::Replace)),
+    );
+    let none = writes(&mut b, ColorWrites::empty());
+    let mut pass = color_pass::<H::Backend>(&v, black);
+    pass.depth = Some(attach(
+        &sv,
+        LoadOp::Clear(0.25f32.to_bits()),
+        LoadOp::Clear(0),
+        StoreOp::Store,
+    ));
+    let three_quarters = at(0.75);
+    b.begin_pass(&pass);
+    b.draw(&DrawCall {
+        stencil_reference: [7; 2],
+        ..call(
+            &p,
+            &none,
+            &setup,
+            &rs,
+            &vl,
+            &streams,
+            &three_quarters,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    // The destination: depth 1 and stencil 3, then the copy.
+    let mut pass = color_pass::<H::Backend>(&v, black);
+    pass.depth = Some(attach(
+        &dv,
+        LoadOp::Clear(1.0f32.to_bits()),
+        LoadOp::Clear(3),
+        StoreOp::Store,
+    ));
+    b.begin_pass(&pass);
+    b.end_pass();
+    b.copy_texture(
+        &region(&src, 0, 0, 0, 0),
+        &region(&dst, 0, 0, 0, 0),
+        extent(N, N, 1),
+    );
+
+    // Red where 0.5 is less than the depth, green where the stencil is 7, blue where it is 0.
+    let tests = [
+        (
+            block(&mut b, Some((CompareFn::Less, false)), None),
+            ColorWrites::R,
+            0,
+        ),
+        (
+            block(&mut b, None, Some((CompareFn::Equal, StencilOp::Keep))),
+            ColorWrites::G,
+            7,
+        ),
+        (
+            block(&mut b, None, Some((CompareFn::Equal, StencilOp::Keep))),
+            ColorWrites::B,
+            0,
+        ),
+    ];
+    let blocks: Vec<_> = tests.iter().map(|(_, w, _)| writes(&mut b, *w)).collect();
+    let vp = viewport(N, N);
+    let mut pass = color_pass::<H::Backend>(&v, black);
+    pass.depth = Some(attach(&dv, LoadOp::Load, LoadOp::Load, StoreOp::Discard));
+    b.begin_pass(&pass);
+    for ((ds, _, reference), bl) in tests.iter().zip(&blocks) {
+        b.draw(&DrawCall {
+            stencil_reference: [*reference; 2],
+            ..call(
+                &p,
+                bl,
+                ds,
+                &rs,
+                &vl,
+                &streams,
+                &vp,
+                Topology::TriangleStrip,
+                vertices(4, 4),
+            )
+        });
+    }
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let mut expected = Vec::new();
+    for _ in 0..N {
+        for x in 0..N {
+            expected.extend_from_slice(&if x < N / 2 {
+                [64, 217, 0, 255]
+            } else {
+                [0, 0, 140, 255]
+            });
+        }
+    }
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
 /// The raster block every test of this file starts from.
 fn raster_desc(provoking: ProvokingVertex) -> RasterDesc {
     RasterDesc {

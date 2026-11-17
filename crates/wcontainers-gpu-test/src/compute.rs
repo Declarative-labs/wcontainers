@@ -175,9 +175,18 @@ impl Recorder {
             }
         }
         let outputs = varyings(&state.vertex);
-        if targets.len() > 1 && targets.len() != outputs {
+        if outputs.is_empty() {
+            return Err(Ok("a capture of a program with no location outputs".into()));
+        }
+        if targets.len() > 1 && targets.len() != outputs.len() {
             return Err(Ok(
                 "several capture targets, not one for each output the program writes".into(),
+            ));
+        }
+        if targets.len() == 1 && outputs.iter().sum::<u32>() > self.caps().limits.capture_components
+        {
+            return Err(Ok(
+                "a capture into one target of more components than capture_components".into(),
             ));
         }
         let (list, first_instance, instances) = self.vertex_list(call).map_err(Ok)?;

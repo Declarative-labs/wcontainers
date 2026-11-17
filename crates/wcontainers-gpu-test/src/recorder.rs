@@ -223,6 +223,7 @@ impl Recorder {
             max_line_width: 1.0,
             max_anisotropy: 1,
             capture_buffers: 4,
+            capture_components: 64,
         };
         Recorder {
             caps: Caps {
@@ -1077,26 +1078,32 @@ pub(crate) fn clear_values(format: Format, v: [u32; 4]) -> [f64; 4] {
 /// stages.
 pub(crate) type StageCounts = [[u32; 4]; 3];
 
-/// Values a vertex program passes on to the fragment stage, each one inter-stage slot.
-pub(crate) fn varyings(s: &ShaderModule) -> usize {
+/// The components of each value a vertex program passes on to the fragment stage, each value one
+/// inter-stage slot.
+pub(crate) fn varyings(s: &ShaderModule) -> Vec<u32> {
     let Some(ep) = s
         .module
         .entry_points
         .iter()
         .find(|e| e.name == s.entry_point)
     else {
-        return 0;
+        return Vec::new();
     };
     let Some(r) = &ep.function.result else {
-        return 0;
+        return Vec::new();
+    };
+    let components = |ty: naga::Handle<naga::Type>| match s.module.types[ty].inner {
+        naga::TypeInner::Vector { size, .. } => size as u32,
+        _ => 1,
     };
     match (&r.binding, &s.module.types[r.ty].inner) {
-        (Some(naga::Binding::Location { .. }), _) => 1,
+        (Some(naga::Binding::Location { .. }), _) => vec![components(r.ty)],
         (None, naga::TypeInner::Struct { members, .. }) => members
             .iter()
             .filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. })))
-            .count(),
-        _ => 0,
+            .map(|m| components(m.ty))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -1492,7 +1499,7 @@ impl Backend for Recorder {
             {
                 return Err(GpuError::Invalid("a program of shaders of other stages"));
             }
-            if varyings(&obj.vertex) > self.caps.limits.inter_stage_slots as usize {
+            if varyings(&obj.vertex).len() > self.caps.limits.inter_stage_slots as usize {
                 return Err(GpuError::Invalid(
                     "vertex outputs past the inter-stage limit",
                 ));

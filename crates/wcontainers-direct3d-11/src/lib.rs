@@ -4,6 +4,7 @@
 
 mod ahead;
 mod context;
+mod counting;
 pub mod desc;
 mod device;
 mod error;

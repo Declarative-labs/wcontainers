@@ -75,12 +75,13 @@ struct Bound {
     vs: Option<Held<VertexShader_Impl>>,
     ps: Option<Held<PixelShader_Impl>>,
     cs: Option<Held<ComputeShader_Impl>>,
-    /// Per stage (vertex, pixel, compute), per slot.
-    constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 3],
+    /// Per stage (vertex, pixel, compute, then the geometry, hull and domain stages, whose
+    /// constant buffers and samplers are kept for the getters alone), per slot.
+    constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 6],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
-    constant_ranges: [Vec<Option<(u32, u32)>>; 3],
+    constant_ranges: [Vec<Option<(u32, u32)>>; 6],
     resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 3],
-    samplers: [Vec<Option<Held<SamplerState_Impl>>>; 3],
+    samplers: [Vec<Option<Held<SamplerState_Impl>>>; 6],
     uavs: [Vec<Option<Held<UnorderedAccessView_Impl>>>; 3],
     layout: Option<Held<InputLayout_Impl>>,
     /// Per slot: buffer, stride and offset.
@@ -94,6 +95,7 @@ struct Bound {
     raster: Option<Held<RasterizerState_Impl>>,
     viewports: Vec<D3D11_VIEWPORT>,
     scissors: Vec<RECT>,
+    predication: (Option<Held<Predicate_Impl>>, bool),
 }
 
 impl Default for Bound {
@@ -118,9 +120,20 @@ impl Default for Bound {
             raster: None,
             viewports: Vec::new(),
             scissors: Vec::new(),
+            predication: (None, false),
         }
     }
 }
+
+/// The stages no shader can be made for (geometry, hull, domain): what is bound to them is kept for
+/// the getters, and no draw reads it.
+const GEOMETRY: usize = 3;
+const HULL: usize = 4;
+const DOMAIN: usize = 5;
+
+/// Direct3D's slot counts of constant buffers and samplers.
+const CONSTANT_BUFFER_SLOTS: u32 = 14;
+const SAMPLER_SLOTS: u32 = 16;
 
 /// Stores `items` into `slots` from `start`, growing it as needed.
 fn store<T: Clone>(slots: &mut Vec<Option<T>>, start: u32, items: Vec<Option<T>>) {
@@ -372,9 +385,14 @@ impl Context {
                 .collect()
         };
         let r = ranges.clone();
-        if self.run("SetConstantBuffers", move |f| {
-            f.set_constant_ranges(stage, start, &b, &r)
-        }) {
+        let kept = if stage >= GEOMETRY {
+            self.unused_stage("SetConstantBuffers", start, n, CONSTANT_BUFFER_SLOTS)
+        } else {
+            self.run("SetConstantBuffers", move |f| {
+                f.set_constant_ranges(stage, start, &b, &r)
+            })
+        };
+        if kept {
             let mut bound = self.bound.borrow_mut();
             store(&mut bound.constant_buffers[stage], start, h);
             store(&mut bound.constant_ranges[stage], start, ranges);
@@ -530,7 +548,12 @@ impl Context {
     ) {
         let h = held::<_, SamplerState>(list, n);
         let s = fronts(&h, |s| &*s.front);
-        if self.run("SetSamplers", move |f| f.set_samplers(stage, start, &s)) {
+        let kept = if stage >= GEOMETRY {
+            self.unused_stage("SetSamplers", start, n, SAMPLER_SLOTS)
+        } else {
+            self.run("SetSamplers", move |f| f.set_samplers(stage, start, &s))
+        };
+        if kept {
             store(&mut self.bound.borrow_mut().samplers[stage], start, h);
         }
     }
@@ -786,6 +809,29 @@ impl Context {
         }
     }
 
+    pub(super) fn set_predication(&self, p: Ref<ID3D11Predicate>, value: windows::core::BOOL) {
+        let h = held_one::<_, Predicate>(&p);
+        let q = h.as_ref().map(|p| p.front.clone());
+        let value = value.as_bool();
+        self.run("SetPredication", move |f| {
+            f.set_predication(q.clone(), value);
+            Ok(())
+        });
+        self.bound.borrow_mut().predication = (h, value);
+    }
+
+    pub(super) fn get_predication(
+        &self,
+        out: OutRef<ID3D11Predicate>,
+        value: *mut windows::core::BOOL,
+    ) {
+        let bound = self.bound.borrow();
+        let _ = out.write(public(&bound.predication.0));
+        if let Some(v) = unsafe { value.as_mut() } {
+            *v = bound.predication.1.into();
+        }
+    }
+
     pub(super) fn begin(&self, a: Ref<ID3D11Asynchronous>) {
         if let Some(q) = query_of(a.as_ref()) {
             self.run("Begin", move |f| {
@@ -829,7 +875,9 @@ impl Context {
             )),
             Some(v) => {
                 if size != 0 {
-                    let bytes = v.to_le_bytes();
+                    let mut bytes = [0u8; 16];
+                    bytes[..8].copy_from_slice(&v[0].to_le_bytes());
+                    bytes[8..].copy_from_slice(&v[1].to_le_bytes());
                     unsafe {
                         std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast(), want as usize)
                     };
@@ -1711,6 +1759,202 @@ impl Context {
     }
 
     /// A call on a stage or feature the front does not serve, which is served while it binds nothing.
+    pub(super) fn gs_set_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+    ) {
+        self.set_constant_buffers(GEOMETRY, start, n, list, std::ptr::null(), std::ptr::null());
+    }
+
+    pub(super) fn gs_set_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+        first: *const u32,
+        count: *const u32,
+    ) {
+        self.set_constant_buffers(GEOMETRY, start, n, list, first, count);
+    }
+
+    pub(super) fn gs_get_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11Buffer>,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[GEOMETRY],
+            start,
+            n,
+            out,
+        );
+    }
+
+    pub(super) fn gs_get_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        out: OutRef<ID3D11Buffer>,
+        first: *mut u32,
+        count: *mut u32,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[GEOMETRY],
+            start,
+            n,
+            out_array(out),
+        );
+        self.get_constant_ranges(GEOMETRY, start, n, first, count);
+    }
+
+    pub(super) fn gs_set_samplers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11SamplerState>,
+    ) {
+        self.set_samplers(GEOMETRY, start, n, list);
+    }
+
+    pub(super) fn gs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
+        load(&self.bound.borrow().samplers[GEOMETRY], start, n, out);
+    }
+
+    pub(super) fn hs_set_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+    ) {
+        self.set_constant_buffers(HULL, start, n, list, std::ptr::null(), std::ptr::null());
+    }
+
+    pub(super) fn hs_set_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+        first: *const u32,
+        count: *const u32,
+    ) {
+        self.set_constant_buffers(HULL, start, n, list, first, count);
+    }
+
+    pub(super) fn hs_get_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11Buffer>,
+    ) {
+        load(&self.bound.borrow().constant_buffers[HULL], start, n, out);
+    }
+
+    pub(super) fn hs_get_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        out: OutRef<ID3D11Buffer>,
+        first: *mut u32,
+        count: *mut u32,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[HULL],
+            start,
+            n,
+            out_array(out),
+        );
+        self.get_constant_ranges(HULL, start, n, first, count);
+    }
+
+    pub(super) fn hs_set_samplers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11SamplerState>,
+    ) {
+        self.set_samplers(HULL, start, n, list);
+    }
+
+    pub(super) fn hs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
+        load(&self.bound.borrow().samplers[HULL], start, n, out);
+    }
+
+    pub(super) fn ds_set_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+    ) {
+        self.set_constant_buffers(DOMAIN, start, n, list, std::ptr::null(), std::ptr::null());
+    }
+
+    pub(super) fn ds_set_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+        first: *const u32,
+        count: *const u32,
+    ) {
+        self.set_constant_buffers(DOMAIN, start, n, list, first, count);
+    }
+
+    pub(super) fn ds_get_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11Buffer>,
+    ) {
+        load(&self.bound.borrow().constant_buffers[DOMAIN], start, n, out);
+    }
+
+    pub(super) fn ds_get_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        out: OutRef<ID3D11Buffer>,
+        first: *mut u32,
+        count: *mut u32,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[DOMAIN],
+            start,
+            n,
+            out_array(out),
+        );
+        self.get_constant_ranges(DOMAIN, start, n, first, count);
+    }
+
+    pub(super) fn ds_set_samplers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11SamplerState>,
+    ) {
+        self.set_samplers(DOMAIN, start, n, list);
+    }
+
+    pub(super) fn ds_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
+        load(&self.bound.borrow().samplers[DOMAIN], start, n, out);
+    }
+
+    /// A binding call on a stage no shader can be made for: kept if it lies within the stage's
+    /// `slots`, otherwise invalid and dropped, as Direct3D drops it.
+    fn unused_stage(&self, what: &'static str, start: u32, n: u32, slots: u32) -> bool {
+        if start.checked_add(n).is_some_and(|end| end <= slots) {
+            return true;
+        }
+        self.run(what, |_| {
+            Err(wcontainers_direct3d_11::Error::InvalidArg(
+                "slots past the stage's last",
+            ))
+        });
+        false
+    }
+
     pub(super) fn only_unbinding(&self, what: &'static str, binds: bool) {
         if binds {
             self.unserved(what);
@@ -1881,6 +2125,12 @@ impl Context {
             let depth_stencil = b.depth_stencil.0.as_ref().map(|s| (*s.front).clone());
             let reference = b.depth_stencil.1;
             let raster = b.raster.as_ref().map(|s| (*s.front).clone());
+            let predicate = b.predication.0.as_ref().map(|p| p.front.clone());
+            let value = b.predication.1;
+            self.run("SetPredication", move |f| {
+                f.set_predication(predicate.clone(), value);
+                Ok(())
+            });
             self.run("OMSetBlendState", move |f| {
                 f.om_set_blend_state(blend.clone(), Some(factor), mask);
                 f.om_set_depth_stencil_state(depth_stencil.clone(), reference);
