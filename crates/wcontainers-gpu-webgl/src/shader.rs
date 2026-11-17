@@ -18,8 +18,10 @@ pub struct ShaderObj {
     pub textures: Vec<(String, Slot, Option<Slot>)>,
     /// Uniform blocks by GLSL name.
     pub blocks: Vec<(String, Slot)>,
-    /// The GLSL, for the log of a program that fails to build.
+    /// The GLSL, for the log of a program that fails to build and for capture programs.
     pub source: String,
+    /// A vertex shader's location outputs in location order: GLSL name and bytes.
+    pub outputs: Vec<(String, u32)>,
 }
 
 /// A vertex shader and an optional fragment shader.
@@ -33,6 +35,10 @@ pub struct ProgramObj {
     pub raw: glow::Program,
     /// The shaders it links, until the link is read.
     pub shaders: std::cell::RefCell<Option<Pair>>,
+    /// The shaders it was made from, whose sources capture programs compile again.
+    pub stages: Pair,
+    /// Its capture programs, made at the first capture of each kind (see [`Capture::slot`]).
+    pub captures: [std::cell::OnceCell<Rc<ProgramObj>>; 4],
     pub linked: std::cell::OnceCell<Linked>,
     /// The (vertex, fragment) pair it was linked from, and how many handles name it.
     pub pair: (u64, u64),
@@ -142,17 +148,11 @@ pub fn compile(
         .filter_map(|(var, name)| Some((name.clone(), slot(m, *var)?)))
         .collect();
     blocks.sort();
-    let kind = match module.stage {
-        ShaderStage::Vertex => glow::VERTEX_SHADER,
-        _ => glow::FRAGMENT_SHADER,
+    let outputs = match module.stage {
+        ShaderStage::Vertex => outputs(module),
+        _ => Vec::new(),
     };
-    // SAFETY: plain GL calls on the current context.
-    let raw = unsafe {
-        let raw = gl.create_shader(kind).map_err(|_| GpuError::OutOfMemory)?;
-        gl.shader_source(raw, &source);
-        gl.compile_shader(raw);
-        raw
-    };
+    let raw = start_compile(gl, module.stage, &source)?;
     Ok(ShaderObj {
         id,
         stage: module.stage,
@@ -160,7 +160,137 @@ pub fn compile(
         textures,
         blocks,
         source,
+        outputs,
     })
+}
+
+/// Starts compiling GLSL of `stage`.
+fn start_compile(
+    gl: &glow::Context,
+    stage: ShaderStage,
+    source: &str,
+) -> Result<glow::Shader, GpuError> {
+    let kind = match stage {
+        ShaderStage::Vertex => glow::VERTEX_SHADER,
+        _ => glow::FRAGMENT_SHADER,
+    };
+    // SAFETY: plain GL calls on the current context.
+    unsafe {
+        let raw = gl.create_shader(kind).map_err(|_| GpuError::OutOfMemory)?;
+        gl.shader_source(raw, source);
+        gl.compile_shader(raw);
+        Ok(raw)
+    }
+}
+
+/// The entry point's location outputs in location order, named as naga's GLSL writer names vertex
+/// outputs, with their size in bytes (0 for types transform feedback cannot write).
+fn outputs(module: &ShaderModule) -> Vec<(String, u32)> {
+    let m = &module.module;
+    let Some(entry) = m.entry_points.iter().find(|e| e.name == module.entry_point) else {
+        return Vec::new();
+    };
+    let Some(result) = &entry.function.result else {
+        return Vec::new();
+    };
+    let size = |ty: naga::Handle<naga::Type>| match m.types[ty].inner {
+        naga::TypeInner::Scalar(s) if s.width == 4 => 4,
+        naga::TypeInner::Vector { size, scalar } if scalar.width == 4 => 4 * size as u32,
+        _ => 0,
+    };
+    let mut found: Vec<(u32, u32)> = match (&result.binding, &m.types[result.ty].inner) {
+        (Some(naga::Binding::Location { location, .. }), _) => vec![(*location, size(result.ty))],
+        (None, naga::TypeInner::Struct { members, .. }) => members
+            .iter()
+            .filter_map(|member| match member.binding {
+                Some(naga::Binding::Location { location, .. }) => Some((location, size(member.ty))),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    found.sort();
+    found
+        .into_iter()
+        .map(|(location, bytes)| (format!("_vs2fs_location{location}"), bytes))
+        .collect()
+}
+
+/// What a capture program writes: interleaved into one target or separate, and whether it draws.
+#[derive(Clone, Copy, Debug)]
+pub struct Capture {
+    pub separate: bool,
+    pub rasterize: bool,
+}
+
+impl Capture {
+    /// Its place in [`ProgramObj::captures`].
+    pub fn slot(self) -> usize {
+        usize::from(self.separate) * 2 + usize::from(self.rasterize)
+    }
+}
+
+/// Starts linking `program`'s shaders again from their sources with its location outputs as
+/// transform feedback varyings. One that does not draw links the empty fragment shader, so no
+/// fragment output meets the framebuffer.
+pub fn link_capture(
+    gl: &glow::Context,
+    id: u64,
+    program: &ProgramObj,
+    capture: Capture,
+    empty_fragment: glow::Shader,
+) -> Result<ProgramObj, GpuError> {
+    let (vertex, fragment) = &program.stages;
+    let fresh = |s: &ShaderObj| -> Result<Rc<ShaderObj>, GpuError> {
+        Ok(Rc::new(ShaderObj {
+            raw: start_compile(gl, s.stage, &s.source)?,
+            textures: s.textures.clone(),
+            blocks: s.blocks.clone(),
+            source: s.source.clone(),
+            outputs: s.outputs.clone(),
+            ..*s
+        }))
+    };
+    let v = fresh(vertex)?;
+    let f = match fragment {
+        Some(f) if capture.rasterize => Some(fresh(f)?),
+        _ => None,
+    };
+    let names: Vec<&str> = v.outputs.iter().map(|(n, _)| n.as_str()).collect();
+    let mode = if capture.separate {
+        glow::SEPARATE_ATTRIBS
+    } else {
+        glow::INTERLEAVED_ATTRIBS
+    };
+    // SAFETY: plain GL calls on the current context; the shaders are alive.
+    let raw = unsafe {
+        let raw = gl.create_program().map_err(|_| GpuError::OutOfMemory)?;
+        gl.attach_shader(raw, v.raw);
+        gl.attach_shader(raw, f.as_ref().map_or(empty_fragment, |f| f.raw));
+        gl.transform_feedback_varyings(raw, &names, mode);
+        gl.link_program(raw);
+        // Flagged only: GL deletes them with the program.
+        gl.delete_shader(v.raw);
+        if let Some(f) = &f {
+            gl.delete_shader(f.raw);
+        }
+        raw
+    };
+    Ok(started(id, raw, (v, f), program.pair))
+}
+
+/// A program whose link has started.
+fn started(id: u64, raw: glow::Program, stages: Pair, pair: (u64, u64)) -> ProgramObj {
+    ProgramObj {
+        id,
+        raw,
+        shaders: std::cell::RefCell::new(Some(stages.clone())),
+        stages,
+        captures: Default::default(),
+        linked: std::cell::OnceCell::new(),
+        pair,
+        handles: std::cell::Cell::new(1),
+    }
 }
 
 /// Starts linking a vertex and an optional fragment shader. A fragment-less program gets an empty
@@ -180,14 +310,12 @@ pub fn link(
         gl.link_program(raw);
         raw
     };
-    Ok(ProgramObj {
+    Ok(started(
         id,
         raw,
-        shaders: std::cell::RefCell::new(Some((vertex.clone(), fragment.cloned()))),
-        linked: std::cell::OnceCell::new(),
-        pair: (vertex.id, fragment.map_or(0, |f| f.id)),
-        handles: std::cell::Cell::new(1),
-    })
+        (vertex.clone(), fragment.cloned()),
+        (vertex.id, fragment.map_or(0, |f| f.id)),
+    ))
 }
 
 /// Reads a started link, waiting for it, then points each combined sampler at a unit and each uniform

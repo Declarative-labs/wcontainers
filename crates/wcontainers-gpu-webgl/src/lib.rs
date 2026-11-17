@@ -2573,6 +2573,12 @@ impl Backend for WebGl {
                     if p.handles.get() == 0 {
                         self.programs.remove(&p.pair);
                         gl.delete_program(p.raw);
+                        for c in p.captures.iter().filter_map(|c| c.get()) {
+                            gl.delete_program(c.raw);
+                            if self.applied.program == c.id {
+                                self.applied.program = 0;
+                            }
+                        }
                         if self.applied.program == p.id {
                             self.applied.program = 0;
                         }
@@ -3801,6 +3807,163 @@ impl Backend for WebGl {
             }
         }
         Ok(())
+    }
+
+    /// Transform feedback: the program linked again with its location outputs as varyings
+    /// (interleaved, or separate with more than one target), drawn with `RASTERIZER_DISCARD` unless
+    /// it rasterises. GLES 3.0 captures only draws of lists without indices. A target holding indices
+    /// too gets its index GL buffer refreshed before an index read (`IndexTwinReadBack`).
+    fn capture_vertices(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+        targets: CaptureTargets<'_, Self>,
+        rasterize: bool,
+    ) -> Result<(), GpuError> {
+        if self.lost.is_some() {
+            return Err(GpuError::DeviceLost);
+        }
+        let max = self.caps.limits.capture_buffers as usize;
+        if targets.is_empty() || targets.len() > max || rasterize != self.pass.is_some() {
+            return Err(GpuError::Invalid(
+                "capture_vertices with no targets, more than capture_buffers, or rasterize not \
+                 saying whether a pass is open",
+            ));
+        }
+        let (mode, per_primitive) = match call.topology {
+            Topology::PointList => (glow::POINTS, 1),
+            Topology::LineList => (glow::LINES, 2),
+            Topology::TriangleList => (glow::TRIANGLES, 3),
+            _ => return Err(self.unbuilt("capture_vertices of strips, fans and loops")),
+        };
+        let DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        } = call.range
+        else {
+            return Err(self.unbuilt("capture_vertices of indexed draws"));
+        };
+        let outputs = &call.program.stages.0.outputs;
+        let separate = targets.len() > 1;
+        if outputs.is_empty()
+            || outputs.iter().any(|(_, bytes)| *bytes == 0)
+            || (separate && outputs.len() != targets.len())
+        {
+            return Err(GpuError::Invalid(
+                "capture_vertices of a program with no location outputs, outputs that are not \
+                 32-bit, or other than one target per output",
+            ));
+        }
+        // GL captures whole primitives only.
+        let vertices = u64::from(count - count % per_primitive) * u64::from(instances);
+        let stride = |n: usize| -> u64 {
+            if separate {
+                u64::from(outputs[n].1)
+            } else {
+                outputs.iter().map(|(_, b)| u64::from(*b)).sum()
+            }
+        };
+        if targets.iter().enumerate().any(|(n, t)| {
+            t.buffer.data.is_none()
+                || t.offset % 4 != 0
+                || vertices * stride(n) > t.size
+                || t.offset + t.size > t.buffer.size
+        }) {
+            return Err(GpuError::Invalid(
+                "capture_vertices into a buffer without CAPTURE, at an offset not a multiple of 4, \
+                 or into a range smaller than the vertices the draw makes",
+            ));
+        }
+        let kind = shader::Capture {
+            separate,
+            rasterize,
+        };
+        let slot = &call.program.captures[kind.slot()];
+        let capture = match slot.get() {
+            Some(c) => c.clone(),
+            None => {
+                let id = self.id();
+                let c =
+                    shader::link_capture(&self.gl, id, call.program, kind, self.empty_fragment)?;
+                slot.get_or_init(|| Rc::new(c)).clone()
+            }
+        };
+        let capture = Handle(capture);
+        if self.linked(&capture).is_none() {
+            return Err(GpuError::DeviceLost);
+        }
+        for t in targets {
+            self.refresh(t.buffer, Some(false));
+        }
+        let gl = &self.gl;
+        // SAFETY: plain GL calls; the targets' data GL buffers are alive and hold the ranges.
+        unsafe {
+            if !rasterize {
+                // Outside a pass nothing is drawn; the default framebuffer is always complete.
+                if self.applied.draw_framebuffer.is_some() {
+                    gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+                    self.applied.draw_framebuffer = None;
+                }
+                gl.enable(glow::RASTERIZER_DISCARD);
+            }
+            // WebGL refuses a draw while a capture target is bound anywhere else.
+            for target in [
+                glow::ARRAY_BUFFER,
+                glow::COPY_READ_BUFFER,
+                glow::COPY_WRITE_BUFFER,
+            ] {
+                gl.bind_buffer(target, None);
+            }
+            for (n, t) in targets.iter().enumerate() {
+                gl.bind_buffer_range(
+                    glow::TRANSFORM_FEEDBACK_BUFFER,
+                    n as u32,
+                    t.buffer.data,
+                    t.offset as i32,
+                    t.size as i32,
+                );
+            }
+            if self.applied.program != capture.id {
+                gl.use_program(Some(capture.raw));
+                self.applied.program = capture.id;
+                self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
+            }
+            gl.begin_transform_feedback(mode);
+        }
+        self.draw(&DrawCall {
+            program: &capture,
+            index: None,
+            range: DrawRange::Vertices {
+                first,
+                count,
+                first_instance,
+                instances,
+            },
+            ..*call
+        });
+        let gl = &self.gl;
+        // SAFETY: plain GL calls ending what was begun above.
+        unsafe {
+            gl.end_transform_feedback();
+            if !rasterize {
+                gl.disable(glow::RASTERIZER_DISCARD);
+            }
+            for n in 0..targets.len() {
+                gl.bind_buffer_base(glow::TRANSFORM_FEEDBACK_BUFFER, n as u32, None);
+            }
+            gl.bind_buffer(glow::TRANSFORM_FEEDBACK_BUFFER, None);
+        }
+        for (n, t) in targets.iter().enumerate() {
+            if t.buffer.index.is_some() {
+                let end = t.offset + vertices * stride(n);
+                self.mark_stale(t.buffer, true, t.offset, end);
+            }
+        }
+        match self.lost {
+            Some(_) => Err(GpuError::DeviceLost),
+            None => Ok(()),
+        }
     }
 
     /// `queryCounterEXT` with `TIMESTAMP_EXT`, which GL writes between any two commands.

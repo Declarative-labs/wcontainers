@@ -102,3 +102,13 @@ fn fractional_depth_bias() {
 fn constant_alpha_blends() {
     checks::constant_alpha_blends::<Angle>();
 }
+
+#[test]
+fn vertices_captured_with_and_without_rasterising() {
+    checks::vertices_captured_with_and_without_rasterising::<Angle>();
+}
+
+#[test]
+fn captured_indices_drawn_both_ways() {
+    checks::captured_indices_drawn_both_ways::<Angle>();
+}

@@ -31,6 +31,8 @@ pub fn caps(
         // GL's own clip depth; with EXT_clip_control set per raster block.
         | Features::CLIP_DEPTH_MINUS_ONE
         | Features::INDEX_U8
+        // Transform feedback is GLES 3.0 core.
+        | Features::TRANSFORM_FEEDBACK
         // FRACTIONAL_DEPTH_BIAS: polygonOffset takes float units, but GL may round them; set by the
         // back end's probe.
         | Features::BLEND_CONSTANT_ALPHA;
@@ -88,7 +90,7 @@ pub fn caps(
         } else {
             1
         },
-        capture_buffers: 0,
+        capture_buffers: get(glow::MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS),
     };
     let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {

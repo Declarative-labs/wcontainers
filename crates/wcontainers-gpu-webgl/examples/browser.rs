@@ -144,6 +144,8 @@ suite!(
     multisampled_copies_resolve_as_their_source,
     fractional_depth_bias,
     constant_alpha_blends,
+    vertices_captured_with_and_without_rasterising,
+    captured_indices_drawn_both_ways,
 );
 
 thread_local! {

@@ -1242,3 +1242,310 @@ pub fn constant_alpha_blends<H: Host>() {
         );
     }
 }
+
+/// Vertex `v` writes its numbers to locations 0 and 1, and its position makes triangles over the top
+/// left half of the target, drawn red.
+const CAPTURED: &str = "
+struct Cap {
+    @builtin(position) p: vec4<f32>,
+    @location(0) a: vec4<f32>,
+    @location(1) @interpolate(flat) n: u32,
+}
+@vertex fn vs(@builtin(vertex_index) v: u32) -> Cap {
+    var o: Cap;
+    let corner = vec2<f32>(f32(v % 3u == 1u), f32(v % 3u == 2u));
+    o.p = vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
+    o.a = vec4<f32>(f32(v), f32(v) * 0.5, 1.0, -2.0);
+    o.n = 10u + v;
+    return o;
+}
+@fragment fn fs(i: Cap) -> @location(0) vec4<f32> {
+    return vec4<f32>(i.a.z, 0.0, 0.0, 1.0);
+}
+struct Ix {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) n: u32,
+}
+@vertex fn vs_indices(@builtin(vertex_index) v: u32) -> Ix {
+    var indices = array<u32, 4>(3u, 0u, 5u, 1u);
+    var o: Ix;
+    o.p = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    o.n = indices[v];
+    return o;
+}
+@fragment fn fs_indices(i: Ix) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i.n), 0.0, 0.0, 1.0);
+}
+";
+
+/// A buffer of `size` zero bytes with `usage`, for captures.
+fn zeros<B: Backend>(b: &mut B, usage: BufferUsage, size: usize) -> B::Buffer {
+    buffer(b, usage | BufferUsage::CAPTURE, &vec![0; size])
+}
+
+fn read_buffer<B: Backend>(b: &mut B, buffer: &B::Buffer, size: usize) -> Vec<u8> {
+    let mut got = vec![0; size];
+    b.read_back_now(
+        &ReadSource::Buffer {
+            buffer,
+            offset: 0,
+            size: size as u64,
+        },
+        &mut got,
+    )
+    .expect("read_back_now");
+    got
+}
+
+/// What CAPTURED's vertex `v` writes to location 0 and location 1.
+fn captured(v: u32) -> (Vec<u8>, Vec<u8>) {
+    let a = [v as f32, v as f32 * 0.5, 1.0, -2.0];
+    (
+        a.iter().flat_map(|c| c.to_le_bytes()).collect(),
+        (10 + v).to_le_bytes().to_vec(),
+    )
+}
+
+/// `capture_vertices` writes the location outputs of every vertex of a list draw: interleaved into one
+/// target, or one output per target, without drawing outside a pass and drawing inside one; a draw
+/// that leaves out the last part of a primitive captures whole primitives only.
+pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    assert!(b.caps().limits.capture_buffers >= 2);
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, CAPTURED, "vs", "fs");
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let interleaved: Vec<u8> = (0..6)
+        .flat_map(|v| {
+            let (a, n) = captured(v);
+            [a, n].concat()
+        })
+        .collect();
+    // Interleaved, outside a pass; 7 vertices make 2 whole triangles.
+    let one = zeros(&mut b, BufferUsage::VERTEX, 6 * 20 + 8);
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 7);
+    let targets = [BufferRange {
+        buffer: &one,
+        offset: 0,
+        size: 6 * 20 + 8,
+    }];
+    b.capture_vertices(&call, &targets, false)
+        .expect("capture_vertices");
+    let got = read_buffer(&mut b, &one, 6 * 20 + 8);
+    assert_eq!(&got[..6 * 20], &interleaved[..], "interleaved capture");
+    assert_eq!(&got[6 * 20..], &[0; 8], "bytes past the whole primitives");
+    // Separate, outside a pass, at an offset into the second target.
+    let (a, n) = (
+        zeros(&mut b, BufferUsage::VERTEX, 6 * 16),
+        zeros(&mut b, BufferUsage::VERTEX, 8 + 6 * 4),
+    );
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 6);
+    let targets = [
+        BufferRange {
+            buffer: &a,
+            offset: 0,
+            size: 6 * 16,
+        },
+        BufferRange {
+            buffer: &n,
+            offset: 8,
+            size: 6 * 4,
+        },
+    ];
+    b.capture_vertices(&call, &targets, false)
+        .expect("capture_vertices");
+    let (want_a, want_n): (Vec<_>, Vec<_>) = (0..6).map(captured).unzip();
+    assert_eq!(
+        read_buffer(&mut b, &a, 6 * 16),
+        want_a.concat(),
+        "location 0"
+    );
+    assert_eq!(
+        read_buffer(&mut b, &n, 8 + 6 * 4),
+        [vec![0; 8], want_n.concat()].concat(),
+        "location 1 at offset 8"
+    );
+    // Interleaved, drawing too.
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let drawn = zeros(&mut b, BufferUsage::VERTEX, 6 * 20);
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 6);
+    let targets = [BufferRange {
+        buffer: &drawn,
+        offset: 0,
+        size: 6 * 20,
+    }];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.capture_vertices(&call, &targets, true)
+        .expect("capture_vertices");
+    b.end_pass();
+    assert_eq!(
+        read_buffer(&mut b, &drawn, 6 * 20),
+        interleaved,
+        "capture while drawing"
+    );
+    let picture = kit::read(&mut b, &t, 0, 0, [4, 4, 1], 4, false);
+    assert_eq!(&picture[..4], &[255, 0, 0, 255], "the top left texel drawn");
+    assert_eq!(
+        &picture[60..],
+        &[0, 0, 0, 0],
+        "the bottom right texel not drawn"
+    );
+    // Drawing while capturing outside a pass breaks the interface's rule.
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 6);
+    assert!(matches!(
+        b.capture_vertices(&call, &targets, true),
+        Err(GpuError::Invalid(_))
+    ));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A buffer holding indices and vertex data written by `capture_vertices` reads the captured values
+/// both as indices and as a vertex stream (on WebGL 2 the index twin is refreshed first,
+/// `IndexTwinReadBack`).
+pub fn captured_indices_drawn_both_ways<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let capture = kit::program(&mut b, CAPTURED, "vs_indices", "fs_indices");
+    let both = zeros(&mut b, BufferUsage::INDEX | BufferUsage::VERTEX, 16);
+    // Written by the host first, so both of WebGL's GL buffers hold old values.
+    b.write_buffer(&both, 0, &words(&[7, 7, 7, 7]), WriteMode::Ordered);
+    let whole = [kit::viewport(0.0, 0.0, 8.0, 4.0)];
+    let call = kit::call(&k, &capture, None, &whole, Topology::PointList, 4);
+    let targets = [BufferRange {
+        buffer: &both,
+        offset: 0,
+        size: 16,
+    }];
+    b.capture_vertices(&call, &targets, false)
+        .expect("capture_vertices");
+    let vs = b
+        .create_shader(&module("vs", ShaderStage::Vertex))
+        .expect("create_shader");
+    let fs = b
+        .create_shader(&module("fs", ShaderStage::Fragment))
+        .expect("create_shader");
+    let numbers = b
+        .create_program(&Program::Render {
+            vertex: &vs,
+            fragment: Some(&fs),
+        })
+        .expect("create_program");
+    let mut layout = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    for (i, step) in [StepMode::Vertex, StepMode::Instance(1)]
+        .into_iter()
+        .enumerate()
+    {
+        layout.streams[i] = Some(VertexStream { stride: 4, step });
+        layout.attributes[i] = Some(VertexAttribute {
+            location: 1 + i as u32,
+            stream: i as u8,
+            offset: 0,
+            format: VertexFormat::Uint32x1,
+        });
+    }
+    let layout = b
+        .create_vertex_layout(&layout)
+        .expect("create_vertex_layout");
+    let per_vertex = buffer(
+        &mut b,
+        BufferUsage::VERTEX,
+        &words(&(0..8).collect::<Vec<_>>()),
+    );
+    let per_instance = buffer(&mut b, BufferUsage::VERTEX, &words(&[100]));
+    let f = Format::Rgba32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [8, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let captured = [3u32, 0, 5, 1];
+    for as_indices in [true, false] {
+        let first = if as_indices { &per_vertex } else { &both };
+        let streams = [
+            Some(VertexBinding {
+                buffer: first,
+                offset: 0,
+            }),
+            Some(VertexBinding {
+                buffer: &per_instance,
+                offset: 0,
+            }),
+        ];
+        let before = b.slow_paths().count(SlowPath::IndexTwinReadBack);
+        b.begin_pass(&kit::pass(&v, [u32::MAX; 4], None));
+        b.draw(&DrawCall {
+            vertex_layout: &layout,
+            vertex_buffers: &streams,
+            index: as_indices.then_some(IndexBinding {
+                buffer: &both,
+                offset: 0,
+                format: IndexFormat::U32,
+            }),
+            range: if as_indices {
+                DrawRange::Indexed {
+                    first: 0,
+                    count: 4,
+                    base_vertex: 0,
+                    first_instance: 0,
+                    instances: 1,
+                }
+            } else {
+                DrawRange::Vertices {
+                    first: 0,
+                    count: 4,
+                    first_instance: 0,
+                    instances: 1,
+                }
+            },
+            ..kit::call(&k, &numbers, None, &whole, Topology::PointList, 4)
+        });
+        b.end_pass();
+        let refreshed = b.slow_paths().count(SlowPath::IndexTwinReadBack) - before;
+        let got = kit::read(&mut b, &t, 0, 0, [8, 4, 1], 16, false);
+        let texel = |p: usize| -> [u32; 4] {
+            core::array::from_fn(|c| {
+                u32::from_le_bytes(got[p * 16 + c * 4..p * 16 + c * 4 + 4].try_into().unwrap())
+            })
+        };
+        let want: Vec<(usize, [u32; 4])> = if as_indices {
+            captured
+                .iter()
+                .map(|i| (*i as usize, [*i, 0, *i, 100]))
+                .collect()
+        } else {
+            (0..4)
+                .map(|i| (i as usize, [i, 0, captured[i as usize], 100]))
+                .collect()
+        };
+        for (pixel, numbers) in &want {
+            assert_eq!(
+                texel(*pixel),
+                *numbers,
+                "as indices {as_indices}: pixel {pixel}"
+            );
+        }
+        for p in (0..32).filter(|p| want.iter().all(|(w, _)| w != p)) {
+            assert_eq!(
+                texel(p),
+                [u32::MAX; 4],
+                "as indices {as_indices}: pixel {p}"
+            );
+        }
+        if as_indices && b.slow_paths().count(SlowPath::IndexBufferTwin) > 0 {
+            assert_eq!(refreshed, 1, "the index twin refreshed once");
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
