@@ -647,8 +647,11 @@ Rules a pass description follows:
   attachments are not touched outside it. Exact on WebGPU. On WebGL 2, multisampled targets are
   renderbuffers that no program can read and `blitFramebuffer` cannot copy into, so a replaced
   multisampled attachment is carried through its resolved value (resolved into a single-sampled
-  texture, then drawn into every sample): a listed loss (4.12), only for multisampled attachments of
-  different sizes whose contents are loaded or stored.
+  texture, then drawn into every sample, `MultisampleCopyResolved`): a listed loss (4.12), only for
+  multisampled attachments of different sizes whose contents are loaded or stored. The tracker takes
+  the route from `MULTISAMPLE_READ` and `SAMPLE_SHADING`; integer samples, which no resolve averages,
+  have only the first, and without it their fitting is reported absent (WebGL 2 multisamples no
+  integer format).
 - A pass with no attachment at all (Direct3D 11's drawing with only pixel shader storage writes bound)
   gives its size and sample count in `empty`. The WebGPU back end adds an attachment of its own of that
   size (`r8unorm`, writes masked off, store `Discard`), because a WebGPU pass needs one; its pipelines are
