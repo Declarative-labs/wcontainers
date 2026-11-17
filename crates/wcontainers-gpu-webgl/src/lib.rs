@@ -4214,7 +4214,8 @@ impl Backend for WebGl {
     }
 
     /// Fills the levels by `generateMipmap` where GLES allows it (a format that renders and filters,
-    /// every layer, the texels' values in the texture's own format), else by the interface's draws.
+    /// every layer, the texels' values in the texture's own format) and it is shown equal to the
+    /// interface's draws (2D and cube textures), else by those draws.
     fn generate_mips(
         &mut self,
         texture: &Texture,
@@ -4224,12 +4225,13 @@ impl Backend for WebGl {
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
         let levels = mips.start.max(1)..mips.end.min(desc.mip_levels);
-        let three_d = desc.dimension == TextureDimension::D3;
-        let every_layer = three_d || (layers.start == 0 && layers.end >= desc.depth_or_layers);
+        let shown = matches!(desc.own_view(), ViewDimension::D2 | ViewDimension::Cube);
+        let every_layer = layers.start == 0 && layers.end >= desc.depth_or_layers;
         let native = FormatUse::RENDER | FormatUse::FILTER;
         let raw = texture.tex();
         let Some(raw) = raw.filter(|_| {
             values == desc.format
+                && shown
                 && every_layer
                 && texture.host.is_none()
                 && self.caps.formats.get(values).contains(native)

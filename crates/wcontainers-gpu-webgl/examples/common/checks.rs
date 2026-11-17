@@ -1392,6 +1392,7 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         (TextureDimension::D3, [8, 8, 4], false),
     ];
     let mut tested = 0;
+    let mut failures = Vec::new();
     for format in [
         F::Rgba8Unorm,
         F::Rgba8UnormSrgb,
@@ -1477,34 +1478,38 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                 generate_mips_by_draws(&mut b, &drawn, &desc, format, first..levels, 0..layers)
                     .expect("generate_mips_by_draws");
                 assert_eq!(b.slow_paths().count(SlowPath::FilterInShader), before);
+                let what =
+                    format!("{format:?} {dimension:?} {size:?} cube {cube}, from level {first}");
                 for mip in 0..levels {
                     let s = shape(mip);
                     let want = kit::read(&mut b, &drawn, mip, 0, s, texel, false);
                     let got = kit::read(&mut b, &native, mip, 0, s, texel, false);
                     if let Some(bytes) = written.get(mip as usize) {
-                        let what = format!("{format:?} {dimension:?} {size:?}, from level {first}");
-                        assert!(&got == bytes, "{what}: generateMipmap changed level {mip}");
-                        assert!(&want == bytes, "{what}: the draws changed level {mip}");
+                        if &got != bytes {
+                            failures.push(format!("{what}: generateMipmap changed level {mip}"));
+                        }
+                        if &want != bytes {
+                            failures.push(format!("{what}: the draws changed level {mip}"));
+                        }
                     }
-                    let differ = got
-                        .chunks(texel)
-                        .zip(want.chunks(texel))
-                        .filter(|(g, w)| g != w)
-                        .count();
-                    assert!(
-                        differ == 0,
-                        "{format:?} {dimension:?} {size:?} cube {cube}, from level {first}: level \
-                         {mip} differs in {differ} of {} texels; first {:?} for {:?}",
-                        want.len() / texel,
-                        got.chunks(texel)
-                            .zip(want.chunks(texel))
-                            .find(|(g, w)| g != w)
-                            .map(|p| p.0),
-                        got.chunks(texel)
-                            .zip(want.chunks(texel))
-                            .find(|(g, w)| g != w)
-                            .map(|p| p.1),
-                    );
+                    // Differing texels per layer (per slice in 3D).
+                    let layer = (s[0] * s[1]) as usize * texel;
+                    let differ: Vec<usize> = got
+                        .chunks(layer)
+                        .zip(want.chunks(layer))
+                        .map(|(g, w)| {
+                            g.chunks(texel)
+                                .zip(w.chunks(texel))
+                                .filter(|(a, b)| a != b)
+                                .count()
+                        })
+                        .collect();
+                    if differ.iter().any(|&n| n > 0) {
+                        failures.push(format!(
+                            "{what}: level {mip} differs in {differ:?} of {} texels per layer",
+                            s[0] * s[1]
+                        ));
+                    }
                 }
                 b.destroy(Object::Texture(native));
                 b.destroy(Object::Texture(drawn));
@@ -1513,6 +1518,7 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         }
     }
     assert!(tested > 0, "no format renders, filters and reads back");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
