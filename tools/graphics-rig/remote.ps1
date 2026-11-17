@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 trap { [Console]::Error.WriteLine("remote: $_"); exit 125 }
+. C:\wc\rig\env.ps1
 
 # Runs a program with this console's output and error, and fails if it fails.
 function Run([string]$File, [string]$Arguments, [string]$Directory = 'C:\wc', [switch]$Passthru) {
