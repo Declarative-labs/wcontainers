@@ -27,10 +27,13 @@ for %%s in (triangle quads instanced) do (
 for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do call :same %%r-quads-d24s8.png quads.png
 for %%t in (blend-factor depth-function) do (
     for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do (
-        call :differs %%t\%%r-quads.png
-        call :differs %%t\%%r-quads-d24s8.png
+        call :differs %%t\%%r-quads.png quads.png
+        call :differs %%t\%%r-quads-d24s8.png quads.png
     )
 )
+rem Viewports at half pixels in Chrome: equal to Direct3D's, and different once moved to whole pixels.
+call :same chrome-webgpu-viewports.png raster-viewports.png
+call :differs chrome-webgpu-viewports-rounded.png raster-viewports.png
 exit /b %FAILED%
 
 :same
@@ -39,8 +42,8 @@ exit /b %FAILED%
 exit /b
 
 :differs
-<nul set /p "=%1 must differ from Direct3D 11's quads: "
-"%BIN%\gt-compare" "%OUT%\%1" "%REF%\quads.png" 0
+<nul set /p "=%1 must differ from Direct3D 11's %2: "
+"%BIN%\gt-compare" "%OUT%\%1" "%REF%\%2" 0
 rem gt-compare exits 1 when the pictures differ, 2 when it could not compare them.
 if errorlevel 2 (set FAILED=1) else if not errorlevel 1 set FAILED=1
 exit /b

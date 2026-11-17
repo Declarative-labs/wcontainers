@@ -531,10 +531,9 @@ fn caps(
     // natively wgpu compiles it at once on the calling thread.
     if cfg!(target_arch = "wasm32") {
         features |= Features::BACKGROUND_PREPARE;
-    } else {
-        // Proven natively by tests/raster.rs; in the browser not yet checked against Chrome.
-        features |= Features::FRACTIONAL_VIEWPORT;
     }
+    // Proven against Direct3D's picture natively by tests/raster.rs and in Chrome by web/check.
+    features |= Features::FRACTIONAL_VIEWPORT;
     let adapter_specific = f.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
     let mut formats = FormatCaps {
         uses: [FormatUse::empty(); Format::COUNT],

@@ -45,6 +45,11 @@ Run 6 = G2 run 2, 2026-11-17:
 - Natively, a copy between a BC texture and an uncompressed one of the same block size (Direct3D's
   CopySubresourceRegion) failed as "different block sizes"; it now goes through a buffer with the
   destination's extent in its own texels (`CopyThroughBuffer`).
+- `FRACTIONAL_VIEWPORT` is declared in the browser too: the eight-viewport scene (now
+  examples/scenes/viewports.rs, shared by tests/raster.rs and the browser page) drawn in Chrome
+  equals Direct3D 11's `raster-viewports.png` in every pixel, and moved to whole pixels differs
+  (web/check). The depth probe in Chrome (Dawn on Direct3D 12) answers `Float(0.10000001)`:
+  `depth24plus` is 32-bit float there, so `DEPTH24_UNORM` stays clear in the browser.
 - New tests: tests/direct3d.rs (above); tests/blocks.rs: every BC format's seeded blocks
   (`WEBGPU_SEED`, default 188) on a device with BC and one made without, three levels of 12 by 8
   (the last a partial block), each level read back as written on both; BC6H and BC7 sample exactly
@@ -338,7 +343,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   `depth24plus-stencil8` with wgpu on Direct3D 12 and on Vulkan, draws them in Chrome
   (web/draw.mjs, web/scenes.html), compares all twelve with references/d3d11 at tolerance 0, and
   draws both quads pictures with each twist natively on both APIs and in Chrome and requires them
-  to differ, then runs the shared suite in Chrome, one page per test (suite-chrome.txt). Prints
+  to differ, draws the eight-viewport scene in Chrome (equal to `raster-viewports.png`, and
+  differing with whole-pixel viewports), then runs the shared suite in Chrome, one page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
 - The known BC failure: add `--ignored` to the test command (`--test blocks -- --ignored
@@ -357,6 +363,9 @@ load not sampled; Mac load average 30 to 48):
   as before (16384 pixels by up to 92; 25016 by up to 204), the suite in Chrome 157.0.8103.78 24
   of 24; Chrome's adapter "NVIDIA GeForce RTX 3080", D3D12, discrete, not a fallback. The pictures
   in Chrome are now read back through JSPI waiting instead of polling.
+- `web/check` with the viewports: Chrome's eight-viewport picture equals Direct3D 11's in all 32768
+  pixels; moved to whole pixels, 2540 differ by up to 229. tests/raster.rs passes on both APIs
+  through the shared scene.
 - After the BC work, all tests: Vulkan 62 of 62 and Direct3D 12 62 of 62, one ignored on each (the
   known BC failure); blocks 2 in 0.53 s and 1.32 s; `web/check` passes again (suite in Chrome 24
   of 24, pictures equal, twists differ); clippy with warnings denied passes natively and for
@@ -486,9 +495,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - An ordered write that splits a pass with a running occlusion query.
 - Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
   packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them.
-- Declared absent until built or measured: `TIMESTAMPS`; in the browser `FRACTIONAL_VIEWPORT`
-  (not yet checked in Chrome). `DEPTH24_UNORM` in the browser now follows the probe, which runs
-  there, but what it finds in Chrome is not recorded yet.
+- Declared absent until built or measured: `TIMESTAMPS`.
 - On macOS the suite's `present_shows_the_frame` fails: the test host (tests/suite.rs) opens
   windows only on Windows.
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
@@ -500,9 +507,8 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 The pass bar items still open, in the order to take them:
 - BC1 to BC5 against real Direct3D (the known failure above).
-- In Chrome, now that waiting works there: run tests/raster.rs's half-pixel viewport check, the
-  depth probe and tests/prepare.rs's first-draw timings through the browser host (examples/scenes,
-  as suite.rs does), then declare `FRACTIONAL_VIEWPORT` there or record that Chrome rounds.
+- In Chrome, now that waiting works there: tests/prepare.rs's first-draw timings through the
+  browser host (examples/scenes, as viewports.rs and suite.rs are), to measure `prepare` there.
 - This Mac's GPU: a window for the suite's present test on macOS; why the triangle and quads, and
   the two writes.rs tests comparing with the triangle, differ from the RTX 3080's references there
   (print the largest difference; the rig's WARP allowance is 1). Run it only as single jobs.

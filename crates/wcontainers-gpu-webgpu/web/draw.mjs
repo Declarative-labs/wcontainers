@@ -2,7 +2,9 @@
 // pinned Chrome, and saves them:
 //   node draw.mjs <pkg-dir> <out-dir> [twist...]
 // <pkg-dir> is wasm-bindgen's output for the scenes example. For each twist (default none) writes
-// chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none.
+// chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
+// the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
+// chrome-webgpu-viewports-rounded.png.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -45,6 +47,18 @@ try {
         console.log(`${scene} (${twist}) failed: ${e.message}`);
         failed = true;
       }
+    }
+  }
+  // The eight-viewport scene, once at half pixels and once moved to whole pixels.
+  for (const rounded of [false, true]) {
+    try {
+      const url = await page.evaluate((r) => window.drawViewports(r), rounded);
+      const path = join(out, `chrome-webgpu-viewports${rounded ? '-rounded' : ''}.png`);
+      await writeFile(path, Buffer.from(url.split(',')[1], 'base64'));
+      console.log(path);
+    } catch (e) {
+      console.log(`viewports (rounded ${rounded}) failed: ${e.message}`);
+      failed = true;
     }
   }
 } finally {

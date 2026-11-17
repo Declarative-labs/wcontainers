@@ -50,6 +50,9 @@ fn main() -> anyhow::Result<()> {
 #[cfg(target_arch = "wasm32")]
 fn main() {}
 
+#[cfg(target_arch = "wasm32")]
+mod viewports;
+
 // JSPI exports and imports, which wasm-bindgen still marks experimental.
 #[cfg(target_arch = "wasm32")]
 #[allow(deprecated)]
@@ -67,12 +70,12 @@ mod web {
         JsError::new(&e.to_string())
     }
 
-    /// The adapter the browser gives WebGPU, as the back end sees it.
+    /// The adapter the browser gives WebGPU, as the back end sees it, and what the depth probe
+    /// found there.
     #[wasm_bindgen(jspi)]
     pub fn adapter() -> Result<String, JsError> {
-        Ok(block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU))
-            .map_err(js)?
-            .1)
+        let (b, name) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        Ok(format!("{name}; depth24plus {:?}", b.depth24()))
     }
 
     /// Draws one picture of `draw::PICTURES` on the browser's WebGPU and returns it as a PNG file.
@@ -92,5 +95,21 @@ mod web {
             return Err(js(format!("device lost: {:?}", b.status())));
         }
         draw::png(&rgba).map_err(js)
+    }
+
+    /// Draws the eight-viewport scene (`rounded`: its viewports moved to whole pixels) on the
+    /// browser's WebGPU and returns it as a PNG file.
+    #[wasm_bindgen(jspi)]
+    pub fn draw_viewports(rounded: bool) -> Result<Vec<u8>, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        let rb = super::viewports::draw(&mut b, rounded);
+        b.wait_read(&rb);
+        let (w, h) = super::viewports::SIZE;
+        let mut rgba = vec![0; (w * h * 4) as usize];
+        b.finish_read(rb, &mut rgba);
+        if b.status() != DeviceStatus::Ok {
+            return Err(js(format!("device lost: {:?}", b.status())));
+        }
+        draw::png_of(&rgba, w, h).map_err(js)
     }
 }
