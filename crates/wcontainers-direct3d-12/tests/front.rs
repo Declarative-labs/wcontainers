@@ -146,10 +146,10 @@ fn webgpu_reports_11_0_and_tier_1() {
 }
 
 #[test]
-fn resource_tables_give_11_1_and_tier_3() {
+fn resource_tables_give_tier_3_but_not_11_1() {
     let mut caps = record::webgpu_like_caps();
-    caps.features |= Features::RESOURCE_TABLES | Features::SUBGROUPS;
-    assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_1));
+    caps.features |= Features::RESOURCE_TABLES | Features::SUBGROUPS | Features::LOGIC_OP;
+    assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
     assert_eq!(options(&caps).resource_binding_tier, 3);
     assert!(options1(&caps).wave_ops);
 }

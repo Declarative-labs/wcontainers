@@ -5,15 +5,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use slab::Slab;
+use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
     Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture, DrawCall,
     DrawRange, Extent, Features, FormatKind, GpuError, IndexBinding, IndexFormat, LoadOp,
     MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc,
-    Program, ReadSource, ReadState, ScissorRect, ShaderModule, SlowPath, StepMode, StoreOp,
+    Program, ReadSource, ReadState, ScissorRect, ShaderStage, SlowPath, StepMode, StoreOp,
     TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension,
-    Viewport, WriteMode,
+    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
+    ViewDimension, Viewport, WriteMode,
 };
+use wcontainers_shaders::{ConvertError, Converted, Source};
 
 use crate::Error;
 use crate::address::AddressMap;
@@ -22,7 +24,6 @@ use crate::list::{
 };
 use crate::resource::{self, HeapType, ResourceDesc};
 use crate::root::{RootSignatureDesc, deserialize};
-use crate::stand_in;
 use crate::state::{Blend, DepthStencil, InputElement, Raster, resolve_offsets, vertex_format};
 
 macro_rules! id {
@@ -41,7 +42,9 @@ id!(
     /// A root signature.
     RootId,
     /// A fence.
-    FenceId
+    FenceId,
+    /// A swap chain.
+    ChainId
 );
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
@@ -76,6 +79,8 @@ enum Storage<B: Backend> {
         desc: TextureDesc,
         /// Views made for passes, by what they view.
         views: Vec<(TargetView, B::TextureView)>,
+        /// False for a swap chain's back buffer, whose texture the swap chain owns.
+        owned: bool,
     },
 }
 
@@ -97,6 +102,8 @@ struct Pipeline<B: Backend> {
     targets: TargetLayout,
     /// `D3D12_INDEX_BUFFER_STRIP_CUT_VALUE`: non-zero restarts strips.
     strip_cut: u32,
+    /// The vertex shader reads `SV_VertexID` or `SV_InstanceID`, which leave out the draw's bases.
+    reads_bases: bool,
 }
 
 /// `D3D12_GRAPHICS_PIPELINE_STATE_DESC`, the parts this front reads.
@@ -144,10 +151,18 @@ pub struct Device<B: Backend> {
     addresses: AddressMap<ResourceId>,
     layouts: HashMap<VertexLayoutDesc, B::VertexLayout>,
     reads: Vec<PendingRead<B>>,
-    /// Shaders drawn through a hand-written stand-in, since no DXIL converter exists yet.
-    stand_ins_used: u64,
-    stand_in_warned: bool,
+    /// Events to set when a fence reaches a value: fence, value, and the shell's token for the event.
+    waiters: Vec<(FenceId, u64, u64)>,
+    chains: Slab<Chain<B>>,
+    /// Messages not yet shown, such as why a shader did not convert.
+    messages: Vec<String>,
     removed: Option<&'static str>,
+}
+
+/// A swap chain and the resources standing for its back buffers.
+struct Chain<B: Backend> {
+    chain: SwapChain<B>,
+    buffers: Vec<ResourceId>,
 }
 
 impl<B: Backend> Device<B> {
@@ -161,8 +176,9 @@ impl<B: Backend> Device<B> {
             addresses: AddressMap::new(ADDRESS_BASE),
             layouts: HashMap::new(),
             reads: Vec::new(),
-            stand_ins_used: 0,
-            stand_in_warned: false,
+            waiters: Vec::new(),
+            chains: Slab::new(),
+            messages: Vec::new(),
             removed: None,
         }
     }
@@ -176,25 +192,17 @@ impl<B: Backend> Device<B> {
         self.removed
     }
 
-    /// How many shaders were drawn through a hand-written stand-in.
-    pub fn stand_ins_used(&self) -> u64 {
-        self.stand_ins_used
-    }
-
-    /// Warnings not yet shown: each slow path the first time it is taken, and the first use of a
-    /// stand-in shader.
-    pub fn take_warnings(&mut self) -> Vec<&'static str> {
-        let mut out: Vec<_> = self
+    /// Warnings not yet shown: each slow path the first time it is taken, and why a call failed
+    /// where the error code cannot say.
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        let mut out: Vec<String> = self
             .backend
             .slow_paths()
             .take_warnings()
             .into_iter()
-            .map(SlowPath::reason)
+            .map(|p| p.reason().to_string())
             .collect();
-        if self.stand_ins_used > 0 && !self.stand_in_warned {
-            self.stand_in_warned = true;
-            out.push("DXIL drawn through a hand-written WGSL stand-in");
-        }
+        out.append(&mut self.messages);
         out
     }
 
@@ -275,6 +283,7 @@ impl<B: Backend> Device<B> {
                     texture,
                     desc: tdesc,
                     views: Vec::new(),
+                    owned: true,
                 },
                 0,
             )
@@ -326,11 +335,18 @@ impl<B: Backend> Device<B> {
         self.reads.retain(|p| p.resource != id);
         match r.storage {
             Storage::Buffer { buffer, .. } => self.backend.destroy(Object::Buffer(buffer)),
-            Storage::Texture { texture, views, .. } => {
+            Storage::Texture {
+                texture,
+                views,
+                owned,
+                ..
+            } => {
                 for (_, v) in views {
                     self.backend.destroy(Object::TextureView(v));
                 }
-                self.backend.destroy(Object::Texture(texture));
+                if owned {
+                    self.backend.destroy(Object::Texture(texture));
+                }
             }
         }
     }
@@ -359,39 +375,47 @@ impl<B: Backend> Device<B> {
         if desc.root.is_none_or(|r| !self.roots.contains(r.0 as usize)) {
             return Err(Error::Invalid("a pipeline needs its root signature"));
         }
-        let vs = stand_in::find(desc.vs)
-            .filter(|s| s.stage == wcontainers_gpu::ShaderStage::Vertex)
-            .ok_or(Error::NotImplemented(
-                "DXIL shaders need the shaders crate's converter",
-            ))?;
+        let vs = self.convert(desc.vs, ShaderStage::Vertex)?;
         let ps = if desc.ps.is_empty() {
             None
         } else {
-            Some(
-                stand_in::find(desc.ps)
-                    .filter(|s| s.stage == wcontainers_gpu::ShaderStage::Fragment)
-                    .ok_or(Error::NotImplemented(
-                        "DXIL shaders need the shaders crate's converter",
-                    ))?,
-            )
+            Some(self.convert(desc.ps, ShaderStage::Fragment)?)
         };
         let mut inputs = desc.inputs.clone();
         resolve_offsets(&mut inputs)?;
-        let inputs = inputs
+        let reads = &vs.reflection.inputs;
+        for i in reads.iter().filter(|i| i.system.is_none()) {
+            if !inputs.iter().any(|e| {
+                e.semantic.eq_ignore_ascii_case(&i.semantic) && e.semantic_index == i.semantic_index
+            }) {
+                return Err(Error::Invalid(
+                    "the input layout lacks an input the vertex shader reads",
+                ));
+            }
+        }
+        // Elements the vertex shader does not read are allowed and fetch nothing.
+        let inputs: Vec<(InputElement, u32)> = inputs
             .into_iter()
-            .map(|e| {
-                let location = vs
-                    .inputs
+            .filter_map(|e| {
+                reads
                     .iter()
-                    .position(|(name, index)| {
-                        name.eq_ignore_ascii_case(&e.semantic) && *index == e.semantic_index
+                    .find(|i| {
+                        i.system.is_none()
+                            && i.semantic.eq_ignore_ascii_case(&e.semantic)
+                            && i.semantic_index == e.semantic_index
                     })
-                    .ok_or(Error::Invalid(
-                        "an input element the vertex shader does not read",
-                    ))?;
-                Ok((e, location as u32))
+                    .map(|i| (e, i.location))
             })
-            .collect::<Result<Vec<_>, Error>>()?;
+            .collect();
+        let reads_bases = reads.iter().any(|i| {
+            matches!(
+                i.system,
+                Some(
+                    wcontainers_gpu::SystemValue::VertexId
+                        | wcontainers_gpu::SystemValue::InstanceId
+                )
+            )
+        });
         let mut colors = [None; MAX_COLOR_TARGETS];
         for (slot, f) in colors.iter_mut().zip(&desc.rtv_formats) {
             *slot = Some(dxgi(*f)?);
@@ -414,12 +438,17 @@ impl<B: Backend> Device<B> {
             4 => return Err(Error::NotImplemented("patch topologies")),
             _ => return Err(Error::Invalid("a pipeline needs a topology type")),
         };
-        let mut shader = |s: &stand_in::StandIn| -> Result<B::Shader, Error> {
-            self.stand_ins_used += 1;
-            shader_from_wgsl(&mut self.backend, s)
+        let vs_shader = self.backend.create_shader(&vs.modules[0])?;
+        let ps_shader = match &ps {
+            Some(ps) => match self.backend.create_shader(&ps.modules[0]) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    self.backend.destroy(Object::Shader(vs_shader));
+                    return Err(e.into());
+                }
+            },
+            None => None,
         };
-        let vs_shader = shader(vs)?;
-        let ps_shader = ps.map(&mut shader).transpose()?;
         let program = self.backend.create_program(&Program::Render {
             vertex: &vs_shader,
             fragment: ps_shader.as_ref(),
@@ -436,6 +465,7 @@ impl<B: Backend> Device<B> {
             inputs,
             targets,
             strip_cut: desc.strip_cut,
+            reads_bases,
         };
         let packed = packed_strides(&pipeline.inputs);
         let layout = self.vertex_layout(&pipeline.inputs, &packed)?;
@@ -450,6 +480,38 @@ impl<B: Backend> Device<B> {
             layouts: Default::default(),
         });
         Ok(PipelineId(self.pipelines.insert(pipeline) as u32))
+    }
+
+    /// A DXIL shader in the common form. Shaders reading resources wait for root parameters, which
+    /// the front does not bind yet; the converter's own refusals are kept as messages.
+    fn convert(&mut self, code: &[u8], stage: ShaderStage) -> Result<Converted, Error> {
+        let converted =
+            wcontainers_shaders::convert(Source::Dxil(code), &VariantKey::default(), None)
+                .map_err(|e| {
+                    let error = match e {
+                        ConvertError::Rejected(_) => {
+                            Error::Invalid("the shader bytecode was refused")
+                        }
+                        ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
+                            Error::NotImplemented("a shader feature the converter lacks")
+                        }
+                        ConvertError::Malformed(_) | ConvertError::Invalid(_) => {
+                            Error::NotImplemented("a shader the converter got wrong")
+                        }
+                    };
+                    self.messages
+                        .push(format!("a {stage:?} shader did not convert: {e}"));
+                    error
+                })?;
+        if converted.modules.len() != 1 || converted.modules[0].stage != stage {
+            return Err(Error::Invalid("a shader of another stage"));
+        }
+        if !converted.reflection.bindings.is_empty() || converted.reflection.helper_size != 0 {
+            return Err(Error::NotImplemented(
+                "shaders reading resources need root parameters",
+            ));
+        }
+        Ok(converted)
     }
 
     pub fn destroy_pipeline(&mut self, id: PipelineId) {
@@ -510,6 +572,33 @@ impl<B: Backend> Device<B> {
 
     pub fn destroy_fence(&mut self, id: FenceId) {
         self.fences.try_remove(id.0 as usize);
+        self.waiters.retain(|w| w.0 != id);
+    }
+
+    /// `SetEventOnCompletion` with an event: `token` comes back from [`Device::reached_events`]
+    /// once the fence reaches `value`. Nothing waits here.
+    pub fn add_waiter(&mut self, id: FenceId, value: u64, token: u64) {
+        self.waiters.push((id, value, token));
+    }
+
+    pub fn has_waiters(&self) -> bool {
+        !self.waiters.is_empty()
+    }
+
+    /// The tokens of events whose fence has reached its value, asking the back end without waiting.
+    pub fn reached_events(&mut self) -> Vec<u64> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.waiters.len() {
+            let (id, value, token) = self.waiters[i];
+            if self.completed(id) >= value {
+                out.push(token);
+                self.waiters.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        out
     }
 
     /// `ID3D12CommandQueue::Signal`: the fence reaches `value` when the work submitted so far is done.
@@ -531,8 +620,8 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// `GetCompletedValue`. Read backs whose work is done are in readback memory first, so the
-    /// program sees the bytes when it sees the value.
+    /// `GetCompletedValue`. Read backs whose work is done are in readback memory first (waiting only
+    /// for their bytes to arrive), so the program sees the bytes when it sees the value.
     pub fn completed(&mut self, id: FenceId) -> u64 {
         let Some(f) = self.fences.get_mut(id.0 as usize) else {
             return 0;
@@ -546,7 +635,7 @@ impl<B: Backend> Device<B> {
             f.value = value;
         }
         let value = f.value;
-        self.finish_reads(false);
+        self.finish_reads(true);
         value
     }
 
@@ -599,6 +688,100 @@ impl<B: Backend> Device<B> {
                 self.backend
                     .finish_read(r.readback, &mut host[r.offset..r.offset + r.size]);
             }
+        }
+    }
+
+    // ---- Swap chains ----
+
+    /// `CreateSwapChainForHwnd` and the others, on a queue of this device: a swap chain on the host
+    /// window `window`, with a resource standing for each back buffer the program may get.
+    pub fn create_swap_chain(
+        &mut self,
+        window: u32,
+        desc: &SwapChainDesc,
+    ) -> Result<ChainId, SwapChainError> {
+        self.live().map_err(|_| GpuError::DeviceLost)?;
+        let chain = SwapChain::new(&mut self.backend, window, desc)?;
+        let buffers = adopt_buffers(&mut self.resources, &chain);
+        Ok(ChainId(self.chains.insert(Chain { chain, buffers }) as u32))
+    }
+
+    /// The resource standing for back buffer `index` (`GetBuffer`).
+    pub fn chain_buffer(&self, id: ChainId, index: u32) -> Option<ResourceId> {
+        self.chains
+            .get(id.0 as usize)?
+            .buffers
+            .get(index as usize)
+            .copied()
+    }
+
+    pub fn chain(&self, id: ChainId) -> Option<&SwapChain<B>> {
+        self.chains.get(id.0 as usize).map(|c| &c.chain)
+    }
+
+    pub fn chain_mut(&mut self, id: ChainId) -> Option<&mut SwapChain<B>> {
+        self.chains.get_mut(id.0 as usize).map(|c| &mut c.chain)
+    }
+
+    /// `Present`: the work executed so far is submitted with the copy into the window.
+    pub fn present(&mut self, id: ChainId, sync_interval: u32) -> Result<(), SwapChainError> {
+        self.live().map_err(|_| GpuError::DeviceLost)?;
+        let c = self
+            .chains
+            .get_mut(id.0 as usize)
+            .ok_or(SwapChainError::InvalidCall("no such swap chain"))?;
+        c.chain.present(&mut self.backend, sync_interval)
+    }
+
+    /// `SetColorSpace1`.
+    pub fn set_color_space(&mut self, id: ChainId, space: u32) -> Result<(), SwapChainError> {
+        match self.chains.get_mut(id.0 as usize) {
+            Some(c) => c.chain.set_color_space(&mut self.backend, space),
+            None => Err(SwapChainError::InvalidCall("no such swap chain")),
+        }
+    }
+
+    /// Whether a present now would wait for frame pacing (`DXGI_PRESENT_DO_NOT_WAIT`).
+    pub fn would_wait(&mut self, id: ChainId) -> bool {
+        match self.chains.get_mut(id.0 as usize) {
+            Some(c) => c.chain.would_wait(&mut self.backend),
+            None => false,
+        }
+    }
+
+    /// `ResizeBuffers`, once the shell has seen that the program holds no back buffer.
+    pub fn resize_swap_chain(
+        &mut self,
+        id: ChainId,
+        buffers: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+    ) -> Result<(), SwapChainError> {
+        let old = std::mem::take(
+            &mut self
+                .chains
+                .get_mut(id.0 as usize)
+                .ok_or(SwapChainError::InvalidCall("no such swap chain"))?
+                .buffers,
+        );
+        for r in old {
+            self.destroy_resource(r);
+        }
+        let c = &mut self.chains[id.0 as usize];
+        let result = c
+            .chain
+            .resize(&mut self.backend, buffers, width, height, format);
+        c.buffers = adopt_buffers(&mut self.resources, &c.chain);
+        result
+    }
+
+    pub fn destroy_swap_chain(&mut self, id: ChainId) {
+        if let Some(c) = self.chains.try_remove(id.0 as usize) {
+            for r in c.buffers {
+                self.destroy_resource(r);
+            }
+            c.chain.destroy(&mut self.backend);
         }
     }
 
@@ -710,6 +893,7 @@ impl<B: Backend> Device<B> {
                     texture,
                     desc,
                     views,
+                    ..
                 },
             ..
         }) = self.resources.get_mut(v.resource.0 as usize)
@@ -762,6 +946,48 @@ impl<B: Backend> Device<B> {
     }
 }
 
+/// Resources standing for the back buffers of `chain`, whose textures the swap chain keeps.
+fn adopt_buffers<B: Backend>(
+    resources: &mut Slab<Resource<B>>,
+    chain: &SwapChain<B>,
+) -> Vec<ResourceId> {
+    let tdesc = chain.buffer_desc();
+    let desc = ResourceDesc {
+        dimension: resource::DIMENSION_TEXTURE2D,
+        width: u64::from(tdesc.width),
+        height: tdesc.height,
+        depth_or_array_size: 1,
+        mip_levels: 1,
+        format: chain.desc().format,
+        sample_count: 1,
+        flags: resource::FLAG_RENDER_TARGET
+            | if tdesc.usage.contains(TextureUsage::STORAGE) {
+                resource::FLAG_UNORDERED_ACCESS
+            } else {
+                0
+            },
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(texture) = chain.buffer(i) {
+        let id = resources.insert(Resource {
+            desc,
+            heap: HeapType::Default,
+            storage: Storage::Texture {
+                texture: texture.clone(),
+                desc: tdesc,
+                views: Vec::new(),
+                owned: false,
+            },
+            address: 0,
+        });
+        out.push(ResourceId(id as u32));
+        i += 1;
+    }
+    out
+}
+
 /// The interface format of a DXGI format a view or target names.
 fn dxgi(value: u32) -> Result<wcontainers_gpu::Format, Error> {
     wcontainers_directx_graphics_infrastructure::dxgi_format(value)
@@ -778,28 +1004,6 @@ fn packed_strides(inputs: &[(InputElement, u32)]) -> [u32; MAX_VERTEX_STREAMS] {
         *s = (*s).max(end);
     }
     strides
-}
-
-/// A shader in the common form from a stand-in's WGSL.
-fn shader_from_wgsl<B: Backend>(
-    backend: &mut B,
-    s: &stand_in::StandIn,
-) -> Result<B::Shader, Error> {
-    let module = naga::front::wgsl::parse_str(s.wgsl)
-        .map_err(|_| Error::Invalid("a stand-in shader does not parse"))?;
-    let info = naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::empty(),
-    )
-    .validate(&module)
-    .map_err(|_| Error::Invalid("a stand-in shader does not validate"))?;
-    Ok(backend.create_shader(&ShaderModule {
-        module,
-        info,
-        entry_point: s.entry.into(),
-        stage: s.stage,
-        key: s.hash,
-    })?)
 }
 
 impl From<GpuError> for Error {
@@ -1002,6 +1206,24 @@ impl Replay {
         let pid = self
             .pipeline
             .ok_or(Error::Invalid("drawing with no pipeline state"))?;
+        let bases = match &range {
+            DrawRange::Vertices {
+                first,
+                first_instance,
+                ..
+            } => *first != 0 || *first_instance != 0,
+            DrawRange::Indexed {
+                base_vertex,
+                first_instance,
+                ..
+            } => *base_vertex != 0 || *first_instance != 0,
+            _ => false,
+        };
+        if bases && d.pipelines[pid.0 as usize].reads_bases {
+            return Err(Error::NotImplemented(
+                "SV_VertexID or SV_InstanceID in a draw with a first vertex or instance",
+            ));
+        }
         if !self.pass_open {
             let mut views = Vec::with_capacity(self.colors.len());
             let mut loads = Vec::with_capacity(self.colors.len());
@@ -1054,22 +1276,22 @@ impl Replay {
             .for_each(|(e, _)| used[e.slot as usize] = true);
         d.pipelines[pid.0 as usize].inputs = inputs;
         let layout = layout?;
-        let mut buffers: Vec<Option<(B::Buffer, u64)>> = Vec::with_capacity(MAX_VERTEX_STREAMS);
-        for (v, used) in self.vertex_buffers.iter().zip(used) {
-            buffers.push(match d.addresses.find(v.address) {
-                Some((id, offset)) if used && v.size > 0 => Some((d.buffer(id)?.0.clone(), offset)),
-                _ => None,
-            });
+        let mut buffers: [Option<(B::Buffer, u64)>; MAX_VERTEX_STREAMS] =
+            [const { None }; MAX_VERTEX_STREAMS];
+        for ((b, v), used) in buffers.iter_mut().zip(&self.vertex_buffers).zip(used) {
+            if let Some((id, offset)) = d.addresses.find(v.address)
+                && used
+                && v.size > 0
+            {
+                *b = Some((d.buffer(id)?.0.clone(), offset));
+            }
         }
-        let vertex_buffers: Vec<_> = buffers
-            .iter()
-            .map(|b| {
-                b.as_ref().map(|(buffer, offset)| VertexBinding {
-                    buffer,
-                    offset: *offset,
-                })
+        let vertex_buffers = buffers.each_ref().map(|b| {
+            b.as_ref().map(|(buffer, offset)| VertexBinding {
+                buffer,
+                offset: *offset,
             })
-            .collect();
+        });
         let index = match (&range, &self.index) {
             (DrawRange::Indexed { .. }, Some(v)) => {
                 let (id, offset) = d
