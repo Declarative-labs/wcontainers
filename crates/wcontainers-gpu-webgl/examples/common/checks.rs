@@ -1871,8 +1871,8 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
         let got = kit::read(&mut b, &t, 0, 0, [2, 2, 1], 4, false);
         let stored = kit::read(&mut b, &d, 0, 0, [2, 2, 1], 4, false);
         for (what, bytes) in [("position z", &got), ("stored depth", &stored)] {
-            for texel in bytes.chunks_exact(4) {
-                let z = f32::from_le_bytes(texel.try_into().unwrap());
+            for texel in bytes.as_chunks::<4>().0 {
+                let z = f32::from_le_bytes(*texel);
                 assert_eq!(z, want, "{what} with depth_minus_one {minus_one}");
             }
         }
