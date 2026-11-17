@@ -4,6 +4,56 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K5 (sockets and network), first run: the check's findings on K4 are fixed first (below); then
+K5's parts as listed under "K5 progress".
+
+The K4 check's findings, fixed in K5's first run (each tested against the reference):
+- A call takes its descriptors and paths once (`process::Taken` in each thread: `Kernel::call_file`
+  for every descriptor argument, `syscall::path_argument` for every path; Linux's `fdget` and
+  `getname`): a call that waits runs again with the same open files and path bytes, whatever the
+  table or memory hold by then. Values a call settles once (an append's offset, which Linux
+  computes once under the inode lock) go in the same list (`Kernel::settle_once`). Files only a
+  finished call still held are let go as closed descriptors' are. close takes the descriptor out
+  first, then waits for FLUSH (`file_close_fd` then `filp_close`). poll and select look their
+  descriptors up at every run, as Linux's loop does. tests/backend.rs
+  `arguments_taken_once_match_reference` (guest/backendrace.c: pwrite while another thread dup2s
+  over the descriptor, mkdir while another thread changes the path, a spinning thread while
+  another waits for the backend; 2 saves) failed before (one offset written to both files, 19
+  mkdirs and 26 directories) and passes.
+- The test driver hands the backend's answers over in an order drawn from the seed
+  (`Backend::next`; the server still answers in order), and while an answer is owed it ends a
+  turn at a seeded moment within 50 us of the CPU side (`ANSWER_ARRIVES_WITHIN`), as a host raises
+  the running thread's stop flag when an event arrives. A spinning thread no longer hangs a run.
+  This found that an append's offset was computed again in a later run (a LOOKUP answer delivered
+  after a WRITE's moved the held size): now settled once.
+- Backend directories are listed as Linux 7.0 does: INIT asks for FUSE_DO_READDIRPLUS and
+  FUSE_READDIRPLUS_AUTO; a listing from position 0 (or every listing when the backend grants
+  READDIRPLUS without AUTO) sends READDIRPLUS; its entries' lookups are counted, a held node takes
+  their attributes and lets go of its lists, others are forgotten (FORGET) since nothing keeps
+  names. Each READDIR or READDIRPLUS asks for the caller's buffer size between a page and the
+  most one message carries (`fuse_readdir_uncached`'s clamp; the fourth run's "one page" was
+  wrong for 7.0). tests/backend.rs `listings_match_reference` (guest/backendlisting.c: listing
+  while removing with buffers of 32768, 2048 and 200 bytes, both server kinds) failed before
+  (32 listed where Linux lists 40).
+- O_TMPFILE walks to the directory first (ENOENT, ENOTDIR), then EROFS, then the permission
+  check, then is refused (counted, EOPNOTSUPP), as `do_tmpfile` and `vfs_tmpfile`. Same test.
+- Backend notices are checked as Linux's `fuse_notify_*`: each body's exact size (EINVAL), names'
+  length (ENAMETOOLONG) and trailing zero; a DELETE whose parent is not a directory (ENOTDIR) or
+  whose child the kernel holds under another parent or name (ENOENT) changes nothing. Refused
+  notices are counted "backend notice refused" (new reason, detail code times 2^32 plus the
+  error) with a warning. The test driver cuts one notice in eight short;
+  `backend_notices_are_handled` asserts some were refused.
+- Not fixed: getxattr of `security.capability` on the backend still answers EINVAL without asking
+  (see Known issues). Reading 7.0.14's source (`vfs_getxattr`, `cap_inode_getsecurity`,
+  `vfs_getxattr_alloc`, `fuse_xattr_get`) gives a GETXATTR to the server and its ENODATA, not
+  EINVAL, unless `d_find_any_alias` finds no dentry; which holds needs an experiment in the
+  reference that was not made in this run.
+- Not changed: INIT does not ask for FUSE_POSIX_LOCKS or FUSE_FLOCK_LOCKS (locks stay in the
+  kernel; the first backend does not grant them, so Linux keeps its locks local too), and the
+  kernel sends no COPY_FILE_RANGE, IOCTL or POLL (the first backend answers them ENOSYS, after
+  which Linux does what ours does). A backend that grants or answers them would see differences.
+  Under Departures.
+
 K0 to K3 are done (their runs are in git history and below). K4 (files outside) is built in five
 runs: the first built the FUSE side with the backend as a volume; the second put the root file
 system on the backend, built extended attributes, access control lists and fallocate of backend
@@ -1553,6 +1603,12 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K5, first run: a backend directory's later pages are listed with plain READDIR. Linux also
+  uses READDIRPLUS for them when a name in the directory was looked up afresh, or first
+  revalidated after READDIRPLUS made it, since its last listing (`FUSE_I_ADVISE_RDPLUS`); which
+  names Linux's dentry cache holds is not modelled. INIT asks for no lock flags and the kernel
+  sends no COPY_FILE_RANGE, IOCTL or POLL (above).
+
 - K4, fifth run: a backend inode holds its access control lists between reads, as Linux's
   `i_acl` does, although the plan says the kernel caches nothing in phase one: without it, which
   reads answer ENODATA and which EOPNOTSUPP differs from Linux (a permission check by another
@@ -1786,6 +1842,8 @@ this" counts a CPU side that answered it cannot make a memory, thread or shared 
 guest).
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K5, first run: none so far.
 
 - K4, fifth run: none.
 - K4, fourth run: none.
