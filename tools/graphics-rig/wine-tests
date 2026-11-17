@@ -2,39 +2,59 @@
 # Wine's Direct3D conformance tests (LGPL, testing only; built and kept in C:\wc\wine on the desktop,
 # never part of the workspace), from the Mac.
 #   tools/graphics-rig/wine-tests build
-#       fetches llvm-mingw and Wine's test sources at the pinned commit and builds
-#       d3d11, d3d10core, dxgi and d3d12 tests (desktop/wine-tests.ps1); not a GPU job
-#   tools/graphics-rig/wine-tests run [--warp] [<test>...]
-#       one GPU job running the named tests (all four by default) on the GPU or on WARP; prints each
-#       test's summary and failed-check count (desktop/wine-run.ps1); logs stay in
-#       C:\wc\out\<branch>\wine\<test>-<hardware|warp>.log, and are copied to
-#       pyro-parked/wcontainers-scratch/graphics-rig/wine-logs on the Mac
+#       fetches llvm-mingw and Wine's test sources at the pinned commit and builds the d3d11,
+#       d3d10core, dxgi and d3d12 test files (desktop/wine-tests.ps1); not a GPU job
+#   tools/graphics-rig/wine-tests list <file>
+#       prints the names of a file's tests
+#   tools/graphics-rig/wine-tests run [--warp] [--record] [--dll <name>=<path>]... [<file>[:<test>/<test>...]]...
+#       one GPU job on the hidden desktop running every test of the named files (all four by
+#       default), or only the named tests, each in its own process, on the GPU or on WARP
+#       (desktop/wine-run.ps1). Tests in wine-excluded.txt never run. --dll puts a replacement library
+#       beside the test programs (paths on the desktop, relative to its checkout). Prints each test's
+#       verdict against the baseline in tools/graphics-rig/wine-baseline (a test passing there must
+#       pass) and exits 1 if one does not. --record runs on real Direct3D and copies the results into
+#       wine-baseline, to be committed. Logs stay in C:\wc\out\<branch>\wine\logs and are copied to
+#       pyro-parked/wcontainers-scratch/graphics-rig/wine-logs on the Mac.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
 . "$here/common.sh"
-[ $# -gt 0 ] || { echo "usage: wine-tests build | run [--warp] [<test>...]" >&2; exit 2; }
+usage="usage: wine-tests build | list <file> | run [--warp] [--record] [--dll <name>=<path>]... [<file>[:<test>/<test>...]]..."
+[ $# -gt 0 ] || { echo "$usage" >&2; exit 2; }
 script='powershell -NoProfile -ExecutionPolicy Bypass -File tools\graphics-rig\desktop'
 case $1 in
     build) exec "$here/remote" "$script\\wine-tests.ps1" ;;
+    list) [ $# -eq 2 ] || { echo "$usage" >&2; exit 2; }; exec "$here/remote" "type C:\\wc\\wine\\build\\$2.tests" ;;
     run) shift ;;
-    *) echo "usage: wine-tests build | run [--warp] [<test>...]" >&2; exit 2 ;;
+    *) echo "$usage" >&2; exit 2 ;;
 esac
-warp=
+options=
+record=
+dlls=()
 tests=()
-for arg in "$@"; do
-    case $arg in
-        --warp) warp=" -Warp" ;;
-        *) tests+=("$arg") ;;
+while [ $# -gt 0 ]; do
+    case $1 in
+        --warp) options+=" -Warp"; shift ;;
+        --record) options+=" -Record"; record=1; shift ;;
+        --dll) dlls+=("$2"); shift 2 ;;
+        *) tests+=("$1"); shift ;;
     esac
 done
-list=
-[ ${#tests[@]} -eq 0 ] || list=" -Tests $(IFS=,; echo "${tests[*]}")"
+[ -z "$record" ] || [ ${#dlls[@]} -eq 0 ] || { echo "wine-tests: --record runs real Direct3D only" >&2; exit 2; }
+[ ${#tests[@]} -eq 0 ] || options+=" -Tests $(IFS=,; echo "${tests[*]}")"
+[ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
+out="C:\\wc\\out\\$name\\wine"
 set +e
 "$here/remote" "exit 0" >/dev/null
-"$here/gpu-job" -- "$script\\wine-run.ps1 -Out C:\\wc\\out\\$name\\wine$warp$list"
+"$here/gpu-job" --desktop -- "$script\\wine-run.ps1 -Out $out -Baseline tools\\graphics-rig\\wine-baseline$options"
 code=$?
+set -e
 logs=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/wine-logs
 mkdir -p "$logs"
-rig_scp "$host:C:/wc/out/$name/wine/*.log" "$logs/" 2>/dev/null
+rig_scp "$host:C:/wc/out/$name/wine/logs/*.log" "$logs/" 2>/dev/null || true
+if [ -n "$record" ] && [ $code -eq 0 ]; then
+    mkdir -p "$here/wine-baseline"
+    rig_scp "$host:C:/wc/out/$name/wine/*.txt" "$here/wine-baseline/"
+    echo "wine-tests: results copied into $here/wine-baseline"
+fi
 exit $code

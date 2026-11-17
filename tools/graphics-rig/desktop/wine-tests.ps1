@@ -1,7 +1,10 @@
 # Builds Wine's Direct3D conformance tests (LGPL, used for testing only, never part of the workspace)
 # as 64-bit Windows programs in C:\wc\wine: fetches llvm-mingw and the test sources of a pinned Wine
-# commit, and compiles each test file on its own with Wine's test framework in standalone mode.
-#   wine-tests.ps1   writes C:\wc\wine\build\<test>_test.exe for d3d11, d3d10core, dxgi and d3d12
+# commit, and compiles each test file on its own with Wine's test framework in standalone mode. Each
+# test its START_TEST runs is made to run only when wanted (wine-select.h), so a run can pick tests by
+# name; the copy so changed is the one built, and the names are listed in <test>.tests.
+#   wine-tests.ps1   writes C:\wc\wine\build\<test>_test.exe and <test>.tests for d3d11, d3d10core,
+#                    dxgi and d3d12
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 trap { [Console]::Error.WriteLine("wine-tests: $_"); exit 1 }
@@ -57,10 +60,29 @@ $env:PATH = "$mingw\bin;$env:PATH"
 Set-Content "$root\build\d3d10_1.def" "LIBRARY d3d10_1.dll`nEXPORTS`nD3D10CreateDevice1`n"
 & llvm-dlltool -m i386:x86-64 -d "$root\build\d3d10_1.def" -l "$root\build\libd3d10_1.a"
 if ($LASTEXITCODE) { throw 'making the d3d10_1 import library failed' }
+$select = (Resolve-Path tools\graphics-rig\desktop\wine-select.h).Path
 foreach ($test in $tests.Keys) {
     $dir = "$src\dlls\$test\tests"
+    # Each statement directly in START_TEST's body that names a test_ function becomes
+    # `wc_wanted("<name>") ? (void)(<statement>) : (void)0;`.
+    $text = [IO.File]::ReadAllText("$dir\$test.c")
+    $start = $text.IndexOf("START_TEST($test)")
+    if ($start -lt 0) { throw "no START_TEST($test) in $test.c" }
+    $body = $text.Substring($start)
+    $names = New-Object System.Collections.Generic.List[string]
+    $body = [regex]::Replace($body, '(?m)^([ \t]+)([A-Za-z_]\w*\((?:[^;{}])*?\);)', [Text.RegularExpressions.MatchEvaluator] {
+            param($m)
+            $name = [regex]::Match($m.Groups[2].Value, '\btest_\w+')
+            $prefix = $body.Substring(0, $m.Index)
+            $depth = ([regex]::Matches($prefix, '\{')).Count - ([regex]::Matches($prefix, '\}')).Count
+            if (-not $name.Success -or $depth -ne 1) { return $m.Value }
+            if (-not $names.Contains($name.Value)) { $names.Add($name.Value) }
+            "$($m.Groups[1].Value)wc_wanted(`"$($name.Value)`") ? (void)($($m.Groups[2].Value.TrimEnd(';'))) : (void)0;"
+        })
+    [IO.File]::WriteAllText("$root\build\$test.c", $text.Substring(0, $start) + $body)
+    [IO.File]::WriteAllLines("$root\build\$test.tests", [string[]]$names)
     # winecrt0's debug.c gives the debug string helpers that Wine's own libraries export.
-    $sources = @("$dir\$test.c", "$src\libs\winecrt0\debug.c")
+    $sources = @("$root\build\$test.c", "$src\libs\winecrt0\debug.c")
     if (Test-Path "$dir\resource.rc") {
         $object = "$root\build\$test-resource.o"
         & x86_64-w64-mingw32-windres "-I$dir" "$dir\resource.rc" -o $object
@@ -70,8 +92,8 @@ foreach ($test in $tests.Keys) {
     # Macros Wine's own Windows headers define and llvm-mingw's do not.
     $defines = @('-DDECLSPEC_EXPORT=__declspec(dllexport)', '-DARRAY_SIZE(x)=(sizeof(x)/sizeof((x)[0]))', '-DWIDL_C_INLINE_WRAPPERS')
     $libraries = ($tests[$test] + 'ntdll') | ForEach-Object { "-l$_" }
-    & x86_64-w64-mingw32-clang -O1 -DSTANDALONE -D__WINESRC__ -D__WINE_PE_BUILD @defines "-I$include" -Wno-everything "-L$root\build" @sources -o "$root\build\${test}_test.exe" @libraries
+    & x86_64-w64-mingw32-clang -O1 -DSTANDALONE -D__WINESRC__ -D__WINE_PE_BUILD @defines -include $select "-I$dir" "-I$include" -Wno-everything "-L$root\build" @sources -o "$root\build\${test}_test.exe" @libraries
     if ($LASTEXITCODE) { throw "compiling $test failed" }
-    "built $root\build\${test}_test.exe"
+    "built $root\build\${test}_test.exe, $($names.Count) tests"
 }
 "wine $wineCommit, llvm-mingw $mingwRelease"
