@@ -135,6 +135,8 @@ suite!(
     depth_and_stencil_read_back,
     stencil_sampled_and_read_back,
     copies_within_a_typeless_group,
+    loads_count_levels_from_the_view,
+    fractional_viewports_are_refused,
 );
 
 /// Runs the suite test `name` with `off` (extensions to treat as missing, separated by spaces). A

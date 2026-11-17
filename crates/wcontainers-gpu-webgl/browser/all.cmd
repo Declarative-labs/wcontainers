@@ -2,7 +2,8 @@
 rem Every check of the back end on the desktop, as one GPU job after build.cmd: the scenes on ANGLE and in
 rem Chrome's WebGL 2 with every extension and with EXT_clip_control and WEBGL_provoking_vertex switched
 rem off, and the shared suite in Chrome and on ANGLE with every extension, without EXT_clip_control, and
-rem without both (in Chrome also without WEBGL_stencil_texturing, which ANGLE natively lacks).
+rem without both (in Chrome also without WEBGL_stencil_texturing, which ANGLE natively lacks), and the
+rem drawings compared with the WebGPU back end natively.
 rem all.cmd <out-dir>; run from the checkout root.
 setlocal
 set OUT=%~1
@@ -22,4 +23,6 @@ set WEBGL_OFF=EXT_clip_control
 cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 || set FAIL=1
 set WEBGL_OFF=EXT_clip_control WEBGL_provoking_vertex
 cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 || set FAIL=1
+set WEBGL_OFF=
+cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1 || set FAIL=1
 if defined FAIL exit /b 1

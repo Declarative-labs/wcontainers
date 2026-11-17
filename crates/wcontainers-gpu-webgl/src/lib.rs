@@ -1207,7 +1207,8 @@ impl WebGl {
         GpuError::DeviceLost
     }
 
-    /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
+    /// A nearest-filtering sampler for the back end's own fetches and for textures read only by
+    /// loads, made at its first use.
     fn point_sampler(&mut self) -> Result<glow::Sampler, GpuError> {
         if let Some(s) = self.point_sampler {
             return Ok(s);
@@ -1218,9 +1219,14 @@ impl WebGl {
                 .gl
                 .create_sampler()
                 .map_err(|_| GpuError::OutOfMemory)?;
-            for p in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-                self.gl.sampler_parameter_i32(s, p, glow::NEAREST as i32);
-            }
+            // A mipmap filter: texel fetches reach only the base level without one.
+            self.gl.sampler_parameter_i32(
+                s,
+                glow::TEXTURE_MIN_FILTER,
+                glow::NEAREST_MIPMAP_NEAREST as i32,
+            );
+            self.gl
+                .sampler_parameter_i32(s, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             s
         };
         self.point_sampler = Some(s);
@@ -2564,12 +2570,15 @@ impl Backend for WebGl {
         // SAFETY: plain GL state calls.
         unsafe {
             if let Some(vp) = call.viewports.first() {
-                let rect = [
-                    f(vp.x) as i32,
-                    f(vp.y) as i32,
-                    f(vp.width) as i32,
-                    f(vp.height) as i32,
-                ];
+                let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
+                let rect = floats.map(|v| v as i32);
+                // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
+                if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
+                    self.invalid(format!(
+                        "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
+                    ));
+                    return;
+                }
                 if v.viewport != rect {
                     gl.viewport(rect[0], rect[1], rect[2], rect[3]);
                     v.viewport = rect;

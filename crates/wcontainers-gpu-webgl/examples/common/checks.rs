@@ -784,3 +784,155 @@ pub fn copies_within_a_typeless_group<H: Host>() {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// Loads the texel at the fragment from level `l` of the view, and asks that level's width.
+const LEVEL_LOAD: &str = "
+@group(0) @binding(32) var t: texture_2d<u32>;
+@group(0) @binding(0) var<uniform> l: vec4<u32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<u32> {
+    let level = i32(l.x);
+    return vec4<u32>(textureLoad(t, vec2<i32>(p.xy), level).x, textureDimensions(t, level).x, 0u, 0u);
+}
+";
+
+/// Loads and sizes count levels from the view's first, as WGSL's `textureLoad` and
+/// `textureDimensions` do: each level of an `rgba8uint` texture holds its own number, and views
+/// starting at each level are loaded and sized at each of their levels.
+pub fn loads_count_levels_from_the_view<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LEVEL_LOAD, "vs", "fs");
+    let f = Format::Rgba8Uint;
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 3, usage, false);
+    for mip in 0..3u32 {
+        let n = 4 >> mip;
+        b.write_texture(
+            &TextureRegion {
+                texture: &t,
+                mip,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: n,
+                height: n,
+                depth_or_layers: 1,
+            },
+            &vec![mip as u8; (n * n * 4) as usize],
+            n * 4,
+            n,
+            WriteMode::Ordered,
+        );
+    }
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(&mut b, TextureDimension::D2, f, [1, 1, 1], 1, usage, false);
+    let out_view = kit::target(&mut b, &out, f, 0, 0);
+    let params = b
+        .create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            intent: MapIntent::Often,
+        })
+        .expect("create_buffer");
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    for base in 0..3u32 {
+        let view = kit::view(&mut b, &t, f, ViewDimension::D2, base, 3 - base, 0, 1);
+        let set = b
+            .create_binding_set(&[
+                BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&view),
+                },
+                BindingEntry {
+                    binding: 0,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &params,
+                        offset: 0,
+                        size: 16,
+                    }),
+                },
+            ])
+            .expect("create_binding_set");
+        for level in 0..3 - base {
+            let mut word = [0u8; 16];
+            word[0] = level as u8;
+            b.write_buffer(&params, 0, &word, WriteMode::Discard);
+            b.begin_pass(&kit::pass(&out_view, [9; 4], None));
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &vp,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+            let at = base + level;
+            assert_eq!(
+                got,
+                vec![at as u8, 4 >> at, 0, 0],
+                "level {level} of the view from level {base}: its number and width"
+            );
+        }
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(view));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A triangle covering the target, writing 1.
+const WRITE_ONE: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<u32> {
+    return vec4<u32>(1u);
+}
+";
+
+/// Without `FRACTIONAL_VIEWPORT` a draw with a viewport at a fraction of a pixel breaks the
+/// interface's rule: the device is lost rather than the viewport rounded.
+pub fn fractional_viewports_are_refused<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if b.caps().has(Features::FRACTIONAL_VIEWPORT) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
+    let f = Format::R32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let fraction = [kit::viewport(0.5, 0.0, 3.0, 4.0)];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &whole,
+        Topology::TriangleList,
+        3,
+    ));
+    assert_eq!(b.status(), DeviceStatus::Ok, "a whole-pixel viewport draws");
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &fraction,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error));
+}
