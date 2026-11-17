@@ -99,7 +99,11 @@ K5 built (all four runs):
     into the control area, an internet protocol's option writes its length before its value and
     answers an unknown level before reading the length, mmap of a socket checks MAP_GROWSDOWN
     before ENODEV, MSG_ERRQUEUE on an internet socket is EAGAIN, preadv2 with flags on inotify is
-    EOPNOTSUPP.
+    EOPNOTSUPP. Last: a stream send of nothing sends no descriptor either (measured), sequenced
+    packets check their connection before control messages and urgent flags, inotify refuses
+    O_PATH descriptors with EBADF, an IPv6 UDP socket sends to an IPv4 address through IPv4's
+    checks and control messages, IPv6, TCP and UDP options take a negative length as unsigned,
+    and an empty IPv4 option value is 0 (IP_TTL's is EINVAL).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -1269,7 +1273,9 @@ each sequence the runner puts back what a sequence can change outside its direct
   5050403 and 5050404 (3000) ran before the reach fix (no socket calls). After it, 5050405 to
   5050417 each failed first and were fixed in turn (the findings under Where things stand); with
   every fix in, 5050405 and 5050406 passed 2000, 5050411 to 5050417 passed 5000 each (70 to 117
-  s each, three side by side, load 15 to 40). Sequences report how many sends with control
+  s each, three side by side, load 15 to 40). At 10000: 5050421 passed at 6d071c7 (168 s), 5050418
+  passed at 6d071c7's parent fixes (171 s), and with every fix in (65ae145) 5050419 and 5050420
+  passed (170 s and 168 s, side by side, load 33 to 24). Sequences report how many sends with control
   messages and receives went well: about 100 to 300 and 300 to 4000 per 5000.
 
 - K4, fifth run, final, at head deb0e5c (every fix in): plain layer 1 seeds 4040510, 4040511,
