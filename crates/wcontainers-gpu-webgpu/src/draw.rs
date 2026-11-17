@@ -9,9 +9,9 @@ use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
-    DispatchGroups, DrawCall, DrawRange, FormatKind, FormatUse, GpuError, LoadOp, MAX_BINDING_SETS,
-    MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, SlowPath, StepMode, TargetLayout,
-    VertexLayoutDesc,
+    DispatchGroups, DrawCall, DrawRange, Features, FormatKind, FormatUse, GpuError, LoadOp,
+    MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, SlowPath, StepMode,
+    TargetLayout, VertexLayoutDesc,
 };
 
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
@@ -104,6 +104,8 @@ enum SetRes {
         buffer: Buffer,
         offset: u64,
         size: u64,
+        /// Bound as storage, which programs may write.
+        storage: bool,
     },
     View(TextureView),
     Sampler(Sampler),
@@ -127,6 +129,7 @@ impl SetObj {
                         buffer,
                         offset,
                         size,
+                        ..
                     },
                     wgpu::BindingType::Buffer {
                         has_dynamic_offset, ..
@@ -164,7 +167,14 @@ impl SetObj {
     fn mark_used(&self, serial: u64) {
         for (_, r) in &self.entries {
             match r {
-                SetRes::Buffer { buffer, .. } => buffer.0.used_in.set(serial),
+                SetRes::Buffer {
+                    buffer, storage, ..
+                } => {
+                    buffer.0.used_in.set(serial);
+                    if *storage {
+                        buffer.0.wrote();
+                    }
+                }
                 SetRes::View(v) => {
                     if let Some(t) = &v.0.texture {
                         t.0.used_in.set(serial);
@@ -387,6 +397,7 @@ impl WebGpu {
                         buffer: r.buffer.clone(),
                         offset: r.offset,
                         size: r.size,
+                        storage: matches!(e.resource, BindingResource::StorageBuffer { .. }),
                     }
                 }
                 BindingResource::Texture(v) => {
@@ -405,9 +416,7 @@ impl WebGpu {
                 BindingResource::StorageTexture { view, .. } => SetRes::View((*view).clone()),
                 BindingResource::Sampler(s) => SetRes::Sampler((*s).clone()),
                 BindingResource::TexelBuffer { .. } => {
-                    return Err(GpuError::Invalid(
-                        "typed buffers are read as storage on WebGPU (TexelBufferAsStorage)",
-                    ));
+                    return Err(GpuError::Absent(Features::TEXEL_BUFFERS));
                 }
                 BindingResource::Table(t) => match **t {},
             };
@@ -416,6 +425,7 @@ impl WebGpu {
                     buffer,
                     offset,
                     size,
+                    ..
                 } => (0, buffer.0.id, *offset, *size),
                 SetRes::View(v) => (1, v.0.id, 0, 0),
                 SetRes::Sampler(s) => (2, s.0.id, 0, 0),
@@ -616,8 +626,14 @@ impl WebGpu {
         };
         let layout = self.program_layout(&call.program.0, key.layouts)?;
         let vl = &call.vertex_layout.0.desc;
+        // Streams read through shadows (`VertexFormatConverted`) take the shadow's layout.
+        let shadows = self.vertices.plans.get(&call.vertex_layout.0.id).cloned();
+        let shadow = |s: usize| shadows.as_ref().and_then(|p| p[s].as_ref());
         let attributes: Vec<Vec<wgpu::VertexAttribute>> = (0..vl.streams.len())
             .map(|s| {
+                if let Some(p) = shadow(s) {
+                    return p.attributes.clone();
+                }
                 vl.attributes
                     .iter()
                     .flatten()
@@ -640,9 +656,10 @@ impl WebGpu {
         let buffers: Vec<Option<wgpu::VertexBufferLayout>> = vl.streams[..streams]
             .iter()
             .zip(&attributes)
-            .map(|(s, attrs)| {
+            .enumerate()
+            .map(|(i, (s, attrs))| {
                 s.map(|s| wgpu::VertexBufferLayout {
-                    array_stride: u64::from(s.stride),
+                    array_stride: shadow(i).map_or(u64::from(s.stride), |p| p.stride()),
                     step_mode: match s.step {
                         StepMode::Vertex => wgpu::VertexStepMode::Vertex,
                         StepMode::Instance(_) => wgpu::VertexStepMode::Instance,
@@ -937,18 +954,18 @@ impl WebGpu {
     }
 
     /// Ends the open pass, records `between` outside it, and opens the pass again loading what it
-    /// drew (slow path `WriteSplitPass`).
-    pub(crate) fn split_pass(&mut self, between: impl FnOnce(&mut WebGpu)) {
+    /// drew, counted as the slow path `why` that needs it.
+    pub(crate) fn split_pass(&mut self, why: SlowPath, between: impl FnOnce(&mut WebGpu)) {
         let Some(mut pass) = self.pass.take() else {
             between(self);
             return;
         };
         if pass.query_running {
-            self.fail("an ordered write splitting a pass with a running query is not built yet");
+            self.fail("splitting a pass with a running query is not built yet");
             self.pass = Some(pass);
             return;
         }
-        self.slow.hit(SlowPath::WriteSplitPass);
+        self.slow.hit(why);
         drop(pass.rp);
         between(self);
         let encoder = self.encoder.as_mut().expect("a pass implies an encoder");
@@ -1007,17 +1024,28 @@ impl WebGpu {
     }
 
     pub(crate) fn draw_impl(&mut self, call: &DrawCall<'_, Self>) {
-        let Some(mut pass) = self.pass.take() else {
+        if self.pass.is_none() {
             self.fail("draw outside a pass");
             return;
+        }
+        let Some(shadows) = self.vertex_shadows(call) else {
+            return;
         };
-        if let Err(why) = self.draw_in(&mut pass, call) {
+        let Some(mut pass) = self.pass.take() else {
+            return;
+        };
+        if let Err(why) = self.draw_in(&mut pass, call, &shadows) {
             self.fail(why);
         }
         self.pass = Some(pass);
     }
 
-    fn draw_in(&mut self, pass: &mut Pass, call: &DrawCall<'_, Self>) -> Result<(), &'static str> {
+    fn draw_in(
+        &mut self,
+        pass: &mut Pass,
+        call: &DrawCall<'_, Self>,
+        shadows: &[crate::vertex::Bound],
+    ) -> Result<(), &'static str> {
         let topology =
             convert::topology(call.topology).ok_or("fans and loops go through draw_fan_or_loop")?;
         if !call.immediates.is_empty() {
@@ -1131,6 +1159,15 @@ impl WebGpu {
         }
         for (slot, vb) in call.vertex_buffers.iter().enumerate() {
             let Some(vb) = vb else { continue };
+            if let Some((_, id, shadow)) = shadows.iter().find(|s| s.0 == slot) {
+                // Shadow numbers are object ids, which no buffer shares.
+                let now = Some((*id, 0, 0));
+                if last.vertex[slot] != now {
+                    rp.set_vertex_buffer(slot as u32, shadow.slice(..));
+                    last.vertex[slot] = now;
+                }
+                continue;
+            }
             let b = &vb.buffer.0;
             let now = Some((b.id, b.generation.get(), vb.offset));
             if last.vertex[slot] != now {
