@@ -1,0 +1,27 @@
+#!/bin/bash
+# Sends this checkout's working tree (submodules included, ignored files left out) to the Linux
+# laptop, a CPU-only machine for everything that needs no GPU, and runs a command there in that
+# branch's copy, ~/wcontainers-graphics/src/<branch>, with cargo building into
+# ~/wcontainers-graphics/target/<branch>. Cargo gets 5 jobs, 2 when the laptop's load average is
+# 8 or more (another track has priority there). Output and exit code come back.
+#   tools/graphics-rig/linux cargo test -p wcontainers-shaders
+set -euo pipefail
+[ $# -gt 0 ] || { echo "usage: linux <command>" >&2; exit 2; }
+host=tom@192.168.2.240
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+name=$(printf %s "$(git symbolic-ref --short HEAD)" | tr -c 'A-Za-z0-9._-' '-')
+dir=wcontainers-graphics/src/$name
+list=$(git rev-parse --absolute-git-dir)/linux-files.$$
+trap 'rm -f "$list"' EXIT
+{ git ls-files --recurse-submodules; git ls-files -o --exclude-standard; } | LC_ALL=C sort -u >"$list"
+ssh -o BatchMode=yes "$host" "mkdir -p $dir wcontainers-graphics/target/$name"
+rsync -a --files-from="$list" -e "ssh -o BatchMode=yes" ./ "$host:$dir/"
+rsync -a -e "ssh -o BatchMode=yes" "$list" "$host:$dir.files"
+# shellcheck disable=SC2029
+exec ssh -o BatchMode=yes "$host" "set -e; export PATH=\$HOME/.cargo/bin:\$PATH; cd $dir; \
+    find . -type f | sed 's|^\./||' | LC_ALL=C sort | LC_ALL=C comm -23 - ../$name.files | xargs -r -d '\n' rm -f; \
+    load=\$(cut -d' ' -f1 /proc/loadavg); jobs=5; \
+    if [ \"\${load%.*}\" -ge 8 ]; then jobs=2; fi; \
+    export CARGO_BUILD_JOBS=\$jobs CARGO_TARGET_DIR=\$HOME/wcontainers-graphics/target/$name; \
+    $*"
