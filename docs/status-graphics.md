@@ -123,6 +123,34 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   - `WideLinesAsTriangles` removed (no use). The fan and loop default writes into the ring.
   - 71 slow path reasons.
 
+- G0, run 6 (2026-11-17): every finding of the fifth independent check fixed:
+  - Attachments of different sizes: `PassDesc` requires one size (WebGPU and WebGL 2 both do); the pass
+    tracker (G1) fits a larger depth buffer or mixed colour sizes through pooled temporaries, the common
+    area copied in and out, scissors cut (`AttachmentsFitted`, plan 4.7). Exact on WebGPU; on WebGL 2 a
+    multisampled replaced attachment keeps only its resolved value (listed loss).
+  - WebGL 2's index buffer rule: `write_buffer_ring` now takes a `RingKind` and keeps an index ring and a
+    data ring; the WebGL 2 back end holds a buffer used both ways as two GL buffers (`IndexBufferTwin`,
+    `IndexTwinReadBack`, plan 4.6).
+  - Query results into a buffer on the GPU: new fast path `resolve_queries` (default reads back and
+    writes ordered, `QueryResolveWait`; WebGPU overrides with `resolveQuerySet`). Direct3D 12's
+    `ResolveQueryData`, binary occlusion as 0 or 1, and `SetPredication` on a buffer
+    (`PredicationIndirect` on WebGPU for recorded lists, else `PredicationWait`) written into plan 4.12
+    and 5.2; Vulkan's in 5.5.
+  - 24-bit depth: `Features::DEPTH24_UNORM`, found by a probe draw each back end runs at device creation
+    (plan 4.11); without it a constant bias into 24-bit depth takes `DepthBiasInShader`; float precision
+    of the stored depth is a listed loss.
+  - Texture level and sample counts: `Features::TEXTURE_LEVEL_QUERY` and `VariantFlags::TEXTURE_INFO`;
+    the shaders crate reads them from helper constants the front writes (`TextureInfoInHelpers`); plan
+    6.5 no longer gives this to back ends.
+  - `IndexFormat::U8` with `Features::INDEX_U8` (`IndexWidened` on WebGPU); adjacency topologies without
+    a geometry shader (`AdjacencyDropped`); `capture_vertices` takes `rasterize`; `timestamps_disjoint`
+    (WebGL 2's `GPU_DISJOINT_EXT`).
+  - The fan and loop default builds its list in a kept buffer (`Helpers::scratch`), no allocation per
+    draw once grown; guest indices are walked in place.
+  - The Chrome compile tool now enables every WebGL extension before compiling; the corpus's GLSL ES
+    verdicts were rerun (80 of 95 compile; plan 6.3). dxil-spirv's `bc` attribution corrected.
+  - 79 slow path reasons. 31 tests.
+
 ## Partly done
 
 - Nothing in G0. Designed for G1, not in the crate yet: the pass tracker (plan 4.7), the occlusion
@@ -130,13 +158,13 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## Next
 
-- G0's independent check, again (the fifth).
+- G0's independent check, again (the sixth).
 - G1 to G6 as in plan section 12; they can run in parallel. G1 is short and every other milestone builds
   its tests on it, so start it first.
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (25 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (31 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
@@ -174,6 +202,10 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 - Run 5, on the Mac, load average 25.87, 28.86, 35.02: Chrome compiled the interface's built-in
   programs, 21 WGSL modules and 37 GLSL ES 3.00 files, none failed. Counts, not timings. Microsoft's
   Direct3D 11.3 functional specification saved in `downloads/d3d11spec/` (scratch) for the clamp rules.
+- Run 6, on the Mac, load average 27.88, 27.60, 28.43: the corpus's 95 GLSL ES files recompiled in
+  Chrome's WebGL 2 with every offered extension enabled: 80 compiled, 15 failed (7 bitfield, 6
+  `textureGather`, 1 multisampled sampler, 1 naga writer bug on `gl_SampleID`'s type). WGSL unchanged
+  (111 of 112). Counts, not timings. File: `corpus/dxbc-via-spv-chrome-run6.txt`.
 - Run 3, on the Mac, load average 14.71, 16.16, 16.39: Chrome's adapter limits (plan 4.11), counts not
   timings. WebGPU: 16384 2D, 2048 3D and layers, 8 vertex buffers, 30 attributes, 12 uniform buffers, 10
   storage buffers, 48 sampled textures, 28 inter-stage slots, 64 immediate bytes, BC and BC sliced 3D
@@ -193,8 +225,8 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   ScanMountGoat/image_dds LICENSE), a port of bcdec (MIT or Unlicense).
 - Read in their repositories, not yet dependencies: dxbc-spirv MIT (2025 Philip Rebohle; SPIRV-Headers
   submodule, Khronos MIT-style); dxil-spirv MIT (Hans-Kristian Arntzen for Valve), shipping glslang's
-  SPIR-V builder (BSD-3-Clause), RenderDoc's bitcode reader (MIT) and SPIRV-Headers; Fossilize MIT (not
-  used).
+  SPIR-V builder (BSD-3-Clause), its bitcode reader `bc` (MIT, Hans-Kristian Arntzen for Valve) on
+  RenderDoc's `bc-decoder` (MIT, Baldur Karlsson) and SPIRV-Headers; Fossilize MIT (not used).
 - Test-only, in scratch, never shipped: Wine's d3d11 test source (LGPL-2.1) as DXBC test data; DXC
   (NCSA) to make DXIL test shaders.
 
@@ -250,6 +282,11 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   results; plan 4.8, 5.2).
 - One more listed loss: fractional viewports on WebGL 2 with multisampled targets (edge samples follow
   their pixel's centre; plan 4.12).
+- Two more listed losses: 24-bit depth stored as 32-bit float where the adapter has no 24-bit depth
+  (Apple silicon): depth compares at float precision (the bias is made exact); and on WebGL 2, a
+  multisampled attachment of a different size from the pass's keeps only its resolved value (plan 4.7,
+  4.12). Both were chosen over exact routes that would cost every draw (depth written in the program)
+  or have none (WebGL 2 cannot copy multisampled renderbuffers).
 - `wcontainers-gpu` gained naga's `wgsl-in` feature, for the built-in programs of the fast-path
   defaults.
 - The workspace root `Cargo.toml` gained the `naga` workspace dependency (outside the crates this track
