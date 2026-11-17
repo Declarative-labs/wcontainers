@@ -297,6 +297,7 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                         .then(|| super::inet::prepared(socket, super::inet::arrival_outside())),
                     time: super::stamp(kernel, cx, socket),
                     urgent: false,
+                    owner: 0,
                 };
                 let mut own = socket.borrow_mut();
                 if let Some(inet) = own.inet.as_deref_mut() {
@@ -611,6 +612,7 @@ pub(super) fn deliver(
         )),
         time: None,
         urgent: false,
+        owner: 0,
     };
     socket.borrow_mut().queue.push_back(packet);
     super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);

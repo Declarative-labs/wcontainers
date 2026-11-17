@@ -80,6 +80,9 @@ struct Packet {
     time: Option<crate::fs::Time>,
     /// The urgent byte of a local stream's `MSG_OOB` that the receiver's mark is at (`oob_skb`).
     urgent: bool,
+    /// The real user that sent its descriptors, whose count in flight they add to
+    /// (`fpl->user`).
+    owner: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,6 +322,8 @@ pub(crate) struct Names {
     inet: Ports,
     /// The port numbers netlink sockets hold.
     netlink: BTreeMap<u32, Weak<RefCell<Socket>>>,
+    /// Local sockets whose queues were given descriptors, for counting and collecting them.
+    carriers: Vec<Weak<RefCell<Socket>>>,
 }
 
 /// Closes the host connections let go since the last flush.
@@ -1485,6 +1490,9 @@ fn send_stream(
             return Err(Errno::EPERM);
         }
         let (size, pages) = stream_piece(ordinary - sent, sndbuf);
+        if !files_sent && !message.files.is_empty() {
+            too_many_in_flight(kernel, tid)?;
+        }
         // A piece that cannot be copied in ends the send with what went before.
         let data = match gather(kernel, cx, tid, message.data, sent, size) {
             Ok(data) => data,
@@ -1506,7 +1514,11 @@ fn send_stream(
             arrival: None,
             time: None,
             urgent: false,
+            owner: kernel.credentials(tid).uid,
         };
+        if !files_sent && !message.files.is_empty() {
+            carries(kernel, &peer);
+        }
         files_sent = true;
         socket.borrow_mut().written += packet.truesize;
         peer.borrow_mut().queue.push_back(packet);
@@ -1527,6 +1539,12 @@ fn send_stream(
     if !files_sent && !message.files.is_empty() && !peer.borrow().pass_rights {
         return partial(Errno::EPERM);
     }
+    if !files_sent && !message.files.is_empty() {
+        if let Err(error) = too_many_in_flight(kernel, tid) {
+            return partial(error);
+        }
+        carries(kernel, &peer);
+    }
     let data = match gather(kernel, cx, tid, message.data, sent, 1) {
         Ok(data) => data,
         Err(error) => return partial(error),
@@ -1546,6 +1564,7 @@ fn send_stream(
         arrival: None,
         time: None,
         urgent: true,
+        owner: kernel.credentials(tid).uid,
     };
     socket.borrow_mut().written += packet.truesize;
     {
@@ -1729,6 +1748,10 @@ fn send_packet(
     } else {
         0
     };
+    if !message.files.is_empty() {
+        too_many_in_flight(kernel, tid)?;
+        carries(kernel, &target);
+    }
     let packet = Packet {
         consumed: 0,
         files: message.files.clone(),
@@ -1740,6 +1763,7 @@ fn send_packet(
         arrival: None,
         time: None,
         urgent: false,
+        owner: kernel.credentials(tid).uid,
     };
     let packet = Packet {
         time: stamp(kernel, cx, &target),
@@ -1749,6 +1773,165 @@ fn send_packet(
     target.borrow_mut().queue.push_back(packet);
     data_ready(kernel, cx, &target, EPOLLIN | EPOLLRDNORM);
     Ok(total)
+}
+
+/// Notes that a local socket's queue holds descriptors.
+fn carries(kernel: &mut Kernel, socket: &SocketRef) {
+    let carriers = &mut kernel.sockets.carriers;
+    if !carriers
+        .iter()
+        .any(|held| core::ptr::eq(held.as_ptr(), Rc::as_ptr(socket)))
+    {
+        carriers.push(Rc::downgrade(socket));
+    }
+}
+
+/// Every packet in the queues of sockets that were given descriptors, and in those of their
+/// waiting connections, with the socket whose queue it is in.
+fn queued_with_files(kernel: &mut Kernel) -> Vec<SocketRef> {
+    kernel.sockets.carriers.retain(|held| {
+        held.upgrade()
+            .is_some_and(|socket| holds_files(&socket.borrow()))
+    });
+    kernel
+        .sockets
+        .carriers
+        .iter()
+        .filter_map(Weak::upgrade)
+        .collect()
+}
+
+/// Whether a socket's queue, or a waiting connection's, holds descriptors.
+fn holds_files(own: &Socket) -> bool {
+    own.queue.iter().any(|packet| !packet.files.is_empty())
+        || own
+            .backlog
+            .iter()
+            .any(|embryo| holds_files(&embryo.borrow()))
+}
+
+/// The descriptors a socket's queue and its waiting connections' queues carry.
+fn carried(own: &Socket, each: &mut impl FnMut(&Packet)) {
+    for packet in &own.queue {
+        each(packet);
+    }
+    for embryo in &own.backlog {
+        carried(&embryo.borrow(), each);
+    }
+}
+
+/// `too_many_unix_fds`: a user with more descriptors in flight than its limit on open files
+/// sends no more, without CAP_SYS_RESOURCE or CAP_SYS_ADMIN.
+fn too_many_in_flight(kernel: &mut Kernel, tid: Tid) -> Result<(), Errno> {
+    let (user, exempt) = {
+        let credentials = kernel.credentials(tid);
+        (
+            credentials.uid,
+            credentials.has(CAP_SYS_RESOURCE) || credentials.has(CAP_SYS_ADMIN),
+        )
+    };
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    let mut in_flight = 0u64;
+    for socket in queued_with_files(kernel) {
+        carried(&socket.borrow(), &mut |packet| {
+            if packet.owner == user {
+                in_flight += packet.files.len() as u64;
+            }
+        });
+    }
+    if in_flight > limit && !exempt {
+        return Err(Errno::ETOOMANYREFS);
+    }
+    Ok(())
+}
+
+/// `unix_gc`: local sockets whose files only the queues of such sockets hold, which no
+/// descriptor and no other queue reaches, are let go with everything their queues carry.
+/// Returns whether any were.
+pub(crate) fn collect(kernel: &mut Kernel, cx: &mut Context<'_>) -> bool {
+    let carriers = queued_with_files(kernel);
+    if carriers.is_empty() {
+        return false;
+    }
+    // Each local socket's file in flight, with how many queue places hold it.
+    let mut held: Vec<(FileRef, usize)> = Vec::new();
+    for socket in &carriers {
+        carried(&socket.borrow(), &mut |packet| {
+            for file in &packet.files {
+                if !of(file).is_some_and(|socket| socket.borrow().local()) {
+                    continue;
+                }
+                match held.iter_mut().find(|(seen, _)| Rc::ptr_eq(seen, file)) {
+                    Some((_, count)) => *count += 1,
+                    None => held.push((file.clone(), 1)),
+                }
+            }
+        });
+    }
+    // Candidates: files nothing but queues holds (the list above holds one more each).
+    let candidates: Vec<(FileRef, SocketRef, usize)> = held
+        .into_iter()
+        .filter(|(file, count)| Rc::strong_count(file) == count + 1)
+        .filter_map(|(file, count)| of(&file).map(|socket| (file, socket, count)))
+        .collect();
+    let index_of = |file: &FileRef| candidates.iter().position(|(c, _, _)| Rc::ptr_eq(c, file));
+    // A candidate held from a queue that is not a candidate's is reached, and so is everything
+    // a reached candidate's queue carries.
+    let mut from_candidates = alloc::vec![0usize; candidates.len()];
+    for (_, socket, _) in &candidates {
+        carried(&socket.borrow(), &mut |packet| {
+            for file in &packet.files {
+                if let Some(index) = index_of(file) {
+                    from_candidates[index] += 1;
+                }
+            }
+        });
+    }
+    let mut reached: Vec<bool> = candidates
+        .iter()
+        .zip(&from_candidates)
+        .map(|((_, _, count), inside)| count > inside)
+        .collect();
+    let mut work: Vec<usize> = (0..candidates.len()).filter(|&i| reached[i]).collect();
+    while let Some(at) = work.pop() {
+        let mut found = Vec::new();
+        carried(&candidates[at].1.borrow(), &mut |packet| {
+            for file in &packet.files {
+                if let Some(index) = index_of(file) {
+                    found.push(index);
+                }
+            }
+        });
+        for index in found {
+            if !reached[index] {
+                reached[index] = true;
+                work.push(index);
+            }
+        }
+    }
+    let garbage: Vec<SocketRef> = candidates
+        .iter()
+        .zip(&reached)
+        .filter(|(_, reached)| !**reached)
+        .map(|((_, socket, _), _)| socket.clone())
+        .collect();
+    drop(candidates);
+    for socket in &garbage {
+        let (queue, backlog) = {
+            let mut own = socket.borrow_mut();
+            (
+                core::mem::take(&mut own.queue),
+                core::mem::take(&mut own.backlog),
+            )
+        };
+        for packet in queue {
+            drop_packet(kernel, cx, packet);
+        }
+        for embryo in backlog {
+            release(kernel, cx, &embryo, true);
+        }
+    }
+    !garbage.is_empty()
 }
 
 /// What a receive gives back besides its bytes.

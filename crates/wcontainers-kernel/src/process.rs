@@ -415,14 +415,13 @@ impl Taken {
         self.used = 0;
     }
 
-    /// The call ended: what it took goes. The files only it still held (their descriptors were
-    /// closed while it waited) are given back to be let go as closed descriptors' are.
+    /// The call ended: what it took goes, its files given back (see `Kernel::give_back`).
     pub fn clear(&mut self) -> Vec<crate::file::FileRef> {
         self.used = 0;
         self.items
             .drain(..)
             .filter_map(|item| match item {
-                TakenItem::File(_, Ok(file)) if Rc::strong_count(&file) == 1 => Some(file),
+                TakenItem::File(_, Ok(file)) => Some(file),
                 _ => None,
             })
             .collect()

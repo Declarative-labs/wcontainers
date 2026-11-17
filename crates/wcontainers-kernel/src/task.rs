@@ -275,7 +275,7 @@ impl Kernel {
         let thread = self.thread_mut(tid);
         let holds = core::mem::take(&mut thread.call).holds;
         let taken = thread.taken.get_mut().clear();
-        self.released.extend(taken);
+        self.give_back(taken);
         self.let_go(holds);
         let thread = self.thread_mut(tid);
         let opening = thread.opening.take();
@@ -283,6 +283,15 @@ impl Kernel {
         if !self.released.is_empty() {
             self.files_released(cx);
         }
+    }
+
+    /// A call's files go: those only it held (their descriptors were closed meanwhile) are let
+    /// go as closed descriptors' are.
+    fn give_back(&mut self, taken: alloc::vec::Vec<crate::file::FileRef>) {
+        let only_held = taken
+            .into_iter()
+            .filter(|file| alloc::rc::Rc::strong_count(file) == 1);
+        self.released.extend(only_held);
     }
 
     /// Closes the end a named pipe's waiting open held, which the other end may wait on.
@@ -558,7 +567,7 @@ impl Kernel {
         }
         self.thread_mut(tid).call.holds = Default::default();
         let taken = self.thread_mut(tid).taken.get_mut().clear();
-        self.released.extend(taken);
+        self.give_back(taken);
         self.let_go(call.holds);
         if self.current == Some(tid) {
             self.current = None;
@@ -617,7 +626,7 @@ impl Kernel {
         let mut thread = self.threads.remove(&tid).expect("thread exists");
         thread.call = Call::default();
         let taken = thread.taken.get_mut().clear();
-        self.released.extend(taken);
+        self.give_back(taken);
         // Its own number goes with the first thread, and the descriptors naming it with it.
         if let Some(node) = thread.pidfd.take() {
             self.wake(syscall::pidfd::channel(&node));
@@ -994,6 +1003,19 @@ impl Kernel {
     /// Descriptors were closed: pipes and terminals may have lost an end, so every wait on a file
     /// looks again, and waits for locks do if locks were let go.
     pub(crate) fn files_released(&mut self, cx: &mut Context<'_>) {
+        // What a release lets go of (a socket's queue, a collected cycle) is released in turn.
+        // Cycles are looked for when a local socket is released (`unix_release_sock`).
+        loop {
+            let sockets = self.release_round(cx);
+            let collected = sockets && crate::syscall::socket::collect(self, cx);
+            if !collected && self.released.is_empty() {
+                break;
+            }
+        }
+    }
+
+    /// One round of [`Self::files_released`]; returns whether a local socket was released.
+    fn release_round(&mut self, cx: &mut Context<'_>) -> bool {
         let mut files = core::mem::take(&mut self.released);
         let mut let_go = false;
         for thread in self.threads.values() {
@@ -1001,6 +1023,10 @@ impl Kernel {
             files.extend(table.take_released());
             let_go |= table.take_let_go_locks();
         }
+        let sockets = files.iter().any(|file| {
+            alloc::rc::Rc::strong_count(file) == 1
+                && crate::syscall::socket::of(file).is_some_and(|socket| socket.borrow().local())
+        });
         let nodes: alloc::vec::Vec<_> = files
             .iter()
             .map(|file| file.borrow().node.clone())
@@ -1056,5 +1082,6 @@ impl Kernel {
         for tid in woken {
             self.wake_thread(tid);
         }
+        sockets
     }
 }

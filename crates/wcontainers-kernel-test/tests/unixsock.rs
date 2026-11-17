@@ -21,3 +21,9 @@ fn process_descriptor_and_queue_options_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "sockpidfd", &[]);
 }
+
+#[test]
+fn cycles_are_collected_as_linux() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "unixgc", &[]);
+}

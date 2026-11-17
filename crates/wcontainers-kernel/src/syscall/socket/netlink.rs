@@ -177,9 +177,10 @@ pub(super) fn name(socket: &SocketRef, peer: bool) -> Vec<u8> {
     }
 }
 
+/// `datagram_poll`: always writable here.
 pub(super) fn poll(socket: &SocketRef) -> u16 {
     let own = socket.borrow();
-    let mut mask = EPOLLOUT | EPOLLWRNORM;
+    let mut mask = EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
     if !own.queue.is_empty() {
         mask |= EPOLLIN | EPOLLRDNORM;
     }
@@ -284,6 +285,7 @@ fn queue(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, socket: &SocketRef
         arrival: None,
         time: None,
         urgent: false,
+        owner: 0,
     };
     socket.borrow_mut().queue.push_back(packet);
     super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);

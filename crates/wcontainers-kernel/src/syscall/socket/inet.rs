@@ -1590,6 +1590,7 @@ fn tcp_send(
             arrival: None,
             time: None,
             urgent: false,
+            owner: 0,
         };
         socket.borrow_mut().written += size;
         {
@@ -1886,6 +1887,7 @@ fn udp_send(
                     arrival: Some(prepared(&receiver, arrival_from(socket, &to, sent))),
                     time: super::stamp(kernel, cx, &receiver),
                     urgent: false,
+                    owner: 0,
                 };
                 receiver.borrow_mut().queue.push_back(packet);
                 super::data_ready(kernel, cx, &receiver, EPOLLIN | EPOLLRDNORM);
