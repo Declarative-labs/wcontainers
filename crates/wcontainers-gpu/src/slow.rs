@@ -233,11 +233,14 @@ pub enum SlowPath {
     /// A buffer range filled with a non-zero pattern by copies from a block of the pattern, where the
     /// API clears buffers only to zero.
     PatternClearCopied,
+    /// A constant buffer smaller than the size its shader declares (Direct3D reads past its end as
+    /// zero), moved into a buffer of the declared size whose bytes past its own are zero.
+    ConstantBufferGrown,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 94] = [
+    pub const ALL: [SlowPath; 95] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -332,6 +335,7 @@ impl SlowPath {
         SlowPath::RowsRepacked,
         SlowPath::ResolveInStoredFormat,
         SlowPath::PatternClearCopied,
+        SlowPath::ConstantBufferGrown,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -443,6 +447,7 @@ impl SlowPath {
             SlowPath::RowsRepacked => "copy rows repacked to the api's pitch",
             SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
             SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
+            SlowPath::ConstantBufferGrown => "constant buffer grown to its shader's size",
         }
     }
 }

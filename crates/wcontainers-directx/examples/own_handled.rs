@@ -1,7 +1,10 @@
 //! A small Direct3D 11 program the front serves: four quads from a dynamic vertex buffer written by
 //! `Map(WRITE_DISCARD)`, drawn by indexed draws at different base vertices, each tinted by a constant
 //! buffer rewritten with `UpdateSubresource` between draws, then read back and checked texel by texel
-//! against what the arithmetic says. Prints `pass`, or the first wrong texel and exits with 1.
+//! against what the arithmetic says; and a buffer written and copied at byte offsets and lengths that
+//! are not multiples of four, read back and checked byte by byte. With the argument `d32` or `d24s8`
+//! the quads are drawn with a depth-stencil view of that format, tested and written. Prints `pass`, or
+//! the first wrong texel or byte and exits with 1.
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -41,14 +44,25 @@ fn main() -> windows::core::Result<()> {
     };
     let (device, context): (ID3D11Device, ID3D11DeviceContext) =
         (device.unwrap(), context.unwrap());
+    let depth_format = match std::env::args().nth(1).as_deref() {
+        None => None,
+        Some("d32") => Some(DXGI_FORMAT_D32_FLOAT),
+        Some("d24s8") => Some(DXGI_FORMAT_D24_UNORM_S8_UINT),
+        Some(other) => panic!("unknown argument {other}"),
+    };
 
     let texture = |usage, bind: u32, cpu: u32| -> windows::core::Result<ID3D11Texture2D> {
+        let format = if bind == D3D11_BIND_DEPTH_STENCIL.0 as u32 {
+            depth_format.unwrap()
+        } else {
+            DXGI_FORMAT_R8G8B8A8_UNORM
+        };
         let desc = D3D11_TEXTURE2D_DESC {
             Width: SIZE,
             Height: SIZE,
             MipLevels: 1,
             ArraySize: 1,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            Format: format,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -66,6 +80,24 @@ fn main() -> windows::core::Result<()> {
     let staging = texture(D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32)?;
     let mut rtv = None;
     unsafe { device.CreateRenderTargetView(&target, None, Some(&mut rtv))? };
+    // Depth cleared to one, tested less and written: the quads at depth one half all pass.
+    let mut dsv = None;
+    let mut depth_state = None;
+    if depth_format.is_some() {
+        let depth = texture(D3D11_USAGE_DEFAULT, D3D11_BIND_DEPTH_STENCIL.0 as u32, 0)?;
+        unsafe {
+            device.CreateDepthStencilView(&depth, None, Some(&mut dsv))?;
+            device.CreateDepthStencilState(
+                &D3D11_DEPTH_STENCIL_DESC {
+                    DepthEnable: true.into(),
+                    DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+                    DepthFunc: D3D11_COMPARISON_LESS,
+                    ..Default::default()
+                },
+                Some(&mut depth_state),
+            )?;
+        }
+    }
 
     let (mut vs, mut ps, mut layout) = (None, None, None);
     let elements = [
@@ -148,7 +180,12 @@ fn main() -> windows::core::Result<()> {
         context.Unmap(&vertices, 0);
 
         context.ClearRenderTargetView(rtv.as_ref().unwrap(), &[0.0, 0.0, 0.0, 1.0]);
-        context.OMSetRenderTargets(Some(&[rtv.clone()]), None);
+        if let Some(dsv) = &dsv {
+            let flags = D3D11_CLEAR_DEPTH.0 | D3D11_CLEAR_STENCIL.0;
+            context.ClearDepthStencilView(dsv, flags, 1.0, 0);
+            context.OMSetDepthStencilState(depth_state.as_ref(), 0);
+        }
+        context.OMSetRenderTargets(Some(&[rtv.clone()]), dsv.as_ref());
         context.RSSetViewports(Some(&[D3D11_VIEWPORT {
             Width: SIZE as f32,
             Height: SIZE as f32,
@@ -186,6 +223,61 @@ fn main() -> windows::core::Result<()> {
         }
     }
     unsafe { context.Unmap(&staging, 0) };
+
+    // A buffer of 0xee written at bytes 6 to 10 and copied into at bytes 13 to 35 from bytes 3 to 25 of
+    // another, then copied whole into a staging buffer: what the arithmetic says, byte for byte.
+    let bytes = |usage, bind: u32, cpu: u32, init: &[u8]| {
+        buffer(
+            D3D11_BUFFER_DESC {
+                ByteWidth: init.len() as u32,
+                Usage: usage,
+                BindFlags: bind,
+                CPUAccessFlags: cpu,
+                ..Default::default()
+            },
+            (usage != D3D11_USAGE_STAGING).then_some(init),
+        )
+    };
+    let vertex = D3D11_BIND_VERTEX_BUFFER.0 as u32;
+    let mut want = [0xeeu8; 38];
+    let source: Vec<u8> = (0..30).map(|i| 0xa0 + i).collect();
+    let written = [1u8, 2, 3, 4, 5];
+    let dst = bytes(D3D11_USAGE_DEFAULT, vertex, 0, &want)?;
+    let src = bytes(D3D11_USAGE_DEFAULT, vertex, 0, &source)?;
+    let read = bytes(
+        D3D11_USAGE_STAGING,
+        0,
+        D3D11_CPU_ACCESS_READ.0 as u32,
+        &want,
+    )?;
+    want[6..11].copy_from_slice(&written);
+    want[13..36].copy_from_slice(&source[3..26]);
+    let region = |left, right| D3D11_BOX {
+        left,
+        right,
+        top: 0,
+        bottom: 1,
+        front: 0,
+        back: 1,
+    };
+    unsafe {
+        context.UpdateSubresource(&dst, 0, Some(&region(6, 11)), written.as_ptr().cast(), 0, 0);
+        context.CopySubresourceRegion(&dst, 0, 13, 0, 0, &src, 0, Some(&region(3, 26)));
+        context.CopyResource(&read, &dst);
+        context.Map(&read, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+        let got = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), want.len());
+        if let Some(i) = (0..want.len()).find(|&i| got[i] != want[i]) {
+            wrong.get_or_insert(format!(
+                "buffer byte {i}: {:02x?}, expected {:02x?}",
+                got, want
+            ));
+        }
+        context.Unmap(&read, 0);
+    }
+    let removed = unsafe { device.GetDeviceRemovedReason() };
+    if let Err(e) = removed {
+        wrong.get_or_insert(format!("device removed: {e}"));
+    }
     let adapter = unsafe {
         device
             .cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>()?

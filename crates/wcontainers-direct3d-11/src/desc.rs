@@ -144,6 +144,15 @@ pub struct BlendDesc {
 }
 
 impl BlendDesc {
+    /// Whether a target that blends reads the pixel shader's second output (`D3D11_BLEND_SRC1_*`).
+    pub fn dual_source(&self) -> bool {
+        self.targets.iter().filter(|t| t.enable).any(|t| {
+            [t.src, t.dst, t.src_alpha, t.dst_alpha]
+                .iter()
+                .any(|f| (16..=19).contains(f))
+        })
+    }
+
     /// What a blend state of `None` means: no blending, every channel written.
     pub fn default_state() -> Self {
         let target = TargetBlend {
