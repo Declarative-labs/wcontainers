@@ -2,5 +2,6 @@
 //! methods named after the API's; the Windows library and the container module are thin shells
 //! around them (plan section 10).
 
+pub mod address;
 pub mod features;
 pub mod root;
