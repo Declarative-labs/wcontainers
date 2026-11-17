@@ -61,6 +61,17 @@ built, linked, run or tested on Windows. What it did:
     warned) and `SwapDeviceContextState`: the immediate context's bindings go into the state
     object it had (one holding the device's first state, made at the first swap) and the new
     one's are bound; a deferred context swaps nothing and hands back none.
+  - 3089613: multisampled textures at the counts the back end draws a format with
+    (`takes_samples`; WebGPU: 4): 2D, one level, default usage, drawn into (as Direct3D requires;
+    otherwise `E_INVALIDARG`); `CheckMultisampleQualityLevels` answers one level for those counts
+    and `CheckFormatSupport` adds the multisample target, load and resolve bits; views of the
+    `TEXTURE2DMS` and `TEXTURE2DMSARRAY` dimensions both ways; `ResolveSubresource` through the
+    interface's `resolve` (formats that average only); `CopyResource` needs one sample count. A
+    sample mask leaving out samples of multisampled targets is refused at the draw, named (the
+    interface keeps the mask in the raster block; Direct3D sets it with the blend state).
+    Tests changed with it (not yet run): `own_refused` now expects ours to answer as real
+    Direct3D does for the structured view and 4 samples (0, one level, 0), and com.rs's capability
+    test makes a 4-sample texture for every format claiming a level, where it asserted none.
 
 G4 run 3 merged origin/phase-2-graphics, -webgpu, -webgl, -direct3d-12 and -shaders, cleanly. The
 WebGPU back end now copies both aspects of depth with stencil (interface change c8a7be9), so the
@@ -449,8 +460,9 @@ After G4 run 4, first, once the desktop answers again:
    that moves by frames, so bgfx may be comparable too).
 4. Outputs beyond what bc0897e serves (`IDXGIOutput1` and later, `WaitForVBlank`, frame
    statistics) as programs ask for them.
-5. Multisampled textures (the interface has sample counts, `resolve` and `takes_samples`): 5 Wine
-   tests and the rig's msaa scene; `ResolveSubresource`.
+5. Multisampled textures (3089613): run the rig's msaa scene and Wine's 5 tests; alpha to
+   coverage and a sample mask on multisampled targets (a raster block per mask, or an interface
+   change) if they need it.
 6. test_device_context_state also needs geometry, hull and domain shaders and Direct3D 10's
    interfaces (context states for them answer `E_NOTIMPL`); it stays failing until those exist.
 7. Then the rest of the list below (geometry shaders and stream output wait on the shaders crate,
