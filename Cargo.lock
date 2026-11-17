@@ -2631,9 +2631,13 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "naga",
+ "png",
+ "pollster",
  "slab",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
+ "wcontainers-gpu-webgpu",
+ "wgpu",
 ]
 
 [[package]]

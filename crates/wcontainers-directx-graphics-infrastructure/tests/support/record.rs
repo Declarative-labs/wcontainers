@@ -279,8 +279,13 @@ impl Backend for Recorder {
             buffer.0
         ));
     }
-    fn resolve(&mut self, src: &TextureRegion<'_, Self>, dst: &TextureRegion<'_, Self>) {
-        self.calls.push(format!("resolve {src:?} {dst:?}"));
+    fn resolve(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        format: Format,
+    ) {
+        self.calls.push(format!("resolve {src:?} {dst:?} {format:?}"));
     }
     fn submit(&mut self) -> u32 {
         self.fences += 1;

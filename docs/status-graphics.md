@@ -51,7 +51,18 @@ branches into it at the start and end of every run.
   `ClipDistanceInShader`, `DepthClampInShader`, `CullDistanceAsGeometry`, `PrimitiveIdAsGeometry`,
   `RowsRepacked`, `ResolveInStoredFormat`; `VariantFlags::CLIP_DISTANCE`, `DEPTH_CLAMP`,
   `PRIMITIVE_ID_FROM_STAGE`; `HelperValue::DepthRange`; `generate_mips` accepts the sRGB twin as
-  `values`. The rest is documentation. No other track had changed the crate yet.
+  `values`. The rest is documentation.
+- From the direct3d-12 track (096ba8c, merged at the end of G1a run 1): `Caps::adapter`
+  (`AdapterInfo`: the GPU's name, PCI vendor and device numbers, whether it is software), for DXGI's
+  adapter description. Plain data in the interface's style; kept as it is. The recording back end
+  declares itself software.
+- Settled at the end-of-run merges: the webgpu back end's `resolve` and the direct3d-12 track's test
+  recorder (`wcontainers-directx-graphics-infrastructure/tests/support/record.rs`) were given
+  `resolve`'s new format argument (the WebGPU one makes both views in that format), so the workspace
+  builds; the shaders track's `tools/graphics-rig/linux` and ours were the same tool, merged into one
+  (theirs sends submodules and removes deleted files; ours keeps the command's quoting and runs it at
+  nice 10). The shaders track also patches `naga` to its fork in `third_party/naga`, which the interface
+  now builds against.
 
 ## The recording back end and the suite
 
@@ -118,7 +129,8 @@ branches into it at the start and end of every run.
   `triangle_covers_the_pixels_whose_centres_it_holds`; `Less` compared as greater failed
   `textured_draw_with_depth_and_blending`. Linux laptop load 1.6 to 2.7.
 - The whole workspace checks on Linux (`cargo check --workspace --all-targets`, 4 m 48 s at load 1.6
-  to 4.0 with 5 jobs, after the rig merge).
+  to 4.0 with 5 jobs, after the rig merge; again after the webgpu, direct3d-12 and shaders merges at
+  the end of the run). No webgl or direct3d-11 branch existed on origin yet.
 - G0's shader corpus counts are in the plan, section 6.3.
 
 ## Dependencies added and their licences

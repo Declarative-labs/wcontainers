@@ -180,6 +180,12 @@ impl Recorder {
         };
         Recorder {
             caps: Caps {
+                adapter: AdapterInfo {
+                    name: "wcontainers recording back end".into(),
+                    vendor: 0,
+                    device: 0,
+                    software: true,
+                },
                 features: Features::INDEPENDENT_BLEND
                     | Features::PROVOKING_VERTEX_FIRST
                     | Features::PROVOKING_VERTEX_LAST
