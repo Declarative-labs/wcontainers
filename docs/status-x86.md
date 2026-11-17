@@ -5,7 +5,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 
 ## Where things stand
 
-- X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17.
+- X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the independent
+  check's findings fixed in run 2 the same day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -39,6 +40,53 @@ Scratch (not in the repository), all under pyro-parked/wcontainers-scratch/x86:
   relaxed SIMD overview and sandsifter's injector.c and licence; `target-browser/` and `browser-build.log`
   the browser translator size build.
 
+## X0, run 2 (2026-11-17): the independent check's findings, all fixed in the plan
+
+- Blocking, the bottom loop's marker: a matched `ret` could reach `UNREACHABLE_RETURN & !FLAGS_WANTED`
+  on x86 and RV64. Now each CPU makes it unreachable before the compare: ARM64 by its existing untag, x86
+  by a canonical check in the meanings of `ret` and of every jump or call through a register or memory
+  (four operations each, cost measured at X4), RV64GC by marker 1 (no `jalr` target has bit 0 set). Plan
+  3.2, 3.4 (T14), 3.5, 5.3, 12.
+- Blocking, interface not in full: added `Guest::Offer` and `offer_key` (the AVX setting), passed to
+  `translate` and read through `Emitter::offer()`; added `Guest::run_hook`, `HookBody` and `HookDone`, so
+  the software float runner (ARM64 `exact::run`, x86 float and x87) ships behind the interface and no
+  runner names a CPU function; the browser exports `cpu_hook`. Added appendix B: every interface surface
+  item of the translator (24) and tests (25) areas and where it is covered.
+- `mov ss` holds the trap flag's stop back one instruction; the runner reads a `SI_KERNEL` stop at CODE +
+  length + 1 as "landed at CODE + length" (plan 2, 7.3).
+- `int 0x80` runs a 32-bit system call on the reference; this phase gives general protection, as a kernel
+  without 32-bit emulation does (expected from Linux's source, not seen), counted and warned, excluded
+  from layer 1 with that reason. `int1` maps to `TRAP_BRKPT` (plan 5.2, 6, 7.3, 7.4).
+- The `syscall` experiment's description corrected (no `TRAP_TRACE` at all; the filler stopped it).
+- Lookup array figure: bun's 52,050,800 bytes of code need about 208 MB of slots (was a wrong 38 MB).
+- Write protection of translated pages now follows the permission contract: other threads stopped first
+  (free with one host thread), pieces recheck after calls, and a page in a live stack frame makes the
+  threads concerned give up their WebAssembly frames, counted "code translated from a live stack frame".
+- Decoder only has no `encoding()` or `cpuid_features()`: a build script makes a per-`Code` table (claim
+  group, VEX) from iced's own `instr_info` as a build-dependency, checked by a test.
+- X1 pass bar: the builder adds `WC_BENCH_DUMP` to tests/benchmarks.rs first, so the benchmark modules can
+  be compared with `cmp`.
+- CPUID: `rdpid` is not claimed (the i7-8750H lacks it); the "asked about AVX" counter firing in nearly
+  every glibc program is stated as intended, with the reason.
+- x87: precision control by rustc_apfloat semantics of our own (precision 66, 53, 24, extended exponent
+  range) and rounding to odd; transcendentals with `astro-float`.
+- The x86 machine is shared at times (another track's `~/ordering-cost` wasmtime job, load about 1.0 seen);
+  Rust was already on it.
+
+Checked by looking, run 2:
+- Repeated on the reference (x86 load 0.07): `mov ss` (SI_KERNEL, CODE+3), `int 0x80` (ran, CODE+3),
+  `int 0x81` (SIGSEGV SI_KERNEL), `int1` (TRAP_BRKPT, CODE+1), `int 3` (SI_KERNEL, CODE+2), `syscall`
+  (ran, SI_KERNEL CODE+3).
+- astro-float 0.9.6, MIT (`cargo info`). It builds for wasm32-unknown-unknown with std. It does not build
+  without std: its lazy_static has no `spin_no_std`. What it adds to a stripped wasm32 cdylib (opt-level s,
+  LTO; sin, atan, log2, exp, add at 128 bits) against the same cdylib without it: 142,688 bytes raw (160,136
+  against 17,448), 40,947 brotli -q 11 (46,678 against 5,731). Mac load 16.6 to 20.7.
+- rustc_apfloat 0.2.3's `ieee::Semantics` is a public trait that can be implemented outside the crate.
+  Semantics with 15 exponent bits and precision 66 and 24 work. Rounding to odd then once to 24 bits gave
+  the right results in both directions (scratch `apfloat-pc`).
+- iced 1.22.0: `Code` has 4,936 values (`iced_constants.rs`); `encoding()` and `cpuid_features()` are behind
+  `instr_info`.
+
 ## How to run
 
 - Experiments of X0: build `nix develop -c zig cc -target x86_64-linux-musl -static -O2
@@ -53,12 +101,16 @@ Scratch (not in the repository), all under pyro-parked/wcontainers-scratch/x86:
 
 - Intel i7-8750H, 6 cores / 12 threads, 15 GB, AVX2, FMA, FSGSBASE, no AVX-512; Ubuntu 20.04.3 with a
   mainline Linux 7.3.4 kernel; reached as `ssh -o BatchMode=yes tom@192.168.2.240`.
-- Installed on it by this track: nothing. Files: `~/wcontainers-x86/proof/` (hello, stepper, cases.sh,
-  cases2.sh).
+- Installed on it by this track: nothing. Already there before this track and not used by it: Rust
+  (`~/.rustup` dated 2026-11-14, rustc 1.100.0). Files of this track: `~/wcontainers-x86/proof/` (hello,
+  stepper, cases.sh, cases2.sh).
+- Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
+  times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
+  timing there.
 
 ## Cases actually run
 
-- X0: 22 single-instruction cases on the reference CPU (hand-written, no seed).
+- X0: 22 single-instruction cases on the reference CPU in run 1, 6 more in run 2 (hand-written, no seed).
 
 ## Measurements
 
@@ -66,7 +118,12 @@ All in "X0, run 1" above.
 
 ## Licences of what this track uses
 
-- iced-x86 1.22.0: MIT. Not yet a dependency of anything in the repository (X3 adds it).
+- iced-x86 1.22.0: MIT. Not yet a dependency of anything in the repository (X3 adds it, and as a
+  build-dependency with `instr_info`).
+- astro-float 0.9.6: MIT, with astro-float-num 0.3.7 and astro-float-macro 0.4.6 (both MIT), lazy_static,
+  itertools, either (all MIT or Apache-2.0, already common). Planned for X7 (x87 transcendentals); not yet a
+  dependency.
+- rustc_apfloat 0.2.3: Apache-2.0 WITH LLVM-exception, already a dependency of wcontainers-arm64.
 - sandsifter: BSD-3 (Battelle); read only, nothing copied.
 - gex: AGPL-3.0; not read, nothing used.
 
@@ -83,5 +140,10 @@ None yet.
 - Switch tables with absolute entries (non-PIE code) and tables over the br_table limit go through the
   lookup, counted; revisited only if X9 shows them common.
 - The legacy vsyscall page is not provided.
+- `int 0x80` (the 32-bit system call gate) gives general protection, as a kernel without 32-bit
+  emulation does, until 32-bit mode is built.
+- Every x86 `ret` and every jump or call through a register or memory pays a canonical-address check.
+  It is about four operations each.
+- astro-float adds about 41 KB brotli to the x86 browser build (scratch measurement).
 - `TrapKind` (and later the abi's `Exit`) grow divide error, general protection, float exception and single
   step.

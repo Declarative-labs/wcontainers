@@ -1,8 +1,8 @@
 # wcontainers, phase two: one guest CPU interface, and x86-64
 
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
-ARM64 assumptions. Nothing of it is built yet. The research and the two experiments of milestone X0 are
-done; what they found is in section 2.
+ARM64 assumptions, and revised the same day after the independent check of X0. Nothing of it is built
+yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
 - **guest CPU**: the kind of processor whose machine code is translated: ARM64 today, x86-64 next, RV64GC
@@ -15,7 +15,8 @@ Words used here (phase one's words still hold: guest, host, engine, look-ahead, 
   (Coffee Lake) on Ubuntu, reached over SSH; later also an i9-9900K (also Coffee Lake).
 - **the seam map**: `pyro-parked/wcontainers-scratch/orchestrator/guest-cpu-seam-map.json`, the list of
   187 places where code assumes ARM64 today. Appendix A lists every place of kind b and c in its
-  translator and tests areas and where this plan covers it.
+  translator and tests areas and where this plan covers it; appendix B does the same for every item of
+  those areas' interface surface lists.
 
 Every figure below says whether it was measured or is only expected.
 
@@ -68,6 +69,17 @@ for x86-64, with ARM64's own long runs still passing.
   instruction reads and writes by recording its meaning (as for ARM64), so `instr_info` is not shipped.
   `encoder`, `op_code_info` and `code_asm` are used by the tests only (forms list, case generation, layer 2
   programs).
+- With `decoder` only, iced has no `Instruction::encoding()`, `cpuid_features()` or their `Code` forms
+  (they sit behind `#[cfg(feature = "instr_info")]`, `instruction.rs` line 2815 and `code.rs` line 44560 of
+  1.22.0). The shipped crate still needs, per `Code`, which claim it belongs to and whether it is
+  VEX-encoded (section 5.10). That comes from iced's own tables at build time, never a hand copy: the
+  build script of `wcontainers-x86` has iced-x86 as a build-dependency with `std` and `instr_info`, and for
+  each of the 4,936 `Code` values writes one byte: its claim group (default, the AVX setting, never) from
+  its `cpuid_features()` against the claim lists, and whether its `encoding()` is VEX. The claim lists are
+  one source file that the build script and the crate both include. Cargo's resolver 3 (the workspace's)
+  keeps a build-dependency's features apart from the normal dependency, so the shipped decoder stays
+  `decoder` only. The table is about 5 KB before compression (expected; measured at X3). A test checks the
+  table against iced's `instr_info` answers for every `Code`.
 
 ### Fused multiply-add in WebAssembly
 
@@ -98,15 +110,28 @@ Zero bytes are a real instruction on x86 (`add [rax], al`), so the ARM64 trick d
 trap filler after the instruction does not catch jumps. The method chosen and proven (experiment below):
 **the trap flag set in the signal frame the reference runner returns through.** The runner enters the guest
 state from a signal handler (as on ARM64): it writes the guest's registers into the frame, sets `TF` in the
-saved rflags and returns. The CPU runs exactly one instruction and raises a debug trap, which arrives as
-`SIGTRAP` with `si_code` `TRAP_TRACE` (2) and rip at the next instruction, or at the target of a jump. The
-handler reads the registers back and returns to the runner's own saved state.
+saved rflags and returns. The CPU runs one instruction and raises a debug trap, which arrives as `SIGTRAP`
+with `si_code` `TRAP_TRACE` (2) and rip at the next instruction, or at the target of a jump. The handler
+reads the registers back and returns to the runner's own saved state.
+
+Two kinds of instruction do not stop that way, both seen on the reference (below), and the runner handles
+both (section 7.3):
+- `mov ss, r/m16` (valid in 64-bit user mode) holds the debug trap back for one instruction, as the manual
+  says. The `int3` filler after it then runs and stops the CPU with `SIGTRAP`, `SI_KERNEL` (128), rip at
+  CODE + length + 1. So a stop by `int3` exactly one byte past the instruction's end means "the instruction
+  ran, fell through, and its trap was held back".
+- A system call (`syscall`, and `int 0x80`, Linux's 32-bit system call gate, which also works from 64-bit
+  code) runs the call and gives no `TRAP_TRACE`; the filler stops it the same way. The runner never lets a
+  case's system call run: a seccomp filter turns it into `SIGSYS` first.
 
 ### The two experiments on the x86 machine (scratch, not in the repository)
 
-Machine: Intel i7-8750H, 12 threads, Ubuntu 20.04.3 with a mainline Linux 7.3.4 kernel, idle (load 0.03).
-Its CPU reports `avx2`, `fma` and `fsgsbase`, and no AVX-512. Nothing was installed on it; the
-experiments are static binaries copied to `~/wcontainers-x86/proof`.
+Machine: Intel i7-8750H, 12 threads, Ubuntu 20.04.3 with a mainline Linux 7.3.4 kernel. Load 0.03 at the
+first run; it is not always idle: another track's measurement (`~/ordering-cost`, a wasmtime job) runs
+there at times (load about 1.0 seen on 2026-11-17), so every timing there records `/proc/loadavg`. Its CPU
+reports `avx2`, `fma` and `fsgsbase`, and no AVX-512. This track installed nothing on it; Rust (`~/.rustup`,
+`~/.cargo`, rustc 1.100.0) was already there from before the track and is not used by it. The experiments
+are static binaries copied to `~/wcontainers-x86/proof`.
 
 1. **A static x86-64 program built on the Mac runs there.** `zig cc -target x86_64-linux-musl -static`
    (zig 0.16.0 from the Nix shell) built `hello.c`; `scp` copied it; `ssh ... ~/wcontainers-x86/proof/hello`
@@ -134,8 +159,18 @@ experiments are static binaries copied to `~/wcontainers-x86/proof`.
    - `rep movsb` with rcx 3: one element per step (rcx 2, rip unchanged): the trap flag stops a repeated
      string instruction after each element.
    - `pushfq`: the pushed word has `TF` set (0x100) as well as IF.
-   - `syscall` (getpid): the trap came only after the instruction after it, so system calls must be
-     stopped by seccomp before they run, as the ARM64 reference already does.
+   - `syscall` (getpid): the call ran (rax the process id, rcx the address after it) and no `TRAP_TRACE`
+     came at all; the `int3` filler after it stopped the CPU (`SI_KERNEL`, rip CODE + 3). So system calls
+     must be stopped by seccomp before they run, as the ARM64 reference already does.
+
+   Repeated in run 2 (2026-11-17, x86 load 0.07), after the independent check found them:
+   - `mov ss, eax` with 0x2b: `SIGTRAP`, `SI_KERNEL`, rip CODE + 3: the trap was held back and the filler
+     stopped the CPU.
+   - `int 0x80` with eax 20 (i386 getpid): the call ran (eax the process id) and the filler stopped the CPU
+     at CODE + 3, as for `syscall`. `int 0x81`: `SIGSEGV`, `SI_KERNEL`, rip at the instruction (general
+     protection).
+   - `int1` (`F1`): `SIGTRAP` with `TRAP_BRKPT` (1), rip after it. `int 3` (`CD 03`): `SIGTRAP`, `SI_KERNEL`,
+     rip after it, as `int3`.
 
    What this teaches the reference runner (section 7.3): write every vector register (else the runner's own
    values leak in), set the SSE and AVX bits of the frame's XSAVE header (`xstate_bv` bits 1 and 2) or the
@@ -157,11 +192,12 @@ implements `Guest` for it: `wcontainers_arm64::Arm64`, `wcontainers_x86::X86_64`
 
 ```rust
 pub fn translate<G: Guest>(blob: &[u8], code: Range<u64>, starts: &[u64], look_ahead: LookAhead,
-    optimise: Optimise, host: G::Host) -> Result<Translation, Error>;
+    optimise: Optimise, host: G::Host, offer: G::Offer) -> Result<Translation, Error>;
 pub fn thread_module<G: Guest>() -> Vec<u8>;
 ```
 
-Every use is monomorphised; there is no `dyn` anywhere in the translator, so nothing is looked up at run
+`translate_omitting` and `translate_in_modules` take the same type parameter and the same `host` and
+`offer` arguments. Every use is monomorphised; there is no `dyn` anywhere in the translator, so nothing is looked up at run
 time and nothing is paid at translate time either beyond what ARM64 pays today. The translator crate
 depends on `wcontainers-guest-cpu` only, never on a CPU crate. The program that ships (the browser's
 cdylib, a host runner, later the kernel's CPU side) names the one guest it is built for.
@@ -287,6 +323,20 @@ pub trait Guest: Sized + 'static {
     /// Bytes of the host answer for the cache key.
     fn host_key(host: Self::Host) -> u32;
 
+    // --- what the container offers beyond the default claims ---
+    /// A container setting that changes what the CPU claims, given with every translation: x86 the AVX
+    /// setting (`Offer { avx: bool }`), `()` for ARM64 and RV64GC.
+    type Offer: Copy + Eq + core::hash::Hash + core::fmt::Debug;
+    /// Bytes of the offer for the cache key and the description section (0 for `()`).
+    fn offer_key(offer: Self::Offer) -> u32;
+
+    // --- the host side of this CPU's own hooks ---
+    /// What the runner does when a piece calls a hook whose `HookType::body` is `Cpu`: the work, on the
+    /// thread's state (`BLOCK_SIZE + PRIVATE_BYTES` bytes from the block), with the hook's arguments.
+    /// ARM64's float hook is `exact::run` behind it; x86's float and x87 hooks likewise. Every runner (the
+    /// host runner, the browser's cdylib, later the kernel's CPU side) calls this and nothing CPU-named.
+    fn run_hook(hook: Self::Hook, args: &[i64], state: &mut [u8]) -> HookDone;
+
     // --- meanings ---
     fn emit<E: Emitter<Self>>(e: &mut E, i: &Self::Instruction);
 
@@ -313,10 +363,14 @@ pub trait Guest: Sized + 'static {
     const SP_ALIGNMENT_CHECKED: bool;
     /// Push the address in this i64 local as data accesses use it (ARM64 untags it; others nothing).
     fn data_address(sink: &mut InstructionSink<'_>, local: u32);
-    /// On the path where a jump, call or return leaves for a target that is not the expected one:
-    /// untag it in place (ARM64), or stop with the fault the CPU gives (x86: not canonical).
+    /// On the translator's own slow paths for a jump or call through a register (a switch whose case was
+    /// not taken, the lookup's miss): make the target what the CPU would use, in place (ARM64 untags it),
+    /// or stop with the fault the CPU gives (x86: general protection when it is not canonical).
     fn branch_target<E: Emitter<Self>>(e: &mut E, local: u32);
-    /// The return address the bottom loop passes, which no guest return can reach.
+    /// The return address the bottom loop passes. The rule a CPU crate keeps: the target a meaning hands to
+    /// `Emitter::ret` is always one the CPU would really go to (the meaning has already stopped with the
+    /// CPU's fault otherwise), and no such target equals `UNREACHABLE_RETURN & !FLAGS_WANTED`. ARM64 and
+    /// x86 i64::MIN, RV64GC 1 (section 3.4).
     const UNREACHABLE_RETURN: i64;
 
     // --- system calls ---
@@ -378,7 +432,16 @@ pub struct SyscallRegisters<R> { pub number: R, pub args: [R; 6], pub result: R 
 pub enum CodeChanges { Announced, Detected }
 pub enum TrapDetail { Instruction, Local(u32), Const(i64) }
 pub struct HookType { pub name: &'static str, pub params: &'static [ValType],
-    pub results: &'static [ValType], pub registers: Registers }
+    pub results: &'static [ValType], pub registers: Registers, pub body: HookBody }
+/// Who does a hook's work on the host side.
+pub enum HookBody {
+    Clock,        // the runner's clock, in nanoseconds
+    CodeChanged,  // the runner drops pieces of the range (ARM64 `ic ivau`, RISC-V `fence.i`)
+    Cpu,          // `Guest::run_hook`
+}
+/// What `run_hook` did: its results (as many as `HookType::results` says), and the slow path it was, by
+/// reason number (the translator's or the CPU's), for the runner to count and warn.
+pub struct HookDone { pub results: [i64; 2], pub reason: Option<u32> }
 ```
 
 `TrapKind` moves from the translator's contract into the interface (the contract re-exports it) and gains
@@ -388,12 +451,13 @@ signal Linux sends (section 6).
 
 ### 3.3 The Emitter
 
-Today's `Emitter` (crates/wcontainers-arm64/src/meaning.rs) becomes `Emitter<G: Guest>`, with the same
-methods over the guest's types: `get(G::Reg)`, `set(G::Reg)`, `get_vector(G::Vector)`, `set_vector`,
-`set_flags(G::Flags)`, `flag(G::Flag)`, `get_control(G::Control)`, `set_control`, `hook(G::Hook)`,
-`host() -> G::Host`, `trap(G::Trap)`, `condition(G::Cond)` (default: `G::condition_from_flags`, the full
-emitter tries `G::condition_direct` first, as today), `float_mode` (default from `G::float_slow`),
-`stack_aligned`, `this_address`, `jump`, `jump_if`, `call`, `ret`, `syscall`, `next`, `sink`, `local`.
+Today's `Emitter` (crates/wcontainers-arm64/src/meaning.rs) becomes `Emitter<G: Guest>`, with the same methods
+over the guest's types: `get(G::Reg)`, `set(G::Reg)`, `get_vector(G::Vector)`, `set_vector`,
+`set_flags(G::Flags)`, `flag(G::Flag)`, `get_control(G::Control)`, `set_control`, `hook(G::Hook)`, `host() ->
+G::Host`, `offer() -> G::Offer` (new: the meanings of CPUID, `xgetbv` and every instruction of the AVX setting
+read it), `trap(G::Trap)`, `condition(G::Cond)` (default: `G::condition_from_flags`, the full emitter tries
+`G::condition_direct` first, as today), `float_mode` (default from `G::float_slow`), `stack_aligned`,
+`this_address`, `jump`, `jump_if`, `call`, `ret`, `syscall`, `next`, `sink`, `local`.
 The x86 type of a vector register is per register (`Bit::ty`), so `get_vector` pushes a v128 for xmm and
 an i64 for MMX; RISC-V's f registers are i64.
 
@@ -406,7 +470,8 @@ Changes to the methods' contract, each needed by a CPU named here:
 - `call(target)` and `ret(target)` follow `G::RETURN_ADDRESS`: with `Stack { bytes }` the emitter itself
   stores the return address at sp - bytes and moves sp, after the target is known to be valid, and `ret`
   reads the address the meaning loaded, compares it with the expected one, and moves sp up by `bytes` only
-  then (section 5.3). With `Register` nothing changes from today.
+  then (section 5.3). With `Register` nothing changes from today. In both, the target `ret` is given is
+  one the CPU would go to (see `UNREACHABLE_RETURN`); the meaning makes it so before calling `ret`.
 - `warn(G::Reason)`: call the warn hook with this CPU's own reason and the instruction's address.
 - The rule "`set` is never called inside a part of the meaning that runs only sometimes" stays. Meanings
   whose effect on a register depends on run-time data (x86 `rep` with rcx 0, `cmov`, shifts by zero) write
@@ -459,12 +524,33 @@ Flags wanted (T13). Bit 0 of the expected return address is free on ARM64 becaus
 on x86 returns can be odd. The CPU names the bit: ARM64 1 (unchanged), x86 bit 62 (no canonical user
 address has it), RISC-V none. Every test is `target == L_RETURN & !G::FLAGS_WANTED`.
 
-Address no return reaches (T14) and untagging (T15). `UNREACHABLE_RETURN` stays `i64::MIN` for all three:
-ARM64 because untagged return targets never have it, x86 because it is not canonical and every x86 branch
-to a non-canonical address stops with a general protection fault before it lands (`branch_target`), RV64
-because it is above every user address and a jump there finds no piece and faults at that address, as the
-CPU does. `untag` is called today at code.rs:1305, full.rs:2561 and 2857; those calls become
-`G::branch_target` (branches) and `G::data_address` (data), which on ARM64 emit exactly today's untag.
+Address no return reaches (T14) and untagging (T15). The bottom loop calls a piece with the expected
+return address `UNREACHABLE_RETURN | FLAGS_WANTED`, and a `ret` whose target equals `UNREACHABLE_RETURN &
+!FLAGS_WANTED` returns to the bottom loop as a matched return, with no pc set, so the bottom loop would go
+on from a stale pc. So no target `ret` is handed may equal it. A full 64-bit compare can be hit by some
+popped value, so each CPU makes the value impossible before the compare, in the meaning that calls `ret`:
+- ARM64: the meaning untags every target of `br`, `blr` and `ret` (today's code, meaning.rs:1326), which
+  leaves a top byte of 0x00 or 0xFF, never i64::MIN's 0x80. `UNREACHABLE_RETURN` i64::MIN. Nothing changes,
+  nothing is added.
+- x86: the meanings of `ret`, and of `jmp` and `call` through a register or memory, check the target is
+  canonical (bits 63 to 47 all equal: shift left 16, arithmetic shift right 16, compare with the value)
+  before they call `ret`, `jump` or `call`, and stop with general protection at the instruction, rsp not
+  moved, when it is not, as the CPU does (section 2: `ret` to 0x8000000000000000 gives `SIGSEGV`,
+  `SI_KERNEL`, rsp unchanged). The check must be in the meaning because the CPU faults at the branch, not
+  at the target: once the target reaches the lookup (`F_DISPATCH` sets pc to it) the branch's address is
+  gone. A canonical value is never i64::MIN, so `UNREACHABLE_RETURN` i64::MIN cannot match. Cost: four
+  WebAssembly operations and a branch never taken on every `ret` and every jump or call through a register
+  or memory (ARM64 already pays ten for its untag on the same branches; x86's cost is measured at X4,
+  section 12). The check also serves the mismatch path, which needs no second one. A direct jump or call
+  whose target is not canonical (possible only within 2 GiB of the top of the lower half) is known at
+  translation and translates to the same fault.
+- RV64GC: `jalr` clears bit 0 of its target, so every target has bit 0 clear; `UNREACHABLE_RETURN` is 1
+  (FLAGS_WANTED is 0) and costs nothing. A jump to an address the CPU cannot reach finds no piece and
+  faults at that address, as the CPU does (RISC-V faults at the target, so no check before the jump).
+`untag` is called today at code.rs:1305 (data), full.rs:2561 (a switch's case not taken, where the
+translator works the target out again from the guest register) and full.rs:2857 (data); those calls become
+`G::data_address` and `G::branch_target`, which on ARM64 emit exactly today's untag and on x86 the data
+nothing and the branch the canonical check above.
 
 Control flow (T7). `Flow` gains `FlowKind`, so the translator no longer matches `Branch { link: true }` or
 `BranchRegister::Br`. A RISC-V `auipc ra, hi; jalr ra, lo(ra)` pair is a call through a register whose
@@ -488,14 +574,15 @@ the same way. How often either happens is measured on the x86 real binaries at X
 indexing by case number brought back for a decision.
 
 The lookup array (T11). One i32 slot per `ALIGN` bytes of guest code: ARM64 one per 4 bytes (as today), x86
-one per byte, RISC-V one per 2 bytes. The slot's byte index is `(pc - table_base) << (2 - log2(ALIGN))`,
-which is `pc - table_base` on ARM64 (nothing emitted, so the output is unchanged), and the "is it aligned"
-test is emitted only when `ALIGN > 1`. `TABLE_BASE` and `SLOTS_COVER` in the contract say "one entry per
-`G::ALIGN` bytes". Decision and reason: one memory read per lookup is the fastest lookup there is, and the
-cost is state memory, four bytes per byte of x86 code (untouched pages cost nothing, so only code ranges
-that hold pieces cost memory). For scale, expected and not measured: 38 MB of code, the size of the largest
-ARM64 sample, would need 152 MB of slots. If the x86 binaries at X9 show the 4 GiB state memory is at risk,
-a two-level table is measured then.
+one per byte, RISC-V one per 2 bytes. The slot's byte index is `(pc - table_base) << (2 - log2(ALIGN))`, which
+is `pc - table_base` on ARM64 (nothing emitted, so the output is unchanged), and the "is it aligned" test is
+emitted only when `ALIGN > 1`. `TABLE_BASE` and `SLOTS_COVER` in the contract say "one entry per `G::ALIGN`
+bytes". Decision and reason: one memory read per lookup is the fastest lookup there is, and the cost is state
+memory, four bytes per byte of x86 code (untouched pages cost nothing, so only code ranges that hold pieces
+cost memory). For scale, expected and not measured: 52,050,800 bytes of code, the size of the largest ARM64
+sample (bun, docs/status-translator.md), would need about 208 MB of slots if all of it held pieces; the x86
+build of the same program is expected to be of a similar size, measured at X9. If the x86 binaries at X9 show
+the 4 GiB state memory is at risk, a two-level table is measured then.
 
 Trap detail (T5). `Decoded { word }` becomes `Decoded { length }`; the detail of a trap is
 `G::trap_detail(code)`.
@@ -522,8 +609,24 @@ Hooks (T27). The CPU lists its hooks; the translator gives them function indices
 (system call, stop, memory fault, load code, warn, trap), so ARM64's float, clock and code-changed hooks
 keep indices 6, 7 and 8 and the output does not change. `HookType::registers` is new: the bits a hook reads
 or writes in the block (x86's x87 hook and the MMX registers, section 5.8). ARM64's hooks list none.
+`HookType::body` says who does the work on the host side. The clock and the code-changed hook are the
+runner's own. The software floating point (ARM64's `exact::run`, x86's SSE exact path and x87) is the
+CPU's, through `Guest::run_hook` on the thread's state bytes, so no runner names a CPU function. Today the
+host runner (runner.rs:903) and the browser's cdylib (browser/src/lib.rs:126) call
+`wcontainers_arm64::exact::run` by name and work out FPSR and the reason themselves; at X1 that code moves
+into ARM64's `run_hook`, unchanged in what it computes. The browser's cdylib then exports one function,
+`cpu_hook(hook, a, b, c, d)`, over a buffer of the cdylib's own into which the JavaScript runner copies the
+thread's state before the call and from which it copies it back after, with `cpu_hook_result(i)` and
+`cpu_hook_reason()` for the results and the reason; the hook is a counted slow path, so the copy costs
+nothing on the fast path. The kernel's CPU side calls the same `run_hook` at X10.
 
 Host probe (T28). An associated type with its own probe module. It is part of the cache key.
+
+Offer (from section 5.10, the AVX setting). A container setting that changes what the CPU claims is an
+associated type, given to every translation beside the host answer and read by meanings through
+`Emitter::offer()`: x86 `Offer { avx: bool }`, `()` for ARM64 and RV64GC. It is part of the cache key
+(`offer_key`) and, from X3, of the description section. At X1 ARM64's `()` adds nothing anywhere, so the
+output stays the same.
 
 Stack moves and frames (T29 to T31). `stack_move(i)` replaces the match on ARM64 forms. `RED_ZONE`: the
 frame a function checks when the stack pointer moves down is `[sp - RED_ZONE, top)` instead of `[sp, top)`,
@@ -556,8 +659,9 @@ zero-extends to at most m", "on this edge r is below b unsigned", "an index is e
 module's `Domain` reasoning takes these instead of ARM64's "a 32-bit result clears the top half".
 
 Identity (T37). `ID` names the guest. To keep X1's proof exact, the description section's format and the
-cache key are not changed when ARM64 moves; at X3 the format becomes 4 with a guest byte after the format
-byte, and ARM64's output changes in that byte only, checked then.
+cache key are not changed when ARM64 moves; at X3 the format becomes 4 with a guest byte and the offer key
+(unsigned LEB128) after the format byte, and ARM64's output changes in the format byte and those two
+bytes only (guest 1, offer 0), checked then.
 
 Vectors, x87, rep and memory ordering (T38 to T41) are x86 decisions: sections 5.5, 5.6, 5.8, 5.10 and 8.
 
@@ -572,10 +676,12 @@ ARM64 (`wcontainers_arm64::Arm64`, everything as today):
   Packed (today's `Flags`); `sets` is always all four. FLAGS_WANTED 1.
 - Block: `wcontainers_abi::RegisterBlock`; controls `tpidr_el0`, FPCR, FPSR, FloatTracking, Exclusive*;
   private bytes 32.
-- Hooks: Float `(i32, i64, i64, i64) -> i64`, Clock `() -> i64`, CodeChanged `(i64)`.
+- Hooks: Float `(i32, i64, i64, i64) -> i64` (body `Cpu`: `run_hook` reads FPCR and FPSR from the state,
+  calls `exact::run`, writes FPSR back and names the reason, today's code in runner.rs and the browser's
+  lib.rs moved into the CPU crate), Clock `() -> i64`, CodeChanged `(i64)`.
 - RETURN_ADDRESS `Register(30)`; RED_ZONE 0; SP_ALIGNMENT_CHECKED true; data_address and branch_target
-  untag (bit 55 rule); SYSCALL x8, x0 to x5, x0; CODE_CHANGES Announced; NARROW_WRITE [-, -, Zero] (only
-  32-bit writes exist).
+  untag (bit 55 rule), as the branch meanings already do; UNREACHABLE_RETURN i64::MIN; Offer `()`; SYSCALL
+  x8, x0 to x5, x0; CODE_CHANGES Announced; NARROW_WRITE [-, -, Zero] (only 32-bit writes exist).
 
 x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
 - ALIGN 1, MAX_LENGTH 15; `decode` is `iced_x86::Decoder` in 64-bit mode over the bytes up to the end of the
@@ -589,10 +695,12 @@ x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
 - Block: `X86Block` (section 5.9). Controls: MXCSR, MXCSR tracking, the x87 control, status (with TOP) and
   tag words, the x87 last-instruction pointers.
 - Hooks: Float (SSE exact path, with MXCSR), X87 `(op: i32, low: i64, high: i64) -> (i64, i64)` reading and
-  writing the x87 area and the MMX bits, Clock.
+  writing the x87 area and the MMX bits (both body `Cpu`, run by `run_hook` on the state), Clock.
 - RETURN_ADDRESS `Stack { bytes: 8 }`; RED_ZONE 128; SP_ALIGNMENT_CHECKED false; data_address nothing (a
   non-canonical data address is past the permission table and faults; section 5.4 says how that fault is
-  reported); branch_target stops with a general protection fault when the target is not canonical; SYSCALL
+  reported); branch_target, and the meanings of every branch through a register or memory, stop with a
+  general protection fault when the target is not canonical; UNREACHABLE_RETURN i64::MIN; Offer `{ avx:
+  bool }`; SYSCALL
   rax, (rdi, rsi, rdx, r10, r8, r9), rax; CODE_CHANGES Detected; NARROW_WRITE [Merge, Merge, Zero].
 
 RV64GC (`wcontainers_riscv::Rv64`, paper only, the check that nothing assumes flags, a link register that
@@ -608,7 +716,8 @@ is special, 4-byte instructions or a special stack pointer):
   answered per instruction), Clock (rdtime), CodeChanged with an "everything" form for `fence.i`.
 - RETURN_ADDRESS `Register(1)` (ra, by convention; `jalr` may link to any register, and a call is
   recognised by `FlowKind`, not by the register); RED_ZONE 0; SP_ALIGNMENT_CHECKED false; no untag;
-  SYSCALL a7, a0 to a5, a0; CODE_CHANGES Announced; NARROW_WRITE [-, -, Sign] (the `*W` instructions).
+  UNREACHABLE_RETURN 1 (no `jalr` target has bit 0 set); Offer `()`; SYSCALL a7, a0 to a5, a0;
+  CODE_CHANGES Announced; NARROW_WRITE [-, -, Sign] (the `*W` instructions).
 
 ## 4. Design decisions for the translator and the tests
 
@@ -694,11 +803,28 @@ Tests (section 7 gives the detail):
   reference CPU. Nothing of gex (AGPL) is copied or paraphrased.
 - iced decodes with `DecoderOptions::NONE`, which follows Intel where Intel and AMD decode differently. An
   encoding iced calls `INVALID` traps `Undefined` (SIGILL). An instruction of a feature not offered traps
-  `Unsupported` (SIGILL, counted, warned), with x86's own reason for AVX (section 5.10).
+  `Unsupported` (SIGILL, counted, warned), with x86's own reason for AVX (section 5.10). Which claim a
+  `Code` belongs to, and whether it is VEX-encoded, comes from the table the build script makes from iced's
+  own `instr_info` (section 2), since the shipped decoder has no `encoding()` or `cpuid_features()`. A
+  `Code` with no meaning written is of a feature never claimed and traps `Unsupported`.
 - Kernel-only instructions (hlt, in and out, cli and sti, lgdt and the rest, mov to control registers,
-  rdmsr, wrmsr, rdpmc while Linux does not allow it, `int n` other than 3): the fault Linux gives a user
-  program, which for most is general protection (SIGSEGV, SI_KERNEL, address 0) and for some #UD
-  (SIGILL); layer 1 decides each against the reference.
+  rdmsr, wrmsr, rdpmc while Linux does not allow it, `int n` other than 3, 0x80 and the `int1` and `int3`
+  forms): the fault Linux gives a user program, which for most is general protection (SIGSEGV, SI_KERNEL,
+  address 0) and for some #UD (SIGILL); layer 1 decides each against the reference.
+- Breakpoints: `int3` (`CC`) and `int 3` (`CD 03`) stop with `Breakpoint`, SIGTRAP with `SI_KERNEL`, rip
+  after the instruction; `int1` (`F1`) stops with `Breakpoint`, SIGTRAP with `TRAP_BRKPT`, rip after it
+  (section 2). The trap's detail carries the `si_code`.
+- `int 0x80` from 64-bit code is Linux's 32-bit system call gate on the reference (section 2: it ran i386
+  getpid). 32-bit code and its system call numbers and layouts are deferred with 32-bit mode, so this
+  phase behaves as a Linux kernel built without 32-bit emulation (`CONFIG_IA32_EMULATION` off), where
+  vector 0x80 is a kernel-only gate like `int 0x81`: general protection (SIGSEGV, SI_KERNEL), rip at the
+  instruction. That is reporting the missing feature the way Linux does, not a pretence. It is counted and
+  warned, x86's own reason "32-bit system call from 64-bit code, not provided". Expected from Linux's
+  source and not seen on a running kernel without 32-bit emulation; layer 1 excludes `int 0x80` with that
+  reason and the designed-answers test checks the fault.
+- `mov ss` and `pop ss`: `pop ss` does not exist in 64-bit mode (iced decodes it as `INVALID`); `mov ss`
+  with a selector Linux allows changes nothing a user program sees, except that a trap flag the program
+  set (section 5.1) stops after the instruction after it, as on the CPU.
 
 ### 5.3 Calls and returns
 
@@ -707,10 +833,12 @@ Tests (section 7 gives the detail):
   rsp - 8 and moves rsp, after the target is known and valid: a target that is not canonical stops with
   general protection before anything changes, as the reference does (section 2). `call [m]` reads its
   target first (access 0) and pushes second (access 1); both are checked before anything changes.
-- `ret` reads [rsp]. If the value is the address the caller expects, rsp moves up by 8 and the piece
-  returns directly. If not, `branch_target` checks it is canonical (else general protection with rsp not
-  moved, as on the CPU), rsp moves, and the thread leaves to the bottom loop through "go to address".
-  `ret imm16` also adds its immediate.
+- `ret` reads [rsp] and checks the value is canonical, else it stops with general protection, rsp not
+  moved, as on the CPU (section 3.4, T14: this check comes before the compare, so a popped value can never
+  match the bottom loop's marker). If the value is the address the caller expects, rsp moves up by 8 and
+  the piece returns directly. If not, rsp moves and the thread leaves to the bottom loop through "go to
+  address". `ret imm16` also adds its immediate. `jmp` and `call` through a register or memory make the
+  same canonical check first.
 - After a WebAssembly call returns, the caller checks rsp is 8 above its value at the call (after the
   push); if not, it leaves to the next instruction through the bottom loop, as ARM64 does for a changed sp.
 - Deep recursion leaves to the bottom loop on the stack budget, as on ARM64.
@@ -768,9 +896,29 @@ value is one Linux allows, decided by layer 1.
 ### 5.7 Code written without an announcement
 
 x86 programs may write code and run it without telling the CPU. Decision, as the brief says:
-- When a page's bytes are translated, the CPU side clears the page's write bits in the permission table
-  (`PAGE_WRITE` of the page and `NEXT_PAGE_WRITE` of the page before) and remembers that it did. Translated
-  code is unchanged: it already checks writes, so this costs nothing on the normal path.
+- When a page's bytes are first translated, the CPU side clears the page's write bits in the permission
+  table (`PAGE_WRITE` of the page and `NEXT_PAGE_WRITE` of the page before) and remembers that it did,
+  before it reads the bytes. Translated code is unchanged: it already checks writes, so on the normal path
+  nothing is added to the pieces.
+- **How this meets the contract for permission changes** (contract.rs: what a piece knows about
+  permissions holds until its thread can next stop, except a running function's own frame, noticed only at
+  the next function entry; whoever changes permissions first stops every other thread of the process):
+  - Other threads: the protecting step is a permission change like `mprotect` and follows the same rule.
+    With one host thread, as now and until section 8 is decided, the others are stopped by themselves.
+    With threads in parallel it stops them first, once per page (a page is protected once until it is
+    written), counted "threads stopped to protect code".
+  - The translating thread: translation runs inside `load_code`, which a piece reaches only through a call
+    or a jump to the dispatcher (or from the bottom loop), and pieces check permissions again after a call
+    returns, so everything they knew is checked again, except proofs over their own frames.
+  - Frames: a page that lies at or above a thread's stack pointer inside the mapping that holds that stack
+    pointer (code on an executable stack, such as GCC's nested-function trampolines) may be covered by a
+    frame proof of that thread, and a write through it would not fault. So when the page being protected
+    is such a page for any thread, that thread gives up its WebAssembly frames before it runs on: the
+    translating thread's `load_code` returns "leave" once the piece is in place, a stopped thread leaves
+    `run` when its stop hook returns, and each carries on from the bottom loop with functions in progress
+    continued from their return addresses (as after a lost stack), whose pieces check their frames afresh.
+    Counted and warned "code translated from a live stack frame". This is rare (an executable stack), so
+    its cost does not matter.
 - A write to such a page reaches the memory fault hook with exact registers. The CPU side sees the page is
   only write-protected for code, drops every piece translated from the page, sets the write bits back, and
   continues the thread at the faulting instruction, which writes again. Counter and warning: "code written
@@ -778,8 +926,8 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
 - Pieces in progress on the WebAssembly stack may have come from that page, including the running one. So
   dropping pieces unwinds to the bottom loop (as after a lost stack); functions in progress continue from
   their return addresses, translated afresh ("continued after stack loss").
-- The permission table changes only while the thread is stopped, which the fault guarantees, and with
-  several threads the existing rule (stop the others first) applies.
+- Setting the write bits back is a permission change too: the faulting thread is stopped in its hook,
+  and with several threads the same rule (stop the others first) applies.
 - ARM64 keeps `ic ivau`; `CODE_CHANGES` tells the runner which policy to use.
 - Expected and unmeasured: a JIT that keeps pages writable and executable while writing code next to
   running code would fault often. The counter shows it; a measurement on such a program comes at X6.
@@ -808,11 +956,37 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   last-instruction pointers. Instructions that name ST(i) work out R((TOP + i) mod 8) at run time inside
   the hook, so no register numbering depends on run-time state. Loads and stores of memory operands are
   done by the meaning (checked, exact faults), and their values pass through the hook's i64 arguments and
-  results. Precision control, rounding control and the unmasked-exception rule (the exception is raised at
-  the next x87 instruction that waits) follow the manual. The transcendental instructions (fsin, fcos,
-  fsincos, fptan, fpatan, f2xm1, fyl2x, fyl2xp1) are computed in extended precision in software; layer 1
-  compares them bit for bit with the reference, and any form whose results Intel's undocumented algorithm
-  makes impossible to match is recorded as a known failure with the reason.
+  results. Rounding control and the unmasked-exception rule (the exception is raised at the next x87
+  instruction that waits) follow the manual.
+- **Precision control** (FCW bits 8 and 9: 24, 53 or 64 bits) affects only fadd, fsub, fsubr, fmul, fdiv,
+  fdivr (with their `p` and `i` forms) and fsqrt, as the manual says; the rest always round to 64 bits.
+  At 64 bits, the default Linux sets (FCW 0x037F), the operation is one `X87DoubleExtended` operation. At
+  24 or 53 bits the result must be rounded once to that many bits while keeping the 15-bit exponent range,
+  which `X87DoubleExtended` does not offer. Decision: two more semantics of rustc_apfloat's public
+  `ieee::Semantics` trait, defined in `wcontainers-x86` (15 exponent bits, precision 24 and 53), and a
+  wide one (15 exponent bits, precision 66). The operation is done in the wide semantics rounded toward
+  zero, the lowest bit is set when apfloat reports the result inexact (rounding to odd), and that is
+  converted once to 24 or 53 bits in the program's rounding mode, then widened exactly. Rounding to odd at
+  a precision at least two bits wider than the target and then rounding once gives the correctly rounded
+  result (Boldo and Melquiond, "Emulation of FMA and correctly rounded sums: proved algorithms using
+  rounding to odd", IEEE Transactions on Computers, 2008); 66 bits also holds every 64-bit operand exactly.
+  The status flags come from the two steps' statuses. Checked in a scratch program
+  (`pyro-parked/wcontainers-scratch/x86/apfloat-pc`, rustc_apfloat 0.2.3): the custom semantics build
+  (precision 66 and 24, exponent range 16383 to -16382), 1 + 2^-30 + 2^-60 at 24 bits gives 1 + 2^-23
+  rounding up and 1 to nearest, and 2^-16000 stays non-zero at 24 bits. Layer 1 checks it against the
+  reference with the precision control field random.
+- **The transcendental instructions** (fsin, fcos, fsincos, fptan, fpatan, f2xm1, fyl2x, fyl2xp1)
+  are worked out with the `astro-float` crate (0.9.6, MIT; builds for wasm32-unknown-unknown with the
+  standard library, which the browser's cdylib has; measured below), at 128 bits, then rounded once to
+  64 bits in the program's rounding mode. For fsin, fcos, fsincos and fptan the argument is first reduced
+  the way Intel's manual describes for these instructions (a 66-bit approximation of π; expected from the
+  manual's description, confirmed against the reference at X7). Intel's own results are documented as
+  within one unit in the last place, not as correctly rounded, so layer 1 compares them bit for bit and
+  any case where the reference's result is not the correctly rounded one is recorded as a known failure
+  with the reason, never masked. Size, measured 2026-11-17 on the Mac (load 17 to 21) in a scratch cdylib
+  (`pyro-parked/wcontainers-scratch/x86/x87-crate`, opt-level s, LTO, stripped) using sin, atan, log2,
+  exp and add at 128 bits, against the same cdylib without it: 142,688 bytes raw, 40,947 brotli -q 11 more.
+  Only the x86 browser build carries it.
 - **MMX** (baseline in every x86-64 CPU, so offered): mm0 to mm7 are register bits of type i64, whose
   block slots are the mantissas of R0 to R7. An MMX instruction also sets TOP to 0 and marks every x87
   register valid; `emms` marks them empty. The x87 hook declares the MMX bits in its `registers`, so the
@@ -851,16 +1025,25 @@ dump).
   full, each 256-bit operation as two 128-bit ones; 128-bit VEX forms clear the upper half, legacy SSE
   forms keep it. FMA is fast where the host probe says the host fuses, else software with "software fused
   multiply-add" counted (section 2). `pdep` and `pext` are software loops, counted "software bit deposit or
-  extract". The setting is given with each translation (an associated `Offer` type of the guest, `()` for
-  ARM64) and is part of the cache key; the kernel answers `/proc/cpuinfo` and AT_HWCAP2 from the same value.
+  extract". The setting is given with each translation as the guest's `Offer` (section 3.2: `translate`
+  takes it, meanings read it through `Emitter::offer()`, `offer_key` puts it in the cache key and the
+  description section; `()` for ARM64); the kernel answers `/proc/cpuinfo` and AT_HWCAP2 from the same value.
   Deciding the setting covers the whole v3 level rather than AVX alone is this plan's choice: programs
   built for x86-64-v3 check all of it.
 - **The two counters**, x86's own reasons, each with a warning: "a program asked whether AVX is available
   and was told no" (CPUID leaf 1, or leaf 7 sub-leaf 0, read while the setting is off) and "an AVX
-  instruction was reached while AVX is not offered" (a VEX-encoded instruction while the setting is off,
-  which raises illegal instruction). No program is restarted automatically.
+  instruction was reached while AVX is not offered" (a `Code` the build-time table marks VEX-encoded,
+  reached while the setting is off, which raises illegal instruction). No program is restarted
+  automatically.
+- The first counter is expected to fire in nearly every glibc program: its start-up
+  (`init_cpu_features`) reads both leaves to pick string and math routines. That is intended, not noise to
+  narrow away: such a program really did take its non-AVX routines because the answer was no, which is
+  what someone deciding on the setting wants to know, and nothing narrower can be seen (which bit the
+  program then tests is not visible). The counter counts every read; like every warning (phase one), it is
+  raised once per address past its threshold, so a program that reads CPUID from one place warns once.
 - **rdtsc and rdtscp** return the clock hook's nanoseconds (a 1 GHz counter, as leaf 0x15 says); `rdtscp`
-  and `rdpid` give processor number 0.
+  gives processor number 0 in ecx. `rdpid` is not claimed (the i7-8750H does not have it, so the
+  reference could not prove it) and raises illegal instruction, as on that CPU.
 
 ### 5.11 How the lookup of pieces works for byte-aligned, variable-length code
 
@@ -897,7 +1080,8 @@ resolved at compile time like the translator (the kernel generic over a personal
 - **`arch_prctl`** (set and get FS and GS; CPUID faulting and AMX permission reported as not supported),
   and the faults and their signals (section 3.2's trap kinds: divide error SIGFPE `FPE_INTDIV`, general
   protection SIGSEGV `SI_KERNEL` with address 0, float exceptions SIGFPE, single step SIGTRAP
-  `TRAP_TRACE`, int3 SIGTRAP `SI_KERNEL`). The abi's `Exit` grows these kinds.
+  `TRAP_TRACE`, `int3` and `int 3` SIGTRAP `SI_KERNEL`, `int1` SIGTRAP `TRAP_BRKPT`, each breakpoint
+  with rip after it). The abi's `Exit` grows these kinds.
 - **The machine description**: ELF machine 62, `uname` "x86_64", `/proc/cpuinfo` in x86's format with the
   claimed flags, seccomp's `AUDIT_ARCH_X86_64`, and an x86-64 vDSO (`clock_gettime`, `gettimeofday`,
   `time`, `getcpu`). The legacy vsyscall page is not provided: a call into it faults, as on a kernel booted
@@ -938,8 +1122,9 @@ dynasm, iced's encoder and assembler) never reach the CPU crates. It supplies:
 - the mapping of reference signals (signal, `si_code`, address, rip) and of translator traps to generic
   stops and exit statuses (128 + 8 for SIGFPE);
 - the reference runner's per-CPU part, the initial blob state, the auxiliary vector entries, the
-  stand-in's five system call numbers (x86 write 1, writev 20, exit 60, exit_group 231, brk 12), the exact
-  float hook body, the code-change policy, a disassembler for messages (iced's formatter for x86);
+  stand-in's five system call numbers (x86 write 1, writev 20, exit 60, exit_group 231, brk 12), the
+  code-change policy (the float and x87 hook bodies are not here: they ship, as `Guest::run_hook`), a
+  disassembler for messages (iced's formatter for x86);
 - per-CPU program support (system call stub, `_start`, context switch, assembly tests, the code-writing
   program, the differences program, smoke and checks programs), the layer 2 emitter, relocation types of
   real binaries (x86: `R_X86_64_RELATIVE`, `_64`, `GLOB_DAT`, `JUMP_SLOT`, `IRELATIVE`) and the images
@@ -970,11 +1155,21 @@ so; it is never skipped silently.
 - **One instruction** (section 2): the code area is filled with `int3`; the instruction is placed at CODE;
   the handler (on an alternate stack, using no thread-local storage and only raw system calls) writes
   every register into the frame including all vector registers and the XSAVE header bits, sets the FS and GS
-  bases with `arch_prctl`, sets TF and returns. The next signal is read back: `SIGTRAP` with `TRAP_TRACE` is
-  "landed at rip"; with `SI_KERNEL` it is `int3`; `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE` are faults with
-  their codes; `SIGSYS` (from a seccomp filter on the instruction window `[CODE, CODE + 16)`) is a system
-  call. A repeated string instruction is stepped on while rip stays at CODE. The runner's own FS base is set
-  back before anything else.
+  bases with `arch_prctl`, sets TF and returns. The next signal is read back, knowing the instruction's
+  length L:
+  - `SIGTRAP` with `TRAP_TRACE` (2): landed at rip.
+  - `SIGTRAP` with `SI_KERNEL` (128) and rip CODE + L + 1: the instruction ran and fell through with its
+    trap held back (`mov ss`), and the `int3` filler at CODE + L stopped it. Reported as landed at CODE + L
+    (the filler changes nothing but rip). Any other `SI_KERNEL` stop is a breakpoint of the instruction
+    itself (`int3`, `int 3`), rip after it.
+  - `SIGTRAP` with `TRAP_BRKPT` (1): `int1`, rip after it.
+  - `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE`: faults with their codes (`SI_KERNEL` with address 0 is general
+    protection).
+  - `SIGSYS`, from a seccomp filter on the instruction window `[CODE, CODE + 16)`: a system call, for
+    `syscall` and for `int 0x80` (seen by seccomp as an i386 call), which never runs.
+  Anything else (a stop elsewhere, a signal not listed) is reported as such and fails the case; nothing is
+  mapped by guesswork. A repeated string instruction is stepped on while rip stays at CODE. The runner's
+  own FS base is set back before anything else.
 - **Blobs** (layers 2 and 3 natives): the runner forks per blob, maps it and runs it with the blob start
   state, and reports output and status in-band. Docker is not used on the x86 machine.
 - **Recorded results**: every reference result is stored under `target/reference/x86_64/` keyed by the
@@ -986,22 +1181,23 @@ so; it is never skipped silently.
 
 ### 7.4 The three layers for x86-64
 
-**Layer 1: one instruction at a time.** The forms list comes from iced-x86's own tables: one form per
-iced `Code` whose `OpCodeInfo` says it is valid in 64-bit mode (`mode64()`), is an instruction
-(`is_instruction()`, not a directive), has an encoding that is not 3DNow, XOP, MVEX or EVEX
-(`encoding()`), and whose every `Code::cpuid_features()` entry is in the offered set: one list for the
-default claims and one for the AVX setting. Forms that `is_privileged()` marks kernel-only stay in the list
-as their own group: their case passes when the translator stops with the fault the reference CPU gives
-(section 5.2). The forms not offered are a third list, whose cases must stop with illegal instruction. Its name (the
-`Code` name) is the seed key; its group is its mnemonic and encoding. A case is a random `Instruction` for
-the `Code`, with operands from `op_kind(i)` (registers, immediates weighted toward edges, memory operands
-whose base and index point into DATA), encoded by iced's `Encoder`, which gives the bytes and length. Random
-registers, flags, vector, x87 and MXCSR values are weighted toward edge values; MXCSR is the default in
-half the cases. The reference runs it by the trap flag; the translator runs it at look-ahead none; every
-register, every flag (including undefined ones), the touched memory and the stop are compared. Random byte
-strings that iced decodes as `INVALID` are compared with the CPU's SIGILL, and valid ones also check the
-length (where the CPU lands). Exclusions, each with a reason: a jump to itself, and the instructions
-answered by design (CPUID, rdtsc, rdtscp, rdpid, xgetbv), which a designed-answers test checks instead.
+**Layer 1: one instruction at a time.** The forms list comes from iced-x86's own tables: one form per iced
+`Code` whose `OpCodeInfo` says it is valid in 64-bit mode (`mode64()`), is an instruction (`is_instruction()`,
+not a directive), has an encoding that is not 3DNow, XOP, MVEX or EVEX (`encoding()`), and whose every
+`Code::cpuid_features()` entry is in the offered set: one list for the default claims and one for the AVX
+setting. Forms that `is_privileged()` marks kernel-only stay in the list as their own group: their case passes
+when the translator stops with the fault the reference CPU gives (section 5.2). The forms not offered are a
+third list, whose cases must stop with illegal instruction. Its name (the `Code` name) is the seed key; its
+group is its mnemonic and encoding. A case is a random `Instruction` for the `Code`, with operands from
+`op_kind(i)` (registers, immediates weighted toward edges, memory operands whose base and index point into
+DATA), encoded by iced's `Encoder`, which gives the bytes and length. Random registers, flags, vector, x87 and
+MXCSR values are weighted toward edge values; MXCSR is the default in half the cases. The reference runs it by
+the trap flag; the translator runs it at look-ahead none; every register, every flag (including undefined
+ones), the touched memory and the stop are compared. Random byte strings that iced decodes as `INVALID` are
+compared with the CPU's SIGILL, and valid ones also check the length (where the CPU lands). Exclusions, each
+with a reason: a jump to itself; the instructions answered by design (CPUID, rdtsc, rdtscp, xgetbv), which a
+designed-answers test checks instead; and `int 0x80`, which the reference kernel runs as a 32-bit system call
+and this phase does not provide (section 5.2), also checked by the designed-answers test.
 
 **Layer 2: random small programs**, from the shared program model (loops with counters, calls, bounded
 recursion, tail calls, calls and jumps through registers, jump tables in both x86 compiler styles, frames,
@@ -1052,9 +1248,16 @@ Measured throughout, recorded with machine and load: translation speed, output s
 - **X1, the interface, with ARM64 on it.** `wcontainers-guest-cpu` with section 3's trait and types;
   `wcontainers-arm64` implements it; `wcontainers-translator` is generic over it and no longer depends on
   `wcontainers-arm64` (`cargo tree -p wcontainers-translator` shows it); the test crate and the browser
-  crate name `Arm64` where they call the translator. Pass bar: the WebAssembly output is byte for byte the
+  crate name `Arm64` where they call the translator; the float hook's host side moves into
+  `Arm64::run_hook`, and the host runner and the browser's cdylib call it instead of `exact::run` (the
+  browser's `cpu_hook` export and runner.js's copy of the state come with it, section 3.4 Hooks). Pass
+  bar: the WebAssembly output is byte for byte the
   same as before the move for the benchmark set and all nine real binaries of M5, in both settings
-  (`WC_BINARIES_DUMP` before and after, compared with `cmp`; the benchmark set's modules likewise); the
+  (`WC_BINARIES_DUMP` before and after, compared with `cmp`; the benchmark set's modules likewise, through
+  a knob `WC_BENCH_DUMP` that the X1 builder adds to tests/benchmarks.rs first, as its own commit before
+  any interface change, writing each translated module as `<directory>/<benchmark>-<look-ahead>-
+  <optimise>-<i>.wasm` the way binaries.rs does, so that the "before" modules exist; the thread module of
+  `thread_module()` is compared too); the
   whole test suite of the four crates passes; the benchmarks in wasmtime and Chrome are unchanged within
   noise (best of 3 runs each, before and after, load recorded). The move is done on this branch's copy of
   the translator; fixes the translator track makes later come in by a merge the orchestrator names, and
@@ -1065,14 +1268,17 @@ Measured throughout, recorded with machine and load: translation speed, output s
   hand list of cases (as section 2's experiment, now in the repository) and on a blob. Pass bar: every
   ARM64 test passes with the same seeds giving the same cases and programs (layer 1 cases and layer 2
   programs byte for byte the same per seed); the x86 reference answers a hand list of at least 30
-  instructions with what the Intel manual says, each checked by hand in the test.
+  instructions with what the Intel manual says, each checked by hand in the test, among them every stop
+  of section 7.3's list (`mov ss` with its held-back trap, `int3`, `int 3`, `int1`, `syscall` and `int
+  0x80` as `SIGSYS`, a `ret` to a non-canonical address).
 - **X3, x86 at look-ahead none, integers.** `wcontainers-x86` with the decoder, the block, the base integer
-  instructions (moves, arithmetic and logic at every width, lea, push and pop, call and ret, jmp and jcc,
-  cmov and setcc, shifts and rotates, multiply and divide, string instructions without rep, syscall), lazy
-  flags, the description section's guest byte (format 4; ARM64's output then differs in that byte only).
-  Pass bar: layer 1 for those forms against the real CPU with zero mismatches at 1,000 cases a form; a
-  C hello world built as a flat x86-64 blob prints and exits in wasmtime and Chrome; what the decoder adds
-  to the browser build measured.
+  instructions (moves, arithmetic and logic at every width, lea, push and pop, call and ret, jmp and jcc, cmov
+  and setcc, shifts and rotates, multiply and divide, string instructions without rep, syscall), lazy flags,
+  the build-time claim table from iced's tables (section 2) with its test, the canonical check on branches
+  through a register or memory, the description section's guest and offer bytes (format 4; ARM64's output then
+  differs in those bytes and the format byte only). Pass bar: layer 1 for those forms against the real CPU
+  with zero mismatches at 1,000 cases a form; a C hello world built as a flat x86-64 blob prints and exits in
+  wasmtime and Chrome; what the decoder adds to the browser build measured.
 - **X4, x86 at full look-ahead.** Functions, registers in locals, flags liveness, direct conditions, calls
   and returns as WebAssembly calls with the pushed return address, the red zone frames, switch recognition
   for both x86 compiler styles, loop proofs, the stop and permission checks; the x86 layer 2 emitter. Pass
@@ -1089,7 +1295,8 @@ Measured throughout, recorded with machine and load: translation speed, output s
   protection of translated pages with the unwind, both runners' stand-ins of it, a test program that writes
   and runs code with no announcement; setjmp, C++ exception and Rust panic programs. Pass bar: those tests
   pass at every look-ahead, in wasmtime and Chrome.
-- **X7, x87 and MMX.** The x87 hook with `X87DoubleExtended`, MMX registers, `fxsave` and `fxrstor`. Pass
+- **X7, x87 and MMX.** The x87 hook with `X87DoubleExtended`, precision control by rounding to odd, the
+  transcendental instructions with `astro-float`, MMX registers, `fxsave` and `fxrstor`. Pass
   bar: layer 1 for every x87 and MMX form at 1,000 cases a form, zero mismatches except known failures
   recorded with their reasons; a C program using `long double` gives the native output.
 - **X8, the AVX setting.** AVX, AVX2, FMA, F16C, BMI2, XSAVE in the setting, the two counters, the setting
@@ -1127,22 +1334,30 @@ apply unchanged.
 - How many switch tables exceed the br_table limit at one entry per byte, and how many have absolute
   entries.
 - The cost of lazy flags with PF and AF on demand, and of partial flag setters, on real programs.
-- The cost of the canonical-address check on mismatched returns and indirect branches.
+- The cost of the canonical-address check on every `ret` and every jump or call through a register or
+  memory (four operations each, section 3.4).
+- The size of the build-time claim table (about 5 KB expected) and of `astro-float` in the real x86
+  browser build (40,947 bytes brotli in a scratch cdylib, section 5.8).
+- How often programs translate code from a live stack frame, and how often parallel threads must be
+  stopped to protect code (section 5.7).
 - Bulk against element-by-element string instructions on real programs.
 - How often code is written without announcement in real programs, and what JITs that write next to
   running code cost.
 - The NaN fix-up's cost for x86 guests on ARM hosts.
-- x87 in software against native on programs that use `long double`.
+- x87 in software against native on programs that use `long double`, and how many transcendental cases
+  the reference rounds differently from the correctly rounded result.
 - The passed-register lists for x86.
 - Engine compile time and memory for x86 output, which is expected to differ from ARM64's because x86
   instructions do more each.
 
 ## 13. Where the evidence is
 
-Experiments and downloads of milestone X0 are in `pyro-parked/wcontainers-scratch/x86`: `iced-size` (the
-size builds), `dis` (an iced-based disassembler used to check encodings), `reference-proof` (`hello.c`,
-`stepper.c`, `cases.sh`, `cases2.sh` and their outputs), `sources` (the relaxed SIMD overview and
-sandsifter's `injector.c`). The x86 machine holds copies in `~/wcontainers-x86/proof`.
+Experiments and downloads of milestone X0 are in `pyro-parked/wcontainers-scratch/x86`: `iced-size` (the size
+builds), `dis` (an iced-based disassembler used to check encodings), `reference-proof` (`hello.c`,
+`stepper.c`, `cases.sh`, `cases2.sh` and their outputs), `sources` (the relaxed SIMD overview and sandsifter's
+`injector.c`), `x87-crate` and `x87-crate-base` (astro-float's size in a wasm32 cdylib), `apfloat-pc`
+(precision control by rounding to odd with rustc_apfloat). The x86 machine holds copies in
+`~/wcontainers-x86/proof`.
 
 ## Appendix A. Every kind b and c place of the seam map, and where it is covered
 
@@ -1162,7 +1377,8 @@ Translator area (seam map entry, then section):
 - T11 one lookup slot per 4 bytes: 4 decision 1; 3.4 The lookup array; 5.11.
 - T12 misaligned code faults: 3.4 Instruction unit.
 - T13 flags wanted in bit 0: 3.2 `FLAGS_WANTED`; 3.4 Flags wanted; 4 decision 2.
-- T14 `BOTTOM_RETURN` by Top Byte Ignore: 3.2 `UNREACHABLE_RETURN`; 3.4.
+- T14 `BOTTOM_RETURN` by Top Byte Ignore: 3.2 `UNREACHABLE_RETURN` and its rule; 3.4 (each CPU's way of
+  making the marker unreachable, and x86's canonical check before the compare); 5.3.
 - T15 untag: 3.2 `data_address`, `branch_target`; 3.4.
 - T16 passed registers x0, x1, sp: 3.2 `PASSED_IN`, `PASSED_OUT`; 3.4 Passed registers; 4 decision 5.
 - T17 calls of 4 bytes that keep sp: 3.2 `RETURN_ADDRESS`; 3.3 call and ret; 5.3; 4 decision 2.
@@ -1222,7 +1438,7 @@ Tests area:
 - E24 making written code visible: 7.2 code-change policy (nothing on x86).
 - E25 placing the instruction: 7.3.
 - E26 blob start state: 3.2 `initial_block`; 7.2.
-- E27 the float hook body: 7.2 exact float hook; 5.8.
+- E27 the float hook body: 3.2 `run_hook`, `HookBody`, `HookDone`; 3.4 Hooks; 5.8.
 - E28 trap kinds in the runner: 3.2 `TrapKind` growth; 7.2 mapping to statuses.
 - E29 code changed by `ic ivau`: 5.7; 7.2 code-change policy; 4 decision 17.
 - E30 the runner's 4-byte slots: 3.4 The lookup array.
@@ -1259,3 +1475,70 @@ Tests area:
 - E58 browser cases of one fixed word: 7.3 and 7.4 (length-prefixed cases).
 - E59 native times on the Mac: 7.5; 4 decision 20.
 - E60 toolchain targets and the test crate's ARM64 dependency: 7.2, 7.3, X1 and X2.
+
+## Appendix B. Every item of the seam map's interface surface, and where it is covered
+
+Translator (24 items, in the seam map's order):
+1. Instruction type, decode with length, alignment and maximum length: 3.2 `Instruction`, `decode`, `ALIGN`,
+   `MAX_LENGTH`; 3.4 Instruction unit.
+2. `emit` against a generic emitter: 3.2 `emit`; 3.3.
+3. The emitter's parameter types: 3.2 `Reg`, `Vector`, `Cond`, `Flag`, `Flags`, `Control`, `Hook`, `Host`,
+   `Offer`, `Trap`; 3.3.
+4. The register set: 3.2 `BITS`, `Bit`, `reg_bit`, `vector_bit`, `bit_reg`, `SP_BIT`, `NARROW_WRITE`; 3.4
+   Registers.
+5. Effects found by recording the meaning, extended (memory, hooks, controls): 3.3 (the recorder is an
+   emitter); 3.4 Flags ("plain computation" from the recorded effects).
+6. Control flow: 3.2 `flow`, `Flow`, `FlowKind`, `Through`, the length from `decode`; 3.4 Control flow.
+7. Addresses built into registers: 3.2 `built_address`; 3.4.
+8. Switch recognition: 3.2 `jump_table`; 3.4 Switches (indexed by target address, so no case-number
+   register is needed).
+9. Memory accesses: 3.2 `accesses`, `MemoryAccess`, `Base`; 3.4 Memory accesses; 5.4.
+10. Stack moves: 3.2 `stack_move`, `StackMove`; 3.4 Stack moves and frames.
+11. Stack facts: 3.2 `SP_ALIGNMENT_CHECKED`, `RED_ZONE`, `RETURN_ADDRESS`; 5.3.
+12. Untagging and the address no return reaches: 3.2 `data_address`, `branch_target`, `UNREACHABLE_RETURN`
+    and its rule; 3.4 T14; 5.3.
+13. The flags-wanted marker: 3.2 `FLAGS_WANTED` (0 without flags); 3.4 Flags wanted.
+14. Passed registers: 3.2 `PASSED_IN`, `PASSED_OUT`; 3.4 Passed registers.
+15. System call registers and saved pc: 3.2 `SYSCALL`; 3.4 Calls and system calls.
+16. Flags, shapes and conditions: 3.2 `FLAGS`, `Flags`, `Shape`, `SHAPES`, `shape`, `shape_locals`,
+    `with_locals`, `sets`, `flag_value`, `condition_direct`, `condition_from_flags`; 3.4 Flags; 5.1.
+17. Controls and the block: 3.2 `Block`, `PC_OFFSET`, `FLAGS_WORD_OFFSET`, `STOP_FLAG_OFFSET`,
+    `BLOCK_SIZE`, `PRIVATE_BYTES`, `Control`, `control_ty`, `control_offset`, `initial_block`; 3.4 Controls
+    and the block; 5.9.
+18. Floating point slow path: 3.2 `float_slow`, `FLOAT_CONTROLS`; 3.4; 5.8.
+19. Hooks: 3.2 `Hook`, `HOOKS`, `HookType`, `hook_index`; 3.4 Hooks.
+20. Traps: 3.2 `Trap`, `trap_kind`, `trap_detail`, `TrapKind`, `TrapDetail`; 3.4 Traps; 5.2.
+21. Host probe: 3.2 `Host`, `probe_module`, `host_from_probe`, `host_key`; 3.4 Host probe.
+22. Loop-proof recognisers: 3.2 `induction`, `counting_exit`, `narrow_load`, `unsigned_bound`,
+    `index_extension`; 3.4 Loop proofs.
+23. Guest identity: 3.2 `ID`; 3.4 Identity.
+24. The software floating point runner on the host side: 3.2 `run_hook`, `HookBody::Cpu`, `HookDone`; 3.4
+    Hooks; 5.8.
+
+Tests (25 items, in the seam map's order):
+1. Names and target identifiers: 7.2 names.
+2. Instruction unit and real boundaries: `G::ALIGN`, `G::MAX_LENGTH`; section 4 decision 13.
+3. The forms list: 7.2; 7.4 layer 1.
+4. Offered features and the check against what the guest is told: 7.2; 5.10.
+5. Random encodings in no form: 7.2; 7.4 (byte strings iced calls `INVALID`).
+6. Operand shaping: 7.2.
+7. Exclusions with reasons: 7.2; 7.4 (jump to itself, designed answers, `int 0x80`).
+8. Designed answers: 7.2; 5.10.
+9. Comparable machine state: 7.2; section 4 decision 15.
+10. Value strategies: 7.2.
+11. Masks of bits allowed to differ: 7.2; section 4 decision 16.
+12. Signal and trap mapping: 7.2; 7.3 One instruction; section 6.
+13. The reference runner's per-CPU part: 7.3; section 2.
+14. Initial state and auxiliary vector entries: 3.2 `initial_block`; 7.2.
+15. The stand-in's system call numbers: 7.2.
+16. Host facts: 3.2 Host probe (shipped, not test-side).
+17. The exact float hook body and its reason: 3.2 `run_hook` and `HookDone::reason` (shipped, so the
+    runners and later the kernel share it).
+18. Code-change policy: 3.2 `CODE_CHANGES`; 5.7; section 4 decision 17.
+19. Trap kinds beyond ARM64's: 3.2 `TrapKind`; 5.2 Breakpoints (the `si_code` in the detail).
+20. A disassembler for messages: 7.2.
+21. Per-CPU program support: 7.2.
+22. The layer 2 generator: 7.4 layer 2; section 4 decision 18.
+23. Real-binaries support: 7.2.
+24. The browser contract: section 4 decision 22; 3.4 Hooks (`cpu_hook`).
+25. Reference location and transport: 7.3; section 4 decision 12.
