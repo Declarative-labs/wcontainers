@@ -3,7 +3,8 @@
 //!
 //! Natively: `scenes <dx12|vulkan|metal> <out-dir> [none|blend-factor|depth-function]` writes
 //! `webgpu-<api>-<picture>.png`. Built for WebAssembly, web/scenes.html calls `draw_scene` and
-//! `adapter` and saves what they return, and web/suite.html runs the shared suite (suite.rs).
+//! `adapter` and saves what they return, times first draws with and without `prepare`
+//! (`prepare_timings`, prepare.rs), and web/suite.html runs the shared suite (suite.rs).
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
 #[allow(dead_code)]
@@ -53,6 +54,9 @@ fn main() {}
 #[cfg(target_arch = "wasm32")]
 mod viewports;
 
+#[cfg(target_arch = "wasm32")]
+mod prepare;
+
 // JSPI exports and imports, which wasm-bindgen still marks experimental.
 #[cfg(target_arch = "wasm32")]
 #[allow(deprecated)]
@@ -95,6 +99,31 @@ mod web {
             return Err(js(format!("device lost: {:?}", b.status())));
         }
         draw::png(&rgba).map_err(js)
+    }
+
+    /// Milliseconds by the page's `performance.now()`.
+    fn now() -> f64 {
+        let get = |of: &JsValue, name: &str| js_sys::Reflect::get(of, &JsValue::from_str(name));
+        let performance = get(&js_sys::global(), "performance").expect("a performance clock");
+        let call: js_sys::Function = get(&performance, "now").expect("performance.now").into();
+        call.call0(&performance)
+            .ok()
+            .and_then(|t| t.as_f64())
+            .expect("a time")
+    }
+
+    /// `programs` new programs drawn first unprepared and then, others, after `prepare`, on the
+    /// browser's WebGPU: one line per half, as tests/prepare.rs prints natively.
+    #[wasm_bindgen(jspi)]
+    pub fn prepare_timings(programs: u32) -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        let unprepared = super::prepare::first_draws(&mut b, 0, programs, false, now);
+        let prepared = super::prepare::first_draws(&mut b, 1000, programs, true, now);
+        Ok(format!(
+            "{}\n{}",
+            unprepared.line(false),
+            prepared.line(true)
+        ))
     }
 
     /// Draws the eight-viewport scene (`rounded`: its viewports moved to whole pixels) on the

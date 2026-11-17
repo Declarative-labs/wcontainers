@@ -561,7 +561,17 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
                 }
             })
             .collect();
-        assert_eq!(whole, want, "{format:?}: whole depth read back");
+        // Where `depth24plus` is stored as a float, the word is the float's nearest 24-bit step,
+        // which the program's float arithmetic may miss by one at a near tie.
+        let stored_as_float = matches!(b.depth24(), wcontainers_gpu_webgpu::Depth24::Float(_));
+        if unorm24 && stored_as_float {
+            let off: Vec<_> = (0..want.len())
+                .filter(|i| want[*i].abs_diff(whole[*i]) > 1)
+                .collect();
+            assert!(off.is_empty(), "{format:?}: whole depth read back, {off:?}");
+        } else {
+            assert_eq!(whole, want, "{format:?}: whole depth read back");
+        }
         if unorm24 {
             let off: Vec<_> = (0..words.len())
                 .filter(|i| (words[*i] & 0xff_ffff).abs_diff(whole[*i]) > 1)

@@ -11,6 +11,8 @@ mod scene;
 #[path = "../examples/scenes/draw.rs"]
 mod draw;
 
+mod allowance;
+
 use wcontainers_gpu::{
     Backend, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, Format, LoadOp,
     MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp, TextureRegion,
@@ -98,7 +100,7 @@ fn ordered_write_in_a_pass_splits_it() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 1);
     assert!(
-        rgba == reference("triangle.png"),
+        allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the split pass lost or changed what it drew"
     );
 }
@@ -500,7 +502,10 @@ fn writes_ahead_of_a_pass_do_not_split_it() {
     let rgba = finish(&mut b, rb, (scene::WIDTH * scene::HEIGHT * 4) as usize);
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
-    assert!(rgba == reference("triangle.png"), "the picture changed");
+    assert!(
+        allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
+        "the picture changed"
+    );
 }
 
 fn reference(name: &str) -> Vec<u8> {

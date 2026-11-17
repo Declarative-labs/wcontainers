@@ -4,7 +4,7 @@
 // <pkg-dir> is wasm-bindgen's output for the scenes example. For each twist (default none) writes
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
-// chrome-webgpu-viewports-rounded.png.
+// chrome-webgpu-viewports-rounded.png, and prints first-draw timings with and without prepare.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -60,6 +60,18 @@ try {
       console.log(`viewports (rounded ${rounded}) failed: ${e.message}`);
       failed = true;
     }
+  }
+  // First draws with and without prepare: the prepared half must build nothing while drawing.
+  try {
+    const lines = (await page.evaluate((n) => window.prepareTimings(n), 16)).split('\n');
+    for (const line of lines) console.log(`chrome prepare: ${line}`);
+    if (!lines[1]?.endsWith(' 0 misses, 0 pipelines built while drawing')) {
+      console.log('chrome prepare: the prepared draws built pipelines');
+      failed = true;
+    }
+  } catch (e) {
+    console.log(`prepare timings failed: ${e.message}`);
+    failed = true;
   }
 } finally {
   await browser.close();

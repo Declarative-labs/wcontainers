@@ -179,10 +179,15 @@ mod window {
     }
 }
 
+/// Elsewhere the test cannot read what a window shows: on macOS that takes the screen recording
+/// permission (ScreenCaptureKit), which an unattended test does not have, so present fails here.
 #[cfg(not(windows))]
 mod window {
     pub fn open() -> wgpu::SurfaceTargetUnsafe {
-        panic!("this host opens windows only on Windows");
+        panic!(
+            "known failure: this host reads what a window shows only on Windows (on macOS that \
+             needs the screen recording permission)"
+        );
     }
 
     pub fn shown() -> Vec<u8> {
