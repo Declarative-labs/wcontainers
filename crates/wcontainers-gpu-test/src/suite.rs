@@ -43,6 +43,8 @@ macro_rules! suite {
             values_are_interpolated_with_perspective,
             the_scissor_bounds_the_draw,
             a_scissor_past_the_target_is_clipped_to_it,
+            clear_rects_clear_each_rectangle_clipped_to_the_view,
+            copies_between_depth_stencil_textures_move_both_aspects,
             stencil_operations_and_tests,
             near_clipping_and_the_viewport_depth_range,
             linear_filtering_and_address_modes,

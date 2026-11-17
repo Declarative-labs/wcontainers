@@ -37,6 +37,33 @@ struct VOut {
 @vertex fn vs_loads(@location(0) v: vec2<f32>, @builtin(vertex_index) i: u32) -> VOut {
     return VOut(vec4<f32>(v, 0.5, 1.0), v + textureLoad(texels, vec2<i32>(0, 0), 0).xy, i);
 }
+@vertex fn vs_bare(@location(0) v: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(v, 0.5, 1.0);
+}
+struct Full {
+    @builtin(position) p: vec4<f32>, @location(0) a0: vec4<f32>, @location(1) a1: vec4<f32>,
+    @location(2) a2: vec4<f32>, @location(3) a3: vec4<f32>, @location(4) a4: vec4<f32>,
+    @location(5) a5: vec4<f32>, @location(6) a6: vec4<f32>, @location(7) a7: vec4<f32>,
+    @location(8) a8: vec4<f32>, @location(9) a9: vec4<f32>, @location(10) a10: vec4<f32>,
+    @location(11) a11: vec4<f32>, @location(12) a12: vec4<f32>, @location(13) a13: vec4<f32>,
+    @location(14) a14: vec4<f32>, @location(15) a15: vec4<f32>,
+}
+@vertex fn vs_full(@location(0) v: vec2<f32>) -> Full {
+    let x = vec4<f32>(v, 0.0, 1.0);
+    return Full(vec4<f32>(v, 0.5, 1.0), x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x);
+}
+struct Over {
+    @builtin(position) p: vec4<f32>, @location(0) a0: vec4<f32>, @location(1) a1: vec4<f32>,
+    @location(2) a2: vec4<f32>, @location(3) a3: vec4<f32>, @location(4) a4: vec4<f32>,
+    @location(5) a5: vec4<f32>, @location(6) a6: vec4<f32>, @location(7) a7: vec4<f32>,
+    @location(8) a8: vec4<f32>, @location(9) a9: vec4<f32>, @location(10) a10: vec4<f32>,
+    @location(11) a11: vec4<f32>, @location(12) a12: vec4<f32>, @location(13) a13: vec4<f32>,
+    @location(14) a14: vec4<f32>, @location(15) a15: vec4<f32>, @location(16) a16: vec4<f32>,
+}
+@vertex fn vs_over(@location(0) v: vec2<f32>) -> Over {
+    let x = vec4<f32>(v, 0.0, 1.0);
+    return Over(vec4<f32>(v, 0.5, 1.0), x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x);
+}
 @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 ";
 
@@ -836,6 +863,50 @@ fn captures_keep_to_their_rules() {
             s.capture(&[whole(&t, 144)], Topology::TriangleFan, false)
         },
     );
+    let vertex_only = |s: &mut Strip, entry: &str| {
+        let v = shader(&mut s.r, entry, ShaderStage::Vertex);
+        s.r.create_program(&Program::Render {
+            vertex: &v,
+            fragment: None,
+        })
+        .unwrap()
+    };
+    // Twelve vertices (two triangles, two instances) of 16 or 17 four-component outputs.
+    let wide = |s: &mut Strip, entry: &str| {
+        let t = target(s, 12 * 17 * 16);
+        let program = vertex_only(s, entry);
+        s.capture_from(
+            &[whole(&t, 12 * 17 * 16)],
+            Topology::TriangleStrip,
+            false,
+            Inputs {
+                program: Some(program),
+                ..Inputs::default()
+            },
+        )
+    };
+    refused("a capture of a program with no location outputs", &|s| {
+        let t = target(s, 144);
+        let program = vertex_only(s, "vs_bare");
+        s.capture_from(
+            &[whole(&t, 144)],
+            Topology::TriangleStrip,
+            false,
+            Inputs {
+                program: Some(program),
+                ..Inputs::default()
+            },
+        )
+    });
+    refused(
+        "a capture into one target of more components than capture_components",
+        &|s| wide(s, "vs_over"),
+    );
+    // 64 components, the recorder's capture_components, are taken.
+    let mut s = Strip::new();
+    assert_eq!(s.r.caps().limits.capture_components, 64);
+    assert_eq!(wide(&mut s, "vs_full"), Ok(()));
+    assert!(s.r.violations.is_empty(), "{:?}", s.r.violations);
 }
 
 #[test]
