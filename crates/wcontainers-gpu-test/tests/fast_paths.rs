@@ -370,6 +370,94 @@ fn generate_mips_is_a_pass_per_level_and_layer() {
     healthy(&mut r);
 }
 
+/// A 4 by 4 texture of `format` with one level below, its texels `texels` (row by row, `size`
+/// bytes each), mipped by the default; gives level 1's bytes and the calls the default made.
+fn mipped(r: &mut Recorder, format: Format, values: Format, texels: &[u8], size: u32) -> Vec<u8> {
+    let desc = TextureDesc {
+        dimension: TextureDimension::D2,
+        format,
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+        mip_levels: 2,
+        samples: 1,
+        usage: TextureUsage::all().difference(TextureUsage::STORAGE),
+        cube: false,
+        reinterpret: false,
+    };
+    let t = r.create_texture(&desc).unwrap();
+    let at = |mip| TextureRegion {
+        texture: &t,
+        mip,
+        layer: 0,
+        origin: Origin::default(),
+        stencil: false,
+    };
+    let extent = |n| Extent {
+        width: n,
+        height: n,
+        depth_or_layers: 1,
+    };
+    r.write_texture(&at(0), extent(4), texels, 4 * size, 4, WriteMode::Ordered);
+    r.generate_mips(&t, &desc, values, 1..2, 0..1).unwrap();
+    let mut out = vec![0; 4 * size as usize];
+    r.read_back_now(
+        &ReadSource::Texture {
+            region: at(1),
+            extent: extent(2),
+        },
+        &mut out,
+    )
+    .unwrap();
+    out
+}
+
+/// Each texel of a level is the average of the four below it: through the linear sampler, and on
+/// formats without filtering in the program, from texel centres (floats) or integer loads decoded
+/// as the values the texture holds (an integer twin holding normalised values).
+#[test]
+fn generate_mips_averages_the_four_texels_below_on_every_route() {
+    // Texel k of 16: red 16 k in an rgba8unorm texture, through the linear sampler.
+    let mut r = Recorder::new();
+    let texels: Vec<u8> = (0..16u8).flat_map(|k| [16 * k, 0, 0, 255]).collect();
+    let got = mipped(&mut r, Format::Rgba8Unorm, Format::Rgba8Unorm, &texels, 4);
+    let reds: Vec<u8> = got.chunks(4).map(|c| c[0]).collect();
+    assert_eq!(reds, [40, 72, 168, 200]);
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    healthy(&mut r);
+
+    // r32float holding k, on a back end that does not filter it.
+    let mut r =
+        Recorder::with_caps(|c| c.formats.uses[Format::R32Float.index()].remove(FormatUse::FILTER));
+    let texels: Vec<u8> = (0..16).flat_map(|k| (k as f32).to_le_bytes()).collect();
+    let got = mipped(&mut r, Format::R32Float, Format::R32Float, &texels, 4);
+    let values: Vec<f32> = got
+        .chunks(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    assert_eq!(values, [2.5, 4.5, 10.5, 12.5]);
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 1);
+    healthy(&mut r);
+
+    // rgba16uint holding rgba16unorm values 4000 k in every channel.
+    let mut r = Recorder::new();
+    let texels: Vec<u8> = (0..16u16)
+        .flat_map(|k| (4000 * k).to_le_bytes().repeat(4))
+        .collect();
+    let got = mipped(&mut r, Format::Rgba16Uint, Format::Rgba16Unorm, &texels, 8);
+    let values: Vec<u16> = got
+        .chunks(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let expected: Vec<u16> = [10_000u16, 18_000, 42_000, 50_000]
+        .iter()
+        .flat_map(|&v| [v; 4])
+        .collect();
+    assert_eq!(values, expected);
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 1);
+    healthy(&mut r);
+}
+
 #[test]
 fn fans_become_lists_in_the_ring() {
     let mut r = Recorder::new();
@@ -452,6 +540,83 @@ fn fans_become_lists_in_the_ring() {
     // Both triangles keep the fan's winding, so the back-face culling keeps them: all covered.
     assert_eq!(read(&mut r, &t, 0, 0, 4), [255, 0, 0, 255].repeat(16));
     healthy(&mut r);
+}
+
+/// A line loop becomes a line list in the ring, closed back to its first vertex. The recording back
+/// end draws no lines, so the stream is shown and the draw itself refused.
+#[test]
+fn loops_become_line_lists_in_the_ring() {
+    let mut r = Recorder::new();
+    let k = blocks(&mut r);
+    let (t, _) = texture(&mut r, 4, 1, 1);
+    let v = view(&mut r, &t);
+    let vb = buffer(&mut r, 32, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    let viewport = [Viewport {
+        x: 0f32.to_bits(),
+        y: 0f32.to_bits(),
+        width: 4f32.to_bits(),
+        height: 4f32.to_bits(),
+        min_depth: 0f32.to_bits(),
+        max_depth: 1f32.to_bits(),
+    }];
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let call = DrawCall {
+        program: &k.program,
+        blend: &k.blend,
+        depth_stencil: &k.depth,
+        raster: &k.raster,
+        vertex_layout: &k.layout,
+        bindings: [None; MAX_BINDING_SETS],
+        vertex_buffers: &streams,
+        index: None,
+        topology: Topology::LineLoop,
+        restart: false,
+        viewports: &viewport,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: 4,
+            first_instance: 0,
+            instances: 1,
+        },
+    };
+    r.begin_pass(&pass_on(&v, LoadOp::Clear([0; 4])));
+    let from = r.calls.len();
+    r.draw_fan_or_loop(
+        &call,
+        FanOrLoop::LineLoop,
+        IndexSource::Sequential { first: 2, count: 4 },
+        ProvokingVertex::First,
+        0,
+        1,
+    )
+    .unwrap();
+    assert_eq!(names(&r, from), ["create_buffer", "write_buffer", "draw"]);
+    let Some(Call::WriteBuffer(ring, at, data, _)) = r.calls.get(r.calls.len() - 2).cloned() else {
+        unreachable!()
+    };
+    let Some(Call::Draw(d)) = r.calls.last() else {
+        unreachable!()
+    };
+    assert_eq!(d.topology, Topology::LineList);
+    let (buffer, offset, format) = d.index.unwrap();
+    assert_eq!((buffer, offset, format), (ring, at, IndexFormat::U32));
+    let indices: Vec<u32> = data
+        .chunks(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    assert_eq!(indices, [2, 3, 3, 4, 4, 5, 5, 2]);
+    assert_eq!(r.slow_paths().count(SlowPath::LoopConverted), 1);
+    assert_eq!(
+        r.violations,
+        ["LineList is not drawn by the recording back end yet"]
+    );
 }
 
 #[test]
