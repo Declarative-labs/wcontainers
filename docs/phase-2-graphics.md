@@ -295,7 +295,8 @@ Fast paths, all in the crate with their defaults:
   edges where the hardware's seamless filter reads the next face; this differs only for cubes of odd
   size, and Direct3D does not define GenerateMips' filter. WebGL 2 overrides it with `generateMipmap`
   where the format is colour-renderable and filterable and `values` is the texture's own format, and
-  keeps the default otherwise.
+  keeps the default otherwise, calling `generate_mips_by_draws`, the default's body as a public
+  function.
 - `write_buffer_ring(RingKind, &[&[u8]], align, &mut offsets) -> Buffer`: a place for the data one draw
   needs (Direct3D 9 user pointers, OpenGL client arrays, converted fans, widened 8-bit indices, spilled
   immediates, helper constants), written in one call and valid for commands recorded before the next
