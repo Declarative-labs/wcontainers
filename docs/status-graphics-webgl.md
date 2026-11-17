@@ -5,11 +5,11 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. After run 7, G3 (section 12's pass bar) is met in Chrome and natively on ANGLE with
+G3a is done. After run 8, G3 (section 12's pass bar) is met in Chrome and natively on ANGLE with
 every extension. What remains cannot be fixed inside this crate:
-- Chrome's WebGL 2 passes the shared suite (24 tests) and the back end's 19 checks, 43 of 43, with
+- Chrome's WebGL 2 passes the shared suite (24 tests) and the back end's 20 checks, 44 of 44, with
   every extension and again without WEBGL_stencil_texturing and the four BC extensions.
-- Natively on ANGLE also 43 of 43 with every extension (since run 6 `present_shows_the_frame`
+- Natively on ANGLE also 44 of 44 with every extension (since run 6 `present_shows_the_frame`
   presents through an EGL window surface on a real window instead of a pbuffer).
 - Against the WebGPU back end, 5 of 6 comparisons pass. The one that fails is `r32float` filtered
   in the program here against WebGPU's hardware filter (one float step off in 5 of 16 values, from
