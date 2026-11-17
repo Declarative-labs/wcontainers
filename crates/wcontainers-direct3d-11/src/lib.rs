@@ -9,6 +9,7 @@ mod error;
 pub mod format;
 pub mod object;
 mod present;
+pub mod query;
 pub mod record;
 pub mod shader;
 

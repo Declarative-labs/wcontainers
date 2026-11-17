@@ -472,6 +472,49 @@ impl Device_Impl {
         })
     }
 
+    pub(super) fn create_query(
+        &self,
+        desc: *const D3D11_QUERY_DESC,
+        out: OutRef<ID3D11Query>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let front = self
+            .front
+            .borrow_mut()
+            .create_query(d.Query.0 as u32, d.MiscFlags)
+            .map_err(hresult)?;
+        // Predicates are queries too; `QueryInterface` gives them as `ID3D11Predicate`.
+        if matches!(
+            d.Query,
+            D3D11_QUERY_OCCLUSION_PREDICATE | D3D11_QUERY_SO_OVERFLOW_PREDICATE
+        ) {
+            let p: ID3D11Predicate = Predicate::new(front, self.me()).into();
+            return give(out, p.cast()?);
+        }
+        give(out, Query::new(front, self.me()).into())
+    }
+
+    pub(super) fn create_predicate(
+        &self,
+        desc: *const D3D11_QUERY_DESC,
+        out: OutRef<ID3D11Predicate>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let predicate = d.Query == D3D11_QUERY_OCCLUSION_PREDICATE
+            || (D3D11_QUERY_SO_OVERFLOW_PREDICATE.0..=D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3.0)
+                .contains(&d.Query.0)
+                && (d.Query.0 - D3D11_QUERY_SO_OVERFLOW_PREDICATE.0) % 2 == 0;
+        if !predicate {
+            return Err(E_INVALIDARG.into());
+        }
+        let front = self
+            .front
+            .borrow_mut()
+            .create_query(d.Query.0 as u32, d.MiscFlags)
+            .map_err(hresult)?;
+        give(out, Predicate::new(front, self.me()).into())
+    }
+
     pub(super) fn check_format_support(&self, format: DXGI_FORMAT) -> Result<u32> {
         match self.front.borrow().format_support(format.0 as u32) {
             // Direct3D's answer for a format the device does not support at all.

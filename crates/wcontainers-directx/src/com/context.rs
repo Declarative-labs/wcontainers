@@ -543,6 +543,50 @@ impl Context {
         }
     }
 
+    pub(super) fn begin(&self, a: Ref<ID3D11Asynchronous>) {
+        if let Some(q) = query_of(a.as_ref()) {
+            self.front.borrow_mut().begin_query(&q);
+        }
+    }
+
+    pub(super) fn end(&self, a: Ref<ID3D11Asynchronous>) {
+        if let Some(q) = query_of(a.as_ref()) {
+            self.front.borrow_mut().end_query(&q);
+        }
+    }
+
+    /// `GetData`: `S_FALSE` until the answer is there; a size other than the query's (or zero) is
+    /// invalid.
+    pub(super) fn get_data(
+        &self,
+        a: Ref<ID3D11Asynchronous>,
+        data: *mut c_void,
+        size: u32,
+        flags: u32,
+    ) -> Result<()> {
+        let q = query_of(a.as_ref()).ok_or(E_INVALIDARG)?;
+        let want = wcontainers_direct3d_11::query::data_size(q.kind).unwrap_or(0);
+        if (size != 0 && size != want) || (size != 0 && data.is_null()) {
+            return Err(E_INVALIDARG.into());
+        }
+        let flush = flags & D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32 == 0;
+        let r = self.front.borrow_mut().query_data(&q, flush);
+        match r.map_err(hresult)? {
+            None => Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::S_FALSE,
+            )),
+            Some(v) => {
+                if size != 0 {
+                    let bytes = v.to_le_bytes();
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast(), want as usize)
+                    };
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub(super) fn clear_depth_stencil_view(
         &self,
         view: Ref<ID3D11DepthStencilView>,

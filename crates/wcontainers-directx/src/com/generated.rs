@@ -227,7 +227,7 @@ impl ID3D11Device_Impl for Device_Impl {
         ppquery: windows::core::OutRef<ID3D11Query>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateQuery"))
+        self.create_query(pquerydesc, ppquery)
     }
     fn CreatePredicate(
         &self,
@@ -235,7 +235,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pppredicate: windows::core::OutRef<ID3D11Predicate>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreatePredicate"))
+        self.create_predicate(ppredicatedesc, pppredicate)
     }
     fn CreateCounter(
         &self,
@@ -611,11 +611,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
     }
     fn Begin(&self, pasync: windows::core::Ref<ID3D11Asynchronous>) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::Begin")
+        self.begin(pasync)
     }
     fn End(&self, pasync: windows::core::Ref<ID3D11Asynchronous>) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::End")
+        self.end(pasync)
     }
     fn GetData(
         &self,
@@ -625,7 +625,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         getdataflags: u32,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11DeviceContext::GetData"))
+        self.get_data(pasync, pdata, datasize, getdataflags)
     }
     fn SetPredication(
         &self,
@@ -2345,6 +2345,102 @@ impl ID3D11DeviceChild_Impl for RasterizerState_Impl {
 impl ID3D11InputLayout_Impl for InputLayout_Impl {}
 
 impl ID3D11DeviceChild_Impl for InputLayout_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11Query_Impl for Query_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D11_QUERY_DESC) {
+        let _lock = lock();
+        self.get_desc(pdesc)
+    }
+}
+
+impl ID3D11Asynchronous_Impl for Query_Impl {
+    fn GetDataSize(&self) -> u32 {
+        let _lock = lock();
+        self.get_data_size()
+    }
+}
+
+impl ID3D11DeviceChild_Impl for Query_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11Predicate_Impl for Predicate_Impl {}
+
+impl ID3D11Query_Impl for Predicate_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D11_QUERY_DESC) {
+        let _lock = lock();
+        self.get_desc(pdesc)
+    }
+}
+
+impl ID3D11Asynchronous_Impl for Predicate_Impl {
+    fn GetDataSize(&self) -> u32 {
+        let _lock = lock();
+        self.get_data_size()
+    }
+}
+
+impl ID3D11DeviceChild_Impl for Predicate_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)

@@ -464,9 +464,15 @@ impl<B: Backend> Device<B> {
 
     pub(crate) fn end_pass(&mut self) {
         if self.ctx.pass_open {
+            self.close_stretch(false);
             self.backend.end_pass();
             self.ctx.pass_open = false;
+            self.queries.pass_set = None;
         }
+    }
+
+    pub(crate) fn ctx_pass_open(&self) -> bool {
+        self.ctx.pass_open
     }
 
     /// Ends the pass and runs every pending clear, before work outside a pass.
@@ -552,11 +558,18 @@ impl<B: Backend> Device<B> {
                     .then(|| ops(s)),
             }
         });
+        let occlusion = match self.pass_occlusion() {
+            Ok(set) => set,
+            Err(e) => {
+                self.lose(e);
+                None
+            }
+        };
         self.backend.begin_pass(&PassDesc {
             colors,
             depth: depth_attachment,
             empty: None,
-            occlusion: None,
+            occlusion: occlusion.as_ref().map(|s| &s.handle),
         });
         self.ctx.pass_open = true;
     }
@@ -977,6 +990,12 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         self.open_pass();
+        if !self.open_stretch() {
+            // The pass's occlusion set has no slot left: the draw opens the next pass on another.
+            self.end_pass();
+            self.open_pass();
+            self.open_stretch();
+        }
 
         let ctx = &self.ctx;
         // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots and 16 viewports).
@@ -1541,7 +1560,8 @@ impl<B: Backend> Device<B> {
     pub fn flush(&mut self) {
         self.settle();
         self.bury();
-        let _ = self.backend.submit();
+        let fence = self.backend.submit();
+        self.submitted(fence);
         self.poll_removed();
     }
 }

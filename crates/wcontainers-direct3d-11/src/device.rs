@@ -29,6 +29,7 @@ pub struct Device<B: Backend> {
     level: u32,
     pub(crate) defaults: Defaults<B>,
     pub(crate) ctx: ContextState<B>,
+    pub(crate) queries: crate::query::Queries<B>,
     /// Programs by (vertex shader, pixel shader) id.
     pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
@@ -153,6 +154,7 @@ impl<B: Backend> Device<B> {
             level,
             defaults,
             ctx: ContextState::new(),
+            queries: crate::query::Queries::new(),
             programs: HashMap::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
