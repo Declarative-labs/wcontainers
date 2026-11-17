@@ -766,7 +766,8 @@ updates only then.
 
 Surface formats: `FormatUse::PRESENT` names the formats `configure_surface` takes (WebGPU: `bgra8unorm`,
 `rgba8unorm`, `rgba16float`, the canvas formats; WebGL 2: `rgba8unorm`; every back end takes
-`rgba8unorm`). The DXGI layer configures the back buffer's own format where it has `PRESENT`, otherwise
+`rgba8unorm`; a back end whose window lacks a format it declares, as a Metal layer lacks
+`rgba8unorm`, draws the frame into the window's format at present, `PresentConverted`). The DXGI layer configures the back buffer's own format where it has `PRESENT`, otherwise
 `rgba16float` for back buffers of more than 8 bits per channel where present, otherwise `rgba8unorm`;
 the present copy converts. Colour space: SDR only. Colours are shown as sRGB and values beyond one are
 clipped, as on an SDR display. DXGI reports the output's colour space as
