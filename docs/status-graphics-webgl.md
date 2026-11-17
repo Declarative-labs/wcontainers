@@ -651,7 +651,10 @@ G3's pass bar (plan section 12), what is left, in about this order:
    base level 1 answers right). Try making the view's own GL texture state fresh (or note it as an
    ANGLE bug with a reduced case); then the integer twin's generate_mips against G2.
 4. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
-   `clearBuffer*` (plan 5.8).
+   `clearBuffer*` (plan 5.8). An override that falls back to the default for other formats needs the
+   default callable: Rust cannot call a trait's default from its override, so the default's body
+   must move into a public function of `wcontainers-gpu` first (an "interface:" commit, in the
+   interface's fast-path-with-a-default style).
 5. Run `a_fractional_viewport_in_the_program_equals_webgpu_native` once G2 declares
    `FRACTIONAL_VIEWPORT`.
 6. `gl_FragCoord.z` (WGSL's position z in fragments) read 0.75 for clip z 0.5 on ANGLE with
