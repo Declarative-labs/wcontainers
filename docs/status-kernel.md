@@ -1687,6 +1687,25 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K3, fifth run: layer 1 with every fix in, fresh seeds 3025, 3026 and 3027 passed 20000 sequences
+  each (304 to 307 s, four side by side with seed 3023; load 17 to 22). Along the way, 20000 each:
+  3013 and 3014 passed (before the sendfile fix); 3015, 3016, 3018, 3020, 3021 failed and were
+  fixed (above), then passed on rerun; 3017, 3019, 3022, 3024 passed; 3023 fails in a whole run
+  (Known issues). Seed 3012 passed 4000 (60.6 s, load 13.6) with the PI calls first generated.
+- K3, fifth run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`) at head 9bd0ea1: 124 passed, 1 failed, 5 ignored,
+  6 min 22 s, load 13.64 at the start and 17.08 at the end. The failure was the new futexpi guest's
+  print order (the reference ran the woken waiter before the unlocking thread printed); fixed in the
+  guest and passed 3 reruns. At head 96d35e3 (`RUST_TEST_THREADS=3`, beside layer 1 runs): 124
+  passed, 0 failed, 5 ignored, 6 min 28 s, load 17.26 at the start and 17.50 at the end.
+- K3, fifth run, libc-test at head a3b3e5e (with the varied speed of turns): the 43 thread, signal,
+  timer and IPC tests under seeds 300 to 309 (`SCHEDULE_SEEDS=10 SCHEDULE_SEED=300`), with and
+  without saves, and the rest under one seed, all matched the reference (3 tests passed); 501.8 s,
+  load 14.70 at the start, 26.65 at the end.
+- K3, fifth run: guest/cpusleep.c matched the reference under seeds 1 and 2 (harness, load 10 to
+  15); the check's timermix.c matched under seed 1 and differed under seed 2 in one line, "alarm
+  after 1us itimer" (a 1 µs timer read back by the next call: whether it has fired depends on the
+  time between two calls, 0.5 to 1.5 µs a turn on the repeatable clock; not in the suite).
 - K3, fourth run: the whole suite (`RUST_TEST_THREADS=4 cargo test --no-fail-fast -p
   wcontainers-kernel -p wcontainers-kernel-test`) with the deferred rerun in (head 39cd8a2): 119
   passed, 1 failed, 5 ignored, 5 min 47 s, load 12.08 at the start, 16.20 at the end; the failure was
@@ -2036,6 +2055,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K3, fifth run: layer 1 seed 3023 fails at 20000 in a whole run (twice, same place):
+  process_vm_readv(SELF, 0x7000526d, 16, NULL, 3) after semctl(SEMAPHORES, 1, SEM_STAT_ANY,
+  0x7000534d), whose struct the local vector's last two entries overlap; ours 0 (every length 0),
+  theirs EFAULT. A replay of the shrunk case alone (fresh containers, three times) gives 0 on both
+  sides. Suspected: SEM_STAT_ANY takes an index, layer 1 gives it the set's identifier, and the
+  reference's identifiers carry over from earlier sequences (`idr_alloc_cyclic` indexes and
+  sequence numbers), so its call reads another set or none. Not resolved; the next run should
+  check what the reference wrote there in the whole run (scratch: k3r5/case3023.txt and the replay
+  bin in check-k3/harness).
 - K3, fourth run: sigio's reference race came again once in a whole-suite run beside three layer 1
   runs (load 47): it counted the raw byte's signal with the next section's (0 and 2 where ours, and
   every rerun, has 1 and 1).
@@ -2073,7 +2101,12 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K3 is complete (fourth run). Next is K4 (see the plan). Left open, by choice, and not holding K3:
+K3 is complete (fifth run: the K3 check's findings fixed). Next is K4 (see the plan). Left open:
+- Layer 1 seed 3023 (Known issues).
+- The futex queues still allocate when a futex first gets waiters (Departures); the cost of a wait
+  was not measured.
+
+Left open by the fourth run, by choice, and not holding K3:
 1. Lock waiters share one channel (Known gaps): waking only the waiters blocked on the lock that
    changed (Linux's `fl_blocked_requests`) would keep woken-for-nothing waiters in the deadlock loops.
 2. sigio's reference race (Known issues), seen three times in whole-suite runs under load; the guest
