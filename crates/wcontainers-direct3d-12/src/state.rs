@@ -2,9 +2,10 @@
 //! made from it.
 
 use wcontainers_gpu::{
-    BlendComponent, BlendDesc, BlendFactor, BlendOp, Caps, ColorWrites, CompareFn, CullMode,
-    DepthStencilDesc, Features, FillMode, FrontFace, LogicOp, MAX_COLOR_TARGETS, ProvokingVertex,
-    RasterDesc, RenderTargetBlend, StencilFace, StencilOp, Topology, VertexFormat,
+    AddressMode, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor, Caps, ColorWrites,
+    CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace, LogicOp,
+    MAX_COLOR_TARGETS, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc, StencilFace,
+    StencilOp, Topology, VertexFormat,
 };
 
 use wcontainers_directx_graphics_infrastructure::dxgi_vertex_format;
@@ -354,4 +355,101 @@ pub fn topology(value: u32) -> Result<Topology, Error> {
         33..=64 => return Err(Error::NotImplemented("patch lists")),
         _ => return Err(Error::Invalid("unknown primitive topology")),
     })
+}
+
+/// The sampler of a sampler descriptor. Filters that reduce by minimum or maximum, level-of-detail
+/// bias, and border colours or mirrored-once addressing the back end lacks wait for the program
+/// variants that do them.
+pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc, Error> {
+    let filter = |bit: u32| {
+        if v.filter & (1 << bit) != 0 {
+            Filter::Linear
+        } else {
+            Filter::Nearest
+        }
+    };
+    let anisotropic = v.filter & 0x40 != 0;
+    let reduction = (v.filter >> 7) & 3;
+    if reduction > 1 {
+        return Err(Error::NotImplemented("minimum and maximum filters"));
+    }
+    if v.lod_bias != 0 && f32::from_bits(v.lod_bias) != 0.0 {
+        return Err(Error::NotImplemented("level-of-detail bias"));
+    }
+    let mut border_used = false;
+    let mut address = [AddressMode::Repeat; 3];
+    for (a, &mode) in address.iter_mut().zip(&v.address) {
+        *a = match mode {
+            1 => AddressMode::Repeat,
+            2 => AddressMode::Mirror,
+            3 => AddressMode::Clamp,
+            4 => {
+                border_used = true;
+                AddressMode::Border
+            }
+            5 if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            5 => return Err(Error::NotImplemented("mirrored-once addressing")),
+            _ => return Err(Error::Invalid("unknown address mode")),
+        };
+    }
+    let border = match v.border.map(f32::from_bits) {
+        [0.0, 0.0, 0.0, 0.0] => BorderColor::TransparentBlack,
+        [0.0, 0.0, 0.0, 1.0] => BorderColor::OpaqueBlack,
+        [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
+        _ => BorderColor::Custom(v.border),
+    };
+    if border_used && border != BorderColor::TransparentBlack && !caps.has(Features::BORDER_COLOR) {
+        return Err(Error::NotImplemented("border colours"));
+    }
+    Ok(SamplerDesc {
+        min: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(4)
+        },
+        mag: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(2)
+        },
+        mip: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0)
+        },
+        address,
+        lod_range: [v.min_lod, v.max_lod],
+        anisotropy: if anisotropic {
+            v.anisotropy.clamp(1, 16) as u16
+        } else {
+            1
+        },
+        compare: (reduction == 1).then(|| compare(v.compare)).transpose()?,
+        border: if border_used {
+            border
+        } else {
+            BorderColor::TransparentBlack
+        },
+    })
+}
+
+/// A root signature's static sampler as a sampler descriptor would hold it.
+pub fn static_sampler(s: &crate::root::StaticSampler) -> crate::list::SamplerView {
+    let w = s.0;
+    let one = 1.0f32.to_bits();
+    crate::list::SamplerView {
+        filter: w[0],
+        address: [w[1], w[2], w[3]],
+        lod_bias: w[4],
+        anisotropy: w[5],
+        compare: w[6],
+        // `D3D12_STATIC_BORDER_COLOR`: transparent black, opaque black, opaque white.
+        border: match w[7] {
+            1 => [0, 0, 0, one],
+            2 => [one; 4],
+            _ => [0; 4],
+        },
+        min_lod: w[8],
+        max_lod: w[9],
+    }
 }

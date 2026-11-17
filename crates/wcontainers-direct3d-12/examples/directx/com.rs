@@ -727,27 +727,27 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateConstantBufferView(
         &self,
-        _pdesc: *const D3D12_CONSTANT_BUFFER_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        pdesc: *const D3D12_CONSTANT_BUFFER_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateConstantBufferView");
+        Device::CreateConstantBufferView(self, pdesc, destdescriptor)
     }
     fn CreateShaderResourceView(
         &self,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _pdesc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        pdesc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateShaderResourceView");
+        Device::CreateShaderResourceView(self, presource, pdesc, destdescriptor)
     }
     fn CreateUnorderedAccessView(
         &self,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _pcounterresource: windows_core::Ref<ID3D12Resource>,
-        _pdesc: *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        pcounterresource: windows_core::Ref<ID3D12Resource>,
+        pdesc: *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateUnorderedAccessView");
+        Device::CreateUnorderedAccessView(self, presource, pcounterresource, pdesc, destdescriptor)
     }
     fn CreateRenderTargetView(
         &self,
@@ -767,31 +767,46 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateSampler(
         &self,
-        _pdesc: *const D3D12_SAMPLER_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        pdesc: *const D3D12_SAMPLER_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateSampler");
+        Device::CreateSampler(self, pdesc, destdescriptor)
     }
     fn CopyDescriptors(
         &self,
-        _numdestdescriptorranges: u32,
-        _pdestdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
-        _pdestdescriptorrangesizes: *const u32,
-        _numsrcdescriptorranges: u32,
-        _psrcdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
-        _psrcdescriptorrangesizes: *const u32,
-        _descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
+        numdestdescriptorranges: u32,
+        pdestdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        pdestdescriptorrangesizes: *const u32,
+        numsrcdescriptorranges: u32,
+        psrcdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        psrcdescriptorrangesizes: *const u32,
+        descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
     ) {
-        self.unsupported("CopyDescriptors");
+        Device::CopyDescriptors(
+            self,
+            numdestdescriptorranges,
+            pdestdescriptorrangestarts,
+            pdestdescriptorrangesizes,
+            numsrcdescriptorranges,
+            psrcdescriptorrangestarts,
+            psrcdescriptorrangesizes,
+            descriptorheapstype,
+        )
     }
     fn CopyDescriptorsSimple(
         &self,
-        _numdescriptors: u32,
-        _destdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _srcdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
+        numdescriptors: u32,
+        destdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        srcdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
     ) {
-        self.unsupported("CopyDescriptorsSimple");
+        Device::CopyDescriptorsSimple(
+            self,
+            numdescriptors,
+            destdescriptorrangestart,
+            srcdescriptorrangestart,
+            descriptorheapstype,
+        )
     }
     fn GetResourceAllocationInfo(
         &self,
@@ -1285,82 +1300,104 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn SetDescriptorHeaps(
         &self,
-        _numdescriptorheaps: u32,
-        _ppdescriptorheaps: *const Option<ID3D12DescriptorHeap>,
+        numdescriptorheaps: u32,
+        ppdescriptorheaps: *const Option<ID3D12DescriptorHeap>,
     ) {
-        self.unsupported("SetDescriptorHeaps");
+        List::SetDescriptorHeaps(self, numdescriptorheaps, ppdescriptorheaps)
     }
-    fn SetComputeRootSignature(&self, _prootsignature: windows_core::Ref<ID3D12RootSignature>) {
-        self.unsupported("SetComputeRootSignature");
+    fn SetComputeRootSignature(&self, prootsignature: windows_core::Ref<ID3D12RootSignature>) {
+        List::SetComputeRootSignature(self, prootsignature)
     }
     fn SetGraphicsRootSignature(&self, prootsignature: windows_core::Ref<ID3D12RootSignature>) {
         List::SetGraphicsRootSignature(self, prootsignature)
     }
     fn SetComputeRootDescriptorTable(
         &self,
-        _rootparameterindex: u32,
-        _basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        rootparameterindex: u32,
+        basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("SetComputeRootDescriptorTable");
+        List::SetComputeRootDescriptorTable(self, rootparameterindex, basedescriptor)
     }
     fn SetGraphicsRootDescriptorTable(
         &self,
-        _rootparameterindex: u32,
-        _basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        rootparameterindex: u32,
+        basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("SetGraphicsRootDescriptorTable");
+        List::SetGraphicsRootDescriptorTable(self, rootparameterindex, basedescriptor)
     }
     fn SetComputeRoot32BitConstant(
         &self,
-        _rootparameterindex: u32,
-        _srcdata: u32,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        srcdata: u32,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetComputeRoot32BitConstant");
+        List::SetComputeRoot32BitConstant(
+            self,
+            rootparameterindex,
+            srcdata,
+            destoffsetin32bitvalues,
+        )
     }
     fn SetGraphicsRoot32BitConstant(
         &self,
-        _rootparameterindex: u32,
-        _srcdata: u32,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        srcdata: u32,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetGraphicsRoot32BitConstant");
+        List::SetGraphicsRoot32BitConstant(
+            self,
+            rootparameterindex,
+            srcdata,
+            destoffsetin32bitvalues,
+        )
     }
     fn SetComputeRoot32BitConstants(
         &self,
-        _rootparameterindex: u32,
-        _num32bitvaluestoset: u32,
-        _psrcdata: *const core::ffi::c_void,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        num32bitvaluestoset: u32,
+        psrcdata: *const core::ffi::c_void,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetComputeRoot32BitConstants");
+        List::SetComputeRoot32BitConstants(
+            self,
+            rootparameterindex,
+            num32bitvaluestoset,
+            psrcdata,
+            destoffsetin32bitvalues,
+        )
     }
     fn SetGraphicsRoot32BitConstants(
         &self,
-        _rootparameterindex: u32,
-        _num32bitvaluestoset: u32,
-        _psrcdata: *const core::ffi::c_void,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        num32bitvaluestoset: u32,
+        psrcdata: *const core::ffi::c_void,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetGraphicsRoot32BitConstants");
+        List::SetGraphicsRoot32BitConstants(
+            self,
+            rootparameterindex,
+            num32bitvaluestoset,
+            psrcdata,
+            destoffsetin32bitvalues,
+        )
     }
-    fn SetComputeRootConstantBufferView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetComputeRootConstantBufferView");
+    fn SetComputeRootConstantBufferView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetComputeRootConstantBufferView(self, rootparameterindex, bufferlocation)
     }
-    fn SetGraphicsRootConstantBufferView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetGraphicsRootConstantBufferView");
+    fn SetGraphicsRootConstantBufferView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetGraphicsRootConstantBufferView(self, rootparameterindex, bufferlocation)
     }
-    fn SetComputeRootShaderResourceView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetComputeRootShaderResourceView");
+    fn SetComputeRootShaderResourceView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetComputeRootShaderResourceView(self, rootparameterindex, bufferlocation)
     }
-    fn SetGraphicsRootShaderResourceView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetGraphicsRootShaderResourceView");
+    fn SetGraphicsRootShaderResourceView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetGraphicsRootShaderResourceView(self, rootparameterindex, bufferlocation)
     }
-    fn SetComputeRootUnorderedAccessView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetComputeRootUnorderedAccessView");
+    fn SetComputeRootUnorderedAccessView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetComputeRootUnorderedAccessView(self, rootparameterindex, bufferlocation)
     }
-    fn SetGraphicsRootUnorderedAccessView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetGraphicsRootUnorderedAccessView");
+    fn SetGraphicsRootUnorderedAccessView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetGraphicsRootUnorderedAccessView(self, rootparameterindex, bufferlocation)
     }
     fn IASetIndexBuffer(&self, pview: *const D3D12_INDEX_BUFFER_VIEW) {
         List::IASetIndexBuffer(self, pview)
