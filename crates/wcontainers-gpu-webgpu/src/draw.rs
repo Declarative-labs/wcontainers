@@ -10,7 +10,8 @@ use std::rc::{Rc, Weak};
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
     DispatchGroups, DrawCall, DrawRange, FormatKind, FormatUse, GpuError, LoadOp, MAX_BINDING_SETS,
-    MAX_COLOR_TARGETS, PassDesc, RasterDesc, SlowPath, StepMode, TargetLayout, VertexLayoutDesc,
+    MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, SlowPath, StepMode, TargetLayout,
+    VertexLayoutDesc,
 };
 
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
@@ -570,7 +571,17 @@ impl WebGpu {
                     })
                 }
                 SetRes::View(v) => wgpu::BindingResource::TextureView(&v.0.read),
-                SetRes::Sampler(s) => wgpu::BindingResource::Sampler(&s.0.raw),
+                SetRes::Sampler(s) => {
+                    if s.0.filtering
+                        && le.ty
+                            == wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+                    {
+                        return Err(
+                            "a filtering sampler with a texture this device cannot filter; fronts filter in the program (FilterInShader)",
+                        );
+                    }
+                    wgpu::BindingResource::Sampler(&s.0.raw)
+                }
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: le.binding,
@@ -595,7 +606,7 @@ impl WebGpu {
     fn render_pipeline(
         &mut self,
         key: &PipelineKey,
-        call: &DrawCall<'_, Self>,
+        call: &PrepareDesc<'_, Self>,
     ) -> Result<(u64, wgpu::RenderPipeline, Rc<ProgramLayout>), &'static str> {
         let crate::ProgramObj::Render {
             vertex, fragment, ..
@@ -683,12 +694,16 @@ impl WebGpu {
             }
         }
         let fragment = match fragment {
-            Some(f) => Some((f, targets)),
+            Some(f) => Some((f.0.raw.clone(), f.0.entry.as_str(), targets)),
             None if targets.iter().all(Option::is_none) => None,
+            // WebGPU draws into colour targets only with a fragment stage: one writing nothing,
+            // so the targets keep what they hold, as with no fragment shader in other APIs.
             None => {
-                return Err(
-                    "a program without a fragment shader drawing into color targets is not built yet",
-                );
+                for t in targets.iter_mut().flatten() {
+                    t.write_mask = wgpu::ColorWrites::empty();
+                    t.blend = None;
+                }
+                Some((self.no_fragment(), "none", targets))
             }
         };
         let raster = &call.raster.0.desc;
@@ -757,12 +772,14 @@ impl WebGpu {
                     mask: u64::from(raster.sample_mask),
                     alpha_to_coverage_enabled: blend.alpha_to_coverage,
                 },
-                fragment: fragment.as_ref().map(|(f, targets)| wgpu::FragmentState {
-                    module: &f.0.raw,
-                    entry_point: Some(&f.0.entry),
-                    compilation_options: Default::default(),
-                    targets,
-                }),
+                fragment: fragment
+                    .as_ref()
+                    .map(|(module, entry, targets)| wgpu::FragmentState {
+                        module,
+                        entry_point: Some(entry),
+                        compilation_options: Default::default(),
+                        targets,
+                    }),
                 multiview_mask: None,
                 cache: None,
             });
@@ -783,6 +800,7 @@ impl WebGpu {
         };
         let (mut width, mut height) = (0, 0);
         let mut colors = Vec::new();
+        let mut by_draw = Vec::new();
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else {
                 colors.push(None);
@@ -812,11 +830,12 @@ impl WebGpu {
                             _ => true,
                         };
                         if self.float_clears && !bits.iter().all(|b| exact(*b)) {
-                            self.fail(
-                                "an integer clear past 2^24, which wgpu's Direct3D 12 rounds through a float, is not built yet",
-                            );
+                            // Loaded, then cleared by a draw once the pass is open.
+                            by_draw.push((i, bits));
+                            None
+                        } else {
+                            Some(color_value(bits, kind))
                         }
-                        Some(color_value(bits, kind))
                     }
                     LoadOp::DontCare => Some(wgpu::Color::TRANSPARENT),
                 },
@@ -892,13 +911,16 @@ impl WebGpu {
             }));
         }
         let occlusion_set = pass.occlusion.map(|q| q.0.raw.clone());
-        let rp = open(
+        let mut rp = open(
             self.encoder(),
             &colors,
             &depth,
             occlusion_set.as_ref(),
             false,
         );
+        for (i, bits) in by_draw {
+            self.clear_by_draw(&mut rp, &targets, i, bits);
+        }
         self.pass = Some(Pass {
             rp,
             occlusion: occlusion_set.is_some(),
@@ -939,6 +961,49 @@ impl WebGpu {
         );
         pass.last = Last::default();
         self.pass = Some(pass);
+    }
+
+    /// Builds the pipeline of a combination before its first draw, as that draw would (plan 4.4).
+    /// Strip topologies are built for draws without indices, whose strips need no index format.
+    pub(crate) fn prepare_impl(&mut self, desc: &PrepareDesc<'_, Self>) {
+        let Some(topology) = convert::topology(desc.topology) else {
+            return;
+        };
+        let targets = desc.targets;
+        let own_target =
+            targets.colors.iter().all(Option::is_none) && targets.depth_stencil.is_none();
+        let key = PipelineKey {
+            program: desc.program.0.id(),
+            blend: desc.blend.0.id,
+            depth_stencil: desc.depth_stencil.0.id,
+            raster: desc.raster.0.id,
+            vertex_layout: desc.vertex_layout.0.id,
+            targets: if own_target {
+                TargetLayout {
+                    colors: {
+                        let mut c = [None; MAX_COLOR_TARGETS];
+                        c[0] = Some(wcontainers_gpu::Format::R8Unorm);
+                        c
+                    },
+                    ..targets
+                }
+            } else {
+                targets
+            },
+            own_target,
+            topology,
+            strip_index: None,
+            layouts: desc.program.0.own_keys(desc.layouts),
+        };
+        if self.caches.pipelines.contains_key(&key) {
+            return;
+        }
+        match self.render_pipeline(&key, desc) {
+            Ok(p) => {
+                self.caches.pipelines.insert(key, p);
+            }
+            Err(why) => self.fail(why),
+        }
     }
 
     pub(crate) fn draw_impl(&mut self, call: &DrawCall<'_, Self>) {
@@ -998,7 +1063,19 @@ impl WebGpu {
                 Some(p) => p.clone(),
                 None => {
                     self.slow.hit(SlowPath::PipelineMiss);
-                    let p = self.render_pipeline(&key, call)?;
+                    let p = self.render_pipeline(
+                        &key,
+                        &PrepareDesc {
+                            program: call.program,
+                            blend: call.blend,
+                            depth_stencil: call.depth_stencil,
+                            raster: call.raster,
+                            vertex_layout: call.vertex_layout,
+                            targets: key.targets,
+                            topology: call.topology,
+                            layouts,
+                        },
+                    )?;
                     self.caches.pipelines.insert(key, p.clone());
                     p
                 }

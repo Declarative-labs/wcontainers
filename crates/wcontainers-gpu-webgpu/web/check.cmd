@@ -15,14 +15,16 @@ mkdir "%OUT%" || exit /b 2
 set FAILED=0
 wasm-bindgen --target web --out-dir "%OUT%\pkg" "%CARGO_TARGET_DIR%\wasm32-unknown-unknown\debug\examples\scenes.wasm" || exit /b 2
 for %%a in (dx12 vulkan) do "%BIN%\examples\scenes" %%a "%OUT%" || set FAILED=1
-for %%t in (blend-factor depth-function) do "%BIN%\examples\scenes" dx12 "%OUT%\%%t" %%t || set FAILED=1
+for %%t in (blend-factor depth-function) do (
+    for %%a in (dx12 vulkan) do "%BIN%\examples\scenes" %%a "%OUT%\%%t" %%t || set FAILED=1
+)
 node crates\wcontainers-gpu-webgpu\web\draw.mjs "%OUT%\pkg" "%OUT%" none blend-factor depth-function || set FAILED=1
 for %%s in (triangle quads instanced) do (
     for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do call :same %%r-%%s.png %%s.png
 )
 for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do call :same %%r-quads-d24s8.png quads.png
 for %%t in (blend-factor depth-function) do (
-    for %%r in (webgpu-dx12 chrome-webgpu) do (
+    for %%r in (webgpu-dx12 webgpu-vulkan chrome-webgpu) do (
         call :differs %%t\%%r-quads.png
         call :differs %%t\%%r-quads-d24s8.png
     )
@@ -36,5 +38,7 @@ exit /b
 
 :differs
 <nul set /p "=%1 must differ from Direct3D 11's quads: "
-"%BIN%\gt-compare" "%OUT%\%1" "%REF%\quads.png" 0 && set FAILED=1
+"%BIN%\gt-compare" "%OUT%\%1" "%REF%\quads.png" 0
+rem gt-compare exits 1 when the pictures differ, 2 when it could not compare them.
+if errorlevel 2 (set FAILED=1) else if not errorlevel 1 set FAILED=1
 exit /b

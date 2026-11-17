@@ -5,6 +5,67 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
+G2 (the whole milestone, section 12) is in progress: G2 run 1 is below as "Run 5". The pass bar
+items still open are listed under "Next (G2)". Earlier runs (G2a, the first slice, runs 1 to 4)
+follow it.
+
+Run 5 = G2 run 1, 2026-11-17 (fixes from the independent check of run 4, then pass bar items):
+- Merged origin/phase-2-graphics at 528db9c (a fast-forward). It brought three shared suite tests,
+  `multisampled_targets_cover_their_samples_and_resolve`,
+  `occlusion_queries_answer_whether_samples_passed` (which also covers `resolve_queries` at the
+  unaligned destination offset 8) and `programs_run_per_sample_and_read_samples`; all 24 suite tests
+  pass on Vulkan and on Direct3D 12.
+- `clears_fill_exactly` passes on Direct3D 12 now: an integer clear wgpu's Direct3D 12 would round
+  through a float is loaded and then drawn by a full-target draw writing the value from a uniform
+  (src/fill.rs, new slow path `IntegerClearByDraw`, an interface change below).
+- Copies into depth are built (`DepthWrittenByDraw`, src/fill.rs): from a buffer or a write, the
+  bytes go into an `r32float` texture (32-bit float depth) or an `r32uint` one (24-bit depth, drawn
+  as `(v & 0xffffff) / 16777215`) and a draw writes them as depth; from a texture of the typeless
+  group (`r32float`, `r32uint`, `r32sint` into 32-bit depth; any depth into the same family) by a
+  draw reading it, also into part of a texture, which WebGPU copies never do for depth. Depth
+  textures made with copy usages get render and binding usage for it. Stencil copies WebGPU refuses
+  (part of a stencil, or between formats) and multisampled depth copies mark the device lost with
+  the reason (`StencilCopiedByDraw` is not built); so do copies of 24-bit depth into a buffer.
+- web/check twists the quads on wgpu's Vulkan too, and a comparison gt-compare could not make
+  (exit 2) now fails the check instead of counting as "differs". It builds with `--locked`.
+- The lock file: the shared line's daa1630 brought it in step; every build and test command here
+  now passes `--locked`, so a stale lock file fails the build instead of being rewritten.
+- A program without a fragment shader draws into colour targets through an empty fragment stage
+  of the back end's own with every write mask off (was "not built yet").
+- The 24-bit depth probe of 4.11 runs natively when the back end is made (src/probe.rs,
+  `WebGpu::depth24()`): on the RTX 3080 wgpu's Direct3D 12 answers one 24-bit step
+  (`Unorm(0.10000009)`, `DEPTH24_UNORM` set) and wgpu's Vulkan two steps (`Other(0.10000015)`:
+  NVIDIA's Vulkan bias unit for D24 is 2^-23), so there the bit stays clear and fronts bias in the
+  program. In the browser it does not run yet (waiting needs JSPI, 4.8), so the bit is clear there.
+- The rig's depth-bias scene (constant, slope and clamped bias on `D24_UNORM_S8_UINT`) drawn
+  through the back end on `depth24plus-stencil8` equals Direct3D 11's `depth-bias.png` in every
+  pixel on Direct3D 12 (tests/depth.rs; on Vulkan the bit is clear, so the test says the front's
+  route applies and draws nothing).
+- Samplers: a linear sampler bound where the view cannot be filtered marks the device lost with
+  "fronts filter in the program (FilterInShader)" instead of wgpu's validation text.
+- Formats: blending is declared only where a format renders (wgpu marks `r8snorm` blendable on a
+  device that cannot render it); 16-bit normalised formats are asked for natively
+  (`TEXTURE_FORMAT_16BIT_NORM`).
+- Programs are validated when made with naga's validator for WebGPU's core language and the
+  device's features (`wgpu_naga_bridge::create_validator` with `DownlevelFlags::compliant()`), and
+  the back end keeps that validation's info, not the front's.
+- `prepare` builds the combination's pipeline into the cache, keyed as the draw will key it, so
+  the first draw builds nothing (counted). `BACKGROUND_PREPARE` is declared only in the browser.
+- New tests: tests/copies.rs (buffers at a 36-byte pitch and writes into all four depth formats;
+  `r32float`, `r32uint` and `depth32float` into part of 32-bit depth and 24-bit into part of
+  24-bit depth; seven typeless group copies of colour formats, through a buffer or native for sRGB
+  twins, each exact and with its slow path counted); tests/depth.rs (the probe, the bias picture);
+  tests/prepare.rs (prepared combinations build nothing at their first draw, timed);
+  tests/bindings.rs `programs_without_a_fragment_stage_write_only_depth`,
+  `helper_blocks_of_each_stage_read_their_own_values` (set 3, binding 0 read by the vertex stage
+  and 12 by the fragment stage), `layouts_follow_each_views_filterability` (an `rgba8unorm` view with
+  a point then a linear sampler is one pipeline; `r32float` and `depth32float` views at points on a
+  device made without `float32-filterable`, where a linear sampler is refused; `r32float` filtered
+  with it), `tier1_formats_are_declared_only_with_it` (on a device made without wgpu's 16-bit-norm
+  and adapter-specific format features: no 16-bit normalised format and none can be made, 8-bit
+  snorm without render or blend bits; with them, all six 16-bit formats sample and the unsigned
+  and 8-bit snorm ones render), `programs_are_validated_with_webgpus_core_language`.
+
 G2a (the first slice) is done, run 1, 2026-11-17:
 - The back end implements the whole `Backend` trait. Blocks are made once per value; a draw's
   combination (program, four blocks, pass target formats, topology and strip index format, the
@@ -197,32 +258,61 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 
 All from the checkout root on the Mac; nothing is built or run on the Mac but formatting and
 `cargo check -j 2`.
-- Tests on the RTX 3080 (tests/scenes.rs, writes.rs, bindings.rs and suite.rs, the shared suite;
-  they need a GPU, and the suite's present test a desktop, so `--desktop`; `WEBGPU_API=dx12|vulkan|
-  metal` picks wgpu's API, default the platform's, Vulkan on the desktop), both APIs in one job:
-  `tools/graphics-rig/gpu-job --desktop --build "cargo test -j 3 -p wcontainers-gpu-webgpu --no-run"
-  -- "set WEBGPU_API=vulkan&& cargo test -j 3 -p wcontainers-gpu-webgpu --no-fail-fast --
-  --test-threads 1 & set WEBGPU_API=dx12&& cargo test -j 3 -p wcontainers-gpu-webgpu --no-fail-fast
-  -- --test-threads 1"`. `--no-fail-fast` matters: without it the known Direct3D 12 failure in the
-  suite stops cargo before tests/writes.rs.
+- Tests on the RTX 3080 (tests/bindings.rs, copies.rs, depth.rs, prepare.rs, scenes.rs, writes.rs
+  and suite.rs, the shared suite; they need a GPU, and the suite's present test a desktop, so
+  `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
+  the desktop), both APIs in one job:
+  `tools/graphics-rig/gpu-job --desktop --build "cargo test --locked -j 3 -p wcontainers-gpu-webgpu
+  --no-run" -- "set WEBGPU_API=vulkan&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu
+  --no-fail-fast -- --test-threads 1 & set WEBGPU_API=dx12&& cargo test --locked -j 3 -p
+  wcontainers-gpu-webgpu --no-fail-fast -- --test-threads 1"`. Keep `--no-fail-fast`, so one
+  failing file does not hide the others, and `--locked`, so a stale lock file fails instead of
+  being rewritten (which makes the tree differ and gpu-job refuse it).
+- The prepare timings: `tools/graphics-rig/gpu-job --alone --build "cargo test --locked -j 3 -p
+  wcontainers-gpu-webgpu --no-run" -- "set WEBGPU_API=dx12&& cargo test --locked -j 3 -p
+  wcontainers-gpu-webgpu --test prepare -- --nocapture"` (`WEBGPU_PROGRAMS=<n>` programs per half,
+  default 16).
+- On this Mac's GPU, one job only (never a build loop): copy the committed tree to scratch with
+  `git archive HEAD | tar -x -C <scratch>/mac-src`, and there `nix develop <checkout> -c env
+  CARGO_TARGET_DIR=<scratch>/mac-target WEBGPU_API=metal cargo test --locked -j 2 -p
+  wcontainers-gpu-webgpu --no-fail-fast -- --test-threads 1`, detached with its own log.
 - The random byte test with other seeds and lengths: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<n>&&
   cargo test -j 3 -p wcontainers-gpu-webgpu --test writes byte_granular -- --nocapture` as the job's
   command (it prints the seed, the count, and how many no-overwrite writes it made).
-- Lint: `tools/graphics-rig/remote cargo clippy -j 3 -p wcontainers-gpu-webgpu --all-targets --
-  -D warnings`; and `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgpu --target
-  wasm32-unknown-unknown --examples` for the WebAssembly build.
+- Lint: `tools/graphics-rig/remote cargo clippy --locked -j 3 -p wcontainers-gpu-webgpu
+  --all-targets -- -D warnings`, and the same with `--target wasm32-unknown-unknown --examples` for
+  the WebAssembly build.
 - Both ways against Direct3D, one command: `crates/wcontainers-gpu-webgpu/web/check [dir]`. One
   GPU job builds the scenes example natively and for WebAssembly, gt-compare and the rig's page
   driver packages, then (web/check.cmd) runs wasm-bindgen, draws the three scenes and the quads on
   `depth24plus-stencil8` with wgpu on Direct3D 12 and on Vulkan, draws them in Chrome
   (web/draw.mjs, web/scenes.html), compares all twelve with references/d3d11 at tolerance 0, and
-  draws both quads pictures with each twist both ways and requires them to differ. Prints Chrome's WebGPU adapter and fails unless it is a GPU, not a
+  draws both quads pictures with each twist natively on both APIs and in Chrome and requires them
+  to differ. Prints Chrome's WebGPU adapter and fails unless it is a GPU, not a
   fallback. With a directory, the pictures are copied there. About 7 minutes cold, the job itself
   5 s.
 - One renderer by hand, on the desktop: `scenes <dx12|vulkan|metal> <dir> [none|blend-factor|
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 5 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs; Mac
+load average 24 to 51):
+- All tests on Vulkan: 54 of 54 (bindings 10 in 1.38 s, copies 3 in 0.43 s, depth 2 in 0.30 s,
+  scenes 4 in 0.51 s, suite 24 in 2.71 s, writes 11 in 1.26 s); on Direct3D 12: 54 of 54 (4.47 s,
+  1.15 s, 0.71 s, 1.46 s, 9.12 s, 4.29 s). prepare.rs ran on its own (below).
+- `web/check`: all twelve pictures equal Direct3D 11's at tolerance 0; every twist differs natively
+  on Direct3D 12 and on Vulkan and in Chrome (blend factor 16384 pixels by up to 92, depth function
+  25016 by up to 204, on `quads` and `quads-d24s8` alike); Chrome's WebGPU adapter "NVIDIA GeForce
+  RTX 3080", D3D12, discrete GPU, not a fallback.
+- The depth probe: Direct3D 12 `Unorm(0.10000009)`, Vulkan `Other(0.10000015)`.
+- `prepare` (job alone in the GPU queue, CPU load not sampled; 16 programs per half, each a
+  fragment loop of 24 rounds, distinct per program): first draws without prepare, Vulkan median
+  6.52 ms, longest 13.6 ms, 115 ms for 16; Direct3D 12 median 26.9 ms, longest 39.3 ms, 460 ms for
+  16. After prepare (Vulkan 107 ms, Direct3D 12 410 ms for the 16 prepares): every first draw
+  median 0.8 to 1 µs, longest 4.3 µs, no miss and no pipeline built while drawing. Not measured in
+  Chrome yet.
+- Clippy with warnings denied passes, natively and for WebAssembly.
 
 Run 4 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load 4 % sampled right after; Mac load average 27 to 50):
@@ -286,21 +376,20 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Not carried out yet (each marks the device lost with its reason, or is declared absent)
 
-- Integer colour clears past 2^24 under wgpu's native Direct3D 12 (above).
+- Stencil copies WebGPU refuses (`StencilCopiedByDraw`), multisampled depth copies, and copies of
+  24-bit depth into a buffer (`DepthReadByDraw`).
 - Vertex formats WebGPU lacks (`VertexFormatConverted`): three-component 8 and 16-bit formats,
   `Float16x3`, `Uint10_10_10_2`, `Float11_11_10`. `create_vertex_layout` marks the device lost.
   The plan's route: widen the streams that use them into a shadow buffer by a compute pass at draw
   time, cached until the buffer is written.
 - A surface wgpu reports lost (the window's surface must be made again from the instance, which
   the back end does not hold).
-- Copies into depth formats (`DepthWrittenByDraw`).
 - Immediates: `immediate_bytes` is 0, so fronts spill them.
-- A program without a fragment shader drawing into colour targets.
 - An ordered write that splits a pass with a running occlusion query.
 - Formats WebGPU lacks are declared without bits (no `FormatConverted`, `BlockDecoded`,
   packed-pair conversion yet), though 5.7 has the back end convert them.
-- Declared absent until built or measured: `TIMESTAMPS`, `BACKGROUND_PREPARE` (`prepare` keeps the
-  default), `FRACTIONAL_VIEWPORT` (needs the half-pixel test), `DEPTH24_UNORM` (needs the probe).
+- Declared absent until built or measured: `TIMESTAMPS`, `FRACTIONAL_VIEWPORT` (needs the
+  half-pixel test against Direct3D), `DEPTH24_UNORM` in the browser (the probe needs waiting).
 - Waiting in the browser (JSPI, 4.8).
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
@@ -309,14 +398,43 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2)
 
-In order: run tests/bindings.rs, tests/writes.rs and the shared suite in Chrome too (the page
-draws only the scenes); `prepare` with createRenderPipelineAsync and its measurement; the rest of the
-list above; then the remaining G2 pass bar of section 12 (layouts with depth and r32float views,
-BC both ways, typeless copies, tier1 formats, generate_mips, fractional viewport, copy within one
-buffer test, unaligned resolve_queries, the 24-bit depth probe, a fitted multisampled pass, helper
-blocks, naga validation with WebGPU's core capabilities).
+The pass bar items still open, in the order to take them:
+- The shared suite in Chrome (the page draws only the scenes; the WebGL track's
+  crates/wcontainers-gpu-webgl/browser/suite.html and suite.mjs show a way: the suite built for
+  WebAssembly needs the proptest/getrandom question of run 4 solved).
+- References from real Direct3D for the bar items the rig has no picture of: `generate_mips` of
+  `r32float` (on a device made without `float32-filterable` and adapter-specific features, as in
+  `layouts_follow_each_views_filterability`) and of `rgba16uint` holding `rgba16unorm` values; a
+  viewport at a half-pixel offset (`FRACTIONAL_VIEWPORT`); a multisampled `Rgba8Unorm` texture made
+  with `reinterpret` resolved in `Rgba8UnormSrgb`. Either the rig track adds these scenes, or a
+  Windows-only test here draws them with real Direct3D 11 through the `windows` crate (test-only).
+- BC textures decoded with `bcdec_rs` where the device has no `texture-compression-bc`
+  (`BlockDecoded`, host blocks for read backs and copies, `HostCopyReadBack`), tested on a device
+  made without it against the native route; both read back as the blocks written.
+- A pass fitted by `AttachmentsFitted` with multisampled attachments (the shared pass tracker,
+  drawn here).
+- `prepare` in Chrome (time of first draws on the page).
+- The rest of "Not carried out yet".
+- This Mac's GPU: one Metal run was started at the end of run 5 (see Measurements); repeat it only
+  as a single job.
 
 ## Departures from the plan
+
+- `prepare` calls `createRenderPipeline`, not `createRenderPipelineAsync`, and keeps no cap on
+  compiles in flight: wgpu 30 has no asynchronous pipeline creation. In Chrome the pipeline still
+  compiles in the GPU process while the page goes on, and a draw waits only if it is not ready
+  (expected, not measured in Chrome yet). Natively the compile happens at the `prepare` call, so
+  `BACKGROUND_PREPARE` is declared only in the browser.
+- The 24-bit depth probe accepts a third answer instead of calling it a back end bug: wgpu's
+  Vulkan on the RTX 3080 moves depth by two 24-bit steps per unit of bias. The bit stays clear and
+  fronts take `DepthBiasInShader`, which is right for any storage.
+- `texture-formats-tier1` cannot be asked for through wgpu 30 (it has no such feature), so in the
+  browser the tier 1 formats are declared without their tier 1 bits even where Chrome has them
+  (fronts take `NormAsInteger`). Natively the same formats come from wgpu's 16-bit-norm and
+  adapter-specific format features, and the test makes a device without those.
+- Reading 24-bit depth back in a program is exact only to one 24-bit step on the RTX 3080 (a clear
+  to 0.5, stored as 2^23, reads as 0.50000006), so the depth copy tests allow one step for 24-bit
+  depth and none for 32-bit float depth.
 
 - Every attachment is stored at the end of a pass, also when the interface says `Discard`: an
   ordered write may split the pass, and its first part must keep what it drew. Correct, but it
@@ -342,6 +460,10 @@ blocks, naga validation with WebGPU's core capabilities).
   unshown frame, and DXGI answers it with a success code (`DXGI_STATUS_OCCLUDED`).
 
 ## Interface changes
+
+- b999c16 `interface: named the slow path of integer colour clears made by a draw`:
+  `SlowPath::IntegerClearByDraw`, and the sentence in the plan's 5.7. wgpu's Direct3D 12 clears
+  colour targets through f32, which cannot hold integers past 2^24.
 
 Gaps found for the interface track (not changed here): no capability tells a front which vertex
 formats a back end converts itself or that instance step rates other than one are refused

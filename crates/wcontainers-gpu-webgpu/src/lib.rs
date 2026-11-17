@@ -9,8 +9,10 @@
 mod convert;
 mod draw;
 mod edge;
+mod fill;
 mod layout;
 mod memory;
+mod probe;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -29,6 +31,7 @@ use wcontainers_gpu::{
 };
 
 pub use draw::Counters;
+pub use probe::Depth24;
 
 /// Readback states, set by the map callback.
 const MAP_PENDING: u8 = 0;
@@ -64,6 +67,8 @@ pub struct WebGpu {
     pool: memory::BufferPool,
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
+    fills: fill::Fills,
+    depth24: Option<Depth24>,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
     /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
@@ -170,6 +175,8 @@ struct ViewObj {
 struct SamplerObj {
     id: u64,
     raw: wgpu::Sampler,
+    /// Any of its filters is linear.
+    filtering: bool,
 }
 
 #[derive(Debug)]
@@ -210,12 +217,19 @@ impl ProgramObj {
         &self,
         bindings: &[Option<&BindingSet>; MAX_BINDING_SETS],
     ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
+        self.own_keys(bindings.map(|s| s.map_or_else(BindingLayoutKey::default, |s| s.0.key)))
+    }
+
+    /// The parts of the sets' layout keys this program's layout depends on: the textures it samples
+    /// through a sampler.
+    fn own_keys(
+        &self,
+        sets: [BindingLayoutKey; MAX_BINDING_SETS],
+    ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
         let mut keys = [BindingLayoutKey::default(); MAX_BINDING_SETS];
         for shader in self.stages() {
-            for ((k, s), paired) in keys.iter_mut().zip(bindings).zip(shader.paired) {
-                if let Some(s) = s {
-                    k.unfilterable_textures |= s.0.key.unfilterable_textures & paired;
-                }
+            for ((k, s), paired) in keys.iter_mut().zip(&sets).zip(shader.paired) {
+                k.unfilterable_textures |= s.unfilterable_textures & paired;
             }
         }
         keys
@@ -306,6 +320,7 @@ impl WebGpu {
             | wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+            | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         wgpu::DeviceDescriptor {
             label: None,
@@ -336,7 +351,16 @@ impl WebGpu {
             };
             on_lost.lock().unwrap().get_or_insert(reason);
         });
-        let (caps, usages) = caps(adapter, &device);
+        let (mut caps, usages) = caps(adapter, &device);
+        // The browser cannot wait for the probe's answer yet (plan 4.8), so there the bit stays clear
+        // and fronts bias in the program, which is right for either storage.
+        #[cfg(not(target_arch = "wasm32"))]
+        let depth24 = Some(probe::run(&device, &queue));
+        #[cfg(target_arch = "wasm32")]
+        let depth24 = None;
+        if let Some(Depth24::Unorm(_)) = depth24 {
+            caps.features |= Features::DEPTH24_UNORM;
+        }
         // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
         let float_clears = adapter.get_info().backend == wgpu::Backend::Dx12;
         WebGpu {
@@ -359,12 +383,19 @@ impl WebGpu {
             pool: Default::default(),
             arena: None,
             edge: None,
+            fills: Default::default(),
             float_clears,
             bind_epoch: 0,
             windows: HashMap::new(),
             counters: Counters::default(),
             usages,
+            depth24,
         }
+    }
+
+    /// What the probe of how `depth24plus` is stored found, where it ran.
+    pub fn depth24(&self) -> Option<Depth24> {
+        self.depth24
     }
 
     /// Registers a host window for [`Backend::create_surface`] under the number the graphics hook
@@ -485,6 +516,11 @@ fn caps(
             features |= ours;
         }
     }
+    // In the browser `prepare`'s pipeline compiles in the GPU process while the page goes on;
+    // natively wgpu compiles it at once on the calling thread.
+    if cfg!(target_arch = "wasm32") {
+        features |= Features::BACKGROUND_PREPARE;
+    }
     let adapter_specific = f.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
     let mut formats = FormatCaps {
         uses: [FormatUse::empty(); Format::COUNT],
@@ -525,8 +561,11 @@ fn caps(
                 !depth && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT),
                 FormatUse::RENDER,
             ),
+            // wgpu marks every filterable float format blendable, renderable or not.
             (
-                flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
+                !depth
+                    && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+                    && flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
                 FormatUse::BLEND,
             ),
             (
@@ -832,7 +871,15 @@ impl Backend for WebGpu {
         // Read backs and the staging route of ordered writes copy in and out of every texture whose
         // format allows it.
         let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
-        usage |= copies & self.usages[desc.format.index()];
+        let allowed = self.usages[desc.format.index()];
+        usage |= copies & allowed;
+        // Depth copies WebGPU has no copy for are draws: from a bound source into an attachment.
+        if desc.usage.contains(TextureUsage::COPY_SRC) && fill::DepthSource::readable(desc.format) {
+            usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
+        }
+        if desc.usage.contains(TextureUsage::COPY_DST) && desc.format.is_depth_stencil() {
+            usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
+        }
         let srgb_twin = (format.remove_srgb_suffix() != format)
             .then(|| format.remove_srgb_suffix())
             .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()));
@@ -910,7 +957,11 @@ impl Backend for WebGpu {
             },
             border_color: None,
         });
-        Ok(Sampler(Rc::new(SamplerObj { id: self.id(), raw })))
+        Ok(Sampler(Rc::new(SamplerObj {
+            id: self.id(),
+            raw,
+            filtering: [desc.min, desc.mag, desc.mip].contains(&Filter::Linear),
+        })))
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {
@@ -925,6 +976,18 @@ impl Backend for WebGpu {
             .iter()
             .position(|e| e.name == module.entry_point && e.stage == stage)
             .ok_or(GpuError::Invalid("the module has no such entry point"))?;
+        // Checked against what WebGPU's core language and this device's features allow (plan 6.3),
+        // so a program the browser would refuse is refused here too, natively as well.
+        let info = wgpu_naga_bridge::create_validator(
+            self.device.features(),
+            wgpu::DownlevelFlags::compliant(),
+            naga::valid::ValidationFlags::all(),
+        )
+        .validate(&module.module)
+        .map_err(|e| {
+            eprintln!("webgpu: program refused: {}", e.as_inner());
+            GpuError::Invalid("a program WebGPU's language and this device's features do not allow")
+        })?;
         let raw = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -933,8 +996,8 @@ impl Backend for WebGpu {
             });
         Ok(Shader(Rc::new(ShaderObj {
             module: module.module.clone(),
-            info: module.info.clone(),
-            paired: layout::paired(&module.module, module.info.get_entry_point(entry_index)),
+            paired: layout::paired(&module.module, info.get_entry_point(entry_index)),
+            info,
             entry_index,
             entry: module.entry_point.clone(),
             stage,
@@ -1150,6 +1213,10 @@ impl Backend for WebGpu {
         if self.pass.take().is_none() {
             self.fail("end_pass without a pass");
         }
+    }
+
+    fn prepare(&mut self, desc: &wcontainers_gpu::PrepareDesc<'_, Self>) {
+        self.prepare_impl(desc);
     }
 
     fn draw(&mut self, call: &wcontainers_gpu::DrawCall<'_, Self>) {

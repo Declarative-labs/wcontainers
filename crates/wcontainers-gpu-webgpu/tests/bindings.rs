@@ -13,11 +13,12 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor,
-    BlendOp, BufferDesc, BufferRange, BufferUsage, ColorAttachment, DepthAttachment, DeviceStatus,
-    DrawCall, DrawRange, Extent, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc,
-    ReadSource, StageSet, StoreOp, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    ViewDimension, Viewport, WriteMode,
+    AddressMode, AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc,
+    BlendFactor, BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment,
+    CompareFn, DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent,
+    Filter, Format, FormatUse, GpuError, LoadOp, MapIntent, Origin, PassDesc, Program, ReadSource,
+    SamplerDesc, ShaderModule, ShaderStage, StageSet, StoreOp, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -461,4 +462,457 @@ fn combined_depth_stencil_views_draw_and_read_each_aspect() {
         ran += 1;
     }
     assert!(ran > 0, "every device holds depth24plus-stencil8");
+}
+
+/// A vertex stage alone, moving the triangle by its constants: depth 0.5 with no fragment stage.
+const VERTEX_ONLY_WGSL: &str = r#"
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.5, 1.0);
+}
+"#;
+
+/// Each stage's helper constants in set 3 (plan 6.4: binding 0 the vertex stage's, 12 the
+/// fragment stage's): the vertex block moves the triangle onto the right pixel, the fragment
+/// block colours it.
+const HELPERS_WGSL: &str = r#"
+struct V { shift: vec4f }
+struct F { color: vec4f }
+@group(3) @binding(0) var<uniform> v: V;
+@group(3) @binding(12) var<uniform> f: F;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0 + v.shift.xy, 0.0, 1.0);
+}
+@fragment fn ps() -> @location(0) vec4f { return f.color; }
+"#;
+
+fn draw_call<'a>(
+    k: &'a Kit,
+    bindings: [Option<&'a <WebGpu as Backend>::BindingSet>; 4],
+    viewport: &'a [Viewport],
+) -> DrawCall<'a, WebGpu> {
+    DrawCall {
+        program: &k.program,
+        blend: &k.blend,
+        depth_stencil: &k.depth_stencil,
+        raster: &k.raster,
+        vertex_layout: &k.vertex_layout,
+        bindings,
+        vertex_buffers: &[],
+        index: None,
+        topology: Topology::TriangleList,
+        restart: false,
+        viewports: viewport,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: 3,
+            first_instance: 0,
+            instances: 1,
+        },
+    }
+}
+
+fn whole(width: u32) -> [Viewport; 1] {
+    [Viewport {
+        x: 0,
+        y: 0,
+        width: (width as f32).to_bits(),
+        height: 1.0f32.to_bits(),
+        min_depth: 0,
+        max_depth: 1.0f32.to_bits(),
+    }]
+}
+
+/// A program with no fragment stage drawn into a colour and a depth target: the colour keeps its
+/// clear and the depth test and write happen.
+#[test]
+fn programs_without_a_fragment_stage_write_only_depth() {
+    let mut b = device();
+    let vs = draw::shader(&mut b, VERTEX_ONLY_WGSL, "vs", ShaderStage::Vertex).unwrap();
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vs,
+            fragment: None,
+        })
+        .unwrap();
+    let depth_stencil = b
+        .create_depth_stencil(&DepthStencilDesc {
+            depth_compare: Some(CompareFn::Less),
+            depth_write: true,
+            ..draw::no_depth()
+        })
+        .unwrap();
+    let k = Kit {
+        program,
+        depth_stencil,
+        ..kit(&mut b, Format::Rgba8Unorm, 1, &draw::opaque())
+    };
+    let (depth, depth_view) = draw::texture_2d(
+        &mut b,
+        Format::Depth32Float,
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    )
+    .unwrap();
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: Some(DepthAttachment {
+            view: &depth_view,
+            depth: Some(AspectOps {
+                load: LoadOp::Clear(1.0f32.to_bits()),
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        }),
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &k.view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear([0.2f32, 0.4, 0.6, 1.0].map(f32::to_bits)),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    b.draw(&draw_call(&k, [None; 4], &whole(1)));
+    let color = finish(&mut b, &k, 4);
+    let rb = b
+        .read_back(&ReadSource::Texture {
+            region: TextureRegion {
+                texture: &depth,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: 1,
+                height: 1,
+                depth_or_layers: 1,
+            },
+        })
+        .unwrap();
+    b.submit();
+    b.wait_read(&rb);
+    let mut got = [0u8; 4];
+    b.finish_read(rb, &mut got);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(color, [51, 102, 153, 255]);
+    assert_eq!(f32::from_le_bytes(got), 0.5);
+}
+
+/// One draw's vertex and fragment helper blocks, two entries of set 3, each read by its own stage.
+#[test]
+fn helper_blocks_of_each_stage_read_their_own_values() {
+    let mut b = device();
+    let k = Kit {
+        program: draw::program(&mut b, HELPERS_WGSL).unwrap(),
+        ..kit(&mut b, Format::Rgba8Unorm, 2, &draw::opaque())
+    };
+    let vertex = constants(&mut b, 16, MapIntent::Often);
+    let fragment = constants(&mut b, 16, MapIntent::Often);
+    // Clip space moves right by one: only the right pixel is covered.
+    b.write_buffer(&vertex, 0, &unorm([255, 0, 0, 0]), WriteMode::Discard);
+    b.write_buffer(&fragment, 0, &unorm([10, 20, 30, 255]), WriteMode::Discard);
+    let block = |buffer| BufferRange {
+        buffer,
+        offset: 0,
+        size: 16,
+    };
+    let helpers = b
+        .create_binding_set(&[
+            BindingEntry {
+                binding: 0,
+                stages: StageSet::VERTEX,
+                resource: BindingResource::UniformBuffer(block(&vertex)),
+            },
+            BindingEntry {
+                binding: 12,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::UniformBuffer(block(&fragment)),
+            },
+        ])
+        .unwrap();
+    begin(&mut b, &k, [0.0; 4]);
+    b.draw(&draw_call(
+        &k,
+        [None, None, None, Some(&helpers)],
+        &whole(2),
+    ));
+    let got = finish(&mut b, &k, 4);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(got, [0, 0, 0, 0, 10, 20, 30, 255]);
+}
+
+/// Samples a 2 by 1 texture between its two texels: 0.5 filtered linearly, the right texel's value
+/// at a point, written to an `r32float` target.
+const SAMPLE_MIDDLE_WGSL: &str = r#"
+@group(1) @binding(16) var s: sampler;
+@group(1) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn ps() -> @location(0) vec4f {
+    return vec4f(textureSampleLevel(t, s, vec2f(0.5, 0.5), 0.0).x, 0.0, 0.0, 1.0);
+}
+"#;
+
+fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Backend>::Sampler {
+    b.create_sampler(&SamplerDesc {
+        min: filter,
+        mag: filter,
+        mip: Filter::Nearest,
+        address: [AddressMode::Clamp; 3],
+        lod_range: [0, f32::MAX.to_bits()],
+        anisotropy: 1,
+        compare: None,
+        border: BorderColor::TransparentBlack,
+    })
+    .unwrap()
+}
+
+/// A 2 by 1 texture of `format` holding 0 and 1 (`depth32float` written through the depth draw).
+fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Backend>::TextureView {
+    let (texture, view) = draw::texture_2d(
+        b,
+        format,
+        2,
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    let bytes: Vec<u8> = match format {
+        Format::Rgba8Unorm => vec![0, 0, 0, 0, 255, 255, 255, 255],
+        _ => [0.0f32, 1.0].iter().flat_map(|v| v.to_le_bytes()).collect(),
+    };
+    b.write_texture(
+        &TextureRegion {
+            texture: &texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: 2,
+            height: 1,
+            depth_or_layers: 1,
+        },
+        &bytes,
+        bytes.len() as u32,
+        1,
+        WriteMode::Ordered,
+    );
+    view
+}
+
+/// Draws the middle sample of `view` through `sampler` and returns it.
+fn sample_middle(
+    b: &mut WebGpu,
+    k: &Kit,
+    view: &<WebGpu as Backend>::TextureView,
+    sampler: &<WebGpu as Backend>::Sampler,
+) -> f32 {
+    let set = b
+        .create_binding_set(&[
+            BindingEntry {
+                binding: 16,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(sampler),
+            },
+            BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(view),
+            },
+        ])
+        .unwrap();
+    begin(b, k, [0.0; 4]);
+    b.draw(&draw_call(k, [None, Some(&set), None, None], &whole(1)));
+    f32::from_le_bytes(finish(b, k, 4).try_into().unwrap())
+}
+
+/// Linear filtering halfway between 0 and 1, within the filter weights' precision (Direct3D asks
+/// for at least 8 fractional bits; the RTX 3080 gives 0.5000076).
+fn halfway(v: f32) -> bool {
+    (v - 0.5).abs() < 1.0 / 256.0
+}
+
+/// Layouts follow plan 4.5: a filterable view takes a filtering sampler slot, which also takes a
+/// point sampler, so one program bound with a point and then a linear sampler is one pipeline; a
+/// depth view and an `r32float` view on a device made without `float32-filterable` take
+/// unfilterable slots and are sampled at points, and refuse a linear sampler loudly; with
+/// `float32-filterable`, `r32float` filters.
+#[test]
+fn layouts_follow_each_views_filterability() {
+    for float32_filterable in [true, false] {
+        let without = if float32_filterable {
+            wgpu::Features::empty()
+        } else {
+            // As in a browser: natively the adapter's own format features would filter anyway.
+            wgpu::Features::FLOAT32_FILTERABLE
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        };
+        let backends = match std::env::var("WEBGPU_API").as_deref() {
+            Ok("dx12") => wgpu::Backends::DX12,
+            Ok("vulkan") => wgpu::Backends::VULKAN,
+            Ok("metal") => wgpu::Backends::METAL,
+            _ => wgpu::Backends::PRIMARY,
+        };
+        let mut b = pollster::block_on(draw::device_without(&draw::instance(backends), without))
+            .unwrap()
+            .0;
+        let filters = b
+            .caps()
+            .formats
+            .get(Format::R32Float)
+            .contains(FormatUse::FILTER);
+        if float32_filterable && !filters {
+            eprintln!("this adapter has no float32-filterable");
+            continue;
+        }
+        assert_eq!(filters, float32_filterable);
+        let k = Kit {
+            program: draw::program(&mut b, SAMPLE_MIDDLE_WGSL).unwrap(),
+            ..kit(&mut b, Format::R32Float, 1, &draw::opaque())
+        };
+        let (point, linear) = (
+            sampler(&mut b, Filter::Nearest),
+            sampler(&mut b, Filter::Linear),
+        );
+        let rgba8 = zero_one(&mut b, Format::Rgba8Unorm);
+        let before = b.counters().pipelines;
+        assert_eq!(sample_middle(&mut b, &k, &rgba8, &point), 1.0);
+        assert!(halfway(sample_middle(&mut b, &k, &rgba8, &linear)));
+        assert_eq!(
+            b.counters().pipelines - before,
+            1,
+            "point then linear: one pipeline"
+        );
+        for format in [Format::R32Float, Format::Depth32Float] {
+            let view = zero_one(&mut b, format);
+            assert_eq!(sample_middle(&mut b, &k, &view, &point), 1.0, "{format:?}");
+            assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        }
+        let r32 = zero_one(&mut b, Format::R32Float);
+        if filters {
+            assert!(halfway(sample_middle(&mut b, &k, &r32, &linear)));
+            assert_eq!(b.status(), DeviceStatus::Ok);
+        } else {
+            sample_middle(&mut b, &k, &r32, &linear);
+            assert_ne!(
+                b.status(),
+                DeviceStatus::Ok,
+                "a linear sampler on an unfilterable view"
+            );
+        }
+    }
+}
+
+/// The formats `texture-formats-tier1` adds or makes renderable: the 16-bit normalised ones exist,
+/// and the 8-bit signed normalised ones render, blend and multisample, only on a device that has
+/// them (natively wgpu's 16-bit-norm and adapter-specific format features; a browser device without
+/// tier 1 is made the same way here), and a format without bits cannot be made.
+#[test]
+fn tier1_formats_are_declared_only_with_it() {
+    let backends = match std::env::var("WEBGPU_API").as_deref() {
+        Ok("dx12") => wgpu::Backends::DX12,
+        Ok("vulkan") => wgpu::Backends::VULKAN,
+        Ok("metal") => wgpu::Backends::METAL,
+        _ => wgpu::Backends::PRIMARY,
+    };
+    let instance = draw::instance(backends);
+    let sixteen = [
+        Format::R16Unorm,
+        Format::R16Snorm,
+        Format::Rg16Unorm,
+        Format::Rg16Snorm,
+        Format::Rgba16Unorm,
+        Format::Rgba16Snorm,
+    ];
+    let snorm8 = [Format::R8Snorm, Format::Rg8Snorm, Format::Rgba8Snorm];
+    let tier1 = FormatUse::RENDER | FormatUse::BLEND;
+    let mut b = pollster::block_on(draw::device_without(
+        &instance,
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ))
+    .unwrap()
+    .0;
+    for f in sixteen {
+        assert!(b.caps().formats.get(f).is_empty(), "{f:?} without tier 1");
+        let made = draw::texture_2d(&mut b, f, 1, 1, TextureUsage::SAMPLE);
+        assert!(made.is_err(), "{f:?} made without tier 1");
+    }
+    for f in snorm8 {
+        let uses = b.caps().formats.get(f);
+        assert!(
+            uses.contains(FormatUse::SAMPLE | FormatUse::FILTER),
+            "{f:?}: {uses:?}"
+        );
+        assert!(!uses.intersects(tier1), "{f:?} without tier 1: {uses:?}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let b = pollster::block_on(draw::device_on(&instance)).unwrap().0;
+    let adapter_has = |f: Format| !b.caps().formats.get(f).is_empty();
+    if !sixteen.into_iter().all(adapter_has) {
+        eprintln!("this adapter has no 16-bit normalised formats");
+        return;
+    }
+    for f in sixteen.into_iter().chain(snorm8) {
+        let uses = b.caps().formats.get(f);
+        assert!(uses.contains(FormatUse::SAMPLE), "{f:?}: {uses:?}");
+        if f != Format::R16Snorm && f != Format::Rg16Snorm && f != Format::Rgba16Snorm {
+            assert!(
+                uses.contains(FormatUse::RENDER),
+                "{f:?} with tier 1: {uses:?}"
+            );
+        }
+    }
+}
+
+/// Programs are validated with what WebGPU's core language gives (plan 6.3), never with nothing: a
+/// fragment program reading its sample index is taken, one using 64-bit floats is refused, even
+/// where the front validated it with every capability.
+#[test]
+fn programs_are_validated_with_webgpus_core_language() {
+    let mut b = device();
+    let module = |source: &str, entry: &str, stage| {
+        let module = naga::front::wgsl::parse_str(source).unwrap();
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        ShaderModule {
+            module,
+            info,
+            entry_point: entry.into(),
+            stage,
+            key: [0; 32],
+        }
+    };
+    let sample = module(
+        "@fragment fn ps(@builtin(sample_index) i: u32) -> @location(0) vec4f { return vec4f(f32(i)); }",
+        "ps",
+        ShaderStage::Fragment,
+    );
+    assert!(b.create_shader(&sample).is_ok());
+    let wide = module(
+        "@fragment fn ps() -> @location(0) vec4f { let x: f64 = 1.0lf; return vec4f(f32(x)); }",
+        "ps",
+        ShaderStage::Fragment,
+    );
+    assert!(matches!(b.create_shader(&wide), Err(GpuError::Invalid(_))));
+    assert_eq!(b.status(), DeviceStatus::Ok);
 }
