@@ -291,11 +291,11 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CheckFeatureSupport(
         &self,
-        _feature: D3D12_FEATURE,
-        _pfeaturesupportdata: *mut core::ffi::c_void,
-        _featuresupportdatasize: u32,
+        feature: D3D12_FEATURE,
+        pfeaturesupportdata: *mut core::ffi::c_void,
+        featuresupportdatasize: u32,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("CheckFeatureSupport"))
+        Device::CheckFeatureSupport(self, feature, pfeaturesupportdata, featuresupportdatasize)
     }
     fn CreateDescriptorHeap(
         &self,

@@ -1,10 +1,12 @@
 //! A small Direct3D 12 program of this track's own, for checking the front against real Direct3D 12:
 //! an indexed quad from two vertex streams copied from an upload buffer into a default buffer, one
 //! triangle of it culled, a whole clear and a rectangle clear (beside the scissor, which clears
-//! ignore), a scissor, and a read back of a box. Run it once beside our
-//! d3d12.dll and dxgi.dll and once without, then compare:
+//! ignore), a scissor, and a read back of a box; and every answer of `CheckFeatureSupport` the front
+//! gives. Run it once beside our d3d12.dll and dxgi.dll and once without, then compare:
 //!   check_d3d12 draw <out.rgba>
 //!   check_d3d12 compare <a.rgba> <b.rgba> <tolerance>
+//!   check_d3d12 features <out.txt>
+//!   check_d3d12 compare-features <real.txt> <ours.txt> [all]
 //! It draws with the rig's triangle shaders, the only DXIL the front takes until DXIL is converted.
 
 #[cfg(windows)]
@@ -67,9 +69,509 @@ fn main() -> windows::core::Result<()> {
             }
             std::process::exit(i32::from(beyond > 0));
         }
-        _ => eprintln!("usage: check_d3d12 draw <out.rgba> | compare <a> <b> <tolerance>"),
+        Some("features") => {
+            std::fs::write(&args[2], features()?).expect("writing the answers");
+        }
+        Some("compare-features") => {
+            let real = std::fs::read_to_string(&args[2]).expect("real Direct3D 12's answers");
+            let ours = std::fs::read_to_string(&args[3]).expect("our answers");
+            let verbose = args.get(4).is_some_and(|a| a == "all");
+            std::process::exit(i32::from(!compare_features(&real, &ours, verbose)));
+        }
+        _ => eprintln!(
+            "usage: check_d3d12 draw <out.rgba> | compare <a> <b> <tolerance> | features <out.txt> \
+             | compare-features <real.txt> <ours.txt> [all]"
+        ),
     }
     Ok(())
+}
+
+/// Prints each answer of ours beyond real Direct3D 12's (every differing one with `all`) and returns whether none of ours promises more than real
+/// Direct3D 12's on the same GPU: per line, `le` values may be lower, `ge` higher (or zero, not
+/// reported), `bits` a subset,
+/// and an answer real Direct3D 12 refuses must be refused.
+#[cfg(windows)]
+fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
+    let parse = |text: &str| -> std::collections::BTreeMap<String, (String, String)> {
+        text.lines()
+            .filter_map(|l| {
+                let mut w = l.split_whitespace();
+                Some((
+                    w.next()?.to_owned(),
+                    (w.next()?.to_owned(), w.next()?.to_owned()),
+                ))
+            })
+            .collect()
+    };
+    let (real, ours) = (parse(real), parse(ours));
+    let number = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok();
+    let mut good = true;
+    let mut differ = 0;
+    for (key, (r, rule)) in &real {
+        let Some((o, _)) = ours.get(key) else {
+            println!("{key}: real {r}, ours missing");
+            good = false;
+            continue;
+        };
+        if r == o {
+            continue;
+        }
+        let within = match (number(r), number(o)) {
+            (Some(r), Some(o)) => match rule.as_str() {
+                "le" => o <= r,
+                // A bound: ours may be wider, or zero where the ability is absent.
+                "ge" => o >= r || o == 0,
+                "bits" => o & !r == 0,
+                _ => false,
+            },
+            // Ours refused what real answered.
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if !within || verbose {
+            println!(
+                "{key}: real {r}, ours {o}{}",
+                if within { "" } else { "  BEYOND REAL" }
+            );
+        }
+        differ += 1;
+        good &= within;
+    }
+    println!(
+        "{differ} of {} answers differ, {}",
+        real.len(),
+        if good {
+            "none beyond real Direct3D 12"
+        } else {
+            "some beyond real Direct3D 12"
+        }
+    );
+    good
+}
+
+/// What `CheckFeatureSupport` answers, a line per value: name, value in hexadecimal (or the
+/// failing HRESULT as `err_` and its value), and how ours may differ (see `compare_features`).
+#[cfg(windows)]
+fn features() -> windows::core::Result<String> {
+    use std::ffi::c_void;
+    use std::fmt::Write;
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Direct3D12::*;
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    use windows::Win32::Graphics::Dxgi::*;
+
+    let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
+    let adapter: IDXGIAdapter1 = unsafe { factory.EnumAdapters1(0)? };
+    let mut device: Option<ID3D12Device> = None;
+    unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)? };
+    let device = device.unwrap();
+    let mut out = String::new();
+    let mut line = |key: &str, value: Result<u64, windows::core::Error>, rule: &str| {
+        match value {
+            Ok(v) => writeln!(out, "{key} {v:#x} {rule}"),
+            Err(e) => writeln!(out, "{key} err_{:08x} {rule}", e.code().0 as u32),
+        }
+        .unwrap();
+    };
+    fn ask<T>(
+        device: &ID3D12Device,
+        feature: D3D12_FEATURE,
+        data: &mut T,
+    ) -> windows::core::Result<()> {
+        unsafe {
+            device.CheckFeatureSupport(
+                feature,
+                (data as *mut T).cast::<c_void>(),
+                size_of::<T>() as u32,
+            )
+        }
+    }
+    let flag = |b: windows::core::BOOL| u64::from(b.as_bool());
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "options.double_precision",
+        v(flag(o.DoublePrecisionFloatShaderOps)),
+        "le",
+    );
+    line("options.logic_op", v(flag(o.OutputMergerLogicOp)), "le");
+    line(
+        "options.min_precision",
+        v(o.MinPrecisionSupport.0 as u64),
+        "bits",
+    );
+    line(
+        "options.tiled_resources_tier",
+        v(o.TiledResourcesTier.0 as u64),
+        "le",
+    );
+    line(
+        "options.resource_binding_tier",
+        v(o.ResourceBindingTier.0 as u64),
+        "le",
+    );
+    line(
+        "options.ps_stencil_ref",
+        v(flag(o.PSSpecifiedStencilRefSupported)),
+        "le",
+    );
+    line(
+        "options.typed_uav_load_additional",
+        v(flag(o.TypedUAVLoadAdditionalFormats)),
+        "le",
+    );
+    line("options.rovs", v(flag(o.ROVsSupported)), "le");
+    line(
+        "options.conservative_raster_tier",
+        v(o.ConservativeRasterizationTier.0 as u64),
+        "le",
+    );
+    line(
+        "options.va_bits_per_resource",
+        v(o.MaxGPUVirtualAddressBitsPerResource as u64),
+        "le",
+    );
+    line(
+        "options.standard_swizzle",
+        v(flag(o.StandardSwizzle64KBSupported)),
+        "le",
+    );
+    line(
+        "options.cross_node_sharing_tier",
+        v(o.CrossNodeSharingTier.0 as u64),
+        "le",
+    );
+    line(
+        "options.cross_adapter_row_major",
+        v(flag(o.CrossAdapterRowMajorTextureSupported)),
+        "le",
+    );
+    line(
+        "options.vp_rt_index_any_shader",
+        v(flag(
+            o.VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation,
+        )),
+        "le",
+    );
+    line(
+        "options.resource_heap_tier",
+        v(o.ResourceHeapTier.0 as u64),
+        "le",
+    );
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS1, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line("options1.wave_ops", v(flag(o.WaveOps)), "le");
+    line(
+        "options1.wave_lane_count_min",
+        v(o.WaveLaneCountMin as u64),
+        "le",
+    );
+    line(
+        "options1.wave_lane_count_max",
+        v(o.WaveLaneCountMax as u64),
+        "ge",
+    );
+    line(
+        "options1.total_lane_count",
+        v(o.TotalLaneCount as u64),
+        "le",
+    );
+    line(
+        "options1.expanded_compute_states",
+        v(flag(o.ExpandedComputeResourceStates)),
+        "le",
+    );
+    line("options1.int64_shader_ops", v(flag(o.Int64ShaderOps)), "le");
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS2::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS2, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "options2.depth_bounds",
+        v(flag(o.DepthBoundsTestSupported)),
+        "le",
+    );
+    line(
+        "options2.sample_positions_tier",
+        v(o.ProgrammableSamplePositionsTier.0 as u64),
+        "le",
+    );
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS3, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "options3.copy_queue_timestamps",
+        v(flag(o.CopyQueueTimestampQueriesSupported)),
+        "le",
+    );
+    line(
+        "options3.casting_fully_typed",
+        v(flag(o.CastingFullyTypedFormatSupported)),
+        "le",
+    );
+    line(
+        "options3.write_buffer_immediate",
+        v(o.WriteBufferImmediateSupportFlags.0 as u64),
+        "bits",
+    );
+    line(
+        "options3.view_instancing_tier",
+        v(o.ViewInstancingTier.0 as u64),
+        "le",
+    );
+    line(
+        "options3.barycentrics",
+        v(flag(o.BarycentricsSupported)),
+        "le",
+    );
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS4::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS4, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "options4.msaa_64kb_aligned",
+        v(flag(o.MSAA64KBAlignedTextureSupported)),
+        "le",
+    );
+    line(
+        "options4.shared_resource_tier",
+        v(o.SharedResourceCompatibilityTier.0 as u64),
+        "le",
+    );
+    line(
+        "options4.native_16bit_ops",
+        v(flag(o.Native16BitShaderOpsSupported)),
+        "le",
+    );
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS5, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "options5.srv_only_tiled_tier3",
+        v(flag(o.SRVOnlyTiledResourceTier3)),
+        "le",
+    );
+    line(
+        "options5.render_passes_tier",
+        v(o.RenderPassesTier.0 as u64),
+        "le",
+    );
+    line(
+        "options5.raytracing_tier",
+        v(o.RaytracingTier.0 as u64),
+        "le",
+    );
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS6::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS6, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "options6.additional_shading_rates",
+        v(flag(o.AdditionalShadingRatesSupported)),
+        "le",
+    );
+    line(
+        "options6.per_primitive_rate_viewport_index",
+        v(flag(o.PerPrimitiveShadingRateSupportedWithViewportIndexing)),
+        "le",
+    );
+    line(
+        "options6.vrs_tier",
+        v(o.VariableShadingRateTier.0 as u64),
+        "le",
+    );
+    line(
+        "options6.shading_rate_tile",
+        v(o.ShadingRateImageTileSize as u64),
+        "le",
+    );
+    line(
+        "options6.background_processing",
+        v(flag(o.BackgroundProcessingSupported)),
+        "le",
+    );
+
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
+    let r = ask(&device, D3D12_FEATURE_D3D12_OPTIONS7, &mut o);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "options7.mesh_shader_tier",
+        v(o.MeshShaderTier.0 as u64),
+        "le",
+    );
+    line(
+        "options7.sampler_feedback_tier",
+        v(o.SamplerFeedbackTier.0 as u64),
+        "le",
+    );
+
+    let mut a = D3D12_FEATURE_DATA_ARCHITECTURE1::default();
+    let r = ask(&device, D3D12_FEATURE_ARCHITECTURE1, &mut a);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "architecture1.tile_based",
+        v(flag(a.TileBasedRenderer)),
+        "eq",
+    );
+    line("architecture1.uma", v(flag(a.UMA)), "eq");
+    line(
+        "architecture1.cache_coherent_uma",
+        v(flag(a.CacheCoherentUMA)),
+        "eq",
+    );
+    line("architecture1.isolated_mmu", v(flag(a.IsolatedMMU)), "le");
+    let mut a = D3D12_FEATURE_DATA_ARCHITECTURE::default();
+    let r = ask(&device, D3D12_FEATURE_ARCHITECTURE, &mut a);
+    line("architecture.uma", r.map(|()| flag(a.UMA)), "eq");
+    let mut a = D3D12_FEATURE_DATA_ARCHITECTURE {
+        NodeIndex: 1,
+        ..Default::default()
+    };
+    line(
+        "architecture.node1",
+        ask(&device, D3D12_FEATURE_ARCHITECTURE, &mut a).map(|()| 0),
+        "eq",
+    );
+
+    let levels = [
+        D3D_FEATURE_LEVEL_9_1,
+        D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_12_0,
+        D3D_FEATURE_LEVEL_12_1,
+        D3D_FEATURE_LEVEL_12_2,
+    ];
+    let mut l = D3D12_FEATURE_DATA_FEATURE_LEVELS {
+        NumFeatureLevels: levels.len() as u32,
+        pFeatureLevelsRequested: levels.as_ptr(),
+        ..Default::default()
+    };
+    let r = ask(&device, D3D12_FEATURE_FEATURE_LEVELS, &mut l);
+    line(
+        "feature_levels.max",
+        r.map(|()| l.MaxSupportedFeatureLevel.0 as u64),
+        "le",
+    );
+    let mut l = D3D12_FEATURE_DATA_FEATURE_LEVELS {
+        NumFeatureLevels: 2,
+        pFeatureLevelsRequested: levels.as_ptr(),
+        ..Default::default()
+    };
+    let r = ask(&device, D3D12_FEATURE_FEATURE_LEVELS, &mut l);
+    line(
+        "feature_levels.max_of_9_1_10_0",
+        r.map(|()| l.MaxSupportedFeatureLevel.0 as u64),
+        "le",
+    );
+    let mut l = D3D12_FEATURE_DATA_FEATURE_LEVELS {
+        NumFeatureLevels: 1,
+        pFeatureLevelsRequested: &D3D_FEATURE_LEVEL_12_2,
+        ..Default::default()
+    };
+    let r = ask(&device, D3D12_FEATURE_FEATURE_LEVELS, &mut l);
+    line(
+        "feature_levels.only_12_2",
+        r.map(|()| l.MaxSupportedFeatureLevel.0 as u64),
+        "le",
+    );
+
+    for asked in [0x51, 0x60, 0x62, 0x65, 0x66] {
+        let mut s = D3D12_FEATURE_DATA_SHADER_MODEL {
+            HighestShaderModel: D3D_SHADER_MODEL(asked),
+        };
+        let r = ask(&device, D3D12_FEATURE_SHADER_MODEL, &mut s);
+        line(
+            &format!("shader_model.asked_{asked:x}"),
+            r.map(|()| s.HighestShaderModel.0 as u64),
+            "le",
+        );
+    }
+    for asked in [1, 2] {
+        let mut s = D3D12_FEATURE_DATA_ROOT_SIGNATURE {
+            HighestVersion: D3D_ROOT_SIGNATURE_VERSION(asked),
+        };
+        let r = ask(&device, D3D12_FEATURE_ROOT_SIGNATURE, &mut s);
+        line(
+            &format!("root_signature.asked_{asked}"),
+            r.map(|()| s.HighestVersion.0 as u64),
+            "le",
+        );
+    }
+
+    let mut g = D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT::default();
+    let r = ask(&device, D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT, &mut g);
+    let v = |f: u64| r.clone().map(|()| f);
+    line(
+        "va.bits_per_resource",
+        v(g.MaxGPUVirtualAddressBitsPerResource as u64),
+        "le",
+    );
+    line(
+        "va.bits_per_process",
+        v(g.MaxGPUVirtualAddressBitsPerProcess as u64),
+        "le",
+    );
+
+    // Every DXGI format up to B4G4R4A4_UNORM, and a size the API refuses.
+    for format in 0..=115 {
+        let format = DXGI_FORMAT(format);
+        let mut s = D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+            Format: format,
+            ..Default::default()
+        };
+        let r = ask(&device, D3D12_FEATURE_FORMAT_SUPPORT, &mut s);
+        let v = |f: u64| r.clone().map(|()| f);
+        line(
+            &format!("format_{}.support1", format.0),
+            v(s.Support1.0 as u32 as u64),
+            "bits",
+        );
+        line(
+            &format!("format_{}.support2", format.0),
+            v(s.Support2.0 as u32 as u64),
+            "bits",
+        );
+        let mut i = D3D12_FEATURE_DATA_FORMAT_INFO {
+            Format: format,
+            ..Default::default()
+        };
+        let r = ask(&device, D3D12_FEATURE_FORMAT_INFO, &mut i);
+        line(
+            &format!("format_{}.planes", format.0),
+            r.map(|()| i.PlaneCount as u64),
+            "eq",
+        );
+        for samples in [1, 2, 4, 8] {
+            let mut q = D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS {
+                Format: format,
+                SampleCount: samples,
+                ..Default::default()
+            };
+            let r = ask(&device, D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &mut q);
+            line(
+                &format!("format_{}.quality_levels_{samples}", format.0),
+                r.map(|()| u64::from(q.NumQualityLevels)),
+                "le",
+            );
+        }
+    }
+    let mut o = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+    let r = unsafe {
+        device.CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS,
+            (&mut o as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS).cast(),
+            4,
+        )
+    };
+    line("options.short_size", r.map(|()| 0), "eq");
+    Ok(out)
 }
 
 #[cfg(not(windows))]
