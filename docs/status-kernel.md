@@ -24,8 +24,9 @@ Built in K4's fifth run:
 - splice from a pipe into a backend file was EINVAL (backend files were not counted as having
   `splice_write`); now `iter_file_splice_write`: every slot's bytes up to the length go in one
   write (one WRITE on the backend), and nothing leaves the pipe until it is answered. tmpfs files
-  and devices take the same one write (`Pipe::unread_bytes`; `consume_front` takes across slots);
-  terminals still take a slot at a time. tests/backend.rs `transfers_match_reference`
+  and devices take the same one write, as Linux's gathers the slots into one `vfs_iter_write`
+  (`Pipe::unread_bytes`; `consume_front` takes across slots); terminals still take a slot at a
+  time. tests/backend.rs `transfers_match_reference`
   (guest/backendtransfer.c: sendfile, splice, tee, copy_file_range with and without offsets,
   from memory files, fadvise, readahead, cachestat; both server kinds) failed before.
 - Access control lists held on backend inodes (`Remote::acls`, Linux's `i_acl` and
@@ -47,6 +48,14 @@ Built in K4's fifth run:
   the caching backend; guest/backendspecial.c now seeks in a directory (failed before).
 - Layer 1 on the backend did not find the splice failure in the seeds run so far; why its
   sequences never reached it is not known (not looked into).
+- Layer 1 harness: plain seed 4040506 failed because the reference's caller died of SIGIO after a
+  write to a pseudo-terminal slave whose master had FIOASYNC: a terminal names the caller as owner
+  when none is set (`__tty_fasync`), and our caller is the container's first process, which Linux
+  keeps from signals it has no handler for. guest/layer1.c now ignores SIGIO and every signal
+  F_SETSIG may choose there (1, 5, 8, 22, 32, 64) in the caller on both sides, as it does SIGPIPE;
+  no generated call reads their actions differently since both runners set the same. The kernel
+  was right: tests/sigio.rs `terminal_signals_without_an_owner_match_reference`
+  (guest/ptyasync.c, an owner named by FIOASYNC, its SIGIO handled and by default) passes.
 
 Built in K4's fourth run (the check's findings):
 - Locks a waiting call holds (`Kernel::take_lock`, `Call::holds`, `Channel::Held`): taken at a
@@ -390,6 +399,9 @@ What layer 1 does not compare, and why (masked on both sides, so a difference th
   back), and the reference's runner remakes the devices after every sequence, so `/dev` always has one
   hidden inode there; ours is held by descriptor 0. Without this the inodes in use in `/dev` differ by
   one.
+- Both runners' callers ignore SIGPIPE, SIGIO and the signals F_SETSIG may choose (1, 5, 8, 22, 32,
+  64), which Linux keeps from our caller (the container's first process) and not from the
+  reference's; so what Linux does for a first process with these at their default is not compared.
 
 What layer 1 does not generate, and why:
 - Terminal writes of more than 256 bytes, blocking terminal descriptors, a controlling terminal
@@ -1522,6 +1534,11 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K4, fifth run: a backend inode holds its access control lists between reads, as Linux's
+  `i_acl` does, although the plan says the kernel caches nothing in phase one: without it, which
+  reads answer ENODATA and which EOPNOTSUPP differs from Linux (a permission check by another
+  user holds none). They are let go of at every LOOKUP, GETATTR and INVAL_INODE, as Linux does.
 
 - K4, fourth run: a backend file's writes hold its lock alone always; Linux shares it among
   writes inside the file when the backend opened it with FOPEN_PARALLEL_DIRECT_WRITES (the first
