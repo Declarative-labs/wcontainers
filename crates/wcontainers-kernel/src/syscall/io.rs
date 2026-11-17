@@ -1585,13 +1585,13 @@ fn send(
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe, a terminal, secret memory and a process descriptor as input cannot seek
-        // (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
+        // A pipe, a socket, a terminal, secret memory and a process descriptor as input cannot
+        // seek (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
         // `splice_read`, so only nothing is moved from them (measured; into a pipe nothing is
         // moved without asking it).
         if matches!(
             input_node.borrow().content,
-            Content::Pipe(_) | Content::Pidfd(..)
+            Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_)
         ) || super::tty::end(&input).is_some()
             || input_node.borrow().is_secret()
         {
@@ -2907,8 +2907,8 @@ fn sync_file(
         crate::fs::backend::fsync(handle, data_only)?;
         return Ok(0);
     }
-    // Only tmpfs's files and directories have a sync operation; pipes, devices and the process
-    // information tree have none.
+    // Only tmpfs's files and directories have a sync operation; pipes, devices, sockets and the
+    // process information tree have none.
     let file = file.borrow();
     let inode = file.node.borrow();
     match inode.content {
@@ -2917,7 +2917,8 @@ fn sync_file(
         | Content::Proc(_)
         | Content::Pidfd(..)
         | Content::Anon
-        | Content::Mqueue(_) => Err(Errno::EINVAL),
+        | Content::Mqueue(_)
+        | Content::Socket(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }

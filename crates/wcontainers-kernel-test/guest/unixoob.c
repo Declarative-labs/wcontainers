@@ -368,12 +368,35 @@ static void signals(void) {
     close(sv[1]);
 }
 
+static void pipes(void) {
+    signal(SIGPIPE, on_pipe);
+    int kinds[] = {SOCK_SEQPACKET, SOCK_DGRAM, SOCK_STREAM};
+    for (int i = 0; i < 3; i++) {
+        int sv[2];
+        printf("kind %d\n", kinds[i]);
+        socketpair(AF_UNIX, kinds[i], 0, sv);
+        shutdown(sv[0], SHUT_WR);
+        result("own shut", send(sv[0], "a", 1, 0));
+        close(sv[0]);
+        close(sv[1]);
+        socketpair(AF_UNIX, kinds[i], 0, sv);
+        shutdown(sv[1], SHUT_RD);
+        result("peer shut", send(sv[0], "a", 1, 0));
+        close(sv[1]);
+        result("peer closed", send(sv[0], "a", 1, 0));
+        close(sv[0]);
+        printf("pipe signals %d\n", pipes);
+    }
+    signal(SIGPIPE, SIG_IGN);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     basics();
     mark();
     inline_urgent();
     refused();
+    pipes();
     passing();
     waiting();
     signals();

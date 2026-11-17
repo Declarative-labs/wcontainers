@@ -205,6 +205,19 @@ impl Socket {
         self.inet.is_none() && self.netlink.is_none()
     }
 
+    /// Its protocol's name, which its inode's dentry carries (`sk_prot_creator->name`).
+    pub(crate) fn protocol_name(&self) -> &'static [u8] {
+        match self.family {
+            AF_UNIX if self.kind == SOCK_STREAM => b"UNIX-STREAM",
+            AF_UNIX => b"UNIX",
+            AF_NETLINK => b"NETLINK",
+            AF_INET6 if self.kind == SOCK_STREAM => b"TCPv6",
+            AF_INET6 => b"UDPv6",
+            _ if self.kind == SOCK_STREAM => b"TCP",
+            _ => b"UDP",
+        }
+    }
+
     /// `unix_may_passcred`: its receives carry who sent.
     fn may_pass_cred(&self) -> bool {
         self.passcred || self.pass_pidfd
@@ -487,6 +500,15 @@ pub(super) fn socketpair(
     [family, kind, protocol, pair, ..]: Args,
 ) -> Result<u64, Errno> {
     let (kind, flags) = kind_and_flags(kind)?;
+    // `__sys_socketpair` takes two descriptors and writes their numbers before it makes anything.
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    let (a, b) = {
+        let files = kernel.files(tid);
+        let a = files.lowest_free(0, limit)?;
+        (a, files.lowest_free(a + 1, limit)?)
+    };
+    guest(kernel, cx, tid).write(pair, &a.to_le_bytes())?;
+    guest(kernel, cx, tid).write(pair + 4, &b.to_le_bytes())?;
     let made = create(kernel, cx, family, kind, protocol)?;
     if made.family != AF_UNIX {
         // Other families' `socketpair` is `sock_no_socketpair`.
@@ -503,27 +525,11 @@ pub(super) fn socketpair(
     }
     let first = make_file(kernel, cx, tid, ends[0].clone(), flags)?;
     let second = make_file(kernel, cx, tid, ends[1].clone(), flags)?;
+    // The descriptors taken above, which nothing has taken since.
     let cloexec = flags & O_CLOEXEC != 0;
-    let a = install(kernel, tid, first, cloexec)?;
-    let b = match install(kernel, tid, second, cloexec) {
-        Ok(b) => b,
-        Err(error) => {
-            let pid = kernel.threads[&tid].process;
-            let _ = kernel.files_mut(tid).remove(a as i32, pid, true);
-            kernel.files_released(cx);
-            return Err(error);
-        }
-    };
-    let mut bytes = [0u8; 8];
-    bytes[..4].copy_from_slice(&(a as i32).to_le_bytes());
-    bytes[4..].copy_from_slice(&(b as i32).to_le_bytes());
-    if let Err(error) = guest(kernel, cx, tid).write(pair, &bytes) {
-        let pid = kernel.threads[&tid].process;
-        let _ = kernel.files_mut(tid).remove(a as i32, pid, true);
-        let _ = kernel.files_mut(tid).remove(b as i32, pid, true);
-        kernel.files_released(cx);
-        return Err(error);
-    }
+    let first = install(kernel, tid, first, cloexec)?;
+    let second = install(kernel, tid, second, cloexec)?;
+    debug_assert_eq!((first, second), (a as u64, b as u64));
     Ok(0)
 }
 
@@ -534,6 +540,33 @@ fn own_cred(kernel: &Kernel, tid: Tid) -> Cred {
         pid: kernel.threads[&tid].process,
         uid: credentials.uid,
         gid: credentials.gid,
+    }
+}
+
+/// What a message without credentials shows as them: no process, and the overflow ids.
+const NO_CRED: Cred = Cred {
+    pid: 0,
+    uid: 65534,
+    gid: 65534,
+};
+
+/// `unix_maybe_add_creds`: a local message carries the credentials its sender named, or its own
+/// when either end passes them or the receiver is not yet accepted.
+fn sent_cred(
+    kernel: &Kernel,
+    tid: Tid,
+    socket: &SocketRef,
+    receiver: &SocketRef,
+    named: Option<Cred>,
+) -> Cred {
+    let carried = socket.borrow().may_pass_cred() || {
+        let other = receiver.borrow();
+        other.may_pass_cred() || other.file.strong_count() == 0
+    };
+    match named {
+        Some(cred) => cred,
+        None if carried => own_cred(kernel, tid),
+        None => NO_CRED,
     }
 }
 
@@ -567,6 +600,14 @@ fn read_name(
         return Err(Errno::EINVAL);
     }
     let bytes = guest(kernel, cx, tid).read(address, length as u64)?;
+    parse_name(&bytes)
+}
+
+/// `unix_validate_addr` and the name a local address gives.
+fn parse_name(bytes: &[u8]) -> Result<Name, Errno> {
+    if bytes.len() > ADDRESS_SIZE {
+        return Err(Errno::EINVAL);
+    }
     if bytes.len() < PATH_OFFSET || u16::from_le_bytes([bytes[0], bytes[1]]) as u32 != AF_UNIX {
         return Err(Errno::EINVAL);
     }
@@ -800,13 +841,17 @@ pub(super) fn connect(
     tid: Tid,
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
-    let (file, socket) = socket_of(kernel, tid, fd)?;
+    // `__sys_connect`: the descriptor, the address taken in, then whether it is a socket.
+    let file = super::io::file(kernel, tid, fd)?;
+    if file.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
+    let bytes = address_argument(kernel, cx, tid, address, length)?;
+    let socket = of(&file).ok_or(Errno::ENOTSOCK)?;
     if socket.borrow().inet.is_some() {
-        let bytes = address_argument(kernel, cx, tid, address, length)?;
         return inet::connect(kernel, cx, tid, &file, &socket, &bytes);
     }
     if socket.borrow().netlink.is_some() {
-        let bytes = address_argument(kernel, cx, tid, address, length)?;
         return netlink::connect(kernel, cx, tid, &socket, &bytes);
     }
     if (length as i32) < PATH_OFFSET as i32 {
@@ -820,13 +865,16 @@ pub(super) fn connect(
     if matches!(name, Name::Automatic) {
         return Err(Errno::EINVAL);
     }
-    match socket.borrow().state {
-        State::Connected => return Err(Errno::EISCONN),
-        State::Listening => return Err(Errno::EINVAL),
-        State::Closed => {}
+    // `unix_stream_connect`: a socket that passes credentials takes a name first; the listener
+    // is found and checked before the socket's own state.
+    if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() {
+        autobind(kernel, cx, &socket)?;
     }
     let other = find(kernel, cx, tid, &name, kind)?;
-    if other.borrow().state != State::Listening || other.borrow().dead {
+    if other.borrow().state != State::Listening
+        || other.borrow().dead
+        || other.borrow().shutdown & RCV_SHUTDOWN != 0
+    {
         return Err(Errno::ECONNREFUSED);
     }
     // `unix_recvq_full`: the backlog is full; wait for room unless nonblocking.
@@ -840,9 +888,10 @@ pub(super) fn connect(
         kernel.park(tid, channel(&other));
         return Err(Errno::PARKED);
     }
-    // Only a socket that passes credentials gets a name of its own here.
-    if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() {
-        autobind(kernel, cx, &socket)?;
+    match socket.borrow().state {
+        State::Connected => return Err(Errno::EISCONN),
+        State::Listening => return Err(Errno::EINVAL),
+        State::Closed => {}
     }
     // The listener's end of the connection, waiting to be accepted; it takes the listener's name
     // and the connecting process's credentials.
@@ -902,11 +951,18 @@ pub(super) fn accept4(
     tid: Tid,
     [fd, address, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
+    // `__sys_accept4`: the descriptor, the flags, a free descriptor, then whether it is a socket.
+    let file = super::io::file(kernel, tid, fd)?;
+    if file.borrow().is_path() {
+        return Err(Errno::EBADF);
+    }
     let flags = flags as u32;
     if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
         return Err(Errno::EINVAL);
     }
-    let (file, socket) = socket_of(kernel, tid, fd)?;
+    let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
+    kernel.files(tid).lowest_free(0, limit)?;
+    let socket = of(&file).ok_or(Errno::ENOTSOCK)?;
     if !socket.borrow().connection() {
         return Err(Errno::EOPNOTSUPP);
     }
@@ -1258,8 +1314,7 @@ impl Data<'_> {
 /// A message to send: its bytes, its destination, what it carries and its flags.
 struct Outgoing<'a> {
     data: Data<'a>,
-    name: Option<Name>,
-    /// An internet socket's destination as the program gave it.
+    /// The destination as the program gave it (`move_addr_to_kernel`), read by each family.
     address: Option<Vec<u8>>,
     files: Vec<FileRef>,
     cred: Option<Cred>,
@@ -1298,8 +1353,8 @@ fn send(
         SOCK_STREAM => send_stream(kernel, cx, tid, socket, &message, total, nonblocking),
         _ => send_packet(kernel, cx, tid, socket, &message, total, nonblocking),
     };
-    let stream = kind == SOCK_STREAM || !is_inet;
-    if result == Err(Errno::EPIPE) && message.flags & MSG_NOSIGNAL == 0 && stream {
+    // Only streams send SIGPIPE (`unix_stream_sendmsg`, `sk_stream_error`).
+    if result == Err(Errno::EPIPE) && message.flags & MSG_NOSIGNAL == 0 && kind == SOCK_STREAM {
         let process = kernel.process_of(tid);
         let info = crate::signal::sender_info(
             SIGPIPE,
@@ -1369,7 +1424,11 @@ fn send_stream(
     total: u64,
     nonblocking: bool,
 ) -> Result<u64, Errno> {
-    if message.name.is_some() {
+    if message
+        .address
+        .as_deref()
+        .is_some_and(|bytes| !bytes.is_empty())
+    {
         return Err(if socket.borrow().state == State::Connected {
             Errno::EISCONN
         } else {
@@ -1407,7 +1466,7 @@ fn send_stream(
             } else {
                 message.files.clone()
             },
-            cred: message.cred.unwrap_or_else(|| own_cred(kernel, tid)),
+            cred: sent_cred(kernel, tid, socket, &peer, message.cred),
             sender: Rc::downgrade(socket),
             truesize: truesize(size - pages, pages),
             data,
@@ -1450,7 +1509,7 @@ fn send_stream(
         } else {
             message.files.clone()
         },
-        cred: message.cred.unwrap_or_else(|| own_cred(kernel, tid)),
+        cred: sent_cred(kernel, tid, socket, &peer, message.cred),
         sender: Rc::downgrade(socket),
         truesize: truesize(1, 0),
         data,
@@ -1564,21 +1623,17 @@ fn send_packet(
     nonblocking: bool,
 ) -> Result<u64, Errno> {
     let kind = socket.borrow().kind;
-    if kind == SOCK_SEQPACKET {
-        if message.name.is_some() && socket.borrow().state != State::Connected {
-            return Err(Errno::ENOTCONN);
-        }
-        if socket.borrow().shutdown & SEND_SHUTDOWN != 0 {
-            return Err(Errno::EPIPE);
-        }
+    // `unix_seqpacket_sendmsg`: connected, and any destination given is passed over.
+    if kind == SOCK_SEQPACKET && socket.borrow().state != State::Connected {
+        return Err(Errno::ENOTCONN);
     }
-    let target = match &message.name {
-        Some(name) if kind == SOCK_DGRAM => find(kernel, cx, tid, name, SOCK_DGRAM)?,
-        _ => match socket.borrow().peer.clone() {
-            Some(peer) => peer,
-            None => return Err(Errno::ENOTCONN),
-        },
+    let name = match &message.address {
+        Some(bytes) if kind == SOCK_DGRAM && !bytes.is_empty() => Some(parse_name(bytes)?),
+        _ => None,
     };
+    if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() {
+        autobind(kernel, cx, socket)?;
+    }
     let (sndbuf, written, timeout) = {
         let own = socket.borrow();
         (own.sndbuf, own.written, own.send_timeout)
@@ -1586,12 +1641,24 @@ fn send_packet(
     if total > sndbuf.saturating_sub(32) {
         return Err(Errno::EMSGSIZE);
     }
-    if socket.borrow().may_pass_cred() && socket.borrow().name.is_none() && kind == SOCK_DGRAM {
-        autobind(kernel, cx, socket)?;
+    // `sock_alloc_send_pskb`.
+    if socket.borrow().shutdown & SEND_SHUTDOWN != 0 {
+        return Err(Errno::EPIPE);
     }
+    if written >= sndbuf {
+        socket.borrow_mut().no_space = true;
+        return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
+    }
+    let target = match &name {
+        Some(name) => find(kernel, cx, tid, name, SOCK_DGRAM)?,
+        None => match socket.borrow().peer.clone() {
+            Some(peer) => peer,
+            None => return Err(Errno::ENOTCONN),
+        },
+    };
     if target.borrow().dead {
         // A connected datagram socket whose peer went is disconnected.
-        if kind == SOCK_DGRAM && message.name.is_none() {
+        if kind == SOCK_DGRAM && name.is_none() {
             let mut own = socket.borrow_mut();
             own.peer = None;
             own.state = State::Closed;
@@ -1603,7 +1670,7 @@ fn send_packet(
             Errno::ECONNREFUSED
         });
     }
-    if kind == SOCK_SEQPACKET && target.borrow().shutdown & RCV_SHUTDOWN != 0 {
+    if target.borrow().shutdown & RCV_SHUTDOWN != 0 {
         return Err(Errno::EPIPE);
     }
     if !message.files.is_empty() && !target.borrow().pass_rights {
@@ -1635,7 +1702,7 @@ fn send_packet(
     let packet = Packet {
         consumed: 0,
         files: message.files.clone(),
-        cred: message.cred.unwrap_or_else(|| own_cred(kernel, tid)),
+        cred: sent_cred(kernel, tid, socket, &target, message.cred),
         sender: Rc::downgrade(socket),
         truesize: truesize(total.saturating_sub(pages), pages),
         data,
@@ -1804,11 +1871,13 @@ fn receive_stream(
     } else {
         1
     };
+    // `sock_rcvlowat`: at least one byte, so an empty read of an empty queue waits too.
     let target = if flags & MSG_WAITALL != 0 {
         size
     } else {
         low.min(size)
-    };
+    }
+    .max(1);
     // A TCP read with MSG_TRUNC throws the bytes away.
     let discard = is_inet && flags & MSG_TRUNC != 0;
     let mut copied = kernel.threads[&tid].call.progress;
@@ -2104,6 +2173,10 @@ pub(super) fn read(
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
     let socket = of(file).expect("a socket");
+    // `sock_read_iter`: a read of nothing is nothing, as System V's.
+    if parts.iter().all(|(_, length)| *length == 0) {
+        return Ok(0);
+    }
     let (copied, received) = receive(kernel, cx, tid, file, &socket, Data::Guest(parts), 0)?;
     // Descriptors that came with the bytes are let go (`scm_destroy`).
     kernel.released.extend(received.files);
@@ -2123,7 +2196,6 @@ pub(crate) fn send_bytes(
     let socket = of(file).expect("a socket");
     let message = Outgoing {
         data: Data::Kernel(bytes),
-        name: None,
         address: None,
         files: Vec::new(),
         cred: None,
@@ -2162,7 +2234,6 @@ pub(super) fn write(
     let socket = of(file).expect("a socket");
     let message = Outgoing {
         data: Data::Guest(parts),
-        name: None,
         address: None,
         files: Vec::new(),
         cred: None,
@@ -2177,27 +2248,20 @@ pub(super) fn sendto(
     tid: Tid,
     [fd, buffer, length, flags, address, address_length]: Args,
 ) -> Result<u64, Errno> {
-    let (file, socket) = socket_of(kernel, tid, fd)?;
+    // `import_ubuf` comes before the descriptor.
     let length = length.min(super::io::MAX_RW_COUNT);
     if !crate::user::access_ok(buffer, length) {
         return Err(Errno::EFAULT);
     }
-    let is_inet = socket.borrow().inet.is_some() || socket.borrow().netlink.is_some();
-    let (name, address) = if address == 0 {
-        (None, None)
-    } else if is_inet {
-        let bytes = address_argument(kernel, cx, tid, address, address_length)?;
-        (None, Some(bytes))
+    let (file, socket) = socket_of(kernel, tid, fd)?;
+    let address = if address == 0 {
+        None
     } else {
-        (
-            Some(read_name(kernel, cx, tid, address, address_length)?),
-            None,
-        )
+        Some(address_argument(kernel, cx, tid, address, address_length)?)
     };
     let buffers = [(buffer, length)];
     let message = Outgoing {
         data: Data::Guest(&buffers),
-        name,
         address,
         files: Vec::new(),
         cred: None,
@@ -2212,11 +2276,12 @@ pub(super) fn recvfrom(
     tid: Tid,
     [fd, buffer, length, flags, address, address_length]: Args,
 ) -> Result<u64, Errno> {
-    let (file, socket) = socket_of(kernel, tid, fd)?;
+    // `import_ubuf` comes before the descriptor.
     let length = length.min(super::io::MAX_RW_COUNT);
     if !crate::user::access_ok(buffer, length) {
         return Err(Errno::EFAULT);
     }
+    let (file, socket) = socket_of(kernel, tid, fd)?;
     let flags = flags as u32;
     let (copied, received) = receive(
         kernel,
@@ -2248,20 +2313,34 @@ pub(super) fn recvfrom(
 struct Header {
     name: u64,
     name_length: i32,
+    /// A send's destination, taken in before the vectors.
+    address: Option<Vec<u8>>,
     parts: Vec<(u64, u64)>,
     control: u64,
     control_length: u64,
 }
 
+/// `copy_msghdr_from_user`: the header, a send's destination (its length cut to 128), then the
+/// vectors.
 fn read_header(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
     address: u64,
+    sending: bool,
 ) -> Result<Header, Errno> {
     let bytes = guest(kernel, cx, tid).read(address, 56)?;
     let long = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
     let name_length = i32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes"));
+    if name_length < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let name_length = name_length.min(128);
+    let address = if sending && long(0) != 0 && name_length != 0 {
+        Some(guest(kernel, cx, tid).read(long(0), name_length as u64)?)
+    } else {
+        None
+    };
     let (vector, count) = (long(16), long(24));
     if count > super::io::MAX_SEGMENTS {
         return Err(Errno::EMSGSIZE);
@@ -2270,6 +2349,7 @@ fn read_header(
     Ok(Header {
         name: long(0),
         name_length,
+        address,
         parts,
         control: long(32),
         control_length: long(40),
@@ -2363,30 +2443,11 @@ pub(super) fn sendmsg(
     [fd, header, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     let (file, socket) = socket_of(kernel, tid, fd)?;
-    let header = read_header(kernel, cx, tid, header)?;
-    let is_inet = socket.borrow().inet.is_some() || socket.borrow().netlink.is_some();
-    let address = if is_inet && header.name != 0 && header.name_length != 0 {
-        let length = header.name_length.min(128) as u64;
-        Some(address_argument(kernel, cx, tid, header.name, length)?)
-    } else {
-        None
-    };
-    let name = if !is_inet && header.name != 0 && header.name_length != 0 {
-        Some(read_name(
-            kernel,
-            cx,
-            tid,
-            header.name,
-            header.name_length as u64,
-        )?)
-    } else {
-        None
-    };
+    let header = read_header(kernel, cx, tid, header, true)?;
     let (files, cred) = read_control(kernel, cx, tid, &header)?;
     let message = Outgoing {
         data: Data::Guest(&header.parts),
-        name,
-        address,
+        address: header.address,
         files,
         cred,
         flags: flags as u32,
@@ -2401,7 +2462,7 @@ pub(super) fn recvmsg(
     [fd, address, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     let (file, socket) = socket_of(kernel, tid, fd)?;
-    let header = read_header(kernel, cx, tid, address)?;
+    let header = read_header(kernel, cx, tid, address, false)?;
     let flags = flags as u32;
     let (copied, received) = receive(
         kernel,
@@ -2471,11 +2532,7 @@ pub(super) fn recvmsg(
     }
     let passcred = socket.borrow().passcred && socket.borrow().family == AF_UNIX;
     if passcred {
-        let cred = received.cred.unwrap_or(Cred {
-            pid: 0,
-            uid: 65534,
-            gid: 65534,
-        });
+        let cred = received.cred.unwrap_or(NO_CRED);
         let mut data = Vec::new();
         data.extend_from_slice(&(cred.pid as u32).to_le_bytes());
         data.extend_from_slice(&cred.uid.to_le_bytes());

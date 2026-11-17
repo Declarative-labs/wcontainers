@@ -58,7 +58,7 @@ fn sequences(cases: u32, backend: bool, cached: bool) {
     );
     let strategy = (
         proptest::collection::vec(any::<u64>(), 125),
-        proptest::collection::vec((any::<u8>(), any::<[u64; 6]>()), 1..16),
+        proptest::collection::vec((any::<u16>(), any::<[u64; 6]>()), 1..16),
     );
     // How many calls put a random device's bytes somewhere, to show they are reached.
     let random = std::cell::Cell::new(0u64);
@@ -68,6 +68,8 @@ fn sequences(cases: u32, backend: bool, cached: bool) {
     let terminal = std::cell::Cell::new(0u64);
     // And how many children were made.
     let children = std::cell::Cell::new(0u64);
+    // And how many sends with control messages and receives went well.
+    let messages = std::cell::Cell::new((0u64, 0u64));
     let result = runner.run(&strategy, |(values, raw)| {
         let sequence = if backend {
             layer1::build_on_backend(&values, &raw, cached)
@@ -79,6 +81,9 @@ fn sequences(cases: u32, backend: bool, cached: bool) {
         named_pipe.set(named_pipe.get() + layer1::named_pipe_calls(&sequence, &theirs));
         terminal.set(terminal.get() + layer1::terminal_opens(&sequence, &theirs));
         children.set(children.get() + layer1::children_made(&sequence, &theirs));
+        let (sends, receives) = layer1::message_calls(&sequence, &theirs);
+        let (all_sends, all_receives) = messages.get();
+        messages.set((all_sends + sends, all_receives + receives));
         let ours = layer1::run_ours_with(&sequence, &program, &theirs, &mut server.borrow_mut());
         match layer1::difference(&sequence, &ours, &theirs) {
             None => Ok(()),
@@ -87,12 +92,15 @@ fn sequences(cases: u32, backend: bool, cached: bool) {
     });
     eprintln!(
         "layer 1{}: {cases} sequences, seed {seed}, {} calls with a random device's bytes, {} that \
-         made or opened the named pipe, {} that opened a pseudo-terminal, {} children made",
+         made or opened the named pipe, {} that opened a pseudo-terminal, {} children made, {} sends \
+         with control messages and {} receives that went well",
         if backend { " on the backend" } else { "" },
         random.get(),
         named_pipe.get(),
         terminal.get(),
-        children.get()
+        children.get(),
+        messages.get().0,
+        messages.get().1
     );
     if let Err(error) = result {
         panic!("layer 1 (seed {seed}): {error}");

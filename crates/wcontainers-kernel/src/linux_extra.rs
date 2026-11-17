@@ -634,6 +634,10 @@ pub(crate) const MSG_WAITFORONE: u32 = 0x10000;
 /// The control message carrying a sender's process descriptor (`linux/socket.h`, not in uapi).
 pub(crate) const SCM_PIDFD: u32 = 0x04;
 
+/// The one extended attribute a socket's inode has, its protocol's name (`linux/xattr.h`, not in
+/// uapi).
+pub(crate) const XATTR_NAME_SOCKPROTONAME: &[u8] = b"system.sockprotoname";
+
 /// TCP's states as `/proc/net/tcp` shows them (`net/tcp_states.h`, which only the kernel's own
 /// headers hold); UDP shows the first and seventh.
 pub(crate) const TCP_ESTABLISHED: u8 = 1;

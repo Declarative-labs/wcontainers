@@ -1,5 +1,6 @@
 // Local socket options that hand over process descriptors and queue sizes: SO_PEERPIDFD,
-// SO_PASSPIDFD with SCM_PIDFD, SO_PASSRIGHTS, and SO_INQ with SCM_INQ.
+// SO_PASSPIDFD with SCM_PIDFD, SO_PASSRIGHTS, and SO_INQ with SCM_INQ; and the protocol name every
+// socket's inode carries as an extended attribute.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -12,6 +13,8 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
+#include <netinet/in.h>
 #include <unistd.h>
 
 #ifndef SO_PASSPIDFD
@@ -291,11 +294,61 @@ static void queued(void) {
     close(sv[1]);
 }
 
+static void attributes(void) {
+    int specs[][2] = {{AF_UNIX, SOCK_STREAM}, {AF_UNIX, SOCK_DGRAM}, {AF_UNIX, SOCK_SEQPACKET},
+                      {AF_INET, SOCK_STREAM}, {AF_INET, SOCK_DGRAM}, {AF_INET6, SOCK_STREAM},
+                      {AF_INET6, SOCK_DGRAM}, {AF_NETLINK, SOCK_RAW}, {AF_NETLINK, SOCK_DGRAM}};
+    for (int i = 0; i < 9; i++) {
+        int fd = socket(specs[i][0], specs[i][1], 0);
+        char value[64] = {0}, list[64] = {0};
+        printf("family %d kind %d\n", specs[i][0], specs[i][1]);
+        result("protocol", fgetxattr(fd, "system.sockprotoname", value, sizeof value));
+        printf("protocol name %s\n", value);
+        result("protocol size", fgetxattr(fd, "system.sockprotoname", NULL, 0));
+        result("protocol short", fgetxattr(fd, "system.sockprotoname", value, 2));
+        result("user", fgetxattr(fd, "user.x", value, sizeof value));
+        result("security", fgetxattr(fd, "security.x", value, sizeof value));
+        result("security bare", fgetxattr(fd, "security.", value, sizeof value));
+        result("set security bare", fsetxattr(fd, "security.", "a", 1, 0));
+        result("set security", fsetxattr(fd, "security.x", "a", 1, 0));
+        result("remove security bare", fremovexattr(fd, "security."));
+        result("other", fgetxattr(fd, "system.other", value, sizeof value));
+        result("set user", fsetxattr(fd, "user.x", "a", 1, 0));
+        result("set protocol", fsetxattr(fd, "system.sockprotoname", "a", 1, 0));
+        result("remove protocol", fremovexattr(fd, "system.sockprotoname"));
+        long n = flistxattr(fd, list, sizeof list);
+        printf("list %ld %s\n", n, list);
+        result("list short", flistxattr(fd, list, 5));
+        close(fd);
+    }
+}
+
+static void attribute_rights(const char *who) {
+    int sv[2];
+    socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv);
+    const char *names[] = {"security.capability", "security.a", "security.", "trusted.a",
+                           "user.a", "system.a", "system.sockprotoname"};
+    for (int i = 0; i < 7; i++) {
+        printf("%s %s\n", who, names[i]);
+        result("remove", fremovexattr(sv[0], names[i]));
+        result("set empty", fsetxattr(sv[0], names[i], "", 0, 0));
+        result("get", fgetxattr(sv[0], names[i], NULL, 0));
+    }
+    close(sv[0]);
+    close(sv[1]);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     peers();
     passing();
     rights();
     queued();
+    attributes();
+    attribute_rights("root");
+    setresuid(1000, -1, 1000);
+    attribute_rights("root, real 1000");
+    setresuid(-1, 1000, -1);
+    attribute_rights("user");
     return 0;
 }

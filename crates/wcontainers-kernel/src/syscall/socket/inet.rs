@@ -1424,7 +1424,7 @@ pub(super) fn send(
     let protocol = inet_ref(socket).protocol;
     match protocol {
         Protocol::Tcp => {
-            if message.flags & MSG_OOB != 0 {
+            if message.flags & MSG_OOB != 0 && total > 0 {
                 return Err(kernel.counters.refuse_flag(
                     cx.host,
                     __NR_sendmsg,
@@ -1595,6 +1595,15 @@ fn udp_send(
     total: u64,
 ) -> Result<u64, Errno> {
     let family = socket.borrow().family;
+    // `udp_sendmsg` starts with the length a UDP header can carry, then urgent data.
+    if family == AF_INET {
+        if total > 0xffff {
+            return Err(Errno::EMSGSIZE);
+        }
+        if message.flags & MSG_OOB != 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+    }
     let named = match to {
         Some(bytes) if family == AF_INET => {
             if bytes.len() < 16 {
@@ -1784,18 +1793,15 @@ pub(super) fn receive(
     if inet_ref(socket).protocol == Protocol::Udp {
         return udp_receive(kernel, cx, tid, socket, parts, size, flags, nonblocking);
     }
-    if flags & MSG_OOB != 0 {
-        return Err(kernel.counters.refuse_flag(
-            cx.host,
-            __NR_recvmsg,
-            MSG_OOB.into(),
-            Errno::EOPNOTSUPP,
-        ));
-    }
     {
         let own = socket.borrow();
         if own.state == State::Listening {
             return Err(Errno::ENOTCONN);
+        }
+        // `tcp_recv_urg`: no urgent byte has come (sending one is not built), as for a
+        // connection that was sent none.
+        if flags & MSG_OOB != 0 {
+            return Err(Errno::EINVAL);
         }
         let connecting = own.inet.as_deref().unwrap().connecting.is_some();
         if own.state == State::Closed && !connecting && own.queue.is_empty() {
@@ -1842,9 +1848,6 @@ fn udp_receive(
     flags: u32,
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
-    if flags & MSG_OOB != 0 {
-        return Err(Errno::EOPNOTSUPP);
-    }
     {
         let mut own = socket.borrow_mut();
         if own.error != 0 {

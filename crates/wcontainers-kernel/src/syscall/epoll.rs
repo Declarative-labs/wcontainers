@@ -549,6 +549,11 @@ fn wait(
     events: u64,
     maxevents: u64,
 ) -> Option<Result<u64, Errno>> {
+    // `do_epoll_wait` in 7.0 takes the descriptor first (measured), then the count and the buffer.
+    let file = match super::io::file(kernel, tid, epfd) {
+        Ok(file) if !file.borrow().is_path() => file,
+        _ => return Some(Err(Errno::EBADF)),
+    };
     let maxevents = maxevents as i32;
     if maxevents <= 0 || maxevents as u64 > MAX_EVENTS {
         return Some(Err(Errno::EINVAL));
@@ -556,10 +561,6 @@ fn wait(
     if !crate::user::access_ok(events, maxevents as u64 * EVENT_SIZE) {
         return Some(Err(Errno::EFAULT));
     }
-    let file = match super::io::file(kernel, tid, epfd) {
-        Ok(file) if !file.borrow().is_path() => file,
-        _ => return Some(Err(Errno::EBADF)),
-    };
     let Some(epoll) = of(&file.borrow()) else {
         return Some(Err(Errno::EINVAL));
     };

@@ -207,6 +207,13 @@ fn keeps_attributes(inode: &Inode) -> bool {
 /// Linux's `xattr_resolve_name` over tmpfs's handlers: a name must have a known prefix and something
 /// after it. The backend's one handler takes every name (`fuse_xattr_handler`).
 fn resolve_name(inode: &Inode, name: &[u8]) -> Result<(), Errno> {
+    // sockfs's handlers: its protocol's name (read in `get`), and `security.` names it refuses.
+    if inode.fs.kind == Kind::Sockfs {
+        return match name.strip_prefix(prefix(XATTR_SECURITY_PREFIX.as_slice())) {
+            Some([]) => Err(Errno::EINVAL),
+            _ => Err(Errno::EOPNOTSUPP),
+        };
+    }
     if !keeps_attributes(inode) {
         return Err(Errno::EOPNOTSUPP);
     }
@@ -491,8 +498,16 @@ fn get(
             &name,
             false,
         )?;
-        resolve_name(&inode, &name)?;
-        if on_backend(&node) {
+        if let Content::Socket(socket) = &inode.content
+            && name == crate::linux_extra::XATTR_NAME_SOCKPROTONAME
+        {
+            // sockfs's one attribute, its protocol's name (`sockfs_xattr_get`).
+            let mut value = socket.borrow().protocol_name().to_vec();
+            value.push(0);
+            Ok(value)
+        } else if let Err(error) = resolve_name(&inode, &name) {
+            Err(error)
+        } else if on_backend(&node) {
             drop(inode);
             backend_value(&node, &name, size)
         } else {
@@ -541,6 +556,11 @@ fn list(
         let inode = node.borrow();
         let trusted = kernel.credentials(tid).has(CAP_SYS_ADMIN);
         let mut names = Vec::new();
+        // sockfs lists its one attribute (`sockfs_listxattr`).
+        if matches!(inode.content, Content::Socket(_)) {
+            names.extend_from_slice(crate::linux_extra::XATTR_NAME_SOCKPROTONAME);
+            names.push(0);
+        }
         // tmpfs keeps names in a tree that lists them from the greatest down.
         for name in inode.xattrs.keys().rev() {
             if !trusted && name.starts_with(prefix(XATTR_TRUSTED_PREFIX)) {
@@ -593,6 +613,15 @@ fn remove(
     // The security layer passes over private inodes (`IS_PRIVATE`): descriptors' inodes.
     if !inode.is_anonymous() {
         security_check(&credentials, &name, true)?;
+    }
+    // sockfs leaves `security.` names to the security layer, and with none a removal comes back
+    // as its handler's EAGAIN (`sockfs_security_xattr_set`; a set turns it into EOPNOTSUPP).
+    if inode.fs.kind == Kind::Sockfs
+        && name
+            .strip_prefix(prefix(XATTR_SECURITY_PREFIX.as_slice()))
+            .is_some_and(|rest| !rest.is_empty())
+    {
+        return Err(Errno::EAGAIN);
     }
     resolve_name(&inode, &name)?;
     if backend {
