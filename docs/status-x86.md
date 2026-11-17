@@ -7,7 +7,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 
 - X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the first independent
   check's findings fixed in run 2, the second check's in run 3, the third's in run 4, the fourth's in
-  run 5, the fifth's in run 6, the sixth's in run 7 and the seventh's in run 8, the same day (below).
+  run 5, the fifth's in run 6, the sixth's in run 7, the seventh's in run 8 and the eighth's in run 9,
+  the same day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -295,7 +296,49 @@ Each was first repeated and widened on the reference with `stepper6` (scratch `r
   pipe `read`, `/dev/zero` `read` and `uname` write every byte up to the page not allowed, for buffers
   ending 1 to 389 bytes before it (plan 6, X10 repeats it).
 
+## X0, run 9 (2026-11-17): the eighth independent check's findings, all fixed in the plan
+
+Repeated and widened on the reference first where the finding was about the CPU (scratch `run9/`:
+`cases16.sh` 39 cases and `xacquire.out` 2, with run 8's `stepper6`; x86 load 0.02 to 0.06, nothing timed):
+- Blocking, features not claimed whose bytes run on a CPU without them: the whole reserved-NOP space
+  (`0F 0D`, `0F 18` to `0F 1F`: `endbr64`, `endbr32`, `rdssp`, `cldemote`, MPX, `prefetchw`,
+  `prefetchwt1`, `prefetchit0`) runs as a NOP on the reference with any address, never faulting; a lock
+  prefix there gives SIGILL. Plan 5.2: iced decodes with `FORCE_RESERVED_NOP`, which makes all of them
+  `Reservednop_*` Codes (feature `MULTIBYTENOP`, claimed) with one meaning that does nothing; ignored
+  prefixes (`xacquire`, `xrelease`, `bnd`, `notrack`) are ignored, as seen. 5.10 states the rule. Layer 1
+  (7.4, 7.2 `presented` and the new `REFERENCE_HAS`) splits forms by the decoded Code's features and runs
+  the not-offered list on the reference too: compared where the reference lacks the feature (TSX, WAITPKG,
+  CLWB, PTWRITE, SERIALIZE, MOVDIRI all SIGILL there), designed answer where it has it (AES, PCLMULQDQ,
+  RDRAND, RDSEED, CLFLUSHOPT, XSAVEOPT, XSAVEC, the AVX group when off). ARM64's tests stay as they are.
+- `Guest::shape` now returns `Option<Self::Shape>`, as today's `Shape::of` (3.2, 3.4).
+- Code written on its own page: the plan now reuses phase one's exact path (`UNWIND_GO_TO_EXACT`,
+  `EXACT_SLOT`, `load_code(pc, 1)`). At X6 the memory fault hook returns the unwind payload (ARM64's
+  runners always `UNWIND_LEAVE`; ARM64's output loses one `i32.const` per fault site), and the CPU side
+  keeps a per-thread exact mark that makes that one `load_code(A, 1)` translate without protecting (5.7,
+  decision 6, X6).
+- Berkeley SoftFloat: considered and not used, with the reason in plan 5.8. softfloat-sys 0.1.4 and
+  softfloat-rs 0.1.0 do not build here: their build scripts test the building machine with `cfg!` and
+  panic off x86-64 ("build rules are not implemented"), and softfloat-sys's `c99` dependency runs CMake,
+  which fails with the Nix shell's CMake. The pure-Rust crates lack 80-bit precision control.
+  SoftFloat's C does compile for wasm32 with zig (`extF80_sqrt.c`, seen), so vendoring it is possible
+  but would put C into the Rust project's x86 crate and every build of it.
+- `cpu_hook`'s buffer: the cdylib exports `cpu_state() -> *mut u8`, `threadStateSize` bytes allocated once;
+  runner.js's per-call copy, index and results are spelled out (3.4 Hooks).
+- Code area: `FILLER` and a new `CODE_SPAN` are per guest in `layout.rs`; the translated side writes the
+  filler over the code area when it is not 0 (x86: 0xCC over 64 KiB, ARM64 nothing), and layer 1 draws
+  rip-relative operands into it (7.2, 7.4).
+- RISU's operation number is in ModRM's r/m field (plan 2, checked in scratch `sources/risu/risu_i386.c`).
+- iced without std: proved by a `no_std` cdylib with its own panic handler that links (scratch
+  `run9/iced-strict-nostd`), with a control using `std` that fails on a duplicate `panic_impl`
+  (`run9/iced-strict-std`) (plan 2).
+
 ## How to run
+
+- Run 9's experiments: copy run 8's `stepper6` and `run9/cases16.sh` to `~/wcontainers-x86/proof9/` and
+  run `./cases16.sh` there. Decoding: `nix develop -c cargo build --release --manifest-path
+  <scratch>/run9/dis/Cargo.toml --target-dir <scratch>/run9/dis/target`, then `dis9 <hex> ...`. iced
+  without std: `cargo build --release --target wasm32-unknown-unknown` of `run9/iced-strict-nostd` (links)
+  and `run9/iced-strict-std` (must fail). SoftFloat: the same build of `run9/sf` (fails, as recorded).
 
 - Run 8's experiments: build `stepper6.c`, `smc.c`, `copyuser.c` in scratch `run8/` like the steppers
   below, copy them and `cases14.sh`, `cases15.sh` to `~/wcontainers-x86/proof8/` and run each there.
@@ -343,10 +386,11 @@ Each was first repeated and widened on the reference with `stepper6` (scratch `r
   stepper, stepper3, stepper4, stepper5, the scripts cases.sh, cases2.sh, cases4.sh, cases5.sh, cases7.sh,
   cases8.sh, sweep15.sh, cases9.sh, cases10.sh, cases11.sh, cases12.sh, cases13.sh, and approx,
   approx_dump, approx_formula, approx_mxcsr with approx.out, approx_formula.out and approx_mxcsr.out) and
-  `~/wcontainers-x86/proof8/` (stepper6, smc, copyuser, cases14.sh, cases15.sh and their outputs). The
+  `~/wcontainers-x86/proof8/` (stepper6, smc, copyuser, cases14.sh, cases15.sh and their outputs) and
+  `~/wcontainers-x86/proof9/` (stepper6, cases16.sh, cases16.out). The
   cases scripts' outputs before run 8 are kept only in the Mac's scratch `reference-proof/`. The
-  independent checks' files are in `~/wcontainers-x86/check` and `check2` to `check7`. Installed in runs
-  2 to 8: nothing.
+  independent checks' files are in `~/wcontainers-x86/check` and `check2` to `check8`. Installed in runs
+  2 to 9: nothing.
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -361,11 +405,12 @@ Each was first repeated and widened on the reference with `stepper6` (scratch `r
   cases (`cases9.sh` 38, `cases10.sh` 8); in run 7, 45 hand-written cases (`cases11.sh` 15, `cases12.sh`
   18, `cases13.sh` 12); in run 8, 41 hand-written cases (`cases14.sh` 24, `cases15.sh` 17), one run of
   `smc` and 42 copy cases (`copyuser`: 14 buffer placements for each of three calls). `cases14.sh` ran
-  twice: the first run did not pass its environment settings to `stepper6` and was discarded.
+  twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
+  41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2).
 
 ## Measurements
 
-All in the "X0, run 1" to "run 8" sections above.
+All in the "X0, run 1" to "run 9" sections above (run 9 timed nothing).
 
 ## Licences of what this track uses
 
@@ -378,6 +423,9 @@ All in the "X0, run 1" to "run 8" sections above.
 - sandsifter: BSD-3 (Battelle); read only, nothing copied.
 - RISU: EPL-1.0; read only, nothing copied.
 - gex: AGPL-3.0; not read, nothing used.
+- Looked at in run 9 and not used: softfloat-sys 0.1.4 (BSD-3-Clause, bundles Berkeley SoftFloat 3,
+  BSD-3), softfloat-rs 0.1.0 (BSD-3-Clause), softfloat 1.0.0 (MIT OR Apache-2.0), machina-softfloat 0.1.2
+  (MIT), era2m_softfloat 0.2.1 (BSD-3-Clause-Clear). Nothing copied.
 
 ## Departures from the plan
 
@@ -426,3 +474,13 @@ None yet (no milestone of the plan has been built).
 - Glibc programs without `BIND_NOW` fire the counter "MXCSR's exception flags read while not kept" at each
   lazy binding (the loader's `fxsave`), warning once; a state restore never moves a program off the fast
   path, only `ldmxcsr` or a non-default mode does.
+- x86 instructions of features not claimed do what they do on a CPU without the feature: the reserved-NOP
+  space (CET's `endbr64` and `rdssp`, `cldemote`, MPX, `prefetchw`) runs as NOPs, so CET-built programs run;
+  the rest gives illegal instruction.
+- Berkeley SoftFloat is not used for x87 precision control and `fsqrt`, though it does exactly that job:
+  no crate wrapping it builds for these targets, and vendoring its C would bring C into the x86 crate. The
+  plan keeps rustc_apfloat and astro-float with a little glue.
+- At X6 the memory fault hook returns the unwind payload, which changes ARM64's output by one instruction
+  per fault site (behaviour unchanged).
+- x86 layer 1's code area is 64 KiB around the instruction, filled with `int3` on both sides; ARM64's stays
+  256 MiB of zeros.
