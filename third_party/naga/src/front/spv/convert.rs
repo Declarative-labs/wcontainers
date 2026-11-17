@@ -41,6 +41,53 @@ pub(super) const fn map_binary_operator(word: spirv::Op) -> Result<crate::Binary
     }
 }
 
+/// The integer signedness an instruction works in, where SPIR-V gives it by the instruction and not
+/// by its operands' types.
+pub(super) const fn op_signedness(word: spirv::Op) -> Option<crate::ScalarKind> {
+    use crate::ScalarKind as Sk;
+    use spirv::Op;
+
+    match word {
+        Op::SDiv
+        | Op::SRem
+        | Op::SMod
+        | Op::ShiftRightArithmetic
+        | Op::ConvertSToF
+        | Op::ConvertFToS
+        | Op::SConvert
+        | Op::BitFieldSExtract
+        | Op::AtomicSMin
+        | Op::AtomicSMax
+        | Op::GroupNonUniformSMin
+        | Op::GroupNonUniformSMax => Some(Sk::Sint),
+        Op::UDiv
+        | Op::UMod
+        | Op::ShiftRightLogical
+        | Op::ConvertUToF
+        | Op::ConvertFToU
+        | Op::UConvert
+        | Op::BitFieldUExtract
+        | Op::AtomicUMin
+        | Op::AtomicUMax
+        | Op::GroupNonUniformUMin
+        | Op::GroupNonUniformUMax => Some(Sk::Uint),
+        _ => None,
+    }
+}
+
+/// The integer signedness a GLSL.std.450 instruction works in.
+pub(super) const fn glsl_signedness(op: spirv::GlslStd450Op) -> Option<crate::ScalarKind> {
+    use spirv::GlslStd450Op as Glo;
+
+    match op {
+        Glo::SAbs | Glo::SSign | Glo::SMin | Glo::SMax | Glo::SClamp | Glo::FindSMsb => {
+            Some(crate::ScalarKind::Sint)
+        }
+        Glo::UMin | Glo::UMax | Glo::UClamp | Glo::FindUMsb => Some(crate::ScalarKind::Uint),
+        _ => None,
+    }
+}
+
 pub(super) const fn map_relational_fun(
     word: spirv::Op,
 ) -> Result<crate::RelationalFunction, Error> {
