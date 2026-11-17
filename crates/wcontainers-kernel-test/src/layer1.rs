@@ -3420,6 +3420,13 @@ fn machine_bytes(call: &Call) -> Vec<Clear> {
         linux::__NR_sched_getattr if c >= 32 => vec![fixed(b + 24, 8)],
         linux::__NR_uname => vec![fixed(a + 130, 130)],
         linux::__NR_sched_getaffinity => vec![by_value(c, b)],
+        // The status calls' sequence numbers, times and processes (as in `volatile`).
+        linux::__NR_shmctl if matches!(b, 2 | 13 | 15) => vec![fixed(c + 24, 2), fixed(c + 56, 32)],
+        linux::__NR_shmctl if b == 14 => vec![fixed(c + 16, 8)],
+        linux::__NR_msgctl if matches!(b, 2 | 11 | 13) => {
+            vec![fixed(c + 24, 2), fixed(c + 48, 24), fixed(c + 96, 8)]
+        }
+        linux::__NR_semctl if matches!(c, 2 | 18 | 20) => vec![fixed(d + 24, 2), fixed(d + 48, 16)],
         _ => Vec::new(),
     };
     assert!(clears.len() <= CLEARS, "more clears than the runner takes");
