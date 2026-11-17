@@ -6,95 +6,138 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-G5a (first slice) is done (run 4 finished what run 3 had left out: swap chains, outputs and
-presenting in the Windows library, and the independent check's findings). Next is G5b (Next, below).
+The first slice (G5a, runs 1 to 4) is done. Run 5 (2026-11-17) is the first run on the whole
+milestone G5. It fixed the nine findings of the independent check of G5a, ran Wine's and vkd3d's
+Direct3D 12 tests through our libraries for the first time, and added what most of them need first:
+root signatures with root constants, root constant buffer views, descriptor tables of constant
+buffers, textures and samplers, static samplers, depth-stencil targets, DXBC shaders, private data
+and the device of every object. G5 is not complete: see "Test files" and "Next".
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
   (`presents_in`, `sdr`); DXGI format numbers to interface formats; swap chains (flip sequential,
   flip discard, blit discard, blit sequential) with presenting by one copy into the host surface (sRGB
   and float back buffers encoded on the way), resizing, and frame pacing by the maximum frame latency;
-  what each DXGI format can be used for (`format_support`, `takes_samples`, `plane_count`,
-  `dxgi_vertex_format`). 9 tests on a recorder whose GPU finishes work only when the test says so
-  or a wait reaches it, so the pacing test sees `present` wait for exactly the frame past the
-  latency.
+  what each DXGI format can be used for. It depends only on `wcontainers-gpu` now (run 5: the present
+  copy's shaders come from the interface's `ShaderModule::from_wgsl`). 9 tests on a recorder whose GPU
+  finishes work only when the test says so.
 - `wcontainers-direct3d-12`, the front (plain Rust, generic over the back end): serialized root
-  signatures, the answers of `D3D12CreateDevice` and `CheckFeatureSupport` (plan section 9), GPU
-  virtual addresses and descriptor handles, committed resources (default heap buffers and textures;
-  upload and readback buffers in front-owned memory), `GetCopyableFootprints`, the size and alignment
-  of resources (`allocation`), graphics pipeline states, command lists recorded front-side and
-  replayed at `ExecuteCommandLists`, fences, and (run 4) swap chains with a resource standing for
-  each back buffer (`create_swap_chain`, `chain_buffer`, `present`, `resize_swap_chain`).
-- Shaders (run 4): DXIL goes through `wcontainers_shaders::convert` (origin/phase-2-graphics-shaders,
-  merged); the hand-written stand-in and its hash table are gone. The vertex shader's reflected
-  inputs give the locations; input elements the shader does not read fetch nothing. Shaders that read
-  resources are refused with `NotImplemented` until root parameters bind them; a draw with a first
-  vertex or instance whose vertex shader reads `SV_VertexID` or `SV_InstanceID` fails the replay
-  (`draw_base: None` reads the bases as zero). The converter's message is kept as a warning.
-- Fences (run 4): `SetEventOnCompletion` with an event registers it on the device and returns;
-  `Queue::Signal` and `Fence::Signal` return at once. The device thread sets each event when the
-  fence reaches its value, looking without waiting (`reached_events`) every 250 µs on a
-  high-resolution timer while events wait, and at once after every call. Nothing blocks the program
-  or the device thread for it. With no event the call waits, as the API defines.
-  `GetCompletedValue` finishes read backs whose submission is done first, so readback memory holds
-  the bytes whenever the program sees the value.
-- The Windows library (`examples/directx`, built as `d3d12.dll`, with `dxgi.dll` a forwarder to it):
-  factory, adapter, outputs (the host's monitors from GDI, primary first, as `IDXGIOutput6`), swap
-  chains on a Direct3D 12 queue (`IDXGISwapChain4`: `CreateSwapChainForHwnd`, `CreateSwapChain`,
-  `Present`, `Present1`, `GetBuffer`, `ResizeBuffers`, frame latency, colour spaces), and the device
-  objects of run 3. The surface is made from the program's window on the device thread. Two things
-  the real driver does needed handling: while a swap chain call waits for the device thread, the
-  calling thread answers messages other threads send to its windows (the driver asks the window's
-  thread while it makes the swap chain); and the NVIDIA driver loads DXGI by name on the device
-  thread to present, which in this process finds our library, so `CreateDXGIFactory*` and
-  `D3D12CreateDevice` called on the device thread go to the system's own libraries (loaded from the
-  system directory). Interface methods not done are generated stubs (`com.py`, which now holds its
-  object list and refuses to generate a stub for a method that returns a plain value, so every such
-  method is answered for real).
-- Drawn on the RTX 3080 through our libraries, unchanged rig programs (2026-11-17, run 4, desktop
-  CPU load 13%): the triangle scene "0 of 65536 pixels beyond 1, largest difference 0", and the
-  swapchain scene, four frames each "0 of 12288 (5120 after the resize) pixels beyond 1, largest
-  difference 0", its results text the same as real Direct3D 12's (three presents succeed, the resize
-  reports 64 by 80 with 3 buffers). Every other Direct3D 12 scene stops at its first call the front
-  does not do (roots, bundles and blend at shaders reading resources; heaps at CreateHeap; compute
-  and queues at CreateComputePipelineState; queries at CreateQueryHeap; copies, depth, stencil,
-  formats and samplers at a command list method not done).
-- The independent check (`examples/check_d3d12.rs`, run with real Direct3D 12 and through our
-  libraries, How to run): draw "0 of 4096 pixels beyond 1, largest difference 0";
-  features "493 of 872 answers differ, none beyond real Direct3D 12" (each difference read against
-  section 9 in run 3: the intended absences, or abilities the WebGPU back end lacks natively; wave
-  operations are absent because the WebGPU back end never declares `SUBGROUPS`, on any machine);
-  outputs "22 of 110 answers differ, none beyond real": 21 colour spaces real Windows presents and
-  ours does not (studio-range spaces 2, 3, 17, 20, 21 and HDR10 spaces 12 and 14, on 8- and 10-bit
-  buffers), and the primaries (ours are sRGB's exactly; real are this monitor's, within 0.002).
-  Read of the code for anything faked (run 4): barriers, `Unmap` and allocator `Reset` do nothing
-  because nothing is needed (plan 5.2, 4.6); `SetGraphicsRootSignature` records nothing, exact for
-  root signatures without parameters; `Present` with `DXGI_PRESENT_TEST` answers S_OK (the host
-  says nothing of occlusion, so a present would always go ahead); `SetColorSpace1` accepts only the
-  one space each format presents in. No method answers success without the work.
-- Not done (later milestones): root parameters and shader-visible descriptor heaps; depth-stencil
-  targets; placed resources; queue `Wait`; bundles; queries; compute; indirect execution;
-  `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` (refused with E_NOTIMPL at creation, so
-  `GetFrameLatencyWaitableObject` answers null as DXGI does without the flag); scaling other than
-  stretch; fullscreen (`SetFullscreenState(TRUE)` answers `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`).
+  signatures and their conversion between versions 1.0 and 1.1 (`RootSignatureDesc::at_version`),
+  `D3D12CreateDevice` and `CheckFeatureSupport` (plan section 9), GPU virtual addresses, descriptor
+  heaps owned by the front (CPU handles point into its slots; GPU handles are numbers it maps back),
+  committed resources, `GetCopyableFootprints`, graphics pipeline states from DXIL or DXBC (through
+  `wcontainers_shaders::convert`), command lists recorded front-side and replayed at
+  `ExecuteCommandLists` (each list with its own state), fences, swap chains.
+- Bindings (run 5, `src/device/bind.rs`): at pipeline creation every binding the stages' reflections
+  name must be found in the root signature (else `E_INVALIDARG`, as Direct3D 12); at each draw the
+  bound root signature is searched for each binding by kind, register space and register, the
+  descriptor is read from the heap as it is at replay, and one binding set per stage set is made
+  (the back end caches equal sets). Root constants are written into the data ring and bound as a
+  uniform buffer of the size the program declares (`ImmediatesSpilled`, counted and warned: the
+  converter does not read root constants as immediates yet). Constant buffer views bind the size the
+  program declares. Texture views are cached per resource and description; samplers per description.
+  Upload buffers a binding reads are written to the GPU once per `ExecuteCommandLists`
+  (`MappedUploadWhole`).
+- Refused with E_NOTIMPL and the reason printed (`wcontainers: <reason>: not implemented`): unordered
+  access views in shaders, buffers read through shader resource views, null descriptors, arrays of
+  resources, component mappings other than identity, minimum level-of-detail clamps, level-of-detail
+  bias, min/max filters, border colours and mirror-once without the back end's feature, alpha-
+  antialiased lines, depth bias on lines and points, forced sample counts, conservative
+  rasterisation, compute pipelines, queries, predication, placed resources and heaps, bundles,
+  indirect execution, queue waits, stream output, resolves.
+- The Windows library (`examples/directx`, `d3d12.dll`, with `dxgi.dll` forwarding to it): as in run
+  4, plus (run 5) `D3D12CreateRootSignatureDeserializer` and `D3D12CreateVersionedRootSignatureDeserializer`,
+  the system library's export ordinals (101 for `D3D12CreateDevice`, and so on), one device per
+  process while it lives (as Direct3D 12 hands out one per adapter), every Direct3D 12 object's
+  private data, name and device (`base.rs`; children hold a reference to the device), structure
+  returns as C callers read them (`abi.rs`, below), depth-stencil, constant buffer, shader resource,
+  unordered access and sampler descriptors, descriptor copies, the root argument calls,
+  `GetHeapProperties`, `CopyResource`, `GetParent` of adapters, outputs and swap chains,
+  `GetContainingOutput`, swap chains refused on the desktop window (`E_ACCESSDENIED`) and on
+  queues other than direct ones (`DXGI_ERROR_INVALID_CALL`).
+- Structure returns (`abi.rs`): COM methods returning a structure (`GetDesc`, `GetAdapterLuid`,
+  `GetCPUDescriptorHandleForHeapStart` and the like) take a pointer for it and return that pointer,
+  which C callers dereference; the windows crate's shims write the structure and return nothing.
+  Each such object gets a copy of its vtable with those entries replaced by shims that also return
+  the pointer. Without this every C program read garbage (Wine's tests crashed on it).
+
+## CheckFeatureSupport describes the planned front
+
+The answers (plan section 9) are honest about the back end but run ahead of the front as it is
+today: feature level 11_0, resource binding tier 1, resource heap tier 2, depth formats with
+`DEPTH_STENCIL`, `SHADER_SAMPLE`/`SHADER_LOAD` and the rest describe the front this milestone builds.
+Today compute pipelines, unordered access views, placed resources and heaps, queries and the other
+refusals above answer E_NOTIMPL when used, so a program trusting the answers can fail at those calls.
+Nothing answers success without the work.
+
+## Test files (Wine's and vkd3d's, through our libraries, RTX 3080)
+
+How a file counts: the rig compares each test's verdict with real Direct3D 12's on this GPU
+(`wine-tests run`, below). "Real" counts tests that pass on real Direct3D 12.
+
+Run 5, last run (2026-11-17), tests passing on real Direct3D 12 that pass through ours:
+- d3d12 (Wine): 6 of 7. Fails: test_swapchain_refcount (10 of 39 checks: references the swap
+  chain and its buffers hold). Two tests real Direct3D fails here (test_swapchain_draw,
+  test_swapchain_backbuffer_index) pass through ours; they are not counted.
+- vkd3d-d3d12: 54 of 172 (56 pass, two of them among the 4 real fails). At the start of run 5: 0
+  (no test could start: the deserializer exports were missing), then 21, 24.
+- vkd3d-d3d12_invalid_usage: 1 of 3. Fail: test_invalid_resource_barriers (2 of 29),
+  test_invalid_copy_texture_region (4 of 21).
+- vkd3d-hlsl_d3d12: 8 of 9. Fails: test_thread_id (962 of 4156 checks; compute).
+- vkd3d-shader_runner (302 files): not run through ours yet.
+The vkd3d-d3d12 tests passing: node_count, format_support, create_reserved_resource,
+create_sampler, create_unordered_access_view, create_pipeline_state, create_fence,
+multithread_private_data, gpu_signal_fence, multithread_fence_wait, fence_values,
+set_render_targets, draw_instanced, draw_indexed_instanced, draw_no_descriptor_bindings,
+multiple_render_targets, append_aligned_element, gpu_virtual_address, fragment_coords, scissor,
+draw_depth_only, texture_resource_barriers, discard_instruction, shader_input_output_components,
+immediate_constant_buffer, root_constants, texture_ld, resinfo, descriptor_tables,
+update_descriptor_tables, update_descriptor_heap_after_closing_command_list,
+copy_descriptors_range_sizes, create_null_descriptors, null_vbv, depth_clip, vertex_id,
+copy_texture, copy_buffer_texture, face_culling, multithread_command_queue_exec, quad_tessellation,
+line_tessellation, cpu_descriptors_lifetime, command_list_initial_pipeline_state, blend_factor,
+output_merger_logic_op, shader_sample_position, vertex_shader_stream_output,
+write_buffer_immediate, unbounded_resource_arrays, unbounded_samplers, readback_map_stability,
+get_resource_tiling, shader_cache, multi_fence_event, enumerate_meta_commands (a pass may be a test
+that checks a refusal: several of these only check that what is absent is reported absent).
+
+The rig's Direct3D 12 scenes through ours (run 5, last code): 17 of 124 outputs pass, all equal
+to real Direct3D 12 (triangle; swapchain, four frames and its results; targets rgba8, rgb10a2,
+rgba16f, r32ui; depth clip, funcs and shader with their depth; blend masks and ops). Wrong pictures,
+not yet understood, to look at first: blend-alpha and blend-factors (every pixel differs, by up to
+255) and depth-bias (every pixel, up to 255; depth bias went native in run 5). The stencil scene
+panics the device thread with an arithmetic overflow (num/mod.rs:1322, not yet found). The others
+stop at a refusal: samplers, textures, topology, constants and views at level-of-detail bias or
+other refusals turned into device removal at replay; formats at E_FAIL; raster at wireframe without
+`POLYGON_MODE` (the Vulkan path); draws at instance step rates; heaps, bundles, compute, queues,
+queries, copies (resolve) and msaa at calls not done; geometry, tessellation and streamout at their
+stages (the stage helper, G6).
+
+Gap list (the absent feature behind failing tests, from the logs of the last run, most common
+first): compute pipelines and `Dispatch`; unordered access views (front, and the shaders crate's
+"unsupported: StorageImage" and "TypedBuffer"); `ClearUnorderedAccessView*`; query heaps, queries,
+`ResolveQueryData`, `SetPredication`; `ExecuteIndirect` and command signatures; `ResolveSubresource`;
+placed resources and heaps; queue `Wait`; bundles; stream output; null descriptors; buffer shader
+resource views; arrays of descriptors; the shaders crate's "ClipDistance", "StructType" and "Atomics".
+Wine's d3d12 `test_draw` fails converting its DXIL (dxil-spirv's output has
+`SPV_KHR_float_controls`, which the shaders crate's SPIR-V reader refuses: G6). This list is not yet
+the pass bar's final written gap list: most of these gaps are work of this milestone.
 
 ## Next, in this order
 
-1. Root parameters and shader-visible descriptor heaps (binding sets made at replay from the
-   descriptors as they are then, plan 4.5 and 5.2), with `VariantKey::layout` from the shaders
-   track for DXIL's binding numbers; then depth-stencil targets: the roots, heaps, blend, depth and
-   stencil scenes.
-2. The frame latency waitable object (a semaphore the device thread releases as frames finish, as
-   fence events are set now).
-3. Recording without allocating per command: recorded commands still own `Vec`s (vertex buffer
-   views, viewports, scissors, targets, clear rectangles), `Close` copies the commands into a new
-   `Arc`, and each draw looks its vertex layout up in a `HashMap`; a per-list arena reused across
-   `Reset` and a last-layout cache would remove these. Run 4 removed the per-draw `Vec`s of vertex
-   buffers (fixed arrays now) and left the rest, a change to recording and replay together, for G5b
-   with a measurement of what it costs first (the independent check's finding, not yet measured).
-4. The call buffer of plan 4.8 in the Windows library (below, Departures).
-5. Move `examples/directx` into `crates/wcontainers-directx` (on the shared line now, the Direct3D 11
-   track's) once the two tracks agree how its device thread serves both fronts.
+1. The wrong pictures and the panic above (blend-alpha, blend-factors, depth-bias, stencil).
+2. Unordered access views (storage buffers and textures, root UAVs, counters) and compute pipelines
+   with `Dispatch` and the compute root arguments; `ClearUnorderedAccessView*`. Ask G6 for storage
+   images and typed buffers in the converter where the logs show them refused.
+3. Buffer shader resource views (typed, structured, raw), null descriptors, arrays of descriptors,
+   level-of-detail bias (the converter's variant), instance step rates.
+4. Queries and predication, placed resources and heaps with aliasing, queue `Wait`, indirect
+   execution, bundles, resolves: the listed cases of the pass bar, each with a test against real
+   Direct3D 12.
+5. Then the real Direct3D 12 program (the rig's godot-platformer-*-d3d12), and the frame latency
+   waitable object.
+6. Recording without allocating per command (G5a's Next 3), the call buffer of plan 4.8 (Departures),
+   and moving `examples/directx` into `crates/wcontainers-directx` with the Direct3D 11 track.
 
 ## For the Direct3D 11 track: using the infrastructure crate
 
@@ -136,7 +179,7 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (25 tests: 9 infrastructure, 6 front, 7 device on the recorder, 1 on the GPU, 2 unit).
+  (26 tests: 9 infrastructure, 7 front, 7 device on the recorder, 1 on the GPU, 2 unit).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
@@ -153,14 +196,37 @@ A working example of all of it is this track's Windows library: `examples/direct
   libraries (in C:\wc\out\phase-2-graphics-direct3d-12\check), then compares. `--desktop`
   matters: in session 0 real DXGI refuses outputs and swap chains
   (`DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`).
-- `com.rs`: `python3 examples/directx/com.py > examples/directx/com.rs`, then `cargo fmt`.
+- Wine's and vkd3d's tests through our libraries (build first; about 8 minutes):
+  `tools/graphics-rig/remote "cargo build -j 3 -p wcontainers-direct3d-12 --examples"`, then
+  `E='%CARGO_TARGET_DIR%\debug\examples'; tools/graphics-rig/wine-tests run --dll "d3d12.dll=$E\d3d12.dll"
+  --dll "dxgi.dll=$E\dxgi.dll" d3d12 vkd3d-d3d12 vkd3d-d3d12_invalid_usage vkd3d-hlsl_d3d12`
+  (name tests as `vkd3d-d3d12:test_a/test_b`). Logs land in
+  pyro-parked/wcontainers-scratch/graphics-rig/wine-logs; `grep -o 'wcontainers: [^,(]*'` over them
+  counts the refusals. The shader runner file (vkd3d-shader_runner, 302 files) has not been run
+  through ours yet.
+- The own program now also runs `answers` (alpha modes, a 16-bit float swap chain's presents, a
+  fence waited for with no event, committed resources with each heap flag), compared like features.
+- `com.rs`: `python3 examples/directx/com.py > examples/directx/com.rs`, then `cargo fmt` (it finds
+  the windows crate under `$CARGO_HOME`, default `~/.cargo`).
 - On the Mac only `nix develop -c cargo fmt` (the Mac is overloaded).
 
 ## Interface changes
 
 - `Caps::adapter: AdapterInfo` (run 1): DXGI's adapter description is answered from `caps()`.
+- `ShaderModule::from_wgsl(source, entry, stage)` (run 5, commit "interface: made a shader module
+  from one entry point of a wgsl module..."): parse, validate and key one entry point of a WGSL
+  module, as the built-ins are keyed. The infrastructure crate's present copy uses it instead of a
+  builder of its own. G1's `helpers.rs` still has its own copy of the same steps (`module`/`program`);
+  it could call this (G1 owns helpers.rs, so this track did not change it).
 
 ## Measurements
+
+- Run 5 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`): fence events, 2000
+  rounds: real mean 1 µs, 99th percentile 2 µs; ours mean 35 µs, 99th percentile 60 µs, first round
+  32.2 ms. Not timings: own program draw 0 of 4096 pixels beyond 1; features 493 of 872 differ, none
+  beyond real; outputs 22 of 110 differ, none beyond; answers 7 of 25 differ, none beyond (ours
+  refuses sharing, display and the other heap flags it lacks; everything else equal, including the
+  alpha modes, the float swap chain's three presents and the wait with no event).
 
 - Run 4 (2026-11-17, RTX 3080, desktop CPU load 13%, shared, not `--alone`): fence events, 2000
   rounds of an empty queue's `Signal`, `SetEventOnCompletion` and `WaitForSingleObject`: real
@@ -197,12 +263,12 @@ A working example of all of it is this track's Windows library: `examples/direct
   sRGB for those, which plan 4.9 had as present), and leaves out the studio-range and HDR10 spaces
   Windows also presents, since we convert none of them. `GetDesc1`'s luminance is Windows' answer
   for an SDR display here (0.5, 270, 270 cd/m²); the primaries are sRGB's.
-- A 16-bit float swap chain makes the WebGPU back end configure an `rgba16float` surface, which its
-  `Caps` lists as presentable, but wgpu's Vulkan surface on this desktop lacks it (it offers
-  bgra8unorm, rgba8unorm, their sRGB forms and rgb10a2unorm): wgpu reports a validation error and
-  `configure_surface` returns no error. For G2: `configure_surface` should fail for a format the
-  surface lacks, and natively `Caps` should list the surface's formats; the swap chain would then
-  fall back to `rgba8unorm`.
+- A 16-bit float back buffer is presented encoded into an `rgb10a2unorm` surface where presented,
+  else `rgba8unorm`, never into an `rgba16float` one (run 5): swap chains present in SDR sRGB only,
+  so a float surface adds nothing. Before, the swap chain configured `rgba16float`, which `Caps`
+  lists but wgpu's Vulkan surface on this desktop lacks, and every `Present` then removed the device
+  (`DXGI_ERROR_DEVICE_REMOVED`). For G2 still: `configure_surface` should fail for a format the
+  surface lacks.
 - Sync intervals 2 to 4 show each frame for at least one refresh, not exactly that many: the host
   surface has only "wait for the display" or not. A listed loss.
 - DXGI's memory sizes in the adapter description are zero (no browser API reports memory).
@@ -224,15 +290,29 @@ A working example of all of it is this track's Windows library: `examples/direct
 - The checksum of a root signature container written by our `D3D12SerializeVersionedRootSignature`
   is zero: only our runtime reads it.
 - Wave lane counts, where a back end has subgroups, are WebGPU's bounds (4 to 128).
-- The infrastructure crate's tests keep their own recorder (tests/support/record.rs) rather than G1's
-  (crates/wcontainers-gpu-test): G1's finishes every fence at once, so frame pacing could not be
-  tested on it.
+- The infrastructure crate's tests keep their own recorder (tests/support/record.rs, 358 lines) rather
+  than G1's (crates/wcontainers-gpu-test): G1's finishes every fence at a submit, so frame pacing
+  cannot be tested on it. A parallel code path; the fix is a mode of G1's recorder whose fences
+  finish only when the test says (asked of the interface track here; this track does not write in
+  G1's crate). Kept until then.
+- `SetEventOnCompletion` with no event (run 5) makes an event of the calling thread's own, registers
+  it like any event and waits on it, so the device thread stays free for the signal (a CPU signal
+  from another thread included); before, it answered E_NOTIMPL unless submitted work reached the
+  value.
+- A draw with no pipeline state set draws nothing (vkd3d's tests rely on the hardware ignoring it).
+- After the device is removed every fence reports `u64::MAX` reached, as Direct3D 12's do.
+- `GetParent` of an adapter or a swap chain gives a new factory, not the one that made it.
+- Descriptors are 64 bytes (`GetDescriptorHandleIncrementSize`); real NVIDIA's are 32.
 
 ## Licences
 
 - `slab` 0.4 (MIT, read in its Cargo.toml): the device's object tables.
 - `wcontainers-shaders` (ours) and through it dxil-spirv (MIT) and dxbc-spirv (MIT), as plan
-  section 3 and the shaders track record. The front no longer uses `naga` or `blake3` directly.
+  section 3 and the shaders track record.
+- `naga` (MIT OR Apache-2.0, the workspace's copy, plan section 3): the front reads the sizes a
+  program's uniform blocks declare (run 5). The infrastructure crate depends only on
+  `wcontainers-gpu` (run 5; it had `naga` and `blake3`, MIT OR Apache-2.0 and CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception,
+  which plan section 3 covers).
 - Windows library only (dev-dependencies): `windows` and `windows-core` 0.62.2 (MIT OR
   Apache-2.0, as plan section 10 confirms).
 - Test only: `wcontainers-gpu-webgpu`, `wgpu` 30.0.2 (MIT OR Apache-2.0), `pollster` (MIT OR
