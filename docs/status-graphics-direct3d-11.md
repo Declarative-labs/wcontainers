@@ -1,9 +1,48 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 5 of G4 as a whole (2026-11-17).
+Runs so far: six on G4a, the first slice; then runs 1 to 6 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 6: the desktop refused every SSH sign-in again (12:13 onward, the same reset after the key
+exchange; the rig track reports the same since 09:45). Nothing was built, run or tested on
+Windows; everything is type-checked and clippy-clean for Windows by the check-only cross build,
+both builds of the library, and committed locally, not pushed. What it did:
+- Merged origin/phase-2-graphics (holding -webgl's newest) cleanly. It brought interface change
+  1362848, rules a front must follow: one viewport a draw, at most one scissor, a uniform binding
+  at least the program's block (the front already grew constant buffers), a comparing sampler
+  exactly where the program compares, no linear sampler on a texture the back end cannot filter,
+  and an empty pass's size.
+- 60f0b05: draws go through the first viewport and, with the scissor test on, the first scissor
+  rectangle (a zero one when none is set, which passes nothing); without a shader choosing one
+  (none is served) Direct3D draws through those. A sampler read the other way than it compares is
+  bound as a twin made once on the sampler (`Sampler::twin`). A texture whose view format lacks
+  `FILTER` sampled through a linear sampler (an empty slot's default sampler is linear) is refused
+  at the draw, named FilterInShader: the shaders crate does not build that variant yet. Front tests
+  `a_draw_goes_through_the_first_viewport_and_scissor_rectangle`,
+  `samplers_are_bound_comparing_as_the_program_reads_them`,
+  `a_texture_the_back_end_cannot_filter_is_not_sampled_linearly` (never run).
+- bf3c1a9: a draw with no target and no depth view (Direct3D's drawing with only unordered access
+  views) opens a pass with `empty` set: as large as the first viewport reaches, one sample; a later
+  draw through a larger viewport opens another. Before, the back end got a pass with nothing.
+  Front test `a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through` (never run).
+- a19cb5a, c3918dd: the WebGL 2 build of the library (plan section 10): `cargo build -p
+  wcontainers-directx --features webgl` makes the same library on the WebGL 2 back end over ANGLE
+  (src/com/chosen.rs holds what differs: making the back end, registering a window). ANGLE comes
+  from `WEBGL_ANGLE_DIR` (default C:\wc\tools\angle-mozangle-0.7.1, as the WebGL 2 back end's own
+  tests take it); `WEBGL_OFF` lists WebGL extensions taken as missing. Never built or run yet.
+- The question of whether ANGLE loads our d3d11.dll: it does. mozangle 0.7.1's Renderer11.cpp
+  calls `LoadLibrary("dxgi.dll")` and `LoadLibrary("d3d11.dll")` by name, which in a process
+  holding ours gives ours. So `D3D11CreateDevice` and `D3D11CreateDeviceAndSwapChain` now decide by
+  the caller's module as DXGI's entry points do: calls from this library, from the back end's own
+  libraries (ANGLE's directory) and from the system directory go to the system's d3d11.dll, loaded
+  by full path; the program's calls get ours.
+- Factories made by `CreateDXGIFactory*` now take the caps of the first back end made, making one
+  for them (and dropping it) only while none was made: a second native WebGL 2 back end on a thread
+  would take over EGL's current context and display (Asked of other tracks).
+- resume.sh gained a `webgl` step (every Direct3D 11 scene through the WebGL 2 build, in its own
+  target directory) and lints the WebGL 2 build too.
 
 G4 run 5: the desktop still refused every SSH sign-in (probed from 11:48 through the run, same
 reset after the key exchange). Nothing was built, run or tested on Windows again; everything below
@@ -813,12 +852,20 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   WebGPU device). Pairs that would fail only on something else (a vertex attribute the format of
   which WebGPU lacks) are not filtered; none is known.
 
-- DXGI's factory entry points decide by the caller's module whose DXGI a call wants: callers in
-  this library (wgpu) or in the system directory get the system's dxgi.dll, every other caller
+- DXGI's factory entry points, and since G4 run 6 `D3D11CreateDevice` and
+  `D3D11CreateDeviceAndSwapChain`, decide by the caller's module whose library a call wants:
+  callers in this library (wgpu), in the back end's own libraries (ANGLE's directory, WebGL 2
+  build) or in the system directory get the system's dxgi.dll or d3d11.dll, every other caller
   ours. The Direct3D 12 track decides by thread (its device thread); this library has no device
   thread yet (calls run on the caller's thread), so the caller's module is the mark that exists.
-- A factory made by `CreateDXGIFactory*` describes its adapter from a back end made once for its
-  caps and dropped (one extra wgpu device at the first such call).
+- A factory made by `CreateDXGIFactory*` describes its adapter from the caps of the first back end
+  made, or of one made for them and dropped while none was made (one extra device at most).
+- Direct3D leaves comparing through a sampler that does not compare (and the reverse) undefined;
+  the front binds a twin comparing with the function the description names, or not comparing.
+- The WebGL 2 build is a cargo feature (`webgl`) choosing the back end type: section 10 builds the
+  library "a second time with B = the WebGL 2 back end", and the feature is how one crate is built
+  twice with another type. It reads `WEBGL_ANGLE_DIR` and `WEBGL_OFF`, as the WebGL 2 back end's
+  tests do; the build is a desktop test route, ANGLE is never shipped.
 
 - No call buffer or device thread yet: COM calls run the front on the calling thread under one
   re-entrant lock (section 4.8 puts the channel in the second batch).
@@ -860,7 +907,7 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Interface changes
 
-None in G4 runs 3, 4 and 5.
+None in G4 runs 3 to 6.
 
 - c8a7be9 "interface: copied combined depth-stencil textures whole in copy_texture": the
   documentation of `copy_texture` and `TextureRegion::stencil`, and the plan's sentence in 4.2: a copy
@@ -963,6 +1010,16 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Asked of other tracks
 
+- WebGL 2 back end, natively on ANGLE (from the WebGL 2 build of this library): a back end makes
+  its EGL context current when made and never again, and dropping one makes nothing current and
+  terminates EGL's display, which every back end on the default display shares. Wine's tests often
+  hold two devices at once, so through the library the second device's context would take the
+  first's calls. Making the context current again when another back end on the thread made its own
+  current (and not terminating a display others use) would serve them.
+- Shaders track: `FilterInShader` (a texture the back end cannot filter, sampled linearly: depth
+  formats on WebGPU, float32 without `float32-filterable`) is refused by name; the front refuses
+  such draws until it is built.
+
 - Interface and shaders track (from Wine's test_depth_stencil_sampling): Direct3D's stencil views
   (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`) give the stencil in the green channel;
   WebGPU's stencil-aspect view gives it in red. It needs a view swizzle (the interface names
@@ -995,6 +1052,12 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
+
+G4 run 6 added our `wcontainers-gpu-webgl` to the library as an optional dependency (the `webgl`
+feature), which brings `glow` 0.18.0 (MIT OR Apache-2.0 OR Zlib), `khronos-egl` 6.0.0
+(MIT/Apache-2.0), `libloading` (ISC) and `bcdec_rs` 0.2.1 (MIT), all already in the lock file and
+read in their Cargo.toml. ANGLE (BSD-3-Clause) is a desktop test tool the WebGL 2 track set up;
+nothing of it is shipped. Nothing installed anywhere.
 
 G4 run 5 added no dependency and installed nothing anywhere.
 
