@@ -66,6 +66,8 @@ K5 progress (second run):
   error kept for the next call. Messages after the first never wait: sendmmsg ends with those
   sent, and a blocking recvmmsg without MSG_WAITFORONE returns those it has where Linux waits for
   the rest (counted "recvmmsg returned early"). Tested in guest/inet.c.
+- A connect by path moves the socket node's access time (`unix_find_bsd`'s `touch_atime`);
+  SO_ZEROCOPY on a local socket is EOPNOTSUPP (`sock_setsockopt`). Tested in guest/unixsock.c.
 - FIONREAD (SIOCINQ) and TIOCOUTQ (SIOCOUTQ) on sockets, FIOSETOWN and FIOGETOWN; the interface
   ioctls; SIOCGSTAMP counted "ioctl request not built".
 - inotify (syscall/inotify.rs, `fs/notify/inotify/inotify_user.c` and the `fsnotify` hooks):
@@ -2018,7 +2020,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   plus protocol.
 - "socket option not built": socket options not built (detail: level times 2^32 plus option;
   ENOPROTOOPT), among them TCP_INFO, IP_PKTINFO and the other IP and IPv6 options that add
-  control messages.
+  control messages, and since K5's second run SO_PASSPIDFD and the SO_TIMESTAMP* options (their
+  control messages are not built; before, they were kept and did nothing).
 - "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
   RTM_GETROUTE dumps and RTM_GETLINK of one link (EOPNOTSUPP; detail the type plus 2^16 for a
   dump), such as `ip route get`, neighbours, rules and queue disciplines.
@@ -2172,9 +2175,9 @@ and layer 2 tests of them):
    (a host may answer NotSupported), and each `ConnectionReady` on the listener becomes an
    embryo in its backlog carried by `outside.rs`. Re-listen after a restore.
 2. Local sockets left: MSG_OOB on streams (counted, EOPNOTSUPP; 7.0 has CONFIG_AF_UNIX_OOB),
-   SO_PASSPIDFD and SCM_PIDFD, collecting sockets passed over themselves (such a cycle stays
-   open here), `touch_atime` of a socket node at connect, splice and sendfile into sockets
-   (unchecked against the reference), a socket's `/proc/<pid>/fdinfo`.
+   SO_PASSPIDFD and SCM_PIDFD (now counted "socket option not built"), collecting sockets passed
+   over themselves (such a cycle stays open here), splice and sendfile into sockets (unchecked
+   against the reference), a socket's `/proc/<pid>/fdinfo`.
 3. `/proc/net` (dev, tcp, tcp6, udp, udp6, unix, route, if_inet6, netstat, snmp): not built
    ("proc entry not built"); `ifconfig` and `netstat` read them. TCP_INFO and the options that add
    control messages (IP_PKTINFO, IP_RECVTTL, IPV6_RECVPKTINFO, SO_TIMESTAMP*) are counted "socket
