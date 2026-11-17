@@ -1706,3 +1706,68 @@ fn constants_rewritten_between_draws_make_no_binding_set_and_split_no_pass() {
     );
     assert!(writes[4].ends_with("at 4 4 bytes Ordered"), "{writes:#?}");
 }
+
+#[test]
+fn a_sample_mask_draws_through_a_raster_block_made_with_it_once() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let target = dev
+        .create_texture(
+            &TextureDesc {
+                sample_count: 4,
+                ..tex2d(16, 16, RGBA8, bind::RENDER_TARGET)
+            },
+            &[],
+        )
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    let from = dev.backend.log.len();
+    let rasters = |dev: &Dev, from: usize| -> Vec<String> {
+        log_from(dev, from)
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .map(|l| {
+                l.split(" raster ")
+                    .nth(1)
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    dev.draw(3, 0);
+    dev.om_set_blend_state(None, None, 0b0101);
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    // Bits past the target's samples change nothing.
+    dev.om_set_blend_state(None, None, 0xffff_fff5);
+    dev.draw(3, 0);
+    dev.om_set_blend_state(None, None, u32::MAX);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let made: Vec<_> = log_from(&dev, from)
+        .into_iter()
+        .filter(|l| l.starts_with("create_raster"))
+        .collect();
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(made[0].ends_with("mask 0x5"), "{}", made[0]);
+    let masked = made[0].split(' ').nth(1).unwrap().to_string();
+    let drawn = rasters(&dev, from);
+    assert_eq!(drawn.len(), 5);
+    assert_ne!(drawn[0], masked);
+    assert_eq!(&drawn[1..4], [masked.clone(), masked.clone(), masked]);
+    assert_eq!(drawn[4], drawn[0]);
+}

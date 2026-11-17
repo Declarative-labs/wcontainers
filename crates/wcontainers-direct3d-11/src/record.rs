@@ -94,7 +94,8 @@ impl Recorder {
                     | Features::DEPTH_CLAMP
                     | Features::BASE_VERTEX_INSTANCE
                     | Features::TEXTURE_VIEWS
-                    | Features::FRACTIONAL_VIEWPORT,
+                    | Features::FRACTIONAL_VIEWPORT
+                    | Features::SAMPLE_MASK,
                 limits,
                 formats: FormatCaps {
                     uses: [FormatUse::all(); Format::COUNT],
@@ -303,8 +304,8 @@ impl Backend for Recorder {
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.record(format!(
-            "create_raster {id} {:?} {:?} {:?} clip {}",
-            desc.fill, desc.cull, desc.front, desc.depth_clip
+            "create_raster {id} {:?} {:?} {:?} clip {} mask {:#x}",
+            desc.fill, desc.cull, desc.front, desc.depth_clip, desc.sample_mask
         ));
         Ok(id)
     }

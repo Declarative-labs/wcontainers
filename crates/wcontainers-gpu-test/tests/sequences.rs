@@ -34,8 +34,9 @@ fn random_sequences_record_and_replay_identically() {
     let calls = Cell::new(0usize);
     // Multisampled passes, depth-stencil passes, indexed draws, queries, scissored draws, tinted
     // draws, no-overwrite buffer writes made without waiting first, and texture writes that
-    // discard, and that do not overwrite without waiting first.
-    let seen = Cell::new([0usize; 9]);
+    // discard, and that do not overwrite without waiting first; dispatches, vertex captures and
+    // timestamps.
+    let seen = Cell::new([0usize; 12]);
     let result = runner.run(&sequence::steps(40), |steps| {
         ran.set(ran.get() + 1);
         let mut r = Recorder::new();
@@ -59,6 +60,9 @@ fn random_sequences_record_and_replay_identically() {
                     6
                 }
                 Call::WriteTexture(.., WriteMode::Discard) => 7,
+                Call::Dispatch(..) => 9,
+                Call::CaptureVertices(..) => 10,
+                Call::WriteTimestamp(..) => 11,
                 Call::WriteTexture(.., WriteMode::NoOverwrite)
                     if !matches!(r.calls.get(i.wrapping_sub(1)), Some(Call::WaitFence(_))) =>
                 {
@@ -94,7 +98,8 @@ fn random_sequences_record_and_replay_identically() {
         "random sequences: seed {seed:#x}, {} asked, {} run, {} calls, {} multisampled passes, \
          {} depth-stencil passes, {} indexed draws, {} queries, {} scissored draws, {} tinted \
          draws, {} no-overwrite writes without a wait, {} discarding texture writes, {} \
-         no-overwrite texture writes without a wait",
+         no-overwrite texture writes without a wait, {} dispatches, {} vertex captures, {} \
+         timestamps",
         cases,
         ran.get(),
         calls.get(),
@@ -106,7 +111,10 @@ fn random_sequences_record_and_replay_identically() {
         n[5],
         n[6],
         n[7],
-        n[8]
+        n[8],
+        n[9],
+        n[10],
+        n[11]
     );
     result.unwrap();
 }

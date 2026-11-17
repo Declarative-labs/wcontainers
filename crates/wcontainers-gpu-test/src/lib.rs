@@ -2,6 +2,7 @@
 //! object's bytes on the CPU, runs each call as it is recorded and checks the interface's rules; and
 //! the shared suite ([`mod@suite`], run with [`suite!`]) every back end runs through the interface.
 
+mod compute;
 mod draw;
 pub mod program;
 mod recorder;

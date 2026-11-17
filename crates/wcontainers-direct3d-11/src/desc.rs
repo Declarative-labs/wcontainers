@@ -118,6 +118,9 @@ pub const MISC_STRUCTURED: u32 = 0x40;
 pub const MISC_GENERATE_MIPS: u32 = 0x1;
 /// `D3D11_RESOURCE_MISC_TEXTURECUBE`.
 pub const MISC_TEXTURECUBE: u32 = 0x4;
+/// `D3D11_STANDARD_MULTISAMPLE_PATTERN` and `D3D11_CENTER_MULTISAMPLE_PATTERN`, sample qualities.
+pub const STANDARD_MULTISAMPLE_PATTERN: u32 = 0xffff_ffff;
+pub const CENTER_MULTISAMPLE_PATTERN: u32 = 0xffff_fffe;
 
 /// One subresource of initial data (`D3D11_SUBRESOURCE_DATA`), its bytes already bounded.
 #[derive(Clone, Copy, Debug)]

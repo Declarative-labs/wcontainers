@@ -1490,6 +1490,30 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// The bound raster block made with sample mask `mask`, kept on its rasterizer state from its
+    /// first use.
+    fn masked_raster(&mut self, mask: u32) -> Result<B::Raster> {
+        let r = self
+            .ctx
+            .raster
+            .clone()
+            .unwrap_or_else(|| self.defaults.raster.clone());
+        if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == mask) {
+            return Ok(k.handle.clone());
+        }
+        let gpu = self.backend.create_raster(&wcontainers_gpu::RasterDesc {
+            sample_mask: mask,
+            ..crate::device::raster_block(&r.desc)
+        });
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        r.masked.borrow_mut().push((
+            mask,
+            Kept::new(gpu.clone(), id, Object::Raster, &self.graveyard),
+        ));
+        Ok(gpu)
+    }
+
     /// `s` made comparing or not as `compares` says, kept on `s` from its first use.
     fn sampler_twin(&mut self, s: &Sampler<B>, compares: bool) -> Result<B::Sampler> {
         if let Some(t) = &*s.twin.borrow() {
@@ -1569,8 +1593,8 @@ impl<B: Backend> Device<B> {
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());
         }
-        // The back ends keep the sample mask in the raster block; Direct3D sets it with the blend
-        // state, so a mask leaving out samples of multisampled targets is not served yet.
+        // A mask leaving out samples of multisampled targets draws through a twin of the raster
+        // block made with it.
         let samples = self
             .ctx
             .targets
@@ -1581,9 +1605,17 @@ impl<B: Backend> Device<B> {
             .max()
             .unwrap_or(1);
         let all = u32::MAX >> (32 - samples.min(32));
-        if samples > 1 && self.ctx.sample_mask & all != all {
-            return not_implemented("a sample mask leaving out samples of multisampled targets");
-        }
+        let mask = self.ctx.sample_mask & all;
+        let masked = if samples > 1 && mask != all {
+            if !self.backend.caps().has(Features::SAMPLE_MASK) {
+                return not_implemented(
+                    "a sample mask without the back end's (SampleMaskInShader)",
+                );
+            }
+            Some(self.masked_raster(mask)?)
+        } else {
+            None
+        };
         // The converter writes no program whose second output feeds the blend yet.
         if self
             .ctx
@@ -1825,7 +1857,7 @@ impl<B: Backend> Device<B> {
             program: &program,
             blend: &blend.gpu.handle,
             depth_stencil: &depth_stencil.gpu.handle,
-            raster: &raster.gpu.handle,
+            raster: masked.as_ref().unwrap_or(&raster.gpu.handle),
             vertex_layout: &vertex_layout,
             bindings,
             vertex_buffers: &vertex_buffers[..used],
