@@ -42,6 +42,7 @@ pub const CASES: &[&str] = &[
     "indirect-count",
     "indirect-dispatch",
     "indirect-short",
+    "depth-planes",
     "indirect-vertex-buffer",
     "indirect-vertex-id",
 ];
@@ -62,6 +63,7 @@ pub fn run(name: &str) -> Result<String> {
             "indirect-count" => indirect_draw(&c, true),
             "indirect-dispatch" => indirect_dispatch(&c),
             "indirect-short" => indirect_short(&c),
+            "depth-planes" => depth_planes(&c),
             "indirect-vertex-buffer" => indirect_vertex_buffer(&c),
             "indirect-vertex-id" => indirect_vertex_id(&c),
             _ => panic!("no case {name}"),
@@ -1196,5 +1198,122 @@ unsafe fn indirect_vertex_id(c: &Ctx) -> Result<String> {
         Ok(colours(
             &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
         ))
+    }
+}
+
+/// The copyable footprints of both planes of the depth-stencil formats, and the planes of a
+/// cleared texture copied out.
+unsafe fn depth_planes(c: &Ctx) -> Result<String> {
+    unsafe {
+        let mut out = String::new();
+        for (name, format, planes) in [
+            ("d24s8", DXGI_FORMAT_D24_UNORM_S8_UINT, 2),
+            ("d32s8", DXGI_FORMAT_D32_FLOAT_S8X24_UINT, 2),
+            ("d32", DXGI_FORMAT_D32_FLOAT, 1),
+            ("d16", DXGI_FORMAT_D16_UNORM, 1),
+        ] {
+            let n = 2 * planes;
+            let desc = D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Width: 64,
+                Height: 32,
+                DepthOrArraySize: 1,
+                MipLevels: 2,
+                Format: format,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+                ..Default::default()
+            };
+            let mut layouts = [D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); 4];
+            let (mut rows, mut sizes, mut total) = ([0u32; 4], [0u64; 4], 0u64);
+            c.device.GetCopyableFootprints(
+                &desc,
+                0,
+                n as u32,
+                0,
+                Some(layouts.as_mut_ptr()),
+                Some(rows.as_mut_ptr()),
+                Some(sizes.as_mut_ptr()),
+                Some(&mut total),
+            );
+            write!(out, "{name} total {total}").unwrap();
+            for i in 0..n {
+                let f = layouts[i].Footprint;
+                write!(
+                    out,
+                    " [{} at {} {}x{} pitch {} rows {} size {}]",
+                    f.Format.0, layouts[i].Offset, f.Width, f.Height, f.RowPitch, rows[i], sizes[i]
+                )
+                .unwrap();
+            }
+            if total > 1 << 20 {
+                write!(out, "; ").unwrap();
+                continue;
+            }
+            let texture = c.committed(
+                D3D12_HEAP_TYPE_DEFAULT,
+                &desc,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            )?;
+            let views: ID3D12DescriptorHeap =
+                c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                    Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                    NumDescriptors: 1,
+                    ..Default::default()
+                })?;
+            let dsv = views.GetCPUDescriptorHandleForHeapStart();
+            c.device.CreateDepthStencilView(&texture, None, dsv);
+            let readback = c.committed(
+                D3D12_HEAP_TYPE_READBACK,
+                &buffer_desc(total, D3D12_RESOURCE_FLAG_NONE),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            )?;
+            let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+            let flags = if planes == 2 {
+                D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL
+            } else {
+                D3D12_CLEAR_FLAG_DEPTH
+            };
+            list.ClearDepthStencilView(dsv, flags, 0.5, 0x5a, None);
+            list.ResourceBarrier(&[transition(
+                &texture,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            )]);
+            let copied = if planes == 2 { vec![0, 2] } else { vec![0] };
+            for &i in &copied {
+                list.CopyTextureRegion(
+                    &D3D12_TEXTURE_COPY_LOCATION {
+                        pResource: transmute_copy(&readback),
+                        Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                            PlacedFootprint: layouts[i],
+                        },
+                    },
+                    0,
+                    0,
+                    0,
+                    &D3D12_TEXTURE_COPY_LOCATION {
+                        pResource: transmute_copy(&texture),
+                        Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                            SubresourceIndex: i as u32,
+                        },
+                    },
+                    None,
+                );
+            }
+            c.run(&list)?;
+            let bytes = mapped(&readback, total as usize)?;
+            for &i in &copied {
+                let at = layouts[i].Offset as usize;
+                write!(out, " plane {i}: {}", words(&bytes[at..at + 16])).unwrap();
+            }
+            write!(out, "; ").unwrap();
+        }
+        Ok(out)
     }
 }

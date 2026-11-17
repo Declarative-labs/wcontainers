@@ -272,6 +272,22 @@ based!(
     CommandSignature => 1
 );
 
+/// Checks a `D3D12_COMMAND_LIST_TYPE`: the video types are not done, others do not exist.
+fn list_type(kind: D3D12_COMMAND_LIST_TYPE) -> Result<()> {
+    match kind {
+        D3D12_COMMAND_LIST_TYPE_DIRECT
+        | D3D12_COMMAND_LIST_TYPE_BUNDLE
+        | D3D12_COMMAND_LIST_TYPE_COMPUTE
+        | D3D12_COMMAND_LIST_TYPE_COPY => Ok(()),
+        D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE
+        | D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS
+        | D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE => {
+            Err(hr(Error::NotImplemented("video command lists")))
+        }
+        _ => Err(E_INVALIDARG.into()),
+    }
+}
+
 /// The front's description of a resource.
 fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
     ResourceDesc {
@@ -392,6 +408,7 @@ impl Device {
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        list_type(r#type)?;
         give::<ID3D12CommandAllocator>(Allocator(r#type, Base::child()).into(), riid, out)
     }
 
@@ -399,11 +416,18 @@ impl Device {
         &self,
         _nodemask: u32,
         r#type: D3D12_COMMAND_LIST_TYPE,
-        _allocator: Ref<ID3D12CommandAllocator>,
+        allocator: Ref<ID3D12CommandAllocator>,
         initial: Ref<ID3D12PipelineState>,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        list_type(r#type)?;
+        // The allocator must be one for lists of this type.
+        // SAFETY: allocators come from this library.
+        match allocator.as_ref().map(|a| unsafe { a.as_impl() }.0) {
+            Some(kind) if kind == r#type => {}
+            _ => return Err(E_INVALIDARG.into()),
+        }
         let list = List {
             kind: r#type,
             rec: Mutex::new(CommandList::new()),
@@ -421,6 +445,15 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        // Only CBV, SRV and UAV heaps and sampler heaps are seen by shaders.
+        if desc.Flags.0 & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE.0 != 0
+            && matches!(
+                desc.Type,
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV | D3D12_DESCRIPTOR_HEAP_TYPE_DSV
+            )
+        {
+            return Err(E_INVALIDARG.into());
+        }
         let count = desc.NumDescriptors;
         let (id, cpu, gpu) = gpu::call(move |d| {
             let (id, cpu, gpu) = d.create_descriptor_heap(count);
@@ -1244,8 +1277,9 @@ impl Device {
             }
             D3D12_FEATURE_SHADER_MODEL => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_SHADER_MODEL>(data, size)? };
-                d.HighestShaderModel =
-                    D3D_SHADER_MODEL(features::shader_model(d.HighestShaderModel.0 as u32) as i32);
+                d.HighestShaderModel = D3D_SHADER_MODEL(
+                    features::shader_model(d.HighestShaderModel.0 as u32).map_err(hr)? as i32,
+                );
             }
             D3D12_FEATURE_ROOT_SIGNATURE => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_ROOT_SIGNATURE>(data, size)? };
@@ -1331,7 +1365,19 @@ impl Device {
                         *total = bytes;
                     }
                 }
+                // Every output is all ones, as Direct3D 12 answers a description it refuses.
                 Err(_) => {
+                    for i in 0..count as usize {
+                        if !layouts.is_null() {
+                            std::ptr::write_bytes(layouts.add(i), 0xff, 1);
+                        }
+                        if !rows.is_null() {
+                            *rows.add(i) = u32::MAX;
+                        }
+                        if !row_sizes.is_null() {
+                            *row_sizes.add(i) = u64::MAX;
+                        }
+                    }
                     if !total.is_null() {
                         *total = u64::MAX;
                     }
@@ -1354,8 +1400,12 @@ impl Drop for Queue {
 }
 
 impl Queue {
+    /// The description, with the one node the device has in the node mask.
     pub fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
-        self.0
+        D3D12_COMMAND_QUEUE_DESC {
+            NodeMask: self.0.NodeMask.max(1),
+            ..self.0
+        }
     }
 
     pub fn ExecuteCommandLists(&self, count: u32, lists: *const Option<ID3D12CommandList>) {
@@ -1419,7 +1469,7 @@ impl Queue {
 }
 
 #[implement(ID3D12CommandAllocator)]
-pub struct Allocator(#[allow(dead_code)] D3D12_COMMAND_LIST_TYPE, Base);
+pub struct Allocator(D3D12_COMMAND_LIST_TYPE, Base);
 
 impl Allocator {
     /// Lists keep their own commands, so there is nothing to free here.
@@ -1565,10 +1615,13 @@ impl Resource {
     /// memory holds the bytes of every copy whose fence the program has seen.
     pub fn Map(
         &self,
-        _subresource: u32,
+        subresource: u32,
         _range: *const D3D12_RANGE,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        if subresource != 0 {
+            return Err(E_INVALIDARG.into());
+        }
         if self.host == 0 {
             return Err(windows::core::Error::new(
                 E_INVALIDARG,

@@ -359,6 +359,9 @@ impl<B: Backend> Device<B> {
             if desc.width == 0 {
                 return Err(Error::Invalid("a buffer of zero bytes"));
             }
+            if desc.width > self.backend.caps().limits.max_buffer_size {
+                return Err(Error::OutOfMemory);
+            }
             let usage = match heap {
                 HeapType::Default => DEFAULT_BUFFER,
                 HeapType::Upload => UPLOAD_BUFFER,
@@ -2518,11 +2521,21 @@ fn copy_texture<B: Backend>(
     src: &CopyLocation,
     area: Option<[u32; 6]>,
 ) -> Result<(), Error> {
+    // A subresource's texture, mip, layer and origin, the resource's description, and whether it is
+    // in the stencil plane.
     let region = |d: &Device<B>, id: ResourceId, index: u32, origin: Origin| {
         let r = &d.resources[id.0 as usize];
-        let mips = r.desc.mips();
+        let (mips, layers) = (r.desc.mips(), r.desc.layers());
         let (texture, _) = d.texture(id)?;
-        Ok::<_, Error>((texture.clone(), index % mips, index / mips, origin, r.desc))
+        let stencil = index / (mips * layers) == 1;
+        Ok::<_, Error>((
+            texture.clone(),
+            index % mips,
+            index / mips % layers,
+            origin,
+            r.desc,
+            stencil,
+        ))
     };
     let origin = |v: [u32; 3]| Origin {
         x: v[0],
@@ -2555,7 +2568,7 @@ fn copy_texture<B: Backend>(
             },
             CopyLocation::Subresource { resource: s, index },
         ) => {
-            let (texture, mip, layer, o, _) = region(d, *s, *index, origin(src_origin))?;
+            let (texture, mip, layer, o, _, stencil) = region(d, *s, *index, origin(src_origin))?;
             let (format, _) = crate::resource::ResourceDesc {
                 format: footprint.format,
                 ..Default::default()
@@ -2581,7 +2594,7 @@ fn copy_texture<B: Backend>(
                     mip,
                     layer,
                     origin: o,
-                    stencil: false,
+                    stencil,
                 },
                 &CopyBufferTexture {
                     buffer: &buffer,
@@ -2606,7 +2619,7 @@ fn copy_texture<B: Backend>(
                 footprint,
             },
         ) => {
-            let (texture, mip, layer, o, _) = region(d, *t, *index, origin(at))?;
+            let (texture, mip, layer, o, _, stencil) = region(d, *t, *index, origin(at))?;
             let (format, _) = crate::resource::ResourceDesc {
                 format: footprint.format,
                 ..Default::default()
@@ -2638,7 +2651,7 @@ fn copy_texture<B: Backend>(
                     mip,
                     layer,
                     origin: o,
-                    stencil: false,
+                    stencil,
                 },
                 extent,
             );
@@ -2653,8 +2666,9 @@ fn copy_texture<B: Backend>(
                 index: si,
             },
         ) => {
-            let (st, smip, slayer, so, sdesc) = region(d, *s, *si, origin(src_origin))?;
-            let (tt, tmip, tlayer, to, _) = region(d, *t, *ti, origin(at))?;
+            // A copy between textures moves both planes of a depth-stencil format at once.
+            let (st, smip, slayer, so, sdesc, _) = region(d, *s, *si, origin(src_origin))?;
+            let (tt, tmip, tlayer, to, _, _) = region(d, *t, *ti, origin(at))?;
             let extent = extent_of(size_of_mip(&sdesc, smip));
             d.backend.copy_texture(
                 &TextureRegion {
