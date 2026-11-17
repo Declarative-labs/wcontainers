@@ -56,20 +56,32 @@ impl Allowance {
 
     /// The allowance of a program's frame recorded on several runs of real Direct3D: the channel
     /// tolerance is the cap, and a tile where any other run differs from the first beyond it is not
-    /// compared (as the program draws it differently each time, a clock or a GPU timing on screen).
+    /// compared (the program draws it differently each time), nor one that meets a rectangle
+    /// (x, y, width, height) in `ignored`, where the program shows what each implementation
+    /// answers differently (a GPU memory readout).
     pub fn from_repeats(
         first: &image::DynamicImage,
         others: &[image::DynamicImage],
+        ignored: &[[u32; 4]],
     ) -> anyhow::Result<Allowance> {
         let tolerance = cap(compare::Depth::of(first)?);
-        let mut tiles = BTreeMap::new();
+        let columns = Difference::tile_columns(first.width()) as usize;
+        let mut changed = vec![false; compare::compare(first, first, 0.0)?.tiles.len()];
         for other in others {
             let d = compare::compare(first, other, tolerance)?;
-            let columns = Difference::tile_columns(first.width()) as usize;
-            for (i, _) in d.tiles.iter().enumerate().filter(|(_, n)| **n > 0) {
-                let (x, y) = ((i % columns) as u32 * TILE, (i / columns) as u32 * TILE);
-                let pixels = TILE.min(first.width() - x) * TILE.min(first.height() - y);
-                tiles.insert(i, pixels);
+            for (c, n) in changed.iter_mut().zip(&d.tiles) {
+                *c |= *n > 0;
+            }
+        }
+        let mut tiles = BTreeMap::new();
+        for (i, changed) in changed.into_iter().enumerate() {
+            let (x, y) = ((i % columns) as u32 * TILE, (i / columns) as u32 * TILE);
+            let (w, h) = (TILE.min(first.width() - x), TILE.min(first.height() - y));
+            let meets = |&[rx, ry, rw, rh]: &[u32; 4]| {
+                x < rx + rw && rx < x + w && y < ry + rh && ry < y + h
+            };
+            if changed || ignored.iter().any(meets) {
+                tiles.insert(i, w * h);
             }
         }
         Ok(Allowance {
@@ -307,11 +319,19 @@ mod tests {
         let mut second = first.clone();
         second.put_pixel(35, 2, Rgba([200, 100, 100, 255]));
         second.put_pixel(3, 2, Rgba([105, 100, 100, 255]));
+        let first = DynamicImage::from(first);
         let allowance =
-            Allowance::from_repeats(&first.into(), &[DynamicImage::from(second)]).unwrap();
+            Allowance::from_repeats(&first, &[DynamicImage::from(second.clone())], &[]).unwrap();
         assert_eq!(allowance.tolerance, 8.0);
         assert_eq!(allowance.tiles, BTreeMap::from([(2, 8 * 16)]));
         assert_eq!(allowance.pixels, 128);
+        let allowance =
+            Allowance::from_repeats(&first, &[DynamicImage::from(second)], &[[15, 0, 2, 1]])
+                .unwrap();
+        assert_eq!(
+            allowance.tiles,
+            BTreeMap::from([(0, 256), (1, 256), (2, 8 * 16)])
+        );
     }
 
     #[test]

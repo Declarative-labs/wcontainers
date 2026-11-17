@@ -11,9 +11,9 @@
 //! replacement no scene loaded (other libraries given are only copied), and reports whether the stored shader corpus matches this build.
 //!
 //! `gt-run frames <reference-dir> <run-dir>` checks a real program's frames (frame-<n>.png) against
-//! its references within their allowances; `gt-run frames --record <reference-dir> <run-dir>...`
-//! stores the first run's frames as the references, with allowances from the other runs (see
-//! `Allowance::from_repeats`).
+//! its references within their allowances; `gt-run frames --record [--ignore <x>,<y>,<w>,<h>]...
+//! <reference-dir> <run-dir>...` stores the first run's frames as the references, with allowances
+//! from the other runs and the rectangles left out (see `Allowance::from_repeats`).
 //!
 //! `gt-run record <out-dir>` runs every scene with the debug layer on the GPU twice (the two runs
 //! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances to
@@ -304,9 +304,30 @@ fn check_mode(options: &Options) -> Result<bool> {
 }
 
 fn frames(args: &[String]) -> Result<bool> {
-    let usage = "usage: gt-run frames <reference-dir> <run-dir> | gt-run frames --record <reference-dir> <run-dir>...";
+    let usage = "usage: gt-run frames <reference-dir> <run-dir> | gt-run frames --record [--ignore <x>,<y>,<w>,<h>]... <reference-dir> <run-dir>...";
     match args {
-        [record, reference, runs @ ..] if record == "--record" && !runs.is_empty() => {
+        [record, rest @ ..] if record == "--record" => {
+            let mut rest = rest;
+            let mut ignored = Vec::new();
+            while let [flag, rect, more @ ..] = rest
+                && flag == "--ignore"
+            {
+                let numbers: Vec<u32> = rect
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .context("--ignore takes <x>,<y>,<w>,<h>")?;
+                ignored.push(
+                    <[u32; 4]>::try_from(numbers)
+                        .ok()
+                        .context("--ignore takes four numbers")?,
+                );
+                rest = more;
+            }
+            let [reference, runs @ ..] = rest else {
+                bail!("{usage}")
+            };
+            anyhow::ensure!(!runs.is_empty(), "{usage}");
             let reference = Path::new(reference);
             std::fs::create_dir_all(reference)?;
             let mut names: Vec<String> = std::fs::read_dir(&runs[0])?
@@ -324,7 +345,7 @@ fn frames(args: &[String]) -> Result<bool> {
                     .iter()
                     .map(|r| load(&Path::new(r).join(name)))
                     .collect::<Result<Vec<_>>>()?;
-                let allowance = Allowance::from_repeats(&first, &others)?;
+                let allowance = Allowance::from_repeats(&first, &others, &ignored)?;
                 let none = compare::compare(&first, &first, 0.0)?;
                 let unrepeatable = check::unrepeatable(&allowance, none.tiles.len());
                 println!(

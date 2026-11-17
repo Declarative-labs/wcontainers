@@ -63,14 +63,18 @@ $bgfxExamples = @('01-cubes', '06-bump', '09-hdr', '16-shadowmaps', '21-deferred
 $godot = 'godot\Godot_v4.7.2-stable_win64_console.exe'
 $godotProjects = @('3d/platformer', '2d/platformer')
 # Each program: its executable and working directory under $root, its arguments ({out} is its
-# output directory), its environment, and its API (Direct3D 11 unless said). A Direct3D 12
+# output directory), its environment, its API (Direct3D 11 unless said), and a part of its frames
+# not compared, if any. A Direct3D 12
 # program writes its own frames as {out}\movie\frame<number>.png.
 $all = [ordered]@{}
 foreach ($n in 2, 4, 5, 6, 7) {
     $all["sdk-tutorial0$n"] = @{ exe = "$tutorials\x64\Release\Tutorial0$n.exe"; cwd = "$tutorials\Tutorial0$n"; args = '' }
 }
+# bgfx's overlay shows the GPU memory the driver reports in use, which differs from run to run and
+# between implementations; its line (lower when the example's description takes two lines) is
+# left out of the comparison: ignore is x,y,width,height in the frame.
 foreach ($e in $bgfxExamples) {
-    $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11' }
+    $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
 }
 # Freedoom's first demo played as fast as it can be drawn, one game tic a frame, through SDL's
 # Direct3D 11 renderer.
@@ -282,7 +286,8 @@ foreach ($name in $chosen) {
         if (-not $ran) { $failed++; continue }
         if (Test-Path $reference) { Remove-Item -Recurse -Force $reference }
         if (Test-Path "$Out\references\$name") { Remove-Item -Recurse -Force "$Out\references\$name" }
-        & $Check frames --record $reference @runs | ForEach-Object { "${name} $_" }
+        $ignore = @(if ($all[$name].ignore) { '--ignore', $all[$name].ignore })
+        & $Check frames --record @ignore $reference @runs | ForEach-Object { "${name} $_" }
         if ($LASTEXITCODE) { "${name}: FAIL, recording its references failed"; $failed++; continue }
         New-Item -ItemType Directory -Force "$Out\references\$name" | Out-Null
         Copy-Item "$reference\tolerances.txt" "$Out\references\$name\"
