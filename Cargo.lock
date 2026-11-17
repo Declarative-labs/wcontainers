@@ -1871,6 +1871,7 @@ name = "wcontainers-kernel-test"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "fuse-abi",
  "libc",
  "linux-raw-sys",
  "memmap2",
@@ -1881,6 +1882,7 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-kernel",
+ "zerocopy",
 ]
 
 [[package]]

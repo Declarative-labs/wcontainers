@@ -80,7 +80,7 @@ pub(super) fn pipe2(
     let write_fd = match files.add(writer, close_on_exec, 0, limit) {
         Ok(fd) => fd,
         Err(error) => {
-            let _ = files.remove(read_fd, pid);
+            let _ = files.remove(read_fd, pid, false);
             drop(files);
             kernel.files_released(cx);
             return Err(error);
@@ -92,8 +92,8 @@ pub(super) fn pipe2(
     bytes[4..].copy_from_slice(&write_fd.to_le_bytes());
     if let Err(error) = guest(kernel, cx, tid).write(fds, &bytes) {
         let mut files = kernel.files_mut(tid);
-        let _ = files.remove(read_fd, pid);
-        let _ = files.remove(write_fd, pid);
+        let _ = files.remove(read_fd, pid, false);
+        let _ = files.remove(write_fd, pid, false);
         drop(files);
         kernel.files_released(cx);
         return Err(error);

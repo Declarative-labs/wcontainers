@@ -105,6 +105,20 @@ fn file_calls_survive_saves() {
     }
 }
 
+/// Notices the backend sends unasked, of every kind and about nodes the kernel holds or not, change
+/// nothing the program sees, and none is left unhandled (about one every 50 turns: 18 reached the
+/// three seeds' runs when this was written).
+#[test]
+fn backend_notices_are_handled() {
+    let injections = driver::Injections {
+        notices: 400,
+        ..Default::default()
+    };
+    for run in same_on_backend("backendfiles", injections) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}
+
 /// The messages each kind of file call sends to the backend (every call goes there in phase one;
 /// this is what the cache will be measured against). Prints them; run with `--nocapture`.
 #[test]

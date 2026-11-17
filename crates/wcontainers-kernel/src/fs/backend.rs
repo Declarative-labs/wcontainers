@@ -1085,6 +1085,21 @@ pub(crate) fn flush(handle: &Handle, owner: u64) -> Result<(), Errno> {
     }
 }
 
+/// `fuse_flush` for a descriptor closed by anything but `close`, whose answer nothing waits for.
+pub(crate) fn flush_unwaited(handle: &Handle, owner: u64) {
+    let input = fuse_flush_in {
+        fh: handle.fh,
+        unused: 0,
+        padding: 0,
+        lock_owner: owner,
+    };
+    handle.client.tell(
+        fuse_opcode::FUSE_FLUSH as u32,
+        handle.nodeid,
+        &[input.as_bytes()],
+    );
+}
+
 /// `fuse_fsync_common`: FSYNC, or FSYNCDIR for a directory.
 pub(crate) fn fsync(handle: &Handle, data_only: bool) -> Result<(), Errno> {
     let input = fuse_fsync_in {

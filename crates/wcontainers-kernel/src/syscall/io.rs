@@ -1963,7 +1963,7 @@ pub(super) fn close(
     // flush answers.
     let flushed = match kernel.files(tid).file(fd as i32) {
         Ok(file) => match &file.borrow().backend {
-            Some(handle) => crate::fs::backend::flush(handle, 0),
+            Some(handle) => crate::fs::backend::flush(handle, kernel.files(tid).lock_owner()),
             None => Ok(()),
         },
         Err(_) => Ok(()),
@@ -1971,7 +1971,7 @@ pub(super) fn close(
     if flushed == Err(Errno::PARKED) {
         return Err(Errno::PARKED);
     }
-    kernel.files_mut(tid).remove(fd as i32, pid)?;
+    kernel.files_mut(tid).remove(fd as i32, pid, true)?;
     kernel.files_released(cx);
     flushed.map(|()| 0)
 }
@@ -2007,7 +2007,7 @@ pub(super) fn close_range(
         if flags & CLOSE_RANGE_CLOEXEC != 0 {
             files.get_mut(fd)?.close_on_exec = true;
         } else {
-            files.remove(fd, pid)?;
+            files.remove(fd, pid, false)?;
         }
     }
     drop(files);

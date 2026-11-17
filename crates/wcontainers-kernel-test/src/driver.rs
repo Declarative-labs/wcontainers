@@ -269,6 +269,9 @@ pub struct Injections {
     pub wall_step: u64,
     /// A signal sent to the first process from outside, and how many times.
     pub signal: Option<(u32, usize)>,
+    /// How many notices the file backend sends unasked, of kinds and about nodes drawn from the
+    /// seed, as a backend whose files changed underneath would.
+    pub notices: usize,
 }
 
 /// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
@@ -298,6 +301,8 @@ pub fn run_injected(
     let mut at = moments(seed ^ 0x5a7e, injections.saves);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
     let mut signal_at = moments(seed ^ 0x5197, signals);
+    let mut notice_at = moments(seed ^ 0x6e07, injections.notices);
+    let mut notices = StdRng::seed_from_u64(seed ^ 0x6e08);
     let mut turns = 0u64;
     let mut saved = 0;
     // In a copy, where its run is reported to the process it was copied from.
@@ -368,6 +373,15 @@ pub fn run_injected(
                     && host.schedule.random_bool(0.5)
                 {
                     deliver(&mut kernel, &mut cpu, &mut host);
+                }
+                while notice_at.first() == Some(&turns) {
+                    notice_at.remove(0);
+                    let notice = notice(&mut notices);
+                    kernel.event(
+                        &mut cpu,
+                        &mut host,
+                        Event::BackendNotice { notice: &notice },
+                    );
                 }
                 while signal_at.first() == Some(&turns) {
                     signal_at.remove(0);
@@ -448,6 +462,76 @@ pub fn run_injected(
         saved,
     };
     Ok(finish(run, report))
+}
+
+/// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node (one of the first
+/// few the backend numbers, some never looked up) drawn from `random`. RETRIEVE is not sent: the
+/// kernel's NOTIFY_REPLY to it would reach a server that never asked.
+fn notice(random: &mut StdRng) -> Vec<u8> {
+    use fuse_abi::linux::*;
+    use zerocopy::IntoBytes;
+    let node: u64 = random.random_range(1..12);
+    let name = b"backend-file\0";
+    let namelen = (name.len() - 1) as u32;
+    let (code, body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..5) {
+        0 => (
+            fuse_notify_code::FUSE_NOTIFY_POLL,
+            fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec(),
+        ),
+        1 => (
+            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+            fuse_notify_inval_inode_out {
+                ino: node,
+                off: 0,
+                len: -1,
+            }
+            .as_bytes()
+            .to_vec(),
+        ),
+        2 => {
+            let mut body = fuse_notify_inval_entry_out {
+                parent: node,
+                namelen,
+                flags: 0,
+            }
+            .as_bytes()
+            .to_vec();
+            body.extend_from_slice(name);
+            (fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY, body)
+        }
+        3 => {
+            let mut body = fuse_notify_delete_out {
+                parent: 1,
+                child: node,
+                namelen,
+                padding: 0,
+            }
+            .as_bytes()
+            .to_vec();
+            body.extend_from_slice(name);
+            (fuse_notify_code::FUSE_NOTIFY_DELETE, body)
+        }
+        _ => {
+            let mut body = fuse_notify_store_out {
+                nodeid: node,
+                offset: 0,
+                size: 4,
+                padding: 0,
+            }
+            .as_bytes()
+            .to_vec();
+            body.extend_from_slice(b"data");
+            (fuse_notify_code::FUSE_NOTIFY_STORE, body)
+        }
+    };
+    let header = fuse_out_header {
+        len: (size_of::<fuse_out_header>() + body.len()) as u32,
+        error: code as i32,
+        unique: 0,
+    };
+    let mut notice = header.as_bytes().to_vec();
+    notice.extend_from_slice(&body);
+    notice
 }
 
 /// Hands the kernel the backend's next answer or notice, waiting for it.
