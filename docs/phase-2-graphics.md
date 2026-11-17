@@ -1234,6 +1234,13 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   depth in the program turns off early depth testing for every draw, which costs more than the loss is
   worth; pictures are compared with tolerance. Read backs return the depth as stored (4.12, depth read
   back).
+- **32-bit float depth copied from values a draw cannot write** (a listed loss, WebGPU). Direct3D and
+  Vulkan copy any bits into `D32_FLOAT`; WebGPU writes depth from a buffer or another format only by a
+  draw (`DepthWrittenByDraw`), whose depth is clamped to the viewport's range, at most 0 to 1, and whose
+  denormals may be flushed. Copied values in that range are exact; values above 1 or below 0 are
+  clamped and NaN becomes zero; denormals and -0 are kept or become zero by the GPU (the RTX 3080
+  through Direct3D 12 and Vulkan keeps -0 and flushes denormals, Metal on Apple M5 the opposite).
+  Depth that draws write is clamped by every API, so only depth copied in differs.
 - **Attachments of different sizes** (4.7): exact on WebGPU (`AttachmentsFitted`). On WebGL 2, a
   multisampled attachment replaced by a temporary keeps only its resolved value across the copy: a listed
   loss, for multisampled attachments of different sizes whose contents are loaded or stored.
