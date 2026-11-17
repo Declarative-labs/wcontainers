@@ -57,6 +57,10 @@ mod viewports;
 #[cfg(target_arch = "wasm32")]
 mod prepare;
 
+#[cfg(target_arch = "wasm32")]
+#[macro_use]
+mod names;
+
 // JSPI exports and imports, which wasm-bindgen still marks experimental.
 #[cfg(target_arch = "wasm32")]
 #[allow(deprecated)]

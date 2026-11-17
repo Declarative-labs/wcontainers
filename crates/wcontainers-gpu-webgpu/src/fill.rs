@@ -1,8 +1,8 @@
 //! Programs of the back end's own: draws where WebGPU has no command for the job (integer colour
 //! clears the API would round through a float, `IntegerClearByDraw`; depth and stencil written from
 //! a texture, `DepthWrittenByDraw` and `StencilWrittenByDraw`; depth and stencil drawn into a colour
-//! texture to be copied out, `DepthReadByDraw`; plan section 4.2), and the empty fragment stage of
-//! programs without one.
+//! texture to be copied out, `DepthReadByDraw`; plan section 4.2; a frame drawn into the window's
+//! format, `PresentConverted`, 4.9), and the empty fragment stage of programs without one.
 
 use std::collections::HashMap;
 
@@ -107,6 +107,7 @@ pub struct Fills {
     depths: HashMap<(wgpu::TextureFormat, DepthSource), DepthProgram>,
     stencils: HashMap<wgpu::TextureFormat, StencilProgram>,
     reads: HashMap<AspectRead, DepthProgram>,
+    presents: HashMap<wgpu::TextureFormat, DepthProgram>,
 }
 
 /// A view of one level and layer of `texture` in `aspect`, in that aspect's own format.
@@ -177,6 +178,14 @@ struct Covered {
 }
 ";
 
+/// The fragment stage of a present draw: the frame's texel at the same place.
+const PRESENT_WGSL: &str = "
+@group(0) @binding(0) var frame: texture_2d<f32>;
+@fragment fn copy(@builtin(position) p: vec4f) -> @location(0) vec4f {
+    return textureLoad(frame, vec2i(p.xy), 0);
+}
+";
+
 /// A 16-byte uniform buffer holding `words`.
 fn uniform(device: &wgpu::Device, words: [u32; 4]) -> wgpu::Buffer {
     let b = device.create_buffer(&wgpu::BufferDescriptor {
@@ -243,6 +252,91 @@ impl WebGpu {
                 })
             })
             .clone()
+    }
+
+    /// Draws `frame` into `window`, a texture of its size in the window's own format
+    /// (`PresentConverted`), in the frame's encoder.
+    pub(crate) fn present_by_draw(&mut self, frame: &wgpu::Texture, window: &wgpu::Texture) {
+        self.slow.hit(SlowPath::PresentConverted);
+        let format = window.format();
+        if !self.fills.presents.contains_key(&format) {
+            let cover = self.cover();
+            let device = &self.device;
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[fragment_entry(
+                    0,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                )],
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(PRESENT_WGSL.into()),
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &cover,
+                    entry_point: Some("cover"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("copy"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(format.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            self.fills
+                .presents
+                .insert(format, DepthProgram { pipeline, layout });
+        }
+        let program = &self.fills.presents[&format];
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &program.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &frame.create_view(&Default::default()),
+                ),
+            }],
+        });
+        let pipeline = program.pipeline.clone();
+        let target = window.create_view(&Default::default());
+        let mut rp = self
+            .stream(Stream::Main)
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+        rp.set_pipeline(&pipeline);
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(0..3, 0..1);
     }
 
     /// Clears colour target `index` of the open pass, of an integer format, to `bits` by a draw
