@@ -16,12 +16,6 @@ use scene::Scene;
 use wcontainers_gpu::{Backend, DeviceStatus};
 use wcontainers_gpu_webgpu::WebGpu;
 
-/// The largest difference in any 8-bit channel allowed against Direct3D. The references were drawn
-/// by real Direct3D on the RTX 3080, and through this back end on that GPU every pixel is equal
-/// (Vulkan and Direct3D 12), so any allowance would hide real differences. On another GPU the
-/// rig's allowance for WARP, 1, is what to expect (wgpu on Metal differs by 1 on the triangle).
-const TOLERANCE: u8 = 0;
-
 fn device() -> WebGpu {
     let backends = match std::env::var("WEBGPU_API").as_deref() {
         Ok("dx12") => wgpu::Backends::DX12,
@@ -62,63 +56,37 @@ fn reference(which: Scene) -> Vec<u8> {
     buf
 }
 
-/// Pixels differing by more than `TOLERANCE` in any channel, and the largest difference.
-fn compare(a: &[u8], b: &[u8]) -> (usize, u8) {
-    let mut worst = 0;
-    let mut beyond = 0;
-    for (p, q) in a.chunks(4).zip(b.chunks(4)) {
-        let d = p
-            .iter()
-            .zip(q)
-            .map(|(x, y)| x.abs_diff(*y))
-            .max()
-            .unwrap_or(0);
-        worst = worst.max(d);
-        if d > TOLERANCE {
-            beyond += 1;
-        }
-    }
-    (beyond, worst)
-}
-
+/// Each scene within the rig's allowance of Direct3D's picture (on the RTX 3080 every pixel equal).
 #[test]
 fn scenes_match_direct3d() {
     let mut b = device();
     let mut failed = Vec::new();
     for which in Scene::ALL {
         let (drawn, expected) = (render(&mut b, which, Twist::None), reference(which));
-        let (beyond, worst) = compare(&drawn, &expected);
-        let differ = compare_exact(&drawn, &expected);
-        eprintln!(
-            "{}: {differ} pixels differ, {beyond} by more than {TOLERANCE}, largest difference {worst}",
-            which.name()
-        );
-        if beyond > 0 {
+        if !draw::within(&drawn, &expected, &format!("{}.png", which.name())) {
             failed.push(which.name());
         }
     }
     assert!(failed.is_empty(), "differ from Direct3D: {failed:?}");
 }
 
-fn compare_exact(a: &[u8], b: &[u8]) -> usize {
-    a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count()
-}
-
 #[test]
 fn changed_blend_factor_and_depth_function_fail() {
     let mut b = device();
     let reference = reference(Scene::Quads);
+    let (tolerance, pixels) = draw::allowance("quads.png");
     for twist in [Twist::BlendFactor, Twist::DepthFunction] {
-        let (beyond, worst) = compare(&render(&mut b, Scene::Quads, twist), &reference);
+        let (beyond, worst) =
+            draw::beyond(&render(&mut b, Scene::Quads, twist), &reference, tolerance);
         eprintln!(
-            "quads with {twist:?}: {beyond} pixels beyond {TOLERANCE}, largest difference {worst}"
+            "quads with {twist:?}: {beyond} pixels beyond {tolerance}, largest difference {worst}"
         );
-        assert!(beyond > 0, "{twist:?} drew the reference picture");
+        assert!(beyond > pixels, "{twist:?} drew the reference picture");
     }
 }
 
 /// The quads drawn with each depth format of at least 24 bits the device holds, stencil cleared too
-/// where the format has one, equal Direct3D's picture.
+/// where the format has one, within the rig's allowance of Direct3D's picture.
 #[test]
 fn quads_match_direct3d_on_every_depth_format() {
     use wcontainers_gpu::{Format, FormatUse};
@@ -144,11 +112,11 @@ fn quads_match_direct3d_on_every_depth_format() {
         let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
         b.finish_read(rb, &mut rgba);
         assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
-        let (beyond, worst) = compare(&rgba, &reference);
-        eprintln!(
-            "quads on {format:?}: {beyond} pixels beyond {TOLERANCE}, largest difference {worst}"
+        eprint!("on {format:?}: ");
+        assert!(
+            draw::within(&rgba, &reference, "quads.png"),
+            "quads on {format:?} differ from Direct3D"
         );
-        assert_eq!(beyond, 0, "quads on {format:?} differ from Direct3D");
     }
 }
 
