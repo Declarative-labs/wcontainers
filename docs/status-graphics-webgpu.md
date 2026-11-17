@@ -5,9 +5,54 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 (the whole milestone, section 12) is in progress: G2 runs 1 and 2 are below as "Run 5" and
-"Run 6". The pass bar items still open are listed under "Next (G2)". Earlier runs (G2a, the first
+G2 (the whole milestone, section 12) is in progress: G2 runs 1 to 3 are below as "Run 5" to
+"Run 7". The pass bar items still open are listed under "Next (G2)". Earlier runs (G2a, the first
 slice, runs 1 to 4) follow them.
+
+Run 7 = G2 run 3, 2026-11-17:
+- Merged origin/phase-2-graphics (at f107eb5), then origin/phase-2-graphics-direct3d-12 and
+  -shaders (each a few commits ahead of it). The shared line brought the interface change c8a7be9:
+  `copy_texture` copies a combined depth-stencil format whole, both aspects, with `stencil` false.
+- Combined depth-stencil copies now follow it: equal formats and whole levels are one WebGPU copy
+  of every aspect (before, the depth aspect only, which WebGPU refuses); part of a level is drawn,
+  depth by `DepthWrittenByDraw` and stencil by the new `StencilWrittenByDraw` (interface change
+  below): per layer one draw clears the rectangle's stencil, then one draw per bit with that bit's
+  write mask and reference 0xff keeps the fragments whose source has the bit (src/fill.rs). Copies
+  between a combined format and another format mark the device lost.
+- Part of a stencil from a buffer (WebGPU copies depth and stencil only whole) goes into an
+  `r8uint` texture and is drawn the same way. Copies into a buffer and read backs that WebGPU
+  cannot make, 24-bit depth at all and part of any depth or stencil level, draw the aspect into a
+  colour texture first (`DepthReadByDraw`): 24-bit depth as `round(d * 16777215)` into `r32uint`
+  (exact: a unorm value stored as the nearest float is within half a step of its integer after one
+  correctly rounded multiply), 32-bit float depth's bits into `r32uint`, 16-bit depth into
+  `r16uint`, stencil into `r8uint`. Every depth or stencil texture gets binding and render usage
+  where its format allows, so these draws always can run. Part of a 16-bit depth level from a
+  buffer marks the device lost (no Direct3D call makes one).
+- A buffer copy or read back of a combined format's depth aspect was sized as both aspects (8
+  bytes a texel); it is now the depth format's size.
+- BC1 to BC5 against Direct3D: tests/direct3d.rs loads every BC format's seeded blocks with
+  Direct3D 11 on the RTX 3080 and with WARP (a pixel shader compiled at test time by
+  `D3DCompile`), and through the back end natively and decoded. Natively every texel equals
+  Direct3D's. Decoded, BC1 to BC5 are within 2 / 255 of WARP (BC4 and BC5 within 2.6e-4, the
+  16-bit float they are stored in), while the RTX 3080's own decoder differs from WARP by up to
+  13 / 255: hardware decoders interpolate BC1 to BC5 within a tolerance. So the bar is: decoded
+  texels no further from the GPU's than WARP's are, plus one step of the format they are stored in.
+  It passes. The old one-step comparison with the GPU's decoder in tests/blocks.rs stays ignored
+  as a known failure that WARP fails too.
+- `prepare` in Chrome: examples/scenes/prepare.rs (shared by tests/prepare.rs and the page, timed
+  by `performance.now()` there) draws 16 new programs unprepared, then 16 others after `prepare`;
+  web/check prints both lines and fails if the prepared draws built anything. In Chrome the
+  `prepare` calls return at once (0.6 ms for 16) and the compiles finish in the GPU process before
+  the next submit completes, so `BACKGROUND_PREPARE` is confirmed there (measurements below).
+- The scene tests (scenes.rs, raster.rs, the two writes.rs tests drawing the triangle) compare with
+  the rig's allowance for each picture (references/d3d11/tolerances.txt, what WARP earns: 1 for the
+  triangle, quads and viewports, 0 for the instanced scene), so they hold on any GPU, and print
+  how many pixels differ at all. On the RTX 3080 every pixel still equals Direct3D's (printed, and
+  web/check compares the twelve pictures at 0).
+- Found: incremental builds on the desktop sometimes kept a stale library (a changed string in
+  src/memory.rs did not reach the test binary, twice). Runs whose results are recorded here now
+  start with `cargo clean -p wcontainers-gpu-webgpu` in the job's build command. Not reported to
+  the rig track yet.
 
 Run 6 = G2 run 2, 2026-11-17:
 - Merged origin/phase-2-graphics at d31a49e (every other graphics branch was already in it); the
@@ -323,6 +368,13 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wcontainers-gpu-webgpu --no-fail-fast -- --test-threads 1"`. Keep `--no-fail-fast`, so one
   failing file does not hide the others, and `--locked`, so a stale lock file fails instead of
   being rewritten (which makes the tree differ and gpu-job refuse it).
+- When a result is recorded, start the build command with `cargo clean -p wcontainers-gpu-webgpu &&`
+  (incremental builds on the desktop once kept a stale library), and before `web/check` run
+  `tools/graphics-rig/remote "cargo clean -p wcontainers-gpu-webgpu & cargo clean -p
+  wcontainers-gpu-webgpu --target wasm32-unknown-unknown"`.
+- The BC comparison with Direct3D and WARP with other blocks: `set WEBGPU_SEED=<n>&& set
+  WEBGPU_CASES=<textures per format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test
+  direct3d bc_ -- --nocapture` as the job's command (prints each format's distances).
 - The prepare timings: `tools/graphics-rig/gpu-job --alone --build "cargo test --locked -j 3 -p
   wcontainers-gpu-webgpu --no-run" -- "set WEBGPU_API=dx12&& cargo test --locked -j 3 -p
   wcontainers-gpu-webgpu --test prepare -- --nocapture"` (`WEBGPU_PROGRAMS=<n>` programs per half,
@@ -344,15 +396,45 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   (web/draw.mjs, web/scenes.html), compares all twelve with references/d3d11 at tolerance 0, and
   draws both quads pictures with each twist natively on both APIs and in Chrome and requires them
   to differ, draws the eight-viewport scene in Chrome (equal to `raster-viewports.png`, and
-  differing with whole-pixel viewports), then runs the shared suite in Chrome, one page per test (suite-chrome.txt). Prints
+  differing with whole-pixel viewports), prints first-draw timings with and without `prepare` in
+  Chrome (failing if the prepared draws built anything), then runs the shared suite in Chrome, one
+  page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
-- The known BC failure: add `--ignored` to the test command (`--test blocks -- --ignored
-  --nocapture`); it prints each format's largest difference and the texel.
+- The old one-step BC comparison (ignored): add `--ignored` to the test command (`--test blocks --
+  --ignored --nocapture`); it prints each format's largest difference and the texel.
 - One renderer by hand, on the desktop: `scenes <dx12|vulkan|metal> <dir> [none|blend-factor|
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 7 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
+load not sampled; Mac load average 18 to 64):
+- All tests after a clean build of the crate, at af2d885's code: Vulkan 64 of 64 and Direct3D 12
+  64 of 64, one ignored on each (the old BC one-step comparison): bindings 10, blocks 2, copies 4,
+  depth 2, direct3d 4, fitted 1, prepare 1, raster 1, scenes 4, suite 24, writes 11. Every scene
+  picture equal to Direct3D's in every pixel on both APIs.
+- tests/direct3d.rs BC comparison, seed 188 one texture per format (Direct3D 12) and seed 7 four
+  per format (Vulkan), largest channel differences over the seed-7 run: WARP from the GPU / the
+  decoded from the GPU / the decoded from WARP: BC1 0.0196 / 0.0196 / 0.0078; BC1 sRGB 0.0269 /
+  0.0273 / 0.0092; BC2 0.0235 / 0.0196 / 0.0078; BC2 sRGB 0.0297 / 0.0293 / 0.0095; BC3 0.0235 /
+  0.0235 / 0.0078; BC3 sRGB 0.0323 / 0.0273 / 0.0095; BC4 0.0235 / 0.0236 / 0.00025; BC4 signed
+  0.0504 / 0.0504 / 0.00026; BC5 0.0247 / 0.0249 / 0.00025; BC5 signed 0.0508 / 0.0508 / 0.00026;
+  BC6H both 0 / 0 / 0; BC7 0 / 0 / 0; BC7 sRGB 0.0037 / 0 / 0.0037 (WARP's sRGB conversion
+  differs from the GPU's and the back end's). Natively 0 texels differ for every format.
+- `web/check` (clean build): all twelve pictures equal Direct3D 11's at tolerance 0, every twist
+  differs as before, the viewports as before, the suite in Chrome 24 of 24, Chrome's adapter the
+  RTX 3080 (D3D12, discrete, not a fallback). `prepare` in Chrome 157 (16 programs per half,
+  `performance.now()` steps of 0.1 ms): unprepared, the frame of 16 first draws (draws, submit,
+  wait for the GPU) took 473.7 ms, each draw call under 0.1 ms; after `prepare`, the 16 `prepare`
+  calls took 0.6 ms, waiting for a submit after them 441.3 ms (the compiles), and the frame
+  4.4 ms with no miss.
+- `prepare` natively, alone in the GPU queue: Direct3D 12, unprepared draw median 9.53 ms, longest
+  13.56 ms, frame 158.5 ms; after 150.4 ms of prepares, draw median 0.9 us, longest 4.4 us, frame
+  1.15 ms. Vulkan: unprepared median 0.43 ms, longest 0.83 ms, frame 7.9 ms; after 6.7 ms of
+  prepares, median 0.5 us, frame 0.35 ms. Both far below run 5's (Vulkan median 6.5 ms then): the
+  programs are the same each run, so the driver's own shader cache likely holds them; expected,
+  not measured.
 
 Run 6 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
 load not sampled; Mac load average 30 to 48):
@@ -475,16 +557,11 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Not carried out yet (each marks the device lost with its reason, or is declared absent)
 
-- BC1 to BC5 decoded by bcdec_rs sample up to 5 / 255 (unsigned) and 5 / 127 (signed) away from the
-  RTX 3080's own decoder (measurements above), beyond one step; the plan asks for Direct3D's
-  interpolation tolerance against the reference. Next: sample the same blocks with real Direct3D 11
-  (tests/direct3d.rs has the device), find the tolerance Direct3D states for BC1 to BC5, and either
-  fix the decode or state the tolerance. Known failure, test ignored with this reason.
 - 3D BC textures natively need `texture-compression-bc-sliced-3d`, which the device asks for where
   the adapter has it; decoded ones need nothing.
 
-- Stencil copies WebGPU refuses (`StencilCopiedByDraw`), multisampled depth copies, and copies of
-  24-bit depth into a buffer (`DepthReadByDraw`).
+- Multisampled depth or stencil copies that WebGPU cannot make (between formats); part of a
+  16-bit depth level written from a buffer.
 - Vertex formats WebGPU lacks (`VertexFormatConverted`): three-component 8 and 16-bit formats,
   `Float16x3`, `Uint10_10_10_2`, `Float11_11_10`. `create_vertex_layout` marks the device lost.
   The plan's route: widen the streams that use them into a shadow buffer by a compute pass at draw
@@ -506,16 +583,18 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 ## Next (G2)
 
 The pass bar items still open, in the order to take them:
-- BC1 to BC5 against real Direct3D (the known failure above).
-- In Chrome, now that waiting works there: tests/prepare.rs's first-draw timings through the
-  browser host (examples/scenes, as viewports.rs and suite.rs are), to measure `prepare` there.
-- This Mac's GPU: a window for the suite's present test on macOS; why the triangle and quads, and
-  the two writes.rs tests comparing with the triangle, differ from the RTX 3080's references there
-  (print the largest difference; the rig's WARP allowance is 1). Run it only as single jobs.
-- The rest of "Not carried out yet".
+- This Mac's GPU: a window for the suite's present test on macOS (tests/suite.rs opens windows
+  only on Windows). Run it only as single jobs.
+- The rest of "Not carried out yet", vertex formats WebGPU lacks first.
 
 ## Departures from the plan
 
+- The plan asks BC textures decoded to be compared with Direct3D "within the stated tolerance".
+  The tolerance stated is WARP's distance from the GPU plus one step of the decoded storage
+  format, since no fixed one-step tolerance is met by Direct3D's own WARP on these blocks.
+- Scene pictures in this crate's tests are held to the rig's per-picture allowance (what WARP
+  earns) so they hold on any GPU; the RTX 3080's exact equality is printed by them and asserted by
+  web/check at tolerance 0.
 - wgpu is vendored (third_party/wgpu, 30.0.2 plus one fix in src/backend/webgpu.rs) so its browser
   back end passes a render pass's occlusion query set to WebGPU; without it every occlusion query
   in the browser failed. This touches the workspace manifest, outside this crate.
@@ -563,6 +642,10 @@ The pass bar items still open, in the order to take them:
 
 ## Interface changes
 
+- 3f5519a `interface: named the slow path of stencil written by a draw per bit`:
+  `SlowPath::StencilWrittenByDraw`, and the plan's 4.2 sentences on depth and stencil copies WebGPU
+  makes only whole (written by draws, read by `DepthReadByDraw`). `StencilCopiedByDraw` names a
+  different job (an 8-bit texture filled from the stencil for sampling, WebGL 2's).
 - b999c16 `interface: named the slow path of integer colour clears made by a draw`:
   `SlowPath::IntegerClearByDraw`, and the sentence in the plan's 5.7. wgpu's Direct3D 12 clears
   colour targets through f32, which cannot hold integers past 2^24.
@@ -587,7 +670,9 @@ LICENSE.APACHE kept) and wgpu-naga-bridge 30.0.2 MIT OR Apache-2.0 (dependencies
 MIT (its Cargo.toml; plan section 3 records its repository's licence); half 2.7.1 MIT OR Apache-2.0;
 in the browser build js-sys 0.3.107 and wasm-bindgen 0.2.130 MIT OR Apache-2.0. Test-only, new in
 run 6: web-sys 0.3.107 and getrandom 0.4.3 MIT OR Apache-2.0 (browser); windows 0.62.2 MIT OR
-Apache-2.0 and wcontainers-graphics-test (ours) for tests/direct3d.rs. Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window and reading the screen, already
+Apache-2.0 and wcontainers-graphics-test (ours) for tests/direct3d.rs; new in run 7, image 0.25.10
+MIT OR Apache-2.0 (its Cargo.toml; already in the lock file through the rig) and the windows crate's
+`Win32_Graphics_Direct3D_Fxc` feature, for tests/direct3d.rs. Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window and reading the screen, already
 in the lock file); wcontainers-gpu-test (ours); png 0.18.1, anyhow 1.0.104, wasm-bindgen 0.2.130,
 js-sys 0.3.107 MIT OR Apache-2.0 (wasm-bindgen-futures is no longer used); pollster 1.0.1 Apache-2.0/MIT;
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.

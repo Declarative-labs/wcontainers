@@ -52,20 +52,17 @@ fn fractional_viewports_match_direct3d() {
         let mut want = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut want).unwrap();
         want.truncate(info.buffer_size());
-        // On the GPU the reference was drawn on, every pixel; the rig allows 1 for WARP.
-        let wrong: Vec<_> = (0..(w * h) as usize)
-            .filter(|p| got[p * 4..p * 4 + 4] != want[p * 4..p * 4 + 4])
-            .map(|p| (p as u32 % w, p as u32 / w))
-            .collect();
         if rounded {
             // The same viewports moved to whole pixels must not match: the half pixel is seen.
-            assert!(!wrong.is_empty(), "rounded viewports matched too");
+            let (tolerance, pixels) = draw::allowance("raster-viewports.png");
+            assert!(
+                draw::beyond(&got, &want, tolerance).0 > pixels,
+                "rounded viewports matched too"
+            );
         } else {
             assert!(
-                wrong.is_empty(),
-                "{} pixels differ, first {:?}",
-                wrong.len(),
-                wrong.first()
+                draw::within(&got, &want, "raster-viewports.png"),
+                "the viewports differ from Direct3D's"
             );
         }
     }
