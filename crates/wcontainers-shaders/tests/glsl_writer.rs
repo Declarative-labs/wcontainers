@@ -1,4 +1,4 @@
-//! The changes our naga carries in its GLSL writer, which the WebGL 2 back end relies on.
+//! The changes our naga carries in its writers, which the back ends rely on.
 
 use naga::back::glsl;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
@@ -93,4 +93,49 @@ fn sample_index_is_converted_to_unsigned() {
         glsl::WriterFlags::empty(),
     );
     assert!(out.contains("uint(gl_SampleID)"), "{out}");
+}
+
+#[test]
+fn sample_mask_is_an_int_array_with_its_extension() {
+    let wgsl = "
+struct Out { @location(0) c: vec4f, @builtin(sample_mask) m: u32 }
+@fragment fn main(@builtin(sample_mask) m: u32) -> Out {
+    return Out(vec4f(1.0), m & 5u);
+}";
+    let out = write_glsl(
+        wgsl,
+        naga::ShaderStage::Fragment,
+        glsl::WriterFlags::empty(),
+    );
+    assert!(
+        out.contains("#extension GL_OES_sample_variables : require"),
+        "{out}"
+    );
+    assert!(out.contains("uint(gl_SampleMaskIn[0])"), "{out}");
+    assert!(out.contains("gl_SampleMask[0] = int("), "{out}");
+}
+
+#[test]
+fn wgsl_literals_near_the_largest_f32_stay_in_range() {
+    let wgsl = "
+@fragment fn main(@location(0) x: f32) -> @location(0) vec4f {
+    return vec4f(select(0.0, 1.0, abs(x) <= 3.4028234663852886e38f), 0.1, -3.4028234663852886e38f, 1.0);
+}";
+    let module = naga::front::wgsl::parse_str(wgsl).expect("parse");
+    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        .validate(&module)
+        .expect("validate");
+    let out =
+        naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
+            .expect("write");
+    // f32::MAX's own digits, which no WGSL compiler reads as out of range; short ones elsewhere.
+    assert!(
+        out.contains("340282346638528860000000000000000000000f"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("340282350000000000000000000000000000000f"),
+        "{out}"
+    );
+    assert!(out.contains("0.1f"), "{out}");
 }

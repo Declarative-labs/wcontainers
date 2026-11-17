@@ -636,7 +636,7 @@ impl<W> Writer<'_, W> {
                 Binding::BuiltIn(built_in) => match built_in {
                     crate::BuiltIn::ClipDistances => self.features.request(Features::CLIP_DISTANCE),
                     crate::BuiltIn::CullDistance => self.features.request(Features::CULL_DISTANCE),
-                    crate::BuiltIn::SampleIndex => {
+                    crate::BuiltIn::SampleIndex | crate::BuiltIn::SampleMask => {
                         self.features.request(Features::SAMPLE_VARIABLES)
                     }
                     crate::BuiltIn::ViewIndex => self.features.request(Features::MULTI_VIEW),
