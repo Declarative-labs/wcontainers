@@ -618,3 +618,39 @@ fn a_draw_the_front_cannot_serve_removes_the_device() {
     assert!(dev.removed);
     assert!(!dev.backend.log.iter().any(|l| l.starts_with("draw ")));
 }
+
+#[test]
+fn vertex_ids_with_a_start_location_are_not_served() {
+    let mut dev = device();
+    let target = dev
+        .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let vs = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    dev.vs_set_shader(Some(vs));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.draw(3, 0);
+    assert!(!dev.removed);
+    assert_eq!(
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count(),
+        1
+    );
+    // SV_VertexID leaves the start location out; the front cannot take it off yet.
+    dev.draw(3, 3);
+    assert!(dev.removed);
+    assert_eq!(
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count(),
+        1
+    );
+}

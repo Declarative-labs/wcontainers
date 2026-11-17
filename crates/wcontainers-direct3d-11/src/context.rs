@@ -6,8 +6,8 @@ use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
     DepthAttachment, DrawCall, DrawRange, Extent, FormatKind, IndexBinding, IndexFormat, LoadOp,
     MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ScissorRect, SlotKind,
-    SlowPath, StageSet, StepMode, StoreOp, TextureRegion, Topology, VertexAttribute, VertexBinding,
-    VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
+    SlowPath, StageSet, StepMode, StoreOp, SystemValue, TextureRegion, Topology, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
 };
 
 use crate::desc::{self, Box3, Viewport, map, topology, usage};
@@ -655,6 +655,20 @@ impl<B: Backend> Device<B> {
         };
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());
+        }
+        // The common form's vertex and instance indices include the draw's bases, which SV_VertexID
+        // and SV_InstanceID leave out; the helper constants that take them off are not served yet.
+        let vertex_base = match range {
+            Range::Vertices { start, .. } => start != 0,
+            Range::Indexed { base, .. } => base != 0,
+        };
+        let reads = |sv| vs.reflection.inputs.iter().any(|i| i.system == Some(sv));
+        if (vertex_base && reads(SystemValue::VertexId))
+            || (first_instance != 0 && reads(SystemValue::InstanceId))
+        {
+            return not_implemented(
+                "SV_VertexID or SV_InstanceID with a non-zero start or base location",
+            );
         }
         let ps = self.ctx.ps.clone();
         let program = self.program(&vs, ps.as_ref())?;
