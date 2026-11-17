@@ -34,6 +34,9 @@ pub struct Writer<'a, W> {
     named_expressions: crate::NamedExpressions,
     /// Set of expressions that need to be baked to avoid unnecessary repetition in output
     need_bake_expressions: back::NeedBakeExpressions,
+    /// Values a loop's `continuing` block reads that its body has yet to define, with the
+    /// variables declared before the loop that the body assigns them to.
+    continuing_values: crate::FastHashMap<Handle<crate::Expression>, String>,
     /// Information about nesting of loops and switches.
     ///
     /// Used for forwarding continue statements in switches that have been
@@ -111,6 +114,7 @@ impl<'a, W: Write> Writer<'a, W> {
             block_id: IdGenerator::default(),
             named_expressions: Default::default(),
             need_bake_expressions: Default::default(),
+            continuing_values: Default::default(),
             continue_ctx: back::continue_forward::ContinueCtx::default(),
             varying: Default::default(),
             clip_distance_count: 0,
@@ -1613,6 +1617,12 @@ impl<'a, W: Write> Writer<'a, W> {
             // This is where we can generate intermediate constants for some expression types.
             Statement::Emit(ref range) => {
                 for handle in range.clone() {
+                    // A value a loop's `continuing` reads: written here, then copied to its
+                    // variable.
+                    let continuing_name = self.continuing_values.remove(&handle);
+                    if continuing_name.is_some() {
+                        self.named_expressions.shift_remove(&handle);
+                    }
                     let ptr_class = ctx.resolve_type(handle, &self.module.types).pointer_space();
                     let expr_name = if ptr_class.is_some() {
                         // GLSL can't save a pointer-valued expression in a variable,
@@ -1655,6 +1665,12 @@ impl<'a, W: Write> Writer<'a, W> {
                     if let Some(name) = expr_name {
                         write!(self.out, "{level}")?;
                         self.write_named_expr(handle, name, handle, ctx)?;
+                    }
+                    if let Some(name) = continuing_name {
+                        write!(self.out, "{level}{name} = ")?;
+                        self.write_expr(handle, ctx)?;
+                        writeln!(self.out, ";")?;
+                        self.named_expressions.entry(handle).or_insert(name);
                     }
                 }
             }
@@ -1830,7 +1846,26 @@ impl<'a, W: Write> Writer<'a, W> {
                 break_if,
             } => {
                 self.continue_ctx.enter_loop();
+                let mut continuing_names = Vec::new();
                 if !continuing.is_empty() || break_if.is_some() {
+                    // `continuing` is written ahead of the body, so the body's values it reads
+                    // live in variables declared before the loop.
+                    let values = ctx.values_for_continuing(
+                        self.module,
+                        body,
+                        continuing,
+                        break_if,
+                        |handle| self.named_expressions.contains_key(&handle),
+                    );
+                    for handle in values {
+                        let name = self.namer.call("loop_value");
+                        write!(self.out, "{level}")?;
+                        self.write_value_declaration(handle, &name, ctx)?;
+                        writeln!(self.out, ";")?;
+                        self.named_expressions.insert(handle, name.clone());
+                        self.continuing_values.insert(handle, name.clone());
+                        continuing_names.push((handle, name));
+                    }
                     let gate_name = self.namer.call("loop_init");
                     writeln!(self.out, "{level}bool {gate_name} = true;")?;
                     writeln!(self.out, "{level}while(true) {{")?;
@@ -1854,6 +1889,19 @@ impl<'a, W: Write> Writer<'a, W> {
                 }
                 for sta in body {
                     self.write_stmt(sta, ctx, level.next())?;
+                    // A statement's result `continuing` reads.
+                    for &(handle, ref name) in continuing_names.iter() {
+                        if self.continuing_values.contains_key(&handle)
+                            && self.named_expressions.get(&handle) != Some(name)
+                        {
+                            let value = &self.named_expressions[&handle];
+                            writeln!(self.out, "{}{name} = {value};", level.next())?;
+                            self.continuing_values.remove(&handle);
+                        }
+                    }
+                }
+                for &(handle, _) in continuing_names.iter() {
+                    self.continuing_values.remove(&handle);
                 }
                 writeln!(self.out, "{level}}}")?;
                 self.continue_ctx.exit_loop();
@@ -4350,6 +4398,22 @@ impl<'a, W: Write> Writer<'a, W> {
         named: Handle<crate::Expression>,
         ctx: &back::FunctionCtx,
     ) -> BackendResult {
+        self.write_value_declaration(named, &name, ctx)?;
+        write!(self.out, " = ")?;
+        self.write_expr(handle, ctx)?;
+        writeln!(self.out, ";")?;
+        self.named_expressions.insert(named, name);
+
+        Ok(())
+    }
+
+    /// Writes the type and name of a variable that holds `named`'s value.
+    fn write_value_declaration(
+        &mut self,
+        named: Handle<crate::Expression>,
+        name: &str,
+        ctx: &back::FunctionCtx,
+    ) -> BackendResult {
         match ctx.info[named].ty {
             proc::TypeResolution::Handle(ty_handle) => match self.module.types[ty_handle].inner {
                 TypeInner::Struct { .. } => {
@@ -4371,11 +4435,6 @@ impl<'a, W: Write> Writer<'a, W> {
         if let TypeInner::Array { base, size, .. } = *resolved {
             self.write_array_size(base, size)?;
         }
-        write!(self.out, " = ")?;
-        self.write_expr(handle, ctx)?;
-        writeln!(self.out, ";")?;
-        self.named_expressions.insert(named, name);
-
         Ok(())
     }
 
