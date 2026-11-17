@@ -36,10 +36,38 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   - Licences of what dxil-spirv ships, its C++ standard, the Chrome flag used for verdicts, and the
     unmeasured direct DXBC lowering are written into the plan (sections 3, 6.2, 6.3, 13).
 
+- G0, run 3 (2026-11-17): every finding of the second independent check fixed:
+  - Feature levels (plan 9) now state what each level needs of a back end's numbers (Microsoft's table
+    and the SDK headers, read on the desktop) and how each is met: texture sizes are conditions (11_0
+    needs 16384 2D and cube, 2048 3D and layers; else 10_1, 10_0); input slots past the limits are
+    fetched in the program (`VertexPulledInShader`); constant buffers past WebGPU's uniform slots are
+    read as storage (`ConstantsAsStorage`), past WebGL 2's blocks or 16 KiB block size through a texture
+    (`ConstantsAsTexture`); stage values are packed, then refused (`VaryingsBeyondLimit`); BC formats are
+    decoded where not native (`BlockDecoded`, with `bcdec_rs`), with the blocks kept on the host for
+    copies and read backs (`BlockCopyReadBack`). WebGL 2's 10_0 conditions now include 2048 3D, 512
+    layers and the cube size.
+  - Sampler LOD bias: removed from `SamplerDesc` (no browser sampler has one); fronts pass it in the
+    helper constants and bind a variant (`LodBiasInShader`, plan 4.12).
+  - Cube textures: `TextureDesc::cube` and `own_view()`; WebGL 2 picks the GL target from it; other view
+    kinds come from a front-kept second texture (`ReinterpretCopy`). 1D textures removed: fronts make them
+    2D, one texel high.
+  - The brief's "build a shader with the most common states when it arrives" is written as step 2 of
+    plan 4.4, with a combination tracker helper for G1.
+  - The Direct3D family's module split: one module per back end, recorded as a departure (plan 2, 10).
+  - Program variants moved from back ends to fronts and the shaders crate. `VariantKey`, `Reflection`,
+    the helper constants (`HelperValue`) and the slot ranges (`SlotKind`) are now Rust in
+    `wcontainers-gpu` (`reflect.rs`); the conversion and stage helper API is written out in plan 6.4.
+    Milestones in plan 12 restated with what each needs; a rule for interface changes after G0.
+  - Minor: `write_buffer_ring` aligns empty parts; `ViewportDepthFlip` for near beyond far;
+    `ExecuteIndirect` in plan 5.2; texture UAV clears by dispatch; `DEPTH_BIAS_CLAMP` and
+    `DepthBiasInShader` (was `LineBiasInShader`); the loop and fan doc strings corrected.
+  - New capability bits `DEPTH_BIAS_CLAMP`, `BLOCK_COMPRESSION`; limit `max_texture_cube` (the 1D limit
+    removed). 57 slow path reasons.
+
 ## Partly done
 
-- Nothing in G0. Designed for G1, not in the crate yet: the shared pass tracker (plan 4.7) and the
-  occlusion counter helper (plan 4.12). G6 writes the `rewrite` module (plan 4.5).
+- Nothing in G0. Designed for G1, not in the crate yet: the pass tracker (plan 4.7), the occlusion
+  counter (plan 4.12) and the combination tracker (plan 4.4).
 
 ## Next
 
@@ -49,7 +77,7 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (13 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (16 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
@@ -69,6 +97,9 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
     `--no-bda --ssbo-uav --ssbo-srv` (plus `--bindless` for the SM 6.6 shader), then `run-corpus.sh` on
     `corpus/dxil-spv`.
 - Microsoft's feature level and format tables used for plan 9 are in `downloads/msdocs/`.
+- Chrome's WebGPU limits and features and WebGL 2 parameters and extensions:
+  `nix develop -c node <scratch>/tools/all-limits.mjs` (headless Chrome through the flake's Playwright);
+  the run-3 output is `corpus/chrome-limits-run3.json`.
 
 ## Measurements
 
@@ -76,6 +107,13 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   2026-11-17 with load average 12.51, 20.81, 20.69 when the builds started; Chrome as installed, headless,
   through the flake's Playwright. Results: plan section 6.3, files in `corpus/`. Run 2 took no new
   measurements (load average 13.02, 14.76, 17.39 when its tests ran).
+- Run 3, on the Mac, load average 14.71, 16.16, 16.39: Chrome's adapter limits (plan 4.11), counts not
+  timings. WebGPU: 16384 2D, 2048 3D and layers, 8 vertex buffers, 30 attributes, 12 uniform buffers, 10
+  storage buffers, 48 sampled textures, 28 inter-stage slots, 64 immediate bytes, BC and BC sliced 3D
+  present. WebGL 2: 16 attributes, 16 uniform blocks of 16384 bytes, 16 units, 2048 3D and layers,
+  every extension the plan names. Direct3D's numbers (14 constant buffers, 32 input slots and elements,
+  32 vertex outputs; 16 at 10_0; 512 layers at 10_0) read from the desktop's SDK 10.0.26100 headers,
+  read only.
 
 ## Dependencies added and their licences
 
@@ -83,6 +121,8 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   Its tree, from `cargo tree`: all MIT or Apache-2.0 except `foldhash` (Zlib), `zerocopy`
   (BSD-2-Clause OR Apache-2.0 OR MIT), `unicode-ident` ((MIT OR Apache-2.0) AND Unicode-3.0),
   `codespan-reporting` (Apache-2.0), `libm` (MIT).
+- Read in its repository, to be added by G2 and G3: `bcdec_rs` 0.2.1, MIT (Cargo.toml and the
+  ScanMountGoat/image_dds LICENSE), a port of bcdec (MIT or Unlicense).
 - Read in their repositories, not yet dependencies: dxbc-spirv MIT (2025 Philip Rebohle; SPIRV-Headers
   submodule, Khronos MIT-style); dxil-spirv MIT (Hans-Kristian Arntzen for Valve), shipping glslang's
   SPIR-V builder (BSD-3-Clause), RenderDoc's bitcode reader (MIT) and SPIRV-Headers; Fossilize MIT (not
@@ -120,6 +160,17 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 - A new crate `wcontainers-directx` (not in the brief's list) builds the one library that holds the
   Direct3D family, so DXGI, Direct3D 11 and 12 share one back end and one device thread; `d3d11.dll`,
   `d3d12.dll` and `dxgi.dll` forward to it (plan 10).
+- Bytes the API lets the program reuse when the call returns are copied once by the stand-in (plan 2
+  rule 1, 4.6), not read in place as the brief says, because the device thread reads them only after the
+  frame's call buffer crosses.
+- The Direct3D family (DXGI, 10, 11, 12) is one module per back end, loaded at the first call into any
+  of them, not one module per API as the brief says: they share one device and DXGI's objects, which
+  separate modules could only do through run-time dispatch or separate devices (plan 10). The unused
+  back end is never loaded. Its cost to a Direct3D 11 program is measured at G4.
+- Program variants (filtering, border, mirror once, LOD bias, limits, clip depth) are chosen by fronts
+  and made by the shaders crate; back ends never rewrite programs.
+- One more counted refusal beside `BindingsBeyondLimit`: `VaryingsBeyondLimit` (more stage values
+  than the back end has after packing). Texture sizes beyond the adapter's lower the reported level.
 - `wcontainers-gpu` gained naga's `wgsl-in` feature, for the built-in programs of the fast-path
   defaults.
 - The workspace root `Cargo.toml` gained the `naga` workspace dependency (outside the crates this track

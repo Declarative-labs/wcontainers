@@ -135,7 +135,9 @@ pub enum ViewDimension {
 /// range; another format of the same size) needs [`crate::Features::TEXTURE_VIEWS`] or
 /// [`crate::Features::FORMAT_REINTERPRET`]. Without them the front keeps a second texture made in the
 /// view's own shape and format, copied from the first whenever that changed since the last copy (slow
-/// path [`crate::SlowPath::ReinterpretCopy`]).
+/// path [`crate::SlowPath::ReinterpretCopy`]). Without [`crate::Features::TEXTURE_VIEWS`] a draw also
+/// binds each texture through one mip range only (WebGL 2 sets the range on the texture itself); a second
+/// range in the same draw comes from the second texture too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextureViewDesc {
     pub format: Format,

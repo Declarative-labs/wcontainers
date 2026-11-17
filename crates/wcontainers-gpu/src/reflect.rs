@@ -199,6 +199,9 @@ pub enum HelperValue {
     LodBias { sampler: u32 },
     /// A sampler's border color (four f32, or four u32 for integer textures).
     BorderColor { sampler: u32 },
+    /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
+    /// and the three address modes as u32 codes, anisotropy (u32), then the level range (two f32).
+    SamplerState { sampler: u32 },
     /// A texture's mip level count (u32), where the back end's language cannot ask.
     TextureLevels { texture: u32 },
     /// A multisampled texture's sample count (u32), where the back end's language cannot ask.
