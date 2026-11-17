@@ -489,7 +489,13 @@ R1 continues, in this order:
 1. Settle where presenting jobs run (Known issues), then add that kind of job to the queue.
 2. Part 2, Wine's Direct3D tests: run all four on the RTX 3080 and on WARP in that session and
    record the baseline (tests and checks run, failures on real Direct3D with their reasons, time).
-3. Part 3, real programs, in that session too. Candidates to
+3. Part 3, real programs, in that session too. Candidates whose licence GitHub reports (checked on
+   2026-11-17 through its API; read each LICENSE file when fetching): microsoft/DirectX-SDK-Samples
+   (MIT; the Direct3D 11 tutorials and samples of the old DirectX SDK), microsoft/DirectXTK (MIT)
+   and microsoft/Xbox-ATG-Samples (MIT; its PC Direct3D 11 samples), microsoft/DirectX-Graphics-
+   Samples (MIT; mostly Direct3D 12), bkaradzic/bgfx (BSD-2-Clause; its examples run on a Direct3D
+   11 renderer), floooh/sokol-samples (MIT; Direct3D 11 on Windows) and ocornut/imgui (MIT; its
+   win32 Direct3D 11 example). Games or demos beyond these are still to be found. Candidates to
    check at their source: DirectX-Graphics-Samples (MIT), DirectXTK samples (MIT), and two or three
    open-source games or demos with 64-bit Direct3D 11 renderers. For each: a fetch-or-build script
    into C:\wc, a fixed number of frames run repeatably, saved pictures, and a call census through a
