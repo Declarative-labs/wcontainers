@@ -14,10 +14,12 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use wcontainers_arm64::forms;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Optimise};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::jobs::at_once;
+use wcontainers_translator_test::layer1::excluded;
 use wcontainers_translator_test::layer2::{OUTPUT, area_offset, assemble, program};
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
@@ -60,6 +62,12 @@ fn full_matches_none_and_the_cpu() {
             &(program(), 1..=64u32, any::<u64>()),
             |(program, bound, mix)| {
                 let blob = assemble(&program);
+                // Every word is one whose behaviour the architecture defines, as layer 1 compares.
+                for (at, word) in blob.bytes[..blob.code_bytes as usize].chunks(4).enumerate() {
+                    let word = u32::from_le_bytes(word.try_into().unwrap());
+                    let left_out = forms::form(word).and_then(|form| excluded(form, word));
+                    assert_eq!(left_out, None, "word {word:#010x} at {:#x}", 4 * at);
+                }
                 let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
                 // A program ends by writing its output, or by a memory fault (SIGSEGV).
                 match none.status {
