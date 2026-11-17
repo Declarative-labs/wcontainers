@@ -78,12 +78,12 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     );
     let (code, ours) = run("own_refused", &place("refused-ours", true));
     assert_eq!(code, 0, "{ours}");
-    // E_NOTIMPL for geometry shaders and the two queries; structured views and 4 samples served
+    // E_NOTIMPL for geometry shaders; the two queries, structured views and 4 samples served
     // as Direct3D serves them; and the unservable draw removes the device
     // (DXGI_ERROR_DRIVER_INTERNAL_ERROR).
     assert_eq!(
         ours,
-        "CreateGeometryShader 0x80004001\nCreateQuery(occlusion) 0x80004001\nCreateQuery(timestamp) 0x80004001\n\
+        "CreateGeometryShader 0x80004001\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
          CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
          CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x887a0020\n"
     );

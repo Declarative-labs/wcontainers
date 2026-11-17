@@ -517,6 +517,54 @@ fn stages_the_front_lacks_take_unbinding_and_report_nothing_bound() {
     }
 }
 
+/// Constant buffers and samplers bound to the geometry, hull and domain stages are kept for the
+/// getters, as Direct3D keeps them, though no shader of those stages can be made.
+#[test]
+fn stages_the_front_lacks_keep_constant_buffers_and_samplers() {
+    let (device, context) = device();
+    unsafe {
+        let desc = D3D11_BUFFER_DESC {
+            ByteWidth: 16,
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+            ..Default::default()
+        };
+        let mut b = None;
+        device.CreateBuffer(&desc, None, Some(&mut b)).unwrap();
+        let b = b.unwrap();
+        let mut s = None;
+        let sampler = D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MaxLOD: f32::MAX,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            ..Default::default()
+        };
+        device.CreateSamplerState(&sampler, Some(&mut s)).unwrap();
+        let s = s.unwrap();
+        context.GSSetConstantBuffers(1, Some(&[Some(b.clone())]));
+        context.HSSetSamplers(2, Some(&[Some(s.clone())]));
+        context.DSSetConstantBuffers(13, Some(&[Some(b.clone()), Some(b.clone())]));
+        let mut buffers: [Option<ID3D11Buffer>; 2] = Default::default();
+        context.GSGetConstantBuffers(0, Some(&mut buffers));
+        assert!(buffers[0].is_none());
+        assert_eq!(buffers[1].as_ref(), Some(&b));
+        let mut samplers: [Option<ID3D11SamplerState>; 1] = Default::default();
+        context.HSGetSamplers(2, Some(&mut samplers));
+        assert_eq!(samplers[0].as_ref(), Some(&s));
+        // Past the last slot: dropped.
+        let mut last: [Option<ID3D11Buffer>; 1] = Default::default();
+        context.DSGetConstantBuffers(13, Some(&mut last));
+        assert!(last[0].is_none());
+        context.ClearState();
+        context.GSGetConstantBuffers(1, Some(&mut last));
+        assert!(last[0].is_none());
+        assert!(device.GetDeviceRemovedReason().is_ok());
+    }
+}
+
 #[test]
 fn binding_a_target_unbinds_its_shader_views() {
     let (device, context) = device();

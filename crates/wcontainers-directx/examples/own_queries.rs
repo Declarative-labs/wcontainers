@@ -1,7 +1,9 @@
 //! A small Direct3D 11 program on queries: an event polled to completion, occlusion predicates
 //! around draws that pass samples and draws scissored to nothing, predicates that overlap, a
-//! predicate ended twice, `GetData` before an end and with wrong sizes, and the interfaces and sizes
-//! of each. Prints the answers, for comparing with real Direct3D line by line.
+//! predicate ended twice, `GetData` before an end and with wrong sizes, counted occlusion queries
+//! (overlapping, against depth the draws write, across a depth clear and a buffer write), timestamps
+//! and their disjoint query answering, and the interfaces and sizes of each. Prints the answers, for
+//! comparing with real Direct3D line by line.
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -176,9 +178,132 @@ fn main() -> windows::core::Result<()> {
     }
     poll("ended twice", &twice);
 
+    // Counted: every draw covers the 16 by 16 target once.
+    let poll64 = |name: &str, q: &ID3D11Query| {
+        let mut value = u64::MAX;
+        let mut hr = 1;
+        for _ in 0..10_000_000 {
+            hr = get(q, (&mut value as *mut u64).cast(), 8);
+            if hr != 1 {
+                break;
+            }
+        }
+        println!("{name} GetData {hr:#010x} {value}");
+    };
+    let (outer, inner, none) = (
+        make(D3D11_QUERY_OCCLUSION)?,
+        make(D3D11_QUERY_OCCLUSION)?,
+        make(D3D11_QUERY_OCCLUSION)?,
+    );
+    unsafe {
+        c.Begin(&outer);
+        full();
+        c.Begin(&inner);
+        full();
+        empty();
+        c.End(&inner);
+        c.Begin(&none);
+        empty();
+        c.End(&outer);
+        c.End(&none);
+    }
+    poll64("counted outer", &outer);
+    poll64("counted inner", &inner);
+    poll64("counted scissored", &none);
+
+    // Against depth: the second draw at the same depth fails the test; after a clear, and a write
+    // of a buffer the draws do not read, it passes again.
+    let (mut depth, mut dsv, mut less, mut cb) = (None, None, None, None);
+    unsafe {
+        device.CreateTexture2D(
+            &D3D11_TEXTURE2D_DESC {
+                Format: DXGI_FORMAT_D24_UNORM_S8_UINT,
+                BindFlags: D3D11_BIND_DEPTH_STENCIL.0 as u32,
+                ..desc
+            },
+            None,
+            Some(&mut depth),
+        )?;
+        device.CreateDepthStencilView(depth.as_ref().unwrap(), None, Some(&mut dsv))?;
+        device.CreateDepthStencilState(
+            &D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: true.into(),
+                DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: D3D11_COMPARISON_LESS,
+                ..Default::default()
+            },
+            Some(&mut less),
+        )?;
+        device.CreateBuffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: 16,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                ..Default::default()
+            },
+            None,
+            Some(&mut cb),
+        )?;
+        let dsv = dsv.as_ref().unwrap();
+        c.OMSetRenderTargets(Some(&[rtv.clone()]), dsv);
+        c.OMSetDepthStencilState(less.as_ref(), 0);
+        c.ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
+        let q = make(D3D11_QUERY_OCCLUSION)?;
+        c.Begin(&q);
+        full();
+        full();
+        c.End(&q);
+        poll64("counted depth", &q);
+        c.Begin(&q);
+        full();
+        c.ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
+        full();
+        c.UpdateSubresource(
+            cb.as_ref().unwrap(),
+            0,
+            None,
+            [0u8; 16].as_ptr().cast(),
+            0,
+            0,
+        );
+        full();
+        c.End(&q);
+        poll64("counted cleared", &q);
+        c.OMSetDepthStencilState(None, 0);
+        c.OMSetRenderTargets(Some(&[rtv.clone()]), None);
+    }
+
+    // Timestamps answer; their values, and whether the counter was continuous, are the device's.
+    let (disjoint, start, end) = (
+        make(D3D11_QUERY_TIMESTAMP_DISJOINT)?,
+        make(D3D11_QUERY_TIMESTAMP)?,
+        make(D3D11_QUERY_TIMESTAMP)?,
+    );
+    unsafe {
+        c.Begin(&disjoint);
+        c.End(&start);
+        full();
+        c.End(&end);
+        c.End(&disjoint);
+    }
+    let mut stamp = [0u8; 16];
+    for (name, q, size) in [("disjoint", &disjoint, 16), ("timestamp", &end, 8)] {
+        let mut hr = 1;
+        for _ in 0..10_000_000 {
+            hr = get(q, stamp.as_mut_ptr().cast(), size);
+            if hr != 1 {
+                break;
+            }
+        }
+        println!("{name} GetData {hr:#010x}");
+    }
+
     for (name, kind) in [
         ("event", D3D11_QUERY_EVENT),
         ("predicate", D3D11_QUERY_OCCLUSION_PREDICATE),
+        ("occlusion", D3D11_QUERY_OCCLUSION),
+        ("timestamp", D3D11_QUERY_TIMESTAMP),
+        ("disjoint", D3D11_QUERY_TIMESTAMP_DISJOINT),
     ] {
         let q = make(kind)?;
         let size = unsafe { q.GetDataSize() };
