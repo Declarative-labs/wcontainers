@@ -19,6 +19,7 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## Next
 
+- G0's independent check.
 - G1 to G6 as in plan section 12; they can run in parallel. G1 (interface complete and recording back
   end) is short and every other milestone builds its tests on it, so start it first.
 

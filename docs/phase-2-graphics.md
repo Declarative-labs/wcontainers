@@ -610,7 +610,9 @@ real DXBC corpus and 7 of 8 DXIL shaders as SPIR-V (6.3).
 
 Measured on 2026-11-17 on the Mac (load average 12.5 to 21 at the start of the runs; no timings were
 taken, only verdicts). Tools: dxbc-spirv at 6196cc6, dxil-spirv at 41815bf, naga 30.0.2, DXC 1.10.2605.37
-(nixpkgs), Chrome's WebGPU (Tint) and WebGL 2 for the final verdict.
+(nixpkgs), Chrome's WebGPU (Tint) and WebGL 2 for the final verdict. Chrome's verdict is shader
+module compilation (`getCompilationInfo` and `COMPILE_STATUS`), not pipeline creation, which needs the
+bindings and state a real draw has; G2, G3 and G6 build pipelines.
 
 DXBC corpus: 191 real DXBC blobs compiled by Microsoft's compiler, pulled out of Wine's Direct3D 11 test
 source (LGPL, used as test data only, kept in scratch). By stage: 137 pixel (4_0, 4_1, 5_0), 19 vertex, 19
@@ -802,7 +804,7 @@ Each says what it needs from the others; nothing waits on a later milestone to s
   measured against G2 on the same scene. Needs: G1's suite.
 - **G4, the Direct3D 11 front.** `wcontainers-direct3d-11` and its Windows shell. Pass bar: Wine's
   Direct3D 11 tests give real Direct3D's verdicts on the RTX 3080 except a written gap list naming the
-  absent feature behind each gap; three real programs (one per engine family, chosen by the rig track)
+  absent feature behind each gap; three real programs (one per engine family, chosen at G4 from those on the desktop)
   draw frames matching real Direct3D within the stated tolerance. Needs: G1, G2 (to draw), G6's
   conversion API (it may start on G0 and the recording back end).
 - **G5, the Direct3D 12 front and the shared infrastructure.**
