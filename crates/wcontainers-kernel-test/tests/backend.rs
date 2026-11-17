@@ -97,6 +97,18 @@ fn shared_positions_match_reference() {
     }
 }
 
+/// The same with the backend opening files for the page cache, where reads ask for attributes too.
+#[test]
+fn cached_shared_positions_match_reference() {
+    let injections = driver::Injections {
+        saves: 4,
+        ..Default::default()
+    };
+    for run in same_on("sharedpos", injections, true) {
+        assert_warned_only(&run, &[]);
+    }
+}
+
 /// Creating through links to missing files, and extended attributes of named pipes.
 #[test]
 fn special_files_match_reference() {
