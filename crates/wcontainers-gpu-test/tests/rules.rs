@@ -3152,6 +3152,9 @@ fn texture_writes_take_pitches_covering_the_region() {
     r.violations.clear();
     r.write_texture(&stencil, extent(2), &[0; 4], 2, 2, WriteMode::Ordered);
     assert!(r.violations.is_empty());
+    // The data covers the region too: three bytes for two rows of two.
+    r.write_texture(&stencil, extent(2), &[0; 3], 2, 2, WriteMode::Ordered);
+    assert_eq!(r.violations, ["data shorter than the region"]);
 }
 
 #[test]
