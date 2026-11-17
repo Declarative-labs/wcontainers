@@ -89,7 +89,17 @@ K5 built (all four runs):
     send to a receiver shut for reading is EPIPE for every kind, only streams send SIGPIPE,
     every socket-level option is at least an int, and a local socket answers other levels with
     EOPNOTSUPP before reading the length. TCP's MSG_OOB on receive is EINVAL (no urgent byte can
-    come), a send of nothing with it is 0.
+    come), a send of nothing with it is 0, and an unconnected socket fails before the refusal.
+    Later in the run: an event descriptor's write takes exactly eight bytes and a vector is
+    written a segment at a time (measured: 13, 16 and 4+4 are EINVAL; pwritev2 with flags is
+    EOPNOTSUPP), eventfd's poll has no RDNORM or WRNORM, UDP peeks start at SO_PEEK_OFF, epoll
+    answers EPIOCSPARAMS and EPIOCGPARAMS (kept, nothing busy-polls here) and EINVAL to other
+    requests, a stream send that faults part way returns what went, a local datagram that cannot
+    be copied out is gone, a failed stream read with SO_PASSCRED still writes empty credentials
+    into the control area, an internet protocol's option writes its length before its value and
+    answers an unknown level before reading the length, mmap of a socket checks MAP_GROWSDOWN
+    before ENODEV, MSG_ERRQUEUE on an internet socket is EAGAIN, preadv2 with flags on inotify is
+    EOPNOTSUPP.
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -106,6 +116,9 @@ Tests added in the fourth run (each against the reference):
   pair, a child and a reaped child, SCM_PIDFD with and without room and with credentials,
   SO_PASSRIGHTS, SO_INQ, the protocol name attribute and attribute rights as root and a user).
 - tests/inet.rs `urgent_flags_match_reference` (guest/inetoob.c).
+- guest/epoll.c: event descriptor write and read sizes and poll bits, epoll's requests;
+  guest/unixoob.c: a long write over a buffer that ends part way; guest/sockpidfd.c: failed
+  reads with credentials asked for, a datagram read into a bad buffer.
 - Layer 1 makes accept4, sendmsg and recvmsg (headers in the arena with destinations, vectors and
   control messages: descriptors, credentials, a bare header, IP_TTL; receives with room from none
   to 128 bytes, their control area zeroed by both runners after each call, the sender's process
@@ -678,6 +691,8 @@ Missing before K5 (40, each counted "system call not implemented" and ENOSYS), w
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
+- IP_RECVERR and IPV6_RECVERR are kept and read back, but no extended error is ever queued for
+  MSG_ERRQUEUE (an ICMP error's report is not built); a read of the error queue is EAGAIN.
 - sendfile waiting for a terminal's room reads the rest of its round from the input again when it
   runs again; Linux keeps the round in its private pipe, so a change to the input file during the
   wait shows here and not there. splice from a pipe into a terminal holds the pipe's lock in Linux
@@ -1246,6 +1261,17 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
+  --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
+  scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
+  59.6 at the start and 43.4 at the end.
+- K5, fourth run, layer 1 once sockets were reached: seeds 5050401 (1000), 5050402 (2000),
+  5050403 and 5050404 (3000) ran before the reach fix (no socket calls). After it, 5050405 to
+  5050417 each failed first and were fixed in turn (the findings under Where things stand); with
+  every fix in, 5050405 and 5050406 passed 2000, 5050411 to 5050417 passed 5000 each (70 to 117
+  s each, three side by side, load 15 to 40). Sequences report how many sends with control
+  messages and receives went well: about 100 to 300 and 300 to 4000 per 5000.
+
 - K4, fifth run, final, at head deb0e5c (every fix in): plain layer 1 seeds 4040510, 4040511,
   4040512 each passed 20000 (328.1 s, 388.0 s, 327.3 s) and the harness's failing seed 4040506
   passed 20000 (326.7 s), four side by side with the whole suite, load 17.8 at the start and 18.5 to
@@ -1720,6 +1746,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K5, fourth run: none.
 - K5, third run (host.rs): documentation only. `Host::listen` now says its port is the
   container's TCP port, that `ConnectionReady` comes on the listener once after the call and again
   after `accept` answered `WouldBlock`, and that `close` on the listener stops it; `Host::accept`
@@ -1779,6 +1806,11 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K5, fourth run: tests/inet.rs `internet_sockets_match_reference` failed once in a run of three
+  test binaries (load about 30): the reference showed `peer closed poll 0x4` where ours (and every
+  other run of the reference) shows the peer's FIN (0x2005); Linux handles a loopback FIN in its
+  softirq, which under load can come after the poll. Two reruns passed. Left as it is.
 
 - K5, second run (not reproduced in the third): tests/saving.rs once failed for guest/unixsock.c
   seed 1 ("after connect atime moved 0" where the reference prints 1). In the third run the
@@ -1898,6 +1930,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002 (K5, with sockets), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050420 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
