@@ -151,7 +151,9 @@ K5 built (all four runs):
     socket, netlink's EPOLLWRBAND, packet information asked for after a datagram came, a pending
     error before a queued local datagram or sequenced packet (`__skb_try_recv_datagram`), an IPv6
     UDP socket connecting to a `sockaddr_in` (`__ip6_datagram_connect`; EAFNOSUPPORT for
-    IPV6_V6ONLY).
+    IPV6_V6ONLY), an empty netlink message (ENODATA), netlink's option levels refused before
+    the value or length is read (ENOPROTOOPT), and a nonblocking read of a UDP socket shut for
+    reading (EAGAIN; a waiting one ends with 0).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -164,6 +166,7 @@ Tests added in the fifth run (each against the reference):
   filling and draining, shut, reset, refused, chosen signals, a waiting reader; UDP data and
   refusals; netlink dump parts, a second dump, a faulting read), `socket_mappings_match_reference`
   (guest/tcpmap.c), `error_queue_matches_reference` (guest/recverr.c).
+- tests/inet.rs `orders_of_checks_match_reference` (guest/sockorder.c).
 - tests/inet.rs `tcp_urgent_data_matches_reference` (guest/tcpoob.c); guest/unixsock.c: a
   pending error before queued messages; guest/udpcontrol.c: IPv6 sockets connecting to IPv4.
 - tests/unixsock.rs `cycles_are_collected_as_linux` (guest/unixgc.c: a socket in its own queue,
@@ -1333,7 +1336,9 @@ each sequence the runner puts back what a sequence can change outside its direct
   5050425 failed (netlink's MSG_OOB, then the late packet information); on f9509e3 5050424 and
   5050426 passed (338 s and 339 s, three side by side, load 65 to 52), 5050425 found netlink's
   EPOLLWRBAND; on 94f7d0d 5050429 passed (317 s, load 51 to 54), 5050427 found the pending
-  error before a queued sequenced packet and 5050428 the IPv6 connect to a `sockaddr_in`.
+  error before a queued sequenced packet and 5050428 the IPv6 connect to a `sockaddr_in`; on
+  8b58c43 5050430 (291 s), 5050431 (144 s) and 5050432 (59 s) found the empty netlink message,
+  the shut UDP read and netlink's getsockopt level (load 44 to 59).
 - K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
   --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
   scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
@@ -2026,6 +2031,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050429 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050435 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
