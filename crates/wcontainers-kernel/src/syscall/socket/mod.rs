@@ -1109,6 +1109,10 @@ pub(super) fn shutdown(
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
     let how = how as u32;
+    // Netlink has no shutdown at all (`sock_no_shutdown`).
+    if socket.borrow().netlink.is_some() {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if how > SHUT_RDWR {
         return Err(Errno::EINVAL);
     }
@@ -2027,11 +2031,36 @@ fn receive(
         return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
     }
     let peek = flags & MSG_PEEK != 0;
+    // `sk_peek_offset`: a peek starts at SO_PEEK_OFF, past whole datagrams
+    // (`__skb_try_recv_from_queue`).
+    let found = {
+        let own = socket.borrow();
+        let mut skip = if peek {
+            own.peek_offset.unwrap_or(0) as usize
+        } else {
+            0
+        };
+        let mut found = None;
+        for (index, packet) in own.queue.iter().enumerate() {
+            let length = packet.data.len();
+            if skip >= length && (length > 0 || skip > 0) {
+                skip -= length;
+                continue;
+            }
+            found = Some((index, skip));
+            break;
+        }
+        found
+    };
+    let Some((index, skip)) = found else {
+        let timeout = socket.borrow().receive_timeout;
+        return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
+    };
     let (data, files, cred, sender, time) = {
         let own = socket.borrow();
-        let packet = own.queue.front().expect("a packet");
+        let packet = &own.queue[index];
         (
-            packet.data.clone(),
+            packet.data[skip..].to_vec(),
             packet.files.clone(),
             packet.cred,
             packet.sender.upgrade(),
@@ -2039,6 +2068,9 @@ fn receive(
         )
     };
     let copied = (data.len() as u64).min(size);
+    if peek && let Some(offset) = &mut socket.borrow_mut().peek_offset {
+        *offset += copied;
+    }
     if let Err(error) = scatter(kernel, cx, tid, parts, &data[..copied as usize]) {
         // `__unix_dgram_recvmsg` has taken the message off the queue and frees it.
         if !peek {
@@ -2062,6 +2094,9 @@ fn receive(
     }
     if !peek {
         let packet = socket.borrow_mut().queue.pop_front().expect("a packet");
+        if let Some(offset) = &mut socket.borrow_mut().peek_offset {
+            *offset = offset.saturating_sub(packet.data.len() as u64);
+        }
         let Packet {
             sender, truesize, ..
         } = packet;
@@ -3054,7 +3089,7 @@ pub(super) fn setsockopt(
     }
     if socket.borrow().inet.is_some() {
         let bytes = guest(kernel, cx, tid).read(value, (length as u64).min(64))?;
-        if let Some(answer) = inet::set_option(kernel, cx, &socket, level, name, &bytes) {
+        if let Some(answer) = inet::set_option(kernel, cx, tid, &socket, level, name, &bytes) {
             return answer;
         }
     } else if socket.borrow().netlink.is_some() && level != SOL_SOCKET {

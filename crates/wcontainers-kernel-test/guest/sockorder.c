@@ -6,6 +6,8 @@
 #include <sys/sendfile.h>
 #include <linux/netlink.h>
 #include <netinet/in.h>
+#include <netinet/udp.h>
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -82,6 +84,61 @@ int main(void) {
         close(sv[1]);
         close(p[0]);
         close(p[1]);
+    }
+    result("netlink shutdown of no kind", shutdown(n, 3));
+    // A peek of local datagrams starts at SO_PEEK_OFF, past whole datagrams.
+    {
+        int sv[2];
+        socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK, 0, sv);
+        send(sv[0], "abcdef", 6, 0);
+        send(sv[0], "gh", 2, 0);
+        int off = 4;
+        setsockopt(sv[1], SOL_SOCKET, SO_PEEK_OFF, &off, sizeof off);
+        char got[16] = {0};
+        result("peek at 4", recv(sv[1], got, sizeof got, MSG_PEEK));
+        printf("got %s\n", got);
+        memset(got, 0, sizeof got);
+        result("peek on", recv(sv[1], got, sizeof got, MSG_PEEK));
+        printf("got %s\n", got);
+        result("peek past all", recv(sv[1], got, 0, MSG_PEEK));
+        result("read", recv(sv[1], got, sizeof got, 0));
+        socklen_t length = sizeof off;
+        getsockopt(sv[1], SOL_SOCKET, SO_PEEK_OFF, &off, &length);
+        printf("offset after read %d\n", off);
+        close(sv[0]);
+        close(sv[1]);
+    }
+    // UDP corking with MSG_MORE and UDP_CORK.
+    {
+        int c = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+        struct sockaddr_in self = {.sin_family = AF_INET, .sin_port = htons(5191),
+                                   .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        bind(c, (struct sockaddr *)&self, sizeof self);
+        char got[16] = {0};
+        result("more ab", sendto(c, "ab", 2, MSG_MORE, (struct sockaddr *)&self, sizeof self));
+        result("nothing yet", recv(c, got, sizeof got, 0));
+        result("cd to nowhere", send(c, "cd", 2, 0));
+        result("read whole", recv(c, got, sizeof got, 0));
+        printf("got %s\n", got);
+        result("more ef", sendto(c, "ef", 2, MSG_MORE, (struct sockaddr *)&self, sizeof self));
+        result("bad buffer", send(c, bad, 2, 0));
+        result("dropped", recv(c, got, sizeof got, 0));
+        int on = 1, value = -1;
+        socklen_t length = sizeof value;
+        result("cork", setsockopt(c, SOL_UDP, 1, &on, sizeof on));
+        getsockopt(c, SOL_UDP, 1, &value, &length);
+        printf("cork value %d\n", value);
+        sendto(c, "gh", 2, 0, (struct sockaddr *)&self, sizeof self);
+        sendto(c, "ij", 2, 0, (struct sockaddr *)&self, sizeof self);
+        result("corked", recv(c, got, sizeof got, 0));
+        on = 0;
+        result("uncork", setsockopt(c, SOL_UDP, 1, &on, sizeof on));
+        memset(got, 0, sizeof got);
+        result("read uncorked", recv(c, got, sizeof got, 0));
+        printf("got %s\n", got);
+        result("no check tx", setsockopt(c, SOL_UDP, 101, &on, sizeof on));
+        result("unknown udp option", setsockopt(c, SOL_UDP, 99, &on, sizeof on));
+        close(c);
     }
     int u = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     result("udp shutdown unconnected", shutdown(u, SHUT_RDWR));

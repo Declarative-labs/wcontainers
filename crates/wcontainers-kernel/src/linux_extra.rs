@@ -662,3 +662,8 @@ pub(crate) const ICMP_DEST_UNREACH: u8 = 3;
 pub(crate) const ICMP_PORT_UNREACH: u8 = 3;
 pub(crate) const ICMPV6_DEST_UNREACH: u8 = 1;
 pub(crate) const ICMPV6_PORT_UNREACH: u8 = 4;
+
+/// UDP's own options (`linux/udp.h`, which linux-raw-sys does not generate).
+pub(crate) const UDP_CORK: u32 = 1;
+pub(crate) const UDP_NO_CHECK6_TX: u32 = 101;
+pub(crate) const UDP_NO_CHECK6_RX: u32 = 102;

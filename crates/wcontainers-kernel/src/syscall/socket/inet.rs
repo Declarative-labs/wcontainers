@@ -159,6 +159,8 @@ pub(crate) struct Inet {
     pub fin_read: bool,
     /// Errors queued under IP_RECVERR or IPV6_RECVERR, first first (`sk_error_queue`).
     pub errors: VecDeque<QueuedError>,
+    /// A UDP datagram being corked.
+    pub cork: Option<Corked>,
 }
 
 /// A UDP datagram's port unreachable error, as `ip_icmp_error` and `ipv6_icmp_error` queue it.
@@ -197,6 +199,7 @@ impl Inet {
             pingpong: false,
             fin_read: false,
             errors: VecDeque::new(),
+            cork: None,
         }
     }
 }
@@ -1871,13 +1874,19 @@ fn udp_send(
     total: u64,
 ) -> Result<u64, Errno> {
     let family = socket.borrow().family;
-    // `udp_sendmsg` starts with the length a UDP header can carry, then urgent data.
+    let corking = flag(&socket.borrow(), SOL_UDP, crate::linux_extra::UDP_CORK)
+        || message.flags & MSG_MORE != 0;
+    // `udp_sendmsg` starts with the length a UDP header can carry, then urgent data, then any
+    // corked frames, which take the bytes whatever destination is named.
     if family == AF_INET {
         if total > 0xffff {
             return Err(Errno::EMSGSIZE);
         }
         if message.flags & MSG_OOB != 0 {
             return Err(Errno::EOPNOTSUPP);
+        }
+        if inet_ref(socket).cork.is_some() {
+            return udp_append(kernel, cx, tid, socket, message, total, corking);
         }
     }
     let named = match to {
@@ -1944,6 +1953,10 @@ fn udp_send(
         }
         None => None,
     };
+    // `udpv6_sendmsg` looks for corked frames once the destination is read.
+    if inet_ref(socket).cork.is_some() {
+        return udp_append(kernel, cx, tid, socket, message, total, corking);
+    }
     let to = match named {
         Some(endpoint) => destination(family, endpoint),
         None => {
@@ -1991,12 +2004,108 @@ fn udp_send(
         from.address = LOOPBACK6;
     }
     let data = gather(kernel, cx, tid, message.data, 0, total)?;
+    if corking {
+        inet(socket).cork = Some(Corked {
+            to,
+            from,
+            data,
+            sent,
+        });
+        return Ok(total);
+    }
+    udp_deliver(kernel, cx, tid, socket, to, from, data, sent)?;
+    Ok(total)
+}
+
+/// What a UDP datagram is held as while corked (MSG_MORE or UDP_CORK): its destination, source,
+/// bytes so far and the first send's control messages (`up->pending`, `inet->cork`).
+pub(crate) struct Corked {
+    to: Endpoint,
+    from: Endpoint,
+    data: Vec<u8>,
+    sent: SentControl,
+}
+
+/// `udp_sendmsg`'s `do_append_data` with frames corked: the bytes join them, whatever destination
+/// was named (a datagram may not outgrow UDP's largest, and a fault drops every corked byte), and
+/// go as one datagram unless still corked.
+fn udp_append(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    message: &Outgoing,
+    total: u64,
+    corking: bool,
+) -> Result<u64, Errno> {
+    let (held, v4) = {
+        let inet = inet_ref(socket);
+        let cork = inet.cork.as_ref().expect("corked frames");
+        (cork.data.len() as u64, v4_of(&cork.to.address).is_some())
+    };
+    let largest = if v4 { UDP_MAX4 } else { UDP_MAX6 };
+    if held + total > largest {
+        inet(socket).cork = None;
+        return Err(Errno::EMSGSIZE);
+    }
+    let data = match gather(kernel, cx, tid, message.data, 0, total) {
+        Ok(data) => data,
+        Err(error) => {
+            inet(socket).cork = None;
+            return Err(error);
+        }
+    };
+    inet(socket)
+        .cork
+        .as_mut()
+        .expect("corked frames")
+        .data
+        .extend_from_slice(&data);
+    if !corking {
+        uncork(kernel, cx, tid, socket)?;
+    }
+    Ok(total)
+}
+
+/// `udp_push_pending_frames`: corked bytes go as one datagram.
+pub(super) fn uncork(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+) -> Result<(), Errno> {
+    let Some(Corked {
+        to,
+        from,
+        data,
+        sent,
+    }) = inet(socket).cork.take()
+    else {
+        return Ok(());
+    };
+    udp_deliver(kernel, cx, tid, socket, to, from, data, sent)
+}
+
+/// A datagram from `from` to `to`: to the outside, to the container's name server, to the socket
+/// that takes it, or answered as a port nothing holds.
+#[allow(clippy::too_many_arguments, reason = "a datagram's parts")]
+fn udp_deliver(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    to: Endpoint,
+    from: Endpoint,
+    data: Vec<u8>,
+    sent: SentControl,
+) -> Result<(), Errno> {
+    let total = data.len() as u64;
     if !is_own(&to.address) {
         if !unicast(&to.address) {
-            return Ok(total);
+            return Ok(());
         }
         super::outside::send_datagram(kernel, cx, socket, to, &data)?;
-        return Ok(total);
+        return Ok(());
     }
     let receiver = find_receiver(kernel, &to, &from);
     let name_server = Endpoint {
@@ -2005,7 +2114,7 @@ fn udp_send(
     };
     if receiver.is_none() && to == name_server {
         super::outside::query(kernel, cx, socket, name_server, &data);
-        return Ok(total);
+        return Ok(());
     }
     match receiver {
         Some(receiver) => {
@@ -2037,7 +2146,7 @@ fn udp_send(
         None if unicast(&to.address) => port_unreachable(kernel, cx, socket, to, from, &data),
         None => {}
     }
-    Ok(total)
+    Ok(())
 }
 
 /// `__udp4_lib_err` and `__udp6_lib_err` for a datagram to `to` no socket took: with the error
@@ -2565,6 +2674,7 @@ fn int_value(bytes: &[u8], level: u32) -> Result<i32, Errno> {
 pub(super) fn set_option(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
+    tid: Tid,
     socket: &SocketRef,
     level: u32,
     name: u32,
@@ -2680,6 +2790,28 @@ pub(super) fn set_option(
                         Some(Err(Errno::ENOENT))
                     }
                 }
+                _ => not_built(kernel, cx),
+            }
+        }
+        // `udp_lib_setsockopt`: corking is built; checksums mean nothing without a wire, so
+        // IPv6's are only kept; segmentation, receive offload and encapsulation are not built.
+        SOL_UDP if protocol == Protocol::Udp => {
+            use crate::linux_extra::{UDP_CORK, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX};
+            let value = match int_value(bytes, level) {
+                Ok(value) => value,
+                Err(error) => return Some(Err(error)),
+            };
+            match name {
+                UDP_CORK => {
+                    let stored = store(socket, i32::from(value != 0));
+                    if value == 0
+                        && let Err(error) = uncork(kernel, cx, tid, socket)
+                    {
+                        return Some(Err(error));
+                    }
+                    stored
+                }
+                UDP_NO_CHECK6_TX | UDP_NO_CHECK6_RX => store(socket, i32::from(value != 0)),
                 _ => not_built(kernel, cx),
             }
         }
@@ -2901,6 +3033,13 @@ pub(super) fn get_option(
             }
             _ => not_built(kernel, cx),
         },
+        SOL_UDP if protocol == Protocol::Udp => {
+            use crate::linux_extra::{UDP_CORK, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX};
+            match name {
+                UDP_CORK | UDP_NO_CHECK6_TX | UDP_NO_CHECK6_RX => kept(0),
+                _ => not_built(kernel, cx),
+            }
+        }
         SOL_IP => match name {
             IP_TTL => {
                 let ttl = kept(-1)?.ok()?;
