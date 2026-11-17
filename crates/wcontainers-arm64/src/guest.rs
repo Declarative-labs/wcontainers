@@ -152,11 +152,13 @@ impl Guest for Arm64 {
     const MAX_LENGTH: u64 = 4;
     type Instruction = Instruction;
 
+    #[inline]
     fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
         let word = u32::from_le_bytes(code.get(..4)?.try_into().unwrap());
         Some((crate::decode(word), 4))
     }
 
+    #[inline]
     fn trap_detail(code: &[u8]) -> i64 {
         i64::from(u32::from_le_bytes(code[..4].try_into().unwrap()))
     }
@@ -165,6 +167,7 @@ impl Guest for Arm64 {
     type Vector = u8;
     const BITS: &'static [Bit] = &BITS;
 
+    #[inline]
     fn reg_bit(r: Reg) -> Option<u32> {
         match r {
             Reg::X(n) => Some(n.into()),
@@ -173,10 +176,12 @@ impl Guest for Arm64 {
         }
     }
 
+    #[inline]
     fn vector_bit(v: u8) -> u32 {
         64 + u32::from(v)
     }
 
+    #[inline]
     fn bit_reg(bit: u32) -> Reg {
         match bit {
             0..=30 => Reg::X(bit as u8),
@@ -201,6 +206,7 @@ impl Guest for Arm64 {
     type Shape = Shape;
     const SHAPES: &'static [Shape] = &SHAPES;
 
+    #[inline]
     fn shape(flags: Flags) -> Option<Shape> {
         match flags {
             Flags::Add {
@@ -363,6 +369,7 @@ impl Guest for Arm64 {
     }
 
     /// Every setter sets all four.
+    #[inline]
     fn sets(_flags: Flags) -> Registers {
         FLAGS
     }
@@ -386,10 +393,12 @@ impl Guest for Arm64 {
 
     type Control = Control;
 
+    #[inline]
     fn control_ty(c: Control) -> ValType {
         c.ty()
     }
 
+    #[inline]
     fn control_offset(c: Control) -> usize {
         match c {
             Control::ThreadPointer => offset_of!(B, tpidr_el0),
@@ -440,6 +449,7 @@ impl Guest for Arm64 {
         },
     ];
 
+    #[inline]
     fn hook_index(h: Hook) -> usize {
         match h {
             Hook::Float => 0,
@@ -525,6 +535,7 @@ impl Guest for Arm64 {
         emit(e, i);
     }
 
+    #[inline]
     fn flow(i: &Instruction) -> Flow<Reg> {
         let flow = i.flow();
         let kind = match *i {
@@ -543,6 +554,7 @@ impl Guest for Arm64 {
         }
     }
 
+    #[inline]
     fn accesses(i: &Instruction) -> [Option<MemoryAccess<Reg>>; 2] {
         let access = i.memory_access().map(|a| {
             let (base, index, displacement, write_back) = match a.address {
@@ -592,6 +604,7 @@ impl Guest for Arm64 {
     }
 
     /// `add` or `sub` of an immediate to sp, and accesses through sp that write it back.
+    #[inline]
     fn stack_move(i: &Instruction) -> StackMove {
         match *i {
             Instruction::AddSub {
@@ -688,6 +701,7 @@ impl Guest for Arm64 {
         })
     }
 
+    #[inline]
     fn plain(i: &Instruction) -> bool {
         use Instruction as I;
         matches!(
@@ -744,6 +758,7 @@ impl Guest for Arm64 {
 
     /// `add` or `sub` of an immediate or of a register to a register in place, and the write back of a pre-
     /// or post-indexed access.
+    #[inline]
     fn induction(i: &Instruction) -> Option<Induction<Reg>> {
         match *i {
             Instruction::AddSub {
@@ -854,6 +869,7 @@ impl Guest for Arm64 {
         }
     }
 
+    #[inline]
     fn loaded_max(i: &Instruction) -> Option<(Reg, i64)> {
         match *i {
             Instruction::Load {

@@ -474,7 +474,10 @@ pub fn thread_module<G: Guest>() -> Vec<u8>;
 
 `translate_omitting` and `translate_in_modules` take the same type parameter and the same `host` and `offer`
 arguments. Every use is monomorphised; nothing of a guest is reached through `dyn`, so nothing is looked
-up at run time and nothing is paid at translate time either beyond what ARM64 pays today. (The loop-proof
+up at run time. At translate time ARM64 retires as many instructions as before the move (within the 1
+percent its runs vary) but took 1 to 3 percent more cycles when measured at X1, with its small per-instruction
+queries marked `#[inline]` so they inline across the crate boundary (5 percent without); the output is
+the same bytes, so the guest's run time is untouched. (The loop-proof
 module passes a few of its own closures as `&dyn Fn` while it plans, as before the move: translate time only,
 nothing of the guest, nothing in the output.) The translator crate
 depends on `wcontainers-guest-cpu` only, never on a CPU crate (a test in the translator crate fails if its
