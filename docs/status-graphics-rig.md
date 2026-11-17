@@ -6,26 +6,15 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library): the fifth run (2026-11-17) fixed the findings of the fourth
-check (see "Fifth run" under Measurements), but SSH to the desktop refused every connection from
-09:45 Pacific time to the end of the run (still at 12:41, tried every 2 minutes), so these are left, in this order:
-1. `tools/graphics-rig/remote "cargo clean -q -p wcontainers-graphics-test -p
-   wcontainers-graphics-test-forward"` (the desktop's clock jumped back, Known issues), then
-   `tools/graphics-rig/programs run --record bgfx-24-nbody` and commit: the nbody references in
-   the repository were recorded by a stale build, before the rule that a drifting program has
-   all its frames unrepeatable, so its frame 10 is still compared and failed 1 check of 4.
-2. `tools/graphics-rig/programs run` twice: all 16 should pass (with nbody "not compared").
-3. A replacement through gt-launch, never yet run with one: `programs run --dll
-   d3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll --dll
-   dxgi.dll=C:\Windows\System32\dxgi.dll sdk-tutorial07 chocolate-doom` and `wine-tests run
-   --dll dxgi.dll=C:\Windows\System32\dxgi.dll d3d11:test_device_interfaces` must pass and say
-   the replacement was loaded; a break of a program (Freedoom's demo2 in place of demo1 in
-   programs.ps1, not committed) must fail chocolate-doom's frames.
-Then R1 waits for the orchestrator's check. Its parts:
+R1 (the Direct3D reference library): the sixth run (2026-11-17) finished what the fifth left
+while SSH to the desktop was refused (see "Sixth run" under Measurements): nbody's references
+recorded again from a clean build, all 16 programs passing on two runs, replacements through
+gt-launch for programs and a Wine test, a broken program caught, and the whole suite run again.
+R1 waits for the orchestrator's check. Its parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
-- Part 1, scenes: 27 Direct3D 11 scenes (133 outputs) and 25 Direct3D 12 scenes (112 outputs).
+- Part 1, scenes: 27 Direct3D 11 scenes (132 outputs) and 25 Direct3D 12 scenes (111 outputs).
   Every Direct3D 11 scene of drawing ground has a Direct3D 12 twin drawn from the same tables
   (the ones without are under Departures). Each output is recorded on the RTX 3080 twice and on
   WARP with the debug layer; `scenes` checks them, through replacement libraries if given. A
@@ -179,7 +168,8 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   for tests that fail on the real thing (not counted). With replacements it ends with how many tests
   loaded each from the test directory. The job builds the rig first (for gt-launch).
   Exits 1 on any FAIL. `--record` runs real Direct3D and copies the results into wine-baseline.
-  Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs). Example:
+  Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs/<branch>, emptied
+  first, as other tracks' checkouts run the same command). Example:
   `wine-tests run d3d11:test_blend_state/test_texture` or
   `wine-tests run vkd3d-shader_runner:hlsl+abs.shader_test`. A whole run of all eight files takes
   about 9 minutes on the GPU, most of it the shader runner (about 1 s a file). vkd3d's tests give
@@ -207,7 +197,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   per tile, only the pixels its own repeated runs on real Direct3D changed): prints `pass` or
   `FAIL` per frame and per program and exits 1 on any FAIL. The references are on the desktop
   (C:\wc\programs\reference\<program>: the frames and tolerances.txt; a copy in the scratch
-  directory, program-references), since the frames show the programs' own art under their own
+  directory, program-references/<branch>), since the frames show the programs' own art under their own
   licences; tools/graphics-rig/program-references/<program> in the repository holds
   tolerances.txt and frames.sha256, and a program whose desktop references do not have those
   hashes fails ("run programs run --record"). `--record` (real Direct3D only) runs each program
@@ -216,7 +206,8 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   frames are written "unrepeatable" and reported as "not compared"), leaves out the tiles meeting a program's `ignore` rectangle (bgfx's GPU
   memory readout, see programs.ps1), and copies tolerances.txt and frames.sha256 into the
   checkout, to be committed. Frames and
-  census go to the scratch directory (programs/<program>); `--census` (real Direct3D only) also
+  census go to the scratch directory (programs/<branch>/<program>, emptied first, as other tracks'
+  checkouts run the same command at the same time); `--census` (real Direct3D only) also
   copies each census into tools/graphics-rig/census/<program>.txt. Direct3D 12 programs run
   without the forwarding library (it is Direct3D 11 only), so they have no census and no frame
   clock (Godot's movie writer runs on fixed time anyway); they must exit with 0 after writing every
@@ -662,7 +653,8 @@ the fourth check's findings:
   triangle blend heaps blnd` (no --api): 12 outputs pass on both APIs (d3d12 heaps printed
   "d3d11.dll from not loaded, d3d12.dll from C:\Windows\SYSTEM32\d3d12.dll, dxgi.dll from
   C:\wc\out\phase-2-graphics-rig\scenes\bin\dxgi.dll"), and "FAIL blnd: no such scene", exit 1.
-- `scenes --record`: 245 outputs (133 D3D11, 112 D3D12), 31 s for the job; the outputs other than
+- `scenes --record`: 243 outputs (132 D3D11, 111 D3D12; the fifth run wrote 245, 133 and 112,
+  wrongly: its log and the stored references both hold 243), 31 s for the job; the outputs other than
   the new and changed ones were byte-identical to the stored ones.
 - Real programs on the frame clock: all 16 run, and on three recording runs every frame of the
   tutorials, Doom, Godot (both APIs) and five bgfx examples was the same in every tile. The bgfx
@@ -673,6 +665,33 @@ the fourth check's findings:
   changed between runs, and in one of four checks one pixel of frame 10 was 9 steps off, so all
   its frames are recorded as unrepeatable and not compared. In the fourth check, chocolate-doom differed at frames 60 and 120 in 1 run of 4; on the
   clock, its frames were identical in all 3 recording runs and the checks below.
+
+Sixth run (2026-11-17; SSH to the desktop refused, reset after key exchange, from 12:41 to 13:52
+Pacific time, tried every 2 minutes, so with the fifth run's refusals about 4 hours in all; when
+it came back the desktop had not rebooted (up since 23:49 the night before) and its clock was
+right; desktop CPU load 13 % after the runs, the owner at the console, other tracks' jobs beside
+ours; Mac load average 23 to 38):
+- After `cargo clean -p` of the two crates, `programs run --record bgfx-24-nbody`: 60, 292 and
+  692 of 3600 tiles of frames 10, 60 and 120 changed between its three runs, so all are
+  unrepeatable; references committed.
+- `programs run`, twice: 16 of 16 programs pass both times (nbody's frames "not compared"); the
+  jobs took 3 min 2 s and 1 min 54 s.
+- `programs run --dll d3d11.dll=<forwarding library> --dll dxgi.dll=C:\Windows\System32\dxgi.dll
+  sdk-tutorial07 chocolate-doom`: both pass, every frame with 0 pixels beyond 8; gt-launch wrote
+  "dxgi.dll from C:\wc\out\phase-2-graphics-rig\programs\sdk-tutorial07\bin\dxgi.dll" (the
+  replacement d3d11.dll is loaded by the forwarding library by its full path, which aborts the
+  program if it cannot). `wine-tests run --dll dxgi.dll=C:\Windows\System32\dxgi.dll
+  d3d11:test_device_interfaces`: pass, 166 checks as on real Direct3D, "replacement dxgi.dll: loaded
+  from C:\wc\out\phase-2-graphics-rig\wine\bin by 1 of 1 tests run".
+- Break: Freedoom's demo2 in place of demo1 (not committed): chocolate-doom FAIL at all three
+  frames (61242, 278820 and 287502 of 480000 pixels beyond 8), exit 1.
+- Found: the Mac copies of program frames and Wine logs went to one scratch directory for every
+  checkout, and another track's run (branch phase-2-graphics-direct3d-11) overwrote ours within
+  minutes; `--record` and `--census` copy from there into the repository. They now go to
+  programs/<branch> and wine-logs/<branch>, emptied first.
+- Whole suite: fmt check, clippy with warnings denied and the 9 unit tests through `remote`;
+  shellcheck of the 9 Mac scripts; `scenes` 243 passed, 0 failed (27 s); `loop` passes (32 s);
+  `wine-tests run`, all eight files on the GPU: 784 counted, 0 FAIL (8 min 2 s for the job).
 
 ## Loading a replacement Direct3D library
 
@@ -742,7 +761,7 @@ There is no plan document in this checkout; these depart from the task or brief 
 - The forwarding DLL is a second crate, crates/wcontainers-graphics-test-forward, since a crate has one
   library and this one must be a cdylib with its own exports.
 - The references are drawn with the Direct3D debug layer on, and any error it reports fails the run.
-- The scenes' reference pictures are kept in the repository (245 outputs of both APIs) so a change
+- The scenes' reference pictures are kept in the repository (243 outputs of both APIs) so a change
   that affects every renderer alike is caught. The real programs' reference frames are not: they
   show the programs' own art (bgfx's example assets, Freedoom, Godot's demo projects) under those
   projects' licences, so they stay on the desktop and in the scratch directory, and the repository
@@ -870,6 +889,11 @@ There is no plan document in this checkout; these depart from the task or brief 
   So the Direct3D 12 programs are Godot's two demos alone. Next step: a forwarding dxgi.dll (or
   d3d12.dll) with the same census and capture, then D3D12HelloWorld and the DirectXTK samples.
 
+- On 2026-11-17 SSH refused every connection for about 4 hours (09:45 to 13:52 Pacific time),
+  each reset right after the server accepted the key exchange, before authentication; port 22
+  answered throughout and the machine did not reboot. On Windows' OpenSSH that is where the
+  server starts a process for the session, so a failure to start processes is a guess at the
+  cause, not checked.
 - SSH to the desktop has refused new connections (reset right after key exchange) for about 9 to 10
   minutes at a time and then recovered by itself, with no reboot and nothing in the OpenSSH or System
   logs. It happened twice in the first run (once after about 30 ssh sessions in 10 minutes) and
