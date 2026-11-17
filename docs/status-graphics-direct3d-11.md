@@ -529,14 +529,34 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
   in logs/g4r1-wine-d3d11.log and wine-logs/g4r1 in the scratch directory.
 - d3d10core, dxgi: not run through ours yet.
 
-The gap list (a test failing through ours only because of a named absent feature): not written
-yet; the counts above are its raw material. Candidates that are real absences on WebGPU rather
-than work: test_negative_viewports (only at feature levels 10_0 and 10_1, where real Direct3D
-keeps a negative fractional viewport corner that the RTX 3080's 11_0 path floors, and WebGPU's
-viewport, like 11_0, floors it), WARP and reference drivers (6 tests ask for them by driver type),
-and test_video_support (video decoding interfaces).
-Most of the 108 stop at features G4 is to serve (3D and 1D textures, queries, deferred contexts,
-buffer and unordered access views, geometry, stream output and compute), so they are work, not gaps.
+The gap list (a test failing through ours only because of a named absent feature): a draft from
+run 3's first-gap file (logs/g4r3-wine-gaps.txt), to be confirmed against the next run of the file;
+not final. Candidates that are absent on this stack rather than work left:
+- Software, reference, WARP and null drivers (the library has only the GPU's): test_create_shader,
+  test_format_support, test_resource_access, test_shared_resource, test_state_refcounting,
+  test_swapchain_formats. Each must be checked to fail only at that request.
+- Shared handles and keyed mutexes between devices or processes: test_keyed_mutex.
+- Pipeline statistics queries (WebGPU has none): test_pipeline_statistics_query.
+- Video decoding interfaces: test_video_support.
+- Feature levels 10_0 and 10_1's negative fractional viewport corner (the WebGPU viewport floors
+  it as 11_0 does): test_negative_viewports.
+Absent today but work, not gaps (each needs a back end or shaders feature first): timestamps and
+counted occlusion (WebGPU back end's `TIMESTAMPS`, `OCCLUSION_COUNT`): test_timestamp_query,
+test_create_query, test_occlusion_query; instance step rates other than one on WebGPU
+(`InstanceRateInShader`): test_il_append_aligned, test_instanced_draw; geometry shaders, stream
+output and their queries, tessellation (shaders crate): test_geometry_shader,
+test_multiple_viewports, test_layered_rendering, test_fl10_stream_output_desc,
+test_index_buffer_offset, test_quad_tessellation, test_stream_output, test_stream_output_resume,
+test_stream_output_components, test_stream_output_vs, test_so_statistics_query, test_vertex_id;
+conversions the shaders crate names (ClipDistance, DynamicOffset, SampleCount, StructType,
+TypedBuffer, LodBiasInShader, BorderInShader); reinterpreting views; 10.1's copy conversions;
+dual-source blending; `GetDC`; read-only depth-stencil views; an empty multisampled or depth slot.
+Served since run 3, so their tests must be run again before anything is listed: deferred contexts
+(8 tests), compute and unordered access views (13), structured and raw buffer views (5 stopped
+at buffer views), multisampled textures (5), depth bias on triangles (test_depth_bias),
+`CreateDeviceContextState` (test_device_context_state also needs geometry, hull and domain
+context states), empty input layouts (test_create_input_layout), staging depth with stencil
+(test_clear_depth_stencil_view).
 
 ## Known failures
 
