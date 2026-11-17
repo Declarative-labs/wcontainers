@@ -25,7 +25,35 @@ unsafe extern "C" {
         out_words: *mut usize,
         error: *mut *mut c_char,
     ) -> c_int;
+    fn wcs_dxil_constant_sizes(
+        data: *const u8,
+        size: usize,
+        out: *mut *mut u32,
+        out_words: *mut usize,
+        error: *mut *mut c_char,
+    ) -> c_int;
     fn wcs_free(p: *mut c_void);
+}
+
+/// The reason in `error` from the C side, freed.
+fn reason(error: *mut c_char) -> String {
+    if error.is_null() {
+        return String::from("dxil-spirv gave no reason");
+    }
+    // SAFETY: a NUL-terminated string from the C side, freed right after.
+    let s = unsafe { core::ffi::CStr::from_ptr(error) }
+        .to_string_lossy()
+        .into();
+    unsafe { wcs_free(error.cast()) };
+    s
+}
+
+/// Words the C side allocated, copied out and freed.
+fn words(out: *mut u32, words: usize) -> Vec<u32> {
+    // SAFETY: `out` holds `words` words written by the C side, freed right after.
+    let v = unsafe { core::slice::from_raw_parts(out, words) }.to_vec();
+    unsafe { wcs_free(out.cast()) };
+    v
 }
 
 /// DXIL to SPIR-V words.
@@ -37,22 +65,104 @@ fn to_spirv(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
     let status =
         unsafe { wcs_dxil_to_spirv(dxil.as_ptr(), dxil.len(), &mut out, &mut words, &mut error) };
     if status != 0 {
-        let reason = if error.is_null() {
-            String::from("dxil-spirv gave no reason")
-        } else {
-            // SAFETY: a NUL-terminated string from the C side, freed right after.
-            let s = unsafe { core::ffi::CStr::from_ptr(error) }
-                .to_string_lossy()
-                .into();
-            unsafe { wcs_free(error.cast()) };
-            s
-        };
-        return Err(ConvertError::Rejected(reason));
+        return Err(ConvertError::Rejected(reason(error)));
     }
-    // SAFETY: `out` holds `words` words written by the C side, freed right after.
-    let spirv = unsafe { core::slice::from_raw_parts(out, words) }.to_vec();
-    unsafe { wcs_free(out.cast()) };
-    Ok(spirv)
+    Ok(self::words(out, words))
+}
+
+/// (space, register, size in bytes) of every constant buffer the DXIL declares.
+fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+    let mut out = core::ptr::null_mut();
+    let mut n = 0;
+    let mut error = core::ptr::null_mut();
+    // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
+    let status =
+        unsafe { wcs_dxil_constant_sizes(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
+    if status != 0 {
+        return Err(ConvertError::Rejected(reason(error)));
+    }
+    Ok(words(out, n))
+}
+
+/// The largest constant buffer, in bytes, which dxil-spirv declares for every dynamically indexed one.
+const MAX_CONSTANT_BYTES: u32 = 64 * 1024;
+
+/// dxil-spirv declares every dynamically indexed constant buffer 64 KiB long, so WebGPU would require
+/// 64 KiB bound. Such a buffer is declared with the size the bytecode gives it, which a program binds
+/// at least. Runs before `bindings`, while a binding is still (space, register).
+fn declared_sizes(dxil: &[u8], module: &mut Module) -> Result<(), ConvertError> {
+    let mut sizes = None;
+    let mut resized = false;
+    for (_, var) in module.global_variables.iter_mut() {
+        let (AddressSpace::Uniform, Some(binding)) = (var.space, var.binding) else {
+            continue;
+        };
+        let TypeInner::Struct { ref members, .. } = module.types[var.ty].inner else {
+            continue;
+        };
+        let [member] = &members[..] else {
+            continue;
+        };
+        let TypeInner::Array {
+            base,
+            size: naga::ArraySize::Constant(length),
+            stride,
+        } = module.types[member.ty].inner
+        else {
+            continue;
+        };
+        if length.get().checked_mul(stride) != Some(MAX_CONSTANT_BYTES) {
+            continue;
+        }
+        let sizes = match &sizes {
+            Some(s) => s,
+            None => sizes.insert(constant_sizes(dxil)?),
+        };
+        let declared = sizes
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .find(|d| (d[0], d[1]) == (binding.group, binding.binding))
+            .map(|d| d[2].div_ceil(stride));
+        let Some(declared) = declared.and_then(core::num::NonZeroU32::new) else {
+            continue;
+        };
+        if declared >= length {
+            continue;
+        }
+        let member = member.clone();
+        let name = module.types[var.ty].name.clone();
+        let array = module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Array {
+                    base,
+                    size: naga::ArraySize::Constant(declared),
+                    stride,
+                },
+            },
+            Span::UNDEFINED,
+        );
+        var.ty = module.types.insert(
+            Type {
+                name,
+                inner: TypeInner::Struct {
+                    members: alloc::vec![StructMember {
+                        ty: array,
+                        ..member
+                    }],
+                    span: declared.get() * stride,
+                },
+            },
+            Span::UNDEFINED,
+        );
+        resized = true;
+    }
+    if resized {
+        // Drops the 64 KiB types, which writers would still declare.
+        naga::compact::compact(module, naga::compact::KeepUnused::No);
+    }
+    Ok(())
 }
 
 /// Converts DXIL into a naga module and its reflection.
@@ -70,6 +180,7 @@ pub(crate) fn lower(
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
     unconverted(&module)?;
+    declared_sizes(dxil, &mut module)?;
     crate::lower::derivatives_anywhere(&mut module);
     let ep = module
         .entry_points
