@@ -605,13 +605,15 @@ impl Device {
     pub fn CreateCommittedResource(
         &self,
         heap: *const D3D12_HEAP_PROPERTIES,
-        _flags: D3D12_HEAP_FLAGS,
+        flags: D3D12_HEAP_FLAGS,
         pdesc: *const D3D12_RESOURCE_DESC,
+        // The initial state and the optimised clear value change nothing this front does.
         _state: D3D12_RESOURCE_STATES,
         _clear: *const D3D12_CLEAR_VALUE,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32).map_err(hr)?;
         // SAFETY: the API requires both.
         let (heap, desc) = unsafe {
             (
@@ -978,13 +980,20 @@ impl Fence {
     pub fn SetEventOnCompletion(&self, value: u64, event: HANDLE) -> Result<()> {
         let id = self.id;
         if event.is_invalid() || event.0.is_null() {
-            return if gpu::call(move |d| d.wait(id, value)) {
-                Ok(())
-            } else {
-                Err(self.unsupported(
-                    "SetEventOnCompletion with no event for a value no submitted work reaches",
-                ))
-            };
+            // No event: the call returns when the fence reaches the value. The calling thread waits
+            // on an event of its own, so the device thread stays free for the signal (which may be a
+            // CPU signal from another thread).
+            use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+            // SAFETY: an unnamed auto-reset event, closed below.
+            let own = unsafe { CreateEventW(None, false, false, None)? };
+            let token = own.0 as usize as u64;
+            gpu::call(move |d| d.add_waiter(id, value, token));
+            // SAFETY: `own` is open until closed here.
+            unsafe {
+                WaitForSingleObject(own, INFINITE);
+                let _ = CloseHandle(own);
+            }
+            return Ok(());
         }
         let token = event.0 as usize as u64;
         gpu::call(move |d| d.add_waiter(id, value, token));

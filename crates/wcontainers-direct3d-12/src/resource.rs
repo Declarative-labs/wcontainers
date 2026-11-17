@@ -48,6 +48,22 @@ pub enum HeapType {
     Readback,
 }
 
+/// `D3D12_HEAP_FLAGS` this front honours: the deny flags (they only narrow what the heap holds),
+/// `CREATE_NOT_RESIDENT` (resources are always resident) and `CREATE_NOT_ZEROED` (memory is zeroed
+/// anyway).
+const HEAP_FLAGS_TAKEN: u32 = 0x4 | 0x40 | 0x80 | 0x800 | 0x1000;
+
+/// Refuses heap flags asking for an ability the front lacks: sharing, display, protected memory,
+/// write watching, cross-adapter atomics and manual write tracking.
+pub fn check_heap_flags(flags: u32) -> Result<(), Error> {
+    if flags & !HEAP_FLAGS_TAKEN != 0 {
+        return Err(Error::NotImplemented(
+            "heap flags for sharing, display, protection, write watching or atomics",
+        ));
+    }
+    Ok(())
+}
+
 impl HeapType {
     pub fn from_d3d12(value: u32) -> Result<HeapType, Error> {
         match value {
