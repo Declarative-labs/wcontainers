@@ -2083,21 +2083,39 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
 - "socket family not built": socket and socketpair of a family other than AF_UNIX, AF_INET,
   AF_INET6 and AF_NETLINK, such as AF_PACKET (detail: the family; EAFNOSUPPORT).
-- "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES), SCTP
+- "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES; plan section 15: no
+  raw packets, so no ping, though Docker's ping_group_range lets the reference make them), SCTP
   (ESOCKTNOSUPPORT for SOCK_SEQPACKET, EPROTONOSUPPORT in a stream), MPTCP and UDP-Lite
-  (EPROTONOSUPPORT), netlink protocols other than NETLINK_ROUTE (EPROTONOSUPPORT), and netlink
-  messages to another socket's port (ECONNREFUSED); detail family times 2^32 plus kind times 2^16
-  plus protocol.
+  (EPROTONOSUPPORT), netlink protocols other than NETLINK_ROUTE (EPROTONOSUPPORT, where the
+  reference makes NETLINK_SOCK_DIAG (`ss`), GENERIC, AUDIT, KOBJECT_UEVENT, NETFILTER and
+  USERSOCK sockets), and netlink messages to another socket's port (ECONNREFUSED); detail family
+  times 2^32 plus kind times 2^16 plus protocol. AF_PACKET is "socket family not built"
+  (EAFNOSUPPORT; the reference has CAP_NET_RAW and makes them; section 15's raw packets).
 - "socket option not built": socket options not built (detail: level times 2^32 plus option;
-  ENOPROTOOPT), among them TCP_ZEROCOPY_RECEIVE, TCP_SAVE_SYN,
-  TCP_MD5SIG, TCP_ULP, UDP_ENCAP, IP_RECVOPTS, IP_RETOPTS, IP_RECVORIGDSTADDR, IP_MINTTL,
-  IP_UNICAST_IF, the source-specific multicast options and IPv6's group and extension header
+  ENOPROTOOPT). Read: SO_MEMINFO, SO_PEERSEC on local sockets is ENOPROTOOPT as Linux's,
+  TCP_ZEROCOPY_RECEIVE with room for its structure, TCP_MD5SIG and TCP_MD5SIG_EXT, IP_MSFILTER,
+  MCAST_MSFILTER, IP_PKTOPTIONS and IPV6_2292PKTOPTIONS once packet information was asked for,
+  IPV6_FLOWLABEL_MGR, IPV6's MCAST_MSFILTER, and IPv6 options past those answered. Set:
+  SO_ATTACH_FILTER and SO_ATTACH_BPF (no socket filters), SO_RESERVE_MEM, TCP_ULP,
+  TCP_FASTOPEN_KEY, TCP_MD5SIG, TCP_ZEROCOPY_RECEIVE, UDP_ENCAP, IP_ORIGDSTADDR,
+  IP_MINTTL, IP_CHECKSUM, IP_RECVERR_RFC4884, IP_UNICAST_IF, IP_LOCAL_PORT_RANGE, IP_MSFILTER and
+  the source-specific multicast options, IPv6's 2292 forms, flow information and labels,
+  multicast (IPV6_JOIN_GROUP and the rest), IPV6_RECVERR_RFC4884, IPV6_MINHOPCOUNT,
+  IPV6_RECVORIGDSTADDR, IPV6_UNICAST_IF, IPV6_ADDR_PREFERENCES and the extension header
   options; SO_TIMESTAMPING with software send flags; and as send control messages (EINVAL)
-  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps.
+  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps. Every other option
+  number Linux answers on a fresh or connected socket is answered as Linux answers it (tests
+  inet `option_reads_and_socket_corners_match_reference`, guest/optreads.c).
+- "socket option not acted on": TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN and TCP_TX_DELAY
+  set on, SO_MAX_PACING_RATE set to a limit, and TCP's MSG_MORE: kept and read back, but bytes
+  go to the peer at once where Linux holds or paces them (detail: level times 2^32 plus option,
+  or the flag). Keepalive's options and TCP_THIN_LINEAR_TIMEOUTS, TCP_RTO_MIN_US and
+  TCP_RTO_MAX_MS are kept and change nothing a program can see here: nothing is lost between
+  the container's own sockets and the peer always answers.
 - "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
-  RTM_GETROUTE dumps, RTM_GETNEIGH dumps and RTM_GETLINK of one link (EOPNOTSUPP; detail the
-  type plus 2^16 for a dump), such as `ip route get`, one neighbour, rules and queue
-  disciplines.
+  RTM_GETROUTE dumps, RTM_GETNEIGH and RTM_GETRULE dumps, RTM_GETLINK of one link and
+  RTM_GETROUTE of one address (EOPNOTSUPP; detail the type plus 2^16 for a dump), such as one
+  neighbour and queue disciplines.
 - "ioctl request not built" also covers SIOCGSTAMP and its forms on internet sockets (ENOENT),
   and the requests that change interfaces for a caller with CAP_NET_ADMIN (Docker gives none,
   so EPERM as in the reference).
@@ -2108,7 +2126,7 @@ queued", "tcp room modelled", "tcp info modelled", "multicast or broadcast not s
 "neighbour entries not built" (a neighbour dump after packets left by eth0),
 "tcp
 connect waits for backlog room", "interface counters not kept", "name query not answered",
-"recvmmsg returned early", "listening outside failed" (a host that cannot accept from outside
+"listening outside failed" (a host that cannot accept from outside
 or whose port is taken), "outside datagram header made up",
 "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not

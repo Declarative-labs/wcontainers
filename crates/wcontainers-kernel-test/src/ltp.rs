@@ -240,7 +240,8 @@ pub fn run_reference(test: &Test, limit: Duration, logs: &Path) -> Line {
 /// Runs tests on our kernel, `jobs` at a time, each under `seed` in a process of its own forked
 /// from one that holds the image's files in a prepared kernel, so the files are loaded once. A
 /// test that runs past `limit` is killed and reported as a hang, as is one whose processes all
-/// wait with nothing to wake them; one whose kernel or stand-in CPU fails is a crash. Each
+/// wait with nothing to wake them; one whose kernel fails is a crash, and one the stand-in CPU
+/// cannot run is unsupported. Each
 /// finished test's line goes to `report` as it ends.
 pub fn run_ours(
     tests: &[Test],
@@ -381,7 +382,11 @@ fn run_one(prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -> ! 
         }
         Ok(Err(failure)) => {
             eprintln!("no outcome: {failure:?}");
-            crash_line(test, seconds)
+            let mut line = crash_line(test, seconds);
+            if matches!(failure, driver::Failure::StandIn(_)) {
+                line.verdict = "unsupported".into();
+            }
+            line
         }
         Err(panic) => {
             let message = panic
@@ -497,6 +502,7 @@ pub fn compare(reference: &[Line], ours: &[Line]) -> String {
         let cause = match line.verdict.as_str() {
             "crash" => "a crash of the kernel",
             "hang" => "a hang",
+            "unsupported" => "an instruction the stand-in CPU does not run",
             _ if !new.is_empty() => "a part not built (a warning no matching test gave)",
             _ => "a wrong answer",
         };
