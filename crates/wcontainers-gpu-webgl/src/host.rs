@@ -103,6 +103,13 @@ impl HostCopy {
         }
     }
 
+    /// Takes every byte of `other`, a host copy of the same shape.
+    pub fn copy_from(&self, other: &HostCopy) {
+        self.bytes
+            .borrow_mut()
+            .copy_from_slice(&other.bytes.borrow());
+    }
+
     /// Reads a region into `dst` as tightly packed rows of blocks; returns the bytes written.
     pub fn read(
         &self,

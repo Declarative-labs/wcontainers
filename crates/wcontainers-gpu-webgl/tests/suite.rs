@@ -235,3 +235,18 @@ fn captured_indices_drawn_both_ways() {
 fn strips_fans_loops_and_indexed_draws_captured_in_list_order() {
     checks::strips_fans_loops_and_indexed_draws_captured_in_list_order::<Angle>();
 }
+
+#[test]
+fn absent_features_are_refused() {
+    checks::absent_features_are_refused::<Angle>();
+}
+
+#[test]
+fn copies_into_and_out_of_host_kept_textures() {
+    checks::copies_into_and_out_of_host_kept_textures::<Angle>();
+}
+
+#[test]
+fn srgb_views_of_block_compressed_textures() {
+    checks::srgb_views_of_block_compressed_textures::<Angle>();
+}
