@@ -33,14 +33,10 @@ windows = { version = "0.62.2", features = [
 ] }
 windows-core = "0.62.2"
 
-# The Windows library and its forwarders (examples/directx/main.rs says why they are examples).
-[[example]]
-name = "wcontainers_directx"
-path = "examples/directx/main.rs"
-crate-type = ["cdylib"]
-
+# The Windows library and its forwarder (examples/directx/main.rs says why they are examples).
 [[example]]
 name = "d3d12"
+path = "examples/directx/main.rs"
 crate-type = ["cdylib"]
 
 [[example]]

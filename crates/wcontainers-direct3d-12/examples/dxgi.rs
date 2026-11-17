@@ -1,8 +1,8 @@
-//! dxgi.dll: forwards each export to wcontainers_directx.dll, with no code of its own.
+//! dxgi.dll: forwards each export to our d3d12.dll, which holds DXGI too, with no code of its own.
 
 #![cfg(windows)]
 
-const EXPORTS: &str = " /EXPORT:CreateDXGIFactory=wcontainers_directx.wc_CreateDXGIFactory /EXPORT:CreateDXGIFactory1=wcontainers_directx.wc_CreateDXGIFactory1 /EXPORT:CreateDXGIFactory2=wcontainers_directx.wc_CreateDXGIFactory2 ";
+const EXPORTS: &str = " /EXPORT:CreateDXGIFactory=d3d12.wc_CreateDXGIFactory /EXPORT:CreateDXGIFactory1=d3d12.wc_CreateDXGIFactory1 /EXPORT:CreateDXGIFactory2=d3d12.wc_CreateDXGIFactory2 ";
 
 /// Linker directives the linker reads from this section of the object file.
 #[used]

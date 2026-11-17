@@ -7,6 +7,8 @@ use wcontainers_gpu::{
     RasterDesc, RenderTargetBlend, StencilFace, StencilOp, Topology, VertexFormat,
 };
 
+use wcontainers_directx_graphics_infrastructure::dxgi_vertex_format;
+
 use crate::Error;
 
 /// `D3D12_RENDER_TARGET_BLEND_DESC`.
@@ -337,53 +339,7 @@ pub fn resolve_offsets(elements: &mut [InputElement]) -> Result<(), Error> {
 
 /// The vertex format of a `DXGI_FORMAT` value and its size in bytes.
 pub fn vertex_format(value: u32) -> Result<(VertexFormat, u32), Error> {
-    use VertexFormat::*;
-    Ok(match value {
-        2 => (Float32x4, 16),
-        3 => (Uint32x4, 16),
-        4 => (Sint32x4, 16),
-        6 => (Float32x3, 12),
-        7 => (Uint32x3, 12),
-        8 => (Sint32x3, 12),
-        10 => (Float16x4, 8),
-        11 => (Unorm16x4, 8),
-        12 => (Uint16x4, 8),
-        13 => (Snorm16x4, 8),
-        14 => (Sint16x4, 8),
-        16 => (Float32x2, 8),
-        17 => (Uint32x2, 8),
-        18 => (Sint32x2, 8),
-        24 => (Unorm10_10_10_2, 4),
-        25 => (Uint10_10_10_2, 4),
-        26 => (Float11_11_10, 4),
-        28 => (Unorm8x4, 4),
-        30 => (Uint8x4, 4),
-        31 => (Snorm8x4, 4),
-        32 => (Sint8x4, 4),
-        34 => (Float16x2, 4),
-        35 => (Unorm16x2, 4),
-        36 => (Uint16x2, 4),
-        37 => (Snorm16x2, 4),
-        38 => (Sint16x2, 4),
-        41 => (Float32x1, 4),
-        42 => (Uint32x1, 4),
-        43 => (Sint32x1, 4),
-        49 => (Unorm8x2, 2),
-        50 => (Uint8x2, 2),
-        51 => (Snorm8x2, 2),
-        52 => (Sint8x2, 2),
-        54 => (Float16x1, 2),
-        56 => (Unorm16x1, 2),
-        57 => (Uint16x1, 2),
-        58 => (Snorm16x1, 2),
-        59 => (Sint16x1, 2),
-        61 => (Unorm8x1, 1),
-        62 => (Uint8x1, 1),
-        63 => (Snorm8x1, 1),
-        64 => (Sint8x1, 1),
-        87 => (Bgra8Unorm, 4),
-        _ => return Err(Error::Invalid("not a vertex format")),
-    })
+    dxgi_vertex_format(value).ok_or(Error::Invalid("not a vertex format"))
 }
 
 /// `D3D_PRIMITIVE_TOPOLOGY`, for the topologies drawn without a geometry stage.

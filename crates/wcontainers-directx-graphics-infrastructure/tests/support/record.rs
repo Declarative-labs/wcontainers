@@ -39,9 +39,15 @@ pub fn webgpu_like_caps() -> Caps {
     for f in [Format::Rgba8Unorm, Format::Bgra8Unorm, Format::Rgba16Float] {
         uses[f.index()] |= FormatUse::PRESENT;
     }
-    for f in [Format::Depth32Float, Format::Depth24PlusStencil8] {
+    for f in [
+        Format::Depth32Float,
+        Format::Depth24PlusStencil8,
+        Format::Depth32FloatStencil8,
+    ] {
         uses[f.index()] = FormatUse::SAMPLE | FormatUse::DEPTH_STENCIL;
     }
+    uses[Format::R32Uint.index()] =
+        FormatUse::SAMPLE | FormatUse::RENDER | FormatUse::STORAGE_WRITE;
     Caps {
         adapter: AdapterInfo {
             name: "recording back end".into(),
@@ -285,7 +291,8 @@ impl Backend for Recorder {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
-        self.calls.push(format!("resolve {src:?} {dst:?} {format:?}"));
+        self.calls
+            .push(format!("resolve {src:?} {dst:?} {format:?}"));
     }
     fn submit(&mut self) -> u32 {
         self.fences += 1;
