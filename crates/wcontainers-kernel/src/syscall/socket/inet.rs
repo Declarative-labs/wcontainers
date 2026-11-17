@@ -1418,12 +1418,13 @@ pub(super) fn send(
     total: u64,
     nonblocking: bool,
 ) -> Result<u64, Errno> {
-    if !message.files.is_empty() {
-        return Err(Errno::EINVAL);
-    }
     let protocol = inet_ref(socket).protocol;
     match protocol {
         Protocol::Tcp => {
+            // `tcp_sendmsg_locked` reads only the socket-level messages, and any fault is EINVAL.
+            if let Some(control) = &message.control {
+                sent_control(kernel, cx, socket, control, true).map_err(|_| Errno::EINVAL)?;
+            }
             if message.flags & MSG_OOB != 0 && total > 0 {
                 return Err(kernel.counters.refuse_flag(
                     cx.host,
@@ -1585,6 +1586,85 @@ pub(super) fn datagram_truesize(size: u64) -> u64 {
     allocated + SK_BUFF
 }
 
+/// What a send's control messages set for its datagram: its TTL and type of service.
+#[derive(Clone, Copy, Default)]
+struct SentControl {
+    ttl: Option<u8>,
+    tos: Option<u8>,
+}
+
+/// The control messages of an internet send (`sock_cmsg_send` for TCP, `ip_cmsg_send` for UDP
+/// over IPv4): descriptors and credentials are passed over, what Linux does not know is EINVAL,
+/// and what it knows that is not built here (marks, priorities, transmit times and timestamping,
+/// IPv4 options and packet information, every IPv6 message) is refused and counted.
+fn sent_control(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    bytes: &[u8],
+    socket_level_only: bool,
+) -> Result<SentControl, Errno> {
+    let v4 = socket.borrow().family == AF_INET;
+    let mut out = SentControl::default();
+    let mut at = 0usize;
+    let mut refuse = |level: u32, kind: u32| {
+        Err(kernel.counters.refuse(
+            cx.host,
+            crate::reason::OPTION_NOT_BUILT,
+            (u64::from(level) << 32) | u64::from(kind),
+            Errno::EINVAL,
+        ))
+    };
+    while at + 16 <= bytes.len() {
+        let length = u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
+        let level = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().expect("4 bytes"));
+        let kind = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().expect("4 bytes"));
+        if length < 16 || at as u64 + length > bytes.len() as u64 {
+            return Err(Errno::EINVAL);
+        }
+        let data = &bytes[at + 16..at + length as usize];
+        // `ip_cmsg_send`'s readings of an int, and of the type of service as an int or a byte.
+        let int = || match data.len() {
+            4 => Ok(i32::from_le_bytes(data.try_into().expect("4 bytes"))),
+            _ => Err(Errno::EINVAL),
+        };
+        match level {
+            SOL_SOCKET => match kind {
+                SCM_RIGHTS | SCM_CREDENTIALS => {}
+                SO_MARK | SO_PRIORITY | SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW | SCM_TXTIME
+                | SCM_TS_OPT_ID => return refuse(level, kind),
+                _ => return Err(Errno::EINVAL),
+            },
+            _ if socket_level_only => {}
+            SOL_IP if v4 => match kind {
+                IP_TTL => {
+                    let ttl = int()?;
+                    if !(1..=255).contains(&ttl) {
+                        return Err(Errno::EINVAL);
+                    }
+                    out.ttl = Some(ttl as u8);
+                }
+                IP_TOS => {
+                    let tos = match data.len() {
+                        1 => i32::from(data[0]),
+                        _ => int()?,
+                    };
+                    if !(0..=255).contains(&tos) {
+                        return Err(Errno::EINVAL);
+                    }
+                    out.tos = Some(tos as u8);
+                }
+                IP_RETOPTS | IP_PKTINFO | IP_PROTOCOL => return refuse(level, kind),
+                _ => return Err(Errno::EINVAL),
+            },
+            SOL_IPV6 if !v4 => return refuse(level, kind),
+            _ => {}
+        }
+        at += length.next_multiple_of(8) as usize;
+    }
+    Ok(out)
+}
+
 fn udp_send(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -1655,6 +1735,10 @@ fn udp_send(
             own.inet.as_deref().unwrap().remote.expect("a destination")
         }
     };
+    let sent = match &message.control {
+        Some(control) => sent_control(kernel, cx, socket, control, false)?,
+        None => SentControl::default(),
+    };
     {
         let mut own = socket.borrow_mut();
         if own.error != 0 {
@@ -1719,7 +1803,7 @@ fn udp_send(
                     sender: Weak::new(),
                     truesize,
                     source: Some(from),
-                    arrival: Some(arrival_from(socket, &to)),
+                    arrival: Some(arrival_from(socket, &to, sent)),
                     time: super::stamp(kernel, cx, &receiver),
                     urgent: false,
                 };
@@ -1874,7 +1958,13 @@ fn udp_receive(
         )
     };
     let copied = (data.len() as u64).min(size);
-    scatter(kernel, cx, tid, parts, &data[..copied as usize])?;
+    if let Err(error) = scatter(kernel, cx, tid, parts, &data[..copied as usize]) {
+        // `udp_recvmsg` drops a datagram it could not copy out, unless peeking.
+        if flags & MSG_PEEK == 0 {
+            socket.borrow_mut().queue.pop_front();
+        }
+        return Err(error);
+    }
     let family = socket.borrow().family;
     let mut received = Received {
         address: source.map(|from| address_bytes(family, &from)),
@@ -1897,7 +1987,7 @@ fn udp_receive(
 /// What a datagram from `sender` to `to` inside the container carries in its header and route:
 /// the sender's TTL or hop limit and type of service or class, and the interface of the address
 /// it went to (`inet_iif`, eth0's for eth0's address, else loopback).
-fn arrival_from(sender: &SocketRef, to: &Endpoint) -> Arrival {
+fn arrival_from(sender: &SocketRef, to: &Endpoint, sent: SentControl) -> Arrival {
     let own = sender.borrow();
     let option = |level: u32, name: u32, default: i32| {
         own.options
@@ -1907,7 +1997,12 @@ fn arrival_from(sender: &SocketRef, to: &Endpoint) -> Arrival {
             .unwrap_or(default)
     };
     let (ttl, tos) = if v4_of(&to.address).is_some() && own.family == AF_INET {
-        (option(SOL_IP, IP_TTL, 64), option(SOL_IP, IP_TOS, 0))
+        (
+            sent.ttl
+                .map_or_else(|| option(SOL_IP, IP_TTL, 64), i32::from),
+            sent.tos
+                .map_or_else(|| option(SOL_IP, IP_TOS, 0), i32::from),
+        )
     } else if v4_of(&to.address).is_some() {
         (64, 0)
     } else {

@@ -1316,6 +1316,9 @@ struct Outgoing<'a> {
     data: Data<'a>,
     /// The destination as the program gave it (`move_addr_to_kernel`), read by each family.
     address: Option<Vec<u8>>,
+    /// An internet socket's control messages as the program gave them, read where its protocol
+    /// reads them.
+    control: Option<Vec<u8>>,
     files: Vec<FileRef>,
     cred: Option<Cred>,
     flags: u32,
@@ -1649,6 +1652,8 @@ fn send_packet(
         socket.borrow_mut().no_space = true;
         return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
     }
+    // The bytes are taken before the receiver is looked for.
+    let data = gather(kernel, cx, tid, message.data, 0, total)?;
     let target = match &name {
         Some(name) => find(kernel, cx, tid, name, SOCK_DGRAM)?,
         None => match socket.borrow().peer.clone() {
@@ -1692,7 +1697,6 @@ fn send_packet(
         let waits_on = if full { &target } else { socket };
         return Err(wait_room(kernel, tid, waits_on, nonblocking, timeout));
     }
-    let data = gather(kernel, cx, tid, message.data, 0, total)?;
     const MAX_ALLOC: u64 = 16384 - 320;
     let pages = if total > MAX_ALLOC {
         (total - MAX_ALLOC).min(17 * 4096).next_multiple_of(4096)
@@ -1783,6 +1787,11 @@ fn receive(
             drop(own);
             socket.borrow_mut().error = 0;
             return Err(Errno(error as u32));
+        }
+        // A datagram socket shut for reading ends only a wait; a nonblocking read of it finds
+        // nothing (`__unix_dgram_recvmsg` turns EAGAIN into the end for sequenced packets only).
+        if kind == SOCK_DGRAM && own.shutdown & RCV_SHUTDOWN != 0 && nonblocking {
+            return Err(Errno::EAGAIN);
         }
         if own.shutdown & RCV_SHUTDOWN != 0
             || (kind == SOCK_SEQPACKET
@@ -2197,6 +2206,7 @@ pub(crate) fn send_bytes(
     let message = Outgoing {
         data: Data::Kernel(bytes),
         address: None,
+        control: None,
         files: Vec::new(),
         cred: None,
         flags,
@@ -2235,6 +2245,7 @@ pub(super) fn write(
     let message = Outgoing {
         data: Data::Guest(parts),
         address: None,
+        control: None,
         files: Vec::new(),
         cred: None,
         flags: 0,
@@ -2263,6 +2274,7 @@ pub(super) fn sendto(
     let message = Outgoing {
         data: Data::Guest(&buffers),
         address,
+        control: None,
         files: Vec::new(),
         cred: None,
         flags: flags as u32,
@@ -2444,10 +2456,25 @@ pub(super) fn sendmsg(
 ) -> Result<u64, Errno> {
     let (file, socket) = socket_of(kernel, tid, fd)?;
     let header = read_header(kernel, cx, tid, header, true)?;
-    let (files, cred) = read_control(kernel, cx, tid, &header)?;
+    // `____sys_sendmsg` takes the control messages in; an internet protocol reads them itself.
+    if header.control_length > i32::MAX as u64 {
+        return Err(Errno::ENOBUFS);
+    }
+    let (files, cred, control) = if socket.borrow().inet.is_some() {
+        let bytes = guest(kernel, cx, tid).read(header.control, header.control_length)?;
+        (
+            Vec::new(),
+            None,
+            Some(bytes).filter(|bytes| !bytes.is_empty()),
+        )
+    } else {
+        let (files, cred) = read_control(kernel, cx, tid, &header)?;
+        (files, cred, None)
+    };
     let message = Outgoing {
         data: Data::Guest(&header.parts),
         address: header.address,
+        control,
         files,
         cred,
         flags: flags as u32,
@@ -2700,6 +2727,10 @@ pub(super) fn setsockopt(
     }
     use crate::linux::net::*;
     let bytes = guest(kernel, cx, tid).read(value, (length as u64).min(64))?;
+    // `sk_setsockopt`: every option but a device name is at least an int.
+    if name != SO_BINDTODEVICE && bytes.len() < 4 {
+        return Err(Errno::EINVAL);
+    }
     let int = || -> Result<i32, Errno> {
         if bytes.len() < 4 {
             return Err(Errno::EINVAL);
@@ -2864,6 +2895,10 @@ pub(super) fn getsockopt(
     let (_, socket) = socket_of(kernel, tid, fd)?;
     let (level, name) = (level as u32, name as u32);
     let room: i32 = guest(kernel, cx, tid).read_value(length)?;
+    // A local socket has no options past its own level, whatever the length (`do_sock_getsockopt`).
+    if socket.borrow().local() && level != SOL_SOCKET {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if room < 0 {
         return Err(Errno::EINVAL);
     }

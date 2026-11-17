@@ -948,6 +948,7 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
     // the loopback port nothing else binds (which its datagrams to that address reach), on the
     // descriptors calls choose most.
     let mut next_fd = 3 + if (choice >> 3) % 4 == 0 { 2 } else { 0 };
+    let mut receivers = Vec::new();
     if !backend && (choice >> 5) % 4 == 0 {
         let kind = pick(
             &[net::SOCK_STREAM, net::SOCK_DGRAM, net::SOCK_SEQPACKET],
@@ -964,6 +965,19 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
                 0,
             ],
         });
+        // A message to the other end, which a receive of it ends the sequence with.
+        calls.push(Call {
+            number: linux::__NR_sendmsg,
+            arguments: [
+                next_fd,
+                ARENA + MSGHDRS + ((choice >> 12) % SEND_HEADERS) * 56,
+                u64::from(net::MSG_DONTWAIT | net::MSG_NOSIGNAL),
+                0,
+                0,
+                0,
+            ],
+        });
+        receivers.push(next_fd + 1);
         next_fd += 2;
     }
     if !backend && (choice >> 9) % 8 == 0 {
@@ -973,10 +987,18 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
             arguments: [u64::from(net::AF_INET), u64::from(flags), 0, 0, 0, 0],
         });
         let (at, length) = SOCKET_ADDRESS_AT[1];
+        let address = ARENA + SOCKET_ADDRESSES + at;
         calls.push(Call {
             number: linux::__NR_bind,
-            arguments: [next_fd, ARENA + SOCKET_ADDRESSES + at, length, 0, 0, 0],
+            arguments: [next_fd, address, length, 0, 0, 0],
         });
+        // A datagram to itself.
+        let flags = u64::from(net::MSG_DONTWAIT);
+        calls.push(Call {
+            number: linux::__NR_sendto,
+            arguments: [next_fd, ARENA + OUTPUT, 7, flags, address, length],
+        });
+        receivers.push(next_fd);
     }
     // Half the sequences may install seccomp filters, which needs no_new_privs (Docker's root lacks
     // CAP_SYS_ADMIN).
@@ -994,6 +1016,16 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
         });
     }
     calls.extend(raw.iter().map(|raw| decode(raw, &path_at, calls_made)));
+    for (index, fd) in receivers.into_iter().enumerate() {
+        let word = choice >> (15 + index * 5);
+        let header = SEND_HEADERS + word % (MSGHDR_COUNT - SEND_HEADERS);
+        let flags =
+            net::MSG_DONTWAIT | pick(&[0, net::MSG_PEEK, net::MSG_CMSG_CLOEXEC, 0], word >> 2);
+        calls.push(Call {
+            number: linux::__NR_recvmsg,
+            arguments: [fd, ARENA + MSGHDRS + header * 56, u64::from(flags), 0, 0, 0],
+        });
+    }
     let terminal = opens_terminal(&calls);
     if terminal {
         keep_terminals_settled(&mut arena, &mut calls);

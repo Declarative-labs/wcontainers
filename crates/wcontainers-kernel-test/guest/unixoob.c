@@ -368,7 +368,7 @@ static void signals(void) {
     close(sv[1]);
 }
 
-static void pipes(void) {
+static void broken_pipes(void) {
     signal(SIGPIPE, on_pipe);
     int kinds[] = {SOCK_SEQPACKET, SOCK_DGRAM, SOCK_STREAM};
     for (int i = 0; i < 3; i++) {
@@ -396,7 +396,7 @@ int main(void) {
     mark();
     inline_urgent();
     refused();
-    pipes();
+    broken_pipes();
     passing();
     waiting();
     signals();
