@@ -50,7 +50,9 @@ branches into it at the start and end of every run.
 - G1, run 4 (2026-11-17): the five findings of G1's second independent check fixed (below). The
   start merges brought webgpu, webgl, direct3d-11, direct3d-12 and shaders in; one conflict, in the
   text of `TextureRegion::stencil` and plan 4.2, where the direct3d-11 track stated the same rule
-  as run 3 (copies between textures move both aspects): kept one statement with both reasons.
+  as run 3 (copies between textures move both aspects): kept one statement with both reasons. The
+  mid-run merges (after the fixes were committed) brought all five in again; a conflict in the same
+  plan paragraph, where the direct3d-11 branch held run 3's older text, kept ours.
 
 ## G1's second check, and how each finding was settled (run 4)
 
@@ -266,6 +268,10 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   - From the direct3d-11 track (c8a7be9, merged at the start): `copy_texture` of a combined
     depth-stencil format copies both aspects in one call; the same rule as run 3's c743db5, so the
     two texts were made one.
+  - From the webgl track (d37c5d9, merged mid-run): `capture_vertices` states what it writes (the
+    vertex stage's location outputs, packed 32-bit, interleaved into one target or one output per
+    target) and `Limits::capture_buffers` what it bounds. Kept: it states the base primitive for
+    every back end.
 
 - G1 run 3:
   - c743db5 ("interface: stated the alignment and limits of buffer bindings and which aspect a copy
