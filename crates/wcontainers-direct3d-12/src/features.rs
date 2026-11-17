@@ -134,10 +134,10 @@ pub fn options1(caps: &Caps) -> Options1 {
 
 /// The highest shader model, given the highest the program asks about
 /// (`D3D12_FEATURE_SHADER_MODEL` answers the lower of the two); a value that names no shader model
-/// (5.1, or 6.0 to 6.9) is refused.
+/// the Windows 10 runtime knows (5.1, or 6.0 to 6.6) is refused, as that runtime refuses it.
 pub fn shader_model(asked: u32) -> Result<u32, crate::Error> {
     match asked {
-        0x51 | 0x60..=0x69 => Ok(asked.min(SHADER_MODEL_6_0)),
+        0x51 | 0x60..=0x66 => Ok(asked.min(SHADER_MODEL_6_0)),
         _ => Err(crate::Error::Invalid("no such shader model")),
     }
 }

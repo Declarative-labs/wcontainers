@@ -1425,7 +1425,7 @@ impl Device {
         }
         let id = gpu::call(move |d| d.create_heap(size, align, kind, flags)).map_err(hr)?;
         give::<ID3D12Heap>(
-            crate::abi::fixed(Heap(desc, id, Base::child()).into()),
+            crate::abi::fixed(Heap(desc, id, Base::child(), AtomicU32::new(1)).into()),
             riid,
             out,
         )
@@ -1443,8 +1443,14 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         clear_out(out);
+        let heap_interface = heap.ok()?;
         // SAFETY: heaps come from this library; the API requires a description.
-        let (heap, desc) = unsafe { (heap.ok()?.as_impl(), *pdesc.as_ref().ok_or(E_INVALIDARG)?) };
+        let (heap, desc) = unsafe {
+            (
+                heap_interface.as_impl(),
+                *pdesc.as_ref().ok_or(E_INVALIDARG)?,
+            )
+        };
         let (memory, heap_desc) = (heap.1, heap.0);
         let (kind, cpu_custom) = heap_kind(&heap_desc.Properties)?;
         let front = resource_desc(&desc);
@@ -1475,6 +1481,7 @@ impl Device {
                     heap_flags: heap_desc.Flags,
                     cpu_maps: cpu_custom.then(AtomicU32::default),
                     _chain: None,
+                    _heap: Some(HeapHold::new(heap_interface)),
                     base: Base::child(),
                 }
                 .into(),
@@ -1534,6 +1541,7 @@ impl Device {
                     heap_flags: flags,
                     cpu_maps: cpu_custom.then(AtomicU32::default),
                     _chain: None,
+                    _heap: None,
                     base: Base::child(),
                 }
                 .into(),
@@ -2103,6 +2111,8 @@ pub struct Resource {
     cpu_maps: Option<AtomicU32>,
     /// A back buffer's share of its swap chain's reference.
     _chain: Option<Arc<crate::present::BufferHold>>,
+    /// A placed resource's reference on its heap.
+    _heap: Option<HeapHold>,
     base: Base,
 }
 
@@ -2146,6 +2156,7 @@ impl Resource {
                 heap_flags: D3D12_HEAP_FLAG_NONE,
                 cpu_maps: None,
                 _chain: Some(chain),
+                _heap: None,
                 base: Base::child(),
             }
             .into(),
@@ -2398,13 +2409,52 @@ impl Drop for RootSignature {
     }
 }
 
-/// A heap of `CreateHeap`: its description and the front's heap.
+/// A heap of `CreateHeap`: its description, the front's heap, and the program's references, which
+/// `abi.rs` counts apart from its placed resources' (`HeapHold`).
 #[implement(ID3D12Heap)]
-pub struct Heap(D3D12_HEAP_DESC, MemoryId, Base);
+pub struct Heap(D3D12_HEAP_DESC, MemoryId, Base, pub AtomicU32);
 
 impl Heap {
     pub fn GetDesc(&self) -> D3D12_HEAP_DESC {
         self.0
+    }
+}
+
+/// A placed resource's reference on its heap, which keeps the heap alive without counting among
+/// the program's references (Direct3D 12 keeps a heap the program released while resources lie in
+/// it, and the program may still place resources in it).
+pub struct HeapHold(*mut c_void);
+
+// SAFETY: the heap's counts are atomic and it is only read after creation.
+unsafe impl Send for HeapHold {}
+// SAFETY: as above.
+unsafe impl Sync for HeapHold {}
+
+impl HeapHold {
+    pub fn new(heap: &ID3D12Heap) -> Self {
+        let this = heap.as_raw();
+        // SAFETY: a heap of this library, alive while the caller holds it.
+        unsafe { crate::abi::heap_hold(this) };
+        Self(this)
+    }
+}
+
+impl Drop for HeapHold {
+    fn drop(&mut self) {
+        // SAFETY: the reference `new` took.
+        unsafe { crate::abi::heap_let_go(self.0) };
+    }
+}
+
+/// The program's reference count of a heap of this library.
+///
+/// # Safety
+/// `this` is a live heap of this library.
+pub unsafe fn heap_program_count(this: &*mut c_void) -> &AtomicU32 {
+    // SAFETY: as the caller promises; the interface pointer is borrowed for the call.
+    unsafe {
+        let heap = ID3D12Heap::from_raw_borrowed(this).expect("a heap");
+        &heap.as_impl().3
     }
 }
 
