@@ -11,6 +11,7 @@
 mod com;
 mod gpu;
 mod objects;
+mod present;
 
 const EXPORTS: &str = " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature ";
 
@@ -60,15 +61,50 @@ unsafe fn hand_out(
     unsafe { object.query(riid, out) }
 }
 
+/// The system's own export `export` of library `name`, for calls made on the device thread: the
+/// GPU driver under the back end loads DXGI or Direct3D 12 by name from that thread, which in this
+/// process finds this library, and must have the system's.
+///
+/// # Safety
+/// `F` is the export's function type.
+unsafe fn system<F: Copy>(name: &str, export: &std::ffi::CStr) -> Option<F> {
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut dir = [0u16; 260];
+    // SAFETY: a buffer of the length given.
+    let len = unsafe { GetSystemDirectoryW(Some(&mut dir)) } as usize;
+    let path: Vec<u16> = String::from_utf16_lossy(&dir[..len])
+        .chars()
+        .chain(format!("\\{name}").chars())
+        .collect::<String>()
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    // SAFETY: a path ended by a zero; the module stays loaded for the process.
+    let module = unsafe { LoadLibraryW(windows::core::PCWSTR(path.as_ptr())) }.ok()?;
+    // SAFETY: a name ended by a zero.
+    let f = unsafe { GetProcAddress(module, windows::core::PCSTR(export.as_ptr().cast())) }?;
+    // SAFETY: the caller names the type.
+    Some(unsafe { std::mem::transmute_copy(&f) })
+}
+
 /// # Safety
 /// The pointers are the caller's, as the API defines them.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn wc_CreateDXGIFactory2(
-    _flags: u32,
+    flags: u32,
     riid: *const GUID,
     out: *mut *mut c_void,
 ) -> HRESULT {
-    let factory: IDXGIFactory4 = Factory.into();
+    if gpu::on_device_thread() {
+        type F = unsafe extern "system" fn(u32, *const GUID, *mut *mut c_void) -> HRESULT;
+        // SAFETY: the system's export of this name has this signature.
+        return match unsafe { system::<F>("dxgi.dll", c"CreateDXGIFactory2") } {
+            Some(f) => unsafe { f(flags, riid, out) },
+            None => E_NOINTERFACE,
+        };
+    }
+    let factory: IDXGIFactory4 = Factory(flags).into();
     // SAFETY: as the caller passed them.
     unsafe { hand_out(&factory.cast().unwrap(), riid, out) }
 }
@@ -99,11 +135,20 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
 /// The pointers are the caller's, as the API defines them.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn wc_D3D12CreateDevice(
-    _adapter: *mut c_void,
+    adapter: *mut c_void,
     minimum_level: i32,
     riid: *const GUID,
     out: *mut *mut c_void,
 ) -> HRESULT {
+    if gpu::on_device_thread() {
+        type F =
+            unsafe extern "system" fn(*mut c_void, i32, *const GUID, *mut *mut c_void) -> HRESULT;
+        // SAFETY: the system's export of this name has this signature.
+        return match unsafe { system::<F>("d3d12.dll", c"D3D12CreateDevice") } {
+            Some(f) => unsafe { f(adapter, minimum_level, riid, out) },
+            None => DXGI_ERROR_UNSUPPORTED,
+        };
+    }
     let level = gpu::call(|d| features::feature_level(d.backend().caps()));
     match level {
         Some(l) if l >= minimum_level as u32 => {}

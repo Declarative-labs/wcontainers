@@ -87,14 +87,23 @@ fn present_blocks_past_the_frame_latency() {
     let mut b = Recorder::new();
     let mut chain = SwapChain::new(&mut b, 1, &desc(87, 2, Model::FlipSequential)).unwrap();
     assert_eq!(chain.surface_format(), Format::Bgra8Unorm);
-    chain.set_max_latency(1).unwrap();
     assert!(chain.set_max_latency(0).is_err());
-    for _ in 0..3 {
-        chain.present(&mut b, 1).unwrap();
-    }
-    // The recording back end finishes every fence at once, so nothing stays queued.
+    chain.set_max_latency(2).unwrap();
+    // The recorder's GPU finishes nothing until the test says so or a wait reaches it.
+    chain.present(&mut b, 1).unwrap();
+    chain.present(&mut b, 1).unwrap();
+    assert_eq!(chain.frames_queued(&mut b), 2);
+    assert!(chain.would_wait(&mut b));
+    assert!(b.named("wait_fence").is_empty());
+    // A third frame is one more than the latency: present waits for the first frame's work.
+    chain.present(&mut b, 1).unwrap();
+    assert_eq!(b.named("wait_fence"), ["wait_fence 1"]);
+    assert_eq!(chain.frames_queued(&mut b), 2);
+    b.finish();
     assert_eq!(chain.frames_queued(&mut b), 0);
     assert!(!chain.would_wait(&mut b));
+    chain.present(&mut b, 1).unwrap();
+    assert_eq!(b.named("wait_fence").len(), 1);
 }
 
 #[test]
@@ -231,4 +240,12 @@ fn format_support_follows_the_back_ends_format_uses() {
             None
         ]
     );
+}
+
+#[test]
+fn outputs_present_sdr_only() {
+    // R8G8B8A8_UNORM and R16G16B16A16_FLOAT back buffers; G2084 P2020 is HDR10.
+    assert!(presents_in(28, COLOR_SPACE_SRGB) && presents_in(10, COLOR_SPACE_SRGB));
+    assert!(presents_in(10, COLOR_SPACE_LINEAR) && !presents_in(28, COLOR_SPACE_LINEAR));
+    assert!(!presents_in(24, 12) && !presents_in(10, 12));
 }

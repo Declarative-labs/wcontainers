@@ -1,6 +1,6 @@
 //! What `D3D12CreateDevice` and `CheckFeatureSupport` answer, from the back end's `Caps` (plan
-//! section 9): feature level 11_0 on a back end with compute and the 11_0 sizes, 11_1 and resource
-//! binding tier 3 only with big resource tables; ray tracing, mesh shaders, variable rate shading,
+//! section 9): feature level 11_0 on a back end with compute and the 11_0 sizes, resource binding
+//! tier 3 only with big resource tables; ray tracing, mesh shaders, variable rate shading,
 //! sampler feedback, tiled resources, rasterizer ordered views, conservative rasterisation and 64-bit
 //! integers absent.
 
@@ -8,7 +8,6 @@ use wcontainers_directx_graphics_infrastructure::{format_support, takes_samples}
 use wcontainers_gpu::{Caps, Features, Format, FormatUse};
 
 pub const FEATURE_LEVEL_11_0: u32 = 0xb000;
-pub const FEATURE_LEVEL_11_1: u32 = 0xb100;
 /// `D3D_SHADER_MODEL_6_0`.
 pub const SHADER_MODEL_6_0: u32 = 0x60;
 
@@ -28,11 +27,9 @@ pub fn feature_level(caps: &Caps) -> Option<u32> {
     if !sizes || !depth_stencil || !caps.has(Features::COMPUTE) {
         return None;
     }
-    Some(if caps.has(Features::RESOURCE_TABLES) {
-        FEATURE_LEVEL_11_1
-    } else {
-        FEATURE_LEVEL_11_0
-    })
+    // 11_1 also needs logic operations and target-independent rasterisation, which no `Caps`
+    // capability promises.
+    Some(FEATURE_LEVEL_11_0)
 }
 
 /// `D3D12_FEATURE_FEATURE_LEVELS`: the highest of `requested` the device supports (every level
@@ -63,14 +60,24 @@ pub struct Options {
     pub resource_heap_tier: u32,
 }
 
-/// The formats `TypedUAVLoadAdditionalFormats` promises loads from, beyond `R32_*`.
-const ADDITIONAL_UAV_LOADS: [Format; 6] = [
+/// The formats `TypedUAVLoadAdditionalFormats` promises loads from, beyond `R32_*` (Microsoft's
+/// "Typed unordered access view loads": 18 formats with the three of `R32`).
+const ADDITIONAL_UAV_LOADS: [Format; 15] = [
     Format::Rgba32Float,
+    Format::Rgba32Uint,
+    Format::Rgba32Sint,
     Format::Rgba16Float,
     Format::Rgba16Uint,
+    Format::Rgba16Sint,
     Format::Rgba8Unorm,
     Format::Rgba8Uint,
+    Format::Rgba8Sint,
     Format::R16Float,
+    Format::R16Uint,
+    Format::R16Sint,
+    Format::R8Unorm,
+    Format::R8Uint,
+    Format::R8Sint,
 ];
 
 pub fn options(caps: &Caps) -> Options {
