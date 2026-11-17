@@ -4,10 +4,12 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 
 ## Where things stand
 
-Milestone G6a (first slice): done in run 3; runs 4, 5, 6 and 8 fixed what the independent checks of
-runs 3, 4, 5 and 7 found (listed under "Run 4" to "Run 8" below); run 7 drew run 6's fixes on the
-GPU. Run 8 merged origin/phase-2-graphics and every origin/phase-2-graphics-* branch again (no
-conflicts; the interface changes in them touch no shader type).
+Milestone G6a (first slice): done in run 3; runs 4, 5, 6, 8 and 9 fixed what the independent checks
+of runs 3, 4, 5, 7 and 8 found (listed under "Run 4" to "Run 9" below); run 7 drew run 6's fixes on
+the GPU. Milestone G6 in full (section 12's pass bar) is not done: run 9 (the first run on it) fixed
+the run 8 check's findings and built the cache of section 8; what remains is under Next. Run 9
+merged origin/phase-2-graphics and every origin/phase-2-graphics-* branch with new commits (no
+conflicts).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -205,7 +207,7 @@ Run 8 (the independent check of run 7, each finding fixed or recorded):
   vertex shader drew nothing on WebGL 2 and natively. The carried writers now declare each such
   value before the loop and assign it where the body makes it (`compact::values_for_continuing`
   finds them). Tests in `tests/glsl_writer.rs`; `vs_carry` (both builds) draws equal (below). naga's
-  MSL writer has the same shape and is not changed (no back end of ours writes MSL).
+  MSL writer had the same shape; run 9 fixed it too.
 - DXIL float to integer conversions: naga's `i32(x)`/`u32(x)` is not Direct3D's (NaN gives 0, the
   limits at and past them). Every f32 to i32 or u32 conversion of a DXIL module now calls a function
   that gives Direct3D's answer (`direct3d_float_to_int` in `src/dxil.rs`; the DXBC route already had
@@ -230,7 +232,58 @@ Run 8 (the independent check of run 7, each finding fixed or recorded):
   build of `ps_table`), and a constant buffer component picked at run time, which dxil-spirv reads
   through a second, scalar view of the buffer (`Unsupported("ConstantComponentIndexing")`).
 
-Next (G6b and on, in order):
+Run 9 (the independent check of run 8, each finding fixed or recorded, then the cache):
+- DXBC integer negation of a value typed unsigned (fxc's `imad -b, c, a` for `a - b * c` on uints)
+  was naga's `Negate` on u32, which validation refuses: it is now negated as i32 and reinterpreted.
+- DXIL `sub 0, x` (integer negation, and the remainder of `x % 3`): dxil-spirv writes `OpSNegate` on
+  its unsigned types; the carried reader now negates an unsigned operand as signed and gives the
+  result its type's signedness.
+- New own shader `tests/own/negate.hlsl` `ps_negate` (both compilers; fxc writes `ineg` and `imad`,
+  dxc `sub i32 0, x` and `sub nsw i32 0, x`): converts by both routes and draws equal everywhere.
+- `tests/draw.rs`: each DXIL build is now held to real Direct3D 12 drawing that same DXIL (root
+  signature: constants at b0 as a root view, the texture in a table, a static linear clamping
+  sampler), not to Direct3D 11's picture of fxc's build. The Direct3D 12 picture is also compared
+  with Direct3D 11's and printed (not failed on). The back ends are now made before the Direct3D
+  devices: with a Direct3D 12 device made first, wgpu's adapter request got Microsoft's Basic Render
+  Driver (seen three times; cause not found).
+- naga's MSL writer (wgpu's Metal path, the WebGPU back end natively on the Mac) gets the run 8 fix
+  for `continuing` blocks that read the body's values; test in `tests/glsl_writer.rs`. Its output
+  was read, not compiled: the Mac has no Metal toolchain installed.
+- `ps_size` on WebGL 2 draws equal after merging the WebGL track's 4ab7bc84; its known-failure mark
+  is gone, so the test fails again if it breaks.
+- The run 8 count was wrong: `tests/draw.rs` then had 21 cases, all 21 equal on WebGPU by the DXBC
+  route (the Measurements line said 20 of 20; corrected below).
+- Bitfield operations on WebGL 2 (fxc's `bfi`/`ubfe` for ordinary arithmetic and the common
+  full-screen vertex shader): plan 6.5 gives their lowering to the WebGL 2 back end's GLSL writing;
+  until then those programs fail there, and that back end answers the failed link with device lost
+  rather than an error. Recorded for the WebGL track (Known gaps).
+- The cache of section 8 (`src/cache.rs`): one file, 16-byte header and checked entries, loaded into
+  an index, appended to, merged by union; a cut or damaged entry ends the file there and is dropped;
+  a key present with another payload is counted (`disagreements`) and the first kept. Converted
+  shaders: key `cache::shader_key` (BLAKE3 of the source kind and bytes, `CONVERTER_VERSION` and the
+  postcard form of the variant key; `convert` now gives modules this key), value `cache::encode`
+  (postcard of the naga modules, entry points, stages and the reflection), `decode` validates again;
+  `convert_cached` does both. State combinations: `record_combination` and `combinations` keep any
+  serde type a front makes of its tuple (the interface's blocks now derive serde). Tests
+  `tests/cache.rs` (round trip, merges in both orders, seeded cuts, a damaged byte, a disagreement,
+  other files refused, combinations). The corpus test sends every converted shader (all five
+  corpora) through `encode`/`decode` under each key a front asks for today (plain, draw bases from
+  the helpers), requires the same bytes back and from a second conversion, and writes `cache.txt`.
+- Found by that: DXIL records differed between the native and WebAssembly builds (the written WGSL
+  did not): naga's SPIR-V reader made each function's global and constant expressions in the order
+  of a hash map keyed by id, which differs between 32-bit and 64-bit targets. It now makes them in
+  id order; every record of every corpus is equal between the builds.
+
+Next (in order):
+- The rest of G6's pass bar, none started: every `VariantKey` field and flag of 6.4 (each refused by
+  name today) with a test against the native feature on WebGPU or WebGL 2 or a reference picture; the
+  stage helper of section 7 (geometry as compute and by replay, hull and domain with a tessellator
+  ported from Mesa's MIT code, stream output) with tests against real Direct3D; the built-in compute
+  programs (texture clears of 5.1) and the counter operations; a corpus of real game shaders (DXBC
+  and DXIL from the rig's real programs) through the corpus test and `web/check`.
+- The cache in a front: G4 and G5 call `convert_cached` and `record_combination`; the browser host
+  keeps the bytes in the origin private file system. Building ahead from `combinations` at start.
+- Older items, still open:
 - DXIL inputs and outputs as the DXBC route lays them out: one four-component value per register
   (now each value keeps its own width, so a Direct3D 12 vertex shader writing a float4 that a pixel
   shader reads as float2 fails WebGPU's pipeline check), and elements dxc packs into one register
@@ -325,6 +378,27 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
+Run 9, 2026-11-17, counts only:
+- `tests/draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, `run9/draw4.log`, and
+  again after the last change to the file, `run9/draw5.log`, all 3 tests passing): DXBC route equal
+  to Direct3D 11 texel for texel on WebGPU 22 of 22 and WebGL 2 17 of 17 drawn (`ps_size` included);
+  DXIL route equal to Direct3D 12 drawing the same DXIL on WebGPU 12 of 12 and WebGL 2 11 of 11; the
+  12 Direct3D 12 pictures equal Direct3D 11's of the fxc builds. Not drawn on WebGL 2: bitfield
+  operations 3, `noperspective` 1, fine derivatives 2. Windows clippy with warnings denied passes.
+  The rig's triangle from DXIL and DXBC equal to Direct3D 12's picture on both back ends. (Drawn
+  before the reader's id-order change, which only orders the expression arena.)
+- Laptop (i7-8750H, load average 0.6 to 3.8): the suite with the corpus passes, every verdict as
+  recorded (own DXBC and DXIL each one more: `ps_negate`, converting); `tests/cache.rs` 6 of 6 with
+  the default 10 seeded cuts (seed 1). Records written: own 52, own DXIL 26, rig 112, rig DXIL 98 and
+  the corpus's, each the same bytes after decoding and after a second conversion.
+- WebAssembly (`wasm-run5.sh`): the corpus test under wasmtime passes and every written file,
+  `cache.txt` included, equals the native build's (corpus, rig, rig DXIL, own, own DXIL: 0 differ),
+  after the reader's id-order fix (before it, the DXIL `cache.txt` files differed).
+- Chrome 157 (`web/check`, one GPU job, about 4 s, `run9/chrome.log`): WGSL corpus 127 of 127, rig
+  DXBC 56 of 56, rig DXIL 49 of 49, own 26 of 26, own DXIL 13 of 13; GLSL ES corpus 89 of 102, rig
+  DXBC 47 of 53, rig DXIL 46 of 48, own 21 of 24, own DXIL 12 of 12. Every GLSL ES failure is a
+  bitfield operation, `textureGather` or `sampler2DMS`.
+
 Run 8, 2026-11-17, counts only:
 - Laptop (i7-8750H, load average 0.2 to 4.2), the suite with the corpus: corpus 127 convert and 64
   named (unchanged), of which 87 compile as GLSL ES in glslang, 15 do not and 25 are not written (one
@@ -332,7 +406,7 @@ Run 8, 2026-11-17, counts only:
   (unchanged); own DXBC 25 of 26, own DXIL 12 of 16 (`ps_table` `NonFiniteConstant`, `ps_spaces`
   `RegisterSpace`, `vs_pack`/`ps_pack` `PackedStageValues`).
 - `tests/draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job): equal to Direct3D 11
-  texel for texel on WebGPU in 20 of 20 by the DXBC route and 11 of 11 by the DXIL route, on WebGL 2
+  texel for texel on WebGPU in 21 of 21 by the DXBC route and 11 of 11 by the DXIL route, on WebGL 2
   in 15 of 16 drawn by the DXBC route (`ps_size` the known failure, 2591 of 4096 texels, largest 111)
   and 10 of 10 by the DXIL route; not drawn on WebGL 2: bitfield operations 3, `noperspective` 1,
   fine derivatives 2 (`ps_deriv`, both builds). New and equal everywhere they are drawn: `vs_carry`
@@ -554,6 +628,9 @@ the tree as published"), plus these changes, each a later commit touching only `
 - GLSL and HLSL writers (run 8), a loop's `continuing` block reads the values its body made in that
   iteration from variables declared before the loop (`compact::values_for_continuing`), instead of
   writing their expressions again where the body's variables have changed.
+- MSL writer (run 9), the same `continuing` fix as the GLSL and HLSL writers (run 8).
+- SPIR-V reader (run 9), `OpSNegate` of an unsigned operand negated as signed; global variables'
+  and constants' expressions made in id order (the same module on 32-bit and 64-bit targets).
 - GLSL writer (run 8), fine derivatives need `Features::DERIVATIVE_CONTROL` (GLSL 4.50, not ES)
   instead of being written as the plain functions.
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
@@ -570,7 +647,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `crates/wcontainers-shaders/web/check <dir>`: one GPU job on the desktop, `chrome.txt` comes back
   into each corpus directory, exit 1 if any file fails.
 - When the desktop refuses new SSH connections (reset after the key exchange; run 6 lost an hour to
-  it, run 7 half an hour, and it did so all through run 8), already open shared connections keep working. Run 7 pointed this
+  it, run 7 half an hour, it did so all through run 8, and again in run 9), already open shared connections keep working. Runs 7 and 9 pointed this
   checkout's rig socket (`~/.ssh/wc-rig-<hash of the git dir>`, see `tools/graphics-rig/common.sh`)
   at another checkout's live one with a symbolic link, and removed the link afterwards. The rig also
   notes the desktop's clock once went back 8 hours, so cargo may keep stale objects: run 7's first
@@ -596,7 +673,10 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `~/wcontainers-graphics/out/<corpus>`. The 191-shader corpus test is ignored without
   `--include-ignored` and fails without `WCONTAINERS_SHADER_CORPUS`; glslang runs only with both
   `GLSLANG` and `WCONTAINERS_SHADERS_OUT`.
-- Fuzz (long, one command): `tools/graphics-rig/linux sh -c 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
+- The cache's seeded cuts: `tools/graphics-rig/linux sh -c 'WCONTAINERS_CACHE_SEED=7
+  WCONTAINERS_CACHE_CUTS=1000 cargo test -p wcontainers-shaders --test cache -- --nocapture'` (each
+  cut is printed with its seed; defaults seed 1, 10 cuts).
+- Fuzz (long, one command; not re-run in run 9): `tools/graphics-rig/linux sh -c 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
   WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000 cargo test -p wcontainers-shaders --test fuzz
   -- --ignored --nocapture'`. Each case is printed before it runs; `WCONTAINERS_FUZZ_FIRST=n` starts
   at case n. It ends at the first case that crashes (Known gaps); scratch
@@ -641,6 +721,11 @@ were already there.
 - `cc` 1.11 (build dependency, compiles the C++): MIT OR Apache-2.0 (its Cargo.toml); with `jobserver`
   0.1 (MIT OR Apache-2.0) for its parallel feature.
 - `blake3` 1.8: as in the plan's section 3; also a build dependency now (hashing the C++ sources).
+- Run 9, for the cache: `postcard` 1.1 (MIT OR Apache-2.0), `serde` 1.0 with `derive` (MIT OR
+  Apache-2.0, also now a dependency of wcontainers-gpu, with `bitflags`' `serde` feature), `crc32fast`
+  1.5 (MIT OR Apache-2.0), naga's own `serialize`/`deserialize` features; all already in the
+  workspace's lock. Dev-dependency `fastrand` 2.5 (Apache-2.0 OR MIT) for the seeded cuts. Licences
+  read from each crate's Cargo.toml.
 - Dev-dependencies of `tests/draw.rs`, Windows only, already in the workspace's lock: `windows` 0.62
   (MIT OR Apache-2.0), `wgpu` 30 (MIT OR Apache-2.0), `pollster` 1 (Apache-2.0 OR MIT), and the
   workspace's own wcontainers-gpu-webgpu, wcontainers-gpu-webgl and wcontainers-graphics-test.
@@ -681,8 +766,12 @@ were already there.
 - Every user input and output is a four-component value at location = register (6.4 speaks of packing
   by component; WGSL has no component qualifier, and fixed four-component values let two stages
   converted apart always agree).
-- The content key is BLAKE3 over the source, `CONVERTER_VERSION` and the variant key's debug text, until
-  the cache (section 8) gives the variant key a serialised form.
+- The cache stops reading at the first entry that is cut short or fails its CRC, and drops the rest
+  (the plan says only that a cut-off last entry is ignored): past a damaged length nothing can be
+  trusted, and dropping keeps appends well-formed. The CRC covers the entry's kind, key and length
+  as well as its payload.
+- A converted shader's record keeps the naga module and the reflection, not naga's `ModuleInfo`
+  (naga cannot read it back); `decode` validates the module again.
 - The WebAssembly build imports ten WASI functions, not two (above).
 - The corpus test writes GLSL with the WebGL 2 back end's options copied (its `write_glsl` is private
   to that crate); if that back end changes them, the test follows by hand.
@@ -713,17 +802,14 @@ were already there.
 - A DXIL constant buffer component picked at run time (`cb[i]` of a float4's components) is refused
   (`ConstantComponentIndexing`): dxil-spirv reads it through a second view of the buffer as scalars
   4 bytes apart, which WebGPU's uniform layout and WGSL's one variable per binding refuse.
-- naga's MSL writer writes loops as the GLSL and HLSL writers did before run 8 (a `continuing` that
-  reads the body's values reads them again); not used by any back end of ours.
+- WebGL 2 (for the WebGL track): fxc writes ordinary arithmetic and the common full-screen vertex
+  shader with `bfi`/`ubfe`, which GLSL ES 3.00 lacks (6.5 gives their lowering to that back end), and
+  the back end answers the refused program with device lost instead of an error.
+- The MSL writer's `continuing` fix (run 9) is checked by reading its output only; no Metal compile.
 - The WebGL 2 back end's fragment depth (z arrived as (z+1)/2) is fixed there: `ps_depth` draws equal
   through it since run 7.
-- The WebGL 2 back end's `textureSize` (for the WebGL track): since its commit 3ea9af6 it rewrites
-  `textureSize(t, l)` to read a hidden uniform `t_size` that it sets when it binds the view. In
-  `tests/draw.rs`'s `ps_size` (an 8 by 8 texture read only by `GetDimensions`, no sampler) the
-  program reads 1 by 1, the helper's floor for an unset (zero) uniform; before that commit it read 8
-  by 8. Not found by reading their code (the uniform's location and first value look right; a
-  `glUniform` while another program is current would give this). Marked `known_on_webgl` with the
-  reason; reproduce with the drawing command in How to run (pictures with `WCONTAINERS_SHADERS_OUT`).
+- The WebGL 2 back end's `textureSize` from a hidden uniform (its 3ea9af6) left `ps_size` reading 1
+  by 1; fixed by its 4ab7bc84, equal since run 9.
 - Direct3D links stages by register here; programs whose vertex outputs and pixel inputs use different
   registers for one semantic need remapping by semantic (also a variant to add).
 - Out-of-bounds texture loads give what WebGPU's robustness gives, not Direct3D's zero. So does a
@@ -734,6 +820,11 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 9, two commits touching only `crates/wcontainers-gpu` (and the lock): serde `Serialize` and
+  `Deserialize` derives on the variant key, the reflection and every type they hold (`Format`,
+  `VertexFormat`, `ShaderStage` included), and on the state blocks of `state.rs` and `CompareFn`, as
+  section 8 plans for the cache's postcard records.
 
 - `VariantKey::output_interpolation: Vec<(u32, Interpolation)>` (commit "interface: gave the variant
   key the interpolation ..."): how the pixel program interpolates each vertex output, by location,
