@@ -25,7 +25,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pptexture1d: windows::core::OutRef<ID3D11Texture1D>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateTexture1D"))
+        self.create_texture1_d(pdesc, pinitialdata, pptexture1d)
     }
     fn CreateTexture2D(
         &self,
@@ -43,7 +43,7 @@ impl ID3D11Device_Impl for Device_Impl {
         pptexture3d: windows::core::OutRef<ID3D11Texture3D>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateTexture3D"))
+        self.create_texture3_d(pdesc, pinitialdata, pptexture3d)
     }
     fn CreateShaderResourceView(
         &self,
@@ -849,7 +849,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
     }
     fn GenerateMips(&self, pshaderresourceview: windows::core::Ref<ID3D11ShaderResourceView>) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::GenerateMips")
+        self.generate_mips(pshaderresourceview)
     }
     fn SetResourceMinLOD(&self, presource: windows::core::Ref<ID3D11Resource>, minlod: f32) {
         let _call = self.call();
@@ -1876,6 +1876,61 @@ impl ID3D11DeviceChild_Impl for Buffer_Impl {
     }
 }
 
+impl ID3D11Texture1D_Impl for Texture1D_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE1D_DESC) {
+        let _lock = lock();
+        self.get_desc(pdesc)
+    }
+}
+
+impl ID3D11Resource_Impl for Texture1D_Impl {
+    fn GetType(&self, presourcedimension: *mut D3D11_RESOURCE_DIMENSION) {
+        let _lock = lock();
+        self.get_type(presourcedimension)
+    }
+    fn SetEvictionPriority(&self, evictionpriority: u32) {
+        let _lock = lock();
+        self.set_eviction_priority(evictionpriority)
+    }
+    fn GetEvictionPriority(&self) -> u32 {
+        let _lock = lock();
+        self.get_eviction_priority()
+    }
+}
+
+impl ID3D11DeviceChild_Impl for Texture1D_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11Texture2D_Impl for Texture2D_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE2D_DESC) {
         let _lock = lock();
@@ -1899,6 +1954,61 @@ impl ID3D11Resource_Impl for Texture2D_Impl {
 }
 
 impl ID3D11DeviceChild_Impl for Texture2D_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11Texture3D_Impl for Texture3D_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE3D_DESC) {
+        let _lock = lock();
+        self.get_desc(pdesc)
+    }
+}
+
+impl ID3D11Resource_Impl for Texture3D_Impl {
+    fn GetType(&self, presourcedimension: *mut D3D11_RESOURCE_DIMENSION) {
+        let _lock = lock();
+        self.get_type(presourcedimension)
+    }
+    fn SetEvictionPriority(&self, evictionpriority: u32) {
+        let _lock = lock();
+        self.set_eviction_priority(evictionpriority)
+    }
+    fn GetEvictionPriority(&self) -> u32 {
+        let _lock = lock();
+        self.get_eviction_priority()
+    }
+}
+
+impl ID3D11DeviceChild_Impl for Texture3D_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)

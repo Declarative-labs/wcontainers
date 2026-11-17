@@ -1,5 +1,5 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
-//! `own_depth_copy`, `own_swap_chain` and `lifetimes`) run as ordinary
+//! `own_depth_copy`, `own_swap_chain`, `own_volumes` and `lifetimes`) run as ordinary
 //! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
 //! beside them, and what each printed compared.
 #![cfg(windows)]
@@ -71,7 +71,7 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     assert_eq!(code, 0, "{text}");
     assert_eq!(
         text,
-        "CreateGeometryShader 0x00000000\nCreateTexture3D 0x00000000\n\
+        "CreateGeometryShader 0x00000000\nCreateTexture2D(dynamic) 0x00000000\n\
          CreateBuffer(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
          CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
     );
@@ -82,7 +82,7 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     // removes the device (DXGI_ERROR_DRIVER_INTERNAL_ERROR).
     assert_eq!(
         ours,
-        "CreateGeometryShader 0x80004001\nCreateTexture3D 0x80004001\n\
+        "CreateGeometryShader 0x80004001\nCreateTexture2D(dynamic) 0x80004001\n\
          CreateBuffer(structured) 0x80004001\nCheckMultisampleQualityLevels(4) 0x00000000 0\n\
          CreateTexture2D(4 samples) 0x80070057\nGetDeviceRemovedReason 0x887a0020\n"
     );
@@ -93,6 +93,18 @@ fn own_edges_read_and_copy_as_direct3d_does() {
     let (code, want) = run("own_edges", &place("edges-system", false));
     assert_eq!(code, 0, "{want}");
     let (code, got) = run("own_edges", &place("edges-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn one_and_three_dimensional_textures_as_direct3d_does() {
+    let (code, want) = run("own_volumes", &place("volumes-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_volumes", &place("volumes-ours", true));
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
         assert_eq!(w, g, "the first line that differs");
