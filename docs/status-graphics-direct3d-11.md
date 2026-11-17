@@ -570,6 +570,28 @@ context states), empty input layouts (test_create_input_layout), staging depth w
 
 ## What comes next (G4b and on)
 
+After G4 run 6, first, once the desktop answers again: `resume.sh g4r7` from this tree (lint of
+both builds, front tests, library tests, every Direct3D 11 scene, Wine's d3d11 file, every scene
+through the WebGL 2 build). The code commits from b1d136f through c3918dd and b37e2ec have never
+been built on Windows; fix what fails, then push (the branch is about 118 commits ahead of
+origin). Then:
+- Wine's d3d11 file: update the table of files and confirm or correct each line of the gap list
+  draft (Wine's Direct3D 11 tests through ours). test_update_subresource's refused write was most
+  likely a BC7 box whose block rows lie over each other (row pitch 16 for rows of 32 bytes), which
+  b1d136f's repacking serves; check it passes.
+- The WebGL 2 build: check ANGLE starts in a process holding our d3d11.dll (its calls now go to the
+  system's), that devices come out at 10_0, and run the scenes through it. The two WebGL 2 listed
+  cases need programs of their own: independent blends on several targets with
+  `WEBGL_OFF=OES_draw_buffers_indexed`, and a shader using `GetDimensions` (`resinfo`); no rig
+  shader uses `GetDimensions`, so write the HLSL and compile it with fxc on the desktop (or ask
+  the rig track for a scene), and compare each with real Direct3D at 10_0.
+- The pass tracker (below): not started. It replaces open_pass, end_pass, add_clear's bound case,
+  run_clears' closing and the occlusion stretches; stretches never overlap, so each stretch maps
+  onto one tracker query (`begin_query` at its start, `end_query` at its end, the indices given to
+  every predicate running in it). Two things to solve first: the tracker's occlusion set has a
+  fixed count and fails when full, which today's per-pass sets avoid; and a fitted pass needs the
+  draw's raster block with the scissor test on (a twin raster block, as samplers have twins).
+
 After G4 run 5, first, once the desktop answers again: run 4's list below, where item 1 now also
 covers 1034db1, bf33687, f114492 and 34f07fa (run `resume.sh g4r6`, which does items 1 and 2 in one go), and the
 rig's `draws` scene for the bases. Then, still open from section 12's list and needing more than
@@ -694,11 +716,19 @@ compute, then the geometry and stream output slow paths; then the three real pro
 
 ## How to run
 
-All of it in one command (G4 run 5, never run yet): the scratch script `resume.sh <label>
-[steps]` runs lint, the front tests, the library tests, every Direct3D 11 scene through our
-library and Wine's d3d11 file, in that order (steps `lint front lib scenes wine`, default all),
-each step's output in scratch logs/<label>-<step>.log, printing each exit code and last lines. The
-steps are the commands below.
+All of it in one command (never run yet): the scratch script `resume.sh <label> [steps]` runs
+lint (both builds), the front tests, the library tests, every Direct3D 11 scene through our
+library, Wine's d3d11 file and every scene through the WebGL 2 build, in that order (steps `lint
+front lib scenes wine webgl`, default all), each step's output in scratch
+logs/<label>-<step>.log, printing each exit code and last lines. The steps are the commands below.
+
+- The WebGL 2 build (G4 run 6): `cargo build -p wcontainers-directx --features webgl
+  --target-dir %CARGO_TARGET_DIR%\webgl` on the desktop (its own target directory, so the two
+  builds' wcontainers_directx.dll do not replace each other), then the scenes with `--dll
+  'd3d11.dll=%CARGO_TARGET_DIR%\webgl\debug\wcontainers_directx.dll'`. It loads ANGLE from
+  `WEBGL_ANGLE_DIR` (default C:\wc\tools\angle-mozangle-0.7.1) and takes the WebGL extensions
+  `WEBGL_OFF` lists as missing. Check-only on the Mac: `wincheck/check.sh clippy --features
+  wcontainers-directx/webgl -- -D warnings`.
 
 Without the desktop (G4 run 4): a check-only cross build on the Mac proves the Windows library
 compiles and is clippy-clean, nothing more (nothing links or runs). The script
@@ -719,7 +749,7 @@ caught by it, so it does see that code.
 
 From the checkout root on the Mac (the desktop does all building and testing). The desktop's
 checkout needs the shaders crate's submodules, so commands start with `git submodule update --init --recursive -q`.
-- Front tests (recording back end, no GPU), 22 tests:
+- Front tests (recording back end, no GPU), 30 tests:
   `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-direct3d-11"`.
 - Library tests (COM behaviour, the forwarder, threads, our programs; they make real devices and a
   window, so a GPU job on the hidden desktop), 22 tests:
