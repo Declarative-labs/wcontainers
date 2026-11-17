@@ -1,4 +1,5 @@
-//! The pipeline-state scenes of Direct3D 11 (blending, depth, stencil, render target formats) drawn
+//! The pipeline-state scenes of Direct3D 11 (blending, depth, stencil, render target formats,
+//! samplers) drawn
 //! through Direct3D
 //! 12: the same cells, each combination of state made into its own pipeline state object.
 
@@ -13,15 +14,16 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::core::s;
+use windows::core::{Interface, s};
 
-use super::{Gpu, bytecode, element, tex2d_desc};
+use super::{Gpu, bytecode, element, footprint_location, tex2d_desc, texture_location, transition};
 use crate::d3d11::scenes::blend::{self, CONSTANT, no_blend};
 use crate::d3d11::scenes::depth::FUNCS;
 use crate::d3d11::scenes::formats::{FORMATS, Kind};
+use crate::d3d11::scenes::samplers;
 use crate::d3d11::scenes::stencil::{op, stencil, triangle};
 use crate::d3d11::scenes::{Colored, depth_test, hue, quad};
-use crate::d3d11::{cell, solid};
+use crate::d3d11::{cell, checker, solid};
 use crate::dxil;
 use crate::output::Output;
 
@@ -41,6 +43,8 @@ struct Immediate<'a> {
     raster: D3D11_RASTERIZER_DESC,
     target: DXGI_FORMAT,
     depth_format: DXGI_FORMAT,
+    /// Descriptor tables set after the root signature at each draw: parameter and handle.
+    tables: Vec<(u32, D3D12_GPU_DESCRIPTOR_HANDLE)>,
     pipelines: RefCell<HashMap<String, ID3D12PipelineState>>,
 }
 
@@ -82,6 +86,7 @@ impl<'a> Immediate<'a> {
             raster: solid(),
             target: DXGI_FORMAT_R8G8B8A8_UNORM,
             depth_format: DXGI_FORMAT_UNKNOWN,
+            tables: Vec::new(),
             pipelines: RefCell::new(HashMap::new()),
         })
     }
@@ -181,9 +186,10 @@ impl<'a> Immediate<'a> {
             desc.DepthStencilState.DepthEnable = false.into();
             desc.DepthStencilState.StencilEnable = false.into();
         }
-        // Debug's text of each block (and the shaders' addresses) names the combination.
+        // Debug's text of each block (and the shaders' and root's addresses) names the combination.
         let key = format!(
-            "{:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+            "{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}",
+            self.root.as_raw(),
             self.vs.as_ptr(),
             self.ps.as_ptr(),
             self.blend,
@@ -206,6 +212,9 @@ impl<'a> Immediate<'a> {
         unsafe {
             list.SetPipelineState(&self.pipeline()?);
             list.SetGraphicsRootSignature(&self.root);
+            for &(parameter, handle) in &self.tables {
+                list.SetGraphicsRootDescriptorTable(parameter, handle);
+            }
             list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
         Ok(())
@@ -656,5 +665,308 @@ pub fn formats(gpu: &Gpu) -> Result<Vec<Output>> {
     im.colored = true;
     im.draw_colored(&quad(-0.8, -0.8, 0.8, 0.8, 0.5, 0.5, [0.2, 0.9, 0.5, 0.5]))?;
     outputs.push(Output::picture("srgb_blend", gpu.read(&texture, 0, RT)?));
+    Ok(outputs)
+}
+
+fn sampler12(d: &D3D11_SAMPLER_DESC) -> D3D12_SAMPLER_DESC {
+    D3D12_SAMPLER_DESC {
+        Filter: D3D12_FILTER(d.Filter.0),
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE(d.AddressU.0),
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE(d.AddressV.0),
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE(d.AddressW.0),
+        MipLODBias: d.MipLODBias,
+        MaxAnisotropy: d.MaxAnisotropy,
+        ComparisonFunc: D3D12_COMPARISON_FUNC(d.ComparisonFunc.0),
+        BorderColor: d.BorderColor,
+        MinLOD: d.MinLOD,
+        MaxLOD: d.MaxLOD,
+    }
+}
+
+/// Records copies of every level of a texture now in the copy destination state, each level's
+/// texels packed in rows.
+fn fill_levels(gpu: &Gpu, texture: &ID3D12Resource, levels: &[Vec<u8>]) -> Result<()> {
+    let desc = unsafe { texture.GetDesc() };
+    let n = levels.len();
+    let mut footprints = vec![D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); n];
+    let mut rows = vec![0u32; n];
+    let mut row_sizes = vec![0u64; n];
+    let mut total = 0;
+    unsafe {
+        gpu.device.GetCopyableFootprints(
+            &desc,
+            0,
+            n as u32,
+            0,
+            Some(footprints.as_mut_ptr()),
+            Some(rows.as_mut_ptr()),
+            Some(row_sizes.as_mut_ptr()),
+            Some(&mut total),
+        )
+    };
+    let mut staged = vec![0u8; total as usize];
+    for (i, bytes) in levels.iter().enumerate() {
+        let (f, size) = (footprints[i], row_sizes[i] as usize);
+        for y in 0..rows[i] as usize {
+            let at = f.Offset as usize + y * f.Footprint.RowPitch as usize;
+            staged[at..at + size].copy_from_slice(&bytes[y * size..(y + 1) * size]);
+        }
+    }
+    let upload = gpu.upload(&staged)?;
+    for (i, &footprint) in footprints.iter().enumerate() {
+        unsafe {
+            gpu.list.CopyTextureRegion(
+                &texture_location(texture, i as u32),
+                0,
+                0,
+                0,
+                &footprint_location(&upload, footprint),
+                None,
+            )
+        };
+    }
+    gpu.keep(&upload);
+    Ok(())
+}
+
+/// A texture of RGBA8 levels, filled, in the pixel shader resource state, with its view at
+/// `index` of `heap`.
+fn sampled_texture(
+    gpu: &Gpu,
+    size: u32,
+    levels: &[Vec<u8>],
+    heap: &ID3D12DescriptorHeap,
+    index: u32,
+) -> Result<ID3D12Resource> {
+    let mut desc = tex2d_desc(
+        size,
+        size,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D12_RESOURCE_FLAG_NONE,
+    );
+    desc.MipLevels = levels.len() as u16;
+    let texture = gpu.committed(
+        D3D12_HEAP_TYPE_DEFAULT,
+        &desc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        None,
+    )?;
+    fill_levels(gpu, &texture, levels)?;
+    unsafe {
+        gpu.list.ResourceBarrier(&[transition(
+            &texture,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )]);
+        gpu.device
+            .CreateShaderResourceView(&texture, None, gpu.cpu(heap, index));
+    }
+    Ok(texture)
+}
+
+/// Direct3D 11's samplers scene: one cell per sampler (from the same tables), every filter,
+/// address mode with a border colour, gathering, and comparison sampling of a depth texture.
+pub fn samplers_scene(gpu: &Gpu) -> Result<Vec<Output>> {
+    let views = gpu.descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 3, true)?;
+    let ranges = [
+        D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 1,
+            ..Default::default()
+        },
+        D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+            NumDescriptors: 2,
+            ..Default::default()
+        },
+    ];
+    let table = |range: &D3D12_DESCRIPTOR_RANGE| D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                NumDescriptorRanges: 1,
+                pDescriptorRanges: range,
+            },
+        },
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+    };
+    let parameters = [
+        D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                Constants: D3D12_ROOT_CONSTANTS {
+                    ShaderRegister: 0,
+                    RegisterSpace: 0,
+                    Num32BitValues: 4,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        },
+        table(&ranges[0]),
+        table(&ranges[1]),
+    ];
+    let root = gpu.root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
+        Version: D3D_ROOT_SIGNATURE_VERSION_1_0,
+        Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
+            Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
+                NumParameters: parameters.len() as u32,
+                pParameters: parameters.as_ptr(),
+                Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+                ..Default::default()
+            },
+        },
+    })?;
+    let mut im = Immediate::new(gpu)?;
+
+    // The same textures: six levels each a checker of its own colour, an 8 by 8 checker, and a
+    // depth texture holding a slope.
+    let levels: Vec<Vec<u8>> = (0..6).map(|m| checker(32 >> m, 32 >> m, m, 6)).collect();
+    let mips = sampled_texture(gpu, 32, &levels, &views, 0)?;
+    let small = sampled_texture(gpu, 8, &[checker(8, 8, 1, 3)], &views, 1)?;
+    let clear = D3D12_CLEAR_VALUE {
+        Format: DXGI_FORMAT_D32_FLOAT,
+        Anonymous: D3D12_CLEAR_VALUE_0 {
+            DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
+                Depth: 1.0,
+                Stencil: 0,
+            },
+        },
+    };
+    let depth = gpu.committed(
+        D3D12_HEAP_TYPE_DEFAULT,
+        &tex2d_desc(
+            32,
+            32,
+            DXGI_FORMAT_R32_TYPELESS,
+            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+        ),
+        DEPTH,
+        Some(&clear),
+    )?;
+    let dsv = gpu.descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, false)?;
+    unsafe {
+        gpu.device.CreateDepthStencilView(
+            &depth,
+            Some(&D3D12_DEPTH_STENCIL_VIEW_DESC {
+                Format: DXGI_FORMAT_D32_FLOAT,
+                ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+                ..Default::default()
+            }),
+            gpu.cpu(&dsv, 0),
+        )
+    };
+    im.begin(None, Some(&dsv), DXGI_FORMAT_D32_FLOAT, 32, 32);
+    im.depth = depth_test(D3D11_COMPARISON_ALWAYS, true);
+    im.draw_colored(&quad(-0.8, -1.0, 1.0, 0.7, 0.05, 0.95, [1.0; 4]))?;
+    let mut view = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_R32_FLOAT,
+        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        ..Default::default()
+    };
+    view.Anonymous.Texture2D.MipLevels = 1;
+    unsafe {
+        gpu.list.ResourceBarrier(&[transition(
+            &depth,
+            DEPTH,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )]);
+        gpu.device
+            .CreateShaderResourceView(&depth, Some(&view), gpu.cpu(&views, 2));
+    }
+    gpu.submit()?;
+    let _textures = (mips, small, depth);
+
+    im.root = root;
+    im.depth = depth_test(D3D11_COMPARISON_ALWAYS, false);
+    im.vs = dxil!("common.vs_full");
+    im.colored = false;
+    let mut outputs = Vec::new();
+    for (part, ps, texture, columns, size, table) in [
+        (
+            "filters",
+            dxil!("samplers.ps_sample"),
+            0,
+            4,
+            64,
+            samplers::filters(),
+        ),
+        (
+            "address",
+            dxil!("samplers.ps_sample"),
+            1,
+            5,
+            48,
+            samplers::address(),
+        ),
+        (
+            "gather",
+            dxil!("samplers.ps_gather"),
+            1,
+            5,
+            48,
+            samplers::address(),
+        ),
+        (
+            "compare",
+            dxil!("samplers.ps_compare"),
+            2,
+            4,
+            48,
+            samplers::compare(),
+        ),
+        (
+            "compare_zero",
+            dxil!("samplers.ps_compare_zero"),
+            2,
+            4,
+            48,
+            samplers::compare(),
+        ),
+    ] {
+        // Each cell's sampler in both of its table's slots (s0 and s1).
+        let heap = gpu.descriptor_heap(
+            D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+            2 * table.len() as u32,
+            true,
+        )?;
+        for (i, desc) in table.iter().enumerate() {
+            for k in 0..2 {
+                unsafe {
+                    gpu.device
+                        .CreateSampler(&sampler12(desc), gpu.cpu(&heap, 2 * i as u32 + k))
+                };
+            }
+        }
+        let rows = (table.len() as u32).div_ceil(columns);
+        let (target, rtv) = gpu.target(columns * size, rows * size, DXGI_FORMAT_R8G8B8A8_UNORM)?;
+        im.begin(
+            Some(&rtv),
+            None,
+            DXGI_FORMAT_UNKNOWN,
+            columns * size,
+            rows * size,
+        );
+        im.ps = ps;
+        unsafe {
+            gpu.list
+                .SetDescriptorHeaps(&[Some(views.clone()), Some(heap.clone())])
+        };
+        for i in 0..table.len() as u32 {
+            let viewport = cell(i, columns, size as f32);
+            im.viewport(viewport);
+            im.tables = vec![(1, gpu.gpu(&views, texture)), (2, gpu.gpu(&heap, 2 * i))];
+            im.draw(
+                3,
+                [
+                    viewport.TopLeftX,
+                    viewport.TopLeftY,
+                    viewport.Width,
+                    viewport.Height,
+                ],
+            )?;
+        }
+        outputs.push(Output::picture(part, gpu.read(&target, 0, RT)?));
+    }
     Ok(outputs)
 }

@@ -16,7 +16,7 @@ mod mips;
 mod msaa;
 mod queries;
 mod raster;
-mod samplers;
+pub(crate) mod samplers;
 pub(crate) mod stencil;
 mod streamout;
 mod swapchain;

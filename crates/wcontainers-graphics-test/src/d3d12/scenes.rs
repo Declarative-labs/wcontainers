@@ -34,6 +34,7 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("depth", super::states::depth),
     ("stencil", super::states::stencil_scene),
     ("formats", super::states::formats),
+    ("samplers", super::states::samplers_scene),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {
