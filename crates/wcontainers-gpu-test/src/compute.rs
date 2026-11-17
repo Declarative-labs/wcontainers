@@ -169,7 +169,10 @@ impl Recorder {
             for (buffer, start, end) in self.draw_reads(call, &state).map_err(Ok)? {
                 self.touch(buffer, start, end);
             }
-            self.touch_bound(&state.sets).map_err(Ok)?;
+            // The bound buffers are among the reads; the bound textures are not.
+            for (texture, sub) in self.bound_subresources(&state.sets).map_err(Ok)? {
+                self.touch_in(texture, sub, 0, u64::MAX);
+            }
         }
         let outputs = varyings(&state.vertex);
         if targets.len() > 1 && targets.len() != outputs {

@@ -14,6 +14,7 @@ fn ids(@builtin(global_invocation_id) g: vec3<u32>, @builtin(local_invocation_in
 }
 @compute @workgroup_size(512, 1, 1) fn wide() { out[0] = 1u; }
 @compute @workgroup_size(16, 16, 2) fn many() { out[0] = 1u; }
+@compute @workgroup_size(1, 1, 65) fn deep() { out[0] = 1u; }
 var<workgroup> shared_words: array<u32, 4>;
 @compute @workgroup_size(1, 1, 1) fn shares() {
     shared_words[0] = 1u;
@@ -27,6 +28,14 @@ struct VOut {
 @vertex fn vs(@location(0) v: vec2<f32>, @builtin(vertex_index) i: u32,
               @builtin(instance_index) k: u32) -> VOut {
     return VOut(vec4<f32>(v, 0.5, 1.0), v, i + 10u * k);
+}
+@group(0) @binding(2) var<uniform> shift: vec4<f32>;
+@vertex fn vs_reads(@location(0) v: vec2<f32>, @builtin(vertex_index) i: u32) -> VOut {
+    return VOut(vec4<f32>(v, 0.5, 1.0), v + shift.xy, i);
+}
+@group(0) @binding(32) var texels: texture_2d<f32>;
+@vertex fn vs_loads(@location(0) v: vec2<f32>, @builtin(vertex_index) i: u32) -> VOut {
+    return VOut(vec4<f32>(v, 0.5, 1.0), v + textureLoad(texels, vec2<i32>(0, 0), 0).xy, i);
 }
 @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 ";
@@ -256,7 +265,8 @@ fn dispatches_keep_to_their_rules() {
 #[test]
 fn compute_programs_keep_to_the_compute_limits() {
     let mut r = Recorder::new();
-    for entry in ["wide", "many"] {
+    // Past the invocations in all, and past one axis alone.
+    for entry in ["wide", "many", "deep"] {
         assert_eq!(
             compute(&mut r, entry),
             Err(GpuError::Invalid("a workgroup past the compute limits")),
@@ -371,7 +381,10 @@ impl Strip {
                 depth_or_layers: 1,
                 mip_levels: 1,
                 samples: 1,
-                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+                usage: TextureUsage::RENDER
+                    | TextureUsage::SAMPLE
+                    | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST,
                 cube: false,
                 reinterpret: false,
             })
@@ -427,10 +440,24 @@ impl Strip {
         topology: Topology,
         rasterize: bool,
     ) -> Result<(), GpuError> {
+        self.capture_from(targets, topology, rasterize, Inputs::default())
+    }
+
+    /// Captures as [`Strip::capture`] with `inputs` in place of the strip's own.
+    fn capture_from(
+        &mut self,
+        targets: &[BufferRange<&Id>],
+        topology: Topology,
+        rasterize: bool,
+        inputs: Inputs,
+    ) -> Result<(), GpuError> {
+        let stream = inputs.stream.unwrap_or(self.vertices);
+        let program = inputs.program.unwrap_or(self.program);
         let streams = [Some(VertexBinding {
-            buffer: &self.vertices,
+            buffer: &stream,
             offset: 0,
         })];
+        let immediates = vec![0; inputs.immediates];
         let viewport = [Viewport {
             x: 0,
             y: 0,
@@ -440,12 +467,12 @@ impl Strip {
             max_depth: 1.0f32.to_bits(),
         }];
         let call = DrawCall {
-            program: &self.program,
+            program: &program,
             blend: &self.blend,
             depth_stencil: &self.depth,
             raster: &self.raster,
             vertex_layout: &self.layout,
-            bindings: [None; MAX_BINDING_SETS],
+            bindings: [inputs.set.as_ref(), None, None, None],
             vertex_buffers: &streams,
             index: None,
             topology,
@@ -454,7 +481,7 @@ impl Strip {
             scissors: &[],
             blend_constant: [0; 4],
             stencil_reference: [0; 2],
-            immediates: &[],
+            immediates: &immediates,
             range: DrawRange::Vertices {
                 first: 0,
                 count: 4,
@@ -464,6 +491,40 @@ impl Strip {
         };
         self.r.capture_vertices(&call, targets, rasterize)
     }
+}
+
+/// What a capture takes in place of the strip's own: a program, a binding set, the stream's buffer,
+/// and bytes of immediates.
+#[derive(Default)]
+struct Inputs {
+    program: Option<Id>,
+    set: Option<Id>,
+    stream: Option<Id>,
+    immediates: usize,
+}
+
+/// The program reading a uniform at binding 2, and a set binding a buffer there for `stages`.
+fn reading(s: &mut Strip, stages: StageSet) -> (Id, Id, Id) {
+    let v = shader(&mut s.r, "vs_reads", ShaderStage::Vertex);
+    let program =
+        s.r.create_program(&Program::Render {
+            vertex: &v,
+            fragment: None,
+        })
+        .unwrap();
+    let uniform = buffer(&mut s.r, 16, BufferUsage::UNIFORM);
+    let set =
+        s.r.create_binding_set(&[BindingEntry {
+            binding: 2,
+            stages,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &uniform,
+                offset: 0,
+                size: 16,
+            }),
+        }])
+        .unwrap();
+    (program, set, uniform)
 }
 
 fn whole(buffer: &Id, size: u64) -> BufferRange<&Id> {
@@ -567,6 +628,79 @@ fn captures_write_each_vertex_of_each_primitive_in_order() {
         assert!(s.r.violations[0].starts_with("a NoOverwrite write over bytes of buffer"));
         s.r.violations.clear();
     }
+    // The same for a buffer the capture's binding set binds.
+    let (program, set, uniform) = reading(&mut s, StageSet::VERTEX);
+    let f = s.r.submit();
+    s.r.wait_fence(&f);
+    s.capture_from(
+        &[whole(&one, 144)],
+        Topology::TriangleStrip,
+        false,
+        Inputs {
+            program: Some(program),
+            set: Some(set),
+            ..Inputs::default()
+        },
+    )
+    .unwrap();
+    s.r.write_buffer(&uniform, 0, &[0; 4], WriteMode::NoOverwrite);
+    assert_eq!(s.r.violations.len(), 1);
+    assert!(s.r.violations[0].starts_with("a NoOverwrite write over bytes of buffer"));
+    s.r.violations.clear();
+    // And for a texture it binds.
+    let v = shader(&mut s.r, "vs_loads", ShaderStage::Vertex);
+    let program =
+        s.r.create_program(&Program::Render {
+            vertex: &v,
+            fragment: None,
+        })
+        .unwrap();
+    let texture = s.target;
+    let texels = s.view;
+    let set =
+        s.r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::Texture(&texels),
+        }])
+        .unwrap();
+    let f = s.r.submit();
+    s.r.wait_fence(&f);
+    s.capture_from(
+        &[whole(&one, 144)],
+        Topology::TriangleStrip,
+        false,
+        Inputs {
+            program: Some(program),
+            set: Some(set),
+            ..Inputs::default()
+        },
+    )
+    .unwrap();
+    s.r.write_texture(
+        &TextureRegion {
+            texture: &texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: 1,
+            height: 1,
+            depth_or_layers: 1,
+        },
+        &[0; 4],
+        4,
+        1,
+        WriteMode::NoOverwrite,
+    );
+    assert_eq!(s.r.violations.len(), 1, "{:?}", s.r.violations);
+    assert!(
+        s.r.violations[0].contains("NoOverwrite"),
+        "{:?}",
+        s.r.violations
+    );
 }
 
 #[test]
@@ -652,6 +786,48 @@ fn captures_keep_to_their_rules() {
     refused("a capture target the call also uses another way", &|s| {
         let both = s.vertices;
         s.capture(&[whole(&both, 32)], Topology::TriangleStrip, false)
+    });
+    refused("immediates past the limit", &|s| {
+        let t = target(s, 144);
+        s.capture_from(
+            &[whole(&t, 144)],
+            Topology::TriangleStrip,
+            false,
+            Inputs {
+                immediates: 4,
+                ..Inputs::default()
+            },
+        )
+    });
+    refused(
+        "a binding the vertex stage reads whose entry leaves that stage out",
+        &|s| {
+            let t = target(s, 144);
+            let (program, set, _) = reading(s, StageSet::FRAGMENT);
+            s.capture_from(
+                &[whole(&t, 144)],
+                Topology::TriangleStrip,
+                false,
+                Inputs {
+                    program: Some(program),
+                    set: Some(set),
+                    ..Inputs::default()
+                },
+            )
+        },
+    );
+    refused("a vertex stream of buffer", &|s| {
+        let t = target(s, 144);
+        let stream = buffer(&mut s.r, 32, BufferUsage::STORAGE);
+        s.capture_from(
+            &[whole(&t, 144)],
+            Topology::TriangleStrip,
+            false,
+            Inputs {
+                stream: Some(stream),
+                ..Inputs::default()
+            },
+        )
     });
     refused(
         "fans and loops go through draw_fan_or_loop on a back end without FAN_AND_LOOP",
