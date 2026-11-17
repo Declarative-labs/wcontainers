@@ -1569,6 +1569,8 @@ struct Replay<B: Backend> {
     colors: Vec<Descriptor>,
     depth: Option<Descriptor>,
     pass_open: bool,
+    /// The open pass has no targets.
+    empty_pass: bool,
     graphics: bind::RootState,
     compute: bind::RootState,
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
@@ -1611,6 +1613,7 @@ impl<B: Backend> Replay<B> {
             colors: Vec::new(),
             depth: None,
             pass_open: false,
+            empty_pass: false,
             graphics: bind::RootState::default(),
             compute: bind::RootState::default(),
             clears: Vec::new(),
@@ -1628,6 +1631,7 @@ impl<B: Backend> Replay<B> {
             }
             d.backend.end_pass();
             self.pass_open = false;
+            self.empty_pass = false;
             self.pass_heap = None;
         }
     }
@@ -1755,6 +1759,10 @@ impl<B: Backend> Replay<B> {
             }
             Command::IndexBuffer(v) => self.index = *v,
             Command::Viewports(v) => {
+                // A pass with no targets is as large as the viewports it began with.
+                if self.empty_pass {
+                    self.end_pass(d);
+                }
                 let fractional = d.backend.caps().has(Features::FRACTIONAL_VIEWPORT);
                 self.viewports = v
                     .iter()
@@ -2261,7 +2269,24 @@ impl<B: Backend> Replay<B> {
                 });
             }
             if views.is_empty() && depth.is_none() {
-                return Err(Error::NotImplemented("drawing with no render target"));
+                // No targets: the pass covers the viewports, at the pipeline's sample count.
+                let end = |at: u32, size: u32| (f32::from_bits(at) + f32::from_bits(size)).ceil();
+                let (width, height) = self.viewports.iter().fold((1, 1), |(w, h), v| {
+                    (
+                        w.max(end(v.x, v.width) as u32),
+                        h.max(end(v.y, v.height) as u32),
+                    )
+                });
+                let samples = d.pipelines[pid.0 as usize]
+                    .render
+                    .as_ref()
+                    .map_or(1, |r| r.targets.samples);
+                pass.empty = Some(wcontainers_gpu::EmptyPass {
+                    width,
+                    height,
+                    samples,
+                });
+                self.empty_pass = true;
             }
             d.backend.begin_pass(&pass);
             self.pass_open = true;
