@@ -1799,7 +1799,11 @@ each sequence the runner puts back what a sequence can change outside its direct
 ## Measurements
 
 - K4, first run: layer 1 seed 9393002 (the check's failing seed) passed 30000 with the SIGPIPE fix
-  (478.4 s, load 13.5 at the start, 32.2 at the end).
+  (478.4 s, load 13.5 at the start, 32.2 at the end). Fresh seed 4040001 passed 20000 at head
+  52212a9 (312.1 s, load 18.7 at the start, 12.7 at the end).
+- K4, first run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p wcontainers-kernel
+  -p wcontainers-kernel-test`) at head c4e2bc3, beside one layer 1 run: 135 passed, 0 failed, 6
+  ignored (one new: backend file mappings), 7 min 10 s, load 13.6 at the start and 14.0 at the end.
 - K4, first run: messages each kind of call sends to the backend, 100 of each less the setup,
   measured by tests/backend.rs `messages_per_call` (seed 1; opcodes: 1 LOOKUP, 2 FORGET, 3 GETATTR,
   9 MKDIR, 10 UNLINK, 11 RMDIR, 12 RENAME, 14 OPEN, 15 READ, 16 WRITE, 18 RELEASE, 25 FLUSH,
