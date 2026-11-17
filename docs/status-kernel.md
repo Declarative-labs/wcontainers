@@ -5,7 +5,58 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K5 (sockets and network), first run: the check's findings on K4 are fixed first (below); then
-K5's parts as listed under "K5 progress".
+K5's parts as listed under "K5 progress". K5 is not complete; what is left is under Next.
+
+K5 progress (first run):
+- Readiness keyed by event (`Kernel::wake_poll(channel, key)`, Linux's `wake_up_poll`): every
+  wake of an object also hands the event to the epoll items watching it (`epoll::notify`); a plain
+  `wake` is key 0 (any). Pipes wake readers with EPOLLIN and writers with EPOLLOUT, as
+  `pipe_write` and `pipe_read`, so an edge-triggered reader is not told again of a read.
+- eventfd2 (syscall/eventfd.rs, `fs/eventfd.c`): counter, EFD_SEMAPHORE, EFD_NONBLOCK, limits
+  (EINVAL under 8 bytes and for 2^64-1; EAGAIN or a wait at the top), poll (EPOLLERR at the top),
+  read, write, readv, writev, `anon_inode:[eventfd]`; a waiting write's value is copied once.
+- epoll (syscall/epoll.rs, `fs/eventpoll.c`): epoll_create1, epoll_ctl, epoll_pwait,
+  epoll_pwait2. Items keyed by descriptor and open file, held weakly (an item lives while its
+  file does, as `eventpoll_release`), each on its file's wait queue (`epoll::Queue`: an object, or
+  a process's signals for signal descriptors) in Linux's order (others at the head, exclusive ones
+  at the tail). `ep_poll_callback`: one-shot items that fired and events not watched are
+  skipped, the item joins the ready list, one `epoll_wait` waiter wakes (FIFO,
+  `Channel::Epoll`), and an exclusive item that woke one for its event ends the walk.
+  `ep_send_events`: each ready item polled now and reported (the two fields stored apart, padding
+  untouched), one-shot disabled, level-triggered kept at the end, edge-triggered dropped; items
+  not reached stay first. Every check of `do_epoll_ctl` in order (EFAULT, EBADF, EPERM for files
+  with no poll, EPOLLWAKEUP dropped without CAP_BLOCK_SUSPEND, EINVAL, EPOLLEXCLUSIVE's rules,
+  ELOOP by `ep_loop_check` down and up, 4 deep), EEXIST, ENOENT. Waits: timeouts with
+  `select_estimate_accuracy`'s slack, EINTR whatever SA_RESTART says, the pwait forms' mask. An
+  instance polls readable while a ready item is ready. Backend files can be added
+  (`fuse_file_poll`) with the default mask; no POLL is sent.
+- Local sockets (syscall/socket.rs, `net/unix/af_unix.c`): socket, socketpair, bind (paths as
+  socket nodes, mode 0777 less the umask, EADDRINUSE; abstract names per kind of socket, as Linux
+  hashes both; automatic names of five hex digits from a random start, given at connect or send
+  only to a socket with SO_PASSCRED, as 7.0), listen (backlog capped at somaxconn), accept,
+  accept4, connect (stream and sequenced packets: the connecting end is connected at once, the
+  listener's end waits in its backlog, a full backlog waits or EAGAIN; datagram: a default
+  destination), getsockname, getpeername, sendto, recvfrom, sendmsg, recvmsg, shutdown,
+  setsockopt and getsockopt (SO_TYPE, DOMAIN, PROTOCOL, ERROR, ACCEPTCONN, SNDBUF and RCVBUF with
+  Linux's doubling and limits, PASSCRED, PEERCRED, PEEK_OFF, RCVTIMEO, SNDTIMEO, LINGER, flag
+  options kept; others counted "socket option not built", ENOPROTOOPT), read, write, readv,
+  writev. Stream reads join buffers but never past one with descriptors or (with SO_PASSCRED)
+  another writer's credentials; datagram and sequenced packet reads take one message (MSG_TRUNC,
+  MSG_PEEK). Buffer accounting is Linux's: each buffer costs its sender `SKB_TRUESIZE` (head
+  rounded to kmalloc's sizes, the `sk_buff`, whole pages, `unix_stream_sendmsg`'s split); a send
+  waits while what it sent is at least SO_SNDBUF; a datagram receiver not connected back holds
+  `max_dgram_qlen` (10) plus one. Measured equal: 180224 bytes in 4096-byte writes, 233152 in
+  65536-byte writes, 600 in 100-byte writes with the smallest buffer, 11 datagrams. SCM_RIGHTS
+  (up to 253, MSG_CMSG_CLOEXEC, MSG_CTRUNC, descriptors not installed let go) and SCM_CREDENTIALS
+  (`scm_check_creds`; real ids by default). The last descriptor's close (`unix_release_sock`):
+  the name is freed, a stream's other end is shut down and reset (ECONNRESET) if bytes were left
+  unread, a datagram sender finds its peer gone at its next send (ECONNREFUSED, then ENOTCONN),
+  queued connections are released and queued descriptors let go. SIGPIPE without MSG_NOSIGNAL.
+  Poll as `unix_poll` and `unix_dgram_poll`. Families other than AF_UNIX are counted "socket
+  family not built" (EAFNOSUPPORT) for now.
+- Tests: tests/epoll.rs `epoll_and_event_descriptors_match_reference` (guest/epoll.c) and
+  tests/unixsock.rs `local_sockets_match_reference` (guest/unixsock.c) match the reference;
+  tests/saving.rs saves and brings back both programs too.
 
 The K4 check's findings, fixed in K5's first run (each tested against the reference):
 - A call takes its descriptors and paths once (`process::Taken` in each thread: `Kernel::call_file`
@@ -806,7 +857,12 @@ file_getattr, file_setattr, acct, vhangup, swapoff, init_module, finit_module, r
 fspick, fsmount, move_mount, sethostname, setdomainname, fanotify_init. (sethostname and
 setdomainname keep handlers the profile keeps out of reach.)
 
-Missing (40, each counted "system call not implemented" and ENOSYS), with what each needs:
+K5's first run built (not yet moved into the lists above): eventfd2, epoll_create1, epoll_ctl,
+epoll_pwait, epoll_pwait2, socket, socketpair, bind, listen, accept, accept4, connect,
+getsockname, getpeername, sendto, recvfrom, sendmsg, recvmsg, shutdown, setsockopt, getsockopt
+(sockets of AF_UNIX only; the rest counted "socket family not built").
+
+Missing before K5 (40, each counted "system call not implemented" and ENOSYS), with what each needs:
 - Processes: ptrace (tracing is out of phase one).
 - Waiting on many things (K5): epoll_create1, epoll_ctl, epoll_pwait, epoll_pwait2, eventfd2,
   inotify_init1, inotify_add_watch, inotify_rm_watch, fanotify_mark.
@@ -1834,6 +1890,12 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "proc entry not built": the `/proc` entries not built (detail: directory and name index).
 - "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
+- "socket family not built": socket and socketpair of a family other than AF_UNIX (detail: the
+  family; EAFNOSUPPORT) until K5 builds the network.
+- "socket option not built": socket options not built (detail: level times 2^32 plus option;
+  ENOPROTOOPT).
+Notices the backend sends that Linux refuses are counted "backend notice refused" (not a
+refusal of the guest).
 Approximations that are not refusals have their own counters: "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
 written", "vmsplice pages copied", "backend pages written whole", "backend change not seen by
@@ -1843,7 +1905,8 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
-- K5, first run: none so far.
+- K5, first run: none. (The network hooks and `Event::Connected`, `ConnectionReady` and
+  `LookedUp` exist from K0 and are not used yet.)
 
 - K4, fifth run: none.
 - K4, fourth run: none.
@@ -1958,6 +2021,29 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K5, in this order (its first run fixed the K4 check's findings and built epoll, eventfd and
+local sockets):
+1. The network inside the container: AF_INET and AF_INET6 with a loopback interface, TCP
+   (states, connect, listen, accept, shutdown, reset on close with unread bytes) and UDP between
+   processes wholly in the kernel; options as Linux answers them (SOL_SOCKET for inet,
+   IPPROTO_TCP, IPPROTO_IP, IPPROTO_IPV6). Measure the reference first (Docker's bridge: lo and
+   eth0 with 172.17.0.x).
+2. Netlink (NETLINK_ROUTE): RTM_GETLINK, RTM_GETADDR, RTM_GETROUTE dumps as the reference shows
+   lo and eth0 (`ip addr`, musl's `getifaddrs`, `if_nameindex`).
+3. The hooks to the outside (host.rs has connect, send, receive, close, listen, accept,
+   `Event::Connected`, `ConnectionReady`), name lookup through `look_up` (answering packets to
+   the resolver in /etc/resolv.conf), the test host's outside server, and section 12's rule that
+   outside connections read as closed after a restore.
+4. inotify on the in-memory file systems (inotify_init1, inotify_add_watch, inotify_rm_watch);
+   fanotify_mark as the reference refuses it.
+5. Local sockets left: MSG_OOB on streams (counted, EOPNOTSUPP; 7.0 has CONFIG_AF_UNIX_OOB),
+   SO_PASSPIDFD and SCM_PIDFD, SIOCINQ and SIOCOUTQ, sendmmsg and recvmmsg, collecting sockets
+   passed over themselves (such a cycle stays open here), `touch_atime` of a socket node at
+   connect, splice and sendfile into sockets, a socket's `/proc/<pid>/fdinfo`.
+6. Layer 1 with the new calls (socketpair, send and receive, epoll, eventfd), layer 2 programs (a
+   server and client inside; clients talking to a test server outside), and the three
+   end-of-milestone seeds of 20000.
 
 K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
 found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
