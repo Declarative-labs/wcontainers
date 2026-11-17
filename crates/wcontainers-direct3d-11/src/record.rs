@@ -420,6 +420,19 @@ impl Backend for Recorder {
         self.record("end_pass".into());
     }
 
+    fn prepare(&mut self, desc: &PrepareDesc<'_, Self>) {
+        self.record(format!(
+            "prepare program {} blend {} depth {} raster {} layout {} {:?} {:?}",
+            desc.program,
+            desc.blend,
+            desc.depth_stencil,
+            desc.raster,
+            desc.vertex_layout,
+            desc.targets,
+            desc.topology,
+        ));
+    }
+
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
         let streams: Vec<_> = call
             .vertex_buffers

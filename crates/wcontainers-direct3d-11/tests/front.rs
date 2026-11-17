@@ -928,6 +928,53 @@ fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u
 }
 
 #[test]
+fn a_new_pair_is_built_ahead_with_the_states_its_vertex_shader_was_drawn_with() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    dev.draw(3, 0);
+    // The first pair met no drawn state: nothing was built ahead.
+    assert_eq!(dev.prepared_use(), (0, 0));
+    let from = dev.backend.log.len();
+    let ps = dev
+        .create_shader(&corpus("common.ps_color"), SourceStage::Pixel)
+        .unwrap();
+    let prepared: Vec<_> = dev.backend.log[from..]
+        .iter()
+        .filter(|l| l.starts_with("prepare "))
+        .cloned()
+        .collect();
+    assert_eq!(prepared.len(), 1, "{:#?}", &dev.backend.log[from..]);
+    assert_eq!(dev.prepared_use(), (0, 1));
+    dev.ps_set_shader(Some(ps));
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    assert_eq!(dev.prepared_use(), (1, 0));
+    // The draw used the program and states prepared.
+    let draw = dev
+        .backend
+        .log
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("draw "))
+        .unwrap();
+    let head = |l: &str| l.split(" layout ").next().unwrap().to_string();
+    assert_eq!(
+        head(draw).trim_start_matches("draw "),
+        head(&prepared[0]).trim_start_matches("prepare ")
+    );
+}
+
+#[test]
 fn a_back_end_loss_reaches_the_program_where_it_waits() {
     let mut dev = device();
     let desc = BufferDesc {

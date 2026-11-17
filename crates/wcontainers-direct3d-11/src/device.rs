@@ -41,6 +41,8 @@ pub struct Device<B: Backend> {
     /// The vertex stage's helper constants as last written. The front is the only writer of the
     /// back end's data ring, so the block stays as written until the front's next write.
     pub(crate) draw_base: Option<HelperBlock<B>>,
+    /// Combinations drawn and built ahead.
+    pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
@@ -169,6 +171,7 @@ impl<B: Backend> Device<B> {
             programs: HashMap::new(),
             interpolated: HashMap::new(),
             draw_base: None,
+            ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
             zeros: Zeros {
@@ -1305,7 +1308,7 @@ impl<B: Backend> Device<B> {
         let stand_ins = stand_ins(&module.module);
         let id = self.id();
         let vertex = stage == wcontainers_gpu::SourceStage::Vertex;
-        Ok(Rc::new(Shader {
+        let shader = Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             reflection: converted.reflection,
             constant_sizes,
@@ -1315,7 +1318,14 @@ impl<B: Backend> Device<B> {
             } else {
                 Vec::new()
             },
-        }))
+        });
+        if matches!(
+            stage,
+            wcontainers_gpu::SourceStage::Vertex | wcontainers_gpu::SourceStage::Pixel
+        ) {
+            self.build_ahead(&shader, vertex);
+        }
+        Ok(shader)
     }
 
     pub fn create_input_layout(

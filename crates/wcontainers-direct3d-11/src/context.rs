@@ -59,7 +59,7 @@ pub struct ContextState<B: Backend> {
     vs: Option<Rc<Shader<B>>>,
     ps: Option<Rc<Shader<B>>>,
     cs: Option<Rc<Shader<B>>>,
-    layout: Option<Rc<InputLayout>>,
+    pub(crate) layout: Option<Rc<InputLayout>>,
     topology: u32,
     vertex_buffers: Vec<Option<VertexSlot<B>>>,
     index: Option<(Rc<Buffer<B>>, IndexFormat, u32)>,
@@ -71,17 +71,17 @@ pub struct ContextState<B: Backend> {
     samplers: [Vec<Option<Rc<Sampler<B>>>>; STAGES],
     /// Per stage, the unordered access views bound (none for the vertex stage).
     uavs: [Vec<Option<Rc<ShaderView<B>>>>; STAGES],
-    targets: Vec<Option<Rc<View<B>>>>,
-    depth: Option<Rc<View<B>>>,
-    blend: Option<Rc<Blend<B>>>,
+    pub(crate) targets: Vec<Option<Rc<View<B>>>>,
+    pub(crate) depth: Option<Rc<View<B>>>,
+    pub(crate) blend: Option<Rc<Blend<B>>>,
     blend_factor: [f32; 4],
     sample_mask: u32,
-    depth_stencil: Option<Rc<DepthStencil<B>>>,
+    pub(crate) depth_stencil: Option<Rc<DepthStencil<B>>>,
     stencil_ref: u32,
-    raster: Option<Rc<Rasterizer<B>>>,
+    pub(crate) raster: Option<Rc<Rasterizer<B>>>,
     viewports: Vec<Viewport>,
     scissors: Vec<ScissorRect>,
-    sets: [Option<Kept<B, B::BindingSet>>; STAGES],
+    pub(crate) sets: [Option<Kept<B, B::BindingSet>>; STAGES],
     sets_dirty: [bool; STAGES],
     pass_open: bool,
     clears: Vec<PendingClear<B>>,
@@ -830,7 +830,12 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    fn program(&mut self, vs: &Rc<Shader<B>>, ps: Option<&Rc<Shader<B>>>) -> Result<B::Program> {
+    /// The program of a vertex and pixel shader pair, made at its first use.
+    pub(crate) fn program(
+        &mut self,
+        vs: &Rc<Shader<B>>,
+        ps: Option<&Rc<Shader<B>>>,
+    ) -> Result<B::Program> {
         let key = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
         if let Some(p) = self.programs.get(&key) {
             return Ok(p.handle.clone());
@@ -876,16 +881,30 @@ impl<B: Backend> Device<B> {
         Ok(program)
     }
 
-    fn vertex_layout(&mut self) -> Result<B::VertexLayout> {
-        let layout = self.ctx.layout.clone();
+    /// The strides of the bound vertex buffers in the slots the input layout reads, zero elsewhere.
+    pub(crate) fn strides(&self) -> [u32; 32] {
         let mut strides = [0u32; 32];
-        if let Some(l) = &layout {
+        if let Some(l) = &self.ctx.layout {
             for e in &l.elements {
                 strides[e.slot as usize] = self.ctx.vertex_buffers[e.slot as usize]
                     .as_ref()
                     .map_or(0, |v| v.1);
             }
         }
+        strides
+    }
+
+    fn vertex_layout(&mut self) -> Result<B::VertexLayout> {
+        let strides = self.strides();
+        self.vertex_layout_for(self.ctx.layout.clone(), strides)
+    }
+
+    /// The vertex layout block of an input layout read at `strides`, made at its first use.
+    pub(crate) fn vertex_layout_for(
+        &mut self,
+        layout: Option<Rc<InputLayout>>,
+        strides: [u32; 32],
+    ) -> Result<B::VertexLayout> {
         let key = (layout.as_ref().map_or(0, |l| l.id), strides);
         if let Some(v) = self.layouts.get(&key) {
             return Ok(v.handle.clone());
@@ -1604,6 +1623,7 @@ impl<B: Backend> Device<B> {
             self.open_stretch();
         }
 
+        self.count_combination(&vs, ps.as_ref(), topology, samples);
         let ctx = &self.ctx;
         // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots and 16 viewports).
         let vertex_handles: [_; VERTEX_SLOTS] = std::array::from_fn(|slot| {
