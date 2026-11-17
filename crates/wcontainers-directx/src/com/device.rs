@@ -823,6 +823,32 @@ impl Device_Impl {
         let _ = out.write(Some(self.immediate()));
     }
 
+    /// `CreateDeferredContext`: a context recording command lists; it takes no flags.
+    pub(super) fn create_deferred_context(
+        &self,
+        flags: u32,
+        out: OutRef<ID3D11DeviceContext>,
+    ) -> Result<()> {
+        if flags != 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        let c: ID3D11DeviceContext1 = Context::deferred(self.front.clone(), self.me()).into();
+        out.write(Some(c.into()))
+    }
+
+    pub(super) fn create_deferred_context1(
+        &self,
+        flags: u32,
+        out: OutRef<ID3D11DeviceContext1>,
+    ) -> Result<()> {
+        if flags != 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        out.write(Some(
+            Context::deferred(self.front.clone(), self.me()).into(),
+        ))
+    }
+
     /// The immediate context, made at the first call.
     fn immediate(&self) -> ID3D11DeviceContext1 {
         let raw = self.context.get();

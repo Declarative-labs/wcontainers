@@ -543,6 +543,27 @@ impl InputLayout {
     }
 }
 
+/// A deferred context's command list: the calls it recorded, run by `ExecuteCommandList`.
+pub struct CommandList {
+    pub commands: Locked<Rc<Vec<super::context::Command>>>,
+    pub(super) child: Child,
+}
+
+counted!(CommandList => CommandList_Impl { main: ID3D11CommandList, ID3D11CommandList_Vtbl });
+
+impl CommandList {
+    pub fn new(commands: Rc<Vec<super::context::Command>>, device: ID3D11Device) -> Self {
+        CommandList {
+            commands: Locked::new(commands),
+            child: Child::new(device),
+        }
+    }
+
+    pub(super) fn get_context_flags(&self) -> u32 {
+        0
+    }
+}
+
 pub struct VertexShader {
     pub front: Locked<Rc<front::Shader<Chosen>>>,
     pub(super) child: Child,

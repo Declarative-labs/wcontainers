@@ -23,7 +23,7 @@ impl ID3D11Device1_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppdeferredcontext, |ppdeferredcontext| {
-            Err(missing("ID3D11Device1::CreateDeferredContext1"))
+            self.create_deferred_context1(contextflags, ppdeferredcontext)
         })
     }
     fn CreateBlendState1(
@@ -375,7 +375,7 @@ impl ID3D11Device_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         creating(ppdeferredcontext, |ppdeferredcontext| {
-            Err(missing("ID3D11Device::CreateDeferredContext"))
+            self.create_deferred_context(contextflags, ppdeferredcontext)
         })
     }
     fn OpenSharedResource(
@@ -1282,7 +1282,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         restorecontextstate: windows::core::BOOL,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::ExecuteCommandList")
+        self.execute_command_list(pcommandlist, restorecontextstate)
     }
     fn HSSetShaderResources(
         &self,
@@ -1782,7 +1782,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppcommandlist: windows::core::OutRef<ID3D11CommandList>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11DeviceContext::FinishCommandList"))
+        self.finish_command_list(restoredeferredcontextstate, ppcommandlist)
     }
 }
 
@@ -3518,6 +3518,46 @@ impl ID3D11DeviceChild_Impl for PixelShader_Impl {
 impl ID3D11ComputeShader_Impl for ComputeShader_Impl {}
 
 impl ID3D11DeviceChild_Impl for ComputeShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11CommandList_Impl for CommandList_Impl {
+    fn GetContextFlags(&self) -> u32 {
+        let _lock = lock();
+        self.get_context_flags()
+    }
+}
+
+impl ID3D11DeviceChild_Impl for CommandList_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)

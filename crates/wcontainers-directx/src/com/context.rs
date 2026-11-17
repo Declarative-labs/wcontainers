@@ -1,6 +1,7 @@
-//! The immediate context.
+//! The immediate context and deferred contexts.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -8,17 +9,22 @@ use windows::Win32::Foundation::{E_INVALIDARG, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
+use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
 use windows::core::{
     BOOL, ComObjectInner, ComObjectInterface, IUnknownImpl, Interface, OutRef, PCWSTR, Ref, Result,
     implement,
 };
 
-use wcontainers_direct3d_11::desc::{Box3, Viewport};
+use wcontainers_direct3d_11::desc::{Box3, Viewport, map};
 use wcontainers_direct3d_11::object::Resource;
 use wcontainers_direct3d_11::{COMPUTE, PIXEL, UAV_SLOTS, VERTEX, format};
 
 use super::counted::{Counted, Held};
 use super::*;
+
+/// A call a deferred context recorded, run on the device's front when its command list is
+/// executed (as often as it is executed).
+pub type Command = Box<dyn Fn(&mut Front)>;
 
 #[implement(ID3D11DeviceContext1, ID3D11Multithread, ID3DUserDefinedAnnotation)]
 pub struct Context {
@@ -26,6 +32,12 @@ pub struct Context {
     pub(super) child: Child,
     /// The device's pointer to this context, cleared when the context goes.
     slot: Locked<Rc<Cell<*mut c_void>>>,
+    /// For a deferred context, what it recorded since its last command list; none for the
+    /// immediate context.
+    recorded: Option<Locked<RefCell<Vec<Command>>>>,
+    /// A deferred context's mapped subresources (by resource address and subresource): the bytes
+    /// the program writes, written into the resource when the command list runs.
+    staged: RefCell<HashMap<(usize, u32), Staging>>,
     /// What is bound, as the program's objects, for the `Get` methods; holding a library reference
     /// on each, as Direct3D's context does.
     bound: RefCell<Bound>,
@@ -118,15 +130,81 @@ fn load<O: Counted + ComObjectInterface<I>, I: Interface>(
     }
 }
 
+/// A deferred context's copy of a mapped subresource, laid out at its own pitches.
+struct Staging {
+    bytes: Vec<u8>,
+    row_pitch: u32,
+    depth_pitch: u32,
+    /// Bytes of a row and rows of a slice, and slices, of the subresource.
+    rows: (u32, u32, u32),
+}
+
 impl Context {
     pub(super) fn new(front: Shared, device: ID3D11Device, slot: Rc<Cell<*mut c_void>>) -> Self {
         Context {
             front: Locked::new(front),
             child: Child::new(device),
             slot: Locked::new(slot),
+            recorded: None,
+            staged: RefCell::new(HashMap::new()),
             bound: RefCell::new(Bound::default()),
             entered: Cell::new(0),
             protected: Cell::new(false),
+        }
+    }
+
+    /// A deferred context: its command lists start from the default state.
+    pub(super) fn deferred(front: Shared, device: ID3D11Device) -> Self {
+        let mut c = Context::new(front, device, Rc::new(Cell::new(std::ptr::null_mut())));
+        c.recorded = Some(Locked::new(RefCell::new(Vec::new())));
+        c.run("ClearState", |f| {
+            f.clear_state();
+            Ok(())
+        });
+        c
+    }
+
+    fn is_deferred(&self) -> bool {
+        self.recorded.is_some()
+    }
+
+    /// Runs a front call now on the immediate context, or records it on a deferred one. True if it
+    /// ran (or was recorded); an invalid call is dropped and one the front cannot serve removes the
+    /// device, when it runs.
+    fn run(
+        &self,
+        what: &'static str,
+        call: impl Fn(&mut Front) -> wcontainers_direct3d_11::Result<()> + 'static,
+    ) -> bool {
+        match &self.recorded {
+            None => {
+                let mut front = self.front.borrow_mut();
+                let r = call(&mut front);
+                settle(&mut front, what, r)
+            }
+            Some(recorded) => {
+                recorded.borrow_mut().push(Box::new(move |front| {
+                    let r = call(front);
+                    settle(front, what, r);
+                }));
+                true
+            }
+        }
+    }
+}
+
+/// The end of a front call that has no result: an invalid one is dropped, as Direct3D drops it
+/// (its debug layer reports it); one the front cannot serve removes the device. True if it ran.
+fn settle(front: &mut Front, what: &'static str, r: wcontainers_direct3d_11::Result<()>) -> bool {
+    match r {
+        Ok(()) => true,
+        Err(wcontainers_direct3d_11::Error::InvalidArg(why)) => {
+            eprintln!("wcontainers direct3d 11: {what} dropped: {why}");
+            false
+        }
+        Err(e) => {
+            front.lose(e);
+            false
         }
     }
 }
@@ -208,22 +286,6 @@ impl Context {
             .lose(wcontainers_direct3d_11::Error::NotImplemented(what));
     }
 
-    /// The end of a front call that has no result: an invalid one is dropped, as Direct3D drops it
-    /// (its debug layer reports it); one the front cannot serve removes the device. True if it ran.
-    fn quiet(&self, what: &'static str, r: wcontainers_direct3d_11::Result<()>) -> bool {
-        match r {
-            Ok(()) => true,
-            Err(wcontainers_direct3d_11::Error::InvalidArg(why)) => {
-                eprintln!("wcontainers direct3d 11: {what} dropped: {why}");
-                false
-            }
-            Err(e) => {
-                self.front.borrow_mut().lose(e);
-                false
-            }
-        }
-    }
-
     pub(super) fn vs_set_shader(
         &self,
         shader: Ref<ID3D11VertexShader>,
@@ -231,9 +293,11 @@ impl Context {
         _n: u32,
     ) {
         let h = held_one::<_, VertexShader>(&shader);
-        self.front
-            .borrow_mut()
-            .vs_set_shader(h.as_ref().map(|s| (*s.front).clone()));
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("VSSetShader", move |f| {
+            f.vs_set_shader(s.clone());
+            Ok(())
+        });
         self.bound.borrow_mut().vs = h;
     }
 
@@ -244,9 +308,11 @@ impl Context {
         _n: u32,
     ) {
         let h = held_one::<_, PixelShader>(&shader);
-        self.front
-            .borrow_mut()
-            .ps_set_shader(h.as_ref().map(|s| (*s.front).clone()));
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("PSSetShader", move |f| {
+            f.ps_set_shader(s.clone());
+            Ok(())
+        });
         self.bound.borrow_mut().ps = h;
     }
 
@@ -280,11 +346,10 @@ impl Context {
                 })
                 .collect()
         };
-        let r = self
-            .front
-            .borrow_mut()
-            .set_constant_ranges(stage, start, &b, &ranges);
-        if self.quiet("SetConstantBuffers", r) {
+        let r = ranges.clone();
+        if self.run("SetConstantBuffers", move |f| {
+            f.set_constant_ranges(stage, start, &b, &r)
+        }) {
             let mut bound = self.bound.borrow_mut();
             store(&mut bound.constant_buffers[stage], start, h);
             store(&mut bound.constant_ranges[stage], start, ranges);
@@ -405,11 +470,9 @@ impl Context {
     ) {
         let h = held::<_, ShaderResourceView>(list, n);
         let v = fronts(&h, |v| &*v.front);
-        let r = self
-            .front
-            .borrow_mut()
-            .set_shader_resources(stage, start, &v);
-        if self.quiet("SetShaderResources", r) {
+        if self.run("SetShaderResources", move |f| {
+            f.set_shader_resources(stage, start, &v)
+        }) {
             store(&mut self.bound.borrow_mut().resources[stage], start, h);
             self.forget_unbound_resources();
         }
@@ -442,8 +505,7 @@ impl Context {
     ) {
         let h = held::<_, SamplerState>(list, n);
         let s = fronts(&h, |s| &*s.front);
-        let r = self.front.borrow_mut().set_samplers(stage, start, &s);
-        if self.quiet("SetSamplers", r) {
+        if self.run("SetSamplers", move |f| f.set_samplers(stage, start, &s)) {
             store(&mut self.bound.borrow_mut().samplers[stage], start, h);
         }
     }
@@ -466,8 +528,13 @@ impl Context {
         self.set_samplers(PIXEL, start, n, list);
     }
 
-    /// Forgets the shader resources the front unbound: views of a resource now bound as a target.
+    /// Forgets the shader resources the front unbound: views of a resource now bound as a target or
+    /// for unordered access. A deferred context keeps what it was given (the front unbinds them
+    /// when its commands run).
     fn forget_unbound_resources(&self) {
+        if self.is_deferred() {
+            return;
+        }
         let mut gone = Vec::new();
         {
             let front = self.front.borrow();
@@ -485,16 +552,19 @@ impl Context {
 
     pub(super) fn ia_set_input_layout(&self, layout: Ref<ID3D11InputLayout>) {
         let h = held_one::<_, InputLayout>(&layout);
-        self.front
-            .borrow_mut()
-            .ia_set_input_layout(h.as_ref().map(|l| (*l.front).clone()));
+        let l = h.as_ref().map(|l| (*l.front).clone());
+        self.run("IASetInputLayout", move |f| {
+            f.ia_set_input_layout(l.clone());
+            Ok(())
+        });
         self.bound.borrow_mut().layout = h;
     }
 
     pub(super) fn ia_set_primitive_topology(&self, topology: D3D_PRIMITIVE_TOPOLOGY) {
-        self.front
-            .borrow_mut()
-            .ia_set_primitive_topology(topology.0 as u32);
+        self.run("IASetPrimitiveTopology", move |f| {
+            f.ia_set_primitive_topology(topology.0 as u32);
+            Ok(())
+        });
         self.bound.borrow_mut().topology = topology;
     }
 
@@ -518,8 +588,9 @@ impl Context {
             .zip(strides.iter().zip(offsets))
             .map(|(b, (&s, &o))| b.map(|b| (b, s, o)))
             .collect();
-        let r = self.front.borrow_mut().ia_set_vertex_buffers(start, &slots);
-        if self.quiet("IASetVertexBuffers", r) {
+        if self.run("IASetVertexBuffers", move |f| {
+            f.ia_set_vertex_buffers(start, &slots)
+        }) {
             let mut bound = self.bound.borrow_mut();
             let end = (start + n) as usize;
             if bound.vertex_buffers.len() < end {
@@ -538,12 +609,10 @@ impl Context {
         offset: u32,
     ) {
         let h = held_one::<_, Buffer>(&buffer);
-        let r = self.front.borrow_mut().ia_set_index_buffer(
-            h.as_ref().map(|b| (*b.front).clone()),
-            format.0 as u32,
-            offset,
-        );
-        if self.quiet("IASetIndexBuffer", r) {
+        let b = h.as_ref().map(|b| (*b.front).clone());
+        if self.run("IASetIndexBuffer", move |f| {
+            f.ia_set_index_buffer(b.clone(), format.0 as u32, offset)
+        }) {
             self.bound.borrow_mut().index = (h, format, offset);
         }
     }
@@ -558,8 +627,9 @@ impl Context {
         let targets = fronts(&h, |v| &*v.front);
         let hd = held_one::<_, DepthStencilView>(&depth);
         let d = hd.as_ref().map(|v| (*v.front).clone());
-        let r = self.front.borrow_mut().om_set_render_targets(&targets, d);
-        if self.quiet("OMSetRenderTargets", r) {
+        if self.run("OMSetRenderTargets", move |f| {
+            f.om_set_render_targets(&targets, d.clone())
+        }) {
             let old = {
                 let mut bound = self.bound.borrow_mut();
                 (
@@ -580,9 +650,11 @@ impl Context {
     ) {
         let h = held_one::<_, BlendState>(&state);
         let f = (!factor.is_null()).then(|| unsafe { *factor.cast::<[f32; 4]>() });
-        self.front
-            .borrow_mut()
-            .om_set_blend_state(h.as_ref().map(|s| (*s.front).clone()), f, mask);
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("OMSetBlendState", move |front| {
+            front.om_set_blend_state(s.clone(), f, mask);
+            Ok(())
+        });
         self.bound.borrow_mut().blend = (h, f.unwrap_or([1.0; 4]), mask);
     }
 
@@ -592,17 +664,21 @@ impl Context {
         reference: u32,
     ) {
         let h = held_one::<_, DepthStencilState>(&state);
-        self.front
-            .borrow_mut()
-            .om_set_depth_stencil_state(h.as_ref().map(|s| (*s.front).clone()), reference);
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("OMSetDepthStencilState", move |f| {
+            f.om_set_depth_stencil_state(s.clone(), reference);
+            Ok(())
+        });
         self.bound.borrow_mut().depth_stencil = (h, reference);
     }
 
     pub(super) fn rs_set_state(&self, state: Ref<ID3D11RasterizerState>) {
         let h = held_one::<_, RasterizerState>(&state);
-        self.front
-            .borrow_mut()
-            .rs_set_state(h.as_ref().map(|s| (*s.front).clone()));
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("RSSetState", move |f| {
+            f.rs_set_state(s.clone());
+            Ok(())
+        });
         self.bound.borrow_mut().raster = h;
     }
 
@@ -612,6 +688,10 @@ impl Context {
         } else {
             unsafe { std::slice::from_raw_parts(viewports, n as usize) }
         };
+        self.set_viewports(list.to_vec());
+    }
+
+    fn set_viewports(&self, list: Vec<D3D11_VIEWPORT>) {
         let v: Vec<Viewport> = list
             .iter()
             .map(|v| Viewport {
@@ -623,8 +703,11 @@ impl Context {
                 max_depth: v.MaxDepth,
             })
             .collect();
-        self.front.borrow_mut().rs_set_viewports(&v);
-        self.bound.borrow_mut().viewports = list.to_vec();
+        self.run("RSSetViewports", move |f| {
+            f.rs_set_viewports(&v);
+            Ok(())
+        });
+        self.bound.borrow_mut().viewports = list;
     }
 
     pub(super) fn rs_set_scissor_rects(&self, n: u32, rects: *const RECT) {
@@ -633,12 +716,19 @@ impl Context {
         } else {
             unsafe { std::slice::from_raw_parts(rects, n as usize) }
         };
+        self.set_scissor_rects(list.to_vec());
+    }
+
+    fn set_scissor_rects(&self, list: Vec<RECT>) {
         let r: Vec<[i32; 4]> = list
             .iter()
             .map(|r| [r.left, r.top, r.right, r.bottom])
             .collect();
-        self.front.borrow_mut().rs_set_scissor_rects(&r);
-        self.bound.borrow_mut().scissors = list.to_vec();
+        self.run("RSSetScissorRects", move |f| {
+            f.rs_set_scissor_rects(&r);
+            Ok(())
+        });
+        self.bound.borrow_mut().scissors = list;
     }
 
     pub(super) fn clear_render_target_view(
@@ -653,27 +743,39 @@ impl Context {
             return;
         }
         let c = unsafe { *color.cast::<[f32; 4]>() };
-        self.front.borrow_mut().clear_render_target_view(&v, c);
+        self.run("ClearRenderTargetView", move |f| {
+            f.clear_render_target_view(&v, c);
+            Ok(())
+        });
     }
 
     pub(super) fn generate_mips(&self, view: Ref<ID3D11ShaderResourceView>) {
         // A view of a buffer has no levels; Direct3D drops the call.
         if let Some(v) = front_of(&view, |v: &ShaderResourceView| &*v.front)
-            && let Some(v) = v.texture()
+            && let Some(v) = v.texture().cloned()
         {
-            self.front.borrow_mut().generate_mips(v);
+            self.run("GenerateMips", move |f| {
+                f.generate_mips(&v);
+                Ok(())
+            });
         }
     }
 
     pub(super) fn begin(&self, a: Ref<ID3D11Asynchronous>) {
         if let Some(q) = query_of(a.as_ref()) {
-            self.front.borrow_mut().begin_query(&q);
+            self.run("Begin", move |f| {
+                f.begin_query(&q);
+                Ok(())
+            });
         }
     }
 
     pub(super) fn end(&self, a: Ref<ID3D11Asynchronous>) {
         if let Some(q) = query_of(a.as_ref()) {
-            self.front.borrow_mut().end_query(&q);
+            self.run("End", move |f| {
+                f.end_query(&q);
+                Ok(())
+            });
         }
     }
 
@@ -687,6 +789,9 @@ impl Context {
         flags: u32,
     ) -> Result<()> {
         let q = query_of(a.as_ref()).ok_or(E_INVALIDARG)?;
+        if self.is_deferred() {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
         let want = wcontainers_direct3d_11::query::data_size(q.kind).unwrap_or(0);
         if (size != 0 && size != want) || (size != 0 && data.is_null()) {
             return Err(E_INVALIDARG.into());
@@ -719,17 +824,24 @@ impl Context {
         let Some(v) = front_of(&view, |v: &DepthStencilView| &*v.front) else {
             return;
         };
-        self.front
-            .borrow_mut()
-            .clear_depth_stencil_view(&v, flags, depth, stencil);
+        self.run("ClearDepthStencilView", move |f| {
+            f.clear_depth_stencil_view(&v, flags, depth, stencil);
+            Ok(())
+        });
     }
 
     pub(super) fn draw(&self, count: u32, start: u32) {
-        self.front.borrow_mut().draw(count, start);
+        self.run("Draw", move |f| {
+            f.draw(count, start);
+            Ok(())
+        });
     }
 
     pub(super) fn draw_indexed(&self, count: u32, start: u32, base: i32) {
-        self.front.borrow_mut().draw_indexed(count, start, base);
+        self.run("DrawIndexed", move |f| {
+            f.draw_indexed(count, start, base);
+            Ok(())
+        });
     }
 
     pub(super) fn draw_instanced(
@@ -739,9 +851,10 @@ impl Context {
         start: u32,
         first_instance: u32,
     ) {
-        self.front
-            .borrow_mut()
-            .draw_instanced(count, instances, start, first_instance);
+        self.run("DrawInstanced", move |f| {
+            f.draw_instanced(count, instances, start, first_instance);
+            Ok(())
+        });
     }
 
     pub(super) fn draw_indexed_instanced(
@@ -752,13 +865,10 @@ impl Context {
         base: i32,
         first_instance: u32,
     ) {
-        self.front.borrow_mut().draw_indexed_instanced(
-            count,
-            instances,
-            start,
-            base,
-            first_instance,
-        );
+        self.run("DrawIndexedInstanced", move |f| {
+            f.draw_indexed_instanced(count, instances, start, base, first_instance);
+            Ok(())
+        });
     }
 
     pub(super) fn copy_resource(&self, dst: Ref<ID3D11Resource>, src: Ref<ID3D11Resource>) {
@@ -768,8 +878,7 @@ impl Context {
         ) else {
             return;
         };
-        let r = self.front.borrow_mut().copy_resource(&d, &s);
-        self.quiet("CopyResource", r);
+        self.run("CopyResource", move |f| f.copy_resource(&d, &s));
     }
 
     #[allow(clippy::too_many_arguments, reason = "the COM method's own arguments")]
@@ -791,15 +900,9 @@ impl Context {
             return;
         };
         let b = unsafe { src_box.as_ref() }.map(box3);
-        let r = self.front.borrow_mut().copy_subresource_region(
-            &d,
-            dst_sub,
-            [x, y, z],
-            &s,
-            src_sub,
-            b.as_ref(),
-        );
-        self.quiet("CopySubresourceRegion", r);
+        self.run("CopySubresourceRegion", move |f| {
+            f.copy_subresource_region(&d, dst_sub, [x, y, z], &s, src_sub, b.as_ref())
+        });
     }
 
     /// Direct3D 11.1's copy: its flags only promise what the program does not overlap, so it is
@@ -860,7 +963,10 @@ impl Context {
             return self.unserved("ID3D11DeviceContext1::ClearView of rectangles");
         }
         let c = unsafe { *color.cast::<[f32; 4]>() };
-        self.front.borrow_mut().clear_render_target_view(&v, c);
+        self.run("ClearView", move |f| {
+            f.clear_render_target_view(&v, c);
+            Ok(())
+        });
     }
 
     /// `ID3D11Multithread::Enter`: the library's lock, held until `Leave`.
@@ -939,15 +1045,16 @@ impl Context {
             }
         };
         let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
-        let r = self.front.borrow_mut().update_subresource(
-            &d,
-            sub,
-            b.as_ref(),
-            bytes,
-            row_pitch,
-            depth_pitch,
-        );
-        self.quiet("UpdateSubresource", r);
+        if self.is_deferred() {
+            let bytes = bytes.to_vec();
+            self.run("UpdateSubresource", move |f| {
+                f.update_subresource(&d, sub, b.as_ref(), &bytes, row_pitch, depth_pitch)
+            });
+        } else {
+            let mut front = self.front.borrow_mut();
+            let r = front.update_subresource(&d, sub, b.as_ref(), bytes, row_pitch, depth_pitch);
+            settle(&mut front, "UpdateSubresource", r);
+        }
     }
 
     pub(super) fn map(
@@ -963,10 +1070,14 @@ impl Context {
             .and_then(resource_of)
             .ok_or(E_INVALIDARG.into())
             .and_then(|r| {
-                self.front
-                    .borrow_mut()
-                    .map(&r, sub, kind.0 as u32, flags)
-                    .map_err(hresult)
+                if self.is_deferred() {
+                    self.map_deferred(&r, sub, kind.0 as u32)
+                } else {
+                    self.front
+                        .borrow_mut()
+                        .map(&r, sub, kind.0 as u32, flags)
+                        .map_err(hresult)
+                }
             });
         let Some(out) = (unsafe { out.as_mut() }) else {
             return mapped.map(drop);
@@ -989,20 +1100,104 @@ impl Context {
     }
 
     pub(super) fn unmap(&self, resource: Ref<ID3D11Resource>, sub: u32) {
-        if let Some(r) = resource.as_ref().and_then(resource_of) {
+        let Some(r) = resource.as_ref().and_then(resource_of) else {
+            return;
+        };
+        if !self.is_deferred() {
             self.front.borrow_mut().unmap(&r, sub);
+            return;
         }
+        // The bytes written go into the resource, through a map of the immediate context, when
+        // the command list runs.
+        let Some((bytes, row_pitch, depth_pitch, (row, rows, slices))) = self
+            .staged
+            .borrow()
+            .get(&(address(&r), sub))
+            .map(|s| (s.bytes.clone(), s.row_pitch, s.depth_pitch, s.rows))
+        else {
+            return;
+        };
+        self.run("Unmap", move |f| {
+            let m = f.map(&r, sub, map::WRITE_DISCARD, 0)?;
+            for z in 0..slices {
+                for y in 0..rows {
+                    let from = (z * depth_pitch + y * row_pitch) as usize;
+                    let to = (z * m.depth_pitch + y * m.row_pitch) as usize;
+                    // SAFETY: the map hands out its subresource's rows at its pitches.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes[from..][..row as usize].as_ptr(),
+                            m.data.add(to),
+                            row as usize,
+                        )
+                    };
+                }
+            }
+            f.unmap(&r, sub);
+            Ok(())
+        });
+    }
+
+    /// A deferred context's `Map`: of dynamic resources only, discarding (or, after a discard
+    /// in the same command list, not overwriting) into bytes of the context's own.
+    fn map_deferred(
+        &self,
+        r: &Resource<Chosen>,
+        sub: u32,
+        kind: u32,
+    ) -> Result<wcontainers_direct3d_11::Mapped> {
+        let (usage, rows) = match r {
+            Resource::Buffer(b) if sub == 0 => (b.desc.usage, (b.desc.byte_width, 1, 1)),
+            Resource::Texture(t) if sub < t.desc.mip_levels * t.desc.array_size => {
+                let e = t.mip_extent(sub % t.desc.mip_levels);
+                let (row, rows) = format::row_bytes(t.format, e.width, e.height);
+                (t.desc.usage, (row, rows, e.depth_or_layers))
+            }
+            _ => return Err(E_INVALIDARG.into()),
+        };
+        if usage != wcontainers_direct3d_11::desc::usage::DYNAMIC {
+            return Err(E_INVALIDARG.into());
+        }
+        let mut staged = self.staged.borrow_mut();
+        let key = (address(r), sub);
+        let s = match kind {
+            map::WRITE_DISCARD => staged.entry(key).insert_entry(Staging {
+                bytes: vec![0; (rows.0 * rows.1 * rows.2) as usize],
+                row_pitch: rows.0,
+                depth_pitch: rows.0 * rows.1,
+                rows,
+            }),
+            map::WRITE_NO_OVERWRITE => match staged.entry(key) {
+                std::collections::hash_map::Entry::Occupied(s) => s,
+                std::collections::hash_map::Entry::Vacant(_) => {
+                    return Err(E_INVALIDARG.into());
+                }
+            },
+            _ => return Err(E_INVALIDARG.into()),
+        };
+        let s = s.into_mut();
+        Ok(wcontainers_direct3d_11::Mapped {
+            data: s.bytes.as_mut_ptr(),
+            row_pitch: s.row_pitch,
+            depth_pitch: s.depth_pitch,
+        })
     }
 
     pub(super) fn clear_state(&self) {
-        self.front.borrow_mut().clear_state();
+        self.run("ClearState", |f| {
+            f.clear_state();
+            Ok(())
+        });
         // The old bindings are released after the borrow ends: their drops may reach the context.
         let old = std::mem::take(&mut *self.bound.borrow_mut());
         drop(old);
     }
 
+    /// A deferred context's flush does nothing: its work goes when its command list runs.
     pub(super) fn flush(&self) {
-        self.front.borrow_mut().flush();
+        if !self.is_deferred() {
+            self.front.borrow_mut().flush();
+        }
     }
 
     pub(super) fn cs_set_shader(
@@ -1012,9 +1207,11 @@ impl Context {
         _n: u32,
     ) {
         let h = held_one::<_, ComputeShader>(&shader);
-        self.front
-            .borrow_mut()
-            .cs_set_shader(h.as_ref().map(|s| (*s.front).clone()));
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("CSSetShader", move |f| {
+            f.cs_set_shader(s.clone());
+            Ok(())
+        });
         self.bound.borrow_mut().cs = h;
     }
 
@@ -1121,11 +1318,13 @@ impl Context {
     ) {
         let h = held::<_, UnorderedAccessView>(list, n);
         let v = fronts(&h, |v| &*v.front);
-        let counts =
-            (!counts.is_null()).then(|| unsafe { std::slice::from_raw_parts(counts, h.len()) });
-        let r = self.front.borrow_mut().set_uavs(stage, start, &v, counts);
-        if self.quiet("SetUnorderedAccessViews", r) {
+        let counts = (!counts.is_null())
+            .then(|| unsafe { std::slice::from_raw_parts(counts, h.len()) }.to_vec());
+        if self.run("SetUnorderedAccessViews", move |f| {
+            f.set_uavs(stage, start, &v, counts.as_deref())
+        }) {
             store(&mut self.bound.borrow_mut().uavs[stage], start, h);
+            self.forget_unbound_resources();
         }
     }
 
@@ -1195,14 +1394,20 @@ impl Context {
     }
 
     pub(super) fn dispatch(&self, x: u32, y: u32, z: u32) {
-        self.front.borrow_mut().dispatch([x, y, z], None);
+        self.run("Dispatch", move |f| {
+            f.dispatch([x, y, z], None);
+            Ok(())
+        });
     }
 
     pub(super) fn dispatch_indirect(&self, args: Ref<ID3D11Buffer>, offset: u32) {
         let Some(b) = front_of(&args, |b: &Buffer| &*b.front) else {
             return;
         };
-        self.front.borrow_mut().dispatch([0; 3], Some((&b, offset)));
+        self.run("DispatchIndirect", move |f| {
+            f.dispatch([0; 3], Some((&b, offset)));
+            Ok(())
+        });
     }
 
     pub(super) fn clear_unordered_access_view_uint(
@@ -1217,8 +1422,9 @@ impl Context {
             return;
         }
         let values = unsafe { *values.cast::<[u32; 4]>() };
-        let r = self.front.borrow_mut().clear_uav(&v, values, false);
-        self.quiet("ClearUnorderedAccessViewUint", r);
+        self.run("ClearUnorderedAccessViewUint", move |f| {
+            f.clear_uav(&v, values, false)
+        });
     }
 
     pub(super) fn clear_unordered_access_view_float(
@@ -1233,8 +1439,9 @@ impl Context {
             return;
         }
         let values = unsafe { *values.cast::<[f32; 4]>() }.map(f32::to_bits);
-        let r = self.front.borrow_mut().clear_uav(&v, values, true);
-        self.quiet("ClearUnorderedAccessViewFloat", r);
+        self.run("ClearUnorderedAccessViewFloat", move |f| {
+            f.clear_uav(&v, values, true)
+        });
     }
 
     pub(super) fn copy_structure_count(
@@ -1249,8 +1456,9 @@ impl Context {
         ) else {
             return;
         };
-        let r = self.front.borrow_mut().copy_structure_count(&b, offset, &v);
-        self.quiet("CopyStructureCount", r);
+        self.run("CopyStructureCount", move |f| {
+            f.copy_structure_count(&b, offset, &v)
+        });
     }
 
     pub(super) fn vs_get_shader(
@@ -1445,11 +1653,138 @@ impl Context {
     }
 
     pub(super) fn get_type(&self) -> D3D11_DEVICE_CONTEXT_TYPE {
-        D3D11_DEVICE_CONTEXT_IMMEDIATE
+        if self.is_deferred() {
+            D3D11_DEVICE_CONTEXT_DEFERRED
+        } else {
+            D3D11_DEVICE_CONTEXT_IMMEDIATE
+        }
     }
 
     pub(super) fn get_context_flags(&self) -> u32 {
         0
+    }
+
+    /// `FinishCommandList`: what the deferred context recorded becomes a command list. Its next
+    /// list starts from the default state, or from the state it has now if `restore` is true.
+    pub(super) fn finish_command_list(
+        &self,
+        restore: BOOL,
+        out: OutRef<ID3D11CommandList>,
+    ) -> Result<()> {
+        let Some(recorded) = &self.recorded else {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        };
+        let commands = std::mem::take(&mut *recorded.borrow_mut());
+        let list = CommandList::new(Rc::new(commands), self.child.device().clone());
+        self.staged.borrow_mut().clear();
+        self.after_list(restore.as_bool());
+        out.write(Some(list.into()))
+    }
+
+    /// `ExecuteCommandList`: the list's calls run (on a deferred context, are recorded), from the
+    /// default state; then the state is the one before, or the default if `restore` is false.
+    pub(super) fn execute_command_list(&self, list: Ref<ID3D11CommandList>, restore: BOOL) {
+        let Some(commands) = front_of(&list, |l: &CommandList| &*l.commands) else {
+            return;
+        };
+        match &self.recorded {
+            None => {
+                let mut front = self.front.borrow_mut();
+                for c in commands.iter() {
+                    c(&mut front);
+                }
+            }
+            Some(recorded) => recorded.borrow_mut().push(Box::new(move |front| {
+                for c in commands.iter() {
+                    c(front);
+                }
+            })),
+        }
+        self.after_list(restore.as_bool());
+    }
+
+    /// The state after a command list is made or run: the context's own again if `restore`,
+    /// otherwise the default.
+    fn after_list(&self, restore: bool) {
+        self.run("ClearState", |f| {
+            f.clear_state();
+            Ok(())
+        });
+        if restore {
+            self.reapply();
+        } else {
+            let old = std::mem::take(&mut *self.bound.borrow_mut());
+            drop(old);
+        }
+    }
+
+    /// Binds again everything the context holds, on a front whose state was cleared.
+    fn reapply(&self) {
+        let (viewports, scissors) = {
+            let b = self.bound.borrow();
+            let vs = b.vs.as_ref().map(|s| (*s.front).clone());
+            let ps = b.ps.as_ref().map(|s| (*s.front).clone());
+            let cs = b.cs.as_ref().map(|s| (*s.front).clone());
+            self.run("VSSetShader", move |f| {
+                f.vs_set_shader(vs.clone());
+                f.ps_set_shader(ps.clone());
+                f.cs_set_shader(cs.clone());
+                Ok(())
+            });
+            let layout = b.layout.as_ref().map(|l| (*l.front).clone());
+            let topology = b.topology.0 as u32;
+            let slots: Vec<_> = b
+                .vertex_buffers
+                .iter()
+                .map(|(h, stride, offset)| {
+                    h.as_ref().map(|h| ((*h.front).clone(), *stride, *offset))
+                })
+                .collect();
+            let index = b.index.0.as_ref().map(|h| (*h.front).clone());
+            let (format, offset) = (b.index.1.0 as u32, b.index.2);
+            self.run("IASetVertexBuffers", move |f| {
+                f.ia_set_input_layout(layout.clone());
+                f.ia_set_primitive_topology(topology);
+                f.ia_set_vertex_buffers(0, &slots)?;
+                f.ia_set_index_buffer(index.clone(), format, offset)
+            });
+            let targets = fronts(&b.targets, |v| &*v.front);
+            let depth = b.depth.as_ref().map(|v| (*v.front).clone());
+            self.run("OMSetRenderTargets", move |f| {
+                f.om_set_render_targets(&targets, depth.clone())
+            });
+            for stage in [VERTEX, PIXEL, COMPUTE] {
+                let buffers = fronts(&b.constant_buffers[stage], |c| &*c.front);
+                let ranges: Vec<_> = (0..buffers.len())
+                    .map(|i| b.constant_ranges[stage].get(i).copied().flatten())
+                    .collect();
+                let views = fronts(&b.resources[stage], |v| &*v.front);
+                let samplers = fronts(&b.samplers[stage], |s| &*s.front);
+                let uavs = fronts(&b.uavs[stage], |u| &*u.front);
+                self.run("SetShaderResources", move |f| {
+                    if stage != VERTEX {
+                        f.set_uavs(stage, 0, &uavs, None)?;
+                    }
+                    f.set_constant_ranges(stage, 0, &buffers, &ranges)?;
+                    f.set_shader_resources(stage, 0, &views)?;
+                    f.set_samplers(stage, 0, &samplers)
+                });
+            }
+            let blend = b.blend.0.as_ref().map(|s| (*s.front).clone());
+            let (factor, mask) = (b.blend.1, b.blend.2);
+            let depth_stencil = b.depth_stencil.0.as_ref().map(|s| (*s.front).clone());
+            let reference = b.depth_stencil.1;
+            let raster = b.raster.as_ref().map(|s| (*s.front).clone());
+            self.run("OMSetBlendState", move |f| {
+                f.om_set_blend_state(blend.clone(), Some(factor), mask);
+                f.om_set_depth_stencil_state(depth_stencil.clone(), reference);
+                f.rs_set_state(raster.clone());
+                Ok(())
+            });
+            (b.viewports.clone(), b.scissors.clone())
+        };
+        self.set_viewports(viewports);
+        self.set_scissor_rects(scissors);
     }
 }
 
@@ -1492,6 +1827,14 @@ fn get_list<T: Copy + Default>(list: &[T], count: *mut u32, out: *mut T) {
     }
     for i in 0..*count as usize {
         unsafe { out.add(i).write(list.get(i).copied().unwrap_or_default()) };
+    }
+}
+
+/// A resource's address, which names it among mapped subresources.
+fn address(r: &Resource<Chosen>) -> usize {
+    match r {
+        Resource::Buffer(b) => Rc::as_ptr(b) as usize,
+        Resource::Texture(t) => Rc::as_ptr(t) as usize,
     }
 }
 
