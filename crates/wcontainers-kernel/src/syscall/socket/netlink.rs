@@ -264,6 +264,7 @@ pub(super) fn send(
             sender: alloc::rc::Weak::new(),
             source: None,
             arrival: None,
+            time: None,
         };
         socket.borrow_mut().queue.push_back(packet);
     }

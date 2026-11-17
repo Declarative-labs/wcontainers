@@ -76,6 +76,8 @@ struct Packet {
     /// Where an internet datagram came from, and what its header and route said.
     source: Option<inet::Endpoint>,
     arrival: Option<inet::Arrival>,
+    /// When it came, for a receiver that asked for timestamps when it was sent.
+    time: Option<crate::fs::Time>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +125,8 @@ pub(crate) struct Socket {
     send_timeout: u64,
     /// The effective user that bound it, for SO_REUSEPORT.
     owner_uid: u32,
+    /// SO_TIMESTAMP and SO_TIMESTAMPNS (`SOCK_RCVTSTAMP`, `SOCK_RCVTSTAMPNS`, `SOCK_TSTAMP_NEW`).
+    stamps: u8,
     /// Its inode's number and owner, once it has a file (`sock_i_ino`, `sock_i_uid`).
     ino: u64,
     uid: u32,
@@ -162,6 +166,7 @@ impl Socket {
             receive_timeout: 0,
             send_timeout: 0,
             owner_uid: 0,
+            stamps: 0,
             ino: 0,
             uid: 0,
             inet: None,
@@ -1294,6 +1299,7 @@ fn send_stream(
             data,
             source: None,
             arrival: None,
+            time: None,
         };
         files_sent = true;
         socket.borrow_mut().written += packet.truesize;
@@ -1425,6 +1431,11 @@ fn send_packet(
         data,
         source: None,
         arrival: None,
+        time: None,
+    };
+    let packet = Packet {
+        time: stamp(kernel, cx, &target),
+        ..packet
     };
     socket.borrow_mut().written += packet.truesize;
     target.borrow_mut().queue.push_back(packet);
@@ -1445,6 +1456,8 @@ struct Received {
     reported: Option<u64>,
     /// An internet datagram's header and route.
     arrival: Option<inet::Arrival>,
+    /// When the bytes came, for SO_TIMESTAMP and SO_TIMESTAMPNS.
+    time: Option<crate::fs::Time>,
 }
 
 /// `unix_stream_read_generic` and `__unix_dgram_recvmsg`: bytes into `parts`, waiting for some
@@ -1501,7 +1514,7 @@ fn receive(
         return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
     }
     let peek = flags & MSG_PEEK != 0;
-    let (data, files, cred, sender) = {
+    let (data, files, cred, sender, time) = {
         let own = socket.borrow();
         let packet = own.queue.front().expect("a packet");
         (
@@ -1509,12 +1522,14 @@ fn receive(
             packet.files.clone(),
             packet.cred,
             packet.sender.upgrade(),
+            packet.time,
         )
     };
     let copied = (data.len() as u64).min(size);
     scatter(kernel, cx, tid, parts, &data[..copied as usize])?;
     let mut received = Received {
         files,
+        time,
         cred: Some(cred),
         name: Some(sender.and_then(|sender| sender.borrow().name.clone())),
         ..Received::default()
@@ -1605,12 +1620,13 @@ fn receive_stream(
                     packet.files.clone(),
                     packet.cred,
                     packet.sender.upgrade(),
+                    packet.time,
                 ));
                 break;
             }
             found
         };
-        let Some((data, files, cred, sender)) = next else {
+        let Some((data, files, cred, sender, time)) = next else {
             if copied >= target {
                 break;
             }
@@ -1656,6 +1672,10 @@ fn receive_stream(
         }
         if received.name.is_none() {
             received.name = Some(sender.and_then(|sender| sender.borrow().name.clone()));
+        }
+        // TCP reports the time of the last buffer read (`tcp_recv_timestamp`).
+        if time.is_some() {
+            received.time = time;
         }
         let chunk = (data.len() as u64).min(size - copied);
         if !discard && scatter_at(kernel, cx, tid, parts, copied, &data[..chunk as usize]).is_err()
@@ -2083,10 +2103,40 @@ pub(super) fn recvmsg(
         guest(kernel, cx, tid).write(header.name, &bytes[..room])?;
         name_length = bytes.len() as i32;
     }
-    // Control messages: an internet datagram's header and route, credentials when asked for,
-    // then descriptors.
+    // Control messages: the time the bytes came, an internet datagram's header and route,
+    // credentials when asked for, then descriptors.
     let mut control = Vec::new();
     let room = header.control_length as usize;
+    let stamps = socket.borrow().stamps;
+    // A datagram that came before any time was asked for is stamped as it is read
+    // (`__sock_recv_timestamp`); TCP gives none for such bytes, and local streams none at all.
+    let datagram = socket.borrow().kind != SOCK_STREAM && socket.borrow().netlink.is_none();
+    let time = match received.time {
+        None if datagram && stamps & STAMP != 0 => Some(kernel.now(cx)),
+        time => time,
+    };
+    if let Some(time) = time.filter(|_| stamps & STAMP != 0) {
+        // `__sock_recv_timestamp`: microseconds or nanoseconds; the old and new forms share
+        // ARM64's layout.
+        let ns = stamps & STAMP_NS != 0;
+        use crate::linux::net::{
+            SO_TIMESTAMP_NEW, SO_TIMESTAMP_OLD, SO_TIMESTAMPNS_NEW, SO_TIMESTAMPNS_OLD,
+        };
+        let kind = match (ns, stamps & STAMP_NEW != 0) {
+            (false, false) => SO_TIMESTAMP_OLD,
+            (true, false) => SO_TIMESTAMPNS_OLD,
+            (false, true) => SO_TIMESTAMP_NEW,
+            (true, true) => SO_TIMESTAMPNS_NEW,
+        };
+        let part = if ns {
+            i64::from(time.nanoseconds)
+        } else {
+            i64::from(time.nanoseconds / 1000)
+        };
+        let mut data = time.seconds.to_le_bytes().to_vec();
+        data.extend_from_slice(&part.to_le_bytes());
+        put_control(&mut control, room, SOL_SOCKET, kind, &data, &mut out_flags);
+    }
     if let Some(arrival) = &received.arrival {
         for (level, kind, data) in inet::arrival_messages(kernel, cx, &socket, arrival) {
             put_control(&mut control, room, level, kind, &data, &mut out_flags);
@@ -2150,6 +2200,17 @@ pub(super) fn recvmsg(
     guest(kernel, cx, tid).write_value(address + 40, &(control.len() as u64))?;
     guest(kernel, cx, tid).write_value(address + 48, &out_flags)?;
     Ok(received.reported.unwrap_or(copied))
+}
+
+/// The bits of [`Socket::stamps`].
+const STAMP: u8 = 1;
+const STAMP_NS: u8 = 2;
+const STAMP_NEW: u8 = 4;
+
+/// The time a packet comes, if its receiver asked for timestamps (Linux stamps buffers as they
+/// arrive while some socket wants them).
+fn stamp(kernel: &Kernel, cx: &mut Context<'_>, receiver: &SocketRef) -> Option<crate::fs::Time> {
+    (receiver.borrow().stamps & STAMP != 0).then(|| kernel.now(cx))
 }
 
 /// `put_cmsg`: a control message padded to the next one; one that does not fit whole is cut to
@@ -2259,8 +2320,21 @@ pub(super) fn setsockopt(
         SO_ZEROCOPY if own.inet.is_none() => return Err(Errno::EOPNOTSUPP),
         // Options whose control messages (SCM_PIDFD, SCM_TIMESTAMP, SCM_TIMESTAMPNS) are not
         // built: answered as a Linux without them.
-        SO_PASSPIDFD | SO_TIMESTAMP_OLD | SO_TIMESTAMPNS_OLD | SO_TIMESTAMP_NEW
-        | SO_TIMESTAMPNS_NEW | SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
+        // `sock_set_timestamp`.
+        SO_TIMESTAMP_OLD | SO_TIMESTAMPNS_OLD | SO_TIMESTAMP_NEW | SO_TIMESTAMPNS_NEW => {
+            let new = if matches!(name, SO_TIMESTAMP_NEW | SO_TIMESTAMPNS_NEW) {
+                STAMP_NEW
+            } else {
+                0
+            };
+            let ns = matches!(name, SO_TIMESTAMPNS_OLD | SO_TIMESTAMPNS_NEW);
+            own.stamps = match (int()? != 0, ns) {
+                (false, _) => own.stamps & STAMP_NEW,
+                (true, false) => STAMP | new,
+                (true, true) => STAMP | STAMP_NS | new,
+            };
+        }
+        SO_PASSPIDFD | SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
             drop(own);
             return Err(kernel.counters.refuse(
                 cx.host,
@@ -2398,12 +2472,27 @@ pub(super) fn getsockopt(
                 bytes
             }
             SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE
-            | SO_DONTROUTE | SO_PASSSEC | SO_TIMESTAMP_OLD | SO_TIMESTAMPNS_OLD | SO_PRIORITY
-            | SO_PASSPIDFD | SO_ZEROCOPY | SO_BUSY_POLL | SO_INCOMING_CPU | SO_MARK => own
+            | SO_DONTROUTE | SO_PASSSEC | SO_PRIORITY | SO_PASSPIDFD | SO_ZEROCOPY
+            | SO_BUSY_POLL | SO_INCOMING_CPU | SO_MARK => own
                 .options
                 .get(&(level, name))
                 .cloned()
                 .unwrap_or_else(|| int(if name == SO_INCOMING_CPU { -1 } else { 0 })),
+            // `sk_getsockopt`'s reading of the flags.
+            SO_TIMESTAMP_OLD | SO_TIMESTAMPNS_OLD | SO_TIMESTAMP_NEW | SO_TIMESTAMPNS_NEW => {
+                let flags = own.stamps;
+                let (stamp, ns, new) = (
+                    flags & STAMP != 0,
+                    flags & STAMP_NS != 0,
+                    flags & STAMP_NEW != 0,
+                );
+                int(i32::from(match name {
+                    SO_TIMESTAMP_OLD => stamp && !new && !ns,
+                    SO_TIMESTAMPNS_OLD => ns && !new,
+                    SO_TIMESTAMP_NEW => stamp && new,
+                    _ => ns && new,
+                }))
+            }
             SO_PEERNAME => {
                 let peer = own.peer.clone().ok_or(Errno::ENOTCONN)?;
                 drop(own);

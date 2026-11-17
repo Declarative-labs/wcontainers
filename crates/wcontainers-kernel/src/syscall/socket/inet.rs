@@ -1544,6 +1544,7 @@ fn tcp_send(
             truesize: size,
             source: None,
             arrival: None,
+            time: None,
         };
         socket.borrow_mut().written += size;
         {
@@ -1551,6 +1552,10 @@ fn tcp_send(
             own.pingpong |= own.received;
         }
         inet(&peer).received = true;
+        let packet = Packet {
+            time: super::stamp(kernel, cx, &peer),
+            ..packet
+        };
         peer.borrow_mut().queue.push_back(packet);
         kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
         sent += size;
@@ -1705,6 +1710,7 @@ fn udp_send(
                     truesize,
                     source: Some(from),
                     arrival: Some(arrival_from(socket, &to)),
+                    time: super::stamp(kernel, cx, &receiver),
                 };
                 receiver.borrow_mut().queue.push_back(packet);
                 kernel.wake_poll(channel(&receiver), EPOLLIN | EPOLLRDNORM);
@@ -1852,10 +1858,15 @@ fn udp_receive(
             return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
         }
     }
-    let (data, source, arrival) = {
+    let (data, source, arrival, time) = {
         let own = socket.borrow();
         let packet = own.queue.front().expect("a datagram");
-        (packet.data.clone(), packet.source, packet.arrival)
+        (
+            packet.data.clone(),
+            packet.source,
+            packet.arrival,
+            packet.time,
+        )
     };
     let copied = (data.len() as u64).min(size);
     scatter(kernel, cx, tid, parts, &data[..copied as usize])?;
@@ -1863,6 +1874,7 @@ fn udp_receive(
     let mut received = Received {
         address: source.map(|from| address_bytes(family, &from)),
         arrival,
+        time,
         ..Received::default()
     };
     if data.len() as u64 > size {

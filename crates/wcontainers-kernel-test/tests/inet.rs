@@ -33,3 +33,9 @@ fn datagram_control_messages_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "udpcontrol", &[]);
 }
+
+#[test]
+fn receive_timestamps_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "timestamps", &[]);
+}
