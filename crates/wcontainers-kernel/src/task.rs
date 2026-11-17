@@ -11,7 +11,7 @@ use crate::counters::reason;
 use crate::linux::general::*;
 use crate::process::{Call, Channel, Leader, Pid, Report, Tid};
 use crate::schedule;
-use crate::{Context, Kernel, syscall};
+use crate::{Context, Errno, Kernel, syscall};
 
 impl Kernel {
     /// Chooses the thread to run, or says why none can run.
@@ -164,7 +164,9 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
+        self.begin_asking(tid);
         let outcome = syscall::dispatch(self, cx, tid, call, again);
+        self.end_asking(tid, matches!(outcome, syscall::Outcome::Parked));
         if let Some(thread) = self.threads.get(&tid) {
             syscall::ipc::settle(self, cx, thread.process);
         }
@@ -188,13 +190,90 @@ impl Kernel {
         }
     }
 
+    /// A run of `tid`'s call starts: the backend's questions are asked as from its thread.
+    pub(crate) fn begin_asking(&self, tid: Tid) {
+        if let Some(client) = &self.files.backend {
+            let thread = &self.threads[&tid];
+            client.begin(crate::fs::backend::Asker {
+                tid,
+                uid: thread.credentials.fsuid,
+                gid: thread.credentials.fsgid,
+                pid: thread.process as u32,
+            });
+        }
+    }
+
+    /// The run of `tid`'s call ended, `parked` or not: a parked call that waits for the backend
+    /// waits on it, and a call that ended forgets its answers.
+    pub(crate) fn end_asking(&mut self, tid: Tid, parked: bool) {
+        let Some(client) = self.files.backend.clone() else {
+            return;
+        };
+        let waits = parked && client.waits(tid);
+        client.end(tid, !parked);
+        if waits
+            && self
+                .threads
+                .get(&tid)
+                .is_some_and(|thread| thread.call.wait.is_none())
+        {
+            self.park(tid, Channel::Backend);
+        }
+    }
+
+    /// Takes a lock a call keeps until it ends, while it waits too (Linux's mutexes a sleeping
+    /// call holds), on `channel`: the address of what it guards, under `Channel::Held`, or a pipe's
+    /// own channel. `holder` is the thread that took it last, which holds it while its call still
+    /// does. Parks while another thread's call holds it.
+    pub(crate) fn take_lock(
+        &mut self,
+        tid: Tid,
+        holder: Option<Tid>,
+        channel: Channel,
+    ) -> Result<(), Errno> {
+        if self.held_by_other(tid, holder, channel) {
+            self.park(tid, channel);
+            return Err(Errno::PARKED);
+        }
+        self.hold_lock(tid, channel);
+        Ok(())
+    }
+
+    /// Whether another thread's call holds the lock on `channel` that `holder` took last.
+    pub(crate) fn held_by_other(&self, tid: Tid, holder: Option<Tid>, channel: Channel) -> bool {
+        holder.is_some_and(|holder| {
+            holder != tid
+                && self
+                    .threads
+                    .get(&holder)
+                    .is_some_and(|thread| thread.call.holds.contains(&Some(channel)))
+        })
+    }
+
+    /// Marks the lock on `channel` as held by `tid`'s call until it ends.
+    pub(crate) fn hold_lock(&mut self, tid: Tid, channel: Channel) {
+        let holds = &mut self.thread_mut(tid).call.holds;
+        if !holds.contains(&Some(channel)) {
+            let free = holds
+                .iter_mut()
+                .find(|slot| slot.is_none())
+                .expect("a call holds at most two locks");
+            *free = Some(channel);
+        }
+    }
+
+    /// Lets go of the locks a call held: whoever waits for one tries again.
+    fn let_go(&mut self, holds: [Option<Channel>; 2]) {
+        for channel in holds.into_iter().flatten() {
+            self.wake(channel);
+        }
+    }
+
     /// Clears a finished call's slot; a named pipe's open still waiting gives up its end.
     fn finish_call(&mut self, tid: Tid) {
         let thread = self.thread_mut(tid);
         let holds = core::mem::take(&mut thread.call).holds;
-        if let Some(address) = holds {
-            self.wake(Channel::Object(address));
-        }
+        self.let_go(holds);
         let thread = self.thread_mut(tid);
         let opening = thread.opening.take();
         self.give_up_opening(opening);
@@ -240,6 +319,11 @@ impl Kernel {
             {
                 self.woken.remove(index);
                 self.take_out_of_line(tid);
+                // The container's start has no registers: it runs on from where it got.
+                if self.is_starting(tid) {
+                    self.run_start(cx);
+                    continue;
+                }
                 let thread = &self.threads[&tid];
                 let mut registers = RegisterBlock::ZERO;
                 cx.cpu.registers(thread.cpu, &mut registers);
@@ -255,6 +339,15 @@ impl Kernel {
                     self.give_way();
                     self.take_turn(tid);
                 }
+                continue;
+            }
+            if self
+                .files
+                .backend
+                .as_ref()
+                .is_some_and(|client| client.has_outgoing())
+            {
+                self.send_to_backend(cx);
                 continue;
             }
             if let Some(tid) = self.signalled.pop_front() {
@@ -447,10 +540,8 @@ impl Kernel {
         if let Some(channel) = call.wait {
             self.parked.remove(tid, channel, call.deadline);
         }
-        if let Some(address) = call.holds {
-            self.thread_mut(tid).call.holds = None;
-            self.wake(Channel::Object(address));
-        }
+        self.thread_mut(tid).call.holds = Default::default();
+        self.let_go(call.holds);
         if self.current == Some(tid) {
             self.current = None;
         }
@@ -462,6 +553,9 @@ impl Kernel {
     pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
         syscall::futex::thread_end(self, cx, tid, true);
         syscall::timer::thread_end(self, tid);
+        if let Some(client) = &self.files.backend {
+            client.drop_call(tid);
+        }
         self.unschedule(tid);
         self.release_vfork(tid);
         syscall::sem::forget(self, tid);

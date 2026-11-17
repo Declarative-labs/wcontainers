@@ -39,6 +39,11 @@ fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, Vec<
             alloc::vec![generation(kernel, inode.ino), ino[0], ino[1]],
         )),
         Kind::Pidfs => Ok((FILEID_KERNFS, ino.to_vec())),
+        // `fuse_encode_fh`: the node number's high and low words and its generation.
+        Kind::Fuse => {
+            let nodeid = crate::fs::backend::remote_number(inode);
+            Ok((0x81, alloc::vec![(nodeid >> 32) as u32, nodeid as u32, 0]))
+        }
         Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Mqueue
             if identifier =>
         {

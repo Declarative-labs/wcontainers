@@ -143,7 +143,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_ppoll, F(io::ppoll)),
         (__NR_pselect6, F(io::pselect6)),
         (__NR_fsync, S(io::fsync)),
-        (__NR_fdatasync, S(io::fsync)),
+        (__NR_fdatasync, S(io::fdatasync)),
         (__NR_syncfs, S(io::syncfs)),
         (__NR_sync, S(io::sync)),
         (__NR_cachestat, S(io::cachestat)),

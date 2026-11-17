@@ -930,11 +930,11 @@ fn drop_copies(
     if dropped.is_empty() {
         return Ok(());
     }
-    let block = match &node.borrow().content {
-        crate::fs::Content::Regular(regular) => regular.block,
-        _ => None,
-    }
-    .expect("a mapped file has a block");
+    let block = node
+        .borrow()
+        .content
+        .block()
+        .expect("a mapped file has a block");
     for page in dropped {
         copied.remove(&page);
         cpu.shared_map(

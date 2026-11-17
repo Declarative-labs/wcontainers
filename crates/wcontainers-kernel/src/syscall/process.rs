@@ -905,9 +905,11 @@ pub(super) fn rt_sigaction(
                 | SA_RESTORER,
         );
         kernel.process_of(tid).actions.borrow_mut()[index] = new;
+        let pid = kernel.threads[&tid].process;
         if crate::signal::action_ignores(new.sa_handler_kernel, signal as u32) {
-            let pid = kernel.threads[&tid].process;
             kernel.flush_pending(pid, signal as u32);
+        } else if previous.sa_handler_kernel == crate::linux_extra::SIG_IGN {
+            super::timer::unignore(kernel, cx, pid, signal as u32);
         }
     }
     if old != 0 {

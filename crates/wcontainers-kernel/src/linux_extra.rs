@@ -13,6 +13,7 @@ pub(crate) const ST_NODEV: u32 = 0x0004;
 pub(crate) const ST_NOEXEC: u32 = 0x0008;
 /// Always set: the flags are meaningful.
 pub(crate) const ST_VALID: u32 = 0x0020;
+pub(crate) const ST_NOATIME: u32 = 0x0400;
 pub(crate) const ST_RELATIME: u32 = 0x1000;
 
 // Values from Linux's uapi headers newer than the ones linux-raw-sys 0.12.1 was generated from.
@@ -38,6 +39,10 @@ pub(crate) const ACL_GROUP_OBJ: u16 = 0x04;
 pub(crate) const ACL_GROUP: u16 = 0x08;
 pub(crate) const ACL_MASK: u16 = 0x10;
 pub(crate) const ACL_OTHER: u16 = 0x20;
+/// Access control list permission bits (`ACL_READ`, `ACL_WRITE`, `ACL_EXECUTE`).
+pub(crate) const ACL_PERMISSIONS: u16 = 0x04 | 0x02 | 0x01;
+/// The id of an entry that names no user or group (`ACL_UNDEFINED_ID`).
+pub(crate) const ACL_UNDEFINED_ID: u32 = u32::MAX;
 
 /// `personality` bits `execve` clears when a program gains privileges (`PER_CLEAR_ON_SETID`, from
 /// `linux/personality.h`'s `READ_IMPLIES_EXEC`, `ADDR_NO_RANDOMIZE`, `ADDR_COMPAT_LAYOUT` and
@@ -613,3 +618,7 @@ pub(crate) struct mq_attr {
     pub mq_curmsgs: i64,
     pub reserved: [i64; 4],
 }
+
+/// The longest name a FUSE backend may answer with (`FUSE_NAME_MAX`, Linux's internal
+/// `fs/fuse/fuse_i.h`).
+pub(crate) const FUSE_NAME_MAX: usize = 1024;

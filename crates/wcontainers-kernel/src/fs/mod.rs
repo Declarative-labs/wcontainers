@@ -4,6 +4,7 @@
 //! process information tree. An inode is shared through `Rc`, so an open file keeps an unlinked inode
 //! alive as on Linux.
 
+pub(crate) mod backend;
 pub(crate) mod dev;
 pub(crate) mod proc;
 
@@ -199,6 +200,8 @@ pub(crate) enum Kind {
     Anon,
     /// POSIX message queues, at `/dev/mqueue`.
     Mqueue,
+    /// A file system outside the kernel, reached with FUSE messages.
+    Fuse,
 }
 
 impl Kind {
@@ -216,7 +219,7 @@ impl Kind {
     /// secret memory), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
     pub fn max_bytes(self) -> u64 {
         match self {
-            Kind::Tmpfs | Kind::Pidfs | Kind::Pipe | Kind::Secretmem | Kind::Anon => {
+            Kind::Tmpfs | Kind::Pidfs | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Fuse => {
                 i64::MAX as u64
             }
             Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
@@ -234,6 +237,7 @@ impl Kind {
             Kind::Pidfs => PID_FS_MAGIC.into(),
             Kind::Anon => ANON_INODE_FS_MAGIC.into(),
             Kind::Mqueue => crate::linux_extra::MQUEUE_MAGIC.into(),
+            Kind::Fuse => FUSE_SUPER_MAGIC.into(),
         }
     }
 }
@@ -312,6 +316,8 @@ pub(crate) enum Content {
     Anon,
     /// A POSIX message queue.
     Mqueue(alloc::boxed::Box<crate::syscall::mqueue::MessageQueue>),
+    /// An inode of a file system outside the kernel, whatever its type.
+    Backend(backend::Remote),
 }
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
@@ -336,6 +342,17 @@ pub(crate) struct Regular {
     /// Whether it is a System V shared memory segment, whose mappings are never merged (Linux's
     /// `shm_vm_ops` has a `close`).
     pub segment: bool,
+}
+
+impl Content {
+    /// The block of shared pages a mapped file's mappings show, while it has one.
+    pub fn block(&self) -> Option<Block> {
+        match self {
+            Content::Regular(regular) => regular.block,
+            Content::Backend(remote) => remote.pages.as_ref().map(|pages| pages.block),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Regular {
@@ -745,6 +762,14 @@ impl Inode {
         self.mode & S_IFMT
     }
 
+    /// The block size `stat` reports: the backend's for its inodes, else the file system kind's.
+    pub fn block_size(&self) -> u32 {
+        match &self.content {
+            Content::Backend(remote) if remote.block_size.get() != 0 => remote.block_size.get(),
+            _ => self.fs.kind.block_size(),
+        }
+    }
+
     pub fn is_directory(&self) -> bool {
         self.file_type() == S_IFDIR
     }
@@ -772,6 +797,7 @@ impl Inode {
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
             Content::Mqueue(queue) => queue.size,
+            Content::Backend(remote) => remote.size.get(),
             Content::Special | Content::Pipe(_) | Content::Pidfd(..) | Content::Anon => 0,
         }
     }
@@ -780,6 +806,7 @@ impl Inode {
     pub fn blocks(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => (file.pages.len() + file.allocated.len()) as u64 * 8,
+            Content::Backend(remote) => remote.blocks.get(),
             _ if self.has_long_target() => 8,
             _ => 0,
         }
@@ -874,8 +901,14 @@ impl Inode {
         self.nlink == 0 || self.is_secret()
     }
 
+    /// Whether opening it with O_DIRECT is allowed (`FMODE_CAN_ODIRECT`): tmpfs's regular files
+    /// and the backend's (`fuse_open`).
     pub fn takes_direct_io(&self) -> bool {
-        self.fs.kind == Kind::Tmpfs && matches!(self.content, Content::Regular(_))
+        match self.content {
+            Content::Regular(_) => self.fs.kind == Kind::Tmpfs,
+            Content::Backend(_) => self.file_type() == S_IFREG,
+            _ => false,
+        }
     }
 
     /// The `d_type` of a directory entry for this inode.
@@ -893,6 +926,14 @@ impl Inode {
             credentials.uid
         };
         let mode = self.mode;
+        // `acl_permission_check`: another than the owner checks the access list when the group
+        // has bits, which a backend without FUSE_POSIX_ACL gives as none and the inode holds.
+        if uid != self.uid
+            && mode & 0o070 != 0
+            && let Some(remote) = backend::remote_of(self)
+        {
+            remote.acls.borrow_mut()[0].get_or_insert_with(Vec::new);
+        }
         let bits = if uid == self.uid {
             (mode >> 6) & 7
         } else if credentials.in_group(self.gid, use_fs_ids) {
@@ -1155,9 +1196,15 @@ impl<'a> Walk<'a> {
                 return Ok((parent.directory, full));
             }
             let node = self.step(&parent.directory, &parent.name)?;
-            let target = match &node.borrow().content {
-                Content::Symlink(target) => Some(target.clone()),
-                _ => None,
+            let (target, remote_link) = match &node.borrow().content {
+                Content::Symlink(target) => (Some(target.clone()), false),
+                Content::Backend(_) => (None, node.borrow().file_type() == S_IFLNK),
+                _ => (None, false),
+            };
+            let target = if remote_link {
+                Some(backend::readlink(&node)?)
+            } else {
+                target
             };
             if let Some(target) = target {
                 self.may_follow(&parent.directory, &node.borrow())?;
@@ -1258,6 +1305,7 @@ impl<'a> Walk<'a> {
     }
 
     fn check_search(&self, directory: &Node) -> Result<(), Errno> {
+        backend::fresh(directory)?;
         let directory = directory.borrow();
         if !directory.is_directory() {
             return Err(Errno::ENOTDIR);
@@ -1271,7 +1319,8 @@ impl<'a> Walk<'a> {
         // file system sees the name.
         {
             let inode = directory.borrow();
-            if matches!(inode.content, Content::Directory(_))
+            if (matches!(inode.content, Content::Directory(_))
+                || matches!(inode.content, Content::Backend(_)) && inode.is_directory())
                 && inode.nlink == 0
                 && name != b"."
                 && name != b".."
@@ -1307,6 +1356,10 @@ impl<'a> Walk<'a> {
             let inode = directory.borrow();
             match &inode.content {
                 Content::Directory(entries) => entries.get(name).ok_or(Errno::ENOENT)?,
+                Content::Backend(_) if inode.is_directory() => {
+                    drop(inode);
+                    backend::lookup(directory, name)?
+                }
                 Content::Proc(entry) => {
                     let entry = *entry;
                     drop(inode);
@@ -1344,6 +1397,11 @@ impl<'a> Walk<'a> {
                 Content::Symlink(target) => {
                     self.may_follow(directory, &inode)?;
                     target.clone()
+                }
+                Content::Backend(_) => {
+                    self.may_follow(directory, &inode)?;
+                    drop(inode);
+                    backend::readlink(&node)?
                 }
                 Content::Proc(entry) => {
                     let entry = *entry;

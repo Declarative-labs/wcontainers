@@ -80,7 +80,7 @@ pub(super) fn pipe2(
     let write_fd = match files.add(writer, close_on_exec, 0, limit) {
         Ok(fd) => fd,
         Err(error) => {
-            let _ = files.remove(read_fd, pid);
+            let _ = files.remove(read_fd, pid, false);
             drop(files);
             kernel.files_released(cx);
             return Err(error);
@@ -92,8 +92,8 @@ pub(super) fn pipe2(
     bytes[4..].copy_from_slice(&write_fd.to_le_bytes());
     if let Err(error) = guest(kernel, cx, tid).write(fds, &bytes) {
         let mut files = kernel.files_mut(tid);
-        let _ = files.remove(read_fd, pid);
-        let _ = files.remove(write_fd, pid);
+        let _ = files.remove(read_fd, pid, false);
+        let _ = files.remove(write_fd, pid, false);
         drop(files);
         kernel.files_released(cx);
         return Err(error);
@@ -112,9 +112,16 @@ pub(crate) fn attach(node: &Node, file: &FileRef) {
 /// close and makes one at the next open (`fifo_open`).
 pub(super) fn named(node: &Node) {
     let mut inode = node.borrow_mut();
-    if !matches!(&inode.content, Content::Pipe(pipe) if pipe.is_open()) {
-        inode.content = Content::Pipe(Pipe::named());
+    if matches!(&inode.content, Content::Pipe(pipe) if pipe.is_open()) {
+        return;
     }
+    let mut pipe = Pipe::named();
+    pipe.backend = match core::mem::replace(&mut inode.content, Content::Special) {
+        Content::Pipe(old) => old.backend,
+        Content::Backend(remote) => Some(alloc::rc::Rc::new(remote)),
+        _ => None,
+    };
+    inode.content = Content::Pipe(pipe);
 }
 
 /// `fifo_open` for a new open file of a named pipe: it counts as an end at once; a reader waits for
@@ -241,14 +248,7 @@ pub(super) fn lock(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Result<(), 
         unreachable!("a pipe's channel is its object");
     };
     let holder = with_pipe(file, |pipe| pipe.held_by);
-    let held = holder.is_some_and(|holder| {
-        holder != tid
-            && kernel
-                .threads
-                .get(&holder)
-                .is_some_and(|thread| thread.call.holds == Some(address))
-    });
-    if held {
+    if kernel.held_by_other(tid, holder, Channel::Object(address)) {
         kernel.park(tid, Channel::Object(address));
         return Err(Errno::PARKED);
     }
@@ -262,7 +262,7 @@ pub(super) fn hold(kernel: &mut Kernel, tid: Tid, file: &FileRef) {
         unreachable!("a pipe's channel is its object");
     };
     with_pipe(file, |pipe| pipe.held_by = Some(tid));
-    kernel.thread_mut(tid).call.holds = Some(address);
+    kernel.hold_lock(tid, Channel::Object(address));
 }
 
 pub(super) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R {

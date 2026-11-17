@@ -111,6 +111,10 @@ pub(crate) struct Files {
     pub spaces: Vec<Rc<fs::Space>>,
     /// Pseudo-terminal pairs by number, until both sides have closed.
     pub terminals: BTreeMap<u32, Rc<core::cell::RefCell<tty::Pty>>>,
+    /// The connection to the file backend, once one is mounted.
+    pub backend: Option<Rc<fs::backend::Client>>,
+    /// The directories file systems are mounted on.
+    pub mount_points: Vec<Node>,
 }
 
 /// All kernel state. It is plain data, so a container is saved by copying it with the guest memories.
@@ -154,6 +158,10 @@ pub struct Kernel {
     init: Option<Pid>,
     /// The first process's wait status once it has ended.
     finished: Option<i32>,
+    /// The container's start while it waits for the backend.
+    starting: Option<alloc::boxed::Box<container::Starting>>,
+    /// Why the container's start failed.
+    start_failure: Option<Errno>,
     /// The last serial given to committed credentials; 0 is the credentials of whoever opened the
     /// container's first descriptors.
     last_credentials: u64,
@@ -216,6 +224,8 @@ impl Kernel {
             last_id: 0,
             init: None,
             finished: None,
+            starting: None,
+            start_failure: None,
             last_credentials: 0,
             counters: Counters::default(),
             ipc: Default::default(),
@@ -241,6 +251,8 @@ impl Kernel {
                 proc_kept: BTreeMap::new(),
                 spaces,
                 terminals: BTreeMap::new(),
+                backend: None,
+                mount_points: Vec::new(),
             },
             machine: Machine {
                 release: "7.0.0-wcontainers",
@@ -314,8 +326,18 @@ impl Kernel {
                 self.settle(&mut cx);
                 return;
             }
-            Event::BackendReply { request, .. } => request.0,
-            Event::BackendNotice { .. } => 0,
+            Event::BackendReply { request, reply } => {
+                self.entry_now = cx.monotonic();
+                self.backend_answered(&mut cx, request.0, reply);
+                self.settle(&mut cx);
+                return;
+            }
+            Event::BackendNotice { notice } => {
+                self.entry_now = cx.monotonic();
+                self.backend_notice(&mut cx, notice);
+                self.settle(&mut cx);
+                return;
+            }
             Event::Connected { connection, .. } | Event::ConnectionReady { connection } => {
                 u64::from(connection.0)
             }
@@ -324,6 +346,29 @@ impl Kernel {
         };
         self.counters
             .count(cx.host, reason::EVENT_UNEXPECTED, detail);
+        self.settle(&mut cx);
+    }
+
+    /// Sends a signal to the container's first process from outside the container, as `docker
+    /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
+    /// other signals with no handler from that process.
+    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, signal: u32) {
+        assert!(self.running.is_none(), "a signal sent while a thread runs");
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+            refused: 0,
+        };
+        self.entry_now = cx.monotonic();
+        if let Some(pid) = self.init.filter(|_| self.finished.is_none()) {
+            if signal == linux::general::SIGKILL {
+                self.die_of(&mut cx, pid, signal);
+            } else {
+                let info = signal::sender_info(signal, linux::general::SI_USER as i32, 0, 0);
+                self.send_to_process(&mut cx, pid, signal, info);
+            }
+        }
         self.settle(&mut cx);
     }
 

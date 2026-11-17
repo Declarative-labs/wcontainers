@@ -41,6 +41,10 @@ pub(crate) struct OpenFile {
     /// Whether it was opened through the kernel's own mount of its file system (mq_open's
     /// `mq_mnt`), which has no mount flags, rather than through a mount in the file tree.
     pub internal_mount: bool,
+    /// For a file on a backend, its handle there.
+    pub backend: Option<Rc<crate::fs::backend::Handle>>,
+    /// The thread whose call took its position last (`io::lock_position`).
+    pub position_holder: Option<crate::process::Tid>,
 }
 
 /// The state of a file on the shared anonymous inode.
@@ -99,6 +103,8 @@ impl OpenFile {
             direct_io,
             anon: None,
             internal_mount: false,
+            backend: None,
+            position_holder: None,
         }))
     }
 
@@ -208,14 +214,15 @@ impl FdTable {
     pub fn set(&mut self, fd: i32, descriptor: Descriptor, closer: Pid) -> bool {
         self.highest = self.highest.max(fd);
         let old = self.slots.insert(fd, descriptor);
-        old.map(|old| self.closed(old, closer)).is_some()
+        old.map(|old| self.closed(old, closer, false)).is_some()
     }
 
-    /// Closes a descriptor for process `closer`.
-    pub fn remove(&mut self, fd: i32, closer: Pid) -> Result<(), Errno> {
+    /// Closes a descriptor for process `closer`; `flushed` when the caller has already flushed a
+    /// backend file and had its answer.
+    pub fn remove(&mut self, fd: i32, closer: Pid, flushed: bool) -> Result<(), Errno> {
         let old = self.slots.remove(&fd).ok_or(Errno::EBADF)?;
         self.next_fd = self.next_fd.min(fd);
-        self.closed(old, closer);
+        self.closed(old, closer, flushed);
         Ok(())
     }
 
@@ -252,15 +259,21 @@ impl FdTable {
     pub fn close_all(&mut self, closer: Pid) {
         self.next_fd = 0;
         for (_, old) in core::mem::take(&mut self.slots) {
-            self.closed(old, closer);
+            self.closed(old, closer, false);
         }
     }
 
-    /// A descriptor was closed by process `closer`: the table's record locks on the file go
-    /// (`filp_flush`), unless it was opened only for its path.
-    fn closed(&mut self, descriptor: Descriptor, closer: Pid) {
+    /// A descriptor was closed by process `closer`: a backend file is flushed there unless that
+    /// was done (`filp_flush`; nothing waits for the answer, whose error only `close` reports),
+    /// and the table's record locks on the file go, unless it was opened only for its path.
+    fn closed(&mut self, descriptor: Descriptor, closer: Pid, flushed: bool) {
         {
             let file = descriptor.file.borrow();
+            if let Some(handle) = &file.backend
+                && !flushed
+            {
+                crate::fs::backend::flush_unwaited(handle, self.lock_owner);
+            }
             if !file.is_path() {
                 let mut node = file.node.borrow_mut();
                 self.let_go_locks |=
@@ -288,7 +301,7 @@ impl FdTable {
             .map(|(fd, _)| *fd)
             .collect();
         for fd in closing {
-            let _ = self.remove(fd, closer);
+            let _ = self.remove(fd, closer, false);
         }
     }
 }

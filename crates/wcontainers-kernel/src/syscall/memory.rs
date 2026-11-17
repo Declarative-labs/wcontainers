@@ -235,6 +235,8 @@ pub(super) fn do_mmap(
     let mut allowed = Permissions::all();
     // What backs the mapping, with Linux's checks on the file; `/dev/zero` gives zeroed memory.
     let mut zero_device = None;
+    // A mapping of a backend file: the open file its bytes are read through.
+    let mut backend = None;
     let file = match file {
         None => None,
         Some(file) => {
@@ -264,7 +266,16 @@ pub(super) fn do_mmap(
             }
             let zero = matches!(inode.content, Content::Special)
                 && Device::from_number(inode.rdev) == Some(Device::Zero);
-            if !zero && !matches!(inode.content, Content::Regular(_)) {
+            // `fuse_file_mmap`: a shared mapping of a file opened for direct reads and writes is
+            // refused, as Linux refuses it.
+            if matches!(inode.content, Content::Backend(_)) {
+                let handle = file.backend.clone().ok_or(Errno::ENODEV)?;
+                if shared && !handle.may_map_shared() {
+                    return Err(Errno::ENODEV);
+                }
+                backend = Some(handle);
+            }
+            if !zero && backend.is_none() && !matches!(inode.content, Content::Regular(_)) {
                 return Err(Errno::ENODEV);
             }
             if grows_down {
@@ -286,7 +297,9 @@ pub(super) fn do_mmap(
             } else {
                 drop(inode);
                 // `shmem_mmap` counts mapping as reading the file.
-                super::io::accessed(kernel, cx, &node, file.flags);
+                if backend.is_none() {
+                    super::io::accessed(kernel, cx, &node, file.flags);
+                }
                 Some((node, file.path.clone()))
             }
         }
@@ -319,11 +332,26 @@ pub(super) fn do_mmap(
         (None, None) if droppable => Backing::Droppable,
         (None, None) => Backing::Anonymous,
         (Some((node, path)), _) => {
+            // The backend says where its file ends now, and its pages are read before anything
+            // changes, since the call runs again once they come.
+            if let Some(handle) = &backend {
+                crate::fs::backend::getattr(node, Some(handle.fh))?;
+                let writer = shared && allowed.contains(Permissions::WRITE);
+                crate::shared::backend_block(
+                    kernel,
+                    cx,
+                    node,
+                    Some(handle),
+                    offset + length,
+                    writer,
+                )?;
+            }
             let size = match &mut node.borrow_mut().content {
                 Content::Regular(regular) => {
                     regular.set_mapped();
                     regular.size()
                 }
+                Content::Backend(remote) => remote.size.get(),
                 _ => 0,
             };
             let file_pages = page_up(size).saturating_sub(offset);
@@ -777,6 +805,7 @@ pub(super) fn madvise(
             at = to;
         }
     }
+    let process = kernel.process_of_mut(tid);
     // Populating faults the pages in mapping by mapping (`madvise_populate`): a mapping that does not
     // allow the access is EINVAL, a gap before it ENOMEM.
     if matches!(advice, MADV_POPULATE_READ | MADV_POPULATE_WRITE) {
@@ -904,11 +933,24 @@ pub(super) fn mremap(
         .cloned()
         .ok_or(Errno::EFAULT)?;
     prepare(kernel, tid, &mapping, &request)?;
-    if to_new_address {
-        remap_to(kernel, cx, tid, &mapping, request)
-    } else {
-        remap_at(kernel, cx, tid, &mapping, request)
+    // A backend file's pages for the grown range are read before anything changes.
+    if let Backing::File { node, offset, .. } = &mapping.backing
+        && crate::fs::backend::remote(node).is_some()
+        && new_length > old_length
+    {
+        let end = offset + (old - mapping.start) + new_length;
+        crate::shared::backend_block(kernel, cx, node, None, end, false)?;
     }
+    let moved = if to_new_address {
+        remap_to(kernel, cx, tid, &mapping, request)?
+    } else {
+        remap_at(kernel, cx, tid, &mapping, request)?
+    };
+    // A file mapping that grew shows the file as far as it reaches now.
+    if let Backing::File { node, .. } = &mapping.backing {
+        crate::shared::changed(kernel, cx, node)?;
+    }
+    Ok(moved)
 }
 
 #[derive(Clone, Copy)]
@@ -1196,7 +1238,7 @@ fn drop_pages(
     if mapping.shared {
         return Ok(());
     }
-    match mapping.backing {
+    match &mapping.backing {
         Backing::File { .. } => map.drop_copies(cx.cpu, memory, from, to),
         _ => cx
             .cpu
@@ -1207,7 +1249,7 @@ fn drop_pages(
 
 pub(super) fn msync(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [address, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1230,7 +1272,35 @@ pub(super) fn msync(
     {
         return Err(Errno::EBUSY);
     }
-    if !map.fully_mapped(address, end) {
+    // `MS_SYNC` syncs each shared mapping of a backend file in the range (`vfs_fsync_range`):
+    // its pages written back, then FSYNC for the data, before a gap in the range is reported.
+    let fully = map.fully_mapped(address, end);
+    let synced: Vec<(crate::fs::Node, u64, u64)> = map
+        .iter()
+        .filter(|mapping| {
+            flags & MS_SYNC != 0 && mapping.shared && mapping.start < end && mapping.end > address
+        })
+        .filter_map(|mapping| match &mapping.backing {
+            Backing::File { node, offset, .. } if crate::fs::backend::remote(node).is_some() => {
+                let from = offset + (mapping.start.max(address) - mapping.start);
+                let to = offset + (mapping.end.min(end) - mapping.start);
+                Some((node.clone(), from, to))
+            }
+            _ => None,
+        })
+        .collect();
+    drop(map);
+    for (node, from, to) in synced {
+        crate::shared::backend_write_back(kernel, cx, &node, from, to, true)?;
+        let handle = match &node.borrow().content {
+            Content::Backend(remote) => remote.pages.as_ref().map(|pages| pages.handle.clone()),
+            _ => None,
+        };
+        if let Some(handle) = handle {
+            crate::fs::backend::fsync(&handle, true)?;
+        }
+    }
+    if !fully {
         return Err(Errno::ENOMEM);
     }
     Ok(0)

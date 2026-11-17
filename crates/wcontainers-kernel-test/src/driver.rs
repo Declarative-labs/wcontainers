@@ -67,8 +67,11 @@ pub struct TestHost {
     /// With a clock that moves only when the driver says, the wall clock's reading when the
     /// monotonic clock read 0: the wall clock moves with it.
     wall_base: u64,
-    /// What a run's choices come from: how long each turn on the CPU side lasts.
+    /// What a run's choices come from: how long each turn on the CPU side lasts, and when the
+    /// backend's answers arrive.
     schedule: StdRng,
+    /// The file backend, for a container with a volume.
+    pub(crate) backend: Option<crate::backend::Backend>,
 }
 
 impl TestHost {
@@ -84,6 +87,7 @@ impl TestHost {
             virtual_now: None,
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            backend: None,
         }
     }
 
@@ -138,6 +142,8 @@ impl TestHost {
             virtual_now: self.virtual_now.map(|_| 0),
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            // The backend and the answers it owes go on with the copy.
+            backend: self.backend.take(),
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -187,8 +193,14 @@ impl Host for TestHost {
         });
     }
 
-    fn backend_send(&mut self, _: BackendRequestId, _: &[u8]) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError> {
+        let backend = self.backend.as_mut().ok_or(HostError::NotSupported)?;
+        // The answer to a RETRIEVE this host sent in the server's place stays here.
+        if request.0 & RETRIEVED == RETRIEVED {
+            return Ok(());
+        }
+        backend.send(request.0, message);
+        Ok(())
     }
 
     fn output(&mut self, stream: Stream, bytes: &[u8]) {
@@ -242,42 +254,87 @@ pub struct Container<'a> {
     pub arguments: &'a [&'a str],
     pub environment: &'a [&'a str],
     pub working_directory: &'a str,
+    /// Where the file backend is mounted: `/` makes it the root, with the files unpacked into
+    /// it; any other path is a volume, empty at the start. None keeps the root in memory.
+    pub backend: Option<&'a str>,
+    /// Whether the backend opens files for the page cache rather than for direct reads and writes.
+    pub cached: bool,
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
 pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
-    run_saving(container, seed, 0, 0)
+    run_injected(container, seed, Injections::default())
 }
 
-/// As [`run`], saving the container up to `saves` times at moments drawn from the seed (each 1 to
-/// 100 turns after the last) and bringing it back each time from the copy alone. A save is a new
+/// What a run has done to it at moments drawn from its seed, besides where its turns end.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Injections {
+    /// How many times it is saved and brought back.
+    pub saves: usize,
+    /// How much more the host's wall clock moves on than its monotonic clock at each save.
+    pub wall_step: u64,
+    /// A signal sent to the first process from outside, and how many times.
+    pub signal: Option<(u32, usize)>,
+    /// How many notices the file backend sends unasked, of kinds and about nodes drawn from the
+    /// seed, as a backend whose files changed underneath would.
+    pub notices: usize,
+}
+
+/// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
+fn moments(seed: u64, count: usize) -> Vec<u64> {
+    moments_apart(seed, count, 100)
+}
+
+/// Turn counts at which something is injected: `count` of them, each 1 to `apart` turns after the
+/// last.
+fn moments_apart(seed: u64, count: usize, apart: u64) -> Vec<u64> {
+    let mut moments = StdRng::seed_from_u64(seed);
+    let mut last = 0;
+    (0..count)
+        .map(|_| {
+            last += moments.random_range(1..apart);
+            last
+        })
+        .collect()
+}
+
+/// As [`run`], with what `injections` says: saving the container up to `saves` times at moments
+/// drawn from the seed and bringing it back each time from the copy alone, and sending signals. A save is a new
 /// process holding a copy of this one's memory, as a host that saves copies the kernel's memory
 /// and every guest memory: the copy goes on with a new CPU side made from the saved memories and
 /// registers and a new host whose clock reads differently, while this process only waits for the
 /// copy's run. Each time the host's wall clock has moved on `wall_step` nanoseconds more than its
 /// monotonic clock, as on a host whose wall clock was set while the container was saved.
-pub fn run_saving(
+pub fn run_injected(
     container: &Container<'_>,
     seed: u64,
-    saves: usize,
-    wall_step: u64,
+    injections: Injections,
 ) -> Result<Run, Failure> {
-    let mut moments = StdRng::seed_from_u64(seed ^ 0x5a7e);
-    let mut last = 0;
-    let mut at: Vec<u64> = (0..saves)
-        .map(|_| {
-            last += moments.random_range(1..100);
-            last
-        })
-        .collect();
+    let mut at = moments(seed ^ 0x5a7e, injections.saves);
+    let (signal, signals) = injections.signal.unwrap_or((0, 0));
+    let mut signal_at = moments(seed ^ 0x5197, signals);
+    // Notices come close together, so that a short program meets many of them.
+    let mut notice_at = moments_apart(seed ^ 0x6e07, injections.notices, 10);
+    let mut notices = StdRng::seed_from_u64(seed ^ 0x6e08);
     let mut turns = 0u64;
     let mut saved = 0;
     // In a copy, where its run is reported to the process it was copied from.
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
+    let root_on_backend = container.backend == Some("/");
+    if container.backend.is_some() {
+        let image = root_on_backend.then_some(container.files);
+        host.backend = Some(crate::backend::Backend::start(
+            &crate::backend::out(),
+            image,
+            container.cached,
+        ));
+    }
     let mut kernel = Kernel::new();
-    image::add_files(&mut kernel, container.files);
+    if !root_on_backend {
+        image::add_files(&mut kernel, container.files);
+    }
     let arguments: Vec<&[u8]> = container
         .arguments
         .iter()
@@ -296,10 +353,9 @@ pub fn run_saving(
         working_directory: container.working_directory.as_bytes(),
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
+        backend: container.backend.map(str::as_bytes),
     };
-    kernel
-        .start(&mut cpu, &mut host, &start)
-        .map_err(Failure::Start)?;
+    kernel.start(&mut cpu, &mut host, &start);
     let status = loop {
         match kernel.next() {
             Next::Run {
@@ -323,6 +379,28 @@ pub fn run_saving(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
+                // The backend's answers arrive at moments drawn from the seed, in its order.
+                while host
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.waiting())
+                    && host.schedule.random_bool(0.5)
+                {
+                    deliver(&mut kernel, &mut cpu, &mut host);
+                }
+                while notice_at.first() == Some(&turns) {
+                    notice_at.remove(0);
+                    let notice = notice(&mut notices);
+                    kernel.event(
+                        &mut cpu,
+                        &mut host,
+                        Event::BackendNotice { notice: &notice },
+                    );
+                }
+                while signal_at.first() == Some(&turns) {
+                    signal_at.remove(0);
+                    kernel.kill(&mut cpu, &mut host, signal);
+                }
                 while at.first() == Some(&turns) {
                     at.remove(0);
                     saved += 1;
@@ -349,11 +427,20 @@ pub fn run_saving(
                         }
                     }
                     cpu = cpu.restored();
-                    host = host.moved(seed ^ ((saved as u64) << 32), wall_step);
+                    host = host.moved(seed ^ ((saved as u64) << 32), injections.wall_step);
                     kernel.restore(&mut cpu, &mut host);
                 }
             }
             Next::Idle { until_nanoseconds } => {
+                // An answer owed comes before any time passes.
+                if host
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.waiting())
+                {
+                    deliver(&mut kernel, &mut cpu, &mut host);
+                    continue;
+                }
                 let Some(until) = until_nanoseconds else {
                     panic!(
                         "the kernel is idle with nothing to wake it, and this host has no events; \
@@ -369,6 +456,14 @@ pub fn run_saving(
             Next::Finished { status } => break status,
         }
     };
+    if let Some(error) = kernel.start_failure() {
+        // Never in a copy: no save is made before the first program runs.
+        return Err(Failure::Start(error));
+    }
+    let files = match &host.backend {
+        Some(backend) if root_on_backend => image::records(&backend.files()),
+        _ => kernel.root_files(&mut cpu),
+    };
     let run = Run {
         outcome: Outcome {
             stdout: host.stdout,
@@ -377,10 +472,122 @@ pub fn run_saving(
         },
         warnings: host.warnings,
         counters: kernel.counters().collect(),
-        files: kernel.root_files(&mut cpu),
+        files,
         saved,
     };
     Ok(finish(run, report))
+}
+
+/// The request numbers of RETRIEVE notices this host sends: above any the kernel numbers.
+const RETRIEVED: u64 = 1 << 62;
+
+/// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node (one of the first
+/// few the backend numbers, some never looked up) drawn from `random`. The kernel's NOTIFY_REPLY to
+/// a RETRIEVE comes back to this host, which sent it, not to the server ([`RETRIEVED`]).
+fn notice(random: &mut StdRng) -> Vec<u8> {
+    use fuse_abi::linux::*;
+    use zerocopy::IntoBytes;
+    let node: u64 = random.random_range(1..12);
+    let name = b"backend-file\0";
+    let namelen = (name.len() - 1) as u32;
+    let (code, body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
+        0 => (
+            fuse_notify_code::FUSE_NOTIFY_POLL,
+            fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec(),
+        ),
+        1 => (
+            fuse_notify_code::FUSE_NOTIFY_INVAL_INODE,
+            fuse_notify_inval_inode_out {
+                ino: node,
+                off: 0,
+                len: -1,
+            }
+            .as_bytes()
+            .to_vec(),
+        ),
+        2 => {
+            let mut body = fuse_notify_inval_entry_out {
+                parent: node,
+                namelen,
+                flags: 0,
+            }
+            .as_bytes()
+            .to_vec();
+            body.extend_from_slice(name);
+            (fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY, body)
+        }
+        3 => {
+            let mut body = fuse_notify_delete_out {
+                parent: 1,
+                child: node,
+                namelen,
+                padding: 0,
+            }
+            .as_bytes()
+            .to_vec();
+            body.extend_from_slice(name);
+            (fuse_notify_code::FUSE_NOTIFY_DELETE, body)
+        }
+        4 => (
+            fuse_notify_code::FUSE_NOTIFY_RETRIEVE,
+            fuse_notify_retrieve_out {
+                notify_unique: RETRIEVED | node,
+                nodeid: node,
+                offset: 0,
+                size: 4096,
+                padding: 0,
+            }
+            .as_bytes()
+            .to_vec(),
+        ),
+        _ => {
+            let mut body = fuse_notify_store_out {
+                nodeid: node,
+                offset: 0,
+                size: 4,
+                padding: 0,
+            }
+            .as_bytes()
+            .to_vec();
+            body.extend_from_slice(b"data");
+            (fuse_notify_code::FUSE_NOTIFY_STORE, body)
+        }
+    };
+    let header = fuse_out_header {
+        len: (size_of::<fuse_out_header>() + body.len()) as u32,
+        error: code as i32,
+        unique: 0,
+    };
+    let mut notice = header.as_bytes().to_vec();
+    notice.extend_from_slice(&body);
+    notice
+}
+
+/// Hands the kernel the backend's next answer or notice, waiting for it.
+pub(crate) fn deliver(
+    kernel: &mut Kernel,
+    cpu: &mut dyn wcontainers_abi::Cpu,
+    host: &mut TestHost,
+) {
+    let Some(message) = host.backend.as_mut().and_then(|backend| backend.receive()) else {
+        return;
+    };
+    match message {
+        crate::backend::Message::Answer(unique, reply) => {
+            let request = BackendRequestId(unique);
+            kernel.event(
+                cpu,
+                host,
+                Event::BackendReply {
+                    request,
+                    reply: &reply,
+                },
+            );
+        }
+        crate::backend::Message::Notice(notice) => {
+            kernel.event(cpu, host, Event::BackendNotice { notice: &notice });
+        }
+    }
 }
 
 /// A run's end: returned, or in a copy made at a save reported to the process it was copied from,

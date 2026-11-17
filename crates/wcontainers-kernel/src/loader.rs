@@ -120,6 +120,8 @@ pub(crate) struct Program {
     /// Its path from the root, with links followed.
     path: Vec<u8>,
     bytes: Vec<u8>,
+    /// A program on the backend: the open file it was read through, which its pages are kept by.
+    backend: Option<alloc::rc::Rc<crate::fs::backend::Handle>>,
     /// The caller may read it (Linux's `would_dump`).
     readable: bool,
     /// The new program could open it again by the name it was run by, as a script's interpreter
@@ -196,16 +198,33 @@ pub(crate) fn program_of(
     if !inode.permits(credentials, X_OK, true) {
         return Err(Errno::EACCES);
     }
-    let bytes = match &inode.content {
-        Content::Regular(file) => file.bytes(cpu),
+    let readable = inode.permits(credentials, R_OK, true);
+    let size = match &inode.content {
+        Content::Backend(remote) => Some(remote.size.get()),
+        _ => None,
+    };
+    let (bytes, backend) = match (&inode.content, size) {
+        (Content::Regular(file), _) => {
+            let bytes = file.bytes(cpu);
+            drop(inode);
+            (bytes, None)
+        }
+        // A program on the backend is opened there and read whole (`do_open_execat`).
+        (Content::Backend(_), Some(size)) => {
+            drop(inode);
+            let handle = crate::fs::backend::open(
+                &node,
+                crate::linux::general::O_RDONLY | crate::linux::general::O_LARGEFILE,
+            )?;
+            (crate::fs::backend::read(&handle, 0, size)?, Some(handle))
+        }
         _ => return Err(Errno::EACCES),
     };
-    let readable = inode.permits(credentials, R_OK, true);
-    drop(inode);
     Ok(Program {
         node,
         path,
         bytes,
+        backend,
         readable,
         reopenable: true,
     })
@@ -520,19 +539,39 @@ fn place(
         && interpreter
             .as_ref()
             .is_none_or(|(program, ..)| program.readable);
+    let nosuid = program.node.borrow().fs.flags & crate::linux_extra::ST_NOSUID != 0;
+    // A program on the backend has its file capabilities read there (`get_vfs_caps_from_disk`,
+    // into a buffer of the larger form's size), unless its mount ignores them.
+    let backend_capabilities = if crate::fs::backend::remote(&program.node).is_some() && !nosuid {
+        match crate::fs::backend::getxattr(
+            &program.node,
+            crate::syscall::CAPABILITY,
+            size_of::<crate::linux::general::vfs_ns_cap_data>() as u32,
+        ) {
+            Ok(value) => Some(value),
+            Err(Errno::ENODATA | Errno::EOPNOTSUPP) => None,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        None
+    };
     let after = {
         let inode = program.node.borrow();
+        let capabilities = match &backend_capabilities {
+            Some(value) => Some(value.as_slice()),
+            None => inode
+                .xattrs
+                .get(crate::syscall::CAPABILITY)
+                .map(Vec::as_slice),
+        };
         kernel
             .credentials(tid)
             .for_program(&crate::credentials::ProgramFile {
                 mode: inode.mode,
                 uid: inode.uid,
                 gid: inode.gid,
-                nosuid: inode.fs.flags & crate::linux_extra::ST_NOSUID != 0,
-                capabilities: inode
-                    .xattrs
-                    .get(crate::syscall::CAPABILITY)
-                    .map(Vec::as_slice),
+                nosuid,
+                capabilities,
             })?
     };
     // The point of no return: from here a failure kills the process.
@@ -565,6 +604,13 @@ fn place(
         }
         None => (main.entry, 0),
     };
+    // A program on the backend shows the pages it was read into, as Linux's page cache.
+    for placed in core::iter::once(&program).chain(interpreter.as_ref().map(|(found, ..)| found)) {
+        if let Some(handle) = &placed.backend {
+            crate::shared::backend_block_of(kernel, cx, &placed.node, handle, &placed.bytes)
+                .map_err(fatal)?;
+        }
+    }
     crate::shared::show_all(kernel, cx, memory, &map).map_err(fatal)?;
     let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 

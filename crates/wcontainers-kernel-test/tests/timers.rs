@@ -12,6 +12,16 @@ fn timers_match_reference() {
     }
 }
 
+/// Timers whose signal is ignored or blocked when they fire (`posixtimer_sig_ignore`,
+/// `itimer_get_remtime`).
+#[test]
+fn ignored_and_blocked_timer_signals_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    for run in assert_same_output_seeded(&out, "timerignore", &[], 0) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}
+
 #[test]
 fn cpu_clock_sleeps_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");

@@ -421,7 +421,13 @@ static void remake_devices(void) {
     chmod("/dev/pts/ptmx", 0666);
 }
 
-int main(void) {
+// With an argument, the directory the file backend is mounted on, which sequences on it work in
+// and which is emptied after each as /dev/shm is.
+int main(int argc, char **argv) {
+    const char *backend = argc > 1 ? argv[1] : 0;
+    if (chdir("/") != 0) {
+        return 1;
+    }
     remake_devices();
     struct stat mqueue_root;
     if (stat("/dev/mqueue", &mqueue_root) != 0) {
@@ -470,6 +476,17 @@ int main(void) {
             memcpy(ARENA, arena_init, length);
             memcpy(before, ARENA, ARENA_SIZE);
             setsid();
+            // Our caller is the container's first process, which Linux keeps from a SIGPIPE it has
+            // no handler for; ignored here too, a write with no reader is EPIPE on both sides.
+            signal(SIGPIPE, SIG_IGN);
+            // The same for I/O signals: a terminal given FIOASYNC or O_ASYNC names the caller as
+            // the owner (`__tty_fasync`), so SIGIO, or what F_SETSIG chooses, reaches it. Set
+            // directly, since the C library refuses its own signals 32 to 34.
+            static const int io_signals[] = {SIGHUP, SIGTRAP, SIGFPE, SIGTTOU, SIGIO, 32, 64};
+            for (unsigned index = 0; index < sizeof io_signals / sizeof io_signals[0]; index++) {
+                uint64_t ignored[4] = {(uint64_t)SIG_IGN, 0, 0, 0};
+                syscall(SYS_rt_sigaction, io_signals[index], ignored, 0, 8);
+            }
             self_pid = getpid();
             uint64_t self = (uint64_t)self_pid;
             int terminal = opens_terminal(sequence, calls);
@@ -590,6 +607,17 @@ int main(void) {
         }
         chown("/dev/shm", 0, 0);
         chmod("/dev/shm", 01777);
+        DIR *mounted = backend ? opendir(backend) : 0;
+        while (mounted && (entry = readdir(mounted))) {
+            if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+                remove_tree(dirfd(mounted), entry->d_name);
+            }
+        }
+        if (mounted) {
+            closedir(mounted);
+            chown(backend, 0, 0);
+            chmod(backend, 01777);
+        }
         // Every shared memory segment goes; the slots and sequence numbers carry over.
         static unsigned char segment_status[112];
         long highest = syscall(SYS_shmctl, 0, 3, segment_status);

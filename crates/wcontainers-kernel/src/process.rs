@@ -385,9 +385,10 @@ pub(crate) struct Call {
     /// For F_SETLKW's wait: the descriptor table asking, and the table holding the lock in the way
     /// (none for an open file's lock), as Linux's `blocked_hash` finds them.
     pub lock_wait: Option<(u64, Option<u64>)>,
-    /// The pipe (its channel's address) whose lock the call holds while it waits, as
-    /// `splice_file_to_pipe` holds it around a terminal's read.
-    pub holds: Option<usize>,
+    /// The locks the call holds until it ends, while it waits too (see `Kernel::take_lock`): a
+    /// pipe's, as `splice_file_to_pipe` holds it around a terminal's read, an open file's
+    /// position, a backend file's writes.
+    pub holds: [Option<Channel>; 2],
 }
 
 /// What a parked call waits for, besides its deadline and a signal.
@@ -409,6 +410,12 @@ pub(crate) enum Channel {
     Vfork(Tid),
     /// A futex wake, requeue or lock handed over (the futexes know which).
     Futex,
+    /// An answer from the file backend; no signal ends this wait, as Linux's FUSE waits once a
+    /// request is sent.
+    Backend,
+    /// A lock that another call holds while it waits (the address of what it guards); no signal
+    /// ends this wait, as none ends Linux's `mutex_lock`.
+    Held(usize),
 }
 
 /// What `restart_syscall` runs again.

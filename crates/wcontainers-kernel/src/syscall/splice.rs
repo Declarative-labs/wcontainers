@@ -371,16 +371,19 @@ fn pipe_to_file(
             Content::Special => Device::from_number(inode.rdev),
             _ => None,
         };
+        let backend_file =
+            matches!(inode.content, Content::Backend(_)) && inode.file_type() == S_IFREG;
         // Only files with `splice_write` take a splice (`do_splice_from`): tmpfs files other than
-        // secret memory, and the devices other than `/dev/full`; not `/proc` files, process,
-        // event, timer and signal descriptors or message queues.
+        // secret memory, backend files, and the devices other than `/dev/full`; not `/proc` files,
+        // process, event, timer and signal descriptors or message queues.
         let splice_write = match inode.content {
             Content::Regular(_) => !inode.is_secret(),
+            Content::Backend(_) => backend_file,
             Content::Special => device != Some(Device::Full),
             _ => false,
         };
         (
-            matches!(inode.content, Content::Regular(_)),
+            matches!(inode.content, Content::Regular(_)) || backend_file,
             splice_write,
             !matches!(device, Some(Device::Null | Device::Zero)),
         )
@@ -408,9 +411,16 @@ fn pipe_to_file(
             }
             break Err(park(kernel, tid, input));
         }
+        // A terminal takes a slot at a time; a file every slot's bytes in one write, which a
+        // backend's file takes as one request and nothing leaves the pipe until it is answered.
+        let wanted = (length - done).min(usize::MAX as u64) as usize;
         let bytes = with_pipe(input, |pipe| {
-            let front = pipe.front_bytes();
-            front[..front.len().min((length - done) as usize)].to_vec()
+            if terminal {
+                let front = pipe.front_bytes();
+                front[..front.len().min(wanted)].to_vec()
+            } else {
+                pipe.unread_bytes(wanted)
+            }
         });
         let written = if terminal {
             super::tty::put(kernel, cx, tid, output, &bytes)

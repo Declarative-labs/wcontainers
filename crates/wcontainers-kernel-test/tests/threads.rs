@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use wcontainers_kernel_test::assert_same_output_seeded;
+use wcontainers_kernel_test::{
+    assert_same_output_on_backend_root_seeded, assert_same_output_seeded,
+};
 
 fn out() -> std::path::PathBuf {
     Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest")
@@ -19,6 +21,22 @@ fn threads_match_reference() {
 #[test]
 fn threads_survive_saving() {
     for run in assert_same_output_seeded(&out(), "threads", &[], 6) {
+        assert!(run.saved > 0);
+    }
+}
+
+/// The same with the root file system on the file backend, saved and brought back at moments
+/// drawn from each seed.
+#[test]
+fn threads_match_reference_on_backend_root() {
+    for run in assert_same_output_on_backend_root_seeded(&out(), "threads", &[], 6) {
+        // The program on the backend is read whole when it starts.
+        let others: Vec<_> = run
+            .warnings
+            .iter()
+            .filter(|warned| warned.reason != wcontainers_kernel::reason::BACKEND_READ_WHOLE)
+            .collect();
+        assert!(others.is_empty(), "{others:?}");
         assert!(run.saved > 0);
     }
 }

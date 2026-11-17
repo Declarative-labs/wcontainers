@@ -90,6 +90,9 @@ struct Timer {
     /// wall clock has canceled it since (`moffs` at `KTIME_MAX`).
     might_cancel: bool,
     canceled: bool,
+    /// A periodic POSIX timer whose signal was ignored when it fired, kept until the signal's
+    /// handler stops being SIG_IGN (Linux's `ignored_posix_timers`).
+    ignored: bool,
 }
 
 /// Every timer in the container.
@@ -345,8 +348,10 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             id: number,
             notify,
         } => {
-            // Rearmed when its signal is taken (`posixtimer_deliver_signal`); until then it waits.
-            kernel.timers.all.get_mut(&id).expect("timer").expires = Some(expires);
+            // A periodic one is rearmed when its signal is taken (`posixtimer_deliver_signal`)
+            // and waits until then; a one-shot one is done (`posix_timer_queue_signal`).
+            let periodic = timer.interval > 0;
+            kernel.timers.all.get_mut(&id).expect("timer").expires = periodic.then_some(expires);
             let (target, signal, value) = match notify {
                 Notify::None => return,
                 Notify::Process { signal, value } => (None, signal, value),
@@ -358,7 +363,6 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             }
             let entry = kernel.timers.all.get_mut(&id).expect("timer");
             entry.sent_at = Some(entry.sequence);
-            let info = timer_info(signal, number, 0, value);
             let live = match target {
                 Some(tid) => kernel.threads.contains_key(&tid),
                 None => kernel
@@ -366,7 +370,15 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
                     .get(&pid)
                     .is_some_and(|p| p.ended.is_none()),
             };
-            if live {
+            if !live {
+                return;
+            }
+            // An ignored signal leaves a periodic timer waiting for it to be caught again, and a
+            // one-shot one drops it (`posixtimer_send_sigqueue`).
+            let ignored = kernel.timer_signal_ignored(target, pid, signal);
+            kernel.timers.all.get_mut(&id).expect("timer").ignored = ignored && periodic;
+            if !ignored {
+                let info = timer_info(signal, number, 0, value);
                 kernel.send_from_timer(cx, target, pid, signal, info);
             }
         }
@@ -403,6 +415,39 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
         }
         // Disarmed, which tells the sleeper its time has come.
         Owner::Sleep { tid, .. } => kernel.wake_thread(tid),
+    }
+}
+
+/// `signal` of `pid` stopped being SIG_IGN: the periodic timers that fired while it was ignored
+/// send it now (`posixtimer_sig_unignore`).
+pub(crate) fn unignore(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid, signal: u32) {
+    let waiting: alloc::vec::Vec<(u64, i32, Notify)> = kernel
+        .timers
+        .all
+        .iter()
+        .filter_map(|(id, timer)| match timer.owner {
+            Owner::Posix {
+                pid: owner,
+                id: number,
+                notify,
+            } if owner == pid && timer.ignored => Some((*id, number, notify)),
+            _ => None,
+        })
+        .collect();
+    for (id, number, notify) in waiting {
+        let (target, sends, value) = match notify {
+            Notify::None => continue,
+            Notify::Process { signal, value } => (None, signal, value),
+            Notify::Thread { tid, signal, value } => (Some(tid), signal, value),
+        };
+        if sends != signal {
+            continue;
+        }
+        kernel.timers.all.get_mut(&id).expect("timer").ignored = false;
+        if target.is_none_or(|tid| kernel.threads.contains_key(&tid)) {
+            let info = timer_info(signal, number, 0, value);
+            kernel.send_from_timer(cx, target, pid, signal, info);
+        }
     }
 }
 
@@ -497,6 +542,7 @@ pub(super) fn start_cpu_sleep(
         wall: false,
         might_cancel: false,
         canceled: false,
+        ignored: false,
     });
     kernel.timers.arm(id, until);
     id
@@ -592,8 +638,8 @@ fn expiry(kernel: &Kernel, cx: &mut Context<'_>, timer: &Timer, value: u64, abso
     }
 }
 
-/// What is left of a timer and its interval, as `gettime` reports them; a one that has fired and
-/// waits to be rearmed reports its next expiry.
+/// What is left of a timer and its interval, as `gettime` reports them; a periodic one that has
+/// fired and waits to be rearmed reports its next expiry, a one-shot one that has fired nothing.
 fn remaining(kernel: &Kernel, id: u64) -> (u64, u64) {
     let timer = &kernel.timers.all[&id];
     let Some(expires) = timer.expires else {
@@ -749,6 +795,7 @@ pub(super) fn timer_create(
         wall: false,
         might_cancel: false,
         canceled: false,
+        ignored: false,
         clock_id,
     });
     Ok(0)
@@ -868,6 +915,10 @@ fn interval_value(kernel: &Kernel, pid: Pid, which: u32) -> (u64, u64) {
     let Some(expires) = timer.expires else {
         return (0, timer.interval);
     };
+    // The real one fired and waiting for SIGALRM to be taken is not running (`hrtimer_active`).
+    if !kernel.timers.due.contains(&(expires, id)) && !kernel.timers.cpu.contains(&id) {
+        return (0, timer.interval);
+    }
     let clock_now = now(kernel, timer.clock).unwrap_or(expires);
     // Due and not yet sent shows a little time left: a microsecond for the real one, a tick for
     // the CPU ones (`itimer_get_remtime`, `get_cpu_itimer`).
@@ -961,6 +1012,7 @@ pub(super) fn setitimer(
             wall: false,
             might_cancel: false,
             canceled: false,
+            ignored: false,
         }),
     };
     set(kernel, cx, id, value, interval, false);
@@ -1014,6 +1066,7 @@ pub(super) fn timerfd_create(
         wall: false,
         might_cancel: false,
         canceled: false,
+        ignored: false,
         clock_id,
     });
     file.borrow_mut().anon = Some(Anon::Timer(id));
