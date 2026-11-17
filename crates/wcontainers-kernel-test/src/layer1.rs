@@ -5058,7 +5058,9 @@ fn volatile(call: &Call, value: i64, arena: &[u8]) -> Vec<(u64, u64)> {
             at += size.next_multiple_of(8);
         }
     }
-    if call.number == linux::__NR_readlinkat && (names_process(c, arena) || names_pipe(c, arena)) {
+    if call.number == linux::__NR_readlinkat
+        && (names_process(c, arena) || names_counted_inode(c, arena))
+    {
         out.push((c, d));
     }
     if call.number == linux::__NR_getcwd && under_proc(a, arena) {
@@ -5108,13 +5110,15 @@ fn under_proc(address: u64, arena: &[u8]) -> bool {
         == Some(b"/proc/".as_slice())
 }
 
-/// Whether a link read to `address` names a pipe, whose inode number each machine hands out from
-/// its own count (`get_next_ino`).
-fn names_pipe(address: u64, arena: &[u8]) -> bool {
-    address
-        .checked_sub(ARENA)
-        .and_then(|offset| arena.get(offset as usize..offset as usize + 6))
-        .is_some_and(|bytes| bytes == b"pipe:[")
+/// Whether a link read to `address` names a pipe or a socket, whose inode numbers each machine
+/// hands out from its own count (`get_next_ino`).
+fn names_counted_inode(address: u64, arena: &[u8]) -> bool {
+    let at = |length: usize| {
+        address
+            .checked_sub(ARENA)
+            .and_then(|offset| arena.get(offset as usize..offset as usize + length))
+    };
+    at(6).is_some_and(|bytes| bytes == b"pipe:[") || at(8).is_some_and(|bytes| bytes == b"socket:[")
 }
 
 /// Whether the path at `address` names a process directory, `/proc/<pid>`, by number.
@@ -5134,7 +5138,7 @@ fn value_is_volatile(call: &Call, arena: &[u8]) -> bool {
         linux::__NR_getcwd => under_proc(call.arguments[0], arena),
         // So does a link to one, such as `/proc/self/cwd` there.
         linux::__NR_readlinkat => {
-            names_process(call.arguments[2], arena) || names_pipe(call.arguments[2], arena)
+            names_process(call.arguments[2], arena) || names_counted_inode(call.arguments[2], arena)
         }
         linux::__NR_mmap => call.arguments[3] & 0x10_0010 == 0,
         linux::__NR_getpid
