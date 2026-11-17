@@ -141,7 +141,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         texels_through_buffer,
         decoded,
         targets_in_shader,
-        min_lod_clamped,
+        min_lod_clamped: _,
         draw_base: _,
         output_interpolation: _,
         samples: _,
@@ -176,7 +176,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         (*texels_through_buffer != 0, "TexelsThroughBuffer"),
         (!decoded.is_empty(), "NormAsInteger"),
         (!targets_in_shader.is_empty(), "TargetsInShader"),
-        (*min_lod_clamped != 0, "MinLodClamp"),
         (
             *layout != [0; 32] || root_signature.is_some(),
             "RootSignatureLayout",
