@@ -230,11 +230,14 @@ pub enum SlowPath {
     /// A resolve asked in the sRGB twin of the stored format averaged in the stored format, because the
     /// back end cannot read its multisampled samples another way (a listed loss).
     ResolveInStoredFormat,
+    /// A buffer range filled with a non-zero pattern by copies from a block of the pattern, where the
+    /// API clears buffers only to zero.
+    PatternClearCopied,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 93] = [
+    pub const ALL: [SlowPath; 94] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -328,6 +331,7 @@ impl SlowPath {
         SlowPath::PrimitiveIdAsGeometry,
         SlowPath::RowsRepacked,
         SlowPath::ResolveInStoredFormat,
+        SlowPath::PatternClearCopied,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -438,6 +442,7 @@ impl SlowPath {
             SlowPath::PrimitiveIdAsGeometry => "primitive index made by the stage helper",
             SlowPath::RowsRepacked => "copy rows repacked to the api's pitch",
             SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
+            SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
         }
     }
 }
