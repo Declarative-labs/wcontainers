@@ -21,6 +21,8 @@ use crate::network;
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
 
+/// An IPv6 device that is up (`IF_READY`, `net/if_inet6.h`, not in uapi).
+const IF_READY: u32 = 0x8000_0000;
 /// `sizeof(struct sockaddr_nl)`.
 const ADDRESS_SIZE: usize = 12;
 /// `sizeof(struct nlmsghdr)` and the alignment of messages and attributes.
@@ -371,13 +373,21 @@ fn answer(
             if !dump {
                 return one_link(request, portid, body);
             }
-            kernel
-                .counters
-                .count(cx.host, crate::reason::INTERFACE_COUNTERS_NOT_KEPT, 0);
-            INTERFACES
-                .iter()
-                .map(|interface| link(interface, request, portid, NLM_F_MULTI as u16))
-                .collect::<Vec<_>>()
+            if family == AF_INET6 {
+                // IPv6's own answer (`inet6_dump_ifinfo`).
+                INTERFACES
+                    .iter()
+                    .map(|interface| link6(interface, request, portid))
+                    .collect::<Vec<_>>()
+            } else {
+                kernel
+                    .counters
+                    .count(cx.host, crate::reason::INTERFACE_COUNTERS_NOT_KEPT, 0);
+                INTERFACES
+                    .iter()
+                    .map(|interface| link(interface, request, portid, NLM_F_MULTI as u16))
+                    .collect::<Vec<_>>()
+            }
         }
         _ if kind == RTM_GETADDR as u32 && dump => {
             let index = (strict && body.len() >= 8)
@@ -499,6 +509,32 @@ fn link(interface: &Interface, request: &[u8], portid: u32, flags: u16) -> Vec<u
     message.attr(IFLA_STATS as u32, &[0; 96]);
     message.text(IFLA_QDISC as u32, "noqueue");
     message.attr(IFLA_MAP as u32, &[0; 32]);
+    message.finish()
+}
+
+/// `inet6_fill_ifinfo`: an interface as IPv6 sees it, with its IPv6 flags and times.
+fn link6(interface: &Interface, request: &[u8], portid: u32) -> Vec<u8> {
+    let mut message = Message::new(RTM_NEWLINK as u16, NLM_F_MULTI as u16, request, portid);
+    let mut head = Vec::with_capacity(16);
+    head.extend_from_slice(&[AF_INET6 as u8, 0]);
+    head.extend_from_slice(&(interface.kind as u16).to_le_bytes());
+    head.extend_from_slice(&interface.index.to_le_bytes());
+    head.extend_from_slice(&interface.flags.to_le_bytes());
+    head.extend_from_slice(&0u32.to_le_bytes());
+    message.push(&head);
+    message.text(IFLA_IFNAME as u32, interface.name);
+    message.attr(IFLA_ADDRESS as u32, &interface.hardware);
+    message.u32(IFLA_MTU as u32, interface.mtu);
+    message.u8(IFLA_OPERSTATE as u32, interface.operstate);
+    // IFLA_PROTINFO with the device's flags (IF_READY) and its reassembly size and times.
+    let mut protinfo = Message(Vec::new());
+    protinfo.u32(IFLA_INET6_FLAGS as u32, IF_READY);
+    let mut cache = Vec::with_capacity(16);
+    for value in [65535u32, 0, 30000, 1000] {
+        cache.extend_from_slice(&value.to_le_bytes());
+    }
+    protinfo.attr(IFLA_INET6_CACHEINFO as u32, &cache);
+    message.attr(IFLA_PROTINFO as u32, &protinfo.0);
     message.finish()
 }
 
