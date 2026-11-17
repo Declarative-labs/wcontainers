@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::{Interface, s};
 
-use super::{colored_layout, hue, queries::result};
+use super::{Colored, colored_layout, hue, queries::result};
 use crate::d3d11::{Gpu, element, made, solid};
 use crate::dxbc;
 use crate::output::Output;
@@ -39,6 +39,18 @@ fn query(gpu: &Gpu, kind: D3D11_QUERY) -> Result<ID3D11Query> {
             Some(o),
         )
     })
+}
+
+/// Two triangles for the geometry shader to write out.
+pub fn triangles() -> Vec<Colored> {
+    (0..6u32)
+        .map(|k| {
+            let [r, g, b] = hue(k, 6);
+            let (x, y) = if k < 3 { (-0.5, 0.5) } else { (0.3, 0.2) };
+            let a = k as f32 * 2.0944;
+            [x + 0.35 * a.sin(), y + 0.35 * a.cos(), 0.5, r, g, b, 1.0]
+        })
+        .collect()
 }
 
 pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
@@ -80,14 +92,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
             Some(o),
         )
     })?;
-    let triangles: Vec<[f32; 7]> = (0..6u32)
-        .map(|k| {
-            let [r, g, b] = hue(k, 6);
-            let (x, y) = if k < 3 { (-0.5, 0.5) } else { (0.3, 0.2) };
-            let a = k as f32 * 2.0944;
-            [x + 0.35 * a.sin(), y + 0.35 * a.cos(), 0.5, r, g, b, 1.0]
-        })
-        .collect();
+    let triangles = triangles();
     gpu.vertices(0, bytemuck::cast_slice(&triangles), 28)?;
     unsafe {
         c.RSSetState(&gpu.rasterizer(&solid())?);

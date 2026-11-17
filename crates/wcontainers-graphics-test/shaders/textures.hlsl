@@ -1,6 +1,7 @@
 // Sampling each texture kind over the target's uv: 1D and its arrays, 2D arrays, 3D, cubes and their
 // arrays, a mip chain by explicit level, and exact texels by Load.
 // fxc: ps_5_0 ps_1d, ps_5_0 ps_1d_array, ps_5_0 ps_2d_array, ps_5_0 ps_3d, ps_5_0 ps_cube, ps_5_0 ps_cube_array, ps_5_0 ps_mips, ps_5_0 ps_load
+// dxc: ps_6_0 ps_1d, ps_6_0 ps_1d_array, ps_6_0 ps_2d_array, ps_6_0 ps_3d, ps_6_0 ps_cube, ps_6_0 ps_cube_array, ps_6_0 ps_mips, ps_6_0 ps_load
 struct FullOut { float4 pos : SV_Position; float2 uv : TEXCOORD; };
 SamplerState smp : register(s0);
 Texture1D t1 : register(t0);

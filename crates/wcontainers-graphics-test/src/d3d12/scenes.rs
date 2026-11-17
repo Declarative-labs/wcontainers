@@ -35,6 +35,17 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("stencil", super::states::stencil_scene),
     ("formats", super::states::formats),
     ("samplers", super::states::samplers_scene),
+    ("textures", super::textures::textures),
+    ("raster", super::raster::raster),
+    ("msaa", super::raster::msaa_scene),
+    ("targets", super::raster::targets),
+    ("topology", super::primitives::topology),
+    ("geometry", super::primitives::geometry),
+    ("tessellation", super::primitives::tessellation),
+    ("streamout", super::primitives::streamout),
+    ("draws", super::draws::draws),
+    ("constants", super::draws::constants),
+    ("views", super::views::views),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {
@@ -52,7 +63,7 @@ fn colored_layout() -> [D3D12_INPUT_ELEMENT_DESC; 2] {
 }
 
 /// A pipeline drawing coloured vertices as triangles into one 8-bit target, solid, no blending.
-fn pipeline(
+pub(super) fn pipeline(
     gpu: &Gpu,
     root: &ID3D12RootSignature,
     vs: &[u8],

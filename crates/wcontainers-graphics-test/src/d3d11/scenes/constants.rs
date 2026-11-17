@@ -13,8 +13,12 @@ use crate::d3d11::{Gpu, seeded, solid};
 use crate::dxbc;
 use crate::output::Output;
 
-pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
-    let c = &gpu.context;
+/// The windows read from the large buffer: first constant and count, in 16-byte constants.
+pub const WINDOWS: [(u32, u32); 4] = [(0, 64), (16, 16), (256, 64), (4080, 16)];
+
+/// Seeded values for the fourteen slots (of 1 to 4096 constants), then for the 4096 of the large
+/// buffer.
+pub fn values() -> (Vec<Vec<f32>>, Vec<f32>) {
     let mut random = seeded(13);
     let mut constants = |count: usize| -> Vec<f32> {
         (0..count * 4)
@@ -22,11 +26,18 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
             .collect()
     };
     let sizes = [1, 16, 256, 4096, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-    let buffers: Vec<Option<ID3D11Buffer>> = sizes
+    let slots = sizes.iter().map(|&n| constants(n)).collect();
+    (slots, constants(4096))
+}
+
+pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
+    let c = &gpu.context;
+    let (slots, large) = values();
+    let buffers: Vec<Option<ID3D11Buffer>> = slots
         .iter()
-        .map(|&n| {
+        .map(|values| {
             Ok(Some(gpu.immutable(
-                bytemuck::cast_slice(&constants(n)),
+                bytemuck::cast_slice(values),
                 D3D11_BIND_CONSTANT_BUFFER,
             )?))
         })
@@ -43,18 +54,12 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     }
     outputs.push(Output::picture("slots", gpu.read(&target, 0, 0)?));
 
-    let big = gpu.immutable(
-        bytemuck::cast_slice(&constants(4096)),
-        D3D11_BIND_CONSTANT_BUFFER,
-    )?;
+    let big = gpu.immutable(bytemuck::cast_slice(&large), D3D11_BIND_CONSTANT_BUFFER)?;
     let context1: ID3D11DeviceContext1 = c.cast()?;
     let (target, rtv) = gpu.target(64, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     gpu.begin(&rtv, None, 64, 64);
     gpu.program(dxbc!("common.vs_full"), dxbc!("constants.ps_window"), &[])?;
-    for (i, (first, count)) in [(0u32, 64u32), (16, 16), (256, 64), (4080, 16)]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, (first, count)) in WINDOWS.into_iter().enumerate() {
         unsafe {
             c.RSSetViewports(Some(&[D3D11_VIEWPORT {
                 TopLeftX: 0.0,
