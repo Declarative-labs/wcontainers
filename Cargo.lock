@@ -2683,6 +2683,8 @@ dependencies = [
  "cc",
  "parking_lot",
  "pollster",
+ "rand 0.9.5",
+ "rand_chacha",
  "wcontainers-direct3d-11",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
