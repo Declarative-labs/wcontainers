@@ -129,13 +129,13 @@ impl IDXGIFactory_Impl for Factory_Impl {
     }
     fn MakeWindowAssociation(
         &self,
-        _windowhandle: windows::Win32::Foundation::HWND,
-        _flags: DXGI_MWA_FLAGS,
+        windowhandle: windows::Win32::Foundation::HWND,
+        flags: DXGI_MWA_FLAGS,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("MakeWindowAssociation"))
+        Factory::MakeWindowAssociation(self, windowhandle, flags)
     }
     fn GetWindowAssociation(&self) -> windows_core::Result<windows::Win32::Foundation::HWND> {
-        Err(self.unsupported("GetWindowAssociation"))
+        Factory::GetWindowAssociation(self)
     }
     fn CreateSwapChain(
         &self,
@@ -2146,10 +2146,10 @@ impl ID3D12Resource2_Impl for Resource_Impl {
 impl ID3D12Resource1_Impl for Resource_Impl {
     fn GetProtectedResourceSession(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppprotectedsession: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppprotectedsession: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetProtectedResourceSession"))
+        Resource::GetProtectedResourceSession(self, riid, ppprotectedsession)
     }
 }
 
