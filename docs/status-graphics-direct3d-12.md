@@ -6,60 +6,67 @@ crates/wcontainers-direct3d-12.
 
 ## Where things stand
 
-G5a (first slice) is in progress, run 1.
+G5a (first slice) is in progress, run 2.
 - Done: `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description
   from the back end's `Caps`, output descriptions and their modes, DXGI format numbers to interface
   formats, swap chains (flip sequential, flip discard, blit discard, blit sequential), presenting by
   one copy into the host surface (sRGB and float back buffers encoded on the way), resizing, and frame
   pacing by the maximum frame latency. 7 tests on a recording back end. Pushed for the Direct3D 11
   track (see below).
-- Done in `wcontainers-direct3d-12`: serialized root signatures (`root.rs`: a DXBC container with
-  one `RTS0` part, versions 1.0 and 1.1, read and written), the answers of `D3D12CreateDevice` and
-  `CheckFeatureSupport` from `Caps` per plan section 9 (`features.rs`: 11_0 with compute and the
-  11_0 sizes, otherwise no device; 11_1 and binding tier 3 only with `RESOURCE_TABLES`; heap tier 2;
-  every absent feature zero or FALSE; shader model 6.0; one quality level per sample count
-  `FormatCaps` allows), and the map from GPU virtual addresses and descriptor handles to their
-  owners (`address.rs`). 8 tests.
-- Not done: the Direct3D 12 device itself, the Windows shells (`dxgi.dll`, `d3d12.dll`), and the
-  rig's scene through them. Nothing has drawn yet: no back end is on any branch (checked
-  2026-11-17: only phase-2-graphics, -rig, -shaders and this branch exist; G1's recording back end
-  and G2's WebGPU back end are not pushed).
+- Done in `wcontainers-direct3d-12`: serialized root signatures (`root.rs`), the answers of
+  `D3D12CreateDevice` and `CheckFeatureSupport` from `Caps` per plan section 9 (`features.rs`), the
+  map from GPU virtual addresses and descriptor handles to their owners (`address.rs`), and now the
+  device itself (`device.rs`, plain Rust, generic over the back end): committed resources (default
+  heap buffers and textures; upload and readback buffers whose bytes live in front-owned memory
+  handed out by `map`), `GetCopyableFootprints` (`resource.rs`), root signatures, graphics pipeline
+  states (blocks from Direct3D 12's numbers in `state.rs`, the program, and `prepare` with streams
+  packed as the input layout lays them out), command lists recorded front-side without the back end
+  (`list.rs`; an unsupported call fails `Close`), `ExecuteCommandLists` replaying them (upload
+  memory the lists read written first, counted `MappedUploadWhole`; whole-view clears become the
+  next pass's `Clear` load or a `clear_texture`; a pass per target change; copies both ways and
+  between textures; read backs into readback memory recorded after each copy into it), fences
+  (`queue_signal` submits, `completed` and `wait` finish read backs whose work is done so the
+  program sees the bytes with the value; `wait` answers false when only unsubmitted work could
+  reach the value). A replay error removes the device with the reason.
+- Shaders: no DXIL converter exists yet (origin/phase-2-graphics-shaders has none), so
+  `stand_in.rs` holds hand-written WGSL for the rig's triangle shaders, chosen by the BLAKE3 hash of
+  the exact DXIL bytes of the stored corpus; each use is counted (`stand_ins_used`) and warned
+  (`take_warnings`); any other DXIL is refused at pipeline creation with `NotImplemented`.
+- Drawn on the GPU: the rig's Direct3D 12 triangle scene, recorded call for call as gt-d3d12 makes
+  it (tests/support/triangle.rs), through `Device<WebGpu>` on the RTX 3080, equals real Direct3D
+  12's reference picture with a largest channel difference of 0 (rig tolerance 1), through wgpu's
+  Vulkan and Direct3D 12 paths (2026-11-17, one gpu-job each, desktop CPU load 14% at the time).
+- Not done: the Windows shells (`dxgi.dll`, `d3d12.dll`) and gt-d3d12.exe running unchanged
+  through them; root parameters (constants, root descriptors, tables) and shader-visible
+  descriptor heaps; depth-stencil targets; placed resources; queue `Wait`; bundles; queries;
+  indirect execution; swap chains on a Direct3D 12 queue.
 
 ## Next, in this order
 
-1. `Device<B>` in `wcontainers-direct3d-12` (plain Rust, generic over the back end), enough for
-   the rig's `triangle` scene (crates/wcontainers-graphics-test/src/d3d12/scenes.rs and mod.rs):
-   command queue, allocator, graphics command list recording into a front-side list of commands,
-   root signature from `root::deserialize`, graphics pipeline state (blocks plus `prepare`),
-   RTV descriptor heap (descriptors are front-side structs at `address.rs` handles), committed
-   resources (default heap textures with a clear value; upload and readback heap buffers whose
-   bytes live in front-owned memory handed out by `Map`), `ResourceBarrier` (nothing on either back
-   end, 5.2), `ClearRenderTargetView` (a pass `Clear` load, or `clear_rects` for rectangles),
-   `OMSetRenderTargets`, viewports, scissors, `IASetVertexBuffers` through the address map,
-   `DrawInstanced`, `CopyTextureRegion` both ways with `GetCopyableFootprints` (rows of 256-byte
-   pitch), `ExecuteCommandLists` replaying into the back end (upload bytes written first,
-   `MappedUploadWhole`), `Signal`, `SetEventOnCompletion` and `GetCompletedValue` with read backs
-   finished into readback memory when their fence completes (4.6). Test it on the recorder by
-   replaying the triangle scene's calls and checking the recorded stream.
-2. Shaders: DXIL needs G6's `convert` (origin/phase-2-graphics-shaders exists now; merge it and
-   look). Until then, the triangle scene's two shaders are replaced by hand-written WGSL chosen by
-   the exact DXIL bytes of the stored corpus (crates/wcontainers-graphics-test/shaders/dxil),
-   counted and warned, and any other DXIL refused at pipeline creation with `E_INVALIDARG`.
-3. The Windows shells. The rig's gt-d3d12.exe imports from d3d12.dll exactly
-   `D3D12CreateDevice`, `D3D12SerializeVersionedRootSignature` and `D3D12GetDebugInterface` (the
-   last answers `E_NOINTERFACE`: there is no debug layer), and from dxgi.dll `CreateDXGIFactory2`
-   (read with llvm-objdump from C:\wc\out\phase-2-graphics-rig\scenes\bin\gt-d3d12.exe). Plan
-   section 10 puts the one library in G4's crate `wcontainers-directx` with `.def` forwarders;
-   until it exists, build the COM objects (the `windows` crate's `implement`, MIT OR Apache-2.0,
-   already in the lock file through the rig) as a `windows` module of each of the two crates
-   here, and a small cdylib inside crates/wcontainers-direct3d-12 that chooses `B`, so G4's
-   library can take the modules over. One device thread owns the back end; COM methods send it
-   closures and wait (the call buffer of 4.8 comes in the second batch).
-4. Run the scene: `tools/graphics-rig/scenes --build "<build>" --dll d3d12.dll=... --dll
-   dxgi.dll=... --api d3d12 triangle`, on the recorder first, then on G2's back end against the
-   stored reference.
-5. The independent check: a small Direct3D 12 program of our own, CheckFeatureSupport answers
-   against real Direct3D's on the desktop, and reading the code for anything faked.
+1. The Windows shells. Plan section 10 puts them in G4's crate `wcontainers-directx` (one library,
+   forwarders for d3d11/d3d12/dxgi). Until it exists: build the library as a cdylib example of
+   `wcontainers-direct3d-12` (examples may use dev-dependencies, so the core never depends on a
+   back end), and `d3d12.dll` and `dxgi.dll` as pure forwarders (cdylib examples named `d3d12` and
+   `dxgi` whose only content is a `#[used] #[link_section = ".drectve"]` string of
+   `/EXPORT:Name=wcontainers_directx.Name` directives, so the linker makes forwarders with no code).
+   gt-d3d12.exe imports from d3d12.dll exactly `D3D12CreateDevice`,
+   `D3D12SerializeVersionedRootSignature` and `D3D12GetDebugInterface` (the last answers
+   `E_NOINTERFACE`: there is no debug layer), and from dxgi.dll `CreateDXGIFactory2`; the scene
+   uses IDXGIFactory4 (EnumAdapters1, EnumWarpAdapter), IDXGIAdapter1::GetDesc1, and on the device,
+   queue, allocator, list, fence, resource, root signature, pipeline and descriptor heap only the
+   methods in crates/wcontainers-graphics-test/src/d3d12/mod.rs and scenes.rs `triangle`. Generate
+   the stubs of every other method from the `windows` crate's `*_Impl` traits with a script (in
+   scratch), each answering `E_NOTIMPL`, or for a void method of a command list failing its `Close`.
+   One device thread owns the back end (WebGpu handles are `Rc`); COM methods send it closures and
+   wait. B = `WebGpu` on wgpu's Vulkan path: inside a process whose `d3d12.dll` is ours, wgpu's
+   Direct3D 12 path would load our library as the system's.
+2. Run the scene: `tools/graphics-rig/scenes --build "<build>" --dll d3d12.dll=... --dll
+   dxgi.dll=... --dll wcontainers_directx.dll=... --api d3d12 triangle` against the stored reference.
+3. The independent check: a small Direct3D 12 program of our own (an indexed draw with two vertex
+   streams and a rectangle clear, say), CheckFeatureSupport answers compared with real Direct3D's on
+   the desktop, and reading the code for anything faked.
+4. Then the rig's other Direct3D 12 scenes need root parameters and shader-visible heaps (binding
+   sets made at replay from the descriptors as they are then, plan 4.5 and 5.2).
 
 ## For the Direct3D 11 track: using the infrastructure crate
 
@@ -82,9 +89,11 @@ Depend on `wcontainers-directx-graphics-infrastructure` (path `../wcontainers-di
 
 ## How to run
 
-- Tests: `tools/graphics-rig/remote "cargo test -j 3 -p wcontainers-directx-graphics-infrastructure
-  -p wcontainers-direct3d-12"` (15 tests: 7 infrastructure, 6 front, 2 unit; all pass on
-  2026-11-17).
+- Tests (one includes the GPU, so through the queue): `tools/graphics-rig/gpu-job --build "cargo
+  test -j 3 -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" --
+  "cargo test -j 3 -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
+  (21 tests: 7 infrastructure, 6 front, 5 device on the recorder, 1 on the GPU, 2 unit).
+  `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
 - On the Mac only `nix develop -c cargo fmt` (the Mac is overloaded).
@@ -98,10 +107,23 @@ Depend on `wcontainers-directx-graphics-infrastructure` (path `../wcontainers-di
 
 ## Measurements
 
-None yet.
+- Triangle scene through `Device<WebGpu>` against real Direct3D 12's picture: largest channel
+  difference 0, 0 pixels beyond 1 (RTX 3080; wgpu Vulkan and Direct3D 12; 2026-11-17; desktop CPU
+  load 14%). The run took 0.47 s including device creation (not a timing; not run alone).
 
 ## Departures from the plan
 
+- Hand-written WGSL stands in for the triangle scene's two DXIL shaders, chosen by the hash of
+  their exact bytes, counted and warned, until the shaders crate converts DXIL. This is keyed on a
+  shader's contents, which the rules forbid for anything lasting; it goes when G6's converter lands.
+- `CreateGraphicsPipelineState` prepares the combination with tightly packed vertex streams:
+  Direct3D 12's strides come with the vertex buffers, not the pipeline. A draw with other strides
+  builds its combination at the first draw.
+- The WebGPU back end does not override `prepare` yet, so every first draw counts `PipelineMiss`.
+- Merging origin/phase-2-graphics-webgpu needed `Caps::adapter` filled in its `caps()` (this
+  track's interface change, which G2 did not have): commit "filled the adapter description in the
+  merged webgpu back end's caps". G2 should take the same lines when it merges this branch or the
+  interface.
 - The recording back end of G1 is not on any branch yet, so the infrastructure crate's tests use a
   small recorder of their own (tests/support/record.rs, test-only, never built into a library). It
   goes when G1's lands.
@@ -116,8 +138,10 @@ None yet.
 
 ## Licences
 
-No new dependencies beyond the interface's own (`naga` with `wgsl-in`, `blake3`, both already
-confirmed in plan section 3).
+- `naga` with `wgsl-in` and `blake3`: already confirmed in plan section 3.
+- `slab` 0.4 (MIT, read in its Cargo.toml): the device's object tables.
+- Test only: `wcontainers-gpu-webgpu`, `wgpu` 30.0.2 (MIT OR Apache-2.0), `pollster` (MIT OR
+  Apache-2.0), `png` (MIT OR Apache-2.0), as the WebGPU track already uses them.
 
 ## Installed on the desktop
 
