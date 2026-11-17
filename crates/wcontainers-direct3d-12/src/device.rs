@@ -1,19 +1,20 @@
 //! The Direct3D 12 device on one back end: its objects, the one queue order every guest queue shares,
 //! the replay of command lists, and fences.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture,
-    DepthAttachment, DrawCall, DrawRange, Extent, Features, FormatKind, GpuError, IndexBinding,
-    IndexFormat, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, Origin,
-    PassDesc, PrepareDesc, Program, ReadSource, ReadState, SamplerDesc, ScissorRect, ShaderStage,
-    SlowPath, StageSet, StepMode, StoreOp, TargetLayout, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features,
+    FormatKind, FormatUse, GpuError, IndexBinding, IndexFormat, LoadOp, MAX_COLOR_TARGETS,
+    MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc, Program, ReadSource,
+    ReadState, SamplerDesc, ScissorRect, ShaderStage, SlowPath, StageSet, StepMode, StoreOp,
+    TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
+    ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -46,10 +47,17 @@ id!(
     /// A swap chain.
     ChainId,
     /// A descriptor heap.
-    HeapId
+    HeapId,
+    /// A command queue.
+    QueueId,
+    /// A query heap.
+    QueryHeapId,
+    /// A heap made by `CreateHeap`, holding placed resources.
+    MemoryId
 );
 
 mod bind;
+mod query;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
 const ADDRESS_BASE: u64 = 1 << 32;
@@ -66,6 +74,7 @@ const DEFAULT_BUFFER: BufferUsage = BufferUsage::VERTEX
 const UPLOAD_BUFFER: BufferUsage = BufferUsage::VERTEX
     .union(BufferUsage::INDEX)
     .union(BufferUsage::UNIFORM)
+    .union(BufferUsage::STORAGE)
     .union(BufferUsage::INDIRECT)
     .union(BufferUsage::COPY_SRC)
     .union(BufferUsage::COPY_DST);
@@ -93,11 +102,29 @@ struct Resource<B: Backend> {
     heap: HeapType,
     storage: Storage<B>,
     address: u64,
+    /// The heap a placed resource lies in.
+    placed: Option<MemoryId>,
+}
+
+/// A heap of `CreateHeap`: each placed resource has storage of its own (plan 5.2), so the heap
+/// keeps only where they lie: offset, end and resource.
+struct Memory {
+    size: u64,
+    heap: HeapType,
+    placed: Vec<(u64, u64, ResourceId)>,
 }
 
 /// What a pipeline state object holds.
 struct Pipeline<B: Backend> {
     program: B::Program,
+    /// Graphics pipelines' fixed state; none for compute pipelines.
+    render: Option<Render<B>>,
+    /// What the program's stages bind, and the size each stage's uniform blocks declare.
+    bindings: Vec<bind::StageBinding>,
+}
+
+/// A graphics pipeline's fixed state.
+struct Render<B: Backend> {
     blend: B::Blend,
     depth_stencil: B::DepthStencil,
     raster: B::Raster,
@@ -108,8 +135,6 @@ struct Pipeline<B: Backend> {
     strip_cut: u32,
     /// The vertex shader reads `SV_VertexID` or `SV_InstanceID`, which leave out the draw's bases.
     reads_bases: bool,
-    /// What the program's stages bind, and the size each stage's uniform blocks declare.
-    bindings: Vec<bind::StageBinding>,
 }
 
 /// `D3D12_GRAPHICS_PIPELINE_STATE_DESC`, the parts this front reads.
@@ -147,6 +172,13 @@ struct PendingRead<B: Backend> {
     size: usize,
 }
 
+/// Work a queue holds behind a `Wait` not yet met, each with its place in the order of the calls.
+enum Work {
+    Execute(Vec<Arc<[Command]>>),
+    Signal(FenceId, u64),
+    Wait(FenceId, u64),
+}
+
 /// A descriptor heap: the slots CPU handles point into, and the first GPU handle.
 struct Heap {
     slots: Box<[Descriptor]>,
@@ -174,6 +206,12 @@ pub struct Device<B: Backend> {
     /// Events to set when a fence reaches a value: fence, value, and the shell's token for the event.
     waiters: Vec<(FenceId, u64, u64)>,
     chains: Slab<Chain<B>>,
+    /// Each queue's held work, in order, numbered by the call that made it.
+    queues: Slab<VecDeque<(u64, Work)>>,
+    calls: u64,
+    query_heaps: Slab<query::QueryHeap<B>>,
+    memory: Slab<Memory>,
+    programs: query::Programs<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
     removed: Option<&'static str>,
@@ -202,6 +240,11 @@ impl<B: Backend> Device<B> {
             reads: Vec::new(),
             waiters: Vec::new(),
             chains: Slab::new(),
+            queues: Slab::new(),
+            calls: 0,
+            query_heaps: Slab::new(),
+            memory: Slab::new(),
+            programs: query::Programs::default(),
             messages: Vec::new(),
             removed: None,
         }
@@ -283,6 +326,16 @@ impl<B: Backend> Device<B> {
             }
             if desc.flags & resource::FLAG_UNORDERED_ACCESS != 0 {
                 usage |= TextureUsage::STORAGE;
+                // `ClearUnorderedAccessView*` clears it by a pass where the format renders.
+                if self
+                    .backend
+                    .caps()
+                    .formats
+                    .get(format)
+                    .contains(FormatUse::RENDER)
+                {
+                    usage |= TextureUsage::RENDER;
+                }
             }
             let three_d = desc.dimension == resource::DIMENSION_TEXTURE3D;
             let tdesc = TextureDesc {
@@ -317,7 +370,71 @@ impl<B: Backend> Device<B> {
             heap,
             storage,
             address,
+            placed: None,
         });
+        Ok(id)
+    }
+
+    /// `CreateHeap`.
+    pub fn create_heap(
+        &mut self,
+        size: u64,
+        heap: HeapType,
+        flags: u32,
+    ) -> Result<MemoryId, Error> {
+        self.live()?;
+        resource::check_heap_flags(flags, false)?;
+        if size == 0 {
+            return Err(Error::Invalid("a heap of zero bytes"));
+        }
+        Ok(MemoryId(self.memory.insert(Memory {
+            size,
+            heap,
+            placed: Vec::new(),
+        }) as u32))
+    }
+
+    /// The heap's release; resources placed in it keep their own storage.
+    pub fn destroy_heap(&mut self, id: MemoryId) {
+        self.memory.try_remove(id.0 as usize);
+    }
+
+    /// `CreatePlacedResource`. Placed resources that overlap a live one would share its bytes as
+    /// Direct3D 12's aliasing rules say, which needs the copies of plan 5.2 (`AliasCopied`), not
+    /// made yet; so overlaps are refused, and the others are resources like committed ones.
+    pub fn create_placed(
+        &mut self,
+        memory: MemoryId,
+        offset: u64,
+        desc: &ResourceDesc,
+    ) -> Result<ResourceId, Error> {
+        self.live()?;
+        let (padded, align) = desc.allocation()?;
+        // A buffer takes its own bytes of the heap; a texture its whole allocation.
+        let size = if desc.dimension == resource::DIMENSION_BUFFER {
+            desc.width
+        } else {
+            padded
+        };
+        let m = self
+            .memory
+            .get(memory.0 as usize)
+            .ok_or(Error::Invalid("no such heap"))?;
+        if !offset.is_multiple_of(align) || offset.checked_add(size).is_none_or(|e| e > m.size) {
+            return Err(Error::Invalid(
+                "a placed resource outside its heap or misaligned",
+            ));
+        }
+        let end = offset + size;
+        if m.placed.iter().any(|&(o, e, _)| o < end && offset < e) {
+            return Err(Error::NotImplemented("placed resources that overlap"));
+        }
+        let heap = m.heap;
+        let id = self.create_committed(heap, desc)?;
+        self.resources[id.0 as usize].placed = Some(memory);
+        self.memory[memory.0 as usize]
+            .placed
+            .push((offset, end, id));
         Ok(id)
     }
 
@@ -355,6 +472,9 @@ impl<B: Backend> Device<B> {
         };
         if r.address != 0 {
             self.addresses.remove(r.address);
+        }
+        if let Some(m) = r.placed.and_then(|m| self.memory.get_mut(m.0 as usize)) {
+            m.placed.retain(|p| p.2 != id);
         }
         self.reads.retain(|p| p.resource != id);
         match r.storage {
@@ -432,10 +552,7 @@ impl<B: Backend> Device<B> {
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<PipelineId, Error> {
         self.live()?;
-        let root = desc
-            .root
-            .filter(|r| self.roots.contains(r.0 as usize))
-            .ok_or(Error::Invalid("a pipeline needs its root signature"))?;
+        let root = self.pipeline_root(desc.root, &[desc.vs, desc.ps])?;
         let vs = self.convert(desc.vs, ShaderStage::Vertex)?;
         let ps = if desc.ps.is_empty() {
             None
@@ -492,7 +609,7 @@ impl<B: Backend> Device<B> {
         if let Some(ps) = &ps {
             bindings.extend(bind::stage_bindings(ps, StageSet::FRAGMENT));
         }
-        bind::check(&self.roots[root.0 as usize], &bindings)?;
+        bind::check(&root, &bindings)?;
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
         let raster = desc.raster.block(
@@ -534,8 +651,8 @@ impl<B: Backend> Device<B> {
         if let Some(s) = ps_shader {
             self.backend.destroy(Object::Shader(s));
         }
-        let pipeline = Pipeline {
-            program: program?,
+        let program = program?;
+        let render = Render {
             blend: self.backend.create_blend(&blend)?,
             depth_stencil: self.backend.create_depth_stencil(&depth_stencil)?,
             raster: self.backend.create_raster(&raster)?,
@@ -543,21 +660,68 @@ impl<B: Backend> Device<B> {
             targets,
             strip_cut: desc.strip_cut,
             reads_bases,
-            bindings,
         };
-        let packed = packed_strides(&pipeline.inputs);
-        let layout = self.vertex_layout(&pipeline.inputs, &packed)?;
+        let packed = packed_strides(&render.inputs);
+        let layout = self.vertex_layout(&render.inputs, &packed)?;
         self.backend.prepare(&PrepareDesc {
-            program: &pipeline.program,
-            blend: &pipeline.blend,
-            depth_stencil: &pipeline.depth_stencil,
-            raster: &pipeline.raster,
+            program: &program,
+            blend: &render.blend,
+            depth_stencil: &render.depth_stencil,
+            raster: &render.raster,
             vertex_layout: &layout,
             targets,
             topology,
             layouts: Default::default(),
         });
-        Ok(PipelineId(self.pipelines.insert(pipeline) as u32))
+        Ok(PipelineId(self.pipelines.insert(Pipeline {
+            program,
+            render: Some(render),
+            bindings,
+        }) as u32))
+    }
+
+    /// `CreateComputePipelineState`.
+    pub fn create_compute_pipeline(
+        &mut self,
+        root: Option<RootId>,
+        cs: &[u8],
+    ) -> Result<PipelineId, Error> {
+        self.live()?;
+        let root = self.pipeline_root(root, &[cs])?;
+        if !self.backend.caps().has(Features::COMPUTE) {
+            return Err(Error::NotImplemented("compute shaders on this back end"));
+        }
+        let cs = self.convert(cs, ShaderStage::Compute)?;
+        let bindings = bind::stage_bindings(&cs, StageSet::COMPUTE);
+        bind::check(&root, &bindings)?;
+        let shader = self.backend.create_shader(&cs.modules[0])?;
+        let program = self.backend.create_program(&Program::Compute(&shader));
+        self.backend.destroy(Object::Shader(shader));
+        Ok(PipelineId(self.pipelines.insert(Pipeline {
+            program: program?,
+            render: None,
+            bindings,
+        }) as u32))
+    }
+
+    /// The root signature a pipeline is made with: the one given, else one a shader carries.
+    fn pipeline_root(
+        &self,
+        root: Option<RootId>,
+        shaders: &[&[u8]],
+    ) -> Result<Arc<RootSignatureDesc>, Error> {
+        if let Some(r) = root {
+            return self
+                .roots
+                .get(r.0 as usize)
+                .cloned()
+                .ok_or(Error::Invalid("no such root signature"));
+        }
+        let code = shaders
+            .iter()
+            .find(|c| container_has(c, *b"RTS0"))
+            .ok_or(Error::Invalid("a pipeline needs its root signature"))?;
+        Ok(Arc::new(deserialize(code).map_err(Error::Invalid)?))
     }
 
     /// A DXIL or DXBC shader in the common form. Shaders reading helper constants wait for the
@@ -595,9 +759,11 @@ impl<B: Backend> Device<B> {
     pub fn destroy_pipeline(&mut self, id: PipelineId) {
         if let Some(p) = self.pipelines.try_remove(id.0 as usize) {
             self.backend.destroy(Object::Program(p.program));
-            self.backend.destroy(Object::Blend(p.blend));
-            self.backend.destroy(Object::DepthStencil(p.depth_stencil));
-            self.backend.destroy(Object::Raster(p.raster));
+            if let Some(r) = p.render {
+                self.backend.destroy(Object::Blend(r.blend));
+                self.backend.destroy(Object::DepthStencil(r.depth_stencil));
+                self.backend.destroy(Object::Raster(r.raster));
+            }
         }
     }
 
@@ -637,6 +803,14 @@ impl<B: Backend> Device<B> {
         let layout = self.backend.create_vertex_layout(&desc)?;
         self.layouts.insert(desc, layout.clone());
         Ok(layout)
+    }
+
+    /// A graphics pipeline's fixed state, for a pipeline the draw has checked is one.
+    fn render_mut(&mut self, pid: PipelineId) -> &mut Render<B> {
+        self.pipelines[pid.0 as usize]
+            .render
+            .as_mut()
+            .expect("a graphics pipeline")
     }
 
     // ---- Fences ----
@@ -679,23 +853,118 @@ impl<B: Backend> Device<B> {
         out
     }
 
-    /// `ID3D12CommandQueue::Signal`: the fence reaches `value` when the work submitted so far is done.
-    pub fn queue_signal(&mut self, id: FenceId, value: u64) -> Result<(), Error> {
+    // ---- Queues ----
+
+    /// `CreateCommandQueue`: every queue shares the back end's one submission order.
+    pub fn create_queue(&mut self) -> QueueId {
+        QueueId(self.queues.insert(VecDeque::new()) as u32)
+    }
+
+    /// A queue's release; work still held behind a wait never runs, as on the GPU.
+    pub fn destroy_queue(&mut self, id: QueueId) {
+        self.queues.try_remove(id.0 as usize);
+    }
+
+    /// Holds `work` if the queue already holds some; else gives it back to be done now.
+    fn hold(&mut self, queue: QueueId, work: Work) -> Result<Option<Work>, Error> {
+        self.calls += 1;
+        let held = self
+            .queues
+            .get_mut(queue.0 as usize)
+            .ok_or(Error::Invalid("no such queue"))?;
+        if held.is_empty() {
+            return Ok(Some(work));
+        }
+        held.push_back((self.calls, work));
+        Ok(None)
+    }
+
+    /// `ExecuteCommandLists`: replayed and submitted now, unless the queue waits.
+    pub fn execute(&mut self, queue: QueueId, lists: &[Arc<[Command]>]) -> Result<(), Error> {
         self.live()?;
-        let fence = self.backend.submit();
-        self.fences
-            .get_mut(id.0 as usize)
-            .ok_or(Error::Invalid("no such fence"))?
-            .pending
-            .push((value, fence));
+        if let Some(Work::Execute(lists)) = self.hold(queue, Work::Execute(lists.to_vec()))? {
+            self.replay(&lists)?;
+        }
         Ok(())
     }
 
-    /// `ID3D12Fence::Signal` from the CPU.
+    /// `ID3D12CommandQueue::Signal`: the fence reaches `value` when the work submitted before it is
+    /// done.
+    pub fn queue_signal(&mut self, queue: QueueId, id: FenceId, value: u64) -> Result<(), Error> {
+        self.live()?;
+        if !self.fences.contains(id.0 as usize) {
+            return Err(Error::Invalid("no such fence"));
+        }
+        if self.hold(queue, Work::Signal(id, value))?.is_some() {
+            self.signal_now(id, value);
+            self.release();
+        }
+        Ok(())
+    }
+
+    /// `ID3D12CommandQueue::Wait`: the queue's later work is held until the fence's value is
+    /// reached by work already replayed or by the CPU.
+    pub fn queue_wait(&mut self, queue: QueueId, id: FenceId, value: u64) -> Result<(), Error> {
+        self.live()?;
+        if !self.fences.contains(id.0 as usize) {
+            return Err(Error::Invalid("no such fence"));
+        }
+        if self.hold(queue, Work::Wait(id, value))?.is_some() && self.reached(id) < value {
+            self.queues[queue.0 as usize].push_back((self.calls, Work::Wait(id, value)));
+        }
+        Ok(())
+    }
+
+    fn signal_now(&mut self, id: FenceId, value: u64) {
+        let fence = self.backend.submit();
+        if let Some(f) = self.fences.get_mut(id.0 as usize) {
+            f.pending.push((value, fence));
+        }
+    }
+
+    /// The value the fence will hold once the work replayed so far is done.
+    fn reached(&self, id: FenceId) -> u64 {
+        self.fences.get(id.0 as usize).map_or(0, |f| {
+            f.pending.last().map_or(f.value, |p| p.0.max(f.value))
+        })
+    }
+
+    /// Does held work whose waits are now met, earliest call first, until none is left to do.
+    fn release(&mut self) {
+        loop {
+            let next = self
+                .queues
+                .iter()
+                .filter_map(|(q, held)| {
+                    let (call, work) = held.front()?;
+                    match *work {
+                        Work::Wait(f, v) if self.reached(f) < v => None,
+                        _ => Some((*call, q)),
+                    }
+                })
+                .min();
+            let Some((_, q)) = next else {
+                return;
+            };
+            match self.queues[q].pop_front().map(|w| w.1) {
+                Some(Work::Execute(lists)) if self.removed.is_none() => {
+                    // A failure removes the device, which every later call reports.
+                    let _ = self.replay(&lists);
+                }
+                Some(Work::Signal(f, v)) => self.signal_now(f, v),
+                _ => {}
+            }
+        }
+    }
+
+    /// `ID3D12Fence::Signal` from the CPU; queues waiting for it go on.
     pub fn cpu_signal(&mut self, id: FenceId, value: u64) {
+        // Queue signals already done come first; those still to come land after it.
+        self.completed(id);
         if let Some(f) = self.fences.get_mut(id.0 as usize) {
             f.value = value;
         }
+        self.release();
     }
 
     /// `GetCompletedValue`. Read backs whose work is done are in readback memory first (waiting only
@@ -863,7 +1132,8 @@ impl<B: Backend> Device<B> {
 
     /// `ExecuteCommandLists`: upload memory the lists read is written to the GPU, the lists are
     /// replayed into the back end in order, and the work is submitted.
-    pub fn execute(&mut self, lists: &[Arc<[Command]>]) -> Result<(), Error> {
+    /// Replays command lists into the back end and submits them.
+    fn replay(&mut self, lists: &[Arc<[Command]>]) -> Result<(), Error> {
         self.live()?;
         self.uploaded.clear();
         let mut uploads: Vec<ResourceId> = Vec::new();
@@ -876,7 +1146,12 @@ impl<B: Backend> Device<B> {
         let first_read = self.reads.len();
         let result = lists.iter().try_for_each(|l| {
             let mut replay = Replay::new();
-            l.iter().try_for_each(|c| replay.run(self, c))?;
+            for (i, c) in l.iter().enumerate() {
+                match c {
+                    Command::Predication(p) => replay.set_predicate(self, *p, &l[i + 1..])?,
+                    c => replay.run(self, c)?,
+                }
+            }
             replay.finish(self)
         });
         let submission = self.backend.submit();
@@ -995,6 +1270,77 @@ impl<B: Backend> Device<B> {
 
     /// Records a read back of `size` bytes at `offset` of a readback buffer, finished into its
     /// memory when the submission is done.
+    /// `ClearUnorderedAccessViewUint` and `...Float`: the integer values are the view's bits with no
+    /// conversion; the float values are converted to the view's format.
+    fn clear_storage(
+        &mut self,
+        v: &crate::list::ResourceView,
+        values: [u32; 4],
+        float: bool,
+        rects: &[Rect],
+    ) -> Result<(), Error> {
+        if !rects.is_empty() {
+            return Err(Error::NotImplemented(
+                "clearing rectangles of an unordered access view",
+            ));
+        }
+        match self
+            .resources
+            .get(v.resource.0 as usize)
+            .map(|r| &r.storage)
+        {
+            Some(Storage::Buffer { buffer, .. }) => {
+                let buffer = buffer.clone();
+                let raw = v.flags & 1 != 0;
+                let (element, pattern) = if raw || v.stride != 0 {
+                    if float {
+                        return Err(Error::NotImplemented(
+                            "float clears of raw and structured buffer views",
+                        ));
+                    }
+                    let element = if raw { 4 } else { u64::from(v.stride) };
+                    (element, values[0].to_le_bytes().to_vec())
+                } else {
+                    let format = dxgi(v.format)?;
+                    let bytes = storage_texel(format, values, float).ok_or(
+                        Error::NotImplemented("clearing a typed buffer view of this format"),
+                    )?;
+                    (u64::from(format.block().2), bytes)
+                };
+                let size = u64::from(v.count) * element;
+                if !size.is_multiple_of(pattern.len() as u64) {
+                    return Err(Error::NotImplemented(
+                        "clearing a structured buffer view whose stride is no multiple of 4",
+                    ));
+                }
+                self.backend
+                    .clear_buffer(&buffer, v.first_element * element, size, &pattern);
+            }
+            Some(Storage::Texture { texture, desc, .. }) => {
+                let (texture, desc) = (texture.clone(), *desc);
+                let format = dxgi(v.format)?;
+                let value = storage_clear_value(format, values, float).ok_or(
+                    Error::NotImplemented("clearing an unordered access view of this format"),
+                )?;
+                let layers = match v.dimension {
+                    4 => 0..1,
+                    5 | 8 => v.first_layer..v.first_layer.saturating_add(v.layers),
+                    _ => return Err(Error::Invalid("an unordered access view's dimension")),
+                };
+                self.backend.clear_texture(
+                    &texture,
+                    &desc,
+                    format,
+                    v.mip..v.mip + 1,
+                    layers,
+                    ClearValue::Color(value),
+                )?;
+            }
+            None => return Err(Error::Invalid("clearing a view of no resource")),
+        }
+        Ok(())
+    }
+
     fn read_into(&mut self, id: ResourceId, offset: u64, size: u64) -> Result<(), Error> {
         let buffer = self.buffer(id)?.0.clone();
         let readback = self.backend.read_back(&ReadSource::Buffer {
@@ -1048,6 +1394,7 @@ fn adopt_buffers<B: Backend>(
                 owned: false,
             },
             address: 0,
+            placed: None,
         });
         out.push(ResourceId(id as u32));
         i += 1;
@@ -1118,7 +1465,7 @@ impl From<GpuError> for Error {
 
 /// The state a command list's replay carries from command to command. A list starts with none of
 /// the previous list's state, as Direct3D 12 defines.
-struct Replay {
+struct Replay<B: Backend> {
     pipeline: Option<PipelineId>,
     topology: Topology,
     vertex_buffers: [VertexBufferView; MAX_VERTEX_STREAMS],
@@ -1131,12 +1478,29 @@ struct Replay {
     depth: Option<Descriptor>,
     pass_open: bool,
     graphics: bind::RootState,
+    compute: bind::RootState,
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
     /// own before anything else reads the texture.
     clears: Vec<(TargetView, ClearValue)>,
+    /// The occlusion query begun and not ended: heap, index, and whether it counts in the open
+    /// pass, or counted in a pass already ended.
+    query: Option<(QueryHeapId, u32, QueryState)>,
+    /// The heap whose query set the open pass counts in.
+    pass_heap: Option<QueryHeapId>,
+    predicate: Option<query::Predicate<B>>,
 }
 
-impl Replay {
+/// A predicated draw's or dispatch's argument record: buffer and offset.
+type Record<B> = Option<(<B as Backend>::Buffer, u64)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueryState {
+    Waiting,
+    Running,
+    Ended,
+}
+
+impl<B: Backend> Replay<B> {
     fn new() -> Self {
         Replay {
             pipeline: None,
@@ -1156,19 +1520,28 @@ impl Replay {
             depth: None,
             pass_open: false,
             graphics: bind::RootState::default(),
+            compute: bind::RootState::default(),
             clears: Vec::new(),
+            query: None,
+            pass_heap: None,
+            predicate: None,
         }
     }
 
-    fn end_pass<B: Backend>(&mut self, d: &mut Device<B>) {
+    fn end_pass(&mut self, d: &mut Device<B>) {
         if self.pass_open {
+            if let Some((_, _, state @ QueryState::Running)) = &mut self.query {
+                d.backend.end_query();
+                *state = QueryState::Ended;
+            }
             d.backend.end_pass();
             self.pass_open = false;
+            self.pass_heap = None;
         }
     }
 
     /// Ends any pass and does the clears still waiting, so copies see them.
-    fn settle<B: Backend>(&mut self, d: &mut Device<B>) -> Result<(), Error> {
+    fn settle(&mut self, d: &mut Device<B>) -> Result<(), Error> {
         self.end_pass(d);
         for (v, value) in std::mem::take(&mut self.clears) {
             let (texture, desc) = d.texture(v.resource)?;
@@ -1185,33 +1558,75 @@ impl Replay {
         Ok(())
     }
 
-    fn finish<B: Backend>(&mut self, d: &mut Device<B>) -> Result<(), Error> {
+    fn finish(&mut self, d: &mut Device<B>) -> Result<(), Error> {
+        if let Some(p) = self.predicate.take() {
+            d.drop_predicate(p);
+        }
         self.settle(d)
     }
 
-    fn run<B: Backend>(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
+    /// Whether a predicate skips a clear, copy or resolve, which have no indirect form.
+    fn skipped(&mut self, d: &mut Device<B>) -> Result<bool, Error> {
+        if self.predicate.is_none() {
+            return Ok(false);
+        }
+        self.end_pass(d);
+        d.skips(self.predicate.as_mut().expect("a predicate"))
+    }
+
+    /// `SetPredication`, with the commands that follow it in the list.
+    fn set_predicate(
+        &mut self,
+        d: &mut Device<B>,
+        predicate: Option<(ResourceId, u64, u32)>,
+        rest: &[Command],
+    ) -> Result<(), Error> {
+        self.settle(d)?;
+        if let Some(p) = self.predicate.take() {
+            d.drop_predicate(p);
+        }
+        if let Some((resource, offset, op)) = predicate {
+            let end = rest
+                .iter()
+                .position(|c| matches!(c, Command::Predication(_)))
+                .unwrap_or(rest.len());
+            self.predicate = Some(d.predicate(resource, offset, op, &rest[..end])?);
+        }
+        Ok(())
+    }
+
+    /// For a draw or dispatch under a predicate: its argument record, or whether it is skipped.
+    /// None when it is skipped.
+    fn predicated(&mut self, d: &mut Device<B>) -> Result<Option<Record<B>>, Error> {
+        let Some(p) = &mut self.predicate else {
+            return Ok(Some(None));
+        };
+        if let Some(record) = Device::<B>::next_record(p) {
+            return Ok(Some(Some(record)));
+        }
+        if d.skips(p)? {
+            return Ok(None);
+        }
+        Ok(Some(None))
+    }
+
+    fn run(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
         match c {
             Command::Pipeline(p) => self.pipeline = Some(*p),
             Command::RootSignature { compute, root } => {
-                if *compute {
-                    return Err(Error::NotImplemented("compute root signatures"));
-                }
                 let signature = root.and_then(|r| d.roots.get(r.0 as usize).cloned());
                 if root.is_some() && signature.is_none() {
                     return Err(Error::Invalid("no such root signature"));
                 }
-                self.graphics.set_root(*root, signature.as_deref());
+                self.state(*compute).set_root(*root, signature.as_deref());
             }
             Command::RootArgument {
                 compute,
                 index,
                 argument,
             } => {
-                if *compute {
-                    return Err(Error::NotImplemented("compute root arguments"));
-                }
                 *self
-                    .graphics
+                    .state(*compute)
                     .arguments
                     .get_mut(*index as usize)
                     .ok_or(Error::Invalid("a root parameter index out of range"))? =
@@ -1223,11 +1638,8 @@ impl Replay {
                 offset,
                 values,
             } => {
-                if *compute {
-                    return Err(Error::NotImplemented("compute root constants"));
-                }
                 let at = *offset as usize;
-                self.graphics
+                self.state(*compute)
                     .constants
                     .get_mut(*index as usize)
                     .and_then(|c| c.get_mut(at..at + values.len()))
@@ -1260,6 +1672,12 @@ impl Replay {
                     self.depth = *depth;
                 }
             }
+            Command::ClearTarget { .. }
+            | Command::ClearDepth { .. }
+            | Command::CopyBuffer { .. }
+            | Command::CopyTexture { .. }
+            | Command::ClearStorage { .. }
+                if self.skipped(d)? => {}
             Command::ClearTarget { view, color, rects } => {
                 let Descriptor::RenderTarget(v) = view else {
                     return Err(Error::Invalid(
@@ -1334,31 +1752,35 @@ impl Replay {
                 instances,
                 first_vertex,
                 first_instance,
-            } => self.draw(
-                d,
-                DrawRange::Vertices {
-                    first: *first_vertex,
-                    count: *vertices,
-                    first_instance: *first_instance,
-                    instances: *instances,
-                },
-            )?,
+            } => {
+                if let Some(record) = self.predicated(d)? {
+                    let range = DrawRange::Vertices {
+                        first: *first_vertex,
+                        count: *vertices,
+                        first_instance: *first_instance,
+                        instances: *instances,
+                    };
+                    self.draw(d, range, record.as_ref())?;
+                }
+            }
             Command::DrawIndexed {
                 indices,
                 instances,
                 first_index,
                 base_vertex,
                 first_instance,
-            } => self.draw(
-                d,
-                DrawRange::Indexed {
-                    first: *first_index,
-                    count: *indices,
-                    base_vertex: *base_vertex,
-                    first_instance: *first_instance,
-                    instances: *instances,
-                },
-            )?,
+            } => {
+                if let Some(record) = self.predicated(d)? {
+                    let range = DrawRange::Indexed {
+                        first: *first_index,
+                        count: *indices,
+                        base_vertex: *base_vertex,
+                        first_instance: *first_instance,
+                        instances: *instances,
+                    };
+                    self.draw(d, range, record.as_ref())?;
+                }
+            }
             Command::CopyBuffer {
                 dst,
                 dst_offset,
@@ -1381,14 +1803,157 @@ impl Replay {
                 self.settle(d)?;
                 copy_texture(d, dst, *at, src, *area)?;
             }
+            Command::Dispatch(groups) => {
+                if let Some(record) = self.predicated(d)? {
+                    self.dispatch(d, *groups, record.as_ref())?;
+                }
+            }
+            Command::BeginQuery { heap, kind, index } => {
+                self.begin_query(d, *heap, *kind, *index)?
+            }
+            Command::EndQuery { heap, kind, index } => self.end_query(d, *heap, *kind, *index)?,
+            Command::ResolveQueries {
+                heap,
+                kind,
+                first,
+                count,
+                dst,
+                offset,
+            } => {
+                self.settle(d)?;
+                d.resolve_query_data(*heap, *kind, *first, *count, *dst, *offset)?;
+            }
+            Command::Predication(_) => {
+                return Err(Error::Invalid("a predicate outside a list's replay"));
+            }
+            Command::ClearStorage {
+                view,
+                values,
+                float,
+                rects,
+            } => {
+                self.settle(d)?;
+                d.clear_storage(view, *values, *float, rects)?;
+            }
         }
         Ok(())
     }
 
-    fn draw<B: Backend>(
+    fn state(&mut self, compute: bool) -> &mut bind::RootState {
+        if compute {
+            &mut self.compute
+        } else {
+            &mut self.graphics
+        }
+    }
+
+    fn begin_query(
+        &mut self,
+        d: &mut Device<B>,
+        heap: QueryHeapId,
+        kind: u32,
+        index: u32,
+    ) -> Result<(), Error> {
+        match kind {
+            query::QUERY_BINARY_OCCLUSION => {}
+            query::QUERY_OCCLUSION => {
+                return Err(Error::NotImplemented("counted occlusion queries"));
+            }
+            _ => return Err(Error::Invalid("BeginQuery of this query type")),
+        }
+        d.occlusion_set(heap)?;
+        if self.query.is_some() {
+            return Err(Error::Invalid("an occlusion query begun inside another"));
+        }
+        if self.pass_open && self.pass_heap == Some(heap) {
+            d.backend.begin_query(index);
+            self.query = Some((heap, index, QueryState::Running));
+        } else {
+            // The next pass counts in this heap's query set.
+            self.end_pass(d);
+            self.query = Some((heap, index, QueryState::Waiting));
+        }
+        Ok(())
+    }
+
+    fn end_query(
+        &mut self,
+        d: &mut Device<B>,
+        heap: QueryHeapId,
+        kind: u32,
+        index: u32,
+    ) -> Result<(), Error> {
+        if kind == query::QUERY_TIMESTAMP {
+            self.end_pass(d);
+            return d.timestamp(heap, index);
+        }
+        match self.query.take() {
+            Some((h, i, state)) if (h, i) == (heap, index) => match state {
+                QueryState::Running => d.backend.end_query(),
+                QueryState::Ended => {}
+                QueryState::Waiting => {
+                    // No pass drew while it ran: an empty pass writes its zero.
+                    self.end_pass(d);
+                    let set = d.occlusion_set(heap)?;
+                    d.backend.begin_pass(&PassDesc {
+                        colors: Default::default(),
+                        depth: None,
+                        empty: Some(wcontainers_gpu::EmptyPass {
+                            width: 1,
+                            height: 1,
+                            samples: 1,
+                        }),
+                        occlusion: Some(&set),
+                    });
+                    d.backend.begin_query(index);
+                    d.backend.end_query();
+                    d.backend.end_pass();
+                }
+            },
+            _ => return Err(Error::Invalid("EndQuery of a query not begun")),
+        }
+        Ok(())
+    }
+
+    fn dispatch(
+        &mut self,
+        d: &mut Device<B>,
+        groups: [u32; 3],
+        record: Option<&(B::Buffer, u64)>,
+    ) -> Result<(), Error> {
+        let Some(pid) = self.pipeline else {
+            return Ok(());
+        };
+        if d.pipelines[pid.0 as usize].render.is_some() {
+            return Err(Error::Invalid("dispatching with a graphics pipeline state"));
+        }
+        if groups.contains(&0) {
+            return Ok(());
+        }
+        self.settle(d)?;
+        let sets = d.binding_sets(&self.compute, pid)?;
+        let call = DispatchCall {
+            program: &d.pipelines[pid.0 as usize].program,
+            bindings: sets.each_ref().map(Option::as_ref),
+            immediates: &[],
+            groups: match record {
+                Some((args, offset)) => DispatchGroups::Indirect {
+                    args,
+                    offset: *offset,
+                },
+                None => DispatchGroups::Direct(groups),
+            },
+        };
+        d.backend.dispatch(&call)?;
+        Ok(())
+    }
+
+    /// A draw; with `record`, its arguments are read from that argument record instead.
+    fn draw(
         &mut self,
         d: &mut Device<B>,
         range: DrawRange<'_, B>,
+        record: Option<&(B::Buffer, u64)>,
     ) -> Result<(), Error> {
         // A draw with no pipeline state draws nothing, as the hardware does.
         let Some(pid) = self.pipeline else {
@@ -1407,12 +1972,46 @@ impl Replay {
             } => *base_vertex != 0 || *first_instance != 0,
             _ => false,
         };
-        if bases && d.pipelines[pid.0 as usize].reads_bases {
+        let render = d.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .ok_or(Error::Invalid("drawing with a compute pipeline state"))?;
+        if bases && render.reads_bases {
             return Err(Error::NotImplemented(
                 "SV_VertexID or SV_InstanceID in a draw with a first vertex or instance",
             ));
         }
+        if let (Some(_), DrawRange::Vertices { first_instance, .. })
+        | (Some(_), DrawRange::Indexed { first_instance, .. }) = (record, &range)
+            && *first_instance != 0
+            && !d.backend.caps().has(Features::INDIRECT_FIRST_INSTANCE)
+        {
+            return Err(Error::NotImplemented(
+                "a predicated draw with a first instance on this back end",
+            ));
+        }
+        let range = match (record, range) {
+            (Some((args, offset)), DrawRange::Indexed { .. }) => DrawRange::IndexedIndirect {
+                args,
+                offset: *offset,
+            },
+            (Some((args, offset)), _) => DrawRange::Indirect {
+                args,
+                offset: *offset,
+            },
+            (None, range) => range,
+        };
+        if let Some((heap, _, QueryState::Ended)) = self.query
+            && !self.pass_open
+            && self.pass_heap != Some(heap)
+        {
+            return Err(Error::NotImplemented("an occlusion query across passes"));
+        }
         if !self.pass_open {
+            let occlusion = match self.query {
+                Some((heap, _, QueryState::Waiting)) => Some((heap, d.occlusion_set(heap)?)),
+                _ => None,
+            };
             let mut views = Vec::with_capacity(self.colors.len());
             let mut loads = Vec::with_capacity(self.colors.len());
             for c in &self.colors {
@@ -1470,7 +2069,7 @@ impl Replay {
                         stencil: *stencil,
                     }),
                 empty: None,
-                occlusion: None,
+                occlusion: occlusion.as_ref().map(|(_, set)| set),
             };
             for (i, (view, load)) in views.iter().zip(loads).enumerate() {
                 pass.colors[i] = Some(ColorAttachment {
@@ -1486,18 +2085,23 @@ impl Replay {
             }
             d.backend.begin_pass(&pass);
             self.pass_open = true;
+            if let (Some((heap, _)), Some((_, index, state))) = (&occlusion, &mut self.query) {
+                d.backend.begin_query(*index);
+                *state = QueryState::Running;
+                self.pass_heap = Some(*heap);
+            }
         }
         let mut strides = [0; MAX_VERTEX_STREAMS];
         for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
             *s = v.stride;
         }
-        let inputs = std::mem::take(&mut d.pipelines[pid.0 as usize].inputs);
+        let inputs = std::mem::take(&mut d.render_mut(pid).inputs);
         let layout = d.vertex_layout(&inputs, &strides);
         let mut used = [false; MAX_VERTEX_STREAMS];
         inputs
             .iter()
             .for_each(|(e, _)| used[e.slot as usize] = true);
-        d.pipelines[pid.0 as usize].inputs = inputs;
+        d.render_mut(pid).inputs = inputs;
         let layout = layout?;
         let mut buffers: [Option<(B::Buffer, u64)>; MAX_VERTEX_STREAMS] =
             [const { None }; MAX_VERTEX_STREAMS];
@@ -1533,7 +2137,7 @@ impl Replay {
             }
             _ => None,
         };
-        let p = &d.pipelines[pid.0 as usize];
+        let p = d.render_mut(pid);
         for (i, slot) in p.targets.colors.iter().enumerate() {
             let bound = match self.colors.get(i) {
                 Some(Descriptor::RenderTarget(v)) => Some(dxgi(v.format)?),
@@ -1557,11 +2161,12 @@ impl Replay {
         let restart = p.strip_cut != 0;
         let sets = d.binding_sets(&self.graphics, pid)?;
         let p = &d.pipelines[pid.0 as usize];
+        let r = p.render.as_ref().expect("a graphics pipeline");
         let call = DrawCall {
             program: &p.program,
-            blend: &p.blend,
-            depth_stencil: &p.depth_stencil,
-            raster: &p.raster,
+            blend: &r.blend,
+            depth_stencil: &r.depth_stencil,
+            raster: &r.raster,
             vertex_layout: &layout,
             bindings: sets.each_ref().map(Option::as_ref),
             vertex_buffers: &vertex_buffers,
@@ -1612,6 +2217,112 @@ fn scissor(r: &Rect) -> ScissorRect {
         width: r.saturating_sub(l),
         height: b.saturating_sub(t),
     }
+}
+
+/// The components of a format whose components are each 8, 16 or 32 bits wide: count and bits.
+fn components(format: wcontainers_gpu::Format) -> Option<(usize, u32)> {
+    use wcontainers_gpu::Format::*;
+    Some(match format {
+        R8Unorm | R8Snorm | R8Uint | R8Sint => (1, 8),
+        Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint => (2, 8),
+        Rgba8Unorm | Rgba8Snorm | Rgba8Uint | Rgba8Sint => (4, 8),
+        R16Unorm | R16Snorm | R16Uint | R16Sint => (1, 16),
+        Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint => (2, 16),
+        Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint => (4, 16),
+        R32Uint | R32Sint | R32Float => (1, 32),
+        Rg32Uint | Rg32Sint | Rg32Float => (2, 32),
+        Rgba32Uint | Rgba32Sint | Rgba32Float => (4, 32),
+        _ => return None,
+    })
+}
+
+/// Whether a format of [`components`] is signed normalised, and whether it is normalised at all.
+fn normalised(format: wcontainers_gpu::Format) -> (bool, bool) {
+    use wcontainers_gpu::Format::*;
+    match format {
+        R8Snorm | Rg8Snorm | Rgba8Snorm | R16Snorm | Rg16Snorm | Rgba16Snorm => (true, true),
+        R8Unorm | Rg8Unorm | Rgba8Unorm | R16Unorm | Rg16Unorm | Rgba16Unorm => (false, true),
+        _ => (false, false),
+    }
+}
+
+/// A storage clear's value as each component's stored bits (masked to its width).
+fn storage_bits(
+    format: wcontainers_gpu::Format,
+    values: [u32; 4],
+    float: bool,
+) -> Option<Vec<u32>> {
+    let (count, bits) = components(format)?;
+    let mask = if bits == 32 {
+        u32::MAX
+    } else {
+        (1 << bits) - 1
+    };
+    let max = (mask >> 1) as f32;
+    let (snorm, norm) = normalised(format);
+    Some(
+        values[..count]
+            .iter()
+            .map(|&v| {
+                let f = f32::from_bits(v);
+                let stored = match (float, format.kind()) {
+                    (false, _) => v,
+                    (true, FormatKind::Uint) => f as u32,
+                    (true, FormatKind::Sint) => f as i32 as u32,
+                    (true, _) if snorm => (f.clamp(-1.0, 1.0) * max).round() as i32 as u32,
+                    (true, _) if norm => (f.clamp(0.0, 1.0) * mask as f32).round() as u32,
+                    (true, _) => v,
+                };
+                stored & mask
+            })
+            .collect(),
+    )
+}
+
+/// One texel's bytes for a storage clear of a typed buffer view.
+fn storage_texel(
+    format: wcontainers_gpu::Format,
+    values: [u32; 4],
+    float: bool,
+) -> Option<Vec<u8>> {
+    let bits = components(format)?.1;
+    Some(
+        storage_bits(format, values, float)?
+            .into_iter()
+            .flat_map(|c| c.to_le_bytes().into_iter().take(bits as usize / 8))
+            .collect(),
+    )
+}
+
+/// A storage clear as the value [`ClearValue::Color`] takes for the format.
+fn storage_clear_value(
+    format: wcontainers_gpu::Format,
+    values: [u32; 4],
+    float: bool,
+) -> Option<[u32; 4]> {
+    let (_, bits) = components(format)?;
+    let stored = storage_bits(format, values, float)?;
+    let (snorm, norm) = normalised(format);
+    let mask = if bits == 32 {
+        u32::MAX
+    } else {
+        (1 << bits) - 1
+    };
+    let mut out = [0; 4];
+    for (o, s) in out.iter_mut().zip(stored) {
+        *o = match format.kind() {
+            FormatKind::Uint => s,
+            // Sign-extended from the component's width.
+            FormatKind::Sint => (((s << (32 - bits)) as i32) >> (32 - bits)) as u32,
+            _ if snorm => {
+                let signed = ((s << (32 - bits)) as i32) >> (32 - bits);
+                (signed as f32 / (mask >> 1) as f32).max(-1.0).to_bits()
+            }
+            _ if norm => (s as f32 / mask as f32).to_bits(),
+            _ => s,
+        };
+    }
+    Some(out)
 }
 
 /// A clear color as the bits the format's kind takes.
